@@ -36,7 +36,7 @@
   - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. The library's gate is one CSG frame, a box minus a box, so it is one drawable (Interface, N15, 2026-10-22). The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
   - After 1.0 s of Run it has moved no more than 10 mm and tilted no more than 2°.
   - *Catches:* the tour's dropped builder checks `on-ground` and `rendered`; a buried, floating or doubled object; an object placed but not drawn.
-- **import-named:** the imported object's name is the glTF mesh's name, or the file's stem when the mesh has none, and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
+- **import-named:** the imported object's name is `read_gltf`'s, as the editor shows it: the glTF node's name, else its mesh's, else the file's stem when it has neither (Interface, N15, 2026-10-22; it read the mesh's alone before, which failed a correct import whose node and mesh are named differently), and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
 - Known-open entry: `mesh-contact-open` (§6 of the design).
 
 ## 4. `editor.fly`
