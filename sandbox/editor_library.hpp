@@ -46,6 +46,7 @@
 #include "drone_view.hpp"
 #include "editor_document.hpp"
 #include "editor_scene_edits.hpp"
+#include "png_reader.hpp"
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
@@ -76,6 +77,7 @@ struct LibraryItem {
     std::string category{};                    // the index's, or "from file"; empty for a built-in
     std::string file{};                        // as the index spells it, or the path loaded from
     std::string source{};                      // the path placing reads; empty for a built-in
+    std::optional<png::Image> thumbnail{};     // the image its entry names, decoded; none without one
 };
 
 // One primitive at its collider's origin, as WorldBuilder lays out its
@@ -240,6 +242,15 @@ namespace detail {
         item.category = e.category;
         item.file = e.file;
         item.source = (library->dir / e.file).generic_string();
+        if (!e.thumbnail.empty()) {
+            // One that won't decode is named; the entry is still listed, a name without a tile.
+            Result<png::Image> image = png::read_file(library->dir / e.thumbnail);
+            if (image) {
+                item.thumbnail = std::move(*image);
+            } else {
+                out.problems.push_back("'" + e.name + "': its thumbnail " + image.error().context);
+            }
+        }
         out.items.push_back(std::move(item));
     }
     return out;
