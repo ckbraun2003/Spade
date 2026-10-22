@@ -48,6 +48,7 @@
 #include "compute/backend.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
+#include "airflow_exact_device.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
@@ -72,13 +73,14 @@ constexpr af::GridShape kShape{44, 28, 46, 0.01f};
 constexpr float kRho = 1.225f;
 constexpr float kStepS = 0.000125f;
 
-// The band, relative to the largest increment the discs add (plan B: 4x the
-// largest measurement, at least 4 ulps; the target 1e-4, past 1e-3 a grade
-// change). Measured 2026-10-21 on an NVIDIA GeForce RTX 3060 Ti, on B1's
-// runner: 2.08e-7 at worst (thrust-only; level 1.01e-7, tilted 1.90e-7), from
-// peskin4's square root, which SPIR-V does not round correctly; 903 to 3479 of
-// the 9948 to 12914 touched faces differ in a last bit or two. Red check:
-// peskin4's 4 a^2 as 4.01 a^2 fails every case by about 1e-3.
+// The gather is spread_actuator()'s bit for bit on the device of record:
+// peskin4's square roots are fp32_math's sqrt32_ftz, and spread_actuator()
+// flushes as the device does (TD-14 as amended 2026-10-22;
+// airflow_exact_device.hpp). Another device or driver keeps the band the
+// device's own sqrt needed, relative to the largest increment the discs add
+// (plan B: 4x the largest measurement, at least 4 ulps): 2.08e-7 at worst on
+// the RTX 3060 Ti, 2026-10-21 (thrust-only; level 1.01e-7, tilted 1.90e-7).
+// Red check: peskin4's 4 a^2 as 4.01 a^2 fails every case by about 1e-3.
 constexpr float kBandRelative = 4.0f * 2.08e-7f;
 
 // Set 1's bindings the gather uses (bindings.slang section F); the runner
@@ -205,11 +207,12 @@ template <class T>
     return packed(du, dv, dw);
 }
 
-// The gather on the device, from `start`; the increments it leaves.
+// The gather on the device, from `start`; the increments it leaves. With
+// `best_ms`, also the three components' time, the fastest of five submits.
 [[nodiscard]] std::optional<std::vector<float>> gather_on_gpu(VulkanContext& ctx, const af::GridShape& s,
                                                               std::span<const af::ActuatorDisc> discs,
                                                               const std::vector<float>& start, float h,
-                                                              uint32_t workgroup_size) {
+                                                              uint32_t workgroup_size, double* best_ms = nullptr) {
     const auto n = face_counts(s);
     std::vector<uint32_t> params(16u, 0u);
     params[0] = s.nx;
@@ -244,6 +247,7 @@ template <class T>
         return std::nullopt;
     }
     std::vector<ChainCommand> chain;
+    chain.push_back(ChainCommand{});  // marks either side, for the time
     for (uint32_t c = 0; c < 3; ++c) {
         const GatherPush push{c, 0u, static_cast<uint32_t>(n[c]), static_cast<uint32_t>(discs.size())};
         ChainCommand cmd{.is_dispatch = true, .pipeline = 0};
@@ -251,10 +255,28 @@ template <class T>
         cmd.groups = {(push.face_count + workgroup_size - 1u) / workgroup_size, 1u, 1u};
         chain.push_back(cmd);
     }
+    chain.push_back(ChainCommand{});
     const auto id = r.record(chain);
     if (!id) {
         ADD_FAILURE() << id.error().context;
         return std::nullopt;
+    }
+    if (best_ms != nullptr) {
+        *best_ms = 0.0;
+        for (int run = 0; run < 5; ++run) {
+            if (!check(r.submit(*id, 1))) return std::nullopt;
+            const auto d = r.durations_ns(*id);
+            if (!d) {
+                ADD_FAILURE() << d.error().context;
+                return std::nullopt;
+            }
+            if (d->empty()) break;  // the device cannot time compute work
+            uint64_t sum = 0;
+            for (const uint64_t x : *d) sum += x;
+            const double ms = static_cast<double>(sum) * 1e-6;
+            if (run == 0 || ms < *best_ms) *best_ms = ms;
+        }
+        if (!check(r.upload(kIncrements, bytes_of(start)))) return std::nullopt;
     }
     if (!check(r.submit(*id, 1))) return std::nullopt;
     std::vector<float> out(start.size(), 0.0f);
@@ -319,6 +341,7 @@ TEST(GpuAirflowActuator, GatherMatchesSpreadActuatorOnTheQuadsDiscs) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
     const std::vector<float> start = noisy_start(kShape);
     for (const Case& c : cases()) {
         const std::vector<af::ActuatorDisc> discs = quad_discs(kShape, c.orient, c.swirl);
@@ -335,8 +358,38 @@ TEST(GpuAirflowActuator, GatherMatchesSpreadActuatorOnTheQuadsDiscs) {
                     "%.3g m/s (%.3g of it)\n",
                     c.name, touched, start.size(), static_cast<double>(added), d.differing,
                     static_cast<double>(d.worst), static_cast<double>(d.worst / added));
-        EXPECT_LE(d.worst, kBandRelative * added) << c.name;
+        if (bit_equal) {
+            EXPECT_EQ(d.differing, 0u) << c.name;
+        } else {
+            EXPECT_LE(d.worst, kBandRelative * added) << c.name;
+        }
     }
+}
+
+// The gather's time in the D1 box (240 x 177 x 168 at 4 mm, R/dx 19), the
+// quad's discs tilted with swirl at the box's middle: u, v and w, the fastest
+// of five. Opt-in with SPADE_AIRFLOW_TIMINGS, as the projection's D1 time is;
+// it prices the exact square root against the device's own (the D1-box speed
+// check, the lead, 2026-10-22).
+TEST(GpuAirflowActuator, GatherTimeInTheD1Box) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const bool timings = std::getenv("SPADE_AIRFLOW_TIMINGS") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!timings) GTEST_SKIP() << "opt-in: SPADE_AIRFLOW_TIMINGS=1";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    constexpr af::GridShape kD1{240, 177, 168, 0.004f};
+    const std::vector<float> start = noisy_start(kD1);
+    const std::vector<af::ActuatorDisc> discs = quad_discs(kD1, cases()[1].orient, true);
+    double ms = 0.0;
+    ASSERT_TRUE(gather_on_gpu(*ctx, kD1, discs, start, kStepS, kWorkgroupSize, &ms).has_value());
+    std::printf("measure: the gather in the D1 box, 240x177x168 at 4 mm: %.3f ms for u, v and w\n", ms);
 }
 
 // No reduction, nothing shared between invocations: the workgroup size
