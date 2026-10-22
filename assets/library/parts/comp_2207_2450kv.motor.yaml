@@ -12,7 +12,7 @@ motor:
   mass: 0.034
   shape: {kind: cylinder, size: [0.014, 0.02, 0]}
 sources:
-  kv: {source: "kat_datapack", grade: assumed, note: "Kat's candidate set; Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, 2026-10-22)"}
+  kv: {source: "kat_datapack", grade: assumed, note: "the lead's choice (2026-10-22) of the datapack's candidate pair, 4S and 2450 KV (its line 325); Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, 2026-10-22)"}
   resistance: {grade: assumed, note: "a typical 2207 2450 KV datasheet value; Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, 2026-10-22)"}
   no_load_current: {grade: assumed, note: "typical 2207 ~2500 KV, at 10 V"}
   no_load_voltage: {grade: assumed, note: "the usual no-load test voltage"}

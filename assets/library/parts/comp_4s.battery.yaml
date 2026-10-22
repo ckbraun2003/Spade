@@ -19,7 +19,7 @@ battery:
   mass: 0.19
   shape: {kind: box, size: [0.088, 0.033, 0.035]}
 sources:
-  cells_series: {source: "kat_datapack", grade: assumed, note: "Kat's candidate set; Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, 2026-10-22)"}
+  cells_series: {source: "kat_datapack", grade: assumed, note: "the lead's choice (2026-10-22) of the datapack's candidate pair, 4S and 2450 KV (its line 325); Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, 2026-10-22)"}
   cells_parallel: {grade: assumed, note: "one cell per series step"}
   cell_capacity: {grade: assumed, note: "a 4S 1500 racing pack"}
   cell_resistance: {grade: assumed, note: "fresh 1500 mAh racing cell"}

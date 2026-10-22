@@ -27,7 +27,7 @@ sources:
   cell_voltage_full: {grade: assumed, note: "LiPo full"}
   cell_voltage_cutoff: {grade: assumed, note: "a usual LiPo cutoff"}
   ocv_table: {grade: assumed, note: "the chain's current LiPo shape (ruling 8)"}
-  c_rating: {source: "retail_iris_plus", grade: retailer, note: "8C"}
+  c_rating: {source: "retail_iris_plus", grade: retailer, note: "8C: 40.8 A, so it binds at full throttle below the motors' 4 x 15 A"}
   polarization_resistance: {grade: assumed, note: "not modelled (0)"}
   polarization_capacitance: {grade: assumed, note: "not modelled (0)"}
   mass: {grade: assumed, note: "typical 3S 5 Ah, 360-410 g"}

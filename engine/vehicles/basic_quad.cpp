@@ -267,7 +267,7 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"motor.no_load_voltage", "the usual no-load test voltage"},
         {"motor.current_max", "typical of a 2306 motor"},
         {"motor.pole_pairs", "12N14P"},
-        {"motor.inductance", "dropped (0)"},
+        {"motor.inductance", "not modelled (Physics, 2026-10-22)"},
         {"motor.rotor_inertia", "the same bell estimate as the 2207s (Physics, 2026-10-22)"},
         {"motor.mass", "typical of a 2306 motor"},
         {"motor.shape", "a 29 x 19 mm bell"},
