@@ -10,9 +10,11 @@
 //
 //   GpuAirflowProjection  the divergence, the residual, the restriction, the
 //                         prolongation and the gradient subtracted, bit for
-//                         bit; one red-black sweep on every level, banded (its
-//                         division); one V(2,2) projection at 32^3 against
-//                         project(), banded, and on a closed domain, whose
+//                         bit; one red-black sweep on every level, and one
+//                         and two V(2,2) projections at 32^3 against
+//                         project(), bit for bit on the device of record
+//                         (the division is fp32_math's div32_ftz; another
+//                         device keeps its band), and on a closed domain, whose
 //                         mean airflow_tile_sum and airflow_remove_mean take
 //                         out (remove_mean()); the same bits at workgroup sizes
 //                         32, 64 and 128; the projection's time at 64^3 and
@@ -50,6 +52,7 @@
 #include <vector>
 
 #include "airflow_divergence.spv.gen.hpp"
+#include "airflow_exact_device.hpp"
 #include "airflow_gradient_subtract.spv.gen.hpp"
 #include "airflow_mg_prolong.spv.gen.hpp"
 #include "airflow_mg_residual.spv.gen.hpp"
@@ -61,6 +64,7 @@
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
+#include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -474,16 +478,18 @@ TEST(GpuAirflowProjection, DivergenceAndGradientMatchTheCpuBitForBit) {
 }
 
 // One red-black sweep on every level of every hierarchy, from fixed-seed
-// noise, against smooth_red_black(level, 1). The division (sum - b) / diag is
-// SPIR-V's OpFDiv, not correctly rounded, so the sweep is banded: 4x the
-// largest measurement, max |gpu - cpu| / max |cpu| over the level (TD-14).
-// Measured 2026-10-22 (RTX 3060 Ti): see kSweepBand.
-TEST(GpuAirflowProjection, OneSweepOnEveryLevelWithinItsBand) {
+// noise, against smooth_red_black(level, 1) under the step's subnormal flush.
+// The division (sum - b) / diag is fp32_math's div32_ftz, so the sweep is the
+// CPU's to the bit on the device of record (TD-14 as amended 2026-10-22;
+// airflow_exact_device.hpp); another device or driver keeps the band the
+// device's own division needed: 4x its largest measurement, max |gpu - cpu| /
+// max |cpu| over the level, 1.71e-7 on the RTX 3060 Ti (2026-10-22).
+TEST(GpuAirflowProjection, OneSweepOnEveryLevelMatchesTheCpuBitForBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    // Measured 1.71e-7, the worst over the three hierarchies; 4x is 6.84e-7.
     constexpr double kSweepBand = 7.0e-7;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
     double worst = 0.0;
     std::size_t differ = 0;
     std::size_t total = 0;
@@ -496,7 +502,10 @@ TEST(GpuAirflowProjection, OneSweepOnEveryLevelWithinItsBand) {
         for (uint32_t l = 0; l < base.levels.size(); ++l) {
             SCOPED_TRACE("level " + std::to_string(l));
             af::Multigrid cpu = base;
-            af::smooth_red_black(cpu.levels[l], 1);
+            {
+                const spade::math::ScopedFlushSubnormals flush;
+                af::smooth_red_black(cpu.levels[l], 1);
+            }
             std::vector<ChainCommand> chain;
             ag::append_sweeps(chain, dev->layout(), kPipelines, l, 1, dev->workgroup_size());
             ASSERT_TRUE(dev->upload_levels(base));
@@ -504,10 +513,15 @@ TEST(GpuAirflowProjection, OneSweepOnEveryLevelWithinItsBand) {
             af::Multigrid gpu = base;
             ASSERT_TRUE(dev->read_levels(gpu));
             const double rel = relative(gpu.levels[l].p, cpu.levels[l].p);
+            const std::size_t n = differing(gpu.levels[l].p, cpu.levels[l].p);
             worst = std::max(worst, rel);
-            differ += differing(gpu.levels[l].p, cpu.levels[l].p);
+            differ += n;
             total += gpu.levels[l].p.size();
-            EXPECT_LE(rel, kSweepBand);
+            if (bit_equal) {
+                EXPECT_EQ(n, 0u);
+            } else {
+                EXPECT_LE(rel, kSweepBand);
+            }
         }
     }
     std::printf("measure: one sweep: %zu of %zu values differ, worst %.3g of the level's largest\n", differ, total,
@@ -532,7 +546,10 @@ struct ProjectionDiff {
     fill_velocity(g, 0x32ull);
     af::MacGrid cpu = g;
     af::ProjectionScratch scratch = af::make_projection_scratch(d.shape, d.bc);
-    (void)af::project(cpu, d.bc, kRho, Device::kStepS, n_v, scratch);
+    {
+        const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+        (void)af::project(cpu, d.bc, kRho, Device::kStepS, n_v, scratch);
+    }
     const auto chain =
         ag::projection_chain(dev->layout(), d.shape, af::face_kinds(d.bc), n_v, kPipelines, workgroup_size);
     if (!dev->upload_grid(g) || !dev->run(chain)) return std::nullopt;
@@ -563,25 +580,34 @@ struct ProjectionDiff {
 
 }  // namespace
 
-// One V(2,2) projection (n_v 1) at 32^3 against project(): the divergence,
-// the cycle and the gradient, from the same noisy u* and warm start. Banded
-// by the sweeps' division: 4x the largest measurement (TD-14).
-// Measured 2026-10-22 (RTX 3060 Ti): see kProjectionBand.
-TEST(GpuAirflowProjection, OneVCycleProjectionAt32CubedWithinItsBand) {
+// One and two V(2,2) projections at 32^3 against project() under the step's
+// subnormal flush: the divergence, the cycles and the gradient, from the same
+// noisy u* and warm start, on the four domains (open, walls, periodic,
+// closed). Every rounding in the chain is a correctly rounded add or multiply
+// or fp32_math's div32_ftz, so the projection is the CPU's to the bit on the
+// device of record (TD-14 as amended 2026-10-22); another device or driver
+// keeps the band the device's own division needed: 4x its largest
+// measurement, velocity 3.33e-7 (18 x 16 x 14 closed) on the RTX 3060 Ti.
+TEST(GpuAirflowProjection, OneVCycleProjectionAt32CubedMatchesTheCpuBitForBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    // Measured velocity 3.33e-7 (18 x 16 x 14 closed), p 2.7e-7 there; 4x the
-    // velocity's is 1.33e-6.
     constexpr double kProjectionBand = 1.4e-6;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
     for (const Domain& d : projection_domains()) {
-        SCOPED_TRACE(d.name);
-        const auto diff = project_both(*ctx, d, 1, kWorkgroupSize);
-        ASSERT_TRUE(diff.has_value());
-        std::printf("measure: %s, one V(2,2): p %.3g, velocity %.3g of the largest; %zu values differ\n", d.name,
-                    diff->p, diff->velocity, diff->differing);
-        EXPECT_LE(diff->p, kProjectionBand);
-        EXPECT_LE(diff->velocity, kProjectionBand);
+        for (const uint32_t n_v : {1u, 2u}) {
+            SCOPED_TRACE(std::string(d.name) + ", n_v " + std::to_string(n_v));
+            const auto diff = project_both(*ctx, d, n_v, kWorkgroupSize);
+            ASSERT_TRUE(diff.has_value());
+            std::printf("measure: %s, n_v %u: p %.3g, velocity %.3g of the largest; %zu values differ\n", d.name,
+                        n_v, diff->p, diff->velocity, diff->differing);
+            if (bit_equal) {
+                EXPECT_EQ(diff->differing, 0u);
+            } else {
+                EXPECT_LE(diff->p, kProjectionBand);
+                EXPECT_LE(diff->velocity, kProjectionBand);
+            }
+        }
     }
 }
 
