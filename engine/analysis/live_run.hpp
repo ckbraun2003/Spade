@@ -49,6 +49,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -72,6 +73,12 @@ inline constexpr uint32_t kLiveRunSaveVersion = 2;
 inline constexpr float kHoldRateDegPerS = 180.0f;
 inline constexpr uint64_t kFramesPerSecond = 30;
 
+// N15: the role the editor gives a part imported as a solid. A part of this
+// role the grid can't resolve is refused by name, as any part is, and the
+// refusal adds the other way out: marking it drawn only
+// (vehicles::kDrawnOnlyRole), which leaves it out of the air.
+inline constexpr std::string_view kImportedPartRole = "imported";
+
 struct LiveState {
     double t_s = 0.0;  // simulated, whole steps of h
     uint64_t steps = 0;
@@ -85,7 +92,8 @@ struct LiveState {
 
 // What a run's solids are (LiveRun::solids()).
 struct LiveSolids {
-    bool any = false;                 // the model's rigid parts are in the grid
+    bool any = false;                 // the model's rigid parts, but the drawn-only, are in the grid
+    std::vector<std::string> drawn_only;  // the parts drawn but not in the air (N15), in posed order
     std::string run_line;             // set_solids()' own line: parts, walls, sheets, leaks
     uint32_t solid_cells = 0;         // the grid's solid cells: the mask the volume publishes with
     float pressure_residual = 0.0f;   // the last step's max|r| / max|b|; 0 without solids

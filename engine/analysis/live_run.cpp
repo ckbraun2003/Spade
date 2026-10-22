@@ -346,24 +346,41 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     if (!posed) {
         return std::unexpected(Error{posed.error().code, "the model's parts at the hover: " + posed.error().context});
     }
-    const bool with_solids = !posed->parts.empty();
-    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
-    Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
-    if (!scratch) return std::unexpected(scratch.error());
-    impl->scratch = std::move(*scratch);
     // The world's origin is the box's centre, where the drone is held.
     const af::GridShape& g = resolved.base;
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
-    if (with_solids) {
-        // A local: its sampler borrows it and impl->model, and set_solids()
-        // is done with both on return (vehicles/airflow_solids.hpp).
-        const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
-        Result<std::vector<af::SolidPart>> parts = solids.parts();
-        if (!parts) {
-            return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+    // The parts the air sees: every posed part but those marked drawn only
+    // (N15, vehicles/airflow_solids.hpp). They say whether the run has
+    // solids, so a model of drawn-only parts flies as one without them: plan
+    // A at the case's n_v. A local: its sampler borrows it and impl->model,
+    // and set_solids() is done with both on return.
+    const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
+    impl->solids.drawn_only = solids.drawn_only();
+    Result<std::vector<af::SolidPart>> parts = solids.parts();
+    if (!parts) {
+        return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+    }
+    // An imported part the grid can't resolve is refused by name, as any part
+    // is, with the other way out (N15, Physics' ruling): the classifier's
+    // refusal, ahead of set_solids()'s, which would give the same words.
+    for (const af::SolidPart& sp : *parts) {
+        const bool imported = std::any_of(impl->model.parts.begin(), impl->model.parts.end(), [&](const auto& d) {
+            return d.name == sp.name && d.role == kImportedPartRole;
+        });
+        if (!imported) continue;
+        if (Result<af::SolidClass> k = af::classify_part(sp, g.dx); !k) {
+            return std::unexpected(Error{k.error().code, "the model's parts as solids: " + k.error().context +
+                                                             ", or mark part '" + sp.name + "' visual-only"});
         }
+    }
+    const bool with_solids = !parts->empty();
+    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
+    Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
+    if (!scratch) return std::unexpected(scratch.error());
+    impl->scratch = std::move(*scratch);
+    if (with_solids) {
         if (Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
             !set) {
             return std::unexpected(Error{set.error().code, "the model's parts as solids: " + set.error().context});
@@ -551,6 +568,10 @@ std::string LiveRun::run_label() const {
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
+    if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
+        out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");
+        for (std::size_t i = 0; i < drawn.size(); ++i) out += (i == 0 ? "'" : ", '") + drawn[i] + "'";
+    }
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
     }
