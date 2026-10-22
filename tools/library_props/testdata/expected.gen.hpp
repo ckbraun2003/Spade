@@ -16,7 +16,7 @@ namespace spade::test::library_props {
 // FNV-1a 64 of the tool and of its props table, CRLF read as LF.
 // tests/test_library_props.cpp recomputes both from the source tree, so an
 // edit to either without re-running the tool fails the suite.
-inline constexpr std::uint64_t kToolHash = 0x5ee29dd510da108full;   // resample_uiuc.py
+inline constexpr std::uint64_t kToolHash = 0x882d376f4603f34cull;   // resample_uiuc.py
 inline constexpr std::uint64_t kPropsHash = 0x8149bc7ac4eab078ull;  // props.json
 
 // A file the tool read: its name, FNV-1a 64 (CRLF read as LF) and SHA-256,
@@ -51,13 +51,16 @@ struct Prop {
     std::span<const double> beta_deg;
     double hub_cutout;
     std::span<const Input> inputs;
+    std::string_view note;  // the grade note, for the part file's citation (L4)
 };
 
 namespace detail {
 
 // syn_a -- synthetic (our own numbers), retrieved 2026-10-22, 2 blades.
-//   run syn_a_run_5000.txt at 5000 rpm, the nearest to the hover rpm 5000
-//   computed for synthetic A (1.444 kg, 4 rotors, D 0.254 m).
+//   run syn_a_run_5000.txt at 5000 rpm, the nearest to the first-pass hover rpm
+//   5000 computed for synthetic A (1.444 kg, 4 rotors, D 0.254 m). The sim
+//   hovers at 4767 rpm on the shipped ct_static: a Reynolds ratio run/hover of
+//   1.05.
 //   published hover 5200 rpm (synthetic).
 //   step C_T +1.8%, step C_P -4.7% at J = 0 (report only); first measured J
 //   0.12, last 0.42.
@@ -168,8 +171,10 @@ inline constexpr std::array<Input, 3> syn_a_inputs{{
 }};
 
 // syn_b -- synthetic (our own numbers), retrieved 2026-10-22, 3 blades.
-//   run syn_b_run_3500.txt at 3500 rpm, the nearest to the hover rpm 3398
-//   computed for synthetic B (0.0417 kg, 4 rotors, D 0.127 m).
+//   run syn_b_run_3500.txt at 3500 rpm, the nearest to the first-pass hover rpm
+//   3398 computed for synthetic B (0.0417 kg, 4 rotors, D 0.127 m). The sim
+//   hovers at 3398 rpm on the shipped ct_static: a Reynolds ratio run/hover of
+//   1.03.
 //   FLAG: the computed hover rpm differs from the published 2500 rpm (synthetic)
 //   by +35.9%.
 //   step C_T -20.0%, step C_P -12.0% at J = 0 (report only, above 10%: review
@@ -271,8 +276,8 @@ inline constexpr std::array<Input, 3> syn_b_inputs{{
 
 // syn_c -- synthetic (our own numbers), retrieved 2026-10-22, 2 blades.
 //   static only: no wind-tunnel run. C_T and C_Q are the static run's at the
-//   hover rpm 9999 computed for synthetic C (0.00711 kg, 4 rotors, D 0.047 m);
-//   the tables are empty.
+//   hover rpm 10163 computed for synthetic C (0.00711 kg, 4 rotors, D 0.047 m),
+//   its fixed point in 9 passes; the tables are empty.
 //   no published hover rpm to cross-check.
 //   grade note: static only: no wind-tunnel run
 inline constexpr std::array<std::array<double, 2>, 0> syn_c_ct{};
@@ -337,8 +342,8 @@ inline constexpr std::array<double, 17> syn_c_beta_deg{
 inline constexpr std::array<Input, 2> syn_c_inputs{{
     Input{
         "syn_c_static.txt",
-        0x43993698fb15c7d5ull,
-        "022ad4766a99be6d8a138e22645a213b0e2cf1eb9f7a4faceea29dd1cca265ae",
+        0x8f78a7ee0db05e21ull,
+        "13a6418daac4c3712e14ea7485c761530c376c3649ead741fc88c6cdc540a76b",
         "synthetic:syn_c_static.txt",
         "2026-10-22T00:00:00Z",
     },
@@ -360,7 +365,7 @@ inline constexpr std::array<Prop, 3> kProps{{
         "2026-10-22",
         2,
         5000.0,
-        4999.536133503123,
+        4766.870666876785,
         0.11,
         0.008753521870054244,
         0.12,
@@ -372,6 +377,7 @@ inline constexpr std::array<Prop, 3> kProps{{
         detail::syn_a_beta_deg,
         0.15,
         detail::syn_a_inputs,
+        "",
     },
     Prop{
         "syn_b",
@@ -391,6 +397,7 @@ inline constexpr std::array<Prop, 3> kProps{{
         detail::syn_b_beta_deg,
         0.18,
         detail::syn_b_inputs,
+        "derived from syn_a's shape, assumed",
     },
     Prop{
         "syn_c",
@@ -398,9 +405,9 @@ inline constexpr std::array<Prop, 3> kProps{{
         "2026-10-22",
         2,
         0.0,
-        9999.032572302833,
-        0.10500241856924292,
-        0.007639591239311064,
+        10163.3884190834,
+        0.10163147256502447,
+        0.0076134715760867305,
         0.0,
         0.0,
         detail::syn_c_ct,
@@ -410,6 +417,7 @@ inline constexpr std::array<Prop, 3> kProps{{
         detail::syn_c_beta_deg,
         0.2,
         detail::syn_c_inputs,
+        "static only: no wind-tunnel run",
     },
 }};
 

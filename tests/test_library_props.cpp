@@ -26,6 +26,7 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 
 #include "library_props.gen.hpp"
 
@@ -126,5 +127,22 @@ TEST(LibraryProps, EachBladeRunsFromItsHubInsideTheDisc) {
             }
         }
         EXPECT_FALSE(p.inputs.empty());
+    }
+}
+
+// Every prop's grade note travels with its numbers, so L4's part files cite
+// it rather than retype it, and the stand-in says it is one (the lead,
+// 2026-10-22).
+TEST(LibraryProps, EachPropCarriesItsGradeNote) {
+    for (const Prop& p : kProps) {
+        SCOPED_TRACE(std::string(p.id));
+        EXPECT_FALSE(p.note.empty());
+        if (p.id == "triblade_6inch_scaled") {
+            EXPECT_NE(p.note.find("stand-in"), std::string_view::npos) << p.note;
+            EXPECT_NE(p.note.find("tri-blade tables: mit_5x4 (three-blade, 5 in)"), std::string_view::npos) << p.note;
+        }
+        if (p.ct_table.empty()) {
+            EXPECT_NE(p.note.find("static only"), std::string_view::npos) << p.note;
+        }
     }
 }

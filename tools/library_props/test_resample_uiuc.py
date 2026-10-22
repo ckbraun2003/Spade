@@ -185,6 +185,18 @@ class TheReviewsMinors(unittest.TestCase):
         lines = tool.comment("word " * 13 + "tri-blade tables: mit_5x4 (three-blade, 5 in)")
         self.assertTrue(any("(three-blade," in ln for ln in lines), lines)
 
+    def test_the_header_is_ascii_and_within_120_columns(self):
+        # MSVC reads a source without /utf-8 in the local code page, so the
+        # header stays ASCII; a long note becomes adjacent literals.
+        long_note = "a note " * 40
+        lines = tool.literal_lines(long_note, "        ")
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(all(len(ln) <= 120 for ln in lines), lines)
+        joined = "".join(ln.strip()[1:-1] for ln in lines)
+        self.assertEqual(joined, long_note)
+        with self.assertRaisesRegex(tool.ToolError, r"not ASCII.*line"):
+            tool.ascii_only("ok\nbad \u00b1 here\n")
+
     def test_each_prop_carries_its_grade_note(self):
         text, _ = tool.generate(PROPS, UIUC)
         self.assertIn('        "derived from syn_a\'s shape, assumed",\n', text)

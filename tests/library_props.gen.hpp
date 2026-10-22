@@ -16,8 +16,8 @@ namespace spade::test::library_props {
 // FNV-1a 64 of the tool and of its props table, CRLF read as LF.
 // tests/test_library_props.cpp recomputes both from the source tree, so an
 // edit to either without re-running the tool fails the suite.
-inline constexpr std::uint64_t kToolHash = 0x5ee29dd510da108full;   // resample_uiuc.py
-inline constexpr std::uint64_t kPropsHash = 0x32f6309e716e916aull;  // props.json
+inline constexpr std::uint64_t kToolHash = 0x882d376f4603f34cull;   // resample_uiuc.py
+inline constexpr std::uint64_t kPropsHash = 0x983c5e96c0064c43ull;  // props.json
 
 // A file the tool read: its name, FNV-1a 64 (CRLF read as LF) and SHA-256,
 // and where it came from. The UIUC files are not committed, so these are
@@ -51,13 +51,16 @@ struct Prop {
     std::span<const double> beta_deg;
     double hub_cutout;
     std::span<const Input> inputs;
+    std::string_view note;  // the grade note, for the part file's citation (L4)
 };
 
 namespace detail {
 
 // uiuc_apce_10x5 -- UIUC Propeller Data Site, Vol. 1, retrieved 2026-10-22, 2 blades.
-//   run apce_10x5_kt0821_5000.txt at 5000 rpm, the nearest to the hover rpm 5442
-//   computed for Phantom 3-class (1.28 kg, 4 rotors, D 0.2388 m).
+//   run apce_10x5_kt0821_5000.txt at 5000 rpm, the nearest to the first-pass
+//   hover rpm 5442 computed for Phantom 3-class (1.28 kg, 4 rotors, D 0.2388 m).
+//   The sim hovers at 5425 rpm on the shipped ct_static: a Reynolds ratio
+//   run/hover of 0.92.
 //   published hover 5300 rpm (NASA Table 2, hover at 12.46 N).
 //   step C_T +2.7%, step C_P -1.5% at J = 0 (report only); first measured J
 //   0.113, last 0.581.
@@ -177,8 +180,10 @@ inline constexpr std::array<Input, 3> uiuc_apce_10x5_inputs{{
 }};
 
 // uiuc_apce_9x4.5 -- UIUC Propeller Data Site, Vol. 1, retrieved 2026-10-22, 2 blades.
-//   run apce_9x4.5_jb0997_5008.txt at 5008 rpm, the nearest to the hover rpm
-//   5179 computed for Iris+-class (1.282 kg, 4 rotors, D 0.2438 m).
+//   run apce_9x4.5_jb0997_5008.txt at 5008 rpm, the nearest to the first-pass
+//   hover rpm 5179 computed for Iris+-class (1.282 kg, 4 rotors, D 0.2438 m).
+//   The sim hovers at 5160 rpm on the shipped ct_static: a Reynolds ratio
+//   run/hover of 0.97.
 //   published hover 5400 rpm (NASA Table 2, hover at 12.46 N).
 //   step C_T +10.2%, step C_P +6.8% at J = 0 (report only, above 10%: review
 //   it); first measured J 0.129, last 0.641.
@@ -301,17 +306,19 @@ inline constexpr std::array<Input, 3> uiuc_apce_9x4_5_inputs{{
 }};
 
 // uiuc_mit_5x4 -- UIUC Propeller Data Site, Vol. 2, retrieved 2026-10-22, 3 blades.
-//   run mit_5x4_0366rd_6057.txt at 6057 rpm, the nearest to the hover rpm 8868
-//   computed for 5-inch FPV (0.5 kg, 4 rotors, D 0.127 m).
+//   run mit_5x4_0366rd_6057.txt at 6057 rpm, the nearest to the first-pass hover
+//   rpm 8868 computed for 5-inch FPV (0.5 kg, 4 rotors, D 0.127 m). The sim
+//   hovers at 8735 rpm on the shipped ct_static: a Reynolds ratio run/hover of
+//   0.69.
 //   no published hover rpm to cross-check.
 //   step C_T +6.5%, step C_P +5.4% at J = 0 (report only); first measured J
 //   0.094195, last 0.906598.
 //   grade note: measured (UIUC; three blades by UIUC's 3-Blade heading). The
 //   FPV's mass is an assumed estimate until L5's parts sum: re-run the tool if
-//   that sum changes the chosen run. Its run (6057 rpm) is below its hover (8868
-//   rpm), a Reynolds ratio of about 0.68, and hover lies above the static file's
-//   top (6396 rpm), so the effect at hover is unmeasured, but expected to be
-//   small: the static C_T stays flat within ±2.5% over the 4× rpm range below it
+//   that sum changes the chosen run. Its run is below its hover (the comment
+//   gives the Reynolds ratio), and hover lies above the static file's top (6396
+//   rpm), so the effect at hover is unmeasured, but expected to be small: the
+//   static C_T stays flat within +/-2.5% over the 4x rpm range below it
 //   (Physics, 2026-10-22)
 inline constexpr std::array<std::array<double, 2>, 19> uiuc_mit_5x4_ct{{
     {0.0, 0.18147428896905915},
@@ -441,8 +448,8 @@ inline constexpr std::array<Input, 3> uiuc_mit_5x4_inputs{{
 
 // uiuc_cfnq_45t1 -- UIUC Propeller Data Site, Vol. 2, retrieved 2026-10-22, 2 blades.
 //   static only: no wind-tunnel run. C_T and C_Q are the static run's at the
-//   hover rpm 17091 computed for Crazyflie-class (0.029 kg, 4 rotors, D 0.04699
-//   m); the tables are empty.
+//   hover rpm 16582 computed for Crazyflie-class (0.029 kg, 4 rotors, D 0.04699
+//   m), its fixed point in 4 passes; the tables are empty.
 //   published hover 17270 rpm (Bitcraze's 2015 thrust table, all four motors
 //   (wiki.bitcraze.io/misc:investigations:thrust): 29 g between 28.6 g at 17174
 //   rpm and 32.8 g at 18179 rpm; Bitcraze's fit gives about 17230
@@ -450,7 +457,8 @@ inline constexpr std::array<Input, 3> uiuc_mit_5x4_inputs{{
 //   grade note: static only: C_T and C_Q held at their static values over J
 //   (compile_airframe's 0..1 table), so thrust is overstated in climb and
 //   forward flight; at J about 0.2 a small prop has lost about a quarter of its
-//   static C_T (Physics, 2026-10-22)
+//   static C_T (Physics, 2026-10-22); isolated-prop C_T; Bitcraze's whole-craft
+//   table reads about 8% lower at hover rpm (Physics, 2026-10-22)
 inline constexpr std::array<std::array<double, 2>, 0> uiuc_cfnq_45t1_ct{};
 inline constexpr std::array<std::array<double, 2>, 0> uiuc_cfnq_45t1_cq{};
 inline constexpr std::array<double, 18> uiuc_cfnq_45t1_r_over_r{
@@ -531,18 +539,20 @@ inline constexpr std::array<Input, 2> uiuc_cfnq_45t1_inputs{{
 }};
 
 // triblade_6inch_scaled -- UIUC Propeller Data Site, Vol. 2, retrieved 2026-10-22, 3 blades.
-//   run mit_5x4_0366rd_6057.txt at 6057 rpm, the nearest to the hover rpm 6758
-//   computed for basic quad, 6-inch defaults (0.602 kg, 4 rotors, D 0.1524 m).
+//   run mit_5x4_0366rd_6057.txt at 6057 rpm, the nearest to the first-pass hover
+//   rpm 6758 computed for basic quad, 6-inch defaults (0.602 kg, 4 rotors, D
+//   0.1524 m). The sim hovers at 6656 rpm on the shipped ct_static: a Reynolds
+//   ratio run/hover of 0.91.
 //   no published hover rpm to cross-check.
 //   step C_T +6.5%, step C_P +5.4% at J = 0 (report only); first measured J
 //   0.094195, last 0.906598.
-//   grade note: stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-
-//   blade, 5 in), scaled to 6 in per Physics' rule. The mass is
-//   basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run (6057
-//   rpm) is below its hover (6758 rpm), a Reynolds ratio of about 0.90, and
-//   hover lies above the static file's top (6396 rpm), so the effect at hover is
-//   unmeasured, but expected to be small: the static C_T stays flat within ±2.5%
-//   over the 4× rpm range below it (Physics, 2026-10-22)
+//   grade note: stand-in, derived and assumed: tri-blade tables: mit_5x4
+//   (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is
+//   basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is
+//   below its hover (the comment gives the Reynolds ratio), and hover lies above
+//   the static file's top (6396 rpm), so the effect at hover is unmeasured, but
+//   expected to be small: the static C_T stays flat within +/-2.5% over the 4x
+//   rpm range below it (Physics, 2026-10-22)
 inline constexpr std::array<std::array<double, 2>, 19> triblade_6inch_scaled_ct{{
     {0.0, 0.18147428896905915},
     {0.05, 0.18201184989635935},
@@ -678,7 +688,7 @@ inline constexpr std::array<Prop, 5> kProps{{
         "2026-10-22",
         2,
         5000.0,
-        5441.887678655595,
+        5425.143645509932,
         0.09635567375886525,
         0.005869995503936827,
         0.113,
@@ -690,6 +700,8 @@ inline constexpr std::array<Prop, 5> kProps{{
         detail::uiuc_apce_10x5_beta_deg,
         0.15,
         detail::uiuc_apce_10x5_inputs,
+        "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 "
+        "in (NASA's rotor), citing NASA p.15's agreement",
     },
     Prop{
         "uiuc_apce_9x4.5",
@@ -697,7 +709,7 @@ inline constexpr std::array<Prop, 5> kProps{{
         "2026-10-22",
         2,
         5008.0,
-        5178.852088683429,
+        5160.316564630982,
         0.09818103975535168,
         0.006128876774894137,
         0.129,
@@ -709,6 +721,9 @@ inline constexpr std::array<Prop, 5> kProps{{
         detail::uiuc_apce_9x4_5_beta_deg,
         0.15,
         detail::uiuc_apce_9x4_5_inputs,
+        "derived: the APC Thin Electric 9x4.5's coefficients as UIUC measured them, applied at 9.6 "
+        "in (NASA's rotor); the static point reads about 10% above the run's lowest-J points "
+        "(UIUC's tunnel at its slowest); hover reads the static point (Physics, 2026-10-22)",
     },
     Prop{
         "uiuc_mit_5x4",
@@ -716,7 +731,7 @@ inline constexpr std::array<Prop, 5> kProps{{
         "2026-10-22",
         3,
         6057.0,
-        8868.44332785673,
+        8735.415291816877,
         0.18147428896905915,
         0.018923916207378596,
         0.094195,
@@ -728,6 +743,12 @@ inline constexpr std::array<Prop, 5> kProps{{
         detail::uiuc_mit_5x4_beta_deg,
         0.15,
         detail::uiuc_mit_5x4_inputs,
+        "measured (UIUC; three blades by UIUC's 3-Blade heading). The FPV's mass is an assumed "
+        "estimate until L5's parts sum: re-run the tool if that sum changes the chosen run. Its run"
+        " is below its hover (the comment gives the Reynolds ratio), and hover lies above the "
+        "static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be "
+        "small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, "
+        "2026-10-22)",
     },
     Prop{
         "uiuc_cfnq_45t1",
@@ -735,9 +756,9 @@ inline constexpr std::array<Prop, 5> kProps{{
         "2026-10-22",
         2,
         0.0,
-        17091.368998170823,
-        0.1555050443583467,
-        0.016721481217240243,
+        16581.840623684948,
+        0.1558611372986196,
+        0.01676376520266022,
         0.0,
         0.0,
         detail::uiuc_cfnq_45t1_ct,
@@ -747,6 +768,10 @@ inline constexpr std::array<Prop, 5> kProps{{
         detail::uiuc_cfnq_45t1_beta_deg,
         0.15,
         detail::uiuc_cfnq_45t1_inputs,
+        "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 "
+        "table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop "
+        "has lost about a quarter of its static C_T (Physics, 2026-10-22); isolated-prop C_T; "
+        "Bitcraze's whole-craft table reads about 8% lower at hover rpm (Physics, 2026-10-22)",
     },
     Prop{
         "triblade_6inch_scaled",
@@ -754,7 +779,7 @@ inline constexpr std::array<Prop, 5> kProps{{
         "2026-10-22",
         3,
         6057.0,
-        6757.6881520717425,
+        6656.321773575963,
         0.18147428896905915,
         0.018923916207378596,
         0.094195,
@@ -766,6 +791,12 @@ inline constexpr std::array<Prop, 5> kProps{{
         detail::triblade_6inch_scaled_beta_deg,
         0.15,
         detail::triblade_6inch_scaled_inputs,
+        "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 "
+        "in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about "
+        "0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover "
+        "lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but "
+        "expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below"
+        " it (Physics, 2026-10-22)",
     },
 }};
 

@@ -16,6 +16,11 @@ THE RULE (reviewed by Physics, 2026-10-22; the plan's Rulings):
           _<rpm>.txt) is nearest the drone's hover rpm, n = sqrt(m g /
           (N rho C_T0 D^4)) with rho 1.225, where C_T0 is the static C_T at
           the static run's middle rpm. A tie takes the lower rpm.
+  hover   The hover rpm reported is the sim's: n again, with the shipped
+          static C_T0. A static-only prop iterates n = sqrt(m g / (N rho
+          C_T(n) D^4)) to a fixed point (|dn| < 0.5 rpm, at most 20 passes,
+          refused by name if unsettled), so its static point is C_T at the
+          hover it gives.
   J = 0   C_T and C_P from the static run, linear in rpm at the run's rpm.
   table   Linear in J at J = k/20 for k = 1, 2, ... through the run's last
           measured J, never past it. Below its first measured J the line runs
@@ -57,6 +62,8 @@ G = 9.80665  # m/s^2
 STEP_WARN = 0.10
 HOVER_WARN = 0.20
 EDGE = 0.025  # a blade grid point closer than this to the hub or tip is dropped
+SETTLE_RPM = 0.5  # a static-only hover's fixed point, to this
+MAX_PASSES = 20
 EPS = 1e-9
 
 
@@ -132,6 +139,11 @@ def run_rpm_of(name):
     return float(m.group(1))
 
 
+def nearest_run(runs, rpm):
+    """The (rpm, file) run nearest `rpm`; a tie takes the lower rpm."""
+    return min(runs, key=lambda r: (abs(r[0] - rpm), r[0]))
+
+
 def field(entry, key, where):
     if key not in entry:
         raise ToolError(f"{where}: has no '{key}'")
@@ -172,23 +184,41 @@ def resample(prop, uiuc_dir, sources):
     static_cp = [(r[0], r[2]) for r in static]
     lo, hi = static[0][0], static[-1][0]
 
-    # The hover rpm the sim will fly at, with C_T0 at the static's middle rpm.
-    ct_mid = interp(static_ct, (lo + hi) / 2)
-    hover_rpm = 60.0 * math.sqrt(mass * G / (rotors * RHO * ct_mid * diameter**4))
+    # n = sqrt(m g / (N rho C_T0 D^4)), in rpm.
+    def hover_at(ct):
+        return 60.0 * math.sqrt(mass * G / (rotors * RHO * ct * diameter**4))
+
+    # The first pass, with C_T0 at the static's middle rpm, picks the run.
+    first_pass_rpm = hover_at(interp(static_ct, (lo + hi) / 2))
     runs = [(run_rpm_of(r), r) for r in field(prop, "runs", pid)]
     paths = [(static_name, static_path)]
+    passes = 1
 
     if not runs:
-        # Static only: the static point at the hover rpm itself, no tables.
-        if not lo <= hover_rpm <= hi:
-            raise ToolError(f"{pid}: has no run, and its hover rpm {hover_rpm:.0f} is outside {static_name}'s "
+        # Static only: its static point IS the hover point, so iterate n =
+        # hover_at(C_T(n)) to its fixed point (Physics, 2026-10-22).
+        rpm = first_pass_rpm
+        while True:
+            if not lo <= rpm <= hi:
+                raise ToolError(f"{pid}: has no run, and its hover rpm {rpm:.0f} is outside {static_name}'s "
+                                f"{lo:g} to {hi:g} rpm")
+            settled = hover_at(interp(static_ct, rpm))
+            if abs(settled - rpm) < SETTLE_RPM:
+                break
+            if passes == MAX_PASSES:
+                raise ToolError(f"{pid}: its static-only hover rpm did not settle in {MAX_PASSES} passes "
+                                f"({rpm:.1f}, then {settled:.1f})")
+            rpm = settled
+            passes += 1
+        if not lo <= settled <= hi:
+            raise ToolError(f"{pid}: has no run, and its hover rpm {settled:.0f} is outside {static_name}'s "
                             f"{lo:g} to {hi:g} rpm")
         run_name = run_rpm = first_j = last_j = step_ct = step_cp = None
-        ct0 = interp(static_ct, hover_rpm)
-        cp0 = interp(static_cp, hover_rpm)
+        ct0 = interp(static_ct, settled)
+        cp0 = interp(static_cp, settled)
         ct_table, cq_table = [], []
     else:
-        run_rpm, run_name = min(runs, key=lambda r: (abs(r[0] - hover_rpm), r[0]))
+        run_rpm, run_name = nearest_run(runs, first_pass_rpm)
         if not lo <= run_rpm <= hi:
             raise ToolError(f"{pid}: the run {run_name}'s {run_rpm:g} rpm is outside {static_name}'s "
                             f"{lo:g} to {hi:g} rpm")
@@ -237,9 +267,12 @@ def resample(prop, uiuc_dir, sources):
         "note": prop.get("note", ""),
         "run_file": run_name,
         "run_rpm": run_rpm,
-        "hover_rpm": hover_rpm,
+        # The rpm the sim hovers at: recomputed with the shipped ct_static.
+        "hover_rpm": hover_at(ct0),
+        "first_pass_rpm": first_pass_rpm,
+        "passes": passes,
         "published_hover_rpm": published,
-        "hover_diff": None if published is None else (hover_rpm - published) / published,
+        "hover_diff": None if published is None else (hover_at(ct0) - published) / published,
         "ct_static": ct0,
         "cq_static": cp0 / (2 * math.pi),
         "ct_table": ct_table,
@@ -298,12 +331,33 @@ def number(x):
     return repr(float(x))
 
 
+def literal_lines(s, indent):
+    """`s` as one C++ string literal, or as adjacent literals of at most 90
+    characters each when it would pass 120 columns; they join to `s`."""
+    if len(indent) + len(text_literal(s)) + 1 <= 120:
+        return [indent + text_literal(s)]
+    pieces = textwrap.wrap(s, 90, drop_whitespace=False, break_on_hyphens=False, break_long_words=False,
+                           replace_whitespace=False)
+    if "".join(pieces) != s:
+        raise ToolError(f"cannot split a note into literals: {s[:40]!r}...")
+    return [indent + text_literal(p) for p in pieces]
+
+
+def ascii_only(text):
+    """`text`, refused by line if it is not ASCII: MSVC reads a source
+    without /utf-8 in the local code page."""
+    for n, line in enumerate(text.split("\n"), start=1):
+        if not line.isascii():
+            raise ToolError(f"the header is not ASCII at line {n}: {line.strip()[:60]!r}")
+    return text
+
+
 def text_literal(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def comment(text, indent="//   "):
-    return [indent + line for line in textwrap.wrap(text, 76)]
+    return [indent + line for line in textwrap.wrap(text, 76, break_on_hyphens=False)]
 
 
 def array_lines(declaration, rows):
@@ -321,10 +375,13 @@ def emit_prop(r):
     lines = [f"// {r['id']} -- {r['volume']}, retrieved {r['retrieved']}, {r['blades']} blades."]
     if r["run_file"] is None:
         lines += comment(f"static only: no wind-tunnel run. C_T and C_Q are the static run's at the hover rpm "
-                         f"{r['hover_rpm']:.0f} computed for {who}; the tables are empty.")
+                         f"{r['hover_rpm']:.0f} computed for {who}, its fixed point in {r['passes']} passes; "
+                         f"the tables are empty.")
     else:
-        lines += comment(f"run {r['run_file']} at {r['run_rpm']:g} rpm, the nearest to the hover rpm "
-                         f"{r['hover_rpm']:.0f} computed for {who}.")
+        lines += comment(f"run {r['run_file']} at {r['run_rpm']:g} rpm, the nearest to the first-pass hover rpm "
+                         f"{r['first_pass_rpm']:.0f} computed for {who}. The sim hovers at "
+                         f"{r['hover_rpm']:.0f} rpm on the shipped ct_static: a Reynolds ratio run/hover of "
+                         f"{r['run_rpm'] / r['hover_rpm']:.2f}.")
     if r["hover_diff"] is None:
         hover = "no published hover rpm to cross-check"
     else:
@@ -361,6 +418,7 @@ def emit_prop(r):
                  "    },"]
     lines += array_lines(f"inline constexpr std::array<Input, {len(r['inputs'])}> {ident}_inputs", rows)
     zero_if_none = lambda v: number(0.0 if v is None else v)  # noqa: E731
+    notes = literal_lines(r["note"], "        ")
     entry = [
         "    Prop{",
         f"        {text_literal(r['id'])},",
@@ -380,6 +438,7 @@ def emit_prop(r):
         f"        detail::{ident}_beta_deg,",
         f"        {number(r['hub_cutout'])},",
         f"        detail::{ident}_inputs,",
+        *[ln + "," if i == len(notes) - 1 else ln for i, ln in enumerate(notes)],
         "    },",
     ]
     return lines, entry
@@ -439,6 +498,7 @@ struct Prop {
     std::span<const double> beta_deg;
     double hub_cutout;
     std::span<const Input> inputs;
+    std::string_view note;  // the grade note, for the part file's citation (L4)
 };
 
 namespace detail {
@@ -469,7 +529,7 @@ def generate(props_path, uiuc_dir):
     out.append("}};")
     out.append("")
     out.append("}  // namespace spade::test::library_props")
-    return "\n".join(out) + "\n", warnings
+    return ascii_only("\n".join(out) + "\n"), warnings
 
 
 def main(argv=None):
