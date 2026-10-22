@@ -25,10 +25,12 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
+#include "render_parts/render_parts.hpp"
 #include "editor_session.hpp"
 #include "end_goal_checks.hpp"
 #include "gl_target_sink.hpp"
@@ -1092,6 +1094,50 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 "rests",
                 fmt(std::max(dx, dz) * 1000.0f) + " mm from the pick; its lowest part " + fmt(p.rest_gap * 1000.0f) +
                     " mm above the surface (within [-2, +5])");
+
+        // drawn: one drawable per part (render_parts), each at its posed
+        // part's transform. Measured against this step's own posing and
+        // prepare_parts(), never the session's: a part counts as drawn when
+        // the frame holds as many items labelled "<vehicle>/<part>" as the
+        // part has pieces, each the posed part's frame times its piece's.
+        then(2);  // a frame binds the placed drone
+        p.drawables_declared = model->parts.size();
+        const Result<render_parts::PreparedParts> prepared = render_parts::prepare_parts(*model);
+        if (posed && prepared) {
+            const render::RenderScene& frame = session->render_scene();
+            const auto label = [&](const std::string& name) -> std::optional<uint32_t> {
+                for (uint32_t i = 0; i < frame.labels.size(); ++i) {
+                    if (frame.labels[i] == name) return i;
+                }
+                return std::nullopt;
+            };
+            const std::optional<uint32_t> object = label(placed.name);
+            for (const vehicles::PosedPart& part : posed->parts) {
+                const render_parts::PreparedPart& pieces = prepared->parts.at(part.part);
+                const std::optional<uint32_t> mine = label(placed.name + "/" + pieces.name);
+                std::vector<const render::DrawItem*> items;
+                for (const render::DrawItem& item : frame.statics) {
+                    if (object && mine && item.object_label == *object && item.part_label == *mine) items.push_back(&item);
+                }
+                if (items.empty() || items.size() != pieces.pieces.size()) continue;
+                ++p.drawables_added;
+                const glm::mat4 world_from_part = glm::translate(glm::mat4(1.0f), part.origin) * glm::mat4_cast(part.orient);
+                for (std::size_t k = 0; k < items.size(); ++k) {
+                    const glm::mat4 want = world_from_part * pieces.pieces[k].part_from_piece;
+                    const glm::mat4& got = items[k]->local_to_world;
+                    p.drawable_offset = std::max(p.drawable_offset, glm::length(glm::vec3(got[3]) - glm::vec3(want[3])));
+                    for (int c = 0; c < 3; ++c) {
+                        const glm::vec3 a = glm::normalize(glm::vec3(got[c]));
+                        const glm::vec3 b = glm::normalize(glm::vec3(want[c]));
+                        p.drawable_turn = std::max(p.drawable_turn, std::asin(std::min(1.0f, glm::length(glm::cross(a, b)))));
+                    }
+                }
+            }
+        }
+        const end_goal::Verdict drawn =
+            prepared ? end_goal::drawn_as_declared(p)
+                     : end_goal::Verdict{false, "drawn: absent: prepare_parts() refused: " + prepared.error().context};
+        s.check(drawn.ok, "drawn", drawn.detail);
 
         // Still: 1.0 s of Run (240 ticks at the editor's 240 Hz), disarmed.
         w().panels().selection = editor::Selection{};

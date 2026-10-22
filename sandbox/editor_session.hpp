@@ -62,6 +62,9 @@ class EditorSession {
         std::string unhonoured;  // GpuRenderer::unhonoured()'s names, ", "-joined; empty when all is honoured
     };
     [[nodiscard]] const ViewDrawn& last_view() const noexcept { return last_view_; }
+    // The last frame's render scene, its vehicles bound: what the tour's
+    // editor.add_drone counts and poses for Test/Docs' drawn.
+    [[nodiscard]] const render::RenderScene& render_scene() const noexcept { return scene_; }
     // While on, each frame draws the view's background alone: its item lists
     // are emptied after binding (the meshes stay, so nothing re-uploads). The
     // tour's editor.views judges "not blank" against this frame.
