@@ -121,12 +121,15 @@ LiveRun, drone held (design decision 1), until P2b.
         - Rotor 0 keeps its own torque, as it flies, so the path tests the swirl too.
         - The reference is momentum theory's v_h (1 + 2/√5), and the band is C8's [0.9, 1.1]: the same disc and the same measure as C8.
         - It hasn't run with its torque yet. The only number so far is torque-free: 1.0617. Physics expects about 4% lower with the swirl, inside the band. That is an expectation, not a measure.
-      - **Report only: each rotor's ratio in the four-rotor quad,** recorded as the four wakes' interference. It has no closed-form reference. Per-rotor momentum theory assumes an isolated wake, and with the rotor tips 0.9R apart the four wakes draw together. A "quad reference" written now would be fitted to our own result, so none is set (01).
+      - **Report only: each rotor's ratio in the four-rotor quad,** recorded as the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated. It has no closed-form reference. Per-rotor momentum theory assumes an isolated wake, and the quad's rotor tips are 0.9R apart. A "quad reference" written now would be fitted to our own result, so none is set (01).
       - **Banded, unchanged: the symmetry band,** the four rotors within 10% of their mean, in the four-rotor runs. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run). It held at 0.0009.
       - **Why** (the record, `c8q-reference-quad.md`):
         - The first ensemble, at cff9429, read every rotor at 0.816 to 0.817 of momentum theory. That is a MISS, and the record keeps it as it came.
-        - Two diagnostics, report only. Without the discs' torque, the four read 0.846 to 0.857, so the swirl accounts for about 4%. Rotor 0 alone, without torque, read 1.0617, C8's +5.7% within half a percent.
-        - So the engine's disc path stands, and the deficit is the four wakes interacting.
+        - Two diagnostics, one run each (report only), not ensembles. Without the discs' torque, the four read 0.846 to 0.857, so the swirl accounts for about 4%. Rotor 0 alone, without torque, read 1.0617, C8's +5.7% within half a percent.
+        - So the engine's disc path stands, and the deficit comes with the four rotors together.
+        - Linear mutual induction gives only about 3% of it. That treats each neighbour's inflow as a sink at its disc, with the neighbours at 2.89R and 4.08R and the probe 2R below.
+        - The rest is the wakes' mixing or the open box's response to four times the flux, and nothing yet separates the two.
+        - The four-wake reference is the measured-data case queued in the demonstration plan (item 10, master `2f29a32`).
         - The reference stays momentum theory and the band stays C8's. Nothing was widened or shifted to take in the 0.81.
       - **What C8q no longer claims:** the quad's four-rotor downwash is reported, not validated against a reference. The validation claim is the per-rotor path through `LiveRun`: the model's rotor rows, their discs, the fluid, the published volume and the probe, at C8's accuracy.
       - **Was** (2026-10-19 to 2026-10-22): each of the four rotors within C8's 10%, and the four within 10% of their mean.
