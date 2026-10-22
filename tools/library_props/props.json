@@ -1,0 +1,164 @@
+{
+  "comment": "The default library's props (L4a of docs/design/core/plans/2026-10-21-default-drone-library-plan.md): which UIUC files feed each, the drone its hover rpm is computed for, and each file's URL and UTC retrieval date. The UIUC files themselves are never committed (ruling 3).",
+  "props": [
+    {
+      "id": "uiuc_apce_10x5",
+      "volume": "UIUC Propeller Data Site, Vol. 1",
+      "retrieved": "2026-10-22",
+      "blades": 2,
+      "diameter_m": 0.2388,
+      "static": "apce_10x5_static_pg0819.txt",
+      "runs": [
+        "apce_10x5_kt0821_5000.txt",
+        "apce_10x5_kt0822_4993.txt",
+        "apce_10x5_kt0823_6005.txt",
+        "apce_10x5_kt0824_6018.txt",
+        "apce_10x5_kt0825_6707.txt",
+        "apce_10x5_kt0826_6710.txt",
+        "apce_10x5_pg0820_4005.txt"
+      ],
+      "geometry": "apce_10x5_geom.txt",
+      "drone": {
+        "name": "Phantom 3-class",
+        "mass_kg": 1.28,
+        "rotors": 4,
+        "published_hover_rpm": 5300,
+        "published_source": "NASA Table 2, hover at 12.46 N"
+      },
+      "note": "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"
+    },
+    {
+      "id": "uiuc_apce_9x4.5",
+      "volume": "UIUC Propeller Data Site, Vol. 1",
+      "retrieved": "2026-10-22",
+      "blades": 2,
+      "diameter_m": 0.2438,
+      "static": "apce_9x4.5_static_rd0995.txt",
+      "runs": [
+        "apce_9x4.5_jb0997_5008.txt",
+        "apce_9x4.5_jb0998_6018.txt",
+        "apce_9x4.5_jb0999_6017.txt",
+        "apce_9x4.5_jb1000_6917.txt",
+        "apce_9x4.5_jb1001_6913.txt",
+        "apce_9x4.5_rd0996_4002.txt"
+      ],
+      "geometry": "apce_9x4.5_geom.txt",
+      "drone": {
+        "name": "Iris+-class",
+        "mass_kg": 1.282,
+        "rotors": 4,
+        "published_hover_rpm": 5400,
+        "published_source": "NASA Table 2, hover at 12.46 N"
+      },
+      "note": "derived: the APC Thin Electric 9x4.5's coefficients as UIUC measured them, applied at 9.6 in (NASA's rotor); the static point reads about 10% above the run's lowest-J points (UIUC's tunnel at its slowest); hover reads the static point (Physics, 2026-10-22)"
+    },
+    {
+      "id": "uiuc_mit_5x4",
+      "volume": "UIUC Propeller Data Site, Vol. 2",
+      "retrieved": "2026-10-22",
+      "blades": 3,
+      "diameter_m": 0.127,
+      "static": "mit_5x4_static_0362rd.txt",
+      "runs": [
+        "mit_5x4_0363rd_3032.txt",
+        "mit_5x4_0364rd_4053.txt",
+        "mit_5x4_0365rd_5053.txt",
+        "mit_5x4_0366rd_6057.txt"
+      ],
+      "geometry": "mit_5x4_geom.txt",
+      "drone": {
+        "name": "5-inch FPV",
+        "mass_kg": 0.5,
+        "rotors": 4,
+        "published_hover_rpm": null
+      },
+      "note": "measured (UIUC; three blades by UIUC's 3-Blade heading). The FPV's mass is an assumed estimate until L5's parts sum: re-run the tool if that sum changes the chosen run. Its run (6057 rpm) is below its hover (8868 rpm), a Reynolds ratio of about 0.68, and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within ±2.5% over the 4× rpm range below it (Physics, 2026-10-22)"
+    },
+    {
+      "id": "uiuc_cfnq_45t1",
+      "volume": "UIUC Propeller Data Site, Vol. 2",
+      "retrieved": "2026-10-22",
+      "blades": 2,
+      "diameter_m": 0.04699,
+      "static": "cfnq_45t1_static_1320rd.txt",
+      "runs": [],
+      "geometry": "cfnq_45t1_geom.txt",
+      "drone": {
+        "name": "Crazyflie-class",
+        "mass_kg": 0.029,
+        "rotors": 4,
+        "published_hover_rpm": 17270,
+        "published_source": "Bitcraze's 2015 thrust table, all four motors (wiki.bitcraze.io/misc:investigations:thrust): 29 g between 28.6 g at 17174 rpm and 32.8 g at 18179 rpm; Bitcraze's fit gives about 17230 (bitcraze.io/2015/02/measuring-propeller-rpm-part-3)"
+      },
+      "note": "static only: C_T and C_Q held at their static values over J (compile_airframe's 0..1 table), so thrust is overstated in climb and forward flight; at J about 0.2 a small prop has lost about a quarter of its static C_T (Physics, 2026-10-22)"
+    },
+    {
+      "id": "triblade_6inch_scaled",
+      "volume": "UIUC Propeller Data Site, Vol. 2",
+      "retrieved": "2026-10-22",
+      "blades": 3,
+      "diameter_m": 0.1524,
+      "static": "mit_5x4_static_0362rd.txt",
+      "runs": [
+        "mit_5x4_0363rd_3032.txt",
+        "mit_5x4_0364rd_4053.txt",
+        "mit_5x4_0365rd_5053.txt",
+        "mit_5x4_0366rd_6057.txt"
+      ],
+      "geometry": "mit_5x4_geom.txt",
+      "drone": {
+        "name": "basic quad, 6-inch defaults",
+        "mass_kg": 0.602,
+        "rotors": 4,
+        "published_hover_rpm": null
+      },
+      "note": "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run (6057 rpm) is below its hover (6758 rpm), a Reynolds ratio of about 0.90, and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within ±2.5% over the 4× rpm range below it (Physics, 2026-10-22)"
+    }
+  ],
+  "sources": {
+    "apce_10x5_geom.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_geom.txt",
+      "retrieved_utc": "2026-10-22T10:31:28Z"
+    },
+    "apce_10x5_kt0821_5000.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_kt0821_5000.txt",
+      "retrieved_utc": "2026-10-22T10:33:27Z"
+    },
+    "apce_10x5_static_pg0819.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_static_pg0819.txt",
+      "retrieved_utc": "2026-10-22T10:31:27Z"
+    },
+    "apce_9x4.5_geom.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_geom.txt",
+      "retrieved_utc": "2026-10-22T10:31:28Z"
+    },
+    "apce_9x4.5_jb0997_5008.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_jb0997_5008.txt",
+      "retrieved_utc": "2026-10-22T10:33:27Z"
+    },
+    "apce_9x4.5_static_rd0995.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_static_rd0995.txt",
+      "retrieved_utc": "2026-10-22T10:31:28Z"
+    },
+    "cfnq_45t1_geom.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-2/data/cfnq_45t1_geom.txt",
+      "retrieved_utc": "2026-10-22T10:31:30Z"
+    },
+    "cfnq_45t1_static_1320rd.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-2/data/cfnq_45t1_static_1320rd.txt",
+      "retrieved_utc": "2026-10-22T10:31:29Z"
+    },
+    "mit_5x4_0366rd_6057.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_0366rd_6057.txt",
+      "retrieved_utc": "2026-10-22T10:33:27Z"
+    },
+    "mit_5x4_geom.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_geom.txt",
+      "retrieved_utc": "2026-10-22T10:31:29Z"
+    },
+    "mit_5x4_static_0362rd.txt": {
+      "url": "https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_static_0362rd.txt",
+      "retrieved_utc": "2026-10-22T10:31:29Z"
+    }
+  }
+}
