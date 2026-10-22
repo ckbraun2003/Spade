@@ -84,3 +84,13 @@ Test/Docs: Physics' second discriminating run, report only and not a verdict (`E
 - **Rotor 0:** 10.4908 m/s, 1.0617 of momentum theory. That is within a percent of C8's +5.7%, a lone uniform disc read through the same 0.5R probe.
 - **So the four slipstreams together make the miss.** Alone, rotor 0 reads as C8's disc does. With its three neighbours, it reads 0.85 without swirl and 0.81 with it.
 - **Physics' reading, set before the run:** per-rotor momentum theory is the wrong reference for a quad whose rotor tips are 0.9R apart. C8q's reference and band are then a spec change for the lead to decide (Physics and Test/Docs). The finding stays open until it is decided.
+
+## 2026-10-22: the bands changed before their run, and the miss in corrected terms
+
+Test/Docs, in Physics' words (Physics checked them, 2026-10-22). C8q's bands were changed after the MISS above, and before the new banded measure's first run (`docs/design/test-docs/2026-10-19-end-goal-checks.md` §5, `eeef10f` and `7bc53de`; Physics' proposal, the lead's approval). The MISS block above stays as it came out.
+- **Banded now:** rotor 0 alone, in the quad's own case and with its own torque, against momentum theory in C8's [0.9, 1.1], on its four runs' mean and its worst run. The four-rotor quad's symmetry band stays, on the same ensemble rule.
+- **Report only now:** the quad's per-rotor ratios. They have no closed-form reference, and none is set from our own result.
+- **The prose above says more than is known.** "So the four slipstreams together make the miss" reads, in corrected terms: the deficit comes with the four rotors together. Linear mutual induction gives only about 3% of it. That treats each neighbour's inflow as a sink at its disc, with the neighbours at 2.89R and 4.08R and the probe 2R below. The rest is the wakes' mixing or the open box's response to four times the flux, and nothing yet separates the two.
+- **The two diagnostics above were one run each,** report only, not ensembles: 0.846 to 0.857 without the discs' torque, and 1.0617 for rotor 0 alone without it.
+- **The four-wake reference** is the measured-data case queued in Physics' demonstration plan (item 10, master `2f29a32`), after the GPU solver.
+- The finding above is closed by the change. The new banded run's record is appended below when it has run.
