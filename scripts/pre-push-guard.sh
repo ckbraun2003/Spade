@@ -42,10 +42,13 @@
 set -e
 
 # A BROKEN PIPE IS STILL A REFUSAL. `git push ... | head` closes the reader while
-# this hook is still printing its list; the next write raises SIGPIPE, and on Git
-# for Windows a hook killed by a signal let the push through (2026-10-22: a push
-# piped into head exported 22 commits). The trap turns that signal into exit 1.
-trap 'exit 1' PIPE
+# this hook is still printing its list; the next write raises SIGPIPE, and Git for
+# Windows lets a push through when its hook dies of a signal (2026-10-22: a push
+# piped into head went through unrefused; it happened to be authorised). The trap
+# turns that signal, and the other common ones, into exit 1. set -e above is
+# load-bearing too: if git ever starts the hook with SIGPIPE already ignored, POSIX
+# makes this trap a no-op, and it is the failing write under set -e that refuses.
+trap 'exit 1' PIPE HUP INT TERM
 
 remote_name="$1"
 
