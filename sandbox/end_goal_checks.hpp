@@ -1107,6 +1107,7 @@ namespace detail {
 
 struct ImportShown {
     std::string shown_name;    // what the editor names the imported object
+    std::string node_name;     // the glTF node's own name; empty when it has none
     std::string mesh_name;     // the glTF mesh's own name; empty when it has none
     std::string file;          // the path imported
     std::string shown_source;  // what the editor shows as its source
