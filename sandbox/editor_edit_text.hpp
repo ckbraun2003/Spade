@@ -722,6 +722,16 @@ inline Result<void> put_edit(Writer& w, const AddMaterial& e) {
     put(w, e.material);
     return {};
 }
+inline Result<void> put_edit(Writer& w, const AddModelFile& e) {
+    w.kw("add-model-file").word(e.file).word(e.vehicle.name);
+    put(w, e.vehicle.start);
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const AddObjectFile& e) {
+    w.kw("add-object-file").word(e.file).word(e.name);
+    put(w, e.pose);
+    return {};
+}
 inline Result<void> put_edit(Writer& w, const RepointWorld& e) {
     w.kw("repoint-world").word(e.file).hex(e.hash);
     return {};
@@ -857,8 +867,9 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 }
 
 inline constexpr std::string_view kSceneVerbs =
-    "a scene edit (add-asset, add-vehicle, remove, rename, duplicate, move, set-asset-pose, set-asset-material, "
-    "set-collider-material, set-vehicle-start, add-material, repoint-world or set-model-param)";
+    "a scene edit (add-asset, add-vehicle, add-model-file, add-object-file, remove, rename, duplicate, move, "
+    "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world or "
+    "set-model-param)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -875,6 +886,18 @@ inline constexpr std::string_view kWorldVerbs =
         out = text::get_add_asset(r);
     } else if (verb == "add-vehicle") {
         out = text::get_add_vehicle(r);
+    } else if (verb == "add-model-file") {
+        AddModelFile e;
+        e.file = r.word("a model file path");
+        e.vehicle.name = r.word("a vehicle name");
+        e.vehicle.start = text::get_start(r);
+        out = e;
+    } else if (verb == "add-object-file") {
+        AddObjectFile e;
+        e.file = r.word("an object file path");
+        e.name = r.word("an asset name");
+        e.pose = text::get_pose(r);
+        out = e;
     } else if (verb == "remove") {
         out = RemoveObject{r.word("an asset or vehicle name")};
     } else if (verb == "rename") {

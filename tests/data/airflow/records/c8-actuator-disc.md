@@ -31,3 +31,61 @@ Test/Docs, from Rendering's B4 run. This is prose, not a record: the readers, an
   - Test/Docs runs an ensemble of 1-ulp-nudged runs, CPU only, as queue jobs.
   - Physics and Test/Docs agree a measure whose verdict holds across that spread. Its band is fixed before the run that judges it (`TD-2`). The 10% stays argued from the literature, never from our own spread (01-verification, "Validation against published data").
   - C8 is re-cut only then, and its record appended.
+
+```text
+=== validation record: C8 actuator-disc far wake ===
+commit: abaafcc (test-docs/c8-spread)
+date: 2026-10-22
+path: CPU reference, MSVC 1943, release
+config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; eight runs that differ only by a nudge in the test, 1 ulp up on 110 increments, seed s: run 0 as it is, runs 1 to 7 seeds 0x1C8, 0x1C9, 0x1CA, 0x1CB, 0x1CC, 0x1CD, 0x1CE. So the spread is the measure's sensitivity to rounding, not a physical uncertainty
+measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 8.0333 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8); the vortex-cylinder model's mean over the same faces is 7.5909 m/s
+tolerance: within 10% (plan A Task 11, spec §11.2, fixed before the first run; the measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)
+verdict: within
+measure: the worst of the eight runs, run 6, the same mean = 8.0597 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: within 10% (as above: the verdict holds across the spread)
+verdict: within
+measure: the eight runs' largest deviation from their mean, the same mean = 0.0437 m/s
+reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a case judged past its horizon)
+tolerance: none
+verdict: report only
+measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs 6.3611 to 7.5019) = 7.4124 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)
+verdict: report only
+```
+
+Physics' note on this record (2026-10-22): The disc mean reads about 6% above momentum theory's uniform disc. spread_actuator's 48 points load the disc unevenly: an unloaded hub (inner ring at 0.408R, Peskin's reach 2 cells), and 1.34× the uniform thrust per area inside 0.5R. Annular momentum theory gives up to √1.34 ≈ 1.16× there, and mixing reduces it. The bias belongs to the disc's point loading, not the solver; it is within the 10% band.
+
+The measure and the eight runs were fixed, and signed off by Physics, before this run: `docs/design/test-docs/2026-10-22-c8-spread.md`. Its 16-run measurement predicted an ensemble mean of +5.6% to +6.2% and a worst run of +6.1% to +6.6% against momentum theory; this run gives +6.0% and +6.4%. The first block above stays, read as the one run it was.
+
+## 2026-10-22: B4, the GPU gather in the CPU step
+
+```text
+=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===
+commit: ec518ad (rendering/airflow-gpu-b4-actuator; queue ticket spade-rendering-b4c8-stack-ec518ad)
+date: 2026-10-22
+path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4), on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no)
+config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; the gather's increments, 110 of 1593344 differing from spread_actuator's by 2.38e-07 m/s at most, copied in each step
+measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 8.0068 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8)
+tolerance: within 10% (C8's: plan A Task 11, spec §11.2)
+verdict: within
+measure: the same mean = 8.0068 m/s
+reference: C8's one-ulp ensemble, the mean of its eight runs = 8.0333 m/s (C8's record, abaafcc)
+tolerance: within 4x the ensemble's largest deviation, 4 x 0.0437 = 0.1748 m/s (test-docs/01-verification.md, a case judged past its horizon)
+verdict: within
+measure: the largest |gather - CPU| through step 104 (T_p): the 0.5R mean 7.21e-06 m/s, the axis 3.45e-05 m/s
+reference: the CPU's run, spread_actuator() each step
+tolerance: 4x the measured gap, never under 4 ulps: 2.88e-05 and 0.000138 m/s (TD-14)
+verdict: within
+measure: where the run leaves the CPU's by 1e-3 on the axis 2R below = step 169
+reference: the one-ulp ensemble's earliest member, step 141 of 16 (2026-10-22-c8-spread.md)
+tolerance: no sooner
+verdict: within
+measure: the CPU's run, the same 0.5R mean = 8.0397 m/s
+reference: none
+tolerance: none
+verdict: report only
+```

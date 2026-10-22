@@ -58,7 +58,10 @@ Against published data, beside the goldens. Each case's tolerance was fixed in p
 | C1, Re 100, 128² (opt-in) | the same | 0.0037; 0.0087 | ≤ 0.02 | within | `c1-cavity.md` |
 | C1, Re 400, 128² (opt-in) | the same; Table II's point 117 left out of v, as decided before any run | 0.0076; 0.0065 | ≤ 0.02 | within | `c1-cavity.md` |
 | C0 Taylor–Green vortex, 64³, inviscid (opt-in) | kinetic energy per unit mass, t = 0 to 10 | 0.125 to 0.0701 | none | report only (DNS data enter at V3) | `c0-taylor-green.md` |
-| C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within | `c8-actuator-disc.md` |
+| C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within for that one run; rounding-sensitive (below) | `c8-actuator-disc.md` |
+| C8, re-cut 2026-10-22 (opt-in): eight runs, 1 ulp apart | the mean downwash over the faces within 0.5R of the axis 2R below, steps 385 to 768 of 768: the eight runs' mean; their worst | 8.0333 and 8.0597 m/s against momentum theory's 7.5777 (+6.0%, +6.4%) | within 10% | within | `c8-actuator-disc.md` |
+
+C8's far wake is chaotic past its horizon, step 104 at the probe. On the axis, 3 of 16 one-ulp-nudged runs missed the 10%: the disc's 48 points leave a hub within 2.1 cells of the axis unloaded, and the axis probe sits in that hub's meandering wake. The re-cut (2026-10-22; Physics signed off the measure and the runs before the run) reads the 0.5R disc mean, and its verdict is the eight runs': their mean and their worst run within 10%. Its +6% comes from the disc's point loading, not the solver (Physics' note in the record). The measurement and the GPU's band past the horizon are in `docs/design/test-docs/2026-10-22-c8-spread.md`.
 
 **P2** (solids, 2026-10-20, CPU reference, MSVC 14.43 release; tolerances in `docs/design/test-docs/2026-10-13-solids-tolerances.md`, fixed before the first run, except where marked `TD-2`):
 

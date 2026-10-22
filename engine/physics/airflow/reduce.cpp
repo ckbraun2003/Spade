@@ -17,7 +17,8 @@ float fixed_tile_dot(std::span<const float> a, std::span<const float> b, uint32_
 
 void remove_mean(std::span<float> x, uint32_t nx, uint32_t ny, uint32_t nz) noexcept {
     if (x.empty()) return;
-    const auto inv_count = static_cast<float>(1.0 / static_cast<double>(x.size()));  // the host's reciprocal
+    // The host's reciprocal; projection_floats().inv_count, the GPU's airflow_params word 26.
+    const auto inv_count = static_cast<float>(1.0 / static_cast<double>(x.size()));
     const float mean = fixed_tile_sum(x, nx, ny, nz) * inv_count;
     for (float& v : x) v -= mean;
 }

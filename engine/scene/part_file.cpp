@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -168,6 +169,23 @@ struct CitedList {
     void table(const char* k, const Table&) { keys.emplace_back(k); }
 };
 
+// The identity strings: fields that take no citation.
+struct IdentityList {
+    std::vector<std::string> keys;
+    void number(const char*, const double&) {}
+    void count(const char*, const uint32_t&) {}
+    void flag(const char*, const bool&) {}
+    void text(const char* k, const std::string&) { keys.emplace_back(k); }
+    void table(const char*, const Table&) {}
+};
+
+template <class Part>
+[[nodiscard]] std::vector<std::string> identity_of(const Part& part) {
+    IdentityList list;
+    walk(list, part);
+    return list.keys;
+}
+
 [[nodiscard]] const std::optional<vehicles::BlockShape>& shape_of(const MotorPart& p) { return p.block.shape; }
 [[nodiscard]] const std::optional<vehicles::BlockShape>& shape_of(const PropPart& p) { return p.block.shape; }
 [[nodiscard]] const std::optional<vehicles::BlockShape>& shape_of(const EscPart& p) { return p.block.shape; }
@@ -230,13 +248,29 @@ struct FiniteCheck {
     if (s.shape == vehicles::PartShape::point) {
         return std::unexpected(invalid(what + " is a point: leave the key out for a point mass"));
     }
+    // The member the kind does not use has no key in the text, so a set one
+    // (any bit, -0 too) would be dropped: refused instead (refuse, never skip).
+    const auto any_bit = [](std::initializer_list<double> values) {
+        return std::any_of(values.begin(), values.end(), [](double v) { return std::bit_cast<uint64_t>(v) != 0; });
+    };
+    const std::string name(kShapeNames[k]);
     if (s.shape == vehicles::PartShape::tensor) {
+        if (any_bit({s.size.x, s.size.y, s.size.z})) {
+            return std::unexpected(
+                invalid(what + ".size is set on a tensor shape, which takes only its tensor: leave it zero"));
+        }
         for (int i = 0; i < 3; ++i) {
             if (Result<void> r = check_finite(what + ".tensor", {s.tensor[i][0], s.tensor[i][1], s.tensor[i][2]}); !r) {
                 return r;
             }
         }
         return {};
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (any_bit({s.tensor[i][0], s.tensor[i][1], s.tensor[i][2]})) {
+            return std::unexpected(invalid(what + ".tensor is set on a " + name +
+                                           " shape, which takes only its size: leave it zero"));
+        }
     }
     return check_finite(what + ".size", {s.size.x, s.size.y, s.size.z});
 }
@@ -288,12 +322,16 @@ struct FiniteCheck {
 }
 
 // The citations against the part's cited fields: none extra, none missing,
-// each grade one of the six.
+// each grade one of the six. `identity` names the fields that take none.
 [[nodiscard]] Result<void> check_citations(const std::string& kind, const std::vector<std::string>& cited,
-                                           const PartSources& sources) {
+                                           const std::vector<std::string>& identity, const PartSources& sources) {
     for (std::size_t i = 0; i < sources.size(); ++i) {
         const std::string& f = sources[i].field;
         if (std::find(cited.begin(), cited.end(), f) == cited.end()) {
+            if (std::find(identity.begin(), identity.end(), f) != identity.end()) {
+                return std::unexpected(
+                    invalid("sources." + f + ": the " + kind + "'s field '" + f + "' takes no citation"));
+            }
             if (f == "shape") return std::unexpected(invalid("sources.shape: the " + kind + " has no shape"));
             if (f.starts_with("blade.")) {
                 return std::unexpected(invalid("sources." + f + ": the " + kind + " has no blade"));
@@ -337,7 +375,7 @@ template <class Part>
                                                   "(leave it the identity)"));
         }
     }
-    return check_citations(kind, cited_of(part), part.sources);
+    return check_citations(kind, cited_of(part), identity_of(part), part.sources);
 }
 
 // ---------------------------------------------------------------------------
@@ -604,7 +642,8 @@ struct Reader {
 }
 
 [[nodiscard]] Result<PartSources> read_sources(const YAML::Node& root, const std::string& kind,
-                                               const std::vector<std::string>& cited) {
+                                               const std::vector<std::string>& cited,
+                                               const std::vector<std::string>& identity) {
     const Result<YAML::Node> sources = field(root, "sources", kTop);
     if (!sources) return std::unexpected(sources.error());
     if (!sources->IsMap()) return std::unexpected(at(*sources, "sources must be a mapping, one citation per field"));
@@ -617,7 +656,7 @@ struct Reader {
         }
         seen.push_back(f);
         if (std::find(cited.begin(), cited.end(), f) == cited.end()) {
-            const Result<void> r = check_citations(kind, cited, PartSources{FieldSource{f, SourceRef{}}});
+            const Result<void> r = check_citations(kind, cited, identity, PartSources{FieldSource{f, SourceRef{}}});
             return std::unexpected(at(it->first, r ? "sources." + f + ": not a field of the " + kind
                                                    : r.error().context));
         }
@@ -699,7 +738,7 @@ template <class Part>
         }
     }
 
-    Result<PartSources> sources = read_sources(root, name, cited_of(out));
+    Result<PartSources> sources = read_sources(root, name, cited_of(out), identity_of(out));
     if (!sources) return std::unexpected(sources.error());
     out.sources = std::move(*sources);
     return out;

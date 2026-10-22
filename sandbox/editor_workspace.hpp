@@ -52,21 +52,6 @@ inline constexpr uint64_t kStepTicks = 4;
 
 namespace detail {
 
-// How far above the ground a library item's origin sits when it rests there.
-[[nodiscard]] inline float rest_height(const LibraryItem& item) {
-    if (item.kind == LibraryItem::Kind::model) return kDroneBodyHalf.y;
-    if (!item.asset || item.asset->collider.nodes.size() != 1) return 0.0f;
-    const SdfNode& n = item.asset->collider.nodes[0];
-    switch (static_cast<SdfPrim>(n.kind)) {
-        case SdfPrim::sphere: return n.params.x;
-        case SdfPrim::box: return n.params.y;
-        case SdfPrim::cylinder: return n.params.y;
-        case SdfPrim::capsule: return n.params.x + n.params.y;
-        case SdfPrim::torus: return n.params.y;
-        default: return 0.0f;
-    }
-}
-
 // An asset's half extents about its origin, before its pose: a one-primitive
 // collider's own, or a unit's.
 [[nodiscard]] inline glm::vec3 asset_half_extents(const scene::SceneAsset& a) {
@@ -97,8 +82,8 @@ class EditorWorkspace {
     [[nodiscard]] static Result<std::unique_ptr<EditorWorkspace>> create(OpenedScene opened) {
         std::unique_ptr<EditorWorkspace> w(new EditorWorkspace(std::move(opened)));
         if (Result<void> composed = w->recompose(); !composed) return std::unexpected(composed.error());
-        w->panels_.library = builtin_library();
         w->list_sources();
+        w->load_library();
         w->refresh_panels();
         return w;
     }
@@ -272,6 +257,23 @@ class EditorWorkspace {
     // assets/worlds/) tells where the built-ins are, which is kept; a scene
     // elsewhere is the user's, and its folder lists as saved. Read when a
     // scene is opened or saved, not every frame.
+    // The default library, from the assets folder a built-in scene told of
+    // (INT-14); what would not load is named in the panel.
+    void load_library() {
+        panels_.armed.reset();
+        if (assets_.empty()) {
+            panels_.library.clear();
+            panels_.library_problems = {
+                "the default library: this scene is not in an assets folder, so its library/library.yaml was "
+                "not found; open a built-in scene, or load a model or object file"};
+            return;
+        }
+        LibraryLoad load = load_library_items(assets_ / "library" / "library.yaml");
+        panels_.library = std::move(load.items);
+        ++panels_.library_generation;
+        panels_.library_problems = std::move(load.problems);
+    }
+
     void list_sources() {
         namespace fs = std::filesystem;
         const fs::path dir = docs_.scene.path.parent_path();
@@ -343,7 +345,7 @@ class EditorWorkspace {
         }
         SdfPose at;
         at.position = origin + dir * *t;
-        at.position.y += detail::rest_height(item);
+        at.position.y += rest_height(item);
         const Serials before = serials();
         const Result<std::string> placed = place(docs_.scene, item, at);
         if (!placed) {
@@ -399,6 +401,18 @@ class EditorWorkspace {
                 return;
             }
             case Command::open: open(panels_.path); return;
+            case Command::load_item: {
+                Result<LibraryItem> item = item_from_file(panels_.item_path);
+                if (!item) {
+                    panels_.status = item.error().context;
+                    return;
+                }
+                panels_.library.push_back(std::move(*item));
+                ++panels_.library_generation;
+                panels_.armed = panels_.library.size() - 1;
+                panels_.status.clear();
+                return;
+            }
         }
     }
 
@@ -453,6 +467,7 @@ class EditorWorkspace {
         panels_.armed.reset();
         panels_.status.clear();
         list_sources();
+        load_library();
     }
 
     OpenedScene docs_;

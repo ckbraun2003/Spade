@@ -15,6 +15,7 @@
 
 #include <bit>
 #include <cstdint>
+#include <filesystem>
 #include <set>
 #include <string>
 #include <vector>
@@ -108,10 +109,15 @@ using spade::Result;
     blue.name = "blue paint";
     blue.base_color = glm::vec4(0.1f, 0.2f, 0.3f, 1.0f);
     blue.shading = spade::MaterialShading::unlit;
+    const std::filesystem::path library = std::filesystem::path(SPADE_ASSETS_DIR) / "library";
+    const spade::scene::SceneVehicle placed{"library quad", "", base.vehicles.at(0).start};
     return {
         ed::AddAsset{crate},
         ed::AddAsset{compound_asset()},
         ed::AddVehicle{launched, model},
+        ed::AddModelFile{(library / "drones" / "reference_quad.model.yaml").generic_string(), placed},
+        ed::AddObjectFile{(library / "obstacles" / "gate.object.yaml").generic_string(), "gate one",
+                          pose_of(glm::vec3(3.0f, 0.0f, 1.0f), 0.4f, 1.0f)},
         ed::RemoveObject{"box_1"},
         ed::RenameObject{"box_1", "big box"},
         ed::DuplicateObject{"hover_quad_0"},

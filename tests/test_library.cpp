@@ -445,6 +445,23 @@ entries:
         << why(extra);
 }
 
+// A version 2 index names every suffix it reads, part files included; a
+// version 1 index keeps its own two.
+TEST(Library, AnUnknownSuffixIsRefusedNamingThatVersionsKinds) {
+    const spade::Result<Library> v2 = spade::scene::library_from_yaml(
+        "library_version: 2\nentries:\n  - {name: X, category: c, file: x.yaml}\n");
+    EXPECT_EQ(code_of(v2), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(why(v2).starts_with("entries[0].file 'x.yaml' must end in .model.yaml (a model file), .object.yaml "
+                                    "(an object file), or .motor.yaml, .prop.yaml, .esc.yaml or .battery.yaml (a "
+                                    "part file) ("))
+        << why(v2);
+    const spade::Result<Library> v1 = spade::scene::library_from_yaml(
+        "library_version: 1\nentries:\n  - {name: X, category: c, file: x.yaml}\n");
+    EXPECT_TRUE(why(v1).starts_with("entries[0].file 'x.yaml' must end in .model.yaml (a model file) or "
+                                    ".object.yaml (an object file) ("))
+        << why(v1);
+}
+
 TEST(Library, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
     struct Case {
         std::string what;
@@ -908,7 +925,7 @@ TEST(LibraryIndex, TheCommittedIndexIsTheTablesEntriesInOrderAndEveryOneLoads) {
         EXPECT_EQ(e.category, expected[i].category);
         EXPECT_EQ(e.file, expected[i].file);
         EXPECT_EQ(e.kind, expected[i].kind);
-        EXPECT_TRUE(e.thumbnail.empty()) << "thumbnails come later, rendered by Rendering";
+        EXPECT_FALSE(e.thumbnail.empty()) << "N14b: every entry has its thumbnail";
     }
     EXPECT_OK(spade::scene::check_library_contents(*library));
 

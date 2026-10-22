@@ -22,7 +22,10 @@
 # Unknown, missing and duplicate keys are errors at every level, as in a
 # scene file. The object files are GENERATED (tests/test_library.cpp, with
 # SPADE_LIBRARY_WRITE set), and so is the drone (tests/test_library_quad.cpp):
-# never edit those by hand. This index is edited by hand.
+# never edit those by hand. So are the thumbnails (thumbnails/*.png, 96 x 96,
+# tests/test_library_thumbnails.cpp): an entry's owner adds its key and
+# regenerates with SPADE_LIBRARY_WRITE=1 ctest -R LibraryThumbnails in the
+# same commit. This index is edited by hand.
 # =============================================================================
 
 library_version: 1
@@ -31,35 +34,44 @@ entries:
   - name: "Reference quad"
     category: "drones"
     file: "drones/reference_quad.model.yaml"
+    thumbnail: "thumbnails/reference_quad.png"
 
   - name: "Box"
     category: "primitives"
     file: "primitives/box.object.yaml"
+    thumbnail: "thumbnails/box.png"
 
   - name: "Sphere"
     category: "primitives"
     file: "primitives/sphere.object.yaml"
+    thumbnail: "thumbnails/sphere.png"
 
   - name: "Cylinder"
     category: "primitives"
     file: "primitives/cylinder.object.yaml"
+    thumbnail: "thumbnails/cylinder.png"
 
   - name: "Capsule"
     category: "primitives"
     file: "primitives/capsule.object.yaml"
+    thumbnail: "thumbnails/capsule.png"
 
   - name: "Gate"
     category: "obstacles"
     file: "obstacles/gate.object.yaml"
+    thumbnail: "thumbnails/gate.png"
 
   - name: "Floor tile"
     category: "floors"
     file: "floors/floor_tile.object.yaml"
+    thumbnail: "thumbnails/floor_tile.png"
 
   - name: "Pole"
     category: "obstacles"
     file: "obstacles/pole.object.yaml"
+    thumbnail: "thumbnails/pole.png"
 
   - name: "Wall"
     category: "obstacles"
     file: "obstacles/wall.object.yaml"
+    thumbnail: "thumbnails/wall.png"

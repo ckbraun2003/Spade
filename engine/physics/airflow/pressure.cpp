@@ -137,7 +137,7 @@ PoissonLevel make_level(uint32_t nx, uint32_t ny, uint32_t nz, const std::array<
 
 void divergence(const MacGrid& g, std::span<float> out) noexcept {
     const GridShape& s = g.shape;
-    const float inv_dx = 1.0f / s.dx;
+    const float inv_dx = 1.0f / s.dx;  // projection_floats().inv_dx: the GPU's airflow_params word 5
     for (uint32_t k = 0; k < s.nz; ++k) {
         for (uint32_t j = 0; j < s.ny; ++j) {
             for (uint32_t i = 0; i < s.nx; ++i) {

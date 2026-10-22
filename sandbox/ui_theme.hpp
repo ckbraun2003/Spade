@@ -311,7 +311,8 @@ inline void build_layout(ImGuiID dockspace, Layout layout) {
         const ImGuiID top = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Up, bar, nullptr, &centre);
         const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
         const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
-        const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.24f, nullptr, &centre);
+        // The library's strip: a category, a 96-pixel tile and its name (N14b).
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.30f, nullptr, &centre);
         if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(top)) {
             ImGuiDockNodeFlags bar_flags = node->LocalFlags;
             bar_flags |= ImGuiDockNodeFlags_NoTabBar;

@@ -97,7 +97,7 @@ The detailed notes, with URLs, pages and quotes, are in the research notes named
 - **Check:** at the Bitcraze table's 9,374 rpm one motor gives 7.9 g ± 10 % (measured). Hover at 29 g needs about 7.3 g per motor.
 
 **Basic quad, 6-inch** (`drones/basic_quad_6inch.model.yaml`). This is `basic_quad_airframe()` at its defaults, every one `assumed` unless noted:
-- X layout ±0.075 × ±0.10 m (the competition drone's, per Kat).
+- X layout ±0.080 × ±0.10 m, so same-side hubs clear the 6-inch discs by 7.6 mm (the lead's ruling (b), 2026-10-21). Kat's ±0.075 × ±0.10 m is the competition drone's.
 - A 6x3.5x3 prop. Its curve is our own scaling from the nearest UIUC 5-inch tri-blade, so **derived and assumed**, because UIUC has no 6-inch prop.
 - 2306 1700 KV motor, 6S 1300 mAh pack (retailer).
 - Mass is the sum of the parts.
@@ -291,5 +291,12 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
   1. A shape's unused member (`size` on a tensor shape, `tensor` on any other), when set, is refused by name rather than dropped on write (refuse, never skip), so every struct the writer accepts round-trips.
   2. Citing `stator` or `protocol` says "the motor's field 'stator' takes no citation", and the header says exactly which keys the "part schema v1" blame covers.
   3. A test for version 2's message on an unknown file suffix.
+- **L3's review, the lead's rulings (2026-10-21; L3 approved at `db765ff`).** Core's rulings 1-4 are accepted: `half_span_x`/`half_span_z`; Kat's FLU (Ixx, Iyy, Izz) maps to design (x, y, z) = (0.0025, 0.0043, 0.0021); Kat's rotor order is not carried; kappa beside tables was refused in L3. Then, in an L3 follow-up after L3 merges:
+  - **(a) Kappa scales the tables, it does not drop them.** L4a's thrust tables stay. `basic_quad_airframe()` derives C_Q(J) = κ·C_T(J)/D at the ct_table's J points, and a C_P table the same way if a prop ever carries one (C_P = 2π·C_Q). The derived table is graded `fitted`, naming κ's source. Physics confirms the formula before L5 builds on it.
+  - **(b) The defaults are a valid generic 6-inch quad.** Same-side hubs clear D by at least 5 mm (half_span_x 0.080). The competition fit keeps Kat's derived ±0.075 layout, with its 2.4 mm disc overlap named in its assumptions. `basic_quad` gains an advisory, not a refusal: it names any pair of rotor discs closer than D, with the overlap in mm. The lead has asked Physics whether overlapping actuator discs need anything.
+  - **Physics' answers (relayed by the lead, 2026-10-21).**
+    - (a) is exact: T = C_T·ρn²D⁴ and Q = C_Q·ρn²D⁵ (n in rev/s), so C_Q(J) = κ·C_T(J)/D. A derived C_P = 2π·C_Q is metadata only, since the rotor model reads no power table.
+    - (b) Overlapping discs are sound: each disc's increments add independently, and Peskin's kernel is a partition of unity, so each disc keeps exactly its own thrust and torque. The advisory also names what isn't modelled for any close layout, overlapping or not: a rotor's thrust does not respond to its neighbour's induced inflow (the shared wake).
+  - **(c) The competition test prints its triangle margin** (I1 + I2 − I3 of the remainder, 1.74e-5 kg m² today), so a default change shows its cost before it becomes a refusal. L5's 2207/4S competition parts get their own margin line.
 - **Thumbnails, one owner per entry** (the lead's condition on Interface's N14b, 2026-10-21; agreed with Interface the same day). Interface owns the generator (`tests/test_library_thumbnails.cpp`, 96 × 96 PNGs under `assets/library/thumbnails/`) and the 9 entries' thumbnails N14b adds. Each entry Core adds in L4 or L5 is Core's. The same commit adds its `thumbnail:` key and runs the generator with `SPADE_LIBRARY_WRITE=1`, so the PNG lands with the entry. N14b changes `tests/test_library.cpp`'s committed-index check from "no thumbnail" to "every entry has one".
 - Kat's catalog has more parts (3-inch, 7-inch, cameras, VTX, GNSS). They join as part files once the four kinds land, each with its sources.

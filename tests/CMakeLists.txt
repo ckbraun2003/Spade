@@ -100,6 +100,7 @@ add_executable(spade_tests
     test_composite_inertia.cpp
     test_propulsion_steady.cpp
     test_airframe_compile.cpp
+    test_basic_quad.cpp
     test_quadrotor.cpp
     test_imu.cpp
     test_gnss.cpp
@@ -266,6 +267,17 @@ add_executable(spade_tests
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
+# test_gpu_airflow_runner.cpp (plan B, B1): the airflow chain runner
+# (spike/airflow, spade_airflow_runner, linked below) and its test kernels;
+# GpuAirflowRunner* on the device, AirflowRunnerSpirv on the host.
+# test_gpu_airflow_projection.cpp (plan B, B2): the multigrid projection on the
+# runner against plan A's CPU projection, GpuAirflowProjection* on the device.
+# test_gpu_airflow_advection.cpp (plan B, B3): the advection kernel against
+# advect.cpp, GpuAirflowAdvection* on the device.
+# test_gpu_airflow_publish.cpp (plan B, B6): the publish kernels against
+# publish_render_volume, GpuAirflowPublish* on the device.
+# test_gpu_airflow_actuator.cpp (plan B, B4): the rotor discs' gather against
+# spread_actuator(), GpuAirflowActuator* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -278,6 +290,11 @@ if(SPADE_VULKAN)
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
         test_gpu_device_limits.cpp
+        test_gpu_airflow_runner.cpp
+        test_gpu_airflow_projection.cpp
+        test_gpu_airflow_advection.cpp
+        test_gpu_airflow_publish.cpp
+        test_gpu_airflow_actuator.cpp
     )
 endif()
 
@@ -395,6 +412,8 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_workspace.cpp
         test_editor_display.cpp
         test_editor_gizmo.cpp
+        test_png_reader.cpp
+        test_library_thumbnails.cpp
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp
@@ -495,6 +514,8 @@ if(SPADE_VULKAN)
         spade::compute
         volk
         Vulkan::Headers
+        # Plan B's chain runner and its kernels' generated headers (B1).
+        spade_airflow_runner
     )
     # Build-ORDER edge onto the D9 generators (S6 Task 3). The generated
     # headers' include DIRECTORY already arrives with spade::compute's PUBLIC
