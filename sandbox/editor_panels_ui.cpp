@@ -646,13 +646,10 @@ void pilot_section(ed::EditorPanels& p) {
     }
     ImGui::Text("Flying %s, %s", pilot.vehicle.c_str(), pilot.controls.armed ? "armed" : "disarmed");
     if (ui::begin_properties("pilot")) {
-        ui::property_row("Throttle");
-        ImGui::Text("%.0f%%", static_cast<double>(pilot.controls.throttle) * 100.0);
-        ui::property_row("Pitch, roll (\xC2\xB0)");
-        ImGui::Text("%.0f, %.0f", static_cast<double>(pilot.controls.pitch_deg),
-                    static_cast<double>(pilot.controls.roll_deg));
-        ui::property_row("Heading (\xC2\xB0)");
-        ImGui::Text("%.0f", static_cast<double>(pilot.controls.yaw_deg));
+        ui::value_row("Throttle", "%.0f%%", static_cast<double>(pilot.controls.throttle) * 100.0);
+        ui::value_row("Pitch, roll (\xC2\xB0)", "%.0f, %.0f", static_cast<double>(pilot.controls.pitch_deg),
+                      static_cast<double>(pilot.controls.roll_deg));
+        ui::value_row("Heading (\xC2\xB0)", "%.0f", static_cast<double>(pilot.controls.yaw_deg));
         ui::end_properties();
     }
     if (ImGui::Button(pilot.controls.armed ? "Disarm" : "Arm")) p.commands.push_back(ed::Command::arm);
@@ -665,7 +662,8 @@ void pilot_section(ed::EditorPanels& p) {
 }
 
 // A library part (INT-14), inspect-only: each cited field's grade, an
-// assumed one in the warning colour, then its value; the whole value, the
+// assumed one in the warning colour, then its value, a fractional one to 4
+// significant figures, every cell elided at its edge; the whole value, the
 // source and the note on hover.
 void inspect_part(const ed::LibraryItem& item) {
     const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
@@ -681,13 +679,13 @@ void inspect_part(const ed::LibraryItem& item) {
         for (const ed::PartRow& r : *rows) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextDisabled("%s", r.field.c_str());
+            ui::cell_text(r.field, ui::Tone::dim);
             bool hovered = ImGui::IsItemHovered();
             ImGui::TableSetColumnIndex(1);
             ui::grade_text(scene::grade_name(r.grade), r.grade == scene::Grade::assumed);
             hovered = hovered || ImGui::IsItemHovered();
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(r.value.c_str());
+            ui::cell_text(ed::short_value(r.value));
             hovered = hovered || ImGui::IsItemHovered();
             if (hovered) {
                 std::string tip = r.field + ": " + r.value + "\n" + std::string(scene::grade_name(r.grade));

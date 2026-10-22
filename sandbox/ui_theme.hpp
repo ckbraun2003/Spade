@@ -239,25 +239,56 @@ inline bool begin_graded_properties(const char* id) {
     return true;
 }
 
+// A table cell's text, placed as ImGui::Text places it but ended with an
+// ellipsis at the cell's right edge, or the panel's when that comes first,
+// so it never runs past its panel (the lead, 2026-10-22, after the part
+// inspector's values ran off it). Every property table's cell text goes
+// through here (UiConventions). Dim for a label or a grade, warning for an
+// assumed one. The caller shows the whole text on hover when it matters.
+enum class Tone { normal, dim, warning };
+
+inline void cell_text(std::string_view text, Tone tone = Tone::normal) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
+    const ImVec2 size = ImGui::CalcTextSize(begin, end);
+    const ImVec2 at(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const float right =
+        std::min(window->DC.CursorPos.x + std::max(ImGui::GetContentRegionAvail().x, 0.0f), window->InnerClipRect.Max.x);
+    const float width = std::max(std::min(size.x, right - at.x), 0.0f);
+    const ImRect box(at, ImVec2(at.x + width, at.y + size.y));
+    ImGui::ItemSize(ImVec2(width, size.y), 0.0f);
+    if (!ImGui::ItemAdd(box, 0)) return;
+    if (tone != Tone::normal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, tone == Tone::warning ? kWarning
+                                                                     : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    }
+    ImGui::RenderTextEllipsis(window->DrawList, at, ImVec2(right, at.y + size.y), right, right, begin, end, &size);
+    if (tone != Tone::normal) ImGui::PopStyleColor();
+}
+
 // Starts a row: the label on the left, then the next widget fills the value
 // column. Give that widget a hidden label ("##wind").
 inline void property_row(const char* label) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", label);
+    cell_text(label, Tone::dim);
     ImGui::TableSetColumnIndex(1);
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
 
-// A read-only row: the label, then formatted text.
+// A read-only row: the label, then formatted text, elided as cell_text().
 inline void value_row(const char* label, const char* format, ...) IM_FMTARGS(2);
 inline void value_row(const char* label, const char* format, ...) {
     property_row(label);
+    char text[512];
     va_list args;
     va_start(args, format);
-    ImGui::TextV(format, args);
+    ImFormatStringV(text, sizeof text, format, args);
     va_end(args);
+    cell_text(text);
 }
 
 // A list row; a selected row takes the accent.
@@ -282,11 +313,7 @@ inline void status_text(std::string_view text) {
 
 // A value's grade (INT-14): an assumed one in the warning colour, so it is
 // never shown as measured; any other dimmed.
-inline void grade_text(std::string_view text, bool assumed) {
-    ImGui::PushStyleColor(ImGuiCol_Text, assumed ? kWarning : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-    ImGui::TextUnformatted(text.data(), text.data() + text.size());
-    ImGui::PopStyleColor();
-}
+inline void grade_text(std::string_view text, bool assumed) { cell_text(text, assumed ? Tone::warning : Tone::dim); }
 
 // Vertical room between groups, instead of a separator.
 inline void gap() { ImGui::Dummy(ImVec2(0.0f, kBase)); }
