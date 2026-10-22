@@ -25,13 +25,16 @@
 // PARITY. -fp-mode precise keeps the arithmetic uncontracted; 1/dx comes from
 // the host, and 1/n for the solid mean from a table of correctly rounded
 // constants, so u, v, w, dye and p match publish.cpp to the bit. |omega|,
-// q-hat and lambda2-hat take sqrt and division, which SPIR-V does not round
-// correctly: they are banded.
+// q-hat and lambda2-hat take fp32_math's sqrt32_ftz and div32_ftz, sqrtss and
+// divss under the CPU's FTZ|DAZ to the bit, each spelled as publish.cpp and
+// core/lambda2.cpp spell theirs, so they match too (TD-14 as amended
+// 2026-10-22), and the module is scanned under the exact profile.
 // ---------------------------------------------------------------------------
 
 import layouts;
 import bindings;
 import airflow_params_layout;
+import fp32_math;
 
 // The airflow push convention (airflow_params_layout.slang): the count in
 // word 2.
@@ -147,17 +150,17 @@ float std_max(float a, float b) { return a < b ? b : a; }
 void rotate(inout float a[3][3], uint p, uint q, uint r) {
     const float apq = a[p][q];
     if (apq == 0.0) return;  // already diagonal in this plane
-    const float theta = (a[q][q] - a[p][p]) / (2.0 * apq);
+    const float theta = div32_ftz(a[q][q] - a[p][p], 2.0 * apq);
     float t = 0.0;
     if (abs(theta) > 1.0e18) {
-        t = 0.5 / theta;
+        t = div32_ftz(0.5, theta);
     } else {
-        t = 1.0 / (abs(theta) + sqrt(theta * theta + 1.0));
+        t = div32_ftz(1.0, abs(theta) + sqrt32_ftz(theta * theta + 1.0));
         if (theta < 0.0) t = -t;
     }
-    const float c = 1.0 / sqrt(t * t + 1.0);
+    const float c = div32_ftz(1.0, sqrt32_ftz(t * t + 1.0));
     const float s = t * c;
-    const float tau = s / (1.0 + c);
+    const float tau = div32_ftz(s, 1.0 + c);
     a[p][p] -= t * apq;
     a[q][q] += t * apq;
     a[p][q] = 0.0;
@@ -192,7 +195,7 @@ float lambda2_hat(Gradient g) {
     const float d1 = a[1][1];
     const float d2 = a[2][2];
     const float l = std_max(std_min(d0, d1), std_min(std_max(d0, d1), d2));
-    return l < 0.0 ? -sqrt(-l) : sqrt(l);
+    return l < 0.0 ? -sqrt32_ftz(-l) : sqrt32_ftz(l);
 }
 
 // --- publish.cpp's fluid_channels ------------------------------------------
@@ -213,9 +216,9 @@ Channels fluid_channels(uint i, uint j, uint k) {
         }
     }
     const float Q = 0.25 * w2 - 0.5 * s2;
-    const float q_hat = Q >= 0.0 ? sqrt(Q) : -sqrt(-Q);
+    const float q_hat = Q >= 0.0 ? sqrt32_ftz(Q) : -sqrt32_ftz(-Q);
     const Channels out = { centred(0u, i, j, k), centred(1u, i, j, k), centred(2u, i, j, k), 0.0,
-                           airflow_pressure[cell_index(i, j, k)], sqrt(w2), q_hat, lambda2_hat(G) };
+                           airflow_pressure[cell_index(i, j, k)], sqrt32_ftz(w2), q_hat, lambda2_hat(G) };
     return out;
 }
 
