@@ -37,6 +37,25 @@
 //      mode 7  out[i] = sqrt32_ftz(args[1 + i])
 //      mode 8  out[i] = div32_ftz_with(args[1 + 3i], args[2 + 3i], args[3 + 3i])
 //      mode 9  out[i] = sqrt32_ftz_with(args[1 + 2i], args[2 + 2i])
+//      mode 10 out[i] = div32_ftz's first quotient Q0 for (args[1 + 2i], args[2 + 2i])
+//      mode 11 out[i] = sqrt32_ftz's first root S0 for args[1 + i]
+//      mode 12 out[i] = sqrt32_ftz(the bits args[1] + i)
+//      mode 13 out[i] = div32_ftz(the bits args[1] + i, args[2])
+//      mode 14 out[i] = div32_ftz(args[2], the bits args[1] + i)
+//
+// ---------------------------------------------------------------------------
+// MODES 10 TO 14 -- THE DEVICE RE-GATE (the exact plan's F1, 2026-10-22).
+// Modes 10 and 11 report, as integer bits, the first approximation each op
+// starts from, computed from the device's OWN estimate by fp32_math's pieces
+// (div32_ftz_estimate and div32_ftz_first, sqrt32_ftz_estimate and
+// sqrt32_ftz_first), so the host measures the estimate's error against the
+// proof's bound: GpuFp32Math.TheDevicesEstimatesStayInsideTheProofsBound. The
+// operands must be normal (and x positive); the host sends no others. The
+// estimate reaches an integer conversion inside the pieces, as E1/E2 ask.
+// Modes 12 to 14 are the full sweep's (SPADE_EXACT_SWEEP): the device makes
+// each input from the base in args[1], so a 2^32 sweep uploads three words a
+// chunk. That is index arithmetic, not a computation between the op and the
+// bits the host compares.
 //
 // ---------------------------------------------------------------------------
 // MODES 8 AND 9 -- THE INJECTED ESTIMATE (Core's exact-division plan,
@@ -118,6 +137,11 @@ static const uint kModeU64Shr = 6u;
 static const uint kModeSqrt = 7u;
 static const uint kModeDivWith = 8u;
 static const uint kModeSqrtWith = 9u;
+static const uint kModeDivFirst = 10u;
+static const uint kModeSqrtFirst = 11u;
+static const uint kModeSqrtRun = 12u;
+static const uint kModeDivRunA = 13u;
+static const uint kModeDivRunB = 14u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -191,6 +215,53 @@ void fp32_math_probe(uint3 tid : SV_DispatchThreadID) {
             return;
         }
         probe_out[i] = sqrt32_ftz_with(probe_args[base], probe_args[base + 1u]);
+        return;
+    }
+
+    // The first approximations (modes 10 and 11), as bits, with mode 4's loud
+    // answer to a short buffer.
+    if (mode == kModeDivFirst) {
+        const uint base = 1u + 2u * i;
+        if (base + 1u >= probe_params.arg_count) {
+            probe_out[i] = asfloat(0x7FC00001u);
+            return;
+        }
+        const float b = probe_args[base + 1u];
+        const uint fa = asuint(probe_args[base]) & 0x007FFFFFu;
+        const uint fb = asuint(b) & 0x007FFFFFu;
+        const uint s = div32_ftz_shift(fa | 0x00800000u, fb | 0x00800000u);
+        probe_out[i] = asfloat(div32_ftz_first(fa, s, div32_ftz_estimate(b)));
+        return;
+    }
+
+    if (mode == kModeSqrtFirst) {
+        if (1u + i >= probe_params.arg_count) {
+            probe_out[i] = asfloat(0x7FC00001u);
+            return;
+        }
+        const float x = probe_args[1u + i];
+        const uint ux = asuint(x);
+        const uint odd = ((ux >> 23) + 1u) & 1u;
+        probe_out[i] = asfloat(sqrt32_ftz_first(ux & 0x007FFFFFu, odd, sqrt32_ftz_estimate(x)));
+        return;
+    }
+
+    // The full sweep's runs (modes 12 to 14): the input is the bits
+    // args[1] + i, the fixed operand args[2].
+    if (mode == kModeSqrtRun || mode == kModeDivRunA || mode == kModeDivRunB) {
+        if (3u > probe_params.arg_count) {
+            probe_out[i] = asfloat(0x7FC00001u);
+            return;
+        }
+        const float swept = asfloat(asuint(probe_args[1]) + i);
+        const float fixed = probe_args[2];
+        if (mode == kModeSqrtRun) {
+            probe_out[i] = sqrt32_ftz(swept);
+        } else if (mode == kModeDivRunA) {
+            probe_out[i] = div32_ftz(swept, fixed);
+        } else {
+            probe_out[i] = div32_ftz(fixed, swept);
+        }
         return;
     }
 
