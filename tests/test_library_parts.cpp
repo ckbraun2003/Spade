@@ -925,6 +925,35 @@ TEST(LibraryParts, NoAssumedNumberIsGradedAsMeasured) {
     }
 }
 
+// A prop's inertia is the number the engine uses, never a 0 that reads as no
+// inertia (the lead, 2026-10-22, after Interface's grades inspector showed
+// "inertia | assumed | 0"). It is the engine's own estimate, prop_inertia()'s
+// m D^2 / 12 from the file's mass and diameter (vehicles/airframe_compile.cpp),
+// written out and graded derived. This pins the committed files bit for bit,
+// so a hand edit of the mass or diameter that leaves it stale fails here.
+TEST(LibraryParts, EveryPropsInertiaIsTheEnginesEstimateBitForBit) {
+    const spade::Result<SourceRegistry> registry = library_sources();
+    ASSERT_OK(registry);
+    std::size_t props = 0;
+    for (const PartRow& row : part_table()) {
+        SCOPED_TRACE(row.id);
+        const spade::Result<PartFile> file = sc::load_part_file(path_of(row), *registry);
+        ASSERT_OK(file);
+        const PropPart* prop = std::get_if<PropPart>(&*file);
+        if (prop == nullptr) continue;
+        ++props;
+        const spade::vehicles::PropBlock& b = prop->block;
+        const double estimate = b.mass * b.diameter * b.diameter / 12.0;
+        EXPECT_GT(b.inertia, 0.0) << "a 0 reads as no inertia";
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(b.inertia), std::bit_cast<std::uint64_t>(estimate))
+            << b.inertia << " against m D^2 / 12 = " << estimate;
+        const SourceRef* ref = citation(prop->sources, "inertia");
+        ASSERT_NE(ref, nullptr);
+        EXPECT_EQ(sc::grade_name(ref->grade), "derived");
+    }
+    EXPECT_EQ(props, 5u) << "the library's five props";
+}
+
 // The basic quad's motor, propeller, ESC and pack files ARE
 // basic_quad_airframe()'s defaults, field for field (L3; L5, the lead's
 // ruling, 2026-10-22): each is emitted from the default block with the file's
