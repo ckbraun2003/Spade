@@ -959,6 +959,55 @@ TEST(LibraryDrones, CrazyflieMatchesBitcrazesThrustTable) {
     report("crazyflie_tau", static_cast<double>(m.rotors[0].tau), "s (hand 63 ms)");
 }
 
+// The ruled bands, typed here from the plan's rulings ("L5's checks", Physics,
+// 2026-10-22), not read from tests/library_drones.hpp: each drone's checks, in
+// order, by test, unit, band and report-only. The sidecars are regenerated
+// from the header, so without this a widened band would pass every test (L5's
+// review, minor 2; the lead's follow-up).
+TEST(LibraryDrones, TheChecksBandsAreThePlansRulings) {
+    struct Ruled {
+        std::string_view test;
+        std::string_view unit;
+        std::optional<std::array<double, 2>> band;
+        bool report_only;
+    };
+    using Band = std::array<double, 2>;
+    const std::vector<std::pair<std::string_view, std::vector<Ruled>>> ruled{
+        {"phantom3_class", {{"Phantom3HoversAtNasasBaselineRpm", "rpm", Band{-0.05, 0.05}, false}}},
+        {"iris_plus_class", {{"IrisPlusHoversAtNasasBaselineRpm", "rpm", Band{-0.05, 0.05}, false}}},
+        // Report-only; the class's 8-14 as [0, (14 - 8) / 8].
+        {"fpv_5inch", {{"FpvThrustToWeightIsReported", "1", Band{0.0, 0.75}, true}}},
+        // +-10% NOT widened; the two loaded rows and SoC 1 are report-only.
+        {"crazyflie_class",
+         {{"CrazyflieMatchesBitcrazesThrustTable", "g", Band{-0.10, 0.10}, false},
+          {"CrazyflieMatchesBitcrazesThrustTable", "rpm", std::nullopt, true},
+          {"CrazyflieMatchesBitcrazesThrustTable", "rpm", std::nullopt, true},
+          {"CrazyflieMatchesBitcrazesThrustTable", "rpm", std::nullopt, true}}},
+        {"basic_quad_6inch", {{"BasicQuadDefaultsHover", "rpm", Band{-0.001, 0.001}, false}}},
+        // A +-2% guard; the duty dropped, the thrust per motor report-only.
+        {"basic_quad_competition",
+         {{"BasicQuadCompetitionHoversAtTheCurvesHoverPoint", "m/s^2", Band{-0.02, 0.02}, false},
+          {"BasicQuadCompetitionHoversAtTheCurvesHoverPoint", "N", std::nullopt, true}}},
+    };
+    for (const auto& [stem, expected] : ruled) {
+        SCOPED_TRACE(stem);
+        const ld::DroneNotes notes = ld::drone_notes(stem);
+        ASSERT_EQ(notes.checks.size(), expected.size());
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            SCOPED_TRACE(i);
+            const ModelCheck& c = notes.checks[i];
+            EXPECT_EQ(c.test, expected[i].test);
+            EXPECT_EQ(c.unit, expected[i].unit);
+            EXPECT_EQ(c.report_only, expected[i].report_only);
+            ASSERT_EQ(c.band.has_value(), expected[i].band.has_value());
+            if (c.band) {
+                EXPECT_EQ((*c.band)[0], (*expected[i].band)[0]);
+                EXPECT_EQ((*c.band)[1], (*expected[i].band)[1]);
+            }
+        }
+    }
+}
+
 // Physics' precondition for the refit (2026-10-22): the chain's pack current is
 // the sum over its motors of duty x winding current, so the fit's bus / duty
 // reading and the chain agree on which current is which. A chain summing the
