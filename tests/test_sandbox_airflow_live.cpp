@@ -318,3 +318,24 @@ TEST(SandboxAirflowLive, ThePosterFrameMeasured) {
     ASSERT_TRUE(spade::sandbox::png::write_file(out, spade::sandbox::png::encode_rgba(pixels.data(), kW, kH, false)));
     std::printf("  the CPU's frame: %s\n", out.string().c_str());
 }
+
+// The view's HUD status line (the lead, 2026-10-22): the run's pressure line,
+// then what the render path does not draw, joined by a dot; in the warning
+// tone when the pressure was unconverged, so a stalled or capped run catches
+// the eye. Empty for a converged run on a path that draws everything.
+TEST(SandboxAirflowLive, ItsStatusLineIsThePressureInTheWarningToneThenTheGap) {
+    const std::string pressure = "pressure unconverged on 1 step: 1 stalled at fp32's floor (last max|r|/max|b| 2.0e-03)";
+    const std::string gap = "GL does not draw: mode";
+    const af::StatusLine none = af::status_line("", "");
+    EXPECT_EQ(none.text, "");
+    EXPECT_FALSE(none.warning);
+    const af::StatusLine gap_only = af::status_line("", gap);
+    EXPECT_EQ(gap_only.text, gap);
+    EXPECT_FALSE(gap_only.warning);
+    const af::StatusLine unconverged = af::status_line(pressure, "");
+    EXPECT_EQ(unconverged.text, pressure);
+    EXPECT_TRUE(unconverged.warning);
+    const af::StatusLine both = af::status_line(pressure, gap);
+    EXPECT_EQ(both.text, pressure + " \xc2\xb7 " + gap);
+    EXPECT_TRUE(both.warning);
+}

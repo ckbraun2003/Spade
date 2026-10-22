@@ -21,6 +21,7 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
+#include "physics/airflow/fluid_step.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/design_frame.hpp"
 #include "state/layout.hpp"
@@ -595,4 +596,75 @@ TEST(AnalysisLiveRun, AnImportedPartTooThinForTheGridIsRefusedByNameWithTheRemed
         resolved(an::test::with_power(solid_case(authored.model), authored), authored.model), authored.model);
     ASSERT_FALSE(plain.has_value());
     EXPECT_EQ(plain.error().context.find("visual-only"), std::string::npos) << plain.error().context;
+}
+
+// P2d (Physics, merged a4ec57f): an unconverged solids step is exactly one
+// of stalled (the CG stopped at fp32's floor) or capped (it reached its
+// cap). The run counts each and its line says which, naming only what
+// occurred (the lead's plan, 2026-10-22).
+TEST(AnalysisLiveRun, TheSolidsHealthLineSaysWhyThePressureWasUnconverged) {
+    an::LiveSolids s;
+    EXPECT_EQ(an::solids_health_line(s, 64), "");
+    s.pressure_residual = 2.0e-3f;
+    s.unconverged_steps = 3;
+    s.stalled_steps = 3;
+    EXPECT_EQ(an::solids_health_line(s, 64),
+              "pressure unconverged on 3 steps: 3 stalled at fp32's floor (last max|r|/max|b| 2.0e-03)");
+    s.unconverged_steps = 1;
+    s.stalled_steps = 0;
+    s.capped_steps = 1;
+    EXPECT_EQ(an::solids_health_line(s, 1),
+              "pressure unconverged on 1 step: 1 at the CG's cap of 1 iteration (last max|r|/max|b| 2.0e-03)");
+    s.unconverged_steps = 5;
+    s.stalled_steps = 2;
+    s.capped_steps = 3;
+    EXPECT_EQ(an::solids_health_line(s, 64),
+              "pressure unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64 iterations "
+              "(last max|r|/max|b| 2.0e-03)");
+}
+
+// A test-only cap of 1 caps the ball body's solves at the CG's floor (pcg
+// clamps a cap to its floor, so the solve runs to max(floor, cap)): the run
+// counts them as capped, stalled and capped sum to unconverged, and its
+// pressure line, the end of its run line, names the cap the solve ran to.
+TEST(AnalysisLiveRun, ACappedSolveIsCountedAndItsCapNamedInTheRunLine) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    an::LiveRun run = started(solid_case(p.model), p);
+    ASSERT_TRUE(run.solids().any);
+    run.set_test_cg_cap(1);
+    spade::FlowVolume v;
+    armed_frame(run, v);
+    if (::testing::Test::HasFatalFailure()) return;
+    const an::LiveSolids& s = run.solids();
+    EXPECT_GT(s.capped_steps, 0u) << run.run_line();
+    EXPECT_EQ(s.capped_steps + s.stalled_steps, s.unconverged_steps);
+    EXPECT_EQ(s.pressure_iterations, spade::physics::airflow::kSolidsCgIterations);
+    const std::string cap =
+        "at the CG's cap of " + std::to_string(spade::physics::airflow::kSolidsCgIterations) + " iterations";
+    EXPECT_NE(run.pressure_line().find(cap), std::string::npos) << run.pressure_line();
+    const std::string line = run.run_line();
+    ASSERT_GE(line.size(), run.pressure_line().size());
+    EXPECT_EQ(line.substr(line.size() - run.pressure_line().size()), run.pressure_line()) << line;
+}
+
+// The override set and then unset (0) flies to the bit as a run never given
+// it (C8q's nudge hook's rule).
+TEST(AnalysisLiveRun, TheCgCapOverrideUnsetFliesToTheBit) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    an::LiveRun a = started(solid_case(p.model), p);
+    an::LiveRun b = started(solid_case(p.model), p);
+    b.set_test_cg_cap(1);
+    b.set_test_cg_cap(0);
+    spade::FlowVolume va;
+    spade::FlowVolume vb;
+    for (int i = 0; i < 2; ++i) {
+        armed_frame(a, va);
+        armed_frame(b, vb);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(va.v, vb.v);
+    EXPECT_EQ(va.s, vb.s);
+    EXPECT_EQ(a.solids().pressure_residual, b.solids().pressure_residual);
+    EXPECT_EQ(a.solids().unconverged_steps, b.solids().unconverged_steps);
+    EXPECT_EQ(a.solids().pressure_iterations, b.solids().pressure_iterations);
 }
