@@ -255,7 +255,9 @@ Cameron asked for a realistic-looking drone, and boxes and tubes alone don't mee
 
   Circles need sin and cos. TD-3 allows no libm under `engine/`, so they use `core/fp32_math`'s portable functions, or the meshes are generated outside `engine/` and committed as `.spmesh` assets. The draft picks one.
 - **L7b, the drones wear them.** Each L5 model file gains its mesh parts, with `.spmesh` sidecars beside it (B5's format). Those goldens are new in this plan, so regenerating them moves no existing golden. Each one still needs its `-NoSeed` leg.
-- **L7c, a prop mesh on each hub**: the compile addition above.
+- **L7c, a prop mesh on each hub**: the compile addition above, and, from Rendering's answer (the lead, 2026-10-21), the two things a spinning prop needs:
+  - **Posed by the blade azimuth.** Both callers that pose rotor parts with ψ = 0 today, `sandbox/vehicle_draw.hpp:110-112` and `tools/flow_movie/main.cpp:880`, take Physics' ψ (P11) instead. Those files are other realms' and go through the lead; L7c lands after P11.
+  - **A mirrored mesh for the opposite hand.** L7a's prop generator emits both hands: the mirror image, re-wound so it faces outward. Each hub carries its own hand's mesh. A flipped mount can't make it.
 
 ## Rulings (the lead, 2026-10-21)
 
@@ -285,4 +287,8 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 - Until L7 lands, each drone is drawn from its SDF parts.
 - **A visual-only carrier** (the lead, 2026-10-21) would be a render mesh beside the physics shape, the way game engines split render and collision. It is a later CORE-7 design, made only if a real detail needs it. L7 needs none.
 - **L2's branch:** L1 merged first (`61724be`), so L2 is cut fresh from master as `core/part-files`.
+- **L2's review minors go in L3's first commits, red first** (the lead, 2026-10-21, at L2's merge `1c65501`):
+  1. A shape's unused member (`size` on a tensor shape, `tensor` on any other), when set, is refused by name rather than dropped on write (refuse, never skip), so every struct the writer accepts round-trips.
+  2. Citing `stator` or `protocol` says "the motor's field 'stator' takes no citation", and the header says exactly which keys the "part schema v1" blame covers.
+  3. A test for version 2's message on an unknown file suffix.
 - Kat's catalog has more parts (3-inch, 7-inch, cameras, VTX, GNSS). They join as part files once the four kinds land, each with its sources.
