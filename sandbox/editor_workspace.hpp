@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -105,6 +106,11 @@ class EditorWorkspace {
     // N15's staging folder (D1): the view's second root, after the scene's
     // folder; Save copies what the scene uses from it beside the scene.
     [[nodiscard]] const std::filesystem::path& import_staging() const noexcept { return staging_.path(); }
+    // Keeps the staging folder from looking like a crashed session's
+    // (ImportStaging::keep_alive()); apply_panels() calls it each frame.
+    void keep_staging_alive(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        staging_.keep_alive(now);
+    }
     [[nodiscard]] EditorPanels& panels() noexcept { return panels_; }
     [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
@@ -125,6 +131,7 @@ class EditorWorkspace {
             settle(before, apply(docs_.world, e));
         }
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
+        keep_staging_alive();
         refresh_panels();
     }
 
@@ -273,9 +280,12 @@ class EditorWorkspace {
     // import never saved leaves nothing behind. Its name is a random 64-bit
     // token (TestHygiene's one product use). A crashed session leaves its
     // folder behind, so starting sweeps the token folders whose newest file is
-    // over a day old (the lead, 2026-10-22). Without a temp folder there is no
-    // staging, and an import is refused by name, never staged in the working
-    // directory (Test/Docs' review).
+    // over a day old (the lead, 2026-10-22), and an open workspace touches its
+    // own folder's "alive" at most once an hour (keep_alive(), from
+    // apply_panels()), so only an orphan ever looks that old (Test/Docs: a
+    // session open over a day could not otherwise save). Without a temp
+    // folder there is no staging, and an import is refused by name, never
+    // staged in the working directory (Test/Docs' review).
     class ImportStaging {
       public:
         ImportStaging() {
@@ -300,6 +310,19 @@ class EditorWorkspace {
         // Empty when there is no temp folder; why_not() then says so.
         [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
         [[nodiscard]] const std::string& why_not() const noexcept { return why_not_; }
+
+        // Touches <path>/alive when the folder exists (an import was staged)
+        // and an hour has passed since the last touch by `now`.
+        void keep_alive(std::chrono::steady_clock::time_point now) {
+            namespace fs = std::filesystem;
+            if (path_.empty() || (touched_ && now - *touched_ < std::chrono::hours(1))) return;
+            std::error_code ec;
+            if (!fs::is_directory(path_, ec)) return;
+            const fs::path alive = path_ / "alive";
+            if (!fs::exists(alive, ec)) std::ofstream(alive, std::ios::binary).put('\n');
+            fs::last_write_time(alive, fs::file_time_type::clock::now(), ec);
+            if (!ec) touched_ = now;
+        }
 
       private:
         // Removes each folder under `root` named like a token (digits only)
@@ -329,6 +352,7 @@ class EditorWorkspace {
 
         std::filesystem::path path_;
         std::string why_not_;
+        std::optional<std::chrono::steady_clock::time_point> touched_;
     };
     struct Serials {
         uint64_t scene = 0;
