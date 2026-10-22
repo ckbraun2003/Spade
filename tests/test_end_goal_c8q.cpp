@@ -466,7 +466,7 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
         for (const double r : b.ratio) ok = ok && in_band(r);
         return ok;
     };
-    std::string spreads;
+    std::vector<double> spreads;
     for (std::size_t i = 0; i < mean.u.size(); ++i) {
         double lo = means[0].u[i];
         double hi = means[0].u[i];
@@ -474,9 +474,7 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
             lo = std::min(lo, m.u[i]);
             hi = std::max(hi, m.u[i]);
         }
-        char text[32];
-        std::snprintf(text, sizeof text, "%s%.4f", i == 0 ? "" : ", ", (hi - lo) / mean.u[i]);
-        spreads += text;
+        spreads.push_back((hi - lo) / mean.u[i]);
     }
     const float dx = q->resolved.base.dx;
     const double r_over_dx = static_cast<double>(mean.r_over_dx);
@@ -522,15 +520,19 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
                 "%.4f\n"
                 "reference: none (evidence for any later tightening, set in advance)\n"
                 "tolerance: none\n"
-                "verdict: report only\n"
-                "measure: each rotor's spread across the four runs, (max - min) / mean, rotors 0 to 3 = %s\n"
-                "reference: none (the measure's sensitivity to rounding)\n"
-                "tolerance: none\n"
                 "verdict: report only\n",
                 all.mutual_off, verdict_word(all.mutual_off <= eg::kC8qMutual), worst_ratio,
                 each[worst_ratio].ratio_off, verdict_word(ratio_ok(each[worst_ratio])), worst_mutual,
                 each[worst_mutual].mutual_off, verdict_word(each[worst_mutual].mutual_off <= eg::kC8qMutual),
-                all.mutual_spread, spreads.c_str());
+                all.mutual_spread);
+    // One measure a rotor: a measure's value is a single number.
+    for (std::size_t i = 0; i < spreads.size(); ++i) {
+        std::printf("measure: rotor %zu's spread across the four runs, (max - min) / mean = %.4f\n"
+                    "reference: none (the measure's sensitivity to rounding)\n"
+                    "tolerance: none\n"
+                    "verdict: report only\n",
+                    i, spreads[i]);
+    }
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
