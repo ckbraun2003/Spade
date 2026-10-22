@@ -658,3 +658,110 @@ TEST(EditorImport, AddMeshPartsReadsAMeshItDoesNotHoldFromItsSidecar) {
     EXPECT_NE(refused.error().context.find("gone.spmesh"), std::string::npos) << refused.error().context;
     EXPECT_EQ(support::text_of(other.desc()), before);
 }
+
+// ===========================================================================
+// I4: SAVE AND REOPEN (D1). Save copies every imported sidecar the scene
+// names beside it, an object's and a part's, from the staging folder (or the
+// scene's folder as it was, on a Save As elsewhere), all or nothing; the
+// reopened scene reads them from its own folder. Save to library refuses a
+// drone with imported parts in Core's words (scene::add_model() won't place
+// mesh parts, N3), so nothing is saved that can't be placed back.
+// ===========================================================================
+
+namespace {
+
+// The hover scene with an imported crate placed and an imported part on its
+// first drone; the files are written to `dir`.
+[[nodiscard]] std::unique_ptr<ed::EditorWorkspace> with_imports(const fs::path& dir) {
+    write_gltf(dir / "crate.gltf", {{"crate", glm::vec3(-0.25f, 0.0f, -0.25f), 0.5f}});
+    write_gltf(dir / "guard.gltf", {{"ring", glm::vec3(-0.1f, 0.05f, -0.1f), 0.2f}});
+    auto w = hover_workspace();
+    if (w == nullptr) return w;
+    w->panels().item_path = spade::path_text(dir / "crate.gltf");
+    run(*w, ed::Command::load_item);
+    w->click(glm::vec3(4.0f, 5.0f, 4.0f), glm::vec3(0.0f, -1.0f, 0.0f));
+    EXPECT_EQ(w->documents().scene.desc().assets.size(), 1u) << w->panels().status;
+    w->panels().item_path = spade::path_text(dir / "guard.gltf");
+    w->panels().selection =
+        ed::Selection{ed::Selection::Kind::object, w->documents().scene.desc().vehicles.at(0).name};
+    run(*w, ed::Command::import_parts);
+    EXPECT_TRUE(w->panels().status.empty()) << w->panels().status;
+    return w;
+}
+
+}  // namespace
+
+TEST(EditorImport, SaveAsCarriesEveryStagedSidecarBesideTheSceneAndReopenReadsThem) {
+    TempDir t{"editor-import-save"};
+    auto w = with_imports(t.path());
+    ASSERT_NE(w, nullptr);
+    const fs::path mine = t.path() / "out" / "mine.scene.yaml";
+    fs::create_directories(mine.parent_path());
+    w->panels().path = spade::path_text(mine);
+    run(*w, ed::Command::save_as);
+    ASSERT_TRUE(fs::exists(mine)) << w->panels().status;
+    const fs::path crate = mine.parent_path() / "imported" / "crate.spmesh";
+    const fs::path ring = mine.parent_path() / "imported" / "guard" / "ring.spmesh";
+    EXPECT_TRUE(fs::exists(crate)) << "the object's sidecar";
+    ASSERT_TRUE(fs::exists(ring)) << "the part's sidecar";
+    const spade::Result<spade::LoadedMesh> carried = spade::load_mesh_file(ring);
+    ASSERT_TRUE(carried.has_value()) << carried.error().context;
+    EXPECT_EQ(carried->provenance.source, spade::path_text(t.path() / "guard.gltf"));
+
+    const std::string drone = w->documents().scene.desc().vehicles.at(0).name;
+    w->panels().path = spade::path_text(mine);
+    run(*w, ed::Command::open);
+    ASSERT_EQ(w->documents().scene.path, mine) << w->panels().status;
+    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    const spade::scene::SceneVehicle* v = nullptr;
+    for (const spade::scene::SceneVehicle& x : s.vehicles) {
+        if (x.name == drone) v = &x;
+    }
+    ASSERT_NE(v, nullptr);
+    const spade::vehicles::PartDesc* part = part_named(support::model_named(s, v->model), "ring");
+    ASSERT_NE(part, nullptr);
+    ASSERT_NE(part->mesh, nullptr) << "read from the scene's own folder";
+    EXPECT_EQ(part->mesh->content_hash(), carried->mesh->content_hash());
+    EXPECT_EQ(part->role, spade::analysis::kImportedPartRole);
+    const std::vector<fs::path> roots{mine.parent_path()};
+    const spade::render::ResolvedMeshes m = spade::render::resolve_meshes(w->composed().world, roots);
+    EXPECT_TRUE(m.unresolved.empty()) << m.unresolved.front().why;
+}
+
+// A sidecar that can't be written saves nothing: the scene file isn't
+// written, and the status says why.
+TEST(EditorImport, ASidecarThatCantBeCarriedSavesNothing) {
+    TempDir t{"editor-import-save-blocked"};
+    auto w = with_imports(t.path());
+    ASSERT_NE(w, nullptr);
+    const fs::path mine = t.path() / "out" / "mine.scene.yaml";
+    fs::create_directories(mine.parent_path());
+    support::write_bytes(mine.parent_path() / "imported", "a file where the folder would go");
+    w->panels().path = spade::path_text(mine);
+    run(*w, ed::Command::save_as);
+    EXPECT_FALSE(fs::exists(mine));
+    EXPECT_NE(w->panels().status.find("the scene was not saved"), std::string::npos) << w->panels().status;
+    EXPECT_TRUE(w->documents().scene.dirty());
+}
+
+// Core's words, in the panel's status line: the drone isn't saved.
+TEST(EditorImport, SaveToLibraryRefusesADroneWithImportedPartsInCoresWords) {
+    TempDir t{"editor-import-library"};
+    auto w = with_imports(t.path());
+    ASSERT_NE(w, nullptr);
+    const fs::path mine = t.path() / "out" / "mine.scene.yaml";
+    fs::create_directories(mine.parent_path());
+    w->panels().path = spade::path_text(mine);
+    run(*w, ed::Command::save_as);
+    ASSERT_TRUE(fs::exists(mine)) << w->panels().status;
+    const std::size_t items = w->panels().library.size();
+    w->panels().selection =
+        ed::Selection{ed::Selection::Kind::object, w->documents().scene.desc().vehicles.at(0).name};
+    run(*w, ed::Command::save_to_library);
+    EXPECT_EQ(w->panels().library.size(), items);
+    const std::string& status = w->panels().status;
+    EXPECT_NE(status.find("Save to library: "), std::string::npos) << status;
+    EXPECT_NE(status.find("has mesh parts; their sidecars would need copying beside the scene"), std::string::npos)
+        << status;
+    EXPECT_FALSE(fs::exists(mine.parent_path() / "library" / "library.yaml"));
+}
