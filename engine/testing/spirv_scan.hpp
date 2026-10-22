@@ -395,6 +395,9 @@ struct SpirvScanResult {
     // fp32_math Slang ports are what a kernel calls instead.
     std::size_t transcendental_ext_inst_ops = 0;
     std::size_t ext_inst_ops = 0;      // OpExtInst calls into any imported set -- counted, not forbidden
+    // E1/E2 (exact only): the OpFDiv and InverseSqrt results traced as
+    // estimates, each to the integer conversions it may reach. 0 under parity.
+    std::size_t estimate_ops = 0;
 
     // Populated for every profile, cheap and unconditional -- not every caller
     // needs them (test_slang_layouts.cpp's integer_only branch is today's user),
