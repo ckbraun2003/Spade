@@ -82,6 +82,17 @@ All 11 of today's editor steps stay, each a declared step (EDT-011), with its 8 
 
 So no action needs porting, and the mode is removed with its code. The builder's checks that stay meaningful move to the editor's tests (§4). Where a §4 row names `test_sandbox_builder.cpp`, the implementation re-homes it to the editor's own test for the same operation (`test_editor_*`), since that file goes with the mode. Each such move shows the editor test's assertion, as Test/Docs asked.
 
+**`editor.fly`** (N17, merged `4f25016`, 2026-10-22; after `editor.add_drone`; the end-goal design's §6). The library's reference quad, placed where `editor.add_drone` places it and selected, is run, and the Pilot section names it (`piloted`). The step then flies it through the session's own frames with the pilot's keys held as `FrameInput`:
+1. 1.5 s disarmed: Run's pop (`editor.add_drone/placed-at`, known-open), then rest.
+2. Space, then 1.5 s at idle.
+3. PageUp held until the throttle holds 1.3 m g, flown to 3 s.
+4. Up held for 2.5 s.
+
+Each frame records the piloted drone's height, velocity, design-frame attitude (+X the nose), rotor speeds and vertical thrust. Test/Docs' `armed`, `climbs` and `follows-attitude` judge those frames, measured from the run's own frames, so none depends on the spawn height (the lead's note). The headless twin is `FlightController.TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows` (`tests/test_flight_controller.cpp`). Don't "fix" the first two back; the third is why their margins hold (the lead's confirmation, 2026-10-22):
+- **The throttle step is 1.3 m g, not full throttle.** At full throttle the quad climbs at 29 m/s. At that speed, drag and the rotors' falling C_T put it outside `climbs`' drag-free premise: 0.498 against the 0.5 floor. That's physical (Physics' review), not a bug. 1.3 m g is inside the 1.1 to 1.4 m g range `climbs` was simulated for. First run: 0.696 (band [0.5, 1.1]).
+- **The pitch command is -30 degrees held, judged from the press.** The keys can't hold -15 degrees. A held arrow ramps the setpoint at 60 degrees a second to the keys' 30-degree limit, and a released one levels it (`sandbox/pilot_keys.hpp`). Setting the panel to -15 would be levelled by the next frame's keys. `follows-attitude` counts from the press, the 0.5 s ramp included: within 3 degrees by 0.92 s (1.0 allowed), 4.9 m/s gained along the tilt. Don't move the judgement to the setpoint's arrival (0.41 s) to buy margin.
+- **The 0.08 s margin is deterministic.** The tour steps a fixed 1/60 s per frame, never the wall clock. `run_live_smoke()` (`sandbox/live_tour.cpp`) calls `GlTargetSink::set_fixed_delta(kDt)`, and `poll()` replaces the measured frame time with it, so `delta_seconds()` is always 1/60. Run's steps take that dt (whole 4 ms steps, the remainder carried), and so do the pilot's keys. The wall clock feeds only the overlay's ms readouts. A loaded box draws slower but steps the same. The twin, sampled every step, reaches at 0.91 s; the tour, sampled every 60 Hz frame, at 0.92 s.
+
 **Closing card** (4 s): the verdict and the run's numbers.
 
 ## 3. What stays the same
