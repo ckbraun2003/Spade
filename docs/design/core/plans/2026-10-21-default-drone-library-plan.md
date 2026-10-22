@@ -97,7 +97,7 @@ The detailed notes, with URLs, pages and quotes, are in the research notes named
 - **Check:** at the Bitcraze table's 9,374 rpm one motor gives 7.9 g ± 10 % (measured). Hover at 29 g needs about 7.3 g per motor.
 
 **Basic quad, 6-inch** (`drones/basic_quad_6inch.model.yaml`). This is `basic_quad_airframe()` at its defaults, every one `assumed` unless noted:
-- X layout ±0.075 × ±0.10 m (the competition drone's, per Kat).
+- X layout ±0.080 × ±0.10 m, so same-side hubs clear the 6-inch discs by 7.6 mm (the lead's ruling (b), 2026-10-21). Kat's ±0.075 × ±0.10 m is the competition drone's.
 - A 6x3.5x3 prop. Its curve is our own scaling from the nearest UIUC 5-inch tri-blade, so **derived and assumed**, because UIUC has no 6-inch prop.
 - 2306 1700 KV motor, 6S 1300 mAh pack (retailer).
 - Mass is the sum of the parts.
