@@ -114,6 +114,7 @@ add_executable(spade_tests
     test_library.cpp
     test_library_props.cpp
     test_library_sources.cpp
+    test_model_sources.cpp
     test_part_file.cpp
     test_library_parts.cpp
     test_determinism.cpp
