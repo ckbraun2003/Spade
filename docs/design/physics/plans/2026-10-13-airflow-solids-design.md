@@ -62,6 +62,11 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
 
       At n = 4, S3 and the quad's cold solves sit at 1–2·10⁻³. From n = 8, every case sits at fp32's floor. `FluidConfig`'s default `n_v` stays plan A's 2 V-cycles. A run with solids left at that default is announced (its residual is 7·10⁻² on S1), never silent. `TheChosenIterationCountConvergesTheSheetFromCold` pins the choice on the worst case.
     - **The residual.** Each projection's final relative residual, `max |r| / max |b|`, goes on the run line and into history. A max is order-free, so both backends give the same value. Above the threshold, 10⁻⁴ (`kResidualAnnounce`), it is announced (`L6`), never silent. The threshold is ten times the warm residual the chosen count leaves (1.2·10⁻⁶), held at the floor of 10⁻⁴ (first 10⁻³, revised with the count).
+      - *Amended 2026-10-22 (P2d; the lead's approval; merged at a4ec57f):* an unconverged solids step is announced as exactly one of two states.
+        - **Capped:** the solve reached its cap, 32, above the mark.
+        - **Stalled:** past the floor, the true residual made no new 10% low in 4 measurements after one restart from the true residual (r = b − Ax), or a step's denominator was exactly zero above the mark. The run line reads "stalled at fp32's floor after N iterations".
+        - A stop above the mark returns the iterate that measured least, not the last. That costs one more grid vector: the CG holds 7 floats a cell.
+        - Measured on D1's box from rest: both steps meet the mark in 9 iterations. With the mark at 0 the floor is about 1·10⁻⁵, and fp32 and double-accumulated residuals agree there, so the error is in x; the restart lowers it to 6·10⁻⁶ and 4·10⁻⁷. The old floor near 10⁻⁴ was the coarse faces before P2c.
     - **Symmetry.** A test checks the preconditioner's symmetry, `⟨Mx, y⟩ = ⟨x, My⟩` to rounding on random vectors (§8, test 10).
   - **The cost:** one iteration costs about 1.3 V-cycles.
 - **Fluid regions** (the lead's finding 3). A sheet or a solid can cut the fluid into separate regions, and each closed one has its own null space.
