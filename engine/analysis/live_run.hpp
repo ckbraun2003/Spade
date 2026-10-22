@@ -193,6 +193,16 @@ class LiveRun {
     [[nodiscard]] static Result<LiveRun> restore(const std::filesystem::path& file, const ResolvedCase& resolved,
                                                  const vehicles::ModelType& model);
 
+    // FOR TESTS ONLY: C8q's one-ulp ensemble (Test/Docs' end-goal checks,
+    // "Its verdict is an ensemble's"). Each step, after the rotors' discs are
+    // spread (none without rotors) and before the fluid steps, `nudge` gets
+    // this step's velocity increments (the u, v and w faces) to move a few
+    // of them by an ulp. No host sets it. Unset, the default, a run is the
+    // same to the bit. It is not saved: a restored run starts unset. nullptr
+    // unsets it.
+    using TestIncrementNudge = void (*)(void* context, std::span<float> du, std::span<float> dv, std::span<float> dw);
+    void set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept;
+
   private:
     struct Impl;
     explicit LiveRun(std::unique_ptr<Impl> impl) noexcept;

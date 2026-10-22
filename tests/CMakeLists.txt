@@ -393,6 +393,9 @@ if(SPADE_BUILD_SANDBOX)
         # The D1 hover preview: the body in the flow, no leak, the downwash
         # with the body, the C_p legend's note, and publishing with solids.
         test_sandbox_d1_checks.cpp
+        # C8q: LiveRun's test nudge (unset, a run the same to the bit) and the
+        # ensemble judge; the 128^3 four-run record is opt-in (SPADE_C8Q).
+        test_end_goal_c8q.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
