@@ -24,6 +24,7 @@
 #include "editor_display.hpp"
 #include "editor_model_params.hpp"
 #include "editor_panels.hpp"
+#include "pilot_keys.hpp"  // kPilotKeysHelp
 #include "ui_theme.hpp"
 
 namespace spade::sandbox {
@@ -592,6 +593,38 @@ void inspect_world(ed::EditorPanels& p) {
     }
 }
 
+// While Run runs: who it flies, what the pilot holds, the keys, and the
+// buttons (N17; the lead's Q1, Q2). Nothing flown: why.
+void pilot_section(ed::EditorPanels& p) {
+    if (!p.running || !ui::section("Pilot", true)) return;
+    const ed::PilotPanel& pilot = p.pilot;
+    if (pilot.vehicle.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", pilot.why_not.c_str());
+        ImGui::PopTextWrapPos();
+        ui::gap();
+        return;
+    }
+    ImGui::Text("Flying %s, %s", pilot.vehicle.c_str(), pilot.controls.armed ? "armed" : "disarmed");
+    if (ui::begin_properties("pilot")) {
+        ui::property_row("Throttle");
+        ImGui::Text("%.0f%%", static_cast<double>(pilot.controls.throttle) * 100.0);
+        ui::property_row("Pitch, roll (\xC2\xB0)");
+        ImGui::Text("%.0f, %.0f", static_cast<double>(pilot.controls.pitch_deg),
+                    static_cast<double>(pilot.controls.roll_deg));
+        ui::property_row("Heading (\xC2\xB0)");
+        ImGui::Text("%.0f", static_cast<double>(pilot.controls.yaw_deg));
+        ui::end_properties();
+    }
+    if (ImGui::Button(pilot.controls.armed ? "Disarm" : "Arm")) p.commands.push_back(ed::Command::arm);
+    ImGui::SameLine();
+    if (ImGui::Button("Level")) p.commands.push_back(ed::Command::level);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", flight::kPilotKeysHelp);
+    ImGui::PopTextWrapPos();
+    ui::gap();
+}
+
 void inspector(ed::EditorPanels& p) {
     if (!ImGui::Begin(ui::kInspector, nullptr, ui::kPanelFlags)) {
         ImGui::End();
@@ -607,6 +640,7 @@ void inspector(ed::EditorPanels& p) {
         ImGui::End();
         return;
     }
+    pilot_section(p);
     switch (p.selection.kind) {
         case ed::Selection::Kind::none: ImGui::TextDisabled("Select an object, the scene or the world."); break;
         case ed::Selection::Kind::scene: inspect_scene(p); break;

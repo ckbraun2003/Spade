@@ -43,6 +43,7 @@
 #include "editor_run.hpp"
 #include "editor_scene_edits.hpp"
 #include "editor_world_edits.hpp"
+#include "pilot_keys.hpp"
 #include "scene/compose.hpp"
 #include "world/sdf.hpp"
 
@@ -164,6 +165,14 @@ class EditorWorkspace {
             panels_.selection.name = vehicle ? now.vehicles.back().name : now.assets.back().name;
         }
         refresh_panels();
+    }
+
+    // N17: the pilot's keys for a frame of `dt` seconds, acting only while Run
+    // flies a drone. Called every frame, with no keys held when ImGui has the
+    // keyboard, so a released arrow levels the drone.
+    void pilot_keys(const flight::PilotKeys& keys, float dt) {
+        if (!run_ || panels_.pilot.vehicle.empty()) return;
+        flight::apply_pilot_keys(keys, dt, panels_.pilot.controls);
     }
 
     // Steps the run by `dt` seconds of whole built-in steps, the remainder
@@ -483,6 +492,18 @@ class EditorWorkspace {
                 return;
             }
             case Command::save_to_library: save_selection_to_library(); return;
+            case Command::arm: {
+                flight::PilotKeys space;
+                space.arm_pressed = true;
+                pilot_keys(space, 0.0f);
+                return;
+            }
+            case Command::level: {
+                flight::PilotKeys r;
+                r.level_pressed = true;
+                pilot_keys(r, 0.0f);
+                return;
+            }
         }
     }
 

@@ -346,6 +346,7 @@ struct GlTargetSink::Impl {
     bool w_was_down = false;      // W, the gizmo's move tool
     bool e_was_down = false;      // E, its rotate tool
     bool level_was_down = false;  // R
+    bool arm_was_down = false;    // Space
     // Non-owning. The application owns the model and outlives the sink;
     // the sink only reads and writes it while drawing a panel.
     DronePanelModel* drone = nullptr;
@@ -706,6 +707,12 @@ FrameInput GlTargetSink::poll() {
         const bool level = glfwGetKey(impl_->window, GLFW_KEY_R) == GLFW_PRESS;
         in.level_pressed = level && !impl_->level_was_down;
         impl_->level_was_down = level;
+        // The editor's pilot (N17): Space arms, an edge; PageUp/PageDown move
+        // the throttle.
+        const bool arm = glfwGetKey(impl_->window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        in.arm_pressed = arm && !impl_->arm_was_down;
+        impl_->arm_was_down = arm;
+        in.throttle = held(GLFW_KEY_PAGE_UP) - held(GLFW_KEY_PAGE_DOWN);
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.

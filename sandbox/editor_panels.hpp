@@ -41,7 +41,10 @@ struct Selection {
 
 // The toolbar and the menus. Open and Save As use EditorPanels::path.
 // Save to library saves the selection (EDT-020).
-enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library };
+// arm and level act on the pilot (N17): arm toggles arming, level levels the
+// tilt setpoint.
+enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library,
+                     arm, level };
 
 struct HierarchyRow {
     Selection target;
