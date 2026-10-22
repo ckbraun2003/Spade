@@ -289,4 +289,9 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
     };
 }
 
+std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec) {
+    (void)spec;
+    return {};
+}
+
 }  // namespace spade::vehicles
