@@ -98,8 +98,17 @@ inline constexpr double kCfRowRpm = 17174.0;
 inline constexpr double kCfRowFourMotorsGrams = 28.6;
 inline constexpr double kCfTopRowRpm = 23882.0;
 inline constexpr double kCfTableHoverRpm = 17270.0;
-// The cell voltage cf_7x16_coreless's resistance was fitted at (its part file).
-inline constexpr double kCfFitCellVoltage = 3.7;
+// Bitcraze's rows as loaded (Physics, 2026-10-22). The top row is at 3.30 V
+// under load, PWM 93.75%, 4.44 A (cf_7x16_coreless's resistance is fitted
+// there), and the 17,174 rpm row at 3.67 V, PWM 56.25%, 2.11 A. The board alone
+// draws 0.24 A (the 0% row), so each motor's bus current is (I - 0.24) / 4.
+inline constexpr double kCfTopRowBusVoltage = 3.30;
+inline constexpr double kCfTopRowDuty = 0.9375;
+inline constexpr double kCfTopRowCraftCurrent = 4.44;
+inline constexpr double kCfRowBusVoltage = 3.67;
+inline constexpr double kCfRowDuty = 0.5625;
+inline constexpr double kCfRowCraftCurrent = 2.11;
+inline constexpr double kCfBoardCurrent = 0.24;
 // Kat's curve (competition-700.airframe.json, thrust_curve): its hover point,
 // norm 0.264 at 9.712 m/s^2, and motor.thrust_per_motor, derived from its
 // peak.
@@ -837,7 +846,13 @@ struct FitTargets {
         std::array<double, 2>{-0.10, 0.10}, false});
     n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfTopRowRpm, "rpm",
                                   cite(Grade::measured, kCfThrust,
-                                       "full duty at 3.7 V: the fit's own point (R was fitted here), not independent"),
+                                       "duty 0.9375 at the state of charge whose loaded bus reads 3.30 V: the top "
+                                       "row R was fitted to, so it closes the fit's loop, not an independent check"),
+                                  std::nullopt, true});
+    n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfRowRpm, "rpm",
+                                  cite(Grade::measured, kCfThrust,
+                                       "duty 0.5625 at the state of charge whose loaded bus reads 3.67 V: the "
+                                       "17,174 rpm row"),
                                   std::nullopt, true});
     n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfTopRowRpm, "rpm",
                                   cite(Grade::measured, kCfThrust, "full duty at SoC 1: full pack"), std::nullopt,

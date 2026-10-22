@@ -421,10 +421,12 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
 [[nodiscard]] MotorPart cf_7x16_coreless() {
     MotorPart m;
     PART_FIELD(m, kv, 14000.0, cite(Grade::retailer, kCfMotor));
-    PART_FIELD(m, resistance, 1.6,
+    // (0.9375 x 3.30 - 23882 / 14000) / 1.12 - 0.05 (the ESC's on-resistance)
+    // = 1.189 (Physics, 2026-10-22).
+    PART_FIELD(m, resistance, 1.19,
                cite(Grade::fitted, kCfThrust,
-                    "fitted so full duty at 3.7 V gives about 24,300 rpm at 1.19 A against Bitcraze's top row, "
-                    "23,882 rpm"));
+                    "fitted to Bitcraze's top row: its loaded 3.30 V, duty 0.9375, the motors' current net of the "
+                    "board's 0.24 A, as winding current (bus/duty)"));
     PART_FIELD(m, no_load_current, 0.06, assumed("typical 7x16 coreless, 50-100 mA"));
     PART_FIELD(m, no_load_voltage, 3.7, assumed("1S nominal"));
     PART_FIELD(m, current_max, 1.5, assumed("above its ~1.2 A full-throttle draw"));

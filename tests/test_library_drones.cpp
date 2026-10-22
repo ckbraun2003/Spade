@@ -278,17 +278,24 @@ constexpr std::uint32_t kLimitFlags = pf::duty_clamped | pf::current_limited | p
                                       pf::battery_current_limited | pf::battery_cutoff | pf::battery_empty |
                                       pf::unreachable | pf::no_bracket | pf::esc_total_limited;
 
-// The state of charge at which a cell's OCV table reads `volts`, by linear
-// interpolation (report-only use).
-[[nodiscard]] double soc_at_cell_voltage(const std::vector<std::array<double, 2>>& ocv, double volts) {
-    for (std::size_t i = 1; i < ocv.size(); ++i) {
-        const double v0 = ocv[i - 1][1];
-        const double v1 = ocv[i][1];
-        if (volts >= v0 && volts <= v1 && v1 > v0) {
-            return ocv[i - 1][0] + (volts - v0) / (v1 - v0) * (ocv[i][0] - ocv[i - 1][0]);
+// The state of charge at which the chain's LOADED bus reads `volts` at `duty`,
+// by bisection, since the bus voltage rises with the state of charge
+// (report-only use). Outside the pack's range it lands at the nearer end, so
+// the caller reports the bus voltage it reached.
+[[nodiscard]] double soc_at_loaded_bus(const spade::vehicles::PropulsionChain& chain, double duty, double density,
+                                       double volts) {
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int i = 0; i < 60; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        const SteadyPoint p = spade::vehicles::steady_state_at_duty(chain, duty, density, 0.0, mid);
+        if (p.bus_voltage < volts) {
+            lo = mid;
+        } else {
+            hi = mid;
         }
     }
-    return 1.0;
+    return 0.5 * (lo + hi);
 }
 
 // The standard report of a model's hover and full duty (the draft's "Report
@@ -882,8 +889,10 @@ TEST(LibraryDrones, IrisPlusHoversAtNasasBaselineRpm) {
 // whole craft's 28.6 g: by hand 7.78 g against 7.15 g, +8.8%, inside the
 // UNWIDENED +-10%. UIUC measured an isolated prop and Bitcraze weighed the
 // whole craft (Physics, 2026-10-22). Report only: the hover rpm against the
-// table's 17,270, and full duty at 3.7 V (the fit's own point, since R was
-// fitted there, so not independent) and at SoC 1 (full pack).
+// table's 17,270; the two loaded rows, each at its own duty and at the state
+// of charge whose loaded bus reads its voltage (the top row is R's own fit
+// point, so it closes the loop, not an independent check); and full duty at
+// SoC 1 (full pack).
 TEST(LibraryDrones, CrazyflieMatchesBitcrazesThrustTable) {
     const spade::Result<Committed> lib = committed_library();
     ASSERT_OK(lib);
@@ -913,15 +922,65 @@ TEST(LibraryDrones, CrazyflieMatchesBitcrazesThrustTable) {
     report("crazyflie_hover_rpm", hover_rpm, "own mass; Bitcraze's table gives about 17,270 (hand -4.0%)");
     report("crazyflie_hover_rpm_vs_table", (hover_rpm - ld::kCfTableHoverRpm) / ld::kCfTableHoverRpm, "relative");
     const std::vector<const ModelCheck*> reported = report_checks(drone->notes, "CrazyflieMatchesBitcrazesThrustTable");
-    EXPECT_EQ(reported.size(), 2u) << "full duty at 3.7 V and at SoC 1, both report-only";
-    const double soc_fit = soc_at_cell_voltage(s.battery.ocv_table, ld::kCfFitCellVoltage);
-    const SteadyPoint at_fit = spade::vehicles::steady_state_at_duty(*m.propulsion, 1.0, s.air_density, 0.0, soc_fit);
-    report("crazyflie_full_rpm_at_3v7", rpm_of(at_fit.omega),
-           "the fit's own point (R was fitted here), not independent; Bitcraze's top row 23,882 (hand about 24,300)");
-    report("crazyflie_full_current_at_3v7", at_fit.current, "A per motor (the fit's 1.19)");
+    EXPECT_EQ(reported.size(), 3u) << "the two loaded rows and full duty at SoC 1, all report-only";
+    const spade::vehicles::PropulsionChain& chain = *m.propulsion;
+    const double motors = static_cast<double>(chain.motors_on_bus);
+    struct LoadedRow {
+        std::string key;
+        double duty;
+        double bus_voltage;
+        double rpm;
+        double craft_current;
+    };
+    const std::array<LoadedRow, 2> rows{{
+        {"crazyflie_top_row", ld::kCfTopRowDuty, ld::kCfTopRowBusVoltage, ld::kCfTopRowRpm, ld::kCfTopRowCraftCurrent},
+        {"crazyflie_17174_row", ld::kCfRowDuty, ld::kCfRowBusVoltage, ld::kCfRowRpm, ld::kCfRowCraftCurrent},
+    }};
+    for (const LoadedRow& row : rows) {
+        const double soc = soc_at_loaded_bus(chain, row.duty, s.air_density, row.bus_voltage);
+        const SteadyPoint p = spade::vehicles::steady_state_at_duty(chain, row.duty, s.air_density, 0.0, soc);
+        const double rpm = rpm_of(p.omega);
+        report(row.key + "_soc", soc, "the state of charge whose loaded bus reads the row's voltage");
+        report(row.key + "_bus_voltage", p.bus_voltage, "V, loaded, against the row's");
+        report(row.key + "_rpm", rpm, "at the row's duty");
+        report(row.key + "_rpm_vs_row", (rpm - row.rpm) / row.rpm, "relative, against the row's rpm");
+        report(row.key + "_bus_current_per_motor", p.pack_current / motors, "A, the pack's over its motors");
+        report(row.key + "_row_bus_current_per_motor", (row.craft_current - ld::kCfBoardCurrent) / 4.0,
+               "A, the row's (I - 0.24 A for the board) / 4");
+        report(row.key + "_winding_current", p.current, "A per motor");
+        report(row.key + "_flags", static_cast<double>(p.flags), "propulsion_flags");
+    }
     const SteadyPoint full = spade::vehicles::steady_state_at_duty(*m.propulsion, 1.0, s.air_density, 0.0, 1.0);
     report("crazyflie_full_rpm_at_soc1", rpm_of(full.omega), "full pack; Bitcraze's top row 23,882 (hand 24,757)");
     report("crazyflie_tau", static_cast<double>(m.rotors[0].tau), "s (hand 63 ms)");
+}
+
+// Physics' precondition for the refit (2026-10-22): the chain's pack current is
+// the sum over its motors of duty x winding current, so the fit's bus / duty
+// reading and the chain agree on which current is which. A chain summing the
+// winding currents without the duty fails both expectations: below full duty
+// the pack carries less than the windings (6.25% less at the top row's duty,
+// 43.75% at the 17,174 rpm row's).
+TEST(LibraryDrones, CrazyfliesPackCurrentIsTheSumOfDutyTimesWindingCurrent) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, "crazyflie_class");
+    ASSERT_OK(drone);
+    const spade::Result<ModelFile> file = drone_model(lib->library, "crazyflie_class");
+    ASSERT_OK(file);
+    ASSERT_TRUE(file->model.propulsion.has_value());
+    const spade::vehicles::PropulsionChain& chain = *file->model.propulsion;
+    ASSERT_EQ(chain.motors_on_bus, 4u);
+    const double density = drone->spec.air_density;
+    for (const auto& [duty, volts] : {std::pair{ld::kCfRowDuty, ld::kCfRowBusVoltage},
+                                      std::pair{ld::kCfTopRowDuty, ld::kCfTopRowBusVoltage}}) {
+        const double soc = soc_at_loaded_bus(chain, duty, density, volts);
+        const SteadyPoint p = spade::vehicles::steady_state_at_duty(chain, duty, density, 0.0, soc);
+        const double sum = 4.0 * p.duty * p.duty_scale * p.current;
+        EXPECT_NEAR(p.pack_current, sum, 1e-12 * sum) << "duty " << duty << ", flags " << p.flags;
+        EXPECT_LT(p.pack_current, 4.0 * p.current)
+            << "duty " << duty << ": below full duty the pack carries less than the windings";
+    }
 }
 
 // REPORT-ONLY (Physics, 2026-10-22): 4 x the full-duty thrust over m g, which
