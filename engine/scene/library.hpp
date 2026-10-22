@@ -34,6 +34,13 @@
 // any other key. Version 2 adds only the part kinds, so a version 1 index
 // reads as it always did.
 //
+// WRITING. library_to_yaml() writes an index's canonical text, for a project's
+// own library (Save to library, EDT-020): the lowest version that holds its
+// entries (1, or 2 when any is a part), each entry's keys in the order above,
+// every string double-quoted, a thumbnail only when the entry has one. What it
+// writes, library_from_yaml() reads back equal, so it refuses what the reader
+// would refuse.
+//
 // THE SOURCES. A library with part entries cites its sources from the
 // registry beside its index, sources.yaml (scene/library_sources.hpp):
 // load_library_sources() reads it, and load_library_part() checks a part's
@@ -106,6 +113,16 @@ struct Library {
 // else -- every rule of THE TEXT above, each with its dotted path and its
 // line and column. `dir` is empty.
 [[nodiscard]] Result<Library> library_from_yaml(std::string_view text);
+
+// Library -> text: the index's canonical form (WRITING), a pure function of
+// the entries; `dir` is not written, since it is where the text is saved. It
+// reads back through library_from_yaml() to entries equal field for field, or
+// it is refused (invalid_argument, "library_to_yaml: " then the entry's
+// dotted path): every entry the reader refuses, in the reader's own words
+// less their line and column (the written text's, which the caller never
+// sees), and an entry whose kind is not its file's extension's. internal if
+// the reader itself fails on the text.
+[[nodiscard]] Result<std::string> library_to_yaml(const Library& library);
 
 // Reads the index at `path` and runs library_from_yaml(), then checks the
 // disk: each entry's file exists, and a thumbnail the entry NAMES exists (the

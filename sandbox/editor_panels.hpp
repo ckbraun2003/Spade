@@ -39,7 +39,8 @@ struct Selection {
 };
 
 // The toolbar and the menus. Open and Save As use EditorPanels::path.
-enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item };
+// Save to library saves the selection (EDT-020).
+enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library };
 
 struct HierarchyRow {
     Selection target;
@@ -59,7 +60,7 @@ struct EditorPanels {
     bool can_undo = false;
     bool can_redo = false;
     std::vector<HierarchyRow> hierarchy;      // the scene, the world, then its assets and vehicles in order
-    std::vector<LibraryItem> library;         // the default library (INT-14), then what Load from file added
+    std::vector<LibraryItem> library;         // the default (INT-14), the project's, then Load from file's
     std::vector<std::string> library_problems;  // what of the library would not load, verbatim
     uint64_t library_generation = 0;          // bumped whenever `library` changes
     // The window's: each library item's thumbnail as a texture (0: none),
