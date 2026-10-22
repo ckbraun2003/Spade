@@ -421,10 +421,12 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
 [[nodiscard]] MotorPart cf_7x16_coreless() {
     MotorPart m;
     PART_FIELD(m, kv, 14000.0, cite(Grade::retailer, kCfMotor));
-    PART_FIELD(m, resistance, 1.6,
+    // (0.9375 x 3.30 - 23882 / 14000) / 1.12 - 0.05 (the ESC's on-resistance)
+    // = 1.189 (Physics, 2026-10-22).
+    PART_FIELD(m, resistance, 1.19,
                cite(Grade::fitted, kCfThrust,
-                    "fitted so full duty at 3.7 V gives about 24,300 rpm at 1.19 A against Bitcraze's top row, "
-                    "23,882 rpm"));
+                    "fitted to Bitcraze's top row: its loaded 3.30 V, duty 0.9375, the motors' current net of the "
+                    "board's 0.24 A, as winding current (bus/duty)"));
     PART_FIELD(m, no_load_current, 0.06, assumed("typical 7x16 coreless, 50-100 mA"));
     PART_FIELD(m, no_load_voltage, 3.7, assumed("1S nominal"));
     PART_FIELD(m, current_max, 1.5, assumed("above its ~1.2 A full-throttle draw"));
@@ -599,7 +601,13 @@ void set_no_polarization(BatteryPart& b) {
     PART_FIELD(b, cells_parallel, 1u, assumed(kOneParallel));
     PART_FIELD(b, cell_capacity, 0.25, cite(Grade::published, kCfDatasheet));
     PART_FIELD(b, cell_resistance, 0.08, assumed("typical 250 mAh cell"));
-    set_lipo_cell(b);
+    // set_lipo_cell()'s, but for the cutoff: a 3.3 V cutoff is a resting
+    // figure, and under load a 1S cell sits below it, as Bitcraze's top row
+    // ran at 3.30 V loaded (Physics, 2026-10-22).
+    PART_FIELD(b, cell_voltage_nominal, 3.7, assumed(kLipoNominal));
+    PART_FIELD(b, cell_voltage_full, 4.2, assumed(kLipoFull));
+    PART_FIELD(b, cell_voltage_cutoff, 3.0, assumed("below the 3.30 V Bitcraze's top row ran at, loaded"));
+    PART_FIELD(b, ocv_table, lipo_ocv(), assumed(kLipoOcv));
     PART_FIELD(b, c_rating, 20.0, assumed("5 A covers ~4.8 A"));
     set_no_polarization(b);
     PART_FIELD(b, mass, 0.0072, assumed("typical 1S 250 mAh with lead"));
@@ -917,12 +925,15 @@ TEST(LibraryParts, NoAssumedNumberIsGradedAsMeasured) {
     }
 }
 
-// The basic quad's motor, ESC and pack files are basic_quad_airframe()'s
-// defaults (L3), field for field: each is emitted from the default block with
-// the file's own citations, and must be the file's bytes. Only what a part
-// file does not carry is taken from the file: the ESC's and the pack's mount
-// (the drone's, L5), and the ESC's box (added for its thumbnail, L4). The
-// review of L4 (2026-10-22): without this they could drift before L5.
+// The basic quad's motor, propeller, ESC and pack files ARE
+// basic_quad_airframe()'s defaults, field for field (L3; L5, the lead's
+// ruling, 2026-10-22): each is emitted from the default block with the file's
+// own citations, and must be the file's bytes. Only what one side does not
+// carry is taken from the file: the ESC's and the pack's mount (a part file
+// carries none; the drone's, L5), and the propeller's blade stations (a
+// PropBlock carries none; the model does not read them). The ESC's box is the
+// default's own now, not the file's. The review of L4 (2026-10-22): without
+// this they could drift.
 TEST(LibraryParts, TheBasicQuadsPartsAreItsDefaults) {
     const spade::Result<spade::vehicles::AirframeSpec> spec =
         spade::vehicles::basic_quad_airframe(spade::vehicles::BasicQuadParams{});
@@ -941,16 +952,30 @@ TEST(LibraryParts, TheBasicQuadsPartsAreItsDefaults) {
     ASSERT_OK(m_default);
     EXPECT_EQ(*m_default, *sc::part_to_yaml(*motor)) << "fpv_2306_1700kv is basic_quad's default motor";
 
+    const spade::Result<PartFile> prop = load("triblade_6inch_scaled.prop.yaml");
+    ASSERT_OK(prop);
+    const PropPart* pr = std::get_if<PropPart>(&*prop);
+    ASSERT_NE(pr, nullptr);
+    ASSERT_TRUE(pr->blade.has_value()) << "the stand-in carries mit_5x4's stations";
+    // Not fatal: a default that has drifted from its file may not emit at all,
+    // and the ESC below is still compared.
+    const spade::Result<std::string> p_text = sc::part_to_yaml(PartFile{PropPart{spec->prop, pr->blade, pr->sources}});
+    EXPECT_OK(p_text) << "triblade_6inch_scaled is basic_quad's default propeller";
+    if (p_text) {
+        EXPECT_EQ(*p_text, *sc::part_to_yaml(*prop)) << "triblade_6inch_scaled is basic_quad's default propeller";
+    }
+
     const spade::Result<PartFile> esc = load("basic_4in1_45a.esc.yaml");
     ASSERT_OK(esc);
     const EscPart* e = std::get_if<EscPart>(&*esc);
     ASSERT_NE(e, nullptr);
     EscPart e_default{spec->esc, e->sources};
     e_default.block.mount = e->block.mount;
-    e_default.block.shape = e->block.shape;
     const spade::Result<std::string> e_text = sc::part_to_yaml(PartFile{e_default});
-    ASSERT_OK(e_text);
-    EXPECT_EQ(*e_text, *sc::part_to_yaml(*esc)) << "basic_4in1_45a is basic_quad's default ESC";
+    EXPECT_OK(e_text) << "basic_4in1_45a is basic_quad's default ESC";
+    if (e_text) {
+        EXPECT_EQ(*e_text, *sc::part_to_yaml(*esc)) << "basic_4in1_45a is basic_quad's default ESC";
+    }
 
     const spade::Result<PartFile> pack = load("fpv_6s_1300.battery.yaml");
     ASSERT_OK(pack);

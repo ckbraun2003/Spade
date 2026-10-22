@@ -58,7 +58,9 @@
 //                        axis
 //   "inertia"            a remainder tensor the composite's own checks
 //                        refuse (one that breaks the triangle inequality)
-// Its error names the field, the target and the parts' value.
+// Its error names the field, the target and the parts' value. The rule is
+// fit_remainder(), public so any spec's remainder uses it, the Crazyflie's
+// among them (the lead's ruling, 2026-10-22; TD-9).
 //
 // THE ADVISORIES. basic_quad_advisories() names what compiles but its user
 // should see: each pair of rotor discs whose hubs are closer than the
@@ -90,7 +92,8 @@
 namespace spade::vehicles {
 
 // Every default is the 6-inch basic quad's, and every one is assumed
-// (basic_quad_assumptions()) until Task L5 cites a part for it.
+// (basic_quad_assumptions()). The blocks' defaults ARE the library's part
+// files (L5, the lead's ruling, 2026-10-22), as below.
 struct BasicQuadParams {
     std::string name = "basic_quad";
 
@@ -109,8 +112,13 @@ struct BasicQuadParams {
     double arm_radius = 0.006;          // m: a 12 mm tube, 3 cells at 4 mm
     double arm_mass_per_metre = 0.15;   // kg/m
 
-    // The blocks. Their defaults stand for a 2306 1700 KV motor, a 6x3.5x3
-    // propeller, a 45 A 4-in-1 ESC and a 6S 1300 mAh pack.
+    // The blocks: a 2306 1700 KV motor, a 6x3.5x3 propeller, a 45 A 4-in-1
+    // ESC and a 6S 1300 mAh pack. Each is its library part file, field for
+    // field (fpv_2306_1700kv, triblade_6inch_scaled, basic_4in1_45a,
+    // fpv_6s_1300; tests/test_library_parts.cpp pins them), but for what a
+    // block or a file does not carry: the pack's mount, which is the drone's,
+    // and the propeller's blade stations. The propeller is the tri-blade
+    // stand-in, its tables the L4a header's bit for bit.
     MotorBlock motor = default_motor();
     PropBlock prop = default_prop();
     EscBlock esc = default_esc();
@@ -135,6 +143,16 @@ struct BasicQuadParams {
 // comes back unchanged. Otherwise the compile's rules are left to
 // compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
+
+// THE FIT, for any spec: the `remainder` record that brings `spec`'s parts to
+// `mass` and, with `inertia`, to that diagonal about their centre of mass, in
+// design axes. It is mass only (geometry source none), a point without
+// `inertia` and a tensor with it, at the parts' centre of mass as the compile
+// reports it; the caller appends it to spec.parts. `spec` is compiled once to
+// measure it, so the compile's own refusal comes back unchanged. Otherwise
+// invalid_argument for a non-finite target and the refusals of THE FIT.
+[[nodiscard]] Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass,
+                                                const std::optional<glm::dvec3>& inertia = std::nullopt);
 
 // One default the basic quad assumes: the field's path in BasicQuadParams
 // ("half_span_x", "motor.kv") and why the value is plausible.

@@ -1,7 +1,7 @@
 part_version: 1
 motor:
   kv: 14000
-  resistance: 1.6
+  resistance: 1.19
   no_load_current: 0.06
   no_load_voltage: 3.7
   current_max: 1.5
@@ -13,7 +13,7 @@ motor:
   shape: {kind: cylinder, size: [0.0035, 0.016, 0]}
 sources:
   kv: {source: "retail_cf_motor", grade: retailer}
-  resistance: {source: "bitcraze_pwm_thrust", grade: fitted, note: "fitted so full duty at 3.7 V gives about 24,300 rpm at 1.19 A against Bitcraze's top row, 23,882 rpm"}
+  resistance: {source: "bitcraze_pwm_thrust", grade: fitted, note: "fitted to Bitcraze's top row: its loaded 3.30 V, duty 0.9375, the motors' current net of the board's 0.24 A, as winding current (bus/duty)"}
   no_load_current: {grade: assumed, note: "typical 7x16 coreless, 50-100 mA"}
   no_load_voltage: {grade: assumed, note: "1S nominal"}
   current_max: {grade: assumed, note: "above its ~1.2 A full-throttle draw"}

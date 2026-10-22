@@ -996,6 +996,7 @@ add_library(spade_scene STATIC
     scene/library.cpp
     scene/library_sources.cpp
     scene/model_file.cpp
+    scene/model_sources.cpp
     scene/object_file.cpp
     scene/part_file.cpp
     scene/scene_file.cpp

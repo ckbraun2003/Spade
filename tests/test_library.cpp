@@ -278,8 +278,10 @@ const glm::vec3 kSelectionAccent{0.29f, 0.56f, 0.89f};
 }
 
 // THE INDEX the committed library.yaml must read as, in order: the reference
-// quad first (N4's model file, tests/test_library_quad.cpp pins it), then the
-// content table's objects.
+// quad first (N4's model file, tests/test_library_quad.cpp pins it), then L5's
+// six drones, so the drones category stays together
+// (tests/test_library_drones.cpp pins them), then the content table's
+// objects, then L4's parts.
 struct IndexRow {
     std::string_view name;
     std::string_view category;
@@ -290,6 +292,14 @@ struct IndexRow {
 [[nodiscard]] std::vector<IndexRow> expected_index() {
     std::vector<IndexRow> out;
     out.push_back({"Reference quad", "drones", "drones/reference_quad.model.yaml", LibraryKind::model});
+    // L5's drones, in the L5 draft's names (Interface owns the category).
+    out.push_back({"Phantom 3-class quad", "drones", "drones/phantom3_class.model.yaml", LibraryKind::model});
+    out.push_back({"Iris+-class quad", "drones", "drones/iris_plus_class.model.yaml", LibraryKind::model});
+    out.push_back({"5-inch FPV quad", "drones", "drones/fpv_5inch.model.yaml", LibraryKind::model});
+    out.push_back({"Crazyflie-class micro", "drones", "drones/crazyflie_class.model.yaml", LibraryKind::model});
+    out.push_back({"Basic quad, 6-inch", "drones", "drones/basic_quad_6inch.model.yaml", LibraryKind::model});
+    out.push_back({"Basic quad, competition", "drones", "drones/basic_quad_competition.model.yaml",
+                   LibraryKind::model});
     for (const ObjectRow& row : content_table()) {
         out.push_back({row.name, row.category, row.file, LibraryKind::object});
     }

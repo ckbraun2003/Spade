@@ -6,7 +6,7 @@ battery:
   cell_resistance: 0.08
   cell_voltage_nominal: 3.7
   cell_voltage_full: 4.2
-  cell_voltage_cutoff: 3.3
+  cell_voltage_cutoff: 3
   ocv_table:
     - [0, 3.3]
     - [0.2, 3.6]
@@ -25,7 +25,7 @@ sources:
   cell_resistance: {grade: assumed, note: "typical 250 mAh cell"}
   cell_voltage_nominal: {grade: assumed, note: "LiPo nominal"}
   cell_voltage_full: {grade: assumed, note: "LiPo full"}
-  cell_voltage_cutoff: {grade: assumed, note: "a usual LiPo cutoff"}
+  cell_voltage_cutoff: {grade: assumed, note: "below the 3.30 V Bitcraze's top row ran at, loaded"}
   ocv_table: {grade: assumed, note: "the chain's current LiPo shape (ruling 8)"}
   c_rating: {grade: assumed, note: "5 A covers ~4.8 A"}
   polarization_resistance: {grade: assumed, note: "not modelled (0)"}

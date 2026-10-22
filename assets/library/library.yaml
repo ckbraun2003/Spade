@@ -41,6 +41,36 @@ entries:
     file: "drones/reference_quad.model.yaml"
     thumbnail: "thumbnails/reference_quad.png"
 
+  - name: "Phantom 3-class quad"
+    category: "drones"
+    file: "drones/phantom3_class.model.yaml"
+    thumbnail: "thumbnails/phantom3_class.png"
+
+  - name: "Iris+-class quad"
+    category: "drones"
+    file: "drones/iris_plus_class.model.yaml"
+    thumbnail: "thumbnails/iris_plus_class.png"
+
+  - name: "5-inch FPV quad"
+    category: "drones"
+    file: "drones/fpv_5inch.model.yaml"
+    thumbnail: "thumbnails/fpv_5inch.png"
+
+  - name: "Crazyflie-class micro"
+    category: "drones"
+    file: "drones/crazyflie_class.model.yaml"
+    thumbnail: "thumbnails/crazyflie_class.png"
+
+  - name: "Basic quad, 6-inch"
+    category: "drones"
+    file: "drones/basic_quad_6inch.model.yaml"
+    thumbnail: "thumbnails/basic_quad_6inch.png"
+
+  - name: "Basic quad, competition"
+    category: "drones"
+    file: "drones/basic_quad_competition.model.yaml"
+    thumbnail: "thumbnails/basic_quad_competition.png"
+
   - name: "Box"
     category: "primitives"
     file: "primitives/box.object.yaml"
