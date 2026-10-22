@@ -1,6 +1,12 @@
 # Exact fp32 division and sqrt in fp32_math.slang: Core's plan (2026-10-22)
 
-The lead gave the go on 2026-10-22, relaying Cameron's choice of the estimate forms and his restated E1/E2 (backlog 81dedfb). This plan awaits the lead's grants on the files in section 3 before any build.
+The lead gave the go on 2026-10-22, relaying Cameron's choice of the estimate forms and his restated E1/E2 (backlog 81dedfb). The lead APPROVED it on 2026-10-22 and ruled:
+
+- **Grants.** spirv_scan.hpp, the test_slang_layouts.cpp comments and 00-decisions' "in effect" are Test/Docs' edits, with Core reviewing the scan. Core edits Physics' three gnss comments, and Physics reads the diff. The device gate is Rendering's to run, with Core's ops on its probe.
+- **(a)** core/exact-div-sqrt is cut on top of test-docs/e1e2-taint (c49c0b4), so the GREEN gates with the scan in place. The lead merges the scan first, then this branch, in the same batch.
+- **(b)** The branch gets its own seeded leg: the proof's MXCSR intrinsics on gcc-13 need their own run.
+- **(c)** tests/flush_subnormals.hpp now. If Physics later promotes the scope into engine/ for the CPU flush, it MOVES (TD-9).
+- **(d)** The GPU label goes through jobrun's gpu class: nothing queued after 23:45Z and none while Cameron is gaming. Correctness suites may run beside other GPU work; any timing test runs alone.
 
 Built from Rendering's `exact_fp32.slang` @ f71252b, its device battery and its numpy model. Rules: E1/E2 as restated (81dedfb, c79b1b4). Branch: `core/exact-div-sqrt` off master, in `spade-wt/core-2` (basic-quad-b is merged and the tree is clean).
 
