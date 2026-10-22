@@ -76,6 +76,24 @@ gcc-13.3 reproduced the planar Couette (5.624e-8, and the control's 6.459e-2) an
 
 S2 checks the solution, not the wall treatment. It passes at 16 with the viscous wall links (0.0052) and without them (0.0602). The planar Couette check is the one that tells the treatments apart.
 
+**P3** (the wall load and Publish beside the solids, 2026-10-22, CPU reference, MSVC 19.43 release, records at `f4ddf75`, merged at `cf83678`; tolerances in `docs/design/test-docs/2026-10-13-solids-tolerances.md`, fixed before the first run, except where marked `TD-2`):
+
+| Case | Measure | Result | Tolerance | Verdict | Record |
+|---|---|---|---|---|---|
+| S1 sphere in a uniform stream, R/dx 6 (in the gate) and 12 (opt-in) | the added mass C_M = F_x h / (ρ V U) from `wall_load()`, step 1 from cold | 0.4915; 0.4957 | 0.5 ± 0.24; 0.5 ± 0.12 | within | `s1-sphere.md` |
+| S1, the same | max \|C_p − C_p,pot\| over 52 samples one cell out along the normal, step 3 | 0.0813; 0.0449 | ≤ 0.32; ≤ 0.2 | within | `s1-sphere.md` |
+| S1, the same | the drag \|F_x\| / (½ ρ U² π R²) from `wall_load()`, step 3, at U h/dx 0.1 and 0.05 | 0.0612 and 0.0390; 0.0423 and 0.0363 | none (`TD-2`: the lead's ruling, 2026-10-22, `d2d03ed`; a floor c₀ of about 0.02 at R/dx 6 and 0.03 at 12 has no root cause yet, P3c) | report only | `s1-sphere.md` |
+| S1, the same | the side forces max(\|F_y\|, \|F_z\|) / (½ ρ U² π R²), step 3 | 6.70e-7; 3.21e-5 | ≤ 0.01 | within | `s1-sphere.md` |
+| S1, the same | the worse of steps 1 and 3's final relative residuals | 3.509e-6; 1.189e-5 | ≤ 1e-4 | within | `s1-sphere.md` |
+| S1, the order check (opt-in) | e(12) / e(6) for C_p at the fixed radius 7R/6 (e(6) 0.0813, e(12) 0.0375) | 0.461 | ≤ 0.7 | within | `s1-sphere.md` |
+| S3 sheet across a channel, an even plane and an odd one (in the gate) | P3's force on the sheet, F h / (ρ U L A) from `wall_load()` | 0.968752 and 0.968751 | 1 ± 0.033 | within | `s3-sheet.md` |
+| S5 Publish beside a sheet (in the gate) | max \|\|ω\| − S\| / S, and max \|q̂\| / S, over the 128 cells next to the sheet | 0; 0 | ≤ 1e-3 each | within | `s5-publish-sheet.md` |
+
+- **The steps, and `T_p`:** every P3 measure is read at steps 1 to 3 from a cold start (S1), after one projection (S3), or with no step (S5). That is inside any horizon, so a single run carries each verdict (01-verification, "A case judged past its horizon").
+- **The drag:** the drag rows carry no claim below the floor. The grade row above names the floor as P3's known limit.
+- **The gcc leg:** P3's gcc-13.3 leg at `4fe3977` passed, 2201 passed and 0 failed.
+- **S3:** its closed faces, max \|u\| / U and pressure step are P2's rows, unchanged at `f4ddf75`.
+
 ## Writing a physics test
 
 - Derive the expected value from the model's equations, in double. A transcription of the implementation into the test agrees with the implementation's bugs.
