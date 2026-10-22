@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/fpv_5inch.model.yaml", hash: "bebb5c6843302ca4"}
 built_by: "tests/library_drones.hpp: fpv_5inch(), a direct AirframeSpec"
 parts:
-  prop: {file: "parts/uiuc_mit_5x4.prop.yaml", hash: "665c185d0fe4d963"}
+  prop: {file: "parts/uiuc_mit_5x4.prop.yaml", hash: "f6716f98949756c1"}
   motor: {file: "parts/fpv_2207_1855kv.motor.yaml", hash: "15dc2c64200a0e6a"}
   esc: {file: "parts/fpv_4in1_45a.esc.yaml", hash: "4e628a989f2cf9c2"}
   battery: {file: "parts/fpv_6s_1300.battery.yaml", hash: "e19fd67ad9238347"}

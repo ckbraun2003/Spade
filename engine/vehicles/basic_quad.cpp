@@ -121,7 +121,6 @@ PropBlock BasicQuadParams::default_prop() {
     p.diameter = 0.1524;
     p.pitch = 0.0889;
     p.blades = 3;
-    p.inertia = 0.0;
     p.ct_static = 0.18147428896905915;
     p.cq_static = 0.018923916207378596;
     p.ct_table = {{0.0, 0.18147428896905915}, {0.05, 0.18201184989635935}, {0.1, 0.18182731382170575},
@@ -139,6 +138,10 @@ PropBlock BasicQuadParams::default_prop() {
                   {0.75, 0.006412361581935726}, {0.8, 0.004945488492696708}, {0.85, 0.003424586492792064},
                   {0.9, 0.0020542645321587113}};
     p.mass = 0.0064;
+    // The compile's own estimate, prop_inertia()'s m D^2 / 12, written out as
+    // the part file writes it, so it is that double exactly (the lead,
+    // 2026-10-22: a 0 read as no inertia).
+    p.inertia = p.mass * p.diameter * p.diameter / 12.0;
     return p;
 }
 

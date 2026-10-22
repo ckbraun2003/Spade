@@ -3,7 +3,7 @@ prop:
   diameter: 0.1524
   pitch: 0.0889
   blades: 3
-  inertia: 0
+  inertia: 1.2387072e-05
   ct_static: 0.18147428896905915
   cq_static: 0.018923916207378596
   ct_table:
@@ -57,7 +57,7 @@ sources:
   diameter: {source: "retail_fpv_parts", grade: retailer, note: "HQProp DP 6x3.5x3"}
   pitch: {source: "retail_fpv_parts", grade: retailer, note: "3.5 in"}
   blades: {source: "retail_fpv_parts", grade: retailer}
-  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  inertia: {source: "retail_fpv_parts", grade: derived, note: "m D^2/12 from this file's mass and diameter: the engine's own estimate (prop_inertia)"}
   ct_static: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
   cq_static: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
   ct_table: {source: "uiuc_propdb", grade: assumed, note: "stand-in, derived and assumed: tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule. The mass is basic_quad_airframe()'s parts at its defaults, about 0.602 kg. Its run is below its hover (the comment gives the Reynolds ratio), and hover lies above the static file's top (6396 rpm), so the effect at hover is unmeasured, but expected to be small: the static C_T stays flat within +/-2.5% over the 4x rpm range below it (Physics, 2026-10-22)"}
