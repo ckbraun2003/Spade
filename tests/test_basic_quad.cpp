@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -136,6 +137,8 @@ TEST(BasicQuad, TheDefaultsCompile) {
         "battery.cell_voltage_nominal", "battery.cell_voltage_full", "battery.cell_voltage_cutoff",
         "battery.ocv_table", "battery.c_rating", "battery.polarization_resistance",
         "battery.polarization_capacitance", "battery.mass", "battery.mount", "battery.shape",
+        // Last, what the model assumes of every basic quad (Physics, via the lead).
+        "rotors",
     };
     const std::vector<spade::vehicles::BasicQuadAssumption> assumed = spade::vehicles::basic_quad_assumptions();
     ASSERT_EQ(assumed.size(), expected.size());
@@ -143,6 +146,8 @@ TEST(BasicQuad, TheDefaultsCompile) {
         EXPECT_EQ(assumed[i].field, expected[i]) << i;
         EXPECT_FALSE(assumed[i].note.empty()) << assumed[i].field;
     }
+    EXPECT_TRUE(contains(assumed.back().note, "shared wake")) << assumed.back().note;
+    EXPECT_TRUE(contains(assumed.back().note, "neighbour's induced inflow")) << assumed.back().note;
 }
 
 TEST(BasicQuad, TheCompiledBodyMeetsAFittedMassAndInertiaExactly) {
@@ -260,6 +265,19 @@ TEST(BasicQuad, AFittedKappaSetsCqStaticAndScalesTheTables) {
     torque_only.prop.cq_table = {{0.0, 0.008}, {0.8, 0.004}};
     expect_refused(spade::vehicles::basic_quad_airframe(torque_only), {"kappa", "prop.cq_table", "ct_table"});
 
+    // A thrust table alone: kappa fills in the torque table from it.
+    BasicQuadParams thrust_only = p;
+    thrust_only.prop.ct_table = {{0.0, 0.12}, {0.8, 0.04}};
+    const spade::Result<AirframeSpec> filled = spade::vehicles::basic_quad_airframe(thrust_only);
+    ASSERT_TRUE(filled.has_value()) << filled.error().context;
+    ASSERT_EQ(filled->prop.cq_table.size(), 2u);
+    for (std::size_t i = 0; i < 2; ++i) {
+        const std::array<double, 2>& ct = thrust_only.prop.ct_table[i];
+        EXPECT_EQ(bits(filled->prop.cq_table[i][0]), bits(ct[0])) << i;
+        EXPECT_EQ(bits(filled->prop.cq_table[i][1]), bits(0.022 * ct[1] / thrust_only.prop.diameter)) << i;
+    }
+    EXPECT_TRUE(spade::vehicles::compile_airframe(*filled).has_value());
+
     BasicQuadParams negative = p;
     negative.kappa = -0.022;
     expect_refused(spade::vehicles::basic_quad_airframe(negative), {"kappa", "above 0"});
@@ -286,6 +304,18 @@ TEST(BasicQuad, RotorDiscsCloserThanTheirDiameterAreAdvisedNotRefused) {
     EXPECT_TRUE(contains(advised[0].message, "rotors[0] and rotors[3]")) << advised[0].message;
     // The spec still compiles: an advisory is not a refusal.
     EXPECT_TRUE(spade::vehicles::compile_airframe(*spec).has_value());
+
+    // Measured in the disc plane, the spin axis projected out: one hub raised
+    // 10 mm still overlaps its neighbour by 2.4 mm (a 3D distance would say
+    // 2.1), and the advisory names the axial offset.
+    AirframeSpec raised = *spec;
+    raised.rotors[3].hub.position.y += 0.010;
+    const std::vector<spade::vehicles::BasicQuadAdvisory> lifted = spade::vehicles::basic_quad_advisories(raised);
+    ASSERT_EQ(lifted.size(), 2u);
+    EXPECT_TRUE(contains(lifted[0].message, "overlap by 2.4 mm")) << lifted[0].message;
+    EXPECT_TRUE(contains(lifted[0].message, "150.0 mm apart in the disc plane")) << lifted[0].message;
+    EXPECT_TRUE(contains(lifted[0].message, "10.0 mm apart along the spin axis")) << lifted[0].message;
+    EXPECT_FALSE(contains(lifted[1].message, "along the spin axis")) << lifted[1].message;
 }
 
 TEST(BasicQuad, AHalfSpanNotAboveZeroIsRefused) {
