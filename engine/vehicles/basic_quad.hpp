@@ -42,8 +42,12 @@
 //            kappa * ct_static / diameter, and is refused for a propeller with
 //            tables, which the compile reads instead of cq_static.
 // Met "exactly" means the compiled mass and principal moments round to the
-// targets' floats. A remainder that is not a physical body is refused by
-// name (invalid_argument), and so is a target the parts already exceed:
+// targets' floats. The remainder is exact to double rounding: a few ulps from
+// the order of the compile's sums, and its place at the centre of mass the
+// compile reports in float. So only a target within about 1e-15 of a float
+// rounding midpoint could round the other way.
+// A remainder that is not a physical body is refused by name
+// (invalid_argument), and so is a target the parts already exceed:
 //   "mass"               a mass target that is not above the parts' mass
 //   "inertia.x/.y/.z"    an inertia target below the parts' own about that
 //                        axis

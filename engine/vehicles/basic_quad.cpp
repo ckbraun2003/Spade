@@ -229,7 +229,9 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
         if (!issues.empty()) {
             return std::unexpected(invalid("inertia: the remainder the fit needs, diag(" + text((*p.inertia)[0]) +
                                            ", " + text((*p.inertia)[1]) + ", " + text((*p.inertia)[2]) +
-                                           ") less the parts' own, is not a body: it " + issues.front().message));
+                                           ") less the parts' own diag(" + text(own[0][0]) + ", " +
+                                           text(own[1][1]) + ", " + text(own[2][2]) + "), is not a body: it " +
+                                           issues.front().message));
         }
     }
     s.parts.push_back(std::move(rest));
