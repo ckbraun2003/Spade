@@ -48,7 +48,7 @@
 //   plus the two things the batteries above depend on and could not diagnose on
 //   their own: the CONSTANTS the device actually compiled
 //   (KernelConstantsAreBitIdenticalToTheHostConstants) and the correctly-rounded
-//   DIVISION that replaces log32's one OpFDiv
+//   DIVISION log32 divides with, div32_ftz
 //   (CorrectlyRoundedDivisionMatchesTheHostDivide).
 //
 // EVERY SUITE IS Gpu*-PREFIXED (tests/AppendSpadeLabels.cmake gives those the
@@ -463,14 +463,15 @@ TEST(GpuFp32Math, KernelConstantsAreBitIdenticalToTheHostConstants) {
 }
 
 // ===========================================================================
-// 2. The correctly-rounded division that replaces log32's one OpFDiv
+// 2. The correctly-rounded division log32 divides with, div32_ftz
 // ===========================================================================
 
 // engine/shaders/fp32_math.slang's division audit explains why log32's
 // `f / (2.0f + f)` could not be respelled as a multiply by a constant (the
-// divisor is a runtime value) and is implemented as an exact integer long
-// division instead. This is the direct proof of that implementation against the
-// host's own `/`, over two argument sets:
+// divisor is a runtime value) and goes through div32_ftz, the exact division,
+// instead. This is the direct proof of it on log32's domain against the host's
+// own `/` (section 7 holds it to divss over the whole domain), over two
+// argument sets:
 //
 //   * EVERY (f, 2 + f) PAIR log32 CAN FORM. f = mm - 1 where mm is the folded
 //     mantissa, so the complete set of f values is the 2^23 floats in
@@ -523,8 +524,9 @@ TEST(GpuFp32Math, CorrectlyRoundedDivisionMatchesTheHostDivide) {
     //     and would leave the high mantissa bits nearly constant.
     //   * BOTH SIGNS on both operands.
     //
-    // THE EXPONENT RANGE IS A DOMAIN OBLIGATION, not a convenience: log32_div's
-    // precondition requires a NORMAL quotient. ea - eb lands in [-120, 120], so
+    // THE EXPONENT RANGE KEEPS EVERY QUOTIENT NORMAL, where divss and the host's
+    // `/` agree with or without the flush (it was the precondition of log32_div,
+    // deleted 2026-10-22; section 7 takes the edges). ea - eb lands in [-120, 120], so
     // the result's biased exponent is ea - eb + 126 or + 127, i.e. [6, 247]
     // (248 after a rounding carry) -- never 0 and never 255, so nothing in this
     // lattice underflows to subnormal or overflows to infinity.

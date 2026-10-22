@@ -81,8 +81,12 @@
 //
 // FLOAT-CONTROLS PROFILE: EXACT (tests/test_slang_layouts.cpp holds this
 // module to it). The compiled module contains ../fp32_math.slang whole, so the
-// gate's NoContraction / no-OpFDiv / no-sqrt / no-sum-of-products rules are
-// enforced over the ported kernels themselves, not just over this file.
+// gate's NoContraction and no-sum-of-products rules, and E1/E2 -- an OpFDiv or
+// InverseSqrt only as an estimate that reaches an integer conversion, and no
+// Sqrt -- are enforced over the ported kernels themselves, not just over this
+// file. The estimates it holds are div32_ftz's and sqrt32_ftz's (modes 0 and 4
+// through log32 and div32_ftz, mode 7 through sqrt32_ftz), each inlined into
+// this entry point; modes 8 and 9 load theirs.
 // ---------------------------------------------------------------------------
 
 import fp32_math;

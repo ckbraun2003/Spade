@@ -210,8 +210,8 @@ struct alignas(kStd430StructAlignment) GnssSensorRow {
     //
     // THAT IS A PARITY DECISION, NOT AN OPTIMISATION. shaders/fp32_math.slang
     // records that "an OpFDiv is not merely less accurate, it is
-    // DEVICE-DEPENDENT", which is why log32_div() is a restoring integer long
-    // division and is domain-restricted. Other kernels divide freely, but those
+    // DEVICE-DEPENDENT", which is why fp32_math.slang's div32_ftz is the exact
+    // division. Other kernels divide freely, but those
     // are BANDED physics paths where an ulp sits inside a band. A RECURSIVE BIAS
     // FILTER DOES NOT TOLERATE ERROR, IT ACCUMULATES IT: an ulp of retention
     // error compounds on every emission and walks out of any band eventually.

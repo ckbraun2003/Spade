@@ -24,10 +24,10 @@
 // That is not an optimisation: it keeps the recursion's own arithmetic exact,
 // a multiply by byte-identical per-sensor constants, so the only difference it
 // carries across backends is the draws', which CORE-3 bands at their source
-// (TD-14 bands this sensor; parity.hpp's gnss rows). fp32_math.slang:83-88: "an OpFDiv is not merely
-// less accurate, it is DEVICE-DEPENDENT" -- which is why log32_div() is a
-// restoring integer long division, domain-restricted, and must not be reached
-// for as a general divide. Other kernels do divide (collision_dynamic.slang),
+// (TD-14 bands this sensor; parity.hpp's gnss rows). fp32_math.slang:118-119: "an OpFDiv is not merely
+// less accurate, it is DEVICE-DEPENDENT" -- which is why fp32_math.slang's
+// div32_ftz is the exact division, the device's estimate corrected in
+// integers. Other kernels do divide (collision_dynamic.slang),
 // but those are banded physics paths where an ulp sits inside a band.
 //
 //   A RECURSIVE BIAS FILTER DOES NOT TOLERATE ERROR, IT ACCUMULATES IT.
