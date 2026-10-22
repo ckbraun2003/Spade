@@ -10,7 +10,7 @@
 //   GpuAirflowRunnerTileSum   A4: the fixed-tile sum gives the same bits at
 //                             workgroup sizes 32, 64 and 128, and the same bits
 //                             as physics/airflow/reduce.hpp on the CPU
-//   AirflowRunnerSpirv        the kernels' compiled modules (B1's, B2's): no
+//   AirflowRunnerSpirv        the kernels' compiled modules (B1's to B3's): no
 //                             contraction, no atomics, no shared memory, every
 //                             binding in set 1 (the airflow set), and variants
 //                             that differ in their local size only (no device;
@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "airflow_add_one.spv.gen.hpp"
+#include "airflow_advection.spv.gen.hpp"
 #include "airflow_copy.spv.gen.hpp"
 #include "airflow_divergence.spv.gen.hpp"
 #include "airflow_gradient_subtract.spv.gen.hpp"
@@ -802,7 +803,9 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_mg_residual, false},
                               {gen::kSpvVariants_airflow_mg_restrict, false},
                               {gen::kSpvVariants_airflow_mg_prolong, false},
-                              {gen::kSpvVariants_airflow_remove_mean, false}};
+                              {gen::kSpvVariants_airflow_remove_mean, false},
+                              // B3's advection kernel (Rendering).
+                              {gen::kSpvVariants_airflow_advection, false}};
     for (const Kernel& k : kernels) {
         ASSERT_EQ(k.variants.count, spade::compute::kSupportedWorkgroupSizes.size()) << k.variants.name;
         for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {
