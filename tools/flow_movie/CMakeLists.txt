@@ -17,7 +17,9 @@ add_executable(flow_movie
     live_case.hpp
     live_case.cpp
     arm_pressure.hpp
-    arm_pressure.cpp)
+    arm_pressure.cpp
+    subnormal_scan.hpp
+    subnormal_scan.cpp)
 target_compile_features(flow_movie PRIVATE cxx_std_23)
 # spade::analysis: the validation reel reads the V1 records through
 # Interface's one reader (TD-9).

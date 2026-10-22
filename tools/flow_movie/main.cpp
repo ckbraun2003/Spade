@@ -63,6 +63,7 @@
 #include "cases.hpp"
 #include "live_case.hpp"
 #include "recorder.hpp"
+#include "subnormal_scan.hpp"
 #include "views.hpp"
 
 #include "physics/airflow/publish.hpp"
@@ -1157,6 +1158,8 @@ struct Options {
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
+    uint32_t subnormal_scan = 0;  // --subnormal-scan N: D1's subnormal scan, N steps of two runs; no film
+    fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
 };
 
@@ -1371,6 +1374,10 @@ int main(int argc, char** argv) {
             opt.arm_pressure = true;
         } else if (arg == "--step-time") {
             opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--subnormal-scan") {
+            opt.subnormal_scan = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--from-save") {
+            opt.from_save = value();
         } else if (arg == "--grid") {
             spade::physics::airflow::GridShape g = kD1Grid;
             if (std::sscanf(value().c_str(), "%ux%ux%u", &g.nx, &g.ny, &g.nz) != 3) {
@@ -1425,6 +1432,7 @@ int main(int argc, char** argv) {
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
         if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
+        if (opt.subnormal_scan > 0u) return subnormal_scan(*lc, opt.subnormal_scan, opt.from_save, opt.out);
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
         auto film = case_film(std::move(*lc), frames,
