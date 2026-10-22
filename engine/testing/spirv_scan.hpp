@@ -176,8 +176,9 @@
 //   (Core's review). So the guarantee covers exactly
 //   the functions Core's injected-error battery covers (estimates at least
 //   +-3 ulp off, past the Vulkan bound): the functions listed in
-//   engine/shaders/fp32_math.slang as allowed to hold an estimate, each with
-//   its battery test. An estimate anywhere else is a review finding, which
+//   engine/shaders/fp32_math.slang under "Functions allowed to hold an
+//   estimate (E1/E2)", each with its battery test. An estimate anywhere else
+//   is a review finding, which
 //   this scan cannot raise. The two together enforce the rule
 //   (01-verification, "SPIR-V scanner"). An op added to the carrying list
 //   gets a dated amendment there with its reason.
