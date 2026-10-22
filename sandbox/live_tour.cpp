@@ -1133,7 +1133,8 @@ void editor_tour(Tour& t, const fs::path& assets) {
         // assumed, as the panel drew the marks (assumed-marked).
         std::optional<std::size_t> part;
         for (std::size_t i = 0; i < w().panels().library.size() && !part; ++i) {
-            if (editor::any_assumed(w().panels().library[i])) part = i;
+            const editor::LibraryItem& candidate = w().panels().library[i];
+            if (candidate.kind == editor::LibraryItem::Kind::part && editor::any_assumed(candidate)) part = i;
         }
         if (!part) {
             s.check(false, "part-inspected", "absent: no library part has a field assumed");
