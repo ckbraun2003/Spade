@@ -29,6 +29,12 @@ UIUC = os.path.join(TESTDATA, "uiuc")
 EXPECTED = os.path.join(TESTDATA, "expected.gen.hpp")
 
 
+def hover_of(r, ct):
+    """The hover rpm the sim flies at with C_T0 = ct: n = sqrt(m g / (N rho ct D^4))."""
+    d = r["drone"]
+    return 60.0 * math.sqrt(d["mass_kg"] * tool.G / (d["rotors"] * tool.RHO * ct * r["diameter"] ** 4))
+
+
 def by_id(results, prop_id):
     for r in results:
         if r["id"] == prop_id:
@@ -54,7 +60,11 @@ class TheGeneratedTablesAreWhatTheRuleGives(unittest.TestCase):
         # Hover: n = sqrt(m g / (N rho C_T0 D^4)) with C_T0 = 0.10 at the
         # static's middle rpm (6000): 4999.6 rpm, so the 5000 rpm run.
         self.assertEqual(a["run_rpm"], 5000.0)
-        self.assertAlmostEqual(a["hover_rpm"], 4999.6, delta=0.1)
+        self.assertAlmostEqual(a["first_pass_rpm"], 4999.6, delta=0.1)
+        # The reported hover rpm is the sim's: recomputed with the shipped
+        # ct_static, 0.11 at the run's rpm (Physics, 2026-10-22).
+        self.assertAlmostEqual(a["hover_rpm"], 4999.6 * math.sqrt(0.10 / 0.11), delta=0.1)
+        self.assertEqual(a["hover_rpm"], hover_of(a, a["ct_static"]))
         # J = 0 is the static run at 5000 rpm: C_T 0.11, C_P 0.055.
         self.assertEqual(a["ct_table"][0][0], 0.0)
         self.assertAlmostEqual(a["ct_table"][0][1], 0.11, places=15)
@@ -113,18 +123,23 @@ class TheGeneratedTablesAreWhatTheRuleGives(unittest.TestCase):
                        "ends at r/R 0.91", "differs from the published 2500 rpm"):
             self.assertIn(needle, text)
 
-    def test_a_static_only_prop_has_its_static_point_and_no_tables(self):
+    def test_a_static_only_prop_iterates_to_its_fixed_point(self):
         results, _ = tool.resample_all(PROPS, UIUC)
         c = by_id(results, "syn_c")
-        # Hover from C_T0 0.105 at the static's middle rpm (10000): 9999 rpm.
-        self.assertAlmostEqual(c["hover_rpm"], 9999.0, delta=2.0)
         self.assertIsNone(c["run_file"])
         self.assertEqual(c["ct_table"], [])
         self.assertEqual(c["cq_table"], [])
-        # The static point at the hover rpm itself.
-        rpm = c["hover_rpm"]
-        self.assertAlmostEqual(c["ct_static"], 0.11 - 0.01 * (rpm - 8000) / 4000, places=15)
-        self.assertAlmostEqual(c["cq_static"], (0.05 - 0.004 * (rpm - 8000) / 4000) / (2 * math.pi), places=15)
+        # C_T = 1e-5 rpm on syn_c's line, so the fixed point rpm = 60
+        # sqrt(K / (1e-5 rpm)) is rpm^3 = 3600 K / 1e-5: by hand, 10163.
+        k = 0.00711 * tool.G / (4 * tool.RHO * 0.047**4)
+        fixed = (3600 * k / 1e-5) ** (1 / 3)
+        self.assertAlmostEqual(c["hover_rpm"], fixed, delta=0.5)
+        # Self-consistent: the shipped ct_static is C_T at the hover rpm it
+        # gives, to the iteration's 0.5 rpm, and the reported rpm is its own.
+        self.assertAlmostEqual(c["ct_static"], 1e-5 * c["hover_rpm"], delta=1e-5 * 0.5)
+        self.assertEqual(c["hover_rpm"], hover_of(c, c["ct_static"]))
+        self.assertGreater(c["passes"], 3)
+        self.assertLessEqual(c["passes"], 20)
         # A tabled prop's static values are its table's J = 0 row.
         a = by_id(results, "syn_a")
         self.assertEqual(a["ct_static"], a["ct_table"][0][1])
@@ -158,6 +173,22 @@ class EveryInputCarriesItsProvenance(unittest.TestCase):
         self.assertIn('"2026-10-22T00:00:00Z"', text)
         # A static-only prop reads no run.
         self.assertEqual([i["file"] for i in by_id(results, "syn_c")["inputs"]], ["syn_c_static.txt", "syn_c_geom.txt"])
+
+
+class TheReviewsMinors(unittest.TestCase):
+    def test_a_tie_takes_the_lower_rpm(self):
+        self.assertEqual(tool.nearest_run([(6000.0, "b"), (4000.0, "a")], 5000.0), (4000.0, "a"))
+        self.assertEqual(tool.nearest_run([(4000.0, "a"), (6000.0, "b")], 5000.0), (4000.0, "a"))
+        self.assertEqual(tool.nearest_run([(4000.0, "a"), (6000.0, "b")], 5001.0), (6000.0, "b"))
+
+    def test_a_comment_never_splits_a_hyphenated_word(self):
+        lines = tool.comment("word " * 13 + "tri-blade tables: mit_5x4 (three-blade, 5 in)")
+        self.assertTrue(any("(three-blade," in ln for ln in lines), lines)
+
+    def test_each_prop_carries_its_grade_note(self):
+        text, _ = tool.generate(PROPS, UIUC)
+        self.assertIn('        "derived from syn_a\'s shape, assumed",\n', text)
+        self.assertIn('        "",\n', text)  # syn_a has none
 
 
 class TheToolRefusesByName(unittest.TestCase):
@@ -206,6 +237,14 @@ class TheToolRefusesByName(unittest.TestCase):
         p, d = self._with({"s.txt": self.STATIC, "g.txt": self.GEOM,
                            "r_5000.txt": "J CT CP eta\n0.1 0.1 0.05 0.3\n0.2 0.09 0.04 0.4\n"}, props)
         with self.assertRaisesRegex(tool.ToolError, r"g\.txt.*no source"):
+            tool.resample_all(p, d)
+
+    def test_a_static_only_hover_that_does_not_settle(self):
+        # C_T so steep in rpm (-0.2 + 3e-5 rpm) that n = sqrt(K / C_T(n))
+        # moves away from its fixed point on each pass.
+        props = self._props("[]").replace('"mass_kg": 1.444', '"mass_kg": 1.7')
+        p, d = self._with({"s.txt": "RPM CT CP\n7000 0.01 0.01\n12000 0.16 0.05\n", "g.txt": self.GEOM}, props)
+        with self.assertRaisesRegex(tool.ToolError, r"x:.*(settle|outside)"):
             tool.resample_all(p, d)
 
     def test_a_run_name_without_its_rpm(self):
