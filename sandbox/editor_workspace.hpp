@@ -504,12 +504,14 @@ class EditorWorkspace {
             case Command::redo: history(redo_, undo_, false); return;
             case Command::save: {
                 const Serials before = serials();
-                save_into(before, save_scene(docs_.scene, docs_.world, fallback_meshes_));
+                const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
+                save_into(before, save_scene(docs_.scene, docs_.world, meshes));
                 return;
             }
             case Command::save_as: {
                 const Serials before = serials();
-                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, fallback_meshes_));
+                const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
+                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, meshes));
                 list_sources();
                 load_library();  // a new folder: its project library
                 return;
@@ -609,6 +611,40 @@ class EditorWorkspace {
             }
         }
         settle(before, applied);
+    }
+
+    // What Save copies beside the scene (copy_fallback_meshes(), all or
+    // nothing, keeping a copy already there): the view's fallbacks (N11),
+    // then every imported sidecar the scene names, an asset's or a part's
+    // (N15, D1), from the staging folder, else the scene's folder as it was
+    // (a Save As elsewhere).
+    [[nodiscard]] std::vector<render::FallbackMesh> meshes_to_copy() const {
+        namespace fs = std::filesystem;
+        constexpr std::string_view kSidecar = ".spmesh";
+        std::vector<render::FallbackMesh> out = fallback_meshes_;
+        const scene::SceneDesc& s = docs_.scene.desc();
+        std::vector<std::string> files;
+        for (const scene::SceneAsset& a : s.assets) {
+            if (a.visual.mesh_ref.starts_with("imported/")) files.push_back(a.visual.mesh_ref + std::string(kSidecar));
+        }
+        for (const vehicles::ModelType& m : s.models) {
+            for (const vehicles::PartDesc& p : m.parts) {
+                if (p.mesh_file.starts_with("imported/") && p.mesh_file.ends_with(kSidecar)) files.push_back(p.mesh_file);
+            }
+        }
+        for (const std::string& file : files) {
+            const std::string ref = file.substr(0, file.size() - kSidecar.size());
+            const bool listed = std::any_of(out.begin(), out.end(), [&](const auto& m) { return m.ref == ref; });
+            if (listed) continue;
+            for (const fs::path& root : {staging_.path(), docs_.scene.path.parent_path()}) {
+                const fs::path from = root / fs::path(std::u8string(file.begin(), file.end()));
+                std::error_code ec;
+                if (!fs::exists(from, ec)) continue;
+                out.push_back(render::FallbackMesh{ref, from, 1});
+                break;
+            }
+        }
+        return out;
     }
 
     // N15: the path an imported mesh came from: this session's import, else
