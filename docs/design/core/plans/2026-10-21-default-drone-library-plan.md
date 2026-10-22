@@ -294,6 +294,8 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 - **L4a's UIUC files** (the lead, 2026-10-22): Core fetches them with curl into its scratchpad, one at a time and only the files listed, and never commits them. Ruling 3 is that the repo holds only our own resampled tables, cited as UIUC asks; it doesn't require Cameron to download them. Each file's URL, retrieval date (UTC) and SHA-256 are recorded in the header's provenance and here. The apce_* files are UIUC's own measurements of those props, so they fit ruling 4 (no APC-published file or number).
 - **The tri-blade is a stand-in** (the lead, 2026-10-22): its tables come from mit_5x4, a two-blade prop. They are graded as a stand-in and named as such in the header and in basic_quad_assumptions() ("tri-blade tables: mit_5x4 two-blade, scaled per Physics' rule"), so nothing presents them as measured. The solidity bias goes with them (Physics): C_T and C_P understate a three-blade's, so the hover rpm comes out high.
 
+  - **Correction (Core, 2026-10-22, from UIUC's own index):** UIUC's volume 2 page (propDB-volume-2.html, retrieved 2026-10-22) lists mit_5x4 under Micro Invent's **3-Blade** heading, beside the 4.3x3.5. That agrees with this plan's 5-inch FPV entry ("Micro Invent 5x4 tri-blade"). So the stand-in is a measured three-blade 5x4 applied at 6 in, and no solidity bias applies. It stays a stand-in, graded `derived` and `assumed`, for the 5-to-6-inch scaling (Reynolds number and geometry). The header and basic_quad_assumptions() say "tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule". The lead and Physics have been told.
+
 ## Notes for later
 
 - Until L7 lands, each drone is drawn from its SDF parts.
