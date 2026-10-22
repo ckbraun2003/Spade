@@ -54,26 +54,54 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
         }
         return b_max > 0.0f ? r_max / b_max : 0.0f;
     };
+    // r = b - A x from x itself, and the first search direction from it: the
+    // start, and the stall rule's one restart (pcg.hpp). Returns r . z.
+    const auto start = [&]() {
+        apply_operator(L, s.x, s.q);
+        for (std::size_t i = 0; i < n; ++i) s.r[i] = s.b[i] - s.q[i];
+        mask(s.r);
+        gauge(s.r);
+        precond();
+        std::copy(s.z.begin(), s.z.end(), s.d.begin());
+        return dot(s.r, s.z);
+    };
     mask(s.x);
-    apply_operator(L, s.x, s.q);
-    for (std::size_t i = 0; i < n; ++i) s.r[i] = s.b[i] - s.q[i];
-    mask(s.r);
-    gauge(s.r);
-    precond();
-    std::copy(s.z.begin(), s.z.end(), s.d.begin());
-    float rz = dot(s.r, s.z);
+    float rz = start();
     const uint32_t last = std::max(floor, cap);
     PcgResult out;
     bool measured = false;
+    bool exact = false;      // a step's denominator was exactly zero
+    bool restarted = false;  // the stall rule's one restart is spent
+    float least = 0.0f;      // the stall rule's least residual measured (pcg.hpp)
+    uint32_t since = 0;      // measurements since the residual last fell below kStallGain x least
     for (;; ++out.iterations) {
-        if (out.iterations >= floor) {  // the floor's done: stop at the mark or the cap
+        if (out.iterations >= floor) {  // the floor's done: stop at the mark, the cap or a stall
             out.residual = measure();
             measured = true;
-            if (out.residual <= mark || out.iterations >= last) break;
+            if (out.residual <= mark) break;
+            if (out.iterations == floor || out.residual < kStallGain * least) {
+                least = out.residual;
+                since = 0;
+            } else {
+                ++since;
+            }
+            if (out.iterations >= last) break;  // the cap: announced as capped, not stalled
+            if (since >= kStallIterations) {
+                if (restarted) {
+                    out.stalled = true;
+                    break;
+                }
+                restarted = true;  // the first stall: start again once from the true residual
+                since = 0;
+                rz = start();
+            }
         }
         apply_operator(L, s.d, s.q);
         const float dq = dot(s.d, s.q);
-        if (dq == 0.0f || rz == 0.0f) break;  // solved exactly: nothing left to reduce
+        if (dq == 0.0f || rz == 0.0f) {  // nothing left to reduce: solved, or (above the mark) stalled
+            exact = true;
+            break;
+        }
         measured = false;
         const float alpha = rz / dq;
         for (std::size_t i = 0; i < n; ++i) {
@@ -88,6 +116,7 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
         rz = rz_next;
     }
     if (!measured) out.residual = measure();
+    if (exact && out.residual > mark) out.stalled = true;
     return out;
 }
 

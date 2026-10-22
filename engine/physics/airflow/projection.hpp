@@ -50,6 +50,7 @@ struct ProjectionFloats {
 struct ProjectionReport {
     float residual = 0.0f;    // max|r| / max|b| after the solve (pcg.hpp with solids; plan A's after its cycles)
     uint32_t iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: its n_v cycles
+    bool stalled = false;     // with solids: the CG stopped above the mark by its stall rule (pcg.hpp); plan A: false
 };
 
 // WITH SOLIDS (solids->any, the solids design, section 3): the right side is

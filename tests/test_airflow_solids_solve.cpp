@@ -355,6 +355,26 @@ TEST(AirflowSolidsSolve, ASheetOnEitherParityConvergesInEightIterations) {
     }
 }
 
+// The stall rule (P2d, pcg.hpp): the same solve on the odd plane with a mark
+// below fp32's floor (1e-9). The true residual stops near the floor measured
+// above, the solve starts again once from it, stalls again and stops there,
+// stalled, inside its cap, at fp32's floor, below the announcement's mark.
+// Mutation: the stall rule off, which runs it to the cap.
+TEST(AirflowSolidsSolve, AMarkBelowFp32sFloorStallsInsideTheCap) {
+    Multigrid mg = sheet_multigrid(17);
+    PcgScratch s = make_pcg_scratch(32u * 8u * 8u);
+    s.b = blocked_flow_rhs(sheet_weights(17));
+    const PcgResult res = solve_pcg_to(mg, s, kSolidsCgIterations, kSolidsCgCap, 1.0e-9f,
+                                       PcgGauge{&remove_mean_gauge, nullptr, nullptr});
+    std::printf("a mark of 1e-9: %.3e after %u iterations, %s\n", static_cast<double>(res.residual), res.iterations,
+                res.stalled ? "stalled" : "not stalled");
+    EXPECT_TRUE(res.stalled);
+    EXPECT_GT(res.residual, 1.0e-9f);
+    EXPECT_LE(res.residual, kResidualAnnounce);
+    EXPECT_GE(res.iterations, kSolidsCgIterations + 2u * kStallIterations) << "two stalls: the restart's and the stop's";
+    EXPECT_LT(res.iterations, kSolidsCgCap);
+}
+
 TEST(AirflowSolidsSolve, TheFixedTileDotIsTheTileSumOfProducts) {
     std::vector<float> a(9u * 7u * 5u);
     std::vector<float> b(a.size());

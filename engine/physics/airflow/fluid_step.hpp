@@ -53,6 +53,8 @@ struct FluidHealth {
     uint32_t pressure_iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: n_v
     bool capped = false;               // with solids: the CG reached cfg.cg_cap above kResidualAnnounce
     bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
+    bool stalled = false;  // with solids: the CG stopped above kResidualAnnounce at fp32's floor, before its cap
+                           // (pcg.hpp's stall rule); an unconverged solids step is capped or stalled, never both
 };
 
 // The CG iteration count for a run with solids (P2 Task 9, the solids design

@@ -141,7 +141,7 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); },
         [&](uint32_t q, uint32_t a, uint32_t b) { return w_index(sh, a, b, q); }, f.theta[2], f.wall[2]);
-    return {solved.residual, solved.iterations};
+    return {solved.residual, solved.iterations, solved.stalled};
 }
 
 }  // namespace
