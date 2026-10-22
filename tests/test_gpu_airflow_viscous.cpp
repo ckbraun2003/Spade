@@ -508,12 +508,16 @@ struct Config {
 }  // namespace
 
 // The velocity conditions on every configuration: apply_velocity_boundaries()
-// to the bit, under the step's flush (DAZ: the outlets' sign tests see a
-// subnormal as zero, as the device's do). Copies and selects only.
+// to the bit on the device of record, under the step's flush. Copies, selects
+// and the outlets' two sign tests, which DAZ and the device of record both
+// read a subnormal as zero in; a device that keeps denormals would refuse
+// what they pass, so elsewhere the count is reported only (Physics' review,
+// 2026-10-22).
 TEST(GpuAirflowViscous, VelocityBoundariesMatchTheCpuBitForBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
     for (const Config& c : configs()) {
         SCOPED_TRACE(c.name);
         const af::MacGrid start = noisy(c.shape, 0xBCull, 1.0f);
@@ -527,7 +531,9 @@ TEST(GpuAirflowViscous, VelocityBoundariesMatchTheCpuBitForBit) {
         ASSERT_TRUE(gpu.has_value());
         const std::size_t d = differing(*gpu, cpu);
         std::printf("[ viscous ] %-28s conditions: %zu of %zu faces differ\n", c.name, d, faces_of(cpu));
-        EXPECT_EQ(d, 0u);
+        if (bit_equal) {
+            EXPECT_EQ(d, 0u);
+        }
     }
 }
 

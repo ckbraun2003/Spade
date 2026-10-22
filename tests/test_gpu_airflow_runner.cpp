@@ -818,7 +818,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_mg_prolong, false},
                               {gen::kSpvVariants_airflow_remove_mean, false},
                               // B3's advection, velocity conditions and viscosity (Rendering). The
-                              // conditions are copies and selects: no float arithmetic.
+                              // conditions are copies, selects and two sign tests: no float
+                              // arithmetic.
                               {gen::kSpvVariants_airflow_advection, false},
                               {gen::kSpvVariants_airflow_velocity_bc, true},
                               {gen::kSpvVariants_airflow_viscous, false},

@@ -15,9 +15,11 @@
 // velocities and the ambient's component are the host's
 // (fixed_normal_velocity(), bc.ambient), in the push.
 //
-// PARITY. Copies, comparisons and host values only: no arithmetic, so the
-// kernel is apply_velocity_boundaries()'s bit for bit, and the module is
-// scanned under the exact profile.
+// PARITY. Copies, selects, host values and the outlets' two sign tests: no
+// arithmetic, so the kernel is apply_velocity_boundaries()'s bit for bit where
+// the device reads a subnormal in a comparison as the CPU step's DAZ does (the
+// device of record; a denormal-keeping device refuses a subnormal outflow the
+// CPU passes), and the module is scanned under the exact profile.
 // ---------------------------------------------------------------------------
 
 import layouts;
