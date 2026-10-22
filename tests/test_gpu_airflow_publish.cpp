@@ -9,9 +9,11 @@
 //                       fp16::from_f32, to the bit; the two kernels against
 //                       publish_render_volume's halves on an open box, a
 //                       periodic one and one with solids and closed faces:
-//                       u, v, w, dye and p to the bit, |omega|, q-hat and
-//                       lambda2-hat within their band; the same bits at
-//                       workgroup sizes 32, 64 and 128.
+//                       every channel to the bit on the device of record
+//                       (|omega|, q-hat and lambda2-hat take fp32_math's
+//                       exact sqrt and division; another device keeps their
+//                       band); the same bits at workgroup sizes 32, 64 and
+//                       128.
 //
 // The box is 16 x 12 x 20 at 1/16 m, no two sizes alike. The velocity is a
 // swirl about y with a shear and fixed-seed noise, so every channel varies;
@@ -45,6 +47,7 @@
 #include "compute/backend.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
+#include "airflow_exact_device.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
@@ -85,13 +88,16 @@ struct CellPush {
 
 constexpr uint32_t kFieldsPipeline = 0, kPackPipeline = 1;
 
-// The band for |omega|, q-hat and lambda2-hat, in binary16 steps: their sqrt
-// and division do not round correctly on the device, and a last-bit change in
-// fp32 can carry a half across its rounding point to its neighbour, one step;
-// two would take an fp32 error of a whole half step (2^-11 of the value), a
-// real error, not rounding. Measured 2026-10-21 on an NVIDIA GeForce RTX 3060
-// Ti, on B1's runner: |omega| and lambda2-hat one step in at most 1 of 3840
-// halves per box, q-hat none; u, v, w, dye and p to the bit on all three boxes
+// |omega|, q-hat and lambda2-hat take fp32_math's sqrt32_ftz and div32_ftz,
+// and publish_render_volume() flushes as the device does, so on the device of
+// record every half is the CPU's (TD-14 as amended 2026-10-22;
+// airflow_exact_device.hpp). Another device or driver keeps their band, in
+// binary16 steps: a last-bit change in fp32 can carry a half across its
+// rounding point to its neighbour, one step; two would take an fp32 error of a
+// whole half step (2^-11 of the value), a real error, not rounding. Measured
+// 2026-10-21 on an NVIDIA GeForce RTX 3060 Ti with the device's own sqrt and
+// division: |omega| and lambda2-hat one step in at most 1 of 3840 halves per
+// box, q-hat none; u, v, w, dye and p to the bit on all three boxes
 // (the solid layer's mean and the no-data cells included); the pack to the
 // bit on 30720 values. Red check: the pack's ties rounded up, and the centred
 // u's 1/2 as 1/4, fail the pack (the two ties) and the halves (every u).
@@ -444,11 +450,13 @@ TEST(GpuAirflowPublish, PackMatchesFromF32BitForBit) {
 
 // The two kernels against publish_render_volume's halves: u, v, w, dye and p
 // to the bit (the solid layer's mean included, and no-data where the CPU
-// writes it); |omega|, q-hat and lambda2-hat within kBandHalfSteps.
+// writes it); |omega|, q-hat and lambda2-hat to the bit on the device of
+// record, elsewhere within kBandHalfSteps.
 TEST(GpuAirflowPublish, HalvesMatchPublishRenderVolume) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
     const af::MacGrid g = swirl(kShape);
     for (const Box& box : boxes(kShape)) {
         const spade::FlowVolume cpu = publish_on_cpu(g, box);
@@ -464,7 +472,7 @@ TEST(GpuAirflowPublish, HalvesMatchPublishRenderVolume) {
         for (uint32_t c = 0; c < kChannels; ++c) {
             std::printf("[ publish ] %-8s %-12s %5zu of %zu halves differ, by %u steps at most\n", box.name,
                         kChannelNames[c], d[c].differing, cell_count(kShape), d[c].worst_steps);
-            if (c <= spade::kFlowPressure) {
+            if (bit_equal || c <= spade::kFlowPressure) {
                 EXPECT_EQ(d[c].differing, 0u) << box.name << ", " << kChannelNames[c] << ": not to the bit";
             } else {
                 EXPECT_LE(d[c].worst_steps, kBandHalfSteps) << box.name << ", " << kChannelNames[c];
