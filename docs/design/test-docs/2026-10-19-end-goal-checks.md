@@ -185,9 +185,12 @@ Test/Docs owns these, at Interface's request, so a step never measures what its 
     - So the end-goal step places objects upright, with nothing else within 5 mm sideways. A least distance is not "beneath": a wall that close would read as the rest.
     - It doesn't measure a tilted primitive: a 0.5 m sphere tilted 15° reads up to about 8 mm high, past the +5 mm band.
     - It doesn't measure a CSG object either: its surface-nets mesh sits up to half a mesh cell inside the surface.
-      - So for an SDF object, N15's step (`sandbox/live_tour.cpp`, `editor.add_objects`) finds the lowest points by marching up through the object's own collider, posed. It starts 0.25 m below each drawable vertex within 5 cm of the lowest one, and `rest_gap` measures those points.
-      - The march-up is independent of the placing: the editor rests an object by `rest_height()`, not by marching its collider.
-      - Open: the march-up belongs here, as Test/Docs' own measure with its own tests, so the step only hands over raw inputs (Test/Docs, 2026-10-22).
+      - So an SDF object's lowest points come from its collider (`collider_rest_points`, Test/Docs' own measure since 2026-10-22, on `test-docs/csg-rest`; until then N15's step marched it itself with the editor's pick march). The step hands over the raw inputs: the collider, the object's pose, and its posed drawables' vertices.
+        - The collider is posed by the object's pose, which must be rigid with a uniform scale; any other pose gives no points.
+        - It is marched straight up from 0.25 m below the lowest vertex, in the column of each vertex within 5 cm of the lowest, and stops within 0.1 mm below the surface. So a point reads low by less than 0.1 mm, never high.
+        - A column that meets nothing within 0.6 m gives no point. A march that starts inside the object gives none at all, since those can't be the object's vertices. So do no vertices, an empty collider, and a non-finite vertex or distance.
+        - `rest_gap` then measures the points, and no points is its NaN, which fails.
+      - The measure is independent of the placing: the editor rests an object by `rest_height()`, not by marching its collider.
 
 ## 8. Headless tests, red first
 
