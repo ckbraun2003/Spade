@@ -11,6 +11,7 @@ under testdata/ is our own numbers in UIUC's file format, never UIUC's,
 and every value checked by hand below was computed from it on paper.
 """
 
+import hashlib
 import math
 import os
 import sys
@@ -112,6 +113,45 @@ class TheGeneratedTablesAreWhatTheRuleGives(unittest.TestCase):
                        "ends at r/R 0.91", "differs from the published 2500 rpm"):
             self.assertIn(needle, text)
 
+    def test_a_static_only_prop_has_its_static_point_and_no_tables(self):
+        results, _ = tool.resample_all(PROPS, UIUC)
+        c = by_id(results, "syn_c")
+        # Hover from C_T0 0.105 at the static's middle rpm (10000): 9999 rpm.
+        self.assertAlmostEqual(c["hover_rpm"], 9999.0, delta=2.0)
+        self.assertIsNone(c["run_file"])
+        self.assertEqual(c["ct_table"], [])
+        self.assertEqual(c["cq_table"], [])
+        # The static point at the hover rpm itself.
+        rpm = c["hover_rpm"]
+        self.assertAlmostEqual(c["ct_static"], 0.11 - 0.01 * (rpm - 8000) / 4000, places=15)
+        self.assertAlmostEqual(c["cq_static"], (0.05 - 0.004 * (rpm - 8000) / 4000) / (2 * math.pi), places=15)
+        # A tabled prop's static values are its table's J = 0 row.
+        a = by_id(results, "syn_a")
+        self.assertEqual(a["ct_static"], a["ct_table"][0][1])
+        self.assertEqual(a["cq_static"], a["cq_table"][0][1])
+        text, _ = tool.generate(PROPS, UIUC)
+        self.assertIn("static only: no wind-tunnel run", text)
+
+
+class EveryInputCarriesItsProvenance(unittest.TestCase):
+    def test_url_date_and_sha256_of_each_file_read(self):
+        results, _ = tool.resample_all(PROPS, UIUC)
+        a = by_id(results, "syn_a")
+        names = [i["file"] for i in a["inputs"]]
+        self.assertEqual(names, ["syn_a_static.txt", "syn_a_run_5000.txt", "syn_a_geom.txt"])
+        for i in a["inputs"]:
+            with open(os.path.join(UIUC, i["file"]), "rb") as f:
+                body = f.read()
+            self.assertEqual(i["sha256"], hashlib.sha256(body).hexdigest())
+            self.assertEqual(i["fnv1a64"], tool.fnv1a64(body))
+            self.assertEqual(i["url"], "synthetic:" + i["file"])
+            self.assertEqual(i["retrieved_utc"], "2026-10-22T00:00:00Z")
+        text, _ = tool.generate(PROPS, UIUC)
+        self.assertIn('"synthetic:syn_a_run_5000.txt"', text)
+        self.assertIn('"2026-10-22T00:00:00Z"', text)
+        # A static-only prop reads no run.
+        self.assertEqual([i["file"] for i in by_id(results, "syn_c")["inputs"]], ["syn_c_static.txt", "syn_c_geom.txt"])
+
 
 class TheToolRefusesByName(unittest.TestCase):
     def _with(self, files, props):
@@ -128,7 +168,9 @@ class TheToolRefusesByName(unittest.TestCase):
         return ('{"props": [{"id": "x", "volume": "v", "retrieved": "r", "blades": 2, '
                 '"diameter_m": 0.254, "static": "s.txt", "runs": ' + runs + ', "geometry": "g.txt", '
                 '"drone": {"name": "d", "mass_kg": 1.444, "rotors": 4, "published_hover_rpm": 5000, '
-                '"published_source": "s"}}]}')
+                '"published_source": "s"}}], "sources": {' + ", ".join(
+                    f'"{n}": {{"url": "u", "retrieved_utc": "d"}}'
+                    for n in ("s.txt", "g.txt", "r_5000.txt", "r_9000.txt", "run.txt")) + '}}')
 
     STATIC = "RPM CT CP\n4000 0.12 0.06\n8000 0.09 0.045\n"
     GEOM = "r/R c/R beta\n0.15 0.1 30\n1.0 0.05 10\n"
@@ -150,6 +192,13 @@ class TheToolRefusesByName(unittest.TestCase):
     def test_a_missing_file(self):
         p, d = self._with({"s.txt": self.STATIC, "g.txt": self.GEOM}, self._props('["r_5000.txt"]'))
         with self.assertRaisesRegex(tool.ToolError, r"r_5000\.txt"):
+            tool.resample_all(p, d)
+
+    def test_a_file_without_a_source(self):
+        props = self._props('["r_5000.txt"]').replace('"g.txt": {"url": "u", "retrieved_utc": "d"}, ', "")
+        p, d = self._with({"s.txt": self.STATIC, "g.txt": self.GEOM,
+                           "r_5000.txt": "J CT CP eta\n0.1 0.1 0.05 0.3\n0.2 0.09 0.04 0.4\n"}, props)
+        with self.assertRaisesRegex(tool.ToolError, r"g\.txt.*no source"):
             tool.resample_all(p, d)
 
     def test_a_run_name_without_its_rpm(self):

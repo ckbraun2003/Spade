@@ -1,5 +1,5 @@
 {
-  "comment": "Synthetic input for test_resample_uiuc.py: our own numbers in UIUC's file format, never UIUC's. syn_a is a clean case (no warning); syn_b steps above 10% at J = 0, misses its published hover rpm by more than 20%, and has a hub station at 0.18 and a tip at 0.91.",
+  "comment": "Synthetic input for test_resample_uiuc.py: our own numbers in UIUC's file format, never UIUC's. syn_a is a clean case (no warning); syn_b steps above 10% at J = 0, misses its published hover rpm by more than 20%, and has a hub station at 0.18 and a tip at 0.91. syn_c is static-only. Every file has a source: its URL and UTC retrieval date.",
   "props": [
     {
       "id": "syn_a",
@@ -8,10 +8,19 @@
       "blades": 2,
       "diameter_m": 0.254,
       "static": "syn_a_static.txt",
-      "runs": ["syn_a_run_3000.txt", "syn_a_run_5000.txt", "syn_a_run_7000.txt"],
+      "runs": [
+        "syn_a_run_3000.txt",
+        "syn_a_run_5000.txt",
+        "syn_a_run_7000.txt"
+      ],
       "geometry": "syn_a_geom.txt",
-      "drone": {"name": "synthetic A", "mass_kg": 1.444, "rotors": 4,
-                "published_hover_rpm": 5200, "published_source": "synthetic"}
+      "drone": {
+        "name": "synthetic A",
+        "mass_kg": 1.444,
+        "rotors": 4,
+        "published_hover_rpm": 5200,
+        "published_source": "synthetic"
+      }
     },
     {
       "id": "syn_b",
@@ -20,11 +29,83 @@
       "blades": 3,
       "diameter_m": 0.127,
       "static": "syn_b_static.txt",
-      "runs": ["syn_b_run_2500.txt", "syn_b_run_3500.txt"],
+      "runs": [
+        "syn_b_run_2500.txt",
+        "syn_b_run_3500.txt"
+      ],
       "geometry": "syn_b_geom.txt",
-      "drone": {"name": "synthetic B", "mass_kg": 0.0417, "rotors": 4,
-                "published_hover_rpm": 2500, "published_source": "synthetic"},
+      "drone": {
+        "name": "synthetic B",
+        "mass_kg": 0.0417,
+        "rotors": 4,
+        "published_hover_rpm": 2500,
+        "published_source": "synthetic"
+      },
       "note": "derived from syn_a's shape, assumed"
+    },
+    {
+      "id": "syn_c",
+      "volume": "synthetic (our own numbers)",
+      "retrieved": "2026-10-22",
+      "blades": 2,
+      "diameter_m": 0.047,
+      "static": "syn_c_static.txt",
+      "runs": [],
+      "geometry": "syn_c_geom.txt",
+      "drone": {
+        "name": "synthetic C",
+        "mass_kg": 0.00711,
+        "rotors": 4,
+        "published_hover_rpm": 10000,
+        "published_source": "synthetic"
+      },
+      "note": "static only: no wind-tunnel run"
     }
-  ]
+  ],
+  "sources": {
+    "syn_a_geom.txt": {
+      "url": "synthetic:syn_a_geom.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_a_run_3000.txt": {
+      "url": "synthetic:syn_a_run_3000.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_a_run_5000.txt": {
+      "url": "synthetic:syn_a_run_5000.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_a_run_7000.txt": {
+      "url": "synthetic:syn_a_run_7000.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_a_static.txt": {
+      "url": "synthetic:syn_a_static.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_b_geom.txt": {
+      "url": "synthetic:syn_b_geom.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_b_run_2500.txt": {
+      "url": "synthetic:syn_b_run_2500.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_b_run_3500.txt": {
+      "url": "synthetic:syn_b_run_3500.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_b_static.txt": {
+      "url": "synthetic:syn_b_static.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_c_geom.txt": {
+      "url": "synthetic:syn_c_geom.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    },
+    "syn_c_static.txt": {
+      "url": "synthetic:syn_c_static.txt",
+      "retrieved_utc": "2026-10-22T00:00:00Z"
+    }
+  }
 }
