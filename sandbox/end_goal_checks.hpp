@@ -548,9 +548,73 @@ struct C8qBands {
 // mean and on every run; their ratios to momentum theory are reported, never
 // judged.
 [[nodiscard]] inline Verdict c8q(std::span<const DownwashMeans> rotor0, std::span<const DownwashMeans> quad) {
-    (void)rotor0;
-    (void)quad;
-    return {false, "c8q: not yet judged"};
+    using detail::num;
+    if (rotor0.empty()) return {false, "c8q: absent: no runs of rotor 0 alone"};
+    if (quad.empty()) return {false, "c8q: absent: no runs of the quad"};
+    for (const DownwashMeans& r : rotor0) {
+        if (r.u.size() != 1 || r.v.size() != 1) {
+            return {false, "c8q: absent: a run of rotor 0 alone holds " + std::to_string(r.u.size()) + " rotors"};
+        }
+    }
+    const std::size_t n = quad[0].u.size();
+    for (const DownwashMeans& r : quad) {
+        if (n < 2 || r.u.size() != n || r.v.size() != n) {
+            return {false, "c8q: absent: the quad's runs disagree on the rotors"};
+        }
+    }
+    // (max - min) / mean of rotor i's u across the runs.
+    const auto spread = [](std::span<const DownwashMeans> runs, std::size_t i, double mean) {
+        double lo = std::numeric_limits<double>::infinity();
+        double hi = -std::numeric_limits<double>::infinity();
+        for (const DownwashMeans& r : runs) {
+            lo = std::min(lo, r.u[i]);
+            hi = std::max(hi, r.u[i]);
+        }
+        return (hi - lo) / mean;
+    };
+    const auto out = [](bool in) { return in ? std::string() : std::string(" (OUT)"); };
+
+    // Rotor 0 alone: kC8q's band, on the runs' mean and on every run.
+    const DownwashMeans m0 = ensemble_mean(rotor0);
+    const C8qBands b0 = c8q_bands(m0.u, m0.v);
+    bool ok = b0.ratio_ok;
+    std::vector<C8qBands> each0;
+    std::size_t worst0 = 0;
+    for (std::size_t k = 0; k < rotor0.size(); ++k) {
+        each0.push_back(c8q_bands(rotor0[k].u, rotor0[k].v));
+        ok = ok && each0[k].ratio_ok;
+        if (!(each0[k].ratio_off <= each0[worst0].ratio_off)) worst0 = k;
+    }
+
+    // The quad: kC8qMutual's band, on the runs' mean and on every run.
+    const DownwashMeans mq = ensemble_mean(quad);
+    const C8qBands bq = c8q_bands(mq.u, mq.v);
+    ok = ok && bq.mutual_ok;
+    std::vector<C8qBands> eachq;
+    std::size_t worstq = 0;
+    for (std::size_t k = 0; k < quad.size(); ++k) {
+        eachq.push_back(c8q_bands(quad[k].u, quad[k].v));
+        ok = ok && eachq[k].mutual_ok;
+        if (!(eachq[k].mutual_off <= eachq[worstq].mutual_off)) worstq = k;
+    }
+
+    std::string detail = "c8q: rotor 0 alone, the " + std::to_string(rotor0.size()) + " runs' mean " + num(m0.u[0]) +
+                         " / " + num(m0.v[0]) + " m/s = " + num(b0.ratio[0]) + out(b0.ratio_ok) + "; the worst run, run " +
+                         std::to_string(worst0) + ", off by " + num(each0[worst0].ratio_off) +
+                         out(each0[worst0].ratio_ok) + "; its spread across the runs " + num(spread(rotor0, 0, m0.u[0])) +
+                         "; band [" + num(kC8q.lo) + ", " + num(kC8q.hi) + "]. The quad, the " +
+                         std::to_string(quad.size()) + " runs' mean, report only: ";
+    for (std::size_t i = 0; i < n; ++i) {
+        detail += "rotor " + std::to_string(i) + " " + num(mq.u[i]) + " / " + num(mq.v[i]) + " m/s = " +
+                  num(bq.ratio[i]) + "; ";
+    }
+    detail += "the " + std::to_string(n) + " off their mean by " + num(bq.mutual_off) + " at most (spread " +
+              num(bq.mutual_spread) + ")" + out(bq.mutual_ok) + "; the worst run by the mutual band, run " +
+              std::to_string(worstq) + ", off by " + num(eachq[worstq].mutual_off) + out(eachq[worstq].mutual_ok) +
+              "; each rotor's spread across the runs:";
+    for (std::size_t i = 0; i < n; ++i) detail += " " + num(spread(quad, i, mq.u[i]));
+    detail += "; mutual " + num(kC8qMutual) + ", " + mq.window + ", R/dx " + num(mq.r_over_dx);
+    return {ok, detail};
 }
 
 // ---------------------------------------------------------------------------
