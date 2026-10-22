@@ -543,7 +543,7 @@ TEST(EditorWorkspace, ASelectionEndsAPartsInspection) {
     ASSERT_TRUE(ed::inspect_item(w->panels(), *part));
     w->apply_panels();
     EXPECT_EQ(w->panels().inspected, part);
-    w->panels().selection = ed::Selection{ed::Selection::Kind::scene};
+    w->panels().selection = ed::Selection{ed::Selection::Kind::scene, ""};
     w->apply_panels();
     EXPECT_FALSE(w->panels().inspected.has_value());
     EXPECT_EQ(w->panels().selection.kind, ed::Selection::Kind::scene);

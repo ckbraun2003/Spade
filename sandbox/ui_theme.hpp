@@ -268,6 +268,14 @@ inline void status_text(std::string_view text) {
     ImGui::PopStyleColor();
 }
 
+// A value's grade (INT-14): an assumed one in the warning colour, so it is
+// never shown as measured; any other dimmed.
+inline void grade_text(std::string_view text, bool assumed) {
+    ImGui::PushStyleColor(ImGuiCol_Text, assumed ? kWarning : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::TextUnformatted(text.data(), text.data() + text.size());
+    ImGui::PopStyleColor();
+}
+
 // Vertical room between groups, instead of a separator.
 inline void gap() { ImGui::Dummy(ImVec2(0.0f, kBase)); }
 

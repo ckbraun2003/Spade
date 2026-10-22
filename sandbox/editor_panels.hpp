@@ -92,6 +92,7 @@ struct EditorPanels {
     PilotPanel pilot;  // N17: written by the pilot's keys and the Pilot section
     std::string selected_source;  // N15: the path the selected asset's mesh was imported from; empty: none
     std::optional<std::size_t> armed;         // a library item the next click in the view places
+    std::optional<std::size_t> inspected;     // a library part the inspector shows (INT-14); a selection ends it
     std::vector<SceneEdit> pending;
     std::vector<WorldEdit> pending_world;
     std::vector<Command> commands;
@@ -110,5 +111,16 @@ struct EditorPanels {
     // ---- Both: the last refusal, verbatim (INT-2); empty when none.
     std::string status;
 };
+
+// Inspects library item `i` when it is a part (INT-14; the lead's Q1,
+// 2026-10-22, Unity's project panel): the inspector shows it in place of
+// the scene's selection, which clears. A part arms nothing, as before. An
+// object or an index past the library is refused, and nothing changes.
+inline bool inspect_item(EditorPanels& p, std::size_t i) {
+    if (i >= p.library.size() || p.library[i].kind != LibraryItem::Kind::part) return false;
+    p.inspected = i;
+    p.selection = Selection{};
+    return true;
+}
 
 }  // namespace spade::sandbox::editor
