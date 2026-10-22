@@ -933,6 +933,7 @@ add_library(spade_vehicles STATIC
     vehicles/composite_inertia.cpp
     vehicles/propulsion_steady.cpp
     vehicles/airframe_compile.cpp
+    vehicles/basic_quad.cpp
 )
 add_library(spade::vehicles ALIAS spade_vehicles)
 set_target_properties(spade_vehicles PROPERTIES EXPORT_NAME vehicles)
