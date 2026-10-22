@@ -81,8 +81,10 @@ set_tests_properties(GpuFlowMovie.CaseRenderKeepsItsCache PROPERTIES
 
 # The --case smoke: two frames of the powered reference quad through LiveRun
 # and the recorder (D1's path), at 640x360. Skips as the smoke above does.
+# --drop-cache: each run simulates afresh, never drawing a kept cache from an
+# earlier build.
 add_test(NAME GpuFlowMovie.CaseSmokeRendersTwoFrames
-    COMMAND flow_movie --video case-smoke --out "${CMAKE_CURRENT_BINARY_DIR}/case-smoke")
+    COMMAND flow_movie --video case-smoke --drop-cache --out "${CMAKE_CURRENT_BINARY_DIR}/case-smoke")
 set_tests_properties(GpuFlowMovie.CaseSmokeRendersTwoFrames PROPERTIES
     LABELS "spade;gpu"
     SKIP_RETURN_CODE 77
