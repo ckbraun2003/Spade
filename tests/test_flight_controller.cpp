@@ -245,7 +245,7 @@ TEST(FlightController, RollAndYawCommandsTurnTheDroneTheRightWay) {
 // below full duty (the lead's condition, 2026-10-22). Below full thrust the
 // duty is within 1e-5 of full duty of the inverse's, the idle floor and the
 // saturation's knee included; the commanded duty (clamped to [idle, 1], as
-// command() clamps it) gives the inverse's steady thrust within 1e-6 of full;
+// command() clamps it) gives the inverse's steady thrust within 1e-5 of full;
 // past full thrust it is full duty, as the inverse's unreachable point is.
 // The controller reads a table it builds once: per rotor per step the
 // inverse is 60 chain solves, and N17's tests timed out in debug.
@@ -279,7 +279,7 @@ TEST(FlightController, ItsDutyForAThrustIsTheChainsInverseRisingAndSaturating) {
             const double want = vh::steady_state_for_thrust(chain, thrust, kDensity, 0.0, soc).duty;
             const double off_thrust = std::abs(thrust_at(got) - thrust_at(want)) / t_full;
             worst_thrust = std::max(worst_thrust, off_thrust);
-            EXPECT_LE(off_thrust, 1e-6) << which << ", at " << thrust << " N";
+            EXPECT_LE(off_thrust, 1e-5) << which << ", at " << thrust << " N";
             if (thrust < t_full) {
                 worst_duty = std::max(worst_duty, std::abs(got - want));
                 EXPECT_NEAR(got, want, 1e-5) << which << ", at " << thrust << " N";

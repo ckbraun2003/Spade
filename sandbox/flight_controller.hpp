@@ -16,9 +16,19 @@
 //   since faster rings against it; yaw's a third of that, since a quad's yaw
 //   authority is about a fifth of its pitch's; zeta 0.9.
 // - Each rotor's thrust (flight_mixer.hpp's allocation within its idle and
-//   full-duty thrust) to its duty (steady_state_for_thrust) and its speed
-//   (rotor_omega_for_duty), so the chain's idle and limits apply, and an
-//   armed rotor never drops below idle.
+//   full-duty thrust) to its duty and its speed (rotor_omega_for_duty), so
+//   the chain's idle and limits apply, and an armed rotor never drops below
+//   idle. The duty is steady_state_for_thrust's (the least duty that reaches
+//   the thrust) read off a table of the chain's steady thrust at
+//   kDutyTableSteps even duties, built once by make() from the chain it
+//   copies: that inverse is 60 forward solves, so per rotor per step it made
+//   a step about 250 of them, and N17's tests timed out in debug
+//   (2026-10-22). Between two entries the duty is linear in the square root
+//   of the thrust, which a propeller's thrust nearly is; an interval whose
+//   slope differs from a neighbour's by more than kKneeSlopeRatio (the idle
+//   floor, a current limit's knee, a plateau) is bisected through the chain
+//   instead, kKneeBisections forward solves. Within 1e-5 of full duty of the
+//   inverse (FlightController.ItsDutyForAThrustIsTheChainsInverseRisingAndSaturating).
 //
 // Refused by name: a model without a chain (as LiveRun refuses one), a
 // layout the mixer refuses, and what the chain's own functions refuse.
@@ -29,6 +39,7 @@
 #include <cstddef>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -41,6 +52,10 @@
 #include "vehicles/propulsion_steady.hpp"
 
 namespace spade::sandbox::flight {
+
+inline constexpr int kDutyTableSteps = 512;      // even duties from 0 to 1
+inline constexpr double kKneeSlopeRatio = 1.25;  // a neighbour's slope past this either way: a knee
+inline constexpr int kKneeBisections = 24;       // a table step over 2^24: under 1e-9 of full duty
 
 struct Gains {
     float tau_max = 0.0f;     // the model's slowest rotor lag, s
@@ -96,7 +111,50 @@ class FlightController {
         c.t_idle_ = static_cast<float>(vehicles::steady_state_at_duty(c.chain_, idle, density, 0.0, soc).thrust);
         c.t_full_ = static_cast<float>(vehicles::steady_state_at_duty(c.chain_, 1.0, density, 0.0, soc).thrust);
         for (const std::array<float, 4>& col : c.mixer_.b) c.up_share_ += col[0];
+        c.root_thrust_.reserve(kDutyTableSteps + 1);
+        for (int k = 0; k <= kDutyTableSteps; ++k) {
+            const double d = static_cast<double>(k) / kDutyTableSteps;
+            const double t = vehicles::steady_state_at_duty(c.chain_, d, density, 0.0, soc).thrust;
+            const double r = std::sqrt(std::max(t, 0.0));
+            c.root_thrust_.push_back(c.root_thrust_.empty() ? r : std::max(r, c.root_thrust_.back()));
+        }
+        // Interval k runs from entry k - 1 to entry k; it is smooth when it
+        // rises and both neighbours rise at much its slope (the last has one).
+        const auto slope = [&](int k) {
+            return c.root_thrust_[static_cast<std::size_t>(k)] - c.root_thrust_[static_cast<std::size_t>(k - 1)];
+        };
+        const auto alike = [](double a, double b) {
+            return a > 0.0 && b > 0.0 && a <= kKneeSlopeRatio * b && b <= kKneeSlopeRatio * a;
+        };
+        c.smooth_.assign(kDutyTableSteps + 1, false);
+        for (int k = 2; k <= kDutyTableSteps; ++k) {
+            c.smooth_[static_cast<std::size_t>(k)] =
+                alike(slope(k - 1), slope(k)) && (k == kDutyTableSteps || alike(slope(k + 1), slope(k)));
+        }
         return c;
+    }
+
+    // The least duty whose steady thrust reaches `thrust`, N, as
+    // steady_state_for_thrust gives it: 0 for none, 1 past full duty's.
+    [[nodiscard]] double duty_for_thrust(double thrust) const {
+        if (!(thrust > 0.0)) return 0.0;
+        const double r = std::sqrt(thrust);
+        const auto above = std::lower_bound(root_thrust_.begin(), root_thrust_.end(), r);
+        if (above == root_thrust_.end()) return 1.0;
+        const auto k = static_cast<std::size_t>(above - root_thrust_.begin());
+        if (k == 0) return 0.0;
+        double lo = static_cast<double>(k - 1) / kDutyTableSteps;
+        double hi = static_cast<double>(k) / kDutyTableSteps;
+        if (smooth_[k]) return lo + (hi - lo) * (r - root_thrust_[k - 1]) / (root_thrust_[k] - root_thrust_[k - 1]);
+        for (int i = 0; i < kKneeBisections; ++i) {
+            const double mid = 0.5 * (lo + hi);
+            if (vehicles::steady_state_at_duty(chain_, mid, density_, 0.0, soc_).thrust < thrust) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return 0.5 * (lo + hi);
     }
 
     [[nodiscard]] const Gains& gains() const noexcept { return gains_; }
@@ -153,8 +211,7 @@ class FlightController {
 
         // Each rotor's thrust to its duty and speed, through the chain.
         for (std::size_t i = 0; i < a.thrust.size(); ++i) {
-            const vehicles::SteadyPoint p = vehicles::steady_state_for_thrust(chain_, a.thrust[i], density_, 0.0, soc_);
-            const double d = std::clamp(p.duty, idle_, 1.0);
+            const double d = std::clamp(duty_for_thrust(a.thrust[i]), idle_, 1.0);
             const Result<vehicles::DutyCommand> w = vehicles::rotor_omega_for_duty(chain_, d, density_, soc_);
             if (!w) return std::unexpected(w.error());
             omega_cmd[i] = w->omega_cmd;
@@ -176,6 +233,8 @@ class FlightController {
     float t_idle_ = 0.0f;    // each rotor's steady thrust at idle, N
     float t_full_ = 0.0f;    // and at full duty
     float up_share_ = 0.0f;  // the sum of the rotors' axes along body +Y
+    std::vector<double> root_thrust_;  // sqrt of the steady thrust at duty k / kDutyTableSteps; never decreasing
+    std::vector<bool> smooth_;         // interval k (entries k - 1 to k) is read linearly, not bisected
 };
 
 }  // namespace spade::sandbox::flight
