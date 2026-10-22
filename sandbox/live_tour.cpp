@@ -1157,6 +1157,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
                           : rows.error().context) +
                     (in_inspector ? "; the inspector shows it in place of the selection" : "; NOT shown"));
         t.snapshot("editor_part");
+        then(1);  // the still is the next frame drawn: it draws while the part is inspected
         const std::vector<editor::LibraryItem>& lib = w().panels().library;
         const std::vector<bool>& badges = w().panels().library_badges;
         bool match = badges.size() == lib.size();
@@ -1553,7 +1554,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
             ++placed;
             if (pl.what == "crate") judge_import(*name);
         }
-        if (placed == placings.size()) t.snapshot("editor_objects");
+        if (placed == placings.size()) {
+            t.snapshot("editor_objects");
+            then(1);  // the still is the next frame drawn: it draws before the undos
+        }
         for (std::size_t i = 0; i < placed; ++i) command(editor::Command::undo);
         then(10);
     });
