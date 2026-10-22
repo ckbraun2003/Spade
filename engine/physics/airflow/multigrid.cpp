@@ -89,6 +89,7 @@ void cycle(Multigrid& mg, std::size_t l) noexcept {
 
 Multigrid make_multigrid(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool, 3> periodic) {
     Multigrid mg;
+    mg.periodic = periodic;
     mg.levels.push_back(make_level(nx, ny, nz, {}));
     for (;;) {
         const uint32_t n[3] = {mg.levels.back().nx, mg.levels.back().ny, mg.levels.back().nz};
@@ -298,8 +299,57 @@ namespace {
     return true;
 }
 
+// The weight of a coarse face's path along its normal (P2c): from one coarse
+// cell's centre to the next it crosses the face's own fine plane (`on`, a
+// whole fine cell's length) and the fine plane inside each of the two cells
+// (`lo` and `hi`, half a length each), so their conductances add in series:
+// 2 / (0.5 / lo + 1 / on + 0.5 / hi). A plane that is missing (has_lo or
+// has_hi false: an odd axis's partial last cell) drops out with its length,
+// 1.5 / (...). Any closed plane closes the path. Weights of 1 give exactly 1.
+[[nodiscard]] float series(bool has_lo, float lo, float on, bool has_hi, float hi) noexcept {
+    if (on == 0.0f || (has_lo && lo == 0.0f) || (has_hi && hi == 0.0f)) return 0.0f;
+    float resistance = 0.0f;
+    float length = 0.0f;
+    if (has_lo) {
+        resistance += 0.5f / lo;
+        length += 0.5f;
+    }
+    resistance += 1.0f / on;
+    length += 1.0f;
+    if (has_hi) {
+        resistance += 0.5f / hi;
+        length += 0.5f;
+    }
+    return length / resistance;
+}
+
 // Level c's face weights from level f's (an empty f.w: every weight 1).
-void coarsen_weights(const PoissonLevel& f, PoissonLevel& c) {
+// THE COARSE FACE RULE (P2c, the lead's order, 2026-10-21):
+//   * Across the face, each fine plane its path crosses gives the mean of
+//     the fine faces the coarse face covers on it (2 x 2, or 2 or 1 across an
+//     axis not coarsened, summed with the second transverse axis outer; a
+//     missing transverse partner is closed and counts 0).
+//   * Along the face's normal those plane means are in series (series()):
+//     the face's own plane and the plane inside the coarse cell on each side.
+//     So a sheet or a wall on any fine plane reaches every coarser level.
+//     Before, a coarse face read its own plane alone, every second fine plane,
+//     and a sheet on another was invisible to it (the lead's finding 2): a
+//     sphere centred on a cell centre then took 20 to 31 CG iterations where
+//     one centred on a corner took 8 (measured 2026-10-21, 48^3 and 47^3 at
+//     R/dx 6; now the floor of 8 for both).
+//   * A face with no inner plane on either side keeps its own plane's mean:
+//     a domain face (the weight enters only an outlet's ghost term), and every
+//     face across a held axis (r = 1: a coarse cell is one fine cell long;
+//     its weight x 4, as before). An odd axis's partial last cell has no inner
+//     plane, so the face before it drops that half (series()). A periodic
+//     axis wraps: face 0 reads the planes nf - 1, 0 and 1, and face nc, which
+//     mirrors it, the same values in the same order.
+//   * `on_plane` (plan A's levels, clear_weights()) keeps the mean of the
+//     face's own plane everywhere, bit for bit as before.
+// Every weight is a mean or a series of the level above's, so none is
+// negative: each coarse operator stays a weighted graph Laplacian, and the
+// symmetric cycle stays symmetric and definite (design test 10).
+void coarsen_weights(const PoissonLevel& f, PoissonLevel& c, const std::array<bool, 3>& periodic, bool on_plane) {
     const uint32_t nf[3] = {f.nx, f.ny, f.nz};
     const uint32_t nc[3] = {c.nx, c.ny, c.nz};
     for (uint32_t a = 0; a < 3; ++a) {
@@ -312,27 +362,51 @@ void coarsen_weights(const PoissonLevel& f, PoissonLevel& c) {
         // A held axis (not coarsened, more than one cell): its cells are half
         // as long as the coarsened axes', so its faces weigh 4 times as much.
         const bool held = r[a] == 1u && nf[a] > 1u;
+        // The mean over the face's fine columns on fine plane `plane`.
+        const auto plane_mean = [&](uint32_t plane, const uint32_t (&C)[3]) {
+            float sum = 0.0f;
+            for (uint32_t d2 = 0; d2 < r[t2]; ++d2) {
+                for (uint32_t d1 = 0; d1 < r[t1]; ++d1) {
+                    uint32_t F[3];
+                    F[a] = plane;
+                    F[t1] = C[t1] * r[t1] + d1;
+                    F[t2] = C[t2] * r[t2] + d2;
+                    if (F[t1] >= nf[t1] || F[t2] >= nf[t2]) continue;  // a missing partner: closed
+                    sum += f.w[a].empty()
+                               ? 1.0f
+                               : f.w[a][F[0] + std::size_t{fdim[0]} * (F[1] + std::size_t{fdim[1]} * F[2])];
+                }
+            }
+            return sum * inv;
+        };
         c.w[a].assign(std::size_t{cdim[0]} * cdim[1] * cdim[2], 0.0f);
         for (uint32_t K = 0; K < cdim[2]; ++K) {
             for (uint32_t J = 0; J < cdim[1]; ++J) {
                 for (uint32_t I = 0; I < cdim[0]; ++I) {
                     const uint32_t C[3] = {I, J, K};
-                    float sum = 0.0f;
-                    for (uint32_t d2 = 0; d2 < r[t2]; ++d2) {
-                        for (uint32_t d1 = 0; d1 < r[t1]; ++d1) {
-                            uint32_t F[3];
-                            // An odd axis's last coarse face is the domain's
-                            // face; a missing transverse partner is closed.
-                            F[a] = std::min(C[a] * r[a], nf[a]);
-                            F[t1] = C[t1] * r[t1] + d1;
-                            F[t2] = C[t2] * r[t2] + d2;
-                            if (F[t1] >= nf[t1] || F[t2] >= nf[t2]) continue;
-                            sum += f.w[a].empty()
-                                       ? 1.0f
-                                       : f.w[a][F[0] + std::size_t{fdim[0]} * (F[1] + std::size_t{fdim[1]} * F[2])];
+                    // An odd axis's last coarse face is the domain's face.
+                    const uint32_t on = std::min(C[a] * r[a], nf[a]);
+                    // The inner planes: of cell C - 1 below the face, of cell C above.
+                    bool has_lo = false;
+                    bool has_hi = false;
+                    uint32_t lo = 0;
+                    uint32_t hi = 0;
+                    if (!on_plane && r[a] == 2u) {
+                        if (periodic[a]) {
+                            has_lo = has_hi = true;
+                            lo = (on == 0u ? nf[a] : on) - 1u;
+                            hi = (on == nf[a] ? 0u : on) + 1u;
+                        } else if (C[a] > 0u && C[a] < nc[a]) {
+                            has_lo = true;
+                            lo = on - 1u;
+                            has_hi = on + 1u < nf[a];  // not an odd axis's partial last cell
+                            hi = on + 1u;
                         }
                     }
-                    const float w = sum * inv;
+                    const float own = plane_mean(on, C);
+                    const float w = has_lo || has_hi ? series(has_lo, has_lo ? plane_mean(lo, C) : 0.0f, own, has_hi,
+                                                              has_hi ? plane_mean(hi, C) : 0.0f)
+                                                     : own;
                     c.w[a][I + std::size_t{cdim[0]} * (J + std::size_t{cdim[1]} * K)] = held ? 4.0f * w : w;
                 }
             }
@@ -344,7 +418,9 @@ void coarsen_weights(const PoissonLevel& f, PoissonLevel& c) {
 
 void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine) {
     for (uint32_t a = 0; a < 3; ++a) mg.levels[0].w[a].assign(fine[a].begin(), fine[a].end());
-    for (std::size_t l = 1; l < mg.levels.size(); ++l) coarsen_weights(mg.levels[l - 1], mg.levels[l]);
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        coarsen_weights(mg.levels[l - 1], mg.levels[l], mg.periodic, false);
+    }
 }
 
 void clear_weights(Multigrid& mg) {
@@ -355,7 +431,9 @@ void clear_weights(Multigrid& mg) {
     // Past the halving rule plan A's coarser levels carry the weights of
     // unit fine faces: a closed partner and a held axis are weights. The
     // finest keeps plan A's stencil and its fast paths.
-    for (std::size_t l = 1; l < mg.levels.size(); ++l) coarsen_weights(mg.levels[l - 1], mg.levels[l]);
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        coarsen_weights(mg.levels[l - 1], mg.levels[l], mg.periodic, true);  // the on-plane mean
+    }
 }
 
 std::array<uint32_t, 3> multigrid_coarsest(uint32_t nx, uint32_t ny, uint32_t nz,
