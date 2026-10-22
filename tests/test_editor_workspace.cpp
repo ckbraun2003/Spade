@@ -16,6 +16,7 @@
 #include <glm/glm.hpp>
 
 #include "../sandbox/editor_workspace.hpp"
+#include "../sandbox/pilot_keys.hpp"
 #include "analysis/case.hpp"
 #include "vehicles/propulsion_steady.hpp"
 #include "editor_test_support.hpp"
@@ -485,4 +486,46 @@ TEST(EditorPilot, AnEditWhileFlyingKeepsThePilotedDronesRotorsTurning) {
     w->advance(0.04f);
     const float idle = idle_speed(*w, quad);
     for (const float s : rotor_speeds(*w, quad)) EXPECT_GE(s, 0.8f * idle) << "carried, not spun down";
+}
+
+// The pilot's keys act only while Run flies a drone: not before Run, and not
+// when nothing is piloted (the window passes them only when ImGui doesn't
+// have the keyboard).
+TEST(EditorPilot, ThePilotsKeysActOnlyWhileRunFliesADrone) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    spade::sandbox::flight::PilotKeys space;
+    space.arm_pressed = true;
+    w->pilot_keys(space, 0.004f);
+    EXPECT_FALSE(w->panels().pilot.controls.armed) << "not running";
+
+    command(*w, Command::run);
+    ASSERT_TRUE(w->panels().pilot.vehicle.empty());
+    w->pilot_keys(space, 0.004f);
+    EXPECT_FALSE(w->panels().pilot.controls.armed) << "nothing piloted";
+    command(*w, Command::stop);
+
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    command(*w, Command::run);
+    ASSERT_EQ(w->panels().pilot.vehicle, quad);
+    w->pilot_keys(space, 0.004f);
+    EXPECT_TRUE(w->panels().pilot.controls.armed);
+}
+
+// The Pilot section's buttons: Arm toggles arming, Level levels the tilt.
+TEST(EditorPilot, TheArmAndLevelCommandsActOnThePilot) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    command(*w, Command::run);
+    ASSERT_EQ(w->panels().pilot.vehicle, quad);
+    command(*w, Command::arm);
+    EXPECT_TRUE(w->panels().pilot.controls.armed);
+    w->panels().pilot.controls.pitch_deg = -20.0f;
+    w->panels().pilot.controls.roll_deg = 5.0f;
+    command(*w, Command::level);
+    EXPECT_EQ(w->panels().pilot.controls.pitch_deg, 0.0f);
+    EXPECT_EQ(w->panels().pilot.controls.roll_deg, 0.0f);
+    command(*w, Command::arm);
+    EXPECT_FALSE(w->panels().pilot.controls.armed);
 }
