@@ -62,6 +62,7 @@ The rules of the end-goal checks hold here (`2026-10-19-end-goal-checks.md` §0)
   - The arm's 12 mm width shades from 60 to 96 mm out: 2.4%.
   - The motor, 28 mm across (0.18R), sits under its hub inside the probe disc: 3.4%.
 - **Band:** a floor of 0.10 of `1.894 v_h` at `R/dx` ≥ 2 (`kDownwashPresentInWind`). The magnitude is report-only in the 04 rows (§2).
+- **D1's run, 2026-10-22:** not measured: frames deleted before sampling (2026-10-22); to be re-run on the GPU solver. Never a pass or a fail (§2, "D1's run").
 
 ### D1-4. `cp-note-shown`: the C_p legend note
 
@@ -108,6 +109,13 @@ These come from `Videos\CATEGORIES.md`, not new checks:
 - **(c) Within the window,** an announced step is allowed while every one ends under 1e-3. That is P2's cold-solve bar (the solids design §3: `kSolidsCgIterations` was chosen so cold solves reach 1e-3 and warm ones 1e-4). The step's leftover divergence is then under a thousandth of its own. That is far inside D1-3's margin of 3.1× over its floor, and it can't move the arm-top C_p sign, which is a mean over at least 6 frames (Physics).
 - **(d) Over 1e-3 within the window,** D1-3 and the arm-top C_p row are mis-staged, not failed. The run is redone with a higher CG cap rather than judged.
 - **If the convergence log misses the window,** the record states "convergence not logged in this run", and (c) and (d) can't be judged. D1-3 and the arm-top C_p sign are still reported with their own verdicts, each with that limitation named beside it. Neither is passed silently. The same applies within the window when the count grows by more than one between two frames: the residuals between them are not logged, and the record names it.
+
+**D1's run, 2026-10-22** (exe `1f5fb1a`; 17 frames, 1492 steps, t = 0.567 s). The render ran before the arm-pressure pass without `--keep-cache`, and it deleted the frame cache. So neither the probe discs nor the arm-top samples in D1-3's window were taken. Cameron decided not to re-run until the GPU solver makes it quick (backlog, 2026-10-22). The video, the run line and the convergence log survive. Physics writes the record. This doc states what the checks above can say:
+- **D1-1 and D1-2** read the run line, which survives: `solids: 10 parts, 10 walls, 0 sheets`. They are judged from it, in Physics' record.
+- **D1-3 and the arm-top C_p row:** not measured: frames deleted before sampling (2026-10-22); to be re-run on the GPU solver. Never a pass or a fail. The downwash row's report-only magnitude has the same probe samples, so it has no value either.
+- **Unconverged pressure steps:** the rule has its evidence. `convergence.csv.recovered`, recovered from the run's log, shows no announced step within the window, and each frame's last residual is 2.2e-7 to 5.0e-7. So (c) holds and (d) doesn't arise.
+  - Its limit: the file holds each frame's last residual, not the largest residual among the steps between frames.
+  - The count covers those steps instead: any step over 1e-4 is announced and counted, and the count didn't grow in the window.
 
 ## 3. Red first
 
