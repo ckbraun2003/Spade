@@ -1180,8 +1180,11 @@ TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkInsideTheCap) {
 }
 
 // The solids' solve on odd grids and on a periodic ring that cannot halve to
-// an even one (held, semi-coarsened: the lead's condition 2), with the
-// sphere at the box's centre: every step reaches the mark inside the cap.
+// an even one (30, 2 mod 4): held, semi-coarsened, never given a closed face
+// (the lead's condition 2). An odd ring never reaches the solver: check_shape()
+// refuses it by name (red-black colouring needs an even ring, since plan A's
+// Task 1), pinned below. The sphere at the box's centre: every step reaches
+// the mark inside the cap.
 TEST(AirflowSolidsStep, TheSolidsSolveConvergesOnOddGridsAndAHeldPeriodicRing) {
     struct Case {
         uint32_t nx, ny, nz;
@@ -1281,6 +1284,13 @@ TEST(AirflowSolidsStep, TheHierarchyCoarsensOddAxesAndNamesAShallowOne) {
     EXPECT_EQ(make_multigrid(240, 177, 168).levels.size(), 7u);
     EXPECT_EQ(coarsest(224, 168, 160), (std::array<uint32_t, 3>{7, 6, 5}));
     EXPECT_EQ(coarsest(48, 30, 48, {false, true, false}), (std::array<uint32_t, 3>{3, 30, 3}));  // y held
+    // An odd periodic ring is refused before any hierarchy is built.
+    DomainBc odd_ring;
+    odd_ring.face[kYMinus] = odd_ring.face[kYPlus] = FaceBc::periodic;
+    const auto refused = check_shape({48, 47, 48, 0.01f}, odd_ring);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("periodic axis y must have an even size"), std::string::npos)
+        << refused.error().context;
     EXPECT_EQ(multigrid_plan_a_weight_faces(48, 48, 48), 0u);
     EXPECT_GT(multigrid_plan_a_weight_faces(48, 47, 48), 0u);
     DomainBc ring;
