@@ -114,12 +114,27 @@ LiveRun, drone held (design decision 1), until P2b.
         - C8 at +6.0% leaves only 4% of headroom.
 
         The body-in case stays with `downwash` (±25%). One body-in run, report only and with no band, may run in a quiet window. A band ever set from it is a regression band (it catches change), never a validation band (01).
-    - The band: each rotor within C8's 10%, and the four within 10% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the mutual band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run).
+    - **The bands, as changed on 2026-10-22.** This is Physics' proposal with the lead's approval. It was made after the first ensemble's MISS, and before the new banded measure's first run.
+      - **Banded: rotor 0 alone,** in the quad's own `LiveRun` case: cff9429's box, seeds and window.
+        - The hover throttle is trimmed on the four-rotor model, so rotor 0 spins as it does in the quad.
+        - Rotors 1 to 3 push nothing. Their thrust coefficient is the least normal float, since a model refuses 0, and their torque is 0.
+        - Rotor 0 keeps its own torque, as it flies, so the path tests the swirl too.
+        - The reference is momentum theory's v_h (1 + 2/√5), and the band is C8's [0.9, 1.1]: the same disc and the same measure as C8.
+        - It hasn't run with its torque yet. The only number so far is torque-free: 1.0617. Physics expects about 4% lower with the swirl, inside the band. That is an expectation, not a measure.
+      - **Report only: each rotor's ratio in the four-rotor quad,** recorded as the four wakes' interference. It has no closed-form reference. Per-rotor momentum theory assumes an isolated wake, and with the rotor tips 0.9R apart the four wakes draw together. A "quad reference" written now would be fitted to our own result, so none is set (01).
+      - **Banded, unchanged: the symmetry band,** the four rotors within 10% of their mean, in the four-rotor runs. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run). It held at 0.0009.
+      - **Why** (the record, `c8q-reference-quad.md`):
+        - The first ensemble, at cff9429, read every rotor at 0.816 to 0.817 of momentum theory. That is a MISS, and the record keeps it as it came.
+        - Two diagnostics, report only. Without the discs' torque, the four read 0.846 to 0.857, so the swirl accounts for about 4%. Rotor 0 alone, without torque, read 1.0617, C8's +5.7% within half a percent.
+        - So the engine's disc path stands, and the deficit is the four wakes interacting.
+        - The reference stays momentum theory and the band stays C8's. Nothing was widened or shifted to take in the 0.81.
+      - **What C8q no longer claims:** the quad's four-rotor downwash is reported, not validated against a reference. The validation claim is the per-rotor path through `LiveRun`: the model's rotor rows, their discs, the fluid, the published volume and the probe, at C8's accuracy.
+      - **Was** (2026-10-19 to 2026-10-22): each of the four rotors within C8's 10%, and the four within 10% of their mean.
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`. The record also reports the observed mutual spread, (max − min) / mean of the four rotors' means, as a number. Any later tightening is then set in advance from evidence: for example, a run at a 0.5 s window with its band fixed before it runs (the lead, 2026-10-19).
     - **Its verdict is an ensemble's** (the lead, 2026-10-22, before its first run; 01-verification, "A case judged past its horizon"; `2026-10-22-c8-spread.md`). The window lies past the wake's horizon `T_p`, so one run is one trajectory, and on C8 a 1-ulp nudge moved a one-run verdict across the band.
       - Four runs that differ only by a nudge in the test, as C8's: run 0 as it is, and three with 1 ulp up on 110 of the discs' increments, each from its own seed, all fixed before the first run. The nudge goes in through `LiveRun::set_test_increment_nudge()`, a test-only hook that is never saved and leaves an unset run the same to the bit (the lead's grant, on Interface's review, 2026-10-22).
       - Four, not C8's eight, because each run is about 35 minutes. On C8 the 0.5R disc's spread across 16 runs was an sd of 0.38% (`2026-10-22-c8-spread.md`), against a 10% band.
-      - Both bands must hold on the ensemble's mean (each rotor's mean over the four runs) and on the worst run. The record reports each rotor's spread across the runs.
+      - Each banded measure must hold on the ensemble's mean and on the worst run. That is rotor 0 alone over its four runs, and the symmetry band over the four-rotor runs (the lead, 2026-10-22). So C8q runs two ensembles of four, rotor 0 alone and the quad, each about 19 minutes on four threads. The record reports each rotor's spread across the runs.
     - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release, per run. That is an estimate: two steps are timed in one short job before the ensemble's job is sized (the lead, 2026-10-22). Timed: 1.77 s a step, so about 16 minutes for a run's 526 steps. A stopped job is re-queued whole. A run resumes from its save only where the job itself resumes from one, as D1's film does; C8q's job doesn't (the lead, 2026-10-22).
     - Falling outside 10% is a finding for Physics, not a change to the band.
 - **downwash-present** (on screen, 32³), the cheap a-priori check on the live view. For each rotor i:
@@ -191,4 +206,4 @@ These go on a Test/Docs branch, against stubs, before each feature lands. Batch 
 
 - **Interface:** agree on the predicates' home. Each end-goal step exposes the per-frame observables above (body state, rotor ω and thrust, the pick point and the posed parts) to the predicate.
 - **Physics:** confirm that k_T ω² is the right T for momentum theory here (P7a's static value, exact in hover), and review the downwash reasoning in §5.
-- **The lead:** decided, 2026-10-19: ±25% on screen, as a coupling check; C8q at C8's 10% for validation.
+- **The lead:** decided, 2026-10-19: ±25% on screen, as a coupling check; C8q at C8's 10% for validation. Changed 2026-10-22, on Physics' proposal: C8q's banded measure is rotor 0 alone in the quad's case, the quad's per-rotor ratios are report only, and the symmetry band stays (§5).
