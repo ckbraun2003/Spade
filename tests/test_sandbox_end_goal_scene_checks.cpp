@@ -550,6 +550,24 @@ TEST(SandboxEndGoalImport, NamesAnUnnamedMeshByItsFilesStem) {
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
+// read_gltf names an object by its node first, then its mesh
+// (engine/world/mesh_import/gltf.cpp), and the editor shows that name, so the
+// node's name decides when it has one (Interface, N15, 2026-10-22).
+TEST(SandboxEndGoalImport, TakesTheNodesNameBeforeTheMeshs) {
+    eg::ImportShown m = good_import();
+    m.node_name = "bench_left";
+    m.shown_name = "bench_left";
+    const eg::Verdict v = eg::import_named(m);
+    EXPECT_TRUE(v.ok) << v.detail;
+    m.shown_name = "bench";  // the mesh's name, where the node has its own
+    const eg::Verdict mesh = eg::import_named(m);
+    EXPECT_TRUE(judged_fail(mesh)) << mesh.detail;
+    m.mesh_name.clear();  // a named node over an unnamed mesh
+    m.shown_name = "bench_left";
+    const eg::Verdict node = eg::import_named(m);
+    EXPECT_TRUE(node.ok) << node.detail;
+}
+
 TEST(SandboxEndGoalImport, FailsAWrongNameOrSourceOrSidecar) {
     eg::ImportShown wrong_name = good_import();
     wrong_name.shown_name = "Mesh";

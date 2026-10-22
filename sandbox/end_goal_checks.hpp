@@ -1256,6 +1256,7 @@ namespace detail {
 
 struct ImportShown {
     std::string shown_name;    // what the editor names the imported object
+    std::string node_name;     // the glTF node's own name; empty when it has none
     std::string mesh_name;     // the glTF mesh's own name; empty when it has none
     std::string file;          // the path imported
     std::string shown_source;  // what the editor shows as its source
@@ -1268,8 +1269,12 @@ struct ImportShown {
 
 [[nodiscard]] inline Verdict import_named(const ImportShown& m) {
     const std::string name = "import-named: ";
-    const std::string expected = m.mesh_name.empty() ? std::filesystem::path(m.file).stem().string() : m.mesh_name;
-    if (expected.empty()) return {false, name + "absent: neither the mesh nor the file gives a name"};
+    // read_gltf's order, as the editor shows it: the node's name, then the
+    // mesh's; the editor names one with neither by the file's stem.
+    const std::string expected = !m.node_name.empty()   ? m.node_name
+                                 : !m.mesh_name.empty() ? m.mesh_name
+                                                        : std::filesystem::path(m.file).stem().string();
+    if (expected.empty()) return {false, name + "absent: neither the node, the mesh nor the file gives a name"};
     if (m.gltf_triangles == 0) return {false, name + "absent: read_gltf read no triangles"};
     if (m.shown_name != expected) return {false, name + "named '" + m.shown_name + "', not '" + expected + "'"};
     if (m.shown_source != m.file) {
