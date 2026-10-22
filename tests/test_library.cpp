@@ -603,6 +603,166 @@ TEST(Library, AThumbnailIsOptionalAndFollowsTheFilesPathRule) {
 }
 
 // ===========================================================================
+// Writing (library_to_yaml): Save to library (EDT-020)
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] LibraryEntry entry_of(std::string name, std::string category, std::string file, std::string thumbnail,
+                                    LibraryKind kind) {
+    LibraryEntry e;
+    e.name = std::move(name);
+    e.category = std::move(category);
+    e.file = std::move(file);
+    e.thumbnail = std::move(thumbnail);
+    e.kind = kind;
+    return e;
+}
+
+// Read back equal: every field of every entry, in order.
+void expect_same_entries(const Library& written, const Library& read) {
+    ASSERT_EQ(read.entries.size(), written.entries.size());
+    for (std::size_t i = 0; i < written.entries.size(); ++i) {
+        SCOPED_TRACE("entry " + std::to_string(i));
+        EXPECT_EQ(read.entries[i].name, written.entries[i].name);
+        EXPECT_EQ(read.entries[i].category, written.entries[i].category);
+        EXPECT_EQ(read.entries[i].file, written.entries[i].file);
+        EXPECT_EQ(read.entries[i].thumbnail, written.entries[i].thumbnail);
+        EXPECT_EQ(read.entries[i].kind, written.entries[i].kind);
+    }
+}
+
+// Writes `library`, reads it back equal, and writes that again to the same
+// text (canonical). The text, or empty after a failure.
+[[nodiscard]] std::string round_trip(const Library& library) {
+    const spade::Result<std::string> text = spade::scene::library_to_yaml(library);
+    EXPECT_OK(text);
+    if (!text) return {};
+    const spade::Result<Library> back = spade::scene::library_from_yaml(*text);
+    EXPECT_OK(back);
+    if (!back) return {};
+    expect_same_entries(library, *back);
+    EXPECT_TRUE(back->dir.empty());
+    const spade::Result<std::string> again = spade::scene::library_to_yaml(*back);
+    EXPECT_OK(again);
+    if (again) {
+        EXPECT_EQ(*again, *text) << "the text is not canonical";
+    }
+    return *text;
+}
+
+[[nodiscard]] std::size_t count_of(const std::string& text, std::string_view needle) {
+    std::size_t n = 0;
+    for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+    return n;
+}
+
+void expect_write_refused(const Library& library, std::string_view needle) {
+    const spade::Result<std::string> r = spade::scene::library_to_yaml(library);
+    EXPECT_EQ(code_of(r), code(spade::Code::invalid_argument)) << why(r);
+    EXPECT_EQ(why(r).rfind("library_to_yaml: ", 0), 0u) << why(r);
+    EXPECT_NE(why(r).find(needle), std::string::npos) << "missing '" << needle << "' in: " << why(r);
+}
+
+[[nodiscard]] Library two_objects() {
+    Library library;
+    library.entries = {entry_of("Box", "Obstacles", "obstacles/box.object.yaml", "", LibraryKind::object),
+                       entry_of("Gate", "Obstacles", "obstacles/gate.object.yaml", "thumbnails/gate.png",
+                                LibraryKind::object)};
+    return library;
+}
+
+}  // namespace
+
+TEST(LibraryText, AVersion1IndexWritesCanonicalTextThatReadsBackEqual) {
+    Library library;
+    library.dir = "somewhere/else";
+    library.entries = {
+        entry_of("Reference quad", "Drones", "drones/reference_quad.model.yaml", "thumbnails/reference_quad.png",
+                 LibraryKind::model),
+        // Every string is double-quoted, so text the plain style would
+        // misread (an alias, a comment, a quote, a key) reads back as written.
+        entry_of("*not an alias: \"quoted\" #1", "Props & obstacles", "obstacles/gate.object.yaml", "",
+                 LibraryKind::object),
+        entry_of("Caf\xc3\xa9 2", "Tab\there", "obstacles/box.object.yaml", "", LibraryKind::object),
+    };
+    const std::string text = round_trip(library);
+    EXPECT_NE(text.find("\nlibrary_version: 1\n"), std::string::npos) << text;
+    EXPECT_NE(text.find("entries:\n"
+                        "  - name: \"Reference quad\"\n"
+                        "    category: \"Drones\"\n"
+                        "    file: \"drones/reference_quad.model.yaml\"\n"
+                        "    thumbnail: \"thumbnails/reference_quad.png\"\n"
+                        "  - name: "),
+              std::string::npos)
+        << text;
+    // A thumbnail only where the entry has one; dir is not the text's.
+    EXPECT_EQ(count_of(text, "thumbnail:"), 1u) << text;
+    EXPECT_EQ(text.find("somewhere"), std::string::npos) << text;
+    EXPECT_EQ(text.find('\r'), std::string::npos) << "LF only, as the scene's files";
+}
+
+TEST(LibraryText, APartEntryWritesVersion2AndNoEntriesWritesAnEmptySequence) {
+    Library library;
+    library.entries = {
+        entry_of("Quad", "Drones", "drones/quad.model.yaml", "", LibraryKind::model),
+        entry_of("Motor", "Motors", "parts/m.motor.yaml", "thumbnails/m.png", LibraryKind::motor),
+        entry_of("Prop", "Props", "parts/p.prop.yaml", "", LibraryKind::prop),
+        entry_of("ESC", "ESCs", "parts/e.esc.yaml", "", LibraryKind::esc),
+        entry_of("Pack", "Batteries", "parts/b.battery.yaml", "", LibraryKind::battery),
+    };
+    EXPECT_NE(round_trip(library).find("\nlibrary_version: 2\n"), std::string::npos);
+
+    // The lowest version that holds the entries: without the parts, 1.
+    library.entries.resize(1);
+    EXPECT_NE(round_trip(library).find("\nlibrary_version: 1\n"), std::string::npos);
+
+    // No entries is an empty sequence, which reads back as none.
+    const std::string none = round_trip(Library{});
+    EXPECT_NE(none.find("\nentries: []\n"), std::string::npos) << none;
+}
+
+TEST(LibraryText, TheCommittedIndexReadsBackEqual) {
+    const spade::Result<Library> committed = spade::scene::load_library(library_dir() / "library.yaml");
+    ASSERT_OK(committed);
+    ASSERT_FALSE(committed->entries.empty());
+    (void)round_trip(*committed);
+}
+
+TEST(LibraryText, WhatTheReaderWouldRefuseIsRefusedByName) {
+    Library empty_name = two_objects();
+    empty_name.entries[0].name.clear();
+    expect_write_refused(empty_name, "entries[0].name must not be empty");
+
+    Library twin = two_objects();
+    twin.entries[1].name = "BOX";
+    expect_write_refused(twin, "entries[1].name 'BOX' is entries[0]'s name 'Box' ignoring case");
+
+    Library outside = two_objects();
+    outside.entries[0].file = "../box.object.yaml";
+    expect_write_refused(outside, "entries[0].file '../box.object.yaml' must not have a '..' segment");
+
+    Library unknown = two_objects();
+    unknown.entries[0].file = "obstacles/box.yaml";
+    expect_write_refused(unknown, "entries[0].file 'obstacles/box.yaml' must end in");
+
+    Library backslash = two_objects();
+    backslash.entries[1].thumbnail = "thumbnails\\gate.png";
+    expect_write_refused(backslash, "entries[1].thumbnail 'thumbnails\\gate.png' must use forward slashes");
+
+    // A kind that is not its file's would read back as the file's.
+    Library wrong_kind = two_objects();
+    wrong_kind.entries[0].kind = LibraryKind::model;
+    expect_write_refused(wrong_kind,
+                         "entries[0].kind is a model, but its file 'obstacles/box.object.yaml' makes it an object");
+    Library part_named_model = two_objects();
+    part_named_model.entries[1].kind = LibraryKind::prop;
+    expect_write_refused(part_named_model,
+                         "entries[1].kind is a prop part, but its file 'obstacles/gate.object.yaml' makes it an "
+                         "object");
+}
+
+// ===========================================================================
 // On disk (load_library, load_library_model, load_library_object)
 // ===========================================================================
 

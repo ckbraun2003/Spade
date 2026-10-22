@@ -266,6 +266,11 @@ Result<Library> library_from_yaml(std::string_view text) {
     return parse_text(text);
 }
 
+Result<std::string> library_to_yaml(const Library& library) {
+    (void)library;
+    return std::unexpected(Error{Code::internal, "library_to_yaml: not written yet"});
+}
+
 Result<Library> load_library(const std::filesystem::path& path) {
     std::string text;
     try {
