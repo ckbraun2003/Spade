@@ -45,6 +45,8 @@ struct FluidRegions {
     std::vector<double> flux;      // per region, this step: the net outward prescribed flux, m^3/s
     std::vector<double> magnitude;
     std::vector<float> total;      // per region: the masked sums, then the means
+    std::vector<float> block;      // per region: the current block's partial sum
+    std::vector<uint8_t> in_block; // per region: met in the current block
     std::vector<float> tile;       // per region: one tile's partial sum
     std::vector<uint8_t> mark;     // per region: met in the current tile
     std::vector<uint32_t> touched; // the regions the current tile met, in first-met order
@@ -71,10 +73,14 @@ struct RegionFault {
                                         const SolidField& f) noexcept;
 
 // x -= each closed region's mean over its own cells. A region's sum is
-// reduce.hpp's fixed tiles restricted to its cells: each tile's cells of that
-// region in (k, j, i) order from 0, the tiles' partial sums in (tk, tj, ti)
-// order, all in fp32; the mean is the sum times the host's reciprocal of its
-// cell count, subtracted in array order. Pinned regions are left alone.
+// reduce.hpp's two-level order restricted to its cells: each tile's cells of
+// that region in (k, j, i) order from 0; each block of kReduceBlockTiles
+// consecutive tiles (the grid's blocks, whatever the region) adds the tile
+// partials it has of the region from 0 in tile order; the block sums the
+// region has are added from 0 in block order; all in fp32. A tile or block
+// without the region's cells adds nothing to it. The mean is the sum times
+// the host's reciprocal of its cell count, subtracted in array order. Pinned
+// regions are left alone.
 void remove_region_means(std::span<float> x, FluidRegions& r, const GridShape& s) noexcept;
 
 // "fluid regions: N (K with an outlet, M closed)", from the last check_regions().

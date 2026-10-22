@@ -97,6 +97,8 @@ void label_regions(FluidRegions& r, const GridShape& s, std::array<bool, 3> peri
     r.flux.assign(r.count, 0.0);
     r.magnitude.assign(r.count, 0.0);
     r.total.assign(r.count, 0.0f);
+    r.block.assign(r.count, 0.0f);
+    r.in_block.assign(r.count, 0u);
     r.tile.assign(r.count, 0.0f);
     r.mark.assign(r.count, 0u);
     r.touched.assign(std::size_t{kReduceTile} * kReduceTile * kReduceTile, 0u);
@@ -150,6 +152,18 @@ RegionFault check_regions(FluidRegions& r, const GridShape& s, const DomainBc& b
 
 void remove_region_means(std::span<float> x, FluidRegions& r, const GridShape& s) noexcept {
     std::fill(r.total.begin(), r.total.end(), 0.0f);
+    std::fill(r.block.begin(), r.block.end(), 0.0f);
+    std::fill(r.in_block.begin(), r.in_block.end(), uint8_t{0});
+    // The block's sums into the totals, for each region the block met.
+    const auto end_block = [&r]() noexcept {
+        for (uint32_t id = 0; id < r.count; ++id) {
+            if (r.in_block[id] == 0u) continue;
+            r.total[id] += r.block[id];
+            r.block[id] = 0.0f;
+            r.in_block[id] = 0u;
+        }
+    };
+    uint32_t tiles_in_block = 0;
     for (uint32_t tk = 0; tk < s.nz; tk += kReduceTile) {
         const uint32_t k_end = std::min(tk + kReduceTile, s.nz);
         for (uint32_t tj = 0; tj < s.ny; tj += kReduceTile) {
@@ -173,13 +187,19 @@ void remove_region_means(std::span<float> x, FluidRegions& r, const GridShape& s
                 }
                 for (std::size_t m = 0; m < met; ++m) {
                     const uint32_t id = r.touched[m];
-                    r.total[id] += r.tile[id];
+                    r.block[id] += r.tile[id];
+                    r.in_block[id] = 1u;
                     r.tile[id] = 0.0f;
                     r.mark[id] = 0u;
+                }
+                if (++tiles_in_block == kReduceBlockTiles) {
+                    end_block();
+                    tiles_in_block = 0;
                 }
             }
         }
     }
+    end_block();  // the last block, holding the rest
     for (uint32_t id = 0; id < r.count; ++id) {
         if (r.closed[id] == 0u) continue;
         r.total[id] *= static_cast<float>(1.0 / static_cast<double>(r.cells[id]));  // the host's reciprocal

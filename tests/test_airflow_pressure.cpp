@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -286,11 +287,18 @@ TEST(AirflowProjection, AClosedBoxsPressureIsRepeatableWithZeroMean) {
 
 
 // THE FIXED-ORDER REDUCTION (spec §4.5 as amended 2026-10-12; Core's stage 7
-// design §5.5): 4x4x4 tiles, each summed in (k, j, i) order from 0, then the
-// tiles in (tk, tj, ti) order from 0, all in fp32. This is its definition,
-// written out independently of reduce.cpp; the GPU twin sums the same way.
-[[nodiscard]] float tile_sum_by_definition(const std::vector<float>& x, uint32_t nx, uint32_t ny, uint32_t nz) {
-    float total = 0.0f;
+// design §5.5; the two-level order, Cameron 2026-10-22): 4x4x4 tiles, each
+// summed in (k, j, i) order from 0; blocks of 256 consecutive tiles in
+// (tk, tj, ti) order (the last holds the rest), each block's tile sums from 0
+// in tile order; then the block sums from 0 in block order, all in fp32. This
+// is its definition, written out independently of reduce.hpp, with its own
+// 256; the GPU twin sums the same way.
+constexpr std::size_t kDefinitionBlockTiles = 256;
+
+// Each tile's sum from 0 in (k, j, i) order, the tiles in (tk, tj, ti) order.
+[[nodiscard]] std::vector<float> tile_sums_by_definition(const std::vector<float>& x, uint32_t nx, uint32_t ny,
+                                                         uint32_t nz) {
+    std::vector<float> out;
     for (uint32_t tk = 0; tk < nz; tk += 4u) {
         for (uint32_t tj = 0; tj < ny; tj += 4u) {
             for (uint32_t ti = 0; ti < nx; ti += 4u) {
@@ -302,46 +310,116 @@ TEST(AirflowProjection, AClosedBoxsPressureIsRepeatableWithZeroMean) {
                         }
                     }
                 }
-                total += tile;
+                out.push_back(tile);
             }
         }
+    }
+    return out;
+}
+
+[[nodiscard]] float tile_sum_by_definition(const std::vector<float>& x, uint32_t nx, uint32_t ny, uint32_t nz) {
+    const std::vector<float> tiles = tile_sums_by_definition(x, nx, ny, nz);
+    float total = 0.0f;
+    for (std::size_t first = 0; first < tiles.size(); first += kDefinitionBlockTiles) {
+        float block = 0.0f;
+        for (std::size_t t = first; t < std::min(first + kDefinitionBlockTiles, tiles.size()); ++t) block += tiles[t];
+        total += block;
     }
     return total;
 }
 
+// B1's order, before B5.1: the tile sums from 0 in tile order, one chain.
+[[nodiscard]] float serial_tile_sum(const std::vector<float>& x, uint32_t nx, uint32_t ny, uint32_t nz) {
+    float total = 0.0f;
+    for (const float tile : tile_sums_by_definition(x, nx, ny, nz)) total += tile;
+    return total;
+}
+
+[[nodiscard]] std::vector<float> lcg_field(std::size_t cells) {
+    std::vector<float> x(cells);
+    Lcg rng;
+    for (float& v : x) v = 1000.0f * rng.next();
+    return x;
+}
+
+// One block (8^3, 6x5x3, 16x16x1, and 32x32x16, exactly 256 tiles), whole
+// blocks (64x64x20, 1280 tiles: 5), and a ragged last block with ragged tiles
+// (61x45x43, 2112 tiles: 8 blocks and 64 tiles). Mutations: the block 128 in
+// reduce.hpp; the last ragged block dropped; B1's serial order.
 TEST(AirflowReduce, TheFixedTileSumIsItsDefinitionBitForBit) {
     for (const std::array<uint32_t, 3>& n :
-         {std::array<uint32_t, 3>{8, 8, 8}, std::array<uint32_t, 3>{6, 5, 3}, std::array<uint32_t, 3>{16, 16, 1}}) {
-        std::vector<float> x(std::size_t{n[0]} * n[1] * n[2]);
-        Lcg rng;
-        for (float& v : x) v = 1000.0f * rng.next();
+         {std::array<uint32_t, 3>{8, 8, 8}, std::array<uint32_t, 3>{6, 5, 3}, std::array<uint32_t, 3>{16, 16, 1},
+          std::array<uint32_t, 3>{32, 32, 16}, std::array<uint32_t, 3>{64, 64, 20},
+          std::array<uint32_t, 3>{61, 45, 43}}) {
+        const std::vector<float> x = lcg_field(std::size_t{n[0]} * n[1] * n[2]);
         EXPECT_EQ(fixed_tile_sum(x, n[0], n[1], n[2]), tile_sum_by_definition(x, n[0], n[1], n[2]))
             << n[0] << "x" << n[1] << "x" << n[2];
     }
 }
 
+// THE BLOCK RULE ITSELF (B5.1): a grid of at most kReduceBlockTiles = 256
+// tiles is one block, so its sum is B1's serial chain bit for bit (why no
+// golden of a grid that small moved); a larger grid adds its blocks of 256
+// tiles, then the block sums, and so differs from B1's chain (32^3: 2 blocks;
+// 61x45x43: 8 blocks and 64 tiles). Mutations: the block 128 (32x32x16, 256
+// tiles, leaves B1's chain); B1's serial order (the larger grids keep it).
+TEST(AirflowReduce, AtMostOneBlockOfTilesIsB1sChainAndALargerGridAddsItsBlockSums) {
+    EXPECT_EQ(kReduceBlockTiles, 256u) << "the block is Cameron's 256 tiles (2026-10-22)";
+    for (const std::array<uint32_t, 3>& n :
+         {std::array<uint32_t, 3>{5, 7, 9}, std::array<uint32_t, 3>{16, 16, 16}, std::array<uint32_t, 3>{32, 32, 16}}) {
+        SCOPED_TRACE(std::to_string(n[0]) + "x" + std::to_string(n[1]) + "x" + std::to_string(n[2]));
+        const std::vector<float> x = lcg_field(std::size_t{n[0]} * n[1] * n[2]);
+        ASSERT_LE(tile_sums_by_definition(x, n[0], n[1], n[2]).size(), kDefinitionBlockTiles);
+        EXPECT_EQ(fixed_tile_sum(x, n[0], n[1], n[2]), serial_tile_sum(x, n[0], n[1], n[2]));
+    }
+    for (const std::array<uint32_t, 3>& n : {std::array<uint32_t, 3>{32, 32, 32}, std::array<uint32_t, 3>{61, 45, 43}}) {
+        SCOPED_TRACE(std::to_string(n[0]) + "x" + std::to_string(n[1]) + "x" + std::to_string(n[2]));
+        const std::vector<float> x = lcg_field(std::size_t{n[0]} * n[1] * n[2]);
+        const std::vector<float> tiles = tile_sums_by_definition(x, n[0], n[1], n[2]);
+        ASSERT_GT(tiles.size(), kDefinitionBlockTiles);
+        // The blocks' sums, each from 0, then added from 0 in block order.
+        std::vector<float> blocks;
+        for (std::size_t first = 0; first < tiles.size(); first += kDefinitionBlockTiles) {
+            float b = 0.0f;
+            for (std::size_t t = first; t < std::min(first + kDefinitionBlockTiles, tiles.size()); ++t) b += tiles[t];
+            blocks.push_back(b);
+        }
+        float total = 0.0f;
+        for (const float b : blocks) total += b;
+        const float sum = fixed_tile_sum(x, n[0], n[1], n[2]);
+        const float serial = serial_tile_sum(x, n[0], n[1], n[2]);
+        std::printf("[AirflowReduce] %ux%ux%u: %zu tiles in %zu blocks: two-level %.9g, B1's chain %.9g\n", n[0], n[1],
+                    n[2], tiles.size(), blocks.size(), static_cast<double>(sum), static_cast<double>(serial));
+        EXPECT_EQ(sum, total);
+        EXPECT_NE(sum, serial) << "past one block the sum is not B1's chain (or the data does not tell them apart)";
+    }
+}
+
 // fixed_tile_sum_of() (P3, Task 1) with a glm::vec3 sums each component in
 // the definition's order, bit for bit, and hands the cell its own (i, j, k)
-// with its array index. Ragged tiles on every axis.
+// with its array index. Ragged tiles on every axis, in one block (5x7x9) and
+// in three blocks, the last ragged (36^3: 729 tiles).
 TEST(AirflowReduce, AVectorTileSumIsThreeDefinitionSumsBitForBit) {
-    const uint32_t nx = 5;
-    const uint32_t ny = 7;
-    const uint32_t nz = 9;
-    std::array<std::vector<float>, 3> x;
-    Lcg rng;
-    for (std::vector<float>& c : x) {
-        c.resize(std::size_t{nx} * ny * nz);
-        for (float& v : c) v = 1000.0f * rng.next();
-    }
-    uint32_t misplaced = 0;
-    const glm::vec3 sum = spade::physics::airflow::fixed_tile_sum_of<glm::vec3>(
-        nx, ny, nz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t idx) {
-            misplaced += idx == i + std::size_t{nx} * (j + std::size_t{ny} * k) ? 0u : 1u;
-            return glm::vec3(x[0][idx], x[1][idx], x[2][idx]);
-        });
-    EXPECT_EQ(misplaced, 0u);
-    for (std::size_t c = 0; c < 3; ++c) {
-        EXPECT_EQ(sum[static_cast<glm::length_t>(c)], tile_sum_by_definition(x[c], nx, ny, nz)) << c;
+    for (const std::array<uint32_t, 3>& n : {std::array<uint32_t, 3>{5, 7, 9}, std::array<uint32_t, 3>{36, 36, 36}}) {
+        const uint32_t nx = n[0];
+        const uint32_t ny = n[1];
+        const uint32_t nz = n[2];
+        std::array<std::vector<float>, 3> x;
+        Lcg rng;
+        for (std::vector<float>& c : x) {
+            c.resize(std::size_t{nx} * ny * nz);
+            for (float& v : c) v = 1000.0f * rng.next();
+        }
+        uint32_t misplaced = 0;
+        const glm::vec3 sum = spade::physics::airflow::fixed_tile_sum_of<glm::vec3>(
+            nx, ny, nz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t idx) {
+                misplaced += idx == i + std::size_t{nx} * (j + std::size_t{ny} * k) ? 0u : 1u;
+                return glm::vec3(x[0][idx], x[1][idx], x[2][idx]);
+            });
+        EXPECT_EQ(misplaced, 0u) << nx;
+        for (std::size_t c = 0; c < 3; ++c) {
+            EXPECT_EQ(sum[static_cast<glm::length_t>(c)], tile_sum_by_definition(x[c], nx, ny, nz)) << nx << ": " << c;
+        }
     }
 }
 

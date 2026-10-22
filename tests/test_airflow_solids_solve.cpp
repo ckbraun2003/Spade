@@ -464,6 +464,87 @@ TEST(AirflowRegions, EachClosedRegionLosesItsOwnMean) {
     EXPECT_NEAR(mean[1] / r.cells[1], 0.0, 1.0e-5);
 }
 
+// B5.1's two-level order per region (regions.hpp), spelled out here: a
+// 61x45x43 box (2112 tiles: 8 blocks of 256 and 64 more, ragged tiles on
+// every far edge) cut by a sheet on face plane x = 21 into two closed
+// regions, so the tiles at ti = 5 hold both. Each region's sum is its cells'
+// tile partials from 0 in (k, j, i), each block's partials of it from 0 in
+// tile order, and its block sums from 0 in block order; the means and x after
+// remove_region_means() are those bits. Mutation: B1's order (each region's
+// tile partials in one chain).
+TEST(AirflowRegions, EachRegionSumsItsTilesInBlocksOf256) {
+    const GridShape shape{61, 45, 43, 1.0f};
+    airflow_test::Scene scene;
+    scene.shapes.push_back(airflow_test::Shape{.name = "divider", .kind = airflow_test::Kind::box,
+                                               .centre = {21.0f, 22.5f, 21.5f}, .half = {0.125f, 40.0f, 40.0f},
+                                               .min_feature = 0.25f});
+    SolidField f = *make_solid_field(shape);
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(0.25f, 45.0f, 43.0f);
+    ASSERT_TRUE(build_solids(f, shape, {}, parts, scene.sampler()).has_value());
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    ASSERT_EQ(r.count, 2u);
+    ASSERT_EQ(r.cells[0], 21u * 45u * 43u);
+    ASSERT_EQ(r.cells[1], 40u * 45u * 43u);
+    ASSERT_EQ(check_regions(r, shape, walls(), f).region, kNoRegion);
+
+    std::vector<float> x(std::size_t{shape.nx} * shape.ny * shape.nz);
+    Lcg rng;
+    for (std::size_t c = 0; c < x.size(); ++c) x[c] = 1000.0f * rng.next() + (r.label[c] == 0u ? 3000.0f : -1000.0f);
+
+    // The definition.
+    std::array<float, 2> sum{};
+    std::array<float, 2> chain{};  // B1's order
+    std::array<float, 2> block{};
+    std::array<bool, 2> block_met{};
+    std::size_t tiles = 0;
+    for (uint32_t tk = 0; tk < shape.nz; tk += 4u) {
+        for (uint32_t tj = 0; tj < shape.ny; tj += 4u) {
+            for (uint32_t ti = 0; ti < shape.nx; ti += 4u) {
+                std::array<float, 2> tile{};
+                std::array<bool, 2> met{};
+                for (uint32_t k = tk; k < std::min(tk + 4u, shape.nz); ++k) {
+                    for (uint32_t j = tj; j < std::min(tj + 4u, shape.ny); ++j) {
+                        for (uint32_t i = ti; i < std::min(ti + 4u, shape.nx); ++i) {
+                            const std::size_t c = cell_index(shape, i, j, k);
+                            tile[r.label[c]] += x[c];
+                            met[r.label[c]] = true;
+                        }
+                    }
+                }
+                for (std::size_t id = 0; id < 2; ++id) {
+                    if (!met[id]) continue;
+                    block[id] += tile[id];
+                    block_met[id] = true;
+                    chain[id] += tile[id];
+                }
+                if (++tiles % 256u == 0u || (tk + 4u >= shape.nz && tj + 4u >= shape.ny && ti + 4u >= shape.nx)) {
+                    for (std::size_t id = 0; id < 2; ++id) {
+                        if (block_met[id]) sum[id] += block[id];
+                        block[id] = 0.0f;
+                        block_met[id] = false;
+                    }
+                }
+            }
+        }
+    }
+    ASSERT_EQ(tiles, 2112u);
+    std::array<float, 2> mean{};
+    std::vector<float> expected = x;
+    for (std::size_t id = 0; id < 2; ++id) {
+        const auto inv = static_cast<float>(1.0 / static_cast<double>(r.cells[id]));
+        mean[id] = sum[id] * inv;
+        EXPECT_NE(mean[id], chain[id] * inv) << "region " << id << ": the data does not tell the orders apart";
+    }
+    for (std::size_t c = 0; c < x.size(); ++c) expected[c] -= mean[r.label[c]];
+
+    remove_region_means(x, r, shape);
+    EXPECT_EQ(r.total[0], mean[0]);
+    EXPECT_EQ(r.total[1], mean[1]);
+    EXPECT_TRUE(same_bits(x, expected));
+}
+
 // Design test 5's region refusal: the -x wall moves in at 1 m/s and the +x
 // wall out at 1 m/s, so the whole domain balances (check_domain() passes),
 // but the sheet leaves the left region taking the inflow alone. Refused,
