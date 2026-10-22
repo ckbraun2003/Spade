@@ -32,6 +32,7 @@
 #include "analysis/live_run.hpp"
 #include "render_parts/render_parts.hpp"
 #include "editor_session.hpp"
+#include "pilot_keys.hpp"
 #include "end_goal_checks.hpp"
 #include "gl_target_sink.hpp"
 #include "png_reader.hpp"
@@ -43,6 +44,7 @@
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
+#include "vehicles/propulsion_steady.hpp"
 #include "world/aabb.hpp"
 
 #ifdef _WIN32
@@ -96,6 +98,7 @@ constexpr std::array kSteps = {
     StepName{"editor", "world"},         StepName{"editor", "conflict"},
     StepName{"editor", "views"},         StepName{"editor", "save"},
     StepName{"editor", "library"},       StepName{"editor", "add_drone"},
+    StepName{"editor", "fly"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
@@ -1219,6 +1222,117 @@ void editor_tour(Tour& t, const fs::path& assets) {
         command(editor::Command::stop);
         const end_goal::Verdict rests = end_goal::placed_at(p);
         s.check(rests.ok, "placed-at", rests.detail);
+        command(editor::Command::undo);
+        then(10);
+    });
+
+    // N17: the placed reference quad flown from the pilot's keys (the lead's
+    // Q1 to Q3). Run pilots the selected drone, disarmed at rest; Space arms it
+    // to idle; PageUp, held, throttles it to 1.3 m g, inside the band climbs
+    // was simulated for (full throttle climbs past it); Up, held, tilts the
+    // nose toward the keys' 30 degrees down. Judged by armed, climbs and
+    // follows-attitude on the run's own frames, so none depends on the spawn
+    // height (Run's pop: editor.add_drone/placed-at). follows-attitude counts
+    // from the press, the setpoint's 0.5 s ramp included; the headless twin
+    // is FlightController.TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows.
+    t.step("editor", "fly", [&] {
+        if (!open()) return;
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        const std::size_t before = scene_now().vehicles.size();
+        arm("Reference quad");
+        click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
+        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
+        const std::string quad = scene_now().vehicles.back().name;
+        const vehicles::ModelType* placed = model_of(quad);
+        if (!s.check(placed != nullptr && placed->propulsion.has_value(), "has-chain", quad)) return;
+        const vehicles::ModelType m = *placed;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, quad};
+        command(editor::Command::run);
+        const editor::PilotPanel& pilot = w().panels().pilot;
+        if (!s.check(w().run() != nullptr && pilot.vehicle == quad, "piloted",
+                     pilot.vehicle.empty() ? pilot.why_not : "flying " + pilot.vehicle)) {
+            command(editor::Command::stop);
+            command(editor::Command::undo);
+            return;
+        }
+
+        const WorldDesc& world = w().documents().world.desc();
+        const float density = world.environment.air_density;
+        const float gravity = glm::length(world.environment.gravity);
+        const auto now_s = [&] {
+            const editor::EditorRun* run = w().run();
+            return run != nullptr ? static_cast<double>(run->tick()) * static_cast<double>(kBuiltinStepNs) * 1e-9 : 0.0;
+        };
+        // `n` frames with `keys` held, each recorded as editor.fly records it:
+        // the piloted drone's design-frame attitude (+X the nose) and rotors.
+        std::vector<end_goal::FlightFrame> frames;
+        const auto fly = [&](int n, const FrameInput& keys) -> bool {
+            for (int i = 0; i < n; ++i) {
+                if (!t.pump(1, [keys](int) { return keys; }, draw)) return false;
+                const editor::EditorRun* run = w().run();
+                const std::optional<VehicleRef> ref = run != nullptr ? run->vehicle_ref(quad) : std::nullopt;
+                if (!ref) return s.check(false, "flying", "the run or the drone went away");
+                const Result<const BodyState*> body = run->sim().body(ref->body);
+                if (!body) return s.check(false, "flying", body.error().context);
+                end_goal::FlightFrame f;
+                f.t_s = now_s();
+                f.height = (*body)->pos.y;
+                f.velocity = (*body)->vel;
+                f.attitude = (*body)->orient * m.design_to_principal;
+                std::vector<end_goal::RotorProbe> probes;
+                for (uint32_t r = 0; r < ref->rotor_count; ++r) {
+                    const Result<const vehicles::RotorRow*> row = run->sim().rotor(*ref, r);
+                    if (!row) continue;  // armed() names the frame that lacks it
+                    probes.push_back(end_goal::probe_rotor(**row, **body));
+                    f.rotor_omega.push_back((*row)->omega);
+                }
+                f.thrust_up = end_goal::vertical_thrust(probes);
+                frames.push_back(std::move(f));
+            }
+            return true;
+        };
+        const int per_second = static_cast<int>(std::lround(1.0f / kDt));
+        FrameInput none;
+        FrameInput space;
+        space.arm_pressed = true;
+        FrameInput page_up;
+        page_up.throttle = 1.0f;
+        FrameInput up_arrow;
+        up_arrow.attitude_pitch = -1.0f;  // Up: the nose down
+
+        if (!fly(per_second * 3 / 2, none)) return;  // disarmed: Run's pop, then at rest
+        const double arm_s = now_s();
+        if (!fly(1, space) || !fly(per_second * 3 / 2, none)) return;
+        const double throttle_up_s = now_s();
+        const std::size_t until_up = frames.size();
+        const double per_rotor = 1.3 * static_cast<double>(m.body.mass) * static_cast<double>(gravity) /
+                                 static_cast<double>(m.rotors.size());
+        const vehicles::SteadyPoint hold = vehicles::steady_state_for_thrust(*m.propulsion, per_rotor, density, 0.0,
+                                                                            analysis::kDefaultStateOfCharge);
+        const double idle_duty = analysis::kDefaultIdleDuty;
+        const float target = static_cast<float>((hold.duty - idle_duty) / (1.0 - idle_duty));
+        for (int i = 0; i < per_second * 3 && pilot.controls.throttle < target; ++i) {
+            if (!fly(1, page_up)) return;
+        }
+        const int rest = static_cast<int>(std::lround((throttle_up_s + 3.0 - now_s()) * per_second));
+        if (!fly(std::max(rest, 0), none)) return;
+        const double press_s = now_s();
+        if (!fly(per_second * 5 / 2, up_arrow)) return;
+        command(editor::Command::stop);
+
+        const Result<vehicles::DutyCommand> idle = vehicles::rotor_omega_for_duty(
+            *m.propulsion, analysis::kDefaultIdleDuty, density, analysis::kDefaultStateOfCharge);
+        const std::vector<float> idle_command(m.rotors.size(), idle ? idle->omega_cmd : 0.0f);
+        const std::vector<end_goal::FlightFrame> before_up(frames.begin(),
+                                                           frames.begin() + static_cast<std::ptrdiff_t>(until_up));
+        const end_goal::Verdict armed = end_goal::armed(before_up, arm_s, idle_command);
+        s.check(armed.ok, "armed", idle ? armed.detail : idle.error().context);
+        const end_goal::Verdict climbed =
+            end_goal::climbs(frames, throttle_up_s, m.body.mass, gravity, m.rotors.front().radius);
+        s.check(climbed.ok, "climbs", climbed.detail);
+        const end_goal::Verdict followed =
+            end_goal::follows_attitude(frames, press_s, -flight::kTiltMaxDeg * 0.017453292519943295f);
+        s.check(followed.ok, "follows-attitude", followed.detail);
         command(editor::Command::undo);
         then(10);
     });

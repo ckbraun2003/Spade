@@ -29,6 +29,7 @@
 
 #include "../sandbox/end_goal_checks.hpp"
 #include "../sandbox/flight_controller.hpp"
+#include "../sandbox/pilot_keys.hpp"
 #include "analysis/case.hpp"
 #include "flight_test_support.hpp"
 #include "vehicles/propulsion_steady.hpp"
@@ -248,4 +249,70 @@ TEST(FlightController, AModelWithoutAChainIsRefusedByName) {
     ASSERT_FALSE(c.has_value());
     EXPECT_NE(c.error().context.find("'" + bare.name + "'"), std::string::npos) << c.error().context;
     EXPECT_NE(c.error().context.find("chain"), std::string::npos) << c.error().context;
+}
+
+// editor.fly's staging (live_tour.cpp), headless: the pilot's keys, applied
+// every step as the editor applies them every frame. Disarmed 1.5 s on the
+// ground, Space, 1.5 s at idle, PageUp held until the throttle holds 1.3 m g
+// (a ramp at the keys' rate), 3 s, then Up held: the setpoint ramps to the
+// keys' 30 degrees nose down. follows-attitude is judged from the press,
+// the setpoint's 0.5 s ramp included; from the setpoint's arrival it is
+// printed for the record.
+TEST(FlightController, TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows) {
+    std::optional<ft::FlightRig> rig = on_the_ground();
+    ASSERT_TRUE(rig.has_value());
+    const float density = kDensity;
+    const spade::Result<fl::FlightController> fc = fl::FlightController::make(rig->model, density);
+    ASSERT_TRUE(fc.has_value()) << fc.error().context;
+
+    Controls c;
+    fl::PilotKeys keys;
+    const auto pilot = [&](double) {
+        fl::apply_pilot_keys(keys, static_cast<float>(ft::kStepS), c);
+        keys.arm_pressed = false;  // an edge
+        return c;
+    };
+    double t = 0.0;
+    std::vector<eg::FlightFrame> frames;
+    fly(*rig, *fc, t, 1.5, pilot, frames);
+    const double arm_s = t;
+    keys.arm_pressed = true;
+    fly(*rig, *fc, t, 1.5, pilot, frames);
+    const double throttle_up_s = t;
+    const std::size_t until_up = frames.size();
+    const float target = throttle_for(rig->model, density, 1.3);
+    keys.throttle = 1.0f;
+    while (c.throttle < target && t < throttle_up_s + 3.0) fly(*rig, *fc, t, ft::kStepS, pilot, frames);
+    keys.throttle = 0.0f;
+    fly(*rig, *fc, t, throttle_up_s + 3.0 - t, pilot, frames);
+    const double press_s = t;
+    keys.pitch = -1.0f;  // Up: nose down
+    const double arrive_s = press_s + static_cast<double>(fl::kTiltMaxDeg / fl::kTiltDegPerSecond);
+    fly(*rig, *fc, t, 2.5, pilot, frames);
+    EXPECT_EQ(c.pitch_deg, -fl::kTiltMaxDeg);
+
+    std::vector<float> idle;
+    for (uint32_t i = 0; i < rig->ref.rotor_count; ++i) {
+        const spade::Result<vh::DutyCommand> d = vh::rotor_omega_for_duty(
+            *rig->model.propulsion, spade::analysis::kDefaultIdleDuty, density, spade::analysis::kDefaultStateOfCharge);
+        ASSERT_TRUE(d.has_value()) << d.error().context;
+        idle.push_back(d->omega_cmd);
+    }
+    const std::vector<eg::FlightFrame> before_up(frames.begin(), frames.begin() + static_cast<std::ptrdiff_t>(until_up));
+    const eg::Verdict is_armed = eg::armed(before_up, arm_s, idle);
+    EXPECT_TRUE(is_armed.ok) << is_armed.detail;
+    const eg::Verdict climbed =
+        eg::climbs(frames, throttle_up_s, rig->model.body.mass, kGravity, rig->model.rotors.front().radius);
+    EXPECT_TRUE(climbed.ok) << climbed.detail;
+    const float command = glm::radians(-fl::kTiltMaxDeg);
+    const eg::Verdict followed = eg::follows_attitude(frames, press_s, command);
+    EXPECT_TRUE(followed.ok) << followed.detail;
+    const eg::Verdict from_arrival = eg::follows_attitude(frames, arrive_s, command);
+    std::printf("[ tour staging ] throttle %.3f for 1.3 m g, PageUp from t = %.3f s\n", static_cast<double>(target),
+                throttle_up_s);
+    std::printf("[ tour staging ] %s\n", is_armed.detail.c_str());
+    std::printf("[ tour staging ] %s\n", climbed.detail.c_str());
+    std::printf("[ tour staging ] from the press: %s\n", followed.detail.c_str());
+    std::printf("[ tour staging ] from the setpoint's arrival (%s): %s\n", from_arrival.ok ? "passes" : "fails",
+                from_arrival.detail.c_str());
 }
