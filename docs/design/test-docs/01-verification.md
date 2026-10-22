@@ -121,6 +121,14 @@ A record is never edited. A re-run adds a new dated record beside the old one, a
 
 `engine/testing/spirv_scan.hpp` reads compiled SPIR-V as a word stream; it needs no SDK tool. It applies two profiles: **parity** kernels obey `SPIR-V rule P1`–`P5`, and **`fp32_math`** modules also obey `E1`/`E2`. `P3` was amended on 2026-10-05 and now holds that no module requests an fp32 denormal mode, so every device runs the kernels with its own default (`00-decisions.md`). Every compiled variant is scanned, and the module count comes from the build, so a new kernel cannot slip past unscanned. Run by `test_slang_layouts.cpp`, which needs no device.
 
+**E1/E2 as restated (the user, 2026-10-22; in effect when Core's exact ops land).** The scan enforces them as a taint closure, agreed with Core and approved by the lead:
+- Tainted: an `OpFDiv` result, a GLSL.std.450 `InverseSqrt` result, and any float op with a tainted operand.
+- A tainted value may be used only by `OpFMul`, `OpFAdd`, `OpFSub`, `OpFNegate`, GLSL.std.450 `Floor`, `Trunc` or `Round` (each result tainted again), `OpCopyObject` (followed through), or a float-to-integer conversion (`OpConvertFToU`, `OpConvertFToS`, or `OpBitcast` to an integer type).
+- Any other use fails as `E1`/`E2`: a store, a return, an `OpPhi` or `OpSelect`, a comparison, a call, or a composite built for a float output. A bare `Sqrt` fails anywhere.
+- The scan proves reach only: no float estimate gets past an integer conversion. It cannot prove the integer correction exact. That is Core's injected-error battery (estimates at least ±3 ulp off, past the Vulkan bound), and the two together are the rule's enforcement.
+- An op added to the allowed list later gets a dated amendment here with its reason.
+- **Scope** (the lead, 2026-10-22): `E1`/`E2` bind `fp32_math` modules. When an airflow kernel retires its band to bit-equal, its module goes under the same scan, so a hardware divide or square root can't re-enter a kernel that claims bit-equal; a bit-equal test on sample inputs wouldn't catch every case. Rendering lists each kernel as it converts.
+
 ## Bench
 
 `spade_bench` (Google Benchmark) is **not** a ctest case. `tests/bench/` holds `bench_core`, `bench_sim` and `bench_render`, and `baselines.json` records reference runs. A timing is reported with its basis (`cpu_time` or `real_time`) and its between-batch spread (`TD-8`). The rate envelope is recorded, not gated; a miss is a design-review item, not a red build.
