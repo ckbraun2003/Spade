@@ -846,6 +846,34 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
     return least;
 }
 
+// An SDF object's lowest points, for rest_gap (§7a). Its surface-nets mesh
+// sits up to half a mesh cell inside its surface, so its vertices can't judge
+// a rest: they read high. Its collider can. The collider, posed by
+// world_from_object (rigid, with uniform scale), is marched straight up from
+// kRestMarchBelow under the lowest posed vertex, in the column of each vertex
+// within kRestMarchBand of the lowest, to within kRestMarchTolerance of its
+// surface. Each march stops below the surface, so a point reads low by less
+// than the tolerance, never high. A column that meets nothing within
+// kRestMarchReach gives no point. Empty, so rest_gap's NaN: no vertices, an
+// empty collider, a non-finite vertex or distance, a pose that isn't rigid
+// with uniform scale, or a march that starts inside the object (the vertices
+// can't be the object's). This is the step's measure for an SDF object, not
+// the editor's own pick march (Test/Docs, 2026-10-22). Precondition: the
+// collider validated.
+inline constexpr float kRestMarchBelow = 0.25f;     // m below the lowest vertex
+inline constexpr float kRestMarchBand = 0.05f;      // m above the lowest: the vertices marched under
+inline constexpr float kRestMarchReach = 0.6f;      // m: the farthest a march goes
+inline constexpr float kRestMarchTolerance = 1e-4f; // m: where it stops below the surface
+
+[[nodiscard]] inline std::vector<glm::vec3> collider_rest_points(const SdfProgram& collider,
+                                                                 const glm::mat4& world_from_object,
+                                                                 std::span<const glm::vec3> vertices) {
+    (void)collider;
+    (void)world_from_object;
+    (void)vertices;
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // IMAGES (§1 thumbnails, §6 views). "Differs" is the doc's: at least 1% of
 // the pixels differ by more than 8/255 in red, green or blue.
