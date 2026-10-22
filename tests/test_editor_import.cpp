@@ -28,8 +28,12 @@
 #include <glm/glm.hpp>
 
 #include "../sandbox/editor_import.hpp"
+#include "../sandbox/editor_workspace.hpp"
 #include "../sandbox/end_goal_checks.hpp"
 #include "core/path_text.hpp"
+#include "editor_test_support.hpp"
+#include "render/mesh_resolver.hpp"
+#include "render/scene.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_part.hpp"
@@ -304,4 +308,123 @@ TEST(EditorImport, ARefAlreadyInUseIsRefusedNamingItAndNeverRenamed) {
         expect_clash(b, file, "imported already");
         EXPECT_EQ(files_under(b.staging).size(), 1u);
     }
+}
+
+// ===========================================================================
+// I2: AN OBJECT IMPORT IN THE WORKSPACE. Load from file takes a .gltf or .glb
+// as an "imported" library item, armed; a click places it resting on the
+// picked surface by its mesh's bounds, as one undoable asset with a visual
+// (the world's first material) and no collider. The view finds its sidecar in
+// the staging folder, the resolver's second root (D1), so nothing is written
+// beside the scene; the inspector shows the path imported.
+// ===========================================================================
+
+namespace {
+
+namespace support = spade::sandbox::editor::test;
+
+[[nodiscard]] std::unique_ptr<ed::EditorWorkspace> hover_workspace() {
+    spade::Result<ed::OpenedScene> opened = ed::open_scene(support::hover_scene());
+    EXPECT_TRUE(opened.has_value()) << (opened ? "" : opened.error().context);
+    spade::Result<std::unique_ptr<ed::EditorWorkspace>> w = ed::EditorWorkspace::create(std::move(*opened));
+    EXPECT_TRUE(w.has_value()) << (w ? "" : w.error().context);
+    return w ? std::move(*w) : nullptr;
+}
+
+void run(ed::EditorWorkspace& w, ed::Command c) {
+    w.panels().commands.push_back(c);
+    w.apply_panels();
+}
+
+// The view's roots, as the session passes them: the scene's folder, then the
+// staging folder.
+[[nodiscard]] spade::render::ResolvedMeshes resolved(const ed::EditorWorkspace& w) {
+    const std::vector<fs::path> roots{w.documents().scene.path.parent_path(), w.import_staging()};
+    return spade::render::resolve_meshes(w.composed().world, roots);
+}
+
+[[nodiscard]] std::size_t statics_drawn(const ed::EditorWorkspace& w) {
+    const spade::render::ResolvedMeshes m = resolved(w);
+    const spade::Result<spade::render::RenderScene> s = spade::render::scene_from_world(w.composed().world, m.meshes);
+    EXPECT_TRUE(s.has_value()) << (s ? "" : s.error().context);
+    return s ? s->statics.size() : 0u;
+}
+
+}  // namespace
+
+TEST(EditorImport, LoadFromFileImportsAGltfAsAnArmedItemThatRestsWhereTheClickMeetsTheGround) {
+    TempDir t{"editor-import-place"};
+    const fs::path file = t.path() / "crate.gltf";
+    write_gltf(file, {{"crate", glm::vec3(-0.25f, -0.1f, -0.25f), 0.5f}});
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    const fs::path scene_dir = w->documents().scene.path.parent_path();
+    const std::size_t drawn_before = statics_drawn(*w);
+
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::load_item);
+    ASSERT_TRUE(w->panels().armed.has_value()) << w->panels().status;
+    const ed::LibraryItem& item = w->panels().library.at(*w->panels().armed);
+    EXPECT_EQ(item.name, "crate");
+    EXPECT_EQ(item.category, "imported");
+    EXPECT_TRUE(fs::exists(w->import_staging() / "imported" / "crate.spmesh"));
+    EXPECT_FALSE(fs::exists(scene_dir / "imported")) << "nothing beside the scene until Save";
+
+    w->click(glm::vec3(4.0f, 5.0f, 4.0f), glm::vec3(0.0f, -1.0f, 0.0f));
+    ASSERT_EQ(w->documents().scene.desc().assets.size(), 1u) << w->panels().status;
+    const spade::scene::SceneAsset& a = w->documents().scene.desc().assets[0];
+    EXPECT_EQ(a.name, "crate");
+    EXPECT_EQ(a.visual.mesh_ref, "imported/crate");
+    EXPECT_EQ(a.visual.material, w->documents().world.desc().materials.front().name);
+    EXPECT_TRUE(a.collider.nodes.empty()) << "a mesh obstacle's collider waits for N9";
+    EXPECT_NEAR(a.pose.position.x, 4.0f, 1e-4f);
+    EXPECT_NEAR(a.pose.position.z, 4.0f, 1e-4f);
+    EXPECT_NEAR(a.pose.position.y, 0.1f, 1e-3f) << "its lowest vertex, 0.1 m below its origin, on the ground";
+    EXPECT_EQ(w->panels().selection, (ed::Selection{ed::Selection::Kind::object, "crate"}));
+    w->refresh_panels();
+    EXPECT_EQ(w->panels().selected_source, spade::path_text(file));
+
+    const spade::render::ResolvedMeshes m = resolved(*w);
+    EXPECT_TRUE(m.unresolved.empty()) << m.unresolved.front().why;
+    ASSERT_EQ(m.from_fallback.size(), 1u) << "found in the staging folder, root 1";
+    EXPECT_EQ(m.from_fallback.front().ref, "imported/crate");
+    EXPECT_EQ(m.from_fallback.front().root, 1u);
+    EXPECT_EQ(statics_drawn(*w), drawn_before + 1) << "one drawable for the import";
+
+    run(*w, ed::Command::undo);
+    EXPECT_TRUE(w->documents().scene.desc().assets.empty());
+}
+
+TEST(EditorImport, ARefusedImportArmsNothingAndSaysWhyInTheReadersWords) {
+    TempDir t{"editor-import-refused"};
+    const fs::path file = t.path() / "lid_off.gltf";
+    write_gltf(file, {{"lid_off", glm::vec3(0.0f), 1.0f, 1}});
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    w->refresh_panels();
+    const std::size_t items = w->panels().library.size();
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::load_item);
+    EXPECT_FALSE(w->panels().armed.has_value());
+    EXPECT_EQ(w->panels().library.size(), items);
+    EXPECT_NE(w->panels().status.find("object 'lid_off'"), std::string::npos) << w->panels().status;
+}
+
+// The staging folder is the workspace's: made at the first import, removed
+// with the workspace, so an unsaved import leaves nothing behind.
+TEST(EditorImport, TheStagingFolderGoesWithTheWorkspace) {
+    TempDir t{"editor-import-staging"};
+    const fs::path file = t.path() / "crate.gltf";
+    write_gltf(file, {{"crate"}});
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::load_item);
+    const fs::path staging = w->import_staging();
+    ASSERT_TRUE(fs::exists(staging / "imported" / "crate.spmesh")) << w->panels().status;
+    auto other = hover_workspace();
+    ASSERT_NE(other, nullptr);
+    EXPECT_NE(other->import_staging(), staging) << "each workspace stages in its own folder";
+    w.reset();
+    EXPECT_FALSE(fs::exists(staging));
 }
