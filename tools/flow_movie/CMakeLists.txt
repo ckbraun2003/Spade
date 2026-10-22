@@ -67,6 +67,18 @@ set_tests_properties(GpuFlowMovie.CaseResumedRunMatchesUnbroken PROPERTIES
     PASS_REGULAR_EXPRESSION "\\[ resume \\] case-smoke: 12 frames"
     TIMEOUT 120)
 
+# A LiveRun film's cache outlives its render unless --drop-cache is given (D1
+# lost its run's frames to its render, 2026-10-22); a film that isn't
+# LiveRun's still drops its own.
+add_test(NAME GpuFlowMovie.CaseRenderKeepsItsCache
+    COMMAND "${CMAKE_COMMAND}" "-DFLOW_MOVIE=$<TARGET_FILE:flow_movie>" "-DOUT=${CMAKE_CURRENT_BINARY_DIR}/keep-cache"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/keep_cache_check.cmake")
+set_tests_properties(GpuFlowMovie.CaseRenderKeepsItsCache PROPERTIES
+    LABELS "spade;gpu"
+    SKIP_REGULAR_EXPRESSION "\\[ keep cache \\] skipped"
+    PASS_REGULAR_EXPRESSION "\\[ keep cache \\] case-smoke kept its"
+    TIMEOUT 120)
+
 # The --case smoke: two frames of the powered reference quad through LiveRun
 # and the recorder (D1's path), at 640x360. Skips as the smoke above does.
 add_test(NAME GpuFlowMovie.CaseSmokeRendersTwoFrames
