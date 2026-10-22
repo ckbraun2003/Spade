@@ -1400,6 +1400,14 @@ TEST(GpuFp32Math, ExactDivisionMatchesTheHostUnderFtzDaz) {
                      return ex::pair_with_result_exponent(edge_rng, kEdges[static_cast<std::size_t>(i >> 16)]);
                  }));
 
+    // The full sweep's generated-input runs, kept working by default: 2^20 of
+    // a / 3 (a swept) and of 1 / b (b swept), inputs the listed sets above
+    // also hold.
+    expect_clean("ExactDivRunSliceAOverThree",
+                 exact_run(*ctx, "ExactDivRunSliceAOverThree", kModeDivRunA, 0x3F000000u, 0x40400000u, 1u << 20));
+    expect_clean("ExactDivRunSliceOneOverB",
+                 exact_run(*ctx, "ExactDivRunSliceOneOverB", kModeDivRunB, 0x3F800000u, 0x3F800000u, 1u << 20));
+
     // THE FULL SWEEP, SPADE_EXACT_SWEEP=1 only (the exact plan's F1): Rendering's
     // gate's sets. a / b over all 2^32 b for a = 1, 2^-126, the largest float
     // and 3; over all 2^32 a for b = 3, 0.1, 1 + 2^-23 and 2 - 2^-23; 2^25
@@ -1463,6 +1471,13 @@ TEST(GpuFp32Math, ExactSqrtMatchesTheHostUnderFtzDaz) {
     report("ExactSqrtSpecials", specials);
     ASSERT_FALSE(specials.dispatch_failed);
     EXPECT_EQ(specials.mismatches, 0u);
+
+    // The full sweep's generated-input run, kept working by default: 2^20
+    // inputs from 0.5, which ExactSqrtExponents126And127 also holds.
+    const Tally slice = exact_run(*ctx, "ExactSqrtRunSlice", kModeSqrtRun, 0x3F000000u, 0u, 1u << 20);
+    report("ExactSqrtRunSlice", slice);
+    ASSERT_FALSE(slice.dispatch_failed);
+    EXPECT_EQ(slice.mismatches, 0u);
 
     // THE FULL SWEEP, SPADE_EXACT_SWEEP=1 only (the exact plan's F1): all 2^32
     // inputs.
