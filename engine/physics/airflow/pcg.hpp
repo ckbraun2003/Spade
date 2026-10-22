@@ -30,11 +30,12 @@ struct PcgScratch {
     std::vector<float> x;  // the unknown: the caller's initial guess in, the solution out
     std::vector<float> b;  // the right side
     std::vector<float> r, z, d, q;
+    std::vector<float> best;  // the x that measured least past the floor, for a stop above the mark (P2d)
 };
 
 [[nodiscard]] PcgScratch make_pcg_scratch(std::size_t cells);
-// The bytes make_pcg_scratch() allocates: six floats per cell.
-[[nodiscard]] inline uint64_t pcg_bytes(uint64_t cells) noexcept { return 6u * cells * sizeof(float); }
+// The bytes make_pcg_scratch() allocates: seven floats per cell.
+[[nodiscard]] inline uint64_t pcg_bytes(uint64_t cells) noexcept { return 7u * cells * sizeof(float); }
 
 // A pressure solve leaving more than this relative residual is announced (the
 // lead's condition, spec 1.5 as amended): ten times the warm residual the
@@ -65,13 +66,20 @@ inline constexpr uint32_t kSolidsCgCap = 32;
 // S3's blocked channel's second step from 0.9 to 1.9e-5). Order-free and in
 // fp32, as the residual is, so every build (and the GPU twin, B5) stops and
 // restarts on the same iteration.
+// A solve that stops above the mark (stalled, an exact zero or the cap)
+// returns the x that measured least past the floor, not its last one (Physics,
+// 2026-10-22: with the restart the 128-cell blocked channel's last measured
+// 2.04e-4 where the solve without it had stopped at 1.28e-4). PcgScratch::best
+// keeps it. A solve that meets the mark returns its last x, as before.
 inline constexpr uint32_t kStallIterations = 4;
 inline constexpr float kStallGain = 0.9f;
 
 struct PcgResult {
-    float residual = 0.0f;    // max|b - A x| / max|b| over the cells not marked solid
-    uint32_t iterations = 0;  // the iterations taken
-    bool stalled = false;     // above the mark, stopped by the stall rule or an exact zero (not by the cap)
+    float residual = 0.0f;     // max|b - A x| / max|b| over the cells not marked solid, for the x returned
+    uint32_t iterations = 0;   // the iterations run (past residual_at when an earlier x is returned)
+    bool stalled = false;      // above the mark, stopped by the stall rule or an exact zero (not by the cap)
+    uint32_t residual_at = 0;  // the iteration the x returned (and `residual`) was measured on: `iterations`, or,
+                               // on a stop above the mark, the earlier one that measured least
 };
 
 // At least `floor` CG iterations on mg.levels[0]'s operator from s.x, then on
@@ -85,7 +93,9 @@ struct PcgResult {
 // on every build. An exact zero in a step's denominator
 // ends the iterations early: a solved system, or, above the mark, a
 // recurrence with nothing left that the true residual has not followed
-// (stalled). The cap reached above the mark is not a stall.
+// (stalled). The cap reached above the mark is not a stall. A stop above the
+// mark leaves in s.x the x that measured least (the stall rule above); a
+// solve that meets the mark returns its last x, bit for bit as before.
 [[nodiscard]] PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t cap, float mark,
                                      const PcgGauge& gauge) noexcept;
 

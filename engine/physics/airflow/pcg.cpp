@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "physics/airflow/reduce.hpp"
 
@@ -15,6 +16,7 @@ PcgScratch make_pcg_scratch(std::size_t cells) {
     s.z.assign(cells, 0.0f);
     s.d.assign(cells, 0.0f);
     s.q.assign(cells, 0.0f);
+    s.best.assign(cells, 0.0f);
     return s;
 }
 
@@ -74,6 +76,8 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
     bool restarted = false;  // the stall rule's one restart is spent
     float least = 0.0f;      // the stall rule's least residual measured (pcg.hpp)
     uint32_t since = 0;      // measurements since the residual last fell below kStallGain x least
+    float best = std::numeric_limits<float>::infinity();  // the least residual measured; its x is s.best
+    uint32_t best_at = 0;                                  // the iteration it was measured on
     for (;; ++out.iterations) {
         if (out.iterations >= floor) {  // the floor's done: stop at the mark, the cap or a stall
             out.residual = measure();
@@ -86,11 +90,19 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
                 ++since;
             }
             if (out.iterations >= last) break;  // the cap: announced as capped, not stalled
+            if (since >= kStallIterations && restarted) {
+                out.stalled = true;
+                break;
+            }
+            // The solve goes on from this x: keep it if it measured least, for
+            // a stop above the mark to return (pcg.hpp). The x a stop leaves
+            // is the last one; it needs no copy.
+            if (out.residual < best) {
+                best = out.residual;
+                best_at = out.iterations;
+                std::copy(s.x.begin(), s.x.end(), s.best.begin());
+            }
             if (since >= kStallIterations) {
-                if (restarted) {
-                    out.stalled = true;
-                    break;
-                }
                 restarted = true;  // the first stall: start again once from the true residual
                 since = 0;
                 rz = start();
@@ -116,7 +128,13 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
         rz = rz_next;
     }
     if (!measured) out.residual = measure();
+    out.residual_at = out.iterations;
     if (exact && out.residual > mark) out.stalled = true;
+    if (out.residual > mark && best < out.residual) {  // stopped above the mark: return the least measured
+        std::copy(s.best.begin(), s.best.end(), s.x.begin());
+        out.residual = best;
+        out.residual_at = best_at;
+    }
     return out;
 }
 

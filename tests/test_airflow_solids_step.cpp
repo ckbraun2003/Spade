@@ -242,16 +242,21 @@ TEST(AirflowSolidsStep, AStalledSolveRestartsOnceAndMeetsTheMark) {
 // The stall rule at the step (P2d). S3's channel stretched to 128 cells, the
 // sheet on plane 65: step 1's true residual stops above the mark, the one
 // restart does not take it below, and the solve stops there, stalled, inside
-// its cap (measured 2026-10-22: 2.04e-4 after 20 iterations). The step
-// announces a stall, not a cap. Mutations: the stall rule off, which runs it
-// to the cap (1.5e-4 at 32, capped); the projection's report without
-// `stalled`, which leaves it capped.
+// its cap after 20 iterations. The step announces a stall, not a cap, and
+// keeps the x that measured least: at or below the 1.276e-4 the solve
+// without the restart stopped at (its 16th iteration, which the restarted
+// solve also measures; printed to four digits, so the bound is that print's
+// upper edge). Measured 2026-10-22: 1.276e-4; its last x 2.04e-4. Mutations:
+// the stall rule off, which runs it to the cap (1.5e-4 at 32, capped); the
+// projection's report without `stalled`, which leaves it capped; the last x
+// returned (2.04e-4).
 TEST(AirflowSolidsStep, ASolveAtFp32sFloorAboveTheMarkStalls) {
     const std::vector<FluidHealth> h = blocked_channel_steps(128, 65, 1);
     ASSERT_EQ(h.size(), 1u);
     const FluidHealth& step = h.front();
     EXPECT_EQ(step.fault, FluidFault::none);
     EXPECT_GT(step.pressure_residual, kResidualAnnounce);
+    EXPECT_LT(step.pressure_residual, 1.2765e-4f) << "the least measured, not the last";
     EXPECT_TRUE(step.unconverged);
     EXPECT_TRUE(step.stalled);
     EXPECT_FALSE(step.capped);

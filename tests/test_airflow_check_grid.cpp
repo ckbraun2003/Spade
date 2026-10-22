@@ -164,7 +164,8 @@ TEST(AirflowCheckGrid, TheSolidBytesAreWhatSetSolidsAllocates) {
         }
         held += 4u * s.regions.label.size() + s.regions.solid.size() + 4u * s.regions.touched.size();
         const PcgScratch& pcg = s.projection.pcg;
-        held += 4u * (pcg.x.size() + pcg.b.size() + pcg.r.size() + pcg.z.size() + pcg.d.size() + pcg.q.size());
+        held += 4u * (pcg.x.size() + pcg.b.size() + pcg.r.size() + pcg.z.size() + pcg.d.size() + pcg.q.size() +
+                      pcg.best.size());
         for (const PoissonLevel& level : s.projection.mg.levels) {
             for (uint32_t a = 0; a < 3; ++a) held += 4u * level.w[a].size();
         }
