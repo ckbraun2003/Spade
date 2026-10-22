@@ -2,7 +2,8 @@
 // renderer, kThumbnailSize square, from one fixed three-quarter view that
 // frames everything it draws. An object is composed into an empty world as a
 // scene would place it (its materials, its collider and visual); a drone's
-// parts are bound as the editor draws them (design frame at the origin).
+// parts are bound as the editor draws them (design frame at the origin); a
+// part (Core's L4) is its own geometry, one primitive.
 // tests/test_library_thumbnails.cpp writes the committed PNGs with
 // SPADE_LIBRARY_WRITE set and checks them otherwise. Display-free.
 
@@ -16,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -31,8 +33,10 @@
 #include "render/target.hpp"
 #include "render_parts/render_parts.hpp"
 #include "scene/compose.hpp"
+#include "scene/part_file.hpp"
 #include "scene/scene_file.hpp"
 #include "vehicle_draw.hpp"
+#include "vehicles/airframe_compile.hpp"
 #include "world/builder.hpp"
 
 namespace spade::sandbox::editor {
@@ -63,20 +67,61 @@ inline constexpr float kThumbnailFov = 0.6108652f;    // 35 degrees, vertical
     return render::Aabb{lo, hi};
 }
 
+// A part's own geometry as one primitive, as its file's shape sizes it
+// (vehicles::BlockShape, part-local: a sphere's size.x the radius; a box's
+// full extents; a cylinder or tube along +Y, size.x the radius and size.y the
+// length). A prop with no shape is its disc: its diameter, a hundredth as
+// thick (2 mm at least). None for a point mass or a tensor: no geometry.
+[[nodiscard]] inline std::optional<scene::SceneAsset> part_asset(const scene::PartFile& part) {
+    const auto* prop = std::get_if<scene::PropPart>(&part);
+    if (prop && !prop->block.shape) {
+        const float r = static_cast<float>(0.5 * prop->block.diameter);
+        if (!(r > 0.0f)) return std::nullopt;
+        return primitive_asset("part", SdfPrim::cylinder, glm::vec4(r, std::max(0.01f * r, 0.001f), 0.0f, 0.0f),
+                               SdfPose{});
+    }
+    const std::optional<vehicles::BlockShape> shape =
+        std::visit([](const auto& p) { return p.block.shape; }, part);
+    if (!shape) return std::nullopt;
+    const glm::vec3 size(shape->size);
+    switch (shape->shape) {
+        case vehicles::PartShape::sphere:
+            return primitive_asset("part", SdfPrim::sphere, glm::vec4(size.x, 0.0f, 0.0f, 0.0f), SdfPose{});
+        case vehicles::PartShape::box:
+            return primitive_asset("part", SdfPrim::box, glm::vec4(0.5f * size, 0.0f), SdfPose{});
+        case vehicles::PartShape::cylinder:
+        case vehicles::PartShape::tube:
+            return primitive_asset("part", SdfPrim::cylinder, glm::vec4(size.x, 0.5f * size.y, 0.0f, 0.0f),
+                                   SdfPose{});
+        case vehicles::PartShape::point:
+        case vehicles::PartShape::tensor:
+            break;
+    }
+    return std::nullopt;
+}
+
 }  // namespace detail
 
 // `item` drawn alone, `size` x `size`, top row first. Meshes resolve from
 // `mesh_roots` (the library's meshes/ folder). invalid_argument naming the item
-// for a part (it is drawn in its drone), a model without parts, a mesh that
-// resolves nowhere, or an item that draws nothing; whatever compose(),
+// for a part with no geometry (detail::part_asset()), a model without parts, a
+// mesh that resolves nowhere, or an item that draws nothing; whatever compose(),
 // scene_from_world(), prepare_parts() or render() refuse, prefixed the same.
 [[nodiscard]] inline Result<png::Image> render_thumbnail(const LibraryItem& item,
                                                          std::span<const std::filesystem::path> mesh_roots,
                                                          uint32_t size = kThumbnailSize) {
+    std::optional<scene::SceneAsset> part;
     if (item.kind == LibraryItem::Kind::part) {
-        return detail::thumbnail_refusal(item, "a part is drawn in its drone, not on its own");
+        if (item.part) part = detail::part_asset(*item.part);
+        if (!part) {
+            const std::string kind =
+                item.part ? std::string(scene::part_kind_name(scene::part_kind(*item.part))) : std::string("part");
+            return detail::thumbnail_refusal(item, "its " + kind +
+                                                       " file has no shape, or a tensor one: no geometry to draw");
+        }
+    } else if (!placeable(item)) {
+        return detail::thumbnail_refusal(item, "nothing to draw");
     }
-    if (!placeable(item)) return detail::thumbnail_refusal(item, "nothing to draw");
 
     // An empty world: no ground, so the item is drawn alone.
     WorldBuilder base_builder;
@@ -95,6 +140,8 @@ inline constexpr float kThumbnailFov = 0.6108652f;    // 35 degrees, vertical
         scene::SceneAsset a = *item.asset;
         a.name = item.name.empty() ? std::string("thumbnail") : item.name;
         desc.assets.push_back(std::move(a));
+    } else if (part) {
+        desc.assets.push_back(std::move(*part));
     }
     Result<scene::ComposedScene> composed = scene::compose(desc, *base);
     if (!composed) return detail::thumbnail_refusal(item, composed.error().context);
