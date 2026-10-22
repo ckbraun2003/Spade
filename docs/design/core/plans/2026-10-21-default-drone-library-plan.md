@@ -296,6 +296,22 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 
   - **Correction (Core, 2026-10-22, from UIUC's own index):** UIUC's volume 2 page (propDB-volume-2.html, retrieved 2026-10-22) lists mit_5x4 under Micro Invent's **3-Blade** heading, beside the 4.3x3.5. That agrees with this plan's 5-inch FPV entry ("Micro Invent 5x4 tri-blade"). So the stand-in is a measured three-blade 5x4 applied at 6 in, and no solidity bias applies. It stays a stand-in, graded `derived` and `assumed`, for the 5-to-6-inch scaling (Reynolds number and geometry). The header and basic_quad_assumptions() say "tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule". The lead and Physics have been told.
 
+- **L4a's UIUC inputs** (fetched by Core with curl, 2026-10-22; never committed). The SHA-256 is of the bytes as served: volume 2 serves CRLF, volume 1 LF.
+
+  | File | URL | Retrieved (UTC) | SHA-256 |
+  |---|---|---|---|
+  | `apce_10x5_static_pg0819.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_static_pg0819.txt | 2026-10-22T10:31:27Z | `9d4f0434c5e31f6c53082e8551426d2dba40def4a60ee5aca5eeee60a514f2dd` |
+  | `apce_10x5_geom.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_geom.txt | 2026-10-22T10:31:28Z | `8f75a94d7fcac2cd4b6cdcb558e51f3c0dd4d6f46a01d4ab6095fbd511a666b2` |
+  | `apce_9x4.5_static_rd0995.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_static_rd0995.txt | 2026-10-22T10:31:28Z | `f700c8d9a77fb3025e727ff97de88a5a414610f0ae56df063ce0f43ce62858d9` |
+  | `apce_9x4.5_geom.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_geom.txt | 2026-10-22T10:31:28Z | `fb02e7b3d0bb09e4cd845bdfa0b7d6c2b5e96c9991111e1e8bbb4d79852bb67c` |
+  | `mit_5x4_static_0362rd.txt` | https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_static_0362rd.txt | 2026-10-22T10:31:29Z | `5cffe5aabc9463fbfa4c46bd80bf31ae2c53b07080ec040639fc7468c7e1f8a6` |
+  | `mit_5x4_geom.txt` | https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_geom.txt | 2026-10-22T10:31:29Z | `397a73d692b88b4bb0ef183a055088ffe93a6f97af37db217b3db9d20086f293` |
+  | `cfnq_45t1_static_1320rd.txt` | https://m-selig.ae.illinois.edu/props/volume-2/data/cfnq_45t1_static_1320rd.txt | 2026-10-22T10:31:29Z | `962d051aea28c92598217b218de3a852035e2915d8bb6dba52da190300ac7cbc` |
+  | `cfnq_45t1_geom.txt` | https://m-selig.ae.illinois.edu/props/volume-2/data/cfnq_45t1_geom.txt | 2026-10-22T10:31:30Z | `acc7e44168b75473b0e93f004963ee444840c013dab6f84fcabe39744ab56cf0` |
+  | `apce_10x5_kt0821_5000.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_10x5_kt0821_5000.txt | 2026-10-22T10:33:27Z | `3df32a75d9b09452a6cd22f4853a7ce4c09b51e412fda3c6bea247dd7ce09c61` |
+  | `apce_9x4.5_jb0997_5008.txt` | https://m-selig.ae.illinois.edu/props/volume-1/data/apce_9x4.5_jb0997_5008.txt | 2026-10-22T10:33:27Z | `47e52df75625cdbf0fac04ef4e68c3b6a35bfaf30d6c926789ebe47b6bf80ecc` |
+  | `mit_5x4_0366rd_6057.txt` | https://m-selig.ae.illinois.edu/props/volume-2/data/mit_5x4_0366rd_6057.txt | 2026-10-22T10:33:27Z | `faaeda851b832185072b5fd2e8af51b96b2f4a9c6c75230b80d91060882d2165` |
+
 ## Notes for later
 
 - Until L7 lands, each drone is drawn from its SDF parts.
