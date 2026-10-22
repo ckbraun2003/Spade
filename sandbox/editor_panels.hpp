@@ -16,6 +16,7 @@
 #include <string>
 #include <vector>
 
+#include "analysis/case.hpp"  // Controls
 #include "builtin_records.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_library.hpp"
@@ -48,6 +49,16 @@ struct HierarchyRow {
     bool vehicle = false;
 };
 
+// N17: who Run flies and what the pilot holds. The workspace picks the
+// vehicle when Run starts (the selection if it is a drone with a chain, else
+// the first such drone) and clears it all when Run stops; the pilot's keys and
+// the Pilot section write `controls`.
+struct PilotPanel {
+    analysis::Controls controls{};  // armed, throttle, pitch/roll/yaw setpoints (degrees)
+    std::string vehicle;            // the piloted vehicle's name; empty: none
+    std::string why_not;            // why nothing is piloted, when nothing is
+};
+
 struct EditorPanels {
     // ---- Read by the panels; the workspace fills these every frame.
     const scene::SceneDesc* scene = nullptr;
@@ -75,6 +86,7 @@ struct EditorPanels {
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;
+    PilotPanel pilot;  // N17: written by the pilot's keys and the Pilot section
     std::optional<std::size_t> armed;         // a library item the next click in the view places
     std::vector<SceneEdit> pending;
     std::vector<WorldEdit> pending_world;
