@@ -1,5 +1,5 @@
 {
-  "comment": "Synthetic input for test_resample_uiuc.py: our own numbers in UIUC's file format, never UIUC's. syn_a is a clean case (no warning); syn_b steps above 10% at J = 0, misses its published hover rpm by more than 20%, and has a hub station at 0.18 and a tip at 0.91. syn_c is static-only. Every file has a source: its URL and UTC retrieval date.",
+  "comment": "Synthetic input for test_resample_uiuc.py: our own numbers in UIUC's file format, never UIUC's. syn_a is a clean case (no warning); syn_b steps above 10% at J = 0, misses its published hover rpm by more than 20%, and has a hub station at 0.18 and a tip at 0.91. syn_c is static-only, with no published hover rpm. Every file has a source: its URL and UTC retrieval date.",
   "props": [
     {
       "id": "syn_a",
@@ -56,8 +56,7 @@
         "name": "synthetic C",
         "mass_kg": 0.00711,
         "rotors": 4,
-        "published_hover_rpm": 10000,
-        "published_source": "synthetic"
+        "published_hover_rpm": null
       },
       "note": "static only: no wind-tunnel run"
     }

@@ -132,6 +132,13 @@ class TheGeneratedTablesAreWhatTheRuleGives(unittest.TestCase):
         text, _ = tool.generate(PROPS, UIUC)
         self.assertIn("static only: no wind-tunnel run", text)
 
+    def test_no_published_hover_rpm_is_no_cross_check(self):
+        results, warnings = tool.resample_all(PROPS, UIUC)
+        self.assertIsNone(by_id(results, "syn_c")["hover_diff"])
+        self.assertFalse(any("syn_c" in w for w in warnings), warnings)
+        text, _ = tool.generate(PROPS, UIUC)
+        self.assertIn("no published hover rpm to cross-check", text)
+
 
 class EveryInputCarriesItsProvenance(unittest.TestCase):
     def test_url_date_and_sha256_of_each_file_read(self):
