@@ -98,8 +98,7 @@ namespace sc = spade::scene;
 // The thumbnail an entry without one should name: its file's name less the
 // trailing ".<kind>.yaml", so a name with a dot of its own keeps it.
 [[nodiscard]] std::string suggested_thumbnail(const std::string& file) {
-    const std::string stem = fs::path(file).filename().string();
-    return "thumbnails/" + stem.substr(0, stem.find('.')) + ".png";
+    return "thumbnails/" + fs::path(file).stem().stem().string() + ".png";
 }
 
 [[nodiscard]] eg::PixelsView view_of(const png::Image& image) {
