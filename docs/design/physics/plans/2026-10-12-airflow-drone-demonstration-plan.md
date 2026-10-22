@@ -132,6 +132,11 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 8. Plan B with P8. D2 needs it.
 9. **P2c, the solids' coarse face weights** (the lead's ruling 1c, 2026-10-21). Series/harmonic coarse face weights, so a coarse face sees every fine plane it spans instead of every second one. This also fixes P2's finding 2, the sheet blindness. Since 2026-10-21 the solids' CG runs by residual: a floor of `kSolidsCgIterations` (8), then on to 1e-4, with a cap of 32. A cell-centred sphere needs 24 iterations because the coarse levels see a different body; P2c brings the count back toward the floor. It follows plan B's GPU work unless the cap starts firing. Even-grid solids bits shift at about 1e-6, inside the bands, so the solids goldens are re-cut under TD-1 with the lead's word.
 9. P5 and P9. D3 needs them.
+10. **The quad's four wakes against measured data** (the lead, 2026-10-22, from C8q's finding; after the GPU solver, once L5 builds the drones). A quad-level case against NASA Ames' measured hover and wind-tunnel data for the Phantom 3 and Iris+ classes (thrust and inflow per rotor; the library plan names the sources). Four interacting wakes have no closed-form reference:
+    - C8q measured each rotor of the reference quad (tips 0.9R apart) at 0.81 of single-rotor momentum theory, and at 0.85 without swirl; rotor 0 alone in the same case read 1.06, C8's disc.
+    - Linear mutual induction (each neighbour's inflow, as a sink at its disc) accounts for only about 3% at C8q's probe, 0.5R wide and 2R below. The rest, the wakes' mixing or the open box's response to four times the flux, is not yet separated.
+    - C8q keeps the banded single-rotor check (rotor 0 alone, against momentum theory in C8's band) and reports the four-rotor ratios only.
+11. **The swirl's root relief** (later). P1's constant circulation reaches the disc's inner ring at 0.41R, and it costs C8q's quad about 4% of the downwash at its 0.5R probe (0.81 against 0.85 without torque). The change: a circulation rising from 0 at the hub, as a real rotor's root unloads, designed and measured against C8q.
 
 ## Spec changes (Cameron's, 2026-10-12)
 
