@@ -1,0 +1,30 @@
+{
+  "comment": "Synthetic input for test_resample_uiuc.py: our own numbers in UIUC's file format, never UIUC's. syn_a is a clean case (no warning); syn_b steps above 10% at J = 0, misses its published hover rpm by more than 20%, and has a hub station at 0.18 and a tip at 0.91.",
+  "props": [
+    {
+      "id": "syn_a",
+      "volume": "synthetic (our own numbers)",
+      "retrieved": "2026-10-22",
+      "blades": 2,
+      "diameter_m": 0.254,
+      "static": "syn_a_static.txt",
+      "runs": ["syn_a_run_3000.txt", "syn_a_run_5000.txt", "syn_a_run_7000.txt"],
+      "geometry": "syn_a_geom.txt",
+      "drone": {"name": "synthetic A", "mass_kg": 1.444, "rotors": 4,
+                "published_hover_rpm": 5200, "published_source": "synthetic"}
+    },
+    {
+      "id": "syn_b",
+      "volume": "synthetic (our own numbers)",
+      "retrieved": "2026-10-22",
+      "blades": 3,
+      "diameter_m": 0.127,
+      "static": "syn_b_static.txt",
+      "runs": ["syn_b_run_2500.txt", "syn_b_run_3500.txt"],
+      "geometry": "syn_b_geom.txt",
+      "drone": {"name": "synthetic B", "mass_kg": 0.0417, "rotors": 4,
+                "published_hover_rpm": 2500, "published_source": "synthetic"},
+      "note": "derived from syn_a's shape, assumed"
+    }
+  ]
+}
