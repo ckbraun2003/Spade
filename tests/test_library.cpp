@@ -925,7 +925,7 @@ TEST(LibraryIndex, TheCommittedIndexIsTheTablesEntriesInOrderAndEveryOneLoads) {
         EXPECT_EQ(e.category, expected[i].category);
         EXPECT_EQ(e.file, expected[i].file);
         EXPECT_EQ(e.kind, expected[i].kind);
-        EXPECT_TRUE(e.thumbnail.empty()) << "thumbnails come later, rendered by Rendering";
+        EXPECT_FALSE(e.thumbnail.empty()) << "N14b: every entry has its thumbnail";
     }
     EXPECT_OK(spade::scene::check_library_contents(*library));
 

@@ -61,6 +61,10 @@
 
 namespace spade::sandbox::editor {
 
+// A library thumbnail's side, in pixels (INT-14, N14b): the PNGs
+// library_thumbnail.hpp draws, and the panel's tiles, 1:1.
+inline constexpr uint32_t kThumbnailSize = 96;
+
 struct LibraryItem {
     enum class Kind { model, asset, part };
     Kind kind = Kind::asset;
