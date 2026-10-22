@@ -662,6 +662,7 @@ void expect_write_refused(const Library& library, std::string_view needle) {
     EXPECT_EQ(code_of(r), code(spade::Code::invalid_argument)) << why(r);
     EXPECT_EQ(why(r).rfind("library_to_yaml: ", 0), 0u) << why(r);
     EXPECT_NE(why(r).find(needle), std::string::npos) << "missing '" << needle << "' in: " << why(r);
+    EXPECT_EQ(why(r).find("(line "), std::string::npos) << "a line of text the caller never sees: " << why(r);
 }
 
 [[nodiscard]] Library two_objects() {
@@ -674,6 +675,8 @@ void expect_write_refused(const Library& library, std::string_view needle) {
 
 }  // namespace
 
+constexpr char kOddBytes[] = "ctl \x01\x7f\r\n\\ nul \0 end";
+
 TEST(LibraryText, AVersion1IndexWritesCanonicalTextThatReadsBackEqual) {
     Library library;
     library.dir = "somewhere/else";
@@ -685,6 +688,10 @@ TEST(LibraryText, AVersion1IndexWritesCanonicalTextThatReadsBackEqual) {
         entry_of("*not an alias: \"quoted\" #1", "Props & obstacles", "obstacles/gate.object.yaml", "",
                  LibraryKind::object),
         entry_of("Caf\xc3\xa9 2", "Tab\there", "obstacles/box.object.yaml", "", LibraryKind::object),
+        // Every byte comes back: control bytes, a NUL, a CR and LF, a
+        // backslash, DEL, and bytes that are not UTF-8.
+        entry_of(std::string(kOddBytes, sizeof(kOddBytes) - 1), "\xff\xfe not UTF-8", "obstacles/odd.object.yaml", "",
+                 LibraryKind::object),
     };
     const std::string text = round_trip(library);
     EXPECT_NE(text.find("\nlibrary_version: 1\n"), std::string::npos) << text;
@@ -760,6 +767,10 @@ TEST(LibraryText, WhatTheReaderWouldRefuseIsRefusedByName) {
     expect_write_refused(part_named_model,
                          "entries[1].kind is a prop part, but its file 'obstacles/gate.object.yaml' makes it an "
                          "object");
+    Library part_file_as_object = two_objects();
+    part_file_as_object.entries[0].file = "parts/m.motor.yaml";
+    expect_write_refused(part_file_as_object,
+                         "entries[0].kind is an object, but its file 'parts/m.motor.yaml' makes it a motor part");
 }
 
 // ===========================================================================
