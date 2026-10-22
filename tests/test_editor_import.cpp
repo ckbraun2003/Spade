@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -764,4 +765,36 @@ TEST(EditorImport, SaveToLibraryRefusesADroneWithImportedPartsInCoresWords) {
     EXPECT_NE(status.find("has mesh parts; their sidecars would need copying beside the scene"), std::string::npos)
         << status;
     EXPECT_FALSE(fs::exists(mine.parent_path() / "library" / "library.yaml"));
+}
+
+// A crashed session leaves its staging folder behind (the lead, 2026-10-22).
+// A workspace starting removes each token folder under spade-editor-imports
+// whose newest file is over a day old. It keeps a younger one (a live
+// session's) and anything not named like a token. Reached through
+// import_staging(), never the temp directory (TestHygiene).
+TEST(EditorImport, AWorkspaceStartingSweepsStagingFoldersOverADayOld) {
+    auto first = hover_workspace();
+    ASSERT_NE(first, nullptr);
+    const fs::path root = first->import_staging().parent_path();
+    const std::string token = spade::path_text(first->import_staging().filename());
+    const auto aged = [&](const fs::path& dir, std::chrono::hours age) {
+        fs::create_directories(dir / "imported");
+        support::write_bytes(dir / "imported" / "left.spmesh", "staged");
+        const fs::file_time_type then = fs::file_time_type::clock::now() - age;
+        for (const fs::path& x : {dir / "imported" / "left.spmesh", dir / "imported", dir}) fs::last_write_time(x, then);
+    };
+    const fs::path old = root / (token + "1");
+    const fs::path young = root / (token + "2");
+    const fs::path other = root / ("notes-" + token);
+    aged(old, std::chrono::hours(48));
+    aged(young, std::chrono::hours(23));
+    aged(other, std::chrono::hours(48));
+    auto second = hover_workspace();
+    ASSERT_NE(second, nullptr);
+    EXPECT_FALSE(fs::exists(old)) << "a crashed session's, two days old";
+    EXPECT_TRUE(fs::exists(young)) << "a live session's, under a day old";
+    EXPECT_TRUE(fs::exists(other)) << "not a token's name";
+    std::error_code ec;
+    fs::remove_all(young, ec);
+    fs::remove_all(other, ec);
 }
