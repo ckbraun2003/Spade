@@ -29,9 +29,11 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -58,6 +60,7 @@
 #include "vehicles/quadrotor.hpp"
 #include "world/aabb.hpp"
 #include "world/builder.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 namespace spade::sandbox::editor {
@@ -74,10 +77,11 @@ struct LibraryItem {
     std::optional<scene::SceneAsset> asset;    // set for an asset: an object file's object
     std::vector<MaterialDesc> materials{};     // an object file's own materials
     std::optional<scene::PartFile> part{};     // set for a part, its sources (grades) included
-    std::string category{};                    // the index's, or "from file"; empty for a built-in
+    std::string category{};                    // the index's, "from file" or "imported"; empty for a built-in
     std::string file{};                        // as the index spells it, or the path loaded from
     std::string source{};                      // the path placing reads; empty for a built-in
     std::optional<png::Image> thumbnail{};     // the image its entry names, decoded; none without one
+    std::shared_ptr<const TriangleMesh> mesh{};  // an import's (N15), for its rest; its asset has no collider
 };
 
 // One primitive at its collider's origin, as WorldBuilder lays out its
@@ -288,7 +292,8 @@ namespace detail {
 // How far above the ground an item's origin sits when it rests there
 // (Test/Docs' placed-at): a drone on its own lowest posed part, or on the
 // built-in drone's body when it has no parts; an asset on its collider's box
-// (sdf_bounds()), or at its origin when the box can't be found.
+// (sdf_bounds()), an import (N15) on its mesh's lowest vertex, or at its
+// origin when neither can be found.
 [[nodiscard]] inline float rest_height(const LibraryItem& item) {
     if (item.kind == LibraryItem::Kind::model) {
         if (!item.model || item.model->parts.empty()) return kDroneBodyHalf.y;
@@ -296,6 +301,11 @@ namespace detail {
         return low ? -*low : kDroneBodyHalf.y;
     }
     if (!item.asset) return 0.0f;
+    if (item.asset->collider.nodes.empty() && item.mesh) {
+        float low = std::numeric_limits<float>::infinity();
+        for (const glm::vec3& p : item.mesh->positions()) low = std::min(low, p.y);
+        return std::isfinite(low) ? -low : 0.0f;
+    }
     const Result<Aabb> box = sdf_bounds(item.asset->collider);
     return box ? -box->min.y : 0.0f;
 }

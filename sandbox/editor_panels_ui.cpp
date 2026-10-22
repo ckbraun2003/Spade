@@ -435,6 +435,11 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
 
 void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     ui::title(a.name.c_str());
+    if (!p.selected_source.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("imported from %s", p.selected_source.c_str());
+        ImGui::PopTextWrapPos();
+    }
     if (ui::section("Transform", true) && ui::begin_properties("transform")) {
         SdfPose next = a.pose;
         bool changed = vec3_row("Position (m)", "##pos", a.pose.position, 0.01f, next.position);

@@ -23,9 +23,12 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -36,6 +39,7 @@
 #include "drone_view.hpp"
 #include "editor_document.hpp"
 #include "editor_files.hpp"
+#include "editor_import.hpp"
 #include "editor_library.hpp"
 #include "editor_library_save.hpp"
 #include "editor_panels.hpp"
@@ -96,6 +100,9 @@ class EditorWorkspace {
     // told where it is (assets/library/meshes is the library's mesh root).
     void set_fallback_meshes(std::vector<render::FallbackMesh> meshes) { fallback_meshes_ = std::move(meshes); }
     [[nodiscard]] const std::filesystem::path& assets_dir() const noexcept { return assets_; }
+    // N15's staging folder (D1): the view's second root, after the scene's
+    // folder; Save copies what the scene uses from it beside the scene.
+    [[nodiscard]] const std::filesystem::path& import_staging() const noexcept { return staging_.path(); }
     [[nodiscard]] EditorPanels& panels() noexcept { return panels_; }
     [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
@@ -213,6 +220,11 @@ class EditorWorkspace {
             panels_.selection = Selection{};
         }
         if (panels_.armed && *panels_.armed >= panels_.library.size()) panels_.armed.reset();
+        panels_.selected_source.clear();
+        if (panels_.selection.kind == Selection::Kind::object) {
+            const scene::SceneAsset* a = find_asset(s, panels_.selection.name);
+            if (a != nullptr) panels_.selected_source = import_source(a->visual.mesh_ref);
+        }
     }
 
     // The selected object's framing: a vehicle within its reach, where the run
@@ -253,6 +265,30 @@ class EditorWorkspace {
 
   private:
     enum class Doc { scene, world };
+
+    // N15's staging folder (D1): the workspace's own, under the system's temp
+    // folder, made by the first import, removed with the workspace, so an
+    // import never saved leaves nothing behind.
+    class ImportStaging {
+      public:
+        ImportStaging() {
+            std::error_code ec;
+            const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+            std::random_device rd;
+            const uint64_t token = (static_cast<uint64_t>(rd()) << 32) ^ rd();
+            path_ = (ec ? std::filesystem::path(".") : temp) / "spade-editor-imports" / std::to_string(token);
+        }
+        ~ImportStaging() {
+            std::error_code ec;
+            if (!path_.empty()) std::filesystem::remove_all(path_, ec);
+        }
+        ImportStaging(const ImportStaging&) = delete;
+        ImportStaging& operator=(const ImportStaging&) = delete;
+        [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+
+      private:
+        std::filesystem::path path_;
+    };
     struct Serials {
         uint64_t scene = 0;
         uint64_t world = 0;
@@ -480,7 +516,8 @@ class EditorWorkspace {
             }
             case Command::open: open(panels_.path); return;
             case Command::load_item: {
-                Result<LibraryItem> item = item_from_file(panels_.item_path);
+                Result<LibraryItem> item =
+                    is_gltf(panels_.item_path) ? import_item(panels_.item_path) : item_from_file(panels_.item_path);
                 if (!item) {
                     panels_.status = item.error().context;
                     return;
@@ -505,6 +542,60 @@ class EditorWorkspace {
                 return;
             }
         }
+    }
+
+    // N15: a .gltf or .glb, by its extension, any case.
+    [[nodiscard]] static bool is_gltf(const std::filesystem::path& file) {
+        std::string ext = path_text(file.extension());
+        for (char& c : ext) c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        return ext == ".gltf" || ext == ".glb";
+    }
+
+    // N15: a glTF as an "imported" library item, armed by Load from file. Its
+    // sidecar is staged (D1); its asset is visual only (a mesh obstacle's
+    // collider waits for N9), drawn with the world's first material. Its
+    // source stays empty, so placing it adds the asset, not an object file;
+    // `file` keeps the path imported.
+    [[nodiscard]] Result<LibraryItem> import_item(const std::filesystem::path& file) {
+        const WorldDesc& world = docs_.world.desc();
+        if (world.materials.empty()) {
+            return std::unexpected(Error{Code::invalid_argument, detail::import_prefix(file) +
+                                                                     "the world has no material to draw it with"});
+        }
+        Result<ImportedMesh> got = import_gltf_object(file, staging_.path(), docs_.scene.desc(), world,
+                                                      docs_.scene.path.parent_path());
+        if (!got) return std::unexpected(got.error());
+        LibraryItem item;
+        item.kind = LibraryItem::Kind::asset;
+        item.name = got->name;
+        scene::SceneAsset a;
+        a.name = got->name;
+        a.visual.mesh_ref = got->ref;
+        a.visual.material = world.materials.front().name;
+        item.asset = std::move(a);
+        item.mesh = got->mesh;
+        item.category = "imported";
+        item.file = got->source;
+        import_sources_[got->ref] = got->source;
+        return item;
+    }
+
+    // N15: the path an imported mesh came from: this session's import, else
+    // the provenance of its sidecar beside the scene or staged; empty for a
+    // ref not under imported/. Read once per ref.
+    [[nodiscard]] std::string import_source(const std::string& ref) {
+        if (!ref.starts_with("imported/")) return {};
+        if (const auto it = import_sources_.find(ref); it != import_sources_.end()) return it->second;
+        std::string source;
+        for (const std::filesystem::path& root : {docs_.scene.path.parent_path(), staging_.path()}) {
+            const std::filesystem::path sidecar = root / std::filesystem::path(ref + ".spmesh");
+            std::error_code ec;
+            if (!std::filesystem::exists(sidecar, ec)) continue;
+            if (const Result<LoadedMesh> m = load_mesh_file(sidecar); m) source = m->provenance.source;
+            break;
+        }
+        import_sources_[ref] = source;
+        return source;
     }
 
     // One step back (or forward) in the shared history.
@@ -557,6 +648,7 @@ class EditorWorkspace {
         panels_.selection = Selection{};
         panels_.pilot = PilotPanel{};
         panels_.armed.reset();
+        import_sources_.clear();
         panels_.status.clear();
         list_sources();
         load_library();
@@ -566,6 +658,8 @@ class EditorWorkspace {
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
     std::vector<render::FallbackMesh> fallback_meshes_;  // N11: what Save copies beside the scene
+    ImportStaging staging_;                              // N15: where imports are staged until Save
+    std::map<std::string, std::string> import_sources_;  // N15: an imported ref -> the path it came from
     scene::ComposedScene composed_;
     uint64_t composition_ = 0;
     std::optional<EditorRun> run_;

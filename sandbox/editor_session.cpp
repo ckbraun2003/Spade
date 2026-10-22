@@ -120,10 +120,12 @@ render::ViewInputs EditorSession::view_inputs() {
 // vehicles and the selection draw with. Only when the composition changed.
 Result<void> EditorSession::rebuild_scene() {
     // N11: the world's meshes, from the scene's folder first, then the
-    // library's. A ref that resolves nowhere draws as the resolver's magenta
-    // stand-in and is named in the status; Save copies the library's beside
-    // the scene.
-    std::vector<std::filesystem::path> roots{workspace_->documents().scene.path.parent_path()};
+    // imports staged this session (N15, D1), then the library's. A ref that
+    // resolves nowhere draws as the resolver's magenta stand-in and is named
+    // in the status; Save copies the staged and the library's beside the
+    // scene.
+    std::vector<std::filesystem::path> roots{workspace_->documents().scene.path.parent_path(),
+                                             workspace_->import_staging()};
     if (!workspace_->assets_dir().empty()) roots.push_back(workspace_->assets_dir() / "library" / "meshes");
     const render::ResolvedMeshes meshes = render::resolve_meshes(workspace_->composed().world, roots);
     workspace_->set_fallback_meshes(meshes.from_fallback);
