@@ -55,6 +55,7 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_fp32_exact.cpp
     test_spirv_scan_estimates.cpp
     test_core_fp16.cpp
     test_core_flow_volume.cpp

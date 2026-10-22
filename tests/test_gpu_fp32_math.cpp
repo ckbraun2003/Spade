@@ -39,6 +39,12 @@
 //       both sides (log32's 2^24 pre-scale and exp32's subnormal-result tail),
 //       and the kMaxReducibleAngle pins.  [one suite]
 //
+//   (e) THE EXACT DIVISION AND SQUARE ROOT, div32_ftz and sqrt32_ftz (Core's
+//       plan, 2026-10-22), against the host's divss and sqrtss under MXCSR
+//       FTZ|DAZ, compared as bits with NaN payloads included, and their
+//       correction on injected estimates against the same and against
+//       tests/fp32_exact_battery.hpp's C++ port.  [three suites, section 7]
+//
 //   plus the two things the batteries above depend on and could not diagnose on
 //   their own: the CONSTANTS the device actually compiled
 //   (KernelConstantsAreBitIdenticalToTheHostConstants) and the correctly-rounded
@@ -58,6 +64,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <cinttypes>
 #include <cmath>
 #include <cstddef>
@@ -68,6 +77,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "compute/backend.hpp"
@@ -76,6 +86,7 @@
 #include "compute/vulkan/probe_runner.hpp"
 #include "core/fp32_math.hpp"
 #include "core/rng.hpp"
+#include "fp32_exact_battery.hpp"
 #include "world/medium.hpp"
 
 #include "fp32_math_probe.spv.gen.hpp"
@@ -102,6 +113,10 @@ constexpr uint32_t kModeConstants = 5;
 // three-arguments-per-two-results layout and for why an integer kernel rides
 // the fp32_math probe.
 constexpr uint32_t kModeU64Shr = 6;
+// The exact square root, and the two injected-estimate modes (section 7).
+constexpr uint32_t kModeSqrt = 7;
+constexpr uint32_t kModeDivWith = 8;
+constexpr uint32_t kModeSqrtWith = 9;
 
 // Results per dispatch. 2^21 floats is an 8 MB argument buffer and an 8 MB
 // result buffer -- comfortably inside the global constraint's 64 MB-per-dispatch
@@ -938,6 +953,351 @@ TEST(GpuFp32Math, EdgeCasesAreBitIdenticalToTheHost) {
     // pass this suite by agreeing with itself.
     EXPECT_EQ(spade::math::sin32(kMaxReducible), 0.0f);
     EXPECT_EQ(spade::math::cos32(kMaxReducible), 1.0f);
+}
+
+// ===========================================================================
+// 7. Battery (e) -- the exact division and square root
+// ===========================================================================
+//
+// div32_ftz and sqrt32_ftz are divss and sqrtss under MXCSR FTZ|DAZ, bit for
+// bit over the WHOLE domain, NaN payloads included (fp32_math.slang's table).
+// Their host twin is the hardware's own, so these suites hold the device to
+// tests/fp32_exact_battery.hpp's reference -- divps and sqrtps inside
+// engine/core/detail/flush_subnormals.hpp's scope -- as bit patterns, a NaN by
+// its bits and not as a class. The proof that the correction is exact for
+// any estimate within the bound is tests/test_fp32_exact.cpp's; these show
+// the device computes it.
+
+namespace {
+
+namespace ex = spade::testing::exact;
+
+// The exact suites' driver. `arity` argument words per result, as BIT
+// PATTERNS, which fill(base, n, in) writes for a chunk; check(base, n, in, gpu)
+// then gets the device's answers and computes the chunk's reference. A chunk
+// keeps the argument buffer at the unary batteries' 8 MB or under.
+template <class Fill, class Check>
+[[nodiscard]] bool sweep_exact(VulkanContext& ctx, const char* name, uint32_t mode, uint32_t arity, uint64_t count,
+                               Fill fill, Check check, uint32_t& chunks) {
+    const uint32_t per_chunk = kChunkElements / std::bit_ceil(arity);
+    std::vector<uint32_t> in(std::size_t{per_chunk} * arity);
+    std::vector<uint32_t> gpu(per_chunk);
+    std::vector<float> args(in.size() + 1);
+    std::vector<float> out(per_chunk);
+    args[0] = float_of(mode);
+
+    for (uint64_t base = 0; base < count; base += per_chunk) {
+        const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(per_chunk, count - base));
+        fill(base, n, in.data());
+        const std::size_t words = std::size_t{n} * arity;
+        for (std::size_t w = 0; w < words; ++w) args[1 + w] = float_of(in[w]);
+
+        const auto result = run_probe(ctx, probe_spirv(), std::span<const float>(args.data(), words + 1),
+                                      std::span<float>(out.data(), n));
+        if (!result.has_value()) {
+            ADD_FAILURE() << name << ": run_probe failed at chunk " << chunks << ": " << result.error().context;
+            return false;
+        }
+        ++chunks;
+        for (uint32_t j = 0; j < n; ++j) gpu[j] = bits_of(out[j]);
+        check(base, n, in.data(), gpu.data());
+    }
+    return true;
+}
+
+// One device result against what it should be: counted, and printed for the
+// first kMaxPrintedMismatches with its inputs as bits.
+void compare_exact(const char* name, Tally& tally, int& printed, uint64_t index, const uint32_t* in, uint32_t arity,
+                   uint32_t gpu, uint32_t want) {
+    ++tally.n;
+    if (gpu == want) return;
+    ++tally.mismatches;
+    if (printed >= kMaxPrintedMismatches) return;
+    ++printed;
+    char inputs[40] = "";
+    for (uint32_t w = 0, at = 0; w < arity && w < 3u; ++w) {
+        at += static_cast<uint32_t>(std::snprintf(inputs + at, sizeof inputs - at, " 0x%08" PRIX32, in[w]));
+    }
+    std::printf("[GpuFp32Math] MISMATCH %s[%" PRIu64 "]  in=%s  gpu=0x%08" PRIX32 "  want=0x%08" PRIX32 "\n", name,
+                index, inputs, gpu, want);
+}
+
+// a / b through mode 4 (div32_ftz) for `count` pairs from pair_at(i), as bits,
+// against divss under the flush.
+template <class PairAt>
+[[nodiscard]] Tally exact_divide(VulkanContext& ctx, const char* name, uint64_t count, PairAt pair_at) {
+    Tally tally;
+    int printed = 0;
+    std::vector<uint32_t> a, b, want;
+    const bool ok = sweep_exact(
+        ctx, name, kModeDiv, 2u, count,
+        [&pair_at](uint64_t base, uint32_t n, uint32_t* in) {
+            for (uint32_t j = 0; j < n; ++j) {
+                const std::pair<uint32_t, uint32_t> p = pair_at(base + j);
+                in[2 * std::size_t{j}] = p.first;
+                in[2 * std::size_t{j} + 1] = p.second;
+            }
+        },
+        [&](uint64_t base, uint32_t n, const uint32_t* in, const uint32_t* gpu) {
+            a.resize(n);
+            b.resize(n);
+            want.resize(n);
+            for (uint32_t j = 0; j < n; ++j) {
+                a[j] = in[2 * std::size_t{j}];
+                b[j] = in[2 * std::size_t{j} + 1];
+            }
+            ex::reference_divide(a, b, want);
+            for (uint32_t j = 0; j < n; ++j) {
+                compare_exact(name, tally, printed, base + j, in + 2 * std::size_t{j}, 2u, gpu[j], want[j]);
+            }
+        },
+        tally.chunks);
+    tally.dispatch_failed = !ok;
+    return tally;
+}
+
+// sqrt(x) through mode 7 (sqrt32_ftz) for `count` inputs from x_at(i), as bits,
+// against sqrtss under the flush.
+template <class XAt>
+[[nodiscard]] Tally exact_sqrt(VulkanContext& ctx, const char* name, uint64_t count, XAt x_at) {
+    Tally tally;
+    int printed = 0;
+    std::vector<uint32_t> x, want;
+    const bool ok = sweep_exact(
+        ctx, name, kModeSqrt, 1u, count,
+        [&x_at](uint64_t base, uint32_t n, uint32_t* in) {
+            for (uint32_t j = 0; j < n; ++j) in[j] = x_at(base + j);
+        },
+        [&](uint64_t base, uint32_t n, const uint32_t* in, const uint32_t* gpu) {
+            x.assign(in, in + n);
+            want.resize(n);
+            ex::reference_sqrt(x, want);
+            for (uint32_t j = 0; j < n; ++j) compare_exact(name, tally, printed, base + j, in + j, 1u, gpu[j], want[j]);
+        },
+        tally.chunks);
+    tally.dispatch_failed = !ok;
+    return tally;
+}
+
+}  // namespace
+
+// The division over every pair of the 48 specials (zeros, subnormals, the
+// normal range's edges, infinities, NaNs of both signs and kinds with several
+// payloads); 1 / b over every b in [1, 2), the device's reciprocal, which is
+// the estimate's one assumption; a / 3 over every a in [0.5, 2); 2^20 of
+// Rendering's near-ties; 2^22 random bit patterns; and 2^16 pairs per result
+// exponent -1..2 (the FTZ edge) and 253..256 (overflow).
+TEST(GpuFp32Math, ExactDivisionMatchesTheHostUnderFtzDaz) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    const auto expect_clean = [](const char* name, const Tally& tally) {
+        report(name, tally);
+        EXPECT_FALSE(tally.dispatch_failed) << name;
+        EXPECT_EQ(tally.mismatches, 0u) << name;
+    };
+
+    constexpr std::size_t kN = ex::kSpecials.size();
+    expect_clean("ExactDivSpecialPairs", exact_divide(*ctx, "ExactDivSpecialPairs", kN * kN, [](uint64_t i) {
+                     return std::pair<uint32_t, uint32_t>{ex::kSpecials[static_cast<std::size_t>(i / kN)],
+                                                          ex::kSpecials[static_cast<std::size_t>(i % kN)]};
+                 }));
+
+    expect_clean("ExactDivOneOverEveryB", exact_divide(*ctx, "ExactDivOneOverEveryB", 1u << 23, [](uint64_t i) {
+                     return std::pair<uint32_t, uint32_t>{0x3F800000u, 0x3F800000u | static_cast<uint32_t>(i)};
+                 }));
+
+    expect_clean("ExactDivEveryAOverThree", exact_divide(*ctx, "ExactDivEveryAOverThree", 1u << 24, [](uint64_t i) {
+                     return std::pair<uint32_t, uint32_t>{0x3F000000u + static_cast<uint32_t>(i), 0x40400000u};
+                 }));
+
+    std::vector<uint32_t> ta, tb;
+    ex::near_ties(std::size_t{1} << 20, 0x71E5ull, ta, tb);
+    expect_clean("ExactDivNearTies", exact_divide(*ctx, "ExactDivNearTies", ta.size(), [&ta, &tb](uint64_t i) {
+                     return std::pair<uint32_t, uint32_t>{ta[static_cast<std::size_t>(i)],
+                                                          tb[static_cast<std::size_t>(i)]};
+                 }));
+
+    ex::SplitMix rng{0xD1F0ull};
+    expect_clean("ExactDivRandomBits", exact_divide(*ctx, "ExactDivRandomBits", 1u << 22, [&rng](uint64_t) {
+                     const uint64_t r = rng.next();
+                     return std::pair<uint32_t, uint32_t>{static_cast<uint32_t>(r), static_cast<uint32_t>(r >> 32)};
+                 }));
+
+    constexpr int kEdges[] = {-1, 0, 1, 2, 253, 254, 255, 256};
+    ex::SplitMix edge_rng{0xED6Eull};
+    expect_clean("ExactDivExponentEdges",
+                 exact_divide(*ctx, "ExactDivExponentEdges", std::size(kEdges) * (uint64_t{1} << 16), [&](uint64_t i) {
+                     return ex::pair_with_result_exponent(edge_rng, kEdges[static_cast<std::size_t>(i >> 16)]);
+                 }));
+}
+
+// The square root over every input with a biased exponent of 0 and 1, both
+// signs (zeros, subnormals under DAZ, the smallest normals and their
+// negations), 126 and 127 (both parities over [0.5, 2): the whole correction
+// space), and 254 and 255 (the largest, infinity, every NaN payload); and the
+// specials, for -inf and the negative NaNs.
+TEST(GpuFp32Math, ExactSqrtMatchesTheHostUnderFtzDaz) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    const struct {
+        const char* name;
+        uint32_t first;
+    } kRuns[] = {
+        {"ExactSqrtExponents0And1", 0x00000000u},
+        {"ExactSqrtNegativeExponents0And1", 0x80000000u},
+        {"ExactSqrtExponents126And127", 0x3F000000u},
+        {"ExactSqrtExponents254And255", 0x7F000000u},
+    };
+    for (const auto& run : kRuns) {
+        const uint32_t first = run.first;
+        const Tally tally = exact_sqrt(*ctx, run.name, uint64_t{1} << 24,
+                                       [first](uint64_t i) { return first + static_cast<uint32_t>(i); });
+        report(run.name, tally);
+        ASSERT_FALSE(tally.dispatch_failed) << run.name;
+        EXPECT_EQ(tally.mismatches, 0u) << run.name;
+    }
+
+    const Tally specials = exact_sqrt(*ctx, "ExactSqrtSpecials", ex::kSpecials.size(),
+                                      [](uint64_t i) { return ex::kSpecials[static_cast<std::size_t>(i)]; });
+    report("ExactSqrtSpecials", specials);
+    ASSERT_FALSE(specials.dispatch_failed);
+    EXPECT_EQ(specials.mismatches, 0u);
+}
+
+// The correction on estimates the device's own OpFDiv and InverseSqrt would
+// never give: modes 8 and 9 take the estimate from the host -- the correctly
+// rounded 1/bm or 1/sqrt(xm) pushed by k floats -- and each result is held to
+// divss/sqrtss under the flush AND to tests/fp32_exact_battery.hpp's port on
+// the same estimate. The second comparison is what makes the port a faithful
+// port: the CPU proof runs on it.
+//
+// ASSERTED, inside the proof's bounds (fp32_math.slang): division at k in
+// [-3, 3], +-16 and +-32 (exact while |d0| < 128 units; +-32 gives about 66),
+// over 2^20 pairs whose result exponents span -1..256; sqrt at k in [-3, 3]
+// and +-16 (exact while |e0| < 64 units, about +-31 ulps of r at worst, where
+// xm -> 4) over 2^20 positive normals. The ks take turns, input by input.
+// REPORTED, never asserted: sqrt at +-32 over every xm in [3.9, 4), the
+// bound's edge, where misses are expected.
+TEST(GpuFp32Math, ExactCorrectionRoundsInjectedEstimatesOnTheDevice) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    constexpr uint64_t kCount = uint64_t{1} << 20;
+    constexpr int kDivK[] = {-3, -2, -1, 0, 1, 2, 3, -16, 16, -32, 32};
+    constexpr int kSqrtK[] = {-3, -2, -1, 0, 1, 2, 3, -16, 16};
+
+    // ---- division, mode 8: (a, b, y) ------------------------------------
+    std::vector<uint32_t> a(kCount), b(kCount), y(kCount);
+    ex::SplitMix rng{0x1E57ull};
+    for (std::size_t i = 0; i < kCount; ++i) {
+        const int er = -1 + static_cast<int>(rng.next() % 258u);
+        const std::pair<uint32_t, uint32_t> p = ex::pair_with_result_exponent(rng, er);
+        a[i] = p.first;
+        b[i] = p.second;
+        y[i] = ex::bits(ex::nudge(ex::div_estimate(p.second), kDivK[i % std::size(kDivK)]));
+    }
+    Tally div_host, div_port;
+    int div_host_printed = 0, div_port_printed = 0;
+    std::vector<uint32_t> ca, cb, want;
+    const bool div_ok = sweep_exact(
+        *ctx, "ExactDivInjected", kModeDivWith, 3u, kCount,
+        [&](uint64_t base, uint32_t n, uint32_t* in) {
+            for (uint32_t j = 0; j < n; ++j) {
+                const std::size_t i = static_cast<std::size_t>(base) + j;
+                in[3 * std::size_t{j}] = a[i];
+                in[3 * std::size_t{j} + 1] = b[i];
+                in[3 * std::size_t{j} + 2] = y[i];
+            }
+        },
+        [&](uint64_t base, uint32_t n, const uint32_t* in, const uint32_t* gpu) {
+            const auto from = static_cast<std::ptrdiff_t>(base);
+            ca.assign(a.begin() + from, a.begin() + from + n);
+            cb.assign(b.begin() + from, b.begin() + from + n);
+            want.resize(n);
+            ex::reference_divide(ca, cb, want);
+            for (uint32_t j = 0; j < n; ++j) {
+                const uint32_t port = ex::port_div(ca[j], cb[j], ex::from_bits(y[static_cast<std::size_t>(base) + j]));
+                const uint32_t* args = in + 3 * std::size_t{j};
+                compare_exact("ExactDivInjectedVsDivss", div_host, div_host_printed, base + j, args, 3u, gpu[j],
+                              want[j]);
+                compare_exact("ExactDivInjectedVsPort", div_port, div_port_printed, base + j, args, 3u, gpu[j], port);
+            }
+        },
+        div_host.chunks);
+    div_port.chunks = div_host.chunks;
+    report("ExactDivInjectedVsDivss", div_host);
+    report("ExactDivInjectedVsPort", div_port);
+    ASSERT_TRUE(div_ok);
+    EXPECT_EQ(div_host.mismatches, 0u) << "div32_ftz_with on injected estimates differs from divss";
+    EXPECT_EQ(div_port.mismatches, 0u) << "div32_ftz_with on the device differs from the C++ port";
+
+    // ---- the square root, mode 9: (x, r) --------------------------------
+    // One run of inputs xs with their estimates rs, held to sqrtss and to the
+    // port, or only counted when `assert_clean` is false (the bound's edge,
+    // whose misses are expected: none is printed as a MISMATCH either).
+    const auto run_sqrt = [&ctx](const char* host_name, const char* port_name, const std::vector<uint32_t>& xs,
+                                 const std::vector<uint32_t>& rs, bool assert_clean) {
+        Tally host, port;
+        int host_printed = assert_clean ? 0 : kMaxPrintedMismatches;
+        int port_printed = host_printed;
+        std::vector<uint32_t> cx, cwant;
+        const bool ok = sweep_exact(
+            *ctx, host_name, kModeSqrtWith, 2u, xs.size(),
+            [&](uint64_t base, uint32_t n, uint32_t* in) {
+                for (uint32_t j = 0; j < n; ++j) {
+                    in[2 * std::size_t{j}] = xs[static_cast<std::size_t>(base) + j];
+                    in[2 * std::size_t{j} + 1] = rs[static_cast<std::size_t>(base) + j];
+                }
+            },
+            [&](uint64_t base, uint32_t n, const uint32_t* in, const uint32_t* gpu) {
+                const auto from = static_cast<std::ptrdiff_t>(base);
+                cx.assign(xs.begin() + from, xs.begin() + from + n);
+                cwant.resize(n);
+                ex::reference_sqrt(cx, cwant);
+                for (uint32_t j = 0; j < n; ++j) {
+                    const uint32_t ported =
+                        ex::port_sqrt(cx[j], ex::from_bits(rs[static_cast<std::size_t>(base) + j]));
+                    const uint32_t* args = in + 2 * std::size_t{j};
+                    compare_exact(host_name, host, host_printed, base + j, args, 2u, gpu[j], cwant[j]);
+                    compare_exact(port_name, port, port_printed, base + j, args, 2u, gpu[j], ported);
+                }
+            },
+            host.chunks);
+        port.chunks = host.chunks;
+        report(host_name, host);
+        report(port_name, port);
+        EXPECT_TRUE(ok) << host_name;
+        if (assert_clean) {
+            EXPECT_EQ(host.mismatches, 0u) << host_name << ": sqrt32_ftz_with on injected estimates is not sqrtss";
+            EXPECT_EQ(port.mismatches, 0u) << port_name << ": sqrt32_ftz_with on the device differs from the C++ port";
+        }
+    };
+
+    std::vector<uint32_t> xs(kCount), rs(kCount);
+    ex::SplitMix xrng{0x5A17ull};
+    for (std::size_t i = 0; i < kCount; ++i) {
+        const uint64_t r = xrng.next();
+        xs[i] = ((1u + static_cast<uint32_t>(r % 254u)) << 23) | (static_cast<uint32_t>(r >> 32) & 0x7FFFFFu);
+        rs[i] = ex::bits(ex::nudge(ex::sqrt_estimate(xs[i]), kSqrtK[i % std::size(kSqrtK)]));
+    }
+    run_sqrt("ExactSqrtInjectedVsSqrtss", "ExactSqrtInjectedVsPort", xs, rs, true);
+
+    // The bound's edge: every xm in [3.9, 4), each at k = -32 and +32.
+    std::vector<uint32_t> edge_x, edge_r;
+    for (uint32_t i = 0; i < ex::kBoundEdgeCount; ++i) {
+        const uint32_t x = ex::kBoundEdgeFirst + i;
+        for (const int k : {-32, 32}) {
+            edge_x.push_back(x);
+            edge_r.push_back(ex::bits(ex::nudge(ex::sqrt_estimate(x), k)));
+        }
+    }
+    run_sqrt("ExactSqrtBoundEdgeVsSqrtss (report only)", "ExactSqrtBoundEdgeVsPort (report only)", edge_x, edge_r,
+             false);
 }
 
 

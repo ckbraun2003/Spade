@@ -114,6 +114,36 @@
 // and it is flagged here rather than buried: the brief anticipated only
 // divisions by constants.
 // ===========================================================================
+//
+// ===========================================================================
+// Functions allowed to hold an estimate (E1/E2)
+// ===========================================================================
+//
+// The only functions in this module, and so in any kernel that imports it,
+// that may hold an OpFDiv or InverseSqrt result (E1/E2 as the user restated
+// them on 2026-10-22). engine/testing/spirv_scan.hpp's pass 3 proves where an
+// estimate can go -- through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/
+// CopyObject to an integer conversion -- but it also passes an uncorrected
+// `uint(a / b)`. So the guarantee covers exactly these functions, and these
+// batteries prove that the integer each estimate becomes is corrected, with
+// estimates pushed +-3 ulps off (past the Vulkan bound) and far past it. An
+// estimate in any other function is a review finding (01-verification,
+// "SPIR-V scanner"). No FAbs or other op outside the scan's carrying list is
+// applied to an estimate; one would need a dated amendment there.
+//
+//   div32_ftz_with (and div32_ftz, which supplies y)    OpFDiv 1/bm
+//       Fp32Exact.DivisionRoundsExactlyWithEstimatesThreeUlpsOff
+//       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
+//       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
+//
+//   sqrt32_ftz_with (and sqrt32_ftz, which supplies r)  InverseSqrt xm
+//       Fp32Exact.SqrtRoundsExactlyWithEstimatesThreeUlpsOffOverItsWholeInputSpace
+//       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
+//       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
+//
+// C1 (RED): both are STUBS that ignore their estimate (below log32_div); C2
+// lands the corrections and keeps this list exact.
+// ===========================================================================
 
 // ---------------------------------------------------------------------------
 // Bit-level access. The C++ side uses std::memcpy (fp32_math.cpp:11-24) because
@@ -260,6 +290,38 @@ float log32_div(float a, float b) {
     }
 
     return asfloat(sign | (uint(bexp) << 23) | (mant & 0x007FFFFFu));
+}
+
+// ===========================================================================
+// div32_ftz / sqrt32_ftz -- divss and sqrtss under MXCSR FTZ|DAZ, bit for bit
+// ===========================================================================
+//
+// C1 (RED) STUBS (Core's exact-division plan, 2026-10-22, section 2). The
+// `_with` forms ignore their estimate: div32_ftz_with answers with
+// log32_div, and sqrt32_ftz_with returns x. The public forms already compute
+// the estimate and hand it over, the shape C2 keeps; here it is dead once the
+// [ForceInline] form is inlined, so slangc drops it or leaves it with no use,
+// and the scan passes either. C2 lands the integer corrections.
+[ForceInline]  // the estimate never crosses an OpFunctionCall (the taint scan)
+float div32_ftz_with(float a, float b, float y) {
+    return log32_div(a, b);  // RED: y ignored
+}
+
+float div32_ftz(float a, float b) {
+    // The E1 estimate: OpFDiv, <= 2.5 ulp.
+    return div32_ftz_with(a, b, 1.0f / asfloat((asuint(b) & 0x007FFFFFu) | 0x3F800000u));
+}
+
+[ForceInline]  // the estimate never crosses an OpFunctionCall (the taint scan)
+float sqrt32_ftz_with(float x, float r) {
+    return x;  // RED: r ignored
+}
+
+float sqrt32_ftz(float x) {
+    const uint ux = asuint(x);
+    const uint odd = ((ux >> 23) + 1u) & 1u;  // (ex + 1) & 1: the sign bit is not bit 0
+    // The E2 estimate: InverseSqrt, <= 2 ulp.
+    return sqrt32_ftz_with(x, rsqrt(asfloat((ux & 0x007FFFFFu) | ((127u + odd) << 23))));
 }
 
 // ===========================================================================

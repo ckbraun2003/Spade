@@ -22,7 +22,7 @@
 // signature is fixed by the task brief and is deliberately kernel-agnostic --
 // `run_probe(ctx, spirv, args, out)`, no user-supplied push value -- because
 // Task 7 reuses it for the sort-isolation tests. So a probe that needs to
-// select between six evaluations puts the selector in the data it already
+// select between ten evaluations puts the selector in the data it already
 // owns: args[0] is the MODE, bit-cast from a uint, and args[1..] are the
 // arguments proper. That keeps the runner free of any knowledge of this
 // kernel.
@@ -31,9 +31,24 @@
 //      mode 1  out[i] = exp32(args[1 + i])
 //      mode 2  out[i] = sin32(args[1 + i])
 //      mode 3  out[i] = cos32(args[1 + i])
-//      mode 4  out[i] = log32_div(args[1 + 2i], args[2 + 2i])
+//      mode 4  out[i] = div32_ftz(args[1 + 2i], args[2 + 2i])
 //      mode 5  out[i] = fp32_math_constant(i)          (args ignored)
 //      mode 6  u64_shr, ONE OUTPUT WORD PER THREAD -- see below
+//      mode 7  out[i] = sqrt32_ftz(args[1 + i])
+//      mode 8  out[i] = div32_ftz_with(args[1 + 3i], args[2 + 3i], args[3 + 3i])
+//      mode 9  out[i] = sqrt32_ftz_with(args[1 + 2i], args[2 + 2i])
+//
+// ---------------------------------------------------------------------------
+// MODES 8 AND 9 -- THE INJECTED ESTIMATE (Core's exact-division plan,
+// 2026-10-22). div32_ftz_with and sqrt32_ftz_with take their estimate as an
+// argument, so the host can hand them one it chose -- the correctly rounded
+// 1/bm or 1/sqrt(xm) pushed k bits off, past the Vulkan bound -- and the
+// device runs the same correction the ops do on estimates its own OpFDiv and
+// InverseSqrt would never give:
+// GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice. Here the
+// estimate is a LOAD from the argument buffer, not an OpFDiv or an
+// InverseSqrt, so the scan's E1/E2 trace has nothing to follow in these two
+// modes.
 //
 // ---------------------------------------------------------------------------
 // MODE 6 (S6 Task 8 review, minor M9) -- WHY AN INTEGER KERNEL RIDES THE
@@ -96,6 +111,9 @@ static const uint kModeCos = 3u;
 static const uint kModeDiv = 4u;
 static const uint kModeConstants = 5u;
 static const uint kModeU64Shr = 6u;
+static const uint kModeSqrt = 7u;
+static const uint kModeDivWith = 8u;
+static const uint kModeSqrtWith = 9u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -146,7 +164,29 @@ void fp32_math_probe(uint3 tid : SV_DispatchThreadID) {
             probe_out[i] = asfloat(0x7FC00001u);
             return;
         }
-        probe_out[i] = log32_div(probe_args[base], probe_args[base + 1u]);
+        probe_out[i] = div32_ftz(probe_args[base], probe_args[base + 1u]);
+        return;
+    }
+
+    // The injected-estimate modes: three arguments per result (a, b, y) and
+    // two (x, r), each with mode 4's loud answer to a short buffer.
+    if (mode == kModeDivWith) {
+        const uint base = 1u + 3u * i;
+        if (base + 2u >= probe_params.arg_count) {
+            probe_out[i] = asfloat(0x7FC00001u);
+            return;
+        }
+        probe_out[i] = div32_ftz_with(probe_args[base], probe_args[base + 1u], probe_args[base + 2u]);
+        return;
+    }
+
+    if (mode == kModeSqrtWith) {
+        const uint base = 1u + 2u * i;
+        if (base + 1u >= probe_params.arg_count) {
+            probe_out[i] = asfloat(0x7FC00001u);
+            return;
+        }
+        probe_out[i] = sqrt32_ftz_with(probe_args[base], probe_args[base + 1u]);
         return;
     }
 
@@ -168,6 +208,9 @@ void fp32_math_probe(uint3 tid : SV_DispatchThreadID) {
             break;
         case kModeCos:
             probe_out[i] = cos32(x);
+            break;
+        case kModeSqrt:
+            probe_out[i] = sqrt32_ftz(x);
             break;
         default:
             probe_out[i] = asfloat(0x7FC00002u);
