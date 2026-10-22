@@ -1044,7 +1044,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
             const std::vector<uint8_t>& frame = t.recorder().grabbed();
             const uint32_t fw = t.recorder().grabbed_width();
             const uint32_t fh = t.recorder().grabbed_height();
-            if (!s.check(!frame.empty(), "grabbed", "absent: no frame captured for the library's tiles")) return;
+            if (frame.empty()) {
+                s.check(false, "grabbed", "absent: no frame captured for the library's tiles");
+                return;
+            }
             const std::vector<std::optional<ViewportRect>>& tiles = w().panels().library_tiles;
             bool any = false;
             for (std::size_t i = 0; i < files.size() && i < tiles.size(); ++i) {

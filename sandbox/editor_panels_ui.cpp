@@ -638,109 +638,101 @@ void library(ed::EditorPanels& p) {
         ImGui::End();
         return;
     }
-    // The default library by category, in its index's order (INT-14), then
-    // what Load from file added; what would not load, verbatim, above them.
+    // Load from file, then what would not load, verbatim; then the default
+    // library by category, in its index's order (INT-14), then what Load from
+    // file added.
+    ImGui::TextDisabled("Load from file");
+    std::string item_path = p.item_path;
+    if (edit_text("##item_path", p.item_path, item_path)) p.item_path = item_path;
+    if (ImGui::Button("Load")) p.commands.push_back(ed::Command::load_item);
+    if (p.armed) ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
     for (const std::string& problem : p.library_problems) ui::status_text(problem);
+    ui::gap();
     std::vector<std::string> categories;
     for (const ed::LibraryItem& item : p.library) {
         const std::string c = ed::panel_category(item);
         if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
-    // N14b: one strip of tiles, scrolling sideways, each category a group.
-    // A tile is its thumbnail 1:1 at whole pixels inside a 2-pixel frame (the
-    // accent when armed), its name below. A tile wholly in view records where
-    // its image was drawn, for the tour's thumbnails check.
+    // N14b: each category a run of tiles that wraps at the panel's edge; the
+    // panel itself scrolls (§13: no child windows). A tile is its thumbnail
+    // 1:1 at whole pixels inside a 2-pixel frame (the accent when armed), its
+    // name below. A tile wholly in view records where its image was drawn,
+    // for the tour's thumbnails check.
     p.library_tiles.assign(p.library.size(), std::nullopt);
     const float image = static_cast<float>(ed::kThumbnailSize);
     const float frame = 2.0f;
     const float tile = image + 2.0f * frame;
+    const float spacing = 2.0f * ui::kBase;
     const float line = ImGui::GetTextLineHeightWithSpacing();
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float strip = 2.0f * line + tile + style.ScrollbarSize + 2.0f * style.ItemSpacing.y;
-    if (ImGui::BeginChild("##tiles", ImVec2(0.0f, strip), ImGuiChildFlags_None,
-                          ImGuiWindowFlags_HorizontalScrollbar)) {
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        const ImVec2 clip_min = draw->GetClipRectMin();
-        const ImVec2 clip_max = draw->GetClipRectMax();
-        const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
-        const auto tile_of = [&](std::size_t i) {
-            const ed::LibraryItem& item = p.library[i];
-            ImGui::PushID(static_cast<int>(i));
-            ImGui::BeginGroup();
-            const ImVec2 cursor = ImGui::GetCursorScreenPos();
-            const ImVec2 at(std::floor(cursor.x), std::floor(cursor.y));
-            ImGui::SetCursorScreenPos(at);
-            const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(tile, tile));
-            const bool hovered = ImGui::IsItemHovered();
-            if (p.library_scroll_to && *p.library_scroll_to == i) {
-                ImGui::SetScrollHereX(0.0f);
-                ImGui::SetScrollHereY(0.0f);
-                p.library_scroll_to.reset();
-            }
-            const bool placeable = ed::placeable(item);
-            const bool armed = p.armed && *p.armed == i;
-            const ImU32 edge = armed ? ImGui::GetColorU32(ui::kAccent)
-                                     : ImGui::GetColorU32(hovered && placeable ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
-            draw->AddRectFilled(at, ImVec2(at.x + tile, at.y + tile), edge);
-            const ImVec2 lo(at.x + frame, at.y + frame);
-            const ImVec2 hi(lo.x + image, lo.y + image);
-            const std::uintptr_t texture = i < p.library_textures.size() ? p.library_textures[i] : 0u;
-            if (texture != 0u) {
-                draw->AddImage((ImTextureID)texture, lo, hi);
-                if (lo.x >= clip_min.x && lo.y >= clip_min.y && hi.x <= clip_max.x && hi.y <= clip_max.y) {
-                    p.library_tiles[i] = ViewportRect{static_cast<uint32_t>(std::lround(lo.x * scale.x)),
-                                                      static_cast<uint32_t>(std::lround(lo.y * scale.y)),
-                                                      static_cast<uint32_t>(std::lround(image * scale.x)),
-                                                      static_cast<uint32_t>(std::lround(image * scale.y))};
-                }
-            } else {
-                draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_WindowBg));
-            }
-            if (clicked && placeable) {
-                if (armed) {
-                    p.armed.reset();
-                } else {
-                    p.armed = i;
-                }
-            }
-            if (hovered && !placeable) {  // a part: inspect-only (INT-14)
-                ImGui::SetTooltip("%s: built into a drone, not placed on its own", item.name.c_str());
-            }
-            // The name, cut at the tile's width so the strip keeps its rhythm.
-            const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
-            draw->PushClipRect(name_at, ImVec2(name_at.x + tile, name_at.y + line), true);
-            draw->AddText(name_at, ImGui::GetColorU32(placeable ? ImGuiCol_Text : ImGuiCol_TextDisabled),
-                          item.name.c_str());
-            draw->PopClipRect();
-            ImGui::Dummy(ImVec2(tile, line));
-            ImGui::EndGroup();
-            ImGui::PopID();
-        };
-        bool first_group = true;
-        for (const std::string& c : categories) {
-            if (!first_group) ImGui::SameLine(0.0f, 4.0f * ui::kBase);
-            first_group = false;
-            ImGui::BeginGroup();
-            ImGui::TextDisabled("%s", c.c_str());
-            bool first_tile = true;
-            for (std::size_t i = 0; i < p.library.size(); ++i) {
-                if (ed::panel_category(p.library[i]) != c) continue;
-                if (!first_tile) ImGui::SameLine(0.0f, 2.0f * ui::kBase);
-                first_tile = false;
-                tile_of(i);
-            }
-            ImGui::EndGroup();
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 clip_min = draw->GetClipRectMin();
+    const ImVec2 clip_max = draw->GetClipRectMax();
+    const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    const auto tile_of = [&](std::size_t i) {
+        const ed::LibraryItem& item = p.library[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::BeginGroup();
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        const ImVec2 at(std::floor(cursor.x), std::floor(cursor.y));
+        ImGui::SetCursorScreenPos(at);
+        const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(tile, tile));
+        const bool hovered = ImGui::IsItemHovered();
+        if (p.library_scroll_to && *p.library_scroll_to == i) {
+            ImGui::SetScrollHereY(0.0f);
+            p.library_scroll_to.reset();
         }
-    }
-    ImGui::EndChild();
-    ui::gap();
-    ImGui::TextDisabled("Load from file");
-    std::string item_path = p.item_path;
-    if (edit_text("##item_path", p.item_path, item_path)) p.item_path = item_path;
-    if (ImGui::Button("Load")) p.commands.push_back(ed::Command::load_item);
-    if (p.armed) {
+        const bool placeable = ed::placeable(item);
+        const bool armed = p.armed && *p.armed == i;
+        const ImU32 edge = armed ? ImGui::GetColorU32(ui::kAccent)
+                                 : ImGui::GetColorU32(hovered && placeable ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+        draw->AddRectFilled(at, ImVec2(at.x + tile, at.y + tile), edge);
+        const ImVec2 lo(at.x + frame, at.y + frame);
+        const ImVec2 hi(lo.x + image, lo.y + image);
+        const std::uintptr_t texture = i < p.library_textures.size() ? p.library_textures[i] : 0u;
+        if (texture != 0u) {
+            draw->AddImage((ImTextureID)texture, lo, hi);
+            if (lo.x >= clip_min.x && lo.y >= clip_min.y && hi.x <= clip_max.x && hi.y <= clip_max.y) {
+                p.library_tiles[i] = ViewportRect{static_cast<uint32_t>(std::lround(lo.x * scale.x)),
+                                                  static_cast<uint32_t>(std::lround(lo.y * scale.y)),
+                                                  static_cast<uint32_t>(std::lround(image * scale.x)),
+                                                  static_cast<uint32_t>(std::lround(image * scale.y))};
+            }
+        } else {
+            draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_WindowBg));
+        }
+        if (clicked && placeable) {
+            if (armed) {
+                p.armed.reset();
+            } else {
+                p.armed = i;
+            }
+        }
+        if (hovered && !placeable) {  // a part: inspect-only (INT-14)
+            ImGui::SetTooltip("%s: built into a drone, not placed on its own", item.name.c_str());
+        }
+        // The name, cut at the tile's width so the grid keeps its rhythm.
+        const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
+        draw->PushClipRect(name_at, ImVec2(name_at.x + tile, name_at.y + line), true);
+        draw->AddText(name_at, ImGui::GetColorU32(placeable ? ImGuiCol_Text : ImGuiCol_TextDisabled),
+                      item.name.c_str());
+        draw->PopClipRect();
+        ImGui::Dummy(ImVec2(tile, line));
+        ImGui::EndGroup();
+        ImGui::PopID();
+    };
+    for (const std::string& c : categories) {
+        ImGui::TextDisabled("%s", c.c_str());
+        bool first_tile = true;
+        for (std::size_t i = 0; i < p.library.size(); ++i) {
+            if (ed::panel_category(p.library[i]) != c) continue;
+            // The next tile on this line when it fits, else on the next.
+            if (!first_tile && ImGui::GetItemRectMax().x + spacing + tile <= right) ImGui::SameLine(0.0f, spacing);
+            first_tile = false;
+            tile_of(i);
+        }
         ui::gap();
-        ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
     }
     ImGui::End();
 }
