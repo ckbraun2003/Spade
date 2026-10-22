@@ -94,3 +94,67 @@ Test/Docs, in Physics' words (Physics checked them, 2026-10-22). C8q's bands wer
 - **The two diagnostics above were one run each,** report only, not ensembles: 0.846 to 0.857 without the discs' torque, and 1.0617 for rotor 0 alone without it.
 - **The four-wake reference** is the measured-data case queued in Physics' demonstration plan (item 10, master `2f29a32`), after the GPU solver.
 - The finding above is closed by the change. The new banded run's record is appended below when it has run.
+
+```text
+=== validation record: C8q reference quad ===
+commit: cc38924 (master)
+date: 2026-10-22
+path: CPU reference, MSVC 1943, release
+config: the library's reference quad (assets/library/drones/reference_quad.model.yaml), its parts cleared as the editor's airflow chapter flies it, held level at the box's centre in still air, no floor; a 0.975 m box, dx 7.62 mm, R/dx 10.00, h = dx/8 = 0.000952 s, air's kinematic viscosity 1.461e-05 m2/s (C8 ran inviscid: the difference was ruled immaterial before the run, Physics 2026-10-22: viscous spreading about 0.05R by 0.5 s, the probe disc's edge about 0.23R inside the slipstream); armed at the hover throttle 0.1655 from t = 0, trimmed on the four-rotor model; the window [0.3, 0.5] s, 6 frames a run. Two ensembles, as C8q's bands were changed on 2026-10-22 before this run (docs/design/test-docs/2026-10-19-end-goal-checks.md section 5): rotor 0 alone, actuator disc · 128³, dx 7.61719 mm, R/dx 10, with its own torque, rotors 1 to 3 pushing nothing (thrust coefficient the least normal float, torque 0); and the quad as flown, actuator disc · 128³, dx 7.61719 mm, R/dx 10. Each is four runs that differ only by a nudge in the test, 1 ulp up on 110 of the discs' increments, seed s: run 0 as it is, runs 1 to 3 seeds 0x1C8, 0x1C9, 0x1CA. So each spread is the measure's sensitivity to rounding, not a physical uncertainty
+measure: rotor 0 alone's mean downwash over the 0.5R disc 2R below, its four runs' mean = 10.5364 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) from the rotor's thrust, its four runs' mean = 9.8807 m/s (tests/data/airflow/README.md, C8 and C8q)
+tolerance: within 10% (C8's, plan A Task 11; C8q's bands as changed on 2026-10-22, fixed before this run, docs/design/test-docs/2026-10-19-end-goal-checks.md section 5)
+verdict: within
+measure: rotor 0 alone's worst run, run 2, off momentum theory by = 0.0666
+reference: momentum theory, as above
+tolerance: <= 0.1 (as above: the verdict holds across the spread)
+verdict: within
+measure: rotor 0 alone's spread across its four runs, (max - min) / mean = 0.0005
+reference: none (the measure's sensitivity to rounding)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 0, its downwash over momentum theory's, its four runs' mean = 0.8167
+reference: none (the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated; no closed-form reference, Physics 2026-10-22)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 1, its downwash over momentum theory's, its four runs' mean = 0.8156
+reference: none (the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated; no closed-form reference, Physics 2026-10-22)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 2, its downwash over momentum theory's, its four runs' mean = 0.8161
+reference: none (the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated; no closed-form reference, Physics 2026-10-22)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 3, its downwash over momentum theory's, its four runs' mean = 0.8170
+reference: none (the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated; no closed-form reference, Physics 2026-10-22)
+tolerance: none
+verdict: report only
+measure: the quad's rotors' means, its four runs' mean, off their mean by at most = 0.0009
+reference: the four rotors are equal statistically (quarter-turn symmetry; Physics, 2026-10-19)
+tolerance: <= 0.1 (C8q's mutual band, fixed before the first run, as above)
+verdict: within
+measure: the quad's worst run by the mutual band, run 2, its rotors off their mean by at most = 0.0089
+reference: the four rotors are equal statistically, as above
+tolerance: <= 0.1 (as above: the verdict holds across the spread)
+verdict: within
+measure: the quad's mutual spread, (max - min) / mean of its rotors' means, its four runs' mean = 0.0017
+reference: none (evidence for any later tightening, set in advance)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 0's spread across its four runs, (max - min) / mean = 0.0117
+reference: none (the measure's sensitivity to rounding)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 1's spread across its four runs, (max - min) / mean = 0.0082
+reference: none (the measure's sensitivity to rounding)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 2's spread across its four runs, (max - min) / mean = 0.0157
+reference: none (the measure's sensitivity to rounding)
+tolerance: none
+verdict: report only
+measure: the quad's rotor 3's spread across its four runs, (max - min) / mean = 0.0154
+reference: none (the measure's sensitivity to rounding)
+tolerance: none
+verdict: report only
+```
