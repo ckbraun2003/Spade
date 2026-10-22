@@ -1,21 +1,26 @@
 // C8q (docs/design/test-docs/2026-10-19-end-goal-checks.md §5, "C8's band
 // where it holds"): the library's reference quad held level in still air at
-// C8's R/dx 10, its parts cleared, each rotor's downwash over a 0.5R disc 2R
-// below against momentum theory. The window is past the wake's horizon, so
-// the verdict is a four-run one-ulp ensemble's: run 0 as it is, three with
-// 1 ulp up on 110 of the discs' increments, through LiveRun's test nudge.
+// C8's R/dx 10, its parts cleared, a rotor's downwash over a 0.5R disc 2R
+// below against momentum theory. As changed on 2026-10-22, before its banded
+// run: rotor 0 alone in the quad's case is banded by C8's 10%, and the
+// four-rotor quad by its rotors' symmetry, its ratios reported only. The
+// window is past the wake's horizon, so each is a four-run one-ulp ensemble's:
+// run 0 as it is, three with 1 ulp up on 110 of the discs' increments, through
+// LiveRun's test nudge.
 //
 // - The nudge (LiveRun::set_test_increment_nudge): unset, a run is the same
 //   to the bit; it moves a run; it is never saved. In the gate.
-// - The ensemble judge (end_goal::c8q()) on made-up means. In the gate.
+// - The judge (end_goal::c8q()) on made-up means, and the record's lines
+//   through the records' reader. In the gate.
 // - SPADE_C8Q_TIME=1: start and two steps timed at 128^3, to size the run.
-// - SPADE_C8Q=1: the four runs and the record. Release, in a quiet window.
+// - SPADE_C8Q=1: the two ensembles and the record. Release, in a quiet window.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -33,6 +38,7 @@
 
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
+#include "analysis/validation.hpp"
 #include "analysis_powered_quad.hpp"
 #include "core/flow_volume.hpp"
 #include "scene/model_file.hpp"
@@ -256,82 +262,124 @@ TEST(EndGoalC8qNudge, IsNeverSavedSoARestoredRunStartsUnset) {
     return m;
 }
 
-TEST(EndGoalC8qJudge, PassesFourRunsInsideBothBands) {
-    const std::vector<eg::DownwashMeans> runs{means({1.05, 1.06, 1.04, 1.05}), means({1.06, 1.05, 1.05, 1.04}),
-                                              means({1.04, 1.05, 1.06, 1.06}), means({1.05, 1.04, 1.05, 1.06})};
-    const eg::Verdict v = eg::c8q(runs);
+// Rotor 0 alone's runs: one rotor each, at `ratio` of a 10 m/s reference.
+[[nodiscard]] std::vector<eg::DownwashMeans> alone(const std::vector<double>& ratios) {
+    std::vector<eg::DownwashMeans> runs;
+    for (const double r : ratios) runs.push_back(means({r}));
+    return runs;
+}
+
+// The quad as its first ensemble read it (2026-10-22): every rotor about 0.816
+// of momentum theory, within 0.1% of the four's mean.
+[[nodiscard]] std::vector<eg::DownwashMeans> quad_as_read() {
+    return std::vector<eg::DownwashMeans>(4, means({0.8167, 0.8156, 0.8161, 0.8170}));
+}
+
+// Rotor 0 alone's part of a verdict's detail, and the quad's.
+[[nodiscard]] std::pair<std::string, std::string> parts(const std::string& d) {
+    const std::size_t quad = d.find(". The quad");
+    if (quad == std::string::npos) {
+        ADD_FAILURE() << d;
+        return {};
+    }
+    return {d.substr(0, quad), d.substr(quad)};
+}
+
+TEST(EndGoalC8qJudge, PassesRotorZeroAloneInsideTheBandWithTheQuadsSymmetry) {
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.06, 1.04, 1.05}), quad_as_read());
     EXPECT_TRUE(v.ok) << v.detail;
     EXPECT_EQ(v.detail.find("(OUT)"), std::string::npos) << v.detail;
 }
 
-// The mean of the four is inside, but one run is out: the worst run decides.
-TEST(EndGoalC8qJudge, TheWorstRunDecidesWhenTheMeanIsInside) {
-    const std::vector<eg::DownwashMeans> runs{means({1.05, 1.05, 1.05, 1.05}), means({1.05, 1.05, 1.05, 1.05}),
-                                              means({1.05, 1.05, 1.05, 1.05}), means({1.12, 1.05, 1.05, 1.05})};
-    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(runs).u, eg::ensemble_mean(runs).v).ok);
-    const eg::Verdict v = eg::c8q(runs);
-    EXPECT_FALSE(v.ok) << v.detail;
-    EXPECT_NE(v.detail.find("the worst run by the rotor band, run 3"), std::string::npos) << v.detail;
-}
-
-TEST(EndGoalC8qJudge, FailsARotorOutsideTenPercent) {
-    const std::vector<eg::DownwashMeans> runs(4, means({0.85, 0.95, 0.95, 0.95}));
-    EXPECT_FALSE(eg::c8q(runs).ok);
-}
-
-// Each rotor within 10% of momentum theory, but one 13% off the four's mean.
-TEST(EndGoalC8qJudge, FailsTheMutualBandInsideTheRotorBand) {
-    const std::vector<eg::DownwashMeans> runs(4, means({0.91, 1.09, 1.09, 1.09}));
-    const eg::C8qBands b = eg::c8q_bands(runs[0].u, runs[0].v);
-    EXPECT_NEAR(b.mutual_off, (10.45 - 9.1) / 10.45, 1e-12);
-    EXPECT_FALSE(b.ok);
-    EXPECT_FALSE(eg::c8q(runs).ok);
-}
-
-// Each worst run is marked OUT by its own band only. C8q's first ensemble
-// (2026-10-22) marked run 2 OUT by the mutual band at 0.00885, inside it: the
-// mark read the run's verdict on both bands.
-TEST(EndGoalC8qJudge, MarksEachWorstRunOutByItsOwnBandOnly) {
-    const auto marks = [](const std::vector<eg::DownwashMeans>& runs) {
-        const std::string d = eg::c8q(runs).detail;
-        const std::size_t rotor = d.find("the worst run by the rotor band");
-        const std::size_t mutual = d.find("; by the mutual band");
-        const std::size_t end = d.find("; each rotor's spread");
-        if (!(rotor < mutual && mutual < end && end != std::string::npos)) {
-            ADD_FAILURE() << d;
-            return std::pair{false, false};
-        }
-        return std::pair{d.substr(rotor, mutual - rotor).find("(OUT)") != std::string::npos,
-                         d.substr(mutual, end - mutual).find("(OUT)") != std::string::npos};
-    };
-    // Outside the rotor band, inside the mutual band; then the other way round.
-    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.82, 0.81, 0.82, 0.82}))), std::pair(true, false));
-    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09}))), std::pair(false, true));
-}
-
-TEST(EndGoalC8qJudge, ReportsTheMutualSpreadAndEachRotorsSpreadAcrossTheRuns) {
-    const std::vector<eg::DownwashMeans> runs{means({1.0, 1.0, 1.0, 1.0}), means({1.02, 1.0, 1.0, 1.0}),
-                                              means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0, 1.04})};
-    const eg::C8qBands b = eg::c8q_bands(runs[3].u, runs[3].v);
-    EXPECT_NEAR(b.mutual_spread, 0.4 / 10.1, 1e-12);
-    const eg::Verdict v = eg::c8q(runs);
+// At 0.816 of momentum theory, the first ensemble's MISS, the quad now passes
+// on its symmetry: its ratios are reported, never judged (§5, 2026-10-22).
+TEST(EndGoalC8qJudge, ReportsTheQuadsRatiosWithoutJudgingThem) {
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad_as_read());
     EXPECT_TRUE(v.ok) << v.detail;
-    // Rotor 0: (10.2 - 10) / 10.05; rotor 3: (10.4 - 10) / 10.1.
-    EXPECT_NE(v.detail.find("each rotor's spread across the runs: 0.0199 0 0 0.0396"), std::string::npos) << v.detail;
+    const auto [rotor0, quad] = parts(v.detail);
+    EXPECT_NE(quad.find("report only: rotor 0 "), std::string::npos) << v.detail;
+    EXPECT_NE(quad.find("rotor 3 "), std::string::npos) << v.detail;
+    EXPECT_EQ(quad.find("(OUT)"), std::string::npos) << v.detail;
 }
 
-TEST(EndGoalC8qJudge, IsAbsentWithoutRunsOrWhenTheRunsDisagreeOnTheRotors) {
-    EXPECT_FALSE(eg::c8q({}).ok);
-    const std::vector<eg::DownwashMeans> runs{means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0})};
-    const eg::Verdict v = eg::c8q(runs);
-    EXPECT_FALSE(v.ok);
-    EXPECT_EQ(v.detail, "c8q: absent: the runs disagree on the rotors");
+// The mean of rotor 0's four runs is inside, but one run is out.
+TEST(EndGoalC8qJudge, TheWorstRotorZeroRunDecidesWhenTheMeanIsInside) {
+    const std::vector<eg::DownwashMeans> runs = alone({1.05, 1.05, 1.05, 1.12});
+    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(runs).u, eg::ensemble_mean(runs).v).ratio_ok);
+    const eg::Verdict v = eg::c8q(runs, quad_as_read());
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_NE(v.detail.find("the worst run, run 3"), std::string::npos) << v.detail;
+}
+
+TEST(EndGoalC8qJudge, FailsRotorZeroOutsideTenPercent) {
+    EXPECT_FALSE(eg::c8q(alone({0.85, 0.85, 0.85, 0.85}), quad_as_read()).ok);
+}
+
+// Each quad rotor within 10% of momentum theory, but one 13% off the four's mean.
+TEST(EndGoalC8qJudge, FailsTheQuadsSymmetryBand) {
+    const std::vector<eg::DownwashMeans> quad(4, means({0.91, 1.09, 1.09, 1.09}));
+    const eg::C8qBands b = eg::c8q_bands(quad[0].u, quad[0].v);
+    EXPECT_NEAR(b.mutual_off, (10.45 - 9.1) / 10.45, 1e-12);
+    EXPECT_FALSE(b.mutual_ok);
+    EXPECT_FALSE(eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad).ok);
+}
+
+// The quad's four runs' mean is inside the symmetry band, but run 3 is 13% out.
+TEST(EndGoalC8qJudge, TheWorstQuadRunDecidesTheSymmetryBand) {
+    std::vector<eg::DownwashMeans> quad(3, means({1.0, 1.0, 1.0, 1.0}));
+    quad.push_back(means({0.90, 1.08, 1.08, 1.08}));
+    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(quad).u, eg::ensemble_mean(quad).v).mutual_ok);
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_NE(v.detail.find("the worst run by the mutual band, run 3"), std::string::npos) << v.detail;
+}
+
+// Each part is marked OUT by its own band only.
+TEST(EndGoalC8qJudge, MarksEachPartOutByItsOwnBandOnly) {
+    const eg::Verdict rotor0_out = eg::c8q(alone({0.85, 0.85, 0.85, 0.85}), quad_as_read());
+    const auto [a0, aq] = parts(rotor0_out.detail);
+    EXPECT_NE(a0.find("(OUT)"), std::string::npos) << rotor0_out.detail;
+    EXPECT_EQ(aq.find("(OUT)"), std::string::npos) << rotor0_out.detail;
+    const eg::Verdict quad_out =
+        eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09})));
+    const auto [b0, bq] = parts(quad_out.detail);
+    EXPECT_EQ(b0.find("(OUT)"), std::string::npos) << quad_out.detail;
+    EXPECT_NE(bq.find("(OUT)"), std::string::npos) << quad_out.detail;
+}
+
+TEST(EndGoalC8qJudge, ReportsTheQuadsSpreadAndEachRotorsSpreadAcrossTheRuns) {
+    std::vector<eg::DownwashMeans> quad(3, means({1.0, 1.0, 1.0, 1.0}));
+    quad.push_back(means({1.0, 1.0, 1.0, 1.04}));
+    const eg::Verdict v = eg::c8q(alone({1.0, 1.02, 1.0, 1.0}), quad);
+    EXPECT_TRUE(v.ok) << v.detail;
+    // Rotor 0 alone: (10.2 - 10) / 10.05; the quad's rotor 3: (10.4 - 10) / 10.1.
+    EXPECT_NE(v.detail.find("its spread across the runs 0.0199"), std::string::npos) << v.detail;
+    EXPECT_NE(v.detail.find("each rotor's spread across the runs: 0 0 0 0.0396"), std::string::npos) << v.detail;
+}
+
+TEST(EndGoalC8qJudge, IsAbsentWithoutEitherEnsembleOrWithTheWrongRotors) {
+    const std::vector<eg::DownwashMeans> ok0 = alone({1.0, 1.0, 1.0, 1.0});
+    const std::vector<eg::DownwashMeans> disagree{means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0})};
+    const std::pair<eg::Verdict, std::string> cases[] = {
+        {eg::c8q({}, quad_as_read()), "c8q: absent: no runs of rotor 0 alone"},
+        {eg::c8q(ok0, {}), "c8q: absent: no runs of the quad"},
+        {eg::c8q(quad_as_read(), quad_as_read()), "c8q: absent: a run of rotor 0 alone holds 4 rotors"},
+        {eg::c8q(ok0, disagree), "c8q: absent: the quad's runs disagree on the rotors"},
+        {eg::c8q(ok0, ok0), "c8q: absent: the quad's runs disagree on the rotors"},
+    };
+    for (const auto& [v, detail] : cases) {
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_EQ(v.detail, detail);
+    }
 }
 
 TEST(EndGoalC8qJudge, AReferenceOfZeroIsNeverInside) {
     eg::DownwashMeans m = means({1.0, 1.0, 1.0, 1.0});
     m.v[2] = 0.0;
     EXPECT_FALSE(eg::c8q_bands(m.u, m.v).ok);
+    eg::DownwashMeans m0 = means({1.0});
+    m0.v[0] = 0.0;
+    EXPECT_FALSE(eg::c8q(std::vector<eg::DownwashMeans>(4, m0), quad_as_read()).ok);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,16 +396,20 @@ inline constexpr uint64_t kC8qSeeds[] = {0, 0x1C8, 0x1C9, 0x1CA};
 // 10.0), h = dx/8 as C8's, air's viscosity (Physics, 2026-10-22), no floor,
 // armed at the hover throttle from t = 0.
 //
-// Physics' discriminating variants of it (below), each one run of run 0's:
+// Its variants:
+// - rotor_0_alone, C8q's banded measure (§5, 2026-10-22): rotors 1 to 3 push
+//   nothing and spread no swirl. Their thrust coefficient is the least normal
+//   float, about 1e-32 N at hover, since a model refuses 0, and their torque
+//   coefficient is 0. Rotor 0 keeps its own torque, as it flies. The hover
+//   throttle is trimmed on the four-rotor model first, so rotor 0's speed, and
+//   with it its reference, are the quad's. Only rotor 0 is judged, against a
+//   quarter of the weight, so the loaded premise reads its share as it reads
+//   the quad's.
+// Physics' discriminating runs for the first ensemble's miss, one run each:
 // - no_torque: every rotor's torque coefficient is 0, so the discs spread no
 //   swirl;
-// - rotor_0_alone: that, and rotors 1 to 3 push nothing besides. Their thrust
-//   coefficient is the least normal float, about 1e-32 N at hover, since a
-//   model refuses 0. The hover throttle is trimmed on the four-rotor model
-//   first, so rotor 0's speed, and with it its reference, are run 0's. Only
-//   rotor 0 is judged, against a quarter of the weight, so the loaded premise
-//   reads its share as it reads the quad's.
-enum class C8qVariant { as_flown, no_torque, rotor_0_alone };
+// - rotor_0_alone_no_torque: rotor 0 alone, as above, with its torque at 0 too.
+enum class C8qVariant { as_flown, rotor_0_alone, no_torque, rotor_0_alone_no_torque };
 
 struct C8qCase {
     spade::vehicles::ModelType model;
@@ -375,7 +427,7 @@ struct C8qCase {
     C8qCase q;
     q.model = loaded->model;
     q.model.parts.clear();
-    if (variant != C8qVariant::as_flown) {
+    if (variant == C8qVariant::no_torque || variant == C8qVariant::rotor_0_alone_no_torque) {
         for (auto& rotor : q.model.rotors) rotor.torque_coeff = 0.0f;
     }
     an::AnalysisCase c;
@@ -392,9 +444,10 @@ struct C8qCase {
     if (!trim) return std::nullopt;
     q.hover = an::Controls{true, trim->hover, 0.0f, 0.0f, 0.0f};
     float judged_mass = q.model.body.mass;
-    if (variant == C8qVariant::rotor_0_alone) {
+    if (variant == C8qVariant::rotor_0_alone || variant == C8qVariant::rotor_0_alone_no_torque) {
         for (std::size_t i = 1; i < q.model.rotors.size(); ++i) {
             q.model.rotors[i].thrust_coeff = std::numeric_limits<float>::min();
+            q.model.rotors[i].torque_coeff = 0.0f;
         }
         c.model = an::pin_model(file.generic_string(), q.model);
         judged_mass /= static_cast<float>(q.model.rotors.size());
@@ -463,120 +516,229 @@ struct C8qRun {
 
 [[nodiscard]] const char* verdict_word(bool ok) { return ok ? "within" : "MISS"; }
 
-[[nodiscard]] bool in_band(double ratio) {
-    return ratio >= static_cast<double>(eg::kC8q.lo) && ratio <= static_cast<double>(eg::kC8q.hi);
+[[nodiscard]] std::string printed(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    va_list size_args;
+    va_copy(size_args, args);
+    const int n = std::vsnprintf(nullptr, 0, format, size_args);
+    va_end(size_args);
+    std::string s(static_cast<std::size_t>(std::max(n, 0)), '\0');
+    std::vsnprintf(s.data(), s.size() + 1, format, args);
+    va_end(args);
+    return s;
 }
 
-TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
-    if (!env_set("SPADE_C8Q")) {
-        GTEST_SKIP() << "set SPADE_C8Q=1 to run C8q's four runs at 128^3 (release, a quiet window)";
+// What C8q's record says of its case, besides the two ensembles' means.
+struct C8qRecordCase {
+    std::string path;          // path_line()
+    std::string rotor0_label;  // run_label() of rotor 0 alone's run 0
+    std::string quad_label;    // and of the quad's
+    double dx_mm = 0.0;
+    double r_over_dx = 0.0;
+    double h_s = 0.0;
+    double nu = 0.0;
+    double throttle = 0.0;
+    std::string window;
+    std::size_t frames = 0;
+};
+
+// Rotor i's (max - min) / mean of its u across the runs.
+[[nodiscard]] double spread_of(std::span<const eg::DownwashMeans> runs, std::size_t i, double mean) {
+    double lo = runs[0].u[i];
+    double hi = runs[0].u[i];
+    for (const eg::DownwashMeans& m : runs) {
+        lo = std::min(lo, m.u[i]);
+        hi = std::max(hi, m.u[i]);
     }
-    const std::optional<C8qCase> q = c8q_case();
-    ASSERT_TRUE(q.has_value());
+    return (hi - lo) / mean;
+}
+
+// C8q's record, as its run prints it: the opening line, then path, config and
+// the measures, one key a line, for the paste step to add its commit and date
+// after the opening (01-verification, "Validation records"). The banded
+// measures are the judge's (end_goal::c8q()); the quad's ratios and every
+// spread are report only. Precondition: both ensembles nonempty, rotor 0's
+// runs one rotor each and the quad's agreeing on theirs, as c8q() checks.
+[[nodiscard]] std::string c8q_record(const C8qRecordCase& c, std::span<const eg::DownwashMeans> rotor0,
+                                     std::span<const eg::DownwashMeans> quad) {
+    const eg::DownwashMeans m0 = eg::ensemble_mean(rotor0);
+    const eg::C8qBands b0 = eg::c8q_bands(m0.u, m0.v);
+    std::size_t worst0 = 0;
+    std::vector<eg::C8qBands> each0;
+    for (std::size_t k = 0; k < rotor0.size(); ++k) {
+        each0.push_back(eg::c8q_bands(rotor0[k].u, rotor0[k].v));
+        if (each0[k].ratio_off > each0[worst0].ratio_off) worst0 = k;
+    }
+    const eg::DownwashMeans mq = eg::ensemble_mean(quad);
+    const eg::C8qBands bq = eg::c8q_bands(mq.u, mq.v);
+    std::size_t worstq = 0;
+    std::vector<eg::C8qBands> eachq;
+    for (std::size_t k = 0; k < quad.size(); ++k) {
+        eachq.push_back(eg::c8q_bands(quad[k].u, quad[k].v));
+        if (eachq[k].mutual_off > eachq[worstq].mutual_off) worstq = k;
+    }
+
+    std::string r = "=== validation record: C8q reference quad ===\n";
+    r += "path: " + c.path + "\n";
+    r += printed(
+        "config: the library's reference quad (assets/library/drones/reference_quad.model.yaml), its parts cleared as "
+        "the editor's airflow chapter flies it, held level at the box's centre in still air, no floor; a %.3f m box, "
+        "dx %.2f mm, R/dx %.2f, h = dx/8 = %.6f s, air's kinematic viscosity %.4g m2/s (C8 ran inviscid: the "
+        "difference was ruled immaterial before the run, Physics 2026-10-22: viscous spreading about 0.05R by 0.5 s, "
+        "the probe disc's edge about 0.23R inside the slipstream); armed at the hover throttle %.4f from t = 0, "
+        "trimmed on the four-rotor model; the window %s, %zu frames a run. Two ensembles, as C8q's bands were changed "
+        "on 2026-10-22 before this run (docs/design/test-docs/2026-10-19-end-goal-checks.md section 5): rotor 0 "
+        "alone, %s, with its own torque, rotors 1 to 3 pushing nothing (thrust coefficient the least normal float, "
+        "torque 0); and the quad as flown, %s. Each is four runs that differ only by a nudge in the test, 1 ulp up "
+        "on %zu of the discs' increments, seed s: run 0 as it is, runs 1 to 3 seeds 0x1C8, 0x1C9, 0x1CA. So each "
+        "spread is the measure's sensitivity to rounding, not a physical uncertainty\n",
+        static_cast<double>(kC8qBoxM), c.dx_mm, c.r_over_dx, c.h_s, c.nu, c.throttle, c.window.c_str(), c.frames,
+        c.rotor0_label.c_str(), c.quad_label.c_str(), kC8qNudged);
+    r += printed(
+        "measure: rotor 0 alone's mean downwash over the 0.5R disc 2R below, its four runs' mean = %.4f m/s\n"
+        "reference: momentum theory, v_h (1 + 2/sqrt 5) from the rotor's thrust, its four runs' mean = %.4f m/s "
+        "(tests/data/airflow/README.md, C8 and C8q)\n"
+        "tolerance: within 10%% (C8's, plan A Task 11; C8q's bands as changed on 2026-10-22, fixed before this run, "
+        "docs/design/test-docs/2026-10-19-end-goal-checks.md section 5)\n"
+        "verdict: %s\n"
+        "measure: rotor 0 alone's worst run, run %zu, off momentum theory by = %.4f\n"
+        "reference: momentum theory, as above\n"
+        "tolerance: <= 0.1 (as above: the verdict holds across the spread)\n"
+        "verdict: %s\n"
+        "measure: rotor 0 alone's spread across its four runs, (max - min) / mean = %.4f\n"
+        "reference: none (the measure's sensitivity to rounding)\n"
+        "tolerance: none\n"
+        "verdict: report only\n",
+        m0.u[0], m0.v[0], verdict_word(b0.ratio_ok), worst0, each0[worst0].ratio_off,
+        verdict_word(each0[worst0].ratio_ok), spread_of(rotor0, 0, m0.u[0]));
+    // One measure a rotor: a measure's value is a single number.
+    for (std::size_t i = 0; i < mq.u.size(); ++i) {
+        r += printed(
+            "measure: the quad's rotor %zu, its downwash over momentum theory's, its four runs' mean = %.4f\n"
+            "reference: none (the four rotors together: their wakes' interaction and the open box's response to four "
+            "times the flux, not separated; no closed-form reference, Physics 2026-10-22)\n"
+            "tolerance: none\n"
+            "verdict: report only\n",
+            i, bq.ratio[i]);
+    }
+    r += printed(
+        "measure: the quad's rotors' means, its four runs' mean, off their mean by at most = %.4f\n"
+        "reference: the four rotors are equal statistically (quarter-turn symmetry; Physics, 2026-10-19)\n"
+        "tolerance: <= 0.1 (C8q's mutual band, fixed before the first run, as above)\n"
+        "verdict: %s\n"
+        "measure: the quad's worst run by the mutual band, run %zu, its rotors off their mean by at most = %.4f\n"
+        "reference: the four rotors are equal statistically, as above\n"
+        "tolerance: <= 0.1 (as above: the verdict holds across the spread)\n"
+        "verdict: %s\n"
+        "measure: the quad's mutual spread, (max - min) / mean of its rotors' means, its four runs' mean = %.4f\n"
+        "reference: none (evidence for any later tightening, set in advance)\n"
+        "tolerance: none\n"
+        "verdict: report only\n",
+        bq.mutual_off, verdict_word(bq.mutual_ok), worstq, eachq[worstq].mutual_off,
+        verdict_word(eachq[worstq].mutual_ok), bq.mutual_spread);
+    for (std::size_t i = 0; i < mq.u.size(); ++i) {
+        r += printed(
+            "measure: the quad's rotor %zu's spread across its four runs, (max - min) / mean = %.4f\n"
+            "reference: none (the measure's sensitivity to rounding)\n"
+            "tolerance: none\n"
+            "verdict: report only\n",
+            i, spread_of(quad, i, mq.u[i]));
+    }
+    return r;
+}
+
+// The record's lines read as one validation record, with the paste step's
+// commit and date, before the run they wait for: each banded measure judged as
+// the judge judges it, every other report only.
+TEST(EndGoalC8qJudge, TheRecordReadsAsAValidationRecord) {
+    const C8qRecordCase c{"CPU reference, a test", "run A", "run B", 7.62, 10.0, 0.000952, 1.46e-5, 0.4321,
+                          "[0.3, 0.5] s", 7};
+    const auto read = [&](std::span<const eg::DownwashMeans> rotor0, std::span<const eg::DownwashMeans> quad) {
+        const std::string block = c8q_record(c, rotor0, quad);
+        const std::size_t first = block.find('\n') + 1;
+        const std::string text = "```text\n" + block.substr(0, first) + "commit: 0000000 (a test)\ndate: 2026-10-22\n" +
+                                 block.substr(first) + "```\n";
+        return an::validation_records(text, "c8q-test.md");
+    };
+    const auto within = read(alone({1.05, 1.06, 1.04, 1.05}), quad_as_read());
+    ASSERT_TRUE(within.has_value()) << within.error().context;
+    ASSERT_EQ(within->size(), 1u);
+    const std::vector<an::ValidationMeasure>& m = within->at(0).measures;
+    ASSERT_EQ(m.size(), 14u);  // rotor 0: 3; the quad: 4 ratios, 3, 4 spreads
+    for (std::size_t k = 0; k < m.size(); ++k) {
+        const bool banded = k == 0 || k == 1 || k == 7 || k == 8;
+        EXPECT_EQ(m[k].verdict, banded ? an::Verdict::within : an::Verdict::report_only) << k << ": " << m[k].quantity;
+        EXPECT_EQ(m[k].tolerance.has_value(), banded) << k << ": " << m[k].quantity;
+    }
+    EXPECT_EQ(m[0].unit, "m/s");
+    EXPECT_NEAR(m[0].number, 10.5, 1e-9);
+    EXPECT_NEAR(m[3].number, 0.8167, 1e-9);  // the quad's rotor 0, reported
+
+    const auto miss =
+        read(alone({0.85, 0.85, 0.85, 0.85}), std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09})));
+    ASSERT_TRUE(miss.has_value()) << miss.error().context;
+    for (const std::size_t k : {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::size_t{8}}) {
+        EXPECT_EQ(miss->at(0).measures.at(k).verdict, an::Verdict::miss) << k;
+    }
+}
+
+// One ensemble's means: its four runs, side by side. Each run is
+// single-threaded, so its bits are the same however many run beside it.
+[[nodiscard]] std::vector<eg::DownwashMeans> c8q_ensemble(const C8qCase& q, const char* tag, std::string& label) {
     constexpr std::size_t kRuns = std::size(kC8qSeeds);
     std::vector<C8qRun> runs(kRuns);
     {
-        // Each run is single-threaded, so its bits are the same however many run beside it.
         std::vector<std::thread> pool;
-        for (std::size_t m = 0; m < kRuns; ++m) pool.emplace_back([&, m] { runs[m] = c8q_run(*q, kC8qSeeds[m]); });
+        for (std::size_t m = 0; m < kRuns; ++m) pool.emplace_back([&, m] { runs[m] = c8q_run(q, kC8qSeeds[m]); });
         for (std::thread& t : pool) t.join();
     }
-    std::vector<eg::DownwashMeans> means;
+    std::vector<eg::DownwashMeans> out;
     for (std::size_t m = 0; m < kRuns; ++m) {
-        ASSERT_TRUE(runs[m].fault.empty()) << "run " << m << ": " << runs[m].fault;
+        EXPECT_TRUE(runs[m].fault.empty()) << tag << " run " << m << ": " << runs[m].fault;
+        if (!runs[m].fault.empty()) return {};
         if (kC8qSeeds[m] != 0) {
-            EXPECT_GT(runs[m].moved, 0u) << "run " << m << "'s nudge moved nothing";
+            EXPECT_GT(runs[m].moved, 0u) << tag << " run " << m << "'s nudge moved nothing";
         }
-        const auto judged = eg::downwash_means(runs[m].frames, q->judged, eg::kC8q);
-        ASSERT_TRUE(judged.has_value()) << "run " << m << ": " << judged.error().detail;
-        means.push_back(*judged);
-        std::printf("c8q-run: run %zu seed 0x%llX:", m, static_cast<unsigned long long>(kC8qSeeds[m]));
+        const auto judged = eg::downwash_means(runs[m].frames, q.judged, eg::kC8q);
+        EXPECT_TRUE(judged.has_value()) << tag << " run " << m << ": " << (judged ? "" : judged.error().detail);
+        if (!judged) return {};
+        out.push_back(*judged);
+        std::printf("%s: run %zu seed 0x%llX:", tag, m, static_cast<unsigned long long>(kC8qSeeds[m]));
         for (std::size_t i = 0; i < judged->u.size(); ++i) {
             std::printf(" rotor %zu %.4f / %.4f m/s;", i, judged->u[i], judged->v[i]);
         }
         std::printf("\n");
     }
-    const eg::Verdict v = eg::c8q(means);
+    label = runs[0].label;
+    return out;
+}
+
+TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
+    if (!env_set("SPADE_C8Q")) {
+        GTEST_SKIP() << "set SPADE_C8Q=1 to run C8q's two ensembles of four at 128^3 (release, a quiet window)";
+    }
+    const std::optional<C8qCase> q0 = c8q_case(C8qVariant::rotor_0_alone);
+    const std::optional<C8qCase> qq = c8q_case(C8qVariant::as_flown);
+    ASSERT_TRUE(q0.has_value() && qq.has_value());
+    ASSERT_EQ(q0->hover.throttle, qq->hover.throttle);  // both trimmed on the four-rotor model
+    C8qRecordCase c;
+    const std::vector<eg::DownwashMeans> rotor0 = c8q_ensemble(*q0, "c8q-rotor0-run", c.rotor0_label);
+    ASSERT_EQ(rotor0.size(), std::size(kC8qSeeds));
+    const std::vector<eg::DownwashMeans> quad = c8q_ensemble(*qq, "c8q-quad-run", c.quad_label);
+    ASSERT_EQ(quad.size(), std::size(kC8qSeeds));
+    const eg::Verdict v = eg::c8q(rotor0, quad);
     std::printf("c8q-verdict: %s %s\n", verdict_word(v.ok), v.detail.c_str());
 
-    // The record's numbers: the bands on the runs' mean and on the worst run.
-    const eg::DownwashMeans mean = eg::ensemble_mean(means);
-    const eg::C8qBands all = eg::c8q_bands(mean.u, mean.v);
-    std::vector<eg::C8qBands> each;
-    std::size_t worst_ratio = 0;
-    std::size_t worst_mutual = 0;
-    for (std::size_t m = 0; m < kRuns; ++m) {
-        each.push_back(eg::c8q_bands(means[m].u, means[m].v));
-        if (each[m].ratio_off > each[worst_ratio].ratio_off) worst_ratio = m;
-        if (each[m].mutual_off > each[worst_mutual].mutual_off) worst_mutual = m;
-    }
-    std::vector<double> spreads;
-    for (std::size_t i = 0; i < mean.u.size(); ++i) {
-        double lo = means[0].u[i];
-        double hi = means[0].u[i];
-        for (const eg::DownwashMeans& m : means) {
-            lo = std::min(lo, m.u[i]);
-            hi = std::max(hi, m.u[i]);
-        }
-        spreads.push_back((hi - lo) / mean.u[i]);
-    }
-    const float dx = q->resolved.base.dx;
-    const double r_over_dx = static_cast<double>(mean.r_over_dx);
-    std::printf("=== validation record: C8q reference quad ===\n"
-                "path: %s\n"
-                "config: the library's reference quad (assets/library/drones/reference_quad.model.yaml), its parts "
-                "cleared as the editor's airflow chapter flies it, held level at the box's centre in still air, no "
-                "floor; %s; a %.3f m box, dx %.2f mm, R/dx %.2f, h = dx/8 = %.6f s, air's kinematic viscosity "
-                "%.4g m2/s (C8 ran inviscid: the difference was ruled immaterial before the run, Physics 2026-10-22: "
-                "viscous spreading about 0.05R by 0.5 s, the probe disc's edge about 0.23R inside the slipstream); "
-                "armed at the hover throttle %.4f from t = 0; the window %s, %zu frames a run. Four runs that differ "
-                "only by a nudge in the test, 1 ulp up on %zu of the discs' increments, seed s: run 0 as it is, runs "
-                "1 to 3 seeds 0x1C8, 0x1C9, 0x1CA. So the spread is the measure's sensitivity to rounding, not a "
-                "physical uncertainty\n",
-                path_line().c_str(), runs[0].label.c_str(), static_cast<double>(kC8qBoxM),
-                1000.0 * static_cast<double>(dx), r_over_dx,
-                static_cast<double>(q->resolved.spec.time.step.value_or(0.0f)),
-                static_cast<double>(q->resolved.spec.fluid.kinematic_viscosity),
-                static_cast<double>(q->hover.throttle), mean.window.c_str(), means[0].count, kC8qNudged);
-    for (std::size_t i = 0; i < mean.u.size(); ++i) {
-        const bool in = in_band(all.ratio[i]);
-        std::printf("measure: rotor %zu's mean downwash over the 0.5R disc 2R below, the four runs' mean = %.4f m/s\n"
-                    "reference: momentum theory, v_h (1 + 2/sqrt 5) from the rotor's thrust, the four runs' mean = "
-                    "%.4f m/s (tests/data/airflow/README.md, C8 and C8q)\n"
-                    "tolerance: within 10%% (C8's, plan A Task 11; C8q's bands and its four runs fixed before the "
-                    "first run, docs/design/test-docs/2026-10-19-end-goal-checks.md section 5)\n"
-                    "verdict: %s\n",
-                    i, mean.u[i], mean.v[i], verdict_word(in));
-    }
-    std::printf("measure: the four rotors' means, the four runs' mean, off their mean by at most = %.4f\n"
-                "reference: the four rotors are equal statistically (quarter-turn symmetry; Physics, 2026-10-19)\n"
-                "tolerance: <= 0.1 (as above)\n"
-                "verdict: %s\n"
-                "measure: the worst run by the rotor band, run %zu, off momentum theory by at most = %.4f\n"
-                "reference: momentum theory, as above\n"
-                "tolerance: <= 0.1 (as above: the verdict holds across the spread)\n"
-                "verdict: %s\n"
-                "measure: the worst run by the mutual band, run %zu, the four off their mean by at most = %.4f\n"
-                "reference: the four rotors are equal statistically, as above\n"
-                "tolerance: <= 0.1 (as above: the verdict holds across the spread)\n"
-                "verdict: %s\n"
-                "measure: the mutual spread, (max - min) / mean of the four rotors' means, the four runs' mean = "
-                "%.4f\n"
-                "reference: none (evidence for any later tightening, set in advance)\n"
-                "tolerance: none\n"
-                "verdict: report only\n",
-                all.mutual_off, verdict_word(all.mutual_ok), worst_ratio,
-                each[worst_ratio].ratio_off, verdict_word(each[worst_ratio].ratio_ok), worst_mutual,
-                each[worst_mutual].mutual_off, verdict_word(each[worst_mutual].mutual_ok),
-                all.mutual_spread);
-    // One measure a rotor: a measure's value is a single number.
-    for (std::size_t i = 0; i < spreads.size(); ++i) {
-        std::printf("measure: rotor %zu's spread across the four runs, (max - min) / mean = %.4f\n"
-                    "reference: none (the measure's sensitivity to rounding)\n"
-                    "tolerance: none\n"
-                    "verdict: report only\n",
-                    i, spreads[i]);
-    }
+    c.path = path_line();
+    c.dx_mm = 1000.0 * static_cast<double>(qq->resolved.base.dx);
+    c.r_over_dx = static_cast<double>(quad[0].r_over_dx);
+    c.h_s = static_cast<double>(qq->resolved.spec.time.step.value_or(0.0f));
+    c.nu = static_cast<double>(qq->resolved.spec.fluid.kinematic_viscosity);
+    c.throttle = static_cast<double>(qq->hover.throttle);
+    c.window = quad[0].window;
+    c.frames = quad[0].count;
+    std::fputs(c8q_record(c, rotor0, quad).c_str(), stdout);
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
@@ -615,7 +777,7 @@ TEST(EndGoalC8q, RotorZeroAloneWithoutSwirl) {
     if (!env_set("SPADE_C8Q_ROTOR0")) {
         GTEST_SKIP() << "set SPADE_C8Q_ROTOR0=1 for Physics' one C8q run with rotor 0 alone";
     }
-    report_variant(C8qVariant::rotor_0_alone, "c8q-rotor0");
+    report_variant(C8qVariant::rotor_0_alone_no_torque, "c8q-rotor0");
 }
 
 }  // namespace
