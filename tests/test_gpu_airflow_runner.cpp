@@ -10,7 +10,7 @@
 //   GpuAirflowRunnerTileSum   A4: the fixed-tile sum gives the same bits at
 //                             workgroup sizes 32, 64 and 128, and the same bits
 //                             as physics/airflow/reduce.hpp on the CPU
-//   AirflowRunnerSpirv        the three kernels' compiled modules: no
+//   AirflowRunnerSpirv        the kernels' compiled modules (B1's, B2's): no
 //                             contraction, no atomics, no shared memory, every
 //                             binding in set 1 (the airflow set), and variants
 //                             that differ in their local size only (no device;
@@ -45,6 +45,13 @@
 
 #include "airflow_add_one.spv.gen.hpp"
 #include "airflow_copy.spv.gen.hpp"
+#include "airflow_divergence.spv.gen.hpp"
+#include "airflow_gradient_subtract.spv.gen.hpp"
+#include "airflow_mg_prolong.spv.gen.hpp"
+#include "airflow_mg_residual.spv.gen.hpp"
+#include "airflow_mg_restrict.spv.gen.hpp"
+#include "airflow_mg_smooth.spv.gen.hpp"
+#include "airflow_remove_mean.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
@@ -786,7 +793,16 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     };
     const Kernel kernels[] = {{gen::kSpvVariants_airflow_copy, true},
                               {gen::kSpvVariants_airflow_add_one, false},
-                              {gen::kSpvVariants_airflow_tile_sum, false}};
+                              {gen::kSpvVariants_airflow_tile_sum, false},
+                              // B2's projection kernels (Rendering). The smoother's one OpFDiv is
+                              // the parity profile's to allow: it is banded, not exact.
+                              {gen::kSpvVariants_airflow_divergence, false},
+                              {gen::kSpvVariants_airflow_gradient_subtract, false},
+                              {gen::kSpvVariants_airflow_mg_smooth, false},
+                              {gen::kSpvVariants_airflow_mg_residual, false},
+                              {gen::kSpvVariants_airflow_mg_restrict, false},
+                              {gen::kSpvVariants_airflow_mg_prolong, false},
+                              {gen::kSpvVariants_airflow_remove_mean, false}};
     for (const Kernel& k : kernels) {
         ASSERT_EQ(k.variants.count, spade::compute::kSupportedWorkgroupSizes.size()) << k.variants.name;
         for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {

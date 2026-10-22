@@ -32,6 +32,21 @@ struct ProjectionScratch {
 // The hierarchy follows the domain's periodic axes (make_multigrid).
 [[nodiscard]] ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc);
 
+// The projection's host floats, each the CPU's own expression, computed in
+// one place (TD-9): project() and project_solids() read b_coef and g_coef
+// here, and the GPU projection's upload (plan B, B2:
+// spike/airflow/projection_chain.hpp) writes all four into airflow_params, so
+// a change here reaches both. inv_dx is divergence()'s 1 / dx and inv_count
+// remove_mean()'s host reciprocal, the same expressions as theirs.
+struct ProjectionFloats {
+    float b_coef = 0.0f;     // rho dx^2 / h: the right side's scale (airflow_params word 24)
+    float g_coef = 0.0f;     // h / (rho dx): the gradient's scale (word 25)
+    float inv_dx = 0.0f;     // 1 / dx (word 5)
+    float inv_count = 0.0f;  // 1 / cells, rounded once from double (word 26)
+};
+
+[[nodiscard]] ProjectionFloats projection_floats(const GridShape& shape, float rho, float h) noexcept;
+
 struct ProjectionReport {
     float residual = 0.0f;    // max|r| / max|b| after the solve (pcg.hpp with solids; plan A's after its cycles)
     uint32_t iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: its n_v cycles

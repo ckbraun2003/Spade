@@ -270,6 +270,8 @@ add_executable(spade_tests
 # test_gpu_airflow_runner.cpp (plan B, B1): the airflow chain runner
 # (spike/airflow, spade_airflow_runner, linked below) and its test kernels;
 # GpuAirflowRunner* on the device, AirflowRunnerSpirv on the host.
+# test_gpu_airflow_projection.cpp (plan B, B2): the multigrid projection on the
+# runner against plan A's CPU projection, GpuAirflowProjection* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -283,6 +285,7 @@ if(SPADE_VULKAN)
         test_gpu_module_schedule.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
+        test_gpu_airflow_projection.cpp
     )
 endif()
 
