@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -35,12 +36,14 @@ constexpr uint32_t kTypeVoid = 19;
 constexpr uint32_t kTypeBool = 20;
 constexpr uint32_t kTypeInt = 21;
 constexpr uint32_t kTypeFloat = 22;
+constexpr uint32_t kTypeVector = 23;
 constexpr uint32_t kTypeFunction = 33;
 constexpr uint32_t kFunction = 54;
 constexpr uint32_t kFunctionEnd = 56;
 constexpr uint32_t kFunctionCall = 57;
 constexpr uint32_t kStore = 62;
 constexpr uint32_t kDecorate = 71;
+constexpr uint32_t kVectorShuffle = 79;
 constexpr uint32_t kCompositeExtract = 81;
 constexpr uint32_t kCopyObject = 83;
 constexpr uint32_t kConvertFToU = 109;
@@ -83,6 +86,7 @@ constexpr uint32_t kEntry = 9;
 constexpr uint32_t kA = 10;
 constexpr uint32_t kB = 11;
 constexpr uint32_t kN = 12;
+constexpr uint32_t kUint2 = 13;  // a vector of kUint
 
 class Module {
 public:
@@ -91,6 +95,7 @@ public:
         declare(op::kTypeFloat, {kFloat, 32});
         declare(op::kTypeInt, {kUint, 32, 0});
         declare(op::kTypeInt, {kInt, 32, 1});
+        declare(op::kTypeVector, {kUint2, kUint, 2});
         declare(op::kTypeVoid, {kVoid});
         declare(op::kTypeBool, {kBool});
         declare(op::kTypeFunction, {kFnType, kVoid});
@@ -116,8 +121,11 @@ public:
         return value(op::kExtInst, kFloat, std::move(operands));
     }
 
-    // An instruction with no result.
+    // An instruction with no result, or one written raw.
     void use(uint32_t opcode, std::vector<uint32_t> operands) { emit(body_, opcode, operands); }
+
+    // The id the next value will get, for a use written before its definition.
+    [[nodiscard]] uint32_t next_id() const { return next_; }
 
     [[nodiscard]] std::vector<uint32_t> words() const {
         std::vector<uint32_t> out{st::kSpirvMagic, 0x00010300u, 0u, next_, 0u};
@@ -245,14 +253,54 @@ TEST(SpirvScanEstimates, NamesTheUseAndItsEstimate) {
 }
 
 // A literal operand whose value happens to equal an estimate's id is not a use
-// of it: here an OpCompositeExtract index.
+// of it: an OpCompositeExtract index, an OpVectorShuffle component, an
+// OpStore's memory-access operand.
 TEST(SpirvScanEstimates, ReadsALiteralAsALiteral) {
     Module m;
     const uint32_t y = m.value(op::kFDiv, kFloat, {kA, kB});
     m.value(op::kConvertFToU, kUint, {y});
     m.value(op::kCompositeExtract, kFloat, {kA, y});
+    m.value(op::kVectorShuffle, kFloat, {kA, kB, y});
+    m.use(op::kStore, {kN, kA, y});
     const st::SpirvScanResult scan = st::scan_spirv(m.words(), st::SpirvProfile::exact);
     EXPECT_TRUE(scan.clean()) << all_findings(scan);
+}
+
+// An integer vector is an integer type too: a bitcast to one is an exit.
+TEST(SpirvScanEstimates, LetsAnEstimateLeaveAsAnIntegerVector) {
+    Module m;
+    m.value(op::kBitcast, kUint2, {m.value(op::kFDiv, kFloat, {kA, kB})});
+    const st::SpirvScanResult scan = st::scan_spirv(m.words(), st::SpirvProfile::exact);
+    EXPECT_TRUE(scan.clean()) << all_findings(scan);
+}
+
+// A use is found wherever it sits, before the estimate's definition included:
+// the trace reads every instruction of the body, not those after the source.
+TEST(SpirvScanEstimates, FindsAUseWrittenBeforeItsEstimate) {
+    Module m;
+    const uint32_t y = m.next_id();
+    m.use(op::kStore, {kN, y});
+    EXPECT_EQ(m.value(op::kFDiv, kFloat, {kA, kB}), y);
+    const st::SpirvScanResult scan = st::scan_spirv(m.words(), st::SpirvProfile::exact);
+    EXPECT_EQ(findings_named(scan, "E1"), 1u) << all_findings(scan);
+}
+
+// A carrying op too short to have a result (word count 2, its one operand the
+// estimate), as the module's last instruction: it carries nothing, so it is a
+// finding, and the scan reads no word past the module's end (Core's review,
+// 2026-10-22). The module is cut after it, and the span ends one word before a
+// guard word this test owns: an unguarded scan reads the guard, takes it for a
+// new estimate's id, and passes the module.
+TEST(SpirvScanEstimates, FailsACarryingOpWithNoResultAtTheModulesEnd) {
+    Module m;
+    m.use(op::kFMul, {m.value(op::kFDiv, kFloat, {kA, kB})});
+    std::vector<uint32_t> words = m.words();
+    words.resize(words.size() - 2);  // drop OpReturn and OpFunctionEnd, one word each
+    ASSERT_EQ(words[words.size() - 2], (uint32_t{2} << 16) | op::kFMul);
+    words.push_back(0xC0FFEEu);  // the guard, past the module's end
+    const std::span<const uint32_t> module(words.data(), words.size() - 1);
+    const st::SpirvScanResult scan = st::scan_spirv(module, st::SpirvProfile::exact);
+    EXPECT_EQ(findings_named(scan, "E1"), 1u) << all_findings(scan);
 }
 
 // Under parity, division and roots stay allowed: a banded kernel may use them
