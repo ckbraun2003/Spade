@@ -33,7 +33,7 @@
   - Placing a library object adds exactly one asset, under a name no other asset has.
   - Its x and z equal the pick point's, to 1 mm.
   - It **rests on the picked surface,** whether that is the ground or another object. Measured with the scene's SDF without the object, the gap from its lowest collider point to the surface beneath lies within [−2, +5] mm.
-  - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. A gate (a torus and two posts) is three. The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
+  - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. The library's gate is one CSG frame, a box minus a box, so it is one drawable (Interface, N15, 2026-10-22). The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
   - After 1.0 s of Run it has moved no more than 10 mm and tilted no more than 2°.
   - *Catches:* the tour's dropped builder checks `on-ground` and `rendered`; a buried, floating or doubled object; an object placed but not drawn.
 - **import-named:** the imported object's name is the glTF mesh's name, or the file's stem when the mesh has none, and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
@@ -167,6 +167,9 @@ Test/Docs owns these, at Interface's request, so a step never measures what its 
     - So the end-goal step places objects upright, with nothing else within 5 mm sideways. A least distance is not "beneath": a wall that close would read as the rest.
     - It doesn't measure a tilted primitive: a 0.5 m sphere tilted 15° reads up to about 8 mm high, past the +5 mm band.
     - It doesn't measure a CSG object either: its surface-nets mesh sits up to half a mesh cell inside the surface.
+      - So for an SDF object, N15's step (`sandbox/live_tour.cpp`, `editor.add_objects`) finds the lowest points by marching up through the object's own collider, posed. It starts 0.25 m below each drawable vertex within 5 cm of the lowest one, and `rest_gap` measures those points.
+      - The march-up is independent of the placing: the editor rests an object by `rest_height()`, not by marching its collider.
+      - Open: the march-up belongs here, as Test/Docs' own measure with its own tests, so the step only hands over raw inputs (Test/Docs, 2026-10-22).
 
 ## 8. Headless tests, red first
 
