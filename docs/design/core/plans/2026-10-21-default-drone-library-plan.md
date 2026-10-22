@@ -94,7 +94,7 @@ The detailed notes, with URLs, pages and quotes, are in the research notes named
 - Prop: UIUC Crazyflie 1.85 in, specimen t1 (measured, static only; Physics supplies the J dependence, P-a).
 - Coreless DC motor, KV 14,000 rpm/V (retailer). The chain's equations hold for a brushed DC motor; Physics confirms (P-c).
 - 1S 250 mAh pack (Bitcraze, published); its mass is assumed.
-- **Check:** at the Bitcraze table's 9,374 rpm one motor gives 7.9 g ± 10 % (measured). Hover at 29 g needs about 7.3 g per motor.
+- **Check** (corrected by Physics, 2026-10-22): Bitcraze's rig weighed the whole Crazyflie 2.0, all four motors (wiki.bitcraze.io/misc:investigations:thrust), so each row is four motors. Read the row nearest hover: at 17,174 rpm four motors give 28.6 g, so one motor gives 7.15 g ± 10 % (measured). Not the 9,374 rpm row: the model holds C_T at its 17k-rpm, higher-Reynolds value there. Hover at 29 g lies at about 17,270 rpm by the table, or 17,230 by Bitcraze's fit (bitcraze.io/2015/02/measuring-propeller-rpm-part-3); L4a computes 17,091 (−1.0 %).
 
 **Basic quad, 6-inch** (`drones/basic_quad_6inch.model.yaml`). This is `basic_quad_airframe()` at its defaults, every one `assumed` unless noted:
 - X layout ±0.080 × ±0.10 m, so same-side hubs clear the 6-inch discs by 7.6 mm (the lead's ruling (b), 2026-10-21). Kat's ±0.075 × ±0.10 m is the competition drone's.
