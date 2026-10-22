@@ -1,6 +1,7 @@
 // The library's thumbnails (INT-14, N14b; the lead's Q2a): one committed PNG
 // per entry of the default library, kThumbnailSize square, drawn on the CPU
-// renderer by render_thumbnail() (sandbox/library_thumbnail.hpp).
+// renderer by render_thumbnail() (sandbox/library_thumbnail.hpp). A part is
+// drawn from its own geometry, so Core's L4 part entries carry one too.
 //
 // Each entry's owner adds its `thumbnail: "thumbnails/<file stem>.png"` key
 // and regenerates in the same commit (Core's L4/L5 entries too; the lead,
@@ -18,7 +19,10 @@
 #include <fstream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <glm/glm.hpp>
 
 #include "../sandbox/editor_library.hpp"
 #include "../sandbox/end_goal_checks.hpp"
@@ -28,6 +32,8 @@
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
+#include "scene/part_file.hpp"
+#include "vehicles/airframe_compile.hpp"
 
 namespace {
 
@@ -123,9 +129,8 @@ TEST(LibraryThumbnails, EveryEntryOfTheDefaultLibraryHasItsOwnThumbnail) {
     }
 }
 
-// A thumbnail is the item alone, the same every time it is drawn, and a part
-// (drawn in its drone) has none of its own.
-TEST(LibraryThumbnails, AThumbnailIsTheSameEachTimeAndAPartHasNone) {
+// A thumbnail is the same every time it is drawn.
+TEST(LibraryThumbnails, AThumbnailIsTheSameEachTimeItIsDrawn) {
     const spade::Result<sc::Library> library = the_index();
     ASSERT_TRUE(library.has_value()) << library.error().context;
     const std::vector<fs::path> mesh_roots{library_dir() / "meshes"};
@@ -136,12 +141,59 @@ TEST(LibraryThumbnails, AThumbnailIsTheSameEachTimeAndAPartHasNone) {
     ASSERT_TRUE(a.has_value()) << a.error().context;
     ASSERT_TRUE(b.has_value()) << b.error().context;
     EXPECT_EQ(a->rgba, b->rgba);
+}
 
-    ed::LibraryItem part;
-    part.kind = ed::LibraryItem::Kind::part;
-    part.name = "2312 motor";
-    const spade::Result<png::Image> none = ed::render_thumbnail(part, mesh_roots);
-    ASSERT_FALSE(none.has_value());
-    EXPECT_NE(none.error().context.find("'2312 motor'"), std::string::npos) << none.error().context;
-    EXPECT_NE(none.error().context.find("drawn in its drone"), std::string::npos) << none.error().context;
+namespace {
+
+[[nodiscard]] ed::LibraryItem part_item(std::string name, sc::PartFile part) {
+    ed::LibraryItem item;
+    item.kind = ed::LibraryItem::Kind::part;
+    item.name = std::move(name);
+    item.part = std::move(part);
+    return item;
+}
+
+[[nodiscard]] spade::vehicles::BlockShape shape(spade::vehicles::PartShape kind, glm::dvec3 size) {
+    spade::vehicles::BlockShape s;
+    s.shape = kind;
+    s.size = size;
+    return s;
+}
+
+}  // namespace
+
+// A part (Core's L4: motors, props, ESCs, batteries) is drawn from its own
+// geometry: its file's shape, as vehicles::BlockShape sizes it, or a prop's
+// disc, its diameter, when it has none (Core, 2026-10-22). A part with no
+// geometry (no shape, or a tensor) is refused by name, never skipped.
+TEST(LibraryThumbnails, APartIsDrawnFromItsOwnGeometryAndOneWithoutAnyIsRefused) {
+    namespace vh = spade::vehicles;
+    const std::vector<fs::path> mesh_roots{library_dir() / "meshes"};
+    sc::MotorPart motor;
+    motor.block.shape = shape(vh::PartShape::cylinder, glm::dvec3(0.014, 0.025, 0.0));
+    sc::PropPart prop;
+    prop.block.diameter = 0.24;
+    prop.block.blades = 2;
+    sc::BatteryPart battery;
+    battery.block.shape = shape(vh::PartShape::box, glm::dvec3(0.13, 0.03, 0.045));
+    for (const ed::LibraryItem& item :
+         {part_item("2312 motor", motor), part_item("9450 prop", prop), part_item("4S battery", battery)}) {
+        SCOPED_TRACE(item.name);
+        const spade::Result<png::Image> drawn = ed::render_thumbnail(item, mesh_roots);
+        ASSERT_TRUE(drawn.has_value()) << drawn.error().context;
+        EXPECT_EQ(drawn->width, ed::kThumbnailSize);
+        const eg::PixelsView view = view_of(*drawn);
+        EXPECT_TRUE(eg::differs(eg::differ_fraction(view, eg::dominant_colour(view)))) << "a blank";
+    }
+
+    sc::EscPart shapeless;
+    sc::MotorPart tensor;
+    tensor.block.shape = shape(vh::PartShape::tensor, glm::dvec3(0.0));
+    for (const ed::LibraryItem& item : {part_item("bare ESC", shapeless), part_item("tensor motor", tensor)}) {
+        SCOPED_TRACE(item.name);
+        const spade::Result<png::Image> none = ed::render_thumbnail(item, mesh_roots);
+        ASSERT_FALSE(none.has_value());
+        EXPECT_NE(none.error().context.find("'" + item.name + "'"), std::string::npos) << none.error().context;
+        EXPECT_NE(none.error().context.find("no geometry to draw"), std::string::npos) << none.error().context;
+    }
 }
