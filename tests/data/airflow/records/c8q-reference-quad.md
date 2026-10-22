@@ -76,3 +76,11 @@ Test/Docs: Physics' discriminating run, one run (`EndGoalC8q.ReferenceQuadWithou
 - **Each rotor:** 0.8567, 0.8463, 0.8505 and 0.8527 of momentum theory (u 8.36 to 8.46 m/s). The four are off their mean by 0.0061 at most.
 - **Against run 0 with the swirl** (0.811 to 0.814), the swirl takes about 4%. The rest stays without it: about 15% below momentum theory, and about 19% below C8's +5.7%.
 - So the swirl is not the cause of most of the miss. Physics' next step, as Physics set it beforehand: one rotor alone through `LiveRun`. The finding stays open with Physics.
+
+## 2026-10-22: rotor 0 alone, without swirl
+
+Test/Docs: Physics' second discriminating run, report only and not a verdict (`EndGoalC8q.RotorZeroAloneWithoutSwirl` at `3aac467`, ticket `spade-testdocs-c8q-rotor0-3aac467`; the lead's grant, on Physics' word).
+- **The case:** run 0's, without swirl, with rotors 1 to 3 pushing nothing. Their thrust coefficient is the least normal float, about 1e-32 N, since a model refuses 0. The hover throttle was trimmed on the four rotors first and came out at 0.1655, so rotor 0's reference is run 0's, 9.8807 m/s.
+- **Rotor 0:** 10.4908 m/s, 1.0617 of momentum theory. That is within a percent of C8's +5.7%, a lone uniform disc read through the same 0.5R probe.
+- **So the four slipstreams together make the miss.** Alone, rotor 0 reads as C8's disc does. With its three neighbours, it reads 0.85 without swirl and 0.81 with it.
+- **Physics' reading, set before the run:** per-rotor momentum theory is the wrong reference for a quad whose rotor tips are 0.9R apart. C8q's reference and band are then a spec change for the lead to decide (Physics and Test/Docs). The finding stays open until it is decided.
