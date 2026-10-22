@@ -192,15 +192,23 @@ template <class T>
     return out + "]";
 }
 
-// The library as committed, and its registry.
+// The library as committed, and its registry. The index alone, its dir set:
+// load_library() refuses an entry whose file is missing, and the generator is
+// what writes the drones' model files (test_library_thumbnails.cpp's
+// the_index()). The committed files themselves are checked byte for byte below.
 struct Committed {
     Library library{};
     SourceRegistry registry{};
 };
 
 [[nodiscard]] spade::Result<Committed> committed_library() {
-    spade::Result<Library> library = sc::load_library(library_dir() / "library.yaml");
+    std::string text;
+    if (!read_bytes(library_dir() / "library.yaml", text)) {
+        return std::unexpected(spade::Error{spade::Code::io_error, "library.yaml can't be read"});
+    }
+    spade::Result<Library> library = sc::library_from_yaml(text);
     if (!library) return std::unexpected(library.error());
+    library->dir = library_dir();
     spade::Result<SourceRegistry> registry = sc::load_library_sources(*library);
     if (!registry) return std::unexpected(registry.error());
     return Committed{std::move(*library), std::move(*registry)};

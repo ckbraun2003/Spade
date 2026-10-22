@@ -28,6 +28,11 @@ sources.yaml text eol=lf
 *.esc.yaml text eol=lf
 *.battery.yaml text eol=lf
 
+# Drone sources sidecars (library/drones/*.sources.yaml) are written by
+# spade::scene::model_sources_to_yaml(), which writes LF;
+# tests/test_library_drones.cpp compares each against a fresh emission.
+*.sources.yaml text eol=lf
+
 # Fonts are binary: never convert their line endings.
 *.ttf binary
 

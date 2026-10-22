@@ -83,7 +83,7 @@ sources:
     license: facts_cite
     license_evidence: "Cameron, 2026-10-21 (ruling 5): \"The Grand Prix published nothing, these were derived sim values and require no concern. Have them in the library.\""
   - id: kat_datapack
-    citation: "Kat, design-specs/integration/drone-builder-datapack.md section 7.2: the best candidate parts set for the competition drone"
+    citation: "Kat, design-specs/integration/drone-builder-datapack.md section 7.4: the candidate pair for the competition drone, 4S and 2450 KV (line 325)"
     retrieved: 2026-10-21
     license: facts_cite
     license_evidence: "Kat's own design notes, read in place; Cameron, 2026-10-21 (ruling 5) puts the competition fit in the library. Nothing in it that took its shape from APC is used (ruling 4)."
