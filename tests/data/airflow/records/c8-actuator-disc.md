@@ -31,3 +31,31 @@ Test/Docs, from Rendering's B4 run. This is prose, not a record: the readers, an
   - Test/Docs runs an ensemble of 1-ulp-nudged runs, CPU only, as queue jobs.
   - Physics and Test/Docs agree a measure whose verdict holds across that spread. Its band is fixed before the run that judges it (`TD-2`). The 10% stays argued from the literature, never from our own spread (01-verification, "Validation against published data").
   - C8 is re-cut only then, and its record appended.
+
+```text
+=== validation record: C8 actuator-disc far wake ===
+commit: abaafcc (test-docs/c8-spread)
+date: 2026-10-22
+path: CPU reference, MSVC 1943, release
+config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; eight runs that differ only by a nudge in the test, 1 ulp up on 110 increments, seed s: run 0 as it is, runs 1 to 7 seeds 0x1C8, 0x1C9, 0x1CA, 0x1CB, 0x1CC, 0x1CD, 0x1CE. So the spread is the measure's sensitivity to rounding, not a physical uncertainty
+measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 8.0333 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8); the vortex-cylinder model's mean over the same faces is 7.5909 m/s
+tolerance: within 10% (plan A Task 11, spec §11.2, fixed before the first run; the measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)
+verdict: within
+measure: the worst of the eight runs, run 6, the same mean = 8.0597 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: within 10% (as above: the verdict holds across the spread)
+verdict: within
+measure: the eight runs' largest deviation from their mean, the same mean = 0.0437 m/s
+reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a case judged past its horizon)
+tolerance: none
+verdict: report only
+measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs 6.3611 to 7.5019) = 7.4124 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)
+verdict: report only
+```
+
+Physics' note on this record (2026-10-22): The disc mean reads about 6% above momentum theory's uniform disc. spread_actuator's 48 points load the disc unevenly: an unloaded hub (inner ring at 0.408R, Peskin's reach 2 cells), and 1.34× the uniform thrust per area inside 0.5R. Annular momentum theory gives up to √1.34 ≈ 1.16× there, and mixing reduces it. The bias belongs to the disc's point loading, not the solver; it is within the 10% band.
+
+The measure and the eight runs were fixed, and signed off by Physics, before this run: `docs/design/test-docs/2026-10-22-c8-spread.md`. Its 16-run measurement predicted an ensemble mean of +5.6% to +6.2% and a worst run of +6.1% to +6.6% against momentum theory; this run gives +6.0% and +6.4%. The first block above stays, read as the one run it was.
