@@ -69,3 +69,10 @@ Test/Docs, on the lead's word. This is prose, not a record: the readers read onl
   - The box's faces are all open with no floor, as in C8.
 - **Open:** the one difference left from C8 is that the quad's discs carry torque. P1's swirl puts `torque / (48 r)` on each point, and `torque_coeff / thrust_coeff` = 0.0102 m, so Q/(TR) ≈ 0.13. C8's disc had none. A test-only run with the discs' torque at 0 decides it (the lead's grant, on Physics' word). Physics expects it back near C8's +5.7%, which would make P1's swirl the cause and the fix Physics', in the engine.
 - Whatever that run finds is appended below, dated. The block above is never edited.
+
+## 2026-10-22: the run without the discs' swirl
+
+Test/Docs: Physics' discriminating run, one run (`EndGoalC8q.ReferenceQuadWithoutTheDiscsSwirl` at `f8fbbae`, ticket `spade-testdocs-c8q-notorque-f8fbbae`). It is run 0's case with every rotor's torque coefficient at 0. The hover throttle came out the same, 0.1655, and so did the reference, 9.8807 m/s, so only the discs' torque changed.
+- **Each rotor:** 0.8567, 0.8463, 0.8505 and 0.8527 of momentum theory (u 8.36 to 8.46 m/s). The four are off their mean by 0.0061 at most.
+- **Against run 0 with the swirl** (0.811 to 0.814), the swirl takes about 4%. The rest stays without it: about 15% below momentum theory, and about 19% below C8's +5.7%.
+- So the swirl is not the cause of most of the miss. Physics' next step, as Physics set it beforehand: one rotor alone through `LiveRun`. The finding stays open with Physics.
