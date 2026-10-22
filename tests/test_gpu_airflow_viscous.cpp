@@ -549,7 +549,9 @@ TEST(GpuAirflowViscous, DiffuseMatchesTheCpuBitForBit) {
         ASSERT_TRUE(gpu.has_value());
         const std::size_t d = differing(*gpu, cpu);
         std::printf("[ viscous ] %-28s diffuse: %zu of %zu faces differ\n", c.name, d, faces_of(cpu));
-        if (bit_equal) EXPECT_EQ(d, 0u);
+        if (bit_equal) {
+            EXPECT_EQ(d, 0u);
+        }
     }
 }
 
@@ -583,7 +585,9 @@ TEST(GpuAirflowViscous, DiffuseWithSolidsMatchesTheCpuBitForBit) {
         const std::size_t d = differing(*gpu, cpu);
         std::printf("[ viscous ] %-28s %zu fixed, %zu linked of %zu faces (%zu links); %zu differ\n", c.name, fixed,
                     linked, faces_of(cpu), f.links.size(), d);
-        if (bit_equal) EXPECT_EQ(d, 0u);
+        if (bit_equal) {
+            EXPECT_EQ(d, 0u);
+        }
     }
 }
 
