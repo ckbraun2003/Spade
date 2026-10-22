@@ -151,6 +151,13 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
     - Don't queue a command that is already running or waiting from the same folder. Wait for that run instead.
     - If another realm has the same test queued at the same commit, use that run's result. Ask the lead if you can't get it.
     - If a job you no longer need is still waiting, stop it before you queue a new version.
+  - **Don't pay to wait, and clear a cross-realm change before you make it** (Cameron, 2026-10-22, via the lead; for every realm in every project). In the owner's words:
+    > "Don't pay to wait, and clear a cross-realm change before you make it.
+    > 1. Don't wait with a big context. When a subagent's next step is a queued job (build, test or gate) and its context is over 200k, it writes its state to its resume note (the ticket, the log path, and what to check when the job ends) and hands back. A fresh, small subagent picks up when the job's notice arrives and reads the log. No polling: one look when the notice comes.
+    > 2. Queue checks together. Queue independent legs in one go, not one after another, and re-run only the legs your change touches.
+    > 3. Ask before you cross a realm. Before you change something another realm's tests or data rely on (a sign or unit convention, a shared schema, pinned outputs), list the files and tests it reaches and get your lead's grant for them first, so the commit isn't held up after the gate fails.
+    > 4. Keep wip parking commits rare. At most one per change, with the reason in the resume note.
+    > Why: last week KAT Components spent about 317 responses per code commit (Editor spent 74). Most of it was subagents waiting in the queue with 500k to 700k contexts, plus a fix that broke Runtime's tests and then waited for a grant."
 
   - **The classes:**
 
