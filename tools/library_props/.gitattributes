@@ -1,0 +1,3 @@
+# LF everywhere, so the synthetic expected header compares and every hash
+# agrees on Windows and the leg (the lead, 2026-10-22).
+* text eol=lf
