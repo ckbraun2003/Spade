@@ -155,10 +155,24 @@
 // the fp32_math module (Task 4) and on anything else that must be
 // correctly-rounded rather than merely non-fusing:
 //
-//   E1. NO OpFDiv. Vulkan's division is <= 2.5 ulp, NOT correctly rounded.
-//       Respell as a multiply by a precomputed, correctly-rounded inverse
-//       constant, documented at the site.
-//   E2. NO GLSL.std.450 Sqrt OR InverseSqrt. Same reason, same bound.
+//   E1. NO BARE OpFDiv. Vulkan's division is <= 2.5 ulp, NOT correctly
+//       rounded. As the user restated it on 2026-10-22: an OpFDiv may appear
+//       only as the ESTIMATE inside an exact division, whose integer
+//       correction is proven for any estimate within that bound, and no
+//       division result reaches an output uncorrected.
+//   E2. NO GLSL.std.450 Sqrt, and NO BARE InverseSqrt (<= 2 ulp), on the same
+//       terms as E1.
+//
+//   The scan enforces reach (pass 3): an estimate may pass through FMul, FAdd,
+//   FSub, FNegate, Floor, Trunc, Round and OpCopyObject, and may leave only
+//   through a conversion to an integer (ConvertFToU/FToS, or a bitcast to an
+//   integer type). Any other use is a finding, a store, return, comparison,
+//   select, phi or call alike. Reach is all the scan proves: a float quotient
+//   truncated to an integer passes it, exact or not. That the correction
+//   rounds exactly is Core's injected-error battery's to prove (estimates at
+//   least +-3 ulp off), and the two together enforce the rule
+//   (01-verification, "SPIR-V scanner"). An op added to the carrying list
+//   gets a dated amendment there with its reason.
 //
 // DOWNSTREAM KERNELS MAY USE div/sqrt (global constraint: "downstream kernels
 // MAY use div/sqrt -- that is why CPU<->GPU is banded rather than
@@ -205,6 +219,27 @@ inline constexpr uint32_t kEntryPoint = 15;
 inline constexpr uint32_t kExecutionMode = 16;
 inline constexpr uint32_t kStore = 62;
 inline constexpr uint32_t kDecorate = 71;
+// E1/E2's trace (pass 3): the function bodies' bounds, the integer types an
+// estimate may be bitcast to, the uses that carry it or convert it, and the
+// opcodes whose literal operands must not read as uses of it.
+inline constexpr uint32_t kLine = 8;
+inline constexpr uint32_t kTypeInt = 21;
+inline constexpr uint32_t kTypeVector = 23;
+inline constexpr uint32_t kFunction = 54;
+inline constexpr uint32_t kFunctionEnd = 56;
+inline constexpr uint32_t kVariable = 59;
+inline constexpr uint32_t kLoad = 61;
+inline constexpr uint32_t kVectorShuffle = 79;
+inline constexpr uint32_t kCompositeExtract = 81;
+inline constexpr uint32_t kCompositeInsert = 82;
+inline constexpr uint32_t kCopyObject = 83;
+inline constexpr uint32_t kConvertFToU = 109;
+inline constexpr uint32_t kConvertFToS = 110;
+inline constexpr uint32_t kBitcast = 124;
+inline constexpr uint32_t kLoopMerge = 246;
+inline constexpr uint32_t kSelectionMerge = 247;
+inline constexpr uint32_t kSwitch = 251;
+inline constexpr uint32_t kNoLine = 317;
 inline constexpr uint32_t kFNegate = 127;
 inline constexpr uint32_t kFAdd = 129;
 inline constexpr uint32_t kFSub = 131;
@@ -227,9 +262,13 @@ inline constexpr uint32_t kDot = 148;
 // mistake it for, producing a check that always passes.
 inline constexpr uint32_t kDecorationNoContraction = 42;
 
-// GLSL.std.450 extended-instruction numbers for the two roots E2 forbids.
+// GLSL.std.450 extended-instruction numbers for the two roots E2 names, and
+// the three roundings an estimate may pass through on its way to an integer.
 inline constexpr uint32_t kGlslStd450Sqrt = 31;
 inline constexpr uint32_t kGlslStd450InverseSqrt = 32;
+inline constexpr uint32_t kGlslStd450Round = 1;
+inline constexpr uint32_t kGlslStd450Trunc = 3;
+inline constexpr uint32_t kGlslStd450Floor = 8;
 
 // ---------------------------------------------------------------------------
 // The GLSL.std.450 transcendentals rule P5 forbids, by their extended-
@@ -372,6 +411,7 @@ enum class SpirvProfile {
         case spv_op::kMatrixTimesMatrix: return "OpMatrixTimesMatrix";
         case spv_op::kOuterProduct: return "OpOuterProduct";
         case spv_op::kDot: return "OpDot";
+        case spv_op::kStore: return "OpStore";
         default: return "<op>";
     }
 }
@@ -445,6 +485,9 @@ struct SpirvScanResult {
     // `ext_inst_ops` counts calls into ANY extended-instruction set rather than
     // only the one this pipeline happens to import today.
     std::vector<uint32_t> all_ext_inst_import_ids;
+    // The integer types, scalar and vector: an estimate may leave as a bitcast
+    // to one of these (E1/E2's trace, pass 3).
+    std::vector<uint32_t> int_types;
 
     // -- pass 1: decorations, extended-instruction-set imports, entry point --
     for (std::size_t i = 5; i < words.size();) {
@@ -486,6 +529,17 @@ struct SpirvScanResult {
                 std::string(words[i + 1] == kCapabilityDenormPreserve ? "OpCapability DenormPreserve"
                                                                       : "OpCapability DenormFlushToZero") +
                 " at word " + std::to_string(i));
+        }
+        // A vector type follows its component's declaration, as SPIR-V
+        // requires of every type but a forward pointer.
+        if (opcode == spv_op::kTypeInt && word_count >= 2) int_types.push_back(words[i + 1]);
+        if (opcode == spv_op::kTypeVector && word_count >= 3) {
+            for (std::size_t t = 0; t < int_types.size(); ++t) {
+                if (int_types[t] == words[i + 2]) {
+                    int_types.push_back(words[i + 1]);
+                    break;
+                }
+            }
         }
         if (opcode == spv_op::kExtInstImport && word_count >= 3) {
             all_ext_inst_import_ids.push_back(words[i + 1]);
@@ -556,12 +610,7 @@ struct SpirvScanResult {
                            "slangc does not decorate them NoContraction; spell the sum out "
                            "componentwise in the CPU twin's pinned order"});
         }
-        if (profile == SpirvProfile::exact && opcode == spv_op::kFDiv) {
-            result.findings.push_back(
-                {"E1", "OpFDiv at word " + std::to_string(i) +
-                           ": Vulkan division is <= 2.5 ulp, not correctly rounded; multiply by a "
-                           "precomputed correctly-rounded inverse instead"});
-        }
+        // E1's OpFDiv and E2's InverseSqrt are judged by their uses, in pass 3.
         // P5 (parity AND exact): a GLSL.std.450 exp/log/trig call is the
         // DRIVER's transcendental, specified to a relative tolerance rather
         // than correctly rounded -- an unbounded, vendor- and
@@ -583,13 +632,11 @@ struct SpirvScanResult {
 
         if (profile == SpirvProfile::exact && opcode == spv_op::kExtInst && word_count >= 5 &&
             is_glsl_set(words[i + 3])) {
-            const uint32_t instruction = words[i + 4];
-            if (instruction == kGlslStd450Sqrt || instruction == kGlslStd450InverseSqrt) {
+            if (words[i + 4] == kGlslStd450Sqrt) {
                 result.findings.push_back(
-                    {"E2", std::string("GLSL.std.450 ") +
-                               (instruction == kGlslStd450Sqrt ? "Sqrt" : "InverseSqrt") +
-                               " at word " + std::to_string(i) +
-                               ": <= 2.5 ulp, not correctly rounded; respell without it"});
+                    {"E2", "GLSL.std.450 Sqrt at word " + std::to_string(i) +
+                               ": not correctly rounded, and no exact operation takes it as an "
+                               "estimate; an exact square root starts from InverseSqrt"});
             }
         }
 
@@ -623,6 +670,126 @@ struct SpirvScanResult {
         }
 
         i += word_count;
+    }
+
+    // -- pass 3 (exact): E1/E2's estimates, traced through their uses --------
+    // Each OpFDiv and InverseSqrt result in a function body is an estimate, and
+    // every use of it is judged. A carrying op makes its own result an estimate
+    // in turn; a conversion to an integer is where it may leave; anything else
+    // is a finding under the rule of the estimate it came from. A use is any
+    // operand word equal to the estimate's id, bar the literal operands a
+    // function body holds. Ids are unique, so only a literal can match by
+    // accident, and a literal this list misses fails a module rather than
+    // passing one.
+    if (profile == SpirvProfile::exact) {
+        struct Instruction {
+            std::size_t at;
+            uint32_t word_count;
+            uint32_t opcode;
+        };
+        std::vector<Instruction> body;
+        bool in_function = false;
+        for (std::size_t i = 5; i < words.size();) {
+            const uint32_t word_count = words[i] >> 16;
+            const uint32_t opcode = words[i] & 0xFFFFu;
+            if (opcode == spv_op::kFunction) in_function = true;
+            if (in_function) body.push_back({i, word_count, opcode});
+            if (opcode == spv_op::kFunctionEnd) in_function = false;
+            i += word_count;
+        }
+
+        constexpr uint32_t kNotGlsl = 0xFFFFFFFFu;
+        const auto glsl_instruction = [&](const Instruction& n) {
+            return n.opcode == spv_op::kExtInst && n.word_count >= 5 && is_glsl_set(words[n.at + 3])
+                       ? words[n.at + 4]
+                       : kNotGlsl;
+        };
+
+        struct Estimate {
+            uint32_t id;
+            std::size_t defined_at;  // the instruction whose result this is
+            const char* rule;        // "E1" or "E2": the rule of the op it came from
+            const char* source;
+            std::size_t source_at;
+        };
+        std::vector<Estimate> estimates;
+        for (const Instruction& n : body) {
+            if (n.opcode == spv_op::kFDiv && n.word_count >= 3) {
+                estimates.push_back({words[n.at + 2], n.at, "E1", "OpFDiv", n.at});
+            } else if (glsl_instruction(n) == kGlslStd450InverseSqrt) {
+                estimates.push_back({words[n.at + 2], n.at, "E2", "GLSL.std.450 InverseSqrt", n.at});
+            }
+        }
+        result.estimate_ops = estimates.size();
+
+        // Word k of an instruction is a literal here, not an id.
+        const auto is_literal = [](uint32_t opcode, uint32_t k) {
+            switch (opcode) {
+                case spv_op::kExtInst: return k == 4;                // the instruction's number
+                case spv_op::kVariable: return k == 3;               // the storage class
+                case spv_op::kLoad: return k >= 4;                   // memory operands
+                case spv_op::kStore: return k >= 3;                  // memory operands
+                case spv_op::kCompositeExtract: return k >= 4;       // indices
+                case spv_op::kCompositeInsert: return k >= 5;        // indices
+                case spv_op::kVectorShuffle: return k >= 5;          // components
+                case spv_op::kSwitch: return k >= 3 && k % 2 == 1;   // case values
+                case spv_op::kLoopMerge:
+                case spv_op::kSelectionMerge:
+                case spv_op::kLine:
+                case spv_op::kNoLine: return true;  // labels, controls and positions: never a value
+                default: return false;
+            }
+        };
+        const auto is_estimate = [&estimates](uint32_t id) {
+            for (const Estimate& e : estimates) {
+                if (e.id == id) return true;
+            }
+            return false;
+        };
+        const auto is_int_type = [&int_types](uint32_t id) {
+            for (const uint32_t t : int_types) {
+                if (t == id) return true;
+            }
+            return false;
+        };
+
+        // The list grows as the closure does, so it is walked by index.
+        for (std::size_t e = 0; e < estimates.size(); ++e) {
+            const Estimate estimate = estimates[e];  // a copy: push_back below may reallocate
+            for (const Instruction& n : body) {
+                if (n.at == estimate.defined_at) continue;
+                bool uses = false;
+                for (uint32_t k = 1; k < n.word_count && !uses; ++k) {
+                    uses = words[n.at + k] == estimate.id && !is_literal(n.opcode, k);
+                }
+                if (!uses) continue;
+                const uint32_t glsl = glsl_instruction(n);
+                const bool carries = n.opcode == spv_op::kFMul || n.opcode == spv_op::kFAdd ||
+                                     n.opcode == spv_op::kFSub || n.opcode == spv_op::kFNegate ||
+                                     n.opcode == spv_op::kCopyObject || glsl == kGlslStd450Floor ||
+                                     glsl == kGlslStd450Trunc || glsl == kGlslStd450Round;
+                const bool leaves = n.opcode == spv_op::kConvertFToU || n.opcode == spv_op::kConvertFToS ||
+                                    (n.opcode == spv_op::kBitcast && is_int_type(words[n.at + 1]));
+                if (carries) {
+                    if (!is_estimate(words[n.at + 2])) {
+                        estimates.push_back(
+                            {words[n.at + 2], n.at, estimate.rule, estimate.source, estimate.source_at});
+                    }
+                } else if (!leaves) {
+                    const std::string named = op_name(n.opcode);
+                    const std::string what = glsl != kNotGlsl ? "GLSL.std.450 #" + std::to_string(glsl)
+                                             : named != "<op>" ? named
+                                                               : "opcode " + std::to_string(n.opcode);
+                    result.findings.push_back(
+                        {estimate.rule,
+                         what + " at word " + std::to_string(n.at) + " uses the estimate from " +
+                             estimate.source + " at word " + std::to_string(estimate.source_at) +
+                             ": an estimate may pass only through FMul, FAdd, FSub, FNegate, Floor, "
+                             "Trunc, Round or OpCopyObject, and leave only as an integer, on its way "
+                             "into an exact operation's integer correction"});
+                }
+            }
+        }
     }
 
     // P4. Reported once for the module, because a capability declaration IS a
