@@ -531,11 +531,12 @@ const SpirvModule kSpirvModules[] = {
     //   sensor_gnss    the gnss.synthesize pass. PARITY like
     //                  sensor_imu, and for a sharper reason: its Gauss-Markov
     //                  coefficients are precomputed on the CPU, so this module
-    //                  contains no exp and no OpFDiv at all -- the bias advance
-    //                  is two multiplies and an add. The only banded operation
-    //                  it reaches is rng.slang's Box-Muller sqrt, through the
-    //                  nine draws, exactly as sensor_imu reaches it through
-    //                  twelve.
+    //                  has no exp and no division of its own -- the bias
+    //                  advance is two multiplies and an add. Its only division
+    //                  is log32's, through rng.slang's draws, which is exact
+    //                  (E1/E2). The only banded operation it reaches is
+    //                  rng.slang's Box-Muller sqrt, through the nine draws,
+    //                  exactly as sensor_imu reaches it through twelve.
     {gen::kSpvVariants_sensor_gnss, spade::testing::SpirvProfile::parity},
     //   field_environment  environment.sample: copies gravity and density into
     //                      the field row. NO FLOAT ARITHMETIC BY CONSTRUCTION
