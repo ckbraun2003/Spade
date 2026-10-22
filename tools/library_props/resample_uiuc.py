@@ -30,13 +30,20 @@ THE RULE (reviewed by Physics, 2026-10-22; the plan's Rulings):
           J = 0 against the static C_T and C_P (a warning above 10%), and the
           computed hover rpm against the published one (above 20%).
 
-HASHES. FNV-1a 64 of each file read, CRLF read as LF so a Windows checkout
-and the leg agree. The header stamps the tool's and the props table's, which
-tests/test_library_props.cpp recomputes from the source tree, and records the
-UIUC inputs', which are not committed.
+HASHES AND PROVENANCE. FNV-1a 64 of each file read, CRLF read as LF so a
+Windows checkout and the leg agree. The header stamps the tool's and the props
+table's, which tests/test_library_props.cpp recomputes from the source tree.
+For each UIUC input it records the FNV-1a 64 and the SHA-256, with the URL and
+UTC retrieval date from the props table's `sources` (the lead, 2026-10-22).
+The inputs themselves are not committed, so these are recorded, not rechecked;
+a file with no source is refused.
+
+STATIC ONLY. A prop with no runs (UIUC measured some static only) gets its
+static C_T and C_Q at the hover rpm and empty tables; the header says so.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -130,7 +137,23 @@ def field(entry, key, where):
     return entry[key]
 
 
-def resample(prop, uiuc_dir):
+def provenance(name, path, sources):
+    """A file the tool read: its name, its hashes and where it came from."""
+    if name not in sources:
+        raise ToolError(f"{name}: has no source in the props table's sources (its URL and UTC retrieval date)")
+    src = sources[name]
+    with open(path, "rb") as f:
+        body = f.read()
+    return {
+        "file": name,
+        "fnv1a64": fnv1a64(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+        "url": field(src, "url", name),
+        "retrieved_utc": field(src, "retrieved_utc", name),
+    }
+
+
+def resample(prop, uiuc_dir, sources):
     """One prop's tables, blade and checks, by THE RULE."""
     pid = field(prop, "id", "a prop")
     drone = field(prop, "drone", pid)
@@ -150,34 +173,48 @@ def resample(prop, uiuc_dir):
     ct_mid = interp(static_ct, (lo + hi) / 2)
     hover_rpm = 60.0 * math.sqrt(mass * G / (rotors * RHO * ct_mid * diameter**4))
     runs = [(run_rpm_of(r), r) for r in field(prop, "runs", pid)]
+    paths = [(static_name, static_path)]
+
     if not runs:
-        raise ToolError(f"{pid}: lists no runs")
-    run_rpm, run_name = min(runs, key=lambda r: (abs(r[0] - hover_rpm), r[0]))
-    if not lo <= run_rpm <= hi:
-        raise ToolError(f"{pid}: the run {run_name}'s {run_rpm:g} rpm is outside {static_name}'s {lo:g} to {hi:g} rpm")
-
-    run_path = os.path.join(uiuc_dir, run_name)
-    run = read_columns(run_path, ["j", "ct", "cp"])
-    if not run[0][0] > 0.0:
-        raise ToolError(f"{run_name}: its first J must be above 0: J = 0 is the static run's")
-    ct0 = interp(static_ct, run_rpm)
-    cp0 = interp(static_cp, run_rpm)
-    ct_points = [(0.0, ct0)] + [(r[0], r[1]) for r in run]
-    cp_points = [(0.0, cp0)] + [(r[0], r[2]) for r in run]
-    j_last = run[-1][0]
-    grid = [0.0]
-    k = 1
-    while k / 20 <= j_last:
-        grid.append(k / 20)
-        k += 1
-
-    # The step check: the run's first two points, extrapolated to J = 0.
-    (j0, t0, p0), (j1, t1, p1) = run[0], run[1]
-    ct_extrapolated = t0 - (t1 - t0) * j0 / (j1 - j0)
-    cp_extrapolated = p0 - (p1 - p0) * j0 / (j1 - j0)
+        # Static only: the static point at the hover rpm itself, no tables.
+        if not lo <= hover_rpm <= hi:
+            raise ToolError(f"{pid}: has no run, and its hover rpm {hover_rpm:.0f} is outside {static_name}'s "
+                            f"{lo:g} to {hi:g} rpm")
+        run_name = run_rpm = first_j = last_j = step_ct = step_cp = None
+        ct0 = interp(static_ct, hover_rpm)
+        cp0 = interp(static_cp, hover_rpm)
+        ct_table, cq_table = [], []
+    else:
+        run_rpm, run_name = min(runs, key=lambda r: (abs(r[0] - hover_rpm), r[0]))
+        if not lo <= run_rpm <= hi:
+            raise ToolError(f"{pid}: the run {run_name}'s {run_rpm:g} rpm is outside {static_name}'s "
+                            f"{lo:g} to {hi:g} rpm")
+        run_path = os.path.join(uiuc_dir, run_name)
+        run = read_columns(run_path, ["j", "ct", "cp"])
+        paths.append((run_name, run_path))
+        if not run[0][0] > 0.0:
+            raise ToolError(f"{run_name}: its first J must be above 0: J = 0 is the static run's")
+        ct0 = interp(static_ct, run_rpm)
+        cp0 = interp(static_cp, run_rpm)
+        ct_points = [(0.0, ct0)] + [(r[0], r[1]) for r in run]
+        cp_points = [(0.0, cp0)] + [(r[0], r[2]) for r in run]
+        first_j, last_j = run[0][0], run[-1][0]
+        grid = [0.0]
+        k = 1
+        while k / 20 <= last_j:
+            grid.append(k / 20)
+            k += 1
+        ct_table = [(j, interp(ct_points, j)) for j in grid]
+        cq_table = [(j, interp(cp_points, j) / (2 * math.pi)) for j in grid]
+        # The step check: the run's first two points, extrapolated to J = 0.
+        (j0, t0, p0), (j1, t1, p1) = run[0], run[1]
+        step_ct = (t0 - (t1 - t0) * j0 / (j1 - j0) - ct0) / ct0
+        step_cp = (p0 - (p1 - p0) * j0 / (j1 - j0) - cp0) / cp0
 
     geom_name = field(prop, "geometry", pid)
-    geom = read_columns(os.path.join(uiuc_dir, geom_name), ["r/r", "c/r", "beta"])
+    geom_path = os.path.join(uiuc_dir, geom_name)
+    geom = read_columns(geom_path, ["r/r", "c/r", "beta"])
+    paths.append((geom_name, geom_path))
     hub, tip = geom[0][0], geom[-1][0]
     if not (0.0 <= hub and tip <= 1.0):
         raise ToolError(f"{geom_name}: its stations must lie in [0, 1], found {hub!r} to {tip!r}")
@@ -200,19 +237,20 @@ def resample(prop, uiuc_dir):
         "hover_rpm": hover_rpm,
         "published_hover_rpm": published,
         "hover_diff": (hover_rpm - published) / published,
-        "ct_table": [(j, interp(ct_points, j)) for j in grid],
-        "cq_table": [(j, interp(cp_points, j) / (2 * math.pi)) for j in grid],
-        "first_measured_j": run[0][0],
-        "last_measured_j": j_last,
-        "step_ct": (ct_extrapolated - ct0) / ct0,
-        "step_cp": (cp_extrapolated - cp0) / cp0,
+        "ct_static": ct0,
+        "cq_static": cp0 / (2 * math.pi),
+        "ct_table": ct_table,
+        "cq_table": cq_table,
+        "first_measured_j": first_j,
+        "last_measured_j": last_j,
+        "step_ct": step_ct,
+        "step_cp": step_cp,
         "r_over_r": nodes,
         "c_over_r": [interp(chord, r) for r in nodes],
         "beta_deg": [interp(twist, r) for r in nodes],
         "hub_cutout": hub,
         "tip": tip,
-        "inputs": [(static_name, hash_file(static_path)), (run_name, hash_file(run_path)),
-                   (geom_name, hash_file(os.path.join(uiuc_dir, geom_name)))],
+        "inputs": [provenance(name, path, sources) for name, path in paths],
     }
 
 
@@ -220,9 +258,13 @@ def pct(x):
     return f"{100 * x:+.1f}%"
 
 
+def stepped(r):
+    return r["step_ct"] is not None and (abs(r["step_ct"]) > STEP_WARN or abs(r["step_cp"]) > STEP_WARN)
+
+
 def warnings_of(r):
     out = []
-    if abs(r["step_ct"]) > STEP_WARN or abs(r["step_cp"]) > STEP_WARN:
+    if stepped(r):
         out.append(f"{r['id']}: the static-to-run step at J = 0 is {pct(r['step_ct'])} on C_T and "
                    f"{pct(r['step_cp'])} on C_P (above 10%): review it")
     if abs(r["hover_diff"]) > HOVER_WARN:
@@ -239,7 +281,9 @@ def resample_all(props_path, uiuc_dir):
             table = json.load(f)
     except (OSError, ValueError) as e:
         raise ToolError(f"{os.path.basename(props_path)}: cannot be read as JSON ({e})") from None
-    results = [resample(p, uiuc_dir) for p in field(table, "props", os.path.basename(props_path))]
+    where = os.path.basename(props_path)
+    sources = field(table, "sources", where)
+    results = [resample(p, uiuc_dir, sources) for p in field(table, "props", where)]
     warnings = [w for r in results for w in warnings_of(r)]
     return results, warnings
 
@@ -259,49 +303,70 @@ def comment(text, indent="//   "):
     return [indent + line for line in textwrap.wrap(text, 76)]
 
 
+def array_lines(declaration, rows):
+    """`declaration{` rows `};`, or `declaration{};` for none."""
+    if not rows:
+        return [declaration + "{};"]
+    return [declaration + "{{"] + rows + ["}};"]
+
+
 def emit_prop(r):
     ident = re.sub(r"[^0-9A-Za-z]", "_", r["id"])
     drone = r["drone"]
+    who = (f"{drone.get('name', '')} ({drone['mass_kg']:g} kg, {drone['rotors']} rotors, "
+           f"D {r['diameter']:g} m)")
     lines = [f"// {r['id']} -- {r['volume']}, retrieved {r['retrieved']}, {r['blades']} blades."]
-    lines += comment(f"run {r['run_file']} at {r['run_rpm']:g} rpm, the nearest to the hover rpm "
-                     f"{r['hover_rpm']:.0f} computed for {drone.get('name', '')} ({drone['mass_kg']:g} kg, "
-                     f"{drone['rotors']} rotors, D {r['diameter']:g} m).")
+    if r["run_file"] is None:
+        lines += comment(f"static only: no wind-tunnel run. C_T and C_Q are the static run's at the hover rpm "
+                         f"{r['hover_rpm']:.0f} computed for {who}; the tables are empty.")
+    else:
+        lines += comment(f"run {r['run_file']} at {r['run_rpm']:g} rpm, the nearest to the hover rpm "
+                         f"{r['hover_rpm']:.0f} computed for {who}.")
     hover = f"published hover {r['published_hover_rpm']:g} rpm ({drone.get('published_source', '')})"
     if abs(r["hover_diff"]) > HOVER_WARN:
         hover = (f"FLAG: the computed hover rpm differs from the published {r['published_hover_rpm']:g} rpm "
                  f"({drone.get('published_source', '')}) by {pct(r['hover_diff'])}")
     lines += comment(hover + ".")
-    step = (f"step C_T {pct(r['step_ct'])}, step C_P {pct(r['step_cp'])} at J = 0 (report only"
-            + (", above 10%: review it" if abs(r["step_ct"]) > STEP_WARN or abs(r["step_cp"]) > STEP_WARN else "")
-            + f"); first measured J {r['first_measured_j']!r}, last {r['last_measured_j']!r}.")
-    lines += comment(step)
+    if r["run_file"] is not None:
+        lines += comment(f"step C_T {pct(r['step_ct'])}, step C_P {pct(r['step_cp'])} at J = 0 (report only"
+                         + (", above 10%: review it" if stepped(r) else "")
+                         + f"); first measured J {r['first_measured_j']!r}, last {r['last_measured_j']!r}.")
     if r["tip"] < 1.0:
         lines += comment(f"the blade ends at r/R {r['tip']!r}, the file's last station (no extrapolation).")
     if r["note"]:
         lines += comment("grade note: " + r["note"])
     n = len(r["ct_table"])
     for key, label in (("ct_table", "ct"), ("cq_table", "cq")):
-        lines.append(f"inline constexpr std::array<std::array<double, 2>, {n}> {ident}_{label}{{{{")
-        lines += [f"    {{{number(j)}, {number(v)}}}," for j, v in r[key]]
-        lines.append("}};")
+        lines += array_lines(f"inline constexpr std::array<std::array<double, 2>, {n}> {ident}_{label}",
+                             [f"    {{{number(j)}, {number(v)}}}," for j, v in r[key]])
     m = len(r["r_over_r"])
     for key in ("r_over_r", "c_over_r", "beta_deg"):
         lines.append(f"inline constexpr std::array<double, {m}> {ident}_{key}{{")
         lines += [f"    {number(v)}," for v in r[key]]
         lines.append("};")
-    lines.append(f"inline constexpr std::array<Input, {len(r['inputs'])}> {ident}_inputs{{{{")
-    lines += [f"    {{{text_literal(name)}, 0x{h:016x}ull}}," for name, h in r["inputs"]]
-    lines.append("}};")
+    rows = []
+    for i in r["inputs"]:
+        rows += ["    Input{",
+                 f"        {text_literal(i['file'])},",
+                 f"        0x{i['fnv1a64']:016x}ull,",
+                 f"        {text_literal(i['sha256'])},",
+                 f"        {text_literal(i['url'])},",
+                 f"        {text_literal(i['retrieved_utc'])},",
+                 "    },"]
+    lines += array_lines(f"inline constexpr std::array<Input, {len(r['inputs'])}> {ident}_inputs", rows)
+    zero_if_none = lambda v: number(0.0 if v is None else v)  # noqa: E731
     entry = [
         "    Prop{",
         f"        {text_literal(r['id'])},",
         f"        {text_literal(r['volume'])},",
         f"        {text_literal(r['retrieved'])},",
         f"        {r['blades']},",
-        f"        {number(r['run_rpm'])},",
+        f"        {zero_if_none(r['run_rpm'])},",
         f"        {number(r['hover_rpm'])},",
-        f"        {number(r['first_measured_j'])},",
-        f"        {number(r['last_measured_j'])},",
+        f"        {number(r['ct_static'])},",
+        f"        {number(r['cq_static'])},",
+        f"        {zero_if_none(r['first_measured_j'])},",
+        f"        {zero_if_none(r['last_measured_j'])},",
         f"        detail::{ident}_ct,",
         f"        detail::{ident}_cq,",
         f"        detail::{ident}_r_over_r,",
@@ -336,24 +401,31 @@ namespace spade::test::library_props {
 """
 
 HEADER_TYPES = """
-// A file the tool read, by name, and its FNV-1a 64 (CRLF read as LF). The
-// UIUC files are not committed, so their hashes are recorded, not rechecked.
+// A file the tool read: its name, FNV-1a 64 (CRLF read as LF) and SHA-256,
+// and where it came from. The UIUC files are not committed, so these are
+// recorded, not rechecked.
 struct Input {
     std::string_view file;
     std::uint64_t hash;
+    std::string_view sha256;
+    std::string_view url;
+    std::string_view retrieved_utc;
 };
 
-// One prop: its tables (the static point at J = 0 first, then J = k/20), its
-// blade stations (the hub cut-out first) and where they came from.
+// One prop: its static point, its tables (the static point at J = 0 first,
+// then J = k/20; empty for a static-only prop), its blade stations (the hub
+// cut-out first) and where they came from.
 struct Prop {
     std::string_view id;
     std::string_view volume;
     std::string_view retrieved;
     int blades;
-    double run_rpm;
+    double run_rpm;  // 0 for a static-only prop
     double hover_rpm;  // computed from the drone
-    double first_measured_j;
-    double last_measured_j;
+    double ct_static;
+    double cq_static;  // C_P / 2 pi
+    double first_measured_j;  // 0 for a static-only prop
+    double last_measured_j;   // 0 for a static-only prop
     std::span<const std::array<double, 2>> ct_table;  // [J, C_T]
     std::span<const std::array<double, 2>> cq_table;  // [J, C_Q], C_Q = C_P / 2 pi
     std::span<const double> r_over_r;

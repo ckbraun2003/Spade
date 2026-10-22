@@ -16,27 +16,34 @@ namespace spade::test::library_props {
 // FNV-1a 64 of the tool and of its props table, CRLF read as LF.
 // tests/test_library_props.cpp recomputes both from the source tree, so an
 // edit to either without re-running the tool fails the suite.
-inline constexpr std::uint64_t kToolHash = 0xfb76b9bc7c78e146ull;   // resample_uiuc.py
-inline constexpr std::uint64_t kPropsHash = 0xf0cf4a7626cbf7b2ull;  // props.json
+inline constexpr std::uint64_t kToolHash = 0xf1dd50a02db56e49ull;   // resample_uiuc.py
+inline constexpr std::uint64_t kPropsHash = 0xdecdefd3d2e750e7ull;  // props.json
 
-// A file the tool read, by name, and its FNV-1a 64 (CRLF read as LF). The
-// UIUC files are not committed, so their hashes are recorded, not rechecked.
+// A file the tool read: its name, FNV-1a 64 (CRLF read as LF) and SHA-256,
+// and where it came from. The UIUC files are not committed, so these are
+// recorded, not rechecked.
 struct Input {
     std::string_view file;
     std::uint64_t hash;
+    std::string_view sha256;
+    std::string_view url;
+    std::string_view retrieved_utc;
 };
 
-// One prop: its tables (the static point at J = 0 first, then J = k/20), its
-// blade stations (the hub cut-out first) and where they came from.
+// One prop: its static point, its tables (the static point at J = 0 first,
+// then J = k/20; empty for a static-only prop), its blade stations (the hub
+// cut-out first) and where they came from.
 struct Prop {
     std::string_view id;
     std::string_view volume;
     std::string_view retrieved;
     int blades;
-    double run_rpm;
+    double run_rpm;  // 0 for a static-only prop
     double hover_rpm;  // computed from the drone
-    double first_measured_j;
-    double last_measured_j;
+    double ct_static;
+    double cq_static;  // C_P / 2 pi
+    double first_measured_j;  // 0 for a static-only prop
+    double last_measured_j;   // 0 for a static-only prop
     std::span<const std::array<double, 2>> ct_table;  // [J, C_T]
     std::span<const std::array<double, 2>> cq_table;  // [J, C_Q], C_Q = C_P / 2 pi
     std::span<const double> r_over_r;
@@ -137,9 +144,27 @@ inline constexpr std::array<double, 18> syn_a_beta_deg{
     12.0,
 };
 inline constexpr std::array<Input, 3> syn_a_inputs{{
-    {"syn_a_static.txt", 0x85732f4be6f78ae7ull},
-    {"syn_a_run_5000.txt", 0x382b1687eccbb8ecull},
-    {"syn_a_geom.txt", 0x33769d2317d13f8full},
+    Input{
+        "syn_a_static.txt",
+        0x85732f4be6f78ae7ull,
+        "098508f57fce579b5a114fb9b60b62fd28b1e48c6aff8137094090a8c6bfd271",
+        "synthetic:syn_a_static.txt",
+        "2026-10-22T00:00:00Z",
+    },
+    Input{
+        "syn_a_run_5000.txt",
+        0x382b1687eccbb8ecull,
+        "88c10f31830c58f7e210f9de1fd8c719b09261a772ac2fef2bdba94a0cef395c",
+        "synthetic:syn_a_run_5000.txt",
+        "2026-10-22T00:00:00Z",
+    },
+    Input{
+        "syn_a_geom.txt",
+        0x33769d2317d13f8full,
+        "2b51c14469745595df3fa24ed074cf64bce85f5fc5b3f8fc0a197db2e57989a8",
+        "synthetic:syn_a_geom.txt",
+        "2026-10-22T00:00:00Z",
+    },
 }};
 
 // syn_b -- synthetic (our own numbers), retrieved 2026-10-22, 3 blades.
@@ -221,14 +246,114 @@ inline constexpr std::array<double, 15> syn_b_beta_deg{
     10.0,
 };
 inline constexpr std::array<Input, 3> syn_b_inputs{{
-    {"syn_b_static.txt", 0xb9d66ff02dbc35f8ull},
-    {"syn_b_run_3500.txt", 0x97e1325880c24f0full},
-    {"syn_b_geom.txt", 0x0d5ea219e6e16c9dull},
+    Input{
+        "syn_b_static.txt",
+        0xb9d66ff02dbc35f8ull,
+        "b3289df2c8816e00a38239abad4140c0d3ed2bf6778523da90ab285538b775e8",
+        "synthetic:syn_b_static.txt",
+        "2026-10-22T00:00:00Z",
+    },
+    Input{
+        "syn_b_run_3500.txt",
+        0x97e1325880c24f0full,
+        "5b16855f60acaf5a18c6cc414b05c6c5e9cc1d478711425bb95da3eb3f4ca5d4",
+        "synthetic:syn_b_run_3500.txt",
+        "2026-10-22T00:00:00Z",
+    },
+    Input{
+        "syn_b_geom.txt",
+        0x0d5ea219e6e16c9dull,
+        "6273385e2eef5be07b3dbbd44be0619c1848363fcc06f09a6bed0800e24dac74",
+        "synthetic:syn_b_geom.txt",
+        "2026-10-22T00:00:00Z",
+    },
+}};
+
+// syn_c -- synthetic (our own numbers), retrieved 2026-10-22, 2 blades.
+//   static only: no wind-tunnel run. C_T and C_Q are the static run's at the
+//   hover rpm 9999 computed for synthetic C (0.00711 kg, 4 rotors, D 0.047 m);
+//   the tables are empty.
+//   published hover 10000 rpm (synthetic).
+//   grade note: static only: no wind-tunnel run
+inline constexpr std::array<std::array<double, 2>, 0> syn_c_ct{};
+inline constexpr std::array<std::array<double, 2>, 0> syn_c_cq{};
+inline constexpr std::array<double, 17> syn_c_r_over_r{
+    0.2,
+    0.25,
+    0.3,
+    0.35,
+    0.4,
+    0.45,
+    0.5,
+    0.55,
+    0.6,
+    0.65,
+    0.7,
+    0.75,
+    0.8,
+    0.85,
+    0.9,
+    0.95,
+    1.0,
+};
+inline constexpr std::array<double, 17> syn_c_c_over_r{
+    0.12,
+    0.11499999999999999,
+    0.11,
+    0.10500000000000001,
+    0.1,
+    0.095,
+    0.09,
+    0.08499999999999999,
+    0.08000000000000002,
+    0.07500000000000001,
+    0.07,
+    0.065,
+    0.06,
+    0.05500000000000002,
+    0.05000000000000002,
+    0.04500000000000001,
+    0.04,
+};
+inline constexpr std::array<double, 17> syn_c_beta_deg{
+    25.0,
+    23.9375,
+    22.875,
+    21.8125,
+    20.75,
+    19.6875,
+    18.625,
+    17.5625,
+    16.5,
+    15.4375,
+    14.375000000000004,
+    13.312499999999998,
+    12.25,
+    11.187500000000002,
+    10.125000000000002,
+    9.0625,
+    8.0,
+};
+inline constexpr std::array<Input, 2> syn_c_inputs{{
+    Input{
+        "syn_c_static.txt",
+        0x43993698fb15c7d5ull,
+        "022ad4766a99be6d8a138e22645a213b0e2cf1eb9f7a4faceea29dd1cca265ae",
+        "synthetic:syn_c_static.txt",
+        "2026-10-22T00:00:00Z",
+    },
+    Input{
+        "syn_c_geom.txt",
+        0xceecc922950c5855ull,
+        "0ce36e7714e0ade597f43685980e4fb43a22777966fe70a57c37c82ebba11e39",
+        "synthetic:syn_c_geom.txt",
+        "2026-10-22T00:00:00Z",
+    },
 }};
 
 }  // namespace detail
 
-inline constexpr std::array<Prop, 2> kProps{{
+inline constexpr std::array<Prop, 3> kProps{{
     Prop{
         "syn_a",
         "synthetic (our own numbers)",
@@ -236,6 +361,8 @@ inline constexpr std::array<Prop, 2> kProps{{
         2,
         5000.0,
         4999.536133503123,
+        0.11,
+        0.008753521870054244,
         0.12,
         0.42,
         detail::syn_a_ct,
@@ -253,6 +380,8 @@ inline constexpr std::array<Prop, 2> kProps{{
         3,
         3500.0,
         3398.397172537376,
+        0.1,
+        0.007957747154594767,
         0.2,
         0.3,
         detail::syn_b_ct,
@@ -262,6 +391,25 @@ inline constexpr std::array<Prop, 2> kProps{{
         detail::syn_b_beta_deg,
         0.18,
         detail::syn_b_inputs,
+    },
+    Prop{
+        "syn_c",
+        "synthetic (our own numbers)",
+        "2026-10-22",
+        2,
+        0.0,
+        9999.032572302833,
+        0.10500241856924292,
+        0.007639591239311064,
+        0.0,
+        0.0,
+        detail::syn_c_ct,
+        detail::syn_c_cq,
+        detail::syn_c_r_over_r,
+        detail::syn_c_c_over_r,
+        detail::syn_c_beta_deg,
+        0.2,
+        detail::syn_c_inputs,
     },
 }};
 
