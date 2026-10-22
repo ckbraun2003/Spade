@@ -96,7 +96,7 @@ constexpr double kTiny = kThird * 1e-9;
     m.block.rotor_inertia = 1e-05;
     m.block.stator = "2312";
     m.block.mass = 0.055;
-    m.block.shape = BlockShape{PartShape::cylinder, {0.014, 0.025, 0.0}, {}};
+    m.block.shape = BlockShape{PartShape::cylinder, {0.014, 0.025, 0.0}, glm::dmat3(0.0)};
     m.sources = PartSources{
         {"kv", SourceRef{"retail_phantom3_parts", Grade::retailer, ""}},
         {"resistance", SourceRef{"", Grade::assumed, "typical of a 2312 motor"}},
@@ -186,7 +186,8 @@ sources:
     b.block.polarization_resistance = 0.0;
     b.block.polarization_capacitance = 0.0;
     b.block.mass = 0.365;
-    b.block.shape = BlockShape{PartShape::tensor, {}, {{1e-4, 0.0, 0.0}, {0.0, 2e-4, 0.0}, {0.0, 0.0, kThird}}};
+    b.block.shape =
+        BlockShape{PartShape::tensor, glm::dvec3(0.0), {{1e-4, 0.0, 0.0}, {0.0, 2e-4, 0.0}, {0.0, 0.0, kThird}}};
     b.sources = cite({"cells_series", "cells_parallel", "cell_capacity", "cell_resistance", "cell_voltage_nominal",
                       "cell_voltage_full", "cell_voltage_cutoff", "ocv_table", "c_rating", "polarization_resistance",
                       "polarization_capacitance", "mass", "shape"});
@@ -464,7 +465,7 @@ TEST(PartFile, EveryFieldReadsBackIntoItsOwnSlot) {
         want.block.cells_parallel = 2;
         want.block.ocv_table = {{0.0, 3.25}, {0.25, 3.625}, {0.75, 3.875}, {1.0, 4.125}};
         // Element (row r, column c) is 1.5 + 3r + c; glm indexes [column][row].
-        BlockShape tensor{PartShape::tensor, {}, {}};
+        BlockShape tensor{PartShape::tensor, glm::dvec3(0.0), glm::dmat3(0.0)};
         for (int col = 0; col < 3; ++col) {
             for (int row = 0; row < 3; ++row) tensor.tensor[col][row] = 1.5 + 3.0 * row + col;
         }
@@ -481,6 +482,50 @@ TEST(PartFile, EveryFieldReadsBackIntoItsOwnSlot) {
             << text;
         expect_same_shape(back->block.shape, want.block.shape);
     }
+}
+
+// The text has no key for a shape's unused member, so a writer that dropped
+// one would hand back a different struct: refuse, never skip (L6). "Set" is
+// any bit, so a -0 is refused too.
+TEST(PartFile, AShapesUnusedMemberIsRefusedNotDropped) {
+    MotorPart cylinder = a_motor();
+    cylinder.block.shape->tensor[1][1] = 1e-6;
+    expect_refused(spade::scene::motor_to_yaml(cylinder), Code::invalid_argument,
+                   {"motor.shape.tensor", "cylinder", "leave it zero"});
+
+    BatteryPart tensor = a_battery();
+    tensor.block.shape->size.x = 0.1;
+    expect_refused(spade::scene::battery_to_yaml(tensor), Code::invalid_argument,
+                   {"battery.shape.size", "tensor", "leave it zero"});
+    tensor.block.shape->size.x = -0.0;
+    expect_refused(spade::scene::battery_to_yaml(tensor), Code::invalid_argument, {"battery.shape.size"});
+
+    // Zero, it writes and reads back the same struct.
+    tensor.block.shape->size.x = 0.0;
+    EXPECT_TRUE(spade::scene::battery_to_yaml(tensor).has_value());
+}
+
+// stator and protocol are identity strings: they are fields, and they take no
+// citation (SOURCES in scene/part_file.hpp).
+TEST(PartFile, AnIdentityStringTakesNoCitation) {
+    MotorPart motor = a_motor();
+    motor.sources.push_back({"stator", SourceRef{"", Grade::assumed, "the bell"}});
+    const spade::Result<std::string> written = spade::scene::motor_to_yaml(motor);
+    ASSERT_FALSE(written.has_value());
+    EXPECT_EQ(written.error().code, Code::invalid_argument);
+    EXPECT_EQ(written.error().context, "sources.stator: the motor's field 'stator' takes no citation");
+
+    const spade::Result<MotorPart> read = spade::scene::motor_from_yaml(
+        with(std::string(kMotorText), "sources:\n", "sources:\n  stator: {grade: assumed, note: \"the bell\"}\n"));
+    ASSERT_FALSE(read.has_value());
+    EXPECT_TRUE(read.error().context.starts_with("sources.stator: the motor's field 'stator' takes no citation ("))
+        << read.error().context;
+
+    EscPart esc = an_esc();
+    esc.sources.push_back({"protocol", SourceRef{"", Grade::assumed, "the wire"}});
+    const spade::Result<std::string> esc_written = spade::scene::esc_to_yaml(esc);
+    ASSERT_FALSE(esc_written.has_value());
+    EXPECT_EQ(esc_written.error().context, "sources.protocol: the esc's field 'protocol' takes no citation");
 }
 
 TEST(PartFile, CitedFieldsAreTheBlocksKeysLessItsIdentityStrings) {
