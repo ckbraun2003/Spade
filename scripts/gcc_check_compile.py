@@ -53,20 +53,38 @@ TEMPLATES = [
      "a new spade_airflow_runner source the leg has not built yet"),
 ]
 
-# file -> (flags replaced, flags added): the leg's own line, with the window
-# backend on. imgui and GLFW are fetched into every build's _deps, so their
-# headers are there even where no target links them.
+# <GL/gl.h> for a backend-on pass. The leg's image has no system GL headers,
+# so glad's header stands in: it defines the GL types, the 1.1 calls (as its
+# loader's pointers, with the same signatures) and the enums, and refuses a
+# second GL header as the real one would be. gcc then sees the branch's C++
+# and its calls' types; an enum Windows' GL 1.1 header lacks is MSVC's to
+# catch, and every Windows build compiles the branch.
+GL_SHIM = "/tmp/gl-shim"
+os.makedirs(GL_SHIM + "/GL", exist_ok=True)
+with open(GL_SHIM + "/GL/gl.h", "w") as shim:
+    shim.write("#include <glad/glad.h>\n")
+
+# file -> (flags replaced, flags added, what they add): the leg's own line,
+# with the window backend on. imgui, GLFW and glad are fetched into every
+# build's _deps, so their headers are there even where no target links them.
 BACKEND_ON = {
     "sandbox/editor_panels_ui.cpp": (
         {"-DSPADE_SANDBOX_HAS_GL=0": "-DSPADE_SANDBOX_HAS_GL=1"},
         ["-DGLFW_INCLUDE_NONE", "-I/leg/build/_deps/imgui-src",
-         "-I/leg/build/_deps/imgui-src/backends", "-I/leg/build/_deps/glfw-src/include"]),
+         "-I/leg/build/_deps/imgui-src/backends", "-I/leg/build/_deps/glfw-src/include"],
+        "imgui's and GLFW's includes"),
+    "sandbox/gl_target_sink.cpp": (
+        {"-DSPADE_SANDBOX_HAS_GL=0": "-DSPADE_SANDBOX_HAS_GL=1"},
+        ["-DGLFW_INCLUDE_NONE", "-I/leg/build/_deps/imgui-src",
+         "-I/leg/build/_deps/imgui-src/backends", "-I/leg/build/_deps/glfw-src/include",
+         "-I" + GL_SHIM, "-I/leg/build/_deps/glad-src/include"],
+        "imgui's, GLFW's and glad's includes, glad's header standing in for <GL/gl.h>"),
 }
 
-UNCHECKED = {
-    "sandbox/gl_target_sink.cpp":
-        "its SPADE_SANDBOX_HAS_GL=1 branch includes <GL/gl.h>, which the leg's image lacks, so only MSVC compiles it",
-}
+# file -> why: a backend branch nothing here can compile, named in the output
+# so a pass is not read as covering it. None since glad's header stood in for
+# <GL/gl.h> (gl_target_sink.cpp, Interface's ask, 2026-10-22).
+UNCHECKED = {}
 
 # A new spade_tests file. Every tests/test_*.cpp is a spade_tests translation
 # unit, and CMake gives each one the target's single command line (no file in
@@ -128,6 +146,13 @@ def compile_with(entry, source=None, replace=None, add=()):
     """Compiles with `entry`'s command line: its own file, or `source` in place
     of it; `replace` swaps whole flags; `add` appends flags. True if clean."""
     args = shlex.split(entry["command"]) if "command" in entry else list(entry["arguments"])
+    # A flag to swap that the line lacks would leave the branch off and pass it
+    # unseen (a target whose define moved, say).
+    missing = [a for a in (replace or {}) if a not in args]
+    if missing:
+        print(f"gcc FAIL: the leg's command line lacks {' '.join(missing)}, so the window backend cannot be "
+              "switched on for this pass; BACKEND_ON needs the flag the target now uses")
+        return False
     if source is not None:
         own = entry["file"]
         if args.count(own) != 1:
@@ -164,9 +189,9 @@ for f in files:
     if entry is not None:
         rc |= verdict(compile_with(entry), f, "compiled with the leg's command line")
         if f in BACKEND_ON:
-            replace, add = BACKEND_ON[f]
+            replace, add, adds = BACKEND_ON[f]
             rc |= verdict(compile_with(entry, replace=replace, add=add), f,
-                          "again with the window backend on: the leg's line, SPADE_SANDBOX_HAS_GL=1, imgui's and GLFW's includes")
+                          f"again with the window backend on: the leg's line, SPADE_SANDBOX_HAS_GL=1, {adds}")
         if f in UNCHECKED:
             print(f"gcc note: {f}: {UNCHECKED[f]}")
         continue
