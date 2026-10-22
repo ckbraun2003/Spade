@@ -16,7 +16,9 @@
 // check_model_sources().
 //
 // WHO REQUIRES ONE (the lead's ruling, 2026-10-22). The committed default
-// library: its tests refuse a model entry whose sidecar is missing or stale.
+// library's drones: tests/test_library_drones.cpp refuses each library drone
+// it builds whose sidecar is missing or stale. It checks those drones by name,
+// not by walking the index, and the reference quad has no sidecar.
 // NOT load_library() or check_library_contents(): a project's own library,
 // written by Save to library, has model entries without sidecars, and they
 // keep loading.
