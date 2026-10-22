@@ -7,8 +7,6 @@
 #include <string_view>
 #include <utility>
 
-#include "physics/airflow/mac_grid.hpp"
-
 namespace spade::airflow_gpu {
 
 namespace {
@@ -19,9 +17,8 @@ namespace {
 // magnitude of headroom.
 constexpr uint64_t kFenceTimeoutNs = 60ull * 1000ull * 1000ull * 1000ull;
 
-// Vulkan's guaranteed maxMemoryAllocationSize, used when the device's own value
-// cannot be read (no vkGetPhysicalDeviceProperties2).
-constexpr uint64_t kGuaranteedAllocationSize = uint64_t{1} << 30;
+// What every device-local buffer asks of its memory.
+constexpr std::array<VkMemoryPropertyFlags, 1> kDeviceMemoryPreferences{VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
 
 // runner_memory_stats(): every runner's allocations, process-wide.
 std::atomic<uint64_t> g_live_bytes{0};
@@ -29,6 +26,11 @@ std::atomic<uint64_t> g_allocations{0};
 
 [[nodiscard]] std::unexpected<Error> refuse(Code code, const std::string& text) {
     return std::unexpected(Error{code, "airflow runner: " + text});
+}
+
+// One of Core's refusals (compute/device_limits.hpp), in the runner's voice.
+[[nodiscard]] std::unexpected<Error> refuse(const Error& core) {
+    return std::unexpected(Error{core.code, "airflow runner: " + core.context});
 }
 
 // The taxonomy of step_recorder.cpp's and dispatch_chain.cpp's map_vk_error,
@@ -49,25 +51,19 @@ std::atomic<uint64_t> g_allocations{0};
     }
 }
 
-[[nodiscard]] Result<uint32_t> find_memory_type(VkPhysicalDevice physical, uint32_t type_bits,
-                                                 VkMemoryPropertyFlags want) {
-    VkPhysicalDeviceMemoryProperties props{};
-    vkGetPhysicalDeviceMemoryProperties(physical, &props);
-    for (uint32_t i = 0; i < props.memoryTypeCount; ++i) {
-        if ((type_bits & (1u << i)) != 0u && (props.memoryTypes[i].propertyFlags & want) == want) return i;
-    }
-    return refuse(Code::internal, "no Vulkan memory type has the properties a runner buffer needs");
-}
-
-// One buffer and its own allocation, bound. On failure it destroys what it
+// One buffer and its own allocation, bound, in the first memory type that
+// meets the earliest of `preferences` it can. On failure it destroys what it
 // made, so the caller frees only what succeeded. `allocated` is the
-// allocation's size, counted into runner_memory_stats().
+// allocation's size, counted into runner_memory_stats(); `flags` is the
+// chosen type's property flags.
 [[nodiscard]] Result<void> make_buffer(VkDevice device, VkPhysicalDevice physical, uint64_t bytes,
-                                       VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer,
-                                       VkDeviceMemory& memory, uint64_t& allocated) {
+                                       VkBufferUsageFlags usage, std::span<const VkMemoryPropertyFlags> preferences,
+                                       VkBuffer& buffer, VkDeviceMemory& memory, uint64_t& allocated,
+                                       VkMemoryPropertyFlags& flags) {
     buffer = VK_NULL_HANDLE;
     memory = VK_NULL_HANDLE;
     allocated = 0;
+    flags = 0;
 
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -81,12 +77,15 @@ std::atomic<uint64_t> g_allocations{0};
 
     VkMemoryRequirements requirements{};
     vkGetBufferMemoryRequirements(device, buffer, &requirements);
-    Result<uint32_t> type = find_memory_type(physical, requirements.memoryTypeBits, properties);
+    VkPhysicalDeviceMemoryProperties props{};
+    vkGetPhysicalDeviceMemoryProperties(physical, &props);
+    const std::optional<uint32_t> type = choose_memory_type(props, requirements.memoryTypeBits, preferences);
     if (!type) {
         vkDestroyBuffer(device, buffer, nullptr);
         buffer = VK_NULL_HANDLE;
-        return std::unexpected(type.error());
+        return refuse(Code::internal, "no Vulkan memory type has the properties a runner buffer needs");
     }
+    flags = props.memoryTypes[*type].propertyFlags;
 
     VkMemoryAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -109,6 +108,7 @@ std::atomic<uint64_t> g_allocations{0};
         buffer = VK_NULL_HANDLE;
         memory = VK_NULL_HANDLE;
         allocated = 0;
+        flags = 0;
         return std::unexpected(map_vk_error(r, "vkBindBufferMemory"));
     }
     return {};
@@ -144,41 +144,23 @@ void record_entry_barrier(VkCommandBuffer cmd, VkPipelineStageFlags dst_stage, V
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// limits, budget, stats
+// budget, memory types, stats
 // ---------------------------------------------------------------------------
 
-RunnerLimits read_runner_limits(const compute::VulkanContext& ctx) {
-    VkPhysicalDeviceMaintenance3Properties maintenance3{};
-    maintenance3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
-    VkPhysicalDeviceProperties properties{};
-    if (vkGetPhysicalDeviceProperties2 != nullptr) {
-        VkPhysicalDeviceProperties2 properties2{};
-        properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        properties2.pNext = &maintenance3;
-        vkGetPhysicalDeviceProperties2(ctx.physical_device(), &properties2);
-        properties = properties2.properties;
-    } else {
-        vkGetPhysicalDeviceProperties(ctx.physical_device(), &properties);
-    }
-
-    const VkPhysicalDeviceLimits& l = properties.limits;
-    RunnerLimits out;
-    out.max_storage_buffer_range = l.maxStorageBufferRange;
-    out.max_memory_allocation_size =
-        maintenance3.maxMemoryAllocationSize != 0 ? maintenance3.maxMemoryAllocationSize : kGuaranteedAllocationSize;
-    out.max_per_stage_storage_buffers = l.maxPerStageDescriptorStorageBuffers;
-    out.max_set_storage_buffers = l.maxDescriptorSetStorageBuffers;
-    out.max_push_constants_size = l.maxPushConstantsSize;
-    out.max_group_count = {l.maxComputeWorkGroupCount[0], l.maxComputeWorkGroupCount[1],
-                           l.maxComputeWorkGroupCount[2]};
-    out.max_group_size_x = l.maxComputeWorkGroupSize[0];
-    out.max_group_invocations = l.maxComputeWorkGroupInvocations;
-    return out;
+uint64_t runner_budget_bytes(compute::VulkanContext& ctx) {
+    return compute::vram_cap(ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load());
 }
 
-// B0 replaces this body with min(4 GiB, budget - usage - 1 GiB reserve), from
-// VulkanContext::memory_budget() (plan B, the lead's decision 4; design A1/A2).
-uint64_t runner_budget_bytes(compute::VulkanContext&) { return physics::airflow::kGridByteCap; }
+std::optional<uint32_t> choose_memory_type(const VkPhysicalDeviceMemoryProperties& props, uint32_t type_bits,
+                                           std::span<const VkMemoryPropertyFlags> preferences) noexcept {
+    const uint32_t types = std::min<uint32_t>(props.memoryTypeCount, VK_MAX_MEMORY_TYPES);
+    for (const VkMemoryPropertyFlags want : preferences) {
+        for (uint32_t i = 0; i < types; ++i) {
+            if ((type_bits & (1u << i)) != 0u && (props.memoryTypes[i].propertyFlags & want) == want) return i;
+        }
+    }
+    return std::nullopt;
+}
 
 RunnerMemoryStats runner_memory_stats() noexcept {
     return RunnerMemoryStats{.live_bytes = g_live_bytes.load(), .allocations = g_allocations.load()};
@@ -189,7 +171,8 @@ RunnerMemoryStats runner_memory_stats() noexcept {
 // ---------------------------------------------------------------------------
 
 Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext& ctx, const RunnerDesc& desc) {
-    const RunnerLimits limits = read_runner_limits(ctx);
+    const compute::DeviceLimits& limits = ctx.device_report().limits;
+    const std::string device(ctx.device_name());
     const uint32_t wg = desc.workgroup_size;
 
     // ---- Every refusal, before anything is allocated (L6). ----------------
@@ -213,26 +196,17 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
                                                   "' has no variant compiled for workgroup size " +
                                                   std::to_string(wg) + " (compiled: " + compiled + ")");
     }
-    if (wg > limits.max_group_size_x) {
-        return refuse(Code::capacity_exceeded, "workgroup size " + std::to_string(wg) +
-                                                   " is over maxComputeWorkGroupSize[0] (" +
-                                                   std::to_string(limits.max_group_size_x) + ")");
-    }
-    if (wg > limits.max_group_invocations) {
-        return refuse(Code::capacity_exceeded, "workgroup size " + std::to_string(wg) +
-                                                   " is over maxComputeWorkGroupInvocations (" +
-                                                   std::to_string(limits.max_group_invocations) + ")");
+    for (const compute::SpirvVariantSet* kernel : desc.kernels) {
+        if (Result<void> ok = compute::check_workgroup(kernel->name, {wg, 1, 1}, limits, device); !ok) {
+            return refuse(ok.error());
+        }
     }
 
     if (desc.push_bytes == 0 || desc.push_bytes % 4 != 0) {
         return refuse(Code::invalid_argument, "push_bytes " + std::to_string(desc.push_bytes) +
                                                   " must be a non-zero multiple of 4 (every dispatch pushes it)");
     }
-    if (desc.push_bytes > limits.max_push_constants_size) {
-        return refuse(Code::capacity_exceeded, "push_bytes " + std::to_string(desc.push_bytes) +
-                                                   " is over maxPushConstantsSize (" +
-                                                   std::to_string(limits.max_push_constants_size) + ")");
-    }
+    if (Result<void> ok = compute::check_push(desc.push_bytes, limits, device); !ok) return refuse(ok.error());
     if (desc.push_bytes > compute::kMaxChainPushBytes) {
         return refuse(Code::capacity_exceeded, "push_bytes " + std::to_string(desc.push_bytes) +
                                                    " is over kMaxChainPushBytes (" +
@@ -240,17 +214,11 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
                                                    "), the push block a ChainCommand carries");
     }
 
-    const uint64_t count = desc.buffers.size();
-    if (count > limits.max_per_stage_storage_buffers) {
-        return refuse(Code::capacity_exceeded, std::to_string(count) +
-                                                   " buffers is over maxPerStageDescriptorStorageBuffers (" +
-                                                   std::to_string(limits.max_per_stage_storage_buffers) + ")");
+    if (desc.buffers.size() > UINT32_MAX) {
+        return refuse(Code::capacity_exceeded, std::to_string(desc.buffers.size()) + " buffers is past any binding");
     }
-    if (count > limits.max_set_storage_buffers) {
-        return refuse(Code::capacity_exceeded, std::to_string(count) +
-                                                   " buffers is over maxDescriptorSetStorageBuffers (" +
-                                                   std::to_string(limits.max_set_storage_buffers) + ")");
-    }
+    const uint32_t count = static_cast<uint32_t>(desc.buffers.size());
+    if (Result<void> ok = compute::check_storage_buffers(count, limits, device); !ok) return refuse(ok.error());
     if (desc.binding_base > UINT32_MAX - count) {
         return refuse(Code::invalid_argument, "binding_base " + std::to_string(desc.binding_base) + " plus " +
                                                   std::to_string(count) + " buffers passes the largest binding");
@@ -260,29 +228,21 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     uint64_t staging_bytes = 0;
     for (const RunnerBuffer& b : desc.buffers) {
         if (b.bytes == 0) return refuse(Code::invalid_argument, "buffer '" + b.name + "' has 0 bytes");
-        if (b.bytes > limits.max_storage_buffer_range) {
-            return refuse(Code::capacity_exceeded, "buffer '" + b.name + "' asks for " + std::to_string(b.bytes) +
-                                                       " bytes, over maxStorageBufferRange (" +
-                                                       std::to_string(limits.max_storage_buffer_range) + ")");
-        }
-        if (b.bytes > limits.max_memory_allocation_size) {
-            return refuse(Code::capacity_exceeded, "buffer '" + b.name + "' asks for " + std::to_string(b.bytes) +
-                                                       " bytes, over maxMemoryAllocationSize (" +
-                                                       std::to_string(limits.max_memory_allocation_size) +
-                                                       "); each buffer is one allocation");
-        }
+        if (Result<void> ok = compute::check_buffer(b.name, b.bytes, limits, device); !ok) return refuse(ok.error());
         device_bytes = saturating_add(device_bytes, b.bytes);
         // Only a buffer that crosses to the host needs the staging buffer.
         if (b.kind != BufferKind::device_only) staging_bytes = std::max(staging_bytes, b.bytes);
     }
+    // runner_budget_bytes(), from one reading of the budget, so the cap the
+    // message gives is the cap the total was held to.
     const uint64_t total = saturating_add(device_bytes, staging_bytes);
-    const uint64_t budget = runner_budget_bytes(ctx);
-    if (total > budget) {
-        return refuse(Code::capacity_exceeded,
-                      std::to_string(count) + " buffers need " + std::to_string(total) + " bytes (device " +
-                          std::to_string(device_bytes) + " + staging " + std::to_string(staging_bytes) +
-                          "), over the budget of " + std::to_string(budget) +
-                          " bytes (runner_budget_bytes: the 4 GiB airflow cap until B0's memory_budget())");
+    if (Result<void> ok = compute::check_vram("runner_budget_bytes: a runner of " + std::to_string(count) +
+                                                  " buffers (device " + std::to_string(device_bytes) +
+                                                  " + staging " + std::to_string(staging_bytes) + " bytes)",
+                                              total, ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load(),
+                                              device);
+        !ok) {
+        return refuse(ok.error());
     }
 
     // ---- Allocation. Each step records what it made, so destroy() frees a
@@ -295,6 +255,7 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     self->push_bytes_ = desc.push_bytes;
     self->workgroup_size_ = wg;
     self->limits_ = limits;
+    self->device_name_ = device;
 
     constexpr VkBufferUsageFlags kDeviceUsage =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -304,8 +265,9 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
         made.name = b.name;
         made.bytes = b.bytes;
         made.kind = b.kind;
+        VkMemoryPropertyFlags flags = 0;
         if (Result<void> r = make_buffer(self->device_, self->physical_device_, b.bytes, kDeviceUsage,
-                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, made.buffer, made.memory, made.allocated);
+                                         kDeviceMemoryPreferences, made.buffer, made.memory, made.allocated, flags);
             !r) {
             return std::unexpected(r.error());
         }
@@ -313,13 +275,17 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
 
     if (staging_bytes > 0) {
         self->staging_bytes_ = staging_bytes;
+        VkMemoryPropertyFlags flags = 0;
         if (Result<void> r = make_buffer(self->device_, self->physical_device_, staging_bytes,
                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                                         self->staging_, self->staging_memory_, self->staging_allocated_);
+                                         kStagingMemoryPreferences, self->staging_, self->staging_memory_,
+                                         self->staging_allocated_, flags);
             !r) {
             return std::unexpected(r.error());
         }
+        // Every preference is coherent, so the mapping needs no flush or
+        // invalidate; cached is the fast read-back (kStagingMemoryPreferences).
+        self->staging_cached_ = (flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) != 0u;
         if (VkResult r = vkMapMemory(self->device_, self->staging_memory_, 0, VK_WHOLE_SIZE, 0, &self->staging_mapped_);
             r != VK_SUCCESS) {
             self->staging_mapped_ = nullptr;
@@ -561,13 +527,9 @@ Result<uint32_t> ChainRunner::record(std::span<const compute::ChainCommand> chai
                                                       std::to_string(c.pipeline) + " is out of range (the runner has " +
                                                       std::to_string(pipelines_.size()) + " pipelines)");
         }
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            if (c.groups[axis] > limits_.max_group_count[axis]) {
-                return refuse(Code::capacity_exceeded,
-                              "command " + std::to_string(i) + " asks for " + std::to_string(c.groups[axis]) +
-                                  " groups on axis " + std::to_string(axis) + ", over maxComputeWorkGroupCount[" +
-                                  std::to_string(axis) + "] (" + std::to_string(limits_.max_group_count[axis]) + ")");
-            }
+        if (Result<void> ok = compute::check_groups("command " + std::to_string(i), c.groups, limits_, device_name_);
+            !ok) {
+            return refuse(ok.error());
         }
     }
 
@@ -653,11 +615,11 @@ Result<std::vector<uint64_t>> ChainRunner::durations_ns(uint32_t chain) const {
     // with WAIT_BIT would never return.
     if (c.timestamps == nullptr || !c.timestamps->supported() || c.submits == 0) return std::vector<uint64_t>{};
     if (in_flight_) return refuse(Code::internal, "durations_ns: an earlier submit never finished");
-    Result<PassDurationsNs> read = c.timestamps->read_durations_ns();
+    Result<compute::PassDurationsNs> read = c.timestamps->read_durations_ns();
     if (!read) return std::unexpected(read.error());
     std::vector<uint64_t> out;
     out.reserve(read->passes.size());
-    for (const PassDuration& d : read->passes) out.push_back(static_cast<uint64_t>(d.ns + 0.5));
+    for (const compute::PassDuration& d : read->passes) out.push_back(static_cast<uint64_t>(d.ns + 0.5));
     return out;
 }
 

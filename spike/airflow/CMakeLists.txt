@@ -14,11 +14,12 @@ add_library(spade_airflow_runner STATIC
 )
 target_include_directories(spade_airflow_runner PUBLIC "${PROJECT_SOURCE_DIR}")
 target_compile_features(spade_airflow_runner PUBLIC cxx_std_23)
-# spade::physics for kGridByteCap (physics/airflow/mac_grid.hpp), the budget's
-# ceiling. volk and the Vulkan headers PUBLIC: chain_runner.hpp names Vulkan
-# handles.
+# spade::compute for the context, Core's limit and budget checks
+# (compute/device_limits.hpp) and the generated bindings.gen.hpp, whose section
+# F constants kAirflowSetBuffers is pinned to. volk and the Vulkan headers
+# PUBLIC: chain_runner.hpp names Vulkan handles.
 target_link_libraries(spade_airflow_runner
-    PUBLIC spade::compute spade::physics volk Vulkan::Headers
+    PUBLIC spade::compute volk Vulkan::Headers
     PRIVATE spade_warnings spade_fp_strict
 )
 
@@ -35,3 +36,8 @@ include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
 spade_slang_kernel_variants(spade_airflow_runner airflow_copy)
 spade_slang_kernel_variants(spade_airflow_runner airflow_add_one)
 spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum)
+
+# chain_runner.hpp includes bindings.gen.hpp: compile after every generator
+# (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
+# build-order edge, and not the link to spade::compute).
+spade_slang_attach_generated(spade_airflow_runner)

@@ -15,6 +15,13 @@
 //                             binding in set 1 (the airflow set), and variants
 //                             that differ in their local size only (no device;
 //                             not gpu-labelled)
+//   AirflowRunnerStaging      the staging buffer's memory type: cached and
+//                             coherent first, then coherent (no device; not
+//                             gpu-labelled)
+//
+// The kernels bind bindings.slang section F's buffers, so every runner here
+// lists section F's bindings from 0 up to the last one its kernels read
+// (airflow_set() below), the unused ones as 4-byte placeholders.
 //
 // Every Gpu* test starts with the vulkan_skip_reason() skip (gpu_skip.hpp).
 // ---------------------------------------------------------------------------
@@ -28,8 +35,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -50,13 +59,44 @@ namespace {
 using spade::Code;
 using spade::airflow_gpu::BufferKind;
 using spade::airflow_gpu::ChainRunner;
+using spade::airflow_gpu::kAirflowSetBuffers;
 using spade::airflow_gpu::RunnerBuffer;
 using spade::airflow_gpu::RunnerDesc;
-using spade::airflow_gpu::RunnerLimits;
 using spade::compute::ChainCommand;
+using spade::compute::DeviceLimits;
 using spade::compute::SpirvVariantSet;
 using spade::compute::VulkanContext;
 namespace gen = spade::compute::gen;
+
+// Section F's bindings the kernels here read.
+constexpr uint32_t kParams = gen::kBinding_airflow_params;
+constexpr uint32_t kU = gen::kBinding_airflow_u;
+constexpr uint32_t kV = gen::kBinding_airflow_v;
+constexpr uint32_t kPressure = gen::kBinding_airflow_pressure;
+constexpr uint32_t kRhs = gen::kBinding_airflow_rhs;
+constexpr uint32_t kScalars = gen::kBinding_airflow_scalars;
+constexpr uint32_t kPartials = gen::kBinding_airflow_partials;
+
+// The runner's list for section F's bindings 0 .. through, named and kinded by
+// kAirflowSetBuffers, each a 4-byte placeholder until a test sizes it.
+[[nodiscard]] std::vector<RunnerBuffer> airflow_set(uint32_t through) {
+    std::vector<RunnerBuffer> out;
+    for (uint32_t b = 0; b <= through; ++b) {
+        out.push_back(RunnerBuffer{std::string(kAirflowSetBuffers[b].name), 4, kAirflowSetBuffers[b].kind});
+    }
+    return out;
+}
+
+// The copy and add-one kernels' list: params (a placeholder), u and v, each of
+// u and v `bytes` long and staged so a test can fill and read it.
+[[nodiscard]] std::vector<RunnerBuffer> copy_buffers(uint64_t bytes) {
+    std::vector<RunnerBuffer> out = airflow_set(kV);
+    out[kU] = {"airflow_u", bytes, BufferKind::staged};
+    out[kV] = {"airflow_v", bytes, BufferKind::staged};
+    return out;
+}
+
+[[nodiscard]] const DeviceLimits& limits_of(const VulkanContext& ctx) { return ctx.device_report().limits; }
 
 [[nodiscard]] std::unique_ptr<VulkanContext> make_context() {
     auto result = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
@@ -96,18 +136,29 @@ template <class T>
     return std::as_writable_bytes(std::span<T>(v));
 }
 
+// Every airflow kernel pushes 16 bytes with its count in word 2
+// (engine/shaders/airflow_params_layout.slang).
+constexpr uint32_t kPushBytes = 16;
+
 // The push block of airflow_copy and airflow_add_one.
 struct CountPush {
+    uint32_t unused0 = 0;
+    uint32_t unused1 = 0;
     uint32_t count = 0;
+    uint32_t unused3 = 0;
 };
+
+[[nodiscard]] CountPush count_push(uint32_t count) { return CountPush{.count = count}; }
 
 // The push block of airflow_tile_sum.
 struct TileSumPush {
-    uint32_t nx = 0;
-    uint32_t ny = 0;
-    uint32_t nz = 0;
-    uint32_t phase = 0;
+    uint32_t field = 0;  // 0 airflow_pressure, 1 airflow_rhs
+    uint32_t pass = 0;   // 0 the tiles; 1 the total
+    uint32_t cell_count = 0;
+    uint32_t slot = 0;  // airflow_scalars' slot for the total
 };
+
+static_assert(sizeof(CountPush) == kPushBytes && sizeof(TileSumPush) == kPushBytes);
 
 template <class P>
 [[nodiscard]] ChainCommand dispatch(uint32_t pipeline, const P& push, std::array<uint32_t, 3> groups) {
@@ -135,8 +186,10 @@ constexpr uint32_t kWorkgroupSize = 64;
 
 // Bytes in, the same bytes out: every 32-bit pattern from a fixed seed, NaNs
 // and subnormals included, through the staging buffer both ways. Two buffers
-// of different sizes, so the staging buffer serves both and the second upload
-// cannot disturb the first buffer.
+// of different sizes and kinds, so the staging buffer serves both and the
+// second upload cannot disturb the first buffer. The staging memory is
+// whichever kStagingMemoryPreferences found (printed): cached and coherent on
+// the 3060 Ti.
 TEST(GpuAirflowRunner, UploadThenReadIsExactBitForBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -150,26 +203,29 @@ TEST(GpuAirflowRunner, UploadThenReadIsExactBitForBit) {
     for (uint32_t& w : small) w = static_cast<uint32_t>(rng.next());
     for (uint32_t& w : large) w = static_cast<uint32_t>(rng.next());
 
-    const RunnerBuffer buffers[] = {{"small", kSmall * 4, BufferKind::staged}, {"large", kLarge * 4, BufferKind::resident}};
+    std::vector<RunnerBuffer> buffers = airflow_set(kV);
+    buffers[kU] = {"airflow_u", kSmall * 4, BufferKind::staged};
+    buffers[kV] = {"airflow_v", kLarge * 4, BufferKind::resident};
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
 
-    ASSERT_TRUE((*runner)->upload(0, bytes_of(small)).has_value());
-    ASSERT_TRUE((*runner)->upload(1, bytes_of(large)).has_value());
+    ASSERT_TRUE((*runner)->upload(kU, bytes_of(small)).has_value());
+    ASSERT_TRUE((*runner)->upload(kV, bytes_of(large)).has_value());
 
     std::vector<uint32_t> small_back(kSmall, 0xDEADBEEFu);
     std::vector<uint32_t> large_back(kLarge, 0xDEADBEEFu);
-    auto read_small = (*runner)->read(0, writable_bytes_of(small_back));
+    auto read_small = (*runner)->read(kU, writable_bytes_of(small_back));
     ASSERT_TRUE(read_small.has_value()) << read_small.error().context;
-    auto read_large = (*runner)->read(1, writable_bytes_of(large_back));
+    auto read_large = (*runner)->read(kV, writable_bytes_of(large_back));
     ASSERT_TRUE(read_large.has_value()) << read_large.error().context;
 
     std::size_t mismatches = 0;
     for (std::size_t i = 0; i < kSmall; ++i) mismatches += small_back[i] != small[i] ? 1u : 0u;
     for (std::size_t i = 0; i < kLarge; ++i) mismatches += large_back[i] != large[i] ? 1u : 0u;
-    std::printf("[GpuAirflowRunner] upload/read: %zu words, mismatches=%zu\n", kSmall + kLarge, mismatches);
+    std::printf("[GpuAirflowRunner] upload/read: %zu words, mismatches=%zu, staging memory %s\n", kSmall + kLarge,
+                mismatches, (*runner)->staging_cached() ? "cached and coherent" : "coherent, not cached");
     EXPECT_EQ(mismatches, std::size_t{0});
 }
 
@@ -187,15 +243,15 @@ TEST(GpuAirflowRunner, SecondDispatchSeesTheFirstsWrite) {
     for (uint32_t i = 0; i < kCount; ++i) src[i] = static_cast<float>(i % 4096u);
     const std::vector<float> sentinel(kCount, -1000.0f);
 
-    const RunnerBuffer buffers[] = {{"src", kCount * 4ull, BufferKind::staged}, {"dst", kCount * 4ull, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(kCount * 4ull);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy, &gen::kSpvVariants_airflow_add_one};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
-    ASSERT_TRUE((*runner)->upload(0, bytes_of(src)).has_value());
-    ASSERT_TRUE((*runner)->upload(1, bytes_of(sentinel)).has_value());
+    ASSERT_TRUE((*runner)->upload(kU, bytes_of(src)).has_value());
+    ASSERT_TRUE((*runner)->upload(kV, bytes_of(sentinel)).has_value());
 
-    const CountPush push{kCount};
+    const CountPush push = count_push(kCount);
     const ChainCommand chain[] = {dispatch(0, push, {groups_for(kCount, kWorkgroupSize), 1, 1}),
                                   dispatch(1, push, {groups_for(kCount, kWorkgroupSize), 1, 1})};
     auto id = (*runner)->record(chain);
@@ -210,9 +266,9 @@ TEST(GpuAirflowRunner, SecondDispatchSeesTheFirstsWrite) {
     ASSERT_TRUE(submitted.has_value()) << submitted.error().context;
 
     std::vector<float> dst(kCount, 0.0f);
-    ASSERT_TRUE((*runner)->read(1, writable_bytes_of(dst)).has_value());
+    ASSERT_TRUE((*runner)->read(kV, writable_bytes_of(dst)).has_value());
     std::vector<float> src_back(kCount, 0.0f);
-    ASSERT_TRUE((*runner)->read(0, writable_bytes_of(src_back)).has_value());
+    ASSERT_TRUE((*runner)->read(kU, writable_bytes_of(src_back)).has_value());
 
     std::size_t stale = 0;
     std::size_t src_changed = 0;
@@ -236,15 +292,16 @@ TEST(GpuAirflowRunner, RecordOnceSubmitFiveTimesAddsFive) {
     std::vector<float> x(kCount);
     for (uint32_t i = 0; i < kCount; ++i) x[i] = static_cast<float>(i % 1000u);
 
-    // add_one works on binding 1, so binding 0 is a placeholder.
-    const RunnerBuffer buffers[] = {{"unused", 4, BufferKind::device_only}, {"x", kCount * 4ull, BufferKind::staged}};
+    // add_one works on airflow_v alone; params and u stay placeholders.
+    std::vector<RunnerBuffer> buffers = airflow_set(kV);
+    buffers[kV] = {"airflow_v", kCount * 4ull, BufferKind::staged};
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_add_one};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
-    ASSERT_TRUE((*runner)->upload(1, bytes_of(x)).has_value());
+    ASSERT_TRUE((*runner)->upload(kV, bytes_of(x)).has_value());
 
-    const ChainCommand chain[] = {dispatch(0, CountPush{kCount}, {groups_for(kCount, kWorkgroupSize), 1, 1})};
+    const ChainCommand chain[] = {dispatch(0, count_push(kCount), {groups_for(kCount, kWorkgroupSize), 1, 1})};
     auto id = (*runner)->record(chain);
     ASSERT_TRUE(id.has_value()) << id.error().context;
     auto submitted = (*runner)->submit(*id, 5);
@@ -252,7 +309,7 @@ TEST(GpuAirflowRunner, RecordOnceSubmitFiveTimesAddsFive) {
     EXPECT_EQ((*runner)->chain_count(), 1u);
 
     std::vector<float> back(kCount, 0.0f);
-    ASSERT_TRUE((*runner)->read(1, writable_bytes_of(back)).has_value());
+    ASSERT_TRUE((*runner)->read(kV, writable_bytes_of(back)).has_value());
     std::size_t wrong = 0;
     for (uint32_t i = 0; i < kCount; ++i) wrong += bits(back[i]) != bits(x[i] + 5.0f) ? 1u : 0u;
     std::printf("[GpuAirflowRunner] record once, submit 5: %u floats, wrong=%zu (x[1]: %g -> %g)\n", kCount, wrong,
@@ -267,7 +324,7 @@ TEST(GpuAirflowRunner, OversizedBufferIsRefusedByNameBeforeAnyAllocation) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const RunnerLimits limits = spade::airflow_gpu::read_runner_limits(*ctx);
+    const DeviceLimits& limits = limits_of(*ctx);
     std::printf("[GpuAirflowRunner] maxStorageBufferRange=%" PRIu64 " maxMemoryAllocationSize=%" PRIu64 "\n",
                 limits.max_storage_buffer_range, limits.max_memory_allocation_size);
     ASSERT_GT(limits.max_storage_buffer_range, 0u);
@@ -276,8 +333,8 @@ TEST(GpuAirflowRunner, OversizedBufferIsRefusedByNameBeforeAnyAllocation) {
     const uint64_t asked = limits.max_storage_buffer_range + 4;
     const RunnerBuffer big[] = {{"big", asked, BufferKind::staged}};
     const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
-    auto refused = ChainRunner::create(
-        *ctx, RunnerDesc{.buffers = big, .kernels = kernels, .push_bytes = 4, .workgroup_size = kWorkgroupSize});
+    auto refused = ChainRunner::create(*ctx, RunnerDesc{.buffers = big, .kernels = kernels,
+                                                        .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     const spade::airflow_gpu::RunnerMemoryStats after = spade::airflow_gpu::runner_memory_stats();
     ASSERT_FALSE(refused.has_value());
     std::printf("[GpuAirflowRunner] refused: %s\n", refused.error().context.c_str());
@@ -296,8 +353,9 @@ TEST(GpuAirflowRunner, OversizedBufferIsRefusedByNameBeforeAnyAllocation) {
     }
     const uint64_t over_allocation = limits.max_memory_allocation_size + 4;
     const RunnerBuffer too_big[] = {{"too_big", over_allocation, BufferKind::device_only}};
-    auto refused_allocation = ChainRunner::create(
-        *ctx, RunnerDesc{.buffers = too_big, .kernels = kernels, .push_bytes = 4, .workgroup_size = kWorkgroupSize});
+    auto refused_allocation = ChainRunner::create(*ctx, RunnerDesc{.buffers = too_big, .kernels = kernels,
+                                                                   .push_bytes = kPushBytes,
+                                                                   .workgroup_size = kWorkgroupSize});
     ASSERT_FALSE(refused_allocation.has_value());
     std::printf("[GpuAirflowRunner] refused: %s\n", refused_allocation.error().context.c_str());
     EXPECT_EQ(refused_allocation.error().code, Code::capacity_exceeded);
@@ -309,13 +367,25 @@ TEST(GpuAirflowRunner, OversizedBufferIsRefusedByNameBeforeAnyAllocation) {
 }
 
 // Buffers each inside every per-buffer limit whose total passes the budget:
-// refused by the budget's name, with nothing allocated.
+// refused by the budget's name, with nothing allocated. The budget is
+// runner_budget_bytes(), min(4 GiB, budget - usage - 1 GiB reserve) from
+// memory_budget(); create() reads it again and it may have moved (other
+// programs allocate), so the message is held to the total and the reserve,
+// not to this reading of the cap. The total passes the cap by up to one slab,
+// far more than a desktop's VRAM use moves between the two readings.
 TEST(GpuAirflowRunner, OverBudgetTotalIsRefusedByName) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const RunnerLimits limits = spade::airflow_gpu::read_runner_limits(*ctx);
+    const DeviceLimits& limits = limits_of(*ctx);
+    const spade::compute::MemoryBudget memory = ctx->memory_budget();
     const uint64_t budget = spade::airflow_gpu::runner_budget_bytes(*ctx);
+    std::printf("[GpuAirflowRunner] memory_budget: budget=%" PRIu64 " usage=%" PRIu64 " source=%s; "
+                "runner_budget_bytes=%" PRIu64 "\n",
+                memory.budget, memory.usage,
+                memory.source == spade::compute::MemoryBudget::Source::ext ? "VK_EXT_memory_budget" : "half heap",
+                budget);
+    EXPECT_LE(budget, spade::compute::kAirflowVramCap);
 
     uint64_t each = limits.max_storage_buffer_range;
     if (limits.max_memory_allocation_size != 0) each = std::min(each, limits.max_memory_allocation_size);
@@ -333,14 +403,16 @@ TEST(GpuAirflowRunner, OverBudgetTotalIsRefusedByName) {
     }
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
     const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
-    auto refused = ChainRunner::create(
-        *ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4, .workgroup_size = kWorkgroupSize});
+    auto refused = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                        .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_FALSE(refused.has_value());
     std::printf("[GpuAirflowRunner] refused: %s\n", refused.error().context.c_str());
     EXPECT_EQ(refused.error().code, Code::capacity_exceeded);
+    EXPECT_TRUE(contains(refused.error().context, "runner_budget_bytes")) << refused.error().context;
     EXPECT_TRUE(contains(refused.error().context, "budget")) << refused.error().context;
     EXPECT_TRUE(contains(refused.error().context, std::to_string(each * count))) << refused.error().context;
-    EXPECT_TRUE(contains(refused.error().context, std::to_string(budget))) << refused.error().context;
+    EXPECT_TRUE(contains(refused.error().context, "reserve " + std::to_string(spade::airflow_gpu::kRunnerReserveBytes)))
+        << refused.error().context;
     EXPECT_EQ(spade::airflow_gpu::runner_memory_stats().allocations, before.allocations);
 }
 
@@ -350,9 +422,9 @@ TEST(GpuAirflowRunner, PushSizeOverTheLimitIsRefusedByName) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const RunnerLimits limits = spade::airflow_gpu::read_runner_limits(*ctx);
+    const DeviceLimits& limits = limits_of(*ctx);
 
-    const RunnerBuffer buffers[] = {{"a", 64, BufferKind::staged}, {"b", 64, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(64);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
     const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
 
@@ -385,12 +457,12 @@ TEST(GpuAirflowRunner, GroupsOverTheLimitAreRefusedByName) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const RunnerLimits limits = spade::airflow_gpu::read_runner_limits(*ctx);
+    const DeviceLimits& limits = limits_of(*ctx);
 
-    const RunnerBuffer buffers[] = {{"a", 256, BufferKind::staged}, {"b", 256, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(256);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
 
     std::size_t axis = 0;
@@ -402,7 +474,7 @@ TEST(GpuAirflowRunner, GroupsOverTheLimitAreRefusedByName) {
     }
     std::array<uint32_t, 3> groups{1, 1, 1};
     groups[axis] = limits.max_group_count[axis] + 1;
-    const ChainCommand too_wide[] = {dispatch(0, CountPush{64}, groups)};
+    const ChainCommand too_wide[] = {dispatch(0, count_push(64), groups)};
     const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
     auto refused = (*runner)->record(too_wide);
     ASSERT_FALSE(refused.has_value());
@@ -413,7 +485,7 @@ TEST(GpuAirflowRunner, GroupsOverTheLimitAreRefusedByName) {
     EXPECT_EQ((*runner)->chain_count(), 0u);
     EXPECT_EQ(spade::airflow_gpu::runner_memory_stats().allocations, before.allocations);
 
-    const ChainCommand fine[] = {dispatch(0, CountPush{64}, {1, 1, 1})};
+    const ChainCommand fine[] = {dispatch(0, count_push(64), {1, 1, 1})};
     auto id = (*runner)->record(fine);
     ASSERT_TRUE(id.has_value()) << id.error().context;
     EXPECT_EQ(*id, 0u);
@@ -425,13 +497,13 @@ TEST(GpuAirflowRunner, PipelineIndexOutOfRangeIsRefusedByName) {
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
-    const RunnerBuffer buffers[] = {{"a", 256, BufferKind::staged}, {"b", 256, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(256);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
 
-    const ChainCommand chain[] = {dispatch(0, CountPush{64}, {1, 1, 1}), dispatch(1, CountPush{64}, {1, 1, 1})};
+    const ChainCommand chain[] = {dispatch(0, count_push(64), {1, 1, 1}), dispatch(1, count_push(64), {1, 1, 1})};
     auto refused = (*runner)->record(chain);
     ASSERT_FALSE(refused.has_value());
     std::printf("[GpuAirflowRunner] refused: %s\n", refused.error().context.c_str());
@@ -447,11 +519,11 @@ TEST(GpuAirflowRunner, WorkgroupSizeWithoutAVariantIsRefusedByName) {
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
-    const RunnerBuffer buffers[] = {{"a", 256, BufferKind::staged}, {"b", 256, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(256);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
     const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
     auto refused = ChainRunner::create(
-        *ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4, .workgroup_size = 256});
+        *ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes, .workgroup_size = 256});
     ASSERT_FALSE(refused.has_value());
     std::printf("[GpuAirflowRunner] refused: %s\n", refused.error().context.c_str());
     EXPECT_EQ(refused.error().code, Code::invalid_argument);
@@ -480,13 +552,13 @@ TEST(GpuAirflowRunner, DurationsArePerMarkOrEmpty) {
                                families[ctx->compute_queue_family()].timestampValidBits > 0;
 
     constexpr uint32_t kCount = 1u << 16;
-    const RunnerBuffer buffers[] = {{"src", kCount * 4ull, BufferKind::staged}, {"dst", kCount * 4ull, BufferKind::staged}};
+    const std::vector<RunnerBuffer> buffers = copy_buffers(kCount * 4ull);
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy, &gen::kSpvVariants_airflow_add_one};
-    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = 4,
-                                                       .workgroup_size = kWorkgroupSize});
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize});
     ASSERT_TRUE(runner.has_value()) << runner.error().context;
 
-    const CountPush push{kCount};
+    const CountPush push = count_push(kCount);
     const uint32_t groups = groups_for(kCount, kWorkgroupSize);
     const ChainCommand marked[] = {mark(), dispatch(0, push, {groups, 1, 1}), mark(),
                                    dispatch(1, push, {groups, 1, 1}), mark()};
@@ -523,40 +595,92 @@ TEST(GpuAirflowRunner, DurationsArePerMarkOrEmpty) {
 // GpuAirflowRunnerTileSum -- A4
 // ===========================================================================
 
+// airflow_scalars' slots in this test (the solver's are [0] remove_mean's
+// sum, [1-7] CG's dots): each field's total in a slot of its own, every other
+// slot left at a sentinel, so a total written to the wrong slot shows.
+constexpr uint32_t kScalarSlots = 8;
+constexpr std::array<uint32_t, 2> kTotalSlot{3, 5};
+constexpr float kScalarSentinel = -12345.0f;
+
+// The fields airflow_tile_sum reads, by its push's `field`.
+constexpr std::array<const char*, 2> kFieldName{"airflow_pressure", "airflow_rhs"};
+
 struct TileSumRun {
-    float total = 0.0f;
-    std::vector<float> tiles;
+    std::array<std::vector<float>, 2> tiles;  // airflow_partials after each field's sum
+    std::vector<float> scalars;               // airflow_scalars after both
 };
 
-// The two-dispatch tile sum of `field` at `workgroup_size`.
-[[nodiscard]] TileSumRun run_tile_sum(VulkanContext& ctx, const std::vector<float>& field, uint32_t nx, uint32_t ny,
-                                      uint32_t nz, uint32_t workgroup_size) {
+// The two-dispatch tile sum of airflow_pressure (field 0), then of
+// airflow_rhs (field 1), at `workgroup_size`: one chain per field, each pass
+// 0 then pass 1 with the same push but for the pass, since airflow_partials
+// is shared by the reductions in turn.
+[[nodiscard]] TileSumRun run_tile_sum(VulkanContext& ctx, const std::array<std::vector<float>, 2>& fields,
+                                      uint32_t nx, uint32_t ny, uint32_t nz, uint32_t workgroup_size) {
     const uint32_t tiles = ((nx + 3) / 4) * ((ny + 3) / 4) * ((nz + 3) / 4);
-    const RunnerBuffer buffers[] = {{"field", field.size() * 4ull, BufferKind::staged},
-                                    {"tile_sums", tiles * 4ull, BufferKind::staged},
-                                    {"total", 4, BufferKind::staged}};
+    const uint32_t cells = nx * ny * nz;
+
+    // airflow_params: its dims, words 0-2 (engine/shaders/airflow_params_layout.slang),
+    // and nothing else this kernel reads.
+    std::vector<uint32_t> params(32, 0u);
+    params[0] = nx;
+    params[1] = ny;
+    params[2] = nz;
+
+    std::vector<RunnerBuffer> buffers = airflow_set(kPartials);
+    buffers[kParams] = {"airflow_params", params.size() * 4ull, BufferKind::staged};
+    buffers[kPressure] = {"airflow_pressure", cells * 4ull, BufferKind::staged};
+    buffers[kRhs] = {"airflow_rhs", cells * 4ull, BufferKind::staged};
+    buffers[kScalars] = {"airflow_scalars", kScalarSlots * 4ull, BufferKind::staged};
+    buffers[kPartials] = {"airflow_partials", tiles * 4ull, BufferKind::staged};
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_tile_sum};
     auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
-                                                      .push_bytes = sizeof(TileSumPush),
-                                                      .workgroup_size = workgroup_size});
+                                                      .push_bytes = kPushBytes, .workgroup_size = workgroup_size});
     EXPECT_TRUE(runner.has_value()) << runner.error().context;
     TileSumRun out;
-    out.tiles.assign(tiles, std::numeric_limits<float>::quiet_NaN());
-    out.total = std::numeric_limits<float>::quiet_NaN();
+    for (std::vector<float>& t : out.tiles) t.assign(tiles, std::numeric_limits<float>::quiet_NaN());
+    out.scalars.assign(kScalarSlots, std::numeric_limits<float>::quiet_NaN());
     if (!runner.has_value()) return out;
 
-    EXPECT_TRUE((*runner)->upload(0, bytes_of(field)).has_value());
-    const ChainCommand chain[] = {dispatch(0, TileSumPush{nx, ny, nz, 0}, {groups_for(tiles, workgroup_size), 1, 1}),
-                                  dispatch(0, TileSumPush{nx, ny, nz, 1}, {1, 1, 1})};
-    auto id = (*runner)->record(chain);
-    EXPECT_TRUE(id.has_value()) << id.error().context;
-    if (!id.has_value()) return out;
-    auto submitted = (*runner)->submit(*id, 1);
-    EXPECT_TRUE(submitted.has_value()) << submitted.error().context;
-    std::vector<float> total(1, 0.0f);
-    EXPECT_TRUE((*runner)->read(1, writable_bytes_of(out.tiles)).has_value());
-    EXPECT_TRUE((*runner)->read(2, writable_bytes_of(total)).has_value());
-    out.total = total[0];
+    const std::vector<float> sentinel(kScalarSlots, kScalarSentinel);
+    EXPECT_TRUE((*runner)->upload(kParams, bytes_of(params)).has_value());
+    EXPECT_TRUE((*runner)->upload(kPressure, bytes_of(fields[0])).has_value());
+    EXPECT_TRUE((*runner)->upload(kRhs, bytes_of(fields[1])).has_value());
+    EXPECT_TRUE((*runner)->upload(kScalars, bytes_of(sentinel)).has_value());
+
+    for (uint32_t field = 0; field < 2; ++field) {
+        const TileSumPush tiles_pass{.field = field, .pass = 0, .cell_count = cells, .slot = kTotalSlot[field]};
+        const TileSumPush total_pass{.field = field, .pass = 1, .cell_count = cells, .slot = kTotalSlot[field]};
+        const ChainCommand chain[] = {dispatch(0, tiles_pass, {groups_for(tiles, workgroup_size), 1, 1}),
+                                      dispatch(0, total_pass, {1, 1, 1})};
+        auto id = (*runner)->record(chain);
+        EXPECT_TRUE(id.has_value()) << id.error().context;
+        if (!id.has_value()) return out;
+        auto submitted = (*runner)->submit(*id, 1);
+        EXPECT_TRUE(submitted.has_value()) << submitted.error().context;
+        EXPECT_TRUE((*runner)->read(kPartials, writable_bytes_of(out.tiles[field])).has_value());
+    }
+    EXPECT_TRUE((*runner)->read(kScalars, writable_bytes_of(out.scalars)).has_value());
+    return out;
+}
+
+// One tile's own sum per tile, in airflow_partials' order: a tile is a
+// fixed_tile_sum_of over its own box, one tile, added to 0.
+[[nodiscard]] std::vector<float> cpu_tile_sums(const std::vector<float>& field, uint32_t nx, uint32_t ny,
+                                               uint32_t nz) {
+    std::vector<float> out;
+    for (uint32_t tk = 0; tk < nz; tk += 4) {
+        for (uint32_t tj = 0; tj < ny; tj += 4) {
+            for (uint32_t ti = 0; ti < nx; ti += 4) {
+                const uint32_t bx = std::min(4u, nx - ti);
+                const uint32_t by = std::min(4u, ny - tj);
+                const uint32_t bz = std::min(4u, nz - tk);
+                out.push_back(spade::physics::airflow::fixed_tile_sum_of<float>(
+                    bx, by, bz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t) {
+                        return field[(ti + i) + std::size_t{nx} * ((tj + j) + std::size_t{ny} * (tk + k))];
+                    }));
+            }
+        }
+    }
     return out;
 }
 
@@ -564,48 +688,54 @@ void check_tile_sum(uint32_t nx, uint32_t ny, uint32_t nz, uint64_t seed) {
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
 
+    // Two fields from two streams of the seed: what the kernel reads for
+    // field 0 and for field 1 differ in every cell, so reading the wrong one
+    // shows.
     const std::size_t cells = std::size_t{nx} * ny * nz;
-    SplitMix rng{seed};
-    std::vector<float> field(cells);
-    for (float& v : field) v = mixed_magnitude(rng.next());
+    std::array<std::vector<float>, 2> fields;
+    std::array<float, 2> cpu{};
+    std::array<std::vector<float>, 2> cpu_tiles;
+    for (uint32_t f = 0; f < 2; ++f) {
+        SplitMix rng{seed + f};
+        fields[f].resize(cells);
+        for (float& v : fields[f]) v = mixed_magnitude(rng.next());
 
-    // The CPU reference: the total, and each tile's own sum (a tile is a
-    // fixed_tile_sum_of over its own box, one tile, added to 0).
-    const float cpu = spade::physics::airflow::fixed_tile_sum(field, nx, ny, nz);
-    std::vector<float> cpu_tiles;
-    for (uint32_t tk = 0; tk < nz; tk += 4) {
-        for (uint32_t tj = 0; tj < ny; tj += 4) {
-            for (uint32_t ti = 0; ti < nx; ti += 4) {
-                const uint32_t bx = std::min(4u, nx - ti);
-                const uint32_t by = std::min(4u, ny - tj);
-                const uint32_t bz = std::min(4u, nz - tk);
-                cpu_tiles.push_back(spade::physics::airflow::fixed_tile_sum_of<float>(
-                    bx, by, bz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t) {
-                        return field[(ti + i) + std::size_t{nx} * ((tj + j) + std::size_t{ny} * (tk + k))];
-                    }));
-            }
-        }
+        // The CPU reference: the total, and each tile's own sum.
+        cpu[f] = spade::physics::airflow::fixed_tile_sum(fields[f], nx, ny, nz);
+        cpu_tiles[f] = cpu_tile_sums(fields[f], nx, ny, nz);
+
+        // The data is order-sensitive: the plain array-order sum differs, so
+        // a GPU that summed in any other order would show.
+        float plain = 0.0f;
+        for (const float v : fields[f]) plain += v;
+        EXPECT_NE(bits(plain), bits(cpu[f])) << "the test data does not tell orders apart; change the seed";
+        std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u %s: cpu=%.9g (0x%08x), array order=%.9g (0x%08x)\n", nx, ny,
+                    nz, kFieldName[f], static_cast<double>(cpu[f]), bits(cpu[f]), static_cast<double>(plain),
+                    bits(plain));
     }
+    EXPECT_NE(bits(cpu[0]), bits(cpu[1]));
 
-    // The data is order-sensitive: the plain array-order sum differs, so a GPU
-    // that summed in any other order would show.
-    float plain = 0.0f;
-    for (const float v : field) plain += v;
-    EXPECT_NE(bits(plain), bits(cpu)) << "the test data does not tell orders apart; change the seed";
-
-    std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u: cpu=%.9g (0x%08x), array order=%.9g (0x%08x)\n", nx, ny, nz,
-                static_cast<double>(cpu), bits(cpu), static_cast<double>(plain), bits(plain));
     for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {
-        const TileSumRun gpu = run_tile_sum(*ctx, field, nx, ny, nz, wg);
-        std::size_t tile_mismatches = 0;
-        for (std::size_t t = 0; t < cpu_tiles.size(); ++t) {
-            tile_mismatches += bits(gpu.tiles[t]) != bits(cpu_tiles[t]) ? 1u : 0u;
+        const TileSumRun gpu = run_tile_sum(*ctx, fields, nx, ny, nz, wg);
+        for (uint32_t f = 0; f < 2; ++f) {
+            std::size_t tile_mismatches = 0;
+            for (std::size_t t = 0; t < cpu_tiles[f].size(); ++t) {
+                tile_mismatches += bits(gpu.tiles[f][t]) != bits(cpu_tiles[f][t]) ? 1u : 0u;
+            }
+            const float total = gpu.scalars[kTotalSlot[f]];
+            std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u wg %u %s: gpu=%.9g (0x%08x) in slot %u, tiles %zu, "
+                        "tile mismatches=%zu\n",
+                        nx, ny, nz, wg, kFieldName[f], static_cast<double>(total), bits(total), kTotalSlot[f],
+                        cpu_tiles[f].size(), tile_mismatches);
+            EXPECT_EQ(bits(total), bits(cpu[f])) << kFieldName[f] << ", workgroup size " << wg;
+            EXPECT_EQ(tile_mismatches, std::size_t{0}) << kFieldName[f] << ", workgroup size " << wg;
         }
-        std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u wg %u: gpu=%.9g (0x%08x), tiles %zu, tile mismatches=%zu\n",
-                    nx, ny, nz, wg, static_cast<double>(gpu.total), bits(gpu.total), cpu_tiles.size(),
-                    tile_mismatches);
-        EXPECT_EQ(bits(gpu.total), bits(cpu)) << "workgroup size " << wg;
-        EXPECT_EQ(tile_mismatches, std::size_t{0}) << "workgroup size " << wg;
+        std::size_t disturbed = 0;
+        for (uint32_t s = 0; s < kScalarSlots; ++s) {
+            if (s == kTotalSlot[0] || s == kTotalSlot[1]) continue;
+            disturbed += bits(gpu.scalars[s]) != bits(kScalarSentinel) ? 1u : 0u;
+        }
+        EXPECT_EQ(disturbed, std::size_t{0}) << "a slot other than the two totals' was written, workgroup size " << wg;
     }
 }
 
@@ -652,7 +782,7 @@ struct OpCensus {
 TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     struct Kernel {
         const SpirvVariantSet& variants;
-        bool integer_only;
+        bool integer_only;  // no float arithmetic: integer work, or a copy's loads and stores
     };
     const Kernel kernels[] = {{gen::kSpvVariants_airflow_copy, true},
                               {gen::kSpvVariants_airflow_add_one, false},
@@ -713,6 +843,64 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
             }
         }
     }
+}
+
+
+// ===========================================================================
+// AirflowRunnerStaging -- the staging buffer's memory type, no device needed
+// ===========================================================================
+
+// A memory-properties table holding these types, in this order, on one heap.
+[[nodiscard]] VkPhysicalDeviceMemoryProperties memory_types(std::initializer_list<VkMemoryPropertyFlags> flags) {
+    VkPhysicalDeviceMemoryProperties props{};
+    props.memoryHeapCount = 1;
+    for (const VkMemoryPropertyFlags f : flags) {
+        props.memoryTypes[props.memoryTypeCount].propertyFlags = f;
+        props.memoryTypes[props.memoryTypeCount].heapIndex = 0;
+        ++props.memoryTypeCount;
+    }
+    return props;
+}
+
+// kStagingMemoryPreferences over the tables a device may report (each in
+// Vulkan's order: a type whose flags are a strict subset of another's comes
+// first): cached and coherent where the buffer may use it, else coherent, and
+// never a cached type that is not coherent.
+TEST(AirflowRunnerStaging, PrefersCachedCoherentThenCoherentNeverCachedAlone) {
+    using spade::airflow_gpu::choose_memory_type;
+    using spade::airflow_gpu::kStagingMemoryPreferences;
+    constexpr VkMemoryPropertyFlags kDevice = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    constexpr VkMemoryPropertyFlags kCoherent =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    constexpr VkMemoryPropertyFlags kCachedCoherent = kCoherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    constexpr VkMemoryPropertyFlags kCachedOnly =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+    // A discrete GPU's table (the 3060 Ti's shape): device-local, coherent,
+    // cached coherent, and the device-local host-visible window.
+    const VkPhysicalDeviceMemoryProperties desktop =
+        memory_types({kDevice, kCoherent, kCachedCoherent, kDevice | kCoherent});
+    EXPECT_EQ(choose_memory_type(desktop, 0xFu, kStagingMemoryPreferences), std::optional<uint32_t>{2u});
+    // The buffer may not use the cached type: the coherent one.
+    EXPECT_EQ(choose_memory_type(desktop, 0xBu, kStagingMemoryPreferences), std::optional<uint32_t>{1u});
+
+    // No cached type: the first coherent one, not the device-local window.
+    const VkPhysicalDeviceMemoryProperties uncached = memory_types({kDevice, kCoherent, kDevice | kCoherent});
+    EXPECT_EQ(choose_memory_type(uncached, 0x7u, kStagingMemoryPreferences), std::optional<uint32_t>{1u});
+
+    // A cached type that is not coherent is passed over for a coherent one.
+    const VkPhysicalDeviceMemoryProperties cached_alone = memory_types({kDevice, kCachedOnly, kCoherent});
+    EXPECT_EQ(choose_memory_type(cached_alone, 0x7u, kStagingMemoryPreferences), std::optional<uint32_t>{2u});
+
+    // An integrated GPU's table (the Iris Plus's shape: every type device-local).
+    const VkPhysicalDeviceMemoryProperties integrated =
+        memory_types({kDevice, kDevice | kCoherent, kDevice | kCachedCoherent});
+    EXPECT_EQ(choose_memory_type(integrated, 0x7u, kStagingMemoryPreferences), std::optional<uint32_t>{2u});
+
+    // Nothing host-visible and coherent that the buffer may use: none.
+    const VkPhysicalDeviceMemoryProperties none = memory_types({kDevice, kCachedOnly});
+    EXPECT_FALSE(choose_memory_type(none, 0x3u, kStagingMemoryPreferences).has_value());
+    EXPECT_FALSE(choose_memory_type(desktop, 0x1u, kStagingMemoryPreferences).has_value());
 }
 
 }  // namespace
