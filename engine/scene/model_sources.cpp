@@ -221,6 +221,13 @@ constexpr std::string_view kHeader =
     return k;
 }
 
+// The order rule's words, the writer's and the reader's alike: `kind` came
+// after `before`, which kPartOrder puts first (or they are the same kind).
+[[nodiscard]] std::string out_of_order(PartKind kind, PartKind before) {
+    return "parts lists the " + kind_text(kind) + " after the " + kind_text(before) +
+           ": the order is prop, motor, esc, battery, each kind at most once";
+}
+
 [[nodiscard]] Result<void> check_parts(const std::vector<PinnedPart>& parts) {
     for (std::size_t i = 0; i < parts.size(); ++i) {
         const std::size_t k = order_of(parts[i].kind);
@@ -231,9 +238,7 @@ constexpr std::string_view kHeader =
         }
         const std::string kind = kind_text(parts[i].kind);
         if (i > 0 && k <= order_of(parts[i - 1].kind)) {
-            return std::unexpected(invalid("parts lists the " + kind + " after the " +
-                                           kind_text(parts[i - 1].kind) +
-                                           ": the order is prop, motor, esc, battery, each kind at most once"));
+            return std::unexpected(invalid(out_of_order(parts[i].kind, parts[i - 1].kind)));
         }
         if (parts[i].file.empty()) return std::unexpected(invalid("parts." + kind + ".file must not be empty"));
     }
@@ -431,12 +436,23 @@ void append_texts(std::string& out, std::string_view key, const std::vector<std:
     if (Result<void> r = yaml_text::check_map(*parts, "parts", {"prop", "motor", "esc", "battery"}, kSchema); !r) {
         return std::unexpected(r.error());
     }
+    // In the file's own order, so parts out of the writer's order are refused
+    // at the key that breaks it, in check_parts()'s words, never reordered: a
+    // sidecar read and written back is the sidecar read. check_map() has
+    // already refused an unknown or repeated kind.
     std::vector<PinnedPart> out;
-    for (const PartKind kind : kPartOrder) {
-        const std::string name = kind_text(kind);
-        const YAML::Node node = (*parts)[name];
-        if (!node.IsDefined()) continue;
-        Result<PinnedFile> pinned = read_pinned(node, "parts." + name);
+    for (YAML::const_iterator it = parts->begin(); it != parts->end(); ++it) {
+        const std::string name = it->first.as<std::string>();
+        std::size_t k = 0;
+        while (k < kPartOrder.size() && kind_text(kPartOrder[k]) != name) ++k;
+        if (k == kPartOrder.size()) {
+            return std::unexpected(marked(invalid("parts." + name + " is not a kind"), it->first));
+        }
+        const PartKind kind = kPartOrder[k];
+        if (!out.empty() && k <= order_of(out.back().kind)) {
+            return std::unexpected(marked(invalid(out_of_order(kind, out.back().kind)), it->first));
+        }
+        Result<PinnedFile> pinned = read_pinned(it->second, "parts." + name);
         if (!pinned) return std::unexpected(pinned.error());
         out.push_back(PinnedPart{kind, std::move(pinned->file), pinned->hash});
     }
