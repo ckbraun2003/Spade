@@ -240,7 +240,7 @@ struct LiveRun::Impl {
     LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
-    uint32_t test_cg_cap = 0;  // a test's CG cap, 0 for unset; never saved
+    uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -516,7 +516,10 @@ Result<void> LiveRun::step(const Controls& controls) {
 
     // The fluid.
     af::FluidConfig fluid = r.fluid;
-    if (r.test_cg_cap != 0) fluid.cg_cap = r.test_cg_cap;
+    if (r.test_max_iterations != 0 && r.solids.any) {
+        fluid.n_v = r.test_max_iterations;
+        fluid.cg_cap = r.test_max_iterations;
+    }
     const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, fluid, r.scratch);
     if (health.fault != af::FluidFault::none) {
         r.fault = "the fluid faulted at step " + std::to_string(r.state.steps + 1) + ": " +
@@ -610,7 +613,8 @@ std::string LiveRun::run_line() const {
 
 std::string LiveRun::pressure_line() const {
     const af::FluidConfig& f = impl_->fluid;
-    return solids_health_line(impl_->solids, std::max(f.n_v, impl_->test_cg_cap != 0 ? impl_->test_cg_cap : f.cg_cap));
+    const uint32_t limit = impl_->test_max_iterations;
+    return solids_health_line(impl_->solids, limit != 0 && impl_->solids.any ? limit : std::max(f.n_v, f.cg_cap));
 }
 
 const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
@@ -620,7 +624,7 @@ void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) 
     impl_->test_nudge_context = context;
 }
 
-void LiveRun::set_test_cg_cap(uint32_t cap) noexcept { impl_->test_cg_cap = cap; }
+void LiveRun::set_test_solids_max_iterations(uint32_t n) noexcept { impl_->test_max_iterations = n; }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 

@@ -184,8 +184,8 @@ class LiveRun {
 
     // solids_health_line() for this run, its cap the one the solve runs to:
     // the larger of the CG's floor and its cap (pcg clamps a cap to its
-    // floor). "" while every step's pressure converged. The airflow view's
-    // status line shows it in the warning tone.
+    // floor), or the test's limit. "" while every step's pressure converged.
+    // The airflow view's status line shows it in the warning tone.
     [[nodiscard]] std::string pressure_line() const;
 
     // The controls flown so far, a point wherever they changed: the live
@@ -220,12 +220,15 @@ class LiveRun {
     using TestIncrementNudge = void (*)(void* context, std::span<float> du, std::span<float> dv, std::span<float> dw);
     void set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept;
 
-    // FOR TESTS ONLY: the solids CG's cap (FluidConfig::cg_cap), passed
-    // straight to each fluid step so a test can force a capped solve (P2d;
-    // the lead, 2026-10-22). No host sets it. 0, the default, unsets it: the
-    // cap is kSolidsCgCap and a run is the same to the bit. It is not saved:
-    // a restored run starts unset.
-    void set_test_cg_cap(uint32_t cap) noexcept;
+    // FOR TESTS ONLY: at most `n` CG iterations per solids step, so a test can
+    // force a capped solve (P2d; the lead's ruling, 2026-10-22). In a run with
+    // solids it sets each fluid step's FluidConfig::cg_cap AND n_v (the CG's
+    // floor) to `n`, passed straight to fluid_step: pcg clamps a cap to its
+    // floor, and at the floor of 8 every case a test can size converges
+    // (~1e-6). A run without solids is left alone (there n_v is plan A's
+    // V-cycles). No host sets it. 0, the default, unsets it: a run is the same
+    // to the bit. It is not saved: a restored run starts unset.
+    void set_test_solids_max_iterations(uint32_t n) noexcept;
 
   private:
     struct Impl;
