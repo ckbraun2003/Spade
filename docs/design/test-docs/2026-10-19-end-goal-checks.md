@@ -104,14 +104,22 @@ LiveRun, drone held (design decision 1), until P2b.
     - a disc misplaced by more than its slipstream's radius (about 0.73R at 2R below);
     - a thrust off by ×2 or more, where the true bias is 10% or less.
   - **C8's band where it holds, as C8q (approved by the lead, 2026-10-19: an opt-in validation record, run in a quiet window):**
-    - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
+    - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above. It runs on `LiveRun`, the stepping core behind the editor's airflow chapter.
+      - **Air's viscosity, not inviscid** (Physics, 2026-10-22, before any run). ν is the case's 1.46e-5 m²/s: the case refuses ν ≤ 0, and this is the editor's real value. The cell Reynolds number is about 5300, effectively inviscid, and C8's 10% is unchanged. The record states ν as a difference from C8, ruled immaterial before the run: viscous spreading reaches about 0.05R by 0.5 s, and the probe disc's edge sits about 0.23R inside the slipstream.
+      - **The model's parts cleared: no solids** (Physics, 2026-10-22, before any run). This is what the editor's airflow chapter flies (`sandbox/airflow_live.hpp`), and it keeps C8's bare-disc premise. With the body in the grid, the 10% wouldn't hold as a validation claim:
+        - the motor and arm shadow about 20% of each probe disc;
+        - the body sits 0.66 dx under the inboard 11% of each disc;
+        - with solids the pressure solve is MGPCG, not plan A's;
+        - C8 at +6.0% leaves only 4% of headroom.
+
+        The body-in case stays with `downwash` (±25%). One body-in run, report only and with no band, may run in a quiet window. A band ever set from it is a regression band (it catches change), never a validation band (01).
     - The band: each rotor within C8's 10%, and the four within 10% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the mutual band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run).
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`. The record also reports the observed mutual spread, (max − min) / mean of the four rotors' means, as a number. Any later tightening is then set in advance from evidence: for example, a run at a 0.5 s window with its band fixed before it runs (the lead, 2026-10-19).
     - **Its verdict is an ensemble's** (the lead, 2026-10-22, before its first run; 01-verification, "A case judged past its horizon"; `2026-10-22-c8-spread.md`). The window lies past the wake's horizon `T_p`, so one run is one trajectory, and on C8 a 1-ulp nudge moved a one-run verdict across the band.
-      - Four runs that differ only by a nudge in the test, as C8's: run 0 as it is, and three with 1 ulp up on 110 of the discs' increments, each from its own seed, all fixed before the first run.
+      - Four runs that differ only by a nudge in the test, as C8's: run 0 as it is, and three with 1 ulp up on 110 of the discs' increments, each from its own seed, all fixed before the first run. The nudge goes in through `LiveRun::set_test_increment_nudge()`, a test-only hook that is never saved and leaves an unset run the same to the bit (the lead's grant, on Interface's review, 2026-10-22).
       - Four, not C8's eight, because each run is about 35 minutes. On C8 the 0.5R disc's spread across 16 runs was an sd of 0.38% (`2026-10-22-c8-spread.md`), against a 10% band.
       - Both bands must hold on the ensemble's mean (each rotor's mean over the four runs) and on the worst run. The record reports each rotor's spread across the runs.
-    - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release, per run. It's saved and restored across 10-minute chunks.
+    - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release, per run. That is an estimate: two steps are timed in one short job before the ensemble's job is sized (the lead, 2026-10-22). A run is restored from its save only after a stop.
     - Falling outside 10% is a finding for Physics, not a change to the band.
 - **downwash-present** (on screen, 32³), the cheap a-priori check on the live view. For each rotor i:
   - The point, measure, reference, premise, development and window are `downwash`'s, at the live region's R/dx, which must be 2 or more.
