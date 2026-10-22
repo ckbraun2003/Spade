@@ -647,6 +647,10 @@ void library(ed::EditorPanels& p) {
         if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
     const auto row = [&p](std::size_t i) {
+        if (!ed::placeable(p.library[i])) {  // a part: inspect-only (INT-14)
+            ImGui::TextDisabled("%s (built into a drone)", p.library[i].name.c_str());
+            return;
+        }
         ImGui::PushID(static_cast<int>(i));
         const bool armed = p.armed && *p.armed == i;
         if (ui::list_row(p.library[i].name.c_str(), armed)) {

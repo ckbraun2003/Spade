@@ -3,7 +3,10 @@
 //
 // THE PANEL lists Core's default library (assets/library/library.yaml,
 // scene::load_library()) in its index's order, grouped by category (INT-14).
-// An entry that won't load is named, and the rest still load. Load from file
+// An entry that won't load is named, and the rest still load. A part (a
+// motor, prop, ESC or battery: index v2, Core's L2) is read against the
+// library's sources registry and listed inspect-only: it is built into a
+// drone, never placed on its own. Load from file
 // reads a *.model.yaml or *.object.yaml by its extension, as the index does.
 // The built-in items -- the quadrotor template (the sandbox stand's airframe)
 // and the unit primitives, as the builder makes them -- left the panel; the
@@ -46,6 +49,7 @@
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
+#include "scene/part_file.hpp"
 #include "scene/scene_file.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
@@ -57,12 +61,13 @@
 namespace spade::sandbox::editor {
 
 struct LibraryItem {
-    enum class Kind { model, asset };
+    enum class Kind { model, asset, part };
     Kind kind = Kind::asset;
     std::string name;                          // what the panel shows
     std::optional<vehicles::ModelType> model;  // set for a model: a model file's, its chain included
     std::optional<scene::SceneAsset> asset;    // set for an asset: an object file's object
     std::vector<MaterialDesc> materials{};     // an object file's own materials
+    std::optional<scene::PartFile> part{};     // set for a part, its sources (grades) included
     std::string category{};                    // the index's, or "from file"; empty for a built-in
     std::string file{};                        // as the index spells it, or the path loaded from
     std::string source{};                      // the path placing reads; empty for a built-in
@@ -127,6 +132,12 @@ struct LibraryItem {
     return "assets";
 }
 
+// Whether place() takes `item`: a model or an asset, not a part.
+[[nodiscard]] inline bool placeable(const LibraryItem& item) {
+    return (item.kind == LibraryItem::Kind::model && item.model) ||
+           (item.kind == LibraryItem::Kind::asset && item.asset);
+}
+
 // A library's items in its index's order, and what would not load, verbatim:
 // the index (then there are no items), or each entry that won't (Core's
 // refusal names it: "library entry '<name>': ...").
@@ -178,8 +189,9 @@ namespace detail {
 
 }  // namespace detail
 
-// Every entry of the index at `index`, loaded (load_library_model() or
-// load_library_object()).
+// Every entry of the index at `index`, loaded (load_library_model(),
+// load_library_object(), or load_library_part() against the sources
+// registry, read once when the first part needs it).
 [[nodiscard]] inline LibraryLoad load_library_items(const std::filesystem::path& index) {
     LibraryLoad out;
     const Result<scene::Library> library = scene::load_library(index);
@@ -187,9 +199,23 @@ namespace detail {
         out.problems.push_back(library.error().context);
         return out;
     }
+    std::optional<Result<scene::SourceRegistry>> registry;
     for (const scene::LibraryEntry& e : library->entries) {
         LibraryItem item;
-        if (e.kind == scene::LibraryKind::model) {
+        if (e.kind != scene::LibraryKind::model && e.kind != scene::LibraryKind::object) {
+            if (!registry) {
+                registry = scene::load_library_sources(*library);
+                if (!*registry) out.problems.push_back((*registry).error().context);
+            }
+            if (!*registry) continue;  // named once, above
+            Result<scene::PartFile> f = scene::load_library_part(*library, e, **registry);
+            if (!f) {
+                out.problems.push_back(f.error().context);
+                continue;
+            }
+            item.kind = LibraryItem::Kind::part;
+            item.part = std::move(*f);
+        } else if (e.kind == scene::LibraryKind::model) {
             const Result<scene::ModelFile> f = scene::load_library_model(*library, e);
             if (!f) {
                 out.problems.push_back(f.error().context);
@@ -305,6 +331,11 @@ inline void add_scene_files(std::vector<SceneSource>& out, const std::filesystem
 // pose. A file's item goes through Core (AddModelFile, AddObjectFile), named
 // as its file's model or object is. Nothing changes on a refusal.
 [[nodiscard]] inline Result<std::string> place(SceneDocument& doc, const LibraryItem& item, const SdfPose& at) {
+    if (item.kind == LibraryItem::Kind::part) {
+        const std::string_view what = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
+        return std::unexpected(Error{Code::invalid_argument, "place '" + item.name + "': a " + std::string(what) +
+                                                                 " is built into a drone, not placed on its own"});
+    }
     if (item.kind == LibraryItem::Kind::asset) {
         if (!item.asset) {
             return std::unexpected(
