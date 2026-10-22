@@ -10,10 +10,11 @@
 // one invocation in apply_axis()'s order, low then high, so a one-cell axis,
 // whose high end copies the low end's new value, gives the CPU's result.
 //
-// Reads airflow_params (the dims and face kinds); reads and writes airflow_u,
-// airflow_v or airflow_w (set 1, bindings.slang section F). The fixed normal
-// velocities and the ambient's component are the host's
-// (fixed_normal_velocity(), bc.ambient), in the push.
+// Reads airflow_params (the dims, the face kinds and the face block: a side's
+// fixed normal velocity is face_velocity(side, axis), the host's
+// fixed_normal_velocity(), and the ambient's component ambient_velocity(axis));
+// reads and writes airflow_u, airflow_v or airflow_w (set 1, bindings.slang
+// section F).
 //
 // PARITY. Copies, selects, host values and the outlets' two sign tests: no
 // arithmetic, so the kernel is apply_velocity_boundaries()'s bit for bit where
@@ -26,15 +27,12 @@ import layouts;
 import bindings;
 import airflow_params_layout;
 
+// The airflow push convention: 16 bytes, the count in word 2.
 struct VelocityBcPush {
-    uint axis;      // 0 x (u), 1 y (v), 2 z (w)
-    uint count;     // the lines: the plane across the axis
-    uint fixed_lo;  // fixed_normal_velocity() of the axis' minus side (float bits)
-    uint fixed_hi;  // and of its plus side
-    uint ambient;   // bc.ambient[axis] (float bits)
-    uint unused0;
+    uint axis;   // 0 x (u), 1 y (v), 2 z (w)
     uint unused1;
-    uint unused2;
+    uint count;  // the lines: the plane across the axis
+    uint unused3;
 };
 
 [[vk::push_constant]] ConstantBuffer<VelocityBcPush> velocity_bc_push;
@@ -77,20 +75,20 @@ void airflow_velocity_bc(uint3 tid : SV_DispatchThreadID) {
     const uint b = t / m1;
     const uint klo = face_kind(2u * axis);
     const uint khi = face_kind(2u * axis + 1u);
-    const float amb = asfloat(velocity_bc_push.ambient);
+    const float amb = ambient_velocity(axis);
     if (klo == kFacePeriodic) {
         store(axis, sample_index(axis, n, a, b), load(axis, sample_index(axis, 0u, a, b)));
         return;
     }
     if (klo == kFaceFixedVelocity) {
-        store(axis, sample_index(axis, 0u, a, b), asfloat(velocity_bc_push.fixed_lo));
+        store(axis, sample_index(axis, 0u, a, b), face_velocity(2u * axis, axis));
     } else {
         float copy = load(axis, sample_index(axis, 1u, a, b));
         if (copy > 0.0) copy = amb;  // into the box through the minus face: refused
         store(axis, sample_index(axis, 0u, a, b), copy);
     }
     if (khi == kFaceFixedVelocity) {
-        store(axis, sample_index(axis, n, a, b), asfloat(velocity_bc_push.fixed_hi));
+        store(axis, sample_index(axis, n, a, b), face_velocity(2u * axis + 1u, axis));
     } else {
         float copy = load(axis, sample_index(axis, n - 1u, a, b));
         if (copy < 0.0) copy = amb;  // into the box through the plus face: refused

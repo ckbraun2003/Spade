@@ -94,28 +94,24 @@ enum Buffer : uint32_t {
 enum Pipeline : uint32_t { kBcPipeline = 0, kViscousPipeline = 1 };
 
 // The kernels' push blocks (airflow_velocity_bc.slang's VelocityBcPush,
-// airflow_viscous.slang's ViscousPush).
+// airflow_viscous.slang's ViscousPush): the airflow convention, 16 bytes with
+// the count in word 2.
 struct VelocityBcPush {
     uint32_t axis = 0;
+    uint32_t unused1 = 0;
     uint32_t count = 0;
-    uint32_t fixed_lo = 0;
-    uint32_t fixed_hi = 0;
-    uint32_t ambient = 0;
-    uint32_t unused[3] = {};
+    uint32_t unused3 = 0;
 };
 
 struct ViscousPush {
     uint32_t component = 0;
     uint32_t mode = 0;  // 0 prepare, 1 sweep, 2 alias
-    uint32_t colour = 0;
     uint32_t count = 0;
-    uint32_t alpha = 0;
-    uint32_t unused[3] = {};
-    uint32_t ghost[6] = {};
+    uint32_t colour = 0;
 };
 
-constexpr uint32_t kPushBytes = sizeof(ViscousPush);
-static_assert(sizeof(VelocityBcPush) <= kPushBytes);
+constexpr uint32_t kPushBytes = 16;
+static_assert(sizeof(VelocityBcPush) == kPushBytes && sizeof(ViscousPush) == kPushBytes);
 
 constexpr uint32_t kWorkgroupSize = 64;
 constexpr uint32_t kSweeps = 8;  // FluidConfig's visc_sweeps
@@ -172,9 +168,11 @@ struct SplitMix {
             std::size_t{s.nx} * s.ny * (s.nz + 1u)};
 }
 
-// airflow_params: dims, grid {dx, 1/dx, h}, periodic, the flags and the face
-// kinds (airflow_params_layout.slang); the rest unread here.
-[[nodiscard]] std::vector<uint32_t> params_for(const af::GridShape& s, const af::DomainBc& bc, bool solids) {
+// airflow_params: dims, grid {dx, 1/dx, h}, periodic, the flags, the face
+// kinds and the face block (airflow_params_layout.slang), the block at word 32
+// since no level table is laid out here; the rest unread here.
+[[nodiscard]] std::vector<uint32_t> params_for(const af::GridShape& s, const af::DomainBc& bc, bool solids,
+                                               float alpha) {
     std::vector<uint32_t> p(32, 0u);
     p[0] = s.nx;
     p[1] = s.ny;
@@ -187,6 +185,14 @@ struct SplitMix {
     p[16] = solids ? 3u : 0u;  // kParamsFlagSolids | kParamsFlagTheta
     const std::array<af::FaceKind, 6> kinds = af::face_kinds(bc);
     for (uint32_t side = 0; side < 6; ++side) p[18 + side] = static_cast<uint32_t>(kinds[side]);
+    p[27] = 32u;
+    p.push_back(bits(alpha));
+    for (uint32_t side = 0; side < 6; ++side) {
+        // A wall's own velocity; otherwise the ambient (an inflow's ghost).
+        const glm::vec3 v = bc.face[side] == af::FaceBc::wall ? bc.wall_velocity[side] : bc.ambient;
+        for (uint32_t c = 0; c < 3; ++c) p.push_back(bits(v[static_cast<glm::length_t>(c)]));
+    }
+    for (uint32_t c = 0; c < 3; ++c) p.push_back(bits(bc.ambient[static_cast<glm::length_t>(c)]));
     return p;
 }
 
@@ -232,17 +238,11 @@ struct PackedSolids {
 }
 
 // The velocity conditions: apply_axis() per axis, one invocation per line.
-[[nodiscard]] std::vector<ChainCommand> bc_chain(const af::GridShape& s, const af::DomainBc& bc, uint32_t wg) {
+[[nodiscard]] std::vector<ChainCommand> bc_chain(const af::GridShape& s, uint32_t wg) {
     std::vector<ChainCommand> chain;
     const uint32_t lines[3] = {s.ny * s.nz, s.nx * s.nz, s.nx * s.ny};
     for (uint32_t axis = 0; axis < 3; ++axis) {
-        const auto lo = static_cast<af::Side>(2u * axis);
-        const auto hi = static_cast<af::Side>(2u * axis + 1u);
-        VelocityBcPush push{.axis = axis,
-                            .count = lines[axis],
-                            .fixed_lo = bits(af::fixed_normal_velocity(bc, lo)),
-                            .fixed_hi = bits(af::fixed_normal_velocity(bc, hi)),
-                            .ambient = bits(bc.ambient[static_cast<glm::length_t>(axis)])};
+        const VelocityBcPush push{.axis = axis, .count = lines[axis]};
         ChainCommand cmd{.is_dispatch = true, .pipeline = kBcPipeline};
         std::memcpy(cmd.push.data(), &push, sizeof push);
         cmd.groups = {(push.count + wg - 1u) / wg, 1u, 1u};
@@ -253,8 +253,8 @@ struct PackedSolids {
 
 // diffuse(): per component, prepare, then colour 0 and 1 `sweeps` times, then
 // the periodic alias face; with `marks`, a timestamp either side.
-[[nodiscard]] std::vector<ChainCommand> viscous_chain(const af::GridShape& s, const af::DomainBc& bc, float alpha,
-                                                      uint32_t sweeps, uint32_t wg, bool marks = false) {
+[[nodiscard]] std::vector<ChainCommand> viscous_chain(const af::GridShape& s, const af::DomainBc& bc, uint32_t sweeps,
+                                                      uint32_t wg, bool marks = false) {
     std::vector<ChainCommand> chain;
     if (marks) chain.push_back(ChainCommand{});
     const std::array<bool, 3> periodic = af::periodic_axes(bc);
@@ -266,14 +266,7 @@ struct PackedSolids {
     };
     for (uint32_t c = 0; c < 3; ++c) {
         const uint32_t cnt[3] = {s.nx + (c == 0u ? 1u : 0u), s.ny + (c == 1u ? 1u : 0u), s.nz + (c == 2u ? 1u : 0u)};
-        ViscousPush base{.component = c, .alpha = bits(alpha)};
-        for (uint32_t side = 0; side < 6; ++side) {
-            // A wall's own velocity; an inflow's ambient (read only where the
-            // side's kind is fixed_velocity).
-            base.ghost[side] = bits(bc.face[side] == af::FaceBc::wall
-                                        ? bc.wall_velocity[side][static_cast<glm::length_t>(c)]
-                                        : bc.ambient[static_cast<glm::length_t>(c)]);
-        }
+        const ViscousPush base{.component = c};
         ViscousPush prepare = base;
         prepare.mode = 0u;
         prepare.count = cnt[0] * cnt[1] * cnt[2];
@@ -301,13 +294,13 @@ struct PackedSolids {
 // Runs `chain` on the device from `in` (and `solids`, packed), and returns the
 // velocity it leaves. With `best_ms`, the chain's time, the fastest of five.
 [[nodiscard]] std::optional<af::MacGrid> run_on_gpu(VulkanContext& ctx, const af::MacGrid& in,
-                                                    const af::DomainBc& bc, const af::SolidField* solids,
+                                                    const af::DomainBc& bc, float alpha, const af::SolidField* solids,
                                                     const std::vector<ChainCommand>& chain, uint32_t wg,
                                                     double* best_ms = nullptr) {
     const auto n = face_counts(in.shape);
     const std::size_t total = n[0] + n[1] + n[2];
     const bool walls = solids != nullptr && solids->any;
-    const std::vector<uint32_t> params = params_for(in.shape, bc, walls);
+    const std::vector<uint32_t> params = params_for(in.shape, bc, walls, alpha);
     const PackedSolids packed = walls ? pack(*solids) : PackedSolids{};
     const auto size_of = [](const auto& v) { return std::max<std::size_t>(4u, v.size() * 4u); };
     const RunnerBuffer buffers[kBufferCount] = {
@@ -526,7 +519,7 @@ TEST(GpuAirflowViscous, VelocityBoundariesMatchTheCpuBitForBit) {
             const spade::math::ScopedFlushSubnormals flush;  // the step's mode
             af::apply_velocity_boundaries(cpu, c.bc);
         }
-        const auto gpu = run_on_gpu(*ctx, start, c.bc, nullptr, bc_chain(c.shape, c.bc, kWorkgroupSize),
+        const auto gpu = run_on_gpu(*ctx, start, c.bc, alpha_of(c.shape), nullptr, bc_chain(c.shape, kWorkgroupSize),
                                     kWorkgroupSize);
         ASSERT_TRUE(gpu.has_value());
         const std::size_t d = differing(*gpu, cpu);
@@ -549,9 +542,8 @@ TEST(GpuAirflowViscous, DiffuseMatchesTheCpuBitForBit) {
         const af::MacGrid start = noisy(c.shape, 0xD1FFull, 1.0f);
         const af::MacGrid cpu = diffuse_on_cpu(start, c.bc, nullptr);
         ASSERT_GT(differing(cpu, start), 0u) << "diffuse() changed nothing";
-        const auto gpu = run_on_gpu(*ctx, start, c.bc, nullptr,
-                                    viscous_chain(c.shape, c.bc, alpha_of(c.shape), kSweeps, kWorkgroupSize),
-                                    kWorkgroupSize);
+        const auto gpu = run_on_gpu(*ctx, start, c.bc, alpha_of(c.shape), nullptr,
+                                    viscous_chain(c.shape, c.bc, kSweeps, kWorkgroupSize), kWorkgroupSize);
         ASSERT_TRUE(gpu.has_value());
         const std::size_t d = differing(*gpu, cpu);
         std::printf("[ viscous ] %-28s diffuse: %zu of %zu faces differ\n", c.name, d, faces_of(cpu));
@@ -584,9 +576,8 @@ TEST(GpuAirflowViscous, DiffuseWithSolidsMatchesTheCpuBitForBit) {
         ASSERT_GT(linked, 0u);
         const af::MacGrid start = noisy(c.shape, 0x501Dull, 1.0f);
         const af::MacGrid cpu = diffuse_on_cpu(start, c.bc, &f);
-        const auto gpu = run_on_gpu(*ctx, start, c.bc, &f,
-                                    viscous_chain(c.shape, c.bc, alpha_of(c.shape), kSweeps, kWorkgroupSize),
-                                    kWorkgroupSize);
+        const auto gpu = run_on_gpu(*ctx, start, c.bc, alpha_of(c.shape), &f,
+                                    viscous_chain(c.shape, c.bc, kSweeps, kWorkgroupSize), kWorkgroupSize);
         ASSERT_TRUE(gpu.has_value());
         const std::size_t d = differing(*gpu, cpu);
         std::printf("[ viscous ] %-28s %zu fixed, %zu linked of %zu faces (%zu links); %zu differ\n", c.name, fixed,
@@ -609,8 +600,7 @@ TEST(GpuAirflowViscous, SameBitsAtEveryWorkgroupSize) {
     std::optional<af::MacGrid> first;
     for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {
         SCOPED_TRACE("workgroup size " + std::to_string(wg));
-        auto gpu = run_on_gpu(*ctx, start, c.bc, &f, viscous_chain(c.shape, c.bc, alpha_of(c.shape), kSweeps, wg),
-                              wg);
+        auto gpu = run_on_gpu(*ctx, start, c.bc, alpha_of(c.shape), &f, viscous_chain(c.shape, c.bc, kSweeps, wg), wg);
         ASSERT_TRUE(gpu.has_value());
         if (!first) {
             first = std::move(gpu);
@@ -642,9 +632,8 @@ TEST(GpuAirflowViscous, DiffuseTimeInTheD1Box) {
     const float alpha = 1.4607e-5f * 3.8e-4f / (kD1.dx * kD1.dx);
     const af::MacGrid start = noisy(kD1, 0xD1ull, 3.0f);
     double ms = 0.0;
-    ASSERT_TRUE(run_on_gpu(*ctx, start, bc, nullptr, viscous_chain(kD1, bc, alpha, kSweeps, kWorkgroupSize, true),
-                           kWorkgroupSize, &ms)
-                    .has_value());
+    const auto chain = viscous_chain(kD1, bc, kSweeps, kWorkgroupSize, true);
+    ASSERT_TRUE(run_on_gpu(*ctx, start, bc, alpha, nullptr, chain, kWorkgroupSize, &ms).has_value());
     std::printf("measure: diffuse in the D1 box, 240x177x168 at 4 mm, %u sweeps per component: %.3f ms\n", kSweeps,
                 ms);
 }

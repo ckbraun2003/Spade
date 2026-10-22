@@ -16,17 +16,27 @@
 //   24     b_coef          rho * dx * dx / h                       float
 //   25     g_coef          h / (rho * dx)                          float
 //   26     inv_count       remove_mean's 1 / count                 float
-//   27-31  free
+//   27     off_face_block  in words, into airflow_params: the face block below
+//   28-31  free (B5's amendment claims them)
 //   32-    the level table: level l at 32 + 12 l,
 //          {nx, ny, nz, off_p, off_b, off_r, off_w0, off_w1, off_w2, weighted, 0, 0}
+//   then   the face block, at word 27's offset, 22 floats (B3's viscosity and
+//          velocity conditions; Rendering, 2026-10-22, Physics confirmed):
+//          {alpha, face_velocity[3 side + c] for side -x, +x, -y, +y, -z, +z
+//          and c = x, y, z, ambient[c]}. alpha is diffuse()'s nu h / (dx dx);
+//          a side's face velocity is its wall's wall_velocity for a wall and
+//          the ambient otherwise (an inflow's ghost; an outlet's is unread),
+//          so fixed_normal_velocity(side) is face_velocity(side, axis).
 //
 // APPEND-ONLY. A word, once given a meaning, keeps it: words 0-16 are already
 // coded against (Rendering's B3 and B6). A new scalar takes a free word in
 // 27-31; past those, the table moves only by a new layout with its own name.
 //
 // THE FLOAT WORDS ARE THE HOST'S (TD-9): inv_dx is 1.0f / dx, and b_coef,
-// g_coef and inv_count are the CPU's own expressions (projection.cpp's b_coef
-// and g_coef, remove_mean's inv_count), computed once on the host and uploaded.
+// g_coef, inv_count and alpha are the CPU's own expressions (projection.cpp's
+// b_coef and g_coef, remove_mean's inv_count, viscous.cpp's alpha, computed
+// under the step's flush as the CPU computes it), computed once on the host
+// and uploaded.
 // No kernel recomputes them, so a kernel and its CPU twin multiply by the same
 // bits.
 //
@@ -73,6 +83,14 @@ uint face_kind(uint side) { return airflow_params[18 + side]; }
 float b_coef() { return asfloat(airflow_params[24]); }
 float g_coef() { return asfloat(airflow_params[25]); }
 float mean_inv_count() { return asfloat(airflow_params[26]); }
+
+// --- word 27 and the face block ------------------------------------------------
+
+uint offset_face_block() { return airflow_params[27]; }
+float viscous_alpha() { return asfloat(airflow_params[airflow_params[27]]); }
+// side: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z; c: 0 x, 1 y, 2 z.
+float face_velocity(uint side, uint c) { return asfloat(airflow_params[airflow_params[27] + 1u + 3u * side + c]); }
+float ambient_velocity(uint c) { return asfloat(airflow_params[airflow_params[27] + 19u + c]); }
 
 // --- the level table ---------------------------------------------------------
 

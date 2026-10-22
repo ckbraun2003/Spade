@@ -3,7 +3,8 @@
 // viscosity on the GPU: engine/physics/airflow/viscous.cpp's
 // diffuse_component(), term for term (its CPU twin and the authority for every
 // expression). (I - alpha L) x = x0 by red-black Gauss-Seidel, component by
-// component, alpha = nu h / dx^2 the host's.
+// component, alpha = nu h / dx^2 the host's (airflow_params' face block, with
+// the sides' face velocities that the fixed sides' ghosts take).
 //
 // One component per dispatch, in three modes:
 //   mode 0, prepare: per face, a fixed sample (closed theta or phi < 0) takes
@@ -44,40 +45,17 @@ import bindings;
 import airflow_params_layout;
 import fp32_math;
 
+// The airflow push convention: 16 bytes, the count in word 2.
 struct ViscousPush {
-    uint component;   // 0 u, 1 v, 2 w
-    uint mode;        // 0 prepare, 1 sweep, 2 alias
-    uint colour;      // mode 1: 0 red, 1 black
-    uint count;       // the invocations the mode needs
-    uint alpha;       // the host's nu h / dx^2 (float bits)
-    uint unused0;
-    uint unused1;
-    uint unused2;
-    // Per side (-x, +x, -y, +y, -z, +z), the ghost value a fixed-velocity
-    // side gives this component: a wall's wall_velocity[side][c], an inflow's
-    // ambient[c] (float bits). Scalars, not an array: no layout rule can pad
-    // them.
-    uint ghost0;
-    uint ghost1;
-    uint ghost2;
-    uint ghost3;
-    uint ghost4;
-    uint ghost5;
+    uint component;  // 0 u, 1 v, 2 w
+    uint mode;       // 0 prepare, 1 sweep, 2 alias
+    uint count;      // the invocations the mode needs
+    uint colour;     // mode 1: 0 red, 1 black
 };
 
 [[vk::push_constant]] ConstantBuffer<ViscousPush> viscous_push;
 
 static const uint kNoWallLinks = 0xFFFFFFFFu;  // physics/airflow/solids.hpp's
-
-float ghost(uint side) {
-    const uint g = side == 0u ? viscous_push.ghost0
-                 : side == 1u ? viscous_push.ghost1
-                 : side == 2u ? viscous_push.ghost2
-                 : side == 3u ? viscous_push.ghost3
-                 : side == 4u ? viscous_push.ghost4
-                              : viscous_push.ghost5;
-    return asfloat(g);
-}
 
 // --- component c's samples ---------------------------------------------------
 
@@ -153,7 +131,7 @@ void relax(uint c, uint i, uint j, uint k) {
     const bool periodic_c = axis_periodic(c);
     // The periodic alias face, or a boundary face the velocity conditions hold.
     if (periodic_c ? own == n[c] : (own == 0u || own == n[c])) return;
-    const float alpha = asfloat(viscous_push.alpha);
+    const float alpha = viscous_alpha();
     float sum = 0.0;
     float diag = 1.0;
     float extra = 0.0;
@@ -194,7 +172,7 @@ void relax(uint c, uint i, uint j, uint k) {
                 }
             } else if (kind == kFaceFixedVelocity) {  // a wall's no slip or an inflow: the ghost 2 U - x
                 diag += 2.0 * alpha;
-                extra += 2.0 * alpha * ghost(side);
+                extra += 2.0 * alpha * face_velocity(side, c);
             }  // an outlet: the zero-gradient ghost, no term
         }
     }
