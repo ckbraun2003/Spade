@@ -767,11 +767,14 @@ Result<PartFile> part_from_yaml(std::string_view text, PartKind kind) {
 
 Result<void> check_part_sources(const PartFile& part, const SourceRegistry& registry) {
     const std::string kind(part_kind_name(part_kind(part)));
-    const PartSources& sources = std::visit([](const auto& p) -> const PartSources& { return p.sources; }, part);
-    for (const FieldSource& s : sources) {
-        if (Result<void> r = check_source_ref(registry, s.ref, kind + "." + s.field); !r) return r;
-    }
-    return {};
+    return std::visit(
+        [&](const auto& p) -> Result<void> {
+            for (const FieldSource& s : p.sources) {
+                if (Result<void> r = check_source_ref(registry, s.ref, kind + "." + s.field); !r) return r;
+            }
+            return {};
+        },
+        part);
 }
 
 Result<PartFile> load_part_file(const std::filesystem::path& path, const SourceRegistry& registry) {
