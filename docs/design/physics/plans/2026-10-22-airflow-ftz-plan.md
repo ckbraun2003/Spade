@@ -215,6 +215,34 @@ Each test is shown red under its named mutation by mutate-and-undo. New tests go
 - **The hand-restore mutation** goes inside the noinline body. The wrapper has only one return.
 - **The wall load's moment** is tested about a box corner. About the sphere's centre it is 0 even unguarded, since the arm lies along the area vector.
 
+## Results (2026-10-22)
+
+Tasks 0-5 are done at `39d9a0a`, on Core's C0 (`d0899ee`, merged as `824c492`).
+
+- **The TD-1 list is empty.** No golden, pin or record moved.
+  - The release CPU suite passes 2400 of 2400, with 13 opt-in or environment skips.
+  - The 14 opt-in records print the same lines as their last blocks. Two differ, and neither from this branch: C1 32×32 names its tolerance differently, and C0 prints four more lines (plan A's residual, added 2026-10-21).
+  - `BitPortability*:M1B*` pass, 13 of 13.
+- **The new pin.** `AirflowFtz.TheTinyLidDigestIsPinned` holds `0xe2b5d178b90aba65`: the tiny lid (L = 1e-30) for 16 steps, FNV over u, v, w and p. It was made on MSVC release, and Task 0's emulated scope gave the same value.
+  - The `-NoSeed` gcc leg on `39d9a0a` passes: "docker-leg: exit 0, PASS", 0 failed of 2397. It prints the same digest. MSVC and gcc agree.
+- **The cause reads.** A scratch replica of the no-solids step read MXCSR's DE and UE around every step, with no scope.
+  - `kSolverCoreDigest`'s cavity (64 steps), C1 at Re 100 on 32² (1280 steps) and on 128² (10240 steps) raise neither flag in any step. No step ends with a subnormal.
+  - The guarded and unguarded runs are bit-identical at every step. A lid of U = 1 makes no subnormal: cells the sweeps have not reached stay exactly 0. So the flush cannot move these pins.
+  - C8 was measured unchanged before (`991b5e6`). D1 is not re-run; its next run carries the shift.
+- **The mutations.** Each test went red under its named mutation. Each mutation was then undone, and Core's header is unchanged.
+  - Scope removed, no restore: the step leaves 6361 subnormals; the disc's du, dv and dw hold 340, 336 and 340; the wall force is `0xBCC`; the digest is `0x010b593c983c26ef`.
+  - Core's OR word (`saved | 0x8040`): the word inside is `0xBFC1`, and an RC-down caller changes the step's digest.
+  - FTZ only (`0x9F80`), with a hand restore before the body's last return: "DAZ to normal" reads `0x01000000`; the poisoned and ill-posed returns leave `0x9FC0`; so does publish's refused return.
+  - DAZ only (`0x1FC0`): the lower row reads `0x00800000`.
+  - A process-wide "set once" flag: the worker reads `0x1F80` inside, and its digest differs from the main thread's.
+  - Task 4's expected bits taken outside the scope (IEEE gradual): 12 rows red on the 3060 Ti.
+  - The scope under `_MSC_VER` only, on a gcc leg (a scratch branch, deleted): "docker-leg: exit 1, FAIL". All ten `AirflowFtz` tests are red and nothing else is. The tiny-lid digest is `0x010b593c983c26ef`; one step leaves 6361 subnormals; the disc's du, dv and dw hold 340, 336 and 340; the wall force is `0xBCC`; the word inside is the caller's.
+- **The GPU tier** at `39d9a0a`. `ctest -L gpu` fails nothing: 170 of 181 pass, and 11 skip by name (opt-in measurements and the poster).
+  - B2's projection (6 tests), B3's advection (4; no value differs), B4's gather (2) and B6's publish (3) pass. B5 has no GPU test yet.
+  - C8's GPU gather in the CPU step (opt-in, run from the binary) passes all five judgements. Its downwash is 8.0068 m/s, and it leaves the CPU's run at step 169, not before 141.
+  - `GpuDenormProbe` passes 2 of 2, the edge test included.
+- **Task 6.** The §4.5 amendment is in the spec, with the after-rounding sentence: no divergence is left at the edge. The Summary, §4.6 and the GPU plan's constraints say the same.
+
 ## TD-1 candidates
 
 F8's table is the list. Every row marked "likely", "possible" or "unlikely" is run in Task 5. The rows marked "not exposed" (frame goldens, scenario goldens) and "cannot fail" (self-comparisons) are not. The live smoke is a video and pins nothing.
