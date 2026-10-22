@@ -28,7 +28,8 @@ THE RULE (reviewed by Physics, 2026-10-22; the plan's Rulings):
           prop's name.
   checks  Reported, never applied: the run's first two points extrapolated to
           J = 0 against the static C_T and C_P (a warning above 10%), and the
-          computed hover rpm against the published one (above 20%).
+          computed hover rpm against the published one (above 20%), where one
+          is published (null where none is).
 
 HASHES AND PROVENANCE. FNV-1a 64 of each file read, CRLF read as LF so a
 Windows checkout and the leg agree. The header stamps the tool's and the props
@@ -160,7 +161,9 @@ def resample(prop, uiuc_dir, sources):
     diameter = float(field(prop, "diameter_m", pid))
     mass = float(field(drone, "mass_kg", pid + ".drone"))
     rotors = int(field(drone, "rotors", pid + ".drone"))
-    published = float(field(drone, "published_hover_rpm", pid + ".drone"))
+    # The cross-check figure, or null where none is published.
+    published = field(drone, "published_hover_rpm", pid + ".drone")
+    published = None if published is None else float(published)
 
     static_name = field(prop, "static", pid)
     static_path = os.path.join(uiuc_dir, static_name)
@@ -236,7 +239,7 @@ def resample(prop, uiuc_dir, sources):
         "run_rpm": run_rpm,
         "hover_rpm": hover_rpm,
         "published_hover_rpm": published,
-        "hover_diff": (hover_rpm - published) / published,
+        "hover_diff": None if published is None else (hover_rpm - published) / published,
         "ct_static": ct0,
         "cq_static": cp0 / (2 * math.pi),
         "ct_table": ct_table,
@@ -267,7 +270,7 @@ def warnings_of(r):
     if stepped(r):
         out.append(f"{r['id']}: the static-to-run step at J = 0 is {pct(r['step_ct'])} on C_T and "
                    f"{pct(r['step_cp'])} on C_P (above 10%): review it")
-    if abs(r["hover_diff"]) > HOVER_WARN:
+    if r["hover_diff"] is not None and abs(r["hover_diff"]) > HOVER_WARN:
         out.append(f"{r['id']}: the computed hover rpm {r['hover_rpm']:.0f} differs from the published "
                    f"{r['published_hover_rpm']:g} rpm ({r['drone'].get('published_source', '')}) by "
                    f"{pct(r['hover_diff'])}: check the mass, the prop or the figure")
@@ -322,8 +325,11 @@ def emit_prop(r):
     else:
         lines += comment(f"run {r['run_file']} at {r['run_rpm']:g} rpm, the nearest to the hover rpm "
                          f"{r['hover_rpm']:.0f} computed for {who}.")
-    hover = f"published hover {r['published_hover_rpm']:g} rpm ({drone.get('published_source', '')})"
-    if abs(r["hover_diff"]) > HOVER_WARN:
+    if r["hover_diff"] is None:
+        hover = "no published hover rpm to cross-check"
+    else:
+        hover = f"published hover {r['published_hover_rpm']:g} rpm ({drone.get('published_source', '')})"
+    if r["hover_diff"] is not None and abs(r["hover_diff"]) > HOVER_WARN:
         hover = (f"FLAG: the computed hover rpm differs from the published {r['published_hover_rpm']:g} rpm "
                  f"({drone.get('published_source', '')}) by {pct(r['hover_diff'])}")
     lines += comment(hover + ".")

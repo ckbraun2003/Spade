@@ -16,8 +16,8 @@ namespace spade::test::library_props {
 // FNV-1a 64 of the tool and of its props table, CRLF read as LF.
 // tests/test_library_props.cpp recomputes both from the source tree, so an
 // edit to either without re-running the tool fails the suite.
-inline constexpr std::uint64_t kToolHash = 0xf1dd50a02db56e49ull;   // resample_uiuc.py
-inline constexpr std::uint64_t kPropsHash = 0xdecdefd3d2e750e7ull;  // props.json
+inline constexpr std::uint64_t kToolHash = 0x5ee29dd510da108full;   // resample_uiuc.py
+inline constexpr std::uint64_t kPropsHash = 0x8149bc7ac4eab078ull;  // props.json
 
 // A file the tool read: its name, FNV-1a 64 (CRLF read as LF) and SHA-256,
 // and where it came from. The UIUC files are not committed, so these are
@@ -273,7 +273,7 @@ inline constexpr std::array<Input, 3> syn_b_inputs{{
 //   static only: no wind-tunnel run. C_T and C_Q are the static run's at the
 //   hover rpm 9999 computed for synthetic C (0.00711 kg, 4 rotors, D 0.047 m);
 //   the tables are empty.
-//   published hover 10000 rpm (synthetic).
+//   no published hover rpm to cross-check.
 //   grade note: static only: no wind-tunnel run
 inline constexpr std::array<std::array<double, 2>, 0> syn_c_ct{};
 inline constexpr std::array<std::array<double, 2>, 0> syn_c_cq{};
