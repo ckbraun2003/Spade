@@ -118,9 +118,10 @@ struct Library {
 // the entries; `dir` is not written, since it is where the text is saved. It
 // reads back through library_from_yaml() to entries equal field for field, or
 // it is refused (invalid_argument, "library_to_yaml: " then the entry's
-// dotted path): every entry the reader refuses, with the reader's own
-// diagnostic (its line and column the written text's), and an entry whose
-// kind is not its file's extension's.
+// dotted path): every entry the reader refuses, in the reader's own words
+// less their line and column (the written text's, which the caller never
+// sees), and an entry whose kind is not its file's extension's. internal if
+// the reader itself fails on the text.
 [[nodiscard]] Result<std::string> library_to_yaml(const Library& library);
 
 // Reads the index at `path` and runs library_from_yaml(), then checks the

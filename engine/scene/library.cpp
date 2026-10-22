@@ -241,7 +241,9 @@ constexpr std::string_view kWrittenHeader =
     for (const LibraryEntry& e : library.entries) {
         if (is_part(e.kind) || part_kind_of(e.file)) parts = true;
     }
-    // Version 2 is the one that added the part kinds.
+    // Version 2 is the one that added the part kinds. A later version is a
+    // new choice here: say which entries need it.
+    static_assert(kLibraryVersion == 2, "library_to_yaml() writes versions 1 and 2 only: review it");
     const uint32_t version = parts ? 2 : 1;
     std::string out(kWrittenHeader);
     out += "\nlibrary_version: " + dec(version) + "\n";
@@ -257,6 +259,26 @@ constexpr std::string_view kWrittenHeader =
         if (!e.thumbnail.empty()) out += "    thumbnail: " + yaml_text::quote_yaml(e.thumbnail) + "\n";
     }
     return out;
+}
+
+// `context` less a trailing " (line N, column M)" (yaml_text::mark_of): the
+// writer's refusals name the entry's dotted path, not a line of text the
+// caller never sees.
+[[nodiscard]] std::string without_mark(std::string context) {
+    const std::size_t open = context.rfind(" (line ");
+    if (open == std::string::npos || !context.ends_with(')')) return context;
+    const std::string_view mark = std::string_view(context).substr(open + 7, context.size() - open - 8);
+    const std::size_t comma = mark.find(", column ");
+    if (comma == std::string_view::npos || comma == 0 || comma + 9 >= mark.size()) return context;
+    const auto digits = [](std::string_view s) {
+        for (const char ch : s) {
+            if (ch < '0' || ch > '9') return false;
+        }
+        return true;
+    };
+    if (!digits(mark.substr(0, comma)) || !digits(mark.substr(comma + 9))) return context;
+    context.resize(open);
+    return context;
 }
 
 // yaml-cpp reports every syntax failure by throwing; nothing may leave a Spade
@@ -309,7 +331,9 @@ Result<std::string> library_to_yaml(const Library& library) {
     // here in the reader's own words, its rules in one place (TD-9), and it
     // must hold the same entries.
     const Result<Library> back = parse_text(text);
-    if (!back) return std::unexpected(Error{back.error().code, "library_to_yaml: " + back.error().context});
+    if (!back) {
+        return std::unexpected(Error{back.error().code, "library_to_yaml: " + without_mark(back.error().context)});
+    }
     if (back->entries.size() != library.entries.size()) {
         return std::unexpected(Error{Code::internal, "library_to_yaml: " + dec(library.entries.size()) +
                                                          " entries read back as " + dec(back->entries.size())});
