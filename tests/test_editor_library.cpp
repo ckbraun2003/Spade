@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <variant>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "../sandbox/editor_library.hpp"
 #include "editor_test_support.hpp"
 #include "scene/library.hpp"
+#include "scene/part_file.hpp"
 #include "scene/model_file.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
@@ -437,4 +439,90 @@ TEST(EditorLibraryFiles, AFileThatWontReadIsRefusedNamingItAndNothingChanges) {
     ASSERT_FALSE(model.has_value());
     EXPECT_NE(model.error().context.find("no/such.model.yaml"), std::string::npos) << model.error().context;
     EXPECT_EQ(support::text_of(doc.desc()), before);
+}
+
+// ===========================================================================
+// PARTS (library index v2, Core's L2; INT-14). A motor, prop, ESC or battery
+// entry is read through load_library_part() against the library's sources
+// registry, listed in its own category, and inspect-only: it is built into a
+// drone, never placed on its own.
+// ===========================================================================
+
+namespace {
+
+// Test/Docs' motor (tests/test_part_file.cpp), citing `source` for its kv.
+[[nodiscard]] std::string motor_text(std::string_view source) {
+    return "part_version: 1\n"
+           "motor:\n"
+           "  kv: 960\n"
+           "  resistance: 0.1\n"
+           "  no_load_current: 0.5\n"
+           "  no_load_voltage: 10\n"
+           "  current_max: 20\n"
+           "  pole_pairs: 7\n"
+           "  inductance: 0\n"
+           "  rotor_inertia: 1e-05\n"
+           "  stator: \"2312\"\n"
+           "  mass: 0.055\n"
+           "  shape: {kind: cylinder, size: [0.014, 0.025, 0]}\n"
+           "sources:\n"
+           "  kv: {source: \"" + std::string(source) + "\", grade: retailer}\n"
+           "  resistance: {grade: assumed, note: \"typical of a 2312 motor\"}\n"
+           "  no_load_current: {grade: assumed, note: \"typical\"}\n"
+           "  no_load_voltage: {grade: assumed, note: \"typical\"}\n"
+           "  current_max: {grade: assumed, note: \"typical\"}\n"
+           "  pole_pairs: {grade: assumed, note: \"12N14P\"}\n"
+           "  inductance: {grade: assumed, note: \"dropped\"}\n"
+           "  rotor_inertia: {grade: assumed, note: \"typical\"}\n"
+           "  mass: {source: \"retail_phantom3_parts\", grade: retailer, note: \"55 g\"}\n"
+           "  shape: {grade: assumed, note: \"a 28 mm bell\"}\n";
+}
+
+// A version-2 library in `dir`: the box, then a motor citing `source`.
+void write_parts_library(const std::filesystem::path& dir, std::string_view source) {
+    std::filesystem::copy_file(library_file("primitives/box.object.yaml"), dir / "box.object.yaml");
+    std::filesystem::copy_file(library_file("sources.yaml"), dir / "sources.yaml");
+    support::write_bytes(dir / "m2312.motor.yaml", motor_text(source));
+    support::write_bytes(dir / "library.yaml",
+                         "library_version: 2\n"
+                         "entries:\n"
+                         "  - {name: \"Box\", category: \"primitives\", file: \"box.object.yaml\"}\n"
+                         "  - {name: \"2312 motor\", category: \"motors\", file: \"m2312.motor.yaml\"}\n");
+}
+
+}  // namespace
+
+TEST(EditorLibraryFiles, APartIsListedInItsCategoryAndIsNeverPlaced) {
+    support::TempDir tmp;
+    write_parts_library(tmp.path(), "retail_phantom3_parts");
+    const ed::LibraryLoad load = ed::load_library_items(tmp.path() / "library.yaml");
+    EXPECT_TRUE(load.problems.empty()) << load.problems.front();
+    ASSERT_EQ(load.items.size(), 2u);
+    const ed::LibraryItem& motor = load.items[1];
+    EXPECT_EQ(motor.name, "2312 motor");
+    EXPECT_EQ(motor.kind, ed::LibraryItem::Kind::part);
+    EXPECT_EQ(ed::panel_category(motor), "motors");
+    ASSERT_TRUE(motor.part.has_value());
+    EXPECT_TRUE(std::holds_alternative<sc::MotorPart>(*motor.part));
+    EXPECT_FALSE(ed::placeable(motor));
+    EXPECT_TRUE(ed::placeable(load.items[0]));
+
+    ed::SceneDocument doc = hover_document();
+    const std::string before = support::text_of(doc.desc());
+    const Result<std::string> placed = ed::place(doc, motor, pose_at(glm::vec3(1.0f, 0.0f, 0.0f)));
+    ASSERT_FALSE(placed.has_value());
+    EXPECT_NE(placed.error().context.find("built into a drone"), std::string::npos) << placed.error().context;
+    EXPECT_EQ(support::text_of(doc.desc()), before);
+}
+
+// A part citing a source the registry doesn't list is load_library_part()'s
+// refusal, named; the rest still load.
+TEST(EditorLibraryFiles, APartCitingAnUnlistedSourceIsNamedAndTheRestStillLoad) {
+    support::TempDir tmp;
+    write_parts_library(tmp.path(), "nowhere_listed");
+    const ed::LibraryLoad load = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(load.items.size(), 1u);
+    EXPECT_EQ(load.items[0].name, "Box");
+    ASSERT_EQ(load.problems.size(), 1u);
+    EXPECT_NE(load.problems[0].find("'2312 motor'"), std::string::npos) << load.problems[0];
 }
