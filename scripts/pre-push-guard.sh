@@ -41,6 +41,12 @@
 
 set -e
 
+# A BROKEN PIPE IS STILL A REFUSAL. `git push ... | head` closes the reader while
+# this hook is still printing its list; the next write raises SIGPIPE, and on Git
+# for Windows a hook killed by a signal let the push through (2026-10-22: a push
+# piped into head exported 22 commits). The trap turns that signal into exit 1.
+trap 'exit 1' PIPE
+
 remote_name="$1"
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha>
