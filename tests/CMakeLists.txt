@@ -272,6 +272,8 @@ add_executable(spade_tests
 # GpuAirflowRunner* on the device, AirflowRunnerSpirv on the host.
 # test_gpu_airflow_projection.cpp (plan B, B2): the multigrid projection on the
 # runner against plan A's CPU projection, GpuAirflowProjection* on the device.
+# test_gpu_airflow_advection.cpp (plan B, B3): the advection kernel against
+# advect.cpp, GpuAirflowAdvection* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -286,6 +288,7 @@ if(SPADE_VULKAN)
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_airflow_projection.cpp
+        test_gpu_airflow_advection.cpp
     )
 endif()
 

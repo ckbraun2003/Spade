@@ -40,6 +40,7 @@
 
 import layouts;
 import bindings;
+import airflow_params_layout;
 
 struct AdvectionPush {
     uint component;   // 0 u, 1 v, 2 w
@@ -49,23 +50,6 @@ struct AdvectionPush {
 };
 
 [[vk::push_constant]] ConstantBuffer<AdvectionPush> advection_push;
-
-// --- airflow_params, as Physics lays it out (uint words; a float by asfloat).
-// Physics freezes it as a shared struct when B1 resumes, keeping these 16
-// words in place and only appending; these accessors are the one place that
-// changes then.
-//   uint4  dims           {nx, ny, nz, 0}
-//   float4 grid           {dx, inv_dx, h, 0}
-//   uint4  periodic       {px, py, pz, 0}
-//   uint4  offsets_advect {hat, lo, hi, faces_total}, in floats
-uint3 grid_dims() { return uint3(airflow_params[0], airflow_params[1], airflow_params[2]); }
-float grid_dx() { return asfloat(airflow_params[4]); }
-float grid_inv_dx() { return asfloat(airflow_params[5]); }
-float step_h() { return asfloat(airflow_params[6]); }
-bool axis_periodic(uint a) { return airflow_params[8 + a] != 0u; }
-uint offset_hat() { return airflow_params[12]; }
-uint offset_lo() { return airflow_params[13]; }
-uint offset_hi() { return airflow_params[14]; }
 
 // --- the grid's sampling geometry (advect.cpp's Geometry) ------------------
 

@@ -53,6 +53,10 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict)
 spade_slang_kernel_variants(spade_airflow_runner airflow_mg_prolong)
 spade_slang_kernel_variants(spade_airflow_runner airflow_remove_mean)
 
+# B3's advection kernel, advect.cpp term for term
+# (tests/test_gpu_airflow_advection.cpp).
+spade_slang_kernel_variants(spade_airflow_runner airflow_advection)
+
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
 # build-order edge, and not the link to spade::compute).
