@@ -84,7 +84,7 @@ MotorBlock BasicQuadParams::default_motor() {
     m.current_max = 40.0;
     m.pole_pairs = 7.0;
     m.inductance = 0.0;
-    m.rotor_inertia = 1.0e-5;
+    m.rotor_inertia = 2.7e-6;
     m.stator = "2306";
     m.mass = 0.032;
     m.shape = BlockShape{PartShape::cylinder, glm::dvec3(0.0145, 0.019, 0.0), glm::dmat3(0.0)};
@@ -268,7 +268,7 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"motor.current_max", "typical of a 2306 motor"},
         {"motor.pole_pairs", "12N14P"},
         {"motor.inductance", "dropped (0)"},
-        {"motor.rotor_inertia", "typical of a 2306 bell and shaft"},
+        {"motor.rotor_inertia", "the same bell estimate as the 2207s (Physics, 2026-10-22)"},
         {"motor.mass", "typical of a 2306 motor"},
         {"motor.shape", "a 29 x 19 mm bell"},
         {"prop.diameter", "a 6-inch propeller"},

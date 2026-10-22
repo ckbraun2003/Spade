@@ -1,0 +1,24 @@
+part_version: 1
+motor:
+  kv: 920
+  resistance: 0.12
+  no_load_current: 0.4
+  no_load_voltage: 10
+  current_max: 15
+  pole_pairs: 7
+  inductance: 0
+  rotor_inertia: 3e-06
+  stator: "2212"
+  mass: 0.055
+  shape: {kind: cylinder, size: [0.014, 0.024, 0]}
+sources:
+  kv: {source: "retail_iris_plus", grade: retailer}
+  resistance: {grade: assumed, note: "typical 2212 920 KV"}
+  no_load_current: {grade: assumed, note: "typical 2212 920 KV, at 10 V"}
+  no_load_voltage: {grade: assumed, note: "the usual no-load test voltage"}
+  current_max: {grade: assumed, note: "typical 2212 on 3S"}
+  pole_pairs: {grade: assumed, note: "12N14P"}
+  inductance: {grade: assumed, note: "not modelled"}
+  rotor_inertia: {grade: assumed, note: "18 g bell at 13 mm"}
+  mass: {grade: assumed, note: "typical 2212 with leads"}
+  shape: {grade: assumed, note: "28 x 24 mm bell"}

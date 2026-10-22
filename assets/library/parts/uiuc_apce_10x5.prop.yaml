@@ -1,0 +1,56 @@
+part_version: 1
+prop:
+  diameter: 0.2388
+  pitch: 0.127
+  blades: 2
+  inertia: 0
+  ct_static: 0.09635567375886525
+  cq_static: 0.005869995503936827
+  ct_table:
+    - [0, 0.09635567375886525]
+    - [0.05, 0.09407440218414612]
+    - [0.1, 0.09179313060942698]
+    - [0.15, 0.08855172413793103]
+    - [0.2, 0.0834]
+    - [0.25, 0.07532592592592594]
+    - [0.3, 0.0644]
+    - [0.35, 0.0535551724137931]
+    - [0.4, 0.045246153846153846]
+    - [0.45, 0.03713529411764706]
+    - [0.5, 0.028542307692307693]
+    - [0.55, 0.020042424242424244]
+  cq_table:
+    - [0, 0.005869995503936827]
+    - [0.05, 0.005955751179983015]
+    - [0.1, 0.006041506856029204]
+    - [0.15, 0.006151612955576051]
+    - [0.2, 0.006191127286274728]
+    - [0.25, 0.0060691084965709425]
+    - [0.3, 0.005655093437941226]
+    - [0.35, 0.0051011903311695425]
+    - [0.4, 0.0046399787255252565]
+    - [0.45, 0.004143645753674876]
+    - [0.5, 0.0035632343220689338]
+    - [0.55, 0.0029670339693980002]
+  mass: 0.013
+  blade:
+    r_over_r: [0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1]
+    c_over_r: [0.13, 0.149, 0.173, 0.189, 0.197, 0.201, 0.2, 0.194, 0.186, 0.174, 0.16, 0.145, 0.128, 0.112, 0.096, 0.081, 0.061, 0.041]
+    beta_deg: [32.76, 37.19, 33.54, 29.25, 25.64, 22.54, 20.27, 18.46, 17.05, 15.97, 14.87, 14.09, 13.39, 12.84, 12.25, 11.37, 10.19, 8.99]
+    hub_cutout: 0.15
+    airfoil: "unknown"
+sources:
+  diameter: {source: "nasa_ames_2016", grade: measured, note: "9.4 in"}
+  pitch: {source: "retail_phantom3_parts", grade: retailer, note: "5.0 in, as UIUC's 10x5; the 9450's listings give 4.5 or 5.0 in"}
+  blades: {source: "uiuc_propdb", grade: measured}
+  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  ct_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
+  cq_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
+  ct_table: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
+  cq_table: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
+  mass: {grade: assumed, note: "typical 9-10 in moulded prop"}
+  blade.r_over_r: {source: "uiuc_propdb", grade: derived, note: "UIUC geometry at 9.4 in"}
+  blade.c_over_r: {source: "uiuc_propdb", grade: derived, note: "UIUC geometry at 9.4 in"}
+  blade.beta_deg: {source: "uiuc_propdb", grade: derived, note: "UIUC geometry at 9.4 in"}
+  blade.hub_cutout: {source: "uiuc_propdb", grade: derived, note: "the first station"}
+  blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}
