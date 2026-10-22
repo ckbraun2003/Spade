@@ -1159,6 +1159,7 @@ struct Options {
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
     uint32_t subnormal_scan = 0;  // --subnormal-scan N: D1's subnormal scan, N steps of two runs; no film
+    uint32_t subnormal_locate = 0;  // --subnormal-locate N: what raises them, N steps of one run; no film
     fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
 };
@@ -1376,6 +1377,8 @@ int main(int argc, char** argv) {
             opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--subnormal-scan") {
             opt.subnormal_scan = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--subnormal-locate") {
+            opt.subnormal_locate = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--from-save") {
             opt.from_save = value();
         } else if (arg == "--grid") {
@@ -1433,6 +1436,7 @@ int main(int argc, char** argv) {
         if (!lc) return fail(lc.error());
         if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
         if (opt.subnormal_scan > 0u) return subnormal_scan(*lc, opt.subnormal_scan, opt.from_save, opt.out);
+        if (opt.subnormal_locate > 0u) return subnormal_locate(*lc, opt.subnormal_locate, opt.from_save);
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
         auto film = case_film(std::move(*lc), frames,

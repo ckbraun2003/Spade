@@ -36,6 +36,11 @@ target_compile_definitions(flow_movie PRIVATE GLFW_INCLUDE_NONE
 if(WIN32)
     target_compile_definitions(flow_movie PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
+# flow_movie.map beside the exe: --subnormal-locate names fault addresses
+# from it (the release build keeps no PDB).
+if(MSVC)
+    target_link_options(flow_movie PRIVATE /MAP)
+endif()
 
 # The smoke test: two frames of a small case through GL, ffmpeg and the
 # captions, at 640x360. A box with no display or no ffmpeg skips (77).

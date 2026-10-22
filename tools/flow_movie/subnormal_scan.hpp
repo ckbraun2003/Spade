@@ -30,4 +30,14 @@ namespace flow_movie {
 [[nodiscard]] int subnormal_scan(const LiveCase& lc, uint32_t steps, const std::filesystem::path& from_save,
                                  const std::filesystem::path& work_dir);
 
+// What raises them (the lead: is it the body's update or the fluid?). One
+// run, from rest or the save, with MXCSR's DE and UE exceptions unmasked in
+// step(): a vectored handler records the first instruction of each kind a
+// step faults on and the calls under it (unwound from the fault), masks that
+// kind and lets the instruction run again, masked, as the default run does.
+// Each address is named from flow_movie.map beside the exe (the link's
+// /MAP): the function and its object file. Nothing is saved. 0 done; 1
+// failed, named on stderr; 77 off Windows x64.
+[[nodiscard]] int subnormal_locate(const LiveCase& lc, uint32_t steps, const std::filesystem::path& from_save);
+
 }  // namespace flow_movie
