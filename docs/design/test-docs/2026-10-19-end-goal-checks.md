@@ -57,6 +57,7 @@
   - *Lower bound 0.5:* the prediction uses the static thrust, but the rotor model lowers thrust in climb. Its inflow closure λ(V_c / v_h), with λ(x + λ) = 1, gives λ ≈ 0.84 at 2 m/s.
     - Simulated for the reference quad (point mass, λ, ground effect and C_D A = 0.01 m²), the ratio Δh / Δh_pred from 2R up is 0.70 to 0.71 at F_y = 1.1, 1.2 and 1.4 m g. Drag at these speeds changes it by under 0.01.
     - So 0.5 leaves 0.2 for frame-rate integration and anything the point mass leaves out.
+    - This holds for moderate climb speeds only, as simulated above. At full throttle the reference quad climbs at about 29 m/s, where drag is no longer small: N17's `editor.fly` scored 0.498 there, just under 0.5. Physics agrees that is physical, not a defect (the lead, 2026-10-22). The step is therefore staged as a 1.3 m g throttle step (Interface, N17, merged `4f25016`), which scores 0.696. A full-throttle climb below 0.5 is staged outside the premise and isn't a failure. Any later use at higher thrust needs the bound derived again first, with drag in it.
     - A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
   - *Upper bound 1.10:* out of ground effect, nothing in the simulation lifts beyond the rotors' static thrust, and inflow only lowers it. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
 - **follows-attitude:**
