@@ -346,17 +346,28 @@ inline constexpr uint64_t kC8qSeeds[] = {0, 0x1C8, 0x1C9, 0x1CA};
 // The library's reference quad, its parts cleared as the editor's airflow
 // chapter flies it, held level in still air: a 0.975 m box at 128^3 (R/dx
 // 10.0), h = dx/8 as C8's, air's viscosity (Physics, 2026-10-22), no floor,
-// armed at the hover throttle from t = 0. With `torque` false, every rotor's
-// torque coefficient is 0 before the model is pinned, so the discs spread no
-// swirl (Physics' discriminating run, below).
+// armed at the hover throttle from t = 0.
+//
+// Physics' discriminating variants of it (below), each one run of run 0's:
+// - no_torque: every rotor's torque coefficient is 0, so the discs spread no
+//   swirl;
+// - rotor_0_alone: that, and rotors 1 to 3 push nothing besides. Their thrust
+//   coefficient is the least normal float, about 1e-32 N at hover, since a
+//   model refuses 0. The hover throttle is trimmed on the four-rotor model
+//   first, so rotor 0's speed, and with it its reference, are run 0's. Only
+//   rotor 0 is judged, against a quarter of the weight, so the loaded premise
+//   reads its share as it reads the quad's.
+enum class C8qVariant { as_flown, no_torque, rotor_0_alone };
+
 struct C8qCase {
     spade::vehicles::ModelType model;
     an::ResolvedCase resolved;
     an::Controls hover;
     eg::DownwashCase judged;
+    bool rotor_0_only = false;  // judge rotor 0's probe alone
 };
 
-[[nodiscard]] std::optional<C8qCase> c8q_case(bool torque = true) {
+[[nodiscard]] std::optional<C8qCase> c8q_case(C8qVariant variant = C8qVariant::as_flown) {
     const fs::path file = fs::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
     spade::Result<spade::scene::ModelFile> loaded = spade::scene::load_model_file(file);
     EXPECT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().context);
@@ -364,7 +375,7 @@ struct C8qCase {
     C8qCase q;
     q.model = loaded->model;
     q.model.parts.clear();
-    if (!torque) {
+    if (variant != C8qVariant::as_flown) {
         for (auto& rotor : q.model.rotors) rotor.torque_coeff = 0.0f;
     }
     an::AnalysisCase c;
@@ -380,8 +391,17 @@ struct C8qCase {
     EXPECT_TRUE(trim.has_value()) << (trim ? "" : trim.error().context);
     if (!trim) return std::nullopt;
     q.hover = an::Controls{true, trim->hover, 0.0f, 0.0f, 0.0f};
+    float judged_mass = q.model.body.mass;
+    if (variant == C8qVariant::rotor_0_alone) {
+        for (std::size_t i = 1; i < q.model.rotors.size(); ++i) {
+            q.model.rotors[i].thrust_coeff = std::numeric_limits<float>::min();
+        }
+        c.model = an::pin_model(file.generic_string(), q.model);
+        judged_mass /= static_cast<float>(q.model.rotors.size());
+        q.rotor_0_only = true;
+    }
     q.resolved = resolved(c, q.model);
-    q.judged = eg::DownwashCase{c.fluid.density, q.model.body.mass, 9.80665f};
+    q.judged = eg::DownwashCase{c.fluid.density, judged_mass, 9.80665f};
     return q;
 }
 
@@ -431,8 +451,10 @@ struct C8qRun {
             out.fault = frame.error().context;
             return out;
         }
-        out.frames.push_back(eg::sample_downwash(volume, af::probes_of(*run), run->state().t_s,
-                                                 eg::tilt_of(run->body().orient), true));
+        std::vector<eg::RotorProbe> probes = af::probes_of(*run);
+        if (q.rotor_0_only) probes.resize(1);
+        out.frames.push_back(
+            eg::sample_downwash(volume, probes, run->state().t_s, eg::tilt_of(run->body().orient), true));
     }
     out.moved = nudge.moved;
     out.label = run->run_label();
@@ -558,28 +580,42 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
     EXPECT_TRUE(v.ok) << v.detail;
 }
 
-// Physics' discriminating run for C8q's first miss (every rotor 0.816 of
-// momentum theory, 2026-10-22): run 0's case with the discs' torque at 0, so
-// they spread no swirl, as C8's disc spread none. One run, report only: its
-// per-rotor ratios go to Physics, and no band is judged here (the lead's
-// grant, on Physics' word, 2026-10-22).
-TEST(EndGoalC8q, ReferenceQuadWithoutTheDiscsSwirl) {
-    if (!env_set("SPADE_C8Q_NO_TORQUE")) {
-        GTEST_SKIP() << "set SPADE_C8Q_NO_TORQUE=1 for Physics' one C8q run with the discs' torque at 0";
-    }
-    const std::optional<C8qCase> q = c8q_case(false);
+// One run of a discriminating variant, seed 0, report only: each judged
+// rotor's ratio, tagged, for Physics. No band is judged here.
+void report_variant(C8qVariant variant, const char* tag) {
+    const std::optional<C8qCase> q = c8q_case(variant);
     ASSERT_TRUE(q.has_value());
     const C8qRun run = c8q_run(*q, 0);
     ASSERT_TRUE(run.fault.empty()) << run.fault;
     const auto judged = eg::downwash_means(run.frames, q->judged, eg::kC8q);
     ASSERT_TRUE(judged.has_value()) << judged.error().detail;
     const eg::C8qBands b = eg::c8q_bands(judged->u, judged->v);
-    std::printf("c8q-no-torque: %s; %s; hover throttle %.4f; the window %s, %zu frames\n", path_line().c_str(),
+    std::printf("%s: %s; %s; hover throttle %.4f; the window %s, %zu frames\n", tag, path_line().c_str(),
                 run.label.c_str(), static_cast<double>(q->hover.throttle), judged->window.c_str(), judged->count);
     for (std::size_t i = 0; i < judged->u.size(); ++i) {
-        std::printf("c8q-no-torque: rotor %zu %.4f / %.4f m/s = %.4f\n", i, judged->u[i], judged->v[i], b.ratio[i]);
+        std::printf("%s: rotor %zu %.4f / %.4f m/s = %.4f\n", tag, i, judged->u[i], judged->v[i], b.ratio[i]);
     }
-    std::printf("c8q-no-torque: the four off their mean by %.4f at most\n", b.mutual_off);
+    if (judged->u.size() > 1) std::printf("%s: the rotors off their mean by %.4f at most\n", tag, b.mutual_off);
+}
+
+// Physics' discriminating runs for C8q's first miss (every rotor 0.816 of
+// momentum theory, 2026-10-22), each the lead's grant on Physics' word. First,
+// the discs' torque at 0, so they spread no swirl, as C8's disc spread none.
+TEST(EndGoalC8q, ReferenceQuadWithoutTheDiscsSwirl) {
+    if (!env_set("SPADE_C8Q_NO_TORQUE")) {
+        GTEST_SKIP() << "set SPADE_C8Q_NO_TORQUE=1 for Physics' one C8q run with the discs' torque at 0";
+    }
+    report_variant(C8qVariant::no_torque, "c8q-no-torque");
+}
+
+// Then rotor 0 alone, as placed, still without swirl: the others push nothing.
+// Near C8's +5.7%, the deficit is the four slipstreams together; still near
+// 0.85, it is LiveRun's case itself (Physics, 2026-10-22).
+TEST(EndGoalC8q, RotorZeroAloneWithoutSwirl) {
+    if (!env_set("SPADE_C8Q_ROTOR0")) {
+        GTEST_SKIP() << "set SPADE_C8Q_ROTOR0=1 for Physics' one C8q run with rotor 0 alone";
+    }
+    report_variant(C8qVariant::rotor_0_alone, "c8q-rotor0");
 }
 
 }  // namespace
