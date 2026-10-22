@@ -443,9 +443,11 @@ TEST(EditorImport, TheStagingFolderGoesWithTheWorkspace) {
 // the design frame's +X nose: +90 degrees about +Y), min_feature declared as
 // its box's smallest extent (CORE-8 D5 wants one declared), and the role
 // analysis::kImportedPartRole, or vehicles::kDrawnOnlyRole when it is under
-// 8 mm in two extents (wire-like, L7). AddMeshParts adds them to one
-// vehicle's model, copying a shared one; SetImportedPart edits what the rows
-// show. Each is one undoable edit.
+// 8 mm in two extents (wire-like, L7). AddMeshParts adds the staged meshes
+// to one vehicle's model as imported_part() makes them, copying a shared
+// model, and reads a mesh it doesn't hold from its sidecar (its text form's
+// way, EDT-002); SetImportedPart edits what the rows show. Each is one
+// undoable edit.
 // ===========================================================================
 
 namespace {
@@ -521,10 +523,8 @@ TEST(EditorImport, AnImportedPartFollowsGltfsFrameAndDeclaresItsBoxsSmallestExte
 
 TEST(EditorImport, AddMeshPartsGivesOneVehicleThePartsCopyingASharedModel) {
     Bench b;
-    std::vector<spade::vehicles::PartDesc> parts;
-    for (const ed::ImportedMesh& m : parts_of(b, b.gltf("pair.gltf", {{"left"}, {"right", glm::vec3(2.0f, 0.0f, 0.0f)}}))) {
-        parts.push_back(ed::imported_part(m));
-    }
+    const std::vector<ed::ImportedMesh> parts =
+        parts_of(b, b.gltf("pair.gltf", {{"left"}, {"right", glm::vec3(2.0f, 0.0f, 0.0f)}}));
     ASSERT_EQ(parts.size(), 2u);
     ed::SceneDocument doc = ed::make_scene_document(support::two_vehicles_sharing("quad"), {});
     const std::size_t had = support::model_named(doc.desc(), "quad").parts.size();
@@ -536,7 +536,14 @@ TEST(EditorImport, AddMeshPartsGivesOneVehicleThePartsCopyingASharedModel) {
     EXPECT_EQ(s.vehicles.at(1).model, "quad");
     EXPECT_EQ(support::model_named(s, "quad").parts.size(), had);
     ASSERT_EQ(support::model_named(s, own).parts.size(), had + 2);
-    EXPECT_NE(part_named(support::model_named(s, own), "left"), nullptr);
+    const spade::vehicles::PartDesc* left = part_named(support::model_named(s, own), "left");
+    ASSERT_NE(left, nullptr);
+    const spade::vehicles::PartDesc made = ed::imported_part(parts[0]);
+    EXPECT_EQ(left->mesh, made.mesh);
+    EXPECT_EQ(left->mesh_file, made.mesh_file);
+    EXPECT_EQ(left->role, made.role);
+    EXPECT_EQ(left->min_feature, made.min_feature);
+    EXPECT_EQ(left->mount_orient, made.mount_orient);
     EXPECT_NE(part_named(support::model_named(s, own), "right"), nullptr);
 
     const spade::Result<void> again = ed::apply(doc, ed::AddMeshParts{"quad_0", parts});
@@ -574,10 +581,7 @@ TEST(EditorImport, TheWorkspaceImportsPartsOntoTheSelectedDroneAsOneUndoableEdit
 
 TEST(EditorImport, AnImportedPartsRoleFeatureAndMountAreEditableAndAnAuthoredPartsAreNot) {
     Bench b;
-    std::vector<spade::vehicles::PartDesc> parts;
-    for (const ed::ImportedMesh& m : parts_of(b, b.gltf("guard.gltf", {{"ring", glm::vec3(0.0f), 0.2f}}))) {
-        parts.push_back(ed::imported_part(m));
-    }
+    const std::vector<ed::ImportedMesh> parts = parts_of(b, b.gltf("guard.gltf", {{"ring", glm::vec3(0.0f), 0.2f}}));
     // An authored part beside it: a 5 cm ball, declared.
     spade::vehicles::ModelType quad = support::quad_model();
     spade::vehicles::PartDesc ball;
@@ -625,4 +629,32 @@ TEST(EditorImport, ThePartRowsSayWhatAnImportedPartIsAndIsNot) {
     EXPECT_EQ(ed::imported_part_note(p), "drawn only: not in the airflow, not weighed, and no drag in flight");
     p.role = "arm";
     EXPECT_TRUE(ed::imported_part_note(p).empty()) << "an authored part has no note";
+}
+
+// The edit's text form names each mesh's sidecar; parsed, the edit holds no
+// mesh, and applying it reads each from its sidecar, the same mesh as staged.
+// A sidecar gone is refused by name, adding nothing.
+TEST(EditorImport, AddMeshPartsReadsAMeshItDoesNotHoldFromItsSidecar) {
+    Bench b;
+    std::vector<ed::ImportedMesh> parts = parts_of(b, b.gltf("guard.gltf", {{"ring", glm::vec3(0.0f), 0.2f}}));
+    ASSERT_EQ(parts.size(), 1u);
+    const std::shared_ptr<const spade::TriangleMesh> staged = parts[0].mesh;
+    parts[0].mesh.reset();
+    ed::SceneDocument doc = ed::make_scene_document(support::scene_with(support::quad_model()), {});
+    ASSERT_TRUE(ed::apply(doc, ed::AddMeshParts{"quad_0", parts}).has_value());
+    const spade::vehicles::PartDesc* ring =
+        part_named(support::model_named(doc.desc(), doc.desc().vehicles.at(0).model), "ring");
+    ASSERT_NE(ring, nullptr);
+    ASSERT_NE(ring->mesh, nullptr);
+    EXPECT_EQ(ring->mesh->content_hash(), staged->content_hash());
+    EXPECT_NEAR(ring->min_feature, 0.2f, 1e-6f);
+
+    ed::SceneDocument other = ed::make_scene_document(support::scene_with(support::quad_model()), {});
+    const std::string before = support::text_of(other.desc());
+    parts[0].sidecar = b.staging / "gone.spmesh";
+    const spade::Result<void> refused = ed::apply(other, ed::AddMeshParts{"quad_0", parts});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("'ring'"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("gone.spmesh"), std::string::npos) << refused.error().context;
+    EXPECT_EQ(support::text_of(other.desc()), before);
 }
