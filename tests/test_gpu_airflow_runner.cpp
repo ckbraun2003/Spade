@@ -790,6 +790,14 @@ struct OpCensus {
     return out;
 }
 
+// Every airflow kernel is scanned under the exact profile (P1-P4 and E1/E2):
+// no bare OpFDiv, Sqrt or InverseSqrt whose result reaches an output, so a
+// device's own division or root cannot enter one unseen (01-verification's
+// scope rule; the lead, 2026-10-22). The kernels that divide or take a root
+// do it through fp32_math's div32_ftz and sqrt32_ftz: airflow_mg_smooth,
+// airflow_advection's periodic wrap, airflow_publish_fields and
+// airflow_actuator_gather (Rendering, rendering/exact-kernels). The others
+// hold no float division or root and pass as they did.
 TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     struct Kernel {
         const SpirvVariantSet& variants;
@@ -798,8 +806,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     const Kernel kernels[] = {{gen::kSpvVariants_airflow_copy, true},
                               {gen::kSpvVariants_airflow_add_one, false},
                               {gen::kSpvVariants_airflow_tile_sum, false},
-                              // B2's projection kernels (Rendering). The smoother's one OpFDiv is
-                              // the parity profile's to allow: it is banded, not exact.
+                              // B2's projection kernels (Rendering). The smoother divides with
+                              // div32_ftz.
                               {gen::kSpvVariants_airflow_divergence, false},
                               {gen::kSpvVariants_airflow_gradient_subtract, false},
                               {gen::kSpvVariants_airflow_mg_smooth, false},
@@ -824,7 +832,7 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
             const std::string module = std::string(k.variants.name) + " (local size " +
                                        std::to_string(v.workgroup_size) + ")";
             const spade::testing::SpirvScanResult scan =
-                spade::testing::scan_spirv(v.code(), spade::testing::SpirvProfile::parity);
+                spade::testing::scan_spirv(v.code(), spade::testing::SpirvProfile::exact);
             EXPECT_TRUE(scan.well_formed) << module;
             EXPECT_TRUE(scan.findings.empty()) << module << ": " << scan.findings.size() << " policy findings";
             EXPECT_EQ(scan.decorated_ops, scan.contractable_ops) << module << ": an op lacks NoContraction";
