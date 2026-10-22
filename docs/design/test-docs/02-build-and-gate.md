@@ -43,6 +43,7 @@ Cameron decided this on 2026-10-21, by AskUserQuestion to the lead (backlog, `34
 - **The live smoke,** only when the branch changes `sandbox/` or editor code.
 - **The gcc check** ("The gcc check before review", below): `--compile` on every changed `.cpp`, the plain check on changed headers. A new `.cpp` that gcc-check can't place uses a sibling's command line or a `TEMPLATES` entry. Failing both, the branch needs a leg.
 - **Its own `-NoSeed` leg,** as well, when the branch touches the solver (`engine/sim`, the airflow code) or moves a pinned format or golden (`TD-1`, `TD-12`).
+- **The records' reader** (`AnalysisValidation*`, which holds `TheV1RecordsRead`), whenever the branch changes anything under `tests/data/airflow/records/`, whatever else it skips. That includes a pasted block that nothing is built from. It runs after the branch's last record commit. It needs no rebuild, because the test reads the records from the source tree when it runs. The lead set this on 2026-10-22, after B4's block on master (`65cfccd`) broke `TheV1RecordsRead`: the block was committed after the branch's gated run.
 
 Per-branch debug chunks are dropped.
 
