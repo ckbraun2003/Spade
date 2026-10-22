@@ -11,11 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "core/detail/flush_subnormals.hpp"  // MXCSR, for the flush-mode test at the end
 #include "core/fp32_math.hpp"
-
-#if defined(__x86_64__) || defined(_M_X64)
-#include <xmmintrin.h>  // MXCSR, for the flush-mode test at the end
-#endif
 #include "core/rng.hpp"
 
 // ---------------------------------------------------------------------------
@@ -629,19 +626,8 @@ TEST(Fp32Log, TheLn2SplitMultipliesExactlyAcrossEveryExponentAndEveryExpQuotient
 // ---------------------------------------------------------------------------
 namespace {
 
-#if defined(__x86_64__) || defined(_M_X64)
-// Sets MXCSR's FTZ (bit 15) and DAZ (bit 6) for its lifetime, and restores the
-// previous MXCSR on every exit.
-class ScopedFlushSubnormals {
-public:
-    ScopedFlushSubnormals() : saved_(_mm_getcsr()) { _mm_setcsr(saved_ | 0x8040u); }
-    ~ScopedFlushSubnormals() { _mm_setcsr(saved_); }
-    ScopedFlushSubnormals(const ScopedFlushSubnormals&) = delete;
-    ScopedFlushSubnormals& operator=(const ScopedFlushSubnormals&) = delete;
-
-private:
-    unsigned int saved_;
-};
+// The scope is engine/core/detail/flush_subnormals.hpp's (one home, TD-9).
+using spade::math::ScopedFlushSubnormals;
 
 struct FlushMismatches {
     uint64_t count = 0;
@@ -672,14 +658,10 @@ struct FlushMismatches {
     }
     return out;
 }
-#endif
 
 }  // namespace
 
 TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
-#if !(defined(__x86_64__) || defined(_M_X64))
-    GTEST_SKIP() << "needs x86 MXCSR (FTZ, DAZ) to flush subnormals on the host";
-#else
     struct Case {
         const char* what;
         float (*f)(float);
@@ -707,5 +689,4 @@ TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
         }
         EXPECT_EQ(m.count, 0u) << c.what << ": " << m.count << " results change when subnormals flush" << first;
     }
-#endif
 }

@@ -73,8 +73,8 @@
 //     first execution.
 //
 //     It remains a real allowance and NOT a claim that Vulkan's sqrt is
-//     correctly rounded. A tighter implementation (an integer correctly
-//     rounded sqrt, as log32_div is for division) is allowed but not
+//     correctly rounded. A tighter implementation (fp32_math.slang's exact
+//     sqrt32_ftz, as div32_ftz is for division) is allowed but not
 //     required: CORE-3 as amended by the user's ruling of 2026-10-05, under
 //     which CPU<->GPU results are banded everywhere (TD-14).
 //

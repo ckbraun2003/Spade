@@ -13,6 +13,15 @@
 // the corpus-live exp32 arguments and every edge case -- compared as uint32
 // bit patterns, zero mismatches tolerated.
 //
+// IT ALSO HOLDS THE EXACT DIVISION AND SQUARE ROOT, div32_ftz and sqrt32_ftz
+// (Core's plan of 2026-10-22, docs/design/core/plans/). Their host twin is not
+// a function in fp32_math.cpp but the hardware's own divss and sqrtss under
+// MXCSR FTZ|DAZ (engine/core/detail/flush_subnormals.hpp), NaN bits included,
+// and they are held to it bit for bit: tests/test_fp32_exact.cpp proves the
+// correction on a line-cited C++ port (tests/fp32_exact_battery.hpp), and
+// tests/test_gpu_fp32_math.cpp runs these functions on the device. log32
+// divides with div32_ftz.
+//
 // ===========================================================================
 // HOW THE PORT IS WRITTEN, AND THE FOUR RULES IT OBEYS
 //
@@ -22,7 +31,9 @@
 //      statements here; a grouping that IS an accuracy argument over there is
 //      the identical grouping over here. Each function carries the
 //      fp32_math.cpp LINE RANGE it was ported from, so a reviewer can diff the
-//      two side by side rather than trust this sentence.
+//      two side by side rather than trust this sentence. (The exact division
+//      and square root run the other way: fp32_exact_battery.hpp cites THIS
+//      file's lines.)
 //
 //   2. NO CONTRACTION. cmake/SpadeSlang.cmake compiles every kernel
 //      -fp-mode precise, which decorates every contractable float op in the
@@ -30,38 +41,46 @@
 //      /fp:precise + -ffp-contract=off. tests/test_slang_layouts.cpp's
 //      SlangSpirv.FloatControlsPinned holds THIS module to the EXACT profile
 //      (spirv_scan.hpp): NoContraction everywhere, no sum-of-products opcode,
-//      no OpFDiv, no sqrt.
+//      and rule 3's E1/E2.
 //
-//   3. NO OpFDiv, NO SQRT. Vulkan's division and square root are <= 2.5 ulp,
-//      NOT correctly rounded, so neither may appear on a path that claims
-//      bit-identity with an IEEE-correct CPU. The DIVISION AUDIT is recorded
-//      in full below -- it is the one place this port could not simply follow
-//      the CPU text, and it is the finding this file most wants a reader to
-//      see.
+//   3. OpFDiv AND InverseSqrt ONLY AS AN ESTIMATE, AND NO Sqrt (E1/E2, as the
+//      user restated them on 2026-10-22). Vulkan's division and inverse square
+//      root are <= 2.5 and <= 2 ulp, NOT correctly rounded, so neither result
+//      may reach a path that claims bit-identity with an IEEE-correct CPU.
+//      Each may appear only as the ESTIMATE inside an exact operation whose
+//      integer correction is proven for ANY estimate within that bound, and no
+//      result leaves uncorrected. A bare Sqrt stays forbidden.
+//
+//      The scan proves REACH (spirv_scan.hpp, pass 3): an estimate may pass
+//      only through FMul, FAdd, FSub, FNegate, Floor, Trunc, Round and
+//      CopyObject, and leave only by a conversion to an integer. It cannot see
+//      whether the integer that leaves is corrected -- `uint(a / b)` passes
+//      too -- so the guarantee covers exactly the functions listed under
+//      "Functions allowed to hold an estimate (E1/E2)" below, each with its
+//      battery tests. An estimate anywhere else is a review finding.
 //
 //      SQRT AUDIT: there is NO square root in any of the four kernels. Checked
 //      by reading fp32_math.cpp end to end -- `kSqrt2` is a LITERAL CONSTANT
 //      (the mantissa split point), not a call, and core/fp32_math.hpp's own
 //      "WHAT IS *NOT* HERE" note states the policy ("std::sqrt STAYS ... IEEE
 //      754 mandates a correctly rounded square root"). rng.hpp's
-//      `std::sqrt(-2 * log32(u1))` is Box-Muller's, OUTSIDE these kernels. So
-//      rule E2 is satisfied by absence, not by respelling, and that is stated
-//      rather than left to be inferred.
+//      `std::sqrt(-2 * log32(u1))` is Box-Muller's, OUTSIDE these kernels.
+//      This module's one square root is sqrt32_ftz below: an InverseSqrt
+//      estimate inside the exact correction, which rule 3 allows. None of the
+//      four kernels calls it.
 //
-//      THE DEFERRAL THAT USED TO END THIS PARAGRAPH IS DELETED, NOT REASSIGNED
-//      (R3, 2026-09-24). It read "and is a later task's problem" -- a promise
-//      that the divergence would eventually be removed, carried with no owner
-//      and no trigger since it was written. THE RULING REFUSES TIGHTENING, and
-//      not on cost: Vulkan does not guarantee a correctly-rounded sqrt, so a
-//      "tightened" implementation would be a claim the platform cannot keep.
-//
-//      Giving this deferral an owner would have scheduled work the platform
-//      forbids. A DEFERRAL ASSERTS THAT A THING IS STILL COMING; once it has
-//      been ruled un-takeable, the honest edit is to delete it and point at the
-//      declared grade instead. The gaussian path is now BANDED BY DECLARATION
-//      -- see rng.slang's header for the measured band, its n and its device
+//      R3 (2026-09-24) STANDS FOR THE GAUSSIAN. It deleted the deferral that
+//      used to end this paragraph ("and is a later task's problem") rather
+//      than give it an owner, because Vulkan does not guarantee a
+//      correctly-rounded sqrt, and A DEFERRAL ASSERTS THAT A THING IS STILL
+//      COMING. sqrt32_ftz does not lean on Vulkan's sqrt -- its correction
+//      holds for any estimate within the bound -- but R3 was lifted on
+//      2026-10-22 only for the airflow solver (backlog, "Bit-exact GPU
+//      airflow"). So the gaussian path is still BANDED BY DECLARATION -- see
+//      rng.slang's header for the measured band, its n and its device
 //      provenance, and design-specs/spade/01-charter.md section 4 for where
-//      that grade sits among the three.
+//      that grade sits among the three -- and moving rng_next_gauss onto
+//      sqrt32_ftz is Cameron's call, not this file's.
 //
 //   4. CONSTANTS ARE SPELLED EXACTLY AS THE CPU SPELLS THEM -- exact rationals
 //      (`1.0f / 5040.0f`) for the polynomial coefficients, hex float literals
@@ -100,19 +119,51 @@
 // accurate, it is DEVICE-DEPENDENT, so log32 would stop being bit-identical at
 // all.
 //
-// SO THE DIVISION IS IMPLEMENTED EXACTLY, in integer arithmetic: log32_div()
-// below is a restoring long division on the significands that produces the
-// correctly-rounded (round-to-nearest, ties-to-even) quotient IEEE 754 requires
-// -- i.e. bit-for-bit what MSVC's `divss` returns. It contains no float
-// arithmetic at all, so it adds nothing for the NoContraction rule to check and
-// nothing for the OpFDiv rule to find. The GPU battery
-// GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide proves the claim
-// against the host `/` over every (f, 2+f) pair log32 can form, and the four
-// log32 batteries prove it again end to end.
+// SO THE DIVISION IS EXACT: log32 calls div32_ftz below, which returns what the
+// host's divss returns under MXCSR FTZ|DAZ, bit for bit. At log32's call site
+// that is IEEE's own quotient, the host's `/`, because the domain is all
+// normal: f is +0 or normal (|f| >= 2^-24), 2 + f lies in [1.71, 2.42] and the
+// quotient in [2.4e-8, 0.243], so the flush never applies and log32's bits do
+// not move on any device. GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
+// proves it against the host `/` over every (f, 2+f) pair log32 can form, and
+// the four log32 batteries prove it again end to end.
 //
-// THIS IS A DEVIATION FROM THE BRIEF'S LETTER AND AN OBEDIENCE TO ITS INTENT,
+// UNTIL 2026-10-22 THIS WAS log32_div: a restoring integer long division with
+// no float op at all, fenced by its name and by a four-part precondition (no
+// subnormal, infinite or NaN operand; a normal quotient) that it did not check.
+// div32_ftz answers over the whole domain, so log32_div is deleted rather than
+// kept beside it (TD-9: one division).
+//
+// THIS WAS A DEVIATION FROM THE BRIEF'S LETTER AND AN OBEDIENCE TO ITS INTENT,
 // and it is flagged here rather than buried: the brief anticipated only
 // divisions by constants.
+// ===========================================================================
+//
+// ===========================================================================
+// Functions allowed to hold an estimate (E1/E2)
+// ===========================================================================
+//
+// The only functions in this module, and so in any kernel that imports it,
+// that may hold an OpFDiv or InverseSqrt result (E1/E2 as the user restated
+// them on 2026-10-22). engine/testing/spirv_scan.hpp's pass 3 proves where an
+// estimate can go -- through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/
+// CopyObject to an integer conversion -- but it also passes an uncorrected
+// `uint(a / b)`. So the guarantee covers exactly these functions, and these
+// batteries prove that the integer each estimate becomes is corrected, with
+// estimates pushed +-3 ulps off (past the Vulkan bound) and far past it. An
+// estimate in any other function is a review finding (01-verification,
+// "SPIR-V scanner"). No FAbs or other op outside the scan's carrying list is
+// applied to an estimate; one would need a dated amendment there.
+//
+//   div32_ftz_with (and div32_ftz, which supplies y)    OpFDiv 1/bm
+//       Fp32Exact.DivisionRoundsExactlyWithEstimatesThreeUlpsOff
+//       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
+//       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
+//
+//   sqrt32_ftz_with (and sqrt32_ftz, which supplies r)  InverseSqrt xm
+//       Fp32Exact.SqrtRoundsExactlyWithEstimatesThreeUlpsOffOverItsWholeInputSpace
+//       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
+//       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -123,143 +174,199 @@
 // ---------------------------------------------------------------------------
 
 // Non-finite bit patterns, spelled as patterns rather than as expressions.
-// `1.0f / 0.0f` would be an OpFDiv (rule 3) and `0.0f / 0.0f` a second one;
-// these are what std::numeric_limits<float>::infinity() and ::quiet_NaN()
+// `1.0f / 0.0f` would be a bare OpFDiv (rule 3) and `0.0f / 0.0f` a second
+// one; these are what std::numeric_limits<float>::infinity() and ::quiet_NaN()
 // ARE on the host, and the edge-case battery compares them bit for bit.
 static const uint kBitsPosInf = 0x7F800000u;
 static const uint kBitsNegInf = 0xFF800000u;
 static const uint kBitsQNaN = 0x7FC00000u;  // std::numeric_limits<float>::quiet_NaN()
+static const uint kBitsDefaultNaN = 0xFFC00000u;  // x86's QNaN indefinite: divss/sqrtss's invalid result
 
 // ===========================================================================
-// log32_div -- correctly-rounded fp32 division, without OpFDiv
+// div32_ftz / sqrt32_ftz -- divss and sqrtss under MXCSR FTZ|DAZ, bit for bit
 // ===========================================================================
 //
-// THE NAME CARRIES THE PURPOSE ON PURPOSE. This is not a general-purpose
-// `div32` and must not be reached for as one: it is log32's divide, with a
-// PRECONDITION its caller satisfies and which IT DOES NOT CHECK. Out of domain
-// it fails SILENTLY, not loudly -- measured: 1.0/0.0 returns 1.7e38 rather than
-// +infinity, and a NaN numerator returns a finite number. A name like `div32`
-// would advertise a contract this function does not honour, and this module is
-// importable by every later kernel, so the name is the fence.
+// WHAT THEY COMPUTE, over the WHOLE domain: IEEE 754 binary32, round to
+// nearest even, under x86's flush -- a subnormal operand reads as a zero of
+// its sign (DAZ), and a result below 2^-126 is a zero of its sign (FTZ) --
+// with x86's NaN bits:
 //
-//      *** PRECONDITION -- THE CALLER MUST GUARANTEE ALL FOUR ***
-//        1. b is finite, NORMAL and non-zero;
-//        2. a is either exactly +-0, or finite and NORMAL;
-//        3. neither operand is an infinity or a NaN;
-//        4. the exact quotient is in the NORMAL range -- no overflow, no
-//           subnormal result.
-//      Outside that domain the answer is meaningless, not merely inaccurate.
+//   input                 div32_ftz                       sqrt32_ftz
+//   NaN                   a's quieted (a | 0x00400000),   x | 0x00400000
+//                         else b's (divss returns its
+//                         first source)
+//   invalid               0/0, inf/inf -> 0xFFC00000      negative normal, -inf
+//                                                         -> 0xFFC00000
+//   inf                   inf/finite -> +-inf;            +inf
+//                         finite/inf -> +-0
+//   0 or subnormal (DAZ)  x/0 -> +-inf; 0/x -> +-0        +-0, its sign kept
+//   overflow              biased e >= 255 -> +-inf        none
+//   underflow (FTZ)       biased e <= 0 -> +-0            none
 //
-// WHAT IT COMPUTES INSIDE THE DOMAIN: fl(a / b) under round-to-nearest,
-// ties-to-even -- the result IEEE 754 mandates and every conforming `/`
-// produces, including the host's. Not an approximation of it: the long division
-// below produces the infinitely-precise quotient's leading 25 bits (24-bit
-// significand + round bit) plus an exact sticky flag, so the rounding decision
-// it makes is the same decision the hardware makes.
+// The `_ftz` suffix is the warning: unlike log32 and exp32, which keep
+// subnormals, these flush. The canary is 0x00FFFFFF / 2, FLT_MIN (1 - 2^-24):
+// +0 here and from divss under FTZ, where IEEE's gradual underflow rounds it
+// up to FLT_MIN.
 //
-// WHY log32'S CALL SITE IS INSIDE THE DOMAIN, derived rather than asserted: mm
-// lies in [sqrt(2)/2, sqrt(2)), so f = mm - 1 is either exactly 0 or has
-// |f| >= 2^-24 (normal -- a float's smallest normal is 2^-126), and the divisor
-// 2 + f lies in [1.707, 2.415] (normal, non-zero, finite). log32 has already
-// returned for every non-finite and non-positive x before reaching here, so (3)
-// holds too. The quotient's magnitude is therefore either 0 or within
-// [2^-24 / 2.415, 0.4142 / 1.707] = [2.4e-8, 0.2426] -- comfortably normal.
+// THE METHOD is Rendering's exact_div and exact_sqrt (rendering/exact-div-sqrt
+// @ f71252b, the estimate forms): the device's own OpFDiv or InverseSqrt gives
+// an ESTIMATE of the significand's reciprocal or inverse root, and an integer
+// correction on the 24-bit significands makes the answer exact. The estimate
+// enters as the `_with` form's argument, so the op and the probe's
+// injected-estimate modes (fp32_math_probe.slang, 8 and 9) run the one
+// correction (TD-9). [ForceInline] keeps the estimate inside one function
+// body: it never crosses an OpFunctionCall, which the scan would refuse.
 //
-// THE TIES-TO-EVEN LEG IS UNREACHABLE FOR DIVISION, and that is a theorem, not
-// an untested corner: a tie needs the exact quotient to have exactly 25
-// significant bits, i.e. ma * 2^j = mb * N with N odd and N >= 2^24; taking odd
-// parts gives odd(ma) = odd(mb) * N >= 2^24 > ma, a contradiction. So no
-// division of two normal floats ever lands halfway, the `(mant & 1u)` term
-// below never decides anything, and the battery owes it no coverage. It is kept
-// because removing it would make the routine wrong for any other use and right
-// only by an argument the next reader would have to reconstruct.
+// DIVISION. q* = A 2^s / B lies in [2^23, 2^24) (s = 23 when A >= B, else
+// 24), and y = (1/bm)(1 + eps):
+//   Q0 = uint(am * y * 2^s)       |q* - Q0| < 2^24 |eps| + 2.
+//   R0 = A 2^s - B Q0 = B d0      exact in 32-bit wrapping arithmetic iff
+//                                 |R0| < 2^31: |d0| < 128, as B < 2^24.
+//   k = round(R0 y 2^-23)         t = d0 (1 + eps)(1 + 3 delta), |t - d0| <
+//                                 2^-9, so |q* - Q1| < 1/2 + 2^-9.
+//   2 R1 against +-B              decides |q* - Q| < 1/2 exactly; one +-1 is
+//                                 enough, as |d1| < 3/2.
+// At Vulkan's 2.5 ulp, |d0| <= 7. |d0| < 128 holds to about +-63 ulps of y
+// (+-32 gives |d0| about 66); Rendering's numpy model had 0 misses through
+// +-62 and its first at +-64.
 //
-// WHY LONG DIVISION AND NOT A NEWTON-RAPHSON REFINEMENT. The Newton route
-// needs an exactly-computed residual to correct its last bit, which without a
-// trusted FMA means Dekker two-products (contraction is pinned OFF here, and
-// GLSL.std.450 Fma's precision is inherited rather than mandated, so neither
-// is available as a primitive to build a proof on). The integer form needs no
-// float primitive at all, and its correctness is one invariant plus one
-// pre-step -- both of which are stated in the code below, because the pre-step
-// is exactly what a first draft of this function got wrong.
-float log32_div(float a, float b) {
+// SQUARE ROOT. S* = sqrt(X), X = M 2^(23 + odd) in [2^46, 2^48), odd =
+// (ex + 1) & 1, xm in [1, 4) the significand with the odd exponent folded in,
+// and r = (1/sqrt(xm))(1 + eps):
+//   S0 = uint(xm * r * 2^23)      |e0| = |S* - S0| < 2^24 |eps| + 2.
+//   R0 = X - S0^2 = e0 (S* + S0)  exact in the wrap while |e0| < 63:
+//                                 |R0| < 63 (2^25 + 63) < 2^31 (the true
+//                                 limit is just under 64).
+//   k = round(R0 r 2^-24)         R0 / 2 S*: lands within 1/2 + 2^-10.
+//   R1 > S1                       <=>  sqrt(X) > S1 + 1/2, and
+//   R1 <= -S1                     <=>  sqrt(X) < S1 - 1/2, in integers.
+// At Vulkan's 2 ulp, |e0| <= 6. The wrap's limit is about +-31 ulps of r at
+// worst, where xm -> 4 (r -> 1/2, S* -> 2^24, |e0| about 2k); near xm = 1 it
+// is about four times that. A numpy model of this correction had 0 misses over
+// xm in [3.9, 4) through +-31 and its first at +-32.
+//
+// NO TIES, AND NO ROUND-UP ACROSS A BINADE (Rendering's proofs). A quotient
+// tie needs A 2^(s+1) = B (2Q + 1), whose 2-adic valuations differ (at least
+// 24 against at most 23); the square root of a 24-bit significand cannot have
+// exactly 25 significant bits. So every comparison above is strict and "to
+// even" never decides anything. A quotient of two significands below a power
+// of two is at most 1 - 2^-24 or 2 - 2^-23, both floats, so the binade is
+// known from A >= B alone, tininess before and after rounding agree, and FTZ
+// is "the biased exponent is 0 or less".
+//
+// NO FMA. The proof spends only the slack in those bounds, so it holds whether
+// a driver fuses or contracts the estimate's FMul and FAdd or not.
+
+// a / b, given y ~ 1/bm (bm = b's significand in [1, 2)). See above.
+[ForceInline]  // the estimate never crosses an OpFunctionCall (the taint scan)
+float div32_ftz_with(float a, float b, float y) {
     const uint ua = asuint(a);
     const uint ub = asuint(b);
     const uint sign = (ua ^ ub) & 0x80000000u;
+    const uint ea = (ua >> 23) & 0xFFu;
+    const uint eb = (ub >> 23) & 0xFFu;
+    const uint fa = ua & 0x007FFFFFu;
+    const uint fb = ub & 0x007FFFFFu;
 
-    // +-0 / b -> +-0 with the sign of the quotient. The only special case the
-    // validated domain admits, and log32 reaches it whenever x is an exact
-    // power of two (mm == 1, f == 0).
-    if ((ua & 0x7FFFFFFFu) == 0u) {
-        return asfloat(sign);
+    // The specials, in divss's order (the table above).
+    if (ea == 0xFFu && fa != 0u) {
+        return asfloat(ua | 0x00400000u);  // a is a NaN: a's, quieted
+    }
+    if (eb == 0xFFu && fb != 0u) {
+        return asfloat(ub | 0x00400000u);  // b is a NaN: b's, quieted
+    }
+    if (ea == 0xFFu) {
+        return asfloat(eb == 0xFFu ? kBitsDefaultNaN : (sign | kBitsPosInf));  // inf / inf, inf / finite
+    }
+    if (eb == 0xFFu) {
+        return asfloat(sign);  // finite / inf
+    }
+    if (eb == 0u) {
+        return asfloat(ea == 0u ? kBitsDefaultNaN : (sign | kBitsPosInf));  // 0 / 0, x / 0 (DAZ)
+    }
+    if (ea == 0u) {
+        return asfloat(sign);  // 0 / normal (DAZ)
     }
 
-    const int ea = int((ua >> 23) & 0xFFu);
-    const int eb = int((ub >> 23) & 0xFFu);
-    const uint ma = (ua & 0x007FFFFFu) | 0x00800000u;  // 24-bit significand
-    const uint mb = (ub & 0x007FFFFFu) | 0x00800000u;
-
-    // ---- THE PRE-STEP, AND THE INVARIANT IT ESTABLISHES -------------------
-    //
-    // Restoring long division subtracts the divisor AT MOST ONCE per step, so
-    // it is only correct while the running remainder is SMALLER than the
-    // divisor. Both significands live in [2^23, 2^24), so ma/mb lands in
-    // (0.5, 2) and `rem = ma` violates that precondition for exactly the half
-    // of all inputs with ma >= mb.
-    //
-    // THIS IS NOT A HYPOTHETICAL. A first draft of this function started the
-    // loop at `rem = ma` unconditionally; on the ma >= mb half the remainder
-    // grew without bound instead of staying bounded, and the GPU battery
-    // reported 3,714,649 mismatches out of 8,388,608 -- 44%, i.e. precisely
-    // the fraction of log32's call-site pairs with ma >= mb. The battery is in
-    // this task's report with that number, because a test that only ever
-    // printed zeros would not have earned the claim it makes.
-    //
-    // The fix is the classic one: take the leading quotient bit BEFORE the
-    // loop, which both restores the invariant (rem < mb from then on, so
-    // `rem << 1 < 2^25` and the uint never overflows) and tells the
-    // reconstruction which binade the quotient is in.
-    //
-    //   ma >= mb  ->  quotient in [1, 2):   leading bit 1, 24 more bits needed
-    //   ma <  mb  ->  quotient in (0.5, 1): leading bit 0, 25 bits needed
-    //
-    // Either way q ends up with exactly 25 significant bits -- the 24-bit
-    // significand plus the round bit -- and `rem != 0` is the exact sticky.
-    uint rem = ma;
-    uint q = 0u;
-    int bias = 126;
-    int steps = 25;
-    if (ma >= mb) {
-        rem = ma - mb;
-        q = 1u;
-        bias = 127;
-        steps = 24;
+    // The correction, Rendering's exact_div unchanged.
+    const uint A = fa | 0x00800000u;
+    const uint B = fb | 0x00800000u;
+    const uint s = A >= B ? 23u : 24u;  // the quotient in [1, 2) or (1/2, 1)
+    const float am = asfloat(fa | 0x3F800000u);
+    uint Q = uint(am * y * asfloat((127u + s) << 23));
+    int R = asint((A << s) - B * Q);  // A 2^s - B Q, in the wrap
+    const int k = int(floor(float(R) * y * asfloat(104u << 23) + 0.5f));  // R / B, B = bm 2^23
+    Q = asuint(asint(Q) + k);
+    R = R - k * asint(B);
+    if (2 * R > asint(B)) {
+        Q = Q + 1u;
+    } else if (2 * R < -asint(B)) {
+        Q = Q - 1u;
     }
 
-    for (int i = 0; i < steps; ++i) {
-        rem = rem << 1;
-        q = q << 1;
-        if (rem >= mb) {
-            rem -= mb;
-            q |= 1u;
-        }
+    const int e = int(ea) - int(eb) + (s == 23u ? 127 : 126);
+    if (e >= 255) {
+        return asfloat(sign | kBitsPosInf);  // overflow
+    }
+    if (e <= 0) {
+        return asfloat(sign);  // FTZ
+    }
+    return asfloat(sign | (uint(e) << 23) | (Q & 0x007FFFFFu));
+}
+
+// a / b: divss under MXCSR FTZ|DAZ, NaN bits included.
+float div32_ftz(float a, float b) {
+    // The E1 estimate: OpFDiv, <= 2.5 ulp.
+    return div32_ftz_with(a, b, 1.0f / asfloat((asuint(b) & 0x007FFFFFu) | 0x3F800000u));
+}
+
+// sqrt(x), given r ~ 1/sqrt(xm). See above.
+[ForceInline]  // the estimate never crosses an OpFunctionCall (the taint scan)
+float sqrt32_ftz_with(float x, float r) {
+    const uint ux = asuint(x);
+    const uint ex = (ux >> 23) & 0xFFu;
+    const uint fx = ux & 0x007FFFFFu;
+
+    // The specials, in sqrtss's order (the table above).
+    if (ex == 0xFFu && fx != 0u) {
+        return asfloat(ux | 0x00400000u);  // a NaN, quieted
+    }
+    if (ex == 0u) {
+        return asfloat(ux & 0x80000000u);  // +-0, and a subnormal reads as one (DAZ)
+    }
+    if ((ux >> 31) != 0u) {
+        return asfloat(kBitsDefaultNaN);  // a negative normal, -inf
+    }
+    if (ex == 0xFFu) {
+        return asfloat(kBitsPosInf);  // +inf
     }
 
-    uint mant = q >> 1;
-    const uint guard = q & 1u;
-    const uint sticky = (rem != 0u) ? 1u : 0u;
-    int bexp = ea - eb + bias;
-
-    // Round to nearest, ties to even.
-    if (guard != 0u && (sticky != 0u || (mant & 1u) != 0u)) {
-        mant += 1u;
-        if (mant == (1u << 24)) {
-            mant = mant >> 1;
-            bexp += 1;
-        }
+    // The correction, Rendering's exact_sqrt with the exponent in integers:
+    // x = xm 2^(ex - 127 - odd), ex - 127 - odd even, sqrt(xm) in [1, 2).
+    const uint odd = (ex + 1u) & 1u;
+    const uint M = fx | 0x00800000u;
+    const float xm = asfloat(fx | ((127u + odd) << 23));
+    uint S = uint(xm * r * asfloat(150u << 23));
+    const uint X = M << (23u + odd);  // its low 32 bits: all the wrap needs
+    int R = asint(X - S * S);  // X - S^2, in the wrap
+    const int k = int(floor(float(R) * r * asfloat(103u << 23) + 0.5f));  // R / 2S
+    S = asuint(asint(S) + k);
+    R = asint(X - S * S);
+    // sqrt(X) > S + 1/2  <=>  R > S;  sqrt(X) < S - 1/2  <=>  R <= -S.
+    if (R > asint(S)) {
+        S = S + 1u;
+    } else if (R <= -asint(S)) {
+        S = S - 1u;
     }
+    return asfloat((((ex + 127u - odd) >> 1) << 23) | (S & 0x007FFFFFu));
+}
 
-    return asfloat(sign | (uint(bexp) << 23) | (mant & 0x007FFFFFu));
+// sqrt(x): sqrtss under MXCSR FTZ|DAZ, NaN bits included.
+float sqrt32_ftz(float x) {
+    const uint ux = asuint(x);
+    const uint odd = ((ux >> 23) + 1u) & 1u;  // (ex + 1) & 1: the sign bit is not bit 0
+    // The E2 estimate: InverseSqrt, <= 2 ulp.
+    return sqrt32_ftz_with(x, rsqrt(asfloat((ux & 0x007FFFFFu) | ((127u + odd) << 23))));
 }
 
 // ===========================================================================
@@ -489,7 +596,7 @@ float log32(float x) {
     // fp32_math.cpp:313-335 for why the textbook 2*atanh(s) route peaks at
     // 2 ulp and this one does not.
     const float f = mm - 1.0f;  // EXACT -- the whole point
-    const float s = log32_div(f, 2.0f + f);  // fp32_math.cpp:337 -- the one division; see the audit
+    const float s = div32_ftz(f, 2.0f + f);  // fp32_math.cpp:337 -- the one division; see the audit
     const float z = s * s;
 
     const float R = z * ((2.0f / 3.0f) +
