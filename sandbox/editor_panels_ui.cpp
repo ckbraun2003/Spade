@@ -645,6 +645,12 @@ void library(ed::EditorPanels& p) {
     std::string item_path = p.item_path;
     if (edit_text("##item_path", p.item_path, item_path)) p.item_path = item_path;
     if (ImGui::Button("Load")) p.commands.push_back(ed::Command::load_item);
+    // Save to library (EDT-020): the selected vehicle or object, into the
+    // scene's folder's library/ (never the default library).
+    ImGui::SameLine();
+    ImGui::BeginDisabled(p.selection.kind != ed::Selection::Kind::object);
+    if (ImGui::Button("Save selection to library")) p.commands.push_back(ed::Command::save_to_library);
+    ImGui::EndDisabled();
     if (p.armed) ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
     for (const std::string& problem : p.library_problems) ui::status_text(problem);
     ui::gap();

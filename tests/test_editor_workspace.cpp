@@ -286,6 +286,50 @@ TEST(EditorWorkspace, LoadFromFileArmsTheFilesItem) {
     EXPECT_EQ(scene_of(*w).assets[0].name, "gate");
 }
 
+// Save to library (EDT-020): the selection goes into the project library,
+// <the scene's folder>/library/, and the panel lists it after the default
+// library's items, then and when the scene is opened again.
+TEST(EditorWorkspace, SaveToLibrarySavesTheSelectionAndThePanelListsItAfterTheDefaultLibrary) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const support::TempDir tmp;
+    const std::filesystem::path mine = tmp.path() / "hover.scene.yaml";
+    w->panels().path = mine.string();
+    command(*w, Command::save_as);
+    ASSERT_TRUE(std::filesystem::exists(mine)) << w->panels().status;
+    const std::size_t before = w->panels().library.size();
+    w->panels().selection = object("hover_quad_0");
+    command(*w, Command::save_to_library);
+    ASSERT_EQ(w->panels().library.size(), before + 1) << w->panels().status;
+    EXPECT_EQ(w->panels().library.back().name, "hover_quad_0");
+    EXPECT_EQ(w->panels().library.back().category, "drones");
+    EXPECT_TRUE(std::filesystem::exists(tmp.path() / "library" / "library.yaml"));
+    EXPECT_NE(w->panels().status.find("hover_quad_0"), std::string::npos) << w->panels().status;
+
+    w->panels().path = mine.string();
+    command(*w, Command::open);
+    ASSERT_EQ(w->panels().library.size(), before + 1) << "reopened: the default library, then the project's";
+    EXPECT_EQ(w->panels().library.back().name, "hover_quad_0");
+}
+
+// In a built-in scene it is refused by name: the default library is never
+// written. Without a selection there is nothing to save.
+TEST(EditorWorkspace, SaveToLibraryInABuiltInSceneOrWithNothingSelectedIsRefusedByName) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::size_t before = w->panels().library.size();
+    w->panels().selection = object("hover_quad_0");
+    command(*w, Command::save_to_library);
+    EXPECT_EQ(w->panels().library.size(), before);
+    EXPECT_NE(w->panels().status.find("built-in"), std::string::npos) << w->panels().status;
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / "scenes" / "library"));
+
+    w->panels().selection = Selection{};
+    command(*w, Command::save_to_library);
+    EXPECT_EQ(w->panels().library.size(), before);
+    EXPECT_NE(w->panels().status.find("select"), std::string::npos) << w->panels().status;
+}
+
 // One that won't load is named in the status, and nothing is armed.
 TEST(EditorWorkspace, LoadFromFileOfAnUnreadableFileIsNamed) {
     auto w = hover();
