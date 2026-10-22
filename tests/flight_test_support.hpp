@@ -29,7 +29,7 @@ inline constexpr float kStepS = 1.0e-9f * static_cast<float>(kStepNs);
 struct FlightRig {
     Simulation sim;
     VehicleRef ref{};
-    vehicles::ModelType model;  // as the simulation registered it
+    vehicles::ModelType model;  // the library's file's, chain included
 };
 
 [[nodiscard]] inline std::filesystem::path reference_quad_file() {
@@ -45,10 +45,12 @@ struct FlightRig {
 }
 
 // The reference quad level at `at`, still, its rotors at `rotor_omega` (none:
-// at hover_omega()), flushed so it takes rotor commands at once. Fails the
-// calling test, and returns none, when anything refuses.
+// at hover_omega()), in `world` (none: a bare one, open air), flushed so it
+// takes rotor commands at once. Fails the calling test, and returns none,
+// when anything refuses.
 [[nodiscard]] inline std::optional<FlightRig> reference_quad_rig(glm::vec3 at,
-                                                                 std::optional<float> rotor_omega = std::nullopt) {
+                                                                 std::optional<float> rotor_omega = std::nullopt,
+                                                                 std::optional<WorldDesc> world = std::nullopt) {
     const Result<scene::ModelFile> file = scene::load_model_file(reference_quad_file());
     if (!file) {
         ADD_FAILURE() << file.error().context;
@@ -57,14 +59,17 @@ struct FlightRig {
     VehicleSpawn start;
     start.pos = at;
     start.rotor_omega = rotor_omega.value_or(hover_omega(file->model));
-    const Result<WorldDesc> world = WorldBuilder()
-                                        .name("flight")
-                                        .environment(Environment{})
-                                        .capacities(Capacities{4, 64, 16, 8})
-                                        .build();
     if (!world) {
-        ADD_FAILURE() << world.error().context;
-        return std::nullopt;
+        const Result<WorldDesc> bare = WorldBuilder()
+                                           .name("flight")
+                                           .environment(Environment{})
+                                           .capacities(Capacities{4, 64, 16, 8})
+                                           .build();
+        if (!bare) {
+            ADD_FAILURE() << bare.error().context;
+            return std::nullopt;
+        }
+        world = *bare;
     }
     WorldInstanceDesc inst;
     inst.world = *world;
@@ -88,12 +93,7 @@ struct FlightRig {
         ADD_FAILURE() << flushed.error().context;
         return std::nullopt;
     }
-    const Result<const vehicles::ModelType*> model = sim->model(*id);
-    if (!model) {
-        ADD_FAILURE() << model.error().context;
-        return std::nullopt;
-    }
-    return FlightRig{std::move(*sim), *ref, **model};
+    return FlightRig{std::move(*sim), *ref, file->model};
 }
 
 }  // namespace spade::sandbox::flight::test
