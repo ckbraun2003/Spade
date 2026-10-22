@@ -426,6 +426,40 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             }
         }
     }
+    // N15: the parts imported from a glTF, open, each saying what it is and
+    // is not (D4); its role, min_feature and mount are its rows.
+    std::size_t imported = 0;
+    for (const vehicles::PartDesc& part : model->parts) imported += ed::is_imported_part(part) ? 1u : 0u;
+    const std::string heading = "Imported parts (" + std::to_string(imported) + ")";
+    if (imported > 0 && ui::section(heading.c_str(), true)) {
+        for (std::size_t i = 0; i < model->parts.size(); ++i) {
+            const vehicles::PartDesc& part = model->parts[i];
+            if (!ed::is_imported_part(part)) continue;
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TextUnformatted(part.name.c_str());
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", ed::imported_part_note(part).c_str());
+            ImGui::TextDisabled("%s", ed::min_feature_note(part).c_str());
+            ImGui::PopTextWrapPos();
+            if (ui::begin_properties(("imported" + std::to_string(i)).c_str())) {
+                ed::SetImportedPart next{v.name, part.name, part.role == vehicles::kDrawnOnlyRole, part.min_feature,
+                                         part.mount_orient};
+                ui::property_row("Visual only");
+                bool changed = ImGui::Checkbox("##visual", &next.visual_only);
+                float feature_mm = 0.0f;
+                if (float_row("min_feature (mm)", "##feature", part.min_feature * 1000.0f, 0.1f, feature_mm,
+                              "%.3g")) {
+                    next.min_feature = feature_mm / 1000.0f;
+                    changed = true;
+                }
+                ui::property_row("Mount (\xC2\xB0)");
+                changed |= drag_attitude("##mount", part.mount_orient, next.mount_orient);
+                if (changed) p.pending.push_back(next);
+                ui::end_properties();
+            }
+            ImGui::PopID();
+        }
+    }
     // The internals, folded (§13's progressive disclosure).
     if (ui::section("Advanced", false) && ui::begin_properties("advanced")) {
         model_param_rows(p, v.name, *model, Element::model, 0, Rows::advanced);
@@ -435,6 +469,11 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
 
 void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     ui::title(a.name.c_str());
+    if (!p.selected_source.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("imported from %s", p.selected_source.c_str());
+        ImGui::PopTextWrapPos();
+    }
     if (ui::section("Transform", true) && ui::begin_properties("transform")) {
         SdfPose next = a.pose;
         bool changed = vec3_row("Position (m)", "##pos", a.pose.position, 0.01f, next.position);
@@ -684,6 +723,9 @@ void library(ed::EditorPanels& p) {
     ImGui::SameLine();
     ImGui::BeginDisabled(p.selection.kind != ed::Selection::Kind::object);
     if (ImGui::Button("Save selection to library")) p.commands.push_back(ed::Command::save_to_library);
+    // N15: the path's glTF as the selected drone's parts, one per mesh.
+    ImGui::SameLine();
+    if (ImGui::Button("Import as the drone's parts")) p.commands.push_back(ed::Command::import_parts);
     ImGui::EndDisabled();
     if (p.armed) ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
     for (const std::string& problem : p.library_problems) ui::status_text(problem);

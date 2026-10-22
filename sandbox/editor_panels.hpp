@@ -44,7 +44,7 @@ struct Selection {
 // arm and level act on the pilot (N17): arm toggles arming, level levels the
 // tilt setpoint.
 enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library,
-                     arm, level };
+                     arm, level, import_parts };
 
 struct HierarchyRow {
     Selection target;
@@ -90,6 +90,7 @@ struct EditorPanels {
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;
     PilotPanel pilot;  // N17: written by the pilot's keys and the Pilot section
+    std::string selected_source;  // N15: the path the selected asset's mesh was imported from; empty: none
     std::optional<std::size_t> armed;         // a library item the next click in the view places
     std::vector<SceneEdit> pending;
     std::vector<WorldEdit> pending_world;

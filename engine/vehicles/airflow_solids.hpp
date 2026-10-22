@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -27,8 +29,18 @@
 // The sampler points at this object: it must outlive the set_solids() or
 // build_solids() call that uses it, and is neither copied nor moved. A part
 // part_bounds() refuses makes parts() return that refusal (it names the part).
+//
+// DRAWN ONLY (N15; Physics' ruling, 2026-10-22): a part whose role is
+// kDrawnOnlyRole is drawn but is not a solid. It is left out of parts() and
+// the sampler, as if it were not posed, and drawn_only() names it, in posed
+// order, for the run line. Marking a part is the user's modelling choice; the
+// solver never drops a part of its own accord. The role is the one mark, so
+// PartDesc gains no field and model_identity() (which never folds parts)
+// does not move.
 // ---------------------------------------------------------------------------
 namespace spade::vehicles {
+
+inline constexpr std::string_view kDrawnOnlyRole = "imported-visual";
 
 class AirflowSolids {
 public:
@@ -38,6 +50,8 @@ public:
 
     [[nodiscard]] Result<std::vector<physics::airflow::SolidPart>> parts() const;
     [[nodiscard]] physics::airflow::SolidSampler sampler() const noexcept;
+    // The posed parts marked kDrawnOnlyRole, by name, in posed order.
+    [[nodiscard]] const std::vector<std::string>& drawn_only() const noexcept { return drawn_only_; }
 
 private:
     static physics::airflow::SolidQuery nearest(const void* ctx, glm::vec3 x) noexcept;
@@ -48,6 +62,7 @@ private:
     glm::vec3 origin_{0.0f};               // the grid's minimum corner in the world, m
     std::vector<PosedParts> single_;       // one per posed part, for the per-part query
     std::vector<uint32_t> solid_of_;       // ModelType part index -> posed (SolidPart) index
+    std::vector<std::string> drawn_only_;  // the posed parts left out, by name
 };
 
 }  // namespace spade::vehicles

@@ -136,6 +136,21 @@ namespace detail {
                                                         vehicle->model + "', which the scene doesn't have"));
         }
         const scene::ModelFile file{*model};
+        // Only what Core would place back (TD-9): a model add_model() refuses,
+        // as it refuses one with mesh parts (N3, N15's imported parts), is not
+        // saved, and the refusal is Core's. Placed into a copy of this scene
+        // under a free name, so the scene it would become is judged whole.
+        scene::SceneDesc trial = scene;
+        std::string trial_name = file.model.name + "_placed";
+        while (std::any_of(trial.models.begin(), trial.models.end(),
+                           [&](const vehicles::ModelType& m) { return m.name == trial_name; })) {
+            trial_name += "_";
+        }
+        if (Result<void> placed = scene::add_model(trial, file, trial_name); !placed) {
+            return std::unexpected(detail::save_refusal("'" + std::string(name) +
+                                                        "' would not place back from the library, so it was not "
+                                                        "saved: " + placed.error().context));
+        }
         Result<std::string> t = scene::model_to_yaml(file);
         if (!t) return std::unexpected(detail::save_refusal("'" + std::string(name) + "': " + t.error().context));
         text = std::move(*t);

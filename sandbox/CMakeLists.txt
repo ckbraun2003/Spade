@@ -50,6 +50,10 @@ target_link_libraries(spade_sandbox PRIVATE
     spade::render_parts
     # The live smoke's airflow chapter asks LiveRun for the drone-box run.
     spade::analysis
+    # The editor imports glTF (N15, editor_import.hpp): Core's readers, installed
+    # and exported, so the standalone build finds them too. Never the step's:
+    # MeshImport.TheStepNeverLinksTheReaders pins spade_sim.
+    spade::mesh_import
 )
 
 if(SPADE_RENDER_GL)

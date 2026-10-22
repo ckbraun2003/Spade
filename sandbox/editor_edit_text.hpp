@@ -45,6 +45,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/path_text.hpp"
 #include "editor_library.hpp"
 #include "editor_model_params.hpp"
 #include "editor_scene_edits.hpp"
@@ -753,6 +754,17 @@ inline Result<void> put_edit(Writer& w, const SetModelParam& e) {
     return {};
 }
 
+inline Result<void> put_edit(Writer& w, const AddMeshParts& e) {
+    w.kw("add-mesh-parts").word(e.vehicle).u(e.meshes.size());
+    for (const ImportedMesh& m : e.meshes) w.word(m.name).word(m.ref).word(path_text(m.sidecar));
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const SetImportedPart& e) {
+    w.kw("set-imported-part").word(e.vehicle).word(e.part).kw(e.visual_only ? "visual-only" : "solid");
+    w.kw("min-feature").f(e.min_feature).kw("rot").q(e.mount_orient);
+    return {};
+}
+
 // ---- the world edits ----
 
 inline Result<void> put_edit(Writer& w, const RenameWorld& e) {
@@ -868,8 +880,8 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 
 inline constexpr std::string_view kSceneVerbs =
     "a scene edit (add-asset, add-vehicle, add-model-file, add-object-file, remove, rename, duplicate, move, "
-    "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world or "
-    "set-model-param)";
+    "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world, "
+    "set-model-param, add-mesh-parts or set-imported-part)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -951,6 +963,34 @@ inline constexpr std::string_view kWorldVerbs =
             r.reject("a parameter of " + std::string(text::element_word(e.element)) +
                      " in the inspector's table (model_params())");
         }
+        out = e;
+    } else if (verb == "add-mesh-parts") {
+        AddMeshParts e;
+        e.vehicle = r.word("a vehicle name");
+        const std::size_t n = r.count("a count of meshes");
+        for (std::size_t i = 0; i < n && r.ok(); ++i) {
+            ImportedMesh m;
+            m.name = r.word("a part name");
+            m.ref = r.word("its mesh ref");
+            const std::string sidecar = r.word("its sidecar's path");
+            m.sidecar = std::filesystem::path(std::u8string(sidecar.begin(), sidecar.end()));
+            e.meshes.push_back(std::move(m));
+        }
+        out = e;
+    } else if (verb == "set-imported-part") {
+        SetImportedPart e;
+        e.vehicle = r.word("a vehicle name");
+        e.part = r.word("a part name");
+        const std::string kind = r.word("visual-only or solid");
+        if (kind == "visual-only") {
+            e.visual_only = true;
+        } else if (kind != "solid") {
+            r.reject("visual-only or solid");
+        }
+        r.expect("min-feature");
+        e.min_feature = r.f("its min_feature (m)");
+        r.expect("rot");
+        e.mount_orient = r.q("its mount's turn (w x y z)");
         out = e;
     } else {
         r.reject(text::kSceneVerbs);

@@ -25,6 +25,19 @@ namespace air = physics::airflow;
 
 AirflowSolids::AirflowSolids(const ModelType& model, PosedParts posed, glm::vec3 origin)
     : model_(&model), posed_(std::move(posed)), origin_(origin) {
+    // Drawn-only parts leave the posed list first, so every index below is
+    // the solids' own.
+    std::vector<PosedPart> solid;
+    solid.reserve(posed_.parts.size());
+    for (const PosedPart& pp : posed_.parts) {
+        const PartDesc& d = model.parts[pp.part];
+        if (d.role == kDrawnOnlyRole) {
+            drawn_only_.push_back(d.name);
+        } else {
+            solid.push_back(pp);
+        }
+    }
+    posed_.parts = std::move(solid);
     solid_of_.assign(model.parts.size(), air::kNoSolidPart);
     for (uint32_t i = 0; i < posed_.parts.size(); ++i) {
         solid_of_[posed_.parts[i].part] = i;

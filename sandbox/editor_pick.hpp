@@ -37,6 +37,8 @@ namespace spade::sandbox::editor {
 
 inline constexpr float kPickMaxDistance = 1000.0f;  // m: past this, the sky
 inline constexpr int kPickMaxSteps = 512;
+inline constexpr float kPickSurface = 1e-4f;        // m: how near the surface a hit is refined to
+inline constexpr int kPickRefineSteps = 256;        // enough for a ray grazing the ground at 30 m
 inline constexpr float kPickDefaultReach = 0.25f;   // m, for a vehicle with no proxy and no rotors
 
 namespace detail {
@@ -44,13 +46,24 @@ namespace detail {
 // The nearest distance along the ray at which it meets the program's surface,
 // or none. Each step is 0.9 of the distance: a heightfield or a smooth union
 // is a bound, not an exact distance, and overstepping one tunnels through.
+// The hit is found within 1e-3 of the distance travelled, then refined to
+// within kPickSurface of the surface, so what a click places rests on it
+// (N15: from the tour's camera, about 8 m off, the first hit alone floated
+// objects 7.5 to 8.9 mm).
 [[nodiscard]] inline std::optional<float> march(const SdfProgram& program, glm::vec3 origin, glm::vec3 dir) {
     if (program.empty()) return std::nullopt;
     float t = 0.0f;
     for (int i = 0; i < kPickMaxSteps && t < kPickMaxDistance; ++i) {
-        const float d = eval(program, origin + dir * t);
+        float d = eval(program, origin + dir * t);
         if (!std::isfinite(d)) return std::nullopt;
-        if (d < 1e-3f * std::max(1.0f, t)) return t;
+        if (d < 1e-3f * std::max(1.0f, t)) {
+            for (int k = 0; k < kPickRefineSteps && d > kPickSurface; ++k) {
+                t += 0.9f * d;
+                d = eval(program, origin + dir * t);
+                if (!std::isfinite(d)) return std::nullopt;
+            }
+            return t;
+        }
         t += 0.9f * d;
     }
     return std::nullopt;

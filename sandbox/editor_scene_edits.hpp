@@ -28,7 +28,10 @@
 #include <variant>
 #include <vector>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include "editor_document.hpp"
+#include "editor_import.hpp"
 #include "editor_model_params.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
@@ -107,10 +110,30 @@ struct SetModelParam {
     std::string field;
     ParamValue value;
 };
+// N15: meshes staged from a glTF (editor_import.hpp's import_gltf_parts()),
+// added to the model a vehicle flies as imported_part() makes them, the model
+// copied first as SetModelParam's is. A mesh the edit doesn't hold (its text
+// form carries none) is read from its sidecar. A name the model's parts
+// already have is refused.
+struct AddMeshParts {
+    std::string vehicle;
+    std::vector<ImportedMesh> meshes;
+};
+// N15: what an imported part's rows edit (D4): drawn only or a solid, its
+// declared smallest feature (m), and its mount's turn. An authored part is
+// refused.
+struct SetImportedPart {
+    std::string vehicle;
+    std::string part;
+    bool visual_only = false;
+    float min_feature = 0.0f;
+    glm::quat mount_orient{1.0f, 0.0f, 0.0f, 0.0f};
+};
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
-                               RepointWorld, SetModelParam, AddModelFile, AddObjectFile>;
+                               RepointWorld, SetModelParam, AddModelFile, AddObjectFile, AddMeshParts,
+                               SetImportedPart>;
 
 namespace detail {
 
@@ -352,6 +375,31 @@ inline Result<bool> change(scene::SceneDesc& s, const RepointWorld& e) {
     return a == b;  // uint32_t, std::string
 }
 
+// Puts `edited` in for the model `v` flies, if ModelType::issues() has no
+// objection (EDT-014): in place when no other vehicle flies it, else as this
+// vehicle's own copy, the others keeping theirs (copy-on-first-edit, EDT-019).
+// `refused` ends the refusal.
+inline Result<bool> commit_model(scene::SceneDesc& s, scene::SceneVehicle& v, vehicles::ModelType edited,
+                                 std::string_view refused) {
+    if (const std::string problems = describe_issues(edited); !problems.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "model '" + edited.name + "' of '" + v.name +
+                                                                 "' would not be valid: " + problems + "; " +
+                                                                 std::string(refused)});
+    }
+    const std::string model = v.model;
+    const bool shared = std::any_of(s.vehicles.begin(), s.vehicles.end(),
+                                    [&](const auto& other) { return other.name != v.name && other.model == model; });
+    vehicles::ModelType* m = find_named(s.models, model);
+    if (!shared && m != nullptr) {
+        *m = std::move(edited);
+        return true;
+    }
+    edited.name = lowest_free(model, [&](std::string_view n) { return model_taken(s, n); });
+    v.model = edited.name;
+    s.models.push_back(std::move(edited));  // pointers into s.models may dangle from here
+    return true;
+}
+
 inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
     scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
     if (v == nullptr) return std::unexpected(no_object("set a model parameter", e.vehicle));
@@ -368,24 +416,74 @@ inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
     if (Result<void> set = set_model_param(edited, e.element, e.index, e.field, e.value); !set) {
         return std::unexpected(set.error());
     }
-    if (const std::string problems = describe_issues(edited); !problems.empty()) {
-        return std::unexpected(Error{Code::invalid_argument, "model '" + m->name + "' of '" + e.vehicle +
-                                                                 "' would not be valid: " + problems +
-                                                                 "; the edit was not made"});
-    }
+    return commit_model(s, *v, std::move(edited), "the edit was not made");
+}
 
-    const std::string model = v->model;
-    const bool shared = std::any_of(s.vehicles.begin(), s.vehicles.end(),
-                                    [&](const auto& other) { return other.name != e.vehicle && other.model == model; });
-    if (!shared) {
-        *m = std::move(edited);
-        return true;
+// The vehicle `e` names and the model it flies, or why not, for `what`.
+template <class Edit>
+[[nodiscard]] Result<std::pair<scene::SceneVehicle*, vehicles::ModelType*>> flown(scene::SceneDesc& s, const Edit& e,
+                                                                                 std::string_view what) {
+    scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
+    if (v == nullptr) return std::unexpected(no_object(what, e.vehicle));
+    vehicles::ModelType* m = find_named(s.models, v->model);
+    if (m == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, std::string(what) + " '" + e.vehicle + "': its model '" +
+                                                                 v->model + "' is not in this scene"});
     }
-    // Copy-on-first-edit: this vehicle gets its own model, the others keep theirs.
-    edited.name = lowest_free(model, [&](std::string_view n) { return model_taken(s, n); });
-    v->model = edited.name;
-    s.models.push_back(std::move(edited));  // `m` may dangle from here; it is not used again
-    return true;
+    return std::pair{v, m};
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddMeshParts& e) {
+    const auto at = flown(s, e, "import parts onto");
+    if (!at) return std::unexpected(at.error());
+    const auto [v, m] = *at;
+    if (e.meshes.empty()) return false;
+    vehicles::ModelType edited = *m;
+    for (const ImportedMesh& staged : e.meshes) {
+        if (find_named(edited.parts, staged.name) != nullptr) {
+            return std::unexpected(Error{Code::invalid_argument, "import parts onto '" + e.vehicle + "': model '" +
+                                                                     m->name + "' has a part '" + staged.name +
+                                                                     "' already; the parts were not added"});
+        }
+        ImportedMesh held = staged;
+        if (!held.mesh) {
+            Result<LoadedMesh> read = load_mesh_file(held.sidecar);
+            if (!read) {
+                return std::unexpected(Error{read.error().code, "import parts onto '" + e.vehicle + "': part '" +
+                                                                    held.name + "''s mesh could not be read from " +
+                                                                    path_text(held.sidecar) + ": " +
+                                                                    read.error().context +
+                                                                    "; the parts were not added"});
+            }
+            held.mesh = std::move(read->mesh);
+        }
+        edited.parts.push_back(imported_part(held));
+    }
+    return commit_model(s, *v, std::move(edited), "the parts were not added");
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const SetImportedPart& e) {
+    const auto at = flown(s, e, "set an imported part of");
+    if (!at) return std::unexpected(at.error());
+    const auto [v, m] = *at;
+    const vehicles::PartDesc* now = find_named(m->parts, e.part);
+    if (now == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, "set an imported part of '" + e.vehicle + "': model '" +
+                                                                 m->name + "' has no part '" + e.part + "'"});
+    }
+    if (!is_imported_part(*now)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "set an imported part of '" + e.vehicle + "': part '" + e.part +
+                                         "' is not imported; only an imported part's role, min_feature and "
+                                         "mount are set here"});
+    }
+    vehicles::ModelType edited = *m;
+    vehicles::PartDesc& p = *find_named(edited.parts, e.part);
+    p.role = std::string(e.visual_only ? vehicles::kDrawnOnlyRole : analysis::kImportedPartRole);
+    p.min_feature = e.min_feature;
+    p.mount_orient = e.mount_orient;
+    if (p.role == now->role && p.min_feature == now->min_feature && p.mount_orient == now->mount_orient) return false;
+    return commit_model(s, *v, std::move(edited), "the edit was not made");
 }
 
 }  // namespace detail
