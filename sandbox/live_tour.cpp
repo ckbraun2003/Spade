@@ -106,10 +106,10 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 10> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 11> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
-                                                         "editor_part"};
+                                                         "editor_part",     "editor_drone"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -1174,10 +1174,40 @@ void editor_tour(Tour& t, const fs::path& assets) {
         }
         s.check(match, "assumed-marked",
                 match ? std::to_string(marked) + " of " + std::to_string(lib.size()) +
-                            " tiles marked assumed, each a part with a field assumed"
+                            " tiles marked assumed, each a part or drone with a grade assumed"
                       : (wrong.empty() ? std::to_string(badges.size()) + " marks drawn for " +
                                              std::to_string(lib.size()) + " tiles"
                                        : wrong));
+
+        // L5's sidecars (the lead's Q2): the first library drone with an
+        // input assumed is inspected as its tile's click inspects it, its
+        // inputs' grades in place of the selection (drone-inspected).
+        std::optional<std::size_t> drone;
+        for (std::size_t i = 0; i < lib.size() && !drone; ++i) {
+            if (lib[i].kind == editor::LibraryItem::Kind::model && editor::any_assumed(lib[i])) drone = i;
+        }
+        if (!drone) {
+            s.check(false, "drone-inspected", "absent: no library drone has an input assumed in its sources");
+        } else {
+            const editor::LibraryItem d = lib[*drone];
+            w().panels().selection = editor::Selection{editor::Selection::Kind::scene, ""};
+            editor::inspect_item(w().panels(), *drone);
+            w().panels().library_scroll_to = *drone;
+            then(3);
+            const std::vector<editor::PartRow> rows = editor::model_rows(*d.sources);
+            const auto assumed_inputs = std::count_if(rows.begin(), rows.end(), [](const editor::PartRow& r) {
+                return r.grade == scene::Grade::assumed;
+            });
+            const bool drone_shown =
+                w().panels().inspected == drone && w().panels().selection.kind == editor::Selection::Kind::none;
+            s.check(drone_shown && !rows.empty(), "drone-inspected",
+                    "'" + d.name + "': " + std::to_string(rows.size()) + " inputs, " +
+                        std::to_string(assumed_inputs) + " assumed, built from " +
+                        std::to_string(d.sources->parts.size()) + " part files" +
+                        (drone_shown ? "; the inspector shows it in place of the selection" : "; NOT shown"));
+            t.snapshot("editor_drone");
+            then(1);  // the still is the next frame drawn: it draws while the drone is inspected
+        }
         w().panels().inspected.reset();
         w().panels().library_scroll_to = 0;
         then(10);
