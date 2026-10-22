@@ -187,7 +187,10 @@ TEST(BasicQuad, ARemainderThatIsNotABodyIsRefusedByName) {
     // plus pitch: no body has that tensor.
     BasicQuadParams p = competition();
     p.inertia = glm::dvec3(0.0025, 0.0049, 0.0021);
-    expect_refused(spade::vehicles::basic_quad_airframe(p), {"inertia", "remainder", "triangle inequality"});
+    // It names the target and the parts' own value, as every fit refusal does.
+    expect_refused(spade::vehicles::basic_quad_airframe(p),
+                   {"inertia", "remainder", "triangle inequality", "diag(0.0025, 0.0049, 0.0021)",
+                    "the parts' own diag(0.00203"});
 
     // An inertia target needs a mass target: a massless remainder is no body.
     BasicQuadParams no_mass;
