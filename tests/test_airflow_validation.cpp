@@ -14,11 +14,17 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <numbers>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "data/airflow/ghia1982_cavity.hpp"
@@ -247,47 +253,289 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
     EXPECT_LE(worst, kPlanAResidualAnnounce);
 }
 
-TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {
-    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the actuator-disc wake (~6 min)";
-    const GridShape shape{64, 128, 64, 0.01f};
-    const DomainBc bc;  // open faces, still air: every face an outlet
-    MacGrid g = *make_grid(shape, bc);
-    const float rho = 1.225f;
-    const float vh = 4.0f;
+// ---- C8, the actuator disc's far wake -----------------------------------------
+// The far wake is chaotic past its horizon T_p (step 104 at the probe, under
+// the banded-parity plan's rule), so one run is one trajectory, and a measure
+// read from it moves with a last bit. On the axis 2R below, C8's first
+// measure, 3 of 16 one-ulp-nudged runs missed the 10%: the disc's 48 points
+// leave a hub within 2.1 cells of the axis unloaded (the inner ring at 0.408R,
+// Peskin's reach 2 cells), and the axis sits in that hub's meandering wake.
+// The measure is the mean downwash over the 80 v faces within 0.5R of the
+// axis, 2R below (the end-goal checks' probe disc), over steps 385 to 768. The
+// verdict is an ensemble's: eight runs that differ only by a nudge in this
+// test, 1 ulp up on 110 of the disc's increments (B4's nudge,
+// tests/test_gpu_airflow_actuator.cpp) from each run's own seed. Measured and
+// signed off by Physics before this run:
+// docs/design/test-docs/2026-10-22-c8-spread.md.
+//
+// Physics' note on the bias: the disc mean reads about 6% above momentum
+// theory's uniform disc. spread_actuator's 48 points load the disc unevenly:
+// an unloaded hub, and 1.34x the uniform thrust per area inside 0.5R.
+// Annular momentum theory gives up to sqrt 1.34 = 1.16x there, and mixing
+// reduces it. The bias belongs to the disc's point loading, not the solver.
+
+constexpr uint32_t kC8Steps = 768;
+constexpr std::size_t kC8Nudged = 110;
+constexpr uint32_t kC8Threads = 8;
+
+// The probes, all of the downwash -v: C8's four-face mean on the axis at R,
+// 2R, 3R and 4R below; the mean over the faces within 0.5R and within R of
+// the axis, 2R below.
+enum C8Probe : std::size_t { kAxisR, kAxis2R, kAxis3R, kAxis4R, kDiscHalfR, kDiscR, kC8Probes };
+
+// splitmix64, as B4's: a fixed-seed stream, the same on every compiler.
+struct SplitMix {
+    uint64_t state = 0;
+    uint64_t next() noexcept {
+        uint64_t z = (state += 0x9E3779B97F4A7C15ull);
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        return z ^ (z >> 31);
+    }
+};
+
+// C8's case as plan A's Task 11 fixed it, with the disc's increments from
+// zero (packed u, v, w, as B4 packs them) and the probes' faces.
+struct C8Case {
+    GridShape shape{64, 128, 64, 0.01f};
+    DomainBc bc;  // open faces, still air: every face an outlet
+    float rho = 1.225f;
+    float vh = 4.0f;
+    ActuatorDisc disc;
+    FluidConfig cfg;
+    std::array<std::size_t, 3> faces{};
+    std::vector<float> spread;
+    std::vector<std::size_t> touched;
+    std::vector<std::size_t> disc_half_r;
+    std::vector<std::size_t> disc_r;
+};
+
+[[nodiscard]] C8Case make_c8() {
+    C8Case c;
     const float radius = 0.1f;
     const float area = static_cast<float>(std::numbers::pi) * radius * radius;
-    const ActuatorDisc disc{.centre = {0.32f, 0.96f, 0.32f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = radius,
-                            .thrust = 2.0f * rho * area * vh * vh};
-    ASSERT_TRUE(check_disc(disc, shape).has_value());
-    const FluidConfig cfg{.rho = rho, .nu = 0.0f, .h = shape.dx / 8.0f, .n_v = 2};
-    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
-    const uint32_t steps = 384;
-    const uint32_t window = 128;
-    const uint32_t j = 76;  // y = 0.76 m = 2R below the disc
-    double sum = 0.0;
-    for (uint32_t k = 0; k < steps; ++k) {
-        spread_actuator(disc, shape, rho, cfg.h, s.du, s.dv, s.dw);
-        const FluidHealth h = fluid_step(g, bc, cfg, s);
-        ASSERT_EQ(h.fault, FluidFault::none) << describe(h, g.shape);
-        if (k >= steps - window) {
-            const auto v = [&](uint32_t i, uint32_t kk) { return static_cast<double>(g.v[v_index(shape, i, j, kk)]); };
-            sum += -0.25 * (v(31, 31) + v(32, 31) + v(31, 32) + v(32, 32));
+    c.disc = ActuatorDisc{.centre = {0.32f, 0.96f, 0.32f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = radius,
+                          .thrust = 2.0f * c.rho * area * c.vh * c.vh};
+    c.cfg = FluidConfig{.rho = c.rho, .nu = 0.0f, .h = c.shape.dx / 8.0f, .n_v = 2};
+    const GridShape& s = c.shape;
+    c.faces = {std::size_t{s.nx + 1u} * s.ny * s.nz, std::size_t{s.nx} * (s.ny + 1u) * s.nz,
+               std::size_t{s.nx} * s.ny * (s.nz + 1u)};
+    std::vector<float> du(c.faces[0], 0.0f), dv(c.faces[1], 0.0f), dw(c.faces[2], 0.0f);
+    spread_actuator(c.disc, s, c.rho, c.cfg.h, du, dv, dw);
+    c.spread.insert(c.spread.end(), du.begin(), du.end());
+    c.spread.insert(c.spread.end(), dv.begin(), dv.end());
+    c.spread.insert(c.spread.end(), dw.begin(), dw.end());
+    for (std::size_t i = 0; i < c.spread.size(); ++i) {
+        if (c.spread[i] != 0.0f) c.touched.push_back(i);
+    }
+    // The v faces 2R below (j = 76) within r cells of the axis (x = z = 0.32 m,
+    // the corner of cells 31 and 32), by their centres.
+    for (uint32_t k = 0; k < s.nz; ++k) {
+        for (uint32_t i = 0; i < s.nx; ++i) {
+            const int64_t a = 2 * int64_t{i} + 1 - 64;
+            const int64_t b = 2 * int64_t{k} + 1 - 64;
+            if (a * a + b * b <= 4 * 5 * 5) c.disc_half_r.push_back(v_index(s, i, 76, k));
+            if (a * a + b * b <= 4 * 10 * 10) c.disc_r.push_back(v_index(s, i, 76, k));
         }
     }
-    const double measured = sum / window;
-    const double expected = vh * (1.0 + 2.0 / std::sqrt(5.0));
-    const bool within = std::fabs(measured - expected) <= 0.1 * expected;
+    return c;
+}
+
+// One run from still air, the probes after every step. Seed 0: the run as it
+// is, spread_actuator() each step. Any other seed: the disc's increments with
+// kC8Nudged picks from the touched faces put 1 ulp up, copied in each step.
+// Copying the unnudged increments in reproduces the run to the bit (B4).
+struct C8Run {
+    std::vector<std::array<double, kC8Probes>> probes;
+    std::optional<uint32_t> fault_at;
+};
+
+[[nodiscard]] C8Run c8_run(const C8Case& c, uint64_t seed, uint32_t steps) {
+    std::vector<float> fixed;
+    if (seed != 0) {
+        fixed = c.spread;
+        SplitMix rng{seed};
+        for (std::size_t m = 0; m < kC8Nudged; ++m) {
+            const std::size_t i = c.touched[rng.next() % c.touched.size()];
+            fixed[i] = std::nextafter(fixed[i], std::numeric_limits<float>::infinity());
+        }
+    }
+    const auto nu = static_cast<std::ptrdiff_t>(c.faces[0]);
+    const auto nv = static_cast<std::ptrdiff_t>(c.faces[1]);
+    MacGrid g = *make_grid(c.shape, c.bc);
+    FluidScratch s = *make_fluid_scratch(g, c.bc, c.cfg);
+    const auto axis = [&](uint32_t j) {
+        const auto v = [&](uint32_t i, uint32_t k) { return static_cast<double>(g.v[v_index(c.shape, i, j, k)]); };
+        return -0.25 * (v(31, 31) + v(32, 31) + v(31, 32) + v(32, 32));
+    };
+    const auto mean = [&](const std::vector<std::size_t>& faces) {
+        double sum = 0.0;
+        for (const std::size_t f : faces) sum += static_cast<double>(g.v[f]);
+        return -sum / static_cast<double>(faces.size());
+    };
+    C8Run out;
+    out.probes.reserve(steps);
+    for (uint32_t k = 0; k < steps; ++k) {
+        if (seed == 0) {
+            spread_actuator(c.disc, c.shape, c.rho, c.cfg.h, s.du, s.dv, s.dw);
+        } else {
+            std::copy(fixed.begin(), fixed.begin() + nu, s.du.begin());
+            std::copy(fixed.begin() + nu, fixed.begin() + nu + nv, s.dv.begin());
+            std::copy(fixed.begin() + nu + nv, fixed.end(), s.dw.begin());
+        }
+        if (fluid_step(g, c.bc, c.cfg, s).fault != FluidFault::none) {
+            out.fault_at = k + 1;
+            break;
+        }
+        out.probes.push_back({axis(86), axis(76), axis(66), axis(56), mean(c.disc_half_r), mean(c.disc_r)});
+    }
+    return out;
+}
+
+// The runs for `seeds`, kC8Threads at a time. Each run is single-threaded, so
+// its bits are the same however many run beside it.
+[[nodiscard]] std::vector<C8Run> c8_runs(const C8Case& c, const std::vector<uint64_t>& seeds, uint32_t steps) {
+    std::vector<C8Run> runs(seeds.size());
+    for (std::size_t base = 0; base < seeds.size(); base += kC8Threads) {
+        std::vector<std::thread> pool;
+        for (std::size_t m = base; m < std::min<std::size_t>(seeds.size(), base + kC8Threads); ++m) {
+            pool.emplace_back([&, m] { runs[m] = c8_run(c, seeds[m], steps); });
+        }
+        for (std::thread& t : pool) t.join();
+    }
+    return runs;
+}
+
+// A probe's mean over steps first to last, counted from 1.
+[[nodiscard]] double window_mean(const C8Run& r, C8Probe p, uint32_t first, uint32_t last) {
+    double sum = 0.0;
+    for (uint32_t k = first; k <= last; ++k) sum += r.probes[k - 1][p];
+    return sum / static_cast<double>(last - first + 1);
+}
+
+TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {
+    if (!validation_enabled()) {
+        GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the actuator-disc wake, eight runs (~11 min)";
+    }
+    const C8Case c = make_c8();
+    ASSERT_TRUE(check_disc(c.disc, c.shape).has_value());
+    ASSERT_EQ(c.disc_half_r.size(), 80u);
+    // Fixed before this run: run 0 as it is, and seven seeds the note's
+    // measurement did not use.
+    const std::vector<uint64_t> seeds = {0, 0x1C8, 0x1C9, 0x1CA, 0x1CB, 0x1CC, 0x1CD, 0x1CE};
+    const std::vector<C8Run> runs = c8_runs(c, seeds, kC8Steps);
+    std::vector<double> disc;
+    std::vector<double> axis;
+    for (std::size_t m = 0; m < runs.size(); ++m) {
+        ASSERT_FALSE(runs[m].fault_at.has_value()) << "run " << m << " faulted at step " << *runs[m].fault_at;
+        disc.push_back(window_mean(runs[m], kDiscHalfR, 385, kC8Steps));
+        axis.push_back(window_mean(runs[m], kAxis2R, 257, 384));
+    }
+    const double expected = c.vh * (1.0 + 2.0 / std::sqrt(5.0));
+    double mean = 0.0;
+    for (const double d : disc) mean += d;
+    mean /= static_cast<double>(disc.size());
+    std::size_t worst = 0;
+    double deviation = 0.0;
+    for (std::size_t m = 0; m < disc.size(); ++m) {
+        if (std::fabs(disc[m] - expected) > std::fabs(disc[worst] - expected)) worst = m;
+        deviation = std::max(deviation, std::fabs(disc[m] - mean));
+    }
+    const bool mean_within = std::fabs(mean - expected) <= 0.1 * expected;
+    const bool worst_within = std::fabs(disc[worst] - expected) <= 0.1 * expected;
+    std::string seed_list;
+    for (std::size_t m = 1; m < seeds.size(); ++m) {
+        char hex[16];
+        std::snprintf(hex, sizeof hex, "%s0x%llX", m == 1 ? "" : ", ", static_cast<unsigned long long>(seeds[m]));
+        seed_list += hex;
+    }
+    const auto [axis_lo, axis_hi] = std::minmax_element(axis.begin(), axis.end());
     std::printf("=== validation record: C8 actuator-disc far wake ===\n"
                 "path: %s\n"
                 "config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
-                "h = %.6f, n_v 2, %u steps\n"
-                "measure: axial velocity on the axis 2R below the disc, mean of the last %u steps = %.4f m/s\n"
-                "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
-                "tolerance: within 10%% (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run)\n"
-                "verdict: %s\n",
-                path_line().c_str(), static_cast<double>(disc.thrust), static_cast<double>(cfg.h), steps, window,
-                measured, expected, verdict(within));
-    EXPECT_TRUE(within) << measured << " against " << expected;
+                "h = %.6f, n_v 2, %u steps; eight runs that differ only by a nudge in the test, 1 ulp up on %zu "
+                "increments, seed s: run 0 as it is, runs 1 to 7 seeds %s. So the spread is the measure's "
+                "sensitivity to rounding, not a physical uncertainty\n"
+                "measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R "
+                "below the disc, steps 385 to %u = %.4f m/s\n"
+                "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8); the "
+                "vortex-cylinder model's mean over the same faces is 7.5909 m/s\n"
+                "tolerance: within 10%% (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run; the "
+                "measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)\n"
+                "verdict: %s\n"
+                "measure: the worst of the eight runs, run %zu, the same mean = %.4f m/s\n"
+                "reference: momentum theory, %.4f m/s, as above\n"
+                "tolerance: within 10%% (as above: the verdict holds across the spread)\n"
+                "verdict: %s\n"
+                "measure: the eight runs' largest deviation from their mean, the same mean = %.4f m/s\n"
+                "reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a "
+                "case judged past its horizon)\n"
+                "tolerance: none\n"
+                "verdict: report only\n"
+                "measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs %.4f "
+                "to %.4f) = %.4f m/s\n"
+                "reference: momentum theory, %.4f m/s, as above\n"
+                "tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)\n"
+                "verdict: report only\n",
+                path_line().c_str(), static_cast<double>(c.disc.thrust), static_cast<double>(c.cfg.h), kC8Steps,
+                kC8Nudged, seed_list.c_str(), kC8Steps, mean, expected, verdict(mean_within), worst, disc[worst],
+                expected, verdict(worst_within), deviation, *axis_lo, *axis_hi, axis[0], expected);
+    EXPECT_TRUE(mean_within) << mean << " against " << expected;
+    EXPECT_TRUE(worst_within) << "run " << worst << ": " << disc[worst] << " against " << expected;
+}
+
+// The measurement behind C8's measure: every probe after every step, opt-in.
+// SPADE_C8_ENSEMBLE=<first>:<count>[:<steps>] runs runs first to
+// first + count - 1, each <steps> long (768 if left out): run 0 as it is, run
+// m > 0 from seed 0xC8 + m - 1, so runs 1 to 3 are B4's three. It repeats the
+// note's 16 runs to the bit (docs/design/test-docs/2026-10-22-c8-spread.md).
+// A measuring tool: it prints no record, and asserts only healthy runs.
+[[nodiscard]] std::optional<std::array<uint32_t, 3>> c8_ensemble_from_env() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* text = std::getenv("SPADE_C8_ENSEMBLE");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (text == nullptr) return std::nullopt;
+    char* end = nullptr;
+    const auto first = static_cast<uint32_t>(std::strtoul(text, &end, 10));
+    if (*end != ':') return std::nullopt;
+    const auto count = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
+    uint32_t steps = kC8Steps;
+    if (*end == ':') steps = static_cast<uint32_t>(std::strtoul(end + 1, &end, 10));
+    if (*end != '\0' || count == 0 || steps < 384) return std::nullopt;
+    return std::array<uint32_t, 3>{first, count, steps};
+}
+
+TEST(AirflowValidation, C8OneUlpEnsembleProbes) {
+    const auto ens = c8_ensemble_from_env();
+    if (!ens) GTEST_SKIP() << "set SPADE_C8_ENSEMBLE=<first>:<count>[:<steps>] to run C8's one-ulp ensemble";
+    const auto [first, count, steps] = *ens;
+    const C8Case c = make_c8();
+    ASSERT_TRUE(check_disc(c.disc, c.shape).has_value());
+    std::vector<uint64_t> seeds;
+    for (uint32_t m = first; m < first + count; ++m) seeds.push_back(m == 0 ? 0 : 0xC8ull + m - 1);
+    const std::vector<C8Run> runs = c8_runs(c, seeds, steps);
+    std::printf("c8spread: C8's case, %u steps; run 0 as it is, run m > 0 puts %zu of the disc's %zu increments "
+                "1 ulp up from seed 0xC8 + m - 1; disc 0.5R holds %zu faces, disc R %zu\n",
+                steps, kC8Nudged, c.touched.size(), c.disc_half_r.size(), c.disc_r.size());
+    std::printf("c8spread: member step axisR axis2R axis3R axis4R disc05R disc1R\n");
+    for (uint32_t m = 0; m < count; ++m) {
+        const C8Run& r = runs[m];
+        EXPECT_FALSE(r.fault_at.has_value()) << "run " << first + m << " faulted at step " << *r.fault_at;
+        for (std::size_t k = 0; k < r.probes.size(); ++k) {
+            const auto& p = r.probes[k];
+            std::printf("c8spread: %u %zu %.7f %.7f %.7f %.7f %.7f %.7f\n", first + m, k + 1, p[kAxisR], p[kAxis2R],
+                        p[kAxis3R], p[kAxis4R], p[kDiscHalfR], p[kDiscR]);
+        }
+        if (r.probes.size() >= 384) {
+            std::printf("c8spread-member: %u seed 0x%llX C8's first measure (axis 2R, steps 257 to 384) %.6f m/s\n",
+                        first + m, static_cast<unsigned long long>(seeds[m]), window_mean(r, kAxis2R, 257, 384));
+        }
+    }
 }
 
 }  // namespace
