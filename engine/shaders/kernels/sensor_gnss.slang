@@ -12,7 +12,8 @@
 // ===========================================================================
 // WHAT THIS KERNEL DOES NOT CONTAIN, AND WHY THAT IS THE DESIGN
 //
-// NO exp(). NO DIVISION. gnss.hpp section 2's Gauss-Markov model is
+// NO exp(). NO division in the recursion: log32's division is div32_ftz, exact
+// (E1/E2). gnss.hpp section 2's Gauss-Markov model is
 //
 //   bias <- bias * exp(-dt/tau) + N(0, sigma_bias * sqrt(1 - exp(-2 dt/tau)))
 //
