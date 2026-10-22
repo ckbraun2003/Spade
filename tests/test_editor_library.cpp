@@ -320,6 +320,42 @@ TEST(EditorLibraryFiles, AnEntryThatWontLoadIsNamedAndTheRestStillLoad) {
     EXPECT_NE(load.problems[0].find("'Bad'"), std::string::npos) << load.problems[0];
 }
 
+// THUMBNAILS (N14b): each item carries the image its entry names, decoded,
+// for the panel's tile.
+TEST(EditorLibraryFiles, TheDefaultLibrarysItemsCarryTheirThumbnails) {
+    const ed::LibraryLoad load = ed::load_library_items(library_index());
+    EXPECT_TRUE(load.problems.empty()) << load.problems.front();
+    ASSERT_FALSE(load.items.empty());
+    for (const ed::LibraryItem& item : load.items) {
+        SCOPED_TRACE(item.name);
+        ASSERT_TRUE(item.thumbnail.has_value());
+        EXPECT_EQ(item.thumbnail->width, 96u);
+        EXPECT_EQ(item.thumbnail->height, 96u);
+        EXPECT_EQ(item.thumbnail->rgba.size(), 96u * 96u * 4u);
+    }
+}
+
+// A thumbnail that won't decode is named, in the reader's words, and its
+// entry is still listed, as a name without a tile.
+TEST(EditorLibraryFiles, AThumbnailThatWontDecodeIsNamedAndItsEntryIsStillListed) {
+    support::TempDir tmp;
+    std::filesystem::copy_file(library_file("primitives/box.object.yaml"), tmp.path() / "box.object.yaml");
+    support::write_bytes(tmp.path() / "box.png", "not an image");
+    support::write_bytes(tmp.path() / "library.yaml",
+                         "library_version: 1\n"
+                         "entries:\n"
+                         "  - {name: \"Box\", category: \"primitives\", file: \"box.object.yaml\", thumbnail: "
+                         "\"box.png\"}\n");
+    const ed::LibraryLoad load = ed::load_library_items(tmp.path() / "library.yaml");
+    ASSERT_EQ(load.items.size(), 1u);
+    EXPECT_EQ(load.items[0].name, "Box");
+    EXPECT_FALSE(load.items[0].thumbnail.has_value());
+    ASSERT_EQ(load.problems.size(), 1u);
+    EXPECT_NE(load.problems[0].find("'Box'"), std::string::npos) << load.problems[0];
+    EXPECT_NE(load.problems[0].find("box.png"), std::string::npos) << load.problems[0];
+    EXPECT_NE(load.problems[0].find("not a PNG"), std::string::npos) << load.problems[0];
+}
+
 TEST(EditorLibraryFiles, AnIndexThatWontLoadIsNamed) {
     support::TempDir tmp;
     const std::filesystem::path missing = tmp.path() / "library.yaml";

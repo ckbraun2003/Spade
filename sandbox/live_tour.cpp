@@ -34,6 +34,7 @@
 #include "editor_session.hpp"
 #include "end_goal_checks.hpp"
 #include "gl_target_sink.hpp"
+#include "png_reader.hpp"
 #include "png_writer.hpp"
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
@@ -1004,7 +1005,8 @@ void editor_tour(Tour& t, const fs::path& assets) {
     });
 
     // N14a (INT-14): the Library panel lists the default library's index, in
-    // its order (Test/Docs' lists-index).
+    // its order (Test/Docs' lists-index). N14b: each entry's tile shows its own
+    // thumbnail file's image (thumbnails).
     t.step("editor", "library", [&] {
         if (!open()) return;
         const Result<scene::Library> index = scene::load_library(assets / "library" / "library.yaml");
@@ -1015,6 +1017,69 @@ void editor_tour(Tour& t, const fs::path& assets) {
         for (const editor::LibraryItem& i : w().panels().library) shown.push_back({i.name, i.category, i.file});
         const end_goal::Verdict listed = end_goal::lists_index(want, shown);
         s.check(listed.ok, "lists-index", listed.detail);
+
+        // thumbnails: each file decoded here, never the panel's copy. The
+        // panel scrolls, so the step brings the first tile not yet seen into
+        // view, grabs the frame, and cuts out every tile the panel reports
+        // wholly visible, until each is seen or a scroll shows nothing new.
+        std::vector<png::Image> files;
+        for (const scene::LibraryEntry& e : index->entries) {
+            Result<png::Image> f = png::read_file(index->dir / e.thumbnail);
+            if (!f) {
+                s.check(false, "thumbnails", "thumbnails: absent: '" + e.name + "': " + f.error().context);
+                return;
+            }
+            files.push_back(std::move(*f));
+        }
+        std::vector<std::vector<uint8_t>> cut(files.size());  // each tile as shown, top row first
+        std::vector<ViewportRect> where(files.size());
+        std::vector<bool> seen(files.size(), false);
+        for (std::size_t page = 0; page < files.size(); ++page) {
+            const auto next = std::find(seen.begin(), seen.end(), false);
+            if (next == seen.end()) break;
+            w().panels().library_scroll_to = static_cast<std::size_t>(next - seen.begin());
+            then(3);  // the scroll lands, then a frame draws the tiles there
+            t.recorder().want_grab();
+            then(1);
+            const std::vector<uint8_t>& frame = t.recorder().grabbed();
+            const uint32_t fw = t.recorder().grabbed_width();
+            const uint32_t fh = t.recorder().grabbed_height();
+            if (frame.empty()) {
+                s.check(false, "grabbed", "absent: no frame captured for the library's tiles");
+                return;
+            }
+            const std::vector<std::optional<ViewportRect>>& tiles = w().panels().library_tiles;
+            bool any = false;
+            for (std::size_t i = 0; i < files.size() && i < tiles.size(); ++i) {
+                const std::optional<ViewportRect>& r = tiles[i];
+                if (seen[i] || !r || r->empty() || r->x + r->width > fw || r->y + r->height > fh) continue;
+                const std::size_t row_bytes = static_cast<std::size_t>(r->width) * 4u;
+                cut[i].resize(row_bytes * r->height);
+                for (uint32_t row = 0; row < r->height; ++row) {
+                    // The frame's rows run bottom-up; the tile's y runs down from the top.
+                    const std::size_t from =
+                        (static_cast<std::size_t>(fh - 1u - (r->y + row)) * fw + r->x) * 4u;
+                    std::copy_n(frame.begin() + static_cast<std::ptrdiff_t>(from), row_bytes,
+                                cut[i].begin() + static_cast<std::ptrdiff_t>(row * row_bytes));
+                }
+                where[i] = *r;
+                seen[i] = true;
+                any = true;
+            }
+            if (!any) break;
+        }
+        w().panels().library_scroll_to = 0;
+        std::vector<end_goal::PixelsView> shown_tiles;
+        std::vector<end_goal::PixelsView> decoded;
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            decoded.push_back(end_goal::PixelsView{files[i].width, files[i].height,
+                                                   static_cast<std::size_t>(files[i].width) * 4u, files[i].rgba});
+            shown_tiles.push_back(seen[i] ? end_goal::PixelsView{where[i].width, where[i].height,
+                                                                 static_cast<std::size_t>(where[i].width) * 4u, cut[i]}
+                                          : end_goal::PixelsView{});
+        }
+        const end_goal::Verdict thumbs = end_goal::thumbnails(shown_tiles, decoded);
+        s.check(thumbs.ok, "thumbnails", thumbs.detail);
         then(10);
     });
 

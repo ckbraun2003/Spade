@@ -270,6 +270,7 @@ class EditorWorkspace {
         }
         LibraryLoad load = load_library_items(assets_ / "library" / "library.yaml");
         panels_.library = std::move(load.items);
+        ++panels_.library_generation;
         panels_.library_problems = std::move(load.problems);
     }
 
@@ -407,6 +408,7 @@ class EditorWorkspace {
                     return;
                 }
                 panels_.library.push_back(std::move(*item));
+                ++panels_.library_generation;
                 panels_.armed = panels_.library.size() - 1;
                 panels_.status.clear();
                 return;

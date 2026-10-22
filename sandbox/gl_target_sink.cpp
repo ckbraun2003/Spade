@@ -34,6 +34,7 @@
 #include "gl_target_sink.hpp"
 
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
+#include "editor_panels.hpp"     // the editor's panel model: its library's thumbnails become textures here
 #include "editor_panels_ui.hpp"  // the editor's panels, drawn; the workspace decides
 
 #include <algorithm>
@@ -159,6 +160,34 @@ void glfw_error_callback(int code, const char* description) {
 // handle in some builds. A C-style cast is the one spelling that is correct
 // for both, which is why it is here rather than a static_cast.
 ImTextureID as_texture_id(GLuint t) { return (ImTextureID)(std::uintptr_t)t; }
+
+// The editor's library thumbnails as textures (N14b), uploaded again only
+// when the library changes: GL_NEAREST, so a tile drawn at whole pixels is
+// its PNG pixel for pixel (the tour's thumbnails check), and clamped, so no
+// edge texel wraps. An item without a thumbnail gets 0.
+void sync_library_textures(editor::EditorPanels& panels, std::vector<GLuint>& textures,
+                           std::optional<uint64_t>& generation) {
+    if (generation == panels.library_generation && textures.size() == panels.library.size()) return;
+    if (!textures.empty()) glDeleteTextures(static_cast<GLsizei>(textures.size()), textures.data());
+    textures.assign(panels.library.size(), 0u);
+    panels.library_textures.assign(panels.library.size(), 0u);
+    for (std::size_t i = 0; i < panels.library.size(); ++i) {
+        const std::optional<png::Image>& thumbnail = panels.library[i].thumbnail;
+        if (!thumbnail) continue;
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(thumbnail->width),
+                     static_cast<GLsizei>(thumbnail->height), 0, GL_RGBA, GL_UNSIGNED_BYTE, thumbnail->rgba.data());
+        textures[i] = t;
+        panels.library_textures[i] = static_cast<std::uintptr_t>(t);
+    }
+    generation = panels.library_generation;
+}
 
 // The framebuffer-object entry points the view's offscreen target needs (see
 // GL_FRAMEBUFFER above), fetched once the context is current.
@@ -321,6 +350,10 @@ struct GlTargetSink::Impl {
     // the sink only reads and writes it while drawing a panel.
     DronePanelModel* drone = nullptr;
     editor::EditorPanels* editor = nullptr;
+    // The editor's library thumbnails as textures (N14b), one per item (0 for
+    // none), and the library generation they were uploaded for.
+    std::vector<GLuint> library_textures;
+    std::optional<uint64_t> library_generation;
 
     // What the active path does not draw ("" for none); see set_gap_line().
     std::string gap_line;
@@ -349,6 +382,9 @@ struct GlTargetSink::Impl {
         if (view_fbo != 0) fbo_api.delete_framebuffers(1, &view_fbo);
         if (view_depth != 0) fbo_api.delete_renderbuffers(1, &view_depth);
         if (view_color != 0) glDeleteTextures(1, &view_color);
+        if (!library_textures.empty()) {
+            glDeleteTextures(static_cast<GLsizei>(library_textures.size()), library_textures.data());  // 0s are skipped
+        }
         if (window != nullptr) {
             glfwDestroyWindow(window);
         }
@@ -900,6 +936,7 @@ void GlTargetSink::draw_overlay() {
         draw_drone_panel(*impl_->drone);
     }
     if (impl_->editor != nullptr) {
+        sync_library_textures(*impl_->editor, impl_->library_textures, impl_->library_generation);
         draw_editor_panels(*impl_->editor);
     }
     draw_live_smoke_text();
