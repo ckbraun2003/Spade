@@ -39,10 +39,10 @@ model:
   body: {mass: 0.0289999992, inertia_diag: [1.39499998e-05, 2.17300003e-05, 1.436e-05]}
   proxy_radius: 0.0632250011
   rotors:
-    - {local_pos: [0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0628002211, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0628002211, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [-0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0628002211, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [-0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0628002211, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [-0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [-0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.000993558322, 0.00178033672, 0.00104500831], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
@@ -230,7 +230,7 @@ model:
             - {prim: box, transform: 0, params: [0.0149999997, 0.00350000011, 0.00899999961, 0]}
   propulsion:
     kv: 1466.076571675237
-    resistance: 1.6500000000000001
+    resistance: 1.24
     no_load_current: 0.06
     current_min: 0
     current_max: 1.5
@@ -246,7 +246,7 @@ model:
     cells_series: 1
     cells_parallel: 1
     cell_resistance: 0.08
-    cell_cutoff_voltage: 3.3
+    cell_cutoff_voltage: 3
     pack_polarization_resistance: 0
     pack_current_max: 5
     ocv_table: [3.29999995, 3.34687495, 3.39374995, 3.44062495, 3.48749995, 3.53437495, 3.58124995, 3.609375, 3.625, 3.640625, 3.65625, 3.671875, 3.6875, 3.703125, 3.71875, 3.734375, 3.75, 3.77083325, 3.79166675, 3.8125, 3.83333325, 3.85416675, 3.875, 3.89583325, 3.91666675, 3.9375, 3.96562505, 4.00468731, 4.04374981, 4.08281231, 4.12187481, 4.16093731, 4.19999981]

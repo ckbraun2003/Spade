@@ -280,8 +280,12 @@ constexpr std::uint32_t kLimitFlags = pf::duty_clamped | pf::current_limited | p
 
 // The state of charge at which the chain's LOADED bus reads `volts` at `duty`,
 // by bisection, since the bus voltage rises with the state of charge
-// (report-only use). Outside the pack's range it lands at the nearer end, so
-// the caller reports the bus voltage it reached.
+// (report-only use). A point the pack's cutoff or emptiness holds counts as
+// below, since the cutoff pins the bus AT the cutoff voltage, so a row at the
+// cutoff never reads as reached from beneath it. (cf_1s_250's cutoff is 3.0 V,
+// below the top row's loaded 3.30 V: Physics, 2026-10-22.) Outside the pack's
+// range it lands at the nearer end, so the caller reports the bus voltage it
+// reached.
 [[nodiscard]] double soc_at_loaded_bus(const spade::vehicles::PropulsionChain& chain, double duty, double density,
                                        double volts) {
     double lo = 0.0;
@@ -289,13 +293,13 @@ constexpr std::uint32_t kLimitFlags = pf::duty_clamped | pf::current_limited | p
     for (int i = 0; i < 60; ++i) {
         const double mid = 0.5 * (lo + hi);
         const SteadyPoint p = spade::vehicles::steady_state_at_duty(chain, duty, density, 0.0, mid);
-        if (p.bus_voltage < volts) {
+        if (p.bus_voltage < volts || (p.flags & (pf::battery_cutoff | pf::battery_empty)) != 0) {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    return 0.5 * (lo + hi);
+    return hi;
 }
 
 // The standard report of a model's hover and full duty (the draft's "Report
@@ -976,6 +980,8 @@ TEST(LibraryDrones, CrazyfliesPackCurrentIsTheSumOfDutyTimesWindingCurrent) {
                                       std::pair{ld::kCfTopRowDuty, ld::kCfTopRowBusVoltage}}) {
         const double soc = soc_at_loaded_bus(chain, duty, density, volts);
         const SteadyPoint p = spade::vehicles::steady_state_at_duty(chain, duty, density, 0.0, soc);
+        ASSERT_GT(p.current, 0.0) << "duty " << duty << ": a stopped motor would make this vacuous; flags "
+                                  << p.flags;
         const double sum = 4.0 * p.duty * p.duty_scale * p.current;
         EXPECT_NEAR(p.pack_current, sum, 1e-12 * sum) << "duty " << duty << ", flags " << p.flags;
         EXPECT_LT(p.pack_current, 4.0 * p.current)

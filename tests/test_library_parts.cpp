@@ -601,7 +601,13 @@ void set_no_polarization(BatteryPart& b) {
     PART_FIELD(b, cells_parallel, 1u, assumed(kOneParallel));
     PART_FIELD(b, cell_capacity, 0.25, cite(Grade::published, kCfDatasheet));
     PART_FIELD(b, cell_resistance, 0.08, assumed("typical 250 mAh cell"));
-    set_lipo_cell(b);
+    // set_lipo_cell()'s, but for the cutoff: a 3.3 V cutoff is a resting
+    // figure, and under load a 1S cell sits below it, as Bitcraze's top row
+    // ran at 3.30 V loaded (Physics, 2026-10-22).
+    PART_FIELD(b, cell_voltage_nominal, 3.7, assumed(kLipoNominal));
+    PART_FIELD(b, cell_voltage_full, 4.2, assumed(kLipoFull));
+    PART_FIELD(b, cell_voltage_cutoff, 3.0, assumed("below the 3.30 V Bitcraze's top row ran at, loaded"));
+    PART_FIELD(b, ocv_table, lipo_ocv(), assumed(kLipoOcv));
     PART_FIELD(b, c_rating, 20.0, assumed("5 A covers ~4.8 A"));
     set_no_polarization(b);
     PART_FIELD(b, mass, 0.0072, assumed("typical 1S 250 mAh with lead"));
