@@ -207,6 +207,14 @@ Each test is shown red under its named mutation by mutate-and-undo. New tests go
   - It also goes into §4.6's and the Summary's "banded" wording (`2026-10-05-airflow-design.md:9`, `:448-450`).
 - Physics' `04-verification` and `07-status` rows change as kernels go bit-equal (B5 on), not in this branch.
 
+## Corrections from Tasks 0 and 4 (2026-10-22; the lead's approval)
+
+- **D8 does not arise.** The 3060 Ti (driver 572.83) detects tininess after rounding, as the CPU scope does. All 20 rows of the edge test match (`GpuDenormProbe`, `tests/test_gpu_denorm_probe.cpp`), so §4.5 names no divergence.
+- **D2 is settled.** 154 bit scans of `set_solids`' outputs found no subnormal: every CPU suite that calls it, S1 and S2 at their record resolutions, and D1's parts on D1's grid.
+- **Task 1's FTZ-only mutation** (0x9F80) needs a "DAZ to normal" row, 0x00400000 × 0x40800000 → 0x01000000 without DAZ. The "daz" row alone stays green under it, since FTZ zeroes a subnormal product too.
+- **The hand-restore mutation** goes inside the noinline body. The wrapper has only one return.
+- **The wall load's moment** is tested about a box corner. About the sphere's centre it is 0 even unguarded, since the arm lies along the area vector.
+
 ## TD-1 candidates
 
 F8's table is the list. Every row marked "likely", "possible" or "unlikely" is run in Task 5. The rows marked "not exposed" (frame goldens, scenario goldens) and "cannot fail" (self-comparisons) are not. The live smoke is a video and pins nothing.
