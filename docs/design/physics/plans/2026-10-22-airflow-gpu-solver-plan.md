@@ -76,6 +76,7 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
     - each refusal is named, including a `maxStorageBufferRange + 4` buffer refused before allocation;
     - timestamps are reported or empty.
   - A4: `tile_sum` and `tile_dot` give the same bits at workgroup sizes 32, 64 and 128, and the same bits as `reduce.hpp`.
+  - *Amended 2026-10-21 (Physics' ruling on B1):* `tile_dot` moves to B5, its only consumer, the CG's dots. B1 delivers `tile_sum` on set 1, with push {field, pass, cell_count, slot}.
 - **B2, the projection without solids:**
   - kernels: divergence, red-black smoothing, residual, restrict, prolong, coarse, gradient subtract;
   - per-kernel bands at 16³;
@@ -94,6 +95,7 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
 - **B4, rotor discs:**
   - `actuator_gather`, banded against `actuator.cpp` on the reference quad's four discs;
   - C8's actuator-disc case: the GPU's downwash ratio against the CPU's.
+  - *Amended 2026-10-21 (C8's re-cut):* C8 on the GPU: banded against the CPU to T_p, then judged against momentum theory with the CPU's spread band (01-verification, 6b77cbc; the C8 spread study docs/design/test-docs/2026-10-22-c8-spread.md).
 - **B5, solids (P2 on the GPU):**
   - θ in divergence and in the gradient subtract;
   - PCG with tile dots, with `kSolidsCgIterations`;
@@ -109,6 +111,17 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
   - step time, and the time for the D1 film's 0.50 s;
   - the GL renderer's VRAM, measured to set the reserve;
   - the comparison against a CPU run of the same box for as many steps as the CPU affords, inside the band to T_p.
+  - *Amended 2026-10-21 (the box, and the step time expected before B7 runs):* the D1 box is 240 × 177 × 168 at 4 mm (7.14M cells). The CPU reference takes 19.7 s per step at the CG floor of 8 (residual 4.97e-5 / 4.05e-5; measured 2026-10-21 on physics/mg-odd-axes). **The expected GPU step is about 95 ms on the 3060 Ti**, from bandwidth:
+    - bytes moved per cell per step, fp32:
+      - the solids' projection, about 3.3 KB: nine symmetric V(2,2) preconditions (the first, then one per CG iteration) at about 265 B each (four fine sweeps, each colour reading p, b and three face weights; residual, restrict, prolong; coarser levels about 1/7 more), plus CG's operator, two dots, three updates, gauge and mask at about 110 B per iteration;
+      - viscosity, about 0.7 KB: 8 red-black sweeps × 3 components × about 28 B;
+      - advection, about 0.16 KB: two MacCormack passes, each reading u, v and w and writing or reading hat, lo and hi;
+      - the rest (divergence, gradient subtract, sources, boundaries, extrapolation, health), about 0.15 KB;
+      - total about 4.3 KB;
+    - 4.3 KB × 7.14M cells ≈ 31 GB per step; at 80% of 448 GB/s (358 GB/s), ≈ 86 ms;
+    - plus about 1,000 dispatches (the coarse levels are latency-bound) at about 8 µs each, ≈ 8 ms;
+    - so ≈ 95 ms per step, about 200× the CPU, and about 2 minutes for the D1 film's 0.50 s (about 1,300 steps).
+    - **If B7 misses it by more than 2× (above 190 ms per step):** profile per kernel with the runner's pass timings (`durations_ns`), report to the lead before optimising, and bring P2c forward if the CG count drives the time.
 - **B8, records and grade:**
   - each band's record (Test/Docs' format);
   - the module's GPU grade placed in `04-verification.md`, its row in `07-status.md`;
