@@ -36,8 +36,9 @@
 //      the embedded SPIR-V of every compiled kernel against
 //      engine/testing/spirv_scan.hpp's policy: NoContraction on every
 //      contractable float op, no sum-of-products opcode, no fp32 denormal
-//      mode requested, and (for modules held to the exact profile) no OpFDiv
-//      and no sqrt.
+//      mode requested, and (for modules held to the exact profile) no Sqrt,
+//      and an OpFDiv or InverseSqrt only as an exact operation's estimate,
+//      traced to an integer (E1/E2 as restated, 2026-10-22).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -440,9 +441,12 @@ const SpirvModule kSpirvModules[] = {
     // whole -- log32/exp32/sin32/cos32 and the correctly-rounded div32 -- so
     // scanning it IS scanning the ported kernels. EXACT, as the global
     // constraint requires of this module specifically: NoContraction on every
-    // contractable op, no sum-of-products opcode, no OpFDiv (the one division
-    // in log32 is respelled as integer long division; see that file's division
-    // audit) and no sqrt (there is none to respell).
+    // contractable op, no sum-of-products opcode, and E1/E2 as the user
+    // restated them on 2026-10-22. An OpFDiv or InverseSqrt may appear only as
+    // the estimate inside an exact operation, and the scan traces each one to
+    // an integer conversion (spirv_scan.hpp, pass 3). The functions allowed to
+    // hold one are listed in fp32_math.slang, each with its injected-error
+    // battery test, which proves the correction exact. No Sqrt at all.
     {gen::kSpvVariants_fp32_math_probe, spade::testing::SpirvProfile::exact},
     // S6 Task 6's three ported kernels, under PARITY -- P1 (NoContraction on
     // every contractable op), P2 (no sum-of-products opcode) and P3 (no fp32
