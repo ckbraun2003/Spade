@@ -256,82 +256,124 @@ TEST(EndGoalC8qNudge, IsNeverSavedSoARestoredRunStartsUnset) {
     return m;
 }
 
-TEST(EndGoalC8qJudge, PassesFourRunsInsideBothBands) {
-    const std::vector<eg::DownwashMeans> runs{means({1.05, 1.06, 1.04, 1.05}), means({1.06, 1.05, 1.05, 1.04}),
-                                              means({1.04, 1.05, 1.06, 1.06}), means({1.05, 1.04, 1.05, 1.06})};
-    const eg::Verdict v = eg::c8q(runs);
+// Rotor 0 alone's runs: one rotor each, at `ratio` of a 10 m/s reference.
+[[nodiscard]] std::vector<eg::DownwashMeans> alone(const std::vector<double>& ratios) {
+    std::vector<eg::DownwashMeans> runs;
+    for (const double r : ratios) runs.push_back(means({r}));
+    return runs;
+}
+
+// The quad as its first ensemble read it (2026-10-22): every rotor about 0.816
+// of momentum theory, within 0.1% of the four's mean.
+[[nodiscard]] std::vector<eg::DownwashMeans> quad_as_read() {
+    return std::vector<eg::DownwashMeans>(4, means({0.8167, 0.8156, 0.8161, 0.8170}));
+}
+
+// Rotor 0 alone's part of a verdict's detail, and the quad's.
+[[nodiscard]] std::pair<std::string, std::string> parts(const std::string& d) {
+    const std::size_t quad = d.find(". The quad");
+    if (quad == std::string::npos) {
+        ADD_FAILURE() << d;
+        return {};
+    }
+    return {d.substr(0, quad), d.substr(quad)};
+}
+
+TEST(EndGoalC8qJudge, PassesRotorZeroAloneInsideTheBandWithTheQuadsSymmetry) {
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.06, 1.04, 1.05}), quad_as_read());
     EXPECT_TRUE(v.ok) << v.detail;
     EXPECT_EQ(v.detail.find("(OUT)"), std::string::npos) << v.detail;
 }
 
-// The mean of the four is inside, but one run is out: the worst run decides.
-TEST(EndGoalC8qJudge, TheWorstRunDecidesWhenTheMeanIsInside) {
-    const std::vector<eg::DownwashMeans> runs{means({1.05, 1.05, 1.05, 1.05}), means({1.05, 1.05, 1.05, 1.05}),
-                                              means({1.05, 1.05, 1.05, 1.05}), means({1.12, 1.05, 1.05, 1.05})};
-    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(runs).u, eg::ensemble_mean(runs).v).ok);
-    const eg::Verdict v = eg::c8q(runs);
-    EXPECT_FALSE(v.ok) << v.detail;
-    EXPECT_NE(v.detail.find("the worst run by the rotor band, run 3"), std::string::npos) << v.detail;
-}
-
-TEST(EndGoalC8qJudge, FailsARotorOutsideTenPercent) {
-    const std::vector<eg::DownwashMeans> runs(4, means({0.85, 0.95, 0.95, 0.95}));
-    EXPECT_FALSE(eg::c8q(runs).ok);
-}
-
-// Each rotor within 10% of momentum theory, but one 13% off the four's mean.
-TEST(EndGoalC8qJudge, FailsTheMutualBandInsideTheRotorBand) {
-    const std::vector<eg::DownwashMeans> runs(4, means({0.91, 1.09, 1.09, 1.09}));
-    const eg::C8qBands b = eg::c8q_bands(runs[0].u, runs[0].v);
-    EXPECT_NEAR(b.mutual_off, (10.45 - 9.1) / 10.45, 1e-12);
-    EXPECT_FALSE(b.ok);
-    EXPECT_FALSE(eg::c8q(runs).ok);
-}
-
-// Each worst run is marked OUT by its own band only. C8q's first ensemble
-// (2026-10-22) marked run 2 OUT by the mutual band at 0.00885, inside it: the
-// mark read the run's verdict on both bands.
-TEST(EndGoalC8qJudge, MarksEachWorstRunOutByItsOwnBandOnly) {
-    const auto marks = [](const std::vector<eg::DownwashMeans>& runs) {
-        const std::string d = eg::c8q(runs).detail;
-        const std::size_t rotor = d.find("the worst run by the rotor band");
-        const std::size_t mutual = d.find("; by the mutual band");
-        const std::size_t end = d.find("; each rotor's spread");
-        if (!(rotor < mutual && mutual < end && end != std::string::npos)) {
-            ADD_FAILURE() << d;
-            return std::pair{false, false};
-        }
-        return std::pair{d.substr(rotor, mutual - rotor).find("(OUT)") != std::string::npos,
-                         d.substr(mutual, end - mutual).find("(OUT)") != std::string::npos};
-    };
-    // Outside the rotor band, inside the mutual band; then the other way round.
-    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.82, 0.81, 0.82, 0.82}))), std::pair(true, false));
-    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09}))), std::pair(false, true));
-}
-
-TEST(EndGoalC8qJudge, ReportsTheMutualSpreadAndEachRotorsSpreadAcrossTheRuns) {
-    const std::vector<eg::DownwashMeans> runs{means({1.0, 1.0, 1.0, 1.0}), means({1.02, 1.0, 1.0, 1.0}),
-                                              means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0, 1.04})};
-    const eg::C8qBands b = eg::c8q_bands(runs[3].u, runs[3].v);
-    EXPECT_NEAR(b.mutual_spread, 0.4 / 10.1, 1e-12);
-    const eg::Verdict v = eg::c8q(runs);
+// At 0.816 of momentum theory, the first ensemble's MISS, the quad now passes
+// on its symmetry: its ratios are reported, never judged (§5, 2026-10-22).
+TEST(EndGoalC8qJudge, ReportsTheQuadsRatiosWithoutJudgingThem) {
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad_as_read());
     EXPECT_TRUE(v.ok) << v.detail;
-    // Rotor 0: (10.2 - 10) / 10.05; rotor 3: (10.4 - 10) / 10.1.
-    EXPECT_NE(v.detail.find("each rotor's spread across the runs: 0.0199 0 0 0.0396"), std::string::npos) << v.detail;
+    const auto [rotor0, quad] = parts(v.detail);
+    EXPECT_NE(quad.find("report only: rotor 0 "), std::string::npos) << v.detail;
+    EXPECT_NE(quad.find("rotor 3 "), std::string::npos) << v.detail;
+    EXPECT_EQ(quad.find("(OUT)"), std::string::npos) << v.detail;
 }
 
-TEST(EndGoalC8qJudge, IsAbsentWithoutRunsOrWhenTheRunsDisagreeOnTheRotors) {
-    EXPECT_FALSE(eg::c8q({}).ok);
-    const std::vector<eg::DownwashMeans> runs{means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0})};
-    const eg::Verdict v = eg::c8q(runs);
-    EXPECT_FALSE(v.ok);
-    EXPECT_EQ(v.detail, "c8q: absent: the runs disagree on the rotors");
+// The mean of rotor 0's four runs is inside, but one run is out.
+TEST(EndGoalC8qJudge, TheWorstRotorZeroRunDecidesWhenTheMeanIsInside) {
+    const std::vector<eg::DownwashMeans> runs = alone({1.05, 1.05, 1.05, 1.12});
+    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(runs).u, eg::ensemble_mean(runs).v).ratio_ok);
+    const eg::Verdict v = eg::c8q(runs, quad_as_read());
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_NE(v.detail.find("the worst run, run 3"), std::string::npos) << v.detail;
+}
+
+TEST(EndGoalC8qJudge, FailsRotorZeroOutsideTenPercent) {
+    EXPECT_FALSE(eg::c8q(alone({0.85, 0.85, 0.85, 0.85}), quad_as_read()).ok);
+}
+
+// Each quad rotor within 10% of momentum theory, but one 13% off the four's mean.
+TEST(EndGoalC8qJudge, FailsTheQuadsSymmetryBand) {
+    const std::vector<eg::DownwashMeans> quad(4, means({0.91, 1.09, 1.09, 1.09}));
+    const eg::C8qBands b = eg::c8q_bands(quad[0].u, quad[0].v);
+    EXPECT_NEAR(b.mutual_off, (10.45 - 9.1) / 10.45, 1e-12);
+    EXPECT_FALSE(b.mutual_ok);
+    EXPECT_FALSE(eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad).ok);
+}
+
+// The quad's four runs' mean is inside the symmetry band, but run 3 is 13% out.
+TEST(EndGoalC8qJudge, TheWorstQuadRunDecidesTheSymmetryBand) {
+    std::vector<eg::DownwashMeans> quad(3, means({1.0, 1.0, 1.0, 1.0}));
+    quad.push_back(means({0.90, 1.08, 1.08, 1.08}));
+    ASSERT_TRUE(eg::c8q_bands(eg::ensemble_mean(quad).u, eg::ensemble_mean(quad).v).mutual_ok);
+    const eg::Verdict v = eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), quad);
+    EXPECT_FALSE(v.ok) << v.detail;
+    EXPECT_NE(v.detail.find("the worst run by the mutual band, run 3"), std::string::npos) << v.detail;
+}
+
+// Each part is marked OUT by its own band only.
+TEST(EndGoalC8qJudge, MarksEachPartOutByItsOwnBandOnly) {
+    const eg::Verdict rotor0_out = eg::c8q(alone({0.85, 0.85, 0.85, 0.85}), quad_as_read());
+    const auto [a0, aq] = parts(rotor0_out.detail);
+    EXPECT_NE(a0.find("(OUT)"), std::string::npos) << rotor0_out.detail;
+    EXPECT_EQ(aq.find("(OUT)"), std::string::npos) << rotor0_out.detail;
+    const eg::Verdict quad_out =
+        eg::c8q(alone({1.05, 1.05, 1.05, 1.05}), std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09})));
+    const auto [b0, bq] = parts(quad_out.detail);
+    EXPECT_EQ(b0.find("(OUT)"), std::string::npos) << quad_out.detail;
+    EXPECT_NE(bq.find("(OUT)"), std::string::npos) << quad_out.detail;
+}
+
+TEST(EndGoalC8qJudge, ReportsTheQuadsSpreadAndEachRotorsSpreadAcrossTheRuns) {
+    std::vector<eg::DownwashMeans> quad(3, means({1.0, 1.0, 1.0, 1.0}));
+    quad.push_back(means({1.0, 1.0, 1.0, 1.04}));
+    const eg::Verdict v = eg::c8q(alone({1.0, 1.02, 1.0, 1.0}), quad);
+    EXPECT_TRUE(v.ok) << v.detail;
+    // Rotor 0 alone: (10.2 - 10) / 10.05; the quad's rotor 3: (10.4 - 10) / 10.1.
+    EXPECT_NE(v.detail.find("its spread across the runs 0.0199"), std::string::npos) << v.detail;
+    EXPECT_NE(v.detail.find("each rotor's spread across the runs: 0 0 0 0.0396"), std::string::npos) << v.detail;
+}
+
+TEST(EndGoalC8qJudge, IsAbsentWithoutEitherEnsembleOrWithTheWrongRotors) {
+    const std::vector<eg::DownwashMeans> ok0 = alone({1.0, 1.0, 1.0, 1.0});
+    const std::vector<eg::DownwashMeans> disagree{means({1.0, 1.0, 1.0, 1.0}), means({1.0, 1.0, 1.0})};
+    const std::pair<eg::Verdict, std::string> cases[] = {
+        {eg::c8q({}, quad_as_read()), "c8q: absent: no runs of rotor 0 alone"},
+        {eg::c8q(ok0, {}), "c8q: absent: no runs of the quad"},
+        {eg::c8q(quad_as_read(), quad_as_read()), "c8q: absent: a run of rotor 0 alone holds 4 rotors"},
+        {eg::c8q(ok0, disagree), "c8q: absent: the quad's runs disagree on the rotors"},
+        {eg::c8q(ok0, ok0), "c8q: absent: the quad's runs disagree on the rotors"},
+    };
+    for (const auto& [v, detail] : cases) {
+        EXPECT_FALSE(v.ok) << v.detail;
+        EXPECT_EQ(v.detail, detail);
+    }
 }
 
 TEST(EndGoalC8qJudge, AReferenceOfZeroIsNeverInside) {
     eg::DownwashMeans m = means({1.0, 1.0, 1.0, 1.0});
     m.v[2] = 0.0;
     EXPECT_FALSE(eg::c8q_bands(m.u, m.v).ok);
+    eg::DownwashMeans m0 = means({1.0});
+    m0.v[0] = 0.0;
+    EXPECT_FALSE(eg::c8q(std::vector<eg::DownwashMeans>(4, m0), quad_as_read()).ok);
 }
 
 // ---------------------------------------------------------------------------

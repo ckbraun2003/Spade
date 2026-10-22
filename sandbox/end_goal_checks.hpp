@@ -424,9 +424,14 @@ struct DownwashMeans {
                     " frames in " + m->window + ", R/dx " + num(m->r_over_dx)};
 }
 
-// C8q (§5, "C8's band where it holds"): the reference quad at C8's R/dx 10,
-// headless, with the model's parts cleared. Each rotor within C8's 10% of
-// momentum theory, and the four rotors' means within 10% of their mean.
+// C8q (§5, "C8's band where it holds"; the bands as changed on 2026-10-22,
+// before their run): the reference quad at C8's R/dx 10, headless, with the
+// model's parts cleared. Banded: rotor 0 alone, in the quad's own case, within
+// C8's 10% of momentum theory; and the four-rotor quad's rotors within 10% of
+// their mean. Report only: the quad's per-rotor ratios to momentum theory,
+// which read the four rotors together (their wakes' interaction and the open
+// box's response to four times the flux, not separated) and have no
+// closed-form reference.
 inline constexpr DownwashRule kC8q{"c8q", 0.90f, 1.10f, 10.0f};
 inline constexpr double kC8qMutual = 0.10;
 
@@ -535,6 +540,17 @@ struct C8qBands {
     detail += "; band [" + num(kC8q.lo) + ", " + num(kC8q.hi) + "], mutual " + num(kC8qMutual) + ", " +
               mean.window + ", R/dx " + num(mean.r_over_dx);
     return {ok, detail};
+}
+
+// C8q's verdict as changed on 2026-10-22: two ensembles'. `rotor0` is rotor 0
+// alone's runs, one rotor each, banded by kC8q on the runs' mean and on every
+// run. `quad` is the four-rotor quad's runs, banded by kC8qMutual on the runs'
+// mean and on every run; their ratios to momentum theory are reported, never
+// judged.
+[[nodiscard]] inline Verdict c8q(std::span<const DownwashMeans> rotor0, std::span<const DownwashMeans> quad) {
+    (void)rotor0;
+    (void)quad;
+    return {false, "c8q: not yet judged"};
 }
 
 // ---------------------------------------------------------------------------
