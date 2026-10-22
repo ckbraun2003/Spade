@@ -37,6 +37,7 @@
 #include "editor_document.hpp"
 #include "editor_files.hpp"
 #include "editor_library.hpp"
+#include "editor_library_save.hpp"
 #include "editor_panels.hpp"
 #include "editor_pick.hpp"
 #include "editor_run.hpp"
@@ -259,19 +260,62 @@ class EditorWorkspace {
     // scene is opened or saved, not every frame.
     // The default library, from the assets folder a built-in scene told of
     // (INT-14); what would not load is named in the panel.
+    // Then the project's (EDT-020): the scene's own folder's library/, once
+    // something was saved there.
     void load_library() {
         panels_.armed.reset();
+        panels_.library.clear();
+        panels_.library_problems.clear();
         if (assets_.empty()) {
-            panels_.library.clear();
-            panels_.library_problems = {
+            panels_.library_problems.push_back(
                 "the default library: this scene is not in an assets folder, so its library/library.yaml was "
-                "not found; open a built-in scene, or load a model or object file"};
+                "not found; open a built-in scene, or load a model or object file");
+        } else {
+            LibraryLoad load = load_library_items(assets_ / "library" / "library.yaml");
+            panels_.library = std::move(load.items);
+            panels_.library_problems = std::move(load.problems);
+        }
+        if (const Result<std::filesystem::path> dir = project_library_dir(docs_.scene.path); dir) {
+            std::error_code ec;
+            if (std::filesystem::exists(*dir / "library.yaml", ec)) {
+                LibraryLoad project = load_library_items(*dir / "library.yaml");
+                for (LibraryItem& item : project.items) panels_.library.push_back(std::move(item));
+                for (std::string& problem : project.problems) panels_.library_problems.push_back(std::move(problem));
+            }
+        }
+        ++panels_.library_generation;
+    }
+
+    // Save to library (EDT-020): the selected vehicle or asset into the
+    // project library, drawn from the meshes the view draws with, then listed
+    // after what the panel has. A refusal goes to the status line.
+    void save_selection_to_library() {
+        if (panels_.selection.kind != Selection::Kind::object) {
+            panels_.status = "Save to library: select a vehicle or an object to save";
             return;
         }
-        LibraryLoad load = load_library_items(assets_ / "library" / "library.yaml");
-        panels_.library = std::move(load.items);
-        ++panels_.library_generation;
-        panels_.library_problems = std::move(load.problems);
+        const Result<std::filesystem::path> dir = project_library_dir(docs_.scene.path);
+        if (!dir) {
+            panels_.status = dir.error().context;
+            return;
+        }
+        std::vector<std::filesystem::path> roots{docs_.scene.path.parent_path()};
+        if (!assets_.empty()) roots.push_back(assets_ / "library" / "meshes");
+        const Result<LibrarySaved> saved =
+            save_to_library(*dir, docs_.scene.desc(), panels_.selection.name, roots);
+        if (!saved) {
+            panels_.status = saved.error().context;
+            return;
+        }
+        LibraryLoad project = load_library_items(*dir / "library.yaml");
+        for (LibraryItem& item : project.items) {
+            if (item.name != saved->name) continue;
+            panels_.library.push_back(std::move(item));
+            ++panels_.library_generation;
+            break;
+        }
+        panels_.status = "saved '" + saved->name + "' to " + saved->file.generic_string() +
+                         (saved->no_thumbnail.empty() ? std::string() : "; no thumbnail: " + saved->no_thumbnail);
     }
 
     void list_sources() {
@@ -398,6 +442,7 @@ class EditorWorkspace {
                 const Serials before = serials();
                 save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, fallback_meshes_));
                 list_sources();
+                load_library();  // a new folder: its project library
                 return;
             }
             case Command::open: open(panels_.path); return;
@@ -413,6 +458,7 @@ class EditorWorkspace {
                 panels_.status.clear();
                 return;
             }
+            case Command::save_to_library: save_selection_to_library(); return;
         }
     }
 
