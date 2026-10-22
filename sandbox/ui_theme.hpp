@@ -268,6 +268,17 @@ inline void cell_text(std::string_view text, Tone tone = Tone::normal) {
     if (tone != Tone::normal) ImGui::PopStyleColor();
 }
 
+// A caption drawn into `draw` at `at`, ended with cell_text()'s ellipsis at
+// `width` (a library tile's name under its image; the lead, 2026-10-22). Dim
+// for an item that isn't placed. The caller shows the whole of it on hover.
+inline void caption(ImDrawList* draw, ImVec2 at, float width, std::string_view text, bool dim) {
+    const float right = at.x + std::max(width, 0.0f);
+    if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::RenderTextEllipsis(draw, at, ImVec2(right, at.y + ImGui::GetTextLineHeight()), right, right, text.data(),
+                              text.data() + text.size(), nullptr);
+    if (dim) ImGui::PopStyleColor();
+}
+
 // Starts a row: the label on the left, then the next widget fills the value
 // column. Give that widget a hidden label ("##wind").
 inline void property_row(const char* label) {

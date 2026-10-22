@@ -834,16 +834,18 @@ void library(ed::EditorPanels& p) {
                 p.armed = i;
             }
         }
-        if (hovered && !placeable) {  // a part: inspect-only (INT-14)
-            ImGui::SetTooltip("%s: built into a drone, not placed on its own; click to inspect it",
-                              item.name.c_str());
-        }
-        // The name, cut at the tile's width so the grid keeps its rhythm.
+        // The name, ended with an ellipsis at the tile's width so the grid
+        // keeps its rhythm; hovering the tile or its name shows the whole.
         const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
-        draw->PushClipRect(name_at, ImVec2(name_at.x + tile, name_at.y + line), true);
-        draw->AddText(name_at, ImGui::GetColorU32(placeable ? ImGuiCol_Text : ImGuiCol_TextDisabled),
-                      item.name.c_str());
-        draw->PopClipRect();
+        ui::caption(draw, name_at, tile, item.name, !placeable);
+        if (hovered || ImGui::IsMouseHoveringRect(name_at, ImVec2(name_at.x + tile, name_at.y + line))) {
+            if (placeable) {
+                ImGui::SetTooltip("%s", item.name.c_str());
+            } else {  // a part: inspect-only (INT-14)
+                ImGui::SetTooltip("%s: built into a drone, not placed on its own; click to inspect it",
+                                  item.name.c_str());
+            }
+        }
         // A part with any field assumed says so under its name, never over
         // its image: the tour's thumbnails check reads every pixel of it.
         const bool assumed = ed::any_assumed(item);
