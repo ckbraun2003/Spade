@@ -171,7 +171,9 @@
 //
 //   Reach is all the scan proves. It also passes an UNCORRECTED integer use:
 //   uint(a / b), or floor(a / b) converted, leaves through a conversion like a
-//   corrected one, with no correction at all. So the guarantee covers exactly
+//   corrected one, with no correction at all, and asfloat(asuint(a / b))
+//   carries the raw estimate back to a float through the integer bitcast
+//   (Core's review). So the guarantee covers exactly
 //   the functions Core's injected-error battery covers (estimates at least
 //   +-3 ulp off, past the Vulkan bound): the functions listed in
 //   engine/shaders/fp32_math.slang as allowed to hold an estimate, each with
@@ -770,10 +772,13 @@ struct SpirvScanResult {
                 }
                 if (!uses) continue;
                 const uint32_t glsl = glsl_instruction(n);
-                const bool carries = n.opcode == spv_op::kFMul || n.opcode == spv_op::kFAdd ||
-                                     n.opcode == spv_op::kFSub || n.opcode == spv_op::kFNegate ||
-                                     n.opcode == spv_op::kCopyObject || glsl == kGlslStd450Floor ||
-                                     glsl == kGlslStd450Trunc || glsl == kGlslStd450Round;
+                // Carrying needs a result to carry into: an op too short to have
+                // one (Core's review) is a finding, and no word past it is read.
+                const bool carries = n.word_count >= 3 &&
+                                     (n.opcode == spv_op::kFMul || n.opcode == spv_op::kFAdd ||
+                                      n.opcode == spv_op::kFSub || n.opcode == spv_op::kFNegate ||
+                                      n.opcode == spv_op::kCopyObject || glsl == kGlslStd450Floor ||
+                                      glsl == kGlslStd450Trunc || glsl == kGlslStd450Round);
                 const bool leaves = n.opcode == spv_op::kConvertFToU || n.opcode == spv_op::kConvertFToS ||
                                     (n.opcode == spv_op::kBitcast && is_int_type(words[n.at + 1]));
                 if (carries) {
