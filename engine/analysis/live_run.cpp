@@ -238,6 +238,8 @@ struct LiveRun::Impl {
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
     LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
+    LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
+    void* test_nudge_context = nullptr;
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -492,6 +494,7 @@ Result<void> LiveRun::step(const Controls& controls) {
             af::spread_actuator(d, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch.du, r.scratch.dv, r.scratch.dw);
         }
     }
+    if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
 
     // The fluid.
     const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, r.fluid, r.scratch);
@@ -567,6 +570,11 @@ std::string LiveRun::run_line() const {
 }
 
 const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
+
+void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept {
+    impl_->test_nudge = nudge;
+    impl_->test_nudge_context = context;
+}
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 
