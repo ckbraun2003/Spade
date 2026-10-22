@@ -29,7 +29,9 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -268,6 +270,22 @@ namespace detail {
         rows.push_back(std::move(row));
     }
     return rows;
+}
+
+// A cell's text for a value (the lead, 2026-10-22): a fractional number to
+// 4 significant figures, the hover keeping the whole of it; an integer, a
+// count, a word or a shape as written.
+[[nodiscard]] inline std::string short_value(std::string_view value) {
+    double x = 0.0;
+    const char* const end = value.data() + value.size();
+    const auto [stop, ec] = std::from_chars(value.data(), end, x);
+    const bool fractional = value.find_first_of(".eE") != std::string_view::npos;
+    if (value.empty() || !fractional || ec != std::errc() || stop != end || !std::isfinite(x)) {
+        return std::string(value);
+    }
+    char text[32];
+    std::snprintf(text, sizeof text, "%.4g", x);
+    return text;
 }
 
 // Whether `item` is a part with any field graded assumed: its tile says so.

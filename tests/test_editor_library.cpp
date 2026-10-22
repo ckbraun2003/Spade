@@ -706,3 +706,22 @@ TEST(EditorLibraryGrades, InspectingAPartClearsTheSelectionAndArmsNothing) {
     EXPECT_EQ(p.inspected, std::optional<std::size_t>(1));
     EXPECT_EQ(p.selection.kind, ed::Selection::Kind::object);
 }
+
+// A cell shows a fractional number to 4 significant figures (the lead,
+// 2026-10-22; the hover keeps the whole value). An integer, a count, a word
+// or a shape stays as written.
+TEST(EditorLibraryGrades, ACellShowsAFractionalNumberToFourSignificantFigures) {
+    EXPECT_EQ(ed::short_value("0.09635567375886525"), "0.09636");
+    EXPECT_EQ(ed::short_value("0.005869995503936827"), "0.00587");
+    EXPECT_EQ(ed::short_value("0.18147428896905915"), "0.1815");
+    EXPECT_EQ(ed::short_value("0.2388"), "0.2388");
+    EXPECT_EQ(ed::short_value("0.127"), "0.127");
+    EXPECT_EQ(ed::short_value("1e-05"), "1e-05");
+    EXPECT_EQ(ed::short_value("1234.5678"), "1235");
+    EXPECT_EQ(ed::short_value("960"), "960");
+    EXPECT_EQ(ed::short_value("0"), "0");
+    EXPECT_EQ(ed::short_value("table, 12 points"), "table, 12 points");
+    EXPECT_EQ(ed::short_value("unknown"), "unknown");
+    EXPECT_EQ(ed::short_value("{kind: cylinder, size: [0.014, 0.025, 0]}"), "{kind: cylinder, size: [0.014, 0.025, 0]}");
+    EXPECT_EQ(ed::short_value(""), "");
+}
