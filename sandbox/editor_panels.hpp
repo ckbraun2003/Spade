@@ -22,6 +22,7 @@
 #include "editor_scene_edits.hpp"
 #include "editor_views.hpp"
 #include "editor_world_edits.hpp"
+#include "viewport_rect.hpp"
 #include "scene/scene_file.hpp"
 #include "world/builder.hpp"
 
@@ -60,6 +61,10 @@ struct EditorPanels {
     std::vector<HierarchyRow> hierarchy;      // the scene, the world, then its assets and vehicles in order
     std::vector<LibraryItem> library;         // the default library (INT-14), then what Load from file added
     std::vector<std::string> library_problems;  // what of the library would not load, verbatim
+    uint64_t library_generation = 0;          // bumped whenever `library` changes
+    // The window's: each library item's thumbnail as a texture (0: none),
+    // parallel to `library`, uploaded again when the generation moves.
+    std::vector<std::uintptr_t> library_textures;
     std::vector<SceneSource> sources;         // the File menu's scene picker (SL13)
     // The view (N19), filled by the session, which knows the backend.
     std::vector<ModeEntry> modes;             // the View menu: every base, supports()' answer for each
@@ -76,6 +81,11 @@ struct EditorPanels {
     std::string path;                         // what Open and Save As use
     std::string item_path;                    // what Load from file (Command::load_item) reads
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
+    std::optional<std::size_t> library_scroll_to;  // a script's request: bring this item's tile into view
+    // Where each library item's thumbnail was drawn this frame, in framebuffer
+    // pixels from the top-left; none when it was not wholly in view. The
+    // tour's editor.library reads the frame there (Test/Docs' thumbnails).
+    std::vector<std::optional<ViewportRect>> library_tiles;
     GizmoTool tool = GizmoTool::move;         // the gizmo's (W, E)
     std::optional<render::ViewBase> mode_request;  // chosen from the View menu; the session applies it
     bool snap = false;                        // the gizmo snaps; Ctrl held flips it for a drag
