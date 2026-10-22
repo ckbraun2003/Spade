@@ -137,6 +137,7 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
     - Linear mutual induction (each neighbour's inflow, as a sink at its disc) accounts for only about 3% at C8q's probe, 0.5R wide and 2R below. The rest, the wakes' mixing or the open box's response to four times the flux, is not yet separated.
     - C8q keeps the banded single-rotor check (rotor 0 alone, against momentum theory in C8's band) and reports the four-rotor ratios only.
 11. **The swirl's root relief** (later). P1's constant circulation reaches the disc's inner ring at 0.41R, and it costs C8q's quad about 4% of the downwash at its 0.5R probe (0.81 against 0.85 without torque). The change: a circulation rising from 0 at the hub, as a real rotor's root unloads, designed and measured against C8q.
+    - *Withdrawn 2026-10-22, after C8q's banded run:* a lone rotor's swirl costs nothing at the probe (1.066 of momentum theory with its torque, the four runs' mean, against 1.0617 without it). So the quad's ~4% from torque comes only with the neighbours, through the four wakes' interaction, not from a core vortex in each wake. Root relief is not indicated. The swirl's part in the quad goes to item 10's measured-data case.
 
 ## Spec changes (Cameron's, 2026-10-12)
 
