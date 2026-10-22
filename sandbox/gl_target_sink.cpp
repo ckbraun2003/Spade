@@ -356,8 +356,9 @@ struct GlTargetSink::Impl {
     std::vector<GLuint> library_textures;
     std::optional<uint64_t> library_generation;
 
-    // What the active path does not draw ("" for none); see set_gap_line().
-    std::string gap_line;
+    // The HUD's status line ("" for none) and its tone; see set_status_line().
+    std::string status_line;
+    bool status_warning = false;
     // The editor's gizmo, in the view's pixels; see set_view_lines().
     std::vector<editor::GizmoLine> view_lines;
 
@@ -892,9 +893,14 @@ void GlTargetSink::draw_overlay() {
             ImGui::Text("%.1f fps%s%.1f ms%s%.1f MB", a.total_ms > 0.0f ? 1000.0f / a.total_ms : 0.0f, ui::kDot,
                         a.total_ms, ui::kDot, mb);
             impl_->help_drawn = true;
-            // SL10: the GPU path's gap is shown, not hidden.
-            if (!impl_->gap_line.empty()) {
-                ImGui::TextDisabled("%s", impl_->gap_line.c_str());
+            // SL10: the GPU path's gap is shown, not hidden; an unconverged
+            // pressure in the warning tone.
+            if (!impl_->status_line.empty()) {
+                if (impl_->status_warning) {
+                    ui::status_text(impl_->status_line);
+                } else {
+                    ImGui::TextDisabled("%s", impl_->status_line.c_str());
+                }
             }
             // WHERE THE FRAME WENT: the stages have different remedies, and
             // one of them is not a cost.
@@ -1145,11 +1151,13 @@ void GlTargetSink::set_view_lines(std::vector<editor::GizmoLine> lines) {
 #endif
 }
 
-void GlTargetSink::set_gap_line(std::string line) {
+void GlTargetSink::set_status_line(std::string line, bool warning) {
 #if SPADE_SANDBOX_HAS_GL
-    impl_->gap_line = std::move(line);
+    impl_->status_line = std::move(line);
+    impl_->status_warning = warning;
 #else
     (void)line;
+    (void)warning;
 #endif
 }
 

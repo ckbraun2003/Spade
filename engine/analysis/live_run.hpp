@@ -97,8 +97,19 @@ struct LiveSolids {
     std::string run_line;             // set_solids()' own line: parts, walls, sheets, leaks
     uint32_t solid_cells = 0;         // the grid's solid cells: the mask the volume publishes with
     float pressure_residual = 0.0f;   // the last step's max|r| / max|b|; 0 without solids
+    uint32_t pressure_iterations = 0;  // the last step's CG iterations; 0 without solids
     uint64_t unconverged_steps = 0;   // steps whose residual was past 1e-4, since start
+    uint64_t stalled_steps = 0;       // of those, the CG stalled at fp32's floor (P2d)
+    uint64_t capped_steps = 0;        // of those, the CG reached its cap: the two sum to unconverged_steps
 };
+
+// What a run says of its solids' pressure, "" when no step was unconverged:
+// how many steps were, how many of them stalled at fp32's floor and how many
+// stopped at the CG's cap of `cap` iterations, naming only what occurred
+// (P2d; the lead, 2026-10-22), then the last residual. For example "pressure
+// unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64
+// iterations (last max|r|/max|b| 2.0e-03)".
+[[nodiscard]] std::string solids_health_line(const LiveSolids& solids, uint32_t cap);
 
 struct LiveFrame {
     uint64_t frame = 0;  // 1 for the first
@@ -167,9 +178,15 @@ class LiveRun {
     // 128³, dx 12.5 mm, R/dx 6 · motors at their current limit" (UTF-8).
     [[nodiscard]] std::string run_label() const;
 
-    // run_label(), then " · t = 0.250 s", then how many steps the pressure
-    // was unconverged on, when any were.
+    // run_label(), then " · t = 0.250 s", then pressure_line() when it says
+    // anything.
     [[nodiscard]] std::string run_line() const;
+
+    // solids_health_line() for this run, its cap the one the solve runs to:
+    // the larger of the CG's floor and its cap (pcg clamps a cap to its
+    // floor). "" while every step's pressure converged. The airflow view's
+    // status line shows it in the warning tone.
+    [[nodiscard]] std::string pressure_line() const;
 
     // The controls flown so far, a point wherever they changed: the live
     // session as a program, for "queue at higher fidelity".
@@ -202,6 +219,13 @@ class LiveRun {
     // unsets it.
     using TestIncrementNudge = void (*)(void* context, std::span<float> du, std::span<float> dv, std::span<float> dw);
     void set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept;
+
+    // FOR TESTS ONLY: the solids CG's cap (FluidConfig::cg_cap), passed
+    // straight to each fluid step so a test can force a capped solve (P2d;
+    // the lead, 2026-10-22). No host sets it. 0, the default, unsets it: the
+    // cap is kSolidsCgCap and a run is the same to the bit. It is not saved:
+    // a restored run starts unset.
+    void set_test_cg_cap(uint32_t cap) noexcept;
 
   private:
     struct Impl;

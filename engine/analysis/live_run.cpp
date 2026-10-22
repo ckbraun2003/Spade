@@ -240,6 +240,7 @@ struct LiveRun::Impl {
     LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
+    uint32_t test_cg_cap = 0;  // a test's CG cap, 0 for unset; never saved
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -514,7 +515,9 @@ Result<void> LiveRun::step(const Controls& controls) {
     if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
 
     // The fluid.
-    const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, r.fluid, r.scratch);
+    af::FluidConfig fluid = r.fluid;
+    if (r.test_cg_cap != 0) fluid.cg_cap = r.test_cg_cap;
+    const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, fluid, r.scratch);
     if (health.fault != af::FluidFault::none) {
         r.fault = "the fluid faulted at step " + std::to_string(r.state.steps + 1) + ": " +
                   af::describe(health, r.resolved.base);
@@ -523,7 +526,10 @@ Result<void> LiveRun::step(const Controls& controls) {
     if (r.solids.any) {
         // L6: an unconverged pressure is announced (run_line()), never refused.
         r.solids.pressure_residual = health.pressure_residual;
+        r.solids.pressure_iterations = health.pressure_iterations;
         if (health.unconverged) ++r.solids.unconverged_steps;
+        if (health.stalled) ++r.solids.stalled_steps;
+        if (health.capped) ++r.solids.capped_steps;
     }
 
     ++r.state.steps;
@@ -581,13 +587,30 @@ std::string LiveRun::run_label() const {
     return out;
 }
 
+std::string solids_health_line(const LiveSolids& s, uint32_t cap) {
+    if (s.unconverged_steps == 0) return {};
+    std::string out =
+        std::format("pressure unconverged on {} step{}", s.unconverged_steps, s.unconverged_steps == 1 ? "" : "s");
+    std::string why;
+    if (s.stalled_steps > 0) why = std::format("{} stalled at fp32's floor", s.stalled_steps);
+    if (s.capped_steps > 0) {
+        why += std::format("{}{} at the CG's cap of {} iteration{}", why.empty() ? "" : ", ", s.capped_steps, cap,
+                           cap == 1 ? "" : "s");
+    }
+    if (!why.empty()) out += ": " + why;
+    out += std::format(" (last max|r|/max|b| {:.1e})", s.pressure_residual);
+    return out;
+}
+
 std::string LiveRun::run_line() const {
     std::string out = run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
-    if (const LiveSolids& s = impl_->solids; s.unconverged_steps > 0) {
-        out += std::format(" \xc2\xb7 pressure unconverged on {} steps (last max|r|/max|b| {:.1e})",
-                           s.unconverged_steps, s.pressure_residual);
-    }
+    if (const std::string pressure = pressure_line(); !pressure.empty()) out += " \xc2\xb7 " + pressure;
     return out;
+}
+
+std::string LiveRun::pressure_line() const {
+    const af::FluidConfig& f = impl_->fluid;
+    return solids_health_line(impl_->solids, std::max(f.n_v, impl_->test_cg_cap != 0 ? impl_->test_cg_cap : f.cg_cap));
 }
 
 const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
@@ -596,6 +619,8 @@ void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) 
     impl_->test_nudge = nudge;
     impl_->test_nudge_context = context;
 }
+
+void LiveRun::set_test_cg_cap(uint32_t cap) noexcept { impl_->test_cg_cap = cap; }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 

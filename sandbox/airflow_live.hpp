@@ -23,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -60,6 +61,22 @@ inline constexpr float kVortexFloor = -5.0f;
 // (a stated speed, Videos/CATEGORIES.md's Feature rule): the 1.2 s flown
 // would be over in 1.2 s of video otherwise.
 inline constexpr float kPlayback = 0.25f;
+
+// The view's HUD status line (the lead, 2026-10-22): the run's pressure line
+// (LiveRun::pressure_line()), then what the render path does not draw
+// (render_gap_line()), joined by a dot. In the warning tone when the pressure
+// was unconverged, so a stalled or capped run catches the eye; empty for a
+// converged run on a path that draws everything.
+struct StatusLine {
+    std::string text;
+    bool warning = false;
+};
+
+[[nodiscard]] inline StatusLine status_line(std::string_view pressure, std::string_view gap) {
+    StatusLine out{std::string(pressure), !pressure.empty()};
+    if (!gap.empty()) out.text += (out.text.empty() ? "" : " \xc2\xb7 ") + std::string(gap);
+    return out;
+}
 
 // The library quad, as the chapter flies and draws it.
 struct LiveQuad {
