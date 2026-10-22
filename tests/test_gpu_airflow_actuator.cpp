@@ -539,25 +539,31 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
                 "tolerance: within 4x the ensemble's largest deviation, 4 x %.4f = %.4f m/s (test-docs/"
                 "01-verification.md, a case judged past its horizon)\n"
                 "verdict: %s\n"
-                "measure: the largest |gather - CPU| through step %u (T_p): the 0.5R mean %.3g m/s, the axis %.3g "
-                "m/s\n"
+                "measure: the 0.5R mean's largest |gather - CPU| through step %u (T_p) = %.2e m/s\n"
                 "reference: the CPU's run, spread_actuator() each step\n"
-                "tolerance: 4x the measured gap, never under 4 ulps: %.3g and %.3g m/s (TD-14)\n"
+                "tolerance: within 4x the measured gap, never under 4 ulps, %.2e m/s (TD-14; the gap measured "
+                "2026-10-22 at 3eacd6a)\n"
                 "verdict: %s\n"
-                "measure: where the run leaves the CPU's by 1e-3 on the axis 2R below = step %u\n"
+                "measure: the axis probe's largest |gather - CPU| through step %u (T_p) = %.2e m/s\n"
+                "reference: the CPU's run, spread_actuator() each step\n"
+                "tolerance: within 4x the measured gap, never under 4 ulps, %.2e m/s (TD-14; the gap measured "
+                "2026-10-22 at 3eacd6a)\n"
+                "verdict: %s\n"
+                "measure: the step at which the run leaves the CPU's by 1e-3 on the axis 2R below = %u\n"
                 "reference: the one-ulp ensemble's earliest member, step %u of 16 (2026-10-22-c8-spread.md)\n"
-                "tolerance: no sooner\n"
+                "tolerance: no sooner than step %u (2026-10-22-c8-spread.md, fixed before the run)\n"
                 "verdict: %s\n"
                 "measure: the CPU's run, the same 0.5R mean = %.4f m/s\n"
                 "reference: none\n"
-                "tolerance: none\n"
+                "tolerance: none (report only)\n"
                 "verdict: report only\n",
                 spade::compute::describe(ctx->device_report()).c_str(), static_cast<double>(disc.thrust),
                 static_cast<double>(cfg.h), kSteps, once.differing, spread.size(), static_cast<double>(once.worst),
                 kFirst, kSteps, mean, expected, verdict(theory_within), mean, kEnsembleMean, kEnsembleDeviation,
-                4.0 * kEnsembleDeviation, verdict(spread_within), kTp, disc_gap, axis_gap, disc_band, axis_band,
-                verdict(disc_gap <= disc_band && axis_gap <= axis_band), parting, kEarliestParting,
-                verdict(parting >= kEarliestParting), window(cpu.disc, kFirst, kSteps));
+                4.0 * kEnsembleDeviation, verdict(spread_within), kTp, disc_gap, disc_band,
+                verdict(disc_gap <= disc_band), kTp, axis_gap, axis_band, verdict(axis_gap <= axis_band), parting,
+                kEarliestParting, kEarliestParting, verdict(parting >= kEarliestParting),
+                window(cpu.disc, kFirst, kSteps));
     // The copy is the step's own increments: the CPU's through it are the CPU.
     EXPECT_EQ(copied.axis, cpu.axis) << "copying the increments in is not the step's spread";
     EXPECT_EQ(copied.disc, cpu.disc) << "copying the increments in is not the step's spread";
