@@ -104,6 +104,9 @@ struct EditorPanels {
     // pixels from the top-left; none when it was not wholly in view. The
     // tour's editor.library reads the frame there (Test/Docs' thumbnails).
     std::vector<std::optional<ViewportRect>> library_tiles;
+    // Which tiles drew the "assumed" mark this frame (INT-14), parallel to
+    // `library`, for the tour's assumed-marked.
+    std::vector<bool> library_badges;
     GizmoTool tool = GizmoTool::move;         // the gizmo's (W, E)
     std::optional<render::ViewBase> mode_request;  // chosen from the View menu; the session applies it
     bool snap = false;                        // the gizmo snaps; Ctrl held flips it for a drag

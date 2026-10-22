@@ -773,6 +773,7 @@ void library(ed::EditorPanels& p) {
     // name below. A tile wholly in view records where its image was drawn,
     // for the tour's thumbnails check.
     p.library_tiles.assign(p.library.size(), std::nullopt);
+    p.library_badges.assign(p.library.size(), false);
     const float image = static_cast<float>(ed::kThumbnailSize);
     const float frame = 2.0f;
     const float tile = image + 2.0f * frame;
@@ -840,6 +841,7 @@ void library(ed::EditorPanels& p) {
         const bool assumed = ed::any_assumed(item);
         if (assumed) {
             draw->AddText(ImVec2(name_at.x, name_at.y + line), ImGui::GetColorU32(ui::kWarning), "assumed");
+            p.library_badges[i] = true;
         }
         ImGui::Dummy(ImVec2(tile, assumed ? 2.0f * line : line));
         ImGui::EndGroup();

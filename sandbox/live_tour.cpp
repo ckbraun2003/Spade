@@ -106,9 +106,10 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 9> kSnapshots = {"editor_picker",   "editor_vehicle", "editor_place",
-                                                        "editor_gizmo",    "editor_inspect", "editor_running",
-                                                        "editor_world",    "editor_conflict", "editor_objects"};
+constexpr std::array<std::string_view, 10> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+                                                         "editor_gizmo",    "editor_inspect",  "editor_running",
+                                                         "editor_world",    "editor_conflict", "editor_objects",
+                                                         "editor_part"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -1124,6 +1125,60 @@ void editor_tour(Tour& t, const fs::path& assets) {
         }
         const end_goal::Verdict thumbs = end_goal::thumbnails(shown_tiles, decoded);
         s.check(thumbs.ok, "thumbnails", thumbs.detail);
+
+        // INT-14's grades: the first part with a field assumed is inspected
+        // as its tile's click inspects it (inspect_item()) and drawn: the
+        // inspector shows it in place of the selection (part-inspected), and
+        // each tile is marked assumed exactly when its part has a field
+        // assumed, as the panel drew the marks (assumed-marked).
+        std::optional<std::size_t> part;
+        for (std::size_t i = 0; i < w().panels().library.size() && !part; ++i) {
+            if (editor::any_assumed(w().panels().library[i])) part = i;
+        }
+        if (!part) {
+            s.check(false, "part-inspected", "absent: no library part has a field assumed");
+            return;
+        }
+        const editor::LibraryItem item = w().panels().library[*part];
+        w().panels().selection = editor::Selection{editor::Selection::Kind::scene, ""};
+        editor::inspect_item(w().panels(), *part);
+        w().panels().library_scroll_to = *part;
+        then(3);
+        const Result<std::vector<editor::PartRow>> rows = editor::part_rows(*item.part);
+        std::size_t assumed_rows = 0;
+        if (rows) {
+            for (const editor::PartRow& r : *rows) assumed_rows += r.grade == scene::Grade::assumed ? 1u : 0u;
+        }
+        const bool in_inspector =
+            w().panels().inspected == part && w().panels().selection.kind == editor::Selection::Kind::none;
+        s.check(in_inspector && rows.has_value(), "part-inspected",
+                "'" + item.name + "': " +
+                    (rows ? std::to_string(rows->size()) + " fields, " + std::to_string(assumed_rows) + " assumed"
+                          : rows.error().context) +
+                    (in_inspector ? "; the inspector shows it in place of the selection" : "; NOT shown"));
+        t.snapshot("editor_part");
+        const std::vector<editor::LibraryItem>& lib = w().panels().library;
+        const std::vector<bool>& badges = w().panels().library_badges;
+        bool match = badges.size() == lib.size();
+        std::size_t marked = 0;
+        std::string wrong;
+        for (std::size_t i = 0; match && i < lib.size(); ++i) {
+            const bool want = editor::any_assumed(lib[i]);
+            if (badges[i]) ++marked;
+            if (badges[i] != want) {
+                match = false;
+                wrong = "'" + lib[i].name + "' is " + (badges[i] ? "marked" : "not marked") +
+                        (want ? " with a field assumed" : " with none assumed");
+            }
+        }
+        s.check(match, "assumed-marked",
+                match ? std::to_string(marked) + " of " + std::to_string(lib.size()) +
+                            " tiles marked assumed, each a part with a field assumed"
+                      : (wrong.empty() ? std::to_string(badges.size()) + " marks drawn for " +
+                                             std::to_string(lib.size()) + " tiles"
+                                       : wrong));
+        w().panels().inspected.reset();
+        w().panels().library_scroll_to = 0;
         then(10);
     });
 
