@@ -79,7 +79,7 @@ not_carried: []
 checks:
   - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 7.15, unit: "g", source: "bitcraze_pwm_thrust", grade: measured, note: "one motor's k_T w^2 / g at 17,174 rpm against a quarter of the whole craft's 28.6 g, the row nearest hover (not the 9,374 rpm row). UIUC measured an isolated prop and Bitcraze weighed the whole craft, so the model reads about +8.8%; the band is not widened (Physics, 2026-10-22)", band: [-0.1, 0.1], report_only: false}
   - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 23882, unit: "rpm", source: "bitcraze_pwm_thrust", grade: measured, note: "duty 0.9375 at the state of charge whose loaded bus reads 3.30 V: the top row R was fitted to, so it closes the fit's loop, not an independent check", report_only: true}
-  - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 17174, unit: "rpm", source: "bitcraze_pwm_thrust", grade: measured, note: "duty 0.5625 at the state of charge whose loaded bus reads 3.67 V: the 17,174 rpm row", report_only: true}
+  - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 17174, unit: "rpm", source: "bitcraze_pwm_thrust", grade: measured, note: "duty 0.5625 at the state of charge whose loaded bus reads 3.67 V: the 17,174 rpm row; the static C_Q misses the low-Re rise; see Physics' Crazyflie J/Re item", report_only: true}
   - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 23882, unit: "rpm", source: "bitcraze_pwm_thrust", grade: measured, note: "full duty at SoC 1: full pack", report_only: true}
 assumptions:
   - "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's induced inflow (Physics, 2026-10-21)"

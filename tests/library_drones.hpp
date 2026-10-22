@@ -849,10 +849,15 @@ struct FitTargets {
                                        "duty 0.9375 at the state of charge whose loaded bus reads 3.30 V: the top "
                                        "row R was fitted to, so it closes the fit's loop, not an independent check"),
                                   std::nullopt, true});
+    // The model runs this row about 2.4% fast and draws about 21.5% less bus
+    // current. Both point to a load torque 25-30% below the real one. It's the
+    // prop, not the motor (Physics, 2026-10-22): cfnq's C_Q is one static value,
+    // and a 47 mm prop's profile drag rises as Re falls.
     n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfRowRpm, "rpm",
                                   cite(Grade::measured, kCfThrust,
                                        "duty 0.5625 at the state of charge whose loaded bus reads 3.67 V: the "
-                                       "17,174 rpm row"),
+                                       "17,174 rpm row; the static C_Q misses the low-Re rise; see Physics' "
+                                       "Crazyflie J/Re item"),
                                   std::nullopt, true});
     n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfTopRowRpm, "rpm",
                                   cite(Grade::measured, kCfThrust, "full duty at SoC 1: full pack"), std::nullopt,
