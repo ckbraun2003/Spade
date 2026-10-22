@@ -20,6 +20,8 @@
 #include "../sandbox/editor_world_edits.hpp"
 #include "editor_test_support.hpp"
 #include "scene/compose.hpp"
+#include "scene/model_file.hpp"
+#include "vehicles/propulsion_steady.hpp"
 #include "testing/replay.hpp"
 
 namespace {
@@ -171,4 +173,44 @@ TEST(EditorRun, TheRecordsAreTheSceneFilesUntilWorldFileV3) {
     const ed::BuiltinRecords other = ed::records_for("C:/elsewhere/my_new.scene.yaml");
     EXPECT_GE(other.grid.cell_size, 2.0f * other.contacts.proxy_radius);
     EXPECT_GT(other.grid.cell_size, 0.0f);
+}
+
+// Every rebuild makes the flown vehicles' controllers again from the scene as
+// it is now, so the duty table each one builds once follows an edited chain
+// (the lead's condition, 2026-10-22). No edit changes a chain yet; a motor or
+// part edit will rebuild the run, as every edit while running does.
+TEST(EditorRun, ARebuildFliesTheChainAsEdited) {
+    spade::scene::SceneDesc s = support::sample_scene();
+    const Result<spade::scene::ModelFile> file = spade::scene::load_model_file(
+        std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml");
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    s.models.push_back(file->model);
+    spade::scene::SceneVehicle v;
+    v.name = "quad";
+    v.model = file->model.name;
+    v.start.pos = glm::vec3(4.0f, 1.0f, 4.0f);
+    s.vehicles.push_back(v);
+    const spade::WorldDesc world = support::sample_world();
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, world, ed::records_for(support::hover_scene()));
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+
+    const double density = world.environment.air_density;
+    const double soc = spade::analysis::kDefaultStateOfCharge;
+    const auto exact = [&](const spade::vehicles::PropulsionChain& c, double thrust) {
+        return spade::vehicles::steady_state_for_thrust(c, thrust, density, 0.0, soc).duty;
+    };
+    const spade::vehicles::PropulsionChain before = *file->model.propulsion;
+    const double thrust = 0.5 * spade::vehicles::steady_state_at_duty(before, 1.0, density, 0.0, soc).thrust;
+    const spade::sandbox::flight::FlightController* fc = run->controller_of("quad");
+    ASSERT_NE(fc, nullptr) << run->why_not("quad");
+    EXPECT_NEAR(fc->duty_for_thrust(thrust), exact(before, thrust), 1e-5);
+
+    spade::scene::SceneDesc edited = s;
+    spade::vehicles::PropulsionChain& after = *edited.models.back().propulsion;
+    after.kv *= 1.25;  // another motor
+    ASSERT_TRUE(run->rebuild(edited, world).has_value());
+    fc = run->controller_of("quad");
+    ASSERT_NE(fc, nullptr) << run->why_not("quad");
+    EXPECT_GT(std::abs(exact(after, thrust) - exact(before, thrust)), 1e-3) << "the edit moves the inverse";
+    EXPECT_NEAR(fc->duty_for_thrust(thrust), exact(after, thrust), 1e-5);
 }
