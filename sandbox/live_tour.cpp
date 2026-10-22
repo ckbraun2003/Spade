@@ -1273,11 +1273,12 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // import-named for the crate. Measured from raw inputs, never through the
     // editor's own placing:
     // - the world's SDF from before the click is the world without it;
-    // - an SDF object's lowest points come from marching up through its own
-    //   collider, posed here, under its drawables' lowest vertices (a CSG
-    //   object's mesh, the library gate's, sits up to half a cell inside its
-    //   surface, so its vertices can't judge a rest, end_goal_checks.hpp);
-    //   the crate's are its posed vertices, which lie on its surface;
+    // - an SDF object's lowest points are Test/Docs' own measure
+    //   (collider_rest_points(), §7a): its collider, posed by the object's
+    //   pose, marched up under its drawables' lowest vertices (a CSG object's
+    //   mesh, the library gate's, sits up to half a cell inside its surface,
+    //   so its vertices can't judge a rest); the crate's are its posed
+    //   vertices, which lie on its surface;
     // - the editor passes scene_from_world() no labels, so the object's
     //   drawables are those labelled with the nodes and the prop it added
     //   (render/scene.hpp's defaults); a primitive's pose is the object's
@@ -1407,25 +1408,8 @@ void editor_tour(Tour& t, const fs::path& assets) {
             const render::RenderScene& frame = session->render_scene();
             const std::vector<render::DrawItem> items = items_of(drawn);
             const std::vector<glm::vec3> vertices = end_goal::posed_vertices(frame, items);
-            std::vector<glm::vec3> lowest;
-            if (a.collider.nodes.empty()) {
-                lowest = vertices;
-            } else if (!vertices.empty()) {
-                SdfProgram own = a.collider;  // the object alone, posed here
-                own.node_materials.clear();
-                const glm::mat4 local_from_world = glm::inverse(pose);
-                for (SdfTransform& x : own.transforms) x.world_to_local = x.world_to_local * local_from_world;
-                float low = std::numeric_limits<float>::infinity();
-                for (const glm::vec3& v : vertices) low = std::min(low, v.y);
-                const float from = low - 0.25f;
-                for (const glm::vec3& v : vertices) {
-                    if (v.y > low + 0.05f) continue;
-                    const glm::vec3 start(v.x, from, v.z);
-                    if (const std::optional<float> up = editor::detail::march(own, start, glm::vec3(0.0f, 1.0f, 0.0f))) {
-                        lowest.push_back(start + glm::vec3(0.0f, *up, 0.0f));
-                    }
-                }
-            }
+            const std::vector<glm::vec3> lowest =
+                a.collider.nodes.empty() ? vertices : end_goal::collider_rest_points(a.collider, pose, vertices);
             p.rest_gap = end_goal::rest_gap(before.sdf, lowest);
 
             // Still: 1.0 s of Run (240 ticks), its drawables judged in the
@@ -1458,6 +1442,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const auto judge_import = [&](const std::string& name) {
             end_goal::ImportShown m;
             m.shown_name = name;
+            m.node_name = "";  // write_box_gltf() names the mesh, not its node
             m.mesh_name = "crate";
             m.file = path_text(crate);
             w().panels().selection = editor::Selection{editor::Selection::Kind::object, name};
