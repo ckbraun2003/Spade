@@ -222,6 +222,43 @@ constexpr std::string_view kObjectSuffix = ".object.yaml";
     return out;
 }
 
+// ===========================================================================
+// Writing
+// ===========================================================================
+
+constexpr std::string_view kWrittenHeader =
+    "# =============================================================================\n"
+    "# A Spade library index, written by spade::scene::library_to_yaml(); its\n"
+    "# format is engine/scene/library.hpp's, and load_library() reads it. The\n"
+    "# entries are in the order the editor's Library panel shows them.\n"
+    "# =============================================================================\n";
+
+// The index's canonical text (WRITING): the lowest version that holds the
+// entries, then each entry's keys in the format's order, every string
+// double-quoted, a thumbnail only when set.
+[[nodiscard]] std::string emit_index(const Library& library) {
+    bool parts = false;
+    for (const LibraryEntry& e : library.entries) {
+        if (is_part(e.kind) || part_kind_of(e.file)) parts = true;
+    }
+    // Version 2 is the one that added the part kinds.
+    const uint32_t version = parts ? 2 : 1;
+    std::string out(kWrittenHeader);
+    out += "\nlibrary_version: " + dec(version) + "\n";
+    if (library.entries.empty()) {
+        out += "entries: []\n";
+        return out;
+    }
+    out += "entries:\n";
+    for (const LibraryEntry& e : library.entries) {
+        out += "  - name: " + yaml_text::quote_yaml(e.name) + "\n";
+        out += "    category: " + yaml_text::quote_yaml(e.category) + "\n";
+        out += "    file: " + yaml_text::quote_yaml(e.file) + "\n";
+        if (!e.thumbnail.empty()) out += "    thumbnail: " + yaml_text::quote_yaml(e.thumbnail) + "\n";
+    }
+    return out;
+}
+
 // yaml-cpp reports every syntax failure by throwing; nothing may leave a Spade
 // API that way (the scene file's rule).
 [[nodiscard]] Result<Library> parse_text(std::string_view text) {
@@ -267,8 +304,31 @@ Result<Library> library_from_yaml(std::string_view text) {
 }
 
 Result<std::string> library_to_yaml(const Library& library) {
-    (void)library;
-    return std::unexpected(Error{Code::internal, "library_to_yaml: not written yet"});
+    std::string text = emit_index(library);
+    // The written text is read back, so what the reader refuses is refused
+    // here in the reader's own words, its rules in one place (TD-9), and it
+    // must hold the same entries.
+    const Result<Library> back = parse_text(text);
+    if (!back) return std::unexpected(Error{back.error().code, "library_to_yaml: " + back.error().context});
+    if (back->entries.size() != library.entries.size()) {
+        return std::unexpected(Error{Code::internal, "library_to_yaml: " + dec(library.entries.size()) +
+                                                         " entries read back as " + dec(back->entries.size())});
+    }
+    for (std::size_t i = 0; i < library.entries.size(); ++i) {
+        const LibraryEntry& e = library.entries[i];
+        const LibraryEntry& read = back->entries[i];
+        const std::string what = "library_to_yaml: entries[" + dec(i) + "]";
+        if (read.kind != e.kind) {
+            return std::unexpected(invalid(what + ".kind is " + kind_phrase(e.kind) + ", but its file '" + e.file +
+                                           "' makes it " + kind_phrase(read.kind)));
+        }
+        if (read.name != e.name || read.category != e.category || read.file != e.file ||
+            read.thumbnail != e.thumbnail) {
+            return std::unexpected(
+                invalid(what + " does not read back as written: it holds a byte the index's text cannot carry"));
+        }
+    }
+    return text;
 }
 
 Result<Library> load_library(const std::filesystem::path& path) {
