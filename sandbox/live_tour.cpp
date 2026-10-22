@@ -36,6 +36,7 @@
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
 #include "scene_sessions.hpp"
+#include "sim/design_frame.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
@@ -113,7 +114,7 @@ constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "edi
 const std::vector<KnownOpen> kKnownOpen = {
     {"editor.add_drone/placed-at",
      "ground contact is the model's one proxy sphere (reference quad 0.150 m, its rotor reach); resting on the "
-     "lowest posed part buries it 112 mm, so Run lifts the drone. Physics owns the fix: contact against the posed "
+     "lowest posed part buries it 106 mm, so Run lifts the drone. Physics owns the fix: contact against the posed "
      "parts."},
 };
 
@@ -1054,9 +1055,14 @@ void editor_tour(Tour& t, const fs::path& assets) {
         end_goal::Placement p;
         p.pick = eye + dir * *hit;
         p.position = placed.start.pos;
+        // The start pose is the design frame's; the body is the sim's
+        // to_body_state() of it (design_to_principal, com_offset).
+        const FrameState spawn =
+            to_body_state(FrameState{placed.start.pos, placed.start.orient, glm::vec3(0.0f), glm::vec3(0.0f)},
+                          glm::normalize(model->design_to_principal), model->com_offset);
         BodyState body{};
-        body.pos = placed.start.pos;
-        body.orient = placed.start.orient;
+        body.pos = spawn.pos;
+        body.orient = spawn.orient;
         const std::vector<float> still(model->rotors.size(), 0.0f);
         const Result<vehicles::PosedParts> posed =
             vehicles::posed_parts(*model, body, still, still, vehicles::PartFilter::all);

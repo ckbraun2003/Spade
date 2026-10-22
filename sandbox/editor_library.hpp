@@ -51,6 +51,7 @@
 #include "scene/object_file.hpp"
 #include "scene/part_file.hpp"
 #include "scene/scene_file.hpp"
+#include "vehicle_draw.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
 #include "vehicles/quadrotor.hpp"
@@ -163,12 +164,13 @@ namespace detail {
     return item;
 }
 
-// The lowest point of `model`'s parts, its body at the origin, level and
-// still: each part's box (part_bounds()) through its posed frame. None when
-// no part can be posed and bounded.
+// The lowest point of `model`'s parts, its DESIGN frame at the origin, level
+// and still: each part's box (part_bounds()) through its posed frame. A
+// scene's start pose places the design frame, and the body is body_at() of
+// it (to_body_state(), as the sim spawns it and the session draws it). None
+// when no part can be posed and bounded.
 [[nodiscard]] inline std::optional<float> lowest_part_point(const vehicles::ModelType& model) {
-    BodyState body{};
-    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const BodyState body = body_at(model, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
     const std::vector<float> still(model.rotors.size(), 0.0f);
     const Result<vehicles::PosedParts> posed =
         vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
