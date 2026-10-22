@@ -18,7 +18,8 @@ PcgScratch make_pcg_scratch(std::size_t cells) {
     return s;
 }
 
-float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGauge& g) noexcept {
+PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t cap, float mark,
+                       const PcgGauge& g) noexcept {
     PoissonLevel& L = mg.levels[0];
     const std::size_t n = s.x.size();
     const auto mask = [&](std::vector<float>& v) {
@@ -40,6 +41,19 @@ float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGaug
         mask(s.z);
         gauge(s.z);
     };
+    // The final relative residual, over the cells not marked solid.
+    const auto measure = [&]() {
+        gauge(s.x);
+        apply_operator(L, s.x, s.q);
+        float r_max = 0.0f;
+        float b_max = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (g.solid != nullptr && g.solid[i] != 0u) continue;
+            r_max = std::max(r_max, std::fabs(s.b[i] - s.q[i]));
+            b_max = std::max(b_max, std::fabs(s.b[i]));
+        }
+        return b_max > 0.0f ? r_max / b_max : 0.0f;
+    };
     mask(s.x);
     apply_operator(L, s.x, s.q);
     for (std::size_t i = 0; i < n; ++i) s.r[i] = s.b[i] - s.q[i];
@@ -48,10 +62,19 @@ float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGaug
     precond();
     std::copy(s.z.begin(), s.z.end(), s.d.begin());
     float rz = dot(s.r, s.z);
-    for (uint32_t it = 0; it < iterations; ++it) {
+    const uint32_t last = std::max(floor, cap);
+    PcgResult out;
+    bool measured = false;
+    for (;; ++out.iterations) {
+        if (out.iterations >= floor) {  // the floor's done: stop at the mark or the cap
+            out.residual = measure();
+            measured = true;
+            if (out.residual <= mark || out.iterations >= last) break;
+        }
         apply_operator(L, s.d, s.q);
         const float dq = dot(s.d, s.q);
         if (dq == 0.0f || rz == 0.0f) break;  // solved exactly: nothing left to reduce
+        measured = false;
         const float alpha = rz / dq;
         for (std::size_t i = 0; i < n; ++i) {
             s.x[i] += alpha * s.d[i];
@@ -64,16 +87,12 @@ float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGaug
         for (std::size_t i = 0; i < n; ++i) s.d[i] = s.z[i] + beta * s.d[i];
         rz = rz_next;
     }
-    gauge(s.x);
-    apply_operator(L, s.x, s.q);
-    float r_max = 0.0f;
-    float b_max = 0.0f;
-    for (std::size_t i = 0; i < n; ++i) {
-        if (g.solid != nullptr && g.solid[i] != 0u) continue;
-        r_max = std::max(r_max, std::fabs(s.b[i] - s.q[i]));
-        b_max = std::max(b_max, std::fabs(s.b[i]));
-    }
-    return b_max > 0.0f ? r_max / b_max : 0.0f;
+    if (!measured) out.residual = measure();
+    return out;
+}
+
+float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGauge& gauge) noexcept {
+    return solve_pcg_to(mg, s, iterations, iterations, 0.0f, gauge).residual;
 }
 
 }  // namespace spade::physics::airflow

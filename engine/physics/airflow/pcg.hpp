@@ -35,11 +35,37 @@ struct PcgScratch {
 // The bytes make_pcg_scratch() allocates: six floats per cell.
 [[nodiscard]] inline uint64_t pcg_bytes(uint64_t cells) noexcept { return 6u * cells * sizeof(float); }
 
-// `iterations` CG iterations on mg.levels[0]'s operator from s.x. Returns the
-// final relative residual max|b - A x| / max|b| over the cells not marked
-// solid (0 when b is 0 there); a max is order-free, so both backends report
-// the same value. An exact zero in a step's denominator (a solved system)
-// ends the iterations early, the only early exit.
+// A pressure solve leaving more than this relative residual is announced (the
+// lead's condition, spec 1.5 as amended): ten times the warm residual the
+// count above leaves (1.2e-6), held at the floor of 1e-4. The solids' CG runs
+// on to it (solve_pcg_to()).
+inline constexpr float kResidualAnnounce = 1.0e-4f;
+
+// The most CG iterations a solids step takes (the lead's decision 1b,
+// 2026-10-21): past its floor (kSolidsCgIterations) the solve runs on to
+// kResidualAnnounce and stops here, announced. A sphere centred on a cell
+// centre needs 24 at 48^3 (measured 2026-10-21); corner-centred, 8.
+inline constexpr uint32_t kSolidsCgCap = 32;
+
+struct PcgResult {
+    float residual = 0.0f;    // max|b - A x| / max|b| over the cells not marked solid
+    uint32_t iterations = 0;  // the iterations taken
+};
+
+// At least `floor` CG iterations on mg.levels[0]'s operator from s.x, then on
+// until the relative residual max|b - A x| / max|b| over the cells not marked
+// solid (0 when b is 0 there) is at most `mark`, or `cap` iterations (at
+// least `floor`) are done. The residual is measured after the floor's
+// iterations and after each one past it, so a solve that meets the mark at
+// its floor takes exactly the floor's path, bit for bit. A max is order-free
+// and the dots take the fixed tile order, so the count is the same on every
+// build. An exact zero in a step's denominator (a solved system) ends the
+// iterations early.
+[[nodiscard]] PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t cap, float mark,
+                                     const PcgGauge& gauge) noexcept;
+
+// Exactly `iterations` CG iterations (solve_pcg_to() with its cap at its
+// floor); returns the final relative residual.
 float solve_pcg(Multigrid& mg, PcgScratch& s, uint32_t iterations, const PcgGauge& gauge) noexcept;
 
 }  // namespace spade::physics::airflow
