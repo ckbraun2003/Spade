@@ -5,6 +5,7 @@
 #include <cmath>
 #include <string>
 
+#include "core/detail/flush_subnormals.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pcg.hpp"
 
@@ -228,7 +229,13 @@ Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, s
     return {};
 }
 
-FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, FluidScratch& s) noexcept {
+namespace {
+
+// fluid_step()'s body, run under its wrapper's scope: every float op of the
+// step is in here, none in the wrapper (the wrapper rule,
+// core/detail/flush_subnormals.hpp).
+SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg,
+                                        FluidScratch& s) noexcept {
     if (s.health.fault != FluidFault::none) return s.health;
     const bool solid = s.solids.any;
     if (solid) {
@@ -273,6 +280,15 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
         s.health.stalled = solid && s.health.unconverged && rep.stalled;
     }
     return s.health;
+}
+
+}  // namespace
+
+// Subnormals flushed as the RTX 3060 Ti flushes them (spec section 4.5 as
+// amended 2026-10-22): the scope covers every return of the body.
+FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, FluidScratch& s) noexcept {
+    const spade::math::ScopedFlushSubnormals flush;
+    return step_flushed(g, bc, cfg, s);
 }
 
 }  // namespace spade::physics::airflow

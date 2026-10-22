@@ -58,6 +58,7 @@ struct PublishCounts {
 
 // Refused (invalid_argument): a solid mask, a grid array or a non-empty
 // aperture array whose size does not match the grid's shape. `out`'s storage is reused when its size fits.
+// With subnormals flushed as fluid_step() flushes them (fluid_step.hpp).
 [[nodiscard]] Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out);
 
 }  // namespace spade::physics::airflow

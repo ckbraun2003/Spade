@@ -63,7 +63,8 @@ struct DiscSpread {
 
 [[nodiscard]] DiscSpread disc_spread(const ActuatorDisc& disc, const GridShape& shape, float rho, float h) noexcept;
 
-// Adds one step's increments for a checked disc.
+// Adds one step's increments for a checked disc, with subnormals flushed as
+// fluid_step() flushes them (fluid_step.hpp).
 void spread_actuator(const ActuatorDisc& disc, const GridShape& shape, float rho, float h, std::span<float> du,
                      std::span<float> dv, std::span<float> dw) noexcept;
 

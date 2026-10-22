@@ -14,10 +14,12 @@
   - Each kernel mirrors plan A term for term: face order −x, +x, −y, +y, −z, +z; the lerp form; red then black.
   - No atomics: gathers only. Reciprocals are computed on the host, transcendentals use `fp32_math`, and there is no contraction.
   - Every reduction, dot and `remove_mean` uses the fixed fp32 4×4×4 tile order of `reduce.hpp`, with the same bits at every workgroup size.
-- **Grades (L3, L4, TD-14).**
+  - Both twins flush subnormals (spec §4.5, amended 2026-10-22). No kernel requests a denormal mode, so the 3060 Ti's arithmetic is a sign-preserving FTZ+DAZ. The CPU's `fluid_step`, `spread_actuator`, `wall_load` and `publish_render_volume` run under MXCSR's FTZ and DAZ (`engine/core/detail/flush_subnormals.hpp`). Both detect tininess after rounding.
+- **Grades (L3, L4, TD-14; spec §4.5, amended 2026-10-22).**
   - The CPU stays the reference and the golden; the GPU is never a golden source.
-  - Each kernel is banded against its CPU twin. A band is 4× the largest measurement, with a floor of 4 ulps, and holds to the horizon T_p. The target is 1e-4 relative; anything above 1e-3 is a grade change, never a wider band.
-  - The airflow module's GPU grade is **banded**, placed in `04-verification.md`.
+  - Each kernel is banded against its CPU twin until it is exact. A band is 4× the largest measurement, with a floor of 4 ulps, and holds to the horizon T_p. The target is 1e-4 relative; anything above 1e-3 is a grade change, never a wider band.
+  - A kernel is exact when every division and square root in it is `div32_ftz` or `sqrt32_ftz`, and its other float operations are the twin's, in the twin's order. Then it equals its CPU twin bit for bit on each device and driver measured, and its band retires (B5 on).
+  - The airflow module's GPU grade is **banded**, placed in `04-verification.md`. Its rows change as kernels go bit-equal.
 - **Refusals by name (L6).**
   - Device limits: maxStorageBufferRange, the descriptor counts, the push size, the per-axis workgroup count, maxMemoryAllocationSize, and the workgroup size and invocations.
   - The VRAM budget.

@@ -131,6 +131,11 @@ struct FluidScratch {
 
 // One step. Returns the scratch's health: FluidFault::none, or the fault
 // that stopped this step or an earlier one (the grid then is unchanged).
+// It runs with subnormals flushed (FTZ and DAZ, the MXCSR word 0x9FC0), as
+// the GPU's arithmetic flushes them, and gives back the calling thread's
+// MXCSR whole on every return (core/detail/flush_subnormals.hpp; spec section
+// 4.5 as amended 2026-10-22). So do spread_actuator(), wall_load() and
+// publish_render_volume().
 FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, FluidScratch& s) noexcept;
 
 // Sets the scratch's solids from `parts` (a host call: on first use it

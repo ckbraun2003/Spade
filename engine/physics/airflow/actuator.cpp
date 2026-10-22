@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string>
 
+#include "core/detail/flush_subnormals.hpp"
+
 namespace spade::physics::airflow {
 
 namespace {
@@ -100,8 +102,12 @@ DiscSpread disc_spread(const ActuatorDisc& d, const GridShape& s, float rho, flo
     return out;
 }
 
-void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float h, std::span<float> du,
-                     std::span<float> dv, std::span<float> dw) noexcept {
+namespace {
+
+// spread_actuator()'s body, run under its wrapper's scope (the wrapper rule,
+// core/detail/flush_subnormals.hpp); disc_spread() runs inside it.
+SPADE_NOINLINE void spread_flushed(const ActuatorDisc& d, const GridShape& s, float rho, float h, std::span<float> du,
+                                   std::span<float> dv, std::span<float> dw) noexcept {
     const DiscSpread spread = disc_spread(d, s, rho, h);
     const std::array<glm::vec3, kDiscPoints>& pts = spread.points;
     const std::array<glm::vec3, kDiscPoints>& tangent = spread.tangent;
@@ -132,6 +138,16 @@ void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float
             out[c][idx] += swirl ? scale * axis_c * sum + swirl_scale * swirl_sum : scale * axis_c * sum;
         });
     }
+}
+
+}  // namespace
+
+// Subnormals flushed as fluid_step() flushes them (spec section 4.5 as amended
+// 2026-10-22; the GPU's twin is B4's actuator_gather).
+void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float h, std::span<float> du,
+                     std::span<float> dv, std::span<float> dw) noexcept {
+    const spade::math::ScopedFlushSubnormals flush;
+    spread_flushed(d, s, rho, h, du, dv, dw);
 }
 
 }  // namespace spade::physics::airflow
