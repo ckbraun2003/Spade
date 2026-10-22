@@ -415,6 +415,7 @@ if(SPADE_BUILD_SANDBOX)
         test_png_reader.cpp
         test_library_thumbnails.cpp
         test_editor_library_save.cpp
+        test_flight_mixer.cpp
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp
