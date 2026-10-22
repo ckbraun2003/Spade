@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -268,15 +270,26 @@ class EditorWorkspace {
 
     // N15's staging folder (D1): the workspace's own, under the system's temp
     // folder, made by the first import, removed with the workspace, so an
-    // import never saved leaves nothing behind.
+    // import never saved leaves nothing behind. Its name is a random 64-bit
+    // token (TestHygiene's one product use). A crashed session leaves its
+    // folder behind, so starting sweeps the token folders whose newest file is
+    // over a day old (the lead, 2026-10-22). Without a temp folder there is no
+    // staging, and an import is refused by name, never staged in the working
+    // directory (Test/Docs' review).
     class ImportStaging {
       public:
         ImportStaging() {
             std::error_code ec;
             const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+            if (ec || temp.empty()) {
+                why_not_ = "the system's temp folder could not be found" +
+                           (ec ? " (" + ec.message() + ")" : std::string()) + ", so nothing can be staged";
+                return;
+            }
             std::random_device rd;
             const uint64_t token = (static_cast<uint64_t>(rd()) << 32) ^ rd();
-            path_ = (ec ? std::filesystem::path(".") : temp) / "spade-editor-imports" / std::to_string(token);
+            path_ = temp / "spade-editor-imports" / std::to_string(token);
+            sweep(path_.parent_path());
         }
         ~ImportStaging() {
             std::error_code ec;
@@ -284,10 +297,38 @@ class EditorWorkspace {
         }
         ImportStaging(const ImportStaging&) = delete;
         ImportStaging& operator=(const ImportStaging&) = delete;
+        // Empty when there is no temp folder; why_not() then says so.
         [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+        [[nodiscard]] const std::string& why_not() const noexcept { return why_not_; }
 
       private:
+        // Removes each folder under `root` named like a token (digits only)
+        // whose newest file is over a day old: a live session's is younger.
+        static void sweep(const std::filesystem::path& root) {
+            namespace fs = std::filesystem;
+            const fs::file_time_type stale = fs::file_time_type::clock::now() - std::chrono::hours(24);
+            std::vector<fs::path> gone;
+            std::error_code ec;
+            for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+                const std::string name = path_text(it->path().filename());
+                const bool token = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+                    return c >= '0' && c <= '9';
+                });
+                std::error_code e;
+                if (!token || !it->is_directory(e)) continue;
+                fs::file_time_type newest = fs::last_write_time(it->path(), e);
+                for (fs::recursive_directory_iterator r(it->path(), e), done; !e && r != done; r.increment(e)) {
+                    std::error_code t;
+                    const fs::file_time_type when = r->last_write_time(t);
+                    if (!t) newest = std::max(newest, when);
+                }
+                if (!e && newest < stale) gone.push_back(it->path());
+            }
+            for (const fs::path& p : gone) fs::remove_all(p, ec);
+        }
+
         std::filesystem::path path_;
+        std::string why_not_;
     };
     struct Serials {
         uint64_t scene = 0;
@@ -565,6 +606,9 @@ class EditorWorkspace {
             return std::unexpected(Error{Code::invalid_argument, detail::import_prefix(file) +
                                                                      "the world has no material to draw it with"});
         }
+        if (staging_.path().empty()) {
+            return std::unexpected(Error{Code::unavailable, detail::import_prefix(file) + staging_.why_not()});
+        }
         Result<ImportedMesh> got = import_gltf_object(file, staging_.path(), docs_.scene.desc(), world,
                                                       docs_.scene.path.parent_path());
         if (!got) return std::unexpected(got.error());
@@ -591,6 +635,10 @@ class EditorWorkspace {
             panels_.selection.kind == Selection::Kind::object ? find_vehicle(s, panels_.selection.name) : nullptr;
         if (v == nullptr) {
             panels_.status = "Import parts: select a drone to import the parts onto";
+            return;
+        }
+        if (staging_.path().empty()) {
+            panels_.status = detail::import_prefix(file) + staging_.why_not();
             return;
         }
         Result<std::vector<ImportedMesh>> got =
@@ -637,6 +685,7 @@ class EditorWorkspace {
             const bool listed = std::any_of(out.begin(), out.end(), [&](const auto& m) { return m.ref == ref; });
             if (listed) continue;
             for (const fs::path& root : {staging_.path(), docs_.scene.path.parent_path()}) {
+                if (root.empty()) continue;  // never the working directory
                 const fs::path from = root / fs::path(std::u8string(file.begin(), file.end()));
                 std::error_code ec;
                 if (!fs::exists(from, ec)) continue;
@@ -655,6 +704,7 @@ class EditorWorkspace {
         if (const auto it = import_sources_.find(ref); it != import_sources_.end()) return it->second;
         std::string source;
         for (const std::filesystem::path& root : {docs_.scene.path.parent_path(), staging_.path()}) {
+            if (root.empty()) continue;  // never the working directory
             const std::filesystem::path sidecar = root / std::filesystem::path(ref + ".spmesh");
             std::error_code ec;
             if (!std::filesystem::exists(sidecar, ec)) continue;
