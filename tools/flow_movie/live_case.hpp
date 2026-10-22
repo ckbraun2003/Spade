@@ -19,9 +19,6 @@ struct LiveCase {
     spade::analysis::AnalysisCase c;
     spade::vehicles::ModelType run_model;   // what LiveRun steps
     spade::vehicles::ModelType draw_model;  // whose parts each frame draws
-    // The rotors' chain, idle and charge, beside the model until the chain
-    // pin (LiveRun::start()); none for a run without rotors.
-    std::optional<spade::analysis::LivePropulsion> propulsion;
     spade::analysis::ControlProgram program;
     std::string program_name;  // "the showcase program", or the controls file's name
     double seconds = 0.0;      // how long to fly, simulated

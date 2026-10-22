@@ -15,6 +15,7 @@
 #include <string_view>
 
 #include "analysis/detail/atomic_file.hpp"
+#include "analysis/detail/hover.hpp"
 #include "core/fp32_math.hpp"
 #include "core/path_text.hpp"
 #include "core/rng.hpp"
@@ -26,7 +27,9 @@
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "state/snapshot.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_flags.hpp"
 #include "vehicles/rotor_discs.hpp"
 #include "world/builder.hpp"
@@ -187,6 +190,21 @@ struct Reader {
     return "rotor";
 }
 
+// The run's propulsion (INT-11): the model's chain, and the case's idle and
+// state of charge (Physics' defaults where a hand-built case left them out).
+// One chain turns every rotor (one per airframe).
+struct Propulsion {
+    vehicles::PropulsionChain chain;
+    double idle = 0.0;  // the duty an armed drone spins at with zero throttle, in [0, 1)
+    double soc = 1.0;   // the battery's state of charge, in (0, 1]
+};
+
+[[nodiscard]] std::optional<Propulsion> propulsion_of(const AnalysisCase& c, const vehicles::ModelType& model) {
+    if (!model.propulsion) return std::nullopt;
+    return Propulsion{*model.propulsion, static_cast<double>(c.power.idle.value_or(kDefaultIdleDuty)),
+                      static_cast<double>(c.power.state_of_charge.value_or(kDefaultStateOfCharge))};
+}
+
 }  // namespace
 
 // BodyState is over-aligned for the GPU mirror, so Impl is padded: the same
@@ -204,7 +222,7 @@ struct LiveRun::Impl {
     af::PublishInput publish;
     std::unique_ptr<Simulation> sim;
     VehicleRef vehicle;
-    std::optional<LivePropulsion> propulsion;  // set for a model with rotors
+    std::optional<Propulsion> propulsion;  // set for a model with rotors
     double density = 0.0;                      // the case's, for the throttle map
     glm::vec3 grid_origin{0.0f};               // the grid's minimum corner, world frame
     std::vector<float> omega_cmd;              // this step's command, one per rotor
@@ -219,6 +237,7 @@ struct LiveRun::Impl {
     LiveState state;
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
+    LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -229,29 +248,16 @@ LiveRun::LiveRun(LiveRun&&) noexcept = default;
 LiveRun& LiveRun::operator=(LiveRun&&) noexcept = default;
 LiveRun::~LiveRun() = default;
 
-namespace {
-
-// The weight in LiveRun's world, which is y-up under Environment{}'s gravity.
-[[nodiscard]] double world_weight(const vehicles::ModelType& model) {
-    return static_cast<double>(model.body.mass) * static_cast<double>(-Environment{}.gravity.y);
-}
-
-[[nodiscard]] std::string air_text(double density, double soc) {
-    return std::format("density {:.4g} kg/m3, state of charge {:.3g}", density, soc);
-}
-
-}  // namespace
-
-Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model,
-                                   const std::optional<LivePropulsion>& propulsion) {
+Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model) {
     if (model.rotors.empty()) return ShowcaseTrim{};
+    const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!propulsion) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "the model '" + model.name + "' has " + std::to_string(model.rotors.size()) +
-                                         " rotors, and the showcase trim needs their propulsion (the chain, idle "
-                                         "and state of charge) to find their hover"});
+                                         " rotors, and the showcase trim needs their propulsion chain (the "
+                                         "model file's propulsion:) to find their hover"});
     }
-    const LivePropulsion& p = *propulsion;
+    const Propulsion& p = *propulsion;
     if (Result<double> d = vehicles::armed_duty(false, 0.0, p.idle); !d) {
         return std::unexpected(Error{d.error().code, "the propulsion's idle: " + d.error().context});
     }
@@ -259,15 +265,13 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
         return std::unexpected(Error{ok.error().code, "the propulsion: " + ok.error().context});
     }
     const double density = static_cast<double>(c.fluid.density);
-    const double per_rotor = world_weight(model) / static_cast<double>(model.rotors.size());
+    const double per_rotor = detail::world_weight(model) / static_cast<double>(model.rotors.size());
     const auto bad = [](const vehicles::SteadyPoint& s) {
         return (s.flags & (vehicles::propulsion_flags::unreachable | vehicles::propulsion_flags::no_bracket)) != 0u;
     };
-    const vehicles::SteadyPoint hover = vehicles::steady_state_for_thrust(p.chain, per_rotor, density, 0.0, p.soc);
-    if (bad(hover)) {
-        return std::unexpected(Error{Code::invalid_argument, "the chain cannot hover the model '" + model.name +
-                                                                 "' at " + air_text(density, p.soc)});
-    }
+    const Result<vehicles::SteadyPoint> hovering = detail::hover_point(model, p.chain, density, p.soc);
+    if (!hovering) return std::unexpected(hovering.error());
+    const vehicles::SteadyPoint& hover = *hovering;
     if (!(p.idle < hover.duty)) {
         return std::unexpected(Error{Code::invalid_argument,
                                      std::format("idle duty {:.3g} is at or above the hover duty {:.3g}: armed at zero "
@@ -280,16 +284,16 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
         return std::unexpected(Error{Code::invalid_argument,
                                      std::format("the showcase's climb ({:.2g} times the weight) is out of the chain's "
                                                  "reach for '{}' at {}",
-                                                 kShowcaseClimbThrust, model.name, air_text(density, p.soc))});
+                                                 kShowcaseClimbThrust, model.name, detail::air_text(density, p.soc))});
     }
     // The inverse of the arm rule: duty = idle + (1 - idle) throttle.
     const auto throttle = [&p](double duty) { return static_cast<float>((duty - p.idle) / (1.0 - p.idle)); };
     return ShowcaseTrim{throttle(hover.duty), throttle(climb.duty)};
 }
 
-Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                               const std::optional<LivePropulsion>& propulsion) {
+Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model) {
     const AnalysisCase& c = resolved.spec;
+    const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "a live run needs the case's time.step: the solver's own step rule is "
@@ -299,8 +303,8 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     if (!model.rotors.empty() && !propulsion) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "the model '" + model.name + "' has " + std::to_string(model.rotors.size()) +
-                                         " rotors, and a live run needs their propulsion (the chain, idle and "
-                                         "state of charge) to turn a throttle into rotor speed"});
+                                         " rotors, and a live run needs their propulsion chain (the model file's "
+                                         "propulsion:) to turn a throttle into rotor speed"});
     }
     if (propulsion) {
         // The throttle map's own checks, at rest, so a bad input is refused
@@ -328,6 +332,22 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->fluid.rho = c.fluid.density;
     impl->fluid.nu = c.fluid.kinematic_viscosity;
     impl->fluid.h = static_cast<float>(seconds(impl->h_ns));
+    // The model's rigid parts, posed at the hover (the held body at rest),
+    // are the grid's solids (P2); a rotor's own parts are the disc's. With
+    // any, the pressure takes the CG count P2 measured.
+    const FrameState hover_frame =
+        to_body_state(FrameState{}, glm::normalize(model.design_to_principal), model.com_offset);
+    BodyState hover{};
+    hover.pos = hover_frame.pos;
+    hover.orient = hover_frame.orient;
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    Result<vehicles::PosedParts> posed =
+        vehicles::posed_parts(model, hover, still, still, vehicles::PartFilter::rigid_only);
+    if (!posed) {
+        return std::unexpected(Error{posed.error().code, "the model's parts at the hover: " + posed.error().context});
+    }
+    const bool with_solids = !posed->parts.empty();
+    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
     Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
     if (!scratch) return std::unexpected(scratch.error());
     impl->scratch = std::move(*scratch);
@@ -336,6 +356,29 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
+    if (with_solids) {
+        // A local: its sampler borrows it and impl->model, and set_solids()
+        // is done with both on return (vehicles/airflow_solids.hpp).
+        const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
+        Result<std::vector<af::SolidPart>> parts = solids.parts();
+        if (!parts) {
+            return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+        }
+        if (Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
+            !set) {
+            return std::unexpected(Error{set.error().code, "the model's parts as solids: " + set.error().context});
+        }
+        impl->solids.any = impl->scratch.solids.any;
+        impl->solids.run_line = impl->scratch.solids.run_line;
+        const std::vector<uint8_t>& mask = impl->scratch.regions.solid;
+        impl->solids.solid_cells =
+            static_cast<uint32_t>(std::count_if(mask.begin(), mask.end(), [](uint8_t s) { return s != 0u; }));
+        // P6: the cells inside the parts, masked in every published volume;
+        // P3: the face apertures, so no gradient differences across a wall
+        // or a sheet. Both point into the scratch, built once, here.
+        impl->publish.solid = impl->scratch.regions.solid;
+        for (std::size_t a = 0; a < 3; ++a) impl->publish.theta[a] = impl->scratch.solids.theta[a];
+    }
 
     // The drone: one body of the model in a world of its own, without
     // geometry. Gravity is the world's, though the hold sets the body each step.
@@ -457,6 +500,11 @@ Result<void> LiveRun::step(const Controls& controls) {
                   af::describe(health, r.resolved.base);
         return std::unexpected(Error{Code::internal, r.fault});
     }
+    if (r.solids.any) {
+        // L6: an unconverged pressure is announced (run_line()), never refused.
+        r.solids.pressure_residual = health.pressure_residual;
+        if (health.unconverged) ++r.solids.unconverged_steps;
+    }
 
     ++r.state.steps;
     r.state.t_s = seconds(r.state.steps * r.h_ns);
@@ -502,6 +550,7 @@ std::string LiveRun::run_label() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
+    if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
     }
@@ -509,8 +558,15 @@ std::string LiveRun::run_label() const {
 }
 
 std::string LiveRun::run_line() const {
-    return run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+    std::string out = run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+    if (const LiveSolids& s = impl_->solids; s.unconverged_steps > 0) {
+        out += std::format(" \xc2\xb7 pressure unconverged on {} steps (last max|r|/max|b| {:.1e})",
+                           s.unconverged_steps, s.pressure_residual);
+    }
+    return out;
 }
+
+const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 
@@ -561,7 +617,8 @@ Result<void> LiveRun::save(const std::filesystem::path& file) const {
 }
 
 Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const ResolvedCase& resolved,
-                                 const vehicles::ModelType& model, const std::optional<LivePropulsion>& propulsion) {
+                                 const vehicles::ModelType& model) {
+    const std::optional<Propulsion> propulsion = propulsion_of(resolved.spec, model);
     const Result<std::string> read = detail::read_file_shared(file);
     if (!read) return std::unexpected(read.error());
     const std::string_view in(*read);
@@ -646,7 +703,7 @@ Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const Resolv
     if (!rd.ok || rd.at != rd.in.size()) return refuse(Code::invalid_argument, "is malformed");
 
     // The run as the case builds it, then its saved state over it.
-    Result<LiveRun> run = start(resolved, model, propulsion);
+    Result<LiveRun> run = start(resolved, model);
     if (!run) return std::unexpected(run.error());
     Impl& r = *run->impl_;
     if (h_ns != r.h_ns) return refuse(Code::invalid_argument, "steps at another h");

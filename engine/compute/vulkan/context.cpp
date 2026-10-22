@@ -1,10 +1,13 @@
 #include "compute/vulkan/context.hpp"
 
+#include <cstddef>
 #include <cstdlib>
 #include <limits>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "compute/device_limits.hpp"
 
 namespace spade::compute {
 
@@ -78,6 +81,34 @@ namespace {
     report.device_id = properties.deviceID;
     report.api_version = properties.apiVersion;
     report.driver_version = properties.driverVersion;
+
+    // THE LIMITS the module set is checked against (stage 7 §7.1, CORE-5 as
+    // amended 2026-10-12; compute/device_limits.hpp). maxMemoryAllocationSize
+    // is Maintenance3's (Vulkan 1.1 core), read where the loader resolves
+    // vkGetPhysicalDeviceProperties2; otherwise the guaranteed 2^30, and the
+    // report says it was not reported.
+    const VkPhysicalDeviceLimits& limits = properties.limits;
+    report.limits.max_storage_buffer_range = limits.maxStorageBufferRange;
+    report.limits.max_memory_allocation_size = kGuaranteedLimits.max_memory_allocation_size;
+    report.limits.max_per_stage_storage_buffers = limits.maxPerStageDescriptorStorageBuffers;
+    report.limits.max_set_storage_buffers = limits.maxDescriptorSetStorageBuffers;
+    report.limits.max_push_constants_size = limits.maxPushConstantsSize;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        report.limits.max_group_count[axis] = limits.maxComputeWorkGroupCount[axis];
+        report.limits.max_group_size[axis] = limits.maxComputeWorkGroupSize[axis];
+    }
+    report.limits.max_group_invocations = limits.maxComputeWorkGroupInvocations;
+    if (properties.apiVersion >= VK_API_VERSION_1_1 && vkGetPhysicalDeviceProperties2 != nullptr) {
+        VkPhysicalDeviceMaintenance3Properties maintenance3{};
+        maintenance3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
+        VkPhysicalDeviceProperties2 with_maintenance3{};
+        with_maintenance3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        with_maintenance3.pNext = &maintenance3;
+        vkGetPhysicalDeviceProperties2(device, &with_maintenance3);
+        report.limits.max_memory_allocation_size = maintenance3.maxMemoryAllocationSize;
+        report.limits.allocation_size_reported = true;
+    }
+
     if (properties.apiVersion < VK_API_VERSION_1_2 || vkGetPhysicalDeviceProperties2 == nullptr) {
         return report;
     }
@@ -166,6 +197,19 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(VkDebugUtilsMessageSever
         invoke_error_sink(std::string_view(callback_data->pMessage));
     }
     return VK_FALSE;  // never suppress the call the layer would otherwise make
+}
+
+// Whether the device advertises the extension `name` (memory_budget() asks
+// for VK_EXT_memory_budget). A failed enumeration answers no.
+[[nodiscard]] bool device_has_extension(VkPhysicalDevice device, std::string_view name) {
+    uint32_t count = 0;
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr) != VK_SUCCESS) return false;
+    std::vector<VkExtensionProperties> extensions(count);
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count, extensions.data()) != VK_SUCCESS) return false;
+    for (const VkExtensionProperties& extension : extensions) {
+        if (std::string_view(extension.extensionName) == name) return true;
+    }
+    return false;
 }
 
 }  // namespace
@@ -491,6 +535,7 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     ctx->device_name_ = properties.deviceName;
     ctx->debug_messenger_ = debug_messenger;
     ctx->int64_supported_ = int64_supported;
+    ctx->memory_budget_ext_ = device_has_extension(physical_device, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     ctx->report_ = std::move(report);
     vkGetDeviceQueue(device, compute_family, compute_queue_index, &ctx->compute_queue_);
     vkGetDeviceQueue(device, transfer_family, transfer_queue_index, &ctx->transfer_queue_);
@@ -509,6 +554,7 @@ VulkanContext::VulkanContext(VulkanContext&& other) noexcept
       transfer_family_(other.transfer_family_),
       api_version_(other.api_version_),
       int64_supported_(other.int64_supported_),
+      memory_budget_ext_(other.memory_budget_ext_),
       report_(std::move(other.report_)),
       device_name_(std::move(other.device_name_)) {}
 
@@ -525,10 +571,48 @@ VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
         transfer_family_ = other.transfer_family_;
         api_version_ = other.api_version_;
         int64_supported_ = other.int64_supported_;
+        memory_budget_ext_ = other.memory_budget_ext_;
         report_ = std::move(other.report_);
         device_name_ = std::move(other.device_name_);
     }
     return *this;
+}
+
+MemoryBudget VulkanContext::memory_budget() const {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT ext_budget{};
+    ext_budget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+    VkPhysicalDeviceMemoryProperties2 memory2{};
+    memory2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+    const bool ext = memory_budget_ext_ && vkGetPhysicalDeviceMemoryProperties2 != nullptr;
+    if (ext) memory2.pNext = &ext_budget;
+    if (vkGetPhysicalDeviceMemoryProperties2 != nullptr) {
+        vkGetPhysicalDeviceMemoryProperties2(physical_device_, &memory2);
+    } else {
+        vkGetPhysicalDeviceMemoryProperties(physical_device_, &memory2.memoryProperties);
+    }
+    const VkPhysicalDeviceMemoryProperties& memory = memory2.memoryProperties;
+
+    // The largest device-local heap, the lowest index on a tie. Vulkan
+    // guarantees one; without it the budget stays 0, which every check refuses.
+    MemoryBudget out;
+    bool found = false;
+    for (uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+        if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) continue;
+        if (!found || memory.memoryHeaps[i].size > memory.memoryHeaps[out.heap].size) out.heap = i;
+        found = true;
+    }
+    if (!found) return out;
+    if (ext) {
+        out.source = MemoryBudget::Source::ext;
+        out.budget = ext_budget.heapBudget[out.heap];
+        out.usage = ext_budget.heapUsage[out.heap];
+    } else {
+        // Half the heap: on an integrated GPU the device-local heap is system
+        // memory, and half of it is still capped at kAirflowVramCap by vram_cap().
+        out.source = MemoryBudget::Source::half_heap;
+        out.budget = memory.memoryHeaps[out.heap].size / 2;
+    }
+    return out;
 }
 
 VulkanContext::~VulkanContext() { destroy(); }

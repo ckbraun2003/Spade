@@ -73,6 +73,19 @@ A row, with illustrative values:
 
 Two kinds of tolerance are set in opposite ways. An **implementation band** (CPU against GPU, gcc against MSVC) says how faithfully one implementation reproduces another, so it is measured and then pinned with margin (`TD-2`, `TD-14`). A **validation tolerance** (the physics against published reference data, `../physics/plans/2026-10-05-airflow-design.md` §11) is never set that way: pinning it at 4× our own solver's error would fit the tolerance to our answer and make the check circular. Each case's tolerance is fixed in §11.2 before its first run, argued from the literature (the published spread, and the resolution the case states), and its record states that argument. A test against an analytic solution follows the same rule, with its tolerance argued from the resolution and the method's order: the solids tests' (P2, P3) are fixed in `2026-10-13-solids-tolerances.md`. A case that misses is reported as a miss; its tolerance is never loosened after a run without a lead decision recorded with its reason. The reference data is reviewed like a golden before the case's first run (`TD-1`): it cites the source's table or figure, and says how it was verified or digitized.
 
+### A case judged past its horizon (`T_p`)
+
+The lead, 2026-10-22, from Rendering's B4 finding on C8 (`e965df2`; C8's record). Physics accepted the GPU half.
+
+A chaotic flow forgets its last bits. Past its horizon `T_p`, one run is one trajectory of many, and a measure read from it moves with a last bit. C8's late mean moved from −11% to +1% of the CPU's under three 1-ulp nudges of its forcing.
+
+- **`T_p` is measured per case, at the case's own probe.** It is the last step at which every member of the case's one-ulp ensemble stays within 1e-5 of the scene's scale of the unnudged run (the banded-parity plan's rule, `../core/plans/2026-10-05-banded-parity-plan.md`, "Horizons, and chaotic scenes"). It is never assumed. A case judged wholly before `T_p`, or one whose flow settles to a steady state (where a 1-ulp change decays), needs nothing more.
+- **The ensemble is the CPU's own sensitivity.** The case is run N times, each with a fixed set of its forcing's values put 1 ulp up from its own seed (C8's: `tests/test_airflow_c8_spread.cpp`). It gives the measure's ensemble mean, standard deviation and range.
+- **A validation verdict past `T_p` is the ensemble's, never one run's.** The measure is chosen so that its verdict holds across the spread. The case's tolerance stays the literature's, as above: the spread never widens it.
+- **The GPU, or any path not bit-identical to the CPU reference,** on such a case:
+  - **Up to `T_p`:** the probe's series is banded against the CPU's run, per `TD-14`: 4× the measured gap, never under 4 ulps.
+  - **Past `T_p`:** there is no band against the CPU's one run. The GPU's measure is judged against the reference with the case's tolerance unchanged. It is also judged against the CPU's own spread: it must lie within 4× the ensemble's largest deviation from the ensemble's mean (the banded-parity plan's statistics band). A GPU run outside that band is a defect, however near the reference it lands.
+
 ### Validation records
 
 Every run of a validation case leaves one record, in its case's records folder (airflow: `tests/data/airflow/records/`). The measured lines are pasted from the block the test prints, never retyped. The record holds:

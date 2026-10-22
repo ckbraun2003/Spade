@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 
+#include "compute/device_limits.hpp"
+
 namespace spade::compute {
 
 // Which compute backend a caller targets. `cpu` names today's existing
@@ -156,6 +158,10 @@ struct DeviceReport {
     std::string driver_info;
     bool denorm_preserve_f32 = false;
     bool denorm_flush_to_zero_f32 = false;
+    // The device's limits (stage 7 §7.1, CORE-5 as amended 2026-10-12), so
+    // every run records what its device admits; compute/device_limits.hpp
+    // checks against them by name.
+    DeviceLimits limits{};
 };
 
 // One line for logs, gate output and front ends, e.g. "NVIDIA GeForce RTX 3060

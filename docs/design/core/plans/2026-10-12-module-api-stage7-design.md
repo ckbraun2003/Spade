@@ -486,6 +486,7 @@ An outline, not a plan. Each task is test-first, both presets, the gcc check, th
 2. **`state_digest` takes `Simulation&`** (§2.3). The plan counts the `const` call sites first; if there are many, a `const` overload that refuses at run time instead.
 3. **Core owns the domain-neutral grid kernels** of §8 (raster, sums, shift, points, fp16 pack); Physics reviews them. Physics owns every kernel with a fluid formula in it.
 4. **Reserve airflow's binding block in `bindings.slang` now,** with stage 6's empty-buffer pattern, so plan B's kernels bind there from the start.
+   - **Amended 2026-10-21 (the lead, approving Core's B0 plan, `fcb9f3b`):** the block is its own descriptor set, **set 1, "airflow"**, not more bindings in set 0 with empty buffers. Set 0, the mirror, `StepShape` and every identity stay byte for byte (the runner's G1). Plan B's runner and this stage's airflow module both bind set 1. Its contents are Physics' to confirm; the list is append-only and never renumbered.
 
 ## Conflicts found
 

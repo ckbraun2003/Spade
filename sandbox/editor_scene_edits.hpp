@@ -166,6 +166,14 @@ inline Result<bool> change(scene::SceneDesc& s, const RemoveObject& e) {
     }
     const auto it = std::find_if(s.vehicles.begin(), s.vehicles.end(), [&](const auto& v) { return v.name == e.name; });
     if (it == s.vehicles.end()) return std::unexpected(no_object("remove", e.name));
+    // A region follows its vehicle by name (N5b): not removed from under it.
+    for (const scene::SceneAirflowRegion& r : s.airflow) {
+        if (r.follows == e.name) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "remove '" + e.name + "': airflow region '" + r.name +
+                                             "' follows it; remove the region or point it at another vehicle first"});
+        }
+    }
     const std::string model = it->model;
     s.vehicles.erase(it);
     const bool still_used =
@@ -191,6 +199,10 @@ inline Result<bool> change(scene::SceneDesc& s, const RenameObject& e) {
         a->name = e.to;
     } else {
         find_named(s.vehicles, e.from)->name = e.to;
+        // The regions that follow it (N5b) follow it under its new name.
+        for (scene::SceneAirflowRegion& r : s.airflow) {
+            if (r.follows == e.from) r.follows = e.to;
+        }
     }
     return true;
 }

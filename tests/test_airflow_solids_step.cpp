@@ -22,6 +22,7 @@
 #include "airflow_solid_shapes.hpp"
 #include "reference_airframe.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/wall_load.hpp"
 #include "state/layout.hpp"
 #include "vehicles/airflow_solids.hpp"
@@ -162,15 +163,16 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
     }
 }
 
-// With n_v = 1 on the odd plane the solve cannot converge: the step reports
-// its relative residual and announces it (L6), and does not refuse.
+// With n_v = 1 and the cap at 1 on the odd plane the solve cannot converge:
+// the step reports its relative residual and announces it at its cap (L6),
+// and does not refuse.
 TEST(AirflowSolidsStep, AnUnconvergedSolveIsAnnounced) {
     const float dx = 1.0f / 32.0f;
     const GridShape shape{32, 8, 8, dx};
     const DomainBc bc = all_periodic();
     MacGrid g = *make_grid(shape, bc);
     std::fill(g.u.begin(), g.u.end(), 1.0f);
-    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = 1};
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = 1, .cg_cap = 1};
     FluidScratch s = *make_fluid_scratch(g, bc, cfg);
     Scene scene;
     ASSERT_TRUE(set_solids(s, g, bc, s3_sheet(scene, 17, dx), scene.sampler()).has_value());
@@ -178,6 +180,9 @@ TEST(AirflowSolidsStep, AnUnconvergedSolveIsAnnounced) {
     EXPECT_EQ(health.fault, FluidFault::none);
     EXPECT_GT(health.pressure_residual, kResidualAnnounce);
     EXPECT_TRUE(health.unconverged);
+    EXPECT_TRUE(health.capped);
+    EXPECT_EQ(health.pressure_iterations, 1u);
+    EXPECT_NE(describe(health, shape).find("cap of 1"), std::string::npos) << describe(health, shape);
     EXPECT_NE(describe(health, shape).find("announced"), std::string::npos) << describe(health, shape);
 }
 
@@ -564,10 +569,10 @@ struct S1Result {
 // slip, inviscid, U h / dx = cfl (0.1 for the checks), n_v 16. C_M from step
 // 1; C_p, drag and side forces from step 3; samples every 15 degrees in theta
 // on four meridians.
-[[nodiscard]] S1Result run_s1(uint32_t n, float cfl = 0.1f) {
+[[nodiscard]] S1Result run_s1(uint32_t n, float cfl = 0.1f, bool odd = false) {
     const double R = 0.06;
     const float dx = static_cast<float>(R / n);
-    const uint32_t cells = 8u * n;
+    const uint32_t cells = odd ? 8u * n - 1u : 8u * n;  // odd: the sphere centred on a cell centre
     const GridShape shape{cells, cells, cells, dx};
     DomainBc bc;
     bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
@@ -578,7 +583,7 @@ struct S1Result {
     std::fill(g.u.begin(), g.u.end(), U);
     FluidScratch s = *make_fluid_scratch(g, bc, cfg);
     Scene scene;
-    const float mid = 4.0f * static_cast<float>(n) * dx;
+    const float mid = 0.5f * static_cast<float>(cells) * dx;
     scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = glm::vec3(mid),
                                  .radius = static_cast<float>(R), .min_feature = static_cast<float>(2.0 * R)});
     S1Result out;
@@ -1077,7 +1082,8 @@ TEST(AirflowSolidsStep, TheChosenIterationCountConvergesTheSheetFromCold) {
     const auto solve = [&](uint32_t plane, uint32_t n_v) {
         MacGrid g = *make_grid(shape, bc);
         std::fill(g.u.begin(), g.u.end(), 1.0f);
-        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = n_v};
+        // Exactly n_v iterations: the count's study, so the cap is the floor.
+        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = n_v, .cg_cap = n_v};
         FluidScratch s = *make_fluid_scratch(g, bc, cfg);
         Scene scene;
         EXPECT_TRUE(set_solids(s, g, bc, s3_sheet(scene, plane, dx), scene.sampler()).has_value());
@@ -1108,6 +1114,191 @@ TEST(AirflowSolidsStep, TheChosenIterationCountConvergesTheSheetFromCold) {
         EXPECT_NE(to_1e3, 0u) << plane;
         EXPECT_FALSE(health.unconverged) << describe(health, shape);
     }
+}
+
+// The solids' pressure solve converges on a grid with an odd axis (the D1
+// hover box, 240 x 177 x 168, reported max|r|/max|b| 0.21 and 0.13 at
+// kSolidsCgIterations; Rendering, 2026-10-21). make_multigrid() coarsens only
+// while every axis is even, so an odd axis leaves one level, and the CG's
+// V-cycle preconditioner is the coarsest level's sweeps on the whole grid:
+// weak, and four times the cost. Measured 2026-10-21 (MSVC release), the S1
+// sphere at R/dx 6 from rest, step 1: 48^3 (5 levels) 3.5e-6 in 0.29 s;
+// 48 x 47 x 48 (1 level) 1.3e-3 in 1.17 s; 96 x 95 x 96 (1 level) 3.7e-3 in
+// 8.8 s against 2.4 s at 96^3. The step's mark is kResidualAnnounce.
+TEST(AirflowSolidsStep, TheSolidsPressureConvergesOnAGridWithAnOddAxis) {
+    const float dx = 0.01f;
+    const GridShape shape{48, 47, 48, dx};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = kSolidsCgIterations,
+                          .interior = SolidInterior::extrapolate};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = {0.24f, 0.235f, 0.24f},
+                                 .radius = 6.0f * dx, .min_feature = 12.0f * dx});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+    const FluidHealth h = fluid_step(g, bc, cfg, s);
+    std::printf("48 x 47 x 48, step 1: max|r|/max|b| = %.3e\n", static_cast<double>(h.pressure_residual));
+    EXPECT_EQ(h.fault, FluidFault::none) << describe(h, shape);
+    EXPECT_LE(h.pressure_residual, kResidualAnnounce);
+    EXPECT_FALSE(h.unconverged);
+    EXPECT_LE(h.pressure_iterations, kSolidsCgCap);
+}
+
+// A sphere centred on a cell centre (48^3, R/dx 6) needs more CG iterations
+// than the floor (the lead's decision 1b, 2026-10-21): measured, 8 left 0.28
+// to 0.56 and 24 reached 1e-4 on all three steps. The solve runs on past the
+// floor to the mark, inside the cap, and the step reports its count.
+// Mutation: the cap at the floor (the fixed count), which misses.
+TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkInsideTheCap) {
+    const float dx = 0.01f;
+    const GridShape shape{48, 48, 48, dx};
+    DomainBc bc;
+    bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = kSolidsCgIterations,
+                          .interior = SolidInterior::extrapolate};
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = glm::vec3(24.5f * dx),
+                                 .radius = 6.0f * dx, .min_feature = 12.0f * dx});
+    ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+    uint32_t most = 0;
+    for (int step = 1; step <= 3; ++step) {
+        const FluidHealth h = fluid_step(g, bc, cfg, s);
+        std::printf("cell-centred sphere, step %d: %.3e in %u iterations\n", step,
+                    static_cast<double>(h.pressure_residual), h.pressure_iterations);
+        EXPECT_LE(h.pressure_residual, kResidualAnnounce) << step;
+        EXPECT_FALSE(h.capped) << step;
+        EXPECT_GE(h.pressure_iterations, kSolidsCgIterations) << step;
+        most = std::max(most, h.pressure_iterations);
+    }
+    EXPECT_GT(most, kSolidsCgIterations) << "the case must take the solve past its floor";
+}
+
+// The solids' solve on odd grids and on a periodic ring that cannot halve to
+// an even one (30, 2 mod 4): held, semi-coarsened, never given a closed face
+// (the lead's condition 2). An odd ring never reaches the solver: check_shape()
+// refuses it by name (red-black colouring needs an even ring, since plan A's
+// Task 1), pinned below. The sphere at the box's centre: every step reaches
+// the mark inside the cap.
+TEST(AirflowSolidsStep, TheSolidsSolveConvergesOnOddGridsAndAHeldPeriodicRing) {
+    struct Case {
+        uint32_t nx, ny, nz;
+        bool y_periodic;
+    };
+    for (const Case c : {Case{47, 48, 48, false}, Case{48, 48, 47, false}, Case{47, 47, 47, false},
+                         Case{48, 30, 48, true}}) {
+        const float dx = 0.01f;
+        const GridShape shape{c.nx, c.ny, c.nz, dx};
+        DomainBc bc;
+        bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+        if (c.y_periodic) bc.face[kYMinus] = bc.face[kYPlus] = FaceBc::periodic;
+        const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = kSolidsCgIterations,
+                              .interior = SolidInterior::extrapolate};
+        MacGrid g = *make_grid(shape, bc);
+        std::fill(g.u.begin(), g.u.end(), 1.0f);
+        FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+        Scene scene;
+        scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere,
+                                     .centre = 0.5f * dx * glm::vec3(c.nx, c.ny, c.nz), .radius = 6.0f * dx,
+                                     .min_feature = 12.0f * dx});
+        ASSERT_TRUE(set_solids(s, g, bc, scene.parts(), scene.sampler()).has_value()) << s.solids.run_line;
+        for (int step = 1; step <= 2; ++step) {
+            const FluidHealth h = fluid_step(g, bc, cfg, s);
+            std::printf("%u x %u x %u%s, step %d: %.3e in %u iterations\n", c.nx, c.ny, c.nz,
+                        c.y_periodic ? " (y periodic)" : "", step, static_cast<double>(h.pressure_residual),
+                        h.pressure_iterations);
+            EXPECT_LE(h.pressure_residual, kResidualAnnounce) << c.nx << "x" << c.ny << "x" << c.nz << " " << step;
+            EXPECT_FALSE(h.capped);
+        }
+    }
+}
+
+// Plan A's path on the same grids: its fixed cycles must converge, which a
+// hierarchy of one level cannot (its residual barely falls from 2 cycles to
+// 6). Measured: an even grid falls about 7 times a cycle. The bar: 6 cycles
+// leave at most 0.05 of what 2 leave. A perturbed stream from a fixed seed.
+TEST(AirflowSolidsStep, PlanAsCyclesConvergeOnOddGridsAndAHeldPeriodicRing) {
+    struct Case {
+        uint32_t nx, ny, nz;
+        bool y_periodic;
+    };
+    for (const Case c : {Case{48, 47, 48, false}, Case{47, 47, 47, false}, Case{48, 30, 48, true}}) {
+        const float dx = 0.01f;
+        const GridShape shape{c.nx, c.ny, c.nz, dx};
+        DomainBc bc;
+        bc.ambient = glm::vec3(1.0f, 0.0f, 0.0f);
+        if (c.y_periodic) bc.face[kYMinus] = bc.face[kYPlus] = FaceBc::periodic;
+        float residual[2] = {};
+        for (const uint32_t which : {0u, 1u}) {
+            const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.1f * dx, .n_v = which == 0u ? 2u : 6u};
+            MacGrid g = *make_grid(shape, bc);
+            uint32_t seed = 12345u;
+            const auto rnd = [&seed] {
+                seed = seed * 1664525u + 1013904223u;
+                return static_cast<float>(seed >> 8) / 16777216.0f - 0.5f;
+            };
+            for (float& x : g.u) x = 1.0f + 0.1f * rnd();
+            for (float& x : g.v) x = 0.1f * rnd();
+            for (float& x : g.w) x = 0.1f * rnd();
+            FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+            const FluidHealth h = fluid_step(g, bc, cfg, s);
+            ASSERT_EQ(h.fault, FluidFault::none);
+            EXPECT_EQ(h.pressure_iterations, cfg.n_v);
+            residual[which] = h.pressure_residual;
+        }
+        std::printf("plan A %u x %u x %u%s: 2 cycles %.3e, 6 cycles %.3e\n", c.nx, c.ny, c.nz,
+                    c.y_periodic ? " (y periodic)" : "", static_cast<double>(residual[0]),
+                    static_cast<double>(residual[1]));
+        EXPECT_LE(residual[1], 0.05f * residual[0]) << c.nx << "x" << c.ny << "x" << c.nz;
+    }
+}
+
+// S1 at an odd size (the lead's test list): 47^3 at R/dx 6, the sphere on a
+// cell centre, meets S1's P3 checks with the same bands as at 48^3.
+TEST(AirflowSolidsStep, S1AtAnOddSizeMeetsItsP3Checks) {
+    const S1Result r = run_s1(6, 0.1f, true);
+    std::printf("S1 at 47^3: C_M %.4f, C_p error %.4f, side forces %.2e, residual %.2e\n", r.c_m, r.cp_err, r.side,
+                static_cast<double>(r.residual));
+    EXPECT_NEAR(r.c_m, 0.5, 0.24);
+    EXPECT_LE(r.cp_err, 0.32);
+    EXPECT_LE(r.side, 0.01);
+    EXPECT_LE(r.residual, kResidualAnnounce);
+}
+
+// The hierarchy rule (multigrid.cpp, coarser()): the halving rule's levels
+// stand where its coarsest is small (every golden and record grid: at most
+// 960 cells); past it, axis by axis. check_grid_note() names a hierarchy
+// whose coarsest is still above kCoarsestCells.
+TEST(AirflowSolidsStep, TheHierarchyCoarsensOddAxesAndNamesAShallowOne) {
+    const auto coarsest = [](uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool, 3> p = {}) {
+        return multigrid_coarsest(nx, ny, nz, p);
+    };
+    EXPECT_EQ(coarsest(48, 48, 48), (std::array<uint32_t, 3>{3, 3, 3}));
+    EXPECT_EQ(coarsest(12, 10, 8), (std::array<uint32_t, 3>{6, 5, 4}));  // the halving rule's, kept
+    EXPECT_EQ(coarsest(240, 177, 168), (std::array<uint32_t, 3>{4, 3, 3}));  // the D1 box: 7 levels
+    EXPECT_EQ(make_multigrid(240, 177, 168).levels.size(), 7u);
+    EXPECT_EQ(coarsest(224, 168, 160), (std::array<uint32_t, 3>{7, 6, 5}));
+    EXPECT_EQ(coarsest(48, 30, 48, {false, true, false}), (std::array<uint32_t, 3>{3, 30, 3}));  // y held
+    // An odd periodic ring is refused before any hierarchy is built.
+    DomainBc odd_ring;
+    odd_ring.face[kYMinus] = odd_ring.face[kYPlus] = FaceBc::periodic;
+    const auto refused = check_shape({48, 47, 48, 0.01f}, odd_ring);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("periodic axis y must have an even size"), std::string::npos)
+        << refused.error().context;
+    EXPECT_EQ(multigrid_plan_a_weight_faces(48, 48, 48), 0u);
+    EXPECT_GT(multigrid_plan_a_weight_faces(48, 47, 48), 0u);
+    DomainBc ring;
+    ring.face.fill(FaceBc::periodic);
+    const std::string note = check_grid_note({30, 30, 30, 0.01f}, ring);
+    EXPECT_NE(note.find("30 x 30 x 30"), std::string::npos) << note;
+    EXPECT_TRUE(check_grid_note({240, 177, 168, 0.004f}, DomainBc{}).empty());
+    EXPECT_TRUE(check_grid_note({48, 48, 48, 0.01f}, DomainBc{}).empty());
 }
 
 }  // namespace

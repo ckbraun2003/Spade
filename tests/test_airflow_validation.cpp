@@ -222,9 +222,11 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
     report(0.0, 0.0, ke0);
     double ke = ke0;
     double mark = 0.5;
+    float worst = 0.0f;  // plan A's largest projection residual over the run
     for (uint64_t step = 1; mark <= 10.0; ++step) {
         const FluidHealth h = fluid_step(g, bc, cfg, s);
         ASSERT_EQ(h.fault, FluidFault::none) << describe(h, g.shape);
+        worst = std::max(worst, h.pressure_residual);
         const double t = static_cast<double>(step) * static_cast<double>(cfg.h);
         if (t >= mark) {
             ke = kinetic_energy(g);
@@ -234,6 +236,15 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
         }
     }
     EXPECT_LT(ke, ke0);
+    // Plan A's announcement mark is fixed from this run (the lead's decision
+    // 2a, 2026-10-21): 4 times V1's largest residual, which C0 sets.
+    std::printf("measure: plan A's largest projection residual max|r| / max|b| over the run = %.3e\n"
+                "reference: kPlanAResidualAnnounce = %.2e, 4 x V1's largest (1.754e-2, this run, 2026-10-21)\n"
+                "tolerance: <= the mark (a step above it is announced, L6)\n"
+                "verdict: %s\n",
+                static_cast<double>(worst), static_cast<double>(kPlanAResidualAnnounce),
+                worst <= kPlanAResidualAnnounce ? "within" : "MISS");
+    EXPECT_LE(worst, kPlanAResidualAnnounce);
 }
 
 TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {

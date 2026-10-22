@@ -29,21 +29,44 @@ struct Taps {
     return {I, other, 0.75f, 0.25f};
 }
 
-// The coarsening rule, in one place: an axis of size 1 takes no part; a level
-// is coarsened when every participating axis is even and at least 4, and every
-// periodic one a multiple of 4 (it halves to an even ring), halving each.
+// The coarsening rule, in one place. An axis of size 1 takes no part.
+//   * Halving: when every participating axis is even and at least 4, and
+//     every periodic one a multiple of 4 (it halves to an even ring), each
+//     halves. This is plan A's rule, and every level it builds is as before.
+//   * Past it (the lead's decision A, 2026-10-21): a level that halving
+//     cannot coarsen but that still holds more than kCoarsestCells cells is
+//     coarsened axis by axis, so an odd axis no longer leaves a grid with one
+//     level (the D1 box, 240 x 177 x 168, solved on 7M cells by smoothing).
+//     A non-periodic axis of 4 or more goes to ceil(n / 2): an odd axis's
+//     last coarse cell covers one fine cell, and its missing partner is closed
+//     (restrict_residual() and set_weights() leave it out). A periodic axis
+//     that is not a multiple of 4, or any axis under 4, is held at n
+//     (semi-coarsening): an odd ring's red-black colouring would make a sweep
+//     depend on its order, and a closed partner would put a wall in a ring.
+//     A held axis's cells are half as long as the others' on the coarser
+//     level, so its faces weigh 4 times as much (set_weights()).
 // Returns false when `n` is the coarsest.
 [[nodiscard]] bool coarser(const uint32_t n[3], const std::array<bool, 3>& periodic, uint32_t out[3]) noexcept {
     bool participates = false;
+    bool halves = true;
     for (uint32_t a = 0; a < 3; ++a) {
         if (n[a] == 1u) continue;
         participates = true;
-        if (n[a] < 4u || n[a] % 2u != 0u) return false;
-        if (periodic[a] && n[a] % 4u != 0u) return false;
+        if (n[a] < 4u || n[a] % 2u != 0u || (periodic[a] && n[a] % 4u != 0u)) halves = false;
     }
     if (!participates) return false;
-    for (uint32_t a = 0; a < 3; ++a) out[a] = n[a] == 1u ? 1u : n[a] / 2u;
-    return true;
+    if (halves) {
+        for (uint32_t a = 0; a < 3; ++a) out[a] = n[a] == 1u ? 1u : n[a] / 2u;
+        return true;
+    }
+    if (uint64_t{n[0]} * n[1] * n[2] <= kCoarsestCells) return false;
+    bool any = false;
+    for (uint32_t a = 0; a < 3; ++a) {
+        const bool held = n[a] < 4u || (periodic[a] && n[a] % 4u != 0u);
+        out[a] = held ? n[a] : periodic[a] ? n[a] / 2u : (n[a] + 1u) / 2u;
+        any = any || out[a] != n[a];
+    }
+    return any;
 }
 
 void cycle(Multigrid& mg, std::size_t l) noexcept {
@@ -73,6 +96,7 @@ Multigrid make_multigrid(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool,
         if (!coarser(n, periodic, c)) break;
         mg.levels.push_back(make_level(c[0], c[1], c[2], {}));
     }
+    clear_weights(mg);  // plan A's weights past the halving rule, if any
     return mg;
 }
 
@@ -122,9 +146,15 @@ void restrict_residual(const PoissonLevel& f, PoissonLevel& c) noexcept {
             for (uint32_t I = 0; I < c.nx; ++I) {
                 float sum = 0.0f;
                 for (uint32_t dk = 0; dk < sz; ++dk) {
+                    const uint32_t k = K * sz + dk;
+                    if (k >= f.nz) continue;  // an odd axis's last cell: its partner is closed
                     for (uint32_t dj = 0; dj < sy; ++dj) {
+                        const uint32_t j = J * sy + dj;
+                        if (j >= f.ny) continue;
                         for (uint32_t di = 0; di < sx; ++di) {
-                            sum += f.r[at(f, I * sx + di, J * sy + dj, K * sz + dk)];
+                            const uint32_t i = I * sx + di;
+                            if (i >= f.nx) continue;
+                            sum += f.r[at(f, i, j, k)];
                         }
                     }
                 }
@@ -251,47 +281,111 @@ void v_cycle(Multigrid& mg) noexcept {
     if (!mg.levels.empty()) cycle(mg, 0);
 }
 
-void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine) {
-    for (uint32_t a = 0; a < 3; ++a) mg.levels[0].w[a].assign(fine[a].begin(), fine[a].end());
+namespace {
+
+// Whether every level halves the one above on each participating axis: the
+// halving rule's hierarchy, whose plan A levels need no weights.
+[[nodiscard]] bool halved_throughout(const Multigrid& mg) noexcept {
     for (std::size_t l = 1; l < mg.levels.size(); ++l) {
         const PoissonLevel& f = mg.levels[l - 1];
-        PoissonLevel& c = mg.levels[l];
+        const PoissonLevel& c = mg.levels[l];
         const uint32_t nf[3] = {f.nx, f.ny, f.nz};
         const uint32_t nc[3] = {c.nx, c.ny, c.nz};
         for (uint32_t a = 0; a < 3; ++a) {
-            const uint32_t t1 = a == 0 ? 1u : 0u;  // the transverse axes, t1 < t2
-            const uint32_t t2 = a == 2 ? 1u : 2u;
-            const uint32_t r[3] = {nf[0] == nc[0] ? 1u : 2u, nf[1] == nc[1] ? 1u : 2u, nf[2] == nc[2] ? 1u : 2u};
-            const uint32_t fdim[3] = {a == 0 ? nf[0] + 1u : nf[0], a == 1 ? nf[1] + 1u : nf[1], a == 2 ? nf[2] + 1u : nf[2]};
-            const uint32_t cdim[3] = {a == 0 ? nc[0] + 1u : nc[0], a == 1 ? nc[1] + 1u : nc[1], a == 2 ? nc[2] + 1u : nc[2]};
-            const float inv = 1.0f / static_cast<float>(r[t1] * r[t2]);
-            c.w[a].assign(std::size_t{cdim[0]} * cdim[1] * cdim[2], 0.0f);
-            for (uint32_t K = 0; K < cdim[2]; ++K) {
-                for (uint32_t J = 0; J < cdim[1]; ++J) {
-                    for (uint32_t I = 0; I < cdim[0]; ++I) {
-                        const uint32_t C[3] = {I, J, K};
-                        float sum = 0.0f;
-                        for (uint32_t d2 = 0; d2 < r[t2]; ++d2) {
-                            for (uint32_t d1 = 0; d1 < r[t1]; ++d1) {
-                                uint32_t F[3];
-                                F[a] = C[a] * r[a];
-                                F[t1] = C[t1] * r[t1] + d1;
-                                F[t2] = C[t2] * r[t2] + d2;
-                                sum += f.w[a][F[0] + std::size_t{fdim[0]} * (F[1] + std::size_t{fdim[1]} * F[2])];
-                            }
+            if (nf[a] != 1u && nc[a] * 2u != nf[a]) return false;
+        }
+    }
+    return true;
+}
+
+// Level c's face weights from level f's (an empty f.w: every weight 1).
+void coarsen_weights(const PoissonLevel& f, PoissonLevel& c) {
+    const uint32_t nf[3] = {f.nx, f.ny, f.nz};
+    const uint32_t nc[3] = {c.nx, c.ny, c.nz};
+    for (uint32_t a = 0; a < 3; ++a) {
+        const uint32_t t1 = a == 0 ? 1u : 0u;  // the transverse axes, t1 < t2
+        const uint32_t t2 = a == 2 ? 1u : 2u;
+        const uint32_t r[3] = {nf[0] == nc[0] ? 1u : 2u, nf[1] == nc[1] ? 1u : 2u, nf[2] == nc[2] ? 1u : 2u};
+        const uint32_t fdim[3] = {a == 0 ? nf[0] + 1u : nf[0], a == 1 ? nf[1] + 1u : nf[1], a == 2 ? nf[2] + 1u : nf[2]};
+        const uint32_t cdim[3] = {a == 0 ? nc[0] + 1u : nc[0], a == 1 ? nc[1] + 1u : nc[1], a == 2 ? nc[2] + 1u : nc[2]};
+        const float inv = 1.0f / static_cast<float>(r[t1] * r[t2]);
+        // A held axis (not coarsened, more than one cell): its cells are half
+        // as long as the coarsened axes', so its faces weigh 4 times as much.
+        const bool held = r[a] == 1u && nf[a] > 1u;
+        c.w[a].assign(std::size_t{cdim[0]} * cdim[1] * cdim[2], 0.0f);
+        for (uint32_t K = 0; K < cdim[2]; ++K) {
+            for (uint32_t J = 0; J < cdim[1]; ++J) {
+                for (uint32_t I = 0; I < cdim[0]; ++I) {
+                    const uint32_t C[3] = {I, J, K};
+                    float sum = 0.0f;
+                    for (uint32_t d2 = 0; d2 < r[t2]; ++d2) {
+                        for (uint32_t d1 = 0; d1 < r[t1]; ++d1) {
+                            uint32_t F[3];
+                            // An odd axis's last coarse face is the domain's
+                            // face; a missing transverse partner is closed.
+                            F[a] = std::min(C[a] * r[a], nf[a]);
+                            F[t1] = C[t1] * r[t1] + d1;
+                            F[t2] = C[t2] * r[t2] + d2;
+                            if (F[t1] >= nf[t1] || F[t2] >= nf[t2]) continue;
+                            sum += f.w[a].empty()
+                                       ? 1.0f
+                                       : f.w[a][F[0] + std::size_t{fdim[0]} * (F[1] + std::size_t{fdim[1]} * F[2])];
                         }
-                        c.w[a][I + std::size_t{cdim[0]} * (J + std::size_t{cdim[1]} * K)] = sum * inv;
                     }
+                    const float w = sum * inv;
+                    c.w[a][I + std::size_t{cdim[0]} * (J + std::size_t{cdim[1]} * K)] = held ? 4.0f * w : w;
                 }
             }
         }
     }
 }
 
-void clear_weights(Multigrid& mg) noexcept {
+}  // namespace
+
+void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine) {
+    for (uint32_t a = 0; a < 3; ++a) mg.levels[0].w[a].assign(fine[a].begin(), fine[a].end());
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) coarsen_weights(mg.levels[l - 1], mg.levels[l]);
+}
+
+void clear_weights(Multigrid& mg) {
     for (PoissonLevel& L : mg.levels) {
         for (std::vector<float>& w : L.w) w.clear();
     }
+    if (halved_throughout(mg)) return;
+    // Past the halving rule plan A's coarser levels carry the weights of
+    // unit fine faces: a closed partner and a held axis are weights. The
+    // finest keeps plan A's stencil and its fast paths.
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) coarsen_weights(mg.levels[l - 1], mg.levels[l]);
+}
+
+std::array<uint32_t, 3> multigrid_coarsest(uint32_t nx, uint32_t ny, uint32_t nz,
+                                           std::array<bool, 3> periodic) noexcept {
+    uint32_t n[3] = {nx, ny, nz};
+    uint32_t c[3] = {};
+    while (coarser(n, periodic, c)) {
+        n[0] = c[0];
+        n[1] = c[1];
+        n[2] = c[2];
+    }
+    return {n[0], n[1], n[2]};
+}
+
+uint64_t multigrid_plan_a_weight_faces(uint32_t nx, uint32_t ny, uint32_t nz, std::array<bool, 3> periodic) noexcept {
+    uint32_t n[3] = {nx, ny, nz};
+    uint32_t c[3] = {};
+    uint64_t total = 0;
+    bool halved = true;
+    while (coarser(n, periodic, c)) {
+        for (uint32_t a = 0; a < 3; ++a) {
+            if (n[a] != 1u && c[a] * 2u != n[a]) halved = false;
+        }
+        total += (uint64_t{c[0]} + 1u) * c[1] * c[2] + uint64_t{c[0]} * (c[1] + 1u) * c[2] +
+                 uint64_t{c[0]} * c[1] * (c[2] + 1u);
+        n[0] = c[0];
+        n[1] = c[1];
+        n[2] = c[2];
+    }
+    return halved ? 0u : total;
 }
 
 }  // namespace spade::physics::airflow

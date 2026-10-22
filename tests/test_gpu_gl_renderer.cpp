@@ -63,6 +63,18 @@
 #include "solid_drone_rig.hpp"
 #include "view_mode_cases.hpp"
 
+// The tour's airflow chapter (sandbox/airflow_live.hpp), where the sandbox is
+// built (its directory is then on the include path): its poster frame on GL.
+#if __has_include("airflow_live.hpp")
+#define SPADE_GL_TEST_HAS_TOUR 1
+#include <filesystem>
+
+#include "airflow_live.hpp"
+#include "orbit_camera.hpp"
+#include "render_parts/render_parts.hpp"
+#include "vehicle_draw.hpp"
+#endif
+
 namespace {
 
 using spade::render::Camera;
@@ -1972,6 +1984,96 @@ TEST(GpuGlFlowCold, CreateReturnsBeforeTheFlowProgramsCompile) {
     glfwTerminate();
 }
 
+// What create() spends, program by program (Spade Host, 2026-10-21: an 11 s
+// first view where the driver's shader cache missed; the lead: measure
+// first). Cold is a fresh source_salt, which no cache has seen; warm is the
+// same salt again in the same process. Every program is waited for here
+// (no background compile), so each one's time is its own. A measurement,
+// not a test: set SPADE_GL_CREATE_COST=1, and run it alone.
+TEST(GpuGlCreateCost, EachProgramColdAndWarm) {
+    if (!env_gate_is_set("SPADE_GL_CREATE_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_CREATE_COST=1 and run it alone";
+    }
+    glfwSetErrorCallback(record_glfw_error);
+    if (glfwInit() != GLFW_TRUE) GTEST_SKIP() << "GLFW could not initialise. " << g_last_glfw_error;
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    GLFWwindow* window = glfwCreateWindow(kWidth, kHeight, "spade GpuGlCreateCost", nullptr, nullptr);
+    if (window == nullptr) {
+        glfwTerminate();
+        GTEST_SKIP() << "no OpenGL 4.3 core context on this machine. " << g_last_glfw_error;
+    }
+    glfwMakeContextCurrent(window);
+    using Clock = std::chrono::steady_clock;
+    struct Timed {
+        std::vector<std::pair<std::string, double>> programs;  // name, ms since the one before
+        double total_ms = 0.0;
+    };
+    const auto timed_create = [](const std::string& salt) {
+        Timed t;
+        Clock::time_point last = Clock::now();
+        const Clock::time_point start = last;
+        GlRenderer::CreateProbe probe;
+        probe.source_salt = salt;
+        probe.on_program = [&](std::string_view name) {
+            const Clock::time_point now = Clock::now();
+            t.programs.emplace_back(std::string(name), std::chrono::duration<double, std::milli>(now - last).count());
+            last = now;
+        };
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{}, probe);
+        t.total_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        EXPECT_TRUE(made.has_value()) << (made ? "" : made.error().context);
+        return t;
+    };
+    const std::string salt =
+        "cold_" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count());
+    const Timed cold = timed_create(salt);
+    const Timed warm = timed_create(salt);
+    const Timed usual = timed_create("");  // the shipped sources, as the disk cache has them from earlier runs
+    ASSERT_EQ(cold.programs.size(), warm.programs.size());
+    ASSERT_EQ(cold.programs.size(), usual.programs.size());
+    ASSERT_EQ(cold.programs.size(), 9u) << "six programs, then the three flow programs";
+    std::printf("[ create cost ] per program, ms, cold (salt %s) / warm (the same salt again) / usual (no salt):\n",
+                salt.c_str());
+    for (size_t i = 0; i < cold.programs.size(); ++i) {
+        std::printf("[ create cost ]   %-16s %9.1f / %7.1f / %7.1f\n", cold.programs[i].first.c_str(),
+                    cold.programs[i].second, warm.programs[i].second, usual.programs[i].second);
+        RecordProperty(cold.programs[i].first + "_cold_ms", static_cast<int>(cold.programs[i].second));
+    }
+    std::printf("[ create cost ]   create() total   %9.1f / %7.1f / %7.1f\n", cold.total_ms, warm.total_ms,
+                usual.total_ms);
+    RecordProperty("create_cold_ms", static_cast<int>(cold.total_ms));
+    RecordProperty("create_warm_ms", static_cast<int>(warm.total_ms));
+
+    // As a host that asks for the flow programs in the background sees it,
+    // cold and then warm: create() returns, then flow_ready() turns true.
+    for (const char* run : {"cold", "warm"}) {
+        GlRenderer::CreateProbe probe;
+        probe.source_salt = salt + "_background";
+        const Clock::time_point start = Clock::now();
+        auto made = GlRenderer::create(reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress),
+                                       GlRenderer::CreateOptions{.flow_programs_in_background = true}, probe);
+        const double create_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        ASSERT_TRUE(made.has_value()) << made.error().context;
+        const Clock::time_point deadline = start + std::chrono::seconds(120);
+        while (!(*made)->flow_ready() && Clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        const double ready_ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::printf("[ create cost ]   in the background, %s: create() %.1f ms, flow ready at %.1f ms\n", run,
+                    create_ms, ready_ms);
+        RecordProperty(std::string("create_background_") + run + "_ms", static_cast<int>(create_ms));
+        RecordProperty(std::string("flow_ready_background_") + run + "_ms", static_cast<int>(ready_ms));
+    }
+    glfwDestroyWindow(window);
+    glfwTerminate();
+}
+
 // Plan step 7f: the live-only reduced march. Half marches a quarter of the
 // rays and says so through last_flow_scale(); a frame with no flow layer
 // says 0. The half frame is held to the full one by a measured band: a live
@@ -2631,6 +2733,29 @@ TEST_F(GpuGlRenderer, TheCallersBlendAndDepthClampStateDoNotReachTheFrame) {
     EXPECT_EQ(count_differing(clean, dirty), 0u) << "the caller's blend or depth-clamp state reached the frame";
 }
 
+// create()'s measurement hooks (GpuGlCreateCost): each program reports as it
+// links, in create()'s order, the flow programs last; a salt that is not a
+// macro name is refused by name. The sources are the fixture's, unsalted, so
+// the driver hands them back at once.
+TEST_F(GpuGlRenderer, CreateReportsEachProgramAndRefusesABadSalt) {
+    const auto loader = reinterpret_cast<spade::render_gl::GlProcLoader>(glfwGetProcAddress);
+    std::vector<std::string> names;
+    GlRenderer::CreateProbe probe;
+    probe.on_program = [&names](std::string_view name) { names.emplace_back(name); };
+    const auto made = GlRenderer::create(loader, GlRenderer::CreateOptions{}, probe);
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    const std::vector<std::string> want = {"mesh", "background",  "field",       "overlay",       "shadow caster",
+                                           "csg",  "flow volume", "flow bricks", "flow composite"};
+    EXPECT_EQ(names, want);
+
+    GlRenderer::CreateProbe bad;
+    bad.source_salt = "not a name";
+    const auto refused = GlRenderer::create(loader, GlRenderer::CreateOptions{}, bad);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("source_salt"), std::string::npos) << refused.error().context;
+}
+
 // L6: what GL does not draw is announced by name, so a caller can show it or
 // refuse GL. Host-only: no context needed, so this suite has no gpu label.
 // A loader that finds nothing is refused with unavailable, naming the first
@@ -3248,5 +3373,180 @@ TEST_F(GpuGlRenderer, EditorLayoutsCost) {
     glDeleteRenderbuffers(1, &colour);
     glDeleteRenderbuffers(1, &depth);
 }
+
+
+
+// The flow layer leaves the frame's alpha as the target held it (the tour's
+// near-black cores, 2026-10-21). The editor draws its 3D view into an RGBA8
+// texture and lays it over the window with alpha blending (ImGui's
+// AddImage). The march blended C + T * behind into alpha as well, T (1 +
+// behind): 0 wherever an iso was opaque, so the window's dark showed through
+// every core, flat. Readbacks of RGB never saw it. A frame cleared opaque,
+// the ring's Q iso drawn over it at full and at half scale, stays opaque.
+TEST_F(GpuGlRenderer, FlowLayerLeavesTheFramesAlpha) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-1.0f), 2.0f / 64.0f, 64, 64, 64,
+                                                                   spade::test::vortex_ring_with_dye());
+    spade::render::TransferFunction speed;
+    speed.range_min = 0.0f;
+    speed.range_max = 0.9f;
+    spade::render::IsoSurface q_iso;
+    q_iso.quantity = spade::render::FlowQuantity::q_hat;
+    q_iso.value = 0.5477226f * volume.header.channel_max[spade::kFlowQHat];
+    q_iso.colour_by = speed;
+    RenderScene scene = ring_cut_scene();
+    scene.flow_layers.push_back(spade::render::FlowLayer{&volume, {}, {q_iso}});
+    const Camera camera = camera_on_ring();
+    ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+    for (const GlRenderer::FlowScale scale : {GlRenderer::FlowScale::full, GlRenderer::FlowScale::half}) {
+        GlRenderer::FlowQuality quality;
+        quality.scale = scale;
+        renderer_->set_flow_quality(quality);
+        bind_cleared_target();
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        const auto drew = renderer_->draw(scene, camera, comparable_options(), kWidth, kHeight);
+        ASSERT_TRUE(drew.has_value()) << drew.error().context;
+        std::vector<uint8_t> rgba(kPixels * 4u);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kWidth, kHeight, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        size_t lit = 0, see_through = 0;
+        for (size_t i = 0; i < kPixels; ++i) {
+            if (rgba[i * 4u] != 0u || rgba[i * 4u + 1u] != 0u || rgba[i * 4u + 2u] != 0u) ++lit;
+            if (rgba[i * 4u + 3u] != 255u) ++see_through;
+        }
+        const char* name = scale == GlRenderer::FlowScale::full ? "full" : "half";
+        std::printf("[ flow alpha ] %s scale: %zu px drawn, %zu not opaque\n", name, lit, see_through);
+        ASSERT_GT(lit, kPixels / 20u) << name << ": the ring must reach the frame";
+        EXPECT_EQ(see_through, 0u) << name << " scale: the march changed the frame's alpha";
+    }
+    renderer_->set_flow_quality(GlRenderer::FlowQuality{});
+}
+
+#if defined(SPADE_GL_TEST_HAS_TOUR)
+// The tour's near-black vortex cores (Interface, 2026-10-21): the airflow
+// chapter's poster frame (armed + 0.9 s), built as AirflowSession builds it
+// (Interface's ThePosterFrameMeasured: the drone's parts, shadows and
+// overlays off, airflow_view() applied), drawn on GL and the CPU. The CPU
+// draws its cores in viridis teal and yellow; GL drew them near-black. A core
+// pixel is one the iso layer changes on the CPU; its mean luminance on GL
+// must be the CPU's within kPosterCoreLuminance. Variants without the lines
+// and without the drone are printed, to say what the GL frame depends on.
+// Measured 2026-10-21 (RTX 3060 Ti, 572.83): GL's RGB was the CPU's to 0.1 of
+// a level in all four, before the fix too -- the editor's black was the
+// frame's alpha (FlowLayerLeavesTheFramesAlpha), which this readback leaves
+// out. Kept: the poster frame on both backends, the same.
+// Opt-in (SPADE_AIRFLOW_POSTER=1): the flight to the frame is about 40 s.
+constexpr double kPosterCoreLuminance = 0.15;  // of the CPU's mean, either way
+
+[[nodiscard]] double luminance(const std::vector<uint8_t>& rgba, size_t pixel) {
+    return 0.2126 * rgba[pixel * 4u] + 0.7152 * rgba[pixel * 4u + 1u] + 0.0722 * rgba[pixel * 4u + 2u];
+}
+
+TEST_F(GpuGlRenderer, AirflowPosterCoresMatchTheCpu) {
+    if (!env_gate_is_set("SPADE_AIRFLOW_POSTER")) {
+        GTEST_SKIP() << "the tour's poster frame: set SPADE_AIRFLOW_POSTER=1 to fly it (about 40 s)";
+    }
+    namespace af = spade::sandbox::airflow;
+    namespace an = spade::analysis;
+    using spade::render::FlowView;
+    using spade::render::ViewSpec;
+    const auto quad =
+        af::live_quad(std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml");
+    ASSERT_TRUE(quad.has_value()) << quad.error().context;
+    auto run = an::LiveRun::start(quad->resolved, quad->run_model);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const double poster = af::armed_at(quad->program).value_or(0.0) + 0.9;
+    spade::FlowVolume volume;
+    while (run->state().t_s < poster) {
+        const an::Controls c = an::controls_at(quad->program, static_cast<float>(run->state().t_s));
+        const auto f = run->advance_frame(c, volume);
+        ASSERT_TRUE(f.has_value()) << f.error().context;
+    }
+    const float top = af::speed_top(quad->run_model, quad->resolved.spec.fluid.density, 9.80665f);
+    const ViewSpec spec = af::airflow_view(volume, af::probes_of(*run), top);
+    const auto without = [&spec](FlowView kind) {
+        ViewSpec v = spec;
+        std::erase_if(v.layers, [kind](const spade::render::FlowViewSpec& l) { return l.kind == kind; });
+        return v;
+    };
+    ASSERT_NE(without(FlowView::vortex_iso).layers.size(), spec.layers.size()) << "no cores at the poster frame";
+
+    const auto prepared = spade::render_parts::prepare_parts(quad->draw_model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
+    const auto scene_with = [&](bool parts) {
+        RenderScene scene;
+        if (!parts) return scene;
+        spade::render_parts::PartsLook look;
+        look.body = static_cast<uint32_t>(scene.materials.size());
+        scene.materials.push_back(spade::sandbox::detail::lambert(0.35f, 0.37f, 0.40f));
+        look.rotor = static_cast<uint32_t>(scene.materials.size());
+        scene.materials.push_back(spade::sandbox::detail::lambert(0.12f, 0.12f, 0.13f));
+        look.porous = look.body;
+        look.object_name = quad->draw_model.name;
+        const auto bound = spade::sandbox::append_vehicle_parts(scene, *prepared, quad->draw_model, run->body(), look);
+        EXPECT_TRUE(bound.has_value()) << bound.error().context;
+        return scene;
+    };
+    spade::sandbox::OrbitCamera orbit;
+    orbit.target = glm::vec3(0.0f, -0.12f * af::kBoxM, 0.0f);
+    orbit.yaw = 0.52f;
+    orbit.pitch = 0.35f;
+    orbit.distance = 1.5f * af::kBoxM;
+    const Camera camera = orbit.to_render_camera();
+
+    // One frame of `view` on both, with the CPU's frame of the same view
+    // without its cores, which says which pixels are cores.
+    struct Means {
+        size_t cores = 0;
+        double cpu = 0.0;
+        double gl = 0.0;
+    };
+    const auto measure = [&](const ViewSpec& view, bool parts) {
+        RenderScene scene = scene_with(parts);
+        RenderScene bare = scene;
+        RenderOptions options = comparable_options();
+        RenderOptions bare_options = options;
+        spade::render::ViewCache cache;
+        const auto legends = spade::render::apply_view(view, &volume, scene, options, cache);
+        EXPECT_TRUE(legends.has_value()) << legends.error().context;
+        ViewSpec no_cores = view;
+        std::erase_if(no_cores.layers,
+                      [](const spade::render::FlowViewSpec& l) { return l.kind == FlowView::vortex_iso; });
+        const auto bare_legends = spade::render::apply_view(no_cores, &volume, bare, bare_options, cache);
+        EXPECT_TRUE(bare_legends.has_value()) << bare_legends.error().context;
+        const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, options);
+        const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, bare_options);
+        const std::vector<uint8_t> gl = draw_and_read(scene, options, camera);
+        Means m;
+        for (size_t i = 0; i < kPixels; ++i) {
+            if (std::memcmp(&cpu[i * 4u], &cpu_bare[i * 4u], 3) == 0) continue;
+            ++m.cores;
+            m.cpu += luminance(cpu, i);
+            m.gl += luminance(gl, i);
+        }
+        if (m.cores > 0u) {
+            m.cpu /= static_cast<double>(m.cores);
+            m.gl /= static_cast<double>(m.cores);
+        }
+        return m;
+    };
+    const Means editor = measure(spec, true);
+    const Means no_lines = measure(without(FlowView::streamlines), true);
+    const Means no_drone = measure(spec, false);
+    const Means alone = measure(without(FlowView::streamlines), false);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const auto line = [](const char* what, const Means& m) {
+        std::printf("[ poster cores ] %-26s %4zu core px, mean luminance CPU %6.1f, GL %6.1f\n", what, m.cores, m.cpu,
+                    m.gl);
+    };
+    line("as the editor draws it:", editor);
+    line("without the lines:", no_lines);
+    line("without the drone:", no_drone);
+    line("the cores alone:", alone);
+    std::printf("[ poster cores ] on %s\n", device.c_str());
+    ASSERT_GT(editor.cores, kPixels / 400u) << "the cores show at the poster frame (68 px measured)";
+    EXPECT_NEAR(editor.gl, editor.cpu, kPosterCoreLuminance * editor.cpu) << device;
+}
+#endif
 
 }  // namespace

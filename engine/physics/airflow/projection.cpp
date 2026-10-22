@@ -1,6 +1,7 @@
 #include "physics/airflow/projection.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "physics/airflow/reduce.hpp"
@@ -90,7 +91,7 @@ void subtract_gradient_solids(uint32_t n, uint32_t m1, uint32_t m2, FaceKind lo,
     }
 }
 
-ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v,
+ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, uint32_t cg_cap,
                                 ProjectionScratch& s, const SolidField& f, FluidRegions& regions) noexcept {
     const GridShape& sh = g.shape;
     const std::array<FaceKind, 6> kinds = face_kinds(bc);
@@ -119,7 +120,8 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
     remove_region_means(s.pcg.b, regions, sh);
     std::copy(g.p.begin(), g.p.end(), s.pcg.x.begin());
     GaugeCtx ctx{&regions, &sh};
-    const float residual = solve_pcg(s.mg, s.pcg, n_v, PcgGauge{&gauge_regions, &ctx, regions.solid.data()});
+    const PcgResult solved = solve_pcg_to(s.mg, s.pcg, n_v, cg_cap, kResidualAnnounce,
+                                          PcgGauge{&gauge_regions, &ctx, regions.solid.data()});
     std::copy(s.pcg.x.begin(), s.pcg.x.end(), g.p.begin());
 
     const float g_coef = h / (rho * sh.dx);
@@ -138,7 +140,7 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); },
         [&](uint32_t q, uint32_t a, uint32_t b) { return w_index(sh, a, b, q); }, f.theta[2], f.wall[2]);
-    return {residual};
+    return {solved.residual, solved.iterations};
 }
 
 }  // namespace
@@ -151,13 +153,13 @@ ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc
 }
 
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
-                         const SolidField* solids, FluidRegions* regions) noexcept {
+                         const SolidField* solids, FluidRegions* regions, uint32_t cg_cap) noexcept {
     if (solids != nullptr && solids->any) {
         // Solids without their regions cannot be projected: the grid is left
         // as it is and the residual is infinite, which a step announces (L6),
         // never plan A over the solids (P2 Task 11, the final review's finding 4).
         if (regions == nullptr) return ProjectionReport{std::numeric_limits<float>::infinity()};
-        return project_solids(g, bc, rho, h, n_v, s, *solids, *regions);
+        return project_solids(g, bc, rho, h, n_v, cg_cap, s, *solids, *regions);
     }
     const GridShape& sh = g.shape;
     const std::array<FaceKind, 6> kinds = face_kinds(bc);
@@ -175,6 +177,17 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
         if (closed) remove_mean(f.p, sh.nx, sh.ny, sh.nz);
     }
     std::copy(f.p.begin(), f.p.end(), g.p.begin());
+    // The solve's own measure, as the solids path reports it (the lead,
+    // 2026-10-21): max|r| / max|b| after the cycles. Reported, never iterated
+    // on; the pressure is already final.
+    residual(f);
+    float r_max = 0.0f;
+    float b_max = 0.0f;
+    for (std::size_t c = 0; c < f.r.size(); ++c) {
+        r_max = std::max(r_max, std::fabs(f.r[c]));
+        b_max = std::max(b_max, std::fabs(f.b[c]));
+    }
+    const float solve_residual = b_max > 0.0f ? r_max / b_max : 0.0f;
 
     const float g_coef = h / (rho * sh.dx);
     subtract_gradient(
@@ -189,7 +202,7 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
         sh.nz, sh.nx, sh.ny, kinds[kZMinus], kinds[kZPlus], g_coef, g.p,
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); });
-    return {};
+    return {solve_residual, n_v};
 }
 
 }  // namespace spade::physics::airflow

@@ -81,6 +81,11 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
   - per-kernel bands at 16³;
   - one V(2,2) projection at 32³ against `project()`;
   - timings at 64³ and 128³ (M1).
+  - *Amended 2026-10-21 (the odd-axis multigrid, physics/mg-odd-axes):* the twin mirrors the CPU's one hierarchy rule, `coarser()` in multigrid.cpp:
+    - halve every axis while all of them halve;
+    - past that, only while the coarsest level holds more than `kCoarsestCells` cells, coarsen axis by axis: an odd closed axis goes to (n + 1) / 2 with a closed partial cell; a periodic axis halves only from a multiple of 4 and is otherwise held.
+    - Restrict, prolong and plan A's coarse weights (`multigrid_plan_a_weight_faces()`) carry the partial cells and held axes the same way.
+    - Plan A reports its residual on the health line every step and announces above `kPlanAResidualAnnounce`.
 - **B3, the fluid step without solids:**
   - kernels: boundaries, advection, viscosity;
   - `fluid_step` parity at 32³ to T_p on the walled cavity and the nine boundary configurations;
@@ -92,6 +97,7 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
 - **B5, solids (P2 on the GPU):**
   - θ in divergence and in the gradient subtract;
   - PCG with tile dots, with `kSolidsCgIterations`;
+  - *Amended 2026-10-21 (the lead's ruling 1b):* the CG runs by residual: at least `kSolidsCgIterations`, then on to `kResidualAnnounce`, capped at `kSolidsCgCap` (32) and announced at the cap (`solve_pcg_to()`). The CPU records each step's count on the health line (`FluidHealth::pressure_iterations`). B5's parity runs the GPU at the CPU's recorded count, so a one-iteration difference in where the mark is met never flips parity.
   - region means and the extrapolated interior.
   - Bands measured on S1 and S3 (the spec's solids amendment), and S2 as a whole-step check.
   - `wall_load` banded against P3.

@@ -106,10 +106,13 @@ add_executable(spade_tests
     test_world_file.cpp
     test_scene_file.cpp
     test_scene_airflow.cpp
+    test_device_limits.cpp
     test_model_file.cpp
     test_object_file.cpp
     test_library_quad.cpp
     test_library.cpp
+    test_library_sources.cpp
+    test_part_file.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
@@ -271,11 +274,13 @@ if(SPADE_VULKAN)
         test_compute_context.cpp
         test_gpu_denorm_probe.cpp
         test_slang_layouts.cpp
+        test_bindings_airflow.cpp
         test_gpu_fp32_math.cpp
         test_gpu_state_mirror.cpp
         test_gpu_parity.cpp
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
+        test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
     )
 endif()
@@ -371,6 +376,9 @@ if(SPADE_BUILD_SANDBOX)
         # Batch 2: the library, identities, imports, the region's bookkeeping, the
         # views, save and reopen, and the measuring helpers for a placed object.
         test_sandbox_end_goal_scene_checks.cpp
+        # The D1 hover preview: the body in the flow, no leak, the downwash
+        # with the body, the C_p legend's note, and publishing with solids.
+        test_sandbox_d1_checks.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp

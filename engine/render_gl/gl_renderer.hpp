@@ -48,6 +48,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -85,9 +86,13 @@ class GlRenderer {
     // indistinguishable from the bug this module exists to fix.
     // flow_programs_in_background: the flow programs (the march, its brick
     // pass, the half-scale composite) compile in the background where the
-    // driver can (KHR_parallel_shader_compile), so create() returns at once
-    // and flow_ready() says when they are done. Where it cannot, create()
-    // waits for them as it does when not asked.
+    // driver can (KHR_parallel_shader_compile), so create() returns without
+    // them and flow_ready() says when they are done. Where it cannot, create()
+    // waits for them as it does when not asked. The cost, on the RTX 3060 Ti
+    // (GpuGlCreateCost, 2026-10-21): create() when the driver's shader cache
+    // misses (the first launch after a driver or shader change) 0.8 s, the
+    // flow ready at 3.0 s, against 4.4 s not asked; when it hits (every other
+    // launch) about 240 ms, against 19 ms.
     struct CreateOptions {
         bool flow_programs_in_background = false;
         // Check every reuse of the flow textures (see flow_volume_uploads())
@@ -102,12 +107,28 @@ class GlRenderer {
         bool verify_cached_volumes = true;
 #endif
     };
-    // Two overloads, not a defaulted argument: a nested class's member
+    // For measuring create() itself (the editor's first view; Spade Host,
+    // 2026-10-21), apart from CreateOptions so its designated initializers
+    // keep compiling. source_salt, when not empty, defines a macro named
+    // after it at the top of every shader, so the driver's shader cache
+    // misses and the compile is cold: letters, digits and '_' only, or
+    // create() refuses it. on_program is called with each program's name as
+    // it finishes linking, so a caller can time them (the engine keeps no
+    // clock, M1B); the three flow programs report when they finish, in
+    // create() or, in the background, in flow_ready(). Neither changes what
+    // is drawn.
+    struct CreateProbe {
+        std::string source_salt;
+        std::function<void(std::string_view program)> on_program;
+    };
+    // Overloads, not defaulted arguments: a nested class's member
     // initializers are not usable in its enclosing class's default arguments
     // (gcc refuses, CWG 1397).
     [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader);
     [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader,
                                                                     const CreateOptions& options);
+    [[nodiscard]] static Result<std::unique_ptr<GlRenderer>> create(GlProcLoader loader, const CreateOptions& options,
+                                                                    const CreateProbe& probe);
 
     ~GlRenderer();
     GlRenderer(const GlRenderer&) = delete;
