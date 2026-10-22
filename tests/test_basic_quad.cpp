@@ -150,6 +150,21 @@ TEST(BasicQuad, TheDefaultsCompile) {
     EXPECT_TRUE(contains(assumed.back().note, "neighbour's induced inflow")) << assumed.back().note;
 }
 
+// The 2306's rotor inertia is the same bell estimate as the 2207s', 2.7e-6
+// kg m^2 (Physics, 2026-10-22), replacing an unsourced 1e-5 placeholder that
+// slowed the spin-up by about half (the lead's TD-1 word, 2026-10-22). The
+// library's fpv_2306_1700kv part carries the same number.
+TEST(BasicQuad, TheMotorsRotorInertiaIsTheBellEstimate) {
+    const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(BasicQuadParams{});
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    EXPECT_EQ(spec->motor.rotor_inertia, 2.7e-6);
+    for (const spade::vehicles::BasicQuadAssumption& a : spade::vehicles::basic_quad_assumptions()) {
+        if (a.field == "motor.rotor_inertia") {
+            EXPECT_TRUE(contains(a.note, "bell estimate")) << a.note;
+        }
+    }
+}
+
 TEST(BasicQuad, TheCompiledBodyMeetsAFittedMassAndInertiaExactly) {
     const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(competition());
     ASSERT_TRUE(spec.has_value()) << spec.error().context;
