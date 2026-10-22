@@ -117,6 +117,7 @@ add_executable(spade_tests
     test_model_sources.cpp
     test_part_file.cpp
     test_library_parts.cpp
+    test_library_drones.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
