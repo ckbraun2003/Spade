@@ -282,6 +282,8 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 
 **The eight questions** and their options are in this file's history (`0a16708`). The answers are in the table above.
 
+- **L4a's tool test** (the lead, 2026-10-22): `tools/library_props/test_resample_uiuc.py` is a stand-alone unittest, run by hand whenever the tool or its input changes, and named in READY with its output. There's no CMake change and no Python on the leg. So that the hand-run test can't rot, the generated header stamps an FNV-1a 64 hash of `resample_uiuc.py` and of each input it read, with CRLF normalized to LF before hashing so that Windows and the leg agree. `tests/test_library_props.cpp` recomputes the tool's hash from the source tree and fails, naming the file, if it differs. The UIUC inputs aren't committed, so their hashes are recorded only. The numbers wait on Physics' review of the resampling rule; meanwhile the tool is built on our own synthetic input.
+
 ## Notes for later
 
 - Until L7 lands, each drone is drawn from its SDF parts.
