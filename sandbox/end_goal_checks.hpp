@@ -995,6 +995,69 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
     return least;
 }
 
+// An SDF object's lowest points, for rest_gap (§7a). Its surface-nets mesh
+// sits up to half a mesh cell inside its surface, so its vertices can't judge
+// a rest: they read high. Its collider can. The collider, posed by
+// world_from_object (rigid, with uniform scale), is marched straight up from
+// kRestMarchBelow under the lowest posed vertex, in the column of each vertex
+// within kRestMarchBand of the lowest, to within kRestMarchTolerance of its
+// surface. Each march stops below the surface, so a point reads low by less
+// than the tolerance, never high. A column that meets nothing within
+// kRestMarchReach gives no point. Empty, so rest_gap's NaN: no vertices, an
+// empty collider, a non-finite vertex or distance, a pose that isn't rigid
+// with uniform scale, or a march that starts inside the object (the vertices
+// can't be the object's). This is the step's measure for an SDF object, not
+// the editor's own pick march (Test/Docs, 2026-10-22). Precondition: the
+// collider validated.
+inline constexpr float kRestMarchBelow = 0.25f;     // m below the lowest vertex
+inline constexpr float kRestMarchBand = 0.05f;      // m above the lowest: the vertices marched under
+inline constexpr float kRestMarchReach = 0.6f;      // m: the farthest a march goes
+inline constexpr float kRestMarchTolerance = 1e-4f; // m: where it stops below the surface
+
+[[nodiscard]] inline std::vector<glm::vec3> collider_rest_points(const SdfProgram& collider,
+                                                                 const glm::mat4& world_from_object,
+                                                                 std::span<const glm::vec3> vertices) {
+    if (collider.nodes.empty() || vertices.empty()) return {};
+    // The pose's scale: its three axes' common length, refused unless common.
+    const float s = glm::length(glm::vec3(world_from_object[0]));
+    for (int axis = 1; axis < 3; ++axis) {
+        if (!(std::abs(glm::length(glm::vec3(world_from_object[axis])) - s) <= 1e-5f * s)) return {};
+    }
+    if (!(std::isfinite(s) && s > 0.0f)) return {};
+    // The collider posed: each node's world_to_local now starts from the
+    // world, and its distances grow by the pose's scale.
+    SdfProgram posed = collider;
+    const glm::mat4 object_from_world = glm::inverse(world_from_object);
+    for (SdfTransform& x : posed.transforms) {
+        x.world_to_local = x.world_to_local * object_from_world;
+        x.scale *= s;
+    }
+
+    float low = std::numeric_limits<float>::infinity();
+    for (const glm::vec3& v : vertices) {
+        if (!detail::finite(v)) return {};
+        low = std::min(low, v.y);
+    }
+    const float from = low - kRestMarchBelow;
+    std::vector<glm::vec3> points;
+    for (const glm::vec3& v : vertices) {
+        if (v.y > low + kRestMarchBand) continue;
+        const glm::vec3 start(v.x, from, v.z);
+        float t = 0.0f;
+        for (int step = 0; step < 512 && t <= kRestMarchReach; ++step) {
+            const float d = eval(posed, start + glm::vec3(0.0f, t, 0.0f));
+            if (!std::isfinite(d)) return {};
+            if (step == 0 && d <= 0.0f) return {};  // starts inside: these aren't the object's vertices
+            if (d < kRestMarchTolerance) {
+                points.push_back(start + glm::vec3(0.0f, t, 0.0f));
+                break;
+            }
+            t += 0.9f * d;  // short of the bound, as the editor's march steps
+        }
+    }
+    return points;
+}
+
 // ---------------------------------------------------------------------------
 // IMAGES (§1 thumbnails, §6 views). "Differs" is the doc's: at least 1% of
 // the pixels differ by more than 8/255 in red, green or blue.
