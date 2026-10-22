@@ -618,6 +618,27 @@ set_tests_properties(StampIdentity.ArchiveFallback PROPERTIES
     LABELS spade
     TIMEOUT 60)
 
+# The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
+# throwaway bare repositories: every push without the owner's word refused, a
+# reader that closes early included, and the authorised one let through
+# (push_guard_test.sh says why the piped cases). Only where sh and git are
+# found: Git for Windows' sh sits beside its git, so it is looked for there.
+# The installed hook is checked against this copy by the lead's push step, not
+# here. LABELS spade, as above.
+find_package(Git QUIET)
+if(GIT_FOUND)
+    get_filename_component(SPADE_GIT_DIR "${GIT_EXECUTABLE}" DIRECTORY)
+    find_program(SPADE_SH NAMES sh HINTS "${SPADE_GIT_DIR}/../bin" "${SPADE_GIT_DIR}/../usr/bin")
+endif()
+if(GIT_FOUND AND SPADE_SH)
+    cmake_path(SET SPADE_PUSH_GUARD NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/pre-push-guard.sh")
+    add_test(NAME PushGuard.RefusesEveryPushWithoutTheOwnersWord
+        COMMAND "${SPADE_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/push_guard_test.sh" "${SPADE_PUSH_GUARD}" "${GIT_EXECUTABLE}")
+    set_tests_properties(PushGuard.RefusesEveryPushWithoutTheOwnersWord PROPERTIES
+        LABELS spade
+        TIMEOUT 120)
+endif()
+
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a
 # PROPERTIES entry (S5 T9 ticket B, first of two root causes -- see
