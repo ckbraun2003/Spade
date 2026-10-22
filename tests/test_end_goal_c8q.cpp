@@ -483,11 +483,6 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
         if (each[m].ratio_off > each[worst_ratio].ratio_off) worst_ratio = m;
         if (each[m].mutual_off > each[worst_mutual].mutual_off) worst_mutual = m;
     }
-    const auto ratio_ok = [](const eg::C8qBands& b) {
-        bool ok = true;
-        for (const double r : b.ratio) ok = ok && in_band(r);
-        return ok;
-    };
     std::vector<double> spreads;
     for (std::size_t i = 0; i < mean.u.size(); ++i) {
         double lo = means[0].u[i];
@@ -543,9 +538,9 @@ TEST(EndGoalC8q, ReferenceQuadAgainstMomentumTheory) {
                 "reference: none (evidence for any later tightening, set in advance)\n"
                 "tolerance: none\n"
                 "verdict: report only\n",
-                all.mutual_off, verdict_word(all.mutual_off <= eg::kC8qMutual), worst_ratio,
-                each[worst_ratio].ratio_off, verdict_word(ratio_ok(each[worst_ratio])), worst_mutual,
-                each[worst_mutual].mutual_off, verdict_word(each[worst_mutual].mutual_off <= eg::kC8qMutual),
+                all.mutual_off, verdict_word(all.mutual_ok), worst_ratio,
+                each[worst_ratio].ratio_off, verdict_word(each[worst_ratio].ratio_ok), worst_mutual,
+                each[worst_mutual].mutual_off, verdict_word(each[worst_mutual].mutual_ok),
                 all.mutual_spread);
     // One measure a rotor: a measure's value is a single number.
     for (std::size_t i = 0; i < spreads.size(); ++i) {

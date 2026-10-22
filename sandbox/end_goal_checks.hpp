@@ -436,7 +436,9 @@ struct C8qBands {
     double ratio_off = 0.0;      // the largest |u / v - 1|
     double mutual_off = 0.0;     // the largest |u_i - mean u| / mean u
     double mutual_spread = 0.0;  // (max u - min u) / mean u: reported, not judged
-    bool ok = false;             // every ratio in kC8q's band, and mutual_off within kC8qMutual
+    bool ratio_ok = false;       // every ratio in kC8q's band
+    bool mutual_ok = false;      // mutual_off within kC8qMutual
+    bool ok = false;             // both
 };
 
 [[nodiscard]] inline C8qBands c8q_bands(std::span<const double> u, std::span<const double> v) {
@@ -460,7 +462,9 @@ struct C8qBands {
         if (const double off = std::fabs(u[i] - mean) / mean; !(off <= b.mutual_off)) b.mutual_off = off;
     }
     b.mutual_spread = (hi - lo) / mean;
-    b.ok = in && b.mutual_off <= kC8qMutual;
+    b.ratio_ok = in;
+    b.mutual_ok = b.mutual_off <= kC8qMutual;
+    b.ok = b.ratio_ok && b.mutual_ok;
     return b;
 }
 
@@ -515,9 +519,9 @@ struct C8qBands {
     }
     detail += "the four off their mean by " + num(all.mutual_off) + " at most (spread " + num(all.mutual_spread) +
               "); the worst run by the rotor band, run " + std::to_string(worst_ratio) + ", off by " +
-              num(each[worst_ratio].ratio_off) + (each[worst_ratio].ok ? "" : " (OUT)") +
+              num(each[worst_ratio].ratio_off) + (each[worst_ratio].ratio_ok ? "" : " (OUT)") +
               "; by the mutual band, run " + std::to_string(worst_mutual) + ", off by " +
-              num(each[worst_mutual].mutual_off) + (each[worst_mutual].ok ? "" : " (OUT)") +
+              num(each[worst_mutual].mutual_off) + (each[worst_mutual].mutual_ok ? "" : " (OUT)") +
               "; each rotor's spread across the runs:";
     for (std::size_t i = 0; i < n; ++i) {
         double lo = std::numeric_limits<double>::infinity();
