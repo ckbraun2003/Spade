@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -94,7 +95,7 @@ TEST(EditorWorkspace, AnArmedItemIsPlacedRestingWhereTheClickMeetsTheGround) {
     w->refresh_panels();
     const auto& library = w->panels().library;
     for (std::size_t i = 0; i < library.size(); ++i) {
-        if (library[i].name == "box") w->panels().armed = i;
+        if (library[i].name == "Box") w->panels().armed = i;
     }
     ASSERT_TRUE(w->panels().armed.has_value());
     w->click(glm::vec3(4.0f, 5.0f, 4.0f), kDown);
@@ -160,7 +161,7 @@ TEST(EditorWorkspace, AnEditWhileRunningKeepsTheRunGoing) {
     const uint64_t tick = w->run()->tick();
     w->refresh_panels();
     for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
-        if (w->panels().library[i].name == "box") w->panels().armed = i;
+        if (w->panels().library[i].name == "Box") w->panels().armed = i;
     }
     w->click(glm::vec3(3.0f, 5.0f, 3.0f), kDown);
     ASSERT_EQ(scene_of(*w).assets.size(), 1u);
@@ -184,7 +185,7 @@ TEST(EditorWorkspace, ASelectionThatUndoRemovesIsCleared) {
     ASSERT_NE(w, nullptr);
     w->refresh_panels();
     for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
-        if (w->panels().library[i].name == "sphere") w->panels().armed = i;
+        if (w->panels().library[i].name == "Sphere") w->panels().armed = i;
     }
     w->click(glm::vec3(2.0f, 5.0f, 2.0f), kDown);
     ASSERT_EQ(w->panels().selection, object("sphere"));
@@ -248,4 +249,51 @@ TEST(EditorWorkspace, OneDragIsOneUndoStep) {
     command(*w, Command::undo);
     EXPECT_EQ(quad_start(*w).x, dragged);
     EXPECT_EQ(quad_start(*w).z, start.pos.z);
+}
+
+// The panel lists the default library, in its order (INT-14, Q3a): the
+// built-in items left it.
+TEST(EditorWorkspace, ItsLibraryIsTheDefaultLibrary) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const ed::LibraryLoad load =
+        ed::load_library_items(std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "library.yaml");
+    ASSERT_FALSE(load.items.empty());
+    EXPECT_TRUE(w->panels().library_problems.empty()) << w->panels().library_problems.front();
+    const auto& library = w->panels().library;
+    ASSERT_EQ(library.size(), load.items.size());
+    for (std::size_t i = 0; i < library.size(); ++i) {
+        EXPECT_EQ(library[i].name, load.items[i].name);
+        EXPECT_EQ(library[i].category, load.items[i].category);
+    }
+}
+
+// Load from file adds the file's item to the panel and arms it, as an entry
+// is armed; the click places it.
+TEST(EditorWorkspace, LoadFromFileArmsTheFilesItem) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::size_t before = w->panels().library.size();
+    w->panels().item_path =
+        (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "obstacles" / "gate.object.yaml").string();
+    command(*w, Command::load_item);
+    ASSERT_EQ(w->panels().library.size(), before + 1) << w->panels().status;
+    ASSERT_TRUE(w->panels().armed.has_value());
+    EXPECT_EQ(*w->panels().armed, before);
+    EXPECT_EQ(w->panels().library.back().category, "from file");
+    w->click(glm::vec3(4.0f, 5.0f, 4.0f), kDown);
+    ASSERT_EQ(scene_of(*w).assets.size(), 1u) << w->panels().status;
+    EXPECT_EQ(scene_of(*w).assets[0].name, "gate");
+}
+
+// One that won't load is named in the status, and nothing is armed.
+TEST(EditorWorkspace, LoadFromFileOfAnUnreadableFileIsNamed) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::size_t before = w->panels().library.size();
+    w->panels().item_path = "no/such.object.yaml";
+    command(*w, Command::load_item);
+    EXPECT_EQ(w->panels().library.size(), before);
+    EXPECT_FALSE(w->panels().armed.has_value());
+    EXPECT_NE(w->panels().status.find("no/such.object.yaml"), std::string::npos) << w->panels().status;
 }

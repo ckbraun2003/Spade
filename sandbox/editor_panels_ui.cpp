@@ -638,14 +638,19 @@ void library(ed::EditorPanels& p) {
         ImGui::End();
         return;
     }
-    // Vehicle models by the kind their model makes them, then the assets (§4).
-    std::vector<std::string> kinds;
+    // The default library by category, in its index's order (INT-14), then
+    // what Load from file added; what would not load, verbatim, above them.
+    for (const std::string& problem : p.library_problems) ui::status_text(problem);
+    std::vector<std::string> categories;
     for (const ed::LibraryItem& item : p.library) {
-        if (item.kind != ed::LibraryItem::Kind::model || !item.model) continue;
-        const std::string k = ed::vehicle_kind_of(*item.model);
-        if (std::find(kinds.begin(), kinds.end(), k) == kinds.end()) kinds.push_back(k);
+        const std::string c = ed::panel_category(item);
+        if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
     const auto row = [&p](std::size_t i) {
+        if (!ed::placeable(p.library[i])) {  // a part: inspect-only (INT-14)
+            ImGui::TextDisabled("%s (built into a drone)", p.library[i].name.c_str());
+            return;
+        }
         ImGui::PushID(static_cast<int>(i));
         const bool armed = p.armed && *p.armed == i;
         if (ui::list_row(p.library[i].name.c_str(), armed)) {
@@ -657,18 +662,17 @@ void library(ed::EditorPanels& p) {
         }
         ImGui::PopID();
     };
-    for (const std::string& k : kinds) {
-        if (!ui::section(k.c_str(), true)) continue;
+    for (const std::string& c : categories) {
+        if (!ui::section(c.c_str(), true)) continue;
         for (std::size_t i = 0; i < p.library.size(); ++i) {
-            const ed::LibraryItem& item = p.library[i];
-            if (item.kind == ed::LibraryItem::Kind::model && item.model && ed::vehicle_kind_of(*item.model) == k) row(i);
+            if (ed::panel_category(p.library[i]) == c) row(i);
         }
     }
-    if (ui::section("Assets", true)) {
-        for (std::size_t i = 0; i < p.library.size(); ++i) {
-            if (p.library[i].kind == ed::LibraryItem::Kind::asset) row(i);
-        }
-    }
+    ui::gap();
+    ImGui::TextDisabled("Load from file");
+    std::string item_path = p.item_path;
+    if (edit_text("##item_path", p.item_path, item_path)) p.item_path = item_path;
+    if (ImGui::Button("Load")) p.commands.push_back(ed::Command::load_item);
     if (p.armed) {
         ui::gap();
         ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());

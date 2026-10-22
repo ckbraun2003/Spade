@@ -7,6 +7,13 @@
 // vehicle the editor adds gets its own copy of its model, so an edit to one
 // vehicle's model never reaches another (the user's Q1, EDT-019).
 //
+// A model or object FILE goes in through Core's one function for it (TD-9):
+// scene::add_model(), which keeps the model's chain, and scene::add_object(),
+// which adds the object's materials. Core never renames, so the editor makes
+// the names unique first. The edit carries the file's path, the form its text
+// has (EDT-002), and reads the file when it is applied; undo restores the
+// scene, never the file (INT-14).
+//
 // docs/design/interface/plans/2026-10-05-editor-design.md §3-§4;
 // 2026-10-05-editor-plan.md Tasks 2 and 3.
 
@@ -23,6 +30,8 @@
 
 #include "editor_document.hpp"
 #include "editor_model_params.hpp"
+#include "scene/model_file.hpp"
+#include "scene/object_file.hpp"
 
 namespace spade::sandbox::editor {
 
@@ -32,6 +41,20 @@ struct AddAsset {
 struct AddVehicle {
     scene::SceneVehicle vehicle;  // its name is made unique
     vehicles::ModelType model;    // copied for this vehicle alone, under a unique model name
+};
+// A model file, placed as a vehicle: the file's model goes in under its own
+// name made unique, and the vehicle (its name made unique too, the model's
+// when empty) flies it.
+struct AddModelFile {
+    std::string file;             // the model file's path, as given
+    scene::SceneVehicle vehicle;  // `model` is set to the copy's name
+};
+// An object file, placed as an asset at `pose`, under `name` made unique
+// (the object's own when empty).
+struct AddObjectFile {
+    std::string file;  // the object file's path, as given
+    std::string name;
+    SdfPose pose;
 };
 struct RemoveObject {
     std::string name;  // an asset or a vehicle; a vehicle's model goes too when nothing else uses it
@@ -87,7 +110,7 @@ struct SetModelParam {
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
-                               RepointWorld, SetModelParam>;
+                               RepointWorld, SetModelParam, AddModelFile, AddObjectFile>;
 
 namespace detail {
 
@@ -155,6 +178,31 @@ inline Result<bool> change(scene::SceneDesc& s, const AddVehicle& e) {
     v.model = m.name;
     s.models.push_back(std::move(m));
     s.vehicles.push_back(std::move(v));
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddModelFile& e) {
+    const Result<scene::ModelFile> file = scene::load_model_file(e.file);
+    if (!file) return std::unexpected(Error{file.error().code, "add-model-file: " + file.error().context});
+    const std::string model = lowest_free(file->model.name.empty() ? "model" : file->model.name,
+                                          [&](std::string_view n) { return model_taken(s, n); });
+    if (const Result<void> added = scene::add_model(s, *file, model); !added) return std::unexpected(added.error());
+    scene::SceneVehicle v = e.vehicle;
+    v.name = lowest_free(v.name.empty() ? model : v.name, [&](std::string_view n) { return object_taken(s, n); });
+    v.model = model;
+    s.vehicles.push_back(std::move(v));
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddObjectFile& e) {
+    const Result<scene::ObjectFile> file = scene::load_object_file(e.file);
+    if (!file) return std::unexpected(Error{file.error().code, "add-object-file: " + file.error().context});
+    const std::string& own = e.name.empty() ? file->object.name : e.name;
+    const std::string name =
+        lowest_free(own.empty() ? "object" : own, [&](std::string_view n) { return object_taken(s, n); });
+    if (const Result<void> added = scene::add_object(s, *file, name, e.pose); !added) {
+        return std::unexpected(added.error());
+    }
     return true;
 }
 
