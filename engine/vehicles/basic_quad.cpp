@@ -20,6 +20,14 @@ namespace {
 
 [[nodiscard]] bool positive(double x) noexcept { return std::isfinite(x) && x > 0.0; }
 
+// A length in a message: millimetres, to a tenth.
+[[nodiscard]] std::string mm(double metres) {
+    char buf[32];
+    const std::to_chars_result r =
+        std::to_chars(buf, buf + sizeof(buf), metres * 1000.0, std::chars_format::fixed, 1);
+    return std::string(buf, r.ptr);
+}
+
 // A number in a message: the shortest form that reads back to it.
 [[nodiscard]] std::string text(double x) {
     char buf[32];
@@ -161,15 +169,21 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
         if (!positive(*p.kappa)) {
             return std::unexpected(invalid("kappa must be finite and above 0, found " + text(*p.kappa)));
         }
-        if (!p.prop.ct_table.empty() || !p.prop.cq_table.empty()) {
-            return std::unexpected(invalid("kappa sets prop.cq_static, which the compile reads only without "
-                                           "tables: give the propeller no ct_table and cq_table, or no kappa"));
-        }
         if (!positive(p.prop.diameter)) {
             return std::unexpected(invalid("kappa needs a propeller diameter above 0, found " +
                                            text(p.prop.diameter)));
         }
+        if (p.prop.ct_table.empty() && !p.prop.cq_table.empty()) {
+            return std::unexpected(invalid("kappa derives prop.cq_table from the ct_table, and this propeller has a "
+                                           "cq_table with no ct_table to scale"));
+        }
+        // C_Q = kappa C_T / D, exact (T = C_T rho n^2 D^4, Q = C_Q rho n^2 D^5):
+        // the static value, and the torque table at the thrust table's J points.
         s.prop.cq_static = *p.kappa * p.prop.ct_static / p.prop.diameter;
+        s.prop.cq_table.clear();
+        for (const std::array<double, 2>& row : p.prop.ct_table) {
+            s.prop.cq_table.push_back({row[0], *p.kappa * row[1] / p.prop.diameter});
+        }
     }
 
     // THE FRAME: front-right, front-left, rear-left, rear-right.
@@ -240,8 +254,8 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
 
 std::vector<BasicQuadAssumption> basic_quad_assumptions() {
     return {
-        {"half_span_x", "Kat's competition-700 layout, +-0.075 m along the nose"},
-        {"half_span_z", "Kat's competition-700 layout, +-0.10 m lateral"},
+        {"half_span_x", "a generic 6-inch layout: same-side hubs 160 mm apart, 7.6 mm clear of the discs"},
+        {"half_span_z", "+-0.10 m lateral, as Kat's competition-700"},
         {"hub_height", "the propeller plane 22 mm above the arms, a motor's height"},
         {"body_size", "a 90 x 35 x 60 mm centre stack"},
         {"body_mass", "a typical 6-inch frame's plates, flight controller and wiring"},
@@ -286,7 +300,40 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"battery.mass", "typical of a 6S 1300 mAh pack"},
         {"battery.mount", "on top of the body, sunk 2 mm into it"},
         {"battery.shape", "a 75 x 30 x 35 mm pack"},
+        {"rotors", "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's "
+                   "induced inflow (Physics, 2026-10-21)"},
     };
+}
+
+std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec) {
+    std::vector<BasicQuadAdvisory> out;
+    const double diameter = spec.prop.diameter;
+    for (std::size_t i = 0; i < spec.rotors.size(); ++i) {
+        // Rotor i's spin axis: its hub's +Y (THE FRAME), normalized with sqrt
+        // only. A zero orientation, which the compile refuses, gives none.
+        const glm::dvec3 turned = spec.rotors[i].hub.orientation * glm::dvec3(0.0, 1.0, 0.0);
+        const double length = std::sqrt(glm::dot(turned, turned));
+        if (!(length > 0.0)) continue;
+        const glm::dvec3 axis = turned / length;
+        for (std::size_t j = i + 1; j < spec.rotors.size(); ++j) {
+            // Measured in rotor i's disc plane: the spin axis projected out.
+            const glm::dvec3 gap = spec.rotors[j].hub.position - spec.rotors[i].hub.position;
+            const double axial = glm::dot(gap, axis);
+            const glm::dvec3 planar = gap - axial * axis;
+            const double apart = std::sqrt(glm::dot(planar, planar));
+            if (!(apart < diameter)) continue;
+            const std::string a = "rotors[" + std::to_string(i) + "]";
+            const std::string b = "rotors[" + std::to_string(j) + "]";
+            std::string message = a + " and " + b + ": their discs overlap by " + mm(diameter - apart) +
+                                  " mm (hubs " + mm(apart) + " mm apart in the disc plane";
+            if (axial != 0.0) message += ", " + mm(axial < 0.0 ? -axial : axial) + " mm apart along the spin axis";
+            message += ", under the " + mm(diameter) +
+                       " mm diameter). Each disc keeps its own thrust and torque; what the model leaves out is "
+                       "the shared wake: a rotor's thrust does not respond to its neighbour's induced inflow.";
+            out.push_back({a + ", " + b, std::move(message)});
+        }
+    }
+    return out;
 }
 
 }  // namespace spade::vehicles

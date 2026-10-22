@@ -39,8 +39,13 @@
 //            compile_airframe()'s own, so the rule lives in one place (TD-9).
 //            It needs a mass target, because a massless remainder is no body.
 //   kappa    m, the torque-to-thrust ratio. It sets cq_static to
-//            kappa * ct_static / diameter, and is refused for a propeller with
-//            tables, which the compile reads instead of cq_static.
+//            kappa * ct_static / diameter. With tables, the thrust table
+//            stays and the torque table becomes C_Q(J) = kappa * C_T(J) /
+//            diameter at the ct_table's J points, so the fitted kappa replaces
+//            any measured C_Q. That is exact, since T = C_T rho n^2 D^4 and
+//            Q = C_Q rho n^2 D^5 (Physics, 2026-10-21). A cq_table with no
+//            ct_table to scale is refused. The library grades the derived
+//            torque `fitted`, naming kappa's source (Task L5).
 // Met "exactly" means the compiled mass and principal moments round to the
 // targets' floats. The remainder is exact to double rounding: a few ulps from
 // the order of the compile's sums, and its place at the centre of mass the
@@ -54,6 +59,17 @@
 //   "inertia"            a remainder tensor the composite's own checks
 //                        refuse (one that breaks the triangle inequality)
 // Its error names the field, the target and the parts' value.
+//
+// THE ADVISORIES. basic_quad_advisories() names what compiles but its user
+// should see: each pair of rotor discs whose hubs are closer than the
+// propeller's diameter in the disc plane (the first rotor's spin axis
+// projected out), with the overlap and any offset along the spin axis.
+// Overlapping actuator discs are sound, because each disc's increments add
+// independently and the spreading kernel is a partition of unity, so each
+// keeps its own thrust and torque (Physics, 2026-10-21). What no layout
+// models, overlapping or not, is the shared wake: a rotor's thrust does not
+// respond to its neighbour's induced inflow. basic_quad_assumptions() lists
+// that for every spec; the advisories name only real overlaps.
 //
 // DETERMINISM. Double arithmetic, + - * / and sqrt only (TD-3), in a fixed
 // order. The same params give a bit-identical spec on every conforming
@@ -78,8 +94,10 @@ namespace spade::vehicles {
 struct BasicQuadParams {
     std::string name = "basic_quad";
 
-    // The layout (THE FRAME). Kat's competition-700 layout, +-0.075 x +-0.10 m.
-    double half_span_x = 0.075;  // m, along the nose
+    // The layout (THE FRAME): a generic 6-inch quad, its same-side hubs
+    // 160 mm apart, 7.6 mm clear of the 152.4 mm discs. Kat's competition-700
+    // layout, +-0.075 x +-0.10 m, overlaps them by 2.4 mm; its fit sets it.
+    double half_span_x = 0.080;  // m, along the nose
     double half_span_z = 0.10;   // m, lateral
     double hub_height = 0.022;   // m: each propeller's plane, above the arms
 
@@ -110,11 +128,12 @@ struct BasicQuadParams {
 };
 
 // The spec. invalid_argument, naming the field: a half span not finite and
-// above 0; a non-finite fit target; a kappa not above 0, beside a propeller
-// with tables or a diameter not above 0; an inertia target without a mass
-// target; and the refusals of THE FIT. With a mass target, the parts are
-// compiled once to measure them, so the compile's own refusal comes back
-// unchanged. Otherwise the compile's rules are left to compile_airframe().
+// above 0; a non-finite fit target; a kappa not above 0, beside a cq_table
+// with no ct_table, or with a diameter not above 0; an inertia target
+// without a mass target; and the refusals of THE FIT. With a mass target,
+// the parts are compiled once to measure them, so the compile's own refusal
+// comes back unchanged. Otherwise the compile's rules are left to
+// compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
 
 // One default the basic quad assumes: the field's path in BasicQuadParams
@@ -127,7 +146,24 @@ struct BasicQuadAssumption {
 // Every numeric default of BasicQuadParams, in declaration order, so the UI
 // can list what a default-built quad assumes. The name and the identity
 // strings (stator, protocol) are not numbers and are not listed, and neither
-// are the fit targets, which have no default.
+// are the fit targets, which have no default. Last, under "rotors", what the
+// model assumes of every basic quad: the shared wake is not modelled
+// (Physics).
 [[nodiscard]] std::vector<BasicQuadAssumption> basic_quad_assumptions();
+
+// A fact about a built spec that is not a refusal: the spec compiles, and its
+// user should see this (THE ADVISORIES).
+struct BasicQuadAdvisory {
+    std::string field;    // "rotors[0], rotors[3]"
+    std::string message;
+};
+
+// Every pair of rotor discs whose hubs are closer than the propeller's
+// diameter in rotor i's disc plane, in pair order (i < j). Each names the
+// hubs' distance in that plane, any offset along the spin axis, the diameter
+// and the overlap, in mm to a tenth, and what the model leaves out. Empty when
+// no pair is that close; a close layout that does not overlap is not advised
+// (the shared wake is listed by basic_quad_assumptions() instead).
+[[nodiscard]] std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec);
 
 }  // namespace spade::vehicles
