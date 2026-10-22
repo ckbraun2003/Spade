@@ -355,6 +355,41 @@ TEST(AirflowSolidsSolve, ASheetOnEitherParityConvergesInEightIterations) {
     }
 }
 
+// The stall rule (P2d, pcg.hpp): the same solve on the odd plane with a mark
+// below fp32's floor (1e-9). The true residual stops near the floor measured
+// above, the solve starts again once from it, stalls again and stops there,
+// stalled, inside its cap, at fp32's floor, below the announcement's mark.
+// It returns the x that measured least, an earlier one than its last
+// (measured 2026-10-22: 1.53e-5 on the 9th of 17; its last 2.29e-5), and
+// the residual recomputed here from that x is the one reported. Mutations:
+// the stall rule off, which runs it to the cap; the last x returned (17 of
+// 17); the least's residual returned with the last x.
+TEST(AirflowSolidsSolve, AMarkBelowFp32sFloorStallsInsideTheCap) {
+    Multigrid mg = sheet_multigrid(17);
+    PcgScratch s = make_pcg_scratch(32u * 8u * 8u);
+    s.b = blocked_flow_rhs(sheet_weights(17));
+    const PcgResult res = solve_pcg_to(mg, s, kSolidsCgIterations, kSolidsCgCap, 1.0e-9f,
+                                       PcgGauge{&remove_mean_gauge, nullptr, nullptr});
+    std::printf("a mark of 1e-9: %.3e after %u iterations (measured on %u), %s\n", static_cast<double>(res.residual),
+                res.iterations, res.residual_at, res.stalled ? "stalled" : "not stalled");
+    EXPECT_TRUE(res.stalled);
+    EXPECT_GT(res.residual, 1.0e-9f);
+    EXPECT_LE(res.residual, kResidualAnnounce);
+    EXPECT_GE(res.iterations, kSolidsCgIterations + 2u * kStallIterations) << "two stalls: the restart's and the stop's";
+    EXPECT_LT(res.iterations, kSolidsCgCap);
+    EXPECT_GE(res.residual_at, kSolidsCgIterations);
+    EXPECT_LT(res.residual_at, res.iterations) << "the least was an earlier x than the last";
+    std::vector<float> ax(s.x.size());
+    apply_operator(mg.levels[0], s.x, ax);
+    float r_max = 0.0f;
+    float b_max = 0.0f;
+    for (std::size_t i = 0; i < ax.size(); ++i) {
+        r_max = std::max(r_max, std::fabs(s.b[i] - ax[i]));
+        b_max = std::max(b_max, std::fabs(s.b[i]));
+    }
+    EXPECT_EQ(res.residual, r_max / b_max) << "the residual is the returned x's";
+}
+
 TEST(AirflowSolidsSolve, TheFixedTileDotIsTheTileSumOfProducts) {
     std::vector<float> a(9u * 7u * 5u);
     std::vector<float> b(a.size());

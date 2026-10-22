@@ -80,12 +80,17 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
     switch (health.fault) {
         case FluidFault::none:
             if (health.unconverged) {
+                const bool solid = health.capped || health.stalled;
+                std::string why;
+                if (health.capped) {
+                    why = " at its cap of " + std::to_string(health.pressure_iterations) + " iterations";
+                } else if (health.stalled) {
+                    why = ", stalled at fp32's floor after " + std::to_string(health.pressure_iterations) +
+                          " iterations";
+                }
                 return "airflow fluid step: healthy, but the pressure solve left a relative residual of " +
                        std::to_string(health.pressure_residual) + ", above " +
-                       std::to_string(health.capped ? kResidualAnnounce : kPlanAResidualAnnounce) +
-                       (health.capped ? " at its cap of " + std::to_string(health.pressure_iterations) + " iterations"
-                                      : std::string()) +
-                       " (announced, L6)";
+                       std::to_string(solid ? kResidualAnnounce : kPlanAResidualAnnounce) + why + " (announced, L6)";
             }
             return "airflow fluid step: healthy";
         case FluidFault::ill_posed_domain:
@@ -260,10 +265,12 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
     if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;
         s.health.pressure_iterations = rep.iterations;
-        // With solids the CG ran on to the mark, so a miss is its cap reached.
-        // Plan A's fixed cycles are announced above their own mark (2a).
+        // With solids the CG ran on to the mark, so a miss is its cap reached
+        // or a stall at fp32's floor before it (P2d), never both. Plan A's
+        // fixed cycles are announced above their own mark (2a).
         s.health.unconverged = rep.residual > (solid ? kResidualAnnounce : kPlanAResidualAnnounce);
-        s.health.capped = solid && s.health.unconverged;
+        s.health.capped = solid && s.health.unconverged && !rep.stalled;
+        s.health.stalled = solid && s.health.unconverged && rep.stalled;
     }
     return s.health;
 }

@@ -165,7 +165,8 @@ TEST(AirflowSolidsStep, S3ASheetAcrossAChannelStopsItsFlow) {
 
 // With n_v = 1 and the cap at 1 on the odd plane the solve cannot converge:
 // the step reports its relative residual and announces it at its cap (L6),
-// and does not refuse.
+// and does not refuse. A cap reached is not a stall (P2d). Mutation: the cap
+// reported as a stall, which leaves it stalled and not capped.
 TEST(AirflowSolidsStep, AnUnconvergedSolveIsAnnounced) {
     const float dx = 1.0f / 32.0f;
     const GridShape shape{32, 8, 8, dx};
@@ -181,9 +182,91 @@ TEST(AirflowSolidsStep, AnUnconvergedSolveIsAnnounced) {
     EXPECT_GT(health.pressure_residual, kResidualAnnounce);
     EXPECT_TRUE(health.unconverged);
     EXPECT_TRUE(health.capped);
+    EXPECT_FALSE(health.stalled);
     EXPECT_EQ(health.pressure_iterations, 1u);
     EXPECT_NE(describe(health, shape).find("cap of 1"), std::string::npos) << describe(health, shape);
     EXPECT_NE(describe(health, shape).find("announced"), std::string::npos) << describe(health, shape);
+}
+
+// S3's blocked channel stretched to `nx` cells (an 8 x 8 section, every axis
+// periodic, dx 1/32 m, the sheet on face plane `plane`), from u = 1 at the
+// solids' floor and cap: the health of `steps` steps, printed.
+[[nodiscard]] std::vector<FluidHealth> blocked_channel_steps(uint32_t nx, uint32_t plane, int steps) {
+    const float dx = 1.0f / 32.0f;
+    const GridShape shape{nx, 8, 8, dx};
+    const DomainBc bc = all_periodic();
+    MacGrid g = *make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 1.0f);
+    const FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.001f, .n_v = kSolidsCgIterations};
+    FluidScratch s = *make_fluid_scratch(g, bc, cfg);
+    Scene scene;
+    std::vector<FluidHealth> out;
+    if (!set_solids(s, g, bc, s3_sheet(scene, plane, dx), scene.sampler()).has_value()) {
+        ADD_FAILURE() << s.solids.run_line;
+        return out;
+    }
+    for (int step = 1; step <= steps; ++step) {
+        out.push_back(fluid_step(g, bc, cfg, s));
+        const FluidHealth& h = out.back();
+        std::printf("blocked channel of %u cells, the sheet on plane %u, step %d: %.3e in %u iterations (%s)\n", nx,
+                    plane, step, static_cast<double>(h.pressure_residual), h.pressure_iterations,
+                    h.stalled ? "stalled" : (h.capped ? "capped" : (h.unconverged ? "unconverged" : "converged")));
+    }
+    return out;
+}
+
+// The stall rule's restart (P2d). S3's channel with the sheet on the odd
+// plane. Step 1 meets the mark at the floor. Step 2's right side is only the
+// rounding step 1 left (the sheet has stopped the flow: max|b| 9e-4 against
+// step 1's 38), but it starts from step 1's pressure (max|p| 593), so the CG's
+// recurrence drifts from the true residual, which stalls at 0.9 by the 13th
+// iteration; the one restart from the true residual brings it to the mark
+// inside the cap (measured 2026-10-22 with the mark at 0: 1.9e-5 at 26).
+// Before P2d it ran to the cap and was announced there at 0.2 to 1.1.
+// Mutation: no restart, which leaves it stalled at 13.
+TEST(AirflowSolidsStep, AStalledSolveRestartsOnceAndMeetsTheMark) {
+    const std::vector<FluidHealth> h = blocked_channel_steps(32, 17, 2);
+    ASSERT_EQ(h.size(), 2u);
+    const GridShape shape{32, 8, 8, 1.0f / 32.0f};
+    for (std::size_t step = 0; step < h.size(); ++step) {
+        EXPECT_EQ(h[step].fault, FluidFault::none) << describe(h[step], shape);
+        EXPECT_FALSE(h[step].unconverged) << step + 1 << ": " << describe(h[step], shape);
+        EXPECT_FALSE(h[step].capped) << step + 1;
+        EXPECT_FALSE(h[step].stalled) << step + 1;
+    }
+    EXPECT_EQ(h[0].pressure_iterations, kSolidsCgIterations);
+    EXPECT_GT(h[1].pressure_iterations, kSolidsCgIterations + kStallIterations) << "only the restart passes a stall";
+    EXPECT_LT(h[1].pressure_iterations, kSolidsCgCap);
+}
+
+// The stall rule at the step (P2d). S3's channel stretched to 128 cells, the
+// sheet on plane 65: step 1's true residual stops above the mark, the one
+// restart does not take it below, and the solve stops there, stalled, inside
+// its cap after 20 iterations. The step announces a stall, not a cap, and
+// keeps the x that measured least: at or below the 1.276e-4 the solve
+// without the restart stopped at (its 16th iteration, which the restarted
+// solve also measures; printed to four digits, so the bound is that print's
+// upper edge). Measured 2026-10-22: 1.276e-4; its last x 2.04e-4. Mutations:
+// the stall rule off, which runs it to the cap (1.5e-4 at 32, capped); the
+// projection's report without `stalled`, which leaves it capped; the last x
+// returned (2.04e-4).
+TEST(AirflowSolidsStep, ASolveAtFp32sFloorAboveTheMarkStalls) {
+    const std::vector<FluidHealth> h = blocked_channel_steps(128, 65, 1);
+    ASSERT_EQ(h.size(), 1u);
+    const FluidHealth& step = h.front();
+    EXPECT_EQ(step.fault, FluidFault::none);
+    EXPECT_GT(step.pressure_residual, kResidualAnnounce);
+    EXPECT_LT(step.pressure_residual, 1.2765e-4f) << "the least measured, not the last";
+    EXPECT_TRUE(step.unconverged);
+    EXPECT_TRUE(step.stalled);
+    EXPECT_FALSE(step.capped);
+    EXPECT_GE(step.pressure_iterations, kSolidsCgIterations + 2u * kStallIterations) << "the restart's stall, the stop's";
+    EXPECT_LT(step.pressure_iterations, kSolidsCgCap);
+    EXPECT_EQ(describe(step, GridShape{128, 8, 8, 1.0f / 32.0f}),
+              "airflow fluid step: healthy, but the pressure solve left a relative residual of " +
+                  std::to_string(step.pressure_residual) + ", above " + std::to_string(kResidualAnnounce) +
+                  ", stalled at fp32's floor after " + std::to_string(step.pressure_iterations) +
+                  " iterations (announced, L6)");
 }
 
 [[nodiscard]] uint64_t digest(const MacGrid& g) {
@@ -1180,11 +1263,16 @@ TEST(AirflowSolidsStep, TheSolidsPressureConvergesOnAGridWithAnOddAxis) {
 // on a cell corner took the floor of 8: a coarse face read its own fine plane
 // only. With the plane means in series it reaches the mark at the floor on
 // every step. Mutation: the own plane's mean (the rule before P2c), 20/24/12.
+// A converged step is neither capped nor stalled (P2d). Mutation: stalled as
+// the complement of capped (solid && !capped, the miss dropped), which marks
+// every converged step stalled.
 TEST(AirflowSolidsStep, ASphereOnACellCentreReachesTheMarkAtTheFloor) {
     const std::array<FluidHealth, 3> steps = cell_centred_sphere_steps(kSolidsCgIterations);
     for (std::size_t step = 0; step < steps.size(); ++step) {
         EXPECT_LE(steps[step].pressure_residual, kResidualAnnounce) << step + 1;
+        EXPECT_FALSE(steps[step].unconverged) << step + 1;
         EXPECT_FALSE(steps[step].capped) << step + 1;
+        EXPECT_FALSE(steps[step].stalled) << step + 1;
         EXPECT_EQ(steps[step].pressure_iterations, kSolidsCgIterations) << step + 1;
     }
 }
@@ -1203,6 +1291,7 @@ TEST(AirflowSolidsStep, TheSolidsSolveRunsPastItsFloorToTheMark) {
     for (std::size_t step = 0; step < steps.size(); ++step) {
         EXPECT_LE(steps[step].pressure_residual, kResidualAnnounce) << step + 1;
         EXPECT_FALSE(steps[step].capped) << step + 1;
+        EXPECT_FALSE(steps[step].stalled) << step + 1;
         EXPECT_GE(steps[step].pressure_iterations, kFloor) << step + 1;
         EXPECT_LE(steps[step].pressure_iterations, kSolidsCgCap) << step + 1;
         most = std::max(most, steps[step].pressure_iterations);
