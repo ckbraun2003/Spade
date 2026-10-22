@@ -22,7 +22,7 @@
 // signature is fixed by the task brief and is deliberately kernel-agnostic --
 // `run_probe(ctx, spirv, args, out)`, no user-supplied push value -- because
 // Task 7 reuses it for the sort-isolation tests. So a probe that needs to
-// select between ten evaluations puts the selector in the data it already
+// select between fifteen evaluations puts the selector in the data it already
 // owns: args[0] is the MODE, bit-cast from a uint, and args[1..] are the
 // arguments proper. That keeps the runner free of any knowledge of this
 // kernel.
@@ -104,7 +104,8 @@
 // InverseSqrt only as an estimate that reaches an integer conversion, and no
 // Sqrt -- are enforced over the ported kernels themselves, not just over this
 // file. The estimates it holds are div32_ftz's and sqrt32_ftz's (modes 0 and 4
-// through log32 and div32_ftz, mode 7 through sqrt32_ftz), each inlined into
+// through log32 and div32_ftz, mode 7 through sqrt32_ftz, modes 12 to 14
+// through both, and modes 10 and 11 through their pieces), each inlined into
 // this entry point; modes 8 and 9 load theirs.
 // ---------------------------------------------------------------------------
 

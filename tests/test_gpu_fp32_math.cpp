@@ -1329,15 +1329,11 @@ constexpr SweptRow kSweptOn[] = {
     {"NVIDIA GeForce RTX 3060 Ti", "572.83", "2026-10-22"},
 };
 
+// The key is the context's own report (compute/backend.hpp's DeviceReport),
+// which already holds the device's name and driverInfo, queried once.
 void report_sweep_trigger(VulkanContext& ctx) {
-    VkPhysicalDeviceDriverProperties driver{};
-    driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
-    VkPhysicalDeviceProperties2 properties{};
-    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &driver;
-    vkGetPhysicalDeviceProperties2(ctx.physical_device(), &properties);
-    const std::string device = properties.properties.deviceName;
-    const std::string info = driver.driverInfo;
+    const std::string& device = ctx.device_report().device_name;
+    const std::string& info = ctx.device_report().driver_info;
     for (const SweptRow& row : kSweptOn) {
         if (device == row.device && info == row.driver) {
             std::printf("[GpuFp32Math] exact sweep: swept on this device and driver (%s, %s, %s)\n", row.device,
@@ -1488,6 +1484,9 @@ TEST(GpuFp32Math, ExactSqrtMatchesTheHostUnderFtzDaz) {
 // give. The division at every bm (1 / b over [1, 2)), every am (a / 3 over
 // [0.5, 2)), 2^20 near-ties and 2^22 random normal pairs. It also prints
 // whether the full sweep has passed on this device and driver (the trigger).
+// It measures the probe's own copy of each estimate, computed by the same
+// pieces as the op's; that the driver compiles the op's copy alike is what
+// the exact suites, and the full sweep, show.
 TEST(GpuFp32Math, TheDevicesEstimatesStayInsideTheProofsBound) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -1553,7 +1552,7 @@ TEST(GpuFp32Math, TheDevicesEstimatesStayInsideTheProofsBound) {
 // ASSERTED, inside the proof's bounds (fp32_math.slang): division at k in
 // [-3, 3], +-16 and +-32 (exact while |d0| < 128 units; +-32 gives about 66),
 // over 2^20 pairs whose result exponents span -1..256; sqrt at k in [-3, 3]
-// and +-16 (exact while |e0| < 64 units, about +-31 ulps of r at worst, where
+// and +-16 (exact while |e0| < 63 units, about +-31 ulps of r at worst, where
 // xm -> 4) over 2^20 positive normals. The ks take turns, input by input.
 // On the bound's edge, sqrt at +-32 over every xm in [3.9, 4): misses against
 // sqrtss are expected and only REPORTED; the device against the port is
