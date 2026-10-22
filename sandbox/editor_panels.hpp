@@ -44,7 +44,7 @@ struct Selection {
 // arm and level act on the pilot (N17): arm toggles arming, level levels the
 // tilt setpoint.
 enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library,
-                     arm, level };
+                     arm, level, import_parts };
 
 struct HierarchyRow {
     Selection target;

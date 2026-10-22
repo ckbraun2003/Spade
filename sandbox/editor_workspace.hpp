@@ -529,6 +529,7 @@ class EditorWorkspace {
                 return;
             }
             case Command::save_to_library: save_selection_to_library(); return;
+            case Command::import_parts: import_parts(panels_.item_path); return;
             case Command::arm: {
                 flight::PilotKeys space;
                 space.arm_pressed = true;
@@ -578,6 +579,36 @@ class EditorWorkspace {
         item.file = got->source;
         import_sources_[got->ref] = got->source;
         return item;
+    }
+
+    // N15: every mesh of `file` as a part of the selected drone's model (D2),
+    // staged (D1), as one undoable edit. A refused edit unstages them.
+    void import_parts(const std::filesystem::path& file) {
+        const scene::SceneDesc& s = docs_.scene.desc();
+        const scene::SceneVehicle* v =
+            panels_.selection.kind == Selection::Kind::object ? find_vehicle(s, panels_.selection.name) : nullptr;
+        if (v == nullptr) {
+            panels_.status = "Import parts: select a drone to import the parts onto";
+            return;
+        }
+        Result<std::vector<ImportedMesh>> got =
+            import_gltf_parts(file, staging_.path(), s, docs_.world.desc(), docs_.scene.path.parent_path());
+        if (!got) {
+            panels_.status = got.error().context;
+            return;
+        }
+        const AddMeshParts edit{v->name, *got};
+        const Serials before = serials();
+        const Result<void> applied = apply(docs_.scene, edit);
+        std::error_code ec;
+        for (const ImportedMesh& m : *got) {
+            if (applied) {
+                import_sources_[m.ref] = m.source;
+            } else {
+                std::filesystem::remove(m.sidecar, ec);
+            }
+        }
+        settle(before, applied);
     }
 
     // N15: the path an imported mesh came from: this session's import, else
