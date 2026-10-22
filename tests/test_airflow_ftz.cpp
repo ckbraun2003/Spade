@@ -31,6 +31,7 @@
 #include <glm/glm.hpp>
 
 #include "airflow_solid_shapes.hpp"
+#include "core/detail/flush_subnormals.hpp"
 #include "core/flow_volume.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/advect.hpp"
@@ -44,6 +45,8 @@ namespace {
 
 using namespace spade::physics::airflow;
 using spade::FlowVolume;
+using spade::math::kFlushSubnormalsWord;
+using spade::math::ScopedFlushSubnormals;
 
 constexpr unsigned kDefaultWord = 0x1F80u;  // every exception masked, round to nearest, no flag
 constexpr unsigned kRoundDown = 0x2000u;    // RC = 01
@@ -152,6 +155,110 @@ struct Lcg {
         return static_cast<float>(state >> 8) * (2.0f / 16777216.0f) - 1.0f;
     }
 };
+
+// ---------------------------------------------------------------------------
+// Task 1: the scope in its one home (core/detail/flush_subnormals.hpp).
+// ---------------------------------------------------------------------------
+
+// A caller rounding down and holding a sticky flag (IE): inside, the word is
+// exactly 0x9FC0 whatever the caller's (D3); after, the caller's word is back
+// exactly, its flag included (D4). Mutations: no restore (the after row goes
+// red); Core's old word, saved | 0x8040 (the inside row goes red).
+TEST(AirflowFtz, TheScopeWritesOneWordAndRestoresTheCallers) {
+    constexpr unsigned caller = kCallerWord | 0x0001u;  // 0x3F81
+    EXPECT_EQ(kFlushSubnormalsWord, 0x9FC0u);
+    const unsigned saved = _mm_getcsr();
+    _mm_setcsr(caller);
+    unsigned inside = 0;
+    {
+        const ScopedFlushSubnormals flush;
+        inside = _mm_getcsr();
+    }
+    const unsigned after = _mm_getcsr();
+    _mm_setcsr(saved);
+    EXPECT_EQ(inside, 0x9FC0u) << "inside: 0x" << std::hex << inside;
+    EXPECT_EQ(after, caller) << "after: 0x" << std::hex << after;
+}
+
+// One multiply, in its own call, of operands read through volatile: the word
+// in effect at the call is the one it runs under, and nothing folds at
+// compile time.
+SPADE_NOINLINE uint32_t product_bits(const volatile float* a, const volatile float* b) {
+    const float x = *a;
+    const float y = *b;
+    return bits_of(x * y);
+}
+
+// The plan's F4 rows, as this CPU gives them under the scope (tininess after
+// rounding) and without it (IEEE gradual underflow). Outside, upper and lower
+// both give 2^-126, so the rows discriminate. "daz" is a subnormal operand
+// whose product is subnormal too, so FTZ alone also zeroes it; "daz to
+// normal" is a subnormal operand whose product is normal (2^-127 x 4 =
+// 2^-125), which only DAZ zeroes (the plan's correction, 2026-10-22).
+// Mutations: FTZ only, 0x9F80 ("daz to normal" goes red); DAZ only, 0x1FC0
+// ("lower" goes red).
+TEST(AirflowFtz, ProductsAtTheSmallestNormalFlushAsThisCpuDoes) {
+    struct Row {
+        const char* name;
+        uint32_t a;
+        uint32_t b;
+        uint32_t inside;
+        uint32_t outside;
+    };
+    const Row rows[] = {
+        {"upper", 0x1FFFFFFEu, 0x20000001u, 0x00800000u, 0x00800000u},
+        {"lower", 0x1FFFF448u, 0x200005DCu, 0x00000000u, 0x00800000u},
+        {"exact", 0x20000000u, 0x20000000u, 0x00800000u, 0x00800000u},
+        {"neg-upper", 0x9FFFFFFEu, 0x20000001u, 0x80800000u, 0x80800000u},
+        {"daz", 0x00400000u, 0x3F800000u, 0x00000000u, 0x00400000u},
+        {"daz to normal", 0x00400000u, 0x40800000u, 0x00000000u, 0x01000000u},
+        {"2^-70 squared", 0x1C800000u, 0x1C800000u, 0x00000000u, 0x00000200u},
+    };
+    for (const Row& r : rows) {
+        volatile float a = float_of(r.a);
+        volatile float b = float_of(r.b);
+        uint32_t inside = 0;
+        {
+            const ScopedFlushSubnormals flush;
+            inside = product_bits(&a, &b);
+        }
+        const uint32_t outside = product_bits(&a, &b);
+        EXPECT_EQ(inside, r.inside) << r.name << " inside the scope: 0x" << std::hex << inside;
+        EXPECT_EQ(outside, r.outside) << r.name << " outside the scope: 0x" << std::hex << outside;
+    }
+}
+
+// The scope on the main thread, then on a std::thread: each reads 0x9FC0
+// inside, the worker its own prior word after, and the main thread's word is
+// unchanged after the join (MXCSR is per thread; the scope has no static
+// state). Mutation: a process-wide "set once" flag in the constructor (the
+// worker then reads its own default word inside).
+TEST(AirflowFtz, EachThreadKeepsItsOwnWord) {
+    const unsigned main_before = _mm_getcsr();
+    unsigned main_inside = 0;
+    {
+        const ScopedFlushSubnormals flush;
+        main_inside = _mm_getcsr();
+    }
+    unsigned before = 0;
+    unsigned inside = 0;
+    unsigned after = 0;
+    std::thread t([&] {
+        before = _mm_getcsr();
+        {
+            const ScopedFlushSubnormals flush;
+            inside = _mm_getcsr();
+        }
+        after = _mm_getcsr();
+    });
+    t.join();
+    std::printf("main 0x%04X, inside 0x%04X; worker 0x%04X -> inside 0x%04X -> 0x%04X\n", main_before, main_inside,
+                before, inside, after);
+    EXPECT_EQ(main_inside, 0x9FC0u);
+    EXPECT_EQ(inside, 0x9FC0u);
+    EXPECT_EQ(after, before);
+    EXPECT_EQ(_mm_getcsr(), main_before);
+}
 
 // ---------------------------------------------------------------------------
 // Task 2: fluid_step under the scope.
@@ -305,10 +412,13 @@ TEST(AirflowFtz, AWorkerThreadStepsFlushedAndIsRestored) {
 // w and p. MSVC and gcc-13 agree only if both flush inside the step: unflushed,
 // the 16 steps leave 1997 subnormals and the digest 0x010b593c983c26ef on MSVC,
 // and a caller's rounding mode inside (RC down) gives 0xfb4bd05a784d81f8
-// (Task 0, 2026-10-22). TASK2_PIN
-//   generated  (at GREEN)
+// (Task 0, 2026-10-22).
+//   generated  2026-10-22, MSVC release: Task 0's scratch run of master's
+//              step under the word 0x9FC0 gave it, and this branch's guarded
+//              fluid_step gives it at GREEN; the -NoSeed gcc-13 leg is to
+//              reproduce it (TD-12).
 // Mutation: the scope compiled under _MSC_VER only (the gcc leg goes red).
-constexpr uint64_t kTinyLidDigest = 0x0000000000000000ull;
+constexpr uint64_t kTinyLidDigest = 0xe2b5d178b90aba65ull;
 
 TEST(AirflowFtz, TheTinyLidDigestIsPinned) {
     const DomainBc bc = lid_bc(kTinyLid);
