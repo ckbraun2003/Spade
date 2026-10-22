@@ -64,7 +64,7 @@ The measure and the eight runs were fixed, and signed off by Physics, before thi
 
 ```text
 === validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===
-commit: ec518ad (rendering/airflow-gpu-b4-actuator; queue ticket spade-rendering-b4c8-stack-ec518ad)
+commit: b8ec4c9 (rendering/c8-record-fix; queue ticket spade-rendering-b4c8-c8fix-b8ec4c9)
 date: 2026-10-22
 path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4), on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no)
 config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; the gather's increments, 110 of 1593344 differing from spread_actuator's by 2.38e-07 m/s at most, copied in each step
@@ -76,16 +76,20 @@ measure: the same mean = 8.0068 m/s
 reference: C8's one-ulp ensemble, the mean of its eight runs = 8.0333 m/s (C8's record, abaafcc)
 tolerance: within 4x the ensemble's largest deviation, 4 x 0.0437 = 0.1748 m/s (test-docs/01-verification.md, a case judged past its horizon)
 verdict: within
-measure: the largest |gather - CPU| through step 104 (T_p): the 0.5R mean 7.21e-06 m/s, the axis 3.45e-05 m/s
+measure: the 0.5R mean's largest |gather - CPU| through step 104 (T_p) = 7.21e-06 m/s
 reference: the CPU's run, spread_actuator() each step
-tolerance: 4x the measured gap, never under 4 ulps: 2.88e-05 and 0.000138 m/s (TD-14)
+tolerance: within 4x the measured gap, never under 4 ulps, 2.88e-05 m/s (TD-14; the gap measured 2026-10-22 at 3eacd6a)
 verdict: within
-measure: where the run leaves the CPU's by 1e-3 on the axis 2R below = step 169
+measure: the axis probe's largest |gather - CPU| through step 104 (T_p) = 3.45e-05 m/s
+reference: the CPU's run, spread_actuator() each step
+tolerance: within 4x the measured gap, never under 4 ulps, 1.38e-04 m/s (TD-14; the gap measured 2026-10-22 at 3eacd6a)
+verdict: within
+measure: the step at which the run leaves the CPU's by 1e-3 on the axis 2R below = 169
 reference: the one-ulp ensemble's earliest member, step 141 of 16 (2026-10-22-c8-spread.md)
-tolerance: no sooner
+tolerance: no sooner than step 141 (2026-10-22-c8-spread.md, fixed before the run)
 verdict: within
 measure: the CPU's run, the same 0.5R mean = 8.0397 m/s
 reference: none
-tolerance: none
+tolerance: none (report only)
 verdict: report only
 ```
