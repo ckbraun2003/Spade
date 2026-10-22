@@ -284,6 +284,13 @@ The plan is approved in shape: the grades, the license lines, refuse-never-skip 
 
 - **L4a's tool test** (the lead, 2026-10-22): `tools/library_props/test_resample_uiuc.py` is a stand-alone unittest, run by hand whenever the tool or its input changes, and named in READY with its output. There's no CMake change and no Python on the leg. So that the hand-run test can't rot, the generated header stamps an FNV-1a 64 hash of `resample_uiuc.py` and of each input it read, with CRLF normalized to LF before hashing so that Windows and the leg agree. `tests/test_library_props.cpp` recomputes the tool's hash from the source tree and fails, naming the file, if it differs. The UIUC inputs aren't committed, so their hashes are recorded only. The numbers wait on Physics' review of the resampling rule; meanwhile the tool is built on our own synthetic input.
 
+- **L4a's resampling rule, Physics' rulings** (2026-10-22). The rule is otherwise sound, and C_Q = C_P / 2π is right (P = Qω, in UIUC's n-convention).
+  1. **No blend** at J = 0: that would write numbers neither rig measured. Instead there is a report-only step check. The tool extrapolates the run's first two measured points linearly to J = 0, for the check only and never written, and compares that with the static C_T(0) and C_P(0). The header's comment gives each prop's relative step. The tool warns, naming the prop, when either coefficient steps by more than 10%; UIUC's lowest-J tunnel points can read low.
+  2. **k starts at 1.** Below the run's first measured J, the tool interpolates between the static J = 0 point and that first point, which is interpolation between two measurements. Every table stays on one grid. The comment gives each prop's gap, its first measured J.
+  3. **Blade stations.** The file's first station, the hub cut-out, is the first node exactly. Then come the 0.05 grid points above it, dropping any closer than 0.025 to it. The tip is treated the same way: a file ending below 1.00 ends at its last station, and the comment says so.
+  4. **Hover rpm from the drone:** n = √(m g / (N ρ C_T0 D⁴)), with ρ = 1.225. Take C_T0 at the static run's middle rpm, pick the run nearest n, then recompute C_T0 at that run's rpm; one pass is enough. The published figure stays in the tool's table, with its source, as a cross-check, and any drone where the two differ by more than 20% is flagged.
+  - **The 6-inch tri-blade** is `derived` and `assumed`. Its blade count comes from the prop's name. If mit_5x4 has fewer than three blades, the grade's note names the solidity bias: C_T and C_P understate a three-blade's at the same rpm, so its hover rpm comes out high.
+
 ## Notes for later
 
 - Until L7 lands, each drone is drawn from its SDF parts.
