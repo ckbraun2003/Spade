@@ -30,10 +30,15 @@ The drone in the box is a solid wall. Air goes around it, not through it. Its su
   - A coarse face covers only the fine faces on its own plane, every second fine plane. So a sheet on any other plane is invisible to that level and every coarser one, and at some level that is every sheet.
   - Measured on a port of plan A's cycle (S3's channel, 32 × 8 × 8, all periodic; Physics' ledger, `spade-wt/physics/.superpowers/sdd/airflow-solids/mg_sym_port.py`): with the sheet on fine plane 16, which every level sees, 21 cycles reduce the residual to 6·10⁻⁸ of its start. On planes 17 and 18 they leave 0.3 and 0.06.
   - Moving an odd plane's closure onto a coarse face, by a min or a series rule, makes the cycle diverge, because the transfers then disagree with the coarse operator.
+    - *Amended 2026-10-22 (P2c):* that was measured on plain V-cycles, which need the transfers to agree with the coarse operator. As MGPCG's preconditioner the cycle needs only to stay symmetric and definite, and a series of non-negative plane means keeps it so. P2c measured it converging on every case (the next bullets).
   - **The fix:** with any w < 1 in the grid, the projection runs CG preconditioned by one symmetric V(2,2) cycle (MGPCG; McAdams, Sifakis and Teran 2010, "A parallel multigrid Poisson solver for fluids simulation on large grids", SCA):
     - The cycle is symmetric. The restriction is the transpose of plan A's trilinear prolongation, halved (full weighting). Pre-smoothing is red then black, post-smoothing black then red, the coarsest level takes 16 sweeps each way, and every level's p starts at 0.
     - With plan A's restriction (the children's sum) the cycle is not symmetric (10⁻¹ measured with a sheet), and CG on it fails even on plane 16.
     - Coarse weights stay the mean of the fine faces each coarse face covers (spec §1.5).
+    - *Amended 2026-10-22 (P2c, the lead's order; the lead's TD-1 word on its shifts; merged at fac368b):* a coarse face's weight is the series of the plane means its path crosses. On each fine plane between the two coarse centres (its own, and the plane inside each coarse cell), take the mean of the faces it covers. Along the normal, combine them as `2 / (0.5/lo + 1/own + 0.5/hi)`.
+      - A domain face, and a face across a held axis, keep their own plane's mean (×4 when held). A periodic axis wraps. An odd axis's partial last cell drops its missing plane: `1.5 / (0.5/lo + 1/own)`.
+      - So a sheet on any fine plane reaches every coarse level (finding 2). Plan A's levels keep the on-plane mean, bit for bit.
+      - Measured: a sphere at R/dx 6 centred on a cell centre took 20 to 31 CG iterations under the mean, where one centred on a corner took 8. Under the series both take the floor of 8, and the worst case measured needs 9. Candidates and logs: `spade-wt/physics/.superpowers/sdd/2026-10-21-p2c/`.
     - `n_v` CG iterations, a fixed count from the last step's p; nothing stops on a residual. Each iteration takes one cycle, one operator application and two dot products. The dot products use `reduce.hpp`'s fixed-tile sum, so the CPU and the GPU twin sum in one order.
     - Each closed region's mean is removed from r and z every iteration (next bullet).
   - Measured on the same port:
@@ -205,7 +210,7 @@ Test/Docs fixed the tests' tolerances before any run (`../../test-docs/2026-10-1
 1. **Porous splitting:** the sink moves into the projection as the face factor β (§5). The steady drop is then exact at any `h`, and S4 pins it.
 2. **Sheets the coarse levels cannot see:** with solids, the projection runs CG preconditioned by a symmetric V-cycle (§3), and test 3 gains a convergence check on both parities. Measured on a port of plan A's cycle:
    - plain cycles stall on odd-plane sheets;
-   - a min or a series coarse rule diverges;
+   - a min or a series coarse rule diverges (in plain cycles; as MGPCG's preconditioner, the series of plane means converges: §3, amended 2026-10-22 by P2c);
    - MGPCG converges on both parities.
    **This reverses spec §1.5's rejection of CG for the first cut, and needs the lead's approval.**
 3. **Separate fluid regions:** regions are labelled deterministically. Each closed region has its own mean removed, and a closed region with a net prescribed flux is refused by name (§3). The run line reports the count. Tests 5 and 9.
