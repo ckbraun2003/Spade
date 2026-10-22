@@ -9,8 +9,10 @@
 //                             allocation; timestamps per mark or empty
 //   GpuAirflowRunnerTileSum   A4: the fixed-tile sum gives the same bits at
 //                             workgroup sizes 32, 64 and 128, and the same bits
-//                             as physics/airflow/reduce.hpp on the CPU
-//   AirflowRunnerSpirv        the kernels' compiled modules (plan B's): no
+//                             as physics/airflow/reduce.hpp on the CPU; and,
+//                             opt-in (SPADE_AIRFLOW_TIMINGS=1), B5.0's times
+//                             of its two passes and of a word's readback
+//   AirflowRunnerSpirv       the kernels' compiled modules (plan B's): no
 //                             contraction, no atomics, no shared memory, every
 //                             binding in set 1 (the airflow set), and variants
 //                             that differ in their local size only (no device;
@@ -30,10 +32,12 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cinttypes>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
@@ -759,6 +763,158 @@ TEST(GpuAirflowRunnerTileSum, RaggedShapeSameBitsAtEveryWorkgroupSizeAndAsTheCpu
 TEST(GpuAirflowRunnerTileSum, CubeSameBitsAtEveryWorkgroupSizeAndAsTheCpu) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     check_tile_sum(32, 32, 32, 0x32C0BEull);
+}
+
+// ===========================================================================
+// GpuAirflowRunnerTileSum -- B5.0's measurements (plan B, B5 as amended
+// 2026-10-22; the lead's rulings 1 and 2). Opt-in, as B2's timings are:
+// SPADE_AIRFLOW_TIMINGS=1. They decide B5's next step and assert only that
+// what they time is correct.
+// ===========================================================================
+
+[[nodiscard]] bool timings_enabled() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_AIRFLOW_TIMINGS") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+struct Spread {
+    std::size_t runs = 0;
+    double min = 0.0;
+    double median = 0.0;
+    double max = 0.0;
+};
+
+[[nodiscard]] Spread spread_of(std::vector<double> v) {
+    Spread s;
+    s.runs = v.size();
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    s.min = v.front();
+    s.max = v.back();
+    s.median = v.size() % 2 == 1 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+    return s;
+}
+
+void print_spread(const char* what, const Spread& s, const char* unit) {
+    std::printf("measure: %s: median %.4f %s, min %.4f, max %.4f (%zu runs)\n", what, s.median, unit, s.min, s.max,
+                s.runs);
+}
+
+// THE DOT'S PASSES (ruling 1). B5's tile_dot is B1's tile_sum with a product
+// in pass 0 and the same pass 1, one thread over every tile in order. Here,
+// tile_sum's two passes on the box, at workgroup size 64, from the runner's
+// marks: 3 warm-up submits, then 20, each read back. The sum's bits are
+// checked against reduce.hpp first, so the time is of a correct sum.
+//
+// THE DECISION WORD'S READBACK (ruling 2), at the D1 box only: the host's
+// round trip for read() of 16 bytes after a submit and its fence, and for the
+// submit of a one-dispatch chain (airflow_copy of one float), timed on the
+// host: 10 warm-ups, then 200 of each, alternating.
+void time_dot_passes(VulkanContext& ctx, const char* name, uint32_t nx, uint32_t ny, uint32_t nz, bool readback) {
+    constexpr uint32_t kWg = 64;
+    constexpr int kWarmups = 3;
+    constexpr int kRuns = 20;
+    const uint32_t tiles = ((nx + 3) / 4) * ((ny + 3) / 4) * ((nz + 3) / 4);
+    const uint32_t cells = nx * ny * nz;
+
+    std::vector<float> field(cells);
+    SplitMix rng{0xB50ull + cells};
+    for (float& v : field) v = mixed_magnitude(rng.next());
+    const float cpu = spade::physics::airflow::fixed_tile_sum(field, nx, ny, nz);
+
+    std::vector<uint32_t> params(32, 0u);
+    params[0] = nx;
+    params[1] = ny;
+    params[2] = nz;
+    std::vector<RunnerBuffer> buffers = airflow_set(kPartials);
+    buffers[kParams] = {"airflow_params", params.size() * 4ull, BufferKind::staged};
+    buffers[kPressure] = {"airflow_pressure", cells * 4ull, BufferKind::staged};
+    buffers[kScalars] = {"airflow_scalars", kScalarSlots * 4ull, BufferKind::staged};
+    buffers[kPartials] = {"airflow_partials", tiles * 4ull, BufferKind::device_only};
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_tile_sum, &gen::kSpvVariants_airflow_copy};
+    auto runner = ChainRunner::create(
+        ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes, .workgroup_size = kWg});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    ASSERT_TRUE((*runner)->upload(kParams, bytes_of(params)).has_value());
+    ASSERT_TRUE((*runner)->upload(kPressure, bytes_of(field)).has_value());
+
+    constexpr uint32_t kSlot = 1;
+    const TileSumPush tiles_pass{.field = 0, .pass = 0, .cell_count = cells, .slot = kSlot};
+    const TileSumPush total_pass{.field = 0, .pass = 1, .cell_count = cells, .slot = kSlot};
+    const ChainCommand chain[] = {dispatch(0, tiles_pass, {groups_for(tiles, kWg), 1, 1}), mark(),
+                                  dispatch(0, total_pass, {1, 1, 1}), mark()};
+    auto id = (*runner)->record(chain);
+    ASSERT_TRUE(id.has_value()) << id.error().context;
+
+    std::vector<double> pass0_ms;
+    std::vector<double> pass1_ms;
+    std::vector<double> whole_ms;
+    std::vector<float> scalars(kScalarSlots, 0.0f);
+    for (int run = 0; run < kWarmups + kRuns; ++run) {
+        ASSERT_TRUE((*runner)->submit(*id, 1).has_value());
+        if (run == 0) {
+            ASSERT_TRUE((*runner)->read(kScalars, writable_bytes_of(scalars)).has_value());
+            ASSERT_EQ(bits(scalars[kSlot]), bits(cpu)) << name << ": the timed sum is not reduce.hpp's";
+        }
+        auto d_ns = (*runner)->durations_ns(*id);
+        ASSERT_TRUE(d_ns.has_value()) << d_ns.error().context;
+        if (d_ns->empty()) GTEST_SKIP() << "the device cannot time compute work";
+        ASSERT_EQ(d_ns->size(), 2u);
+        if (run < kWarmups) continue;
+        pass0_ms.push_back(static_cast<double>((*d_ns)[0]) * 1e-6);
+        pass1_ms.push_back(static_cast<double>((*d_ns)[1]) * 1e-6);
+        whole_ms.push_back(static_cast<double>((*d_ns)[0] + (*d_ns)[1]) * 1e-6);
+    }
+    std::printf("measure: %s, %u cells, %u tiles, workgroup size %u, sum 0x%08x as reduce.hpp\n", name, cells, tiles,
+                kWg, bits(cpu));
+    const std::string label(name);
+    print_spread((label + ", pass 0 (one thread a tile)").c_str(), spread_of(pass0_ms), "ms");
+    print_spread((label + ", pass 1 (one thread over the tiles)").c_str(), spread_of(pass1_ms), "ms");
+    print_spread((label + ", the whole sum (pass 0 + pass 1)").c_str(), spread_of(whole_ms), "ms");
+    if (!readback) return;
+
+    // One dispatch of one thread's work: the cheapest chain a host loop submits.
+    const ChainCommand tiny[] = {dispatch(1, count_push(1), {1, 1, 1})};
+    auto tiny_id = (*runner)->record(tiny);
+    ASSERT_TRUE(tiny_id.has_value()) << tiny_id.error().context;
+    constexpr int kReadWarmups = 10;
+    constexpr int kReads = 200;
+    std::vector<double> submit_us;
+    std::vector<double> read_us;
+    std::array<uint32_t, 4> word{};
+    for (int run = 0; run < kReadWarmups + kReads; ++run) {
+        const auto t0 = std::chrono::steady_clock::now();
+        ASSERT_TRUE((*runner)->submit(*tiny_id, 1).has_value());
+        const auto t1 = std::chrono::steady_clock::now();
+        ASSERT_TRUE((*runner)->read(kScalars, std::as_writable_bytes(std::span(word))).has_value());
+        const auto t2 = std::chrono::steady_clock::now();
+        if (run < kReadWarmups) continue;
+        submit_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        read_us.push_back(std::chrono::duration<double, std::micro>(t2 - t1).count());
+    }
+    EXPECT_EQ(word[kSlot], bits(cpu)) << "the word read back is not the sum";
+    print_spread((label + ", a one-dispatch chain's submit and fence (host)").c_str(), spread_of(submit_us), "us");
+    print_spread((label + ", read() of a 16-byte word after it (host)").c_str(), spread_of(read_us), "us");
+}
+
+TEST(GpuAirflowRunnerTileSum, B5ZeroTimesTheDotsPassesAndAWordsReadback) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!timings_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_TIMINGS=1 to time B5.0's dot passes and readback";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    {
+        SCOPED_TRACE("128^3");
+        time_dot_passes(*ctx, "128^3", 128, 128, 128, false);
+    }
+    if (HasFatalFailure() || IsSkipped()) return;
+    SCOPED_TRACE("D1 box");
+    time_dot_passes(*ctx, "D1 box 240x177x168", 240, 177, 168, true);
 }
 
 // ===========================================================================
