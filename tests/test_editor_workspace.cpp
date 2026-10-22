@@ -16,6 +16,9 @@
 #include <glm/glm.hpp>
 
 #include "../sandbox/editor_workspace.hpp"
+#include "../sandbox/pilot_keys.hpp"
+#include "analysis/case.hpp"
+#include "vehicles/propulsion_steady.hpp"
 #include "editor_test_support.hpp"
 
 namespace {
@@ -340,4 +343,189 @@ TEST(EditorWorkspace, LoadFromFileOfAnUnreadableFileIsNamed) {
     EXPECT_EQ(w->panels().library.size(), before);
     EXPECT_FALSE(w->panels().armed.has_value());
     EXPECT_NE(w->panels().status.find("no/such.object.yaml"), std::string::npos) << w->panels().status;
+}
+
+// ===========================================================================
+// N17: THE PILOT. Run flies one drone through its chain (flight_controller.hpp)
+// from the pilot's Controls (panels().pilot): the selection when Run starts if
+// it is a drone with a chain, else the first such drone; every other chained
+// drone sits disarmed, and a chainless one keeps its held spawn command. A
+// chained drone starts disarmed, its rotors at exactly 0 (the lead's Q2, Q3).
+// ===========================================================================
+
+namespace {
+
+// The library's reference quad placed resting at (x, 0, z); its vehicle's
+// name (placing selects it).
+[[nodiscard]] std::string place_reference_quad(ed::EditorWorkspace& w, float x, float z) {
+    w.refresh_panels();
+    for (std::size_t i = 0; i < w.panels().library.size(); ++i) {
+        if (w.panels().library[i].name == "Reference quad") w.panels().armed = i;
+    }
+    EXPECT_TRUE(w.panels().armed.has_value());
+    w.click(glm::vec3(x, 5.0f, z), kDown);
+    return w.panels().selection.name;
+}
+
+[[nodiscard]] std::vector<float> rotor_speeds(const ed::EditorWorkspace& w, const std::string& vehicle) {
+    std::vector<float> out;
+    if (w.run() == nullptr) {
+        ADD_FAILURE() << "not running";
+        return out;
+    }
+    const std::optional<spade::VehicleRef> ref = w.run()->vehicle_ref(vehicle);
+    if (!ref) {
+        ADD_FAILURE() << "no vehicle " << vehicle;
+        return out;
+    }
+    for (uint32_t i = 0; i < ref->rotor_count; ++i) {
+        const spade::Result<const spade::vehicles::RotorRow*> row = w.run()->sim().rotor(*ref, i);
+        EXPECT_TRUE(row.has_value());
+        if (row) out.push_back((*row)->omega);
+    }
+    return out;
+}
+
+// The drone's idle speed: the arm rule's idle duty through its chain.
+[[nodiscard]] float idle_speed(const ed::EditorWorkspace& w, const std::string& vehicle) {
+    const spade::scene::SceneDesc& s = scene_of(w);
+    std::string model;
+    for (const spade::scene::SceneVehicle& v : s.vehicles) {
+        if (v.name == vehicle) model = v.model;
+    }
+    const spade::vehicles::ModelType& m = support::model_named(s, model);
+    if (!m.propulsion) {
+        ADD_FAILURE() << vehicle << " has no chain";
+        return 0.0f;
+    }
+    const spade::Result<spade::vehicles::DutyCommand> d = spade::vehicles::rotor_omega_for_duty(
+        *m.propulsion, spade::analysis::kDefaultIdleDuty, w.documents().world.desc().environment.air_density,
+        spade::analysis::kDefaultStateOfCharge);
+    EXPECT_TRUE(d.has_value()) << (d ? "" : d.error().context);
+    return d ? d->omega_cmd : 0.0f;
+}
+
+}  // namespace
+
+TEST(EditorPilot, RunPilotsTheSelectedChainedDroneDisarmedAtRestAndArmingIdlesIt) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    ASSERT_FALSE(quad.empty()) << w->panels().status;
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().pilot.vehicle, quad);
+    EXPECT_FALSE(w->panels().pilot.controls.armed);
+    w->advance(0.5f);
+    for (const float s : rotor_speeds(*w, quad)) EXPECT_EQ(s, 0.0f) << "disarmed, at rest";
+
+    w->panels().pilot.controls.armed = true;
+    w->advance(0.5f);
+    const float idle = idle_speed(*w, quad);
+    ASSERT_GT(idle, 0.0f);
+    for (const float s : rotor_speeds(*w, quad)) EXPECT_GE(s, 0.9f * idle) << "idle " << idle;
+}
+
+// Nothing selected: the first chained drone; selected: that one. Either way
+// every other chained drone stays disarmed when the pilot arms.
+TEST(EditorPilot, ThePilotIsTheSelectionElseTheFirstChainedDroneAndTheOthersStayDisarmed) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string first = place_reference_quad(*w, 4.0f, 4.0f);
+    const std::string second = place_reference_quad(*w, -4.0f, 4.0f);
+    ASSERT_NE(first, second);
+
+    w->panels().selection = Selection{};
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().pilot.vehicle, first);
+    w->panels().pilot.controls.armed = true;
+    w->advance(0.5f);
+    for (const float s : rotor_speeds(*w, second)) EXPECT_EQ(s, 0.0f) << "not piloted: disarmed";
+    for (const float s : rotor_speeds(*w, first)) EXPECT_GT(s, 0.0f);
+    command(*w, Command::stop);
+    EXPECT_FALSE(w->panels().pilot.controls.armed) << "stopping disarms";
+
+    w->panels().selection = object(second);
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().pilot.vehicle, second);
+}
+
+// The hover scene's own quad has no chain: nothing is piloted, the panel says
+// why, and its rotors keep the speed it was spawned holding.
+TEST(EditorPilot, AChainlessDroneIsNotPilotedAndKeepsItsHeldSpeed) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const float held = scene_of(*w).vehicles.at(0).start.rotor_omega;
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_TRUE(w->panels().pilot.vehicle.empty());
+    EXPECT_NE(w->panels().pilot.why_not.find("propulsion chain"), std::string::npos) << w->panels().pilot.why_not;
+    w->advance(0.5f);
+    for (const float s : rotor_speeds(*w, "hover_quad_0")) EXPECT_NEAR(s, held, 1e-3f * std::max(1.0f, held));
+}
+
+// An edit while flying rebuilds the run but carries the drone: its rotors
+// keep turning and the pilot stays armed (never zeroed as a fresh start is).
+TEST(EditorPilot, AnEditWhileFlyingKeepsThePilotedDronesRotorsTurning) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    w->panels().pilot.controls.armed = true;
+    w->advance(0.5f);
+    for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
+        if (w->panels().library[i].name == "Box") w->panels().armed = i;
+    }
+    w->click(glm::vec3(-3.0f, 5.0f, -3.0f), kDown);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_TRUE(w->panels().pilot.controls.armed);
+    EXPECT_EQ(w->panels().pilot.vehicle, quad);
+    w->advance(0.04f);
+    const float idle = idle_speed(*w, quad);
+    for (const float s : rotor_speeds(*w, quad)) EXPECT_GE(s, 0.8f * idle) << "carried, not spun down";
+}
+
+// The pilot's keys act only while Run flies a drone: not before Run, and not
+// when nothing is piloted (the window passes them only when ImGui doesn't
+// have the keyboard).
+TEST(EditorPilot, ThePilotsKeysActOnlyWhileRunFliesADrone) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    spade::sandbox::flight::PilotKeys space;
+    space.arm_pressed = true;
+    w->pilot_keys(space, 0.004f);
+    EXPECT_FALSE(w->panels().pilot.controls.armed) << "not running";
+
+    command(*w, Command::run);
+    ASSERT_TRUE(w->panels().pilot.vehicle.empty());
+    w->pilot_keys(space, 0.004f);
+    EXPECT_FALSE(w->panels().pilot.controls.armed) << "nothing piloted";
+    command(*w, Command::stop);
+
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    command(*w, Command::run);
+    ASSERT_EQ(w->panels().pilot.vehicle, quad);
+    w->pilot_keys(space, 0.004f);
+    EXPECT_TRUE(w->panels().pilot.controls.armed);
+}
+
+// The Pilot section's buttons: Arm toggles arming, Level levels the tilt.
+TEST(EditorPilot, TheArmAndLevelCommandsActOnThePilot) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = place_reference_quad(*w, 4.0f, 4.0f);
+    command(*w, Command::run);
+    ASSERT_EQ(w->panels().pilot.vehicle, quad);
+    command(*w, Command::arm);
+    EXPECT_TRUE(w->panels().pilot.controls.armed);
+    w->panels().pilot.controls.pitch_deg = -20.0f;
+    w->panels().pilot.controls.roll_deg = 5.0f;
+    command(*w, Command::level);
+    EXPECT_EQ(w->panels().pilot.controls.pitch_deg, 0.0f);
+    EXPECT_EQ(w->panels().pilot.controls.roll_deg, 0.0f);
+    command(*w, Command::arm);
+    EXPECT_FALSE(w->panels().pilot.controls.armed);
 }

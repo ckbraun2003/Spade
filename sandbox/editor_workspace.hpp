@@ -43,6 +43,7 @@
 #include "editor_run.hpp"
 #include "editor_scene_edits.hpp"
 #include "editor_world_edits.hpp"
+#include "pilot_keys.hpp"
 #include "scene/compose.hpp"
 #include "world/sdf.hpp"
 
@@ -164,6 +165,14 @@ class EditorWorkspace {
             panels_.selection.name = vehicle ? now.vehicles.back().name : now.assets.back().name;
         }
         refresh_panels();
+    }
+
+    // N17: the pilot's keys for a frame of `dt` seconds, acting only while Run
+    // flies a drone. Called every frame, with no keys held when ImGui has the
+    // keyboard, so a released arrow levels the drone.
+    void pilot_keys(const flight::PilotKeys& keys, float dt) {
+        if (!run_ || panels_.pilot.vehicle.empty()) return;
+        flight::apply_pilot_keys(keys, dt, panels_.pilot.controls);
     }
 
     // Steps the run by `dt` seconds of whole built-in steps, the remainder
@@ -400,8 +409,30 @@ class EditorWorkspace {
         panels_.selection = Selection{Selection::Kind::object, *placed};
     }
 
+    // N17: the selection when it is a drone Run flies, else the first one;
+    // disarmed, level, throttle 0. When none is flown, why.
+    void choose_pilot() {
+        panels_.pilot = PilotPanel{};
+        const Selection& s = panels_.selection;
+        if (s.kind == Selection::Kind::object && run_->flies(s.name)) {
+            panels_.pilot.vehicle = s.name;
+        } else if (const std::optional<std::string> first = run_->first_flown(); first) {
+            panels_.pilot.vehicle = *first;
+        } else {
+            panels_.pilot.why_not = "nothing to fly: no drone here has a propulsion chain";
+            for (const scene::SceneVehicle& v : docs_.scene.desc().vehicles) {
+                if (const std::string why = run_->why_not(v.name); !why.empty()) {
+                    panels_.pilot.why_not += "; " + why;
+                    break;
+                }
+            }
+        }
+    }
+
     void step_run(uint64_t steps) {
-        if (Result<void> stepped = run_->step(static_cast<uint32_t>(steps)); !stepped) {
+        if (Result<void> stepped = run_->step(static_cast<uint32_t>(steps), panels_.pilot.vehicle,
+                                              panels_.pilot.controls);
+            !stepped) {
             panels_.status = stepped.error().context;
             paused_ = true;
         }
@@ -418,11 +449,13 @@ class EditorWorkspace {
                     }
                     run_.emplace(std::move(*started));
                     carry_ns_ = 0;
+                    choose_pilot();
                 }
                 paused_ = false;
                 return;
             case Command::stop:
                 run_.reset();
+                panels_.pilot = PilotPanel{};
                 paused_ = false;
                 carry_ns_ = 0;
                 return;
@@ -459,6 +492,18 @@ class EditorWorkspace {
                 return;
             }
             case Command::save_to_library: save_selection_to_library(); return;
+            case Command::arm: {
+                flight::PilotKeys space;
+                space.arm_pressed = true;
+                pilot_keys(space, 0.0f);
+                return;
+            }
+            case Command::level: {
+                flight::PilotKeys r;
+                r.level_pressed = true;
+                pilot_keys(r, 0.0f);
+                return;
+            }
         }
     }
 
@@ -510,6 +555,7 @@ class EditorWorkspace {
         undo_.clear();
         redo_.clear();
         panels_.selection = Selection{};
+        panels_.pilot = PilotPanel{};
         panels_.armed.reset();
         panels_.status.clear();
         list_sources();

@@ -14,6 +14,7 @@
 #include "unit_meshes.hpp"  // the unit meshes
 #include "drone_view.hpp"     // detail::lambert()
 #include "editor_pick.hpp"
+#include "pilot_keys.hpp"
 #include "gl_target_sink.hpp"
 #include "render/mesh_resolver.hpp"
 #include "render_gap.hpp"
@@ -291,6 +292,19 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             w.panels().status = chosen.error().context;
         }
     }
+
+    // The pilot's keys (N17), every frame: none while ImGui has the keyboard,
+    // so a released arrow levels the drone.
+    flight::PilotKeys keys;
+    if (!in.ui_captured_keyboard) {
+        keys.arm_pressed = in.arm_pressed;
+        keys.throttle = in.throttle;
+        keys.pitch = in.attitude_pitch;
+        keys.roll = in.attitude_roll;
+        keys.yaw = in.attitude_yaw;
+        keys.level_pressed = in.level_pressed;
+    }
+    w.pilot_keys(keys, dt);
 
     const auto p0 = std::chrono::steady_clock::now();
     w.advance(dt);
