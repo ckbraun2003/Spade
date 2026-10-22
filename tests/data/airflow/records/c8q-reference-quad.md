@@ -158,3 +158,9 @@ reference: none (the measure's sensitivity to rounding)
 tolerance: none
 verdict: report only
 ```
+
+## 2026-10-22: the banded run's expectation, in Physics' words
+
+Physics' reading of the block above, verbatim. The block stays as it came.
+
+2026-10-22, Physics: the expectation set before this run (about 4% under the torque-free 1.0617) was wrong. A lone rotor's swirl costs nothing here: 1.066 with its torque (the four runs' mean) against 1.0617 without it (one run). So the quad's ~4% from torque (0.846–0.857 without, 0.816 with) comes only with the neighbours. The swirl acts through the four wakes' interaction, not through a core vortex in each wake, as Physics had guessed; adjacent rotors spin in opposite senses, so their swirls run the same way in the gaps between them. The gather's torque path is not implicated: the lone rotor takes its torque through the same gather and reads as C8's disc. The swirl's part in the quad is for the measured-data quad case (the demonstration plan's item 10).
