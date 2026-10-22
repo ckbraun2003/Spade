@@ -62,11 +62,14 @@
 //
 // THE ADVISORIES. basic_quad_advisories() names what compiles but its user
 // should see: each pair of rotor discs whose hubs are closer than the
-// propeller's diameter, with the overlap. Overlapping actuator discs are
-// sound, because each disc's increments add independently and the spreading
-// kernel is a partition of unity, so each keeps its own thrust and torque
-// (Physics, 2026-10-21). What no close layout models is the shared wake: a
-// rotor's thrust does not respond to its neighbour's induced inflow.
+// propeller's diameter in the disc plane (the first rotor's spin axis
+// projected out), with the overlap and any offset along the spin axis.
+// Overlapping actuator discs are sound, because each disc's increments add
+// independently and the spreading kernel is a partition of unity, so each
+// keeps its own thrust and torque (Physics, 2026-10-21). What no layout
+// models, overlapping or not, is the shared wake: a rotor's thrust does not
+// respond to its neighbour's induced inflow. basic_quad_assumptions() lists
+// that for every spec; the advisories name only real overlaps.
 //
 // DETERMINISM. Double arithmetic, + - * / and sqrt only (TD-3), in a fixed
 // order. The same params give a bit-identical spec on every conforming
@@ -143,7 +146,9 @@ struct BasicQuadAssumption {
 // Every numeric default of BasicQuadParams, in declaration order, so the UI
 // can list what a default-built quad assumes. The name and the identity
 // strings (stator, protocol) are not numbers and are not listed, and neither
-// are the fit targets, which have no default.
+// are the fit targets, which have no default. Last, under "rotors", what the
+// model assumes of every basic quad: the shared wake is not modelled
+// (Physics).
 [[nodiscard]] std::vector<BasicQuadAssumption> basic_quad_assumptions();
 
 // A fact about a built spec that is not a refusal: the spec compiles, and its
@@ -154,9 +159,11 @@ struct BasicQuadAdvisory {
 };
 
 // Every pair of rotor discs whose hubs are closer than the propeller's
-// diameter, in pair order (i < j). Each names the hubs' distance, the
-// diameter and the overlap, in mm to a tenth, and what the model leaves out.
-// Empty when no pair is that close.
+// diameter in rotor i's disc plane, in pair order (i < j). Each names the
+// hubs' distance in that plane, any offset along the spin axis, the diameter
+// and the overlap, in mm to a tenth, and what the model leaves out. Empty when
+// no pair is that close; a close layout that does not overlap is not advised
+// (the shared wake is listed by basic_quad_assumptions() instead).
 [[nodiscard]] std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec);
 
 }  // namespace spade::vehicles

@@ -300,6 +300,8 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"battery.mass", "typical of a 6S 1300 mAh pack"},
         {"battery.mount", "on top of the body, sunk 2 mm into it"},
         {"battery.shape", "a 75 x 30 x 35 mm pack"},
+        {"rotors", "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's "
+                   "induced inflow (Physics, 2026-10-21)"},
     };
 }
 
@@ -307,18 +309,28 @@ std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec) {
     std::vector<BasicQuadAdvisory> out;
     const double diameter = spec.prop.diameter;
     for (std::size_t i = 0; i < spec.rotors.size(); ++i) {
+        // Rotor i's spin axis: its hub's +Y (THE FRAME), normalized with sqrt
+        // only. A zero orientation, which the compile refuses, gives none.
+        const glm::dvec3 turned = spec.rotors[i].hub.orientation * glm::dvec3(0.0, 1.0, 0.0);
+        const double length = std::sqrt(glm::dot(turned, turned));
+        if (!(length > 0.0)) continue;
+        const glm::dvec3 axis = turned / length;
         for (std::size_t j = i + 1; j < spec.rotors.size(); ++j) {
+            // Measured in rotor i's disc plane: the spin axis projected out.
             const glm::dvec3 gap = spec.rotors[j].hub.position - spec.rotors[i].hub.position;
-            const double apart = std::sqrt(glm::dot(gap, gap));
+            const double axial = glm::dot(gap, axis);
+            const glm::dvec3 planar = gap - axial * axis;
+            const double apart = std::sqrt(glm::dot(planar, planar));
             if (!(apart < diameter)) continue;
             const std::string a = "rotors[" + std::to_string(i) + "]";
             const std::string b = "rotors[" + std::to_string(j) + "]";
-            out.push_back({a + ", " + b,
-                           a + " and " + b + ": their discs overlap by " + mm(diameter - apart) + " mm (hubs " +
-                               mm(apart) + " mm apart, under the " + mm(diameter) +
-                               " mm diameter). Each disc keeps its own thrust and torque; what the model leaves "
-                               "out is the shared wake: a rotor's thrust does not respond to its neighbour's "
-                               "induced inflow."});
+            std::string message = a + " and " + b + ": their discs overlap by " + mm(diameter - apart) +
+                                  " mm (hubs " + mm(apart) + " mm apart in the disc plane";
+            if (axial != 0.0) message += ", " + mm(axial < 0.0 ? -axial : axial) + " mm apart along the spin axis";
+            message += ", under the " + mm(diameter) +
+                       " mm diameter). Each disc keeps its own thrust and torque; what the model leaves out is "
+                       "the shared wake: a rotor's thrust does not respond to its neighbour's induced inflow.";
+            out.push_back({a + ", " + b, std::move(message)});
         }
     }
     return out;
