@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/crazyflie_class.model.yaml", hash: "10b98284b828b431"}
 built_by: "tests/library_drones.hpp: crazyflie_class(), its remainder by vehicles::fit_remainder()"
 parts:
-  prop: {file: "parts/uiuc_cfnq_45t1.prop.yaml", hash: "7ca4015e949ef5d8"}
+  prop: {file: "parts/uiuc_cfnq_45t1.prop.yaml", hash: "195515386e096cf4"}
   motor: {file: "parts/cf_7x16_coreless.motor.yaml", hash: "e3031a93fbeff2ad"}
   esc: {file: "parts/cf_brushed_4ch.esc.yaml", hash: "d877db09b0bd2855"}
   battery: {file: "parts/cf_1s_250.battery.yaml", hash: "c8f0a93283f92639"}

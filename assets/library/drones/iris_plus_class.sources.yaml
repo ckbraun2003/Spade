@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/iris_plus_class.model.yaml", hash: "41242a58152cd9c3"}
 built_by: "tests/library_drones.hpp: iris_plus_class(), a direct AirframeSpec"
 parts:
-  prop: {file: "parts/uiuc_apce_9x4.5.prop.yaml", hash: "cf2e2f8a828944ae"}
+  prop: {file: "parts/uiuc_apce_9x4.5.prop.yaml", hash: "6df9a97da6bd64de"}
   motor: {file: "parts/iris_920kv.motor.yaml", hash: "557e207e764c69d6"}
   esc: {file: "parts/iris_4x20a.esc.yaml", hash: "97458dffda950dd1"}
   battery: {file: "parts/iris_3s_5100.battery.yaml", hash: "ebe97b7d7344790d"}

@@ -322,7 +322,7 @@ std::vector<BasicQuadAssumption> basic_quad_assumptions() {
         {"prop.diameter", "a 6-inch propeller"},
         {"prop.pitch", "3.5 inches"},
         {"prop.blades", "a tri-blade"},
-        {"prop.inertia", "estimated from the mass (0)"},
+        {"prop.inertia", "m D^2/12, the engine's own estimate (prop_inertia), written out"},
         {"prop.ct_static", kTriBlade},
         {"prop.cq_static", kTriBlade},
         {"prop.ct_table", kTriBlade},

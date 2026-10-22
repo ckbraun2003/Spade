@@ -959,9 +959,11 @@ TEST(LibraryDrones, CrazyflieMatchesBitcrazesThrustTable) {
     report("crazyflie_tau", static_cast<double>(m.rotors[0].tau), "s (hand 63 ms)");
 }
 
-// The ruled bands, typed here from the plan's rulings ("L5's checks", Physics,
-// 2026-10-22), not read from tests/library_drones.hpp: each drone's checks, in
-// order, by test, unit, band and report-only. The sidecars are regenerated
+// The ruled bands, typed here, not read from tests/library_drones.hpp: the
+// plan's "L5's checks" (Physics, 2026-10-22), Physics' later Crazyflie refit
+// (its two loaded rows replace the 3.7 V line; recorded in the plan), and the
+// 6-inch's +-0.1% on the L4a header's hover. Each drone's checks, in order,
+// by test, unit, band and report-only; the references are data, not pinned. The sidecars are regenerated
 // from the header, so without this a widened band would pass every test (L5's
 // review, minor 2; the lead's follow-up).
 TEST(LibraryDrones, TheChecksBandsAreThePlansRulings) {

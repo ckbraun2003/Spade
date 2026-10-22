@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/phantom3_class.model.yaml", hash: "fd9943495d6f1f91"}
 built_by: "tests/library_drones.hpp: phantom3_class(), a direct AirframeSpec"
 parts:
-  prop: {file: "parts/uiuc_apce_10x5.prop.yaml", hash: "2818f7eccdc3395c"}
+  prop: {file: "parts/uiuc_apce_10x5.prop.yaml", hash: "c6f2e3ed4a1832b8"}
   motor: {file: "parts/phantom3_2312_960kv.motor.yaml", hash: "e72fc35e6d62f993"}
   esc: {file: "parts/phantom3_4x20a.esc.yaml", hash: "b32752578302491f"}
   battery: {file: "parts/phantom3_4s_4480.battery.yaml", hash: "3f321221fda440ed"}

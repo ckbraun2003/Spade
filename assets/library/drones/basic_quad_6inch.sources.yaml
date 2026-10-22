@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/basic_quad_6inch.model.yaml", hash: "3d3462cd333217fd"}
 built_by: "vehicles::basic_quad_airframe()"
 parts:
-  prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "2b2d7d34d3df143c"}
+  prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
   motor: {file: "parts/fpv_2306_1700kv.motor.yaml", hash: "30984a0c01d4d9d6"}
   esc: {file: "parts/basic_4in1_45a.esc.yaml", hash: "4e628a989f2cf9c2"}
   battery: {file: "parts/fpv_6s_1300.battery.yaml", hash: "e19fd67ad9238347"}

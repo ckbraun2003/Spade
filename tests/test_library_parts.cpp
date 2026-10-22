@@ -188,7 +188,7 @@ constexpr std::string_view kWithdrawn =
     "Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, "
     "2026-10-22)";
 constexpr std::string_view kEstimatedInertia =
-    "m D^2/12 from this file's mass and diameter: the engine's own estimate (prop_inertia)";
+    "m D^2/12 from this file's mass and diameter, each as graded: the engine's own estimate (prop_inertia)";
 constexpr std::string_view kAirfoil = "unknown for every prop (P-b); Physics picks the polar";
 constexpr std::string_view kNoLoadVoltage = "the usual no-load test voltage";
 constexpr std::string_view kPolePairs = "12N14P";
@@ -264,8 +264,6 @@ void set_field(T& slot, std::type_identity_t<T> value, PartSources& sources, std
     return std::vector<std::array<double, 2>>(table.begin(), table.end());
 }
 
-// The static point and the tables, copied from the header, each cited to
-// UIUC with the header's grade note verbatim.
 // The engine's own estimate of a prop's inertia, prop_inertia()'s m D^2 / 12
 // (vehicles/airframe_compile.cpp), written out rather than left as a 0 that
 // reads as no inertia (the lead, 2026-10-22). Set it once the mass and the
@@ -275,6 +273,8 @@ void set_estimated_inertia(PropPart& part, std::string_view diameter_source) {
                cite(Grade::derived, diameter_source, kEstimatedInertia));
 }
 
+// The static point and the tables, copied from the header, each cited to
+// UIUC with the header's grade note verbatim.
 void set_coefficients(PropPart& part, const Prop& p, Grade static_grade, Grade table_grade) {
     PART_FIELD(part, ct_static, p.ct_static, cite(static_grade, kUiuc, p.note));
     PART_FIELD(part, cq_static, p.cq_static, cite(static_grade, kUiuc, p.note));
