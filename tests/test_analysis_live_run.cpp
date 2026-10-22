@@ -26,6 +26,7 @@
 #include "state/layout.hpp"
 #include "analysis_powered_quad.hpp"
 #include "unique_temp.hpp"
+#include "vehicles/airflow_solids.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "world/sdf.hpp"
@@ -505,4 +506,93 @@ TEST(AnalysisLiveRun, ARestoredRunKeepsItsSolids) {
     EXPECT_EQ(a.header.no_data, b.header.no_data);
     EXPECT_EQ(a.v, b.v);
     EXPECT_EQ(a.s, b.s);
+}
+
+// ===========================================================================
+// N15, DRAWN-ONLY AND IMPORTED PARTS (Physics' ruling and condition,
+// 2026-10-22). A part marked vehicles::kDrawnOnlyRole is drawn, not a solid:
+// the run leaves it out of the air and names it in its label, whether or not
+// any solid is left. Whether the run has solids is decided by the parts the
+// adapter keeps, so a model whose parts are all drawn only flies to the bit as
+// the same model without them (plan A at the case's n_v). An imported solid
+// (kImportedPartRole) the grid can't resolve still refuses the run by name,
+// and the refusal says how else to fly it.
+// ===========================================================================
+
+TEST(AnalysisLiveRun, ADrawnOnlyPartIsLeftOutOfTheAirAndNamedInTheRunLine) {
+    Powered p = with_ball_body(0.1f, 0.2f);
+    spade::vehicles::PartDesc antenna = p.model.parts.front();
+    antenna.name = "antenna";
+    antenna.role = std::string(spade::vehicles::kDrawnOnlyRole);
+    antenna.mount_pos = glm::vec3(0.0f, 0.2f, 0.0f);
+    p.model.parts.push_back(antenna);
+    const an::AnalysisCase c = solid_case(p.model);
+    an::LiveRun run = started(c, p);
+    EXPECT_TRUE(run.solids().any);
+    EXPECT_EQ(run.solids().drawn_only, std::vector<std::string>{"antenna"});
+    EXPECT_NE(run.run_label().find("1 part drawn only: 'antenna'"), std::string::npos) << run.run_label();
+
+    spade::FlowVolume v;
+    armed_frame(run, v);
+    if (::testing::Test::HasFatalFailure()) return;
+    const spade::test::TempDir dir("live_drawn_only");
+    const fs::path file = dir.path() / "run.livesave";
+    ASSERT_TRUE(run.save(file).has_value());
+    spade::Result<an::LiveRun> back =
+        an::LiveRun::restore(file, resolved(an::test::with_power(c, p), p.model), p.model);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    EXPECT_EQ(back->run_label(), run.run_label()) << "a restored run names it too";
+}
+
+TEST(AnalysisLiveRun, AModelWhoseOnlyPartsAreDrawnOnlyFliesToTheBitAsOneWithoutThem) {
+    Powered p = with_ball_body(0.1f, 0.2f);
+    p.model.parts.front().role = std::string(spade::vehicles::kDrawnOnlyRole);
+    an::LiveRun run = started(solid_case(p.model), p);
+    const Powered bare = powered();
+    an::LiveRun plain = started(solid_case(bare.model), bare);
+    EXPECT_FALSE(run.solids().any);
+    EXPECT_EQ(run.solids().solid_cells, 0u);
+    EXPECT_EQ(run.run_label(), plain.run_label() + " \xc2\xb7 1 part drawn only: 'body'");
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    for (int i = 0; i < 2; ++i) {
+        armed_frame(run, a);
+        armed_frame(plain, b);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(a.header.no_data, b.header.no_data);
+    EXPECT_EQ(a.v, b.v) << "plan A at the case's n_v, as with no parts";
+    EXPECT_EQ(a.s, b.s);
+    EXPECT_EQ(run.solids().pressure_residual, plain.solids().pressure_residual);
+}
+
+TEST(AnalysisLiveRun, TwoDrawnOnlyPartsAreNamedInTheirOrder) {
+    Powered p = with_ball_body(0.1f, 0.2f);
+    p.model.parts.front().role = std::string(spade::vehicles::kDrawnOnlyRole);
+    spade::vehicles::PartDesc second = p.model.parts.front();
+    second.name = "skid";
+    second.mount_pos = glm::vec3(0.0f, -0.2f, 0.0f);
+    p.model.parts.push_back(second);
+    an::LiveRun run = started(solid_case(p.model), p);
+    EXPECT_NE(run.run_label().find("2 parts drawn only: 'body', 'skid'"), std::string::npos) << run.run_label();
+}
+
+// The classifier's refusal, unchanged for an authored part, gains the other
+// way out for an imported one.
+TEST(AnalysisLiveRun, AnImportedPartTooThinForTheGridIsRefusedByNameWithTheRemedy) {
+    Powered p = with_ball_body(0.005f, 0.1f);
+    p.model.parts.front().role = std::string(an::kImportedPartRole);
+    const spade::Result<an::LiveRun> run =
+        an::LiveRun::start(resolved(an::test::with_power(solid_case(p.model), p), p.model), p.model);
+    ASSERT_FALSE(run.has_value());
+    EXPECT_NE(run.error().context.find("the model's parts as solids"), std::string::npos) << run.error().context;
+    EXPECT_NE(run.error().context.find("'body'"), std::string::npos) << run.error().context;
+    EXPECT_NE(run.error().context.find(", or mark part 'body' visual-only"), std::string::npos)
+        << run.error().context;
+
+    const Powered authored = with_ball_body(0.005f, 0.1f);
+    const spade::Result<an::LiveRun> plain = an::LiveRun::start(
+        resolved(an::test::with_power(solid_case(authored.model), authored), authored.model), authored.model);
+    ASSERT_FALSE(plain.has_value());
+    EXPECT_EQ(plain.error().context.find("visual-only"), std::string::npos) << plain.error().context;
 }
