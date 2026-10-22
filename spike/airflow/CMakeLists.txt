@@ -57,6 +57,11 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_remove_mean)
 # (tests/test_gpu_airflow_advection.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_advection)
 
+# B6's publish kernels, publish_render_volume's channels and their binary16
+# pack (tests/test_gpu_airflow_publish.cpp).
+spade_slang_kernel_variants(spade_airflow_runner airflow_publish_fields)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16)
+
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
 # build-order edge, and not the link to spade::compute).
