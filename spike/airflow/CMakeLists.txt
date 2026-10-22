@@ -62,6 +62,10 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_advection)
 spade_slang_kernel_variants(spade_airflow_runner airflow_publish_fields)
 spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16)
 
+# B4's rotor discs, spread_actuator() as a gather
+# (tests/test_gpu_airflow_actuator.cpp).
+spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather)
+
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
 # build-order edge, and not the link to spade::compute).

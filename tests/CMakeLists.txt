@@ -276,6 +276,8 @@ add_executable(spade_tests
 # advect.cpp, GpuAirflowAdvection* on the device.
 # test_gpu_airflow_publish.cpp (plan B, B6): the publish kernels against
 # publish_render_volume, GpuAirflowPublish* on the device.
+# test_gpu_airflow_actuator.cpp (plan B, B4): the rotor discs' gather against
+# spread_actuator(), GpuAirflowActuator* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -292,6 +294,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_projection.cpp
         test_gpu_airflow_advection.cpp
         test_gpu_airflow_publish.cpp
+        test_gpu_airflow_actuator.cpp
     )
 endif()
 
