@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "analysis/case.hpp"
@@ -285,6 +286,27 @@ TEST(EndGoalC8qJudge, FailsTheMutualBandInsideTheRotorBand) {
     EXPECT_NEAR(b.mutual_off, (10.45 - 9.1) / 10.45, 1e-12);
     EXPECT_FALSE(b.ok);
     EXPECT_FALSE(eg::c8q(runs).ok);
+}
+
+// Each worst run is marked OUT by its own band only. C8q's first ensemble
+// (2026-10-22) marked run 2 OUT by the mutual band at 0.00885, inside it: the
+// mark read the run's verdict on both bands.
+TEST(EndGoalC8qJudge, MarksEachWorstRunOutByItsOwnBandOnly) {
+    const auto marks = [](const std::vector<eg::DownwashMeans>& runs) {
+        const std::string d = eg::c8q(runs).detail;
+        const std::size_t rotor = d.find("the worst run by the rotor band");
+        const std::size_t mutual = d.find("; by the mutual band");
+        const std::size_t end = d.find("; each rotor's spread");
+        if (!(rotor < mutual && mutual < end && end != std::string::npos)) {
+            ADD_FAILURE() << d;
+            return std::pair{false, false};
+        }
+        return std::pair{d.substr(rotor, mutual - rotor).find("(OUT)") != std::string::npos,
+                         d.substr(mutual, end - mutual).find("(OUT)") != std::string::npos};
+    };
+    // Outside the rotor band, inside the mutual band; then the other way round.
+    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.82, 0.81, 0.82, 0.82}))), std::pair(true, false));
+    EXPECT_EQ(marks(std::vector<eg::DownwashMeans>(4, means({0.91, 1.09, 1.09, 1.09}))), std::pair(false, true));
 }
 
 TEST(EndGoalC8qJudge, ReportsTheMutualSpreadAndEachRotorsSpreadAcrossTheRuns) {
