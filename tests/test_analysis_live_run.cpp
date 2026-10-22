@@ -21,7 +21,6 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
-#include "physics/airflow/fluid_step.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/design_frame.hpp"
 #include "state/layout.hpp"
@@ -623,38 +622,37 @@ TEST(AnalysisLiveRun, TheSolidsHealthLineSaysWhyThePressureWasUnconverged) {
               "(last max|r|/max|b| 2.0e-03)");
 }
 
-// A test-only cap of 1 caps the ball body's solves at the CG's floor (pcg
-// clamps a cap to its floor, so the solve runs to max(floor, cap)): the run
-// counts them as capped, stalled and capped sum to unconverged, and its
-// pressure line, the end of its run line, names the cap the solve ran to.
+// A test-only limit of 1 iteration caps the ball body's solves (at the CG's
+// own floor of 8 they reach ~1e-6, measured 2026-10-22, so nothing a test can
+// size caps by itself): the run counts them as capped, stalled and capped sum
+// to unconverged, and its pressure line, the end of its run line, names the
+// cap the solve ran to.
 TEST(AnalysisLiveRun, ACappedSolveIsCountedAndItsCapNamedInTheRunLine) {
     const Powered p = with_ball_body(0.1f, 0.2f);
     an::LiveRun run = started(solid_case(p.model), p);
     ASSERT_TRUE(run.solids().any);
-    run.set_test_cg_cap(1);
+    run.set_test_solids_max_iterations(1);
     spade::FlowVolume v;
     armed_frame(run, v);
     if (::testing::Test::HasFatalFailure()) return;
     const an::LiveSolids& s = run.solids();
     EXPECT_GT(s.capped_steps, 0u) << run.run_line();
     EXPECT_EQ(s.capped_steps + s.stalled_steps, s.unconverged_steps);
-    EXPECT_EQ(s.pressure_iterations, spade::physics::airflow::kSolidsCgIterations);
-    const std::string cap =
-        "at the CG's cap of " + std::to_string(spade::physics::airflow::kSolidsCgIterations) + " iterations";
-    EXPECT_NE(run.pressure_line().find(cap), std::string::npos) << run.pressure_line();
+    EXPECT_EQ(s.pressure_iterations, 1u);
+    EXPECT_NE(run.pressure_line().find("at the CG's cap of 1 iteration ("), std::string::npos) << run.pressure_line();
     const std::string line = run.run_line();
     ASSERT_GE(line.size(), run.pressure_line().size());
     EXPECT_EQ(line.substr(line.size() - run.pressure_line().size()), run.pressure_line()) << line;
 }
 
-// The override set and then unset (0) flies to the bit as a run never given
-// it (C8q's nudge hook's rule).
-TEST(AnalysisLiveRun, TheCgCapOverrideUnsetFliesToTheBit) {
+// The limit set and then unset (0) flies to the bit as a run never given it
+// (C8q's nudge hook's rule).
+TEST(AnalysisLiveRun, TheSolidsIterationLimitUnsetFliesToTheBit) {
     const Powered p = with_ball_body(0.1f, 0.2f);
     an::LiveRun a = started(solid_case(p.model), p);
     an::LiveRun b = started(solid_case(p.model), p);
-    b.set_test_cg_cap(1);
-    b.set_test_cg_cap(0);
+    b.set_test_solids_max_iterations(1);
+    b.set_test_solids_max_iterations(0);
     spade::FlowVolume va;
     spade::FlowVolume vb;
     for (int i = 0; i < 2; ++i) {
