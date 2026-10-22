@@ -895,3 +895,31 @@ TEST(EditorImport, WithNoTempFolderAnImportIsRefusedByNameAndNothingIsStaged) {
         EXPECT_FALSE(fs::exists(fs::current_path(ec) / "spade-editor-imports", ec)) << "staged in the working directory";
     }
 }
+
+// An open workspace keeps its staging folder alive (Test/Docs, 2026-10-22):
+// at most once an hour its frame loop touches <staging>/alive, so a session
+// open for over a day with an unsaved import never looks like a crashed
+// one's to the sweep (Save could not copy a swept sidecar). The clock is
+// passed in, so the test steps two hours on.
+TEST(EditorImport, AnOpenWorkspaceKeepsItsStagingAliveSoOnlyAnOrphanLooksADayOld) {
+    TempDir t{"editor-import-alive"};
+    const fs::path file = t.path() / "crate.gltf";
+    write_gltf(file, {{"crate"}});
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::load_item);
+    const fs::path staging = w->import_staging();
+    const fs::path sidecar = staging / "imported" / "crate.spmesh";
+    ASSERT_TRUE(fs::exists(sidecar)) << w->panels().status;
+    const fs::file_time_type then = fs::file_time_type::clock::now() - std::chrono::hours(48);
+    std::vector<fs::path> all{staging};
+    for (fs::recursive_directory_iterator it(staging), end; it != end; ++it) all.push_back(it->path());
+    for (const fs::path& x : all) fs::last_write_time(x, then);
+
+    w->keep_staging_alive(std::chrono::steady_clock::now() + std::chrono::hours(2));
+    auto other = hover_workspace();
+    ASSERT_NE(other, nullptr);
+    EXPECT_TRUE(fs::exists(sidecar)) << "a live session's import, aged but kept alive";
+    EXPECT_TRUE(fs::exists(staging / "alive"));
+}
