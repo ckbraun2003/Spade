@@ -58,7 +58,9 @@
 //                        axis
 //   "inertia"            a remainder tensor the composite's own checks
 //                        refuse (one that breaks the triangle inequality)
-// Its error names the field, the target and the parts' value.
+// Its error names the field, the target and the parts' value. The rule is
+// fit_remainder(), public so any spec's remainder uses it, the Crazyflie's
+// among them (the lead's ruling, 2026-10-22; TD-9).
 //
 // THE ADVISORIES. basic_quad_advisories() names what compiles but its user
 // should see: each pair of rotor discs whose hubs are closer than the
@@ -135,6 +137,16 @@ struct BasicQuadParams {
 // comes back unchanged. Otherwise the compile's rules are left to
 // compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
+
+// THE FIT, for any spec: the `remainder` record that brings `spec`'s parts to
+// `mass` and, with `inertia`, to that diagonal about their centre of mass, in
+// design axes. It is mass only (geometry source none), a point without
+// `inertia` and a tensor with it, at the parts' centre of mass as the compile
+// reports it; the caller appends it to spec.parts. `spec` is compiled once to
+// measure it, so the compile's own refusal comes back unchanged. Otherwise
+// invalid_argument for a non-finite target and the refusals of THE FIT.
+[[nodiscard]] Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass,
+                                                const std::optional<glm::dvec3>& inertia = std::nullopt);
 
 // One default the basic quad assumes: the field's path in BasicQuadParams
 // ("half_span_x", "motor.kv") and why the value is plausible.

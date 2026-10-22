@@ -37,6 +37,21 @@ namespace {
 
 constexpr std::array<const char*, 3> kAxes = {"x", "y", "z"};
 
+// A fit target that is not finite, by name (THE FIT): the same refusal from
+// basic_quad_airframe() and fit_remainder().
+[[nodiscard]] std::optional<Error> non_finite_target(const std::optional<double>& mass,
+                                                     const std::optional<glm::dvec3>& inertia) {
+    if (mass && !std::isfinite(*mass)) return invalid("mass target is not finite");
+    if (inertia) {
+        for (int a = 0; a < 3; ++a) {
+            if (!std::isfinite((*inertia)[a])) {
+                return invalid(std::string("inertia.") + kAxes[a] + " target is not finite");
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 // The turn taking +Y onto the horizontal unit vector (dx, 0, dz): about
 // Y x d = (dz, 0, -dx) by 90 degrees, so q = (1, dz, 0, -dx) / sqrt(2). Only
 // sqrt (TD-3).
@@ -144,17 +159,10 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
     if (!positive(p.half_span_z)) {
         return std::unexpected(invalid("half_span_z must be finite and above 0, found " + text(p.half_span_z)));
     }
-    if (p.mass && !std::isfinite(*p.mass)) return std::unexpected(invalid("mass target is not finite"));
-    if (p.inertia) {
-        for (int a = 0; a < 3; ++a) {
-            if (!std::isfinite((*p.inertia)[a])) {
-                return std::unexpected(invalid(std::string("inertia.") + kAxes[a] + " target is not finite"));
-            }
-        }
-        if (!p.mass) {
-            return std::unexpected(invalid("inertia: a fitted inertia needs a mass target (a massless remainder "
-                                           "is no body)"));
-        }
+    if (const std::optional<Error> e = non_finite_target(p.mass, p.inertia)) return std::unexpected(*e);
+    if (p.inertia && !p.mass) {
+        return std::unexpected(invalid("inertia: a fitted inertia needs a mass target (a massless remainder "
+                                       "is no body)"));
     }
 
     AirframeSpec s;
@@ -213,43 +221,52 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
 
     if (!p.mass) return s;
 
-    // THE FIT. The parts are measured by the compile itself (TD-9): its
-    // composite inertia about their centre of mass, in design axes, in double.
-    const Result<CompiledAirframe> parts = compile_airframe(s);
+    // THE FIT, by the one rule every spec's remainder uses.
+    Result<PartInertia> rest = fit_remainder(s, *p.mass, p.inertia);
+    if (!rest) return std::unexpected(rest.error());
+    s.parts.push_back(std::move(*rest));
+    return s;
+}
+
+Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass, const std::optional<glm::dvec3>& inertia) {
+    if (const std::optional<Error> e = non_finite_target(mass, inertia)) return std::unexpected(*e);
+
+    // The parts are measured by the compile itself (TD-9): its composite
+    // inertia about their centre of mass, in design axes, in double.
+    const Result<CompiledAirframe> parts = compile_airframe(spec);
     if (!parts) return std::unexpected(parts.error());
-    const double own_mass = parts_mass(s);
-    const double rest_mass = *p.mass - own_mass;
+    const double own_mass = parts_mass(spec);
+    const double rest_mass = mass - own_mass;
     if (!(rest_mass > 0.0)) {
-        return std::unexpected(invalid("mass: the fitted " + text(*p.mass) + " kg is not above the parts' own " +
+        return std::unexpected(invalid("mass: the fitted " + text(mass) + " kg is not above the parts' own " +
                                        text(own_mass) + " kg"));
     }
     PartInertia rest = record("remainder", "remainder", rest_mass, glm::dvec3(parts->inertia.center_of_mass),
                               glm::dquat(1.0, 0.0, 0.0, 0.0), PartShape::point, glm::dvec3(0.0));
     rest.geometry.source = GeometrySource::none;
-    if (p.inertia) {
+    if (inertia) {
         const glm::dmat3& own = parts->inertia.inertia_design;
         for (int a = 0; a < 3; ++a) {
-            if ((*p.inertia)[a] < own[a][a]) {
+            if ((*inertia)[a] < own[a][a]) {
                 return std::unexpected(invalid(std::string("inertia.") + kAxes[a] + ": the fitted " +
-                                               text((*p.inertia)[a]) + " kg m^2 is below the parts' own " +
+                                               text((*inertia)[a]) + " kg m^2 is below the parts' own " +
                                                text(own[a][a]) + " kg m^2"));
             }
         }
         glm::dmat3 tensor = -own;
-        for (int a = 0; a < 3; ++a) tensor[a][a] += (*p.inertia)[a];
+        for (int a = 0; a < 3; ++a) tensor[a][a] += (*inertia)[a];
         rest.shape = PartShape::tensor;
         rest.tensor = tensor;
         const std::vector<PartIssue> issues = composite_inertia_issues(std::span<const PartInertia>(&rest, 1));
         if (!issues.empty()) {
-            return std::unexpected(invalid("inertia: the remainder the fit needs, diag(" + text((*p.inertia)[0]) +
-                                           ", " + text((*p.inertia)[1]) + ", " + text((*p.inertia)[2]) +
+            return std::unexpected(invalid("inertia: the remainder the fit needs, diag(" + text((*inertia)[0]) +
+                                           ", " + text((*inertia)[1]) + ", " + text((*inertia)[2]) +
                                            ") less the parts' own diag(" + text(own[0][0]) + ", " +
                                            text(own[1][1]) + ", " + text(own[2][2]) + "), is not a body: it " +
                                            issues.front().message));
         }
     }
-    s.parts.push_back(std::move(rest));
-    return s;
+    return rest;
 }
 
 std::vector<BasicQuadAssumption> basic_quad_assumptions() {
