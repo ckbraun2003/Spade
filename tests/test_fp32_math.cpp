@@ -636,9 +636,30 @@ struct FlushMismatches {
     uint32_t flushed = 0;   // its result under FTZ + DAZ
 };
 
+// The flushed half of one chunk: each argument's bits under FTZ + DAZ against
+// `expected`, its default-mode bits. Every float op of the half runs in here,
+// so strictly inside the wrapper's scope (the header's wrapper rule).
+SPADE_NOINLINE void compare_flushed(float (*f)(float), uint64_t base, uint64_t n, const uint32_t* expected,
+                                    FlushMismatches& out) {
+    for (uint64_t i = 0; i < n; ++i) {
+        const uint32_t arg = static_cast<uint32_t>(base + i);
+        const uint32_t got = bits_of(f(float_of(arg)));
+        if (got != expected[i]) {
+            if (out.count == 0) out = FlushMismatches{0, arg, expected[i], got};
+            ++out.count;
+        }
+    }
+}
+
+// The wrapper: the scope, then one call, and no float work of its own.
+void compare_flushed_in_scope(float (*f)(float), uint64_t base, uint64_t n, const uint32_t* expected,
+                              FlushMismatches& out) {
+    const ScopedFlushSubnormals flush;
+    compare_flushed(f, base, n, expected, out);
+}
+
 // Every argument from `first` to `last` (as bit patterns, ascending), in
-// chunks: the default-mode bits first, then the flushed ones. Nothing inside
-// the flushed scope does float arithmetic of its own.
+// chunks: the default-mode bits first, then the flushed ones.
 [[nodiscard]] FlushMismatches flush_mismatches(float (*f)(float), uint32_t first, uint32_t last) {
     constexpr uint64_t kChunk = 1u << 16;
     std::vector<uint32_t> expected(kChunk);
@@ -646,15 +667,7 @@ struct FlushMismatches {
     for (uint64_t base = first; base <= last; base += kChunk) {
         const uint64_t n = std::min<uint64_t>(kChunk, uint64_t{last} - base + 1u);
         for (uint64_t i = 0; i < n; ++i) expected[i] = bits_of(f(float_of(static_cast<uint32_t>(base + i))));
-        const ScopedFlushSubnormals flush;
-        for (uint64_t i = 0; i < n; ++i) {
-            const uint32_t arg = static_cast<uint32_t>(base + i);
-            const uint32_t got = bits_of(f(float_of(arg)));
-            if (got != expected[i]) {
-                if (out.count == 0) out = FlushMismatches{0, arg, expected[i], got};
-                ++out.count;
-            }
-        }
+        compare_flushed_in_scope(f, base, n, expected.data(), out);
     }
     return out;
 }

@@ -1174,16 +1174,19 @@ TEST(GpuFp32Math, ExactSqrtMatchesTheHostUnderFtzDaz) {
 // never give: modes 8 and 9 take the estimate from the host -- the correctly
 // rounded 1/bm or 1/sqrt(xm) pushed by k floats -- and each result is held to
 // divss/sqrtss under the flush AND to tests/fp32_exact_battery.hpp's port on
-// the same estimate. The second comparison is what makes the port a faithful
-// port: the CPU proof runs on it.
+// the same estimate. Inside the asserted window the second comparison follows
+// from the first and the CPU battery; on the bound's edge it is the one that
+// can catch a divergence, because the misses there depend on every
+// intermediate step, so it is asserted there too (the exact review's minor 1).
 //
 // ASSERTED, inside the proof's bounds (fp32_math.slang): division at k in
 // [-3, 3], +-16 and +-32 (exact while |d0| < 128 units; +-32 gives about 66),
 // over 2^20 pairs whose result exponents span -1..256; sqrt at k in [-3, 3]
 // and +-16 (exact while |e0| < 64 units, about +-31 ulps of r at worst, where
 // xm -> 4) over 2^20 positive normals. The ks take turns, input by input.
-// REPORTED, never asserted: sqrt at +-32 over every xm in [3.9, 4), the
-// bound's edge, where misses are expected.
+// On the bound's edge, sqrt at +-32 over every xm in [3.9, 4): misses against
+// sqrtss are expected and only REPORTED; the device against the port is
+// ASSERTED, 0 mismatches.
 TEST(GpuFp32Math, ExactCorrectionRoundsInjectedEstimatesOnTheDevice) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -1239,14 +1242,14 @@ TEST(GpuFp32Math, ExactCorrectionRoundsInjectedEstimatesOnTheDevice) {
     EXPECT_EQ(div_port.mismatches, 0u) << "div32_ftz_with on the device differs from the C++ port";
 
     // ---- the square root, mode 9: (x, r) --------------------------------
-    // One run of inputs xs with their estimates rs, held to sqrtss and to the
-    // port, or only counted when `assert_clean` is false (the bound's edge,
-    // whose misses are expected: none is printed as a MISMATCH either).
+    // One run of inputs xs with their estimates rs, held to the port, and to
+    // sqrtss unless `exact_expected` is false (the bound's edge, whose misses
+    // against sqrtss are expected: only counted, none printed as a MISMATCH).
     const auto run_sqrt = [&ctx](const char* host_name, const char* port_name, const std::vector<uint32_t>& xs,
-                                 const std::vector<uint32_t>& rs, bool assert_clean) {
+                                 const std::vector<uint32_t>& rs, bool exact_expected) {
         Tally host, port;
-        int host_printed = assert_clean ? 0 : kMaxPrintedMismatches;
-        int port_printed = host_printed;
+        int host_printed = exact_expected ? 0 : kMaxPrintedMismatches;
+        int port_printed = 0;
         std::vector<uint32_t> cx, cwant;
         const bool ok = sweep_exact(
             *ctx, host_name, kModeSqrtWith, 2u, xs.size(),
@@ -1274,10 +1277,10 @@ TEST(GpuFp32Math, ExactCorrectionRoundsInjectedEstimatesOnTheDevice) {
         report(host_name, host);
         report(port_name, port);
         EXPECT_TRUE(ok) << host_name;
-        if (assert_clean) {
+        if (exact_expected) {
             EXPECT_EQ(host.mismatches, 0u) << host_name << ": sqrt32_ftz_with on injected estimates is not sqrtss";
-            EXPECT_EQ(port.mismatches, 0u) << port_name << ": sqrt32_ftz_with on the device differs from the C++ port";
         }
+        EXPECT_EQ(port.mismatches, 0u) << port_name << ": sqrt32_ftz_with on the device differs from the C++ port";
     };
 
     std::vector<uint32_t> xs(kCount), rs(kCount);
@@ -1298,8 +1301,7 @@ TEST(GpuFp32Math, ExactCorrectionRoundsInjectedEstimatesOnTheDevice) {
             edge_r.push_back(ex::bits(ex::nudge(ex::sqrt_estimate(x), k)));
         }
     }
-    run_sqrt("ExactSqrtBoundEdgeVsSqrtss (report only)", "ExactSqrtBoundEdgeVsPort (report only)", edge_x, edge_r,
-             false);
+    run_sqrt("ExactSqrtBoundEdgeVsSqrtss (report only)", "ExactSqrtBoundEdgeVsPort", edge_x, edge_r, false);
 }
 
 

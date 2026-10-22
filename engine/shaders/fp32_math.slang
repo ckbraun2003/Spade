@@ -122,9 +122,10 @@
 // SO THE DIVISION IS EXACT: log32 calls div32_ftz below, which returns what the
 // host's divss returns under MXCSR FTZ|DAZ, bit for bit. At log32's call site
 // that is IEEE's own quotient, the host's `/`, because the domain is all
-// normal: f is +0 or normal (|f| >= 2^-24), 2 + f lies in [1.71, 2.42] and the
-// quotient in [2.4e-8, 0.243], so the flush never applies and log32's bits do
-// not move on any device. GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
+// normal: f is +0 or normal (|f| >= 2^-24), 2 + f lies in [1.71, 2.42] and
+// |s| in [2.4e-8, 0.1716] (log32's fold, below), so the flush never applies and
+// log32's bits do not move on any device.
+// GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
 // proves it against the host `/` over every (f, 2+f) pair log32 can form, and
 // the four log32 batteries prove it again end to end.
 //
@@ -143,10 +144,11 @@
 // Functions allowed to hold an estimate (E1/E2)
 // ===========================================================================
 //
-// The only functions in this module, and so in any kernel that imports it,
-// that may hold an OpFDiv or InverseSqrt result (E1/E2 as the user restated
-// them on 2026-10-22). engine/testing/spirv_scan.hpp's pass 3 proves where an
-// estimate can go -- through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/
+// The only functions of this module that may hold an OpFDiv or InverseSqrt
+// result, and so the only ones in an EXACT-profile module that imports it
+// (E1/E2 as the user restated them on 2026-10-22). A banded kernel that
+// imports it keeps its own bare OpFDivs (rotors.slang, integrate.slang).
+// engine/testing/spirv_scan.hpp's pass 3 proves where an estimate can go -- through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/
 // CopyObject to an integer conversion -- but it also passes an uncorrected
 // `uint(a / b)`. So the guarantee covers exactly these functions, and these
 // batteries prove that the integer each estimate becomes is corrected, with
