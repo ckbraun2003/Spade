@@ -65,21 +65,8 @@
 namespace {
 
 namespace ex = spade::testing::exact;
+using ex::exact_sweep;
 using ex::Stop;
-
-// Is SPADE_EXACT_SWEEP set? The MSVC pragma is scoped to this one call, for
-// the reason tests/test_fp32_math.cpp's env_gate_is_set gives: C4996 on
-// std::getenv aims at hazards a read-only null check made once does not have.
-[[nodiscard]] bool exact_sweep() {
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    return std::getenv("SPADE_EXACT_SWEEP") != nullptr;
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-}
 
 // A row's tally: results compared, misses, and the first miss, to name.
 struct Row {

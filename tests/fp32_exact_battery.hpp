@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <span>
 #include <utility>
 #include <vector>
@@ -54,6 +55,22 @@ inline constexpr uint32_t kPosInf = 0x7F800000u;
 [[nodiscard]] inline float from_bits(uint32_t u) noexcept { return std::bit_cast<float>(u); }
 [[nodiscard]] inline uint32_t bits(float x) noexcept { return std::bit_cast<uint32_t>(x); }
 [[nodiscard]] inline int32_t as_int(uint32_t u) noexcept { return std::bit_cast<int32_t>(u); }
+
+// Is SPADE_EXACT_SWEEP set? Both full sweeps read it, the CPU proof's
+// (tests/test_fp32_exact.cpp) and the device's (tests/test_gpu_fp32_math.cpp).
+// The MSVC pragma is scoped to this one call, for the reason
+// tests/test_fp32_math.cpp's env_gate_is_set gives: C4996 on std::getenv aims
+// at hazards a read-only null check made once does not have.
+[[nodiscard]] inline bool exact_sweep() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_EXACT_SWEEP") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
 
 // Where the port's correction stops: at the estimate's truncation (Q0, S0),
 // after the rounded k-step (Q1, S1), or nowhere.
