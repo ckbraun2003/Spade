@@ -664,8 +664,9 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
-// A library part (INT-14), inspect-only: each cited field's value and its
-// grade, an assumed one in the warning colour; the citation's note on hover.
+// A library part (INT-14), inspect-only: each cited field's grade, an
+// assumed one in the warning colour, then its value; the whole value, the
+// source and the note on hover.
 void inspect_part(const ed::LibraryItem& item) {
     const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
     ui::title(item.name.c_str());
@@ -676,15 +677,24 @@ void inspect_part(const ed::LibraryItem& item) {
         ui::status_text(rows.error().context);
         return;
     }
-    if (ui::begin_properties("##part")) {
+    if (ui::begin_graded_properties("##part")) {
         for (const ed::PartRow& r : *rows) {
-            ui::property_row(r.field.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", r.field.c_str());
+            bool hovered = ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(1);
+            ui::grade_text(scene::grade_name(r.grade), r.grade == scene::Grade::assumed);
+            hovered = hovered || ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(r.value.c_str());
-            ImGui::SameLine();
-            std::string grade(scene::grade_name(r.grade));
-            if (!r.source.empty()) grade += ": " + r.source;
-            ui::grade_text(grade, r.grade == scene::Grade::assumed);
-            if (!r.note.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", r.note.c_str());
+            hovered = hovered || ImGui::IsItemHovered();
+            if (hovered) {
+                std::string tip = r.field + ": " + r.value + "\n" + std::string(scene::grade_name(r.grade));
+                tip += r.source.empty() ? ", citing no source" : ": " + r.source;
+                if (!r.note.empty()) tip += "\n" + r.note;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
         }
         ui::end_properties();
     }

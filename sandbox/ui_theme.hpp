@@ -227,6 +227,18 @@ inline bool begin_properties(const char* id, float label_width = kLabelWidth) {
 
 inline void end_properties() { ImGui::EndTable(); }
 
+// Graded rows (INT-14): the label, its grade in a fixed column so a long
+// value never pushes it out of view, then the value. Ended by end_properties().
+inline constexpr float kGradeWidth = 20.0f * kBase;
+
+inline bool begin_graded_properties(const char* id) {
+    if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_SizingStretchProp)) return false;
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
+    ImGui::TableSetupColumn("grade", ImGuiTableColumnFlags_WidthFixed, kGradeWidth);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+    return true;
+}
+
 // Starts a row: the label on the left, then the next widget fills the value
 // column. Give that widget a hidden label ("##wind").
 inline void property_row(const char* label) {
