@@ -50,6 +50,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -59,8 +60,10 @@
 #include "core/path_text.hpp"
 #include "render/csg_mesh.hpp"
 #include "scene/library.hpp"
+#include "scene/library_sources.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
+#include "scene/part_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_type.hpp"
 #include "world/builder.hpp"
@@ -383,20 +386,63 @@ TEST(Library, TheIndexReadsAsTheFormatSpellsIt) {
     EXPECT_EQ(plain->entries[0].file, "pole.object.yaml");
 }
 
+// The library plan's AnOlderBuildRefusesVersion2: an older build runs this
+// same gate against its own newest version, so the newest-plus-one case here
+// is what a version 1 build said of a version 2 index.
 TEST(Library, AnotherLibraryVersionIsASchemaMismatch) {
     const spade::Result<Library> newer =
-        spade::scene::library_from_yaml(with(two_entries(), "library_version: 1\n", "library_version: 2\n"));
+        spade::scene::library_from_yaml(with(two_entries(), "library_version: 1\n", "library_version: 3\n"));
     EXPECT_EQ(code_of(newer), code(spade::Code::schema_mismatch));
-    EXPECT_EQ(why(newer), "library index is schema version 2, this build reads version 1 only (line 1, column 18)");
+    EXPECT_EQ(why(newer), "library index is schema version 3, this build reads versions 1 to 2 (line 1, column 18)");
 
     // The version is read first: a newer file's unknown keys say "upgrade",
     // not "unknown key".
     const spade::Result<Library> newer_keys = spade::scene::library_from_yaml(
-        with(two_entries(), "library_version: 1\n", "library_version: 2\nicons: \"icons/\"\n"));
+        with(two_entries(), "library_version: 1\n", "library_version: 3\nicons: \"icons/\"\n"));
     EXPECT_EQ(code_of(newer_keys), code(spade::Code::schema_mismatch)) << why(newer_keys);
 
     const spade::Result<Library> zero = spade::scene::library_from_yaml("library_version: 0\nentries: []\n");
     EXPECT_EQ(code_of(zero), code(spade::Code::schema_mismatch));
+}
+
+TEST(Library, LibraryVersion1StillReads) {
+    const spade::Result<Library> v1 = spade::scene::library_from_yaml(two_entries());
+    ASSERT_OK(v1);
+    ASSERT_EQ(v1->entries.size(), 2u);
+    EXPECT_EQ(v1->entries[0].kind, LibraryKind::object);
+    EXPECT_EQ(v1->entries[1].kind, LibraryKind::model);
+    // A version 1 index has no part kinds.
+    const spade::Result<Library> part = spade::scene::library_from_yaml(
+        with(two_entries(), "drones/quad.model.yaml", "parts/m2312.motor.yaml"));
+    EXPECT_EQ(code_of(part), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(why(part).starts_with("entries[1].file 'parts/m2312.motor.yaml' is a part file, which needs "
+                                      "library_version 2"))
+        << why(part);
+}
+
+TEST(Library, LibraryVersion2NamesThePartKinds) {
+    EXPECT_EQ(spade::scene::kLibraryVersion, 2u);
+    const spade::Result<Library> v2 = spade::scene::library_from_yaml(R"YAML(library_version: 2
+entries:
+  - {name: Quad, category: drones, file: drones/quad.model.yaml}
+  - {name: Box, category: primitives, file: primitives/box.object.yaml}
+  - {name: Motor, category: motors, file: parts/m2312.motor.yaml}
+  - {name: Prop, category: props, file: parts/p10x5.prop.yaml}
+  - {name: ESC, category: escs, file: parts/esc45.esc.yaml}
+  - {name: Pack, category: batteries, file: parts/p4s.battery.yaml}
+)YAML");
+    ASSERT_OK(v2);
+    ASSERT_EQ(v2->entries.size(), 6u);
+    const LibraryKind kinds[] = {LibraryKind::model, LibraryKind::object, LibraryKind::motor,
+                                 LibraryKind::prop,  LibraryKind::esc,    LibraryKind::battery};
+    for (std::size_t i = 0; i < 6; ++i) EXPECT_EQ(v2->entries[i].kind, kinds[i]) << v2->entries[i].file;
+
+    // A version 2 index's unknown keys are blamed on version 2.
+    const spade::Result<Library> extra = spade::scene::library_from_yaml(
+        "library_version: 2\nentries:\n  - {name: M, category: motors, file: m.motor.yaml, maker: x}\n");
+    EXPECT_EQ(code_of(extra), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(why(extra).starts_with("unknown key 'maker' in entries[0] -- library schema v2 does not define it"))
+        << why(extra);
 }
 
 TEST(Library, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
@@ -579,10 +625,10 @@ TEST(LibraryLoad, TheDirectoryIsTheIndexsAndEveryFileItNamesMustExist) {
     EXPECT_EQ(code_of(no_index), code(spade::Code::io_error));
     EXPECT_EQ(why(no_index), "cannot open library index '" + spade::path_text(absent) + "'");
     const fs::path newer = dir.path() / "newer.yaml";
-    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 2\n"));
+    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 3\n"));
     const spade::Result<Library> version = spade::scene::load_library(newer);
     EXPECT_EQ(code_of(version), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 2"))
+    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 3"))
         << why(version);
 }
 
@@ -652,6 +698,79 @@ TEST(LibraryContents, EveryEntryLoadsAndTwoRefsThatDifferOnlyInCaseAreRefused) {
     const spade::Result<void> broken = spade::scene::check_library_contents(library);
     EXPECT_EQ(code_of(broken), code(spade::Code::invalid_argument));
     EXPECT_TRUE(why(broken).starts_with("library entry 'Quad': ")) << why(broken);
+}
+
+namespace {
+
+// A motor part citing `kv_source` for its kv and assuming the rest (L2's part
+// files).
+[[nodiscard]] std::string a_motor_text(std::string_view kv_source) {
+    spade::scene::MotorPart m;
+    m.block.kv = 960.0;
+    m.block.resistance = 0.1;
+    m.block.no_load_current = 0.5;
+    m.block.current_max = 20.0;
+    m.block.mass = 0.055;
+    for (const char* field : {"kv", "resistance", "no_load_current", "no_load_voltage", "current_max", "pole_pairs",
+                              "inductance", "rotor_inertia", "mass"}) {
+        m.sources.push_back({field, std::string_view(field) == "kv"
+                                        ? spade::scene::SourceRef{std::string(kv_source),
+                                                                  spade::scene::Grade::measured, ""}
+                                        : spade::scene::SourceRef{"", spade::scene::Grade::assumed, "typical"}});
+    }
+    const spade::Result<std::string> text = spade::scene::motor_to_yaml(m);
+    EXPECT_TRUE(text.has_value()) << text.error().context;
+    return text.has_value() ? *text : std::string{};
+}
+
+constexpr std::string_view kLibrarySources = R"YAML(sources_version: 1
+sources:
+  - {id: uiuc_propdb, citation: "UIUC", retrieved: 2026-10-21, license: facts_cite, license_evidence: "facts"}
+  - {id: apc_data_files, citation: "APC", retrieved: 2026-10-21, license: not_usable, license_evidence: "no"}
+)YAML";
+
+}  // namespace
+
+TEST(LibraryLoad, APartEntryLoadsAgainstTheLibrarysSources) {
+    const spade::test::TempDir dir("library-parts");
+    write_text(dir.path() / "sources.yaml", kLibrarySources);
+    write_text(dir.path() / "parts" / "m2312.motor.yaml", a_motor_text("uiuc_propdb"));
+    write_text(dir.path() / "library.yaml", "library_version: 2\nentries:\n"
+                                            "  - {name: M2312, category: motors, file: parts/m2312.motor.yaml}\n");
+    const spade::Result<Library> library = spade::scene::load_library(dir.path() / "library.yaml");
+    ASSERT_OK(library);
+    const LibraryEntry& motor = library->entries[0];
+    EXPECT_EQ(motor.kind, LibraryKind::motor);
+
+    const spade::Result<spade::scene::SourceRegistry> registry = spade::scene::load_library_sources(*library);
+    ASSERT_OK(registry);
+    const spade::Result<spade::scene::PartFile> part = spade::scene::load_library_part(*library, motor, *registry);
+    ASSERT_OK(part);
+    ASSERT_TRUE(std::holds_alternative<spade::scene::MotorPart>(*part));
+    EXPECT_EQ(std::get<spade::scene::MotorPart>(*part).block.kv, 960.0);
+    EXPECT_OK(spade::scene::check_library_contents(*library));
+
+    // Each loader refuses the other kinds by name.
+    EXPECT_EQ(why(spade::scene::load_library_model(*library, motor)),
+              "library entry 'M2312' is a motor part, not a model: load it with load_library_part");
+    EXPECT_EQ(why(spade::scene::load_library_object(*library, motor)),
+              "library entry 'M2312' is a motor part, not an object: load it with load_library_part");
+
+    // A part citing a source the registry rules out is refused, by entry,
+    // file, field and source.
+    write_text(dir.path() / "parts" / "m2312.motor.yaml", a_motor_text("apc_data_files"));
+    const spade::Result<void> apc = spade::scene::check_library_contents(*library);
+    EXPECT_EQ(code_of(apc), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(why(apc).starts_with("library entry 'M2312': " +
+                                     spade::path_text(dir.path() / fs::path(motor.file)) + ": motor.kv"))
+        << why(apc);
+    EXPECT_NE(why(apc).find("'apc_data_files'"), std::string::npos) << why(apc);
+
+    // A library with parts needs its sources registry.
+    fs::remove(dir.path() / "sources.yaml");
+    const spade::Result<void> no_sources = spade::scene::check_library_contents(*library);
+    EXPECT_EQ(code_of(no_sources), code(spade::Code::io_error));
+    EXPECT_NE(why(no_sources).find("sources.yaml"), std::string::npos) << why(no_sources);
 }
 
 // ===========================================================================
