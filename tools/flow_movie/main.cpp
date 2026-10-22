@@ -327,6 +327,16 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     }
     std::ofstream lines(cache / "run.txt", std::ios::binary | std::ios::trunc);
     for (const std::string& line : kept) lines << line << '\n';
+    // convergence.csv: after every frame, LiveRun's pressure convergence (D1's
+    // record, 2026-10-22). LiveRun counts unconverged steps since its start or
+    // restore (its save does not keep the count), so each line names the frame
+    // its count runs from; a frame's own unconverged steps are the difference
+    // from the line before within one count. Appended: a run killed after its
+    // save repeats the frames after it, and the last line for a frame is the
+    // one its cached frame came from.
+    const bool new_log = !fs::exists(cache / "convergence.csv", ec);
+    std::ofstream convergence(cache / "convergence.csv", std::ios::binary | std::ios::app);
+    if (new_log) convergence << "frame,t_s,steps,counted_from_frame,unconverged_steps,last_residual\n";
     spade::FlowVolume volume;
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
@@ -339,6 +349,11 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
         lines << frame->steps << '\t' << run->run_label() << '\n';
+        char residual[32];
+        std::snprintf(residual, sizeof residual, "%.3e", static_cast<double>(run->solids().pressure_residual));
+        convergence << frame->frame << ',' << fixed(frame->t_s, 6) << ',' << frame->steps << ',' << first << ','
+                    << run->solids().unconverged_steps << ',' << residual << '\n';
+        convergence.flush();
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
                                  (frame_budget > 0u && k + 1u - first >= frame_budget);
