@@ -20,8 +20,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -797,4 +799,99 @@ TEST(EditorImport, AWorkspaceStartingSweepsStagingFoldersOverADayOld) {
     std::error_code ec;
     fs::remove_all(young, ec);
     fs::remove_all(other, ec);
+}
+
+namespace {
+
+// Every variable the platforms read for the temp folder, pointed at one that
+// isn't there, and put back however the test ends (test_compute_context.cpp's
+// pattern).
+class ScopedNoTempFolder {
+  public:
+    explicit ScopedNoTempFolder(const fs::path& missing) {
+        for (const char* name : kNames) {
+            saved_.push_back(get(name));
+            set(name, spade::path_text(missing).c_str());
+        }
+    }
+    ~ScopedNoTempFolder() {
+        for (std::size_t i = 0; i < std::size(kNames); ++i) {
+            if (saved_[i]) {
+                set(kNames[i], saved_[i]->c_str());
+            } else {
+                unset(kNames[i]);
+            }
+        }
+    }
+    ScopedNoTempFolder(const ScopedNoTempFolder&) = delete;
+    ScopedNoTempFolder& operator=(const ScopedNoTempFolder&) = delete;
+
+  private:
+    static constexpr const char* kNames[] = {"TMP", "TEMP", "TMPDIR", "TEMPDIR"};
+    [[nodiscard]] static std::optional<std::string> get(const char* name) {
+#ifdef _WIN32
+        char* value = nullptr;
+        std::size_t size = 0;
+        if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) return std::nullopt;
+        std::string out(value);
+        std::free(value);
+        return out;
+#else
+        const char* value = std::getenv(name);
+        return value == nullptr ? std::nullopt : std::optional<std::string>(value);
+#endif
+    }
+    static void set(const char* name, const char* value) {
+#ifdef _WIN32
+        _putenv_s(name, value);
+#else
+        setenv(name, value, 1);
+#endif
+    }
+    static void unset(const char* name) {
+#ifdef _WIN32
+        _putenv_s(name, "");
+#else
+        unsetenv(name);
+#endif
+    }
+    std::vector<std::optional<std::string>> saved_;
+};
+
+}  // namespace
+
+// With no temp folder there is nowhere to stage (D1): an import, as an object
+// or as parts, is refused by name, arms and adds nothing, and nothing is
+// written in the working directory (Test/Docs' review of aa7a32e: the
+// fallback to "." put a crashed session's folder outside the sweep).
+TEST(EditorImport, WithNoTempFolderAnImportIsRefusedByNameAndNothingIsStaged) {
+    TempDir t{"editor-import-no-temp"};
+    const fs::path file = t.path() / "crate.gltf";
+    write_gltf(file, {{"crate"}});
+    std::error_code ec;
+    const bool had_local = fs::exists(fs::current_path(ec) / "spade-editor-imports", ec);
+    std::unique_ptr<ed::EditorWorkspace> w;
+    {
+        const ScopedNoTempFolder no_temp(t.path() / "not-there");
+        w = hover_workspace();
+    }
+    ASSERT_NE(w, nullptr);
+    EXPECT_TRUE(w->import_staging().empty());
+    w->panels().item_path = spade::path_text(file);
+    run(*w, ed::Command::load_item);
+    EXPECT_FALSE(w->panels().armed.has_value());
+    EXPECT_NE(w->panels().status.find("the system's temp folder could not be found"), std::string::npos)
+        << w->panels().status;
+    EXPECT_NE(w->panels().status.find("crate.gltf"), std::string::npos) << w->panels().status;
+
+    const std::string before = support::text_of(w->documents().scene.desc());
+    w->panels().selection =
+        ed::Selection{ed::Selection::Kind::object, w->documents().scene.desc().vehicles.at(0).name};
+    run(*w, ed::Command::import_parts);
+    EXPECT_NE(w->panels().status.find("the system's temp folder could not be found"), std::string::npos)
+        << w->panels().status;
+    EXPECT_EQ(support::text_of(w->documents().scene.desc()), before);
+    if (!had_local) {
+        EXPECT_FALSE(fs::exists(fs::current_path(ec) / "spade-editor-imports", ec)) << "staged in the working directory";
+    }
 }
