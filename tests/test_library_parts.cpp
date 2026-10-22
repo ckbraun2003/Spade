@@ -59,6 +59,7 @@
 #include "scene/library_sources.hpp"
 #include "scene/part_file.hpp"
 #include "vehicles/airframe_compile.hpp"
+#include "vehicles/basic_quad.hpp"
 #include "vehicles/composite_inertia.hpp"
 
 namespace {
@@ -191,6 +192,9 @@ constexpr std::string_view kAirfoil = "unknown for every prop (P-b); Physics pic
 constexpr std::string_view kNoLoadVoltage = "the usual no-load test voltage";
 constexpr std::string_view kPolePairs = "12N14P";
 constexpr std::string_view kInductance = "not modelled";
+// The competition pair's basis: no fitted set remains in the datapack's 7.2.
+constexpr std::string_view kCompPair =
+    "the lead's choice (2026-10-22) of the datapack's candidate pair, 4S and 2450 KV (its line 325)";
 constexpr std::string_view kOneParallel = "one cell per series step";
 constexpr std::string_view kLipoNominal = "LiPo nominal";
 constexpr std::string_view kLipoFull = "LiPo full";
@@ -455,7 +459,7 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
 // Nominal datasheet values, all assumed: Kat's fit was withdrawn.
 [[nodiscard]] MotorPart comp_2207_2450kv() {
     MotorPart m;
-    PART_FIELD(m, kv, 2450.0, cite(Grade::assumed, kKatDatapack, withdrawn("Kat's candidate set")));
+    PART_FIELD(m, kv, 2450.0, cite(Grade::assumed, kKatDatapack, withdrawn(kCompPair)));
     PART_FIELD(m, resistance, 0.045, assumed(withdrawn("a typical 2207 2450 KV datasheet value")));
     PART_FIELD(m, no_load_current, 1.9, assumed("typical 2207 ~2500 KV, at 10 V"));
     PART_FIELD(m, no_load_voltage, 10.0, assumed(kNoLoadVoltage));
@@ -563,7 +567,8 @@ void set_no_polarization(BatteryPart& b) {
     PART_FIELD(b, cell_capacity, 5.1, cite(Grade::retailer, kIrisPlus));
     PART_FIELD(b, cell_resistance, 0.008, assumed("typical 5 Ah low-rate cell"));
     set_lipo_cell(b);
-    PART_FIELD(b, c_rating, 8.0, cite(Grade::retailer, kIrisPlus, "8C"));
+    PART_FIELD(b, c_rating, 8.0,
+               cite(Grade::retailer, kIrisPlus, "8C: 40.8 A, so it binds at full throttle below the motors' 4 x 15 A"));
     set_no_polarization(b);
     PART_FIELD(b, mass, 0.38, assumed("typical 3S 5 Ah, 360-410 g"));
     PART_FIELD(b, shape, box(0.145, 0.03, 0.045), assumed("145 x 30 x 45 mm"));
@@ -605,7 +610,7 @@ void set_no_polarization(BatteryPart& b) {
 // Every field assumed: Kat's fit was withdrawn.
 [[nodiscard]] BatteryPart comp_4s() {
     BatteryPart b;
-    PART_FIELD(b, cells_series, 4u, cite(Grade::assumed, kKatDatapack, withdrawn("Kat's candidate set")));
+    PART_FIELD(b, cells_series, 4u, cite(Grade::assumed, kKatDatapack, withdrawn(kCompPair)));
     PART_FIELD(b, cells_parallel, 1u, assumed(kOneParallel));
     PART_FIELD(b, cell_capacity, 1.5, assumed("a 4S 1500 racing pack"));
     PART_FIELD(b, cell_resistance, 0.0056, assumed("fresh 1500 mAh racing cell"));
@@ -910,4 +915,50 @@ TEST(LibraryParts, NoAssumedNumberIsGradedAsMeasured) {
             EXPECT_EQ(sc::grade_name(ref->grade), "assumed") << "blade.airfoil";
         }
     }
+}
+
+// The basic quad's motor, ESC and pack files are basic_quad_airframe()'s
+// defaults (L3), field for field: each is emitted from the default block with
+// the file's own citations, and must be the file's bytes. Only what a part
+// file does not carry is taken from the file: the ESC's and the pack's mount
+// (the drone's, L5), and the ESC's box (added for its thumbnail, L4). The
+// review of L4 (2026-10-22): without this they could drift before L5.
+TEST(LibraryParts, TheBasicQuadsPartsAreItsDefaults) {
+    const spade::Result<spade::vehicles::AirframeSpec> spec =
+        spade::vehicles::basic_quad_airframe(spade::vehicles::BasicQuadParams{});
+    ASSERT_OK(spec);
+    const spade::Result<SourceRegistry> registry = library_sources();
+    ASSERT_OK(registry);
+    const auto load = [&](std::string_view file) {
+        return sc::load_part_file(library_dir() / "parts" / fs::path(file), *registry);
+    };
+
+    const spade::Result<PartFile> motor = load("fpv_2306_1700kv.motor.yaml");
+    ASSERT_OK(motor);
+    const MotorPart* m = std::get_if<MotorPart>(&*motor);
+    ASSERT_NE(m, nullptr);
+    const spade::Result<std::string> m_default = sc::part_to_yaml(PartFile{MotorPart{spec->motor, m->sources}});
+    ASSERT_OK(m_default);
+    EXPECT_EQ(*m_default, *sc::part_to_yaml(*motor)) << "fpv_2306_1700kv is basic_quad's default motor";
+
+    const spade::Result<PartFile> esc = load("basic_4in1_45a.esc.yaml");
+    ASSERT_OK(esc);
+    const EscPart* e = std::get_if<EscPart>(&*esc);
+    ASSERT_NE(e, nullptr);
+    EscPart e_default{spec->esc, e->sources};
+    e_default.block.mount = e->block.mount;
+    e_default.block.shape = e->block.shape;
+    const spade::Result<std::string> e_text = sc::part_to_yaml(PartFile{e_default});
+    ASSERT_OK(e_text);
+    EXPECT_EQ(*e_text, *sc::part_to_yaml(*esc)) << "basic_4in1_45a is basic_quad's default ESC";
+
+    const spade::Result<PartFile> pack = load("fpv_6s_1300.battery.yaml");
+    ASSERT_OK(pack);
+    const BatteryPart* b = std::get_if<BatteryPart>(&*pack);
+    ASSERT_NE(b, nullptr);
+    BatteryPart b_default{spec->battery, b->sources};
+    b_default.block.mount = b->block.mount;
+    const spade::Result<std::string> b_text = sc::part_to_yaml(PartFile{b_default});
+    ASSERT_OK(b_text);
+    EXPECT_EQ(*b_text, *sc::part_to_yaml(*pack)) << "fpv_6s_1300 is basic_quad's default pack";
 }
