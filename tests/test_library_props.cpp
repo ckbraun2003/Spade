@@ -29,6 +29,7 @@
 #include <string_view>
 
 #include "library_props.gen.hpp"
+#include "scene/model_sources.hpp"
 
 namespace {
 
@@ -40,18 +41,14 @@ using spade::test::library_props::Prop;
     return fs::path(SPADE_TESTS_DIR) / ".." / "tools" / "library_props";
 }
 
-// FNV-1a 64 of the file's bytes, CRLF read as LF: the tool's hash_file().
+// FNV-1a 64 of the file's bytes, CRLF read as LF: the tool's hash_file(),
+// which is the engine's one such hash, scene::pinned_file_hash() (TD-9; L5's
+// review, minor 5).
 [[nodiscard]] bool fnv1a64_of(const fs::path& path, std::uint64_t& out) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return false;
     const std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    std::uint64_t h = 0xcbf29ce484222325ull;
-    for (std::size_t i = 0; i < body.size(); ++i) {
-        if (body[i] == '\r' && i + 1 < body.size() && body[i + 1] == '\n') continue;
-        h ^= static_cast<unsigned char>(body[i]);
-        h *= 0x100000001b3ull;
-    }
-    out = h;
+    out = spade::scene::pinned_file_hash(body);
     return true;
 }
 

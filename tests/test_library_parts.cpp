@@ -187,7 +187,8 @@ constexpr std::string_view kKatDatapack = "kat_datapack";
 constexpr std::string_view kWithdrawn =
     "Kat's fit (datapack 7.2) was withdrawn on 2026-10-21 for APC-derived inputs; re-run not scheduled (Kat, "
     "2026-10-22)";
-constexpr std::string_view kEstimatedInertia = "0: the engine estimates m D^2/12";
+constexpr std::string_view kEstimatedInertia =
+    "m D^2/12 from this file's mass and diameter, each as graded: the engine's own estimate (prop_inertia)";
 constexpr std::string_view kAirfoil = "unknown for every prop (P-b); Physics picks the polar";
 constexpr std::string_view kNoLoadVoltage = "the usual no-load test voltage";
 constexpr std::string_view kPolePairs = "12N14P";
@@ -263,6 +264,15 @@ void set_field(T& slot, std::type_identity_t<T> value, PartSources& sources, std
     return std::vector<std::array<double, 2>>(table.begin(), table.end());
 }
 
+// The engine's own estimate of a prop's inertia, prop_inertia()'s m D^2 / 12
+// (vehicles/airframe_compile.cpp), written out rather than left as a 0 that
+// reads as no inertia (the lead, 2026-10-22). Set it once the mass and the
+// diameter are; it cites the diameter's source.
+void set_estimated_inertia(PropPart& part, std::string_view diameter_source) {
+    PART_FIELD(part, inertia, part.block.mass * part.block.diameter * part.block.diameter / 12.0,
+               cite(Grade::derived, diameter_source, kEstimatedInertia));
+}
+
 // The static point and the tables, copied from the header, each cited to
 // UIUC with the header's grade note verbatim.
 void set_coefficients(PropPart& part, const Prop& p, Grade static_grade, Grade table_grade) {
@@ -298,9 +308,9 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     PART_FIELD(part, pitch, 0.127,
                cite(Grade::retailer, kPhantomParts, "5.0 in, as UIUC's 10x5; the 9450's listings give 4.5 or 5.0 in"));
     PART_FIELD(part, blades, blades_of(p), cite(Grade::measured, kUiuc));
-    PART_FIELD(part, inertia, 0.0, assumed(kEstimatedInertia));
     set_coefficients(part, p, Grade::derived, Grade::derived);
     PART_FIELD(part, mass, 0.013, assumed("typical 9-10 in moulded prop"));
+    set_estimated_inertia(part, kNasa);
     set_blade(part, p, cite(Grade::derived, kUiuc, "UIUC geometry at 9.4 in"),
               cite(Grade::derived, kUiuc, "the first station"));
     return part;
@@ -312,9 +322,9 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     PART_FIELD(part, diameter, 0.2438, cite(Grade::measured, kNasa, "9.6 in"));
     PART_FIELD(part, pitch, 0.1143, cite(Grade::retailer, kIrisPlus, "4.5 in, the 9.5 x 4.5 props"));
     PART_FIELD(part, blades, blades_of(p), cite(Grade::measured, kUiuc));
-    PART_FIELD(part, inertia, 0.0, assumed(kEstimatedInertia));
     set_coefficients(part, p, Grade::derived, Grade::derived);
     PART_FIELD(part, mass, 0.012, assumed("typical 9.5 in plastic prop"));
+    set_estimated_inertia(part, kNasa);
     set_blade(part, p, cite(Grade::derived, kUiuc, "UIUC geometry at 9.6 in"),
               cite(Grade::derived, kUiuc, "the first station"));
     return part;
@@ -326,9 +336,9 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     PART_FIELD(part, diameter, 0.127, cite(Grade::measured, kUiuc, "Micro Invent 5x4"));
     PART_FIELD(part, pitch, 0.1016, cite(Grade::measured, kUiuc, "its name, 5x4"));
     PART_FIELD(part, blades, blades_of(p), cite(Grade::measured, kUiuc, "3-Blade heading"));
-    PART_FIELD(part, inertia, 0.0, assumed(kEstimatedInertia));
     set_coefficients(part, p, Grade::measured, Grade::measured);
     PART_FIELD(part, mass, 0.004, assumed("typical 5 in tri-blade, 3.5-4.5 g"));
+    set_estimated_inertia(part, kUiuc);
     set_blade(part, p, cite(Grade::measured, kUiuc, "UIUC geometry, resampled"),
               cite(Grade::measured, kUiuc, "the first station"));
     return part;
@@ -343,9 +353,9 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
                                             "0.04626"));
     PART_FIELD(part, pitch, 0.0, assumed("not known; identity only"));
     PART_FIELD(part, blades, blades_of(p), cite(Grade::measured, kUiuc));
-    PART_FIELD(part, inertia, 0.0, assumed(kEstimatedInertia));
     set_coefficients(part, p, Grade::measured, Grade::assumed);
     PART_FIELD(part, mass, 0.0002, assumed("47 mm moulded two-blade"));
+    set_estimated_inertia(part, kUiuc);
     set_blade(part, p, cite(Grade::measured, kUiuc, "UIUC geometry"),
               cite(Grade::measured, kUiuc, "the first station"));
     return part;
@@ -358,9 +368,9 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     PART_FIELD(part, diameter, 0.1524, cite(Grade::retailer, kFpvParts, "HQProp DP 6x3.5x3"));
     PART_FIELD(part, pitch, 0.0889, cite(Grade::retailer, kFpvParts, "3.5 in"));
     PART_FIELD(part, blades, blades_of(p), cite(Grade::retailer, kFpvParts));
-    PART_FIELD(part, inertia, 0.0, assumed(kEstimatedInertia));
     set_coefficients(part, p, Grade::assumed, Grade::assumed);
     PART_FIELD(part, mass, 0.0064, cite(Grade::retailer, kFpvParts, "~6.4 g"));
+    set_estimated_inertia(part, kFpvParts);
     const SourceRef stations = cite(Grade::assumed, kUiuc, "stand-in: mit_5x4's stations at 6 in");
     set_blade(part, p, stations, stations);
     return part;
@@ -923,6 +933,35 @@ TEST(LibraryParts, NoAssumedNumberIsGradedAsMeasured) {
             EXPECT_EQ(sc::grade_name(ref->grade), "assumed") << "blade.airfoil";
         }
     }
+}
+
+// A prop's inertia is the number the engine uses, never a 0 that reads as no
+// inertia (the lead, 2026-10-22, after Interface's grades inspector showed
+// "inertia | assumed | 0"). It is the engine's own estimate, prop_inertia()'s
+// m D^2 / 12 from the file's mass and diameter (vehicles/airframe_compile.cpp),
+// written out and graded derived. This pins the committed files bit for bit,
+// so a hand edit of the mass or diameter that leaves it stale fails here.
+TEST(LibraryParts, EveryPropsInertiaIsTheEnginesEstimateBitForBit) {
+    const spade::Result<SourceRegistry> registry = library_sources();
+    ASSERT_OK(registry);
+    std::size_t props = 0;
+    for (const PartRow& row : part_table()) {
+        SCOPED_TRACE(row.id);
+        const spade::Result<PartFile> file = sc::load_part_file(path_of(row), *registry);
+        ASSERT_OK(file);
+        const PropPart* prop = std::get_if<PropPart>(&*file);
+        if (prop == nullptr) continue;
+        ++props;
+        const spade::vehicles::PropBlock& b = prop->block;
+        const double estimate = b.mass * b.diameter * b.diameter / 12.0;
+        EXPECT_GT(b.inertia, 0.0) << "a 0 reads as no inertia";
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(b.inertia), std::bit_cast<std::uint64_t>(estimate))
+            << b.inertia << " against m D^2 / 12 = " << estimate;
+        const SourceRef* ref = citation(prop->sources, "inertia");
+        ASSERT_NE(ref, nullptr);
+        EXPECT_EQ(sc::grade_name(ref->grade), "derived");
+    }
+    EXPECT_EQ(props, 5u) << "the library's five props";
 }
 
 // The basic quad's motor, propeller, ESC and pack files ARE
