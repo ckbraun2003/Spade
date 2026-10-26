@@ -57,6 +57,12 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_remove_mean)
 # (tests/test_gpu_airflow_advection.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_advection)
 
+# B3's velocity conditions and implicit viscosity, boundaries.cpp and
+# viscous.cpp term for term (tests/test_gpu_airflow_viscous.cpp; the lead's
+# grant, 2026-10-22). airflow_viscous imports fp32_math.slang.
+spade_slang_kernel_variants(spade_airflow_runner airflow_velocity_bc)
+spade_slang_kernel_variants(spade_airflow_runner airflow_viscous)
+
 # B6's publish kernels, publish_render_volume's channels and their binary16
 # pack (tests/test_gpu_airflow_publish.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_publish_fields)
