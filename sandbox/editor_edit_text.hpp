@@ -684,6 +684,16 @@ inline Result<void> put_edit(Writer& w, const AddVehicle& e) {
 
 // ---- the other scene edits ----
 
+inline Result<void> put_edit(Writer& w, const AddAirflowRegion& e) {
+    w.kw("add-air-region").word(e.vehicle);
+    return {};
+}
+
+inline Result<void> put_edit(Writer& w, const RemoveAirflowRegion& e) {
+    w.kw("remove-air-region").word(e.name);
+    return {};
+}
+
 inline Result<void> put_edit(Writer& w, const RemoveObject& e) {
     w.kw("remove").word(e.name);
     return {};
@@ -881,7 +891,7 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 inline constexpr std::string_view kSceneVerbs =
     "a scene edit (add-asset, add-vehicle, add-model-file, add-object-file, remove, rename, duplicate, move, "
     "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world, "
-    "set-model-param, add-mesh-parts or set-imported-part)";
+    "set-model-param, add-mesh-parts, set-imported-part, add-air-region or remove-air-region)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -912,6 +922,10 @@ inline constexpr std::string_view kWorldVerbs =
         out = e;
     } else if (verb == "remove") {
         out = RemoveObject{r.word("an asset or vehicle name")};
+    } else if (verb == "add-air-region") {
+        out = AddAirflowRegion{r.word("a vehicle name")};
+    } else if (verb == "remove-air-region") {
+        out = RemoveAirflowRegion{r.word("an airflow region name")};
     } else if (verb == "rename") {
         RenameObject e;
         e.from = r.word("an asset or vehicle name");
