@@ -419,6 +419,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_hash_follow.cpp
         test_editor_run.cpp
         test_editor_edit_text.cpp
+        test_editor_airflow.cpp
         test_editor_cli.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
