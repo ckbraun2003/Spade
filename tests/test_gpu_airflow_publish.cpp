@@ -701,17 +701,21 @@ TEST(GpuAirflowPublish, TheVolumeFromTheDeviceIsPublishRenderVolumes) {
 // P8's rule (plan B, B6): read the fp32 channels back and pack them on the
 // CPU, or pack on the device and read the halves back; keep the cheaper. On
 // plan B's D1 box (B7, as amended 2026-10-21), 240 x 177 x 168 at 4 mm, 7.14 M
-// cells (B6 re-measured there, 2026-10-26; the numbers below were at the
-// first box, 224 x 168 x 160, 6.0 M cells), with one runner and two
-// chains: the fields alone, and the fields then the pack. Each path is timed
-// on the host from its submit to its last byte packed, the median of five,
-// with the kernels' own times from the chains' marks. Opt-in
-// (SPADE_AIRFLOW_P8=1): about 1 GiB of device memory and a minute on the box.
-// Measured 2026-10-21, NVIDIA GeForce RTX 3060 Ti: publish_fields 1.25 ms,
-// pack_f16 0.75 ms. B1's staging as drafted (HOST_COHERENT, not cached): fp32
-// back + CPU pack 1176 ms (read 808 ms of 184 MiB, pack 347 ms), device pack
-// + halves back 404 ms. With HOST_CACHED staging: 348 ms (read 19 ms, pack
-// 327 ms) against 13 ms. Kept: the device pack, by P8's rule, either way.
+// cells, with one runner and two chains: the fields alone, and the fields
+// then the pack. Each path is timed on the host from its submit to its last
+// byte packed, the median of five, with the kernels' own times from the
+// chains' marks. Opt-in (SPADE_AIRFLOW_P8=1): about 1 GiB of device memory
+// and a minute on the box.
+// Measured 2026-10-26, NVIDIA GeForce RTX 3060 Ti, HOST_CACHED staging:
+// publish_fields 6.21 ms (|omega|, q-hat and lambda2-hat exact since K4),
+// pack_f16 1.10 ms; fp32 back + CPU pack 426.8 ms (read 30.4 ms of 218 MiB,
+// pack 389.2 ms), device pack + halves back 23.4 ms (read 16.2 ms of
+// 109 MiB). Kept: the device pack, by P8's rule.
+// First measured 2026-10-21 at the first box, 224 x 168 x 160 (6.0 M cells),
+// before K4: publish_fields 1.25 ms, pack_f16 0.75 ms. B1's staging as drafted
+// (HOST_COHERENT, not cached): fp32 back + CPU pack 1176 ms (read 808 ms of
+// 184 MiB, pack 347 ms), device pack + halves back 404 ms. With HOST_CACHED
+// staging: 348 ms (read 19 ms, pack 327 ms) against 13 ms.
 TEST(GpuAirflowPublish, P8ReadbackCostAtTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     if (!env_gate_is_set("SPADE_AIRFLOW_P8")) GTEST_SKIP() << "P8's measurement: set SPADE_AIRFLOW_P8=1 to run it";
