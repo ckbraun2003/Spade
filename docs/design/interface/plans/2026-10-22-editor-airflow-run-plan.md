@@ -143,7 +143,9 @@ So one step is over a displayed frame's whole 25 ms. The ruling: the air runs on
 - Each publish takes a fresh generation (publish.cpp's `next_flow_generation()`), so GL re-uploads and the `ViewCache` re-traces once per publish. The dims and generation are already in the volume's header, so nothing else crosses for Rendering's verify mode.
 - **The B7 seam:** a GPU step fills the same `AirFrame`. Nothing else crosses between the threads except Stop and the pilot's slot.
 
-**A rotated drone.** LiveRun starts its drone level and unrotated, and the volume's header has no rotation (R-2 a), so a drone placed with any rotation would show its air turned against its mesh. Run air refuses it, naming it: "Run air needs the drone unrotated: the air's box can't turn with it. Set its rotation to zero to run it." A turned box would need a rotation in the header (Rendering's), which isn't planned. Proposed; the lead can overrule.
+**A rotated drone** (the lead, 2026-10-26). LiveRun starts its drone level and unrotated, so a drone placed with any rotation would show its air turned against its mesh (R-2 a). Until the follow-up below is built, Run air refuses it, naming it: "Run air needs the drone unrotated: the air's box can't turn with it. Set its rotation to zero to run it."
+- The air's box is world-aligned and stays so: the volume's header never gets a rotation. A turned drone is a drone turned inside world-frame air.
+- **Follow-up, planned:** LiveRun starts the drone at its placed attitude, with the grid unchanged; then the refusal goes. A yawed placement is common, so it comes soon after T2. Physics says first whether the flight model takes a start orientation as it is.
 
 **The speed shown.** The window times the hand-offs (`steady_clock`, sandbox only). The HUD's status line states the speed over the last few frames: simulated time over wall time, "air at 1/40 speed". It also states "waiting for the first frame" until the first hand-off.
 
