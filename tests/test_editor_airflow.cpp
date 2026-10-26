@@ -141,8 +141,10 @@ constexpr an::Controls kHalf{true, 0.5f, 0.0f, 0.0f, 0.0f};
     return run.latest();
 }
 
+// Every u increment a NaN: one alone can land on a boundary face, which the
+// boundaries overwrite (du's middle at 20^3 is i = 0, j = 0).
 void nan_into_du(void*, std::span<float> du, std::span<float>, std::span<float>) {
-    if (!du.empty()) du[du.size() / 2] = std::numeric_limits<float>::quiet_NaN();
+    std::fill(du.begin(), du.end(), std::numeric_limits<float>::quiet_NaN());
 }
 
 }  // namespace
