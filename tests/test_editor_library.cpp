@@ -867,8 +867,9 @@ TEST(EditorLibraryGrades, AFieldPathTooLongForItsCellIsCutFromTheLeft) {
     // Too narrow for anything but the last character: it is kept.
     EXPECT_EQ(path.substr(spade::sandbox::ui::left_cut(path, 2.0f, 3.0f, unit)), "x");
     EXPECT_EQ(spade::sandbox::ui::left_cut("", 0.0f, 3.0f, unit), 0u);
-    // A cut never splits a UTF-8 sequence: "a\xc2\xb0z" is "a", a 2-byte degree sign, "z".
+    // A cut never splits a UTF-8 sequence: "a\xc2\xb0z" is "a", a 2-byte degree sign, "z", 4 wide. With
+    // an ellipsis 0.5 wide, 3 wide would fit "\xb0z" if a cut could start inside the sign; it keeps "z".
     const std::string_view degrees = "a\xc2\xb0z";
-    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 5.0f, 3.0f, unit)), "z");
-    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 6.0f, 3.0f, unit)), "\xc2\xb0z");
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.0f, 0.5f, unit)), "z");
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.5f, 0.5f, unit)), "\xc2\xb0z");
 }
