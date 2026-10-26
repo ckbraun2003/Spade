@@ -62,6 +62,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -147,12 +148,27 @@ struct ModelFile {
 // and the same registration, all or nothing, except that each mesh part's
 // mesh_file is re-pointed to placed_mesh_file(*mesh) in the placed copy (the
 // file's own model is untouched). Its mesh stays as loaded. Writing the
-// sidecars is the caller's: the editor writes each one that no folder holds
-// yet into its staging folder before Save (sandbox/editor_workspace.hpp).
+// sidecars is the caller's, before it saves the scene: write_placed_meshes(),
+// below (the editor's Save and the command line's --save call it).
 // mesh_file is part of no identity, so the placed model's identities are
 // add_model()'s. A model with no mesh parts is placed exactly as add_model()
 // places it.
 [[nodiscard]] Result<void> add_model_with_meshes(SceneDesc& scene, const ModelFile& file,
                                                  std::string_view model_name);
+
+// The placed sidecars `scene` names, written before it is saved (L7b0): each
+// model part with a mesh whose mesh_file is placed_mesh_file(*mesh), and that
+// neither `into` nor a folder of `held_in` holds yet (an empty folder holds
+// nothing), is written to into / mesh_file from its mesh by save_mesh_file()
+// (whole or not at all), its folder created. A file already at that name is
+// kept: the name is the content's. The editor writes into its staging folder,
+// with the scene's folder in `held_in`, and Save carries them beside the
+// scene; the command line writes beside its --save target.
+// Refused, naming the model, the part and the sidecar: an empty `into` with a
+// sidecar to write (unavailable), and a folder or a sidecar that can't be
+// written (save_mesh_file()'s code and words). Sidecars written before a
+// refusal stay: each is whole and named by its content.
+[[nodiscard]] Result<void> write_placed_meshes(const SceneDesc& scene, const std::filesystem::path& into,
+                                               std::span<const std::filesystem::path> held_in = {});
 
 }  // namespace spade::scene

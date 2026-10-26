@@ -1,11 +1,13 @@
 #include "scene/model_file.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include <yaml-cpp/yaml.h>
@@ -13,6 +15,7 @@
 #include "scene/detail/model_block.hpp"
 #include "scene/scene_file.hpp"  // kSceneFileVersion
 #include "world/detail/yaml_text.hpp"
+#include "world/mesh_file.hpp"  // save_mesh_file
 
 namespace spade::scene {
 namespace {
@@ -298,6 +301,39 @@ Result<void> add_model_with_meshes(SceneDesc& scene, const ModelFile& file, std:
         if (p.mesh) p.mesh_file = placed_mesh_file(*p.mesh);
     }
     return register_model(scene, std::move(placed), model_name);
+}
+
+Result<void> write_placed_meshes(const SceneDesc& scene, const std::filesystem::path& into,
+                                 std::span<const std::filesystem::path> held_in) {
+    namespace fs = std::filesystem;
+    for (const vehicles::ModelType& m : scene.models) {
+        for (const vehicles::PartDesc& p : m.parts) {
+            if (!p.mesh || p.mesh_file != placed_mesh_file(*p.mesh)) continue;
+            const fs::path file(p.mesh_file);  // ASCII: "imported/", hex, ".spmesh"
+            const auto holds = [&](const fs::path& root) {
+                std::error_code ec;
+                return !root.empty() && fs::exists(root / file, ec);
+            };
+            if (holds(into) || std::any_of(held_in.begin(), held_in.end(), holds)) continue;
+            const std::string where = "model '" + m.name + "' part '" + p.name + "': its sidecar " + p.mesh_file;
+            if (into.empty()) {
+                return std::unexpected(Error{Code::unavailable, where + " has no folder to be written into"});
+            }
+            const fs::path to = into / file;
+            std::error_code ec;
+            fs::create_directories(to.parent_path(), ec);
+            if (ec) {
+                return std::unexpected(Error{Code::io_error, where + " could not be written: its folder " +
+                                                                 path_text(to.parent_path()) +
+                                                                 " cannot be created (" + ec.message() + ")"});
+            }
+            if (Result<void> saved = save_mesh_file(to, *p.mesh); !saved) {
+                return std::unexpected(
+                    Error{saved.error().code, where + " could not be written: " + saved.error().context});
+            }
+        }
+    }
+    return {};
 }
 
 }  // namespace spade::scene

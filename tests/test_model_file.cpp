@@ -34,6 +34,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1269,6 +1270,42 @@ TEST(AddModel, APlacedMeshPartReadsBackFromBesideItsScene) {
             EXPECT_EQ(p.mesh->content_hash(), placed.mesh->content_hash());
         }
     }
+}
+
+// write_placed_meshes() (L7b0's review: the editor's Save and the command
+// line's --save share it): each placed sidecar the scene names is written
+// once, from its mesh, into `into`, unless a folder holds it already, which
+// is kept as it is; with nowhere to write one it is refused, by the part.
+TEST(AddModel, ThePlacedSidecarsAreWrittenOnceAndAHeldOneIsKept) {
+    SceneDesc scene = stage();
+    const std::optional<Meshed> m = meshed_reference();
+    ASSERT_TRUE(m.has_value());
+    ASSERT_OK(spade::scene::add_model_with_meshes(scene, m->file, "quad_ref_1"));
+    const std::string small = spade::scene::placed_mesh_file(*m->small);
+    const std::string large = spade::scene::placed_mesh_file(*m->large);
+    const spade::test::TempDir dir("model-write-placed");
+    const std::filesystem::path held = dir.path() / "held";
+    const std::filesystem::path into = dir.path() / "into";
+    std::filesystem::create_directories(held / "imported");
+    write_text(held / small, "held, so kept as it is");
+    const std::filesystem::path holds[] = {held};
+
+    // hull_c's large mesh is held nowhere, and there is no folder for it.
+    const spade::Result<void> nowhere = spade::scene::write_placed_meshes(scene, {}, holds);
+    ASSERT_FALSE(nowhere.has_value());
+    EXPECT_EQ(nowhere.error().code, spade::Code::unavailable);
+    EXPECT_NE(nowhere.error().context.find("part 'hull_c'"), std::string::npos) << nowhere.error().context;
+
+    ASSERT_OK(spade::scene::write_placed_meshes(scene, into, holds));
+    EXPECT_FALSE(std::filesystem::exists(into / small)) << "hull_a's and hull_b's mesh is held";
+    ASSERT_OK(spade::load_mesh_file(into / large, m->large->content_hash()));
+    std::ifstream kept(held / small, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(kept), std::istreambuf_iterator<char>()),
+              "held, so kept as it is");
+
+    // All held now: nothing to write, so no folder is needed.
+    const std::filesystem::path both[] = {held, into};
+    ASSERT_OK(spade::scene::write_placed_meshes(scene, {}, both));
 }
 
 TEST(AddModel, ThePlacedChainSurvivesTheScenesText) {

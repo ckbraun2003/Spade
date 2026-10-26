@@ -36,6 +36,7 @@
 #include "editor_edit_text.hpp"
 #include "editor_files.hpp"
 #include "editor_run.hpp"
+#include "scene/model_file.hpp"  // write_placed_meshes
 
 namespace spade::sandbox::editor {
 
@@ -114,6 +115,12 @@ struct EditCliArgs {
         out << "saved " << a.save_world.generic_string() << "\n";
     }
     if (!a.save.empty()) {
+        // L7b0: a placed drone's sidecars go beside the target first, from its
+        // meshes in memory, the editor's Save's own function.
+        const std::filesystem::path dir = a.save.has_parent_path() ? a.save.parent_path() : std::filesystem::path(".");
+        if (const Result<void> w = scene::write_placed_meshes(opened->scene.desc(), dir); !w) {
+            return fail("save " + a.save.generic_string() + ": " + w.error().context + "; the scene was not saved");
+        }
         const bool world_dirty = opened->world.dirty();
         if (const Result<void> s = save_scene_as(opened->scene, opened->world, a.save); !s) {
             return fail(s.error().context);
