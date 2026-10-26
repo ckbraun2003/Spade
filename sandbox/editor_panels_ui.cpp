@@ -164,10 +164,15 @@ void toolbar(ed::EditorPanels& p) {
         ImGui::SameLine();
     };
     press(p.running ? "Stop" : "Run", p.running ? ed::Command::stop : ed::Command::run);
+    press("Run air", ed::Command::run_air, !p.running);
     press(p.paused ? "Resume" : "Pause", p.paused ? ed::Command::resume : ed::Command::pause, p.running);
     press("Step", ed::Command::step, p.running);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
+    if (p.air_band.empty()) {
+        ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
+    } else {
+        ImGui::TextDisabled("%s", p.air_band.c_str());
+    }
     ImGui::SameLine(0.0f, 6.0f * ui::kBase);
     press("Undo", ed::Command::undo, p.can_undo);
     press("Redo", ed::Command::redo, p.can_redo);

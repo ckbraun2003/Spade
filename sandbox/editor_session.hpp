@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "core/error.hpp"
+#include "editor_airflow.hpp"
 #include "editor_files.hpp"
 #include "editor_views.hpp"
 #include "editor_workspace.hpp"
@@ -106,6 +107,12 @@ class EditorSession {
     std::optional<editor::GizmoDrag> drag_;  // the gizmo's drag, from press to release
     editor::GizmoHandle hot_;                // the handle under the cursor, or dragged
     std::vector<uint8_t> pixels_;
+    // Run air's last frame (INT-15, §9), taken once per displayed frame and
+    // held until the next, so its volume outlives apply_to() and the draw
+    // (R-1); none while the air is stopped. The band's speed, by the
+    // sandbox's clock.
+    std::shared_ptr<const editor::AirFrame> air_frame_;
+    editor::AirSpeed air_speed_;
 };
 
 }  // namespace spade::sandbox

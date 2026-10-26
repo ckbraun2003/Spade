@@ -114,7 +114,7 @@ render::ViewBackend EditorSession::view_backend() const noexcept {
 }
 
 render::ViewInputs EditorSession::view_inputs() {
-    return editor::inputs_of(scene_, nullptr, gpu_ ? gpu_->flow_ready() : true);
+    return editor::inputs_of(scene_, air_frame_ ? &air_frame_->volume : nullptr, gpu_ ? gpu_->flow_ready() : true);
 }
 
 // The composed world as a render scene, plus the meshes and materials the
@@ -323,11 +323,26 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             return std::unexpected(Error{up.error().code, "re-upload failed: " + up.error().context});
         }
     }
+    // Run air's frame (INT-15, §9): the last the worker handed over, its
+    // volume already where the drone is placed; the band's speed by the
+    // sandbox's clock, never the run's.
+    air_frame_ = w.air() != nullptr ? w.air()->latest() : nullptr;
+    if (w.air() == nullptr) {
+        air_speed_ = editor::AirSpeed{};
+        w.panels().air_band.clear();
+    } else {
+        if (air_frame_) {
+            air_speed_.frame(air_frame_->frames, air_frame_->t_s,
+                             std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        }
+        w.panels().air_band =
+            air_frame_ ? air_frame_->run_label + " \xc2\xb7 " + air_speed_.line() : air_speed_.line();  // a middle dot
+    }
     // The view's mode into the scene and options, and the menu for its
-    // backend and inputs (N19). No flow volume until the editor's airflow (M2).
+    // backend and inputs (N19), with Run air's volume when there is one.
     last_view_ = ViewDrawn{};
-    if (Result<void> shown = editor::apply_to(view_, nullptr, view_backend(), view_inputs(), scene_, options_,
-                                              view_cache_);
+    if (Result<void> shown = editor::apply_to(view_, air_frame_ ? &air_frame_->volume : nullptr, view_backend(),
+                                              view_inputs(), scene_, options_, view_cache_);
         !shown) {
         return shown;
     }
@@ -360,7 +375,17 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     }
     sink_->set_view_lines(std::move(lines));
     // SL10: the HUD names what the active path does not draw.
-    sink_->set_status_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
+    // Run air's pressure line, then the gap (airflow::status_line()), or why
+    // the air stopped, in the warning tone.
+    const std::string gap = gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{};
+    if (air_frame_ && !air_frame_->error.empty()) {
+        sink_->set_status_line(air_frame_->error, true);
+    } else if (air_frame_) {
+        const airflow::StatusLine status = airflow::status_line(air_frame_->pressure_line, gap);
+        sink_->set_status_line(status.text, status.warning);
+    } else {
+        sink_->set_status_line(gap);
+    }
     if (gpu_) {
         for (const std::string_view name : GpuRenderer::unhonoured(options_)) {
             if (!last_view_.unhonoured.empty()) last_view_.unhonoured += ", ";
