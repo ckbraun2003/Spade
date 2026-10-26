@@ -187,10 +187,13 @@ class GlTargetSink final : public TargetSink {
     //
     void present_overlay(float render_ms, float physics_ms);
 
-    // The HUD line that names what the active path does not draw
-    // (render_gap.hpp), or "" for none. Held until replaced, so the
-    // application sets it whenever the path or the options can change.
-    void set_gap_line(std::string line);
+    // The HUD's status line under the frame's stats, or "" for none: what
+    // the active path does not draw (render_gap.hpp), and in the airflow
+    // view the run's pressure first (airflow::status_line()). `warning`
+    // draws it in the warning tone (an unconverged pressure, the lead,
+    // 2026-10-22), otherwise dim. Held until replaced, so the application
+    // sets it whenever the path, the options or the run can change it.
+    void set_status_line(std::string line, bool warning = false);
 
     // The editor's gizmo, as segments in the 3D view's pixels: drawn over the
     // view and under every panel. Held until replaced; empty draws none.
