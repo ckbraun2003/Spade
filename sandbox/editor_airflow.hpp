@@ -33,6 +33,7 @@
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "editor_gizmo.hpp"
+#include "editor_panels.hpp"
 #include "scene/scene_file.hpp"
 
 namespace spade::sandbox::editor {
@@ -317,6 +318,22 @@ class AirflowRun {
     analysis::Controls pilot_{};              // under mutex_
     std::jthread worker_;                     // last: joined first
 };
+
+// The inspector's line for `region` through `cache`, resolved again only
+// when the scene's state (`opened`, `serial`) or the region's name changes:
+// air_case() hashes and validates the model (the lead, 2026-10-26).
+inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64_t serial, const scene::SceneDesc& s,
+                                    const scene::SceneAirflowRegion& region) {
+    if (cache.opened == opened && cache.serial == serial && cache.region == region.name) return cache;
+    const Result<analysis::ResolvedCase> r = air_case(s, region);
+    cache.opened = opened;
+    cache.serial = serial;
+    cache.region = region.name;
+    cache.text = r ? grid_line(*r) : r.error().context;
+    cache.refused = !r;
+    ++cache.resolves;
+    return cache;
+}
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
 // in its own colour, not an axis's).

@@ -418,10 +418,11 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             if (ImGui::Button("Add airflow region")) p.pending.push_back(ed::AddAirflowRegion{v.name});
         } else {
             ImGui::TextUnformatted(region->name.c_str());
-            if (const auto resolved = ed::air_case(*p.scene, *region)) {
-                ImGui::TextDisabled("%s", ed::grid_line(*resolved).c_str());
+            const ed::AirLineCache& line = ed::air_line(p.air_line, p.scene_opened, p.scene_serial, *p.scene, *region);
+            if (line.refused) {
+                ui::status_text(line.text);
             } else {
-                ui::status_text(resolved.error().context);
+                ImGui::TextDisabled("%s", line.text.c_str());
             }
             if (ImGui::Button("Remove airflow region")) p.pending.push_back(ed::RemoveAirflowRegion{region->name});
         }

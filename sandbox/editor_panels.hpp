@@ -62,9 +62,26 @@ struct PilotPanel {
     std::string why_not;            // why nothing is piloted, when nothing is
 };
 
+// The inspector's airflow-region line (INT-15) as last resolved, and the
+// scene state it was resolved for (editor_airflow.hpp's air_line()).
+struct AirLineCache {
+    uint64_t opened = ~uint64_t{0};
+    uint64_t serial = 0;
+    std::string region;
+    std::string text;
+    bool refused = false;
+    uint64_t resolves = 0;  // how many times it has resolved
+};
+
 struct EditorPanels {
     // ---- Read by the panels; the workspace fills these every frame.
     const scene::SceneDesc* scene = nullptr;
+    // The scene document's state, a cache key: which document (counted up
+    // each time one is opened, since serials start over) and its serial
+    // (moved by every edit, undo and redo).
+    uint64_t scene_opened = 0;
+    uint64_t scene_serial = 0;
+    AirLineCache air_line;  // kept by the panels between frames
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
     std::string title;                        // the scene file's name, " *" when anything is unsaved
