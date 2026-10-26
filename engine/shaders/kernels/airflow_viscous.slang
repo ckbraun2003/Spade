@@ -28,10 +28,13 @@
 // own neighbour, which the stencil skips. So one invocation per sample of the
 // colour gives the CPU's in-place sweep exactly.
 //
-// THE STENCIL. viscous.cpp's interior fast path makes the general body's
-// additions in the general body's order, with the same diagonal (1 + alpha
-// six times) and a literal + 0.0 for `extra`, so its general body alone is
-// ported: sum, diag and extra accumulated over a = 0..2, dir = 0..1.
+// THE STENCIL. viscous.cpp's general body, sum, diag and extra accumulated
+// over a = 0..2, dir = 0..1, and its interior fast path: a sample with no
+// wall link whose six neighbours are plain samples makes the general body's
+// additions in the general body's order at fixed strides, with the same
+// diagonal (1 + alpha six times) and + 0.0 for `extra`, so either path gives
+// the other's bits; the fast path only skips the general body's per-neighbour
+// branches and face-kind reads (B3's follow-up, 2026-10-26).
 //
 // PARITY. -fp-mode precise keeps the arithmetic uncontracted; every add and
 // multiply rounds correctly, and the one division is fp32_math's div32_ftz,
@@ -116,8 +119,20 @@ void prepare(uint c, uint idx) {
     airflow_viscous_rhs[component_base(c) + idx] = x;
 }
 
-// One sample of the colour: viscous.cpp's general body.
-void relax(uint c, uint i, uint j, uint k) {
+// viscous.cpp's in_range() over the sample's three indices: along its own
+// axis from 1 to n - 1 (0 and n are boundaries) or, periodic, to n - 2 (0
+// and n - 1 wrap); across it from 1 to n - 2 (0 and n - 1 are domain edges).
+bool interior(uint c, uint idx[3], uint n[3], bool periodic_c) {
+    for (uint a = 0u; a < 3u; ++a) {
+        const int top = (a == c && !periodic_c) ? int(n[a]) - 1 : int(n[a]) - 2;
+        if (idx[a] < 1u || int(idx[a]) > top) return false;
+    }
+    return true;
+}
+
+// One sample of the colour: viscous.cpp's interior fast path, or its general
+// body.
+void relax(RWStructuredBuffer<float> x, uint c, uint i, uint j, uint k) {
     const uint n[3] = { grid_dims().x, grid_dims().y, grid_dims().z };
     const uint idx[3] = { i, j, k };
     const uint here = at(c, i, j, k);
@@ -132,6 +147,22 @@ void relax(uint c, uint i, uint j, uint k) {
     // The periodic alias face, or a boundary face the velocity conditions hold.
     if (periodic_c ? own == n[c] : (own == 0u || own == n[c])) return;
     const float alpha = viscous_alpha();
+    if (link == kNoWallLinks && interior(c, idx, n, periodic_c)) {
+        const uint sy = samples(c, 0u);
+        const uint sz = sy * samples(c, 1u);
+        float s = 0.0;
+        s += alpha * x[here - 1u];
+        s += alpha * x[here + 1u];
+        s += alpha * x[here - sy];
+        s += alpha * x[here + sy];
+        s += alpha * x[here - sz];
+        s += alpha * x[here + sz];
+        float d = 1.0;
+        for (uint m = 0u; m < 6u; ++m) d += alpha;
+        const float none = 0.0;  // the general body's `extra`, as the CPU's fast path adds it
+        x[here] = div32_ftz((airflow_viscous_rhs[component_base(c) + here] + s) + none, d);
+        return;
+    }
     float sum = 0.0;
     float diag = 1.0;
     float extra = 0.0;
@@ -152,14 +183,14 @@ void relax(uint c, uint i, uint j, uint k) {
                 } else {
                     nb[a] = (periodic_c && own + 1u == n[c]) ? 0u : own + 1u;
                 }
-                sum += alpha * load(c, at(c, nb[0], nb[1], nb[2]));
+                sum += alpha * x[at(c, nb[0], nb[1], nb[2])];
                 diag += alpha;
                 continue;
             }
             const bool edge = dir == 0u ? idx[a] == 0u : idx[a] + 1u == n[a];
             if (!edge) {
                 nb[a] = dir == 0u ? idx[a] - 1u : idx[a] + 1u;
-                sum += alpha * load(c, at(c, nb[0], nb[1], nb[2]));
+                sum += alpha * x[at(c, nb[0], nb[1], nb[2])];
                 diag += alpha;
                 continue;
             }
@@ -167,7 +198,7 @@ void relax(uint c, uint i, uint j, uint k) {
             if (kind == kFacePeriodic) {
                 if (n[a] > 1u) {
                     nb[a] = dir == 0u ? n[a] - 1u : 0u;
-                    sum += alpha * load(c, at(c, nb[0], nb[1], nb[2]));
+                    sum += alpha * x[at(c, nb[0], nb[1], nb[2])];
                     diag += alpha;
                 }
             } else if (kind == kFaceFixedVelocity) {  // a wall's no slip or an inflow: the ghost 2 U - x
@@ -176,7 +207,7 @@ void relax(uint c, uint i, uint j, uint k) {
             }  // an outlet: the zero-gradient ghost, no term
         }
     }
-    store(c, here, div32_ftz((airflow_viscous_rhs[component_base(c) + here] + sum) + extra, diag));
+    x[here] = div32_ftz((airflow_viscous_rhs[component_base(c) + here] + sum) + extra, diag);
 }
 
 [shader("compute")]
@@ -197,7 +228,16 @@ void airflow_viscous(uint3 tid : SV_DispatchThreadID) {
         const uint j = row % sy;
         const uint k = row / sy;
         const uint i = 2u * (t % half_x) + ((j + k + viscous_push.colour) & 1u);
-        if (i < sx) relax(c, i, j, k);
+        if (i >= sx) return;
+        // The component's buffer, picked once: a pick per load can compile to
+        // a load from all three.
+        if (c == 0u) {
+            relax(airflow_u, c, i, j, k);
+        } else if (c == 1u) {
+            relax(airflow_v, c, i, j, k);
+        } else {
+            relax(airflow_w, c, i, j, k);
+        }
     } else {
         // count = the plane across the own axis; face n takes face 0's value.
         const uint n = axis_cells(c);
