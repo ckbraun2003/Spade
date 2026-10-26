@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -13,6 +14,9 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+
+#include "world/mesh.hpp"         // mass_properties
+#include "world/mesh_shapes.hpp"  // THE LOOK's generators
 
 namespace spade::vehicles {
 namespace {
@@ -79,19 +83,45 @@ constexpr std::string_view kTriBlade =
     return p;
 }
 
-// The parts' mass as the compile gathers it: the records, then a motor and a
-// propeller per rotor, the ESC and the battery (vehicles/airframe_compile.hpp,
-// PARTS). A block of zero mass adds nothing either way.
-[[nodiscard]] double parts_mass(const AirframeSpec& s) {
-    double m = 0.0;
-    for (const PartInertia& p : s.parts) m += p.mass;
-    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
-        m += s.motor.mass;
-        m += s.prop.mass;
+// THE LOOK (basic_quad.hpp): the body record, the four arm records and the
+// motors as generated meshes, each mass kept. A body or arm record becomes a
+// mesh record at its own pose, of density mass / V; the motors take the bell
+// as AirframeSpec::motor_mesh, of the motor's mass.
+[[nodiscard]] Result<void> wear(AirframeSpec& s, const BasicQuadParams& p, double arm_length) {
+    const BasicQuadLook& look = *p.look;
+    if (look.segments < 1 || look.segments > shapes::kMaxBoxSegments) {
+        return std::unexpected(invalid("look.segments must be in [1, " + std::to_string(shapes::kMaxBoxSegments) +
+                                       "], found " + std::to_string(look.segments)));
     }
-    m += s.esc.mass;
-    m += s.battery.mass;
-    return m;
+    const uint32_t around = 8u * look.segments;  // a full circle at the rounded box's spacing
+    const auto refused = [](const char* what, const Error& e) {
+        return std::unexpected(Error{e.code, std::string("look: ") + what + ": " + e.context});
+    };
+    const Result<shapes::GeneratedMesh> body = shapes::rounded_box(p.body_size, look.body_edge_radius, look.segments);
+    if (!body) return refused("the body", body.error());
+    const Result<shapes::GeneratedMesh> arm = shapes::capped_tube(p.arm_radius, arm_length, around);
+    if (!arm) return refused("the arms", arm.error());
+    if (!p.motor.shape || p.motor.shape->shape != PartShape::cylinder) {
+        return std::unexpected(invalid("look: a bell is sized from motor.shape, a cylinder (radius, length), and "
+                                       "this motor's shape is not one"));
+    }
+    const Result<shapes::GeneratedMesh> bell =
+        shapes::motor_bell(p.motor.shape->size.x, p.motor.shape->size.y, look.bell_chamfer, around);
+    if (!bell) return refused("the bells", bell.error());
+
+    const auto wear_mesh = [](PartInertia& r, const shapes::GeneratedMesh& g) {
+        r.geometry.source = GeometrySource::mesh;
+        r.geometry.mesh = g.mesh;
+        r.geometry.density = r.mass / g.mesh->mass_properties().volume;
+        r.geometry.min_feature = g.min_feature;
+        r.mass = 0.0;
+        r.shape = PartShape::point;
+        r.size = glm::dvec3(0.0);
+    };
+    wear_mesh(s.parts[0], *body);
+    for (std::size_t k = 1; k < s.parts.size(); ++k) wear_mesh(s.parts[k], *arm);
+    s.motor_mesh = MotorMeshSpec{.mesh = bell->mesh, .min_feature = bell->min_feature};
+    return {};
 }
 
 }  // namespace
@@ -249,6 +279,9 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
     }
     s.imus.push_back(ImuSpec{});
     s.proxy_radius = arm_length + 0.5 * p.prop.diameter;
+    if (p.look) {
+        if (const Result<void> worn = wear(s, p, arm_length); !worn) return std::unexpected(worn.error());
+    }
 
     if (!p.mass) return s;
 
@@ -262,11 +295,12 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
 Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass, const std::optional<glm::dvec3>& inertia) {
     if (const std::optional<Error> e = non_finite_target(mass, inertia)) return std::unexpected(*e);
 
-    // The parts are measured by the compile itself (TD-9): its composite
-    // inertia about their centre of mass, in design axes, in double.
-    const Result<CompiledAirframe> parts = compile_airframe(spec);
+    // The parts are measured by the compile's own composite (TD-9), without
+    // the fit or the drag rule: their mass in double, as the composite sums
+    // it, and their inertia about their centre of mass, in design axes.
+    const Result<AirframeComposite> parts = airframe_composite(spec);
     if (!parts) return std::unexpected(parts.error());
-    const double own_mass = parts_mass(spec);
+    const double own_mass = parts->mass;
     const double rest_mass = mass - own_mass;
     if (!(rest_mass > 0.0)) {
         return std::unexpected(invalid("mass: the fitted " + text(mass) + " kg is not above the parts' own " +

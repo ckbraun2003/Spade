@@ -26,8 +26,20 @@
 // The blocks follow as the compile gathers them: a motor beside each hub, a
 // propeller on it, the ESC and the battery at their own mounts. One IMU sits
 // at the origin. proxy_radius is L plus the propeller's radius. Drag is left
-// empty, so the compile estimates it from the parts (best-effort; there is no
-// mesh record).
+// empty, so without a look the compile estimates it from the parts
+// (best-effort; there is no mesh record).
+//
+// THE LOOK (L7b1 of the realistic drones plan), optional and none by
+// default: the same parts as generated meshes (world/mesh_shapes.hpp), each
+// part's mass unchanged. The body becomes a rounded_box of body_size, a mesh
+// record of density body_mass / V; each arm a capped_tube of arm_radius whose
+// cap centres are L apart, at the arm's pose, of density its mass / V (the
+// four share one mesh); and every motor the motor_bell its shape sizes (a
+// cylinder: radius, length), as AirframeSpec::motor_mesh, of the motor's
+// mass. A tube or a bell is 8 x segments chords around, the rounded box's own
+// spacing (its quarter circle takes 2 x segments). The look adds no drag:
+// the caller gives one, and the compile refuses a mesh spec without one
+// (Physics' rule). Without a look the spec is what it was, bit for bit.
 //
 // THE FIT. Each target is optional, and none is set by default.
 //   mass     The total, met by a `remainder` record of (mass - the parts'
@@ -60,7 +72,9 @@
 //                        refuse (one that breaks the triangle inequality)
 // Its error names the field, the target and the parts' value. The rule is
 // fit_remainder(), public so any spec's remainder uses it, the Crazyflie's
-// among them (the lead's ruling, 2026-10-22; TD-9).
+// among them (the lead's ruling, 2026-10-22; TD-9). It measures the parts by
+// airframe_composite(), without the fit or the drag rule, so a looked spec,
+// whose drag is the caller's, is fitted too.
 //
 // THE ADVISORIES. basic_quad_advisories() names what compiles but its user
 // should see: each pair of rotor discs whose hubs are closer than the
@@ -92,7 +106,10 @@
 
 namespace spade::vehicles {
 
-// THE LOOK (L7b1): the parts as generated meshes. None by default.
+// THE LOOK (L7b1, above): the parts as generated meshes. Every field is the
+// caller's (the library grades each `assumed`); a value out of a generator's
+// range is refused in its words, after "look: the body: ", "look: the arms: "
+// or "look: the bells: ".
 struct BasicQuadLook {
     double body_edge_radius = 0.0;  // m: the body box's rounded edges and corners
     double bell_chamfer = 0.0;      // m: each motor bell's top edge
@@ -148,19 +165,21 @@ struct BasicQuadParams {
 // The spec. invalid_argument, naming the field: a half span not finite and
 // above 0; a non-finite fit target; a kappa not above 0, beside a cq_table
 // with no ct_table, or with a diameter not above 0; an inertia target
-// without a mass target; and the refusals of THE FIT. With a mass target,
-// the parts are compiled once to measure them, so the compile's own refusal
-// comes back unchanged. Otherwise the compile's rules are left to
-// compile_airframe().
+// without a mass target; with a look, look.segments outside
+// [1, shapes::kMaxBoxSegments], a motor whose shape is not a cylinder, and a
+// generator's refusal; and the refusals of THE FIT. With a mass target, the
+// parts are measured once (airframe_composite()), so its refusal comes back
+// unchanged. Otherwise the compile's rules are left to compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
 
 // THE FIT, for any spec: the `remainder` record that brings `spec`'s parts to
 // `mass` and, with `inertia`, to that diagonal about their centre of mass, in
 // design axes. It is mass only (geometry source none), a point without
 // `inertia` and a tensor with it, at the parts' centre of mass as the compile
-// reports it; the caller appends it to spec.parts. `spec` is compiled once to
-// measure it, so the compile's own refusal comes back unchanged. Otherwise
-// invalid_argument for a non-finite target and the refusals of THE FIT.
+// reports it; the caller appends it to spec.parts. `spec` is measured once by
+// airframe_composite() (the compile's composite, without the fit or the drag
+// rule), so its refusal comes back unchanged. Otherwise invalid_argument for
+// a non-finite target and the refusals of THE FIT.
 [[nodiscard]] Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass,
                                                 const std::optional<glm::dvec3>& inertia = std::nullopt);
 
@@ -174,7 +193,7 @@ struct BasicQuadAssumption {
 // Every numeric default of BasicQuadParams, in declaration order, so the UI
 // can list what a default-built quad assumes. The name and the identity
 // strings (stator, protocol) are not numbers and are not listed, and neither
-// are the fit targets, which have no default. Last, under "rotors", what the
+// are the fit targets or the look, which have no default. Last, under "rotors", what the
 // model assumes of every basic quad: the shared wake is not modelled
 // (Physics).
 [[nodiscard]] std::vector<BasicQuadAssumption> basic_quad_assumptions();

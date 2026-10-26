@@ -69,8 +69,9 @@
 // Both kinds run along local +Y, so a cylinder needs no turn. The parts come
 // in gather order, after the IMU mounts: the spec's records (named by
 // PartInertia::geometry, "parts[k]" when it gives no name, or opted out with
-// source none), then a shaped motor beside each hub ("motor[k]", role
-// "motor"), a shaped ESC ("esc") and a shaped battery ("battery"). A block of
+// source none), then a shaped motor beside each hub, or its mesh at the hub
+// (THE MOTOR'S MESH) ("motor[k]", role "motor"), a shaped ESC ("esc") and a
+// shaped battery ("battery"). A block of
 // zero mass gathers no record and gives no part. A propeller never does: its
 // disc is mass only, and the rotor is an actuator disc. Every part is rigid, a
 // motor's too, whose solid sits where its mass does. Geometry is imported
@@ -124,6 +125,22 @@
 // (RotorSpec::pusher). Half its extent is a cylinder's or a tube's length / 2,
 // a box's y extent / 2, a sphere's radius; a point or a tensor stays on the
 // hub. The propeller's mass and the rotor stay on the hub.
+//
+// THE MOTOR'S MESH (L7b1 of the realistic drones plan; Q2 (a), the lead's
+// ruling, 2026-10-26). With AirframeSpec::motor_mesh, each rotor's motor
+// record is a mesh record instead: its mesh in the HUB frame (a bell hangs
+// below the rotor plane, y = 0), its mass exactly motor.mass, at the hub
+// applied to the mesh's centroid, with the tensor (motor.mass / V) I_unit
+// about it (MASS FROM A MESH, but of the motor's mass, not a density's). Its
+// part is the mesh at the hub pose, with no half-extent shift, and
+// motor.shape is not read for it (a builder sizes the bell from it). It is a
+// mesh record for Physics' drag rule (DRAG AND MESHES). Refused, each one
+// issue at motor_mesh[0].<field>: no mesh, or one whose volume is not finite
+// and > 0 or gives no finite inertia (mesh); a min_feature not finite and > 0
+// (min_feature); a motor mass of 0, "counted elsewhere", which would drop the
+// mesh with the record (mass); and any pusher rotor (pusher; YAGNI, none of
+// the library's drones pushes). These stop the composite and the fit, like a
+// mesh record's.
 //
 // DETERMINISM. Double arithmetic in a fixed order, sqrt the only
 // non-arithmetic call (IEEE 754 rounds it correctly), fixed iteration counts,
@@ -380,8 +397,16 @@ struct CompiledAirframe {
 // The compile. On any problem, invalid_argument with every issue, joined.
 [[nodiscard]] Result<CompiledAirframe> compile_airframe(const AirframeSpec& spec);
 
-// THE COMPOSITE (L7b1): the body compile_airframe() gathers, measured without
-// the fit or the drag rule.
+// THE COMPOSITE (L7b1): the body compile_airframe() gathers -- the same
+// records, the same composite_inertia(), bit for bit -- measured without the
+// fit, the drag rule or the model's rules, so a mesh spec with no DragSpec,
+// or a chain that cannot lift the airframe, is still measured (the basic
+// quad's fit_remainder() and any builder's remainder measure through it).
+// Refused, invalid_argument with the issues joined as compile_airframe()
+// joins them, by the problems that stop the compile's composite: the
+// blocks', the mesh records' and the motor mesh's own rules, and the parts'.
+// `mass` is the records' masses summed in gather order in double, which
+// inertia.mass rounds to float: a fit needs the double to stay exact.
 struct AirframeComposite {
     CompositeInertia inertia;  // compile_airframe()'s CompiledAirframe::inertia, bit for bit
     double mass = 0.0;         // kg: the gathered records' masses, summed in gather order in double
