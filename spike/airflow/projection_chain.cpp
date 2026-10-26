@@ -116,20 +116,22 @@ uint32_t tile_sum_tiles(const af::GridShape& shape) noexcept {
 
 namespace {
 
-// remove_mean(field): airflow_tile_sum's two passes (one thread per tile, then
-// one thread over the tiles) into airflow_scalars[kMeanSlot], then the
-// subtraction. Both kernels' pushes are {field, pass or 0, cells, slot}.
+// remove_mean(field): airflow_tile_sum's three passes (one thread per tile,
+// one per block of kReduceBlockTiles tiles, then one over the blocks) into
+// airflow_scalars[kMeanSlot], then the subtraction. The pushes are {field,
+// tile_sum_pass_word(pass), cells, slot} and {field, 0, cells, slot}.
 void append_remove_mean(std::vector<compute::ChainCommand>& out, const af::GridShape& shape,
                         const ProjectionPipelines& p, uint32_t field, uint32_t workgroup_size) {
     const auto cells = static_cast<uint32_t>(uint64_t{shape.nx} * shape.ny * shape.nz);
-    compute::ChainCommand tiles =
-        projection_dispatch(p.tile_sum, {.a = field, .b = 0, .count = cells, .d = kMeanSlot}, workgroup_size);
-    tiles.groups = {(tile_sum_tiles(shape) + workgroup_size - 1u) / workgroup_size, 1u, 1u};
-    compute::ChainCommand total =
-        projection_dispatch(p.tile_sum, {.a = field, .b = 1, .count = cells, .d = kMeanSlot}, workgroup_size);
-    total.groups = {1u, 1u, 1u};
-    out.push_back(tiles);
-    out.push_back(total);
+    const uint32_t tile_count = tile_sum_tiles(shape);
+    const uint32_t block_count = (tile_count + af::kReduceBlockTiles - 1u) / af::kReduceBlockTiles;
+    const std::array<uint32_t, 3> threads{tile_count, block_count, 1u};
+    for (uint32_t pass = 0; pass < 3u; ++pass) {
+        compute::ChainCommand c = projection_dispatch(
+            p.tile_sum, {.a = field, .b = tile_sum_pass_word(pass), .count = cells, .d = kMeanSlot}, workgroup_size);
+        c.groups = {(threads[pass] + workgroup_size - 1u) / workgroup_size, 1u, 1u};
+        out.push_back(c);
+    }
     out.push_back(projection_dispatch(p.remove_mean, {.a = field, .count = cells, .d = kMeanSlot}, workgroup_size));
 }
 

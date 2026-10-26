@@ -12,10 +12,11 @@
 //
 // A CLOSED DOMAIN (no pressure outlet) also removes b's mean before the
 // cycles and p's after each one (reduce.cpp's remove_mean()): airflow_tile_sum
-// (Physics' B1) sums the field in the CPU's fixed tile order into
-// airflow_scalars[kMeanSlot], and airflow_remove_mean subtracts sum *
-// inv_count from every cell. The chain then needs airflow_partials, one float
-// per tile (tile_sum_tiles()), and airflow_scalars bound.
+// (Physics' B1, B5.1's two-level order) sums the field in the CPU's fixed
+// order (reduce.hpp) into airflow_scalars[kMeanSlot], and airflow_remove_mean
+// subtracts sum * inv_count from every cell. The chain then needs
+// airflow_partials, one float per tile (tile_sum_tiles()), and
+// airflow_scalars bound.
 // ---------------------------------------------------------------------------
 
 #include <array>
@@ -28,6 +29,7 @@
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/projection.hpp"
+#include "physics/airflow/reduce.hpp"
 
 namespace spade::airflow_gpu {
 
@@ -72,6 +74,15 @@ inline constexpr uint32_t kMeanSlot = 0;
 // airflow_tile_sum's tiles over the grid, reduce.hpp's kReduceTile on a side:
 // airflow_partials' floats.
 [[nodiscard]] uint32_t tile_sum_tiles(const physics::airflow::GridShape& shape) noexcept;
+
+// airflow_tile_sum's push word 1: the pass in bits 0-7 (0 the tiles, 1 the
+// blocks, 2 the total) and the block, in tiles, in bits 8-31. The solver's
+// block is reduce.hpp's kReduceBlockTiles, never a workgroup size.
+inline constexpr uint32_t kTileSumBlockShift = 8;
+[[nodiscard]] constexpr uint32_t tile_sum_pass_word(
+    uint32_t pass, uint32_t block = physics::airflow::kReduceBlockTiles) noexcept {
+    return pass | (block << kTileSumBlockShift);
+}
 
 // The projection kernels' pipelines in the runner (RunnerDesc::kernels).
 // tile_sum and remove_mean are dispatched for a closed domain only.

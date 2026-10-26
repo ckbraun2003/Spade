@@ -40,6 +40,9 @@ include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
 spade_slang_kernel_variants(spade_airflow_runner airflow_copy)
 spade_slang_kernel_variants(spade_airflow_runner airflow_add_one)
 spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum)
+# B5.0b's test-only probe: airflow_tile_sum's last pass with loads issued
+# ahead, and a two-level order, measured by an opt-in test; no chain uses it.
+spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum_probe)
 
 # B2's projection kernels, the CPU's multigrid V-cycle and its divergence and
 # gradient (tests/test_gpu_airflow_projection.cpp; AirflowRunnerSpirv scans

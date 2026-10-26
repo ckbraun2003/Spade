@@ -7,10 +7,16 @@
 //   GpuAirflowRunner          upload/read exact; the barrier; record once,
 //                             submit n; each refusal by name, before any
 //                             allocation; timestamps per mark or empty
-//   GpuAirflowRunnerTileSum   A4: the fixed-tile sum gives the same bits at
-//                             workgroup sizes 32, 64 and 128, and the same bits
-//                             as physics/airflow/reduce.hpp on the CPU
-//   AirflowRunnerSpirv        the kernels' compiled modules (plan B's): no
+//   GpuAirflowRunnerTileSum   A4: the fixed-tile sum, in B5.1's two-level
+//                             order, gives the same bits at workgroup sizes
+//                             32, 64 and 128, and the same bits as
+//                             physics/airflow/reduce.hpp on the CPU; and,
+//                             opt-in (SPADE_AIRFLOW_TIMINGS=1), B5.0's times
+//                             of its two passes and of a word's readback,
+//                             and B5.0b's: the last pass with loads issued
+//                             ahead, and a two-level order and its
+//                             invariance (a test-only probe kernel)
+//   AirflowRunnerSpirv       the kernels' compiled modules (plan B's): no
 //                             contraction, no atomics, no shared memory, every
 //                             binding in set 1 (the airflow set), and variants
 //                             that differ in their local size only (no device;
@@ -30,10 +36,13 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <limits>
@@ -42,6 +51,8 @@
 #include <span>
 #include <string>
 #include <vector>
+
+#include <glm/gtc/quaternion.hpp>
 
 #include "airflow_actuator_gather.spv.gen.hpp"
 #include "airflow_add_one.spv.gen.hpp"
@@ -57,15 +68,29 @@
 #include "airflow_publish_fields.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
+#include "airflow_tile_sum_probe.spv.gen.hpp"
 #include "airflow_velocity_bc.spv.gen.hpp"
 #include "airflow_viscous.spv.gen.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
+#include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
+#include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/multigrid.hpp"
+#include "physics/airflow/pcg.hpp"
+#include "physics/airflow/pressure.hpp"
 #include "physics/airflow/reduce.hpp"
+#include "physics/airflow/regions.hpp"
+#include "reference_airframe.hpp"
 #include "spike/airflow/chain_runner.hpp"
+#include "spike/airflow/projection_chain.hpp"
+#include "state/layout.hpp"
 #include "testing/spirv_scan.hpp"
+#include "vehicles/airflow_solids.hpp"
+#include "vehicles/airframe_compile.hpp"
+#include "vehicles/part_pose.hpp"
+#include "vehicles/quadrotor.hpp"
 
 namespace {
 
@@ -163,10 +188,11 @@ struct CountPush {
 
 [[nodiscard]] CountPush count_push(uint32_t count) { return CountPush{.count = count}; }
 
-// The push block of airflow_tile_sum.
+// The push block of airflow_tile_sum. Word 1 is projection_chain.hpp's
+// tile_sum_pass_word(): the pass, and the block in tiles.
 struct TileSumPush {
-    uint32_t field = 0;  // 0 airflow_pressure, 1 airflow_rhs
-    uint32_t pass = 0;   // 0 the tiles; 1 the total
+    uint32_t field = 0;       // 0 airflow_pressure, 1 airflow_rhs
+    uint32_t pass_block = 0;  // the pass (0 the tiles, 1 the blocks, 2 the total) and the block
     uint32_t cell_count = 0;
     uint32_t slot = 0;  // airflow_scalars' slot for the total
 };
@@ -605,7 +631,7 @@ TEST(GpuAirflowRunner, DurationsArePerMarkOrEmpty) {
 }
 
 // ===========================================================================
-// GpuAirflowRunnerTileSum -- A4
+// GpuAirflowRunnerTileSum -- A4, in B5.1's two-level order
 // ===========================================================================
 
 // airflow_scalars' slots in this test (the solver's are [0] remove_mean's
@@ -618,18 +644,80 @@ constexpr float kScalarSentinel = -12345.0f;
 // The fields airflow_tile_sum reads, by its push's `field`.
 constexpr std::array<const char*, 2> kFieldName{"airflow_pressure", "airflow_rhs"};
 
+[[nodiscard]] std::string hex_bits(float f) {
+    char text[16];
+    std::snprintf(text, sizeof(text), "0x%08x", bits(f));
+    return text;
+}
+
+// Each tile's sum from 0 in (k, j, i) order, the tiles in (tk, tj, ti) order:
+// reduce.hpp's tiles, spelled out.
+[[nodiscard]] std::vector<float> tile_partials(const std::vector<float>& f, uint32_t nx, uint32_t ny, uint32_t nz) {
+    std::vector<float> out;
+    for (uint32_t tk = 0; tk < nz; tk += 4) {
+        for (uint32_t tj = 0; tj < ny; tj += 4) {
+            for (uint32_t ti = 0; ti < nx; ti += 4) {
+                float s = 0.0f;
+                for (uint32_t k = tk; k < std::min(tk + 4u, nz); ++k) {
+                    for (uint32_t j = tj; j < std::min(tj + 4u, ny); ++j) {
+                        for (uint32_t i = ti; i < std::min(ti + 4u, nx); ++i) {
+                            s += f[i + std::size_t{nx} * (j + std::size_t{ny} * k)];
+                        }
+                    }
+                }
+                out.push_back(s);
+            }
+        }
+    }
+    return out;
+}
+
+// B1's order, before B5.1: the tile sums from 0 in tile order, one chain.
+[[nodiscard]] float serial_total(const std::vector<float>& tiles) {
+    float total = 0.0f;
+    for (const float s : tiles) total += s;
+    return total;
+}
+
+// Block b's sum: its tiles' sums from 0 in tile order (the last block holds
+// the rest).
+[[nodiscard]] float block_sum(const std::vector<float>& tiles, std::size_t b, uint32_t block) {
+    float s = 0.0f;
+    for (std::size_t t = b * block; t < std::min((b + 1) * block, tiles.size()); ++t) s += tiles[t];
+    return s;
+}
+
+// THE TWO-LEVEL ORDER (reduce.hpp since B5.1), spelled out: blocks of `block`
+// consecutive tiles, each from 0 in tile order, then the block sums from 0 in
+// block order.
+[[nodiscard]] float two_level_total(const std::vector<float>& tiles, uint32_t block) {
+    float total = 0.0f;
+    for (std::size_t b = 0; b * block < tiles.size(); ++b) total += block_sum(tiles, b, block);
+    return total;
+}
+
+// airflow_partials after the three passes: each tile's own sum, but block b's
+// first tile, which holds the block's sum (pass 1 writes it in place).
+[[nodiscard]] std::vector<float> partials_after(const std::vector<float>& tiles, uint32_t block) {
+    std::vector<float> out = tiles;
+    for (std::size_t b = 0; b * block < tiles.size(); ++b) out[b * block] = block_sum(tiles, b, block);
+    return out;
+}
+
 struct TileSumRun {
-    std::array<std::vector<float>, 2> tiles;  // airflow_partials after each field's sum
-    std::vector<float> scalars;               // airflow_scalars after both
+    std::array<std::vector<float>, 2> partials;  // airflow_partials after each field's sum
+    std::vector<float> scalars;                  // airflow_scalars after both
 };
 
-// The two-dispatch tile sum of airflow_pressure (field 0), then of
-// airflow_rhs (field 1), at `workgroup_size`: one chain per field, each pass
-// 0 then pass 1 with the same push but for the pass, since airflow_partials
-// is shared by the reductions in turn.
+// The three-dispatch tile sum of airflow_pressure (field 0), then of
+// airflow_rhs (field 1), at `workgroup_size`, with `block` tiles a block in
+// the push: one chain per field, passes 0, 1 and 2 with the same push but for
+// the pass, since airflow_partials is shared by the reductions in turn.
 [[nodiscard]] TileSumRun run_tile_sum(VulkanContext& ctx, const std::array<std::vector<float>, 2>& fields,
-                                      uint32_t nx, uint32_t ny, uint32_t nz, uint32_t workgroup_size) {
+                                      uint32_t nx, uint32_t ny, uint32_t nz, uint32_t workgroup_size,
+                                      uint32_t block) {
     const uint32_t tiles = ((nx + 3) / 4) * ((ny + 3) / 4) * ((nz + 3) / 4);
+    const uint32_t blocks = (tiles + block - 1) / block;
     const uint32_t cells = nx * ny * nz;
 
     // airflow_params: its dims, words 0-2 (engine/shaders/airflow_params_layout.slang),
@@ -644,13 +732,13 @@ struct TileSumRun {
     buffers[kPressure] = {"airflow_pressure", cells * 4ull, BufferKind::staged};
     buffers[kRhs] = {"airflow_rhs", cells * 4ull, BufferKind::staged};
     buffers[kScalars] = {"airflow_scalars", kScalarSlots * 4ull, BufferKind::staged};
-    buffers[kPartials] = {"airflow_partials", tiles * 4ull, BufferKind::staged};
+    buffers[kPartials] = {"airflow_partials", tiles * 4ull, BufferKind::staged};  // one float a tile
     const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_tile_sum};
     auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
                                                       .push_bytes = kPushBytes, .workgroup_size = workgroup_size});
     EXPECT_TRUE(runner.has_value()) << runner.error().context;
     TileSumRun out;
-    for (std::vector<float>& t : out.tiles) t.assign(tiles, std::numeric_limits<float>::quiet_NaN());
+    for (std::vector<float>& t : out.partials) t.assign(tiles, std::numeric_limits<float>::quiet_NaN());
     out.scalars.assign(kScalarSlots, std::numeric_limits<float>::quiet_NaN());
     if (!runner.has_value()) return out;
 
@@ -660,17 +748,22 @@ struct TileSumRun {
     EXPECT_TRUE((*runner)->upload(kRhs, bytes_of(fields[1])).has_value());
     EXPECT_TRUE((*runner)->upload(kScalars, bytes_of(sentinel)).has_value());
 
+    const std::array<uint32_t, 3> threads{tiles, blocks, 1u};
     for (uint32_t field = 0; field < 2; ++field) {
-        const TileSumPush tiles_pass{.field = field, .pass = 0, .cell_count = cells, .slot = kTotalSlot[field]};
-        const TileSumPush total_pass{.field = field, .pass = 1, .cell_count = cells, .slot = kTotalSlot[field]};
-        const ChainCommand chain[] = {dispatch(0, tiles_pass, {groups_for(tiles, workgroup_size), 1, 1}),
-                                      dispatch(0, total_pass, {1, 1, 1})};
+        std::vector<ChainCommand> chain;
+        for (uint32_t pass = 0; pass < 3; ++pass) {
+            const TileSumPush push{.field = field,
+                                   .pass_block = spade::airflow_gpu::tile_sum_pass_word(pass, block),
+                                   .cell_count = cells,
+                                   .slot = kTotalSlot[field]};
+            chain.push_back(dispatch(0, push, {groups_for(threads[pass], workgroup_size), 1, 1}));
+        }
         auto id = (*runner)->record(chain);
         EXPECT_TRUE(id.has_value()) << id.error().context;
         if (!id.has_value()) return out;
         auto submitted = (*runner)->submit(*id, 1);
         EXPECT_TRUE(submitted.has_value()) << submitted.error().context;
-        EXPECT_TRUE((*runner)->read(kPartials, writable_bytes_of(out.tiles[field])).has_value());
+        EXPECT_TRUE((*runner)->read(kPartials, writable_bytes_of(out.partials[field])).has_value());
     }
     EXPECT_TRUE((*runner)->read(kScalars, writable_bytes_of(out.scalars)).has_value());
     return out;
@@ -697,9 +790,19 @@ struct TileSumRun {
     return out;
 }
 
+// A block other than the solver's, pushed by the check below: the kernel
+// takes its block from the push, not from a constant of its own.
+constexpr uint32_t kOtherBlockTiles = 64;
+
+// THE INVARIANCE (A4; B5.1, as GnssTumble's): at workgroup sizes 32, 64 and
+// 128 the GPU's total has one set of bits, reduce.hpp's two-level sum on the
+// CPU, and its partials are the CPU's tiles with each block's sum on its
+// first tile. Then, at workgroup size 64, the push's block at 64 tiles gives
+// the two-level sum at 64.
 void check_tile_sum(uint32_t nx, uint32_t ny, uint32_t nz, uint64_t seed) {
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
+    constexpr uint32_t kBlock = spade::physics::airflow::kReduceBlockTiles;
 
     // Two fields from two streams of the seed: what the kernel reads for
     // field 0 and for field 1 differ in every cell, so reading the wrong one
@@ -716,32 +819,43 @@ void check_tile_sum(uint32_t nx, uint32_t ny, uint32_t nz, uint64_t seed) {
         // The CPU reference: the total, and each tile's own sum.
         cpu[f] = spade::physics::airflow::fixed_tile_sum(fields[f], nx, ny, nz);
         cpu_tiles[f] = cpu_tile_sums(fields[f], nx, ny, nz);
+        EXPECT_EQ(bits(two_level_total(cpu_tiles[f], kBlock)), bits(cpu[f]))
+            << "the spelled-out two-level order is not reduce.hpp's";
 
-        // The data is order-sensitive: the plain array-order sum differs, so
-        // a GPU that summed in any other order would show.
+        // The data is order-sensitive: the plain array-order sum differs, and
+        // past one block so does B1's chain, so a GPU that summed in any
+        // other order would show.
         float plain = 0.0f;
         for (const float v : fields[f]) plain += v;
+        const float serial = serial_total(cpu_tiles[f]);
         EXPECT_NE(bits(plain), bits(cpu[f])) << "the test data does not tell orders apart; change the seed";
-        std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u %s: cpu=%.9g (0x%08x), array order=%.9g (0x%08x)\n", nx, ny,
-                    nz, kFieldName[f], static_cast<double>(cpu[f]), bits(cpu[f]), static_cast<double>(plain),
-                    bits(plain));
+        if (cpu_tiles[f].size() > kBlock) {
+            EXPECT_NE(bits(serial), bits(cpu[f])) << "the data does not tell B1's chain apart; change the seed";
+        }
+        std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u %s: cpu=%.9g (%s), B1's chain=%.9g (%s), array order=%.9g "
+                    "(%s), %zu tiles in %zu blocks of %u\n",
+                    nx, ny, nz, kFieldName[f], static_cast<double>(cpu[f]), hex_bits(cpu[f]).c_str(),
+                    static_cast<double>(serial), hex_bits(serial).c_str(), static_cast<double>(plain),
+                    hex_bits(plain).c_str(), cpu_tiles[f].size(), (cpu_tiles[f].size() + kBlock - 1) / kBlock,
+                    kBlock);
     }
     EXPECT_NE(bits(cpu[0]), bits(cpu[1]));
 
     for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {
-        const TileSumRun gpu = run_tile_sum(*ctx, fields, nx, ny, nz, wg);
+        const TileSumRun gpu = run_tile_sum(*ctx, fields, nx, ny, nz, wg, kBlock);
         for (uint32_t f = 0; f < 2; ++f) {
-            std::size_t tile_mismatches = 0;
-            for (std::size_t t = 0; t < cpu_tiles[f].size(); ++t) {
-                tile_mismatches += bits(gpu.tiles[f][t]) != bits(cpu_tiles[f][t]) ? 1u : 0u;
+            const std::vector<float> expected = partials_after(cpu_tiles[f], kBlock);
+            std::size_t partial_mismatches = 0;
+            for (std::size_t t = 0; t < expected.size(); ++t) {
+                partial_mismatches += bits(gpu.partials[f][t]) != bits(expected[t]) ? 1u : 0u;
             }
             const float total = gpu.scalars[kTotalSlot[f]];
-            std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u wg %u %s: gpu=%.9g (0x%08x) in slot %u, tiles %zu, "
-                        "tile mismatches=%zu\n",
-                        nx, ny, nz, wg, kFieldName[f], static_cast<double>(total), bits(total), kTotalSlot[f],
-                        cpu_tiles[f].size(), tile_mismatches);
+            std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u wg %u %s: gpu=%.9g (%s) in slot %u, partials %zu, "
+                        "partial mismatches=%zu\n",
+                        nx, ny, nz, wg, kFieldName[f], static_cast<double>(total), hex_bits(total).c_str(),
+                        kTotalSlot[f], expected.size(), partial_mismatches);
             EXPECT_EQ(bits(total), bits(cpu[f])) << kFieldName[f] << ", workgroup size " << wg;
-            EXPECT_EQ(tile_mismatches, std::size_t{0}) << kFieldName[f] << ", workgroup size " << wg;
+            EXPECT_EQ(partial_mismatches, std::size_t{0}) << kFieldName[f] << ", workgroup size " << wg;
         }
         std::size_t disturbed = 0;
         for (uint32_t s = 0; s < kScalarSlots; ++s) {
@@ -750,17 +864,610 @@ void check_tile_sum(uint32_t nx, uint32_t ny, uint32_t nz, uint64_t seed) {
         }
         EXPECT_EQ(disturbed, std::size_t{0}) << "a slot other than the two totals' was written, workgroup size " << wg;
     }
+
+    const TileSumRun other = run_tile_sum(*ctx, fields, nx, ny, nz, 64, kOtherBlockTiles);
+    for (uint32_t f = 0; f < 2; ++f) {
+        const float want = two_level_total(cpu_tiles[f], kOtherBlockTiles);
+        const float total = other.scalars[kTotalSlot[f]];
+        std::printf("[GpuAirflowRunnerTileSum] %ux%ux%u wg 64 %s, the push's block %u: gpu %s, cpu two-level at %u %s\n",
+                    nx, ny, nz, kFieldName[f], kOtherBlockTiles, hex_bits(total).c_str(), kOtherBlockTiles,
+                    hex_bits(want).c_str());
+        EXPECT_EQ(bits(total), bits(want)) << kFieldName[f] << ": the block is not the push's";
+    }
 }
 
-// Sides that are not multiples of 4: partial tiles on every far edge.
+// Sides that are not multiples of 4: partial tiles on every far edge, one
+// block (12 tiles).
 TEST(GpuAirflowRunnerTileSum, RaggedShapeSameBitsAtEveryWorkgroupSizeAndAsTheCpu) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     check_tile_sum(5, 7, 9, 0x7115E5ull);
 }
 
+// Two whole blocks (512 tiles). Since B5.1 the CPU's sum here is the
+// two-level one: pressure 0x43af0d40 and rhs 0x472228a0, where B1's chain gave
+// 0x43af0a00 and 0x47222898 (B5.0b).
 TEST(GpuAirflowRunnerTileSum, CubeSameBitsAtEveryWorkgroupSizeAndAsTheCpu) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     check_tile_sum(32, 32, 32, 0x32C0BEull);
+}
+
+// B5.1: 128 whole blocks (128^3, 32,768 tiles), and a ragged last block with
+// ragged tiles (61x45x43, 2112 tiles: 8 blocks and 64). Mutations: the block
+// from the workgroup size (SPADE_WG * 4, right at 64 only); pass 2 over the
+// tiles in one chain (B1's order); the ragged last block dropped from pass 2.
+TEST(GpuAirflowRunnerTileSum, ManyBlocksSameBitsAtEveryWorkgroupSizeAndAsTheCpu) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    {
+        SCOPED_TRACE("128^3");
+        check_tile_sum(128, 128, 128, 0xB51128ull);
+    }
+    SCOPED_TRACE("61x45x43");
+    check_tile_sum(61, 45, 43, 0xB51061ull);
+}
+
+// ===========================================================================
+// GpuAirflowRunnerTileSum -- B5.0's measurements (plan B, B5 as amended
+// 2026-10-22; the lead's rulings 1 and 2). Opt-in, as B2's timings are:
+// SPADE_AIRFLOW_TIMINGS=1. They decide B5's next step and assert only that
+// what they time is correct.
+// ===========================================================================
+
+[[nodiscard]] bool timings_enabled() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_AIRFLOW_TIMINGS") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+struct Spread {
+    std::size_t runs = 0;
+    double min = 0.0;
+    double median = 0.0;
+    double max = 0.0;
+};
+
+[[nodiscard]] Spread spread_of(std::vector<double> v) {
+    Spread s;
+    s.runs = v.size();
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    s.min = v.front();
+    s.max = v.back();
+    s.median = v.size() % 2 == 1 ? v[v.size() / 2] : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+    return s;
+}
+
+void print_spread(const char* what, const Spread& s, const char* unit) {
+    std::printf("measure: %s: median %.4f %s, min %.4f, max %.4f (%zu runs)\n", what, s.median, unit, s.min, s.max,
+                s.runs);
+}
+
+// THE DOT'S PASSES (ruling 1). B5's tile_dot is tile_sum with a product in
+// pass 0 and the same last passes. Here, tile_sum's passes on the box, at
+// workgroup size 64, from the runner's marks: 3 warm-up submits, then 20,
+// each read back. The sum's bits are checked against reduce.hpp first, so the
+// time is of a correct sum. Since B5.1 the last passes are two: the blocks
+// (one thread a block) and their total (one thread).
+//
+// THE DECISION WORD'S READBACK (ruling 2), at the D1 box only: the host's
+// round trip for read() of 16 bytes after a submit and its fence, and for the
+// submit of a one-dispatch chain (airflow_copy of one float), timed on the
+// host: 10 warm-ups, then 200 of each, alternating.
+void time_dot_passes(VulkanContext& ctx, const char* name, uint32_t nx, uint32_t ny, uint32_t nz, bool readback) {
+    constexpr uint32_t kWg = 64;
+    constexpr int kWarmups = 3;
+    constexpr int kRuns = 20;
+    const uint32_t tiles = ((nx + 3) / 4) * ((ny + 3) / 4) * ((nz + 3) / 4);
+    const uint32_t cells = nx * ny * nz;
+
+    std::vector<float> field(cells);
+    SplitMix rng{0xB50ull + cells};
+    for (float& v : field) v = mixed_magnitude(rng.next());
+    const float cpu = spade::physics::airflow::fixed_tile_sum(field, nx, ny, nz);
+
+    std::vector<uint32_t> params(32, 0u);
+    params[0] = nx;
+    params[1] = ny;
+    params[2] = nz;
+    std::vector<RunnerBuffer> buffers = airflow_set(kPartials);
+    buffers[kParams] = {"airflow_params", params.size() * 4ull, BufferKind::staged};
+    buffers[kPressure] = {"airflow_pressure", cells * 4ull, BufferKind::staged};
+    buffers[kScalars] = {"airflow_scalars", kScalarSlots * 4ull, BufferKind::staged};
+    buffers[kPartials] = {"airflow_partials", tiles * 4ull, BufferKind::device_only};
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_tile_sum, &gen::kSpvVariants_airflow_copy};
+    const uint32_t blocks = (tiles + spade::physics::airflow::kReduceBlockTiles - 1) /
+                            spade::physics::airflow::kReduceBlockTiles;
+    auto runner = ChainRunner::create(
+        ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes, .workgroup_size = kWg});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    ASSERT_TRUE((*runner)->upload(kParams, bytes_of(params)).has_value());
+    ASSERT_TRUE((*runner)->upload(kPressure, bytes_of(field)).has_value());
+
+    constexpr uint32_t kSlot = 1;
+    const auto pass_push = [&](uint32_t pass) {
+        return TileSumPush{.field = 0, .pass_block = spade::airflow_gpu::tile_sum_pass_word(pass),
+                           .cell_count = cells, .slot = kSlot};
+    };
+    const ChainCommand chain[] = {dispatch(0, pass_push(0), {groups_for(tiles, kWg), 1, 1}), mark(),
+                                  dispatch(0, pass_push(1), {groups_for(blocks, kWg), 1, 1}), mark(),
+                                  dispatch(0, pass_push(2), {1, 1, 1}), mark()};
+    auto id = (*runner)->record(chain);
+    ASSERT_TRUE(id.has_value()) << id.error().context;
+
+    std::vector<double> pass0_ms;
+    std::vector<double> pass1_ms;
+    std::vector<double> pass2_ms;
+    std::vector<double> whole_ms;
+    std::vector<float> scalars(kScalarSlots, 0.0f);
+    for (int run = 0; run < kWarmups + kRuns; ++run) {
+        ASSERT_TRUE((*runner)->submit(*id, 1).has_value());
+        if (run == 0) {
+            ASSERT_TRUE((*runner)->read(kScalars, writable_bytes_of(scalars)).has_value());
+            ASSERT_EQ(bits(scalars[kSlot]), bits(cpu)) << name << ": the timed sum is not reduce.hpp's";
+        }
+        auto d_ns = (*runner)->durations_ns(*id);
+        ASSERT_TRUE(d_ns.has_value()) << d_ns.error().context;
+        if (d_ns->empty()) GTEST_SKIP() << "the device cannot time compute work";
+        ASSERT_EQ(d_ns->size(), 3u);
+        if (run < kWarmups) continue;
+        pass0_ms.push_back(static_cast<double>((*d_ns)[0]) * 1e-6);
+        pass1_ms.push_back(static_cast<double>((*d_ns)[1]) * 1e-6);
+        pass2_ms.push_back(static_cast<double>((*d_ns)[2]) * 1e-6);
+        whole_ms.push_back(static_cast<double>((*d_ns)[0] + (*d_ns)[1] + (*d_ns)[2]) * 1e-6);
+    }
+    std::printf("measure: %s, %u cells, %u tiles in %u blocks, workgroup size %u, sum 0x%08x as reduce.hpp\n", name,
+                cells, tiles, blocks, kWg, bits(cpu));
+    const std::string label(name);
+    print_spread((label + ", pass 0 (one thread a tile)").c_str(), spread_of(pass0_ms), "ms");
+    print_spread((label + ", pass 1 (one thread a block)").c_str(), spread_of(pass1_ms), "ms");
+    print_spread((label + ", pass 2 (one thread over the blocks)").c_str(), spread_of(pass2_ms), "ms");
+    print_spread((label + ", the whole sum (passes 0-2)").c_str(), spread_of(whole_ms), "ms");
+    if (!readback) return;
+
+    // One dispatch of one thread's work: the cheapest chain a host loop submits.
+    const ChainCommand tiny[] = {dispatch(1, count_push(1), {1, 1, 1})};
+    auto tiny_id = (*runner)->record(tiny);
+    ASSERT_TRUE(tiny_id.has_value()) << tiny_id.error().context;
+    constexpr int kReadWarmups = 10;
+    constexpr int kReads = 200;
+    std::vector<double> submit_us;
+    std::vector<double> read_us;
+    std::array<uint32_t, 4> word{};
+    for (int run = 0; run < kReadWarmups + kReads; ++run) {
+        const auto t0 = std::chrono::steady_clock::now();
+        ASSERT_TRUE((*runner)->submit(*tiny_id, 1).has_value());
+        const auto t1 = std::chrono::steady_clock::now();
+        ASSERT_TRUE((*runner)->read(kScalars, std::as_writable_bytes(std::span(word))).has_value());
+        const auto t2 = std::chrono::steady_clock::now();
+        if (run < kReadWarmups) continue;
+        submit_us.push_back(std::chrono::duration<double, std::micro>(t1 - t0).count());
+        read_us.push_back(std::chrono::duration<double, std::micro>(t2 - t1).count());
+    }
+    EXPECT_EQ(word[kSlot], bits(cpu)) << "the word read back is not the sum";
+    print_spread((label + ", a one-dispatch chain's submit and fence (host)").c_str(), spread_of(submit_us), "us");
+    print_spread((label + ", read() of a 16-byte word after it (host)").c_str(), spread_of(read_us), "us");
+}
+
+TEST(GpuAirflowRunnerTileSum, B5ZeroTimesTheDotsPassesAndAWordsReadback) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!timings_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_TIMINGS=1 to time B5.0's dot passes and readback";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    {
+        SCOPED_TRACE("128^3");
+        time_dot_passes(*ctx, "128^3", 128, 128, 128, false);
+    }
+    if (HasFatalFailure() || IsSkipped()) return;
+    SCOPED_TRACE("D1 box");
+    time_dot_passes(*ctx, "D1 box 240x177x168", 240, 177, 168, true);
+}
+
+// ===========================================================================
+// GpuAirflowRunnerTileSum -- B5.0b's measurements (the lead, 2026-10-22,
+// after B5.0: the serial last pass is 4.86 ms at the D1 box). Opt-in, as
+// B5.0's: SPADE_AIRFLOW_TIMINGS=1. airflow_tile_sum_probe.slang is a
+// TEST-ONLY kernel; no chain of the solver records it.
+//
+//   (i)  THE ORDER KEPT: the last pass issues 8 to 64 loads before adding
+//        them, in the same order, so it must give B1's serial chain's bits
+//        (reduce.hpp's until B5.1).
+//   (ii) A TWO-LEVEL ORDER, measured before it was chosen: blocks of B
+//        consecutive tiles in (tk, tj, ti) order, each summed from 0 in tile
+//        order (the last block holds the rest), then the block sums from 0 in
+//        block order. Since B5.1 it is reduce.hpp's, at B = kReduceBlockTiles
+//        (Cameron, 2026-10-22). The push carries B to the device, and the CPU
+//        reference here reads it. It is never a workgroup size or a thread
+//        count, so the sum is the same at every workgroup size (checked at 32,
+//        64 and 128, as GnssTumble's invariance is) and equals the CPU's.
+// ===========================================================================
+
+// THE TWO-LEVEL ORDER'S BLOCK, in tiles: reduce.hpp's one statement of it.
+constexpr uint32_t kTreeBlockTiles = spade::physics::airflow::kReduceBlockTiles;
+
+// The push block of airflow_tile_sum_probe.
+struct TileSumProbePush {
+    uint32_t pass = 0;   // 0 tiles, 1 the kept order's chain, 2 block sums, 3 the block sums' total
+    uint32_t ahead = 1;  // loads issued before their adds: 1, 8, 16, 32 or 64
+    uint32_t cell_count = 0;
+    uint32_t block = 0;  // passes 2-3: the tiles in a block
+};
+
+static_assert(sizeof(TileSumProbePush) == kPushBytes);
+
+constexpr uint32_t kProbeSlot = 1;  // airflow_tile_sum_probe's kSlot
+
+struct ProbeBox {
+    const char* name;
+    uint32_t nx, ny, nz;
+};
+
+// One probe runner over a box's field at a workgroup size.
+struct ProbeRig {
+    std::unique_ptr<ChainRunner> runner;
+    uint32_t tiles = 0;
+    uint32_t cells = 0;
+    uint32_t wg = 0;
+};
+
+[[nodiscard]] ProbeRig make_probe_rig(VulkanContext& ctx, const ProbeBox& box, const std::vector<float>& field,
+                                      uint32_t wg) {
+    ProbeRig rig;
+    rig.wg = wg;
+    rig.tiles = ((box.nx + 3) / 4) * ((box.ny + 3) / 4) * ((box.nz + 3) / 4);
+    rig.cells = box.nx * box.ny * box.nz;
+    std::vector<uint32_t> params(32, 0u);
+    params[0] = box.nx;
+    params[1] = box.ny;
+    params[2] = box.nz;
+    std::vector<RunnerBuffer> buffers = airflow_set(kPartials);
+    buffers[kParams] = {"airflow_params", params.size() * 4ull, BufferKind::staged};
+    buffers[kPressure] = {"airflow_pressure", rig.cells * 4ull, BufferKind::staged};
+    buffers[kScalars] = {"airflow_scalars", kScalarSlots * 4ull, BufferKind::staged};
+    buffers[kPartials] = {"airflow_partials", 2ull * rig.tiles * 4ull, BufferKind::device_only};
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_tile_sum_probe};
+    auto runner = ChainRunner::create(
+        ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes, .workgroup_size = wg});
+    EXPECT_TRUE(runner.has_value()) << runner.error().context;
+    if (!runner.has_value()) return rig;
+    rig.runner = std::move(*runner);
+    EXPECT_TRUE(rig.runner->upload(kParams, bytes_of(params)).has_value());
+    EXPECT_TRUE(rig.runner->upload(kPressure, bytes_of(field)).has_value());
+    return rig;
+}
+
+// The chain of one sum: pass 0, then (block 0) pass 1 with `ahead`, or
+// (block > 0) passes 2 and 3; a mark after each dispatch.
+[[nodiscard]] std::vector<ChainCommand> probe_chain(const ProbeRig& rig, uint32_t ahead, uint32_t block) {
+    const TileSumProbePush tiles_pass{.pass = 0, .ahead = ahead, .cell_count = rig.cells, .block = block};
+    std::vector<ChainCommand> out{dispatch(0, tiles_pass, {groups_for(rig.tiles, rig.wg), 1, 1}), mark()};
+    if (block == 0) {
+        out.push_back(dispatch(0, TileSumProbePush{.pass = 1, .ahead = ahead, .cell_count = rig.cells}, {1, 1, 1}));
+        out.push_back(mark());
+        return out;
+    }
+    const uint32_t blocks = (rig.tiles + block - 1) / block;
+    out.push_back(dispatch(0, TileSumProbePush{.pass = 2, .ahead = ahead, .cell_count = rig.cells, .block = block},
+                           {groups_for(blocks, rig.wg), 1, 1}));
+    out.push_back(mark());
+    out.push_back(
+        dispatch(0, TileSumProbePush{.pass = 3, .ahead = ahead, .cell_count = rig.cells, .block = block}, {1, 1, 1}));
+    out.push_back(mark());
+    return out;
+}
+
+struct ProbeTimes {
+    float sum = 0.0f;
+    std::vector<std::vector<double>> segment_ms;  // per mark, per timed run
+};
+
+// Records the chain once and submits it warmups + runs times; the sum from the first.
+[[nodiscard]] ProbeTimes time_probe(ProbeRig& rig, const std::vector<ChainCommand>& chain, int warmups, int runs) {
+    ProbeTimes out;
+    out.sum = std::numeric_limits<float>::quiet_NaN();
+    auto id = rig.runner->record(chain);
+    EXPECT_TRUE(id.has_value()) << id.error().context;
+    if (!id.has_value()) return out;
+    std::vector<float> scalars(kScalarSlots, 0.0f);
+    for (int run = 0; run < warmups + runs; ++run) {
+        EXPECT_TRUE(rig.runner->submit(*id, 1).has_value());
+        if (run == 0) {
+            EXPECT_TRUE(rig.runner->read(kScalars, writable_bytes_of(scalars)).has_value());
+            out.sum = scalars[kProbeSlot];
+        }
+        auto d_ns = rig.runner->durations_ns(*id);
+        EXPECT_TRUE(d_ns.has_value()) << d_ns.error().context;
+        if (!d_ns.has_value() || d_ns->empty()) return out;
+        if (out.segment_ms.empty()) out.segment_ms.resize(d_ns->size());
+        if (run < warmups) continue;
+        for (std::size_t m = 0; m < d_ns->size(); ++m) {
+            out.segment_ms[m].push_back(static_cast<double>((*d_ns)[m]) * 1e-6);
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] std::vector<double> sum_of_segments(const ProbeTimes& t, std::size_t from, std::size_t to) {
+    std::vector<double> out;
+    if (t.segment_ms.size() < to) return out;
+    for (std::size_t r = 0; r < t.segment_ms[from].size(); ++r) {
+        double s = 0.0;
+        for (std::size_t m = from; m < to; ++m) s += t.segment_ms[m][r];
+        out.push_back(s);
+    }
+    return out;
+}
+
+constexpr std::array<uint32_t, 5> kAheads{1u, 8u, 16u, 32u, 64u};
+constexpr std::array<uint32_t, 6> kBlocks{64u, 128u, 256u, 512u, 1024u, 2048u};
+
+[[nodiscard]] std::vector<float> probe_field(uint32_t cells) {
+    std::vector<float> field(cells);
+    SplitMix rng{0xB50ull + cells};  // B5.0's field
+    for (float& v : field) v = mixed_magnitude(rng.next());
+    return field;
+}
+
+TEST(GpuAirflowRunnerTileSum, B5ZeroBTimesTheKeptOrderUnrolledAndATwoLevelOrder) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!timings_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_TIMINGS=1 to time B5.0b's two ways to end the sum";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    constexpr int kWarmups = 3;
+    constexpr int kRuns = 20;
+    for (const ProbeBox& box : {ProbeBox{"128^3", 128, 128, 128}, ProbeBox{"D1 box 240x177x168", 240, 177, 168}}) {
+        SCOPED_TRACE(box.name);
+        const std::vector<float> field = probe_field(box.nx * box.ny * box.nz);
+        const std::vector<float> tiles = tile_partials(field, box.nx, box.ny, box.nz);
+        const float serial = serial_total(tiles);
+        ASSERT_EQ(bits(two_level_total(tiles, kTreeBlockTiles)),
+                  bits(spade::physics::airflow::fixed_tile_sum(field, box.nx, box.ny, box.nz)))
+            << "the spelled-out two-level order is not reduce.hpp's";
+        ProbeRig rig = make_probe_rig(*ctx, box, field, 64);
+        ASSERT_NE(rig.runner, nullptr);
+        std::printf("measure: %s, %u tiles, workgroup size 64, B1's serial sum %s\n", box.name, rig.tiles,
+                    hex_bits(serial).c_str());
+
+        // (i) the order kept, loads issued ahead.
+        for (const uint32_t ahead : kAheads) {
+            const ProbeTimes t = time_probe(rig, probe_chain(rig, ahead, 0), kWarmups, kRuns);
+            if (t.segment_ms.empty()) GTEST_SKIP() << "the device cannot time compute work";
+            EXPECT_EQ(bits(t.sum), bits(serial)) << "(i) ahead " << ahead << ": not B1's serial bits";
+            const std::string label = std::string(box.name) + ", (i) kept order, " + std::to_string(ahead) +
+                                      " loads ahead, sum " + hex_bits(t.sum) +
+                                      (bits(t.sum) == bits(serial) ? " = B1's serial" : " DIFFERS");
+            print_spread((label + ": last pass").c_str(), spread_of(t.segment_ms[1]), "ms");
+            print_spread((label + ": whole sum").c_str(), spread_of(sum_of_segments(t, 0, 2)), "ms");
+        }
+
+        // (ii) the two-level order, per block size and loads ahead.
+        for (const uint32_t block : kBlocks) {
+            const float cpu = two_level_total(tiles, block);
+            for (const uint32_t ahead : {1u, 8u, 16u, 32u}) {
+                const ProbeTimes t = time_probe(rig, probe_chain(rig, ahead, block), kWarmups, kRuns);
+                if (t.segment_ms.empty()) GTEST_SKIP() << "the device cannot time compute work";
+                EXPECT_EQ(bits(t.sum), bits(cpu)) << "(ii) block " << block << " ahead " << ahead;
+                const std::string label = std::string(box.name) + ", (ii) B " + std::to_string(block) + ", " +
+                                          std::to_string(ahead) + " ahead, sum " + hex_bits(t.sum) +
+                                          (bits(t.sum) == bits(cpu) ? " = CPU two-level" : " DIFFERS from CPU");
+                print_spread((label + ": levels 1 + 2").c_str(), spread_of(sum_of_segments(t, 1, 3)), "ms");
+                print_spread((label + ": whole sum").c_str(), spread_of(sum_of_segments(t, 0, 3)), "ms");
+                if (ahead == 16u) {
+                    print_spread((label + ": level 1").c_str(), spread_of(t.segment_ms[1]), "ms");
+                    print_spread((label + ": level 2").c_str(), spread_of(t.segment_ms[2]), "ms");
+                }
+            }
+        }
+    }
+}
+
+// THE INVARIANCE RUN (the lead's requirement 2, GnssTumble's pattern): the
+// two-level sum at workgroup sizes 32, 64 and 128 gives one set of bits,
+// equal to the CPU reference's, at kTreeBlockTiles and at every block size
+// timed above, on boxes of one block (5x7x9), two (32^3), whole blocks
+// (128^3) and a ragged last block (the D1 box).
+TEST(GpuAirflowRunnerTileSum, B5ZeroBTheTwoLevelOrderIsTheSameAtEveryWorkgroupSize) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!timings_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_TIMINGS=1 for B5.0b's invariance run";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    constexpr std::array<uint32_t, 3> kWorkgroupSizes{32u, 64u, 128u};
+    for (const ProbeBox& box : {ProbeBox{"5x7x9", 5, 7, 9}, ProbeBox{"32^3", 32, 32, 32},
+                                ProbeBox{"128^3", 128, 128, 128}, ProbeBox{"D1 box 240x177x168", 240, 177, 168}}) {
+        SCOPED_TRACE(box.name);
+        const std::vector<float> field = probe_field(box.nx * box.ny * box.nz);
+        const std::vector<float> tiles = tile_partials(field, box.nx, box.ny, box.nz);
+        std::vector<uint32_t> blocks{kTreeBlockTiles};
+        for (const uint32_t b : kBlocks) {
+            if (b != kTreeBlockTiles) blocks.push_back(b);
+        }
+        for (const uint32_t wg : kWorkgroupSizes) {
+            ProbeRig rig = make_probe_rig(*ctx, box, field, wg);
+            ASSERT_NE(rig.runner, nullptr);
+            for (const uint32_t block : blocks) {
+                const float cpu = two_level_total(tiles, block);
+                for (const uint32_t ahead : {1u, 16u}) {
+                    const ProbeTimes t = time_probe(rig, probe_chain(rig, ahead, block), 0, 1);
+                    EXPECT_EQ(bits(t.sum), bits(cpu)) << "wg " << wg << " block " << block << " ahead " << ahead;
+                    if (block == kTreeBlockTiles && ahead == 16u) {
+                        std::printf("invariance: %s, %zu tiles, B %u, workgroup size %u: gpu %s, cpu two-level %s, "
+                                    "serial %s\n",
+                                    box.name, tiles.size(), block, wg, hex_bits(t.sum).c_str(),
+                                    hex_bits(cpu).c_str(), hex_bits(serial_total(tiles)).c_str());
+                    }
+                }
+            }
+        }
+    }
+}
+
+// B5.0b's ACCURACY (the lead's requirement 3), no device, opt-in with the
+// timings: the D1 box from rest (P2d's D1 probe: the reference quad at the
+// box's centre, ambient 3 m/s, dx 4 mm), two fluid steps. After each, the
+// step's CG is replayed from the step's start (x = the p it began from, b as
+// it left it), under the step's subnormal scope, for the floor's 8 iterations
+// and one more, taking pcg.cpp's dots in its order: r.z at the start, then d.q
+// and r.z in each iteration (19 a step). Every dot is summed three ways from
+// the same fp32 products: B1's serial order, the two-level order
+// (kTreeBlockTiles; reduce.hpp's fixed_tile_dot since B5.1, on which the
+// replay steps), and in double, compensated (the reference).
+struct DotAccuracy {
+    std::vector<double> serial_rel;
+    std::vector<double> tree_rel;
+    uint32_t dots = 0;
+    uint32_t differ = 0;
+    uint32_t tree_closer = 0;
+    uint32_t serial_closer = 0;
+    double product_rounding = 0.0;  // max |sum of fp32 products - exact dot| / |exact dot|, in double
+};
+
+// Neumaier's compensated sum, in double.
+struct CompensatedSum {
+    double sum = 0.0;
+    double c = 0.0;
+    void add(double v) {
+        const double t = sum + v;
+        c += std::fabs(sum) >= std::fabs(v) ? (sum - t) + v : (v - t) + sum;
+        sum = t;
+    }
+    [[nodiscard]] double value() const { return sum + c; }
+};
+
+float accuracy_dot(const char* what, int step, const std::vector<float>& a, const std::vector<float>& b, uint32_t nx,
+                   uint32_t ny, uint32_t nz, DotAccuracy& acc) {
+    const std::size_t n = a.size();
+    std::vector<float> products(n);
+    CompensatedSum rounded;
+    CompensatedSum exact;
+    for (std::size_t c = 0; c < n; ++c) {
+        products[c] = a[c] * b[c];
+        rounded.add(static_cast<double>(products[c]));
+        exact.add(static_cast<double>(a[c]) * static_cast<double>(b[c]));
+    }
+    const std::vector<float> tiles = tile_partials(products, nx, ny, nz);
+    const float serial = serial_total(tiles);
+    const float tree = two_level_total(tiles, kTreeBlockTiles);
+    const float production = spade::physics::airflow::fixed_tile_dot(a, b, nx, ny, nz);
+    EXPECT_EQ(bits(tree), bits(production)) << what << ": the spelled-out two-level dot is not reduce.hpp's";
+    const double ref = rounded.value();
+    const double scale = ref != 0.0 ? std::fabs(ref) : 1.0;
+    const double serial_rel = std::fabs(static_cast<double>(serial) - ref) / scale;
+    const double tree_rel = std::fabs(static_cast<double>(tree) - ref) / scale;
+    const double ex = exact.value();
+    if (ex != 0.0) acc.product_rounding = std::max(acc.product_rounding, std::fabs(ref - ex) / std::fabs(ex));
+    acc.serial_rel.push_back(serial_rel);
+    acc.tree_rel.push_back(tree_rel);
+    ++acc.dots;
+    if (bits(serial) != bits(tree)) ++acc.differ;
+    if (tree_rel < serial_rel) ++acc.tree_closer;
+    if (serial_rel < tree_rel) ++acc.serial_closer;
+    std::printf("accuracy: step %d %-6s ref %.9e  serial %s rel %.3e  two-level %s rel %.3e%s\n", step, what, ref,
+                hex_bits(serial).c_str(), serial_rel, hex_bits(tree).c_str(), tree_rel,
+                bits(serial) == bits(tree) ? "  (same bits)" : "");
+    return production;
+}
+
+void replay_cg_dots(spade::physics::airflow::Multigrid& mg, spade::physics::airflow::PcgScratch& s,
+                    spade::physics::airflow::FluidRegions& regions, const spade::physics::airflow::GridShape& shape,
+                    const std::vector<float>& x0, int step, DotAccuracy& acc) {
+    namespace af = spade::physics::airflow;
+    const spade::math::ScopedFlushSubnormals scope;  // as fluid_step() runs the solve
+    af::PoissonLevel& L = mg.levels[0];
+    const std::size_t n = s.x.size();
+    const auto mask = [&](std::vector<float>& v) {
+        for (std::size_t i = 0; i < n; ++i) {
+            if (regions.solid[i] != 0u) v[i] = 0.0f;
+        }
+    };
+    const auto gauge = [&](std::vector<float>& v) { af::remove_region_means(v, regions, shape); };
+    const auto precond = [&]() {
+        std::copy(s.r.begin(), s.r.end(), L.b.begin());
+        af::precondition(mg);
+        std::copy(L.p.begin(), L.p.end(), s.z.begin());
+        mask(s.z);
+        gauge(s.z);
+    };
+    std::copy(x0.begin(), x0.end(), s.x.begin());
+    mask(s.x);
+    af::apply_operator(L, s.x, s.q);
+    for (std::size_t i = 0; i < n; ++i) s.r[i] = s.b[i] - s.q[i];
+    mask(s.r);
+    gauge(s.r);
+    precond();
+    std::copy(s.z.begin(), s.z.end(), s.d.begin());
+    float rz = accuracy_dot("r.z 0", step, s.r, s.z, L.nx, L.ny, L.nz, acc);
+    for (uint32_t it = 1; it <= af::kSolidsCgIterations + 1; ++it) {
+        af::apply_operator(L, s.d, s.q);
+        const std::string dq_name = "d.q " + std::to_string(it);
+        const float dq = accuracy_dot(dq_name.c_str(), step, s.d, s.q, L.nx, L.ny, L.nz, acc);
+        if (dq == 0.0f || rz == 0.0f) return;
+        const float alpha = rz / dq;
+        for (std::size_t i = 0; i < n; ++i) {
+            s.x[i] += alpha * s.d[i];
+            s.r[i] -= alpha * s.q[i];
+        }
+        gauge(s.r);
+        precond();
+        const std::string rz_name = "r.z " + std::to_string(it);
+        const float rz_next = accuracy_dot(rz_name.c_str(), step, s.r, s.z, L.nx, L.ny, L.nz, acc);
+        const float beta = rz_next / rz;
+        for (std::size_t i = 0; i < n; ++i) s.d[i] = s.z[i] + beta * s.d[i];
+        rz = rz_next;
+    }
+}
+
+TEST(GpuAirflowRunnerTileSum, B5ZeroBTheTwoOrdersAccuracyOnTheD1BoxsDots) {
+    if (!timings_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_TIMINGS=1 for B5.0b's accuracy of the two orders";
+    namespace af = spade::physics::airflow;
+    static const spade::vehicles::ModelType quad =
+        spade::vehicles::compile_airframe(spade::vehicles::fixtures::reference_quad()).value().model;
+    const float dx = 0.004f;
+    const af::GridShape shape{240, 177, 168, dx};
+    spade::BodyState body{};
+    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::array<float, 4> omega{};
+    const std::array<float, 4> psi{};
+    const auto posed = spade::vehicles::posed_parts(quad, body, omega, psi, spade::vehicles::PartFilter::rigid_only);
+    ASSERT_TRUE(posed.has_value());
+    const glm::vec3 origin = -0.5f * dx * glm::vec3(240.0f, 177.0f, 168.0f);
+    const spade::vehicles::AirflowSolids solids(quad, *posed, origin);
+    const auto parts = solids.parts();
+    ASSERT_TRUE(parts.has_value());
+    af::DomainBc bc;
+    bc.ambient = glm::vec3(3.0f, 0.0f, 0.0f);
+    const af::FluidConfig cfg{.rho = 1.225f, .nu = 1.4607e-5f, .h = 0.38e-3f, .n_v = af::kSolidsCgIterations};
+    af::MacGrid g = *af::make_grid(shape, bc);
+    std::fill(g.u.begin(), g.u.end(), 3.0f);
+    af::FluidScratch s = *af::make_fluid_scratch(g, bc, cfg);
+    ASSERT_TRUE(af::set_solids(s, g, bc, *parts, solids.sampler()).has_value()) << s.solids.run_line;
+    std::printf("accuracy: D1 box 240x177x168 from rest, %s; B %u tiles\n", af::describe_regions(s.regions).c_str(),
+                kTreeBlockTiles);
+    DotAccuracy acc;
+    for (int step = 1; step <= 2; ++step) {
+        const std::vector<float> x0 = g.p;
+        const af::FluidHealth h = af::fluid_step(g, bc, cfg, s);
+        std::printf("accuracy: step %d: r %.4e in %u iterations, stalled %d\n", step,
+                    static_cast<double>(h.pressure_residual), h.pressure_iterations, h.stalled ? 1 : 0);
+        replay_cg_dots(s.projection.mg, s.projection.pcg, s.regions, shape, x0, step, acc);
+    }
+    ASSERT_FALSE(acc.serial_rel.empty());
+    const auto stats = [](std::vector<double> v) {
+        std::sort(v.begin(), v.end());
+        double mean = 0.0;
+        for (const double e : v) mean += e;
+        return std::array<double, 3>{v[v.size() / 2], mean / static_cast<double>(v.size()), v.back()};
+    };
+    const auto se = stats(acc.serial_rel);
+    const auto te = stats(acc.tree_rel);
+    std::printf("accuracy: %u dots; |sum - ref| / |ref|: serial median %.3e mean %.3e max %.3e; two-level median "
+                "%.3e mean %.3e max %.3e\n",
+                acc.dots, se[0], se[1], se[2], te[0], te[1], te[2]);
+    std::printf("accuracy: bits differ in %u of %u; two-level closer in %u, serial closer in %u; fp32 products' own "
+                "rounding (sum of products vs the exact dot) up to %.3e\n",
+                acc.differ, acc.dots, acc.tree_closer, acc.serial_closer, acc.product_rounding);
 }
 
 // ===========================================================================
@@ -808,6 +1515,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     const Kernel kernels[] = {{gen::kSpvVariants_airflow_copy, true},
                               {gen::kSpvVariants_airflow_add_one, false},
                               {gen::kSpvVariants_airflow_tile_sum, false},
+                              // B5.0b's test-only probe (no chain of the solver records it).
+                              {gen::kSpvVariants_airflow_tile_sum_probe, false},
                               // B2's projection kernels (Rendering). The smoother divides with
                               // div32_ftz.
                               {gen::kSpvVariants_airflow_divergence, false},
