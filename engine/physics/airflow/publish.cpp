@@ -229,4 +229,16 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
     return publish_flushed(g, in, out);
 }
 
+// RED STUBS (B6): the header and the count are not yet taken.
+Result<void> flow_header_from_halves(FlowVolume& volume) {
+    (void)volume;
+    return {};
+}
+
+Result<uint32_t> extrapolated_cells(const GridShape& shape, const PublishInput& in) {
+    (void)shape;
+    (void)in;
+    return 0u;
+}
+
 }  // namespace spade::physics::airflow
