@@ -661,16 +661,16 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
-// Graded rows (INT-14): each cited field's or input's grade, an assumed one
-// in the warning colour, then its value, a fractional one to 4 significant
-// figures, every cell elided at its edge; the whole value, the source and the
-// note on hover.
+// Graded rows (INT-14): each cited field's or input's path, cut from the left
+// so its end shows, then its grade, an assumed one in the warning colour,
+// then its value, a fractional one to 4 significant figures, elided at its
+// edge; the whole value, the source and the note on hover.
 void graded_rows(const std::vector<ed::PartRow>& rows) {
     if (ui::begin_graded_properties("##graded")) {
         for (const ed::PartRow& r : rows) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ui::cell_text(r.field, ui::Tone::dim);
+            ui::cell_path(r.field, ui::Tone::dim);
             bool hovered = ImGui::IsItemHovered();
             ImGui::TableSetColumnIndex(1);
             ui::grade_text(scene::grade_name(r.grade), r.grade == scene::Grade::assumed);

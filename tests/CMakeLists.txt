@@ -285,6 +285,9 @@ add_executable(spade_tests
 # publish_render_volume, GpuAirflowPublish* on the device.
 # test_gpu_airflow_actuator.cpp (plan B, B4): the rotor discs' gather against
 # spread_actuator(), GpuAirflowActuator* on the device.
+# test_gpu_airflow_viscous.cpp (plan B, B3): the velocity conditions and the
+# implicit viscosity against boundaries.cpp and viscous.cpp,
+# GpuAirflowViscous* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -302,6 +305,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_advection.cpp
         test_gpu_airflow_publish.cpp
         test_gpu_airflow_actuator.cpp
+        test_gpu_airflow_viscous.cpp
     )
 endif()
 

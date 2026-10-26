@@ -25,6 +25,7 @@
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_library.hpp"
 #include "../sandbox/editor_panels.hpp"
+#include "../sandbox/text_fit.hpp"
 #include "editor_test_support.hpp"
 #include "scene/library.hpp"
 #include "scene/part_file.hpp"
@@ -376,7 +377,7 @@ TEST(EditorLibraryFiles, ThePlacedLibraryDroneKeepsItsThreeIdentities) {
     const Result<sc::ModelFile> file = sc::load_model_file(library_file("drones/reference_quad.model.yaml"));
     ASSERT_TRUE(file.has_value()) << file.error().context;
     ASSERT_TRUE(file->model.propulsion.has_value());
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ed::SceneDocument doc = hover_document();
     const std::size_t before = doc.desc().vehicles.size();
     ASSERT_TRUE(ed::place(doc, quad, pose_at(glm::vec3(2.0f, 0.0f, 0.0f))).has_value());
@@ -455,7 +456,7 @@ TEST(EditorLibraryFiles, LoadFromFileReadsAModelOrAnObjectByItsExtension) {
 // hangs below the built-in drone's 25 mm, so a drone rests on its own lowest
 // posed part, not on kDroneBodyHalf.
 TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ASSERT_TRUE(quad.model.has_value());
     ASSERT_FALSE(quad.model->parts.empty());
     const float low = lowest_part_point(*quad.model);
@@ -467,7 +468,7 @@ TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
 // frame carries the parts 50 mm higher, so the design origin rests 50 mm
 // lower.
 TEST(EditorLibraryFiles, ADronesRestIsItsDesignFramesNotItsBodys) {
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ASSERT_TRUE(quad.model.has_value());
     ed::LibraryItem raised = quad;
     raised.model->com_offset += glm::vec3(0.0f, 0.05f, 0.0f);
@@ -791,9 +792,11 @@ TEST(EditorLibraryGrades, ADroneWithAnAssumedInputIsMarkedAndInspectedLikeAPart)
 }
 
 // The default library's drones carry their sidecars, checked against the
-// library as their own tests check them (check_model_sources()); a drone
-// without one (the reference quad) loads without grades. Each has an input
-// assumed (the compile's operating point, at least), so each tile is marked.
+// library as their own tests check them (check_model_sources()). Every one
+// has a sidecar, the reference quad's too since L6 (a drone without one
+// loads without grades: AStaleSidecarIsNamedAndItsDroneLoadsWithoutGrades).
+// Each has an input assumed (the compile's operating point, or the fixture's
+// prop ramp), so each tile is marked.
 TEST(EditorLibraryGrades, TheDefaultLibrarysDronesCarryTheirSidecars) {
     const std::filesystem::path dir = std::filesystem::path(SPADE_ASSETS_DIR) / "library";
     const ed::LibraryLoad load = ed::load_library_items(dir / "library.yaml");
@@ -815,8 +818,8 @@ TEST(EditorLibraryGrades, TheDefaultLibrarysDronesCarryTheirSidecars) {
         EXPECT_FALSE(item.sources->inputs.empty());
         EXPECT_TRUE(ed::any_assumed(item));
     }
-    EXPECT_GE(with, 5u) << "L5's five library drones";
-    EXPECT_GE(without, 1u) << "the reference quad has no sidecar";
+    EXPECT_GE(with, 6u) << "L5's library drones and the reference quad (L6)";
+    EXPECT_EQ(without, 0u) << "every library drone carries its sidecar";
 }
 
 // A sidecar its model no longer matches (a stale hash) is named, and the
@@ -850,4 +853,25 @@ TEST(EditorLibraryGrades, AStaleSidecarIsNamedAndItsDroneLoadsWithoutGrades) {
     ASSERT_NE(drone, load.items.end()) << "the drone still loads";
     EXPECT_FALSE(drone->sources.has_value());
     EXPECT_FALSE(ed::has_grades(*drone));
+}
+
+// A field path too long for its cell is cut from the LEFT (the lead,
+// 2026-10-26): its end tells rows apart (".x", ".y", ".z"), so the ellipsis
+// goes first and the longest tail that fits after it is kept. Here every
+// byte is 1 wide and the ellipsis 3.
+TEST(EditorLibraryGrades, AFieldPathTooLongForItsCellIsCutFromTheLeft) {
+    const auto unit = [](std::string_view s) { return static_cast<float>(s.size()); };
+    const std::string_view path = "rotors[0].hub.position.x";  // 24 wide
+    EXPECT_EQ(spade::sandbox::ui::left_cut(path, 24.0f, 3.0f, unit), 0u) << "it fits: nothing is cut";
+    EXPECT_EQ(spade::sandbox::ui::left_cut(path, 30.0f, 3.0f, unit), 0u);
+    // 20 wide: the ellipsis and 17 of it, "0].hub.position.x".
+    EXPECT_EQ(path.substr(spade::sandbox::ui::left_cut(path, 20.0f, 3.0f, unit)), "0].hub.position.x");
+    // Too narrow for anything but the last character: it is kept.
+    EXPECT_EQ(path.substr(spade::sandbox::ui::left_cut(path, 2.0f, 3.0f, unit)), "x");
+    EXPECT_EQ(spade::sandbox::ui::left_cut("", 0.0f, 3.0f, unit), 0u);
+    // A cut never splits a UTF-8 sequence: "a\xc2\xb0z" is "a", a 2-byte degree sign, "z", 4 wide. With
+    // an ellipsis 0.5 wide, 3 wide would fit "\xb0z" if a cut could start inside the sign; it keeps "z".
+    const std::string_view degrees = "a\xc2\xb0z";
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.0f, 0.5f, unit)), "z");
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.5f, 0.5f, unit)), "\xc2\xb0z");
 }

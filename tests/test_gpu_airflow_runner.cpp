@@ -69,6 +69,8 @@
 #include "airflow_remove_mean.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "airflow_tile_sum_probe.spv.gen.hpp"
+#include "airflow_velocity_bc.spv.gen.hpp"
+#include "airflow_viscous.spv.gen.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
@@ -1524,8 +1526,12 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_mg_restrict, false},
                               {gen::kSpvVariants_airflow_mg_prolong, false},
                               {gen::kSpvVariants_airflow_remove_mean, false},
-                              // B3's advection kernel (Rendering).
+                              // B3's advection, velocity conditions and viscosity (Rendering). The
+                              // conditions are copies, selects and two sign tests: no float
+                              // arithmetic.
                               {gen::kSpvVariants_airflow_advection, false},
+                              {gen::kSpvVariants_airflow_velocity_bc, true},
+                              {gen::kSpvVariants_airflow_viscous, false},
                               // B6's publish kernels (Rendering): the pack is bit work on the
                               // channels' words.
                               {gen::kSpvVariants_airflow_publish_fields, false},

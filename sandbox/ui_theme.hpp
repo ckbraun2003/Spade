@@ -28,6 +28,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include "text_fit.hpp"
+
 namespace spade::sandbox::ui {
 
 // ---- the scales ----
@@ -265,6 +267,42 @@ inline void cell_text(std::string_view text, Tone tone = Tone::normal) {
                                                                      : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     }
     ImGui::RenderTextEllipsis(window->DrawList, at, ImVec2(right, at.y + size.y), right, right, begin, end, &size);
+    if (tone != Tone::normal) ImGui::PopStyleColor();
+}
+
+// cell_text(), cut from the LEFT instead (text_fit.hpp's left_cut()): ImGui's
+// ellipsis first, then the longest tail that fits, for a field path whose
+// end tells rows apart ("...0].hub.position.x"; the lead, 2026-10-26). The
+// caller shows the whole on hover.
+inline void cell_path(std::string_view text, Tone tone = Tone::normal) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+    const ImVec2 at(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const float right =
+        std::min(window->DC.CursorPos.x + std::max(ImGui::GetContentRegionAvail().x, 0.0f), window->InnerClipRect.Max.x);
+    ImFont* font = ImGui::GetFont();
+    const float scale = ImGui::GetFontSize() / font->FontSize;
+    const float ellipsis = font->EllipsisWidth * scale;
+    const auto measure = [](std::string_view s) { return ImGui::CalcTextSize(s.data(), s.data() + s.size()).x; };
+    const std::size_t cut = left_cut(text, std::max(right - at.x, 0.0f), ellipsis, measure);
+    const std::string_view tail = text.substr(cut);
+    const float tail_at = at.x + (cut > 0 ? ellipsis : 0.0f);
+    const ImVec2 size(std::min(tail_at - at.x + measure(tail), std::max(right - at.x, 0.0f)), ImGui::GetTextLineHeight());
+    ImGui::ItemSize(size, 0.0f);
+    if (!ImGui::ItemAdd(ImRect(at, ImVec2(at.x + size.x, at.y + size.y)), 0)) return;
+    if (tone != Tone::normal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, tone == Tone::warning ? kWarning
+                                                                     : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    }
+    if (cut > 0) {
+        ImVec2 dot = at;
+        for (int i = 0; i < font->EllipsisCharCount; ++i, dot.x += font->EllipsisCharStep * scale) {
+            font->RenderChar(window->DrawList, ImGui::GetFontSize(), dot, ImGui::GetColorU32(ImGuiCol_Text),
+                             font->EllipsisChar);
+        }
+    }
+    ImGui::RenderTextClipped(ImVec2(tail_at, at.y), ImVec2(right, at.y + size.y), tail.data(), tail.data() + tail.size(),
+                             nullptr, ImVec2(0.0f, 0.0f));
     if (tone != Tone::normal) ImGui::PopStyleColor();
 }
 

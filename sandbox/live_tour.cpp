@@ -1228,7 +1228,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const glm::vec3 eye = session->camera().to_render_camera().position;
         const glm::vec3 dir = glm::normalize(target - eye);
         const std::optional<float> hit = editor::detail::march(w().composed().world.sdf, eye, dir);
-        arm("Reference quad");
+        arm("Reference quad (test fixture)");
         click_towards(target);
         if (!s.check(hit.has_value() && scene_now().vehicles.size() == before + 1, "placed",
                      hit ? w().panels().status : "the click's ray met no surface")) {
@@ -1591,7 +1591,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!open()) return;
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
         const std::size_t before = scene_now().vehicles.size();
-        arm("Reference quad");
+        arm("Reference quad (test fixture)");
         click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
         if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
         const std::string quad = scene_now().vehicles.back().name;

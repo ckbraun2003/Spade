@@ -112,7 +112,7 @@ TEST(EditorLibrarySave, TheProjectLibraryIsTheScenesOwnFoldersAndABuiltInSceneHa
 // on the first save; it loads back as the scene's model, with its thumbnail.
 TEST(EditorLibrarySave, AVehicleIsSavedAsAModelFileThatLoadsBackEqual) {
     std::string quad;
-    const ed::SceneDocument doc = hover_with(default_item("Reference quad"), quad);
+    const ed::SceneDocument doc = hover_with(default_item("Reference quad (test fixture)"), quad);
     ASSERT_FALSE(quad.empty());
     const support::TempDir tmp;
     const fs::path dir = tmp.path() / "library";
@@ -179,7 +179,7 @@ TEST(EditorLibrarySave, AnAssetIsSavedAsAnObjectFileWithItsMaterials) {
 // and index entry are unchanged.
 TEST(EditorLibrarySave, ATakenNameGoesToUnderscore2AndTheExistingBytesAreUnchanged) {
     std::string quad;
-    const ed::SceneDocument doc = hover_with(default_item("Reference quad"), quad);
+    const ed::SceneDocument doc = hover_with(default_item("Reference quad (test fixture)"), quad);
     const support::TempDir tmp;
     const fs::path dir = tmp.path() / "library";
     const Result<ed::LibrarySaved> first = ed::save_to_library(dir, doc.desc(), quad, kNoMeshRoots);
@@ -207,7 +207,7 @@ TEST(EditorLibrarySave, ATakenNameGoesToUnderscore2AndTheExistingBytesAreUnchang
 // is never overwritten: the item takes the next name.
 TEST(EditorLibrarySave, AFileAlreadyThereIsNeverOverwritten) {
     std::string quad;
-    const ed::SceneDocument doc = hover_with(default_item("Reference quad"), quad);
+    const ed::SceneDocument doc = hover_with(default_item("Reference quad (test fixture)"), quad);
     const support::TempDir tmp;
     const fs::path dir = tmp.path() / "library";
     fs::create_directories(dir);
@@ -241,7 +241,7 @@ TEST(EditorLibrarySave, AnItemThatCantBeDrawnIsSavedWithoutAThumbnailAndSaysWhy)
 // The project's index won't load: refused naming it, and nothing is written.
 TEST(EditorLibrarySave, AnIndexThatWontLoadIsNamedAndNothingIsWritten) {
     std::string quad;
-    const ed::SceneDocument doc = hover_with(default_item("Reference quad"), quad);
+    const ed::SceneDocument doc = hover_with(default_item("Reference quad (test fixture)"), quad);
     const support::TempDir tmp;
     const fs::path dir = tmp.path() / "library";
     fs::create_directories(dir);
