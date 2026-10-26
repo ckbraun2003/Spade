@@ -49,6 +49,7 @@
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
 #include "airflow_exact_device.hpp"
+#include "analysis/validation.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
@@ -60,6 +61,7 @@
 namespace {
 
 namespace af = spade::physics::airflow;
+namespace an = spade::analysis;
 namespace gen = spade::compute::gen;
 using spade::airflow_gpu::BufferKind;
 using spade::airflow_gpu::ChainRunner;
@@ -423,6 +425,83 @@ TEST(GpuAirflowActuator, SameBitsAtEveryWorkgroupSize) {
 #endif
 }
 
+namespace {
+
+// C8GpuGatherInTheCpuStep's record block on the device of record (K2b): the
+// run's printout, read back there and by
+// TheBitEqualC8BlockReadsAsAValidationRecord through the record reader
+// (an::validation_records), so a format slip fails in the test and not at
+// the paste (Test/Docs and the lead, 2026-10-26; the class of b8ec4c9). Past
+// T_p a verdict is an ensemble's, never one run's (01-verification), so the
+// momentum-theory line says whose this one is: C8's run 0, which this run
+// equals to the bit.
+[[nodiscard]] std::string c8_bit_equal_block(const std::string& device, double thrust, double h, uint32_t steps,
+                                             std::size_t increments_differing, std::size_t increments,
+                                             std::size_t series_differing, uint32_t first, double mean,
+                                             double expected) {
+    const auto verdict = [](bool within) { return within ? "within" : "MISS"; };
+    std::vector<char> text(4096);
+    const int n = std::snprintf(
+        text.data(), text.size(),
+        "=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===\n"
+        "path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4; its square roots "
+        "fp32_math's sqrt32_ftz), on %s\n"
+        "config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, h = %.6f, "
+        "n_v 2, %u steps; the gather's increments copied in each step\n"
+        "measure: the gathered increments differing from spread_actuator()'s in any bit = %zu of %zu\n"
+        "reference: spread_actuator(), the CPU step's own increments\n"
+        "tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: an exact kernel on the device of record)\n"
+        "verdict: %s\n"
+        "measure: both probes' values (the axis and the 0.5R mean, 2R below) differing from the CPU's run over steps "
+        "1 to %u = %zu of %u\n"
+        "reference: the CPU's run, spread_actuator() each step\n"
+        "tolerance: 0, bit-equal: the run is the CPU's run (TD-14 as amended 2026-10-22: an exact kernel on the "
+        "device of record)\n"
+        "verdict: %s\n"
+        "measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps %u to %u "
+        "= %.4f m/s\n"
+        "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
+        "tolerance: within 10%% (C8's: plan A Task 11, spec \xc2\xa7" "11.2; run 0's verdict, the run being C8's "
+        "run 0: past T_p C8's own verdict is its ensemble's, abaafcc)\n"
+        "verdict: %s\n",
+        device.c_str(), thrust, h, steps, increments_differing, increments, verdict(increments_differing == 0u), steps,
+        series_differing, 2u * steps, verdict(series_differing == 0u), first, steps, mean, expected,
+        verdict(std::abs(mean - expected) <= 0.1 * expected));
+    return n > 0 ? std::string(text.data(), std::min(static_cast<std::size_t>(n), text.size() - 1u)) : std::string();
+}
+
+// `block` read as the record reader reads a pasted block: fenced, with the
+// paste step's commit and date after its first line.
+[[nodiscard]] spade::Result<std::vector<an::ValidationRecord>> read_as_record(const std::string& block) {
+    const std::size_t first = block.find('\n') + 1;
+    const std::string text = "```text\n" + block.substr(0, first) + "commit: 0000000 (a test)\ndate: 2026-10-26\n" +
+                             block.substr(first) + "```\n";
+    return an::validation_records(text, "c8-k2b-test.md");
+}
+
+}  // namespace
+
+// The bit-equal block reads as one validation record, its three measures
+// judged: within on C8's numbers; MISS on a differing gather, a differing
+// series and a mean past 10%.
+TEST(AirflowActuatorRecord, TheBitEqualC8BlockReadsAsAValidationRecord) {
+    const auto within =
+        read_as_record(c8_bit_equal_block("a test device", 1.2315, 0.00125, 768, 0, 1593344, 0, 385, 8.0397, 7.5777));
+    ASSERT_TRUE(within.has_value()) << within.error().context;
+    ASSERT_EQ(within->size(), 1u);
+    ASSERT_EQ(within->at(0).measures.size(), 3u);
+    for (const an::ValidationMeasure& m : within->at(0).measures) {
+        EXPECT_EQ(m.verdict, an::Verdict::within) << m.quantity;
+    }
+    const auto miss =
+        read_as_record(c8_bit_equal_block("a test device", 1.2315, 0.00125, 768, 3, 1593344, 5, 385, 9.0, 7.5777));
+    ASSERT_TRUE(miss.has_value()) << miss.error().context;
+    ASSERT_EQ(miss->size(), 1u);
+    for (const an::ValidationMeasure& m : miss->at(0).measures) {
+        EXPECT_EQ(m.verdict, an::Verdict::miss) << m.quantity;
+    }
+}
+
 // C8's far wake (test_airflow_validation.cpp's C8ActuatorDiscFarWake...,
 // its record tests/data/airflow/records/c8-actuator-disc.md) on the CPU step,
 // with the GPU gather's increments in place of spread_actuator()'s ("GPU
@@ -435,8 +514,10 @@ TEST(GpuAirflowActuator, SameBitsAtEveryWorkgroupSize) {
 // spread_actuator()'s bit for bit (peskin4's roots are sqrt32_ftz; TD-14 as
 // amended 2026-10-22), so the run IS the CPU's run: every gathered increment
 // and both probes' series over all 768 steps equal the CPU's, and the record
-// block says so, with C8's verdict the CPU run's (K2b; the lead, 2026-10-26,
-// on Test/Docs' plan). Its red is B4's banded block, b8ec4c9, on record.
+// block says so, its momentum-theory verdict run 0's (the run is C8's run 0;
+// past T_p C8's own verdict is its ensemble's), and reads it back through the
+// record reader (c8_bit_equal_block(); K2b, the lead, 2026-10-26, on
+// Test/Docs' plan). Its red is B4's banded block, b8ec4c9, on record.
 //
 // ELSEWHERE the gather may differ from spread_actuator() in last bits, and
 // the far wake is chaotic past its horizon T_p, so the run is judged as a
@@ -593,33 +674,16 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
         for (uint32_t k = 0; k < kSteps; ++k) {
             series_differing += (gpu.axis[k] != cpu.axis[k] ? 1u : 0u) + (gpu.disc[k] != cpu.disc[k] ? 1u : 0u);
         }
-        const bool increments_equal = once.differing == 0u;
-        const bool series_equal = series_differing == 0u;
-        std::printf("=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===\n"
-                    "path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4; its square "
-                    "roots fp32_math's sqrt32_ftz), on %s\n"
-                    "config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
-                    "h = %.6f, n_v 2, %u steps; the gather's increments copied in each step\n"
-                    "measure: the gathered increments differing from spread_actuator()'s in any bit = %zu of %zu\n"
-                    "reference: spread_actuator(), the CPU step's own increments\n"
-                    "tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: an exact kernel on the device of record)\n"
-                    "verdict: %s\n"
-                    "measure: both probes' values (the axis and the 0.5R mean, 2R below) differing from the CPU's run "
-                    "over steps 1 to %u = %zu of %u\n"
-                    "reference: the CPU's run, spread_actuator() each step\n"
-                    "tolerance: 0, bit-equal: the run is the CPU's run\n"
-                    "verdict: %s\n"
-                    "measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps "
-                    "%u to %u = %.4f m/s\n"
-                    "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
-                    "tolerance: within 10%% (C8's: plan A Task 11, spec \xc2\xa7" "11.2); the CPU run's verdict, the "
-                    "run being the CPU's\n"
-                    "verdict: %s\n",
-                    spade::compute::describe(ctx->device_report()).c_str(), static_cast<double>(disc.thrust),
-                    static_cast<double>(cfg.h), kSteps, once.differing, spread.size(),
-                    verdict(increments_equal), kSteps, series_differing, 2u * kSteps, verdict(series_equal), kFirst,
-                    kSteps, mean,
-                    expected, verdict(theory_within));
+        const std::string block = c8_bit_equal_block(
+            spade::compute::describe(ctx->device_report()), static_cast<double>(disc.thrust), static_cast<double>(cfg.h),
+            kSteps, once.differing, spread.size(), series_differing, kFirst, mean, expected);
+        std::fputs(block.c_str(), stdout);
+        // The block as printed reads as one record of three measures, or the
+        // paste would refuse it.
+        const auto record = read_as_record(block);
+        ASSERT_TRUE(record.has_value()) << record.error().context;
+        ASSERT_EQ(record->size(), 1u);
+        EXPECT_EQ(record->at(0).measures.size(), 3u);
         EXPECT_EQ(once.differing, 0u) << "the gather is not spread_actuator()'s on the device of record";
         EXPECT_EQ(gpu.axis, cpu.axis) << "the axis probe's series is not the CPU's";
         EXPECT_EQ(gpu.disc, cpu.disc) << "the 0.5R mean's series is not the CPU's";
