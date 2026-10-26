@@ -107,6 +107,70 @@ struct Context {
             x.g.p[cell_index(x.g.shape, i, j, k)], std::sqrt(w2), q_hat, lambda2_hat(G)};
 }
 
+// The fluid face-neighbours of cell (i, j, k), -x, +x, -y, +y, -z, +z, across
+// the wrap on a periodic axis of more than one cell (the final review's M3):
+// visit(ni, nj, nk) for each, in that order; returns how many. publish's
+// first solid layer and extrapolated_cells() take this one walk (TD-9).
+template <class Solid, class Visit>
+SPADE_AIRFLOW_HOT uint32_t fluid_neighbours(const GridShape& s, const std::array<bool, 3>& periodic,
+                                            const Solid& is_solid, uint32_t i, uint32_t j, uint32_t k,
+                                            const Visit& visit) {
+    const uint32_t n[3] = {s.nx, s.ny, s.nz};
+    const uint32_t at[3] = {i, j, k};
+    uint32_t fluid = 0;
+    for (uint32_t a = 0; a < 3; ++a) {
+        for (uint32_t dir = 0; dir < 2; ++dir) {
+            const bool edge = dir == 0 ? at[a] == 0u : at[a] + 1u == n[a];
+            if (edge && !(periodic[a] && n[a] > 1u)) continue;
+            uint32_t nb[3] = {i, j, k};
+            if (edge) {
+                nb[a] = dir == 0 ? n[a] - 1u : 0u;
+            } else {
+                nb[a] = dir == 0 ? at[a] - 1u : at[a] + 1u;
+            }
+            if (is_solid(nb[0], nb[1], nb[2])) continue;
+            visit(nb[0], nb[1], nb[2]);
+            ++fluid;
+        }
+    }
+    return fluid;
+}
+
+// The header's range and no-data count, one packed half at a time in cell
+// order: the rule publish_render_volume() and flow_header_from_halves()
+// share (TD-9). A kNoDataBits half is counted and left out of the range; a
+// channel's first valid half opens its range and a later one widens it only
+// past `<` or `>`, so a tie of -0 and +0 keeps the first; a channel with no
+// valid half keeps 0 and 0.
+class HeaderRange {
+public:
+    explicit HeaderRange(FlowVolumeHeader& h) noexcept : h_(h) {
+        h_.channel_min = {};
+        h_.channel_max = {};
+        h_.no_data = 0;
+    }
+
+    SPADE_AIRFLOW_HOT void add(uint32_t c, uint16_t bits) noexcept {
+        if (bits == fp16::kNoDataBits) {
+            ++h_.no_data;
+            return;
+        }
+        const float stored = fp16::to_f32(bits);
+        if (!seen_[c]) {
+            h_.channel_min[c] = stored;
+            h_.channel_max[c] = stored;
+            seen_[c] = true;
+        } else {
+            h_.channel_min[c] = stored < h_.channel_min[c] ? stored : h_.channel_min[c];
+            h_.channel_max[c] = stored > h_.channel_max[c] ? stored : h_.channel_max[c];
+        }
+    }
+
+private:
+    FlowVolumeHeader& h_;
+    std::array<bool, kFlowChannelCount> seen_{};
+};
+
 // publish_render_volume()'s body, run under its wrapper's scope (the wrapper
 // rule, core/detail/flush_subnormals.hpp); Core's lambda2_hat() runs inside it.
 SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
@@ -229,16 +293,43 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
     return publish_flushed(g, in, out);
 }
 
-// RED STUBS (B6): the header and the count are not yet taken.
 Result<void> flow_header_from_halves(FlowVolume& volume) {
-    (void)volume;
+    const FlowVolumeHeader& h = volume.header;
+    const std::size_t halves = std::size_t{h.nx} * h.ny * h.nz * kFlowHalvesPerCell;
+    if (volume.v.size() != halves || volume.s.size() != halves) {
+        return std::unexpected(Error{Code::invalid_argument, "airflow publish: the volume's halves number " +
+                                                                 std::to_string(volume.v.size()) + " and " +
+                                                                 std::to_string(volume.s.size()) + ", not " +
+                                                                 std::to_string(halves) + " each"});
+    }
+    HeaderRange range{volume.header};
+    for (std::size_t at = 0; at < halves; at += kFlowHalvesPerCell) {
+        for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
+            range.add(c, (c < kFlowHalvesPerCell ? volume.v : volume.s)[at + c % kFlowHalvesPerCell]);
+        }
+    }
     return {};
 }
 
-Result<uint32_t> extrapolated_cells(const GridShape& shape, const PublishInput& in) {
-    (void)shape;
-    (void)in;
-    return 0u;
+Result<uint32_t> extrapolated_cells(const GridShape& s, const PublishInput& in) {
+    if (in.solid.empty()) return 0u;
+    const std::size_t cells = std::size_t{s.nx} * s.ny * s.nz;
+    if (in.solid.size() != cells) {
+        return std::unexpected(Error{Code::invalid_argument, "airflow publish: the solid mask holds " +
+                                                                 std::to_string(in.solid.size()) + " cells, not " +
+                                                                 std::to_string(cells)});
+    }
+    const auto is_solid = [&](uint32_t i, uint32_t j, uint32_t k) { return in.solid[cell_index(s, i, j, k)] != 0u; };
+    const auto none = [](uint32_t, uint32_t, uint32_t) {};
+    uint32_t count = 0;
+    for (uint32_t k = 0; k < s.nz; ++k) {
+        for (uint32_t j = 0; j < s.ny; ++j) {
+            for (uint32_t i = 0; i < s.nx; ++i) {
+                if (is_solid(i, j, k) && fluid_neighbours(s, in.periodic, is_solid, i, j, k, none) > 0u) ++count;
+            }
+        }
+    }
+    return count;
 }
 
 }  // namespace spade::physics::airflow
