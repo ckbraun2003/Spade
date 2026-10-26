@@ -152,7 +152,13 @@ struct AirDrone {
 // outlives the run. Everything is where the drone is placed: the volume's
 // origin, the held body and the rotor probes are shifted from the box's
 // centre (LiveRun's frame) by the drone's position, before the hand-off and
-// never after (Rendering's R-2).
+// never after (Rendering's R-2). The held body is an alignas(16) std430
+// row, so this holder gains padding; it is never uploaded or hashed
+// (builtin_records.hpp disables C4324 the same way).
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
 struct AirFrame {
     FlowVolume volume;
     uint64_t frames = 0;  // published so far, this one included
@@ -164,6 +170,9 @@ struct AirFrame {
     std::string pressure_line;
     std::string error;  // "" while the air runs; else why it stopped, in the last frame
 };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // The air on a worker thread (§9, the lead's D3 after M0: a 32^3 step is
 // over a displayed frame's budget). The worker steps LiveRun one step at a
