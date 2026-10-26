@@ -93,3 +93,27 @@ reference: none
 tolerance: none (report only)
 verdict: report only
 ```
+
+## 2026-10-26: K2, the exact gather in the CPU step, bit-equal
+
+```text
+=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===
+commit: a0043c9 (rendering/k2b-record-fix; merged at e57f16a)
+date: 2026-10-26
+path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4; its square roots fp32_math's sqrt32_ftz), on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no)
+config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; the gather's increments copied in each step
+measure: the gathered increments differing from spread_actuator()'s in any bit = 0 of 1593344
+reference: spread_actuator(), the CPU step's own increments
+tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: an exact kernel on the device of record)
+verdict: within
+measure: both probes' values (the axis and the 0.5R mean, 2R below) differing from the CPU's run over steps 1 to 768 = 0 of 1536
+reference: the CPU's run, spread_actuator() each step
+tolerance: 0, bit-equal: the run is the CPU's run (TD-14 as amended 2026-10-22: an exact kernel on the device of record)
+verdict: within
+measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 8.0397 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8)
+tolerance: within 10% (C8's: plan A Task 11, spec §11.2; run 0's verdict, the run being C8's run 0: past T_p C8's own verdict is its ensemble's, abaafcc)
+verdict: within
+```
+
+Test/Docs' note on this block (2026-10-26): the run is C8's run 0 to the bit. Besides the 0 of 1536, its 0.5R mean, 8.0397 m/s, is run 0's 8.039714 (`docs/design/test-docs/2026-10-22-c8-spread.md`) and the CPU's run in B4's block above. The path line's "flush-to-zero supported: no" is the device's report of a mode a kernel could request. With none requested, its arithmetic flushes (a sign-preserving FTZ and DAZ), and the CPU step flushes as it does (`1130608`): that is `TD-14`'s "both twins flush".
