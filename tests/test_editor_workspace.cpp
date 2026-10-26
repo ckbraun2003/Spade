@@ -566,3 +566,77 @@ TEST(EditorWorkspace, ASelectionEndsADronesInspection) {
     w->apply_panels();
     EXPECT_FALSE(w->panels().inspected.has_value());
 }
+
+// ===========================================================================
+// T3 of the editor's airflow run (INT-15; the plan's §1, D1 and §9): "Run
+// air" runs the selected drone's region on the worker, its drone held and
+// flown by the Pilot section; Stop ends it. The rest of the scene is not
+// simulated; a change to the scene stops the air, whose drone was placed
+// where the scene had it at Run air.
+// ===========================================================================
+
+namespace {
+
+// The reference quad placed and selected, with its airflow region.
+[[nodiscard]] std::string quad_with_region(ed::EditorWorkspace& w) {
+    const std::string quad = place_reference_quad(w, 3.0f, 0.0f);
+    w.panels().pending.push_back(ed::AddAirflowRegion{quad});
+    w.apply_panels();
+    EXPECT_FALSE(scene_of(w).airflow.empty()) << w.panels().status;
+    return quad;
+}
+
+}  // namespace
+
+TEST(EditorWorkspaceAir, RunAirRunsTheSelectedDronesRegionAndStopEndsIt) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = quad_with_region(*w);
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    EXPECT_TRUE(w->panels().running);
+    EXPECT_EQ(w->panels().pilot.vehicle, quad) << "the Pilot section flies the held drone";
+    EXPECT_EQ(w->run(), nullptr) << "the rest of the scene is not simulated";
+    command(*w, Command::stop);
+    EXPECT_EQ(w->air(), nullptr);
+    EXPECT_FALSE(w->panels().running);
+}
+
+TEST(EditorWorkspaceAir, RunAirWithoutARegionIsRefusedNamingWhatToDo) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    command(*w, Command::run_air);
+    EXPECT_EQ(w->air(), nullptr);
+    EXPECT_NE(w->panels().status.find("Add airflow region"), std::string::npos) << w->panels().status;
+}
+
+TEST(EditorWorkspaceAir, RunAndRunAirExcludeEachOther) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    (void)quad_with_region(*w);
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    command(*w, Command::run);
+    EXPECT_EQ(w->run(), nullptr);
+    EXPECT_NE(w->panels().status.find("Stop"), std::string::npos) << w->panels().status;
+    command(*w, Command::stop);
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    command(*w, Command::run_air);
+    EXPECT_EQ(w->air(), nullptr);
+    EXPECT_NE(w->panels().status.find("Stop"), std::string::npos) << w->panels().status;
+}
+
+TEST(EditorWorkspaceAir, AChangeToTheSceneStopsTheAirNamingWhy) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = quad_with_region(*w);
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    spade::VehicleSpawn moved = scene_of(*w).vehicles.back().start;
+    moved.pos.x += 0.5f;
+    w->panels().pending.push_back(ed::SetVehicleStart{quad, moved});
+    w->apply_panels();
+    EXPECT_EQ(w->air(), nullptr);
+    EXPECT_NE(w->panels().status.find("the scene changed"), std::string::npos) << w->panels().status;
+}
