@@ -133,11 +133,11 @@ class EditorWorkspace {
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
         keep_staging_alive();
         refresh_panels();
-        // A selection ends a part's inspection (the lead's Q1), and so does
-        // the library moving under it.
+        // A selection ends a part's or a drone's inspection (the lead's Q1),
+        // and so does the library moving under it.
         if (panels_.inspected && (panels_.selection.kind != Selection::Kind::none ||
                                   *panels_.inspected >= panels_.library.size() ||
-                                  panels_.library[*panels_.inspected].kind != LibraryItem::Kind::part)) {
+                                  !has_grades(panels_.library[*panels_.inspected]))) {
             panels_.inspected.reset();
         }
     }

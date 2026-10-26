@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <limits>
 #include <map>
 #include <memory>
@@ -55,6 +56,7 @@
 #include "png_reader.hpp"
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
+#include "scene/model_sources.hpp"
 #include "scene/object_file.hpp"
 #include "scene/part_file.hpp"
 #include "scene/scene_file.hpp"
@@ -81,6 +83,7 @@ struct LibraryItem {
     std::optional<scene::SceneAsset> asset;    // set for an asset: an object file's object
     std::vector<MaterialDesc> materials{};     // an object file's own materials
     std::optional<scene::PartFile> part{};     // set for a part, its sources (grades) included
+    std::optional<scene::ModelSources> sources{};  // set for a library drone with its sidecar (L5): its grades
     std::string category{};                    // the index's, "from file" or "imported"; empty for a built-in
     std::string file{};                        // as the index spells it, or the path loaded from
     std::string source{};                      // the path placing reads; empty for a built-in
@@ -160,7 +163,7 @@ struct LibraryItem {
 // assumed value is never shown as measured; a drone's per-field grades come
 // with L5's sidecar (the lead, 2026-10-22).
 struct PartRow {
-    std::string field;  // its path: "kv", "blade.airfoil"
+    std::string field;  // its path: "kv", "blade.airfoil"; a drone's input's: "rotors[0].hub.position.x"
     std::string value;
     scene::Grade grade = scene::Grade::assumed;
     std::string source;  // the registry id; empty for an assumed value citing none
@@ -288,8 +291,54 @@ namespace detail {
     return text;
 }
 
-// Whether `item` is a part with any field graded assumed: its tile says so.
+// The sidecar beside a library drone's model file (L5, scene/
+// model_sources.hpp): "drones/x.model.yaml" -> "drones/x.sources.yaml"; ""
+// for a file that is not a model file.
+[[nodiscard]] inline std::string sidecar_file(std::string_view model_file) {
+    constexpr std::string_view kModel = ".model.yaml";
+    if (model_file.size() <= kModel.size() || !model_file.ends_with(kModel)) return {};
+    return std::string(model_file.substr(0, model_file.size() - kModel.size())) + ".sources.yaml";
+}
+
+// A library drone's rows (the lead's Q2, deferred to L5): its sidecar's
+// inputs in their order, each value as the sidecar writes it (shortest
+// round-trip; a vector as a flow sequence, "[1, 0, 0, 0]"), with its citation.
+[[nodiscard]] inline std::vector<PartRow> model_rows(const scene::ModelSources& sources) {
+    std::vector<PartRow> rows;
+    rows.reserve(sources.inputs.size());
+    for (const scene::ModelInput& in : sources.inputs) {
+        PartRow row;
+        row.field = in.path;
+        if (const double* x = std::get_if<double>(&in.value)) {
+            row.value = std::format("{}", *x);
+        } else {
+            const std::vector<double>& v = std::get<std::vector<double>>(in.value);
+            row.value = "[";
+            for (std::size_t i = 0; i < v.size(); ++i) row.value += (i == 0 ? "" : ", ") + std::format("{}", v[i]);
+            row.value += "]";
+        }
+        row.grade = in.ref.grade;
+        row.source = in.ref.source;
+        row.note = in.ref.note;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// Whether `item` has grades to inspect: a part, or a library drone with its
+// sidecar.
+[[nodiscard]] inline bool has_grades(const LibraryItem& item) {
+    return (item.kind == LibraryItem::Kind::part && item.part) ||
+           (item.kind == LibraryItem::Kind::model && item.sources);
+}
+
+// Whether `item` has any field (a part's) or input (a drone's) graded
+// assumed: its tile says so.
 [[nodiscard]] inline bool any_assumed(const LibraryItem& item) {
+    if (item.kind == LibraryItem::Kind::model && item.sources) {
+        return std::any_of(item.sources->inputs.begin(), item.sources->inputs.end(),
+                           [](const scene::ModelInput& in) { return in.ref.grade == scene::Grade::assumed; });
+    }
     if (item.kind != LibraryItem::Kind::part || !item.part) return false;
     const scene::PartSources& sources = detail::sources_of(*item.part);
     return std::any_of(sources.begin(), sources.end(),
@@ -350,7 +399,10 @@ namespace detail {
 
 // Every entry of the index at `index`, loaded (load_library_model(),
 // load_library_object(), or load_library_part() against the sources
-// registry, read once when the first part needs it).
+// registry, read once when the first part or sidecar needs it). A drone's
+// sidecar (L5) is loaded and checked as the drone's own test checks it
+// (check_model_sources()); one that won't load or check is named and left
+// off, the drone kept, so the editor shows no citation the library refuses.
 [[nodiscard]] inline LibraryLoad load_library_items(const std::filesystem::path& index) {
     LibraryLoad out;
     const Result<scene::Library> library = scene::load_library(index);
@@ -359,14 +411,17 @@ namespace detail {
         return out;
     }
     std::optional<Result<scene::SourceRegistry>> registry;
+    const auto registry_read = [&] {
+        if (!registry) {
+            registry = scene::load_library_sources(*library);
+            if (!*registry) out.problems.push_back((*registry).error().context);
+        }
+        return registry->has_value();  // named once, above
+    };
     for (const scene::LibraryEntry& e : library->entries) {
         LibraryItem item;
         if (e.kind != scene::LibraryKind::model && e.kind != scene::LibraryKind::object) {
-            if (!registry) {
-                registry = scene::load_library_sources(*library);
-                if (!*registry) out.problems.push_back((*registry).error().context);
-            }
-            if (!*registry) continue;  // named once, above
+            if (!registry_read()) continue;
             Result<scene::PartFile> f = scene::load_library_part(*library, e, **registry);
             if (!f) {
                 out.problems.push_back(f.error().context);
@@ -381,6 +436,20 @@ namespace detail {
                 continue;
             }
             item = detail::model_item(*f);
+            if (const std::string sidecar = sidecar_file(e.file);
+                !sidecar.empty() && std::filesystem::exists(library->dir / sidecar)) {
+                Result<scene::ModelSources> s = scene::load_model_sources(library->dir / sidecar);
+                if (!s) {
+                    out.problems.push_back("library entry '" + e.name + "': " + s.error().context);
+                } else if (registry_read()) {
+                    if (const Result<void> checked = scene::check_model_sources(*library, **registry, *s); !checked) {
+                        out.problems.push_back("library entry '" + e.name + "': its sources " + sidecar + ": " +
+                                               checked.error().context);
+                    } else {
+                        item.sources = std::move(*s);
+                    }
+                }
+            }
         } else {
             const Result<scene::ObjectFile> f = scene::load_library_object(*library, e);
             if (!f) {

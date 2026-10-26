@@ -13,6 +13,8 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <variant>
 #include <string>
@@ -27,6 +29,7 @@
 #include "scene/library.hpp"
 #include "scene/part_file.hpp"
 #include "scene/model_file.hpp"
+#include "scene/model_sources.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "sim/design_frame.hpp"
@@ -724,4 +727,127 @@ TEST(EditorLibraryGrades, ACellShowsAFractionalNumberToFourSignificantFigures) {
     EXPECT_EQ(ed::short_value("unknown"), "unknown");
     EXPECT_EQ(ed::short_value("{kind: cylinder, size: [0.014, 0.025, 0]}"), "{kind: cylinder, size: [0.014, 0.025, 0]}");
     EXPECT_EQ(ed::short_value(""), "");
+}
+
+// A library drone's grades are its L5 sidecar's (scene/model_sources.hpp;
+// the lead's Q2, deferred to L5): one row per input, in the sidecar's order,
+// the value as the sidecar writes it (a vector as a flow sequence), then its
+// grade, source and note. The sidecar sits beside the model file.
+TEST(EditorLibraryGrades, ADronesRowsAreItsSidecarsInputsWithTheirValuesAndGrades) {
+    EXPECT_EQ(ed::sidecar_file("drones/crazyflie_class.model.yaml"), "drones/crazyflie_class.sources.yaml");
+    EXPECT_EQ(ed::sidecar_file("obstacles/crate.object.yaml"), "");
+    sc::ModelSources s;
+    s.inputs.push_back(
+        sc::ModelInput{"mass", 0.0271, sc::SourceRef{"bitcraze_cf21", sc::Grade::measured, ""}, std::nullopt});
+    s.inputs.push_back(sc::ModelInput{"rotors[0].hub.orientation", std::vector<double>{1.0, 0.0, 0.0, 0.0},
+                                      sc::SourceRef{"", sc::Grade::assumed, "identity"}, std::nullopt});
+    const std::vector<ed::PartRow> rows = ed::model_rows(s);
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[0].field, "mass");
+    EXPECT_EQ(rows[0].value, "0.0271");
+    EXPECT_EQ(rows[0].grade, sc::Grade::measured);
+    EXPECT_EQ(rows[0].source, "bitcraze_cf21");
+    EXPECT_EQ(rows[0].note, "");
+    EXPECT_EQ(rows[1].field, "rotors[0].hub.orientation");
+    EXPECT_EQ(rows[1].value, "[1, 0, 0, 0]");
+    EXPECT_EQ(rows[1].grade, sc::Grade::assumed);
+    EXPECT_EQ(rows[1].source, "");
+    EXPECT_EQ(rows[1].note, "identity");
+}
+
+// A drone with an input graded assumed is marked as a part is, and inspected
+// as one, staying armed to place (a drone is placeable; a part is not). A
+// drone without a sidecar (a project's own, the reference quad) has no
+// grades to show, and one citing every input carries no mark.
+TEST(EditorLibraryGrades, ADroneWithAnAssumedInputIsMarkedAndInspectedLikeAPart) {
+    ed::LibraryItem drone;
+    drone.kind = ed::LibraryItem::Kind::model;
+    drone.name = "drone";
+    EXPECT_FALSE(ed::has_grades(drone));
+    EXPECT_FALSE(ed::any_assumed(drone));
+    sc::ModelSources s;
+    s.inputs.push_back(
+        sc::ModelInput{"mass", 0.0271, sc::SourceRef{"bitcraze_cf21", sc::Grade::measured, ""}, std::nullopt});
+    drone.sources = s;
+    EXPECT_TRUE(ed::has_grades(drone));
+    EXPECT_FALSE(ed::any_assumed(drone));
+    s.inputs.push_back(
+        sc::ModelInput{"gravity", 9.80665, sc::SourceRef{"", sc::Grade::assumed, "standard gravity"}, std::nullopt});
+    drone.sources = s;
+    EXPECT_TRUE(ed::any_assumed(drone));
+
+    ed::EditorPanels p;
+    p.library = {drone};
+    p.selection = ed::Selection{ed::Selection::Kind::object, "box"};
+    p.armed = 0;
+    EXPECT_TRUE(ed::inspect_item(p, 0));
+    EXPECT_EQ(p.inspected, std::optional<std::size_t>(0));
+    EXPECT_EQ(p.selection.kind, ed::Selection::Kind::none);
+    EXPECT_EQ(p.armed, std::optional<std::size_t>(0)) << "an inspected drone stays armed to place";
+    p.library[0].sources.reset();
+    p.inspected.reset();
+    EXPECT_FALSE(ed::inspect_item(p, 0));
+    EXPECT_FALSE(p.inspected.has_value());
+}
+
+// The default library's drones carry their sidecars, checked against the
+// library as their own tests check them (check_model_sources()); a drone
+// without one (the reference quad) loads without grades. Each has an input
+// assumed (the compile's operating point, at least), so each tile is marked.
+TEST(EditorLibraryGrades, TheDefaultLibrarysDronesCarryTheirSidecars) {
+    const std::filesystem::path dir = std::filesystem::path(SPADE_ASSETS_DIR) / "library";
+    const ed::LibraryLoad load = ed::load_library_items(dir / "library.yaml");
+    std::string problems;
+    for (const std::string& s : load.problems) problems += "\n  " + s;
+    EXPECT_TRUE(load.problems.empty()) << problems;
+    std::size_t with = 0;
+    std::size_t without = 0;
+    for (const ed::LibraryItem& item : load.items) {
+        if (item.kind != ed::LibraryItem::Kind::model) continue;
+        SCOPED_TRACE(item.name);
+        const std::string sidecar = ed::sidecar_file(item.file);
+        EXPECT_EQ(item.sources.has_value(), !sidecar.empty() && std::filesystem::exists(dir / sidecar));
+        if (!item.sources) {
+            ++without;
+            continue;
+        }
+        ++with;
+        EXPECT_FALSE(item.sources->inputs.empty());
+        EXPECT_TRUE(ed::any_assumed(item));
+    }
+    EXPECT_GE(with, 5u) << "L5's five library drones";
+    EXPECT_GE(without, 1u) << "the reference quad has no sidecar";
+}
+
+// A sidecar its model no longer matches (a stale hash) is named, and the
+// drone still loads, without grades: the editor shows no citation the
+// library's own check would refuse.
+TEST(EditorLibraryGrades, AStaleSidecarIsNamedAndItsDroneLoadsWithoutGrades) {
+    support::TempDir tmp;
+    const std::filesystem::path dir = tmp.path() / "library";
+    std::filesystem::copy(std::filesystem::path(SPADE_ASSETS_DIR) / "library", dir,
+                          std::filesystem::copy_options::recursive);
+    const std::filesystem::path sidecar = dir / "drones" / "crazyflie_class.sources.yaml";
+    std::string text;
+    {
+        std::ifstream in(sidecar, std::ios::binary);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string key = "model: {file: \"drones/crazyflie_class.model.yaml\", hash: \"";
+    const std::size_t at = text.find(key);
+    ASSERT_NE(at, std::string::npos);
+    text.replace(at + key.size(), 16, "0000000000000000");
+    {
+        std::ofstream out(sidecar, std::ios::binary | std::ios::trunc);
+        out << text;
+    }
+    const ed::LibraryLoad load = ed::load_library_items(dir / "library.yaml");
+    ASSERT_EQ(load.problems.size(), 1u);
+    EXPECT_NE(load.problems[0].find("crazyflie_class.sources.yaml"), std::string::npos) << load.problems[0];
+    const auto drone = std::find_if(load.items.begin(), load.items.end(), [](const ed::LibraryItem& i) {
+        return i.file == "drones/crazyflie_class.model.yaml";
+    });
+    ASSERT_NE(drone, load.items.end()) << "the drone still loads";
+    EXPECT_FALSE(drone->sources.has_value());
+    EXPECT_FALSE(ed::has_grades(*drone));
 }

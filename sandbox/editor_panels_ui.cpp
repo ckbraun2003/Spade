@@ -661,22 +661,13 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
-// A library part (INT-14), inspect-only: each cited field's grade, an
-// assumed one in the warning colour, then its value, a fractional one to 4
-// significant figures, every cell elided at its edge; the whole value, the
-// source and the note on hover.
-void inspect_part(const ed::LibraryItem& item) {
-    const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
-    ui::title(item.name.c_str());
-    ImGui::TextDisabled("%.*s, built into a drone; inspect-only", static_cast<int>(kind.size()), kind.data());
-    if (!item.part) return;
-    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*item.part);
-    if (!rows) {
-        ui::status_text(rows.error().context);
-        return;
-    }
-    if (ui::begin_graded_properties("##part")) {
-        for (const ed::PartRow& r : *rows) {
+// Graded rows (INT-14): each cited field's or input's grade, an assumed one
+// in the warning colour, then its value, a fractional one to 4 significant
+// figures, every cell elided at its edge; the whole value, the source and the
+// note on hover.
+void graded_rows(const std::vector<ed::PartRow>& rows) {
+    if (ui::begin_graded_properties("##graded")) {
+        for (const ed::PartRow& r : rows) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ui::cell_text(r.field, ui::Tone::dim);
@@ -693,6 +684,48 @@ void inspect_part(const ed::LibraryItem& item) {
                 if (!r.note.empty()) tip += "\n" + r.note;
                 ImGui::SetTooltip("%s", tip.c_str());
             }
+        }
+        ui::end_properties();
+    }
+}
+
+// A library part (INT-14), inspect-only: its graded fields.
+void inspect_part(const ed::LibraryItem& item) {
+    const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
+    ui::title(item.name.c_str());
+    ImGui::TextDisabled("%.*s, built into a drone; inspect-only", static_cast<int>(kind.size()), kind.data());
+    if (!item.part) return;
+    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*item.part);
+    if (!rows) {
+        ui::status_text(rows.error().context);
+        return;
+    }
+    graded_rows(*rows);
+}
+
+// A library drone with its sidecar (L5; the lead's Q2): what holds for the
+// whole drone, its inputs graded as a part's fields are, then the part files
+// it was built from. Placeable: its tile's click arms it as well.
+void inspect_drone(const std::vector<ed::LibraryItem>& library, const ed::LibraryItem& item) {
+    ui::title(item.name.c_str());
+    if (!item.sources) return;
+    const scene::ModelSources& s = *item.sources;
+    ImGui::TextDisabled("drone, %zu inputs from its sources file", s.inputs.size());
+    if (!s.caveat.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", s.caveat.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    graded_rows(ed::model_rows(s));
+    if (s.parts.empty()) return;
+    ui::gap();
+    ImGui::TextDisabled("Built from");
+    if (ui::begin_properties("##built")) {
+        for (const scene::PinnedPart& part : s.parts) {
+            const auto named = std::find_if(library.begin(), library.end(),
+                                            [&](const ed::LibraryItem& i) { return i.file == part.file; });
+            ui::value_row(std::string(scene::part_kind_name(part.kind)).c_str(), "%s",
+                          named != library.end() ? named->name.c_str() : part.file.c_str());
         }
         ui::end_properties();
     }
@@ -717,7 +750,12 @@ void inspector(ed::EditorPanels& p) {
     switch (p.selection.kind) {
         case ed::Selection::Kind::none:
             if (p.inspected && *p.inspected < p.library.size()) {
-                inspect_part(p.library[*p.inspected]);
+                const ed::LibraryItem& item = p.library[*p.inspected];
+                if (item.kind == ed::LibraryItem::Kind::part) {
+                    inspect_part(item);
+                } else {
+                    inspect_drone(p.library, item);
+                }
             } else {
                 ImGui::TextDisabled("Select an object, the scene or the world.");
             }
@@ -826,7 +864,9 @@ void library(ed::EditorPanels& p) {
         } else {
             draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_WindowBg));
         }
-        if (clicked && !placeable) ed::inspect_item(p, i);  // a part: inspected, never armed (the lead's Q1)
+        // A part is inspected, never armed (the lead's Q1); a library drone
+        // with its sidecar is inspected and armed (L5).
+        if (clicked && ed::has_grades(item)) ed::inspect_item(p, i);
         if (clicked && placeable) {
             if (armed) {
                 p.armed.reset();
@@ -839,7 +879,10 @@ void library(ed::EditorPanels& p) {
         const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
         ui::caption(draw, name_at, tile, item.name, !placeable);
         if (hovered || ImGui::IsMouseHoveringRect(name_at, ImVec2(name_at.x + tile, name_at.y + line))) {
-            if (placeable) {
+            if (placeable && ed::has_grades(item)) {
+                ImGui::SetTooltip("%s: click to place it; the inspector shows where its inputs came from",
+                                  item.name.c_str());
+            } else if (placeable) {
                 ImGui::SetTooltip("%s", item.name.c_str());
             } else {  // a part: inspect-only (INT-14)
                 ImGui::SetTooltip("%s: built into a drone, not placed on its own; click to inspect it",
