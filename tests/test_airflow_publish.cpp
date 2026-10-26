@@ -29,6 +29,33 @@ using spade::FlowVolume;
     return spade::fp16::to_f32(spade::flow_half(vol, spade::flow_cell_index(vol.header, i, j, k), c));
 }
 
+namespace an = spade::analysis;
+
+// S5's record block as the run prints it. The test reads it back through the
+// record reader, so a format slip fails here and not at the paste (Test/Docs
+// and the lead, 2026-10-26).
+[[nodiscard]] std::string s5_block(const std::string& build, double omega_err, bool omega_within, double q_max,
+                                   bool q_within) {
+    return airflow_test::formatted([&](char* b, std::size_t n) {
+        return std::snprintf(
+            b, n,
+            "=== validation record: S5 Publish beside a sheet ===\n"
+            "path: CPU reference, %s\n"
+            "config: 8x16x8 at dx 1 cm, x and z periodic, a sheet's closed v-faces at y = 8 dx; u and w linear on "
+            "each side with jumps U = 1 m/s across it, S dx = 0.01 U, v = 0; published with the apertures, no "
+            "step taken\n"
+            "measure: max | |omega| - S | / S over the 128 cells next to the sheet = %.3e\n"
+            "reference: 0 (|omega| = S exactly; a one-sided difference is exact for a linear field)\n"
+            "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
+            "verdict: %s\n"
+            "measure: max |q-hat| / S over the same cells = %.3e\n"
+            "reference: 0 (Q = 0 exactly)\n"
+            "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
+            "verdict: %s\n",
+            build.c_str(), omega_err, omega_within ? "within" : "MISS", q_max, q_within ? "within" : "MISS");
+    });
+}
+
 TEST(AirflowPublish, AUniformFlowPublishesItsVelocityAndNoVorticity) {
     MacGrid g = *make_grid({4, 4, 4, 0.25f}, DomainBc{});
     for (float& x : g.u) x = 1.0f;
@@ -317,21 +344,15 @@ TEST(AirflowPublish, S5BesideASheetTheGradientDoesNotCrossIt) {
             }
         }
     }
-    std::printf("=== validation record: S5 Publish beside a sheet ===\n"
-                "path: CPU reference, %s\n"
-                "config: 8x16x8 at dx 1 cm, x and z periodic, a sheet's closed v-faces at y = 8 dx; u and w linear on "
-                "each side with jumps U = 1 m/s across it, S dx = 0.01 U, v = 0; published with the apertures, no "
-                "step taken\n"
-                "measure: max | |omega| - S | / S over the 128 cells next to the sheet = %.3e\n"
-                "reference: 0 (|omega| = S exactly; a one-sided difference is exact for a linear field)\n"
-                "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
-                "verdict: %s\n"
-                "measure: max |q-hat| / S over the same cells = %.3e\n"
-                "reference: 0 (Q = 0 exactly)\n"
-                "tolerance: <= 1e-3 (test-docs/2026-10-13-solids-tolerances.md, S5)\n"
-                "verdict: %s\n",
-                airflow_test::build_line().c_str(), omega_err, omega_err <= 1.0e-3 ? "within" : "MISS", q_max,
-                q_max <= 1.0e-3 ? "within" : "MISS");
+    const std::string block =
+        s5_block(airflow_test::build_line(), omega_err, omega_err <= 1.0e-3, q_max, q_max <= 1.0e-3);
+    std::fputs(block.c_str(), stdout);
+    // The block as printed reads as one record of two measures, or the paste
+    // would refuse it.
+    const auto record = airflow_test::read_as_record(block, "test-airflow-publish.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    EXPECT_EQ(record->at(0).measures.size(), 2u);
     EXPECT_LE(omega_err, 1.0e-3);
     EXPECT_LE(q_max, 1.0e-3);
 }
@@ -347,3 +368,24 @@ TEST(AirflowPublish, ApertureArraysOfTheWrongSizeAreRefused) {
 }
 
 }  // namespace
+
+// The block reads as one validation record of two measures, each judged:
+// within on small numbers, MISS on numbers past 1e-3.
+TEST(AirflowPublishRecord, EachRecordBlockReadsAsAValidationRecord) {
+    const auto within =
+        airflow_test::read_as_record(s5_block("a test build", 1.0e-7, true, 2.0e-7, true), "s5-test.md");
+    ASSERT_TRUE(within.has_value()) << within.error().context;
+    ASSERT_EQ(within->size(), 1u);
+    ASSERT_EQ(within->at(0).measures.size(), 2u);
+    for (const an::ValidationMeasure& m : within->at(0).measures) {
+        EXPECT_EQ(m.verdict, an::Verdict::within) << m.quantity;
+    }
+    const auto miss =
+        airflow_test::read_as_record(s5_block("a test build", 5.0e-3, false, 2.0e-3, false), "s5-test.md");
+    ASSERT_TRUE(miss.has_value()) << miss.error().context;
+    ASSERT_EQ(miss->size(), 1u);
+    ASSERT_EQ(miss->at(0).measures.size(), 2u);
+    for (const an::ValidationMeasure& m : miss->at(0).measures) {
+        EXPECT_EQ(m.verdict, an::Verdict::miss) << m.quantity;
+    }
+}
