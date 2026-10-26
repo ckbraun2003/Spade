@@ -323,7 +323,20 @@ The lead approved this plan on 2026-10-26 and ruled on each question below. Thes
 
 **L7b1:** no leg; `gcc-check --compile` covers it.
 
-The lead has asked Physics for P11's four answers and for Q3.
+The lead asked Physics for P11's four answers and for Q3.
+
+**Physics' answers (2026-10-26, sent to the lead, with a copy to Core):**
+- **Q3: yes to (a).** The frozen L5 estimate becomes a `derived` DragSpec, bit for bit. Its source is named in the spec, and `TheFrozenDragIsTheAnalyticEstimateBitForBit` stays.
+- **P11 (1), which omega:** the row's omega after the step, the value its forces used (`rotor.cpp:331`, the lag, then the forces at `:338-340`). A disabled rotor holds its psi.
+- **P11 (2), the rule:**
+  - `psi += omega h`, then subtract `kAzimuthTwoPi = 6.28318548f` (`0x40C90FDB`) while psi is at least that, which gives [0, 2 pi) using + - * only;
+  - psi is held, and the call returns false, if omega is not finite, is negative, or omega h exceeds 64 rad.
+- **P11 (3), the sign:** as `posed_parts()` takes it. Psi grows with omega >= 0, and the caller applies s_k. P4's line puts blade b at s_k psi + 2 pi b / B.
+- **P11 (4), the home:**
+  - header-only, `engine/physics/blade_azimuth.hpp`: `bool spade::physics::advance_blade_azimuth(float& psi, float omega, float h)`, plus a span form;
+  - host-held, outside registered state;
+  - callable from a plain Simulation and from LiveRun.
+  Physics builds it once B5.1 is READY, and Core reviews it against the posing rule.
 
 ## Open questions for the lead (each with a recommendation)
 
