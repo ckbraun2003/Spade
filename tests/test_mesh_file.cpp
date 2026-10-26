@@ -504,4 +504,40 @@ TEST(MeshFile, ARefusedSaveLeavesItsTargetAndNoTemporary) {
     EXPECT_FALSE(std::filesystem::exists(tmp)) << "the temporary outlived the refusal";
 }
 
+// A target another program holds open (L7b0's review; the lead asked for
+// the Windows behaviour by name). On Windows the reader here opens it
+// without FILE_SHARE_DELETE, so the rename over it fails: the save is
+// refused, the temporary removed, and the target keeps its bytes. Elsewhere
+// rename(2) replaces the name, and the reader keeps what it opened.
+TEST(MeshFile, ATargetHeldOpenIsReplacedOrRefusedCleanly) {
+    const TempDir dir("mesh-file-held");
+    const MeshPtr mesh = built(cube({0.0, 0.0, 0.0}, 0.2, MeshUnit::metre));
+    ASSERT_NE(mesh, nullptr);
+    const std::filesystem::path target = dir.path() / "held.spmesh";
+    {
+        std::ofstream out(target, std::ios::binary);
+        out << "held open";
+    }
+    std::ifstream reader(target, std::ios::binary);
+    ASSERT_TRUE(reader.is_open());
+
+    const spade::Result<void> saved = spade::save_mesh_file(target, *mesh);
+    std::filesystem::path tmp = target;
+    tmp += ".tmp-spade";
+    EXPECT_FALSE(std::filesystem::exists(tmp)) << "the temporary outlived the save";
+    const std::string seen((std::istreambuf_iterator<char>(reader)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(seen, "held open") << "the reader keeps what it opened";
+    reader.close();
+#ifdef _WIN32
+    ASSERT_FALSE(saved.has_value());
+    EXPECT_EQ(saved.error().code, Code::io_error);
+    EXPECT_TRUE(contains(saved.error().context, "cannot be replaced")) << saved.error().context;
+    const std::vector<uint8_t> kept = read_bytes(target);
+    EXPECT_EQ(std::string(kept.begin(), kept.end()), "held open");
+#else
+    ASSERT_TRUE(saved.has_value()) << saved.error().context;
+    EXPECT_TRUE(spade::load_mesh_file(target, mesh->content_hash()).has_value());
+#endif
+}
+
 }  // namespace
