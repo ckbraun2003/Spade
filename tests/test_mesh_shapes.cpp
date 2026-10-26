@@ -10,8 +10,10 @@
 //     edge rounded; the tube's span; the bell under the rotor plane; the
 //     propeller through its stations (chord and pitch at each, the tip at R,
 //     nothing in the hub gap), its leading edge leading its turn, and the cw
-//     hand the ccw mirrored bit for bit and re-wound.
-//   - A BAD SPEC IS REFUSED BY ITS FIELD, before make_mesh() sees it.
+//     hand the ccw mirrored bit for bit and re-wound; every library
+//     propeller's blade lofts in both hands.
+//   - A BAD SPEC IS REFUSED BY ITS FIELD, in the generator's own words,
+//     before make_mesh() sees it, and so is every count past its limit.
 //   - THE BITS: each shape's counts and content_hash(), pinned from MSVC; the
 //     Docker gcc leg reproduces them (TD-12).
 
@@ -24,13 +26,20 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
 #include "core/fp32_math.hpp"
+#include "scene/part_file.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_shapes.hpp"
 
@@ -241,6 +250,11 @@ TEST(MeshShapes, TheMotorBellSitsBelowTheRotorPlane) {
             EXPECT_LE(radial(p), 0.012 + 1e-8);
         }
     }
+    // min_feature is the lesser of the diameter and the height.
+    EXPECT_EQ(bell->min_feature, 0.02f) << "the height";
+    const auto can = sh::motor_bell(0.0035, 0.016, 0.001, 16);  // the Crazyflie's 7 x 16 mm can
+    ASSERT_OK(can);
+    EXPECT_EQ(can->min_feature, 0.007f) << "the diameter";
 }
 
 TEST(MeshShapes, ThePropFollowsItsBladeStations) {
@@ -297,6 +311,16 @@ TEST(MeshShapes, ACcwBladeLeadsWithItsSpin) {
     EXPECT_GT(b.le.z, 0.0);
     EXPECT_LT(b.te.z, 0.0);
     EXPECT_GT(b.le.y, b.te.y);
+    // The same through the pose's own turn (vehicles/part_pose.cpp): the
+    // quaternion (cos32(a/2), 0, sin32(a/2), 0) at a = spin_dir psi carries
+    // the blade toward its leading edge.
+    const auto motion = [](float turn, const glm::dvec3& at) {
+        const glm::quat q(spade::math::cos32(0.5f * turn), 0.0f, spade::math::sin32(0.5f * turn), 0.0f);
+        const glm::vec3 p(at);
+        return glm::dvec3(q * p) - glm::dvec3(p);
+    };
+    EXPECT_GT(glm::dot(a.le - a.te, motion(+0.01f, 0.5 * (a.le + a.te))), 0.0) << "spin_dir +1";
+    EXPECT_GT(glm::dot(b.le - b.te, motion(-0.01f, 0.5 * (b.le + b.te))), 0.0) << "spin_dir -1";
 }
 
 TEST(MeshShapes, TheCwHandIsTheCcwMirroredAndReWound) {
@@ -325,46 +349,130 @@ TEST(MeshShapes, TheCwHandIsTheCcwMirroredAndReWound) {
     EXPECT_EQ(cw->min_feature, ccw->min_feature);
 }
 
-TEST(MeshShapes, ABadSpecIsRefusedByName) {
-    const auto refused = [](const auto& r, std::string_view field) {
-        if (r) return testing::AssertionFailure() << "accepted; expected a refusal naming " << field;
-        if (r.error().code != spade::Code::invalid_argument) {
-            return testing::AssertionFailure() << "code " << static_cast<int>(r.error().code);
+// Every propeller in the default library lofts in both hands with an
+// assumed section: the blades L7c1 puts on the library drones' hubs.
+TEST(MeshShapes, EveryLibraryBladeMakesBothHands) {
+    const std::filesystem::path parts = std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "parts";
+    std::vector<std::filesystem::path> files;
+    for (const auto& e : std::filesystem::directory_iterator(parts)) {
+        if (e.path().filename().string().ends_with(".prop.yaml")) files.push_back(e.path());
+    }
+    std::sort(files.begin(), files.end());
+    EXPECT_EQ(files.size(), 5u) << "L4's five library propellers";
+    for (const std::filesystem::path& path : files) {
+        SCOPED_TRACE(path.filename().string());
+        std::ifstream in(path, std::ios::binary);
+        ASSERT_TRUE(in);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        const auto part = spade::scene::prop_from_yaml(text);
+        ASSERT_OK(part);
+        ASSERT_TRUE(part->blade.has_value()) << "every library propeller carries its blade (L4a)";
+        sh::PropMeshSpec s;
+        s.diameter = part->block.diameter;
+        s.blades = part->block.blades;
+        s.r_over_r = part->blade->r_over_r;
+        s.c_over_r = part->blade->c_over_r;
+        s.beta_deg = part->blade->beta_deg;
+        s.hub_cutout = part->blade->hub_cutout;
+        s.hub_gap = 0.0005;
+        s.hub_height = 0.004;
+        s.hub_segments = 16;
+        s.section = sh::PropSection{0.04, 0.4, 0.12, 0.08, 8};
+        for (const sh::PropHand hand : {sh::PropHand::ccw, sh::PropHand::cw}) {
+            const auto prop = sh::prop(s, hand);
+            ASSERT_OK(prop);
+            EXPECT_EQ(prop->mesh->shell_count(), s.blades + 1u);
+            EXPECT_GT(prop->mesh->mass_properties().volume, 0.0);
         }
-        if (r.error().context.find(field) == std::string::npos) {
-            return testing::AssertionFailure() << "'" << r.error().context << "' does not name " << field;
+    }
+}
+
+TEST(MeshShapes, ABadSpecIsRefusedByName) {
+    // Refused by the generator itself, before make_mesh(): its own prefix,
+    // then the field.
+    const auto refused = [](const auto& r, std::string_view fn, std::string_view field) {
+        if (r) return testing::AssertionFailure() << "accepted; expected a refusal naming " << field;
+        const std::string& said = r.error().context;
+        if (r.error().code != spade::Code::invalid_argument) {
+            return testing::AssertionFailure() << "code " << static_cast<int>(r.error().code) << ": " << said;
+        }
+        if (said.rfind(std::string(fn) + ": ", 0) != 0) {
+            return testing::AssertionFailure() << "'" << said << "' is not " << fn << "'s own refusal";
+        }
+        if (said.find(field) == std::string::npos) {
+            return testing::AssertionFailure() << "'" << said << "' does not name " << field;
         }
         return testing::AssertionSuccess();
     };
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     const glm::dvec3 size(0.1, 0.05, 0.1);
-    EXPECT_TRUE(refused(sh::rounded_box(size, 0.025, 4), "edge_radius")) << "half the smallest extent";
-    EXPECT_TRUE(refused(sh::rounded_box(size, 0.0, 4), "edge_radius"));
-    EXPECT_TRUE(refused(sh::rounded_box(glm::dvec3(0.1, 0.0, 0.1), 0.01, 4), "size"));
-    EXPECT_TRUE(refused(sh::rounded_box(size, 0.01, 0), "segments"));
-    EXPECT_TRUE(refused(sh::capped_tube(0.0, 0.1, 16), "radius"));
-    EXPECT_TRUE(refused(sh::capped_tube(0.01, 0.1, 2), "segments"));
-    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.014, 16), "chamfer"));
-    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.0, 16), "chamfer"));
+    EXPECT_TRUE(refused(sh::rounded_box(size, 0.025, 4), "rounded_box", "edge_radius")) << "half the smallest extent";
+    EXPECT_TRUE(refused(sh::rounded_box(size, 0.0, 4), "rounded_box", "edge_radius"));
+    EXPECT_TRUE(refused(sh::rounded_box(size, nan, 4), "rounded_box", "edge_radius"));
+    EXPECT_TRUE(refused(sh::rounded_box(glm::dvec3(0.1, 0.0, 0.1), 0.01, 4), "rounded_box", "size"));
+    EXPECT_TRUE(refused(sh::rounded_box(glm::dvec3(0.1, nan, 0.1), 0.01, 4), "rounded_box", "size"));
+    EXPECT_TRUE(refused(sh::rounded_box(size, 0.01, 0), "rounded_box", "segments"));
+    EXPECT_TRUE(refused(sh::rounded_box(size, 0.01, sh::kMaxBoxSegments + 1), "rounded_box", "segments"));
+    EXPECT_TRUE(refused(sh::rounded_box(size, 0.01, 0xFFFFFFFFu), "rounded_box", "segments"));
+    EXPECT_TRUE(refused(sh::capped_tube(0.0, 0.1, 16), "capped_tube", "radius"));
+    EXPECT_TRUE(refused(sh::capped_tube(0.01, 0.0, 16), "capped_tube", "length"));
+    EXPECT_TRUE(refused(sh::capped_tube(0.01, nan, 16), "capped_tube", "length"));
+    EXPECT_TRUE(refused(sh::capped_tube(0.01, 0.1, 2), "capped_tube", "segments"));
+    EXPECT_TRUE(refused(sh::capped_tube(0.01, 0.1, sh::kMaxRingSegments + 1), "capped_tube", "segments"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.0, 0.02, 0.002, 16), "motor_bell", "radius"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.0, 0.002, 16), "motor_bell", "height"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.014, 16), "motor_bell", "chamfer"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.0, 16), "motor_bell", "chamfer"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.002, 2), "motor_bell", "segments"));
+    EXPECT_TRUE(refused(sh::motor_bell(0.014, 0.02, 0.002, sh::kMaxRingSegments + 1), "motor_bell", "segments"));
 
-    const auto bad = [](auto edit) {
+    const auto bad = [&](auto edit, std::string_view field) {
         sh::PropMeshSpec s = mit_5x4();
         edit(s);
-        return sh::prop(s, sh::PropHand::ccw);
+        return refused(sh::prop(s, sh::PropHand::ccw), "prop", field);
     };
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.blades = 0; }), "blades"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.diameter = 0.0; }), "diameter"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.c_over_r[3] = 0.0; }), "c_over_r[3]"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.r_over_r[5] = s.r_over_r[4]; }), "r_over_r[5]"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.r_over_r.back() = 1.01; }), "r_over_r[17]"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.beta_deg[2] = 90.0; }), "beta_deg[2]"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.c_over_r.pop_back(); }), "c_over_r"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.hub_cutout = 0.2; }), "hub_cutout"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.hub_gap = 0.01; }), "hub_gap"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.hub_height = 0.0; }), "hub_height"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.hub_segments = 2; }), "hub_segments"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.section.chord_points = 1; }), "chord_points"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.section.thickness_tip = 0.0; }), "thickness_tip"));
-    EXPECT_TRUE(refused(bad([](sh::PropMeshSpec& s) { s.section.camber_at = 1.0; }), "camber_at"));
+    using Spec = sh::PropMeshSpec;
+    EXPECT_TRUE(bad([](Spec& s) { s.diameter = 0.0; }, "diameter"));
+    EXPECT_TRUE(bad([&](Spec& s) { s.diameter = nan; }, "diameter"));
+    EXPECT_TRUE(bad([](Spec& s) { s.blades = 0; }, "blades"));
+    EXPECT_TRUE(bad([](Spec& s) { s.blades = sh::kMaxPropBlades + 1; }, "blades"));
+    EXPECT_TRUE(bad(
+        [](Spec& s) {
+            s.r_over_r = {0.5};
+            s.c_over_r = {0.1};
+            s.beta_deg = {20.0};
+        },
+        "r_over_r"));
+    EXPECT_TRUE(bad(
+        [](Spec& s) {
+            const std::size_t n = sh::kMaxPropStations + 1;
+            s.r_over_r.clear();
+            for (std::size_t j = 0; j < n; ++j) s.r_over_r.push_back(0.15 + 0.85 * static_cast<double>(j) / (n - 1));
+            s.c_over_r.assign(n, 0.1);
+            s.beta_deg.assign(n, 20.0);
+        },
+        "r_over_r"));
+    EXPECT_TRUE(bad([](Spec& s) { s.c_over_r.pop_back(); }, "c_over_r"));
+    EXPECT_TRUE(bad([](Spec& s) { s.beta_deg.pop_back(); }, "beta_deg"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_cutout = -0.1; }, "hub_cutout"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_cutout = 0.2; }, "hub_cutout")) << "r_over_r[0] starts below it";
+    EXPECT_TRUE(bad([](Spec& s) { s.r_over_r[5] = s.r_over_r[4]; }, "r_over_r[5]"));
+    EXPECT_TRUE(bad([](Spec& s) { s.r_over_r.back() = 1.01; }, "r_over_r[17]"));
+    EXPECT_TRUE(bad([](Spec& s) { s.c_over_r[3] = 0.0; }, "c_over_r[3]"));
+    EXPECT_TRUE(bad([](Spec& s) { s.beta_deg[2] = 90.0; }, "beta_deg[2]"));
+    EXPECT_TRUE(bad([&](Spec& s) { s.beta_deg[2] = nan; }, "beta_deg[2]"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_gap = 0.0; }, "hub_gap"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_gap = 0.01; }, "hub_gap")) << "it leaves no hub";
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_height = 0.0; }, "hub_height"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_segments = 2; }, "hub_segments"));
+    EXPECT_TRUE(bad([](Spec& s) { s.hub_segments = sh::kMaxRingSegments + 1; }, "hub_segments"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.camber = 0.2; }, "camber"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.camber_at = 1.0; }, "camber_at"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.thickness_root = 0.0; }, "thickness_root"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.thickness_tip = 0.5; }, "thickness_tip"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.chord_points = 1; }, "chord_points"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.chord_points = sh::kMaxChordPoints + 1; }, "chord_points"));
+    EXPECT_TRUE(bad([](Spec& s) { s.section.chord_points = 0xFFFFFFFFu; }, "chord_points"));
 }
 
 // The bits, pinned from MSVC; the Docker gcc leg reproduces them (TD-12). A

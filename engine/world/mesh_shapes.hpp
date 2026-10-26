@@ -9,10 +9,16 @@
 //
 // EACH IS A PLAIN FUNCTION from numbers to make_mesh() (world/mesh.hpp), so
 // every mesh it returns has passed make_mesh()'s checks: closed, oriented
-// outward, 2-manifold, with no self-intersection. A spec make_mesh() would
-// refuse is refused by name before it gets there; anything still refused
-// comes back as make_mesh()'s own words. The positions are metres
-// (MeshUnit::metre), built in double and rounded to fp32 once, by make_mesh().
+// outward, 2-manifold, with no self-intersection. A field out of its range,
+// or a count past its limit (THE LIMITS below), is refused by name, before
+// anything is built. What only the built mesh shows (a sliver of a leading
+// edge at a very fine chordwise spacing, blades so many or so wide that
+// their roots meet, a gap or a radius below fp32's resolution) comes back
+// in make_mesh()'s own words. The positions are metres (MeshUnit::metre),
+// built in double and rounded to fp32 once, by make_mesh().
+//
+// THE LIMITS bound every count before any allocation, so no product of them
+// overflows a 32-bit index: a drone's shapes need far less.
 //
 // TD-3. Circles and pitch angles go through math::sin32 / math::cos32
 // (core/fp32_math.hpp), always inside [0, 2 pi] or (-pi/2, pi/2), their
@@ -44,9 +50,12 @@
 //     y_t(x) = 5 t (0.2969 sqrt(x) - 0.1260 x - 0.3516 x^2 + 0.2843 x^3
 //     - 0.1015 x^4), with the thickness laid normal to the chord line, not
 //     the camber line (no atan). Its trailing edge is the formula's own
-//     blunt edge, 2 y_t(1) = 0.021 t of the chord. The chordwise points sit
-//     at x = (i / n)^2, close at the leading edge, which is one vertex.
-//     t runs linearly in r/R from thickness_root to thickness_tip.
+//     blunt edge, 2 y_t(1) = 0.021 t of the chord, so no two surfaces meet
+//     at a knife edge. (The plan's floor, max(1% c, 0.1 mm), is not used:
+//     at a small propeller's tip it is thicker than the whole section --
+//     mit_5x4's tip is 0.71 mm of chord and t c = 0.057 mm.) The chordwise
+//     points sit at x = (i / n)^2, close at the leading edge, which is one
+//     vertex. t runs linearly in r/R from thickness_root to thickness_tip.
 //   * A cap closes each end of the blade in strips that pair the upper and
 //     lower points at one x.
 //   * The hub is a short cylinder, its own shell, of radius hub_cutout R -
@@ -65,6 +74,7 @@
 // propeller's thinnest section, t c at its thinnest station.
 // ---------------------------------------------------------------------------
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -75,6 +85,13 @@
 #include "world/mesh.hpp"
 
 namespace spade::shapes {
+
+// THE LIMITS (above).
+inline constexpr uint32_t kMaxBoxSegments = 64;     // rounded_box: steps across a rounded band
+inline constexpr uint32_t kMaxRingSegments = 1024;  // chords around a tube, a bell or a hub
+inline constexpr uint32_t kMaxChordPoints = 64;     // a blade section's points on each surface
+inline constexpr uint32_t kMaxPropBlades = 16;
+inline constexpr std::size_t kMaxPropStations = 256;
 
 // A generated mesh and its thinnest dimension (MIN_FEATURE above), metres.
 struct GeneratedMesh {
@@ -87,20 +104,21 @@ struct GeneratedMesh {
 // `segments` is the steps across each rounded band (at least 1), so a
 // rounded edge's quarter circle takes 2 segments chords. The flat faces lie
 // exactly at +-size / 2. Refused: a size not finite and above 0; an
-// edge_radius not above 0 and below half the smallest extent; no segments.
+// edge_radius not above 0 and below half the smallest extent; segments not
+// in [1, kMaxBoxSegments].
 [[nodiscard]] Result<GeneratedMesh> rounded_box(glm::dvec3 size, double edge_radius, uint32_t segments);
 
 // A capsule along +Y: a cylinder of `radius` whose cap centres are `length`
 // apart, closed by two hemispheres, `segments` chords around (at least 3)
 // and max(2, segments / 4) rings in each cap. Refused: a radius or length
-// not finite and above 0; fewer than 3 segments.
+// not finite and above 0; segments not in [3, kMaxRingSegments].
 [[nodiscard]] Result<GeneratedMesh> capped_tube(double radius, double length, uint32_t segments);
 
 // A motor bell in the hub frame: a cylinder of `radius` from y = 0 down to
 // y = -height, its top edge chamfered by `chamfer`, `segments` chords around
 // (at least 3). Refused: a radius or height not finite and above 0; a
-// chamfer not above 0 and below the lesser of the two; fewer than 3
-// segments.
+// chamfer not above 0 and below the lesser of the two; segments not in
+// [3, kMaxRingSegments].
 [[nodiscard]] Result<GeneratedMesh> motor_bell(double radius, double height, double chamfer, uint32_t segments);
 
 // The blade section (THE PROPELLER above), as fractions of the chord.
@@ -131,11 +149,16 @@ struct PropMeshSpec {
 enum class PropHand : uint8_t { ccw, cw };
 
 // The propeller's mesh, in the hub frame (THE FRAMES above). Refused, by the
-// field: a diameter not finite and above 0; no blades; fewer than 2
-// stations, or lists of different lengths; r/R not strictly increasing in
-// (0, 1] or starting below hub_cutout; a c/R not above 0; a beta outside
-// (-90, 90) degrees; a hub radius, hub_cutout R - hub_gap, not above 0; a
-// section out of its ranges.
+// field:
+//   - a diameter not finite and above 0;
+//   - blades not in [1, kMaxPropBlades];
+//   - stations not in [2, kMaxPropStations], or lists of different lengths;
+//   - a hub_cutout outside [0, 1);
+//   - an r/R not strictly increasing in (0, 1], or starting below hub_cutout;
+//   - a c/R not above 0, or a beta outside (-90, 90) degrees;
+//   - a hub_gap not above 0, or leaving no hub (hub_cutout R - hub_gap);
+//   - a hub_height not above 0, or hub_segments not in [3, kMaxRingSegments];
+//   - a section out of its ranges, or chord_points not in [2, kMaxChordPoints].
 [[nodiscard]] Result<GeneratedMesh> prop(const PropMeshSpec& spec, PropHand hand);
 
 }  // namespace spade::shapes

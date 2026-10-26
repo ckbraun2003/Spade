@@ -119,13 +119,23 @@ void append_lathe(MeshInput& in, const std::vector<ProfilePoint>& profile, uint3
     return 5.0 * t * (0.2969 * std::sqrt(x) + poly);
 }
 
+[[nodiscard]] Result<void> ring_segments(const char* fn, uint32_t segments) {
+    if (segments >= 3 && segments <= kMaxRingSegments) return {};
+    return std::unexpected(invalid(std::string(fn) + ": segments " + std::to_string(segments) + " must be in [3, " +
+                                   std::to_string(kMaxRingSegments) + "]"));
+}
+
 [[nodiscard]] Result<void> refuse(std::string what) { return std::unexpected(invalid("prop: " + std::move(what))); }
 
 [[nodiscard]] Result<void> check_prop(const PropMeshSpec& s) {
     const std::size_t n = s.r_over_r.size();
     if (!positive(s.diameter)) return refuse("diameter " + num(s.diameter) + " must be finite and above 0");
-    if (s.blades == 0) return refuse("blades must be at least 1");
-    if (n < 2) return refuse("r_over_r has " + std::to_string(n) + " stations; give at least 2");
+    if (s.blades == 0 || s.blades > kMaxPropBlades) {
+        return refuse("blades " + std::to_string(s.blades) + " must be in [1, " + std::to_string(kMaxPropBlades) + "]");
+    }
+    if (n < 2 || n > kMaxPropStations) {
+        return refuse("r_over_r has " + std::to_string(n) + " stations; give 2 to " + std::to_string(kMaxPropStations));
+    }
     if (s.c_over_r.size() != n) {
         return refuse("c_over_r has " + std::to_string(s.c_over_r.size()) + " values for " + std::to_string(n) +
                       " stations");
@@ -160,7 +170,10 @@ void append_lathe(MeshInput& in, const std::vector<ProfilePoint>& profile, uint3
         return refuse("hub_gap " + num(s.hub_gap) + " leaves no hub: hub_cutout R - hub_gap = " + num(hub));
     }
     if (!positive(s.hub_height)) return refuse("hub_height " + num(s.hub_height) + " must be above 0");
-    if (s.hub_segments < 3) return refuse("hub_segments must be at least 3");
+    if (s.hub_segments < 3 || s.hub_segments > kMaxRingSegments) {
+        return refuse("hub_segments " + std::to_string(s.hub_segments) + " must be in [3, " +
+                      std::to_string(kMaxRingSegments) + "]");
+    }
     const PropSection& c = s.section;
     if (!(std::isfinite(c.camber) && c.camber >= 0.0 && c.camber < 0.2)) {
         return refuse("section.camber " + num(c.camber) + " must be in [0, 0.2)");
@@ -174,7 +187,10 @@ void append_lathe(MeshInput& in, const std::vector<ProfilePoint>& profile, uint3
     if (!(std::isfinite(c.thickness_tip) && c.thickness_tip > 0.0 && c.thickness_tip < 0.5)) {
         return refuse("section.thickness_tip " + num(c.thickness_tip) + " must be in (0, 0.5)");
     }
-    if (c.chord_points < 2) return refuse("section.chord_points must be at least 2");
+    if (c.chord_points < 2 || c.chord_points > kMaxChordPoints) {
+        return refuse("section.chord_points " + std::to_string(c.chord_points) + " must be in [2, " +
+                      std::to_string(kMaxChordPoints) + "]");
+    }
     return {};
 }
 
@@ -190,7 +206,10 @@ Result<GeneratedMesh> rounded_box(glm::dvec3 size, double edge_radius, uint32_t 
         return std::unexpected(invalid("rounded_box: edge_radius " + num(edge_radius) +
                                        " must be above 0 and below half the smallest extent, " + num(0.5 * smallest)));
     }
-    if (segments == 0) return std::unexpected(invalid("rounded_box: segments must be at least 1"));
+    if (segments == 0 || segments > kMaxBoxSegments) {
+        return std::unexpected(invalid("rounded_box: segments " + std::to_string(segments) + " must be in [1, " +
+                                       std::to_string(kMaxBoxSegments) + "]"));
+    }
 
     const glm::dvec3 h = size * 0.5;
     const glm::dvec3 inner = h - glm::dvec3(edge_radius);
@@ -273,7 +292,7 @@ Result<GeneratedMesh> rounded_box(glm::dvec3 size, double edge_radius, uint32_t 
 Result<GeneratedMesh> capped_tube(double radius, double length, uint32_t segments) {
     if (!positive(radius)) return std::unexpected(invalid("capped_tube: radius " + num(radius) + " must be above 0"));
     if (!positive(length)) return std::unexpected(invalid("capped_tube: length " + num(length) + " must be above 0"));
-    if (segments < 3) return std::unexpected(invalid("capped_tube: segments must be at least 3"));
+    if (Result<void> ok = ring_segments("capped_tube", segments); !ok) return std::unexpected(ok.error());
 
     // From the top pole down its cap to the equator, then the bottom cap, each
     // y the top's negated bit for bit.
@@ -306,7 +325,7 @@ Result<GeneratedMesh> motor_bell(double radius, double height, double chamfer, u
                                        " must be above 0 and below the lesser of radius and height, " +
                                        num(std::min(radius, height))));
     }
-    if (segments < 3) return std::unexpected(invalid("motor_bell: segments must be at least 3"));
+    if (Result<void> ok = ring_segments("motor_bell", segments); !ok) return std::unexpected(ok.error());
 
     MeshInput in;
     in.unit = MeshUnit::metre;
