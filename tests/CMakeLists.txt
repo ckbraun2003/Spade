@@ -433,6 +433,8 @@ if(SPADE_BUILD_SANDBOX)
         test_flight_controller.cpp
         test_pilot_keys.cpp
         test_editor_import.cpp
+        # Placing a drone with mesh parts (L7b0): its sidecars staged, carried by Save.
+        test_editor_place_meshes.cpp
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp

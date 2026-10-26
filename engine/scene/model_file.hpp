@@ -68,6 +68,7 @@
 #include "core/error.hpp"
 #include "scene/scene_file.hpp"     // SceneDesc
 #include "vehicles/model_type.hpp"  // ModelType, its PropulsionChain
+#include "world/mesh.hpp"           // TriangleMesh
 
 namespace spade::scene {
 
@@ -132,7 +133,26 @@ struct ModelFile {
 // file's model's own name. A mesh part's mesh_file names its sidecar
 // relative to the model file's directory, and a scene reads it relative to
 // the scene file's, so placing one needs its sidecars copied beside the
-// scene first.
+// scene first: add_model_with_meshes(), below, places one.
 [[nodiscard]] Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name);
+
+// The sidecar a placed mesh part names, relative to the SCENE file (L7b0 of
+// the realistic drones plan): "imported/<h>.spmesh", h the mesh's
+// content_hash() as 16 lowercase hex digits. imported/ is the folder the
+// editor's Save carries beside the scene (N15), and the hash makes the name
+// the mesh's own: two parts, or two placed drones, that share a mesh share it.
+[[nodiscard]] std::string placed_mesh_file(const TriangleMesh& mesh);
+
+// add_model() for a model that may have mesh parts (L7b0): the same checks
+// and the same registration, all or nothing, except that each mesh part's
+// mesh_file is re-pointed to placed_mesh_file(*mesh) in the placed copy (the
+// file's own model is untouched). Its mesh stays as loaded. Writing the
+// sidecars is the caller's: the editor writes each one that no folder holds
+// yet into its staging folder before Save (sandbox/editor_workspace.hpp).
+// mesh_file is part of no identity, so the placed model's identities are
+// add_model()'s. A model with no mesh parts is placed exactly as add_model()
+// places it.
+[[nodiscard]] Result<void> add_model_with_meshes(SceneDesc& scene, const ModelFile& file,
+                                                 std::string_view model_name);
 
 }  // namespace spade::scene

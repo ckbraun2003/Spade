@@ -267,4 +267,10 @@ Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view
     return {};
 }
 
+std::string placed_mesh_file(const TriangleMesh&) { return {}; }
+
+Result<void> add_model_with_meshes(SceneDesc&, const ModelFile&, std::string_view) {
+    return std::unexpected(Error{Code::internal, "add_model_with_meshes: not built yet (L7b0's RED)"});
+}
+
 }  // namespace spade::scene
