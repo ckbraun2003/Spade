@@ -325,6 +325,8 @@ The lead approved this plan on 2026-10-26 and ruled on each question below. Thes
 
 The lead asked Physics for P11's four answers and for Q3.
 
+**L7a's trailing edge (the lead, 2026-10-26, approving L7a at `6265ae7`): (a).** Keep the NACA section's own blunt trailing edge, 0.021 t c. The construction's "max(1% c, 0.1 mm)" floor is dropped: at a 5-inch tip it is thicker than the whole section, so it would misdraw the blade, and props are rotor parts, never solids, so no thickness rule applies to them. `world/mesh_shapes.hpp` says why.
+
 **Physics' answers (2026-10-26, sent to the lead, with a copy to Core):**
 - **Q3: yes to (a).** The frozen L5 estimate becomes a `derived` DragSpec, bit for bit. Its source is named in the spec, and `TheFrozenDragIsTheAnalyticEstimateBitForBit` stays.
 - **P11 (1), which omega:** the row's omega after the step, the value its forces used (`rotor.cpp:331`, the lag, then the forces at `:338-340`). A disabled rotor holds its psi.
