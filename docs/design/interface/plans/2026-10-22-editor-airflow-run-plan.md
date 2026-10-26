@@ -111,12 +111,15 @@ Plus the `editor_airflow` still, taken the frame after the vortices first draw.
 
 M0, the bench; then T1 the region; T2 `AirflowRun`; T3 the workspace and session; T4 the tour. One branch per task, each READY on its own. T5 waits for P2b.
 
-## 9. The air on a worker thread (D3 as ruled, 2026-10-26) — for the lead's review
+## 9. The air on a worker thread (D3 as ruled, 2026-10-26)
+
+APPROVED by the lead (2026-10-26), with two changes, both folded in below: a fresh `AirFrame` per publish instead of a buffer pool, and an `AirFrame` that owns copies only. Rendering reviewed the hand-off (2026-10-26): it meets R-1 and R-2.
 
 **What M0 measured** (release, merged as `e1429d7`, two runs that each shared the box with another heavy job):
 - a step at 32³ costs 33 to 38 ms with discs only, and 116 to 147 ms with a solid body;
 - Physics finds both as expected (P-3): about 1 µs a cell for plan A, and the CG's 8 or more iterations with solids;
-- a quiet-box run is queued for tonight. It adds the solids' mean CG iterations, their capped and stalled steps, and the publish timed on its own (Physics' checks).
+- Physics' checks (`interface/m0-checks`, a build beside it): the solids' CG ran at its floor, 8.0 iterations a step, with none capped or stalled; a publish at 32³ takes 14.4 ms on its own;
+- a quiet-box run is queued for tonight.
 
 So one step is over a displayed frame's whole 25 ms. The ruling: the air runs on a sandbox worker thread, and the window draws at full rate from the last volume it was handed. Nothing in `engine/` changes. The GPU solver (B5, B7) is what makes the air faster; this only keeps the editor responsive while it is slow.
 
@@ -135,8 +138,12 @@ So one step is over a displayed frame's whole 25 ms. The ruling: the air runs on
   - the held body, and the rotor probes with their hubs shifted the same way (R-2 b);
   - the run label, the pressure line and the Courant note (the lead's addition);
   - an error, empty while the air runs.
-- **Buffers:** the worker publishes into one of three `AirFrame`s and only ever writes a buffer whose `use_count()` is 1, so the window's frame is never written in place (R-1). Each publish has a fresh generation, so GL re-uploads and the `ViewCache` re-traces once per publish.
+- **A fresh frame per publish** (the lead): each publish is a new `std::make_shared<const AirFrame>`, so the window's frame is never written in place (R-1) by construction, and `shared_ptr`'s own count handles its lifetime. A buffer pool picked by `use_count()` would race, since that read orders nothing (the lead and Rendering). A publish comes about once a wall second, and a 32³ volume is about 0.5 MB.
+- **Copies only** (the lead): an `AirFrame` holds no span, pointer or reference into LiveRun, so a frame the window still holds outlives the run. The worker copies the published volume in; if the box ever grows past 32³, it moves LiveRun's published halves in instead (Rendering), which isn't needed now.
+- Each publish takes a fresh generation (publish.cpp's `next_flow_generation()`), so GL re-uploads and the `ViewCache` re-traces once per publish. The dims and generation are already in the volume's header, so nothing else crosses for Rendering's verify mode.
 - **The B7 seam:** a GPU step fills the same `AirFrame`. Nothing else crosses between the threads except Stop and the pilot's slot.
+
+**A rotated drone.** LiveRun starts its drone level and unrotated, and the volume's header has no rotation (R-2 a), so a drone placed with any rotation would show its air turned against its mesh. Run air refuses it, naming it: "Run air needs the drone unrotated: the air's box can't turn with it. Set its rotation to zero to run it." A turned box would need a rotation in the header (Rendering's), which isn't planned. Proposed; the lead can overrule.
 
 **The speed shown.** The window times the hand-offs (`steady_clock`, sandbox only). The HUD's status line states the speed over the last few frames: simulated time over wall time, "air at 1/40 speed". It also states "waiting for the first frame" until the first hand-off.
 
@@ -149,7 +156,7 @@ So one step is over a displayed frame's whole 25 ms. The ruling: the air runs on
 - **A program's run is bit-identical** to LiveRun's on one thread: the same volumes (`v`, `s`) at the same step counts.
 - **Stop joins** within one step and publishes nothing after.
 - **A failed step reaches the hand-off.** C8q's nudge hook writes a NaN into the increments, and the error is in the last `AirFrame`, with no terminate.
-- **The window never sees a buffer written in place:** a frame it holds keeps its generation and bytes while the worker publishes on.
+- **The window never sees a frame written in place:** a frame it holds keeps its generation and bytes while the worker publishes on.
+- **A frame held across Stop and destruction still reads its bytes** (the lead).
+- **A rotated drone is refused** before a step, naming the drone.
 - **The destructor joins.**
-
-**For Rendering to review:** the hand-off. That covers the immutable `AirFrame`, the three buffers chosen by `use_count()`, the origin shifted before the swap, the probes shifted with it, and one publish per new generation.
