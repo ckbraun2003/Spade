@@ -791,9 +791,11 @@ TEST(EditorLibraryGrades, ADroneWithAnAssumedInputIsMarkedAndInspectedLikeAPart)
 }
 
 // The default library's drones carry their sidecars, checked against the
-// library as their own tests check them (check_model_sources()); a drone
-// without one (the reference quad) loads without grades. Each has an input
-// assumed (the compile's operating point, at least), so each tile is marked.
+// library as their own tests check them (check_model_sources()). Every one
+// has a sidecar, the reference quad's too since L6 (a drone without one
+// loads without grades: AStaleSidecarIsNamedAndItsDroneLoadsWithoutGrades).
+// Each has an input assumed (the compile's operating point, or the fixture's
+// prop ramp), so each tile is marked.
 TEST(EditorLibraryGrades, TheDefaultLibrarysDronesCarryTheirSidecars) {
     const std::filesystem::path dir = std::filesystem::path(SPADE_ASSETS_DIR) / "library";
     const ed::LibraryLoad load = ed::load_library_items(dir / "library.yaml");
@@ -815,8 +817,8 @@ TEST(EditorLibraryGrades, TheDefaultLibrarysDronesCarryTheirSidecars) {
         EXPECT_FALSE(item.sources->inputs.empty());
         EXPECT_TRUE(ed::any_assumed(item));
     }
-    EXPECT_GE(with, 5u) << "L5's five library drones";
-    EXPECT_GE(without, 1u) << "the reference quad has no sidecar";
+    EXPECT_GE(with, 6u) << "L5's library drones and the reference quad (L6)";
+    EXPECT_EQ(without, 0u) << "every library drone carries its sidecar";
 }
 
 // A sidecar its model no longer matches (a stale hash) is named, and the
