@@ -213,13 +213,13 @@ TEST(EditorAirflow, AHeldFrameNeverChangesAndOutlivesTheRun) {
     ASSERT_NE(held, nullptr);
     ASSERT_TRUE(held->error.empty()) << held->error;
     const std::vector<uint16_t> bytes = held->volume.v;
-    const uint64_t generation = held->volume.header.generation;
+    const uint64_t generation = held->volume.generation;
     const std::shared_ptr<const ed::AirFrame> later = wait_for_frames(**run, held->frames + 1);
     ASSERT_NE(later, nullptr);
     EXPECT_NE(later, held);
-    EXPECT_NE(later->volume.header.generation, generation) << "each publish is a new generation";
+    EXPECT_NE(later->volume.generation, generation) << "each publish is a new generation";
     run->reset();  // stop, join and destroy the run
-    EXPECT_EQ(held->volume.header.generation, generation);
+    EXPECT_EQ(held->volume.generation, generation);
     EXPECT_TRUE(held->volume.v == bytes) << "a held frame changed";
 }
 
