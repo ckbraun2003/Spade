@@ -376,7 +376,7 @@ TEST(EditorLibraryFiles, ThePlacedLibraryDroneKeepsItsThreeIdentities) {
     const Result<sc::ModelFile> file = sc::load_model_file(library_file("drones/reference_quad.model.yaml"));
     ASSERT_TRUE(file.has_value()) << file.error().context;
     ASSERT_TRUE(file->model.propulsion.has_value());
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ed::SceneDocument doc = hover_document();
     const std::size_t before = doc.desc().vehicles.size();
     ASSERT_TRUE(ed::place(doc, quad, pose_at(glm::vec3(2.0f, 0.0f, 0.0f))).has_value());
@@ -455,7 +455,7 @@ TEST(EditorLibraryFiles, LoadFromFileReadsAModelOrAnObjectByItsExtension) {
 // hangs below the built-in drone's 25 mm, so a drone rests on its own lowest
 // posed part, not on kDroneBodyHalf.
 TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ASSERT_TRUE(quad.model.has_value());
     ASSERT_FALSE(quad.model->parts.empty());
     const float low = lowest_part_point(*quad.model);
@@ -467,7 +467,7 @@ TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
 // frame carries the parts 50 mm higher, so the design origin rests 50 mm
 // lower.
 TEST(EditorLibraryFiles, ADronesRestIsItsDesignFramesNotItsBodys) {
-    const ed::LibraryItem quad = library_item("Reference quad");
+    const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ASSERT_TRUE(quad.model.has_value());
     ed::LibraryItem raised = quad;
     raised.model->com_offset += glm::vec3(0.0f, 0.05f, 0.0f);
