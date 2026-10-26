@@ -110,3 +110,46 @@ Plus the `editor_airflow` still, taken the frame after the vortices first draw.
 ## 8. Order
 
 M0, the bench; then T1 the region; T2 `AirflowRun`; T3 the workspace and session; T4 the tour. One branch per task, each READY on its own. T5 waits for P2b.
+
+## 9. The air on a worker thread (D3 as ruled, 2026-10-26) — for the lead's review
+
+**What M0 measured** (release, merged as `e1429d7`, two runs that each shared the box with another heavy job):
+- a step at 32³ costs 33 to 38 ms with discs only, and 116 to 147 ms with a solid body;
+- Physics finds both as expected (P-3): about 1 µs a cell for plan A, and the CG's 8 or more iterations with solids;
+- a quiet-box run is queued for tonight. It adds the solids' mean CG iterations, their capped and stalled steps, and the publish timed on its own (Physics' checks).
+
+So one step is over a displayed frame's whole 25 ms. The ruling: the air runs on a sandbox worker thread, and the window draws at full rate from the last volume it was handed. Nothing in `engine/` changes. The GPU solver (B5, B7) is what makes the air faster; this only keeps the editor responsive while it is slow.
+
+**The worker.**
+- `AirflowRun` (T2, `sandbox/editor_airflow.hpp`) owns LiveRun on a `std::jthread`. The worker is the only thing that touches it.
+- It steps one `step()` at a time, checking its `stop_token` between steps, so Stop waits at most one step (about 40 ms, or about 150 ms with solids).
+- At each frame boundary (1/30 s of simulated time) it lets `advance_frame()` take the frame's last step and publish.
+- **Controls come in two ways:**
+  - the tour gives a `ControlProgram`, read at the simulated time, so the run is deterministic;
+  - the Pilot section writes its latest controls into a one-value slot under a mutex, which the worker reads before each step. A live pilot's timing is the user's, so it is not deterministic, and needn't be.
+
+**The hand-off: one immutable object.**
+- **What it carries:** at each publish the worker fills an `AirFrame` and swaps it into a mutex-guarded `std::shared_ptr<const AirFrame>`. The window takes the latest one each displayed frame, and nothing in it changes after the swap. It holds:
+  - the published `FlowVolume`, its `header.origin` already shifted to the drone's world position (Rendering's R-2), before the hand-off and never after (R-2 d);
+  - the step count and the simulated time;
+  - the held body, and the rotor probes with their hubs shifted the same way (R-2 b);
+  - the run label, the pressure line and the Courant note (the lead's addition);
+  - an error, empty while the air runs.
+- **Buffers:** the worker publishes into one of three `AirFrame`s and only ever writes a buffer whose `use_count()` is 1, so the window's frame is never written in place (R-1). Each publish has a fresh generation, so GL re-uploads and the `ViewCache` re-traces once per publish.
+- **The B7 seam:** a GPU step fills the same `AirFrame`. Nothing else crosses between the threads except Stop and the pilot's slot.
+
+**The speed shown.** The window times the hand-offs (`steady_clock`, sandbox only). The HUD's status line states the speed over the last few frames: simulated time over wall time, "air at 1/40 speed". It also states "waiting for the first frame" until the first hand-off.
+
+**Errors and shutdown.**
+- A step or publish that LiveRun refuses ends the worker's loop. Its error goes into a last `AirFrame`, and the HUD shows it in the warning tone ("the air stopped at t = 0.412 s: ..."). The run stays stopped until Stop.
+- The worker's body is wrapped in try/catch: an exception becomes the same error ("the air stopped: an exception: <what>"), and never reaches `std::terminate`.
+- Stop, Reset, leaving Run air, closing the scene and `AirflowRun`'s destructor all request a stop and join, at most one step later. The scene is static during Run air (D1), so the window never needs anything else from the worker.
+
+**Tests** (display-free, red first):
+- **A program's run is bit-identical** to LiveRun's on one thread: the same volumes (`v`, `s`) at the same step counts.
+- **Stop joins** within one step and publishes nothing after.
+- **A failed step reaches the hand-off.** C8q's nudge hook writes a NaN into the increments, and the error is in the last `AirFrame`, with no terminate.
+- **The window never sees a buffer written in place:** a frame it holds keeps its generation and bytes while the worker publishes on.
+- **The destructor joins.**
+
+**For Rendering to review:** the hand-off. That covers the immutable `AirFrame`, the three buffers chosen by `use_count()`, the origin shifted before the swap, the probes shifted with it, and one publish per new generation.
