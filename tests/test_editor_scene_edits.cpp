@@ -297,7 +297,8 @@ TEST(EditorSceneEdits, AFollowedVehicleIsNotRemovedFromUnderItsRegion) {
 // T1 of the editor's airflow run (INT-15; the plan's §1 and §4): "Add
 // airflow region" on a drone puts a one-way follow region around it, named
 // <drone>_air: 32^3 cubic cells, dx its largest rotor's radius over 3,
-// floored to the millimetre, so R/dx >= 3; scene v5's fluid defaults.
+// floored to the millimetre, so R/dx >= 3; analysis::Fluid's air (the
+// case refuses scene v5's inviscid 0).
 // Undo takes it out; Remove does too, and its undo puts it back.
 TEST(EditorSceneEdits, AnAirflowRegionIsAddedAroundADroneAndRemoved) {
     auto d = doc_of(support::sample_scene());
@@ -320,8 +321,8 @@ TEST(EditorSceneEdits, AnAirflowRegionIsAddedAroundADroneAndRemoved) {
     ASSERT_GT(radius, 0.0f);
     EXPECT_FLOAT_EQ(r.cells.dx, std::floor(radius / 3.0f * 1000.0f) / 1000.0f);
     EXPECT_GE(radius / r.cells.dx, 3.0f);
-    EXPECT_FLOAT_EQ(r.density, 1.225f);
-    EXPECT_FLOAT_EQ(r.kinematic_viscosity, 0.0f);
+    EXPECT_FLOAT_EQ(r.density, spade::analysis::Fluid{}.density);
+    EXPECT_FLOAT_EQ(r.kinematic_viscosity, spade::analysis::Fluid{}.kinematic_viscosity);
     ASSERT_TRUE(d.undo());
     EXPECT_TRUE(d.desc().airflow.empty());
 

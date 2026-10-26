@@ -31,6 +31,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "analysis/case.hpp"
 #include "editor_document.hpp"
 #include "editor_import.hpp"
 #include "editor_model_params.hpp"
@@ -134,7 +135,8 @@ struct SetImportedPart {
 // The editor's airflow run (INT-15, T1): a one-way follow region around a
 // drone, named <vehicle>_air, with the plan's §4 defaults (kAirCells^3
 // cubic cells, dx its largest rotor's radius over 3 floored to the
-// millimetre, scene v5's fluid); one region per drone (M2).
+// millimetre, analysis::Fluid's air, as the tour's live run flies it: the
+// case refuses scene v5's inviscid 0); one region per drone (M2).
 struct AddAirflowRegion {
     std::string vehicle;
 };
@@ -298,8 +300,8 @@ inline Result<bool> change(scene::SceneDesc& s, const AddAirflowRegion& e) {
     r.kind = scene::AirflowKind::follow;
     r.follows = e.vehicle;
     r.cells = physics::airflow::GridShape{kAirCells, kAirCells, kAirCells, std::floor(radius / 3.0f * 1000.0f) / 1000.0f};
-    r.density = 1.225f;
-    r.kinematic_viscosity = 0.0f;
+    r.density = analysis::Fluid{}.density;
+    r.kinematic_viscosity = analysis::Fluid{}.kinematic_viscosity;
     r.coupling = scene::AirflowCoupling::one_way;
     s.airflow.push_back(std::move(r));
     return true;
