@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -334,6 +335,38 @@ inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64
     ++cache.resolves;
     return cache;
 }
+
+// The band's speed (§9): simulated time over wall time across the last few
+// frames handed over, as the window saw them ("air at 1/30 speed"). The wall
+// clock is the caller's (the sandbox's steady_clock), never the run's.
+class AirSpeed {
+  public:
+    // A frame seen at `wall_s`; one seen before (the same count) is ignored.
+    void frame(uint64_t frames, double t_s, double wall_s) {
+        if (!samples_.empty() && frames <= samples_.back().frames) return;
+        samples_.push_back(Sample{frames, t_s, wall_s});
+        if (samples_.size() > kWindow) samples_.pop_front();
+    }
+
+    [[nodiscard]] std::string line() const {
+        if (samples_.empty()) return "waiting for the air's first frame";
+        const double sim = samples_.back().t_s - samples_.front().t_s;
+        const double wall = samples_.back().wall_s - samples_.front().wall_s;
+        if (samples_.size() < 2 || !(wall > 0.0) || !(sim > 0.0)) return "the air is starting";
+        const double ratio = sim / wall;
+        if (ratio >= 1.0) return "air at full speed";
+        return std::format("air at 1/{:.0f} speed", 1.0 / ratio);
+    }
+
+  private:
+    struct Sample {
+        uint64_t frames = 0;
+        double t_s = 0.0;
+        double wall_s = 0.0;
+    };
+    static constexpr std::size_t kWindow = 8;
+    std::deque<Sample> samples_;
+};
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
 // in its own colour, not an axis's).

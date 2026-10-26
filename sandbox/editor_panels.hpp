@@ -42,9 +42,10 @@ struct Selection {
 // The toolbar and the menus. Open and Save As use EditorPanels::path.
 // Save to library saves the selection (EDT-020).
 // arm and level act on the pilot (N17): arm toggles arming, level levels the
-// tilt setpoint.
+// tilt setpoint. run_air runs the selected drone's airflow region (INT-15);
+// stop ends either run.
 enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library,
-                     arm, level, import_parts };
+                     arm, level, import_parts, run_air };
 
 struct HierarchyRow {
     Selection target;
