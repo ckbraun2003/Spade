@@ -240,6 +240,13 @@ With no flag and no row, both passes compute today's bits, so no golden moves.
 2. One thread per part sums its tiles in tile order. Per body, the parts in part order; per rotor, its blades in blade order.
 3. The CPU twin sums in exactly that order. So the only CPU/GPU difference is each operation's rounding (banded), and the GPU result does not depend on the workgroup size (`A7` invariance).
 
+**Amended 2026-10-26 (B5.1, merged `34b718c`; Cameron's order, backlog `45d11fe`).** Step 2 now sums in two levels instead of in plain tile order:
+- the tiles are cut into blocks of `kReduceBlockTiles` = 256 consecutive tiles (`engine/physics/airflow/reduce.hpp`);
+- each block is summed from 0 in tile order;
+- then the block sums are summed from 0 in block order.
+
+The block size is that one constant, carried to the kernel by the push and never taken from a workgroup, so step 3's workgroup independence still holds. A grid of at most 256 tiles is one block, which gives the old serial bits. Every airflow reduction follows this rule on both twins: the CG dots, `remove_mean`, the wall loads and the regions' walk.
+
 No fp64: `shaderFloat64` is optional, and `CORE-5` admits any Vulkan 1.1 device. No atomics.
 
 ### 5.6 The CPU reference
