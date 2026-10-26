@@ -264,8 +264,8 @@ struct Box {
 }
 
 // The solids box on a periodic x and z, with a solid slab across the x edge
-// (i 0..1, j 0..2, k 0..3): cells (0, 1, 1) and (0, 1, 2) have their one
-// fluid neighbour across the wrap, so the first layer is counted only by a
+// (i 0..1, j 0..2, k 0..3): its six cells (0, 0..1, 0..2) reach fluid only
+// across a wrap (x, and z at k = 0), so the first layer is counted only by a
 // walk that wraps. The slab's faces stay open (theta only bends gradients).
 [[nodiscard]] Box edge_box(const af::GridShape& s) {
     Box b = solids_box(s);
@@ -700,7 +700,9 @@ TEST(GpuAirflowPublish, TheVolumeFromTheDeviceIsPublishRenderVolumes) {
 
 // P8's rule (plan B, B6): read the fp32 channels back and pack them on the
 // CPU, or pack on the device and read the halves back; keep the cheaper. On
-// plan B's D1 box (B7), 224 x 168 x 160, 6.0 M cells, with one runner and two
+// plan B's D1 box (B7, as amended 2026-10-21), 240 x 177 x 168 at 4 mm, 7.14 M
+// cells (B6 re-measured there, 2026-10-26; the numbers below were at the
+// first box, 224 x 168 x 160, 6.0 M cells), with one runner and two
 // chains: the fields alone, and the fields then the pack. Each path is timed
 // on the host from its submit to its last byte packed, the median of five,
 // with the kernels' own times from the chains' marks. Opt-in
@@ -715,7 +717,7 @@ TEST(GpuAirflowPublish, P8ReadbackCostAtTheD1Box) {
     if (!env_gate_is_set("SPADE_AIRFLOW_P8")) GTEST_SKIP() << "P8's measurement: set SPADE_AIRFLOW_P8=1 to run it";
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const af::GridShape shape{224, 168, 160, 0.004f};
+    const af::GridShape shape{240, 177, 168, 0.004f};
     const af::MacGrid g = swirl(shape);
     const std::size_t cells = cell_count(shape);
     const auto n = face_counts(shape);
@@ -929,7 +931,7 @@ TEST(AirflowPublishHeader, TheHeaderFromTheHalvesIsPublishs) {
     no_wrap.periodic = {false, false, false};
     const auto unwrapped = af::extrapolated_cells(kShape, no_wrap);
     ASSERT_TRUE(unwrapped.has_value());
-    EXPECT_EQ(*unwrapped + 2u, cpu.header.extrapolated_cells) << "(0, 1, 1) and (0, 1, 2) reach fluid by the wrap";
+    EXPECT_EQ(*unwrapped + 6u, cpu.header.extrapolated_cells) << "(0, 0..1, 0..2) reach fluid only by a wrap";
     const std::size_t at = af::cell_index(kShape, 6, 5, 9) * spade::kFlowHalvesPerCell;
     EXPECT_EQ(cpu.v[at], spade::fp16::kNoDataBits) << "the solid beside the NaN is no data";
     const std::vector<uint8_t> wrong(cell_count(kShape) - 1u, 0u);
