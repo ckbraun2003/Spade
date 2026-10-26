@@ -259,3 +259,29 @@ TEST(EditorAirflow, ARunIsRefusedBeforeItsThreadNamingWhy) {
     EXPECT_NE(refused.error().context.find("Run air needs the drone unrotated"), std::string::npos)
         << refused.error().context;
 }
+
+// The inspector's line is resolved once per scene state (the lead,
+// 2026-10-26: air_case() hashes and validates the model): again after an
+// edit (a new serial) or in another document (opened again, whose serials
+// start over), never on a frame that changed nothing.
+TEST(EditorAirflow, TheInspectorsLineResolvesOncePerSceneState) {
+    const spade::scene::SceneDesc s = with_reference_quad(false);
+    ASSERT_FALSE(s.airflow.empty());
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    ed::AirLineCache cache;
+    const ed::AirLineCache& first = ed::air_line(cache, 1, 5, s, region);
+    EXPECT_EQ(first.text, ed::region_line(s, region));
+    EXPECT_FALSE(first.refused);
+    for (int i = 0; i < 3; ++i) (void)ed::air_line(cache, 1, 5, s, region);
+    EXPECT_EQ(cache.resolves, 1u) << "a frame that changed nothing resolved again";
+    (void)ed::air_line(cache, 1, 6, s, region);
+    EXPECT_EQ(cache.resolves, 2u) << "an edit";
+    (void)ed::air_line(cache, 2, 6, s, region);
+    EXPECT_EQ(cache.resolves, 3u) << "another document at the same serial";
+
+    spade::scene::SceneDesc turned = s;
+    for (auto& v : turned.vehicles) v.start.orient = glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f));
+    const ed::AirLineCache& refused = ed::air_line(cache, 2, 7, turned, turned.airflow.back());
+    EXPECT_TRUE(refused.refused);
+    EXPECT_EQ(refused.text, ed::region_line(turned, turned.airflow.back()));
+}
