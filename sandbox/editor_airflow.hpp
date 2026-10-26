@@ -3,18 +3,22 @@
 //
 // The plan: docs/design/interface/plans/2026-10-22-editor-airflow-run-plan.md.
 // T1: a region's case, as LiveRun will run it, and the line the inspector's
-// Airflow section shows for it before it runs: the resolved grid, or the
-// refusal verbatim.
+// Airflow section shows for it before it runs (the resolved grid, or the
+// refusal verbatim), and the wireframe box the viewport draws around its
+// drone.
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "analysis/case.hpp"
+#include "editor_gizmo.hpp"
 #include "scene/scene_file.hpp"
 
 namespace spade::sandbox::editor {
@@ -70,14 +74,52 @@ inline constexpr float kAirStateOfCharge = 1.0f;  // §4
     return std::move(*resolved);
 }
 
-// The inspector's line for `region`, as LiveRun's label gives its grid
-// ("32³, dx 25 mm, R/dx 3"), or air_case()'s refusal verbatim.
+// A resolved case's grid as LiveRun's label gives it: "32³, dx 25 mm, R/dx 3".
+[[nodiscard]] inline std::string grid_line(const analysis::ResolvedCase& r) {
+    std::string out = std::format("{}\xc2\xb3, dx {:g} mm", r.base.nx, r.base.dx * 1000.0f);  // a superscript three
+    if (!r.rotors.empty()) out += std::format(", R/dx {:.0f}", r.rotors.front().cells_across_radius);
+    return out;
+}
+
+// The inspector's line for `region`: its grid_line(), or air_case()'s
+// refusal verbatim.
 [[nodiscard]] inline std::string region_line(const scene::SceneDesc& s, const scene::SceneAirflowRegion& region) {
     const Result<analysis::ResolvedCase> r = air_case(s, region);
-    if (!r) return r.error().context;
-    std::string out = std::format("{}\xc2\xb3, dx {:g} mm", r->base.nx, r->base.dx * 1000.0f);  // a superscript three
-    if (!r->rotors.empty()) out += std::format(", R/dx {:.0f}", r->rotors.front().cells_across_radius);
-    return out;
+    return r ? grid_line(*r) : r.error().context;
+}
+
+// A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
+// in its own colour, not an axis's).
+inline constexpr int kRegionLine = 3;
+
+// Each follow region's box as the viewport draws it, in a view of `width` x
+// `height` pixels: its 12 edges, centred where its drone is placed (LiveRun
+// holds the drone at the box's centre), n dx on a side. An edge with an end
+// behind the camera is left out.
+[[nodiscard]] inline std::vector<GizmoLine> region_box_lines(const scene::SceneDesc& s, const render::Camera& cam,
+                                                            uint32_t width, uint32_t height) {
+    std::vector<GizmoLine> lines;
+    for (const scene::SceneAirflowRegion& region : s.airflow) {
+        if (region.kind != scene::AirflowKind::follow) continue;
+        const auto v = std::find_if(s.vehicles.begin(), s.vehicles.end(),
+                                    [&](const scene::SceneVehicle& x) { return x.name == region.follows; });
+        if (v == s.vehicles.end()) continue;
+        const glm::vec3 half = 0.5f * region.cells.dx *
+                               glm::vec3(static_cast<float>(region.cells.nx), static_cast<float>(region.cells.ny),
+                                         static_cast<float>(region.cells.nz));
+        const auto corner = [&](int i) {
+            return v->start.pos + half * glm::vec3(i & 1 ? 1.0f : -1.0f, i & 2 ? 1.0f : -1.0f, i & 4 ? 1.0f : -1.0f);
+        };
+        for (int i = 0; i < 8; ++i) {
+            for (const int bit : {1, 2, 4}) {
+                if ((i & bit) != 0) continue;  // each edge once, from its low end
+                const std::optional<glm::vec2> a = project(cam, corner(i), width, height);
+                const std::optional<glm::vec2> b = project(cam, corner(i | bit), width, height);
+                if (a && b) lines.push_back(GizmoLine{*a, *b, kRegionLine, false});
+            }
+        }
+    }
+    return lines;
 }
 
 }  // namespace spade::sandbox::editor

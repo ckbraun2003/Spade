@@ -23,6 +23,7 @@
 #include "editor_library.hpp"
 #include "editor_display.hpp"
 #include "editor_model_params.hpp"
+#include "editor_airflow.hpp"
 #include "editor_panels.hpp"
 #include "pilot_keys.hpp"  // kPilotKeysHelp
 #include "ui_theme.hpp"
@@ -405,6 +406,25 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
         changed |= float_row("Rotor speed", "##rotor", v.start.rotor_omega, 1.0f, next.rotor_omega, "%.0f rad/s");
         if (changed) p.pending.push_back(ed::SetVehicleStart{v.name, next});
         ui::end_properties();
+    }
+    // The editor's airflow run (INT-15, T1): the drone's follow region, its
+    // resolved grid or the refusal, and Add or Remove.
+    if (ui::section("Airflow", true)) {
+        const scene::SceneAirflowRegion* region = nullptr;
+        for (const scene::SceneAirflowRegion& r : p.scene->airflow) {
+            if (r.kind == scene::AirflowKind::follow && r.follows == v.name) region = &r;
+        }
+        if (region == nullptr) {
+            if (ImGui::Button("Add airflow region")) p.pending.push_back(ed::AddAirflowRegion{v.name});
+        } else {
+            ImGui::TextUnformatted(region->name.c_str());
+            if (const auto resolved = ed::air_case(*p.scene, *region)) {
+                ImGui::TextDisabled("%s", ed::grid_line(*resolved).c_str());
+            } else {
+                ui::status_text(resolved.error().context);
+            }
+            if (ImGui::Button("Remove airflow region")) p.pending.push_back(ed::RemoveAirflowRegion{region->name});
+        }
     }
     if (model == nullptr) return;
     if (ui::section("Model", true) && ui::begin_properties("model")) {
