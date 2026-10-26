@@ -431,11 +431,18 @@ TEST(GpuAirflowActuator, SameBitsAtEveryWorkgroupSize) {
 // from zero, as the step's cleared increments are. The control: the CPU's own
 // increments copied in the same way are the CPU's run to the bit.
 //
-// The gather differs from spread_actuator() in last bits, and the far wake is
-// chaotic past its horizon T_p, so the run is judged as a path that is not
-// bit-identical to the CPU's (test-docs/01-verification.md, "A case judged
-// past its horizon"; C8's numbers from its re-cut record, abaafcc, and
-// docs/design/test-docs/2026-10-22-c8-spread.md):
+// ON THE DEVICE OF RECORD (airflow_exact_device.hpp) the gather is
+// spread_actuator()'s bit for bit (peskin4's roots are sqrt32_ftz; TD-14 as
+// amended 2026-10-22), so the run IS the CPU's run: every gathered increment
+// and both probes' series over all 768 steps equal the CPU's, and the record
+// block says so, with C8's verdict the CPU run's (K2b; the lead, 2026-10-26,
+// on Test/Docs' plan). Its red is B4's banded block, b8ec4c9, on record.
+//
+// ELSEWHERE the gather may differ from spread_actuator() in last bits, and
+// the far wake is chaotic past its horizon T_p, so the run is judged as a
+// path that is not bit-identical to the CPU's (test-docs/01-verification.md,
+// "A case judged past its horizon"; C8's numbers from its re-cut record,
+// abaafcc, and docs/design/test-docs/2026-10-22-c8-spread.md):
 //   * up to T_p (step 104), both probes' series against the CPU's run, banded
 //     per TD-14: 4x the measured gap, never under 4 ulps of the scene's scale;
 //   * past T_p, C8's measure, the mean downwash over the 80 v faces within
@@ -577,6 +584,48 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
     const bool theory_within = std::abs(mean - expected) <= 0.1 * expected;
     const bool spread_within = std::abs(mean - kEnsembleMean) <= 4.0 * kEnsembleDeviation;
     const auto verdict = [](bool within) { return within ? "within" : "MISS"; };
+    // The copy is the step's own increments: the CPU's through it are the CPU.
+    EXPECT_EQ(copied.axis, cpu.axis) << "copying the increments in is not the step's spread";
+    EXPECT_EQ(copied.disc, cpu.disc) << "copying the increments in is not the step's spread";
+
+    if (spade::testing::airflow_bit_equal_device(*ctx)) {
+        std::size_t series_differing = 0;
+        for (uint32_t k = 0; k < kSteps; ++k) {
+            series_differing += (gpu.axis[k] != cpu.axis[k] ? 1u : 0u) + (gpu.disc[k] != cpu.disc[k] ? 1u : 0u);
+        }
+        const bool increments_equal = once.differing == 0u;
+        const bool series_equal = series_differing == 0u;
+        std::printf("=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===\n"
+                    "path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4; its square "
+                    "roots fp32_math's sqrt32_ftz), on %s\n"
+                    "config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
+                    "h = %.6f, n_v 2, %u steps; the gather's increments copied in each step\n"
+                    "measure: the gathered increments differing from spread_actuator()'s in any bit = %zu of %zu\n"
+                    "reference: spread_actuator(), the CPU step's own increments\n"
+                    "tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: an exact kernel on the device of record)\n"
+                    "verdict: %s\n"
+                    "measure: both probes' values (the axis and the 0.5R mean, 2R below) differing from the CPU's run "
+                    "over steps 1 to %u = %zu of %u\n"
+                    "reference: the CPU's run, spread_actuator() each step\n"
+                    "tolerance: 0, bit-equal: the run is the CPU's run\n"
+                    "verdict: %s\n"
+                    "measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps "
+                    "%u to %u = %.4f m/s\n"
+                    "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
+                    "tolerance: within 10%% (C8's: plan A Task 11, spec \xc2\xa7" "11.2); the CPU run's verdict, the "
+                    "run being the CPU's\n"
+                    "verdict: %s\n",
+                    spade::compute::describe(ctx->device_report()).c_str(), static_cast<double>(disc.thrust),
+                    static_cast<double>(cfg.h), kSteps, once.differing, spread.size(),
+                    verdict(increments_equal), kSteps, series_differing, 2u * kSteps, verdict(series_equal), kFirst,
+                    kSteps, mean,
+                    expected, verdict(theory_within));
+        EXPECT_EQ(once.differing, 0u) << "the gather is not spread_actuator()'s on the device of record";
+        EXPECT_EQ(gpu.axis, cpu.axis) << "the axis probe's series is not the CPU's";
+        EXPECT_EQ(gpu.disc, cpu.disc) << "the 0.5R mean's series is not the CPU's";
+        EXPECT_TRUE(theory_within) << mean << " against momentum theory's " << expected;
+        return;
+    }
     std::printf("=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===\n"
                 "path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4), on %s\n"
                 "config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
@@ -617,9 +666,6 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
                 verdict(disc_gap <= disc_band), kTp, axis_gap, axis_band, verdict(axis_gap <= axis_band), parting,
                 kEarliestParting, kEarliestParting, verdict(parting >= kEarliestParting),
                 window(cpu.disc, kFirst, kSteps));
-    // The copy is the step's own increments: the CPU's through it are the CPU.
-    EXPECT_EQ(copied.axis, cpu.axis) << "copying the increments in is not the step's spread";
-    EXPECT_EQ(copied.disc, cpu.disc) << "copying the increments in is not the step's spread";
     EXPECT_LE(disc_gap, disc_band) << "the 0.5R mean up to T_p";
     EXPECT_LE(axis_gap, axis_band) << "the axis probe up to T_p";
     EXPECT_TRUE(theory_within) << mean << " against momentum theory's " << expected;
