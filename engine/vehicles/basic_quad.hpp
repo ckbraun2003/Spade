@@ -79,6 +79,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -90,6 +91,13 @@
 #include "vehicles/airframe_compile.hpp"
 
 namespace spade::vehicles {
+
+// THE LOOK (L7b1): the parts as generated meshes. None by default.
+struct BasicQuadLook {
+    double body_edge_radius = 0.0;  // m: the body box's rounded edges and corners
+    double bell_chamfer = 0.0;      // m: each motor bell's top edge
+    uint32_t segments = 0;          // steps across a rounded edge; a tube or a bell is 8 x segments chords around
+};
 
 // Every default is the 6-inch basic quad's, and every one is assumed
 // (basic_quad_assumptions()). The blocks' defaults ARE the library's part
@@ -128,6 +136,8 @@ struct BasicQuadParams {
     std::optional<double> mass{};             // kg
     std::optional<glm::dvec3> inertia{};      // kg m^2, design axes, about the centre of mass
     std::optional<double> kappa{};            // m
+
+    std::optional<BasicQuadLook> look{};      // THE LOOK; none: the analytic box and tubes
 
     [[nodiscard]] static MotorBlock default_motor();
     [[nodiscard]] static PropBlock default_prop();

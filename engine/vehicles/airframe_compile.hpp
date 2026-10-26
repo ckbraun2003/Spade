@@ -295,6 +295,14 @@ struct RotorPartSpec {
     float min_feature = 0.0f;                    // m, its smallest feature, as a part declares it
 };
 
+// THE MOTOR'S MESH (L7b1): every rotor's motor as one mesh, in the HUB
+// frame -- the rotor plane is y = 0, thrust along +Y, and a bell hangs below
+// it (shapes::motor_bell, world/mesh_shapes.hpp) -- of the motor's own mass.
+struct MotorMeshSpec {
+    std::shared_ptr<const TriangleMesh> mesh{};
+    float min_feature = 0.0f;  // m, its smallest feature, as a part declares it
+};
+
 struct AirframeSpec {
     std::string name;               // non-empty
     uint32_t param_schema_id = 0;
@@ -303,6 +311,7 @@ struct AirframeSpec {
 
     std::vector<PartInertia> parts; // frame, arms, avionics: every mass not in a block below
     MotorBlock motor;               // one motor type, beside every hub
+    std::optional<MotorMeshSpec> motor_mesh{};  // each motor as this mesh at its hub; none: its block shape
     PropBlock prop;                 // one propeller type, at every hub
     EscBlock esc;
     BatteryBlock battery;
@@ -318,8 +327,8 @@ struct AirframeSpec {
     double state_of_charge = 1.0;   // [0, 1]
 };
 
-// One problem: what kind of entry ("airframe", "parts", "motor", "prop",
-// "esc", "battery", "rotors", "drag", "imus", "rotor_parts", "model"), its index within that
+// One problem: what kind of entry ("airframe", "parts", "motor", "motor_mesh",
+// "prop", "esc", "battery", "rotors", "drag", "imus", "rotor_parts", "model"), its index within that
 // kind (0 for the single blocks), the field and a message. A block's shape is
 // "<block>[0].shape"; a bad pose is "rotors[k].hub", "drag[k].mount" or
 // "imus[k].mount", once; a list too long is "<list>[0].count"; a part
@@ -370,5 +379,14 @@ struct CompiledAirframe {
 
 // The compile. On any problem, invalid_argument with every issue, joined.
 [[nodiscard]] Result<CompiledAirframe> compile_airframe(const AirframeSpec& spec);
+
+// THE COMPOSITE (L7b1): the body compile_airframe() gathers, measured without
+// the fit or the drag rule.
+struct AirframeComposite {
+    CompositeInertia inertia;  // compile_airframe()'s CompiledAirframe::inertia, bit for bit
+    double mass = 0.0;         // kg: the gathered records' masses, summed in gather order in double
+};
+
+[[nodiscard]] Result<AirframeComposite> airframe_composite(const AirframeSpec& spec);
 
 }  // namespace spade::vehicles

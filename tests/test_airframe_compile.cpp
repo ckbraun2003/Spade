@@ -2020,3 +2020,182 @@ TEST(AirframeCompile, ARotorPartIsRefusedByNameAndField) {
             << refused.error().context;
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE MOTOR'S MESH and THE COMPOSITE (L7b1 of the realistic drones plan,
+// docs/design/core/plans/2026-10-26-l7-realistic-drones-draft.md).
+
+namespace {
+
+// A bell as a box in the hub frame: its top face on the rotor plane, y = 0,
+// hanging 1/64 m below it, 1/32 m across. Dyadic, so its volume (2^-16 m^3)
+// and its centroid (0, -1/128, 0) are exact.
+const glm::dvec3 kBellSides(0.03125, 0.015625, 0.03125);
+
+[[nodiscard]] MeshPtr bell_box() { return mesh_of(box_input(glm::dvec3(-0.015625, -0.015625, -0.015625), kBellSides)); }
+
+[[nodiscard]] AirframeSpec quad_with_bells() {
+    AirframeSpec s = with_drag(reference_quad());
+    s.motor_mesh = MotorMeshSpec{.mesh = bell_box(), .min_feature = 0.008f};
+    return s;
+}
+
+[[nodiscard]] const PartDesc* part_called(const ModelType& m, const std::string& name) {
+    for (const PartDesc& p : m.parts) {
+        if (p.name == name) return &p;
+    }
+    return nullptr;
+}
+
+void expect_same_composite(const CompositeInertia& a, const CompositeInertia& b, const std::string& what) {
+    EXPECT_EQ(std::bit_cast<uint32_t>(a.mass), std::bit_cast<uint32_t>(b.mass)) << what;
+    EXPECT_TRUE(same_bits(a.center_of_mass, b.center_of_mass)) << what;
+    EXPECT_TRUE(same_bits(a.principal_moments, b.principal_moments)) << what;
+    EXPECT_TRUE(same_bits(a.design_to_body, b.design_to_body)) << what;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            EXPECT_EQ(std::bit_cast<uint64_t>(a.inertia_design[i][j]), std::bit_cast<uint64_t>(b.inertia_design[i][j]))
+                << what << ": inertia [" << i << "][" << j << "]";
+        }
+    }
+}
+
+}  // namespace
+
+// THE MOTOR'S MESH (Q2 (a)). Each motor is its mesh at its hub, of the
+// motor's own mass exactly: the body is the reference quad's mass bit for
+// bit, and it weighs as an analytic box motor of the mesh's sides, which the
+// compile moves half its height below the hub, where the mesh's centroid is.
+// Its part is the mesh AT THE HUB, never at the centroid, and motor.shape
+// (the reference's cylinder) is not read. It counts as a mesh for Physics'
+// drag rule.
+TEST(AirframeCompile, AMotorMeshCarriesTheMotorsMassAtItsHub) {
+    const AirframeSpec spec = quad_with_bells();
+    AirframeSpec twin_spec = with_drag(reference_quad());
+    twin_spec.motor.shape = BlockShape{PartShape::box, kBellSides, glm::dmat3(0.0)};
+    const auto mesh = compile_airframe(spec);
+    const auto twin = compile_airframe(twin_spec);
+    const auto base = compile_airframe(with_drag(reference_quad()));
+    ASSERT_TRUE(mesh.has_value()) << mesh.error().context;
+    ASSERT_TRUE(twin.has_value()) << twin.error().context;
+    ASSERT_TRUE(base.has_value()) << base.error().context;
+    ASSERT_EQ(spec.motor_mesh->mesh->mass_properties().volume, 0x1p-16);
+    expect_same_body(*mesh, *twin, true, "the bells");
+    EXPECT_EQ(std::bit_cast<uint32_t>(mesh->model.body.mass), std::bit_cast<uint32_t>(base->model.body.mass))
+        << "the motor's own mass";
+
+    for (std::size_t k = 0; k < spec.rotors.size(); ++k) {
+        const std::string name = "motor[" + std::to_string(k) + "]";
+        SCOPED_TRACE(name);
+        const PartDesc* bell = part_called(mesh->model, name);
+        const PartDesc* box = part_called(twin->model, name);
+        ASSERT_NE(bell, nullptr);
+        ASSERT_NE(box, nullptr);
+        EXPECT_EQ(bell->role, "motor");
+        EXPECT_EQ(bell->mesh, spec.motor_mesh->mesh);
+        EXPECT_EQ(bell->min_feature, 0.008f);
+        const glm::dvec3 hub = spec.rotors[k].hub.position;
+        expect_near(to_design(mesh->model, bell->mount_pos), hub, 1e-7, "the bell's part, at its hub");
+        expect_near(to_design(twin->model, box->mount_pos), hub - glm::dvec3(0.0, 0.0078125, 0.0), 1e-7,
+                    "the box's part, at its centre of mass");
+    }
+
+    // Physics' drag rule: with no DragSpec, the four bells are meshes whose
+    // area the estimate cannot see.
+    AirframeSpec bare = spec;
+    bare.drag.clear();
+    const std::vector<AirframeIssue> issues = check_airframe(bare);
+    ASSERT_EQ(issues.size(), 1u) << listed(issues);
+    EXPECT_TRUE(has_issue(issues, "drag", 0, "")) << listed(issues);
+    EXPECT_TRUE(mentions(issues.front().message, "part 'motor[0]' is a mesh (and 3 more)")) << issues.front().message;
+}
+
+// A motor mesh is refused by name, at motor_mesh[0].<field>, each fault one
+// issue: no mesh, a min_feature not finite and > 0, a motor of mass 0
+// ("counted elsewhere": its mesh would be dropped with its record), and a
+// pusher rotor (a bell hangs below its hub; none of the library's drones
+// pushes, so YAGNI).
+TEST(AirframeCompile, AMotorMeshIsRefusedByNameBesideAPusherOrAMasslessMotor) {
+    struct Case {
+        const char* what;
+        void (*change)(AirframeSpec&);
+        const char* field;
+        const char* says;
+    };
+    const Case cases[] = {
+        {"no mesh", [](AirframeSpec& s) { s.motor_mesh->mesh = nullptr; }, "mesh", "without a mesh"},
+        {"a min_feature of 0", [](AirframeSpec& s) { s.motor_mesh->min_feature = 0.0f; }, "min_feature",
+         "finite and > 0"},
+        {"a NaN min_feature",
+         [](AirframeSpec& s) { s.motor_mesh->min_feature = std::numeric_limits<float>::quiet_NaN(); }, "min_feature",
+         "finite and > 0"},
+        {"a massless motor", [](AirframeSpec& s) { s.motor.mass = 0.0; }, "mass", "motor.mass"},
+        {"a pusher", [](AirframeSpec& s) { s.rotors[2].pusher = true; }, "pusher", "rotors[2]"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        AirframeSpec s = quad_with_bells();
+        c.change(s);
+        const std::vector<AirframeIssue> issues = check_airframe(s);
+        ASSERT_EQ(issues.size(), 1u) << listed(issues);
+        EXPECT_TRUE(has_issue(issues, "motor_mesh", 0, c.field)) << listed(issues);
+        EXPECT_TRUE(mentions(issues.front().message, c.says)) << issues.front().message;
+        const auto refused = compile_airframe(s);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_TRUE(mentions(refused.error().context, std::string("motor_mesh[0].") + c.field))
+            << refused.error().context;
+    }
+}
+
+// THE COMPOSITE. airframe_composite() is compile_airframe()'s composite bit
+// for bit, and its double mass is the gathered records' summed in gather
+// order (the basic quad's old parts_mass(), for a spec with no mesh). It runs
+// without the fit and the drag rule, so a mesh spec with no DragSpec, or a
+// chain that cannot lift the airframe, is still measured; a part's fault
+// refuses it as the compile does.
+TEST(AirframeCompile, TheCompositeIsTheCompilesWithoutTheFitOrTheDragRule) {
+    const AirframeSpec s = reference_quad();
+    const auto compiled = compile_airframe(s);
+    const spade::Result<AirframeComposite> composite = airframe_composite(s);
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    ASSERT_TRUE(composite.has_value()) << composite.error().context;
+    expect_same_composite(composite->inertia, compiled->inertia, "the reference quad");
+    double sum = 0.0;
+    for (const PartInertia& p : s.parts) sum += p.mass;
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        sum += s.motor.mass;
+        sum += s.prop.mass;
+    }
+    sum += s.esc.mass;
+    sum += s.battery.mass;
+    EXPECT_EQ(std::bit_cast<uint64_t>(composite->mass), std::bit_cast<uint64_t>(sum));
+
+    // No drag rule: the canopy and the bells, with no DragSpec.
+    AirframeSpec meshes = quad_with_canopy();
+    meshes.motor_mesh = MotorMeshSpec{.mesh = bell_box(), .min_feature = 0.008f};
+    const auto with_its_drag = compile_airframe(meshes);
+    ASSERT_TRUE(with_its_drag.has_value()) << with_its_drag.error().context;
+    meshes.drag.clear();
+    ASSERT_FALSE(compile_airframe(meshes).has_value());
+    const spade::Result<AirframeComposite> measured = airframe_composite(meshes);
+    ASSERT_TRUE(measured.has_value()) << measured.error().context;
+    expect_same_composite(measured->inertia, with_its_drag->inertia, "the canopy and the bells");
+    EXPECT_NEAR(measured->mass, static_cast<double>(with_its_drag->inertia.mass), 1e-7);
+
+    // No fit: a gravity no chain lifts.
+    AirframeSpec heavy = reference_quad();
+    heavy.gravity = 1.0e4;
+    const auto unlifted = compile_airframe(heavy);
+    ASSERT_FALSE(unlifted.has_value());
+    EXPECT_TRUE(mentions(unlifted.error().context, "cannot hover")) << unlifted.error().context;
+    const spade::Result<AirframeComposite> weighed = airframe_composite(heavy);
+    ASSERT_TRUE(weighed.has_value()) << weighed.error().context;
+    expect_same_composite(weighed->inertia, compiled->inertia, "under any gravity");
+
+    // A part's fault refuses it, in the compile's words.
+    AirframeSpec bad = reference_quad();
+    bad.motor.mass = -1.0;
+    const spade::Result<AirframeComposite> refused = airframe_composite(bad);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(mentions(refused.error().context, "motor[0].mass")) << refused.error().context;
+}

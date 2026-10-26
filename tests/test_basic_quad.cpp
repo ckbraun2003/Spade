@@ -490,3 +490,113 @@ TEST(BasicQuad, AHalfSpanNotAboveZeroIsRefused) {
     p.half_span_x = std::nan("");
     expect_refused(spade::vehicles::basic_quad_airframe(p), {"half_span_x"});
 }
+
+// ---------------------------------------------------------------------------
+// THE LOOK (L7b1 of the realistic drones plan, docs/design/core/plans/
+// 2026-10-26-l7-realistic-drones-draft.md).
+
+namespace {
+
+[[nodiscard]] spade::vehicles::BasicQuadLook a_look() {
+    return spade::vehicles::BasicQuadLook{.body_edge_radius = 0.004, .bell_chamfer = 0.0015, .segments = 4};
+}
+
+}  // namespace
+
+// A look turns the body and the arms into mesh records of their own masses
+// (density = mass / V) and every motor into the bell the motor's shape sizes;
+// with the competition fit, the remainder is measured through the composite
+// (no drag rule), and with a drag the caller gives, the compile meets the
+// targets exactly, its axes the design's.
+TEST(BasicQuad, ALookedBasicQuadMeetsItsFittedMassAndInertiaExactly) {
+    BasicQuadParams p = competition();
+    p.look = a_look();
+    const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(p);
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    ASSERT_EQ(spec->parts.size(), 6u) << "the body, four arms and the remainder";
+    const double arm_length = std::sqrt(p.half_span_x * p.half_span_x + p.half_span_z * p.half_span_z);
+    for (std::size_t k = 0; k < 5; ++k) {
+        const PartInertia& r = spec->parts[k];
+        SCOPED_TRACE(r.geometry.name);
+        EXPECT_EQ(r.geometry.source, GeometrySource::mesh);
+        ASSERT_NE(r.geometry.mesh, nullptr);
+        EXPECT_EQ(r.mass, 0.0) << "a mesh record's mass is its mesh's";
+        EXPECT_EQ(r.shape, PartShape::point);
+        EXPECT_GT(r.geometry.min_feature, 0.0f);
+        const double own = k == 0 ? p.body_mass : p.arm_mass_per_metre * arm_length;
+        EXPECT_NEAR(r.geometry.density * r.geometry.mesh->mass_properties().volume, own, 1e-15) << "its mass kept";
+    }
+    EXPECT_EQ(spec->parts[1].geometry.mesh, spec->parts[4].geometry.mesh) << "the four arms share one mesh";
+    ASSERT_TRUE(spec->motor_mesh.has_value());
+    ASSERT_NE(spec->motor_mesh->mesh, nullptr);
+    EXPECT_TRUE(spec->drag.empty()) << "the look adds no drag";
+
+    AirframeSpec flying = *spec;
+    flying.drag.push_back(spade::vehicles::DragSpec{});
+    const spade::Result<CompiledAirframe> compiled = spade::vehicles::compile_airframe(flying);
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    EXPECT_EQ(bits(compiled->inertia.mass), bits(static_cast<float>(kCompetitionMass)));
+    for (int a = 0; a < 3; ++a) {
+        EXPECT_EQ(bits(compiled->inertia.principal_moments[a]), bits(static_cast<float>(kCompetitionInertia[a])))
+            << "axis " << a << ": " << compiled->inertia.principal_moments[a];
+    }
+    EXPECT_EQ(compiled->inertia.design_to_body, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    std::size_t meshes = 0;
+    for (const spade::vehicles::PartDesc& part : compiled->model.parts) meshes += part.mesh ? 1u : 0u;
+    EXPECT_EQ(meshes, 9u) << "the body, four arms and four bells";
+}
+
+// THE LOOK adds no drag, so the compile refuses the spec at drag (Physics'
+// rule) until the caller gives one, naming the body and the eight other
+// meshes; a fit target still builds, since the fit runs without the rule.
+TEST(BasicQuad, ALookedBasicQuadWithoutADragSpecIsRefusedAtDrag) {
+    BasicQuadParams p;
+    p.look = a_look();
+    const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(p);
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    const std::vector<spade::vehicles::AirframeIssue> issues = spade::vehicles::check_airframe(*spec);
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues.front().kind, "drag");
+    EXPECT_TRUE(contains(issues.front().message, "part 'body' is a mesh (and 8 more)")) << issues.front().message;
+
+    BasicQuadParams fitted = competition();
+    fitted.look = a_look();
+    const spade::Result<AirframeSpec> fit = spade::vehicles::basic_quad_airframe(fitted);
+    ASSERT_TRUE(fit.has_value()) << fit.error().context;
+    const spade::Result<CompiledAirframe> refused = spade::vehicles::compile_airframe(*fit);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(contains(refused.error().context, "drag[0]: none given")) << refused.error().context;
+}
+
+// No look, no change: the records are the analytic box and tubes, with no
+// motor mesh, and the remainder -- now measured by airframe_composite() -- is
+// the one the old sum gave, bit for bit: the target less the gathered masses
+// summed in gather order, at the compile's centre of mass. (The library's
+// basic quads pin their files besides, in test_library_drones.cpp.)
+TEST(BasicQuad, BasicQuadWithoutALookIsTheSameSpecBitForBit) {
+    const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(competition());
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    EXPECT_FALSE(spec->motor_mesh.has_value());
+    ASSERT_EQ(spec->parts.size(), 6u);
+    for (std::size_t k = 0; k < 5; ++k) {
+        EXPECT_EQ(spec->parts[k].geometry.source, GeometrySource::inertia_shape) << k;
+        EXPECT_EQ(spec->parts[k].geometry.mesh, nullptr) << k;
+        EXPECT_EQ(spec->parts[k].shape, k == 0 ? PartShape::box : PartShape::tube) << k;
+    }
+
+    AirframeSpec bare = *spec;
+    bare.parts.pop_back();
+    double own = 0.0;
+    for (const PartInertia& r : bare.parts) own += r.mass;
+    for (std::size_t k = 0; k < bare.rotors.size(); ++k) {
+        own += bare.motor.mass;
+        own += bare.prop.mass;
+    }
+    own += bare.esc.mass;
+    own += bare.battery.mass;
+    const PartInertia& rest = spec->parts.back();
+    EXPECT_EQ(bits(rest.mass), bits(kCompetitionMass - own));
+    const spade::Result<CompiledAirframe> measured = spade::vehicles::compile_airframe(bare);
+    ASSERT_TRUE(measured.has_value()) << measured.error().context;
+    EXPECT_EQ(rest.position, glm::dvec3(measured->inertia.center_of_mass));
+}

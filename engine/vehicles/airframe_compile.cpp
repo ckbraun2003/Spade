@@ -1069,6 +1069,10 @@ Result<PropulsionChain> airframe_propulsion_chain(const AirframeSpec& spec) {
 
 std::vector<AirframeIssue> check_airframe(const AirframeSpec& spec) { return build(spec).issues.list; }
 
+Result<AirframeComposite> airframe_composite(const AirframeSpec&) {
+    return std::unexpected(Error{Code::internal, "airframe_composite: not built yet (L7b1's RED)"});
+}
+
 Result<CompiledAirframe> compile_airframe(const AirframeSpec& spec) {
     Built b = build(spec);
     if (!b.issues.list.empty() || !b.result) {
