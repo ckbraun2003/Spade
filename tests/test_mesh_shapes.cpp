@@ -379,11 +379,11 @@ TEST(MeshShapes, TheShapesHashesArePinned) {
         uint64_t hash;
     };
     const std::array<Pin, 5> pins{{
-        {"rounded_box", sh::rounded_box(glm::dvec3(0.18, 0.05, 0.14), 0.008, 4), 488, 972, 0x0ull},
-        {"capped_tube", sh::capped_tube(0.008, 0.1, 16), 130, 256, 0x0ull},
-        {"motor_bell", sh::motor_bell(0.014, 0.02, 0.002, 24), 74, 144, 0x0ull},
-        {"prop ccw", sh::prop(mit_5x4(), sh::PropHand::ccw), 952, 1888, 0x0ull},
-        {"prop cw", sh::prop(mit_5x4(), sh::PropHand::cw), 952, 1888, 0x0ull},
+        {"rounded_box", sh::rounded_box(glm::dvec3(0.18, 0.05, 0.14), 0.008, 4), 488, 972, 0x9b7d104776d20217ull},
+        {"capped_tube", sh::capped_tube(0.008, 0.1, 16), 130, 256, 0x35d5ca89a90b8bb0ull},
+        {"motor_bell", sh::motor_bell(0.014, 0.02, 0.002, 24), 74, 144, 0xc0f0c9eb78b3738aull},
+        {"prop ccw", sh::prop(mit_5x4(), sh::PropHand::ccw), 952, 1888, 0xba8259637c414104ull},
+        {"prop cw", sh::prop(mit_5x4(), sh::PropHand::cw), 952, 1888, 0xa02f71ec080e93dcull},
     }};
     for (const Pin& p : pins) {
         SCOPED_TRACE(p.name);
