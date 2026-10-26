@@ -122,9 +122,10 @@
 // SO THE DIVISION IS EXACT: log32 calls div32_ftz below, which returns what the
 // host's divss returns under MXCSR FTZ|DAZ, bit for bit. At log32's call site
 // that is IEEE's own quotient, the host's `/`, because the domain is all
-// normal: f is +0 or normal (|f| >= 2^-24), 2 + f lies in [1.71, 2.42] and the
-// quotient in [2.4e-8, 0.243], so the flush never applies and log32's bits do
-// not move on any device. GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
+// normal: f is +0 or normal (|f| >= 2^-24), 2 + f lies in [1.71, 2.42] and
+// |s| in [2.4e-8, 0.1716] (log32's fold, below), so the flush never applies and
+// log32's bits do not move on any device.
+// GpuFp32Math.CorrectlyRoundedDivisionMatchesTheHostDivide
 // proves it against the host `/` over every (f, 2+f) pair log32 can form, and
 // the four log32 batteries prove it again end to end.
 //
@@ -143,11 +144,13 @@
 // Functions allowed to hold an estimate (E1/E2)
 // ===========================================================================
 //
-// The only functions in this module, and so in any kernel that imports it,
-// that may hold an OpFDiv or InverseSqrt result (E1/E2 as the user restated
-// them on 2026-10-22). engine/testing/spirv_scan.hpp's pass 3 proves where an
-// estimate can go -- through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/
-// CopyObject to an integer conversion -- but it also passes an uncorrected
+// The only functions of this module that may hold an OpFDiv or InverseSqrt
+// result, and so the only ones in an EXACT-profile module that imports it
+// (E1/E2 as the user restated them on 2026-10-22). A banded kernel that
+// imports it keeps its own bare OpFDivs (rotors.slang, integrate.slang).
+// engine/testing/spirv_scan.hpp's pass 3 proves where an estimate can go --
+// through FMul/FAdd/FSub/FNegate/Floor/Trunc/Round/CopyObject to an integer
+// conversion -- but it also passes an uncorrected
 // `uint(a / b)`. So the guarantee covers exactly these functions, and these
 // batteries prove that the integer each estimate becomes is corrected, with
 // estimates pushed +-3 ulps off (past the Vulkan bound) and far past it. An
@@ -156,14 +159,23 @@
 // applied to an estimate; one would need a dated amendment there.
 //
 //   div32_ftz_with (and div32_ftz, which supplies y)    OpFDiv 1/bm
+//     with its pieces div32_ftz_estimate (y) and div32_ftz_first (Q0)
 //       Fp32Exact.DivisionRoundsExactlyWithEstimatesThreeUlpsOff
 //       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
 //       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
+//       GpuFp32Math.TheDevicesEstimatesStayInsideTheProofsBound
 //
 //   sqrt32_ftz_with (and sqrt32_ftz, which supplies r)  InverseSqrt xm
+//     with its pieces sqrt32_ftz_estimate (r) and sqrt32_ftz_first (S0)
 //       Fp32Exact.SqrtRoundsExactlyWithEstimatesThreeUlpsOffOverItsWholeInputSpace
 //       Fp32Exact.TheCorrectionHoldsFarPastTheVulkanBound
 //       GpuFp32Math.ExactCorrectionRoundsInjectedEstimatesOnTheDevice
+//       GpuFp32Math.TheDevicesEstimatesStayInsideTheProofsBound
+//
+// The pieces are the ops' own first steps, named once so the probe can
+// report them (fp32_math_probe.slang, modes 10 and 11): Q0 and S0 there are
+// uncorrected on purpose, as what the device's estimate gives. No engine
+// kernel calls a piece except through its op.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -257,6 +269,46 @@ static const uint kBitsDefaultNaN = 0xFFC00000u;  // x86's QNaN indefinite: divs
 // NO FMA. The proof spends only the slack in those bounds, so it holds whether
 // a driver fuses or contracts the estimate's FMul and FAdd or not.
 
+// THE PIECES, each the one spelling of an op's first step (TD-9): the ops
+// below use them, and the probe reports them, so what the device test
+// measures is what the ops compute (the exact plan's F1). [ForceInline], as
+// the `_with` forms: the estimate never crosses an OpFunctionCall.
+
+// y ~ 1/bm, bm = b's significand in [1, 2): the E1 estimate, OpFDiv, <= 2.5 ulp.
+[ForceInline]
+float div32_ftz_estimate(float b) {
+    return 1.0f / asfloat((asuint(b) & 0x007FFFFFu) | 0x3F800000u);
+}
+
+// s: 23 when A >= B (the quotient in [1, 2)), else 24 (in (1/2, 1)).
+[ForceInline]
+uint div32_ftz_shift(uint A, uint B) {
+    return A >= B ? 23u : 24u;
+}
+
+// Q0 = uint(am * y * 2^s), the correction's first quotient: fa is a's
+// significand bits, s div32_ftz_shift's, y ~ 1/bm.
+[ForceInline]
+uint div32_ftz_first(uint fa, uint s, float y) {
+    return uint(asfloat(fa | 0x3F800000u) * y * asfloat((127u + s) << 23));
+}
+
+// r ~ 1/sqrt(xm), xm in [1, 4) the significand with the odd exponent folded
+// in: the E2 estimate, InverseSqrt, <= 2 ulp.
+[ForceInline]
+float sqrt32_ftz_estimate(float x) {
+    const uint ux = asuint(x);
+    const uint odd = ((ux >> 23) + 1u) & 1u;  // (ex + 1) & 1: the sign bit is not bit 0
+    return rsqrt(asfloat((ux & 0x007FFFFFu) | ((127u + odd) << 23)));
+}
+
+// S0 = uint(xm * r * 2^23), the correction's first root: fx is x's
+// significand bits, odd = (ex + 1) & 1, r ~ 1/sqrt(xm).
+[ForceInline]
+uint sqrt32_ftz_first(uint fx, uint odd, float r) {
+    return uint(asfloat(fx | ((127u + odd) << 23)) * r * asfloat(150u << 23));
+}
+
 // a / b, given y ~ 1/bm (bm = b's significand in [1, 2)). See above.
 [ForceInline]  // the estimate never crosses an OpFunctionCall (the taint scan)
 float div32_ftz_with(float a, float b, float y) {
@@ -291,9 +343,8 @@ float div32_ftz_with(float a, float b, float y) {
     // The correction, Rendering's exact_div unchanged.
     const uint A = fa | 0x00800000u;
     const uint B = fb | 0x00800000u;
-    const uint s = A >= B ? 23u : 24u;  // the quotient in [1, 2) or (1/2, 1)
-    const float am = asfloat(fa | 0x3F800000u);
-    uint Q = uint(am * y * asfloat((127u + s) << 23));
+    const uint s = div32_ftz_shift(A, B);  // the quotient in [1, 2) or (1/2, 1)
+    uint Q = div32_ftz_first(fa, s, y);
     int R = asint((A << s) - B * Q);  // A 2^s - B Q, in the wrap
     const int k = int(floor(float(R) * y * asfloat(104u << 23) + 0.5f));  // R / B, B = bm 2^23
     Q = asuint(asint(Q) + k);
@@ -316,8 +367,7 @@ float div32_ftz_with(float a, float b, float y) {
 
 // a / b: divss under MXCSR FTZ|DAZ, NaN bits included.
 float div32_ftz(float a, float b) {
-    // The E1 estimate: OpFDiv, <= 2.5 ulp.
-    return div32_ftz_with(a, b, 1.0f / asfloat((asuint(b) & 0x007FFFFFu) | 0x3F800000u));
+    return div32_ftz_with(a, b, div32_ftz_estimate(b));
 }
 
 // sqrt(x), given r ~ 1/sqrt(xm). See above.
@@ -345,8 +395,7 @@ float sqrt32_ftz_with(float x, float r) {
     // x = xm 2^(ex - 127 - odd), ex - 127 - odd even, sqrt(xm) in [1, 2).
     const uint odd = (ex + 1u) & 1u;
     const uint M = fx | 0x00800000u;
-    const float xm = asfloat(fx | ((127u + odd) << 23));
-    uint S = uint(xm * r * asfloat(150u << 23));
+    uint S = sqrt32_ftz_first(fx, odd, r);
     const uint X = M << (23u + odd);  // its low 32 bits: all the wrap needs
     int R = asint(X - S * S);  // X - S^2, in the wrap
     const int k = int(floor(float(R) * r * asfloat(103u << 23) + 0.5f));  // R / 2S
@@ -363,10 +412,7 @@ float sqrt32_ftz_with(float x, float r) {
 
 // sqrt(x): sqrtss under MXCSR FTZ|DAZ, NaN bits included.
 float sqrt32_ftz(float x) {
-    const uint ux = asuint(x);
-    const uint odd = ((ux >> 23) + 1u) & 1u;  // (ex + 1) & 1: the sign bit is not bit 0
-    // The E2 estimate: InverseSqrt, <= 2 ulp.
-    return sqrt32_ftz_with(x, rsqrt(asfloat((ux & 0x007FFFFFu) | ((127u + odd) << 23))));
+    return sqrt32_ftz_with(x, sqrt32_ftz_estimate(x));
 }
 
 // ===========================================================================

@@ -40,6 +40,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <span>
 #include <utility>
 #include <vector>
@@ -55,43 +56,61 @@ inline constexpr uint32_t kPosInf = 0x7F800000u;
 [[nodiscard]] inline uint32_t bits(float x) noexcept { return std::bit_cast<uint32_t>(x); }
 [[nodiscard]] inline int32_t as_int(uint32_t u) noexcept { return std::bit_cast<int32_t>(u); }
 
+// Is SPADE_EXACT_SWEEP set? Both full sweeps read it, the CPU proof's
+// (tests/test_fp32_exact.cpp) and the device's (tests/test_gpu_fp32_math.cpp).
+// The MSVC pragma is scoped to this one call, for the reason
+// tests/test_fp32_math.cpp's env_gate_is_set gives: C4996 on std::getenv aims
+// at hazards a read-only null check made once does not have.
+[[nodiscard]] inline bool exact_sweep() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_EXACT_SWEEP") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
 // Where the port's correction stops: at the estimate's truncation (Q0, S0),
 // after the rounded k-step (Q1, S1), or nowhere.
 enum class Stop { at_estimate, after_step, full };
 
 // ---------------------------------------------------------------------------
 // THE PORT. Results and operands are bit patterns, as the device test sees
-// them. Each line cites engine/shaders/fp32_math.slang.
+// them. Each line cites engine/shaders/fp32_math.slang; the ops' first steps
+// are its pieces at :279-309 (div32_ftz_shift, div32_ftz_first and
+// sqrt32_ftz_first), so those lines cite both the op and the piece.
 // ---------------------------------------------------------------------------
 
-// fp32_math.slang:262-315, div32_ftz_with: a / b from y ~ 1/bm.
+// fp32_math.slang:314-366, div32_ftz_with: a / b from y ~ 1/bm.
 [[nodiscard]] inline uint32_t port_div(uint32_t ua, uint32_t ub, float y, Stop stop = Stop::full) noexcept {
-    const uint32_t sign = (ua ^ ub) & 0x80000000u;  // :265
-    const uint32_t ea = (ua >> 23) & 0xFFu;         // :266
-    const uint32_t eb = (ub >> 23) & 0xFFu;         // :267
-    const uint32_t fa = ua & 0x007FFFFFu;           // :268
-    const uint32_t fb = ub & 0x007FFFFFu;           // :269
+    const uint32_t sign = (ua ^ ub) & 0x80000000u;  // :317
+    const uint32_t ea = (ua >> 23) & 0xFFu;         // :318
+    const uint32_t eb = (ub >> 23) & 0xFFu;         // :319
+    const uint32_t fa = ua & 0x007FFFFFu;           // :320
+    const uint32_t fb = ub & 0x007FFFFFu;           // :321
 
-    if (ea == 0xFFu && fa != 0u) return ua | 0x00400000u;                  // :272-274
-    if (eb == 0xFFu && fb != 0u) return ub | 0x00400000u;                  // :275-277
-    if (ea == 0xFFu) return eb == 0xFFu ? kDefaultNaN : (sign | kPosInf);  // :278-280
-    if (eb == 0xFFu) return sign;                                          // :281-283
-    if (eb == 0u) return ea == 0u ? kDefaultNaN : (sign | kPosInf);        // :284-286
-    if (ea == 0u) return sign;                                             // :287-289
+    if (ea == 0xFFu && fa != 0u) return ua | 0x00400000u;                  // :324-326
+    if (eb == 0xFFu && fb != 0u) return ub | 0x00400000u;                  // :327-329
+    if (ea == 0xFFu) return eb == 0xFFu ? kDefaultNaN : (sign | kPosInf);  // :330-332
+    if (eb == 0xFFu) return sign;                                          // :333-335
+    if (eb == 0u) return ea == 0u ? kDefaultNaN : (sign | kPosInf);        // :336-338
+    if (ea == 0u) return sign;                                             // :339-341
 
-    const uint32_t A = fa | 0x00800000u;                                       // :292
-    const uint32_t B = fb | 0x00800000u;                                       // :293
-    const uint32_t s = A >= B ? 23u : 24u;                                     // :294
-    const float am = from_bits(fa | 0x3F800000u);                              // :295
-    uint32_t Q = static_cast<uint32_t>(am * y * from_bits((127u + s) << 23));  // :296
+    const uint32_t A = fa | 0x00800000u;                                       // :344
+    const uint32_t B = fb | 0x00800000u;                                       // :345
+    const uint32_t s = A >= B ? 23u : 24u;                                     // :346, :286
+    const float am = from_bits(fa | 0x3F800000u);                              // :293
+    uint32_t Q = static_cast<uint32_t>(am * y * from_bits((127u + s) << 23));  // :347, :293
     if (stop != Stop::at_estimate) {
-        uint32_t R = (A << s) - B * Q;  // :297, R's bits
+        uint32_t R = (A << s) - B * Q;  // :348, R's bits
         const int32_t k =
-            static_cast<int32_t>(std::floor(static_cast<float>(as_int(R)) * y * from_bits(104u << 23) + 0.5f));  // :298
-        Q = Q + static_cast<uint32_t>(k);      // :299
-        R = R - static_cast<uint32_t>(k) * B;  // :300
+            static_cast<int32_t>(std::floor(static_cast<float>(as_int(R)) * y * from_bits(104u << 23) + 0.5f));  // :349
+        Q = Q + static_cast<uint32_t>(k);      // :350
+        R = R - static_cast<uint32_t>(k) * B;  // :351
         if (stop == Stop::full) {
-            if (as_int(2u * R) > as_int(B)) {  // :301-305
+            if (as_int(2u * R) > as_int(B)) {  // :352-356
                 Q = Q + 1u;
             } else if (as_int(2u * R) < -as_int(B)) {
                 Q = Q - 1u;
@@ -99,42 +118,42 @@ enum class Stop { at_estimate, after_step, full };
         }
     }
 
-    const int32_t e = static_cast<int32_t>(ea) - static_cast<int32_t>(eb) + (s == 23u ? 127 : 126);  // :307
-    if (e >= 255) return sign | kPosInf;                                  // :308-310
-    if (e <= 0) return sign;                                              // :311-313
-    return sign | (static_cast<uint32_t>(e) << 23) | (Q & 0x007FFFFFu);  // :314
+    const int32_t e = static_cast<int32_t>(ea) - static_cast<int32_t>(eb) + (s == 23u ? 127 : 126);  // :358
+    if (e >= 255) return sign | kPosInf;                                  // :359-361
+    if (e <= 0) return sign;                                              // :362-364
+    return sign | (static_cast<uint32_t>(e) << 23) | (Q & 0x007FFFFFu);  // :365
 }
 
-// fp32_math.slang:325-362, sqrt32_ftz_with: sqrt(x) from r ~ 1/sqrt(xm).
+// fp32_math.slang:375-411, sqrt32_ftz_with: sqrt(x) from r ~ 1/sqrt(xm).
 [[nodiscard]] inline uint32_t port_sqrt(uint32_t ux, float r, Stop stop = Stop::full) noexcept {
-    const uint32_t ex = (ux >> 23) & 0xFFu;  // :327
-    const uint32_t fx = ux & 0x007FFFFFu;    // :328
+    const uint32_t ex = (ux >> 23) & 0xFFu;  // :377
+    const uint32_t fx = ux & 0x007FFFFFu;    // :378
 
-    if (ex == 0xFFu && fx != 0u) return ux | 0x00400000u;  // :331-333
-    if (ex == 0u) return ux & 0x80000000u;                 // :334-336
-    if ((ux >> 31) != 0u) return kDefaultNaN;              // :337-339
-    if (ex == 0xFFu) return kPosInf;                       // :340-342
+    if (ex == 0xFFu && fx != 0u) return ux | 0x00400000u;  // :381-383
+    if (ex == 0u) return ux & 0x80000000u;                 // :384-386
+    if ((ux >> 31) != 0u) return kDefaultNaN;              // :387-389
+    if (ex == 0xFFu) return kPosInf;                       // :390-392
 
-    const uint32_t odd = (ex + 1u) & 1u;                                    // :346
-    const uint32_t M = fx | 0x00800000u;                                    // :347
-    const float xm = from_bits(fx | ((127u + odd) << 23));                  // :348
-    uint32_t S = static_cast<uint32_t>(xm * r * from_bits(150u << 23));     // :349
+    const uint32_t odd = (ex + 1u) & 1u;                                    // :396
+    const uint32_t M = fx | 0x00800000u;                                    // :397
+    const float xm = from_bits(fx | ((127u + odd) << 23));                  // :309
+    uint32_t S = static_cast<uint32_t>(xm * r * from_bits(150u << 23));     // :398, :309
     if (stop != Stop::at_estimate) {
-        const uint32_t X = M << (23u + odd);  // :350
-        uint32_t R = X - S * S;               // :351, R's bits
+        const uint32_t X = M << (23u + odd);  // :399
+        uint32_t R = X - S * S;               // :400, R's bits
         const int32_t k =
-            static_cast<int32_t>(std::floor(static_cast<float>(as_int(R)) * r * from_bits(103u << 23) + 0.5f));  // :352
-        S = S + static_cast<uint32_t>(k);  // :353
-        R = X - S * S;                     // :354
+            static_cast<int32_t>(std::floor(static_cast<float>(as_int(R)) * r * from_bits(103u << 23) + 0.5f));  // :401
+        S = S + static_cast<uint32_t>(k);  // :402
+        R = X - S * S;                     // :403
         if (stop == Stop::full) {
-            if (as_int(R) > as_int(S)) {  // :356-360
+            if (as_int(R) > as_int(S)) {  // :405-409
                 S = S + 1u;
             } else if (as_int(R) <= -as_int(S)) {
                 S = S - 1u;
             }
         }
     }
-    return (((ex + 127u - odd) >> 1) << 23) | (S & 0x007FFFFFu);  // :361
+    return (((ex + 127u - odd) >> 1) << 23) | (S & 0x007FFFFFu);  // :410
 }
 
 // ---------------------------------------------------------------------------
@@ -142,14 +161,14 @@ enum class Stop { at_estimate, after_step, full };
 // ---------------------------------------------------------------------------
 
 // The correctly rounded 1/bm for b's bits, bm = b's significand in [1, 2) as
-// div32_ftz forms it (fp32_math.slang:320). The host's `/` is divss; bm and
+// div32_ftz_estimate forms it (fp32_math.slang:280). The host's `/` is divss; bm and
 // 1/bm are normal, so the flush does not enter.
 [[nodiscard]] inline float div_estimate(uint32_t ub) noexcept {
     return 1.0f / from_bits((ub & 0x007FFFFFu) | 0x3F800000u);
 }
 
-// 1/sqrt(xm) for x's bits, xm in [1, 4) as sqrt32_ftz forms it
-// (fp32_math.slang:367-369), rounded once to float from double. Two roundings
+// 1/sqrt(xm) for x's bits, xm in [1, 4) as sqrt32_ftz_estimate forms it
+// (fp32_math.slang:300-302), rounded once to float from double. Two roundings
 // in double can leave it a float off the correctly rounded value only when the
 // exact one is within about 2^-52 of a float midpoint; the windows below reach
 // at least 3 floats either side, so they still hold every estimate within
@@ -327,7 +346,7 @@ inline constexpr uint32_t kBoundEdgeFirst = 0x4079999Au;  // 3.9f
 inline constexpr uint32_t kBoundEdgeCount = 0x407FFFFFu - kBoundEdgeFirst + 1u;
 
 // A random pair whose quotient has the biased exponent `er` before any flush
-// or overflow (fp32_math.slang:307's e): random significands and signs, eb
+// or overflow (fp32_math.slang:358's e): random significands and signs, eb
 // redrawn until ea lands in [1, 254]. er from -1 to 256 reaches both of
 // div32_ftz's edges, e <= 0 (FTZ) and e >= 255 (overflow).
 [[nodiscard]] inline std::pair<uint32_t, uint32_t> pair_with_result_exponent(SplitMix& rng, int er) {
