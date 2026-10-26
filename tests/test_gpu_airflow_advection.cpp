@@ -42,7 +42,9 @@
 #include "compute/backend.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
+#include "airflow_exact_device.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
+#include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/advect.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -63,12 +65,13 @@ using spade::compute::VulkanContext;
 constexpr af::GridShape kShape{16, 12, 20, 1.0f / 16.0f};
 constexpr float kStepS = 0.01f;
 
-// The band, relative to the field's largest speed (plan B: 4x the largest
-// measurement, at least 4 ulps; the target 1e-4, past 1e-3 a grade change).
-// Measured 2026-10-21 on an NVIDIA GeForce RTX 3060 Ti, on B1's runner: every
-// pass bit-equal to advect.cpp on both boxes (0 of 12272 faces differ), so
-// the band is the floor. The periodic wrap's division rounds differently on
-// some devices; the floor leaves it room. Red check: the correction's 1/2 as
+// Every pass is advect.cpp's bit for bit on the device of record: the
+// periodic wrap's division is fp32_math's div32_ftz, and the CPU reference
+// runs under the step's subnormal flush (TD-14 as amended 2026-10-22;
+// airflow_exact_device.hpp). Another device or driver keeps the floor band,
+// relative to the field's largest speed (plan B: 4x the largest measurement,
+// at least 4 ulps; measured bit-equal on the RTX 3060 Ti, 2026-10-21, so the
+// floor). Red check: the correction's 1/2 as
 // 1/4 fails the backward and both-pass tests by 0.055 (clamped) and 0.30
 // (periodic) of the top speed.
 constexpr float kBandRelative = 4.0f * 0x1p-23f;
@@ -171,6 +174,7 @@ struct Advected {
 [[nodiscard]] Advected advect_on_cpu(const af::MacGrid& in, const af::DomainBc& bc) {
     af::MacGrid out = in;
     af::AdvectScratch s = af::make_advect_scratch(in.shape);
+    const spade::math::ScopedFlushSubnormals flush;  // the step's mode
     af::advect_velocity(in, out, bc, kStepS, s);
     return {packed(s.hat), packed(s.lo), packed(s.hi), packed({out.u, out.v, out.w})};
 }
@@ -302,9 +306,13 @@ struct Diff {
     return d;
 }
 
-void expect_in_band(const char* what, const char* box, const Diff& d, float speed) {
+void expect_in_band(const VulkanContext& ctx, const char* what, const char* box, const Diff& d, float speed) {
     std::printf("[ advection ] %-8s %-24s worst %.3g m/s (%.3g of the top speed), %zu of %zu differ\n", box, what,
                 static_cast<double>(d.worst), static_cast<double>(d.worst / speed), d.differing, d.count);
+    if (spade::testing::airflow_bit_equal_device(ctx)) {
+        EXPECT_EQ(d.differing, 0u) << box << ", " << what;
+        return;
+    }
     EXPECT_LE(d.worst, kBandRelative * speed) << box << ", " << what;
 }
 
@@ -335,9 +343,9 @@ TEST(GpuAirflowAdvection, ForwardPassMatchesAdvectCpp) {
         const Advected cpu = advect_on_cpu(in, box.bc);
         const auto gpu = advect_on_gpu(*ctx, in, box.bc, Passes::forward, kWorkgroupSize);
         ASSERT_TRUE(gpu.has_value()) << box.name;
-        expect_in_band("forward: hat", box.name, diff(gpu->hat, cpu.hat), speed);
-        expect_in_band("forward: lo", box.name, diff(gpu->lo, cpu.lo), speed);
-        expect_in_band("forward: hi", box.name, diff(gpu->hi, cpu.hi), speed);
+        expect_in_band(*ctx, "forward: hat", box.name, diff(gpu->hat, cpu.hat), speed);
+        expect_in_band(*ctx, "forward: lo", box.name, diff(gpu->lo, cpu.lo), speed);
+        expect_in_band(*ctx, "forward: hi", box.name, diff(gpu->hi, cpu.hi), speed);
     }
 }
 
@@ -361,7 +369,7 @@ TEST(GpuAirflowAdvection, BackwardPassAndClampMatchAdvectCpp) {
         EXPECT_GT(clamped, cpu.next.size() / 50u) << box.name << ": the clamp hardly acts on this field";
         const auto gpu = advect_on_gpu(*ctx, in, box.bc, Passes::backward, kWorkgroupSize, &cpu);
         ASSERT_TRUE(gpu.has_value()) << box.name;
-        expect_in_band("backward + clamp", box.name, diff(gpu->next, cpu.next), speed);
+        expect_in_band(*ctx, "backward + clamp", box.name, diff(gpu->next, cpu.next), speed);
     }
 }
 
@@ -376,7 +384,7 @@ TEST(GpuAirflowAdvection, BothPassesMatchAdvectCpp) {
         const Advected cpu = advect_on_cpu(in, box.bc);
         const auto gpu = advect_on_gpu(*ctx, in, box.bc, Passes::both, kWorkgroupSize);
         ASSERT_TRUE(gpu.has_value()) << box.name;
-        expect_in_band("both passes", box.name, diff(gpu->next, cpu.next), speed);
+        expect_in_band(*ctx, "both passes", box.name, diff(gpu->next, cpu.next), speed);
     }
 }
 
