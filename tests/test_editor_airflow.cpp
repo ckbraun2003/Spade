@@ -5,8 +5,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <format>
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -55,4 +57,34 @@ TEST(EditorAirflow, ATurnedDroneIsRefusedNamingIt) {
     EXPECT_NE(resolved.error().context.find("Run air needs the drone unrotated"), std::string::npos)
         << resolved.error().context;
     EXPECT_EQ(ed::region_line(s, s.airflow[0]), resolved.error().context) << "the refusal, verbatim";
+}
+
+// The viewport draws each follow region as a wireframe box around its drone
+// (T1): its 12 edges, centred where the drone is placed (LiveRun holds it at
+// the box's centre), n dx on a side, in the region's line colour.
+TEST(EditorAirflow, ARegionIsDrawnAsABoxAroundItsDrone) {
+    spade::scene::SceneDesc s = with_region();
+    ASSERT_EQ(s.airflow.size(), 1u);
+    for (auto& v : s.vehicles) v.start.pos = glm::vec3(0.0f);
+    spade::render::Camera cam;
+    cam.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    const std::vector<ed::GizmoLine> lines = ed::region_box_lines(s, cam, 800, 600);
+    ASSERT_EQ(lines.size(), 12u);
+    const float half = 0.5f * static_cast<float>(s.airflow[0].cells.nx) * s.airflow[0].cells.dx;
+    const std::optional<glm::vec2> centre = ed::project(cam, glm::vec3(0.0f), 800, 600);
+    const std::optional<glm::vec2> near_corner = ed::project(cam, glm::vec3(half), 800, 600);
+    ASSERT_TRUE(centre.has_value());
+    ASSERT_TRUE(near_corner.has_value());
+    float lo = 1e9f;
+    float hi = -1e9f;
+    for (const ed::GizmoLine& l : lines) {
+        EXPECT_EQ(l.axis, ed::kRegionLine);
+        lo = std::min({lo, l.a.x, l.b.x});
+        hi = std::max({hi, l.a.x, l.b.x});
+    }
+    EXPECT_NEAR(hi, near_corner->x, 0.5f) << "the box's near face is its widest";
+    EXPECT_NEAR(lo + hi, 2.0f * centre->x, 0.5f) << "centred on the drone";
+
+    s.airflow.clear();
+    EXPECT_TRUE(ed::region_box_lines(s, cam, 800, 600).empty());
 }
