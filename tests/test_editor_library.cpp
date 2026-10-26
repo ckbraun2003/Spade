@@ -25,6 +25,7 @@
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_library.hpp"
 #include "../sandbox/editor_panels.hpp"
+#include "../sandbox/text_fit.hpp"
 #include "editor_test_support.hpp"
 #include "scene/library.hpp"
 #include "scene/part_file.hpp"
@@ -850,4 +851,25 @@ TEST(EditorLibraryGrades, AStaleSidecarIsNamedAndItsDroneLoadsWithoutGrades) {
     ASSERT_NE(drone, load.items.end()) << "the drone still loads";
     EXPECT_FALSE(drone->sources.has_value());
     EXPECT_FALSE(ed::has_grades(*drone));
+}
+
+// A field path too long for its cell is cut from the LEFT (the lead,
+// 2026-10-26): its end tells rows apart (".x", ".y", ".z"), so the ellipsis
+// goes first and the longest tail that fits after it is kept. Here every
+// byte is 1 wide and the ellipsis 3.
+TEST(EditorLibraryGrades, AFieldPathTooLongForItsCellIsCutFromTheLeft) {
+    const auto unit = [](std::string_view s) { return static_cast<float>(s.size()); };
+    const std::string_view path = "rotors[0].hub.position.x";  // 24 wide
+    EXPECT_EQ(spade::sandbox::ui::left_cut(path, 24.0f, 3.0f, unit), 0u) << "it fits: nothing is cut";
+    EXPECT_EQ(spade::sandbox::ui::left_cut(path, 30.0f, 3.0f, unit), 0u);
+    // 20 wide: the ellipsis and 17 of it, "0].hub.position.x".
+    EXPECT_EQ(path.substr(spade::sandbox::ui::left_cut(path, 20.0f, 3.0f, unit)), "0].hub.position.x");
+    // Too narrow for anything but the last character: it is kept.
+    EXPECT_EQ(path.substr(spade::sandbox::ui::left_cut(path, 2.0f, 3.0f, unit)), "x");
+    EXPECT_EQ(spade::sandbox::ui::left_cut("", 0.0f, 3.0f, unit), 0u);
+    // A cut never splits a UTF-8 sequence: "a\xc2\xb0z" is "a", a 2-byte degree sign, "z", 4 wide. With
+    // an ellipsis 0.5 wide, 3 wide would fit "\xb0z" if a cut could start inside the sign; it keeps "z".
+    const std::string_view degrees = "a\xc2\xb0z";
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.0f, 0.5f, unit)), "z");
+    EXPECT_EQ(degrees.substr(spade::sandbox::ui::left_cut(degrees, 3.5f, 0.5f, unit)), "\xc2\xb0z");
 }
