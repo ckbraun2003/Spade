@@ -291,7 +291,6 @@ struct IndexRow {
 
 [[nodiscard]] std::vector<IndexRow> expected_index() {
     std::vector<IndexRow> out;
-    out.push_back({"Reference quad", "drones", "drones/reference_quad.model.yaml", LibraryKind::model});
     // L5's drones, in the L5 draft's names (Interface owns the category).
     out.push_back({"Phantom 3-class quad", "drones", "drones/phantom3_class.model.yaml", LibraryKind::model});
     out.push_back({"Iris+-class quad", "drones", "drones/iris_plus_class.model.yaml", LibraryKind::model});
@@ -348,6 +347,10 @@ struct IndexRow {
                    LibraryKind::battery});
     out.push_back({"4S 1500 mAh (competition)", "batteries", "parts/comp_4s.battery.yaml",
                    LibraryKind::battery});
+    // The engine's test fixture, labelled plainly and last: its category is
+    // last in Interface's order (L6; INT-14).
+    out.push_back({"Reference quad (test fixture)", "test fixtures", "drones/reference_quad.model.yaml",
+                   LibraryKind::model});
     return out;
 }
 

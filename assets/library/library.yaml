@@ -36,11 +36,6 @@
 library_version: 2
 
 entries:
-  - name: "Reference quad"
-    category: "drones"
-    file: "drones/reference_quad.model.yaml"
-    thumbnail: "thumbnails/reference_quad.png"
-
   - name: "Phantom 3-class quad"
     category: "drones"
     file: "drones/phantom3_class.model.yaml"
@@ -220,3 +215,8 @@ entries:
     category: "batteries"
     file: "parts/comp_4s.battery.yaml"
     thumbnail: "thumbnails/comp_4s.png"
+
+  - name: "Reference quad (test fixture)"
+    category: "test fixtures"
+    file: "drones/reference_quad.model.yaml"
+    thumbnail: "thumbnails/reference_quad.png"

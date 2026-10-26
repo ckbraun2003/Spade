@@ -360,7 +360,7 @@ namespace {
 [[nodiscard]] std::string place_reference_quad(ed::EditorWorkspace& w, float x, float z) {
     w.refresh_panels();
     for (std::size_t i = 0; i < w.panels().library.size(); ++i) {
-        if (w.panels().library[i].name == "Reference quad") w.panels().armed = i;
+        if (w.panels().library[i].name == "Reference quad (test fixture)") w.panels().armed = i;
     }
     EXPECT_TRUE(w.panels().armed.has_value());
     w.click(glm::vec3(x, 5.0f, z), kDown);
