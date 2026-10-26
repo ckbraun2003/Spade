@@ -576,12 +576,20 @@ class EditorWorkspace {
             case Command::redo: history(redo_, undo_, false); return;
             case Command::save: {
                 const Serials before = serials();
+                if (const Result<void> staged = stage_placed_meshes(); !staged) {
+                    panels_.status = staged.error().context;
+                    return;
+                }
                 const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
                 save_into(before, save_scene(docs_.scene, docs_.world, meshes));
                 return;
             }
             case Command::save_as: {
                 const Serials before = serials();
+                if (const Result<void> staged = stage_placed_meshes(); !staged) {
+                    panels_.status = staged.error().context;
+                    return;
+                }
                 const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
                 save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, meshes));
                 list_sources();
@@ -690,6 +698,43 @@ class EditorWorkspace {
             }
         }
         settle(before, applied);
+    }
+
+    // L7b0: a placed drone's mesh parts name imported/<hash>.spmesh
+    // (scene::add_model_with_meshes()), with their meshes in memory, as the
+    // drone's file loaded them. Before Save, each such sidecar that neither
+    // the staging folder nor the scene's folder holds yet is written into the
+    // staging folder from its mesh, so meshes_to_copy() carries it. One that
+    // can't be written saves nothing: the status says why.
+    [[nodiscard]] Result<void> stage_placed_meshes() {
+        namespace fs = std::filesystem;
+        for (const vehicles::ModelType& m : docs_.scene.desc().models) {
+            for (const vehicles::PartDesc& p : m.parts) {
+                if (!p.mesh || p.mesh_file != scene::placed_mesh_file(*p.mesh)) continue;
+                const fs::path file(std::u8string(p.mesh_file.begin(), p.mesh_file.end()));
+                bool held = false;
+                for (const fs::path& root : {staging_.path(), docs_.scene.path.parent_path()}) {
+                    std::error_code ec;
+                    held = held || (!root.empty() && fs::exists(root / file, ec));
+                }
+                if (held) continue;
+                const std::string where = "save: model '" + m.name + "' part '" + p.name + "': its mesh ";
+                if (staging_.path().empty()) {
+                    return std::unexpected(Error{Code::unavailable, where + "can't be staged: " + staging_.why_not() +
+                                                                        "; the scene was not saved"});
+                }
+                const fs::path to = staging_.path() / file;
+                std::error_code ec;
+                fs::create_directories(to.parent_path(), ec);
+                if (Result<void> saved = save_mesh_file(to, *p.mesh); !saved) {
+                    return std::unexpected(Error{saved.error().code, where + "could not be written to " +
+                                                                         path_text(to) + ": " +
+                                                                         saved.error().context +
+                                                                         "; the scene was not saved"});
+                }
+            }
+        }
+        return {};
     }
 
     // What Save copies beside the scene (copy_fallback_meshes(), all or

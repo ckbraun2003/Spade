@@ -8,11 +8,13 @@
 // vehicle's model never reaches another (the user's Q1, EDT-019).
 //
 // A model or object FILE goes in through Core's one function for it (TD-9):
-// scene::add_model(), which keeps the model's chain, and scene::add_object(),
-// which adds the object's materials. Core never renames, so the editor makes
-// the names unique first. The edit carries the file's path, the form its text
-// has (EDT-002), and reads the file when it is applied; undo restores the
-// scene, never the file (INT-14).
+// scene::add_model_with_meshes(), which keeps the model's chain and names a
+// mesh part's sidecar under the scene's imported/ (L7b0; the workspace writes
+// it before Save), and scene::add_object(), which adds the object's
+// materials. Core never renames, so the editor makes the names unique first.
+// The edit carries the file's path, the form its text has (EDT-002), and
+// reads the file when it is applied; undo restores the scene, never the file
+// (INT-14).
 //
 // docs/design/interface/plans/2026-10-05-editor-design.md §3-§4;
 // 2026-10-05-editor-plan.md Tasks 2 and 3.
@@ -209,7 +211,9 @@ inline Result<bool> change(scene::SceneDesc& s, const AddModelFile& e) {
     if (!file) return std::unexpected(Error{file.error().code, "add-model-file: " + file.error().context});
     const std::string model = lowest_free(file->model.name.empty() ? "model" : file->model.name,
                                           [&](std::string_view n) { return model_taken(s, n); });
-    if (const Result<void> added = scene::add_model(s, *file, model); !added) return std::unexpected(added.error());
+    if (const Result<void> added = scene::add_model_with_meshes(s, *file, model); !added) {
+        return std::unexpected(added.error());
+    }
     scene::SceneVehicle v = e.vehicle;
     v.name = lowest_free(v.name.empty() ? model : v.name, [&](std::string_view n) { return object_taken(s, n); });
     v.model = model;

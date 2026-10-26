@@ -1,5 +1,6 @@
 #include "scene/model_file.hpp"
 
+#include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -222,24 +223,13 @@ Result<ModelFile> load_model_file(const std::filesystem::path& path) {
     return file;
 }
 
-Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name) {
-    if (Result<void> r = validate_model_file(file); !r) {
-        return r;
-    }
+namespace {
 
-    // NO MESH PARTS (N3, the lead's ruling): a mesh part's mesh_file names its
-    // sidecar relative to the MODEL file, and a scene reads it relative to the
-    // SCENE file, so placing one would need its sidecars copied beside the
-    // scene, which nothing does yet.
-    for (const vehicles::PartDesc& p : file.model.parts) {
-        if (p.mesh) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         "add_model: model '" + file.model.name +
-                                             "' has mesh parts; their sidecars would need copying beside the "
-                                             "scene, which is not yet supported"});
-        }
-    }
-
+// add_model()'s registration, once the file is valid: the name, then the
+// copy, validate_scene() on it, assigned only on success. `placed` is the
+// model as it goes in.
+[[nodiscard]] Result<void> register_model(SceneDesc& scene, vehicles::ModelType placed,
+                                          std::string_view model_name) {
     // The name, by name: a model's name is unique within the scene's models
     // (SCN-004), its own namespace. Never renamed: the editor makes names
     // unique.
@@ -255,7 +245,6 @@ Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view
     // ALL OR NOTHING: the change is made on a copy. The model is copied whole,
     // so its chain (model.propulsion) comes with it.
     SceneDesc next = scene;
-    vehicles::ModelType placed = file.model;
     placed.name = std::string(model_name);
     next.models.push_back(std::move(placed));
 
@@ -267,10 +256,48 @@ Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view
     return {};
 }
 
-std::string placed_mesh_file(const TriangleMesh&) { return {}; }
+}  // namespace
 
-Result<void> add_model_with_meshes(SceneDesc&, const ModelFile&, std::string_view) {
-    return std::unexpected(Error{Code::internal, "add_model_with_meshes: not built yet (L7b0's RED)"});
+Result<void> add_model(SceneDesc& scene, const ModelFile& file, std::string_view model_name) {
+    if (Result<void> r = validate_model_file(file); !r) {
+        return r;
+    }
+
+    // NO MESH PARTS (N3, the lead's ruling): a mesh part's mesh_file names its
+    // sidecar relative to the MODEL file, and a scene reads it relative to the
+    // SCENE file, so placing one needs its sidecars carried beside the scene:
+    // add_model_with_meshes() names them for that.
+    for (const vehicles::PartDesc& p : file.model.parts) {
+        if (p.mesh) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "add_model: model '" + file.model.name +
+                                             "' has mesh parts; their sidecars would need copying beside the "
+                                             "scene, which is not yet supported"});
+        }
+    }
+    return register_model(scene, file.model, model_name);
+}
+
+std::string placed_mesh_file(const TriangleMesh& mesh) {
+    static constexpr char kHex[] = "0123456789abcdef";
+    const uint64_t h = mesh.content_hash();
+    std::string out = "imported/";
+    for (int shift = 60; shift >= 0; shift -= 4) out += kHex[(h >> shift) & 0xFu];
+    out += ".spmesh";
+    return out;
+}
+
+Result<void> add_model_with_meshes(SceneDesc& scene, const ModelFile& file, std::string_view model_name) {
+    if (Result<void> r = validate_model_file(file); !r) {
+        return r;
+    }
+    // Each mesh part's sidecar, re-pointed from the model file's folder to
+    // the scene's imported/, named by its mesh (placed_mesh_file()).
+    vehicles::ModelType placed = file.model;
+    for (vehicles::PartDesc& p : placed.parts) {
+        if (p.mesh) p.mesh_file = placed_mesh_file(*p.mesh);
+    }
+    return register_model(scene, std::move(placed), model_name);
 }
 
 }  // namespace spade::scene

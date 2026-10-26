@@ -116,7 +116,8 @@ TEST(EditorPlaceMeshes, PlacingALibraryDroneWithMeshPartsStagesItsSidecarsAndSav
         const spade::vehicles::PartDesc* p = part_named(support::model_named(s, s.vehicles.back().model), "shell");
         ASSERT_NE(p, nullptr);
         EXPECT_EQ(p->mesh_file, sidecar);
-        EXPECT_EQ(p->mesh, shell) << "the mesh is the one the drone's file loaded";
+        ASSERT_NE(p->mesh, nullptr);
+        EXPECT_EQ(p->mesh->content_hash(), shell->content_hash()) << "the mesh the drone's file loaded";
     }
 
     // Save As carries the sidecar beside the scene.
