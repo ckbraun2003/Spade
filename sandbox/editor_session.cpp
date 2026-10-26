@@ -71,7 +71,7 @@ void EditorSession::attach(GlTargetSink& sink) {
 EditorSession::~EditorSession() {
     if (sink_ != nullptr) {
         sink_->attach_editor(nullptr);
-        sink_->set_gap_line({});
+        sink_->set_status_line({});
         sink_->set_view_lines({});
     }
 }
@@ -352,7 +352,7 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
                                                        shown)
                                  : std::vector<editor::GizmoLine>{});
     // SL10: the HUD names what the active path does not draw.
-    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
+    sink_->set_status_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
     if (gpu_) {
         for (const std::string_view name : GpuRenderer::unhonoured(options_)) {
             if (!last_view_.unhonoured.empty()) last_view_.unhonoured += ", ";

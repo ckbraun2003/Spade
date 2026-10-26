@@ -3,7 +3,7 @@ prop:
   diameter: 0.2438
   pitch: 0.1143
   blades: 2
-  inertia: 0
+  inertia: 5.943843999999999e-05
   ct_static: 0.09818103975535168
   cq_static: 0.006128876774894137
   ct_table:
@@ -45,7 +45,7 @@ sources:
   diameter: {source: "nasa_ames_2016", grade: measured, note: "9.6 in"}
   pitch: {source: "retail_iris_plus", grade: retailer, note: "4.5 in, the 9.5 x 4.5 props"}
   blades: {source: "uiuc_propdb", grade: measured}
-  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  inertia: {source: "nasa_ames_2016", grade: derived, note: "m D^2/12 from this file's mass and diameter, each as graded: the engine's own estimate (prop_inertia)"}
   ct_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 9x4.5's coefficients as UIUC measured them, applied at 9.6 in (NASA's rotor); the static point reads about 10% above the run's lowest-J points (UIUC's tunnel at its slowest); hover reads the static point (Physics, 2026-10-22)"}
   cq_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 9x4.5's coefficients as UIUC measured them, applied at 9.6 in (NASA's rotor); the static point reads about 10% above the run's lowest-J points (UIUC's tunnel at its slowest); hover reads the static point (Physics, 2026-10-22)"}
   ct_table: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 9x4.5's coefficients as UIUC measured them, applied at 9.6 in (NASA's rotor); the static point reads about 10% above the run's lowest-J points (UIUC's tunnel at its slowest); hover reads the static point (Physics, 2026-10-22)"}

@@ -20,13 +20,16 @@
 // (nx + 1) / 2 * ny * nz.
 //
 // PARITY. The sums are correctly rounded adds and multiplies (-fp-mode
-// precise: no contraction); the division is SPIR-V's OpFDiv, which is not
-// correctly rounded (<= 2.5 ulp), so the sweep is banded against its twin
-// (spec 4.5, TD-14). It sits in smooth_divide() alone.
+// precise: no contraction), and the division is fp32_math's div32_ftz, divss
+// under the CPU step's FTZ|DAZ to the bit, so the sweep is its twin's bit for
+// bit (TD-14 as amended 2026-10-22, the user's "Full bit-exact"); the module
+// is scanned under the exact profile, so no bare OpFDiv can return. It sits
+// in smooth_divide() alone.
 // ---------------------------------------------------------------------------
 
 import bindings;
 import mg_levels;
+import fp32_math;
 
 struct SmoothPush {
     uint level;
@@ -38,7 +41,7 @@ struct SmoothPush {
 [[vk::push_constant]] ConstantBuffer<SmoothPush> smooth_push;
 
 // The smoothing's one division (smooth_one_cell()'s `(sum - b) / diag`).
-float smooth_divide(float numerator, float diag) { return numerator / diag; }
+float smooth_divide(float numerator, float diag) { return div32_ftz(numerator, diag); }
 
 [shader("compute")]
 [numthreads(SPADE_WG, 1, 1)]

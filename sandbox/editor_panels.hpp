@@ -115,12 +115,14 @@ struct EditorPanels {
     std::string status;
 };
 
-// Inspects library item `i` when it is a part (INT-14; the lead's Q1,
-// 2026-10-22, Unity's project panel): the inspector shows it in place of
-// the scene's selection, which clears. A part arms nothing, as before. An
-// object or an index past the library is refused, and nothing changes.
+// Inspects library item `i` when it has grades (has_grades(): a part, or a
+// library drone with its L5 sidecar; INT-14, the lead's Q1, 2026-10-22,
+// Unity's project panel): the inspector shows it in place of the scene's
+// selection, which clears. Arming is left as it is: a part arms nothing, a
+// drone's tile arms it as well. An object, a drone without a sidecar or an
+// index past the library is refused, and nothing changes.
 inline bool inspect_item(EditorPanels& p, std::size_t i) {
-    if (i >= p.library.size() || p.library[i].kind != LibraryItem::Kind::part) return false;
+    if (i >= p.library.size() || !has_grades(p.library[i])) return false;
     p.inspected = i;
     p.selection = Selection{};
     return true;

@@ -33,14 +33,15 @@
 // traces are one function: x + (s h/2) v is x - (h/2) v to the bit for
 // s = -1, since negation is exact. lo and hi are std::min's and std::max's
 // comparisons, not min() and max(), which differ on NaN and signed zero. The
-// periodic wrap's f / n is a division, which SPIR-V does not round
-// correctly, so like every kernel here this is banded against its twin, not
-// bit-equal.
+// periodic wrap's f / n is fp32_math's div32_ftz, divss under the CPU step's
+// FTZ|DAZ to the bit, so the kernel is advect.cpp's bit for bit (TD-14 as
+// amended 2026-10-22), and the module is scanned under the exact profile.
 // ---------------------------------------------------------------------------
 
 import layouts;
 import bindings;
 import airflow_params_layout;
+import fp32_math;
 
 struct AdvectionPush {
     uint component;   // 0 u, 1 v, 2 w
@@ -90,7 +91,7 @@ Axis locate(float f, uint n, uint count, bool periodic) {
     if (periodic) {
         if (n == 1u) return axis(0u, 0u, 0.0);
         const float nf = float(n);
-        float w = f - nf * floor(f / nf);
+        float w = f - nf * floor(div32_ftz(f, nf));
         if (!(w >= 0.0) || !(w < nf)) w = 0.0;  // NaN, or rounding onto the period's end
         const uint i0 = uint(w);
         return axis(i0, i0 + 1u == n ? 0u : i0 + 1u, w - float(i0));

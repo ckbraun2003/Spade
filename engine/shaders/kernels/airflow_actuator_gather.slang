@@ -23,15 +23,18 @@
 //   [8] swirl_scale   [9] swirl (1 or 0)   [10-15] unused
 //   [16-159] the 48 points' xyz   [160-303] the 48 tangents-over-radius' xyz
 //
-// PARITY. -fp-mode precise keeps the arithmetic uncontracted, and every
-// value but peskin4's square root comes from the host or is a correctly
-// rounded add, subtract or multiply; SPIR-V's sqrt is not correctly rounded,
-// so the gather is banded against its twin.
+// PARITY. -fp-mode precise keeps the arithmetic uncontracted, every value
+// comes from the host or is a correctly rounded add, subtract or multiply,
+// and peskin4's square roots are fp32_math's sqrt32_ftz, sqrtss under the
+// CPU's FTZ|DAZ to the bit: the gather is spread_actuator()'s bit for bit
+// (TD-14 as amended 2026-10-22), and the module is scanned under the exact
+// profile, so no bare sqrt can return.
 // ---------------------------------------------------------------------------
 
 import layouts;
 import bindings;
 import airflow_params_layout;
+import fp32_math;
 
 struct GatherPush {
     uint component;   // 0 u, 1 v, 2 w
@@ -80,8 +83,8 @@ float3 face_point(uint c, uint index) {
 // Peskin's 4-point kernel, in cells (actuator.cpp's peskin4).
 float peskin4(float r) {
     const float a = r < 0.0 ? -r : r;
-    if (a < 1.0) return 0.125 * (3.0 - 2.0 * a + sqrt(1.0 + 4.0 * a - 4.0 * a * a));
-    if (a < 2.0) return 0.125 * (5.0 - 2.0 * a - sqrt(-7.0 + 12.0 * a - 4.0 * a * a));
+    if (a < 1.0) return 0.125 * (3.0 - 2.0 * a + sqrt32_ftz(1.0 + 4.0 * a - 4.0 * a * a));
+    if (a < 2.0) return 0.125 * (5.0 - 2.0 * a - sqrt32_ftz(-7.0 + 12.0 * a - 4.0 * a * a));
     return 0.0;
 }
 

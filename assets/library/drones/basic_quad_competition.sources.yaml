@@ -10,7 +10,7 @@ model_sources_version: 1
 model: {file: "drones/basic_quad_competition.model.yaml", hash: "ca6d46a6b9bd135b"}
 built_by: "vehicles::basic_quad_airframe(), then Kat's drag as drag[0]"
 parts:
-  prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "3d7e3e9b47dbf58e"}
+  prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
   motor: {file: "parts/comp_2207_2450kv.motor.yaml", hash: "b74aef8574ca83e7"}
   esc: {file: "parts/comp_4in1_45a.esc.yaml", hash: "4e628a989f2cf9c2"}
   battery: {file: "parts/comp_4s.battery.yaml", hash: "491ae5e93785de58"}

@@ -387,6 +387,16 @@ TEST(ModelSources, UnknownMissingAndDuplicateKeysAreRefusedWithTheirLineAndColum
          "unknown key 'frame' in parts" + schema, 14, 3},
         {"a part kind twice", with(base, "  motor: {", "  prop: {file: \"x\", hash: \"0000000000000000\"}\n  motor: {"),
          "duplicate key 'prop' in parts", 14, 3},
+        // Out of the writer's order: refused, never silently reordered, so a
+        // file read and written back is the file read (the lead, 2026-10-22).
+        {"the parts out of the writer's order",
+         with(base,
+              "  prop: {file: \"parts/p6.prop.yaml\", hash: \"00000000000000ff\"}\n"
+              "  motor: {file: \"parts/m2306.motor.yaml\", hash: \"fedcba9876543210\"}\n",
+              "  motor: {file: \"parts/m2306.motor.yaml\", hash: \"fedcba9876543210\"}\n"
+              "  prop: {file: \"parts/p6.prop.yaml\", hash: \"00000000000000ff\"}\n"),
+         "parts lists the prop after the motor: the order is prop, motor, esc, battery, each kind at most once", 14,
+         3},
         // The inputs (16 mass to 21 kappa).
         {"an unknown input key", with(base, "grade: measured}", "grade: measured, maker: \"x\"}"),
          "unknown key 'maker' in inputs.rotors[0].hub.position" + schema, 19, 0},

@@ -548,3 +548,21 @@ TEST(EditorWorkspace, ASelectionEndsAPartsInspection) {
     EXPECT_FALSE(w->panels().inspected.has_value());
     EXPECT_EQ(w->panels().selection.kind, ed::Selection::Kind::scene);
 }
+
+// A library drone with its sidecar (L5) is inspected as a part is, the
+// inspection kept while nothing is selected and ended by a selection.
+TEST(EditorWorkspace, ASelectionEndsADronesInspection) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    std::optional<std::size_t> drone;
+    for (std::size_t i = 0; i < w->panels().library.size() && !drone; ++i) {
+        if (w->panels().library[i].sources) drone = i;
+    }
+    ASSERT_TRUE(drone.has_value()) << "the default library's drones have sidecars (L5)";
+    ASSERT_TRUE(ed::inspect_item(w->panels(), *drone));
+    w->apply_panels();
+    EXPECT_EQ(w->panels().inspected, drone);
+    w->panels().selection = ed::Selection{ed::Selection::Kind::scene, ""};
+    w->apply_panels();
+    EXPECT_FALSE(w->panels().inspected.has_value());
+}

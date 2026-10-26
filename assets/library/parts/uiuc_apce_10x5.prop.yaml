@@ -3,7 +3,7 @@ prop:
   diameter: 0.2388
   pitch: 0.127
   blades: 2
-  inertia: 0
+  inertia: 6.177756e-05
   ct_static: 0.09635567375886525
   cq_static: 0.005869995503936827
   ct_table:
@@ -43,7 +43,7 @@ sources:
   diameter: {source: "nasa_ames_2016", grade: measured, note: "9.4 in"}
   pitch: {source: "retail_phantom3_parts", grade: retailer, note: "5.0 in, as UIUC's 10x5; the 9450's listings give 4.5 or 5.0 in"}
   blades: {source: "uiuc_propdb", grade: measured}
-  inertia: {grade: assumed, note: "0: the engine estimates m D^2/12"}
+  inertia: {source: "nasa_ames_2016", grade: derived, note: "m D^2/12 from this file's mass and diameter, each as graded: the engine's own estimate (prop_inertia)"}
   ct_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
   cq_static: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
   ct_table: {source: "uiuc_propdb", grade: derived, note: "derived: the APC Thin Electric 10x5's coefficients as UIUC measured them, applied at 9.4 in (NASA's rotor), citing NASA p.15's agreement"}
