@@ -7,16 +7,19 @@
 // scene's imported/ folder by its mesh. Before Save, the workspace writes each
 // of those sidecars that no folder holds yet into its staging folder, from
 // the mesh in memory, so Save As carries them beside the scene (N15's copy)
-// and the saved scene opens with them.
+// and the saved scene opens with them. The command line's --save writes them
+// beside its target, through the same function (scene::write_placed_meshes()).
 
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include <glm/glm.hpp>
 
+#include "../sandbox/editor_cli.hpp"
 #include "../sandbox/editor_workspace.hpp"
 #include "core/path_text.hpp"
 #include "editor_test_support.hpp"
@@ -132,6 +135,43 @@ TEST(EditorPlaceMeshes, PlacingALibraryDroneWithMeshPartsStagesItsSidecarsAndSav
     EXPECT_TRUE(carried.has_value()) << (carried ? "" : carried.error().context);
 
     // The saved scene opens with the drone's mesh.
+    const spade::Result<ed::OpenedScene> reopened = ed::open_scene(mine);
+    ASSERT_TRUE(reopened.has_value()) << reopened.error().context;
+    const spade::scene::SceneDesc& back = reopened->scene.desc();
+    const spade::vehicles::PartDesc* p = part_named(support::model_named(back, back.vehicles.back().model), "shell");
+    ASSERT_NE(p, nullptr);
+    ASSERT_NE(p->mesh, nullptr);
+    EXPECT_EQ(p->mesh->content_hash(), shell->content_hash());
+}
+
+TEST(EditorPlaceMeshes, TheCommandLinesSaveWritesAPlacedDronesSidecarsBesideTheScene) {
+    support::TempDir t;
+    const MeshPtr shell = cube(0.08);
+    ASSERT_NE(shell, nullptr);
+    const fs::path drone = write_meshed_drone(t.path() / "drone", shell);
+    ASSERT_FALSE(drone.empty());
+    const fs::path copy = support::mirror({fs::path(SPADE_ASSETS_DIR), support::hover_scene()}, t.path());
+    const spade::Result<spade::scene::SceneDesc> base = spade::scene::load_scene_file(copy);
+    ASSERT_TRUE(base.has_value()) << base.error().context;
+    ASSERT_FALSE(base->vehicles.empty());
+
+    // --apply's add-model-file places it; --save writes the scene elsewhere.
+    spade::scene::SceneVehicle placed{"meshed drone", "", base->vehicles.front().start};
+    placed.start.pos.x += 2.0f;
+    const spade::Result<std::string> line = ed::format_edit(ed::AddModelFile{drone.generic_string(), placed});
+    ASSERT_TRUE(line.has_value()) << line.error().context;
+    const fs::path edits = t.path() / "edits.txt";
+    support::write_bytes(edits, *line + "\n");
+    const fs::path mine = t.path() / "out" / "mine.scene.yaml";
+    fs::create_directories(mine.parent_path());
+    std::ostringstream out;
+    std::ostringstream err;
+    const int code = ed::edit_cli({copy.string(), "--apply", edits.string(), "--save", mine.string()}, out, err);
+    ASSERT_EQ(code, 0) << err.str();
+
+    // The sidecar is beside the scene, and the scene opens with the mesh.
+    const fs::path beside = mine.parent_path() / fs::path(spade::scene::placed_mesh_file(*shell));
+    ASSERT_TRUE(fs::exists(beside)) << spade::path_text(beside);
     const spade::Result<ed::OpenedScene> reopened = ed::open_scene(mine);
     ASSERT_TRUE(reopened.has_value()) << reopened.error().context;
     const spade::scene::SceneDesc& back = reopened->scene.desc();
