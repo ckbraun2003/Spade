@@ -30,6 +30,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -39,12 +40,17 @@
 #include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "core/error.hpp"
 #include "core/path_text.hpp"
 #include "reference_airframe.hpp"
+#include "scene/library.hpp"
+#include "scene/library_sources.hpp"
 #include "scene/model_file.hpp"
+#include "scene/model_sources.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_type.hpp"
@@ -280,4 +286,124 @@ TEST(LibraryQuad, TheFilesChainAtTheHoverDutyHoversTheFilesRotors) {
     }
     const double weight = static_cast<double>(m.body.mass) * spec.gravity;
     EXPECT_NEAR(total, weight, 1e-6 * weight);
+}
+
+// ---------------------------------------------------------------------------
+// L6 (the drone library plan, 2026-10-21; the lead's grant, 2026-10-26): THE
+// REFERENCE QUAD IS LABELLED PLAINLY AS A TEST FIXTURE. Its index entry is
+// "Reference quad (test fixture)", in Interface's `test fixtures` category
+// (INT-14), and last in the index, since that category comes last in
+// Interface's order. A sources sidecar beside it says that its prop tables
+// are a synthetic linear ramp, graded assumed, and that the drone is a
+// fixture. Its model file does not move by a byte:
+// TheCommittedFileIsTheGeneratorsText above still holds it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+namespace sc = spade::scene;
+
+#define EXPECT_OK(expr) EXPECT_PRED_FORMAT1(IsOk, expr)
+
+[[nodiscard]] fs::path library_dir() { return fs::path(SPADE_ASSETS_DIR) / "library"; }
+
+constexpr std::string_view kQuadFile = "drones/reference_quad.model.yaml";
+constexpr std::string_view kQuadSources = "drones/reference_quad.sources.yaml";
+constexpr std::string_view kFixtureName = "Reference quad (test fixture)";
+constexpr std::string_view kFixtureCategory = "test fixtures";
+
+// The sidecar's text, pinning the committed model file's bytes: the fixture's
+// two prop tables, each a vector input [J0, C0, J1, C1], graded assumed.
+[[nodiscard]] spade::Result<std::string> generated_quad_sources(const std::string& model_bytes) {
+    const spade::vehicles::AirframeSpec spec = spade::vehicles::fixtures::reference_quad();
+    const auto flat = [](const std::vector<std::array<double, 2>>& table) {
+        std::vector<double> out;
+        for (const std::array<double, 2>& row : table) {
+            out.push_back(row[0]);
+            out.push_back(row[1]);
+        }
+        return out;
+    };
+    sc::ModelSources s;
+    s.model = sc::PinnedFile{std::string(kQuadFile), sc::pinned_file_hash(model_bytes)};
+    s.built_by = "vehicles::fixtures::reference_quad() (tests/reference_airframe.hpp)";
+    const std::string ramp =
+        "a synthetic linear ramp over J 0 to 0.8, not a measured propeller (tests/reference_airframe.hpp:60-61)";
+    s.inputs.push_back(sc::ModelInput{"prop.ct_table", flat(spec.prop.ct_table),
+                                      sc::SourceRef{"", sc::Grade::assumed, "C_T 0.12 to 0.04: " + ramp},
+                                      std::nullopt});
+    s.inputs.push_back(sc::ModelInput{"prop.cq_table", flat(spec.prop.cq_table),
+                                      sc::SourceRef{"", sc::Grade::assumed, "C_Q 0.008 to 0.004: " + ramp},
+                                      std::nullopt});
+    s.caveat = "a test fixture, not a drone of any make: the engine's tests build it (tests/reference_airframe.hpp), "
+               "and its numbers are chosen to exercise the compile, not measured";
+    return sc::model_sources_to_yaml(s);
+}
+
+}  // namespace
+
+// The sidecar is the generator's text; with SPADE_LIBRARY_WRITE set, the same
+// test writes it into the source tree instead, and passes, saying so.
+TEST(LibraryQuad, TheCommittedSidecarIsTheGeneratorsText) {
+    std::string model;
+    ASSERT_TRUE(read_bytes(library_quad_path(), model)) << spade::path_text(library_quad_path());
+    const spade::Result<std::string> text = generated_quad_sources(model);
+    ASSERT_OK(text);
+    const fs::path path = library_dir() / fs::path(kQuadSources);
+
+    if (library_write_asked()) {
+        {
+            std::ofstream out(path, std::ios::binary | std::ios::trunc);
+            out.write(text->data(), static_cast<std::streamsize>(text->size()));
+            out.close();
+            ASSERT_TRUE(out) << "SPADE_LIBRARY_WRITE: could not write " << spade::path_text(path);
+        }
+        std::string written;
+        ASSERT_TRUE(read_bytes(path, written)) << spade::path_text(path);
+        ASSERT_TRUE(written == *text) << "SPADE_LIBRARY_WRITE: " << spade::path_text(path)
+                                      << " does not read back as written";
+        RecordProperty("written", spade::path_text(path));
+        SUCCEED() << "wrote " << spade::path_text(path);
+        return;
+    }
+
+    std::string committed;
+    ASSERT_TRUE(read_bytes(path, committed))
+        << spade::path_text(path) << " is missing. Generate it: set SPADE_LIBRARY_WRITE=1 and run ctest -R "
+        << "LibraryQuad.TheCommittedSidecarIsTheGeneratorsText.";
+    EXPECT_TRUE(committed == *text) << spade::path_text(path) << " is not the generator's text; never edit it by hand";
+}
+
+// The index labels it a fixture, last, under its own category; the sidecar
+// loads and checks against the index and its registry, and says so too.
+TEST(LibraryQuad, TheReferenceQuadIsLabelledAFixture) {
+    std::string index;
+    ASSERT_TRUE(read_bytes(library_dir() / "library.yaml", index));
+    spade::Result<sc::Library> library = sc::library_from_yaml(index);
+    ASSERT_OK(library);
+    library->dir = library_dir();
+    ASSERT_FALSE(library->entries.empty());
+
+    const sc::LibraryEntry& last = library->entries.back();
+    EXPECT_EQ(last.file, kQuadFile) << "the fixture's entry is the index's last";
+    EXPECT_EQ(last.name, kFixtureName);
+    EXPECT_EQ(last.category, kFixtureCategory);
+    EXPECT_EQ(last.thumbnail, "thumbnails/reference_quad.png");
+    for (std::size_t i = 0; i + 1 < library->entries.size(); ++i) {
+        EXPECT_NE(library->entries[i].category, kFixtureCategory) << library->entries[i].name;
+        EXPECT_NE(library->entries[i].file, kQuadFile) << "one entry for the fixture";
+    }
+
+    const spade::Result<sc::ModelSources> sources = sc::load_model_sources(library_dir() / fs::path(kQuadSources));
+    ASSERT_OK(sources);
+    const spade::Result<sc::SourceRegistry> registry = sc::load_library_sources(*library);
+    ASSERT_OK(registry);
+    EXPECT_OK(sc::check_model_sources(*library, *registry, *sources));
+    EXPECT_TRUE(sources->parts.empty()) << "a fixture built in code, from no part file";
+    EXPECT_NE(sources->caveat.find("test fixture"), std::string::npos) << sources->caveat;
+    ASSERT_EQ(sources->inputs.size(), 2u);
+    for (const sc::ModelInput& in : sources->inputs) {
+        EXPECT_EQ(sc::grade_name(in.ref.grade), "assumed") << in.path;
+        EXPECT_NE(in.ref.note.find("synthetic linear ramp"), std::string::npos) << in.path << ": " << in.ref.note;
+    }
 }
