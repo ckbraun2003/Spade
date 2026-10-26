@@ -117,15 +117,19 @@ struct AirDrone {
     if (!m->rotors.empty() && !m->propulsion) {
         return refused("its drone's model '" + m->name + "' has no propulsion chain, so its rotors can't turn");
     }
+    // The case is the flown model's (air_model(): parts out of the air), pinned
+    // and resolved as LiveRun::start() will take it.
+    const Result<vehicles::ModelType> flown = air_model(s, region);
+    if (!flown) return std::unexpected(flown.error());
     analysis::AnalysisCase c;
-    c.model = analysis::pin_model(v->model, *m);
+    c.model = analysis::pin_model(v->model, *flown);
     c.power = analysis::Power{.idle = kAirIdleDuty, .state_of_charge = kAirStateOfCharge};
     c.fluid = analysis::Fluid{.density = region.density, .kinematic_viscosity = region.kinematic_viscosity};
-    c.rotors.assign(m->rotors.size(), analysis::RotorSetup{});
+    c.rotors.assign(flown->rotors.size(), analysis::RotorSetup{});
     c.grid.box = static_cast<float>(g.nx) * g.dx;
     c.grid.spacing = g.dx;
     c.time.step = kAirStepS;
-    auto resolved = analysis::resolve(c, *m);
+    auto resolved = analysis::resolve(c, *flown);
     if (!resolved) {
         const analysis::CaseIssue& first = resolved.error().front();
         return refused(first.field + ": " + first.message);
