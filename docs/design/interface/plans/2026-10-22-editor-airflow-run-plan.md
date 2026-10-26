@@ -1,6 +1,6 @@
 # The editor's airflow run: M2, held first (N18) — plan
 
-**Owner:** Interface. **Status:** PLAN for the lead's review, 2026-10-22. Nothing is built.
+**Owner:** Interface. **Status:** **APPROVED by the lead, 2026-10-26**, D1-D4 as recommended (INT-15); P-1 is Physics' to confirm. M0 next. Written 2026-10-22.
 **Asked by:** the lead, 2026-10-22: "an airflow run in the editor. Run the selected drone with LiveRun's airflow (parts as solids, the status line from LiveSolids, the flow view and its render modes in the viewport). This is the step that puts the CFD into the Unity-like editor."
 **Rests on:**
 - the editor's end-goal design (`2026-10-19-editor-end-goal-design.md`, approved): §4's regions, M2 ("one `follow` region around one placed drone ... the editor's first airflow runs with the drone held: the drone box, live in the editor"), and §6's `editor.airflow` row with its physical predicate;
