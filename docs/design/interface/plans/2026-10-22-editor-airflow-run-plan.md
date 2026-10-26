@@ -56,7 +56,7 @@ So the run puts every part that passes 2 dx into the air as a solid, and draws t
 | dx | R/3 rounded down to the millimetre, so R/dx ≥ 3 | The tour's live R/dx (3.05). Per drone: the 6-inch quads and the reference quad 25 mm (box 0.8 m); fpv_5inch 21 mm (0.67 m); phantom3_class 39 mm (1.25 m); iris_plus_class 40 mm (1.28 m); crazyflie_class 7 mm (0.22 m). Each drone fits its box with room for the wake below. |
 | Step h | 1 ms, unless Physics' rule (P-2) asks for less | It is airflow_live's step. At the Crazyflie's 7 mm cells, its far wake (about 8 m/s, twice the hover's induced speed) moves 1.1 cells a step, which is why P-2 asks for the rule. |
 | Power | idle duty 0.05, state of charge 1.0 | airflow_live's, until the chain pin (INT-11). |
-| Fluid | the region's density and viscosity (1.225 kg/m³, inviscid) | scene v5's defaults. |
+| Fluid | the region's density and viscosity; a new region gets `analysis::Fluid`'s air (1.225 kg/m³, 1.4607e-5 m²/s) | The tour's live run flies it. Scene v5's inviscid 0 is refused by `analysis::resolve()` ("must be above 0"), so a region with 0 shows that refusal (T1, 2026-10-26). |
 
 **Budget: measure first (M0).** Nothing has measured LiveRun's cost per step at 32³ on this box.
 - **Estimates only:** the storyboard scaled 64³ to about 33 ms per step, and the airflow design guessed 10 to 40 ms.
