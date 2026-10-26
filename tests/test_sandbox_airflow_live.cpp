@@ -21,6 +21,8 @@
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/publish.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/target.hpp"
 #include "render_parts/render_parts.hpp"
@@ -367,7 +369,9 @@ TEST(SandboxAirflowLive, ItsStatusLineIsThePressureInTheWarningToneThenTheGap) {
 // body (4 cells across, so the solids' CG runs). Each run warms for one
 // frame, then times 3 frames whole (a frame is 1/30 s of whole steps, then
 // the volume's publish, as the editor's frames will be), then 60 steps one by
-// one; a publish is what a frame costs past its steps.
+// one, with the solids' mean CG iterations and their capped and stalled
+// steps. The publish is then timed on its own, on a grid of the same case
+// (Physics' checks, P-3: a frame less its steps is too noisy to read it by).
 TEST(SandboxAirflowLive, M0TimesLiveRunAt32Cubed) {
     if (!env_gate_is_set("SPADE_LIVE_BENCH")) GTEST_SKIP() << "set SPADE_LIVE_BENCH=1 to time LiveRun at 32^3 (M0)";
     const spade::Result<af::LiveQuad> q = af::live_quad(library_quad());
@@ -397,18 +401,52 @@ TEST(SandboxAirflowLive, M0TimesLiveRunAt32Cubed) {
         constexpr int kSteps = 60;
         double total = 0.0;
         double worst = 0.0;
+        double iterations = 0.0;
         for (int i = 0; i < kSteps; ++i) {
             const clock::time_point t0 = clock::now();
             ASSERT_TRUE(run->step(half).has_value());
             const double t = ms(clock::now() - t0);
             total += t;
             worst = std::max(worst, t);
+            iterations += static_cast<double>(run->solids().pressure_iterations);
         }
         const double step = total / kSteps;
+        // iterations: the CG's per solids step; plan A's are its V-cycles
+        // (fluid_step.hpp's pressure_iterations), not a CG count.
         std::printf("m0-bench: %s; %s; %s; h %.4f s; a step %.2f ms mean, %.2f max of %d; a frame %.1f ms mean, "
-                    "%.1f steps; a publish about %.1f ms\n",
+                    "%.1f steps; CG iterations %.1f mean a step, %llu capped, %llu stalled\n",
                     build, solid ? "a solid body" : "discs only", run->run_label().c_str(), run->step_s(), step, worst,
                     kSteps, frames / kFrames, static_cast<double>(frame_steps) / kFrames,
-                    (frames - step * static_cast<double>(frame_steps)) / kFrames);
+                    solid ? iterations / kSteps : 0.0,
+                    static_cast<unsigned long long>(run->solids().capped_steps),
+                    static_cast<unsigned long long>(run->solids().stalled_steps));
     }
+
+    // The publish on its own: the case's grid, all fluid, a deterministic
+    // velocity pattern, its origin and periodic axes as LiveRun sets them;
+    // one publish to size the volume, then 10 timed.
+    namespace pa = spade::physics::airflow;
+    spade::Result<pa::MacGrid> grid = pa::make_grid(q->resolved.base, q->resolved.domain);
+    ASSERT_TRUE(grid.has_value()) << grid.error().context;
+    for (std::size_t i = 0; i < grid->u.size(); ++i) grid->u[i] = 0.001f * static_cast<float>(i % 97u);
+    for (std::size_t i = 0; i < grid->v.size(); ++i) grid->v[i] = -0.002f * static_cast<float>(i % 89u);
+    for (std::size_t i = 0; i < grid->w.size(); ++i) grid->w[i] = 0.0015f * static_cast<float>(i % 83u);
+    const pa::GridShape& g = q->resolved.base;
+    pa::PublishInput in;
+    in.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
+    in.periodic = pa::periodic_axes(q->resolved.domain);
+    spade::FlowVolume published;
+    ASSERT_TRUE(pa::publish_render_volume(*grid, in, published).has_value());
+    constexpr int kPublishes = 10;
+    double publish_total = 0.0;
+    double publish_worst = 0.0;
+    for (int i = 0; i < kPublishes; ++i) {
+        const clock::time_point t0 = clock::now();
+        ASSERT_TRUE(pa::publish_render_volume(*grid, in, published).has_value());
+        const double t = ms(clock::now() - t0);
+        publish_total += t;
+        publish_worst = std::max(publish_worst, t);
+    }
+    std::printf("m0-bench: %s; a publish at %ux%ux%u, all fluid: %.2f ms mean, %.2f max of %d\n", build, g.nx, g.ny,
+                g.nz, publish_total / kPublishes, publish_worst, kPublishes);
 }
