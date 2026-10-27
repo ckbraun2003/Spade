@@ -14,6 +14,13 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **The library drones wear rigid meshes** (Core, L7b2, merged `fc85801`).
+  - Each drone's body, arms and motor bells are now mesh parts, with sidecars `drones/<stem>/{body,arm,bell}.spmesh`.
+  - `vehicles::wear_look()` puts basic_quad's look on a spec's records.
+  - A mesh drone's drag is `drag[0]`, the frozen L5 estimate.
+  - `world/mesh_shapes`' rounded_box and every ring of 4m chords are now exactly symmetric. So the generator hashes, the 12 prop sidecars (bytes only) and the six drone thumbnails moved.
+  - Mass is unchanged to the bit. Inertia moves by about 1e-3 relative.
+  - The centre of mass moves 9-16 µm on all six drones, and the rotor and IMU mounts move with it.
 - **LiveRun's fluid on a device** (Rendering, Run air on the GPU, slices 1 and 2, merged `479ef6d` and `c2aa0a2`).
   - `LiveRun::start(resolved, model, const LiveFluidMaker& fluid = {})`. The default is the CPU, unchanged and bit for bit. A `LiveFluid` has `step(discs)`, `publish(...)` and `read(MacGrid&)`.
   - `spike/airflow/live_fluid.hpp`: `GpuLiveFluid` and `gpu_live_fluid(ctx, wg)`, plus `start_live_run(resolved, model, ctx*)`, which returns `{run, cpu_because}`. It falls back to the CPU by name when the device refuses.
