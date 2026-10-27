@@ -150,7 +150,10 @@ void append_symmetric_v_cycle(std::vector<compute::ChainCommand>& out, const MgL
 Result<SolidsUpload> solids_upload(const af::FluidScratch& s) {
     Result<MgLayout> layout = mg_layout(s.projection.mg);
     if (!layout) return std::unexpected(layout.error());
-    return SolidsUpload{.field = pack_solid_field(s.solids), .layout = std::move(*layout), .labels = s.regions.label};
+    return SolidsUpload{.field = pack_solid_field(s.solids),
+                        .layout = std::move(*layout),
+                        .labels = s.regions.label,
+                        .regions = pack_region_table(s.regions)};
 }
 
 uint64_t solids_binding_bytes(const SolidsUpload& u, uint32_t binding) noexcept {
@@ -163,14 +166,15 @@ uint64_t solids_binding_bytes(const SolidsUpload& u, uint32_t binding) noexcept 
         case compute::gen::kBinding_airflow_face_tags: return bytes(u.field.face_tags);
         case compute::gen::kBinding_airflow_wall_links: return bytes(u.field.wall_links);
         case compute::gen::kBinding_airflow_region_labels: return bytes(u.labels);
+        case compute::gen::kBinding_airflow_region_table: return bytes(u.regions.words);
         default: return 0u;
     }
 }
 
 Result<void> init_solids(ChainRunner& runner, std::span<uint32_t> params, const SolidsUpload& u, uint32_t pcg_block,
-                         uint32_t closed_regions, uint32_t floor, uint32_t cap) {
+                         uint32_t floor, uint32_t cap) {
     params[kParamsFlags] = (params[kParamsFlags] & ~(kParamsFlagSolids | kParamsFlagTheta)) | solids_flags(u.field);
-    write_pcg_block(params, pcg_block, closed_regions, floor, cap);
+    write_pcg_block(params, pcg_block, u.regions.closed, floor, cap);
     // An empty array is bound as a placeholder and never read: nothing to upload.
     const auto upload = [&](uint32_t binding, const auto& v) -> Result<void> {
         if (v.empty()) return {};
@@ -185,8 +189,7 @@ Result<void> init_solids(ChainRunner& runner, std::span<uint32_t> params, const 
     if (Result<void> ok = upload(gen::kBinding_airflow_face_tags, u.field.face_tags); !ok) return ok;
     if (Result<void> ok = upload(gen::kBinding_airflow_wall_links, u.field.wall_links); !ok) return ok;
     if (Result<void> ok = upload(gen::kBinding_airflow_region_labels, u.labels); !ok) return ok;
-    // B5.3 (the closed regions): the region table's upload, binding 19, goes here.
-    return {};
+    return upload(gen::kBinding_airflow_region_table, u.regions.words);
 }
 
 }  // namespace spade::airflow_gpu
@@ -295,6 +298,167 @@ void append_wall_load(std::vector<compute::ChainCommand>& out, const af::GridSha
         c.groups = {groups_for(threads[pass], workgroup_size), 1u, 1u};
         out.push_back(c);
     }
+}
+
+}  // namespace spade::airflow_gpu
+
+// ===========================================================================
+// B5.4 (Physics, 2026-10-27; appended as a block of its own): the solids CG's
+// five chains and the host loop.
+// ===========================================================================
+
+namespace spade::airflow_gpu {
+
+namespace {
+
+// One grid's CG: each member appends pcg.cpp's ops in its order.
+struct CgChain {
+    const af::GridShape& shape;
+    const MgLayout& layout;
+    const SolvePipelines& p;
+    uint32_t closed;
+    uint32_t workgroup_size;
+
+    [[nodiscard]] uint32_t cells() const noexcept { return cells_of(shape); }
+
+    void update(std::vector<compute::ChainCommand>& out, UpdateOp op) const {
+        out.push_back(projection_dispatch(p.update, {.a = static_cast<uint32_t>(op), .count = cells()},
+                                          workgroup_size));
+    }
+
+    void scalars(std::vector<compute::ChainCommand>& out, ScalarsOp op) const {
+        out.push_back(scalars_dispatch(p.solids, op));
+    }
+
+    // q = A v (apply_operator()).
+    void apply(std::vector<compute::ChainCommand>& out, PcgVector v) const {
+        out.push_back(projection_dispatch(p.apply, {.a = v, .count = cells()}, workgroup_size));
+    }
+
+    void dot(std::vector<compute::ChainCommand>& out, PcgVector a, PcgVector b, uint32_t slot) const {
+        append_tile_dot(out, shape, p.solids, a, b, slot, workgroup_size);
+    }
+
+    // gauge(v): remove_region_means() (projection.cpp's gauge_regions()).
+    void gauge(std::vector<compute::ChainCommand>& out, PcgVector v) const {
+        append_remove_region_means(out, shape, p.region_mean, v, closed, workgroup_size);
+    }
+
+    // precond() (pcg.cpp:39-45): level 0's b <- r and its p <- 0
+    // (precondition()), the symmetric V(2,2), z <- level 0's p masked, gauge(z).
+    void precond(std::vector<compute::ChainCommand>& out) const {
+        update(out, UpdateOp::to_level0);
+        append_symmetric_v_cycle(out, layout, p.precondition, 0u, workgroup_size);
+        update(out, UpdateOp::z_from_level0);
+        gauge(out, kPcgZ);
+    }
+
+    // start() (pcg.cpp:61-69): r = b - A x masked, gauge(r), precond(),
+    // d <- z, rz = r . z.
+    void start(std::vector<compute::ChainCommand>& out) const {
+        apply(out, kPcgX);
+        update(out, UpdateOp::residual);
+        gauge(out, kPcgR);
+        precond(out);
+        update(out, UpdateOp::d_from_z);
+        dot(out, kPcgR, kPcgZ, kSlotRz);
+    }
+};
+
+}  // namespace
+
+SolveChains solve_chains(const af::GridShape& shape, const MgLayout& layout, const SolvePipelines& p,
+                         uint32_t closed, uint32_t workgroup_size) {
+    const CgChain cg{shape, layout, p, closed, workgroup_size};
+    SolveChains c;
+    // setup: the scalars' start (:73-80), x <- p masked (:70), start() (:71).
+    cg.scalars(c.setup, ScalarsOp::start);
+    cg.update(c.setup, UpdateOp::x_from_p);
+    cg.start(c.setup);
+    // iteration (:111-128).
+    cg.apply(c.iteration, kPcgD);
+    cg.dot(c.iteration, kPcgD, kPcgQ, kSlotDq);
+    cg.scalars(c.iteration, ScalarsOp::step);
+    cg.update(c.iteration, UpdateOp::xr);
+    cg.gauge(c.iteration, kPcgR);
+    cg.precond(c.iteration);
+    cg.dot(c.iteration, kPcgR, kPcgZ, kSlotRzNext);
+    cg.scalars(c.iteration, ScalarsOp::next);
+    cg.update(c.iteration, UpdateOp::direction);
+    // measure (:83-109): gauge(x), its subtract behind the gate (a solve
+    // stopped and measured leaves x alone), A x, the max-norm, the decision,
+    // best <- x.
+    if (closed > 0u) {
+        append_region_means(c.measure, shape, p.region_mean, kPcgX, closed, workgroup_size);
+        cg.scalars(c.measure, ScalarsOp::gate);
+        c.measure.push_back(projection_dispatch(
+            p.region_mean, {.a = kPcgX, .b = tile_sum_pass_word(kRegionSubtractPass), .count = cg.cells()},
+            workgroup_size));
+    }
+    cg.apply(c.measure, kPcgX);
+    append_measure(c.measure, shape, p.solids, workgroup_size, af::kReduceBlockTiles);
+    cg.scalars(c.measure, ScalarsOp::decide);
+    cg.update(c.measure, UpdateOp::keep_best);
+    // restart (:108).
+    cg.start(c.restart);
+    // finish (:130-137).
+    cg.scalars(c.finish, ScalarsOp::finish);
+    cg.update(c.finish, UpdateOp::take_best);
+    return c;
+}
+
+uint64_t solve_partials_floats(const af::GridShape& shape, uint32_t closed) noexcept {
+    return std::max<uint64_t>(2ull * tile_sum_tiles(shape), region_partials_floats(shape, closed));
+}
+
+Result<SolveChainIds> record_solve(ChainRunner& runner, const SolveChains& chains) {
+    SolveChainIds ids;
+    const std::pair<const std::vector<compute::ChainCommand>*, uint32_t*> all[] = {
+        {&chains.setup, &ids.setup},     {&chains.iteration, &ids.iteration}, {&chains.measure, &ids.measure},
+        {&chains.restart, &ids.restart}, {&chains.finish, &ids.finish}};
+    for (const auto& [chain, id] : all) {
+        Result<uint32_t> recorded = runner.record(*chain);
+        if (!recorded) return std::unexpected(recorded.error());
+        *id = *recorded;
+    }
+    return ids;
+}
+
+Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor, uint32_t cap) {
+    const uint32_t scalars = compute::gen::kBinding_airflow_scalars;
+    if (Result<void> ok = runner.submit(ids.setup, 1); !ok) return std::unexpected(ok.error());
+    if (Result<void> ok = runner.submit(ids.iteration, floor); !ok) return std::unexpected(ok.error());
+    if (Result<void> ok = runner.submit(ids.measure, 1); !ok) return std::unexpected(ok.error());
+    // The device measures at the floor and after each iteration past it, and
+    // stops at the cap: max(floor, cap) - floor + 1 measures at the most.
+    const uint32_t measures = std::max(floor, cap) - floor + 1u;
+    std::array<float, kSlotDecision + kDecisionSlots> word{};
+    for (uint32_t read = 1;; ++read) {
+        if (Result<void> ok = runner.read(scalars, std::as_writable_bytes(std::span(word))); !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (word[kSlotStop] != 0.0f) break;
+        if (read >= measures) {
+            return std::unexpected(Error{Code::internal, "airflow solids CG: the device did not stop after " +
+                                                             std::to_string(read) + " measures (its cap allows " +
+                                                             std::to_string(measures) + ")"});
+        }
+        if (word[kSlotRestart] != 0.0f) {
+            if (Result<void> ok = runner.submit(ids.restart, 1); !ok) return std::unexpected(ok.error());
+        }
+        if (Result<void> ok = runner.submit(ids.iteration, 1); !ok) return std::unexpected(ok.error());
+        if (Result<void> ok = runner.submit(ids.measure, 1); !ok) return std::unexpected(ok.error());
+    }
+    if (Result<void> ok = runner.submit(ids.finish, 1); !ok) return std::unexpected(ok.error());
+    std::array<float, kScalarSlots> s{};
+    if (Result<void> ok = runner.read(scalars, std::as_writable_bytes(std::span(s))); !ok) {
+        return std::unexpected(ok.error());
+    }
+    return GpuPcgResult{.residual = s[kSlotResidual],
+                        .iterations = static_cast<uint32_t>(s[kSlotIterations]),
+                        .stalled = s[kSlotStalled] != 0.0f,
+                        .residual_at = static_cast<uint32_t>(s[kSlotResidualAt]),
+                        .capped = s[kSlotCapped] != 0.0f};
 }
 
 }  // namespace spade::airflow_gpu
