@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/crazyflie_class.model.yaml", hash: "f49d36e392f1ed99"}
+model: {file: "drones/crazyflie_class.model.yaml", hash: "01068a2fa7d3d61f"}
 built_by: "tests/library_drones.hpp: crazyflie_class(), its remainder by vehicles::fit_remainder()"
 parts:
   prop: {file: "parts/uiuc_cfnq_45t1.prop.yaml", hash: "195515386e096cf4"}
@@ -70,6 +70,9 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.063225, source: "luis_leny_2016", grade: derived, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule"}
+  "meshes.body.edge_radius": {value: 0.0012000000000000001, grade: assumed, note: "a fifth of the body's smallest extent: every edge and corner rounded"}
+  "meshes.bell.chamfer": {value: 0.00035000000000000005, grade: assumed, note: "a tenth of the bell's radius (the motor file's shape)"}
+  "meshes.segments": {value: 4, grade: assumed, note: "steps across a rounded edge, so a tube or a bell is 32 chords around"}
   "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
   "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
   "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
@@ -81,8 +84,11 @@ inputs:
   "mass": {value: 0.029, source: "bitcraze_cf21_datasheet", grade: published, note: "fit_remainder()'s mass target: the Crazyflie 2.1's 29 g"}
   "inertia": {value: [1.395e-05, 2.173e-05, 1.436e-05], source: "luis_leny_2016", grade: measured, note: "fit_remainder()'s inertia target: Luis & Le Ny's (Ixx, Iyy, Izz) = (1.395, 1.436, 2.173)e-5 kg m^2 of a Crazyflie 2.0 (second-hand) as design (x roll, y yaw, z pitch), not scaled by 29/27 (Physics, 2026-10-22)"}
   "parts[5].mass": {value: 0.008000000000000004, source: "bitcraze_cf21_datasheet", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}
-  "parts[5].position": {value: [1.1697121751033268e-18, 0.004819047637283802, 1.2100471044338493e-19], source: "luis_leny_2016", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}
-  "parts[5].tensor": {value: [3.4528508273809514e-06, -9.219694335062837e-25, 1.852884572118782e-22, -9.219694335062837e-25, 1.1595930833333264e-06, -1.464502679416006e-24, 1.852884572118782e-22, -1.464502679416006e-24, 3.5172508273809503e-06], source: "luis_leny_2016", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}
+  "parts[5].position": {value: [1.1697121751033268e-18, 0.004810139071196318, 1.2100471044338493e-19], source: "luis_leny_2016", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}
+  "parts[5].tensor": {value: [3.447779007677534e-06, -9.96996634523393e-25, 1.852884572118782e-22, -9.96996634523393e-25, 1.1454539696740744e-06, -1.4722641140039829e-24, 1.852884572118782e-22, -1.4722641140039829e-24, 3.512179007677533e-06], source: "luis_leny_2016", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}
+  "drag[0].coeffs": {value: [0.0009935583220794797, 0.0017803367227315903, 0.0010450083063915372], source: "luis_leny_2016", grade: derived, note: "the drag the compile estimates from the drone's L5 parts (these rows without the meshes, which the estimate cannot see): one componentwise body, 0.5 rho C_d A per axis, frozen bit for bit (Physics' Q3, 2026-10-26)"}
+  "drag[0].mount.position": {value: [8.470329472543003e-19, 0.004810139071196318, 8.762409531774892e-20], source: "luis_leny_2016", grade: derived, note: "the centre of mass of the drone as it wears its meshes, so the drag adds no torque, as the estimate's"}
+  "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes, the estimate's"}
 not_carried: []
 checks:
   - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 7.15, unit: "g", source: "bitcraze_pwm_thrust", grade: measured, note: "one motor's k_T w^2 / g at 17,174 rpm against a quarter of the whole craft's 28.6 g, the row nearest hover (not the 9,374 rpm row). UIUC measured an isolated prop and Bitcraze weighed the whole craft, so the model reads about +8.8%; the band is not widened (Physics, 2026-10-22)", band: [-0.1, 0.1], report_only: false}
@@ -91,5 +97,5 @@ checks:
   - {test: "CrazyflieMatchesBitcrazesThrustTable", reference: 23882, unit: "rpm", source: "bitcraze_pwm_thrust", grade: measured, note: "full duty at SoC 1: full pack", report_only: true}
 assumptions:
   - "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's induced inflow (Physics, 2026-10-21)"
-  - "drag: none is given, so the compile estimates it from the parts' shapes (best-effort; vehicles/airframe_compile.hpp)"
+  - "drag: given as drag[0], the estimate the compile makes from the drone's L5 parts (the same rows without the meshes, which it cannot see), frozen bit for bit (Physics' Q3, 2026-10-26)"
 caveat: "a Crazyflie 2.0's measured tensor at the 2.1's 29 g, not scaled by 29/27 (Physics, 2026-10-22); the prop is static only, its C_T held over J"

@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -154,9 +155,9 @@ inline constexpr std::string_view kCompSimulator = "fitted to the AI Grand Prix 
 inline constexpr std::string_view kCompKappaCost =
     "current-limited at 40 A on kappa's torque; the table's C_Q would reach the curve";
 
-inline constexpr std::string_view kDragEstimated =
-    "drag: none is given, so the compile estimates it from the parts' shapes (best-effort; "
-    "vehicles/airframe_compile.hpp)";
+inline constexpr std::string_view kDragFrozen =
+    "drag: given as drag[0], the estimate the compile makes from the drone's L5 parts (the same rows without the "
+    "meshes, which it cannot see), frozen bit for bit (Physics' Q3, 2026-10-26)";
 
 // -- Small helpers -------------------------------------------------------------
 
@@ -567,6 +568,89 @@ inline void add_prop_rows(DroneInputs& in, const DroneParts& parts) {
     return {};
 }
 
+// -- The look (L7b2) -----------------------------------------------------------
+
+// The look's rows (THE LOOK, vehicles/basic_quad.hpp), every drone's, each
+// assumed: no source gives an edge radius or a chamfer, so each is a rule on
+// the drone's own sizes, and its row holds the rule's value.
+inline constexpr uint32_t kLookSegments = 4;
+
+inline void add_look_rows(DroneInputs& in, const glm::dvec3& body_size, const DroneParts& parts) {
+    in.add("meshes.body.edge_radius", 0.2 * std::min({body_size.x, body_size.y, body_size.z}),
+           assumed("a fifth of the body's smallest extent: every edge and corner rounded"));
+    in.add("meshes.bell.chamfer", 0.1 * (parts.motor.shape ? parts.motor.shape->size.x : 0.0),
+           assumed("a tenth of the bell's radius (the motor file's shape)"));
+    in.add("meshes.segments", static_cast<double>(kLookSegments),
+           assumed("steps across a rounded edge, so a tube or a bell is 32 chords around"));
+}
+
+[[nodiscard]] inline vehicles::BasicQuadLook read_look(InputReader& r) {
+    vehicles::BasicQuadLook look;
+    look.body_edge_radius = r.number("meshes.body.edge_radius");
+    look.bell_chamfer = r.number("meshes.bell.chamfer");
+    look.segments = static_cast<uint32_t>(r.number("meshes.segments"));
+    return look;
+}
+
+// The look as the table gives it, for a reader of the rows (problem() only).
+[[nodiscard]] inline Result<vehicles::BasicQuadLook> look_params(const DroneInputs& inputs) {
+    InputReader r(inputs);
+    const vehicles::BasicQuadLook look = read_look(r);
+    if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
+    return look;
+}
+
+// -- The frozen drag (L7b2; Physics' Q3, 2026-10-26) ---------------------------
+
+inline constexpr std::string_view kFrozenDrag =
+    "the drag the compile estimates from the drone's L5 parts (these rows without the meshes, which the estimate "
+    "cannot see): one componentwise body, 0.5 rho C_d A per axis, frozen bit for bit (Physics' Q3, 2026-10-26)";
+inline constexpr std::string_view kFrozenAt =
+    "the centre of mass of the drone as it wears its meshes, so the drag adds no torque, as the estimate's";
+
+// The drag a mesh drone gives (the compile refuses a mesh spec without one):
+// the estimate `l5` compiles to, frozen. The estimate is one componentwise
+// body at the centre of mass along the principal axes; with those the design
+// axes (refused otherwise), its coefficients given back at `worn`'s centre of
+// mass compile to the same body bit for bit
+// (TheFrozenDragIsTheAnalyticEstimateBitForBit).
+[[nodiscard]] inline Result<vehicles::DragSpec> frozen_drag(const AirframeSpec& l5, const AirframeSpec& worn) {
+    const Result<vehicles::CompiledAirframe> bare = vehicles::compile_airframe(l5);
+    if (!bare) return std::unexpected(bare.error());
+    const vehicles::ModelType& m = bare->model;
+    if (bare->fit.drag != vehicles::Provenance::estimated || m.drag_bodies.size() != 1 ||
+        m.drag_bodies[0].mode != physics::drag_mode::componentwise || m.drag_bodies[0].local_pos != glm::vec3(0.0f) ||
+        m.design_to_principal != glm::quat(1.0f, 0.0f, 0.0f, 0.0f)) {
+        return std::unexpected(invalid("'" + l5.name + "': its L5 drag is not one estimated componentwise body at "
+                                       "the centre of mass along the design axes, so it cannot be frozen"));
+    }
+    const Result<vehicles::AirframeComposite> at = vehicles::airframe_composite(worn);
+    if (!at) return std::unexpected(at.error());
+    vehicles::DragSpec d;
+    d.mode = physics::drag_mode::componentwise;
+    d.coeffs = glm::dvec3(m.drag_bodies[0].coeffs);
+    d.mount.position = glm::dvec3(at->inertia.center_of_mass);
+    d.mount.orientation = identity_turn();
+    return d;
+}
+
+// The frozen drag's rows: the coefficients cited as `ref` (the drone's
+// layout, as its proxy radius is), the mount at the centre of mass likewise,
+// its turn assumed.
+inline void add_frozen_drag_rows(DroneInputs& in, const vehicles::DragSpec& d, const SourceRef& ref) {
+    in.add("drag[0].coeffs", vec_value(d.coeffs), ref);
+    in.add("drag[0].mount.position", vec_value(d.mount.position),
+           SourceRef{ref.source, ref.grade, std::string(kFrozenAt)});
+    in.add("drag[0].mount.orientation", quat_value(d.mount.orientation), assumed("the body axes, the estimate's"));
+}
+
+// The frozen drag's rows, checked against frozen_drag()'s (TD-9).
+inline void same_frozen_drag(InputReader& r, const vehicles::DragSpec& d) {
+    r.same("drag[0].coeffs", vec_value(d.coeffs));
+    r.same("drag[0].mount.position", vec_value(d.mount.position));
+    r.same("drag[0].mount.orientation", quat_value(d.mount.orientation));
+}
+
 // -- A direct drone ------------------------------------------------------------
 
 // A direct drone's own numbers and their citations (the draft's section 3).
@@ -590,6 +674,7 @@ struct DirectQuad {
     glm::dvec3 battery_at{0.0};
     SourceRef battery_ref{};
     SourceRef proxy_ref{};
+    SourceRef drag_ref{};  // the frozen drag's: as the layout cites (L7b2)
 };
 
 [[nodiscard]] inline double arm_length(const DirectQuad& q) {
@@ -642,6 +727,7 @@ inline void add_direct_rows(DroneInputs& in, const DirectQuad& q, const DronePar
         in.add(std::string("imus[0].") + sigma, 0.0, assumed("noise-free: L5 adds no sensor model"));
     }
     in.add("proxy_radius", length + 0.5 * parts.prop.diameter, q.proxy_ref);
+    add_look_rows(in, q.body_size, parts);
     add_prop_rows(in, parts);
 }
 
@@ -698,13 +784,55 @@ inline void add_direct_rows(DroneInputs& in, const DirectQuad& q, const DronePar
     return s;
 }
 
+// A direct drone's records from its rows, as L5 built them, and the same
+// records wearing the drone's look (vehicles::wear_look(), L7b2). problem()
+// only: the caller reads the rest of the rows.
+struct Worn {
+    AirframeSpec l5{};
+    AirframeSpec worn{};
+};
+
+[[nodiscard]] inline Result<Worn> wear_direct(const DroneParts& parts, InputReader& r, std::string name) {
+    Worn w;
+    w.l5 = read_direct_quad(parts, r, std::move(name));
+    const vehicles::BasicQuadLook look = read_look(r);
+    if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
+    w.worn = w.l5;
+    if (Result<void> ok = vehicles::wear_look(w.worn, look); !ok) return std::unexpected(ok.error());
+    return w;
+}
+
+// A direct drone's frozen drag rows, from its rows so far.
+[[nodiscard]] inline Result<void> add_direct_drag(DroneInputs& in, const DroneParts& parts, std::string name,
+                                                  const SourceRef& ref) {
+    vehicles::DragSpec drag;
+    {
+        InputReader r(in);  // done with before the table grows
+        Result<Worn> w = wear_direct(parts, r, std::move(name));
+        if (!w) return std::unexpected(w.error());
+        Result<vehicles::DragSpec> d = frozen_drag(w->l5, w->worn);
+        if (!d) return std::unexpected(d.error());
+        drag = *d;
+    }
+    add_frozen_drag_rows(in, drag, ref);
+    return {};
+}
+
+// A direct drone's spec: its records in its look, the frozen drag its L5
+// records give (checked against the rows), and the props.
 [[nodiscard]] inline Result<AirframeSpec> direct_spec(const DroneParts& parts, const DroneInputs& inputs,
                                                       std::string name) {
     InputReader r(inputs);
-    AirframeSpec s = read_direct_quad(parts, r, std::move(name));
+    Result<Worn> w = wear_direct(parts, r, std::move(name));
+    if (!w) return std::unexpected(w.error());
     const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
+    Result<vehicles::DragSpec> drag = frozen_drag(w->l5, w->worn);
+    if (!drag) return std::unexpected(drag.error());
+    same_frozen_drag(r, *drag);
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
-    if (Result<void> w = wear_props(s, parts, props); !w) return std::unexpected(w.error());
+    AirframeSpec s = std::move(w->worn);
+    s.drag.push_back(*drag);
+    if (Result<void> wp = wear_props(s, parts, props); !wp) return std::unexpected(wp.error());
     return s;
 }
 
@@ -735,8 +863,12 @@ inline constexpr std::string_view kDirectProxy =
     q.esc_ref = assumed("the four ESCs as one central block, at the origin");
     q.battery_ref = assumed("the pack inside the shell, at the origin, its 120 mm along the nose");
     q.proxy_ref = cite(Grade::derived, kNasa, kDirectProxy);
+    q.drag_ref = cite(Grade::derived, kNasa, kFrozenDrag);
     DroneInputs in;
     add_direct_rows(in, q, parts);
+    if (Result<void> d = add_direct_drag(in, parts, "phantom3_class", q.drag_ref); !d) {
+        return std::unexpected(d.error());
+    }
     return in;
 }
 
@@ -754,7 +886,7 @@ inline constexpr std::string_view kDirectProxy =
              "12.46 N. The curve is UIUC's APC TE 10x5 at 9.4 in, not DJI's 9450; NASA's figures are stated "
              "numbers (ruling 7); Physics owns the band"),
         std::array<double, 2>{-0.05, 0.05}, false});
-    n.assumptions = {wake_line(), std::string(kDragEstimated)};
+    n.assumptions = {wake_line(), std::string(kDragFrozen)};
     n.caveat = "the prop curve is UIUC's APC Thin Electric 10x5 at 9.4 in, a near match, not DJI's 9450; the inertia "
                "is the parts', since none is published";
     return n;
@@ -785,8 +917,12 @@ inline constexpr std::string_view kDirectProxy =
     q.esc_ref = assumed("the four ESCs as one central block, at the origin");
     q.battery_ref = assumed("the pack inside the shell, at the origin, its 145 mm along the nose");
     q.proxy_ref = cite(Grade::derived, kNasa, kDirectProxy);
+    q.drag_ref = cite(Grade::derived, kNasa, kFrozenDrag);
     DroneInputs in;
     add_direct_rows(in, q, parts);
+    if (Result<void> d = add_direct_drag(in, parts, "iris_plus_class", q.drag_ref); !d) {
+        return std::unexpected(d.error());
+    }
     return in;
 }
 
@@ -804,7 +940,7 @@ inline constexpr std::string_view kDirectProxy =
              "9x4.5's static C_T sits about 10% above its low-J points, and sqrt(1.10) is about 4.9% in rpm; its "
              "own mass is report-only (Physics, 2026-10-22)"),
         std::array<double, 2>{-0.05, 0.05}, false});
-    n.assumptions = {wake_line(), std::string(kDragEstimated)};
+    n.assumptions = {wake_line(), std::string(kDragFrozen)};
     n.caveat = "the prop curve is UIUC's APC Thin Electric 9x4.5 at 9.6 in, a near match; NASA's spacing gives a "
                "486.8 mm diagonal, not the 550 mm the retailers quote";
     return n;
@@ -838,8 +974,10 @@ inline constexpr std::string_view kDirectProxy =
     q.battery_at = glm::dvec3(0.0, 0.028, 0.0);
     q.battery_ref = assumed("strapped on top, sunk 2 mm into the stack");
     q.proxy_ref = assumed(std::string(kDirectProxy) + ", on the assumed layout");
+    q.drag_ref = assumed(std::string(kFrozenDrag) + ", on the assumed layout");
     DroneInputs in;
     add_direct_rows(in, q, parts);
+    if (Result<void> d = add_direct_drag(in, parts, "fpv_5inch", q.drag_ref); !d) return std::unexpected(d.error());
     return in;
 }
 
@@ -855,7 +993,7 @@ inline constexpr std::string_view kDirectProxy =
     n.checks.push_back(ModelCheck{"FpvThrustToWeightIsReported", kFpvClassLow, "1",
                                   assumed("typical 5-inch racers sit around 8-14 (no single source)"),
                                   std::array<double, 2>{0.0, (kFpvClassHigh - kFpvClassLow) / kFpvClassLow}, true});
-    n.assumptions = {wake_line(), std::string(kDragEstimated)};
+    n.assumptions = {wake_line(), std::string(kDragFrozen)};
     n.caveat = "the frame is assumed (220 mm motor to motor, true X) until one is cited, and its mass closes on the "
                "L4a header's 0.500 kg estimate";
     return n;
@@ -895,14 +1033,29 @@ struct FitTargets {
     q.battery_at = glm::dvec3(0.0, 0.0065, 0.0);
     q.battery_ref = assumed("on top of the board");
     q.proxy_ref = cite(Grade::derived, kLuisLeNy, kDirectProxy);
+    q.drag_ref = cite(Grade::derived, kLuisLeNy, kFrozenDrag);
     return q;
+}
+
+// The Crazyflie as L5 built it: its records, and the remainder fitted to
+// them.
+[[nodiscard]] inline Result<AirframeSpec> crazyflie_l5(AirframeSpec records, double mass, const glm::dvec3& inertia) {
+    Result<PartInertia> rest = vehicles::fit_remainder(records, mass, inertia);
+    if (!rest) return std::unexpected(rest.error());
+    records.parts.push_back(std::move(*rest));
+    return records;
 }
 
 [[nodiscard]] inline Result<DroneInputs> crazyflie_class_inputs(const DroneParts& parts) {
     DroneInputs in;
-    add_direct_rows(in, crazyflie_layout(), parts);
-    Result<AirframeSpec> base = direct_spec(parts, in, "crazyflie_class");
-    if (!base) return std::unexpected(base.error());
+    const DirectQuad q = crazyflie_layout();
+    add_direct_rows(in, q, parts);
+    Result<Worn> w;
+    {
+        InputReader r(in);  // done with before the table grows
+        w = wear_direct(parts, r, "crazyflie_class");
+    }
+    if (!w) return std::unexpected(w.error());
 
     const double mass = 0.029;
     const glm::dvec3 inertia(1.395e-5, 2.173e-5, 1.436e-5);
@@ -913,12 +1066,20 @@ struct FitTargets {
                 "fit_remainder()'s inertia target: Luis & Le Ny's (Ixx, Iyy, Izz) = (1.395, 1.436, 2.173)e-5 kg m^2 "
                 "of a Crazyflie 2.0 (second-hand) as design (x roll, y yaw, z pitch), not scaled by 29/27 (Physics, "
                 "2026-10-22)"));
-    Result<PartInertia> rest = vehicles::fit_remainder(*base, mass, inertia);
+    Result<PartInertia> rest = vehicles::fit_remainder(w->worn, mass, inertia);
     if (!rest) return std::unexpected(rest.error());
     const std::string fitted_note = std::string(kCfRemainder) + ": the targets less the parts, by fit_remainder()";
     in.add("parts[5].mass", rest->mass, cite(Grade::fitted, kCfDatasheet, fitted_note));
     in.add("parts[5].position", vec_value(rest->position), cite(Grade::fitted, kLuisLeNy, fitted_note));
     in.add("parts[5].tensor", mat_value(rest->tensor), cite(Grade::fitted, kLuisLeNy, fitted_note));
+
+    Result<AirframeSpec> l5 = crazyflie_l5(w->l5, mass, inertia);
+    if (!l5) return std::unexpected(l5.error());
+    AirframeSpec worn = w->worn;
+    worn.parts.push_back(*rest);
+    Result<vehicles::DragSpec> drag = frozen_drag(*l5, worn);
+    if (!drag) return std::unexpected(drag.error());
+    add_frozen_drag_rows(in, *drag, q.drag_ref);
     return in;
 }
 
@@ -935,19 +1096,27 @@ struct FitTargets {
 // fit_remainder()'s of the targets (one rule, TD-9).
 [[nodiscard]] inline Result<AirframeSpec> crazyflie_class(const DroneParts& parts, const DroneInputs& inputs) {
     InputReader r(inputs);
-    AirframeSpec s = read_direct_quad(parts, r, "crazyflie_class");
+    Result<Worn> w = wear_direct(parts, r, "crazyflie_class");
+    if (!w) return std::unexpected(w.error());
     const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
     const double mass = r.number("mass");
     const glm::dvec3 inertia = r.vec3("inertia");
     if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
-    Result<PartInertia> rest = vehicles::fit_remainder(s, mass, inertia);
+    Result<PartInertia> rest = vehicles::fit_remainder(w->worn, mass, inertia);
     if (!rest) return std::unexpected(rest.error());
     r.same("parts[5].mass", rest->mass);
     r.same("parts[5].position", vec_value(rest->position));
     r.same("parts[5].tensor", mat_value(rest->tensor));
-    if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    Result<AirframeSpec> l5 = crazyflie_l5(w->l5, mass, inertia);
+    if (!l5) return std::unexpected(l5.error());
+    AirframeSpec s = std::move(w->worn);
     s.parts.push_back(std::move(*rest));
-    if (Result<void> w = wear_props(s, parts, props); !w) return std::unexpected(w.error());
+    Result<vehicles::DragSpec> drag = frozen_drag(*l5, s);
+    if (!drag) return std::unexpected(drag.error());
+    same_frozen_drag(r, *drag);
+    if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    s.drag.push_back(*drag);
+    if (Result<void> wp = wear_props(s, parts, props); !wp) return std::unexpected(wp.error());
     return s;
 }
 
@@ -979,7 +1148,7 @@ struct FitTargets {
     n.checks.push_back(ModelCheck{"CrazyflieMatchesBitcrazesThrustTable", kCfTopRowRpm, "rpm",
                                   cite(Grade::measured, kCfThrust, "full duty at SoC 1: full pack"), std::nullopt,
                                   true});
-    n.assumptions = {wake_line(), std::string(kDragEstimated)};
+    n.assumptions = {wake_line(), std::string(kDragFrozen)};
     n.caveat = "a Crazyflie 2.0's measured tensor at the 2.1's 29 g, not scaled by 29/27 (Physics, 2026-10-22); the "
                "prop is static only, its C_T held over J";
     return n;
@@ -1023,6 +1192,7 @@ inline void add_frame_defaults(DroneInputs& in, const BasicQuadParams& d) {
     p.battery = parts.battery;
     p.esc.mount = read_pose(r, "esc.mount");
     p.battery.mount = read_pose(r, "battery.mount");
+    p.look = read_look(r);
     if (fitted) {
         p.mass = r.number("mass");
         p.inertia = r.vec3("inertia");
@@ -1032,6 +1202,18 @@ inline void add_frame_defaults(DroneInputs& in, const BasicQuadParams& d) {
 }
 
 [[nodiscard]] inline bool is_competition(std::string_view stem) { return stem == "basic_quad_competition"; }
+
+// A basic quad as L5 built it (L7b2): its params without the look, at `at`'s
+// operating point.
+[[nodiscard]] inline Result<AirframeSpec> basic_quad_l5(BasicQuadParams p, const AirframeSpec& at) {
+    p.look.reset();
+    Result<AirframeSpec> s = vehicles::basic_quad_airframe(p);
+    if (!s) return s;
+    s->air_density = at.air_density;
+    s->gravity = at.gravity;
+    s->state_of_charge = at.state_of_charge;
+    return s;
+}
 
 [[nodiscard]] inline Result<BasicQuadParams> basic_quad_params(std::string_view stem, const DroneParts& parts,
                                                                const DroneInputs& inputs) {
@@ -1053,12 +1235,18 @@ inline constexpr std::string_view kBasicProxy =
     add_default(in, "battery.mount.position", vec_value(d.battery.mount.position), "battery.mount");
     add_default(in, "battery.mount.orientation", quat_value(d.battery.mount.orientation), "battery.mount");
     add_operating_point(in);
+    add_look_rows(in, d.body_size, parts);
     add_prop_rows(in, parts);
     Result<BasicQuadParams> p = basic_quad_params("basic_quad_6inch", parts, in);
     if (!p) return std::unexpected(p.error());
     Result<AirframeSpec> spec = vehicles::basic_quad_airframe(*p);
     if (!spec) return std::unexpected(spec.error());
     in.add("proxy_radius", spec->proxy_radius, assumed(kBasicProxy));
+    Result<AirframeSpec> l5 = basic_quad_l5(*p, *spec);
+    if (!l5) return std::unexpected(l5.error());
+    Result<vehicles::DragSpec> drag = frozen_drag(*l5, *spec);
+    if (!drag) return std::unexpected(drag.error());
+    add_frozen_drag_rows(in, *drag, assumed(std::string(kFrozenDrag) + ", on basic_quad's defaults"));
     return in;
 }
 
@@ -1071,7 +1259,13 @@ inline constexpr std::string_view kBasicProxy =
     read_operating_point(*s, r);
     r.same("proxy_radius", s->proxy_radius);
     const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
+    Result<AirframeSpec> l5 = basic_quad_l5(p, *s);
+    if (!l5) return std::unexpected(l5.error());
+    Result<vehicles::DragSpec> drag = frozen_drag(*l5, *s);
+    if (!drag) return std::unexpected(drag.error());
+    same_frozen_drag(r, *drag);
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    s->drag.push_back(*drag);
     if (Result<void> w = wear_props(*s, parts, props); !w) return std::unexpected(w.error());
     return s;
 }
@@ -1094,7 +1288,7 @@ inline constexpr std::string_view kBasicProxy =
              "the L4a header's hover_rpm for triblade_6inch_scaled (tests/library_props.gen.hpp), the tool's at "
              "about 0.602 kg; a larger gap means the header's run choice must be re-checked"),
         std::array<double, 2>{-0.001, 0.001}, false});
-    n.assumptions = {std::string(kKappaRule), triblade_line(), wake_line(), std::string(kDragEstimated)};
+    n.assumptions = {std::string(kKappaRule), triblade_line(), wake_line(), std::string(kDragFrozen)};
     n.caveat = "every number is a default basic_quad assumes: a generic 6-inch quad, its prop the tri-blade stand-in";
     return n;
 }
@@ -1140,6 +1334,7 @@ inline constexpr std::string_view kKatArms =
                 "torque."),
            kat_motor_block());
     add_operating_point(in);
+    add_look_rows(in, d.body_size, parts);
     add_prop_rows(in, parts);
 
     // What basic_quad_airframe() makes of them: the remainder, at the centre of
@@ -1237,8 +1432,7 @@ struct BuiltDrone {
     std::optional<FitTargets> targets{};      // the Crazyflie's
     shapes::PropMeshSpec prop_mesh{};         // what every drone's props are drawn from (L7c1)
     vehicles::BasicQuadLook look{};           // what its body, arms and bells are drawn from (L7b2)
-    AirframeSpec bare{};  // the spec as its rows give it, before the look and the frozen drag (L7b2)
-    AirframeSpec l5{};    // the drone as L5 built it, without meshes: what the frozen drag is (L7b2)
+    AirframeSpec l5{};  // the drone as L5 built it, without meshes: its frozen drag's source (L7b2)
     AirframeSpec spec{};
     DroneNotes notes{};
 };
@@ -1273,6 +1467,29 @@ struct BuiltDrone {
     return basic_quad_competition_notes();
 }
 
+// The drone as L5 built it (L7b2): without the meshes, at its spec's
+// operating point -- a direct drone's records as its rows give them, the
+// Crazyflie's with the remainder fitted to them, a basic quad's params
+// without the look, comp with Kat's drag. What the frozen drag is, what the
+// inertia shift is measured against, and what a worn record's rows describe.
+[[nodiscard]] inline Result<AirframeSpec> drone_l5(std::string_view stem, const DroneParts& parts,
+                                                   const DroneInputs& inputs, const AirframeSpec& spec) {
+    if (stem == "basic_quad_6inch" || is_competition(stem)) {
+        Result<BasicQuadParams> p = basic_quad_params(stem, parts, inputs);
+        if (!p) return std::unexpected(p.error());
+        Result<AirframeSpec> s = basic_quad_l5(*p, spec);
+        if (s && is_competition(stem)) s->drag = spec.drag;
+        return s;
+    }
+    InputReader r(inputs);
+    AirframeSpec s = read_direct_quad(parts, r, std::string(stem));
+    if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
+    if (stem != "crazyflie_class") return s;
+    Result<FitTargets> t = crazyflie_class_targets(inputs);
+    if (!t) return std::unexpected(t.error());
+    return crazyflie_l5(std::move(s), t->mass, t->inertia);
+}
+
 // The drone named `stem`, from the committed library's part files: its table,
 // its spec (the table's alone), its props' mesh, its params or fit targets,
 // and its notes.
@@ -1294,6 +1511,12 @@ struct BuiltDrone {
     Result<shapes::PropMeshSpec> mesh = prop_mesh_params(out.parts, out.inputs);
     if (!mesh) return std::unexpected(mesh.error());
     out.prop_mesh = std::move(*mesh);
+    Result<vehicles::BasicQuadLook> look = look_params(out.inputs);
+    if (!look) return std::unexpected(look.error());
+    out.look = *look;
+    Result<AirframeSpec> l5 = drone_l5(stem, out.parts, out.inputs, out.spec);
+    if (!l5) return std::unexpected(l5.error());
+    out.l5 = std::move(*l5);
     if (stem == "basic_quad_6inch" || is_competition(stem)) {
         Result<BasicQuadParams> p = basic_quad_params(stem, out.parts, out.inputs);
         if (!p) return std::unexpected(p.error());

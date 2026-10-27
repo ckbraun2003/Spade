@@ -35,186 +35,105 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [8.47032947e-19, 0.00481904764, 8.76240953e-20]
+  com_offset: [8.47032947e-19, 0.00481013907, 8.76240953e-20]
   body: {mass: 0.0289999992, inertia_diag: [1.39499998e-05, 2.17300003e-05, 1.436e-05]}
   proxy_radius: 0.0632250011
   rotors:
-    - {local_pos: [0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [-0.0280933529, 0.00718095247, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
-    - {local_pos: [-0.0280933529, 0.00718095247, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [0.0280933529, 0.00718986103, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [0.0280933529, 0.00718986103, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [-0.0280933529, 0.00718986103, -0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
+    - {local_pos: [-0.0280933529, 0.00718986103, 0.0280933529], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0556398183, radius: 0.0234949999, thrust_coeff: 2.35795756e-08, torque_coeff: 1.19172255e-10}
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.000993558322, 0.00178033672, 0.00104500831], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [-8.47032947e-19, -0.00481904764, -8.76240953e-20], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [-8.47032947e-19, -0.00481013907, -8.76240953e-20], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [-8.47032947e-19, -0.00481904764, -8.76240953e-20], orientation: [1, 0, 0, 0]}
+      mount: {position: [-8.47032947e-19, -0.00481013907, -8.76240953e-20], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00600000005
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: box, transform: 0, params: [0.0164999999, 0.00300000003, 0.0164999999, 0]}
+        mesh: {file: "crazyflie_class/body.spmesh", hash: "0xfa0ee78c07381d4f"}
     - name: "arm[0]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0140466765, -0.00481904764, 0.0140466765], orientation: [0.707106769, 0.5, 0, -0.5]}
+      mount: {position: [0.0140466765, -0.00481013907, 0.0140466765], orientation: [0.707106769, 0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00499999989
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00249999994, 0.0198650006, 0, 0]}
+        mesh: {file: "crazyflie_class/arm.spmesh", hash: "0x6583db419165dc78"}
     - name: "arm[1]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0140466765, -0.00481904764, -0.0140466765], orientation: [0.707106769, -0.5, 0, -0.5]}
+      mount: {position: [0.0140466765, -0.00481013907, -0.0140466765], orientation: [0.707106769, -0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00499999989
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00249999994, 0.0198650006, 0, 0]}
+        mesh: {file: "crazyflie_class/arm.spmesh", hash: "0x6583db419165dc78"}
     - name: "arm[2]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0140466765, -0.00481904764, -0.0140466765], orientation: [0.707106769, -0.5, 0, 0.5]}
+      mount: {position: [-0.0140466765, -0.00481013907, -0.0140466765], orientation: [0.707106769, -0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00499999989
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00249999994, 0.0198650006, 0, 0]}
+        mesh: {file: "crazyflie_class/arm.spmesh", hash: "0x6583db419165dc78"}
     - name: "arm[3]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0140466765, -0.00481904764, 0.0140466765], orientation: [0.707106769, 0.5, 0, 0.5]}
+      mount: {position: [-0.0140466765, -0.00481013907, 0.0140466765], orientation: [0.707106769, 0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00499999989
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00249999994, 0.0198650006, 0, 0]}
+        mesh: {file: "crazyflie_class/arm.spmesh", hash: "0x6583db419165dc78"}
     - name: "motor[0]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0280933529, -0.000819047622, 0.0280933529], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0280933529, 0.00718986103, 0.0280933529], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00700000022
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00350000011, 0.00800000038, 0, 0]}
+        mesh: {file: "crazyflie_class/bell.spmesh", hash: "0x43f43d998c2fb609"}
     - name: "motor[1]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0280933529, -0.000819047622, -0.0280933529], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0280933529, 0.00718986103, -0.0280933529], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00700000022
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00350000011, 0.00800000038, 0, 0]}
+        mesh: {file: "crazyflie_class/bell.spmesh", hash: "0x43f43d998c2fb609"}
     - name: "motor[2]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0280933529, -0.000819047622, -0.0280933529], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0280933529, 0.00718986103, -0.0280933529], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00700000022
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00350000011, 0.00800000038, 0, 0]}
+        mesh: {file: "crazyflie_class/bell.spmesh", hash: "0x43f43d998c2fb609"}
     - name: "motor[3]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0280933529, -0.000819047622, 0.0280933529], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0280933529, 0.00718986103, 0.0280933529], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00700000022
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00350000011, 0.00800000038, 0, 0]}
+        mesh: {file: "crazyflie_class/bell.spmesh", hash: "0x43f43d998c2fb609"}
     - name: "battery"
       role: "battery"
       attach: "body"
       rotor: 0
-      mount: {position: [-8.47032947e-19, 0.00168095238, -8.76240953e-20], orientation: [1, 0, 0, 0]}
+      mount: {position: [-8.47032947e-19, 0.00168986095, -8.76240953e-20], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00700000022
       shape:
@@ -236,7 +155,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 9.99947224e-05
       shape:
-        mesh: {file: "crazyflie_class/prop_ccw.spmesh", hash: "0x6b14cbb041319e14"}
+        mesh: {file: "crazyflie_class/prop_ccw.spmesh", hash: "0x4dd022dd6e1ca6e0"}
     - name: "prop[1]"
       role: "prop"
       attach: "rotor"
@@ -245,7 +164,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 9.99947224e-05
       shape:
-        mesh: {file: "crazyflie_class/prop_cw.spmesh", hash: "0x2c4f1ce1c2b001d4"}
+        mesh: {file: "crazyflie_class/prop_cw.spmesh", hash: "0x8c27ac0a96a5bc20"}
     - name: "prop[2]"
       role: "prop"
       attach: "rotor"
@@ -254,7 +173,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 9.99947224e-05
       shape:
-        mesh: {file: "crazyflie_class/prop_ccw.spmesh", hash: "0x6b14cbb041319e14"}
+        mesh: {file: "crazyflie_class/prop_ccw.spmesh", hash: "0x4dd022dd6e1ca6e0"}
     - name: "prop[3]"
       role: "prop"
       attach: "rotor"
@@ -263,7 +182,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 9.99947224e-05
       shape:
-        mesh: {file: "crazyflie_class/prop_cw.spmesh", hash: "0x2c4f1ce1c2b001d4"}
+        mesh: {file: "crazyflie_class/prop_cw.spmesh", hash: "0x8c27ac0a96a5bc20"}
   propulsion:
     kv: 1466.076571675237
     resistance: 1.24

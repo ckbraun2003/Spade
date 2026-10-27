@@ -27,7 +27,10 @@ constexpr double kPi = 3.141592653589793;
 [[nodiscard]] bool positive(double v) { return std::isfinite(v) && v > 0.0; }
 
 // cos and sin of 2 pi k / n, k = 0 .. n - 1, through cos32 / sin32 inside
-// [0, 2 pi).
+// [0, 2 pi). A ring of n = 4m takes its first quarter so and the rest by
+// exact quarter turns, (c, s) -> (-s, c): its vertices are quarter-turn
+// symmetric bit for bit, so a lathe's tensor has Ixx = Izz and no products of
+// inertia to rounding (L7b2; each angle apart left about 1e-10 of the trace).
 struct Circle {
     std::vector<double> c;
     std::vector<double> s;
@@ -37,10 +40,15 @@ struct Circle {
     Circle out;
     out.c.resize(n);
     out.s.resize(n);
-    for (uint32_t k = 0; k < n; ++k) {
+    const uint32_t first = n % 4 == 0 ? n / 4 : n;
+    for (uint32_t k = 0; k < first; ++k) {
         const float a = static_cast<float>(2.0 * kPi * static_cast<double>(k) / static_cast<double>(n));
         out.c[k] = math::cos32(a);
         out.s[k] = math::sin32(a);
+    }
+    for (uint32_t k = first; k < n; ++k) {
+        out.c[k] = -out.s[k - first];
+        out.s[k] = out.c[k - first];
     }
     return out;
 }
@@ -269,18 +277,33 @@ Result<GeneratedMesh> rounded_box(glm::dvec3 size, double edge_radius, uint32_t 
                 ijk[c] = w;
                 return index[at(ijk[0], ijk[1], ijk[2])];
             };
+            // A cell splits along its diagonal through the corner nearest the
+            // face's centre, which mirrors onto itself across both of the
+            // face's axes, so the box's triangles are as mirror symmetric as
+            // its grid. One diagonal everywhere is not, and on the corners,
+            // where a cell is not flat, it gave the box products of inertia
+            // of about 1e-6 of its trace (L7b2). The middle cell, between
+            // -inner and +inner, is flat, so either diagonal is alike there.
+            const uint32_t mid = segments;
             for (uint32_t u = 0; u + 1 < g; ++u) {
                 for (uint32_t w = 0; w + 1 < g; ++w) {
                     const uint32_t q00 = v(u, w);
                     const uint32_t q10 = v(u + 1, w);
                     const uint32_t q11 = v(u + 1, w + 1);
                     const uint32_t q01 = v(u, w + 1);
-                    if (side != 0) {
+                    const bool main_diagonal = u == mid || w == mid || (u < mid) == (w < mid);  // q00 to q11
+                    if (main_diagonal && side != 0) {
                         add_triangle(in, q00, q10, q11);
                         add_triangle(in, q00, q11, q01);
-                    } else {
+                    } else if (main_diagonal) {
                         add_triangle(in, q00, q11, q10);
                         add_triangle(in, q00, q01, q11);
+                    } else if (side != 0) {
+                        add_triangle(in, q00, q10, q01);
+                        add_triangle(in, q10, q11, q01);
+                    } else {
+                        add_triangle(in, q00, q01, q10);
+                        add_triangle(in, q10, q01, q11);
                     }
                 }
             }

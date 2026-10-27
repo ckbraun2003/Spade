@@ -83,47 +83,6 @@ constexpr std::string_view kTriBlade =
     return p;
 }
 
-// THE LOOK (basic_quad.hpp): the body record, the four arm records and the
-// motors as generated meshes, each mass kept. A body or arm record becomes a
-// mesh record at its own pose, of density mass / V; the motors take the bell
-// as AirframeSpec::motor_mesh, of the motor's mass.
-[[nodiscard]] Result<void> wear(AirframeSpec& s, const BasicQuadParams& p, double arm_length) {
-    const BasicQuadLook& look = *p.look;
-    if (look.segments < 1 || look.segments > shapes::kMaxBoxSegments) {
-        return std::unexpected(invalid("look.segments must be in [1, " + std::to_string(shapes::kMaxBoxSegments) +
-                                       "], found " + std::to_string(look.segments)));
-    }
-    const uint32_t around = 8u * look.segments;  // a full circle at the rounded box's spacing
-    const auto refused = [](const char* what, const Error& e) {
-        return std::unexpected(Error{e.code, std::string("look: ") + what + ": " + e.context});
-    };
-    const Result<shapes::GeneratedMesh> body = shapes::rounded_box(p.body_size, look.body_edge_radius, look.segments);
-    if (!body) return refused("the body", body.error());
-    const Result<shapes::GeneratedMesh> arm = shapes::capped_tube(p.arm_radius, arm_length, around);
-    if (!arm) return refused("the arms", arm.error());
-    if (!p.motor.shape || p.motor.shape->shape != PartShape::cylinder) {
-        return std::unexpected(invalid("look: a bell is sized from motor.shape, a cylinder (radius, length), and "
-                                       "this motor's shape is not one"));
-    }
-    const Result<shapes::GeneratedMesh> bell =
-        shapes::motor_bell(p.motor.shape->size.x, p.motor.shape->size.y, look.bell_chamfer, around);
-    if (!bell) return refused("the bells", bell.error());
-
-    const auto wear_mesh = [](PartInertia& r, const shapes::GeneratedMesh& g) {
-        r.geometry.source = GeometrySource::mesh;
-        r.geometry.mesh = g.mesh;
-        r.geometry.density = r.mass / g.mesh->mass_properties().volume;
-        r.geometry.min_feature = g.min_feature;
-        r.mass = 0.0;
-        r.shape = PartShape::point;
-        r.size = glm::dvec3(0.0);
-    };
-    wear_mesh(s.parts[0], *body);
-    for (std::size_t k = 1; k < s.parts.size(); ++k) wear_mesh(s.parts[k], *arm);
-    s.motor_mesh = MotorMeshSpec{.mesh = bell->mesh, .min_feature = bell->min_feature};
-    return {};
-}
-
 }  // namespace
 
 MotorBlock BasicQuadParams::default_motor() {
@@ -280,7 +239,7 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
     s.imus.push_back(ImuSpec{});
     s.proxy_radius = arm_length + 0.5 * p.prop.diameter;
     if (p.look) {
-        if (const Result<void> worn = wear(s, p, arm_length); !worn) return std::unexpected(worn.error());
+        if (const Result<void> worn = wear_look(s, *p.look); !worn) return std::unexpected(worn.error());
     }
 
     if (!p.mass) return s;
@@ -292,8 +251,58 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
     return s;
 }
 
-Result<void> wear_look(AirframeSpec&, const BasicQuadLook&) {
-    return std::unexpected(invalid("wear_look() is L7b2's, not yet written"));  // RED
+// THE LOOK (basic_quad.hpp), on the records themselves: the body record, the
+// four arm records and the motors as generated meshes, each mass kept. A body
+// or arm record becomes a mesh record at its own pose, of density mass / V;
+// the motors take the bell as AirframeSpec::motor_mesh, of the motor's mass.
+// Everything is checked and generated before the spec is touched.
+Result<void> wear_look(AirframeSpec& s, const BasicQuadLook& look) {
+    const auto layout = [](std::size_t k, const char* why) {
+        return std::unexpected(invalid("look: parts[" + std::to_string(k) + "] " + why +
+                                       ": the look wears basic_quad_airframe()'s layout, the body box, then four "
+                                       "arm tubes of one size, and nothing after them"));
+    };
+    if (s.parts.size() > 5) return layout(5, "is one record too many");
+    if (s.parts.size() < 5) return layout(s.parts.size(), "is missing");
+    if (s.parts[0].shape != PartShape::box) return layout(0, "is not a box");
+    for (std::size_t k = 1; k < 5; ++k) {
+        if (s.parts[k].shape != PartShape::tube) return layout(k, "is not a tube");
+        if (s.parts[k].size != s.parts[1].size) return layout(k, "is not parts[1]'s size");
+    }
+    if (look.segments < 1 || look.segments > shapes::kMaxBoxSegments) {
+        return std::unexpected(invalid("look.segments must be in [1, " + std::to_string(shapes::kMaxBoxSegments) +
+                                       "], found " + std::to_string(look.segments)));
+    }
+    const uint32_t around = 8u * look.segments;  // a full circle at the rounded box's spacing
+    const auto refused = [](const char* what, const Error& e) {
+        return std::unexpected(Error{e.code, std::string("look: ") + what + ": " + e.context});
+    };
+    const Result<shapes::GeneratedMesh> body =
+        shapes::rounded_box(s.parts[0].size, look.body_edge_radius, look.segments);
+    if (!body) return refused("the body", body.error());
+    const Result<shapes::GeneratedMesh> arm = shapes::capped_tube(s.parts[1].size.x, s.parts[1].size.y, around);
+    if (!arm) return refused("the arms", arm.error());
+    if (!s.motor.shape || s.motor.shape->shape != PartShape::cylinder) {
+        return std::unexpected(invalid("look: a bell is sized from motor.shape, a cylinder (radius, length), and "
+                                       "this motor's shape is not one"));
+    }
+    const Result<shapes::GeneratedMesh> bell =
+        shapes::motor_bell(s.motor.shape->size.x, s.motor.shape->size.y, look.bell_chamfer, around);
+    if (!bell) return refused("the bells", bell.error());
+
+    const auto wear_mesh = [](PartInertia& r, const shapes::GeneratedMesh& g) {
+        r.geometry.source = GeometrySource::mesh;
+        r.geometry.mesh = g.mesh;
+        r.geometry.density = r.mass / g.mesh->mass_properties().volume;
+        r.geometry.min_feature = g.min_feature;
+        r.mass = 0.0;
+        r.shape = PartShape::point;
+        r.size = glm::dvec3(0.0);
+    };
+    wear_mesh(s.parts[0], *body);
+    for (std::size_t k = 1; k < 5; ++k) wear_mesh(s.parts[k], *arm);
+    s.motor_mesh = MotorMeshSpec{.mesh = bell->mesh, .min_feature = bell->min_feature};
+    return {};
 }
 
 Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass, const std::optional<glm::dvec3>& inertia) {

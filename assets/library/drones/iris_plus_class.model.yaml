@@ -35,186 +35,105 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [5.07426916e-19, 0.00421216851, 3.3828461e-19]
-  body: {mass: 1.28199995, inertia_diag: [0.0148935346, 0.0227122679, 0.00826444384]}
+  com_offset: [5.07426916e-19, 0.0042009484, 3.3828461e-19]
+  body: {mass: 1.28199995, inertia_diag: [0.0149310809, 0.0227496978, 0.00825113431]}
   proxy_radius: 0.36531961
   rotors:
-    - {local_pos: [0.132080004, 0.0257878322, 0.204469994], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
-    - {local_pos: [0.132080004, 0.0257878322, -0.204469994], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
-    - {local_pos: [-0.132080004, 0.0257878322, -0.204469994], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
-    - {local_pos: [-0.132080004, 0.0257878322, 0.204469994], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
+    - {local_pos: [0.132080004, 0.0257990509, 0.204469994], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
+    - {local_pos: [0.132080004, 0.0257990509, -0.204469994], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
+    - {local_pos: [-0.132080004, 0.0257990509, -0.204469994], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
+    - {local_pos: [-0.132080004, 0.0257990509, 0.204469994], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0699203163, radius: 0.1219, thrust_coeff: 1.07631349e-05, torque_coeff: 1.63804472e-07}
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.0176933464, 0.0343779139, 0.0182039756], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [-5.07426916e-19, -0.00421216851, -3.3828461e-19], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [-5.07426916e-19, -0.0042009484, -3.3828461e-19], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [-5.07426916e-19, -0.00421216851, -3.3828461e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-5.07426916e-19, -0.0042009484, -3.3828461e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0500000007
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: box, transform: 0, params: [0.100000001, 0.0250000004, 0.0599999987, 0]}
+        mesh: {file: "iris_plus_class/body.spmesh", hash: "0xe7ecac9ab207b40f"}
     - name: "arm[0]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0660400018, -0.00421216851, 0.102234997], orientation: [0.707106769, 0.593962491, 0, -0.383677632]}
+      mount: {position: [0.0660400018, -0.0042009484, 0.102234997], orientation: [0.707106769, 0.593962491, 0, -0.383677632]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00800000038, 0.121709809, 0, 0]}
+        mesh: {file: "iris_plus_class/arm.spmesh", hash: "0x10ddaac1efee80f4"}
     - name: "arm[1]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0660400018, -0.00421216851, -0.102234997], orientation: [0.707106769, -0.593962491, 0, -0.383677632]}
+      mount: {position: [0.0660400018, -0.0042009484, -0.102234997], orientation: [0.707106769, -0.593962491, 0, -0.383677632]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00800000038, 0.121709809, 0, 0]}
+        mesh: {file: "iris_plus_class/arm.spmesh", hash: "0x10ddaac1efee80f4"}
     - name: "arm[2]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0660400018, -0.00421216851, -0.102234997], orientation: [0.707106769, -0.593962491, 0, 0.383677632]}
+      mount: {position: [-0.0660400018, -0.0042009484, -0.102234997], orientation: [0.707106769, -0.593962491, 0, 0.383677632]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00800000038, 0.121709809, 0, 0]}
+        mesh: {file: "iris_plus_class/arm.spmesh", hash: "0x10ddaac1efee80f4"}
     - name: "arm[3]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0660400018, -0.00421216851, 0.102234997], orientation: [0.707106769, 0.593962491, 0, 0.383677632]}
+      mount: {position: [-0.0660400018, -0.0042009484, 0.102234997], orientation: [0.707106769, 0.593962491, 0, 0.383677632]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00800000038, 0.121709809, 0, 0]}
+        mesh: {file: "iris_plus_class/arm.spmesh", hash: "0x10ddaac1efee80f4"}
     - name: "motor[0]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.132080004, 0.0137878312, 0.204469994], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.132080004, 0.0257990509, 0.204469994], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.0120000001, 0, 0]}
+        mesh: {file: "iris_plus_class/bell.spmesh", hash: "0x82778afc53e1def0"}
     - name: "motor[1]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.132080004, 0.0137878312, -0.204469994], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.132080004, 0.0257990509, -0.204469994], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.0120000001, 0, 0]}
+        mesh: {file: "iris_plus_class/bell.spmesh", hash: "0x82778afc53e1def0"}
     - name: "motor[2]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.132080004, 0.0137878312, -0.204469994], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.132080004, 0.0257990509, -0.204469994], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.0120000001, 0, 0]}
+        mesh: {file: "iris_plus_class/bell.spmesh", hash: "0x82778afc53e1def0"}
     - name: "motor[3]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.132080004, 0.0137878312, 0.204469994], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.132080004, 0.0257990509, 0.204469994], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.0120000001, 0, 0]}
+        mesh: {file: "iris_plus_class/bell.spmesh", hash: "0x82778afc53e1def0"}
     - name: "esc"
       role: "esc"
       attach: "body"
       rotor: 0
-      mount: {position: [-5.07426916e-19, -0.00421216851, -3.3828461e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-5.07426916e-19, -0.0042009484, -3.3828461e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00800000038
       shape:
@@ -232,7 +151,7 @@ model:
       role: "battery"
       attach: "body"
       rotor: 0
-      mount: {position: [-5.07426916e-19, -0.00421216851, -3.3828461e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-5.07426916e-19, -0.0042009484, -3.3828461e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0299999993
       shape:
@@ -254,7 +173,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.000477847992
       shape:
-        mesh: {file: "iris_plus_class/prop_ccw.spmesh", hash: "0x16c433ccd7a29259"}
+        mesh: {file: "iris_plus_class/prop_ccw.spmesh", hash: "0x27ae00c309e1a149"}
     - name: "prop[1]"
       role: "prop"
       attach: "rotor"
@@ -263,7 +182,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.000477847992
       shape:
-        mesh: {file: "iris_plus_class/prop_cw.spmesh", hash: "0x6f40c96229845749"}
+        mesh: {file: "iris_plus_class/prop_cw.spmesh", hash: "0x13f317880be70af9"}
     - name: "prop[2]"
       role: "prop"
       attach: "rotor"
@@ -272,7 +191,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.000477847992
       shape:
-        mesh: {file: "iris_plus_class/prop_ccw.spmesh", hash: "0x16c433ccd7a29259"}
+        mesh: {file: "iris_plus_class/prop_ccw.spmesh", hash: "0x27ae00c309e1a149"}
     - name: "prop[3]"
       role: "prop"
       attach: "rotor"
@@ -281,7 +200,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.000477847992
       shape:
-        mesh: {file: "iris_plus_class/prop_cw.spmesh", hash: "0x6f40c96229845749"}
+        mesh: {file: "iris_plus_class/prop_cw.spmesh", hash: "0x13f317880be70af9"}
   propulsion:
     kv: 96.342174710087
     resistance: 0.126

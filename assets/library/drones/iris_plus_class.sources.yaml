@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/iris_plus_class.model.yaml", hash: "fb1656cfdafeec0b"}
+model: {file: "drones/iris_plus_class.model.yaml", hash: "8d91824154408192"}
 built_by: "tests/library_drones.hpp: iris_plus_class(), a direct AirframeSpec"
 parts:
   prop: {file: "parts/uiuc_apce_9x4.5.prop.yaml", hash: "6df9a97da6bd64de"}
@@ -70,6 +70,9 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.3653196115763888, source: "nasa_ames_2016", grade: derived, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule"}
+  "meshes.body.edge_radius": {value: 0.010000000000000002, grade: assumed, note: "a fifth of the body's smallest extent: every edge and corner rounded"}
+  "meshes.bell.chamfer": {value: 0.0014000000000000002, grade: assumed, note: "a tenth of the bell's radius (the motor file's shape)"}
+  "meshes.segments": {value: 4, grade: assumed, note: "steps across a rounded edge, so a tube or a bell is 32 chords around"}
   "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
   "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
   "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
@@ -78,10 +81,13 @@ inputs:
   "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
   "meshes.prop.hub_height": {value: 0.01219, grade: assumed, note: "the hub 5% of the diameter tall"}
   "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
+  "drag[0].coeffs": {value: [0.017693346366286278, 0.03437791392207146, 0.01820397563278675], source: "nasa_ames_2016", grade: derived, note: "the drag the compile estimates from the drone's L5 parts (these rows without the meshes, which the estimate cannot see): one componentwise body, 0.5 rho C_d A per axis, frozen bit for bit (Physics' Q3, 2026-10-26)"}
+  "drag[0].mount.position": {value: [5.074269157354481e-19, 0.004200948402285576, 3.3828461049029875e-19], source: "nasa_ames_2016", grade: derived, note: "the centre of mass of the drone as it wears its meshes, so the drag adds no torque, as the estimate's"}
+  "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes, the estimate's"}
 not_carried: []
 checks:
   - {test: "IrisPlusHoversAtNasasBaselineRpm", reference: 5400, unit: "rpm", source: "nasa_ames_2016", grade: measured, note: "hover at 2.8 lb (12.46 N) at 5,400 rpm (NASA Table 2), like for like. It reads about -4.9%: the 9x4.5's static C_T sits about 10% above its low-J points, and sqrt(1.10) is about 4.9% in rpm; its own mass is report-only (Physics, 2026-10-22)", band: [-0.05, 0.05], report_only: false}
 assumptions:
   - "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's induced inflow (Physics, 2026-10-21)"
-  - "drag: none is given, so the compile estimates it from the parts' shapes (best-effort; vehicles/airframe_compile.hpp)"
+  - "drag: given as drag[0], the estimate the compile makes from the drone's L5 parts (the same rows without the meshes, which it cannot see), frozen bit for bit (Physics' Q3, 2026-10-26)"
 caveat: "the prop curve is UIUC's APC Thin Electric 9x4.5 at 9.6 in, a near match; NASA's spacing gives a 486.8 mm diagonal, not the 550 mm the retailers quote"

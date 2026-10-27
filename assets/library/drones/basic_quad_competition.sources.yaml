@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/basic_quad_competition.model.yaml", hash: "9b00749da7691e3f"}
+model: {file: "drones/basic_quad_competition.model.yaml", hash: "18a2d6338b012aa6"}
 built_by: "vehicles::basic_quad_airframe(), then Kat's drag as drag[0]"
 parts:
   prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
@@ -32,6 +32,9 @@ inputs:
   "air_density": {value: 1.225, grade: assumed, note: "ISA sea level: the compile's operating point"}
   "gravity": {value: 9.80665, grade: assumed, note: "standard gravity: the compile's operating point"}
   "state_of_charge": {value: 1, grade: assumed, note: "a full pack: the compile's operating point"}
+  "meshes.body.edge_radius": {value: 0.007000000000000001, grade: assumed, note: "a fifth of the body's smallest extent: every edge and corner rounded"}
+  "meshes.bell.chamfer": {value: 0.0014000000000000002, grade: assumed, note: "a tenth of the bell's radius (the motor file's shape)"}
+  "meshes.segments": {value: 4, grade: assumed, note: "steps across a rounded edge, so a tube or a bell is 32 chords around"}
   "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
   "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
   "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
@@ -41,12 +44,12 @@ inputs:
   "meshes.prop.hub_height": {value: 0.007620000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
   "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
   "drag[0].coeffs": {value: [0.028, 0.028, 0.028], source: "kat_competition_700", grade: fitted, note: "Kat's F_i = -0.028 |v_i| v_i on the body axes is the engine's componentwise law (physics/forces.cpp), in kg/m with no rho conversion (Physics, 2026-10-22)", kat: {source: "tuned", confidence: "high", date: "2026-07-29"}}
-  "drag[0].mount.position": {value: [-9.704638042836974e-20, 0.014814178459346294, 1.9409276085673949e-19], grade: assumed, note: "at the centre of mass, the remainder's place, so the drag adds no torque, as in Kat's law"}
+  "drag[0].mount.position": {value: [-9.704638042836974e-20, 0.01479837205260992, 1.9409276085673949e-19], grade: assumed, note: "at the centre of mass, the remainder's place, so the drag adds no torque, as in Kat's law"}
   "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes"}
   "proxy_radius": {value: 0.2012, grade: assumed, note: "basic_quad_airframe()'s rule: the arm's length plus the propeller's radius, the geometric reach (Physics, 2026-10-22); Kat's 0.3 m collision radius is a planner's margin (not_carried)"}
   "parts[5].mass": {value: 0.14139999999999997, grade: assumed, note: "Kat's 0.700 kg and tensor less the assumed parts, at their centre of mass (fit_remainder(), inside basic_quad_airframe()); assumed, since the parts are (Physics, 2026-10-22); with the body and arms it is Physics' 0.336 kg"}
-  "parts[5].position": {value: [-9.704638042836974e-20, 0.014814178459346294, 1.9409276085673949e-19], grade: assumed, note: "Kat's 0.700 kg and tensor less the assumed parts, at their centre of mass (fit_remainder(), inside basic_quad_airframe()); assumed, since the parts are (Physics, 2026-10-22); with the body and arms it is Physics' 0.336 kg"}
-  "parts[5].tensor": {value: [0.0003936130056254924, 2.996341944319996e-22, -2.710505431213761e-20, 2.996341944319996e-22, 0.0010337734013333333, -5.992683888639992e-22, -2.710505431213761e-20, -5.992683888639992e-22, 0.0006613925056254922], grade: assumed, note: "Kat's 0.700 kg and tensor less the assumed parts, at their centre of mass (fit_remainder(), inside basic_quad_airframe()); assumed, since the parts are (Physics, 2026-10-22); with the body and arms it is Physics' 0.336 kg"}
+  "parts[5].position": {value: [-9.704638042836974e-20, 0.01479837205260992, 1.9409276085673949e-19], grade: assumed, note: "Kat's 0.700 kg and tensor less the assumed parts, at their centre of mass (fit_remainder(), inside basic_quad_airframe()); assumed, since the parts are (Physics, 2026-10-22); with the body and arms it is Physics' 0.336 kg"}
+  "parts[5].tensor": {value: [0.0003886121226265482, 2.9994404492418805e-22, -2.710505431213761e-20, 2.9994404492418805e-22, 0.0010262378497465415, -5.998880898483761e-22, -2.710505431213761e-20, -5.998880898483761e-22, 0.0006614463758141996], grade: assumed, note: "Kat's 0.700 kg and tensor less the assumed parts, at their centre of mass (fit_remainder(), inside basic_quad_airframe()); assumed, since the parts are (Physics, 2026-10-22); with the body and arms it is Physics' 0.336 kg"}
 not_carried:
   - "thrust_curve: Kat's measured throttle-to-thrust curve (ruling 6: a later plan)"
   - "airspeed_thrust: the curve's airspeed loss (ruling 6)"
