@@ -11,6 +11,7 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/error.hpp"
+#include "../../tests/d1_case.hpp"  // D1's one builder, shared with the tests
 #include "physics/airflow/mac_grid.hpp"
 #include "vehicles/model_type.hpp"
 
@@ -72,18 +73,10 @@ struct LiveCase {
 [[nodiscard]] spade::Result<LiveCase> quad_live_case(double seconds);
 [[nodiscard]] spade::Result<LiveCase> smoke_live_case(double seconds);
 
-// D1's hover preview (docs/design/test-docs/2026-10-21-d1-hover-checks.md):
-// the same quad with its rigid parts in the flow as solids (P2) at 4 mm,
-// armed at its hover throttle from the start and held level in the 3 m/s
-// wind, stepped every 0.38 ms (Physics: CFL 1 at the wash's ~10.5 m/s).
-// Physics' box held the centre of mass 0.416 m from the inlet, 0.354 m above
-// the bottom and centred in z, in 0.896 x 0.64 x 0.672 m; LiveRun holds it at
-// the grid's centre, so kD1Grid is the smallest box about the drone that
-// keeps each of those clearances as a minimum (0.48 m either side along x,
-// 0.354 m either side along y), with the centre of mass on Physics' cell
-// alignment (an x and z face, a y cell centre). `grid` replaces it, for a
-// measurement.
-inline constexpr spade::physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
+// D1's hover preview: tests/d1_case.hpp's d1_case() (the one builder flow_movie,
+// Physics' B7 and Test/Docs' harness share), as a film. `grid` replaces
+// kD1Grid, for a measurement.
+using spade::testing::kD1Grid;
 [[nodiscard]] spade::Result<LiveCase> d1_live_case(double seconds,
                                                    const spade::physics::airflow::GridShape& grid = kD1Grid);
 

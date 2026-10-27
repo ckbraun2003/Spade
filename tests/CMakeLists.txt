@@ -195,6 +195,7 @@ add_executable(spade_tests
     test_analysis_controls.cpp
     test_analysis_live_run.cpp
     test_analysis_live_run_save.cpp
+    test_d1_case.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
