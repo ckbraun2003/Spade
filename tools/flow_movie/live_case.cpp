@@ -87,6 +87,23 @@ spade::Result<ModelType> case_model(const an::AnalysisCase& c, const fs::path& c
                                    "; re-pin the case to the model it is for"));
 }
 
+float expected_speed(const LiveCase& lc) {
+    if (lc.speed_max > 0.0f) return std::max(lc.speed_max, 1.0f);
+    const float wind = lc.c.flight.speed;
+    const ModelType& m = lc.run_model;
+    if (m.rotors.empty() || !m.propulsion) return std::max(2.0f * wind, 1.0f);
+    // At full throttle the duty is 1 whatever the idle (armed_duty()).
+    const auto full = spade::vehicles::rotor_omega_for_duty(
+        *m.propulsion, 1.0, lc.c.fluid.density,
+        static_cast<double>(lc.c.power.state_of_charge.value_or(an::kDefaultStateOfCharge)));
+    if (!full) return std::max(2.0f * wind, 1.0f);
+    const spade::vehicles::RotorDesc& rotor = m.rotors.front();
+    const float thrust = rotor.thrust_coeff * full->omega_cmd * full->omega_cmd;
+    const float v_h =
+        std::sqrt(thrust / (2.0f * lc.c.fluid.density * std::numbers::pi_v<float> * rotor.radius * rotor.radius));
+    return std::max(2.0f * v_h + wind, 1.0f);
+}
+
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
     return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid);
 }

@@ -1,11 +1,9 @@
 #include "gpu_live.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <memory>
-#include <optional>
 #include <span>
 #include <vector>
 
@@ -32,7 +30,6 @@ namespace {
 
 constexpr uint64_t kNsPerSecond = 1'000'000'000;  // live_run.cpp's
 
-constexpr const char* kChannelNames[] = {"u", "v", "w", "dye", "pressure", "|w|", "q-hat", "lambda2-hat"};
 
 [[nodiscard]] bool same(const an::Controls& a, const an::Controls& b) {
     return a.armed == b.armed && a.throttle == b.throttle && a.pitch_deg == b.pitch_deg && a.roll_deg == b.roll_deg &&
@@ -117,12 +114,9 @@ spade::Result<void> simulate_gpu(const LiveCase& lc, uint32_t frames, const std:
     auto fluid = spade::airflow_gpu::GpuFluid::create(**ctx, *grid, bc, cfg);
     if (!fluid) return failed(fluid.error());
 
-    // The flow's bound (the lead, 2026-10-27): ten times the case's expected
-    // top speed, the speed colours' top (the wind plus momentum theory's
-    // 2 v_h), or twice the wind for a case without one; at least 10 m/s.
-    // Past it the flow has blown up, finite or not.
-    const float expected = lc.speed_max > 0.0f ? lc.speed_max : 2.0f * lc.c.flight.speed;
-    const float bound = 10.0f * std::max(expected, 1.0f);
+    // Each frame is held to frame_check.hpp's bound as write_frame() caches
+    // it: ten times the case's expected top speed (expected_speed()).
+    const FrameBound bound{.expected_speed = expected_speed(lc)};
 
     std::error_code ec;
     fs::create_directories(cache, ec);
@@ -144,34 +138,12 @@ spade::Result<void> simulate_gpu(const LiveCase& lc, uint32_t frames, const std:
         stepping_s += std::chrono::duration<double>(Clock::now() - t0).count();
         if (spade::Result<void> p = (*fluid)->publish(origin, volume); !p) return failed(p.error());
         const double t_s = static_cast<double>(steps * h_ns) / static_cast<double>(kNsPerSecond);
-        if (const std::optional<NonFinite> bad = first_non_finite(volume)) {
-            char why[320];
-            std::snprintf(why, sizeof why,
-                          "frame %u/%u, after step %llu (t %.6f s), holds %zu non-finite samples, the first %s at "
-                          "cell (%u, %u, %u), half 0x%04x: the fluid went NaN, infinite or past binary16's range at "
-                          "or before step %llu; the frame is not cached and the film stops",
-                          k + 1u, frames, static_cast<unsigned long long>(steps), t_s, bad->count,
-                          kChannelNames[bad->channel], bad->i, bad->j, bad->k, static_cast<unsigned>(bad->bits),
-                          static_cast<unsigned long long>(steps));
-            return std::unexpected(spade::Error{spade::Code::internal, stem + ": " + why});
-        }
-        const FastestCell fast = fastest_cell(volume);
-        if (fast.speed > bound) {
-            char why[320];
-            std::snprintf(why, sizeof why,
-                          "frame %u/%u, after step %llu (t %.6f s): max |v| %.1f m/s at cell (%u, %u, %u), past the "
-                          "bound %.1f m/s (10 x the case's expected top speed, %.2f m/s): the flow blew up at or "
-                          "before step %llu; the frame is not cached and the film stops",
-                          k + 1u, frames, static_cast<unsigned long long>(steps), t_s,
-                          static_cast<double>(fast.speed), fast.i, fast.j, fast.k, static_cast<double>(bound),
-                          static_cast<double>(expected), static_cast<unsigned long long>(steps));
-            return std::unexpected(spade::Error{spade::Code::internal, stem + ": " + why});
-        }
-        if (auto wrote = write_frame(cache, k, volume, FrameLog{steps, t_s, live}); !wrote) {
+        if (auto wrote = write_frame(cache, k, volume, FrameLog{steps, t_s, live}, bound); !wrote) {
             return failed(wrote.error());
         }
         lines << steps << '\t' << label << '\n';
         if (k % 10u == 0u || k + 1u == frames) {
+            const FastestCell fast = fastest_cell(volume);
             const double elapsed = std::chrono::duration<double>(Clock::now() - start).count();
             std::printf("[ %s ] frame %u/%u, t %.3f s, step %llu, max |v| %.2f m/s; %.1f s\n", stem.c_str(), k + 1u,
                         frames, t_s, static_cast<unsigned long long>(steps), static_cast<double>(fast.speed),

@@ -39,6 +39,12 @@ struct LiveCase {
     std::optional<spade::physics::airflow::GridShape> grid;
 };
 
+// The fastest the case's air is expected to move, m/s, at least 1: the
+// speed colours' top when the film sets one; else momentum theory's 2 v_h at
+// the rotors' full throttle, through the model's chain, plus the wind; else
+// twice the wind. A film's frames are held to ten times it (frame_check.hpp).
+[[nodiscard]] float expected_speed(const LiveCase& lc);
+
 // The case resolved against its run model, with LiveCase::grid in place of
 // the cube's when set. Refused as resolve() refuses, with every issue, and a
 // grid past kGridByteCap.

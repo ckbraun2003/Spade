@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -45,7 +46,14 @@ template <class T>
 }  // namespace
 
 spade::Result<void> write_frame(const fs::path& dir, uint32_t frame, const spade::FlowVolume& volume,
-                                const FrameLog& log) {
+                                const FrameLog& log, const FrameBound& bound) {
+    if (const std::string why = frame_fault(volume, bound); !why.empty()) {
+        char at[96];
+        std::snprintf(at, sizeof at, "frame %u, after step %llu (t %.6f): ", frame + 1u,
+                      static_cast<unsigned long long>(log.step), log.time);
+        return std::unexpected(spade::Error{spade::Code::internal,
+                                            at + why + "; the frame is not cached and the film stops"});
+    }
     const fs::path path = frame_path(dir, frame);
     const fs::path tmp = dir / "frame.tmp";
     {

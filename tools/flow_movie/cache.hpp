@@ -16,6 +16,7 @@
 
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "frame_check.hpp"
 #include "physics/airflow/mac_grid.hpp"
 
 namespace flow_movie {
@@ -26,8 +27,13 @@ struct FrameLog {
     std::vector<double> live;  // the case's own measures at this frame, in its order
 };
 
+// Every film's frame goes through here, and one that fails frame_fault()
+// against `bound` is refused (internal), naming the frame, its step and
+// why, and never written: a bad frame never becomes a film (the lead,
+// 2026-10-27).
 [[nodiscard]] spade::Result<void> write_frame(const std::filesystem::path& dir, uint32_t frame,
-                                              const spade::FlowVolume& volume, const FrameLog& log);
+                                              const spade::FlowVolume& volume, const FrameLog& log,
+                                              const FrameBound& bound);
 [[nodiscard]] spade::Result<void> read_frame(const std::filesystem::path& dir, uint32_t frame,
                                              spade::FlowVolume& volume, FrameLog& log);
 // How many frames the cache holds, counted from 0 without a gap.
