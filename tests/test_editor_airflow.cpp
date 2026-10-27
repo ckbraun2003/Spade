@@ -304,3 +304,14 @@ TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
     fast.frame(2, 1.5, 2.0);
     EXPECT_EQ(fast.line(), "air at full speed");
 }
+
+// The band (§9) and its floor (the lead's ruling A, 2026-10-27): the speed,
+// then the run's label; elided at its end, it never loses its speed or the
+// run's kind ("actuator disc").
+TEST(EditorAirflow, TheBandsFloorIsItsSpeedAndTheRunsKind) {
+    const std::string band = ed::air_band("air at 1/43 speed", "actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(band, "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 actuator disc");
+    EXPECT_EQ(ed::air_band("waiting for the air's first frame", ""), "waiting for the air's first frame");
+    EXPECT_EQ(ed::band_floor("waiting for the air's first frame"), "waiting for the air's first frame");
+}
