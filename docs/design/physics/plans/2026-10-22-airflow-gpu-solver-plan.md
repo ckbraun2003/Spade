@@ -152,6 +152,12 @@ Each task is red first. GPU tests are `Gpu`-prefixed, so they carry the ctest `g
       - restart: `start()` again;
       - finish: the measure if none was taken (`:130`), the exact-zero stall (`:132`), x ← best on a stop above the mark (`:133-137`), p ← x, the gradient with θ, and the health word.
       - The host submits setup, then iteration `floor` times (`submit(chain, n)`), then measure, and reads a 16-byte decision word {stop, restart}. Until the word says stop, it submits restart when the word asks, then iteration and measure, and reads the word again. Then it submits finish. D1 at 9 iterations reads the word twice.
+      - *Amended 2026-10-27 (the lead's ruling on B5.4, 3f4b9e2): what returns on the stop word, and what state a stop leaves dead.*
+        - **Return at once on stop:** `airflow_pcg_update`'s ops 0-7, and `airflow_pcg_scalars`' step (op 4) and next (op 5). After a stop, decide (op 7) only takes the finish's measure. Gate (op 6), on a solve already stopped and measured, sets the closed regions' means to +0.0, so the measure's `gauge(x)` leaves x alone.
+        - **Run on after a stop:** `airflow_pcg_apply` (A v), the dots (`airflow_tile_dot`, `airflow_tile_sum`), `airflow_region_mean` and the V-cycle's kernels. They write only state a stop leaves DEAD: q, r, z and d; the d·q and rz_next slots; level 0's b and p; the coarse levels.
+        - **Live after a stop:** x, best and b, and the scalars other than those dead slots: the residual and slots 9-23, including the decision word. Anything that runs after a stop (the finish, B5.6's p ← x, the gradient with θ, the health word) reads only live state.
+        - **The evidence:** bit-equality with `solve_pcg_to()` on all seven of B5.4's cases, the exact-zero ones included.
+        - **The decision word** is slots 9-12: {stop, restart, iterations, stalled}.
     - **Best x** is one more grid vector. `airflow_pcg` packs x, b, r, z, d, q and best, seven floats a cell, as `pcg_bytes()` already counts (`pcg.hpp:38`).
     - **Level 0** (`airflow_pressure`, `airflow_rhs`, `airflow_residual`) is the preconditioner's scratch during the solve, as `levels[0]` is on the CPU (`pcg.cpp:39-45`). The grid's p goes into x first and comes back last (`projection.cpp:122, 126`).
     - **Scalars:** B5 takes slots 1-31 of `airflow_scalars`. Slots 1-7 were reserved for it (`projection_chain.hpp:69`). `airflow_params_layout.slang`'s header lists them.
