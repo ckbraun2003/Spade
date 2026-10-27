@@ -177,4 +177,19 @@ struct LegendLine {
     return line;
 }
 
+// The toolbar's legend lines, each scale (with its note) once: layers that
+// share a scale, as Run air's streamlines and cores share the speed's, show
+// it once (the lead, 2026-10-27).
+[[nodiscard]] inline std::vector<LegendLine> legend_lines(const std::vector<render::ViewLegend>& legends) {
+    std::vector<LegendLine> lines;
+    for (const render::ViewLegend& legend : legends) {
+        LegendLine line = legend_line(legend);
+        const bool shown = std::any_of(lines.begin(), lines.end(), [&line](const LegendLine& l) {
+            return l.scale == line.scale && l.note == line.note;
+        });
+        if (!shown) lines.push_back(std::move(line));
+    }
+    return lines;
+}
+
 }  // namespace spade::sandbox::editor

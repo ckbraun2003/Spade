@@ -82,14 +82,16 @@ struct EditorPanels {
     // (moved by every edit, undo and redo).
     uint64_t scene_opened = 0;
     uint64_t scene_serial = 0;
-    // While Run air runs (INT-15): its run label and speed, which the
-    // command bar shows in place of the tick; the session fills it.
+    // While Run air runs (INT-15): its speed, then its run label, which the
+    // command bar shows in place of the tick, elided at the label's end
+    // before Save and File would leave the bar; the session fills it.
     std::string air_band;
     AirLineCache air_line;  // kept by the panels between frames
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
     std::string title;                        // the scene file's name, " *" when anything is unsaved
     bool running = false;
+    bool air = false;  // Run air runs: Pause and Step are a Run's, off
     bool paused = false;
     uint64_t tick = 0;
     bool can_undo = false;

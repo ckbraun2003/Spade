@@ -224,6 +224,7 @@ class EditorWorkspace {
         const std::string file = docs_.scene.path.empty() ? std::string("untitled") : docs_.scene.path.filename().string();
         panels_.title = file + (docs_.scene.dirty() || docs_.world.dirty() ? " *" : "");
         panels_.running = run_.has_value() || air_ != nullptr;
+        panels_.air = air_ != nullptr;
         panels_.paused = paused_;
         panels_.tick = run_ ? run_->tick() : 0u;
         panels_.can_undo = !undo_.empty();
@@ -618,7 +619,9 @@ class EditorWorkspace {
                 paused_ = false;
                 carry_ns_ = 0;
                 return;
-            case Command::pause: paused_ = true; return;
+            case Command::pause:
+                if (!air_) paused_ = true;  // a Run's; the air runs on
+                return;
             case Command::resume: paused_ = false; return;
             case Command::step:
                 if (run_) step_run(kStepTicks);
