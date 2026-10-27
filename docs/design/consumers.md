@@ -14,6 +14,18 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **GpuFluid, the whole fluid step on the GPU** (Rendering, G1, merged `e34d2be`). New `spike/airflow/step_chain.hpp`, namespace `spade::airflow_gpu`:
+  - `GpuFluid::create(ctx, g, bc, cfg, solids, wg)`;
+  - `step(discs)` takes at most `kMaxDiscs` = 16 discs;
+  - `read(g)`, `publish(origin, out)` and `shape()`;
+  - `disc_records()` packs the discs on the host;
+  - a new kernel, `airflow_add_increments`.
+
+  Each step is bit-equal to the CPU's `fluid_step()` without solids. Limits until G3:
+  - a SolidField with parts is refused;
+  - health reports only `pressure_iterations = n_v`, with no scan for NaN or infinity and no residual.
+
+  Nothing existing changes.
 - **Region means, the solid interior and the wall load on the GPU** (Physics, B5.3 and B5.5, merged `5b34e16`). There are three new kernels: `airflow_region_mean`, `airflow_solid_velocities` and `airflow_wall_load`. New in `spike/airflow/solids_chain.hpp`:
   - `pack_region_table()` fills binding 19, and `region_partials_floats()` sizes the partials;
   - `append_region_means()` and `append_remove_region_means()` (the CG's gauge);
