@@ -3,19 +3,21 @@
 // editor's AirflowRun started through gpu_air_starter()
 // (sandbox/editor_air_gpu.hpp) runs on the device and says so, the CPU's run
 // to the bit on the device of record; a device's refusal runs on the CPU,
-// naming it verbatim; and a flow past ten times the top speed, which the
-// device steps without a fault, is stopped by the bound at its frame.
+// naming it verbatim; and a frame past ten times the top speed, finite and
+// in binary16's range, is stopped by the bound at its frame.
 // GpuEditorAirflow* on the device.
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <glm/glm.hpp>
 
@@ -25,6 +27,7 @@
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/flow_volume.hpp"
+#include "core/fp16.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "spike/airflow/live_fluid.hpp"
@@ -99,6 +102,29 @@ void expect_cpus_frame(const spade::scene::SceneDesc& s, const spade::scene::Sce
     EXPECT_TRUE(frame.volume.s == v.s) << "the scalars differ from the CPU's";
 }
 
+// The device's fluid, stepping as ever, whose every publish has cell (1, 2, 3)
+// at 30000 m/s: finite, in binary16's range, and past any drone's bound.
+class FastCell final : public an::LiveFluid {
+  public:
+    explicit FastCell(std::unique_ptr<an::LiveFluid> device) : device_(std::move(device)) {}
+
+    [[nodiscard]] Result<af::FluidHealth> step(std::span<const af::ActuatorDisc> discs) override {
+        return device_->step(discs);
+    }
+
+    [[nodiscard]] Result<void> publish(const af::PublishInput& in, spade::FlowVolume& out) override {
+        if (Result<void> p = device_->publish(in, out); !p) return p;
+        const std::size_t at = spade::flow_cell_index(out.header, 1, 2, 3) * spade::kFlowHalvesPerCell;
+        out.v[at + spade::kFlowU] = spade::fp16::from_f32(30000.0f).bits;
+        return {};
+    }
+
+    [[nodiscard]] Result<void> read(af::MacGrid& g) const override { return device_->read(g); }
+
+  private:
+    std::unique_ptr<an::LiveFluid> device_;
+};
+
 }  // namespace
 
 // On the device: the run says "GPU", and its first two frames (67 steps,
@@ -154,35 +180,38 @@ TEST(GpuEditorAirflow, ADevicesRefusalRunsOnTheCpuNamingIt) {
     expect_cpus_frame(s, region, program, *frame);
 }
 
-// The bound (the lead, 2026-10-27): a poisoned start, 1000 m/s through the
-// box (finite, inside binary16's range, so the device steps it without a
-// fault and its publish holds it), stops the air at its first frame, named,
-// and that frame is not handed over.
+// The bound (the lead, 2026-10-27): a device run's frame with a cell past ten
+// times the top speed, finite and in binary16's range (FastCell), stops the
+// air at that frame, named, and the frame is not handed over. (A poisoned
+// start doesn't serve: 1000 m/s through the box overflows binary16 in the
+// published fields, 8680 halves, and the device's publish refuses the frame
+// before the bound sees it, measured 2026-10-27.)
 TEST(GpuEditorAirflow, AFlowPastTheBoundStopsTheAirAtItsFrame) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const spade::scene::SceneDesc s = with_reference_quad();
     ASSERT_FALSE(s.airflow.empty());
     const std::shared_ptr<VulkanContext> ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const ed::AirStarter poisoned = [ctx](const an::ResolvedCase& r,
-                                          const spade::vehicles::ModelType& m) -> Result<ed::AirStart> {
+    const ed::AirStarter fast = [ctx](const an::ResolvedCase& r,
+                                      const spade::vehicles::ModelType& m) -> Result<ed::AirStart> {
         const an::LiveFluidMaker gpu = ag::gpu_live_fluid(*ctx);
-        const an::LiveFluidMaker maker = [&gpu](const an::LiveFluidStart& start) {
-            af::MacGrid g = start.grid;
-            std::fill(g.u.begin(), g.u.end(), 1000.0f);
-            return gpu(an::LiveFluidStart{g, start.domain, start.config, start.solids});
+        const an::LiveFluidMaker maker =
+            [&gpu](const an::LiveFluidStart& start) -> Result<std::unique_ptr<an::LiveFluid>> {
+            Result<std::unique_ptr<an::LiveFluid>> device = gpu(start);
+            if (!device) return std::unexpected(device.error());
+            return std::make_unique<FastCell>(std::move(*device));
         };
         Result<an::LiveRun> run = an::LiveRun::start(r, m, maker);
         if (!run) return std::unexpected(run.error());
         return ed::AirStart{std::move(*run), "GPU", ctx};
     };
     const an::ControlProgram program{{{0.0f, kHalf}}};
-    Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, s.airflow.back(), program, {}, poisoned);
+    Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, s.airflow.back(), program, {}, fast);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     const std::shared_ptr<const ed::AirFrame> last = wait_for_frames(**run, 1);
     (*run)->stop();
     ASSERT_NE(last, nullptr);
     EXPECT_EQ(last->frames, 0u) << "the frame past the bound is not handed over";
-    EXPECT_NE(last->error.find(": frame 1: the fastest cell, ("), std::string::npos) << last->error;
+    EXPECT_NE(last->error.find(": frame 1: the fastest cell, (1, 2, 3), is at "), std::string::npos) << last->error;
     EXPECT_NE(last->error.find(" m/s, past ten times the top speed ("), std::string::npos) << last->error;
 }
