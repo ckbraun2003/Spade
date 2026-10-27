@@ -40,6 +40,19 @@ using spade::Result;
 // The hover scene plus a plain box "box_1" and a visual panel "panel".
 [[nodiscard]] spade::scene::SceneDesc base_scene() {
     spade::scene::SceneDesc s = support::with_asset(support::sample_scene(), "box_1");
+    // A fixed airflow region for remove-air-region (test_scene_airflow.cpp's
+    // tunnel), which follows no vehicle, so add-air-region's drone is free.
+    spade::scene::SceneAirflowRegion tunnel;
+    tunnel.name = "tunnel";
+    tunnel.kind = spade::scene::AirflowKind::fixed;
+    tunnel.min_corner = glm::vec3(-2.0f, 0.0f, -12.0f);
+    tunnel.cells = spade::physics::airflow::GridShape{64, 32, 32, 0.05f};
+    tunnel.faces.face = {spade::physics::airflow::FaceBc::open, spade::physics::airflow::FaceBc::open,
+                         spade::physics::airflow::FaceBc::wall, spade::physics::airflow::FaceBc::wall,
+                         spade::physics::airflow::FaceBc::periodic, spade::physics::airflow::FaceBc::periodic};
+    tunnel.density = 1.2f;
+    tunnel.kinematic_viscosity = 1.5e-5f;
+    s.airflow.push_back(tunnel);
     spade::scene::SceneAsset panel = support::asset_named("panel");
     panel.visual.mesh_ref = "props/panel";
     panel.visual.material = "red";
@@ -188,6 +201,8 @@ using spade::Result;
                           glm::angleAxis(0.05f, glm::vec3(0.0f, 0.0f, 1.0f))},
         ed::AddMeshParts{"hover_quad_0", {staged_cube()}},
         ed::SetImportedPart{"hover_quad_0", "ring", true, 0.025f, glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))},
+        ed::AddAirflowRegion{"hover_quad_0"},
+        ed::RemoveAirflowRegion{"tunnel"},
     };
 }
 

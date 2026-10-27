@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -30,6 +31,7 @@
 
 #include <glm/gtc/quaternion.hpp>
 
+#include "analysis/case.hpp"
 #include "editor_document.hpp"
 #include "editor_import.hpp"
 #include "editor_model_params.hpp"
@@ -130,10 +132,24 @@ struct SetImportedPart {
     glm::quat mount_orient{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
+// The editor's airflow run (INT-15, T1): a one-way follow region around a
+// drone, named <vehicle>_air, with the plan's §4 defaults (kAirCells^3
+// cubic cells, dx its largest rotor's radius over 3 floored to the
+// millimetre, analysis::Fluid's air, as the tour's live run flies it: the
+// case refuses scene v5's inviscid 0); one region per drone (M2).
+struct AddAirflowRegion {
+    std::string vehicle;
+};
+struct RemoveAirflowRegion {
+    std::string name;
+};
+
+inline constexpr uint32_t kAirCells = 32;  // §4: the live grid the tour flies
+
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
                                RepointWorld, SetModelParam, AddModelFile, AddObjectFile, AddMeshParts,
-                               SetImportedPart>;
+                               SetImportedPart, AddAirflowRegion, RemoveAirflowRegion>;
 
 namespace detail {
 
@@ -252,6 +268,52 @@ inline Result<bool> change(scene::SceneDesc& s, const RemoveObject& e) {
     if (!still_used) {
         std::erase_if(s.models, [&](const auto& m) { return m.name == model; });
     }
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddAirflowRegion& e) {
+    const scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
+    if (v == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, "add an airflow region: no vehicle is named '" + e.vehicle +
+                                                                 "' in this scene; check the name in the hierarchy"});
+    }
+    for (const scene::SceneAirflowRegion& r : s.airflow) {
+        if (r.kind == scene::AirflowKind::follow && r.follows == e.vehicle) {
+            return std::unexpected(Error{Code::invalid_argument, "add an airflow region around '" + e.vehicle +
+                                                                     "': airflow region '" + r.name +
+                                                                     "' already follows it; one region holds one drone"});
+        }
+    }
+    float radius = 0.0f;
+    if (const vehicles::ModelType* m = find_named(s.models, v->model)) {
+        for (const vehicles::RotorDesc& rotor : m->rotors) radius = std::max(radius, rotor.radius);
+    }
+    if (!(radius > 0.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "add an airflow region around '" + e.vehicle +
+                                                                 "': its model '" + v->model +
+                                                                 "' has no rotors, so there is no air to drive"});
+    }
+    scene::SceneAirflowRegion r;
+    r.name = lowest_free(e.vehicle + "_air", [&](std::string_view n) {
+        return std::any_of(s.airflow.begin(), s.airflow.end(), [&](const auto& x) { return x.name == n; });
+    });
+    r.kind = scene::AirflowKind::follow;
+    r.follows = e.vehicle;
+    r.cells = physics::airflow::GridShape{kAirCells, kAirCells, kAirCells, std::floor(radius / 3.0f * 1000.0f) / 1000.0f};
+    r.density = analysis::Fluid{}.density;
+    r.kinematic_viscosity = analysis::Fluid{}.kinematic_viscosity;
+    r.coupling = scene::AirflowCoupling::one_way;
+    s.airflow.push_back(std::move(r));
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const RemoveAirflowRegion& e) {
+    const auto it = std::find_if(s.airflow.begin(), s.airflow.end(), [&](const auto& r) { return r.name == e.name; });
+    if (it == s.airflow.end()) {
+        return std::unexpected(Error{Code::invalid_argument, "remove an airflow region: no airflow region is named '" +
+                                                                 e.name + "' in this scene"});
+    }
+    s.airflow.erase(it);
     return true;
 }
 
