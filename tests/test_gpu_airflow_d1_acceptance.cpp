@@ -69,6 +69,10 @@ TEST(B7Acceptance, TheCpuStandInIsBitEqualToTheCpu) {
     const spade::Result<B7Run> run = run_b7(*box, &CpuStandIn::create);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     std::fputs(run->block.c_str(), stdout);
+    const std::string physical = physical_line(*run);
+    std::fputs(physical.c_str(), stdout);
+    EXPECT_TRUE(run->physical) << physical;
+    EXPECT_LE(run->t.film_peak, run->bound) << "the film's flow stays physical too";
     const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
     ASSERT_TRUE(record.has_value()) << record.error().context;
     ASSERT_EQ(record->size(), 1u);
@@ -99,6 +103,9 @@ TEST(B7Acceptance, TheCpuStandInIsBitEqualToTheCpuInTheD1Box) {
     const spade::Result<B7Run> run = run_b7(*box, &CpuStandIn::create, kD1StandInPlan);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     std::fputs(run->block.c_str(), stdout);
+    const std::string physical = physical_line(*run);
+    std::fputs(physical.c_str(), stdout);
+    EXPECT_TRUE(run->physical) << physical;
     const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
     ASSERT_TRUE(record.has_value()) << record.error().context;
     ASSERT_EQ(record->size(), 1u);
@@ -124,6 +131,9 @@ TEST(B7Acceptance, ANudgedRunIsAMissAtItsFirstStep) {
     const spade::Result<B7Run> run = run_b7(*box, NudgedCpuStandIn::maker(kNudgeStep, sample));
     ASSERT_TRUE(run.has_value()) << run.error().context;
     std::fputs(run->block.c_str(), stdout);
+    const std::string physical = physical_line(*run);
+    std::fputs(physical.c_str(), stdout);
+    EXPECT_TRUE(run->physical) << physical;
     const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
     ASSERT_TRUE(record.has_value()) << record.error().context;
     ASSERT_EQ(record->size(), 1u);
@@ -228,4 +238,45 @@ TEST(B7AcceptanceRecord, TheBlockReadsAsAValidationRecord) {
     EXPECT_EQ(f->at(0).measures[1].number, 0.0);
     const MacGrid one{};
     EXPECT_EQ(values_per_step(one, gpu.reports), 1u) << "pressure_iterations alone, no wall load";
+
+    // A film whose flow diverged reads provisional, its time still the value.
+    const Timing diverged{.step_ms = 35.0, .film_s = 45.0, .film_steps = 1316, .film_peak = 8.8e23};
+    const auto h = airflow_test::read_as_record(
+        b7_block("a test box", "a test config", "a test build", kFullPlan, gpu, diverged, true, true, true, true),
+        "b7-test.md");
+    ASSERT_TRUE(h.has_value()) << h.error().context;
+    ASSERT_EQ(h->size(), 1u);
+    ASSERT_EQ(h->at(0).measures.size(), 4u);
+    EXPECT_NE(h->at(0).measures[3].quantity.find("provisional (diverged flow"), std::string::npos)
+        << h->at(0).measures[3].quantity;
+    EXPECT_EQ(h->at(0).measures[3].number, 45.0);
+    EXPECT_EQ(e->at(0).measures[3].quantity.find("provisional"), std::string::npos);
+}
+
+// The physical check: the flow's peak over u, v and w, infinite past a NaN;
+// the bound from momentum theory (the stand-in's disc has v_h 1 m/s and no
+// wind: 4 x 2 m/s); its line PASS, FAIL, and FAIL known-open.
+TEST(B7AcceptanceRecord, ThePhysicalCheckBoundsTheFlowAbove) {
+    MacGrid g;
+    g.u = {1.0f, -3.0f};
+    g.v = {2.0f};
+    EXPECT_EQ(peak_speed(g), 3.0);
+    g.w = {std::numeric_limits<float>::quiet_NaN()};
+    EXPECT_EQ(peak_speed(g), std::numeric_limits<double>::infinity());
+    const spade::Result<B7Box> box = stand_in_box(BoxSolids::none);
+    ASSERT_TRUE(box.has_value()) << box.error().context;
+    EXPECT_NEAR(physical_bound(*box), 8.0, 1.0e-5);
+    B7Run run;
+    run.c.steps = 2;
+    run.c.cpu_peak = 88.7;
+    run.bound = 55.1;
+    EXPECT_EQ(physical_line(run, "known-open (Physics' cause pending)").rfind(
+                  "physical: FAIL, known-open (Physics' cause pending): the CPU's largest |u|, |v| or |w| over steps "
+                  "1 to 2 = 88.7 m/s against 55.1 m/s (4 x (2 v_h + the wind))",
+                  0),
+              0u)
+        << physical_line(run, "known-open (Physics' cause pending)");
+    run.c.cpu_peak = 5.0;
+    run.physical = true;
+    EXPECT_EQ(physical_line(run).rfind("physical: PASS: ", 0), 0u) << physical_line(run);
 }

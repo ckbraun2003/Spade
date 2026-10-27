@@ -94,10 +94,17 @@ class GpuFluidStepper : public FluidStepper {
     return std::move(*result);
 }
 
+// D1 without its solids diverges on the CPU itself (2026-10-27), and GpuFluid
+// follows it bit for bit: its physical line is printed, not asserted, until
+// Physics fixes the cause (the lead).
+constexpr const char* kD1KnownOpen = "known-open (Physics' cause pending)";
+
 // The harness on `box` with GpuFluid under `plan`: the block printed and read
-// back, the values bit-equal over the plan's steps, the air moving. The
-// step time's verdict is printed for the record, not asserted.
-void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std::size_t measures, double speed) {
+// back, the values bit-equal over the plan's steps, the discs moving the air
+// and the flow staying physical (unless `known_open` names why it doesn't).
+// The step time's verdict is printed for the record, not asserted.
+void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std::size_t measures, double speed,
+                      const std::string& known_open = {}) {
     ASSERT_TRUE(box.has_value()) << box.error().context;
     const std::unique_ptr<VulkanContext> ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -109,6 +116,11 @@ void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std:
     ASSERT_TRUE(run.has_value()) << run.error().context;
     std::fputs(run->block.c_str(), stdout);
     std::printf("the CPU's largest |v| at step %u: %.4f m/s\n", plan.compared, run->c.cpu_speed);
+    const std::string physical = physical_line(*run, known_open);
+    std::fputs(physical.c_str(), stdout);
+    if (known_open.empty()) {
+        EXPECT_TRUE(run->physical) << physical;
+    }
     const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
     ASSERT_TRUE(record.has_value()) << record.error().context;
     ASSERT_EQ(record->size(), 1u);
@@ -130,7 +142,7 @@ TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheStandInBoxWithoutItsSphere) {
 TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheD1BoxWithoutItsSolids) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     // The wind is along -x and v starts at 0: any v is the discs'.
-    expect_bit_equal(d1_box(BoxSolids::none), kShortPlan, 2u, 0.1);
+    expect_bit_equal(d1_box(BoxSolids::none), kShortPlan, 2u, 0.1, kD1KnownOpen);
 }
 
 // The full plan: 32 steps compared, the step's median and the film's 0.50 s
@@ -145,7 +157,7 @@ TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheStandInBox) {
 TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run B7's full GPU plan in D1";
-    expect_bit_equal(d1_box(BoxSolids::none), kFullPlan, 4u, 1.0);
+    expect_bit_equal(d1_box(BoxSolids::none), kFullPlan, 4u, 1.0, kD1KnownOpen);
 }
 
 }  // namespace

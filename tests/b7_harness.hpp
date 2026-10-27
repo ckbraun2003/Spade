@@ -427,8 +427,40 @@ struct Comparison {
     std::size_t first_index = 0;        // the sample, or the component
     double first_gap = 0.0;             // |candidate - CPU| there
     std::array<double, 4> largest_gap{};  // u, v, w and p: the largest |candidate - CPU| of the run
-    double cpu_speed = 0.0;             // the CPU's largest |v| at step N: the box is not still
+    double cpu_speed = 0.0;             // the CPU's largest |v| at step N: the discs move the air
+    double cpu_peak = 0.0;              // the CPU's largest |u|, |v| or |w| over steps 1 to N (peak_speed())
 };
+
+// The largest |u|, |v| or |w| sample, infinite if any is not finite.
+[[nodiscard]] inline double peak_speed(const MacGrid& g) {
+    double peak = 0.0;
+    for (const std::vector<float>* comp : {&g.u, &g.v, &g.w}) {
+        for (const float x : *comp) {
+            if (!std::isfinite(x)) return std::numeric_limits<double>::infinity();
+            peak = std::max(peak, std::fabs(static_cast<double>(x)));
+        }
+    }
+    return peak;
+}
+
+// The bound a physical flow in the box stays under: kPhysicalFactor times the
+// fastest air its discs and wind should make, the far wake's 2 v_h of its
+// fastest disc (momentum theory, v_h = sqrt(T / (2 rho pi R^2))) plus the
+// wind's speed: 8 m/s in the stand-in box, 55 m/s in D1. A diverging run
+// passes it within steps (D1 without solids, 2026-10-27: 88.7 m/s at step 2,
+// 8.8e23 m/s at step 32, from the top face by the inflow). The real D1 passes
+// it at step 14: one disc-plane sample at 0.71 R grows about 4 m/s a step, to
+// 135.7 m/s at step 32 (Physics' triage).
+inline constexpr double kPhysicalFactor = 4.0;
+
+[[nodiscard]] inline double physical_bound(const B7Box& box) {
+    double vh = 0.0;
+    for (const ActuatorDisc& d : box.discs) {
+        const double area = std::numbers::pi * static_cast<double>(d.radius) * static_cast<double>(d.radius);
+        vh = std::max(vh, std::sqrt(static_cast<double>(d.thrust) / (2.0 * static_cast<double>(box.cfg.rho) * area)));
+    }
+    return kPhysicalFactor * (2.0 * vh + static_cast<double>(glm::length(box.bc.ambient)));
+}
 
 inline void tally(Comparison& c, uint32_t step, const char* field, std::size_t index, bool differs, double gap) {
     ++c.compared;
@@ -592,6 +624,7 @@ inline void tally_solids(Comparison& c, const SolidField& cpu, const SolidField&
         tally_field(c, step, "v", a.v, b.v, c.largest_gap[1]);
         tally_field(c, step, "w", a.w, b.w, c.largest_gap[2]);
         tally_field(c, step, "p", a.p, b.p, c.largest_gap[3]);
+        c.cpu_peak = std::max(c.cpu_peak, peak_speed(a));
         tally_health(c, step, *ha, *hb);
         if (c.reports.wall_load) {
             const spade::Result<WallLoad> la = cpu.wall_load(box.about);
@@ -610,6 +643,7 @@ struct Timing {
     double step_ms = 0.0;     // the median of M steps after W warm-up
     double film_s = 0.0;      // 0.50 s of the box's time, published at each frame
     uint32_t film_steps = 0;  // the steps that took
+    double film_peak = 0.0;   // the candidate's peak_speed() at the film's end, read after the timing
 };
 
 // The step time with nothing read back between the timed steps; then, from
@@ -656,6 +690,9 @@ struct Timing {
     }
     t.film_s = std::chrono::duration<double>(clock::now() - t0).count();
     t.film_steps = static_cast<uint32_t>(steps);
+    MacGrid end;
+    if (spade::Result<void> r = (*made)->read(end); !r) return std::unexpected(r.error());
+    t.film_peak = peak_speed(end);
     return t;
 }
 
@@ -676,7 +713,8 @@ struct Timing {
 // compared, the step time's when steps were timed, the film's when it ran.
 [[nodiscard]] inline std::string b7_block(const std::string& box, const std::string& config,
                                           const std::string& build, const RunPlan& plan, const Comparison& c,
-                                          const Timing& t, bool bits_within, bool solids_within, bool time_within) {
+                                          const Timing& t, bool bits_within, bool solids_within, bool time_within,
+                                          bool film_diverged = false) {
     const std::string film = plan.film ? airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n, "0.50 s of the box's time in %u steps, published at every 1/30 s", t.film_steps);
     })
@@ -748,23 +786,45 @@ struct Timing {
         });
     }
     if (!plan.film) return block;
+    const std::string diverged =
+        film_diverged ? airflow_test::formatted([&](char* b, std::size_t n) {
+            return std::snprintf(b, n, ", provisional (diverged flow: its largest |u|, |v| or |w| %.3g m/s at the end)",
+                                 t.film_peak);
+        })
+                      : std::string();
     return block + airflow_test::formatted([&](char* b, std::size_t n) {
                return std::snprintf(b, n,
                                     "measure: the wall time for 0.50 s of the box's time (%u steps), publishing at "
-                                    "the film's frame times = %.2f s\n"
+                                    "the film's frame times%s = %.2f s\n"
                                     "reference: the plan's estimate, about 2 minutes at the D1 box (B7)\n"
                                     "tolerance: none (report only)\n"
                                     "verdict: report only\n",
-                                    t.film_steps, t.film_s);
+                                    t.film_steps, diverged.c_str(), t.film_s);
            });
 }
 
-// The harness on one box: the comparison, the times, and the block judged.
+// The harness on one box: the comparison, the times, the block judged, and
+// whether the CPU's flow stayed physical (cpu_peak within physical_bound()).
 struct B7Run {
     Comparison c;
     Timing t;
     std::string block;
+    double bound = 0.0;
+    bool physical = false;
 };
+
+// The physical check's own line, after the block (not a record measure): a
+// FAIL the lead has named known-open says so (`known_open`, its reason).
+[[nodiscard]] inline std::string physical_line(const B7Run& run, const std::string& known_open = {}) {
+    const std::string open = known_open.empty() ? std::string() : ", " + known_open;
+    return airflow_test::formatted([&](char* b, std::size_t n) {
+        return std::snprintf(b, n,
+                             "physical: %s%s: the CPU's largest |u|, |v| or |w| over steps 1 to %u = %.4g m/s against "
+                             "%.4g m/s (%.0f x (2 v_h + the wind))\n",
+                             run.physical ? "PASS" : "FAIL", open.c_str(), run.c.steps, run.c.cpu_peak, run.bound,
+                             kPhysicalFactor);
+    });
+}
 
 [[nodiscard]] inline spade::Result<B7Run> run_b7(const B7Box& box, const MakeStepper& make,
                                                  const RunPlan& plan = kFullPlan) {
@@ -772,9 +832,10 @@ struct B7Run {
     if (!c) return std::unexpected(c.error());
     spade::Result<Timing> t = time_candidate(box, make, plan);
     if (!t) return std::unexpected(t.error());
-    B7Run run{std::move(*c), *t, {}};
+    B7Run run{std::move(*c), *t, {}, physical_bound(box), false};
+    run.physical = run.c.cpu_peak <= run.bound;
     run.block = b7_block(box.name, box.config, airflow_test::build_line(), plan, run.c, run.t, run.c.differing == 0u,
-                         run.c.solids_differing == 0u, run.t.step_ms <= kStepBoundMs);
+                         run.c.solids_differing == 0u, run.t.step_ms <= kStepBoundMs, run.t.film_peak > run.bound);
     return run;
 }
 
