@@ -100,13 +100,13 @@ void fly(ft::FlightRig& rig, const fl::FlightController& fc, double& t, double s
 
 // The hover world: a ground to rest on, with room for the quad's elements
 // (a scene's composition would size it; scene/compose.cpp).
-[[nodiscard]] std::optional<ft::FlightRig> on_the_ground() {
+[[nodiscard]] std::optional<ft::FlightRig> on_the_ground(const std::filesystem::path& file = ft::reference_quad_file()) {
     spade::Result<spade::WorldDesc> world =
         spade::load_world_file(std::filesystem::path(SPADE_ASSETS_DIR) / "worlds" / "hover.world.yaml");
     EXPECT_TRUE(world.has_value()) << (world ? "" : world.error().context);
     if (!world) return std::nullopt;
     world->capacities = spade::Capacities{4, 64, 16, 8};
-    return ft::reference_quad_rig(glm::vec3(0.0f, 0.5f, 0.0f), 0.0f, *world);
+    return ft::model_rig(file, glm::vec3(0.0f, 0.5f, 0.0f), 0.0f, *world);
 }
 
 }  // namespace
@@ -313,8 +313,10 @@ TEST(FlightController, AModelWithoutAChainIsRefusedByName) {
 // keys' 30 degrees nose down. follows-attitude is judged from the press,
 // the setpoint's 0.5 s ramp included; from the setpoint's arrival it is
 // printed for the record.
-TEST(FlightController, TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows) {
-    std::optional<ft::FlightRig> rig = on_the_ground();
+namespace {
+
+// The staging on `rig`'s drone, as editor.fly stages it on the one it places.
+void tour_staging(std::optional<ft::FlightRig>& rig) {
     ASSERT_TRUE(rig.has_value());
     const float density = kDensity;
     const spade::Result<fl::FlightController> fc = fl::FlightController::make(rig->model, density);
@@ -363,11 +365,26 @@ TEST(FlightController, TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollo
     const eg::Verdict followed = eg::follows_attitude(frames, press_s, command);
     EXPECT_TRUE(followed.ok) << followed.detail;
     const eg::Verdict from_arrival = eg::follows_attitude(frames, arrive_s, command);
-    std::printf("[ tour staging ] throttle %.3f for 1.3 m g, PageUp from t = %.3f s\n", static_cast<double>(target),
-                throttle_up_s);
+    std::printf("[ tour staging ] %s: throttle %.3f for 1.3 m g, PageUp from t = %.3f s\n", rig->model.name.c_str(),
+                static_cast<double>(target), throttle_up_s);
     std::printf("[ tour staging ] %s\n", is_armed.detail.c_str());
     std::printf("[ tour staging ] %s\n", climbed.detail.c_str());
     std::printf("[ tour staging ] from the press: %s\n", followed.detail.c_str());
     std::printf("[ tour staging ] from the setpoint's arrival (%s): %s\n", from_arrival.ok ? "passes" : "fails",
                 from_arrival.detail.c_str());
+}
+
+}  // namespace
+
+TEST(FlightController, TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows) {
+    std::optional<ft::FlightRig> rig = on_the_ground();
+    tour_staging(rig);
+}
+
+// The same staging on the library's Phantom (the lead, 2026-10-27), which
+// editor.fly places and flies since L7c1 gave it props: the gains follow its
+// inertia and its motors' tau, so it passes as the reference quad does.
+TEST(FlightController, TheToursStagingPassesOnTheLibrarysPhantom) {
+    std::optional<ft::FlightRig> rig = on_the_ground(ft::phantom_file());
+    tour_staging(rig);
 }

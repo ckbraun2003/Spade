@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -314,4 +315,42 @@ TEST(EditorAirflow, TheBandsFloorIsItsSpeedAndTheRunsKind) {
     EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 actuator disc");
     EXPECT_EQ(ed::air_band("waiting for the air's first frame", ""), "waiting for the air's first frame");
     EXPECT_EQ(ed::band_floor("waiting for the air's first frame"), "waiting for the air's first frame");
+}
+
+// The library's Phantom (the lead, 2026-10-27), which editor.airflow runs
+// since L7c1 gave it props (mesh parts): its air starts, its chain resolves
+// and a frame is handed over with no error at its own dx (R/3, to the
+// millimetre below), on 20^3 so the debug suite stays cheap, its span
+// inside. Run air is actuator discs (the lead's ruling): its parts are not
+// the air's solids.
+TEST(EditorAirflow, ThePlacedPhantomsAirStartsAndPublishes) {
+    auto d = ed::make_scene_document(support::sample_scene(), {});
+    ed::AddModelFile add;
+    add.file = (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "phantom3_class.model.yaml")
+                   .generic_string();
+    add.vehicle.name = "phantom";
+    add.vehicle.start.pos = glm::vec3(1.0f, 2.0f, 3.0f);
+    const Result<void> added = ed::apply(d, add);
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    const Result<void> region = ed::apply(d, ed::AddAirflowRegion{"phantom"});
+    ASSERT_TRUE(region.has_value()) << region.error().context;
+    spade::scene::SceneDesc s = d.desc();
+    ASSERT_EQ(s.airflow.size(), 1u);
+    float radius = 0.0f;
+    for (const spade::scene::SceneVehicle& v : s.vehicles) {
+        if (v.name != "phantom") continue;
+        for (const spade::vehicles::ModelType& m : s.models) {
+            if (m.name == v.model) radius = m.rotors.front().radius;
+        }
+    }
+    ASSERT_GT(radius, 0.0f);
+    EXPECT_FLOAT_EQ(s.airflow[0].cells.dx, std::floor(radius / 3.0f * 1000.0f) / 1000.0f);
+    s.airflow[0].cells = spade::physics::airflow::GridShape{20, 20, 20, s.airflow[0].cells.dx};
+    Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, s.airflow[0]);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 1);
+    ASSERT_NE(frame, nullptr) << "no frame in 50 s";
+    EXPECT_TRUE(frame->error.empty()) << frame->error;
+    EXPECT_GE(frame->frames, 1u);
+    EXPECT_TRUE(frame->run_label.starts_with("actuator disc")) << frame->run_label;
 }

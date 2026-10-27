@@ -265,3 +265,34 @@ TEST(EditorLibrarySave, ANameTheSceneDoesntHaveIsRefusedByName) {
     EXPECT_NE(saved.error().context.find("'no_such'"), std::string::npos) << saved.error().context;
     EXPECT_FALSE(fs::exists(dir));
 }
+
+// A drone with mesh parts, the library's Phantom with L7c1's props, is saved
+// with its sidecars (the lead, 2026-10-27): each beside the model file under
+// the content-named path its part gives, so the entry loads back equal, its
+// meshes checked by their hashes, and places back.
+TEST(EditorLibrarySave, ADroneWithMeshPartsIsSavedWithItsSidecarsAndLoadsBackEqual) {
+    std::string phantom;
+    const ed::SceneDocument doc = hover_with(default_item("Phantom 3-class quad"), phantom);
+    ASSERT_FALSE(phantom.empty());
+    const spade::vehicles::ModelType& placed =
+        support::model_named(doc.desc(), vehicle_named(doc.desc(), phantom).model);
+    std::vector<std::string> sidecars;
+    for (const spade::vehicles::PartDesc& part : placed.parts) {
+        if (part.mesh) sidecars.push_back(part.mesh_file);
+    }
+    ASSERT_FALSE(sidecars.empty()) << "L7c1's props are mesh parts";
+    const support::TempDir tmp;
+    const fs::path dir = tmp.path() / "library";
+
+    const Result<ed::LibrarySaved> saved = ed::save_to_library(dir, doc.desc(), phantom, kNoMeshRoots);
+    ASSERT_TRUE(saved.has_value()) << saved.error().context;
+    for (const std::string& s : sidecars) EXPECT_TRUE(fs::exists(dir / s)) << s;
+    const ed::LibraryLoad load = ed::load_library_items(dir / "library.yaml");
+    ASSERT_TRUE(load.problems.empty()) << load.problems.front();
+    ASSERT_EQ(load.items.size(), 1u);
+    ASSERT_TRUE(load.items[0].model.has_value());
+    EXPECT_EQ(model_text(*load.items[0].model), model_text(placed));
+    std::string again;
+    (void)hover_with(load.items[0], again);
+    EXPECT_FALSE(again.empty()) << "it places back";
+}
