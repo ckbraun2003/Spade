@@ -349,6 +349,12 @@ The lead asked Physics for P11's four answers and for Q3.
 - `save_mesh_file()` replaces its target whole: it writes `<path>.tmp-spade` and renames that over the target, so a failed write leaves nothing partial at the target. On Windows, a target held open without `FILE_SHARE_DELETE` is refused cleanly, the temporary is removed and the target keeps its bytes.
 - One writer of a placed drone's sidecars, `scene::write_placed_meshes()`, serves both the editor's Save and the command line's `--save` (`editor_cli.hpp`, granted to Core with Interface's review).
 
+**Visible results first (Cameron, backlog 2026-10-27, via the lead).** The new order is L7b0, then L7c1 (props drawn still), then L7c2, then L7b1 and L7b2.
+- L7c1 takes nothing from L7b1: props are massless rotor parts.
+- L7c1 lands after L7b0 and builds on its merge.
+- The `.gitattributes` `*.spmesh binary` grant moves from L7b2 to L7c1.
+- reference_quad stays a fixture, so the lead asks Interface to fly an L5 drone in the tour's editor chapters, where the props will show.
+
 ## Open questions for the lead (each with a recommendation)
 
 1. **Where props enter the spec.** (a) The generic `AirframeSpec::rotor_parts`: massless, with the builder picking the hand. (b) One mesh per hand in `PropBlock`, picked by spin_dir in the compile. PropBlock is a part-file struct, so its writer would have to refuse the field. (c) `attach`/`rotor` on `PartGeometrySpec`: such a record carries mass, and the composite needs mass > 0, so the prop would be counted twice. **Recommend (a).**
