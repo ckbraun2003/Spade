@@ -640,3 +640,18 @@ TEST(EditorWorkspaceAir, AChangeToTheSceneStopsTheAirNamingWhy) {
     EXPECT_EQ(w->air(), nullptr);
     EXPECT_NE(w->panels().status.find("the scene changed"), std::string::npos) << w->panels().status;
 }
+
+// Pause and Step are a Run's: while the air runs the bar has them off, and a
+// Pause sent anyway leaves nothing paused (no "Resume" over air that runs on).
+TEST(EditorWorkspaceAir, PauseAndStepAreARunsNotTheAirs) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    (void)quad_with_region(*w);
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    EXPECT_TRUE(w->panels().air);
+    command(*w, Command::pause);
+    EXPECT_FALSE(w->panels().paused);
+    command(*w, Command::stop);
+    EXPECT_FALSE(w->panels().air);
+}
