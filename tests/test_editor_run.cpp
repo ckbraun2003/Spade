@@ -215,3 +215,82 @@ TEST(EditorRun, ARebuildFliesTheChainAsEdited) {
     EXPECT_GT(std::abs(exact(after, thrust) - exact(before, thrust)), 1e-3) << "the edit moves the inverse";
     EXPECT_NEAR(fc->duty_for_thrust(thrust), exact(after, thrust), 1e-5);
 }
+
+namespace {
+
+// The hover scene with the library's drone from `stem`.model.yaml placed as
+// `name` at `at`.
+[[nodiscard]] spade::scene::SceneDesc with_library_drone(spade::scene::SceneDesc s, std::string_view stem,
+                                                         std::string_view name, glm::vec3 at) {
+    const Result<spade::scene::ModelFile> file = spade::scene::load_model_file(
+        std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / (std::string(stem) + ".model.yaml"));
+    EXPECT_TRUE(file.has_value()) << (file ? "" : file.error().context);
+    if (!file) return s;
+    s.models.push_back(file->model);
+    spade::scene::SceneVehicle v;
+    v.name = std::string(name);
+    v.model = file->model.name;
+    v.start.pos = at;
+    s.vehicles.push_back(v);
+    return s;
+}
+
+}  // namespace
+
+// A scene whose drones all fit the records' cell (the reference quad's proxy
+// sphere is 0.150 m against the hover records' 0.5 m) runs on the records'
+// own instance, bit for bit as before Run sized its cell (the lead,
+// 2026-10-27): no cell sized, and the digest is the records' instance's at
+// the start and 200 ticks on (the quad lands), its rotors commanded as Run
+// commands a disarmed drone's, zero.
+TEST(EditorRun, ARunWhoseDronesFitTheRecordsCellIsBitForBitTheRecords) {
+    const spade::scene::SceneDesc s =
+        with_library_drone(support::sample_scene(), "reference_quad", "quad", glm::vec3(4.0f, 0.3f, 4.0f));
+    const spade::WorldDesc world = support::sample_world();
+    const ed::BuiltinRecords records = ed::records_for(support::hover_scene());
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, world, records);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ(run->grid_cell(), records.grid.cell_size);
+    EXPECT_TRUE(run->cell_sized_for().empty()) << run->cell_sized_for();
+
+    // The records' instance, as Run built it before: chained drones at rest.
+    spade::scene::SceneDesc at_rest = s;
+    for (spade::scene::SceneVehicle& v : at_rest.vehicles) {
+        if (run->flies(v.name)) v.start.rotor_omega = 0.0f;
+    }
+    const Result<spade::scene::ComposedScene> composed = ed::compose_together(at_rest, world);
+    ASSERT_TRUE(composed.has_value()) << composed.error().context;
+    auto direct = spade::scene::instantiate(*composed, spade::sandbox::instance_of(records),
+                                            spade::sandbox::kBuiltinStepNs, spade::sandbox::kBuiltinSubsteps);
+    ASSERT_TRUE(direct.has_value()) << direct.error().context;
+    ASSERT_TRUE(direct->sim.flush_structural().has_value());
+    EXPECT_EQ(spade::testing::state_digest(run->sim()), spade::testing::state_digest(direct->sim));
+    for (int tick = 0; tick < 200; ++tick) {
+        for (std::size_t i = 0; i < s.vehicles.size(); ++i) {
+            if (!run->flies(s.vehicles[i].name)) continue;
+            const spade::VehicleRef& ref = direct->vehicles[i];
+            const std::vector<float> zero(ref.rotor_count, 0.0f);
+            ASSERT_TRUE(direct->sim.set_rotor_commands(ref, zero).has_value());
+        }
+        ASSERT_TRUE(direct->sim.step(1).has_value());
+    }
+    ASSERT_TRUE(run->step(200).has_value());
+    EXPECT_EQ(spade::testing::state_digest(run->sim()), spade::testing::state_digest(direct->sim));
+}
+
+// A drone too big for the records' cell sizes it (the lead, 2026-10-27):
+// spawn() refuses a cell under twice a model's proxy radius, so the run's is
+// twice the largest, and it names the drone it was sized for.
+TEST(EditorRun, ARunSizesItsCellForItsLargestDroneNamingIt) {
+    const spade::scene::SceneDesc s = with_library_drone(
+        with_library_drone(support::sample_scene(), "reference_quad", "quad", glm::vec3(4.0f, 0.3f, 4.0f)),
+        "phantom3_class", "phantom", glm::vec3(-4.0f, 0.4f, 4.0f));
+    const ed::BuiltinRecords records = ed::records_for(support::hover_scene());
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, support::sample_world(), records);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const float proxy = s.models.back().proxy_radius;
+    ASSERT_GT(2.0f * proxy, records.grid.cell_size) << "the Phantom needs more than the records' cell";
+    EXPECT_EQ(run->grid_cell(), 2.0f * proxy);
+    EXPECT_EQ(run->cell_sized_for(), "phantom");
+    EXPECT_TRUE(run->state_of("phantom").has_value());
+}

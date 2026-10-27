@@ -676,3 +676,28 @@ TEST(EditorWorkspaceRun, RunFliesAPlacedLibraryPhantom) {
     EXPECT_EQ(w->panels().pilot.vehicle, phantom) << w->panels().pilot.why_not;
     EXPECT_TRUE(w->run()->state_of(phantom).has_value());
 }
+
+// The inspector's Grid cell row is honest (the lead, 2026-10-27): while a Run
+// whose cell was sized for a drone is going, it reads the run's cell and why;
+// otherwise the records' cell, as before.
+TEST(EditorWorkspaceRun, TheGridCellRowShowsTheRunsSizedCellAndWhy) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    w->refresh_panels();
+    for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
+        if (w->panels().library[i].name == "Phantom 3-class quad") w->panels().armed = i;
+    }
+    ASSERT_TRUE(w->panels().armed.has_value());
+    w->click(glm::vec3(3.0f, 5.0f, 0.0f), kDown);
+    const std::string phantom = w->panels().selection.name;
+    ASSERT_FALSE(phantom.empty()) << w->panels().status;
+    const float records = w->records().grid.cell_size;
+    const std::string before = std::format("{:.3f} m", records);
+    EXPECT_EQ(w->panels().grid_cell, before);
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().grid_cell, std::format("{:.3f} m, sized for '{}'; the records' {:.3f} m",
+                                                 w->run()->grid_cell(), phantom, records));
+    command(*w, Command::stop);
+    EXPECT_EQ(w->panels().grid_cell, before);
+}
