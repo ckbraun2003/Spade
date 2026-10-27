@@ -14,6 +14,8 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Every film's frames are checked** (Rendering, merged `e3997db`). `write_frame()` takes a `FrameBound` and refuses a frame that fails `frame_fault()` before writing it: a non-finite half (beyond a solid block's allowed no-data halves), or a speed past 10 × the film's expected top speed (at least 10 m/s). The film then stops with "<stem>: frame K, after step S (t T): why". Every builder sets `Film::expected_speed`, and a `--case` file's run takes 2 v_h at full throttle plus the wind.
+- **The solids projection on the GPU** (Physics, B5.6, merged `236bb12`). `solids_chain`'s `projection_chains(shape, layout, ProjectionSolidsPipelines, closed, wg)` and `project_with_solids(runner, ids, floor, cap)` return `GpuProjectionReport{ProjectionReport, capped}`. They are bit-equal to `project_solids()`. The health word sits in `airflow_scalars` slots 24-27 (`kSlotHealth`): residual, iterations, stalled, capped. `airflow_pcg_update` gains op 9 (p ← x). Nothing existing changes.
 - **A motor mesh, the composite, and the basic quad's look** (Core, L7b1, merged `caba080`). These add to what was there. No library drone sets either option yet; that is L7b2.
   - `AirframeSpec::motor_mesh` is a `std::optional<MotorMeshSpec>{mesh, min_feature}` in the hub frame. It makes each motor a mesh record of exactly `motor.mass` at its hub.
   - `airframe_composite(spec)` returns `Result<AirframeComposite{inertia, mass}>`: compile_airframe()'s composite without the fit or the drag rule.
@@ -21,7 +23,7 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 - **flow_movie --gpu** (Rendering, G2, merged `9adbf27`). It runs a LiveRun film's fluid on GpuFluid, with no parts in the flow, for d1-hover and the case videos.
   - The cache stem is `<stem>-gpu`.
   - A non-Vulkan build refuses `--gpu` with exit 2.
-  - A `--gpu` film checks each frame before caching it (`tools/flow_movie/frame_check.hpp`). The film stops on a non-finite half, or on a speed past 10 × the case's expected top speed, and names the frame and step. CPU films don't check yet.
+  - A `--gpu` film checks each frame before caching it (`tools/flow_movie/frame_check.hpp`). The film stops on a non-finite half, or on a speed past 10 × the case's expected top speed, and names the frame and step. Since `e3997db` every film checks (see that line).
   - The C_p view is drawn only when the run model has parts in the flow.
   - `tests/d1_case.hpp`'s `d1_case(seconds, grid, parts_in_flow = true)` keeps its default.
 - **The solids CG on the GPU** (Physics, B5.4, merged `ed02b9a`).
