@@ -13,6 +13,8 @@ add_library(spade_airflow_runner STATIC
     chain_runner.cpp
     projection_chain.hpp
     projection_chain.cpp
+    publish_chain.hpp
+    publish_chain.cpp
 )
 target_include_directories(spade_airflow_runner PUBLIC "${PROJECT_SOURCE_DIR}")
 target_compile_features(spade_airflow_runner PUBLIC cxx_std_23)
