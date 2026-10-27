@@ -69,6 +69,7 @@
 #include "airflow_pcg_apply.spv.gen.hpp"
 #include "airflow_pcg_measure.spv.gen.hpp"
 #include "airflow_pcg_scalars.spv.gen.hpp"
+#include "airflow_pcg_update.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
 #include "airflow_region_mean.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
@@ -1565,7 +1566,10 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               // B5.3 and B5.5 (Physics): only the interior's free-slip means divide.
                               {gen::kSpvVariants_airflow_region_mean, false, Estimates::none},
                               {gen::kSpvVariants_airflow_solid_velocities, false, Estimates::some},
-                              {gen::kSpvVariants_airflow_wall_load, false, Estimates::none}};
+                              {gen::kSpvVariants_airflow_wall_load, false, Estimates::none},
+                              // B5.4 (Physics): the CG's vector work; its decisions divide in
+                              // airflow_pcg_scalars.
+                              {gen::kSpvVariants_airflow_pcg_update, false, Estimates::none}};
     for (const Kernel& k : kernels) {
         ASSERT_EQ(k.variants.count, spade::compute::kSupportedWorkgroupSizes.size()) << k.variants.name;
         for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {

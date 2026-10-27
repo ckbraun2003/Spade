@@ -101,6 +101,10 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_region_mean)
 spade_slang_kernel_variants(spade_airflow_runner airflow_solid_velocities)
 spade_slang_kernel_variants(spade_airflow_runner airflow_wall_load)
 
+# B5.4 (Physics; tests/test_gpu_airflow_solids.cpp): the solids CG's vector
+# work (no division); its decisions are airflow_pcg_scalars'.
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_update)
+
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
 # build-order edge, and not the link to spade::compute).

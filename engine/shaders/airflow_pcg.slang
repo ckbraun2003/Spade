@@ -31,8 +31,26 @@
 //    5  beta      rz_next / rz       (airflow_pcg_scalars, div32_ftz)
 //    6  r_max     max |b - q| over the cells in a region (airflow_pcg_measure)
 //    7  b_max     max |b| over the same cells (airflow_pcg_measure)
-//    8  residual  b_max > 0 ? r_max / b_max : 0 (airflow_pcg_scalars, div32_ftz)
-//    9-31 free (B5.4's decisions)
+//    8  residual  b_max > 0 ? r_max / b_max : 0 (airflow_pcg_scalars, div32_ftz);
+//                 after the finish, the residual of the x returned
+//   B5.4's decisions (airflow_pcg_scalars; pcg.cpp's solve_pcg_to(), :70-137),
+//   each a float: a flag is 0.0 or 1.0, a count a whole float.
+//    9  stop        \  THE DECISION WORD, slots 9-12, the 16 bytes the host
+//   10  restart      | reads after a measure: whether the solve stops,
+//   11  iterations   | whether the restart chain is wanted, the iterations
+//   12  stalled     /  run and whether it stalled
+//   13  residual_at the iteration the x returned was measured on
+//   14  least       the stall rule's least residual measured
+//   15  since       measurements since the residual fell below kStallGain x least
+//   16  restarted   the stall rule's one restart is spent
+//   17  best        the least residual measured past the floor (+inf at the start)
+//   18  best_at     the iteration it was measured on
+//   19  measured    the residual is the current x's
+//   20  exact       a step's denominator was exactly zero
+//   21  keep_best   the measure keeps x as best (airflow_pcg_update's best <- x)
+//   22  take_best   the finish returns best (airflow_pcg_update's x <- best)
+//   23  capped      the finish: above the mark and not stalled (FluidHealth's)
+//   24-31 free
 //
 // THE SOLID FIELD (bindings 13-15, pack_solid_field()'s rule, confirmed by
 // Physics to Rendering on 2026-10-22): theta, the wall velocity and phi as
@@ -77,6 +95,37 @@ static const uint kSlotBeta = 5u;
 static const uint kSlotRMax = 6u;
 static const uint kSlotBMax = 7u;
 static const uint kSlotResidual = 8u;
+static const uint kSlotStop = 9u;
+static const uint kSlotRestart = 10u;
+static const uint kSlotIterations = 11u;
+static const uint kSlotStalled = 12u;
+static const uint kSlotResidualAt = 13u;
+static const uint kSlotLeast = 14u;
+static const uint kSlotSince = 15u;
+static const uint kSlotRestarted = 16u;
+static const uint kSlotBest = 17u;
+static const uint kSlotBestAt = 18u;
+static const uint kSlotMeasured = 19u;
+static const uint kSlotExact = 20u;
+static const uint kSlotKeepBest = 21u;
+static const uint kSlotTakeBest = 22u;
+static const uint kSlotCapped = 23u;
+
+// The decision word: kDecisionSlots slots from kSlotDecision.
+static const uint kSlotDecision = 9u;
+static const uint kDecisionSlots = 4u;
+
+// A flag slot is set when it holds anything but 0.0.
+bool slot_set(uint slot) { return airflow_scalars[slot] != 0.0f; }
+
+// The stop word (the plan's B5, "the device decides"). While it is set,
+// airflow_pcg_update's ops 0-7 and airflow_pcg_scalars' step and next return
+// at once, decide only takes the finish's measure, gate holds off the
+// measure's gauge(x), and the finish's ops act. The chains' other kernels
+// (A v, the dots, the region means, the V-cycle) run on, but write only what
+// the stop leaves dead: q, r, z, dq, rz_next, level 0's b and p, the coarse
+// levels.
+bool pcg_stopped() { return slot_set(kSlotStop); }
 
 // --- the regions ---------------------------------------------------------------
 

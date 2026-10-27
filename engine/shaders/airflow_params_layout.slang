@@ -34,7 +34,16 @@
 //          the floor, the cap}, the constants from physics/airflow/pcg.hpp and
 //          the solve's floor and cap as solve_pcg_to() takes them, all
 //          written by the host (spike/airflow/solids_chain.hpp's
-//          write_pcg_block()).
+//          write_pcg_block()). kResidualAnnounce is the solve's mark, as
+//          projection.cpp passes it to solve_pcg_to().
+//
+// AND airflow_scalars' slots (binding 21; B5 owns 1-31; Physics, 2026-10-27),
+// their table airflow_pcg.slang's: 0 remove_mean()'s sum; 1-3 the CG's dots
+// (rz, dq, rz_next); 4-5 alpha and beta; 6-7 r_max and b_max; 8 the residual;
+// 9-23 B5.4's decisions (pcg.cpp's solve_pcg_to()), with 9-12 the 16-byte
+// decision word the host reads {stop, restart, iterations, stalled}, then
+// residual_at, least, since, restarted, best, best_at, measured, exact,
+// keep_best, take_best and capped; 24-31 free.
 //
 // APPEND-ONLY. A word, once given a meaning, keeps it: words 0-16 are already
 // coded against (Rendering's B3 and B6). A new scalar takes a free word in
