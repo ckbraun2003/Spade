@@ -280,9 +280,12 @@ struct Box {
 }
 
 // The swirl with a NaN on the u face between cells (4, 5, 9) and (5, 5, 9):
-// cell (5, 5, 9) and its neighbours' gradients are NaN, and so is the mean
-// its solid neighbour (6, 5, 9) takes, which is no-data in every channel and
-// still counted as extrapolated.
+// both cells' u, q-hat and lambda2-hat are NaN, and so are the gradients
+// beside them. The solid (6, 5, 9) takes (5, 5, 9)'s channels, its one fluid
+// neighbour: no data in u, q-hat and lambda2-hat, and still counted as
+// extrapolated. Its dye is 0 like every cell's until the solver carries dye
+// (P10), so no extrapolated cell is no data in every channel today: only the
+// deep cells are.
 [[nodiscard]] af::MacGrid nan_swirl(const af::GridShape& s) {
     af::MacGrid g = swirl(s);
     g.u[af::u_index(s, 5, 5, 9)] = std::bit_cast<float>(0x7FC00000u);
@@ -927,8 +930,8 @@ TEST(AirflowPublishHeader, TheHeaderFromTheHalvesIsPublishs) {
                     cpu.header.extrapolated_cells);
         EXPECT_EQ(header_differences(rebuilt.header, cpu.header), "") << c.box.name;
     }
-    // The edge box's own counts: its first layer wraps, and its NaN mean is
-    // no data yet extrapolated.
+    // The edge box's own counts: its first layer wraps, and the solid beside
+    // the NaN is no data in u and still extrapolated.
     const Case edge{nan_swirl(kShape), edge_box(kShape)};
     const spade::FlowVolume cpu = publish_on_cpu(edge.g, edge.box);
     af::PublishInput no_wrap = input_of(edge.box);
@@ -937,7 +940,8 @@ TEST(AirflowPublishHeader, TheHeaderFromTheHalvesIsPublishs) {
     ASSERT_TRUE(unwrapped.has_value());
     EXPECT_EQ(*unwrapped + 6u, cpu.header.extrapolated_cells) << "(0, 0..1, 0..2) reach fluid only by a wrap";
     const std::size_t at = af::cell_index(kShape, 6, 5, 9) * spade::kFlowHalvesPerCell;
-    EXPECT_EQ(cpu.v[at], spade::fp16::kNoDataBits) << "the solid beside the NaN is no data";
+    EXPECT_EQ(cpu.v[at + spade::kFlowU], spade::fp16::kNoDataBits) << "the solid beside the NaN: u is no data";
+    EXPECT_NE(cpu.v[at + spade::kFlowDye], spade::fp16::kNoDataBits) << "dye is 0 until P10";
     const std::vector<uint8_t> wrong(cell_count(kShape) - 1u, 0u);
     af::PublishInput refused_in;
     refused_in.solid = wrong;
