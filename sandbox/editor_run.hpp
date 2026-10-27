@@ -206,9 +206,19 @@ class EditorRun {
                 if (m != nullptr && m->propulsion) v.start.rotor_omega = 0.0f;
             }
         }
+        // The grid's cell fits the scene's largest drone: spawn() refuses a
+        // cell under twice a model's proxy radius (the Phantom's 0.296 m, the
+        // Iris+'s 0.365 m, against the editor's 0.5 m). Never under the
+        // records' own cell, so a scene whose drones fit runs as it did.
+        BuiltinRecords sized = records;
+        for (const scene::SceneVehicle& v : scene.vehicles) {
+            if (const vehicles::ModelType* m = model_of(v)) {
+                sized.grid.cell_size = std::max(sized.grid.cell_size, 2.0f * m->proxy_radius);
+            }
+        }
         const Result<scene::ComposedScene> composed = compose_together(run_scene, world);
         if (!composed) return std::unexpected(composed.error());
-        Result<scene::SceneRun> run = scene::instantiate(*composed, instance_of(records), kBuiltinStepNs,
+        Result<scene::SceneRun> run = scene::instantiate(*composed, instance_of(sized), kBuiltinStepNs,
                                                          kBuiltinSubsteps);
         if (!run) return std::unexpected(run.error());
         // Flushed, so the controllers can command before the first step.
