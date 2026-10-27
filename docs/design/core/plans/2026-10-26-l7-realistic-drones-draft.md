@@ -227,33 +227,53 @@ The editor places a library drone through `AddModelFile` -> `scene::add_model()`
 - [ ] **GREEN:** regenerate.
 - [ ] **Gate:** release CPU and gcc. Smoke: the props are drawn still. A **`-NoSeed` leg** (goldens).
 
-## Task L7c2: The props spin (needs Physics' P11)
+## Task L7c2: The props spin (P11 merged at `97ddfdd`)
 
-**Files:** other realms' files only (see the table). Core writes no engine code here. Its part is the spec and the review against the posing rule.
+**Files:** other realms' files only (see the table). Core writes no code here. Its part is this spec and the review of each branch against the posing rule.
 
-**The changes.**
-- **`append_vehicle_parts`** (`sandbox/vehicle_draw.hpp:106-124`) gains `rotor_omega` and `psi` spans. The still overload stays for thumbnails and placement.
-- **The editor's Run.**
-  - `EditorRun` advances psi per vehicle on every tick by P11's rule (`editor_run.hpp:100-101`), from the rotor rows it already reads (`:143-150`).
-  - It carries psi by name across a rebuild.
-  - It exposes `blade_azimuth(name)`, which `EditorSession::draw_items()` passes on (`editor_session.cpp:219`).
-- **The airflow drone box.** `AirflowSession` passes `LiveRun`'s omegas and `blade_azimuth()` (`scene_sessions.cpp:349`). INT-15's Run air does the same.
-- **flow_movie.**
-  - It logs psi after the omegas (`main.cpp:336-337`) and poses with it (`:885-887`).
-  - An older cache, which logged no psi, draws psi = 0.
+> **Re-anchored at master `ae73c7c` (2026-10-27)**, after T3, G1 and L7c1. P11 is `engine/physics/blade_azimuth.hpp`: `advance_blade_azimuth(float& psi, float omega, float h)` and `advance_blade_azimuths(std::span<float> psi, std::span<const vehicles::RotorRow> rows, float h)`, which skips a disabled row.
+
+**The posing rule (what Core reviews against).**
+- One psi per rotor, in the model's rotor order, in [0, 2 pi), starting at 0 (the authored pose).
+- Advanced once per step, after the step, by `advance_blade_azimuths()` with the rows as the step left them: omega after the step, and a disabled rotor holds. There is no other rule and no copy of it (TD-9).
+- Passed to `posed_parts()` unsigned, since it applies s_k. The same caller passes the rows' omegas as `rotor_omega`.
+- Drawn only. Nothing reads psi back into the sim: no registered state, no `RotorRow` field, no digest input.
+- A refusal (false) never fails a step, because psi is only drawn. The refused rotor holds, and the owner surfaces it once: EditorRun on the status line, LiveRun through an accessor the host can show. A stepping sim should never produce one.
+
+**The changes, by owner.**
+- **Interface: the draw helper.** `append_vehicle_parts()` (`sandbox/vehicle_draw.hpp:106-115`) gains an overload that takes `rotor_omega` and `psi` spans in rotor order and passes them to `posed_parts()`. The still overloads stay for thumbnails, placement, `editor_library.hpp:382`, and the tour's drop pick at `live_tour.cpp:1267`.
+- **Interface: the editor's Run** (`sandbox/editor_run.hpp`).
+  - `EditorRun` holds a psi vector per vehicle, outside the Simulation. Each vector is sized by the vehicle's rotor count and is 0 at `start()`.
+  - `step()` advances it after every `sim.step(1)` (`:100`). It uses the vehicle's rows from `sim.rotor(ref, r)` and h = `sim.substep_h() * float(sim.substeps())`, the step's duration, since the rows are read once per step.
+  - The no-pilot branch's batched `sim.step(steps)` (`:83-87`) steps one at a time when any vehicle has rotors, so psi sees every step. The sim's state must stay bit-identical (`TheAzimuthIsNeverReadBack`).
+  - `rebuild()` (`:135-160`) carries psi by name, as it carries the pose. A vehicle whose rotor count changed starts at 0.
+  - It exposes `blade_azimuth(name)` and `rotor_omega(name)` as spans, empty for a vehicle it doesn't have. `EditorSession::draw_items()` (`editor_session.cpp:202-220`) passes them to the new overload whenever the Run has the vehicle.
+- **Interface: Run air (T3).** `AirFrame` (`editor_airflow.hpp:169-179`) gains `rotor_omega` and `psi` copies. `hand_over()` (`:291-305`) sets them from `run_.state().rotor_omega` and `run_.blade_azimuth()`. While Run air runs and the editor's Run doesn't have that drone, `draw_items()` poses the region's drone with them.
+- **Interface: the airflow drone box.** `AirflowSession` (`scene_sessions.cpp:349`) passes `run_->state().rotor_omega` and `run_->blade_azimuth()`.
+- **Interface (I1), with Physics: LiveRun** (`engine/analysis/live_run.{hpp,cpp}`).
+  - It gains `std::span<const float> blade_azimuth() const noexcept` beside `body()` and `rotor_rows()` (hpp `:160-169`). Their "until it lands, pass zeros" note goes.
+  - `step()` calls `advance_blade_azimuths(psi, rows, r.fluid.h)` right after it copies the rows (cpp `:499-502`).
+  - It is saved and restored, so a resumed film's props don't jump. Restore copies the rows at cpp `:792`, and sets psi from the save there. `kLiveRunSaveVersion` goes from 2 to 3 (hpp `:70`). Restore keeps refusing any other version by name (cpp `:690-694`), as it refused v1 once v2 landed.
+- **Rendering (G4): flow_movie** (`tools/flow_movie/main.cpp`).
+  - The frame log appends `run->blade_azimuth()` after the omegas (`:352-354`). The live entries become pos (3), orient (4), omega (R), psi (R).
+  - `decorate` (`:1053-1055`) reads psi from `live[7 + R + k]` and poses with it. A log shorter than 7 + 2R (an older cache) draws psi = 0. A cached film's v2 `live.save` is refused on resume, so that film re-runs.
+  - Psi is honest (Q6 (a)), so at 30 fps the props alias like a wagon wheel.
+
+**Order.** Interface's LiveRun accessor comes first, because the airflow box, Run air and flow_movie read it. Rendering's flow_movie branch builds on it, either after it merges or stacked on Interface's branch.
 
 - [ ] **RED** (each in its owner's file):
-  - `AVehiclesPropsArePosedByTheirAzimuth`: the draw transform equals `posed_parts()` at that psi;
-  - `TheEditorRunTurnsEachPropByItsRotorsOmegaEachTick`: n ticks equal the rule applied n times, a still rotor stays at 0, and the value is carried across a rebuild;
-  - `ALiveRunAdvancesTheAzimuthEachStepAndARestoredRunResumesIt`;
-  - `AFilmFrameLogsAndPosesItsAzimuth`;
-  - `TheAzimuthIsNeverReadBack`: a run's state and digest are bit-identical with and without psi tracking.
+  - `AVehiclesPropsArePosedByTheirAzimuth` (Interface): the bound transform equals `posed_parts()` at that omega and psi;
+  - `TheEditorRunTurnsEachPropByItsRotorsOmegaEachTick` (Interface): n ticks equal the rule applied to each step's rows n times, a still rotor stays at 0, and psi is carried across a rebuild;
+  - `ALiveRunAdvancesTheAzimuthEachStepAndARestoredRunResumesIt` (Interface), with the v2 refusal;
+  - `AFilmFrameLogsAndPosesItsAzimuth` (Rendering), with an older log drawing psi = 0;
+  - `TheAzimuthIsNeverReadBack` (Interface): a run's state and digest are bit-identical whether the azimuth advances or not, EditorRun's one-at-a-time stepping included, and no existing golden moves.
 - [ ] **GREEN.**
 - [ ] **Gate:**
   - release CPU and gcc;
-  - smoke: the editor Run flying an L7 drone, and the airflow chapter;
-  - one flow_movie `--case` film through jobrun's gpu class, with its cache copied aside first (it drops it);
+  - smoke: the editor's Run flying an L7 drone with its props turning, and the airflow chapter;
+  - one flow_movie `--case` film through jobrun's gpu class, with its cache copied aside first, because a render drops it;
   - a leg for LiveRun's save version 3 (a format).
+- [ ] **Core's review** of each branch against the posing rule above.
 
 ---
 
@@ -267,13 +287,14 @@ The editor places a library drone through `AddModelFile` -> `scene::add_model()`
 | `engine/vehicles/basic_quad.{hpp,cpp}` | Core's L3, in Physics' directory | L7b1 | `look`, measuring through the composite |
 | `.gitattributes` | lead / Test/Docs | L7b2 | `*.spmesh binary` |
 | `sandbox/editor_scene_edits.hpp`, `editor_workspace.hpp` | Interface | L7b0 | stage a placed drone's sidecars |
-| `sandbox/vehicle_draw.hpp:106-124` | Interface | L7c2 | omega and psi spans |
-| `sandbox/editor_run.hpp:80-102, 143-150` | Interface | L7c2 | psi per tick, carried on rebuild |
-| `sandbox/editor_session.cpp:186-237` | Interface | L7c2 | the editor's Run draw path |
+| `sandbox/vehicle_draw.hpp:106-115` | Interface | L7c2 | an omega-and-psi overload |
+| `sandbox/editor_run.hpp:80-104, 135-160` | Interface | L7c2 | psi per tick, carried on rebuild |
+| `sandbox/editor_session.cpp:187-237` | Interface | L7c2 | the editor's Run and Run air draw path |
+| `sandbox/editor_airflow.hpp:169-179, 291-305` | Interface | L7c2 | `AirFrame`'s omega and psi |
 | `sandbox/scene_sessions.cpp:349` | Interface | L7c2 | the airflow drone box |
-| `engine/analysis/live_run.{hpp,cpp}` (hpp `:160-162`, step at cpp `:442`, save) | Interface (I1), with Physics' P11 | L7c2 | `blade_azimuth()`; save v2 -> v3 |
-| `tools/flow_movie/main.cpp:336-337, 875-887` | Rendering | L7c2 | log and pose psi |
-| P11's function (home is Physics' choice) | Physics | before L7c2 | the rule below |
+| `engine/analysis/live_run.{hpp,cpp}` (hpp `:70, 160-169`; cpp step `:499-502`, restore `:792`, version `:690-694`) | Interface (I1), with Physics' P11 | L7c2 | `blade_azimuth()`; save v2 -> v3 |
+| `tools/flow_movie/main.cpp:352-354, 1053-1055` | Rendering (G4) | L7c2 | log and pose psi |
+| `engine/physics/blade_azimuth.hpp` (P11) | Physics | before L7c2 | MERGED at `97ddfdd` |
 | `assets/library/thumbnails/<six drones>.png` | Core's entries, Interface's generator | L7b2, L7c1 | regenerated |
 | `tests/test_vehicles_airflow_solids.cpp` | Physics | none | Core's check lives in its own file, and Physics reviews it |
 
