@@ -1375,6 +1375,15 @@ void editor_tour(Tour& t, const fs::path& assets) {
         command(editor::Command::run_air);
         if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
         w().panels().pilot.controls = analysis::Controls{true, 0.6f, 0.0f, 0.0f, 0.0f};
+        // The camera on the drone and its box, as the airflow chapter frames its
+        // poster; put back after.
+        const OrbitCamera before = session->camera();
+        for (const scene::SceneVehicle& v : scene_now().vehicles) {
+            if (v.name == quad) session->camera().target = v.start.pos - glm::vec3(0.0f, 0.1f, 0.0f);
+        }
+        session->camera().yaw = 0.52f;
+        session->camera().pitch = 0.35f;
+        session->camera().distance = 1.6f;
         std::shared_ptr<const editor::AirFrame> frame;
         for (int i = 0; i < 3600; ++i) {
             then(1);
@@ -1386,7 +1395,9 @@ void editor_tour(Tour& t, const fs::path& assets) {
                                                                          : std::to_string(frame->frames) + " frames");
         then(5);
         t.snapshot("editor_airflow");
+        then(20);  // the snapshot is the next frame drawn: the air still running
         command(editor::Command::stop);
+        session->camera() = before;
         command(editor::Command::undo);  // the region
         command(editor::Command::undo);  // the drone
         then(10);
