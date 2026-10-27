@@ -1793,6 +1793,7 @@ int run_live_smoke(const TourOptions& options) {
         return 2;
     }
     sink->set_fixed_delta(kDt);
+    sink->set_scripted_input(true);  // no tooltip or hover from wherever the box's cursor is parked
 
     Recorder rec(options.out_dir, smoke);
     rec.start(sink->framebuffer_width(), sink->framebuffer_height());
