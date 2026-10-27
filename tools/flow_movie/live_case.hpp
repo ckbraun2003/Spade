@@ -11,6 +11,8 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/error.hpp"
+#include "../../tests/d1_case.hpp"  // D1's one builder, shared with the tests
+#include "physics/airflow/mac_grid.hpp"
 #include "vehicles/model_type.hpp"
 
 namespace flow_movie {
@@ -31,7 +33,16 @@ struct LiveCase {
     // rotor's deepest core is a grid-scale spike, so its tip vortices need a
     // sixth.
     float vortex_fraction = 1.0f / 3.0f;
+    // The grid, when it is not the case's cube: LiveRun holds the drone at
+    // its centre either way. The case's box then names its longest side, and
+    // identity names the grid.
+    std::optional<spade::physics::airflow::GridShape> grid;
 };
+
+// The case resolved against its run model, with LiveCase::grid in place of
+// the cube's when set. Refused as resolve() refuses, with every issue, and a
+// grid past kGridByteCap.
+[[nodiscard]] spade::Result<spade::analysis::ResolvedCase> resolve_live(const LiveCase& lc);
 
 // The case's model, through the one path a case has to its model today:
 // Core's scene reader on the scene file the case names, picking the model
@@ -61,5 +72,12 @@ struct LiveCase {
 //   smoke_live_case(): the smoke's, an 8^3 box of 0.8 m stepped every 4 ms.
 [[nodiscard]] spade::Result<LiveCase> quad_live_case(double seconds);
 [[nodiscard]] spade::Result<LiveCase> smoke_live_case(double seconds);
+
+// D1's hover preview: tests/d1_case.hpp's d1_case() (the one builder flow_movie,
+// Physics' B7 and Test/Docs' harness share), as a film. `grid` replaces
+// kD1Grid, for a measurement.
+using spade::testing::kD1Grid;
+[[nodiscard]] spade::Result<LiveCase> d1_live_case(double seconds,
+                                                   const spade::physics::airflow::GridShape& grid = kD1Grid);
 
 }  // namespace flow_movie
