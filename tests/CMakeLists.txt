@@ -69,6 +69,7 @@ add_executable(spade_tests
     test_mesh.cpp
     test_mesh_field.cpp
     test_mesh_mass.cpp
+    test_mesh_shapes.cpp
     test_mesh_file.cpp
     test_mesh_import.cpp
     test_state.cpp

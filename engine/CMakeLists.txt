@@ -245,6 +245,7 @@ add_library(spade_world STATIC
     world/world_file.cpp
     world/mesh.cpp
     world/mesh_mass.cpp
+    world/mesh_shapes.cpp
     world/mesh_file.cpp
 )
 add_library(spade::world ALIAS spade_world)
