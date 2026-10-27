@@ -1,0 +1,106 @@
+// ---------------------------------------------------------------------------
+// test_flow_movie_frame_check.cpp -- tools/flow_movie/frame_check.hpp, the
+// host check every frame of flow_movie --gpu passes before it is cached (B7's
+// G2; the lead, 2026-10-27: GpuFluid has no NaN scan yet, and a bad frame
+// must never become a film).
+//
+//   FlowMovieFrameCheck  a finite frame passes; a NaN, an infinity and the
+//                        publish's no-data half are each caught, the first
+//                        named by channel and cell and all of them counted;
+//                        the frame's fastest cell by its published u, v and
+//                        w, a non-finite cell passed over (the lead's speed
+//                        bound, for a flow that blows up and stays finite).
+// ---------------------------------------------------------------------------
+
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <optional>
+
+#include "../tools/flow_movie/frame_check.hpp"
+#include "core/fp16.hpp"
+
+namespace {
+
+using flow_movie::FastestCell;
+using flow_movie::fastest_cell;
+using flow_movie::first_non_finite;
+using flow_movie::NonFinite;
+
+// A 3 x 2 x 2 frame of finite halves: zeros of both signs, the largest
+// finite half and the smallest subnormal among them.
+[[nodiscard]] spade::FlowVolume finite_frame() {
+    spade::FlowVolume f;
+    f.header.nx = 3;
+    f.header.ny = 2;
+    f.header.nz = 2;
+    const std::size_t halves = 3u * 2u * 2u * spade::kFlowHalvesPerCell;
+    f.v.assign(halves, 0x0000u);
+    f.s.assign(halves, 0x8000u);
+    f.v[5] = 0x7BFFu;   // 65504
+    f.s[9] = 0xFBFFu;   // -65504
+    f.s[10] = 0x0001u;  // a subnormal
+    return f;
+}
+
+// Cell (i, j, k)'s half of `channel` in its texture.
+[[nodiscard]] std::size_t at(uint32_t i, uint32_t j, uint32_t k, uint32_t channel) {
+    return ((k * 2u + j) * 3u + i) * spade::kFlowHalvesPerCell + channel % spade::kFlowHalvesPerCell;
+}
+
+TEST(FlowMovieFrameCheck, AFiniteFramePasses) {
+    EXPECT_FALSE(first_non_finite(finite_frame()).has_value());
+}
+
+TEST(FlowMovieFrameCheck, NamesTheFirstAndCountsThemAll) {
+    spade::FlowVolume f = finite_frame();
+    f.s[at(1, 1, 0, spade::kFlowPressure)] = spade::fp16::kNoDataBits;  // the publish's NaN
+    f.v[at(2, 0, 1, spade::kFlowW)] = 0x7C00u;                          // +infinity
+    f.s[at(0, 1, 1, spade::kFlowLambda2Hat)] = 0xFE01u;                 // a negative NaN
+    const std::optional<NonFinite> bad = first_non_finite(f);
+    ASSERT_TRUE(bad.has_value());
+    EXPECT_EQ(bad->channel, static_cast<uint32_t>(spade::kFlowW)) << "V's halves are scanned before S's";
+    EXPECT_EQ(bad->i, 2u);
+    EXPECT_EQ(bad->j, 0u);
+    EXPECT_EQ(bad->k, 1u);
+    EXPECT_EQ(bad->bits, 0x7C00u);
+    EXPECT_EQ(bad->count, 3u);
+}
+
+TEST(FlowMovieFrameCheck, TheNoDataHalfAloneIsCaught) {
+    spade::FlowVolume f = finite_frame();
+    f.s[at(2, 1, 1, spade::kFlowVorticity)] = spade::fp16::kNoDataBits;
+    const std::optional<NonFinite> bad = first_non_finite(f);
+    ASSERT_TRUE(bad.has_value());
+    EXPECT_EQ(bad->channel, static_cast<uint32_t>(spade::kFlowVorticity));
+    EXPECT_EQ(bad->i, 2u);
+    EXPECT_EQ(bad->j, 1u);
+    EXPECT_EQ(bad->k, 1u);
+    EXPECT_EQ(bad->count, 1u);
+}
+
+TEST(FlowMovieFrameCheck, FindsTheFastestCell) {
+    spade::FlowVolume f;
+    f.header.nx = 3;
+    f.header.ny = 2;
+    f.header.nz = 2;
+    const std::size_t halves = 3u * 2u * 2u * spade::kFlowHalvesPerCell;
+    f.v.assign(halves, 0x0000u);
+    f.s.assign(halves, 0x0000u);
+    const auto put = [&f](uint32_t i, uint32_t j, uint32_t k, uint32_t channel, float x) {
+        f.v[at(i, j, k, channel)] = spade::fp16::from_f32(x).bits;
+    };
+    EXPECT_EQ(fastest_cell(f).speed, 0.0f) << "still air";
+    put(2, 1, 0, spade::kFlowU, 3.0f);
+    put(2, 1, 0, spade::kFlowV, -4.0f);    // 5 m/s
+    put(0, 0, 1, spade::kFlowW, -4.5f);    // 4.5 m/s
+    put(1, 0, 1, spade::kFlowDye, 99.0f);  // dye is no speed
+    f.v[at(1, 1, 1, spade::kFlowU)] = spade::fp16::kNoDataBits;  // first_non_finite()'s
+    const FastestCell fast = fastest_cell(f);
+    EXPECT_EQ(fast.speed, 5.0f);
+    EXPECT_EQ(fast.i, 2u);
+    EXPECT_EQ(fast.j, 1u);
+    EXPECT_EQ(fast.k, 0u);
+}
+
+}  // namespace

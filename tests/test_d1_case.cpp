@@ -7,7 +7,8 @@
 // 240 x 177 x 168 at 4 mm.
 //
 //   D1Case  the case as built and as resolved on kD1Grid; a grid past the cap
-//           refused by name.
+//           refused by name; without its parts in the flow (B7's GPU film),
+//           the same case with the parts drawn only.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -57,6 +58,22 @@ TEST(D1Case, AGridPastTheCapIsRefusedByName) {
     const auto resolved = spade::testing::resolve_with_grid(q->c, q->run_model, huge);
     ASSERT_FALSE(resolved.has_value());
     EXPECT_NE(resolved.error().context.find("past kGridByteCap"), std::string::npos) << resolved.error().context;
+}
+
+TEST(D1Case, WithoutItsPartsTheyAreDrawnOnly) {
+    const auto with = spade::testing::d1_case(0.6);
+    const auto without = spade::testing::d1_case(0.6, kD1Grid, false);
+    ASSERT_TRUE(with.has_value()) << with.error().context;
+    ASSERT_TRUE(without.has_value()) << without.error().context;
+    EXPECT_TRUE(without->run_model.parts.empty()) << "no part in the flow";
+    EXPECT_EQ(without->draw_model.parts.size(), 10u) << "all ten drawn";
+    EXPECT_EQ(without->run_model.rotors.size(), with->run_model.rotors.size());
+    EXPECT_EQ(without->trim.hover, with->trim.hover);
+    ASSERT_EQ(without->program.points.size(), 1u);
+    EXPECT_EQ(without->program.points[0].controls.throttle, with->program.points[0].controls.throttle);
+    const auto resolved = spade::testing::resolve_with_grid(without->c, without->run_model, without->grid);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    EXPECT_EQ(resolved->base.nx, kD1Grid.nx);
 }
 
 }  // namespace

@@ -13,7 +13,7 @@
 //                    the same bits at workgroup sizes 32, 64 and 128; the
 //                    publish equal to publish_render_volume()'s; the
 //                    refusals; with SPADE_AIRFLOW_TIMINGS=1, a step's time in
-//                    the D1 box.
+//                    the D1 box, the GPU's beside the CPU's.
 //
 // The fields start as fixed-seed noise with a few subnormals mixed in, so
 // the flush is exercised too. Every Gpu* test starts with the
@@ -26,6 +26,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -38,6 +39,8 @@
 #include <glm/glm.hpp>
 
 #include "airflow_exact_device.hpp"
+#include "analysis/controls.hpp"
+#include "analysis/live_run.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/flow_volume.hpp"
@@ -48,6 +51,7 @@
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
 #include "spike/airflow/step_chain.hpp"
+#include "vehicles/rotor_discs.hpp"
 
 namespace {
 
@@ -121,6 +125,17 @@ struct Case {
     return c;
 }
 
+// The open box on odd sizes, as D1's 177 cells along y are: the multigrid's
+// odd axes (Physics' mg-odd-axes rule) under the whole step. D1's --gpu film
+// went non-finite on every grid with an odd ny and on none without (G2,
+// 2026-10-27).
+[[nodiscard]] Case odd_open_box() {
+    Case c = open_box();
+    c.name = "open box, odd sizes 25x21x19";
+    c.shape = {25, 21, 19, 0.02f};
+    return c;
+}
+
 // Periodic along x and z, walls along y: the advection's wrap and the viscous
 // solve's alias faces.
 [[nodiscard]] Case periodic_channel() {
@@ -178,6 +193,14 @@ struct CpuFluid {
 
 [[nodiscard]] std::size_t samples_of(const af::MacGrid& g) { return g.u.size() + g.v.size() + g.w.size() + g.p.size(); }
 
+[[nodiscard]] std::size_t non_finite(const af::MacGrid& g) {
+    std::size_t n = 0;
+    for (const std::vector<float>* a : {&g.u, &g.v, &g.w, &g.p}) {
+        n += static_cast<std::size_t>(std::count_if(a->begin(), a->end(), [](float x) { return !std::isfinite(x); }));
+    }
+    return n;
+}
+
 // Steps `c` kSteps times on both sides from the same noise, comparing after
 // every step; the count of differing samples summed over the steps, or
 // nullopt on a refusal.
@@ -211,8 +234,8 @@ struct CpuFluid {
             return std::nullopt;
         }
         const std::size_t d = differing(read, cpu->g);
-        std::printf("[ step    ] %-28s wg %3u step %u: %zu of %zu samples differ\n", c.name, workgroup_size, step + 1,
-                    d, samples_of(read));
+        std::printf("[ step    ] %-28s wg %3u step %u: %zu of %zu samples differ; non-finite: CPU %zu, GPU %zu\n",
+                    c.name, workgroup_size, step + 1, d, samples_of(read), non_finite(cpu->g), non_finite(read));
         total += d;
     }
     if (gpu_end != nullptr) *gpu_end = read;
@@ -249,6 +272,8 @@ TEST(GpuAirflowStep, TheDiscsMoveTheFlowOnTheCpu) {
 }
 
 TEST(GpuAirflowStep, OpenBoxWithDiscsMatchesFluidStepBitForBit) { expect_bit_equal(open_box()); }
+
+TEST(GpuAirflowStep, OddSizedOpenBoxMatchesFluidStepBitForBit) { expect_bit_equal(odd_open_box()); }
 
 TEST(GpuAirflowStep, PeriodicChannelMatchesFluidStepBitForBit) { expect_bit_equal(periodic_channel()); }
 
@@ -346,8 +371,11 @@ TEST(GpuAirflowStep, RefusesWhatItCannotStep) {
 
 // A step's time in the D1 box (240 x 177 x 168 at 4 mm, the air's nu, h
 // 0.38 ms) with four discs about its centre, no read-back: the mean of 20
-// steps after 2 to warm up. Opt-in with SPADE_AIRFLOW_TIMINGS, as the
-// kernels' D1 times are.
+// steps after 2 to warm up. Beside it, the CPU's step on the same box from
+// the same start (CpuFluid: spread_actuator() and fluid_step(), plan A with
+// no parts, LiveRun's step without solids), the mean of 3 after 1, so the
+// speed-up compares like with like (the lead, 2026-10-27). Opt-in with
+// SPADE_AIRFLOW_TIMINGS, as the kernels' D1 times are.
 TEST(GpuAirflowStep, StepTimeInTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
 #if defined(_MSC_VER)
@@ -379,4 +407,96 @@ TEST(GpuAirflowStep, StepTimeInTheD1Box) {
     for (int step = 0; step < kTimed; ++step) ASSERT_TRUE((*gpu)->step(c.discs).has_value());
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kTimed;
     std::printf("measure: GpuFluid step in the D1 box, 240x177x168 at 4 mm, 4 discs, n_v 2, 8 sweeps: %.3f ms\n", ms);
+
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    ASSERT_EQ(cpu->step(c).fault, af::FluidFault::none);
+    constexpr int kCpuTimed = 3;
+    const auto c0 = std::chrono::steady_clock::now();
+    for (int step = 0; step < kCpuTimed; ++step) ASSERT_EQ(cpu->step(c).fault, af::FluidFault::none);
+    const double cpu_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count() / kCpuTimed;
+    std::printf("measure: fluid_step on the CPU (plan A, no parts) in the same box: %.1f ms; the GPU's %.0fx faster\n",
+                cpu_ms, cpu_ms / ms);
+}
+
+// The --gpu film's case (flow_movie's gpu_live.cpp, B7's G2) against the CPU,
+// step by step: D1's case without its parts on a 112 x 81 x 112 box at 4 mm,
+// its discs formed as gpu_live forms them (LiveRun's rows after one step at
+// the program's controls, each at its command), from rest; each GPU step read
+// back beside spread_actuator() and fluid_step(): the same bits while both
+// are finite, and both non-finite from the same step if either goes. Whether
+// the case blows up is reported, not asserted: it does, on the CPU first
+// (2026-10-27: bit for bit through step 67, both non-finite at 68, the CPU's
+// own fault; solid-free D1 under plan A, Physics' triage), so D1's --gpu film
+// went non-finite on every grid with an odd ny. Opt-in with
+// SPADE_AIRFLOW_VALIDATION: the CPU's steps take minutes.
+TEST(GpuAirflowStep, D1NoPartsCaseStepByStepAgainstTheCpu) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const bool validation = std::getenv("SPADE_AIRFLOW_VALIDATION") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!validation) GTEST_SKIP() << "opt-in: SPADE_AIRFLOW_VALIDATION=1";
+    namespace an = spade::analysis;
+    auto q = spade::testing::d1_case(0.1, af::GridShape{112, 81, 112, 0.004f}, false);
+    ASSERT_TRUE(q.has_value()) << q.error().context;
+    const auto resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    const af::GridShape& s = resolved->base;
+    const glm::vec3 origin = -0.5f * s.dx * glm::vec3(static_cast<float>(s.nx), static_cast<float>(s.ny),
+                                                      static_cast<float>(s.nz));
+    std::vector<spade::vehicles::RotorRow> rows;
+    spade::BodyState body{};
+    {
+        auto run = an::LiveRun::start(*resolved, q->run_model);
+        ASSERT_TRUE(run.has_value()) << run.error().context;
+        ASSERT_FALSE(run->solids().any);
+        ASSERT_TRUE(run->step(an::controls_at(q->program, 0.0f)).has_value());
+        rows.assign(run->rotor_rows().begin(), run->rotor_rows().end());
+        body = run->body();
+    }
+    for (spade::vehicles::RotorRow& r : rows) r.omega = r.omega_cmd;
+    Case c{"D1 no parts 112x81x112", s, resolved->domain, {}, std::vector<af::ActuatorDisc>(rows.size())};
+    ASSERT_TRUE(spade::vehicles::rotor_discs(rows, body, origin, s, c.discs).has_value());
+    const auto h_ns = static_cast<uint64_t>(static_cast<double>(*resolved->spec.time.step) * 1e9 + 0.5);
+    c.cfg.rho = resolved->spec.fluid.density;
+    c.cfg.nu = resolved->spec.fluid.kinematic_viscosity;
+    c.cfg.h = static_cast<float>(static_cast<double>(h_ns) / 1e9);
+    const af::MacGrid start = *af::make_grid(s, c.bc);
+
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg);
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    af::MacGrid read = start;
+    uint32_t first_differing = 0, cpu_bad = 0, gpu_bad = 0;
+    // Until either side goes non-finite: a NaN's payload is not compared.
+    for (uint32_t step = 1; step <= 100u && cpu_bad == 0u && gpu_bad == 0u; ++step) {
+        const af::FluidHealth h = cpu->step(c);
+        ASSERT_TRUE((*gpu)->step(c.discs).has_value());
+        ASSERT_TRUE((*gpu)->read(read).has_value());
+        const std::size_t nc = non_finite(cpu->g), ng = non_finite(read);
+        const std::size_t d = nc == 0u && ng == 0u ? differing(read, cpu->g) : 0u;
+        if (d > 0u && first_differing == 0u) first_differing = step;
+        if (nc > 0u) cpu_bad = step;
+        if (ng > 0u) gpu_bad = step;
+        if (step % 10u == 0u || (d > 0u && first_differing == step) || nc > 0u || ng > 0u) {
+            std::printf("[ d1 gpu  ] step %u: %zu of %zu samples differ; non-finite: CPU %zu (fault %d), GPU %zu\n",
+                        step, d, samples_of(read), nc, static_cast<int>(h.fault), ng);
+            std::fflush(stdout);
+        }
+    }
+    std::printf("[ d1 gpu  ] first differing step %u; first non-finite: CPU %u, GPU %u (0: none in 100 steps)\n",
+                first_differing, cpu_bad, gpu_bad);
+    EXPECT_EQ(gpu_bad, cpu_bad) << "the GPU goes non-finite when, and only when, the CPU does";
+    if (spade::testing::airflow_bit_equal_device(*ctx)) {
+        EXPECT_EQ(first_differing, 0u);
+    }
 }

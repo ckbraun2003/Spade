@@ -106,14 +106,16 @@ struct PoweredQuad {
 }
 
 // D1: the powered quad with its parts in the flow, held at hover, on `grid`
-// (kD1Grid; another grid for a measurement).
-[[nodiscard]] inline Result<PoweredQuad> d1_case(double seconds, const physics::airflow::GridShape& grid = kD1Grid) {
+// (kD1Grid; another grid for a measurement). Without `parts_in_flow`, the
+// parts are drawn only: B7's interim GPU film, until GpuFluid takes solids.
+[[nodiscard]] inline Result<PoweredQuad> d1_case(double seconds, const physics::airflow::GridShape& grid = kD1Grid,
+                                                 bool parts_in_flow = true) {
     const float longest = grid.dx * static_cast<float>(std::max({grid.nx, grid.ny, grid.nz}));
     auto q = powered_library_quad(PoweredQuadSetup{.seconds = seconds,
                                                    .box = longest,
                                                    .spacing = grid.dx,
                                                    .step = kD1Step,
-                                                   .parts_in_flow = true,
+                                                   .parts_in_flow = parts_in_flow,
                                                    .hover_only = true});
     if (!q) return q;
     q->grid = grid;
