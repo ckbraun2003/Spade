@@ -69,6 +69,9 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - **Drag elements:** a wall part has none once the coupling is two-way (D4), because the grid's integrated wall force replaces it. In one-way (D1–D3) the sim keeps its drag model for flight, and the grid's wall force is display only. So the drag element's presence follows the coupling mode, not the part's surface kind. A porous part's drag, two-way, is its Darcy–Forchheimer sink's reaction.
 - **P3. Wall pressure.** The surface pressure at body surface points, and the integrated force and moment, for display (one-way). In D4 that force replaces the body's drag element, so nothing is counted twice.
 - **P4. The actuator line.** Per blade: elements along a rotating line, with lift and drag from tabulated airfoil polars, chord and twist.
+  - *Amended 2026-10-26 (with P11, merged at 97ddfdd):*
+    - **The convention.** Blade `b` of `B` lies at azimuth `s_k ψ + 2π b / B` about the hub's +Y. `ψ` is P11's and grows with `ω ≥ 0` whatever the hand, and `s_k` is the rotor's `spin_dir`, as `posed_parts()` turns a drawn blade. So a drawn blade and P4's line coincide.
+    - **Its floating-point flags** (Core's note). P11's rule is header-only, so `ψ + ω h` compiles under each includer's FP flags, while `spade_fp_strict` is PRIVATE to the engine libraries (`engine/CMakeLists.txt:94-106`). That is fine while `ψ` is visual only. When P4 feeds `ψ` into the step, the rule moves into an engine `.cpp` built once under `spade_fp_strict`, and its callers link it, so every caller's bits are the engine's.
   - **Its input is one blade definition per rotor** (Cameron, backlog `cd298d6`, Q3):
     - the blade count and radius, the hub radius, and stations along the span, each with chord, twist and an airfoil;
     - the airfoil's polars, `C_l` and `C_d` against α, imported with their source;
@@ -93,6 +96,14 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - Small-propeller thrust and power data (the UIUC propeller database) for the actuator line.
 - **P10. The dye scalar** (Rendering). Tracers stand in for D1.
 - **P11. The blade azimuth `ψ`**, a per-rotor array Physics owns, declared by the airflow module. It is advanced by `ω h` each step and read by the actuator line and blade-resolved models. It sits outside `RotorRow`, so every existing golden holds.
+  - *Amended 2026-10-26 (P11 merged at 97ddfdd; Core's L7 plan; the lead's order):* P11's home is `engine/physics/blade_azimuth.hpp`, header-only and not the airflow module, because the editor's Run is a plain `Simulation` without that module.
+    - `advance_blade_azimuth(float& psi, float omega, float h)` computes `ψ ← ψ + ω h`, then subtracts `kAzimuthTwoPi` (6.28318548f, `0x40C90FDB`) while `ψ ≥` it, giving [0, 2π) with `+ - *` only and no `fmod`.
+    - `ω` is the rotor row's value after the rotors' step, the one its forces used.
+    - A disabled rotor holds its `ψ`.
+    - `ψ` outside [0, 2π), a negative or non-finite `ω` or `h`, or `ω h` above 64 rad is refused: `ψ` is held and the call returns false.
+    - `advance_blade_azimuths(psi, rows, h)` advances every rotor.
+    - It is held on the host, outside registered state, with nothing read back. The editor's Run and LiveRun call it, and `posed_parts()` applies `s_k` (`R_y(s_k ψ)`).
+    - For now it is visual only (Core's L7c2).
 
 **Core**
 - **C1. Per-part model geometry, `CORE-7`** (`../../core/2026-10-12-model-parts-design.md`, approved). `ModelType::parts` gives each part a role (rigid, or spinning with rotor k), a body-frame mount, an exact `SdfProgram` shape and a wall or porous surface. A posing rule gives one world-frame SDF of the posed parts and the wall velocity `v + ω × r`. Parts are in YAML. Core builds it right after stage 5 Task 1. D1 uses it if it has landed, otherwise a harness SDF from `QuadrotorParams`. CAD inputs follow `CORE-6`: native CSG parts now, imported triangle meshes with exact BVH distance, and STEP through an offline tool later.
