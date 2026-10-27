@@ -48,9 +48,12 @@ if(VIDEO STREQUAL "smoke")
     if(NOT EXISTS "${state}")
         message(FATAL_ERROR "the budget stop kept no solver state at ${state}")
     endif()
-    file(READ "${state}" state_magic LIMIT 8)
-    file(READ "${state}" grid_magic OFFSET 20 LIMIT 8)
-    if(NOT state_magic STREQUAL "SPSTATE2" OR NOT grid_magic STREQUAL "SPADEGRD")
+    # Read as hex: CMake 4.2's text-mode file(READ ... LIMIT 8) returns the
+    # magic plus a newline whenever any 0x0a byte follows in the file (a
+    # field float can hold one), so a right state compared as text failed.
+    file(READ "${state}" state_magic LIMIT 8 HEX)  # "SPSTATE2"
+    file(READ "${state}" grid_magic OFFSET 20 LIMIT 8 HEX)  # "SPADEGRD"
+    if(NOT state_magic STREQUAL "5350535441544532" OR NOT grid_magic STREQUAL "5350414445475244")
         message(FATAL_ERROR "the state is not flow_movie's header around grid_io's blob: "
                             "\"${state_magic}\" then \"${grid_magic}\" at byte 20")
     endif()
