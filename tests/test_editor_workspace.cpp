@@ -655,3 +655,24 @@ TEST(EditorWorkspaceAir, PauseAndStepAreARunsNotTheAirs) {
     command(*w, Command::stop);
     EXPECT_FALSE(w->panels().air);
 }
+
+// Run flies a placed Phantom (the lead, 2026-10-27: the tour's editor
+// chapters place it since L7c1 gave it props as mesh parts): Run starts, the
+// Pilot section flies it, and the run has its state. The smoke at 5f3e43f
+// found Run absent for it (editor.fly/piloted, add_drone's placed-at).
+TEST(EditorWorkspaceRun, RunFliesAPlacedLibraryPhantom) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    w->refresh_panels();
+    for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
+        if (w->panels().library[i].name == "Phantom 3-class quad") w->panels().armed = i;
+    }
+    ASSERT_TRUE(w->panels().armed.has_value());
+    w->click(glm::vec3(3.0f, 5.0f, 0.0f), kDown);
+    const std::string phantom = w->panels().selection.name;
+    ASSERT_FALSE(phantom.empty()) << w->panels().status;
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().pilot.vehicle, phantom) << w->panels().pilot.why_not;
+    EXPECT_TRUE(w->run()->state_of(phantom).has_value());
+}
