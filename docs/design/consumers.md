@@ -14,6 +14,11 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **LiveRun's fluid on a device** (Rendering, Run air on the GPU, slices 1 and 2, merged `479ef6d` and `c2aa0a2`).
+  - `LiveRun::start(resolved, model, const LiveFluidMaker& fluid = {})`. The default is the CPU, unchanged and bit for bit. A `LiveFluid` has `step(discs)`, `publish(...)` and `read(MacGrid&)`.
+  - `spike/airflow/live_fluid.hpp`: `GpuLiveFluid` and `gpu_live_fluid(ctx, wg)`, plus `start_live_run(resolved, model, ctx*)`, which returns `{run, cpu_because}`. It falls back to the CPU by name when the device refuses.
+  - With a device, `save()` reads the fields back, and a restored run steps on the CPU.
+  - Nothing uses it yet: the editor's Run air (slice 3) waits on C4.
 - **Every film's frames are checked** (Rendering, merged `e3997db`). `write_frame()` takes a `FrameBound` and refuses a frame that fails `frame_fault()` before writing it: a non-finite half (beyond a solid block's allowed no-data halves), or a speed past 10 × the film's expected top speed (at least 10 m/s). The film then stops with "<stem>: frame K, after step S (t T): why". Every builder sets `Film::expected_speed`, and a `--case` file's run takes 2 v_h at full throttle plus the wind.
 - **The solids projection on the GPU** (Physics, B5.6, merged `236bb12`). `solids_chain`'s `projection_chains(shape, layout, ProjectionSolidsPipelines, closed, wg)` and `project_with_solids(runner, ids, floor, cap)` return `GpuProjectionReport{ProjectionReport, capped}`. They are bit-equal to `project_solids()`. The health word sits in `airflow_scalars` slots 24-27 (`kSlotHealth`): residual, iterations, stalled, capped. `airflow_pcg_update` gains op 9 (p ← x). Nothing existing changes.
 - **A motor mesh, the composite, and the basic quad's look** (Core, L7b1, merged `caba080`). These add to what was there. No library drone sets either option yet; that is L7b2.
