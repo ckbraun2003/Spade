@@ -18,10 +18,11 @@
 // each frame's log (the held body, then the rotors' speeds) and run.txt's
 // lines (the step, then the label).
 //
-// Each published frame is checked on the host before it is cached
-// (frame_check.hpp): a non-finite one, or one whose fastest cell is past ten
-// times the case's expected top speed, stops the film, naming its frame and
-// step; a blown-up flow never becomes a film (the lead, 2026-10-27). No save:
+// Each published frame is checked on the host as write_frame() caches it,
+// as every film's is (frame_check.hpp): a non-finite one, or one whose
+// fastest cell is past ten times the case's expected top speed
+// (expected_speed()), stops the film, naming its frame and step; a blown-up
+// flow never becomes a film (the lead, 2026-10-27). No save:
 // the film runs in minutes, and a cache left unfinished starts again.
 #pragma once
 

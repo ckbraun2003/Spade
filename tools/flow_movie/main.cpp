@@ -179,6 +179,9 @@ struct Film {
     int time_decimals = 3;
     std::function<std::vector<double>(const airflow::MacGrid&)> live;  // the case's measures per frame
     std::function<CaptionText(const FrameLog&)> captions;              // the case's lines past the standard ones
+    // The case's expected top speed, in its own units: every cached frame's
+    // fastest cell is held to ten times it (frame_check.hpp). Each film sets it.
+    float expected_speed = 0.0f;
     std::vector<std::string> record;  // its V1 record's lines, above the view's (the validation reel)
     // Where the volume's centre shows across the frame (-1 left, +1 right). A
     // film with a record puts the picture right and its captions in a
@@ -279,7 +282,10 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         }
         const spade::FlowVolumeHeader& h = volume.header;
         FrameLog log{step, static_cast<double>(step) * c.fluid.h, film.live ? film.live(g) : std::vector<double>{}};
-        if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
+        const FrameBound bound{.expected_speed = film.expected_speed};
+        if (auto wrote = write_frame(cache, k, volume, log, bound); !wrote) {
+            return std::unexpected(spade::Error{wrote.error().code, film.stem + ": " + wrote.error().context});
+        }
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
                                  (frame_budget > 0u && k + 1u - first >= frame_budget);
@@ -367,7 +373,10 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         std::vector<double> live{b.pos.x, b.pos.y, b.pos.z, b.orient.w, b.orient.x, b.orient.y, b.orient.z};
         for (const float w : run->state().rotor_omega) live.push_back(w);
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
-        if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
+        const FrameBound bound{.expected_speed = film.expected_speed, .solid_cells = run->solids().solid_cells};
+        if (auto wrote = write_frame(cache, k, volume, log, bound); !wrote) {
+            return std::unexpected(spade::Error{wrote.error().code, film.stem + ": " + wrote.error().context});
+        }
         lines << frame->steps << '\t' << run->run_label() << '\n';
         char residual[32];
         std::snprintf(residual, sizeof residual, "%.3e", static_cast<double>(run->solids().pressure_residual));
@@ -768,6 +777,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
                            {}};
     };
     const AirflowCase& q = film.airflow;
+    film.expected_speed = 2.0f * induced_speed(q.discs[0], q.fluid.rho);
     const float speed_max = 12.0f;  // the far wake: about 2 v_h = 10.7 m/s
     const glm::vec3 target(0.0f, -0.3f, 0.0f);
     const auto speed_colours = colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, speed_max);
@@ -892,6 +902,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
         return CaptionText{{}, {"this run, instantaneous at the red cross: " + fixed(v, 2) + " m/s"}};
     };
     const float speed_max = 2.0f * vh;
+    film.expected_speed = speed_max;
     const glm::vec3 target = hub - glm::vec3(0.0f, 4.5f * r, 0.0f);
     film.views.push_back(View{
         "speed", "speed |u| as a volume, 0 to " + fixed(speed_max, 1) + " m/s; streamlines from above the disc",
@@ -928,6 +939,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     film.stem = "cavity-re400";
     film.airflow = cavity_re400_case();
     film.frames = frames;
+    film.expected_speed = 1.0f;  // the lid's speed
     film.time_decimals = 1;
     film.captions = [](const FrameLog&) {
         return CaptionText{{}, {"the record's measures come from its own run at T = 60; this clip re-runs the same "
@@ -972,6 +984,7 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     film.stem = "taylor-green";
     film.airflow = taylor_green_case();
     film.frames = frames;
+    film.expected_speed = 1.0f;  // the vortex's peak speed at the start
     film.time_decimals = 2;
     film.live = [](const airflow::MacGrid& g) {  // kinetic energy per unit mass, as the record measures it
         const airflow::GridShape& s = g.shape;
@@ -1030,6 +1043,7 @@ constexpr float kVortexFloor = -5.0f;
     film.run = run;
     film.gpu = gpu;
     film.frames = frames;
+    film.expected_speed = expected_speed(*run);
     film.time_unit = " s";
     film.airflow.name = run->name;
     film.airflow.t_end = static_cast<float>(run->seconds);
