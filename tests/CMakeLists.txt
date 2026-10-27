@@ -194,6 +194,7 @@ add_executable(spade_tests
     test_analysis_validation.cpp
     test_analysis_queue.cpp
     test_analysis_controls.cpp
+    test_analysis_live_fluid.cpp
     test_analysis_live_run.cpp
     test_analysis_live_run_save.cpp
     test_d1_case.cpp
