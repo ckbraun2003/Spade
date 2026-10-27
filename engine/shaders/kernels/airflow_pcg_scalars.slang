@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// airflow_pcg_scalars.slang (plan B, tasks B5.1b and B5.4) -- THE CG'S
+// airflow_pcg_scalars.slang (plan B, tasks B5.1b, B5.4 and B5.6) -- THE CG'S
 // QUOTIENTS AND DECISIONS on the GPU, from airflow_scalars to airflow_scalars
 // (slots: airflow_pcg.slang), one thread, each the expression or branch of
 // pcg.cpp's solve_pcg_to(), its CPU twin and the authority:
@@ -30,6 +30,10 @@
 //                  that x (take_best, for airflow_pcg_update), its residual
 //                  and its iteration; capped = above the mark, not stalled
 //                  (fluid_step.cpp's health).
+// and B5.6's, the projection's last dispatch:
+//   op 9  health   the health word, slots 24-27: the finish's residual,
+//                  iterations, stalled and capped (slots 8, 11, 12 and 23,
+//                  live after the stop), for the host's one read
 // Every op from 4 to 7 returns at once while the stop word is set, except
 // that op 7 takes the finish's measure; op 6 acts only then.
 //
@@ -49,7 +53,7 @@
 // op 6 writes airflow_region_table's means (19); reads airflow_params only
 // through the module imports.
 //
-// A MISUSE SHOWS AS NaN: an op past 8 writes a NaN residual, and so does a
+// A MISUSE SHOWS AS NaN: an op past 9 writes a NaN residual, and so does a
 // finish with nothing measured.
 // ---------------------------------------------------------------------------
 
@@ -60,7 +64,7 @@ import fp32_math;
 
 // The airflow push convention: 16 bytes, the count in word 2.
 struct PcgScalarsPush {
-    uint op;  // 0 alpha ... 8 finish
+    uint op;  // 0 alpha ... 8 finish, 9 health
     uint unused0;
     uint count;  // 1: one thread
     uint unused1;
@@ -77,6 +81,7 @@ static const uint kOpNext = 5u;
 static const uint kOpGate = 6u;
 static const uint kOpDecide = 7u;
 static const uint kOpFinish = 8u;
+static const uint kOpHealth = 9u;
 
 float slot(uint s) { return airflow_scalars[s]; }
 
@@ -210,6 +215,13 @@ void finish() {
     set_flag(kSlotCapped, slot(kSlotResidual) > mark && !slot_set(kSlotStalled));
 }
 
+void health() {
+    set_slot(kSlotHealthResidual, slot(kSlotResidual));
+    set_slot(kSlotHealthIterations, slot(kSlotIterations));
+    set_slot(kSlotHealthStalled, slot(kSlotStalled));
+    set_slot(kSlotHealthCapped, slot(kSlotCapped));
+}
+
 [shader("compute")]
 [numthreads(SPADE_WG, 1, 1)]
 void airflow_pcg_scalars(uint3 tid : SV_DispatchThreadID) {
@@ -249,6 +261,10 @@ void airflow_pcg_scalars(uint3 tid : SV_DispatchThreadID) {
     }
     if (op == kOpFinish) {
         finish();
+        return;
+    }
+    if (op == kOpHealth) {
+        health();
         return;
     }
     airflow_scalars[kSlotResidual] = asfloat(0x7FC00000u);

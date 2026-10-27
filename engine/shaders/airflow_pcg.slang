@@ -50,7 +50,13 @@
 //   21  keep_best   the measure keeps x as best (airflow_pcg_update's best <- x)
 //   22  take_best   the finish returns best (airflow_pcg_update's x <- best)
 //   23  capped      the finish: above the mark and not stalled (FluidHealth's)
-//   24-31 free
+//   B5.6's health word (airflow_pcg_scalars' health, the projection's last
+//   dispatch), copied from the live slots 8, 11, 12 and 23 after the finish:
+//   24  residual    \  THE HEALTH WORD, slots 24-27, the 16 bytes the host
+//   25  iterations   | reads after the projection: ProjectionReport's
+//   26  stalled      | residual, iterations and stalled, and FluidHealth's
+//   27  capped      /  capped
+//   28-31 free
 //
 // THE SOLID FIELD (bindings 13-15, pack_solid_field()'s rule, confirmed by
 // Physics to Rendering on 2026-10-22): theta, the wall velocity and phi as
@@ -110,10 +116,18 @@ static const uint kSlotExact = 20u;
 static const uint kSlotKeepBest = 21u;
 static const uint kSlotTakeBest = 22u;
 static const uint kSlotCapped = 23u;
+static const uint kSlotHealthResidual = 24u;
+static const uint kSlotHealthIterations = 25u;
+static const uint kSlotHealthStalled = 26u;
+static const uint kSlotHealthCapped = 27u;
 
 // The decision word: kDecisionSlots slots from kSlotDecision.
 static const uint kSlotDecision = 9u;
 static const uint kDecisionSlots = 4u;
+
+// The health word (B5.6): kHealthSlots slots from kSlotHealth.
+static const uint kSlotHealth = 24u;
+static const uint kHealthSlots = 4u;
 
 // A flag slot is set when it holds anything but 0.0.
 bool slot_set(uint slot) { return airflow_scalars[slot] != 0.0f; }
@@ -121,7 +135,8 @@ bool slot_set(uint slot) { return airflow_scalars[slot] != 0.0f; }
 // The stop word (the plan's B5, "the device decides"). While it is set,
 // airflow_pcg_update's ops 0-7 and airflow_pcg_scalars' step and next return
 // at once, decide only takes the finish's measure, gate holds off the
-// measure's gauge(x), and the finish's ops act. The chains' other kernels
+// measure's gauge(x), and the finish's ops act (B5.6's p <- x and health
+// word with them, reading only x and the live slots). The chains' other kernels
 // (A v, the dots, the region means, the V-cycle) run on, but write only what
 // the stop leaves dead: q, r, z, dq, rz_next, level 0's b and p, the coarse
 // levels.
