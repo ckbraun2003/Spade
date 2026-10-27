@@ -105,6 +105,7 @@ Every decision this file held is ruled; the rulings live in the realm registers.
 | Backup (Cameron, AskUserQuestion 2026-10-26: "Normal pushes only") | Spade's backup is the gated master pushes to the public repo; no bundle, no private backup repo, no backup branch. Realm branches, unpushed commits and the gitignored notes stay on this PC only | the lead |
 | The 10-22 hold lifted (Cameron, AskUserQuestion 2026-10-26: "Lift the hold") | Merge the six approved branches, review the READY ones, answer the open plan questions, continue B5 and the editor airflow plan | the lead; all realms |
 | Priority: visible results first (Cameron, AskUserQuestion 2026-10-27, after "batch 13-16 have been basically the same") | Propellers drawn next (L7c1 ahead of L7b1/L7b2, then L7c2 spinning); Run air in the editor (T3) streamed as soon as it draws air; the GPU solver driven straight to an end-to-end D1 run (B5 solids, then B7). Record and test-process cleanups that feed none of those are paused | the lead; all realms |
+| A second Physics worktree (Cameron, AskUserQuestion 2026-10-27: "Allow physics-2") | spade-wt/physics-2 for Physics' agent to build B5.3/B5.5 alongside B5.2b; builds still through the job queue | Physics |
 
 ## Open user decisions
 
