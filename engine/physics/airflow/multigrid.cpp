@@ -414,6 +414,42 @@ void coarsen_weights(const PoissonLevel& f, PoissonLevel& c, const std::array<bo
     }
 }
 
+// THE PARTIAL CELL'S TRUE STENCIL (C4, the lead's ruling, 2026-10-27), on
+// level c of plan A's weights. `length` is the domain's length in c's cells
+// along each axis (the finest's sizes, halved at each level that coarsens the
+// axis), so an odd axis's last cell covers t = length - (n - 1) of a whole
+// cell (177: 0.5, 0.25, 0.125, 0.0625 down the levels), exactly: a dyadic
+// fraction. The stencil took it as whole, so an outlet's ghost sat t / 2 too
+// far and the cell's centre 1/2 - t/2 too far from the one before it: the
+// domain face beyond it now weighs x 1 / t (its ghost term, diag += 2 w,
+// sees the face t / 2 away) and the face before it x 2 / (1 + t) (the
+// centres (1 + t) / 2 apart). Its transverse faces already carry t (the
+// closed partner, coarsen_weights()) and its b the partial volume
+// (restrict_residual()). A periodic axis halves exactly, never partial.
+void true_partial_cells(PoissonLevel& c, const double (&length)[3], const std::array<bool, 3>& periodic) noexcept {
+    const uint32_t nc[3] = {c.nx, c.ny, c.nz};
+    for (uint32_t a = 0; a < 3; ++a) {
+        const double t = length[a] - static_cast<double>(nc[a] - 1u);
+        if (periodic[a] || t >= 1.0) continue;
+        const auto outer = static_cast<float>(1.0 / t);
+        const auto inner = static_cast<float>(2.0 / (1.0 + t));
+        const uint32_t t1 = a == 0 ? 1u : 0u;  // the transverse axes, t1 < t2
+        const uint32_t t2 = a == 2 ? 1u : 2u;
+        const uint32_t dim[3] = {a == 0 ? nc[0] + 1u : nc[0], a == 1 ? nc[1] + 1u : nc[1], a == 2 ? nc[2] + 1u : nc[2]};
+        for (uint32_t q = 0; q < nc[t2]; ++q) {
+            for (uint32_t p = 0; p < nc[t1]; ++p) {
+                uint32_t C[3];
+                C[t1] = p;
+                C[t2] = q;
+                C[a] = nc[a] - 1u;  // the face before the partial cell
+                c.w[a][C[0] + std::size_t{dim[0]} * (C[1] + std::size_t{dim[1]} * C[2])] *= inner;
+                C[a] = nc[a];  // the domain's face
+                c.w[a][C[0] + std::size_t{dim[0]} * (C[1] + std::size_t{dim[1]} * C[2])] *= outer;
+            }
+        }
+    }
+}
+
 }  // namespace
 
 void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine) {
@@ -429,10 +465,26 @@ void clear_weights(Multigrid& mg) {
     }
     if (halved_throughout(mg)) return;
     // Past the halving rule plan A's coarser levels carry the weights of
-    // unit fine faces: a closed partner and a held axis are weights. The
-    // finest keeps plan A's stencil and its fast paths.
+    // unit fine faces: a closed partner, a held axis and a partial cell (C4,
+    // below) are weights. The finest keeps plan A's stencil and its fast
+    // paths.
     for (std::size_t l = 1; l < mg.levels.size(); ++l) {
         coarsen_weights(mg.levels[l - 1], mg.levels[l], mg.periodic, true);  // the on-plane mean
+    }
+    // Then each level's partial cells (C4), each from its own t alone, once
+    // every level is coarsened: coarsen_weights() reads the domain face of the
+    // level above, so a factor applied in the loop above would compound (1 /
+    // (t1 t2) on level 2). Every level here holds weights: a partial cell
+    // fails halved_throughout(). The solids' set_weights() takes no part.
+    double length[3] = {static_cast<double>(mg.levels[0].nx), static_cast<double>(mg.levels[0].ny),
+                        static_cast<double>(mg.levels[0].nz)};
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        const PoissonLevel& f = mg.levels[l - 1];
+        PoissonLevel& c = mg.levels[l];
+        if (c.nx != f.nx) length[0] *= 0.5;
+        if (c.ny != f.ny) length[1] *= 0.5;
+        if (c.nz != f.nz) length[2] *= 0.5;
+        true_partial_cells(c, length, mg.periodic);
     }
 }
 
