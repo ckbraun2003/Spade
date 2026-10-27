@@ -145,4 +145,16 @@ FluidHealth fluid_step(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, F
 [[nodiscard]] Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc,
                                       std::span<const SolidPart> parts, const SolidSampler& sample);
 
+// Attaches a solid field already built for g's shape (make_solid_field(),
+// build_solids()) to the scratch, as set_solids() does after building its own
+// (it calls this): the cap with solids (check_grid(shape, bc, true)), then
+// the field; with a part, its fluid regions labelled, the multigrid's face
+// weights from its apertures (set_weights()) and CG's vectors sized; with no
+// part, plan A's paths (clear_weights()). A caller holding a field of its own
+// (B7's harness, the GPU step's host side) so reaches set_solids()' state,
+// bit for bit. A host call: it allocates. Refused before the scratch
+// changes: as check_grid() refuses, and invalid_argument for a field not
+// made for g's shape.
+[[nodiscard]] Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field);
+
 }  // namespace spade::physics::airflow

@@ -58,6 +58,10 @@
 #include <vector>
 
 #include "airflow_exact_device.hpp"
+#include "airflow_mg_prolong.spv.gen.hpp"
+#include "airflow_mg_residual.spv.gen.hpp"
+#include "airflow_mg_restrict_full.spv.gen.hpp"
+#include "airflow_mg_smooth.spv.gen.hpp"
 #include "airflow_pcg_apply.spv.gen.hpp"
 #include "airflow_pcg_measure.spv.gen.hpp"
 #include "airflow_pcg_scalars.spv.gen.hpp"
@@ -1119,6 +1123,548 @@ TEST(GpuAirflowSolids, TheOperatorMatchesApplyOperatorBitForBit) {
                                c.name + (v == ag::kPcgX ? ": A x" : ": A d"));
             gpu.set(ag::kPcgQ, pcg.copy(ag::kPcgQ));
             EXPECT_EQ(differing(gpu.all, pcg.all), 0u) << "a vector other than q was written";
+        }
+    }
+}
+
+// ===========================================================================
+// B5.2b (Physics, 2026-10-27; a block of its own, before B5.3's and B5.5's):
+// the solids' upload (solids_upload(), init_solids()) and attach_solid_field()
+// on the host; on the device, the full-weighting restriction
+// (airflow_mg_restrict_full) against multigrid.cpp's
+// restrict_full_weighting(), and one symmetric V(2,2) preconditioner
+// (append_symmetric_v_cycle(): B2's smoother, residual and prolongation, the
+// full weighting, the post-smoothing black first) against precondition(), on
+// the three solids cases, with the same bits at workgroup sizes 32, 64 and 128
+// ===========================================================================
+
+namespace {
+
+// Set 1's level buffers (bindings.slang section F): level 0's b and r, and
+// levels 1..L packed in airflow_multigrid.
+constexpr uint32_t kMgRhs = 9;
+constexpr uint32_t kMgResidual = 10;
+constexpr uint32_t kMgMultigrid = 11;
+
+// The preconditioner runner's kernels, in RunnerDesc::kernels' order.
+enum MgPipeline : uint32_t {
+    kMgSmoothPipeline = 0,
+    kMgResidualPipeline,
+    kMgRestrictFullPipeline,
+    kMgProlongPipeline,
+};
+
+constexpr ag::PreconditionPipelines kMgPipelines{
+    .mg = {.smooth = kMgSmoothPipeline, .residual = kMgResidualPipeline, .prolong = kMgProlongPipeline},
+    .restrict_full = kMgRestrictFullPipeline};
+
+// The FluidConfig build() makes its scratch with.
+[[nodiscard]] af::FluidConfig solids_config() {
+    return af::FluidConfig{.rho = kRho, .nu = 0.0f, .h = kStepS, .n_v = af::kSolidsCgIterations,
+                           .interior = af::SolidInterior::extrapolate};
+}
+
+// Every level's p, b and r as the device holds them: level 0's in
+// airflow_pressure, airflow_rhs and airflow_residual, levels 1..L packed in
+// airflow_multigrid at the level table's offsets.
+struct MgArrays {
+    std::vector<float> p0, b0, r0, coarse;
+};
+
+[[nodiscard]] MgArrays mg_pack(const af::Multigrid& mg, const ag::MgLayout& layout) {
+    MgArrays out{mg.levels[0].p, mg.levels[0].b, mg.levels[0].r, {}};
+    out.coarse.assign(static_cast<std::size_t>(std::max<uint64_t>(layout.multigrid_floats, 1u)), 0.0f);
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        const af::PoissonLevel& L = mg.levels[l];
+        std::copy(L.p.begin(), L.p.end(), out.coarse.begin() + layout.levels[l][3]);
+        std::copy(L.b.begin(), L.b.end(), out.coarse.begin() + layout.levels[l][4]);
+        std::copy(L.r.begin(), L.r.end(), out.coarse.begin() + layout.levels[l][5]);
+    }
+    return out;
+}
+
+void mg_unpack(const MgArrays& in, const ag::MgLayout& layout, af::Multigrid& mg) {
+    mg.levels[0].p = in.p0;
+    mg.levels[0].b = in.b0;
+    mg.levels[0].r = in.r0;
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        af::PoissonLevel& L = mg.levels[l];
+        const auto take = [&](std::vector<float>& x, uint32_t at) {
+            std::copy(in.coarse.begin() + at, in.coarse.begin() + at + static_cast<std::ptrdiff_t>(x.size()),
+                      x.begin());
+        };
+        take(L.p, layout.levels[l][3]);
+        take(L.b, layout.levels[l][4]);
+        take(L.r, layout.levels[l][5]);
+    }
+}
+
+// airflow_params for a built case with the upload's level table: the dims,
+// dx, 1 / dx, h, the periodic axes and the projection's words, with room for
+// the pcg block after the level table. Word 16 and the block are
+// init_solids()'.
+[[nodiscard]] std::vector<uint32_t> mg_params(const Built& b, const ag::SolidsUpload& u) {
+    std::vector<uint32_t> p(ag::projection_params_words(u.layout) + ag::kPcgBlockWords, 0u);
+    const af::GridShape& s = b.shape;
+    p[0] = s.nx;
+    p[1] = s.ny;
+    p[2] = s.nz;
+    p[4] = bits(s.dx);
+    p[5] = bits(1.0f / s.dx);
+    p[6] = bits(kStepS);
+    const std::array<bool, 3> periodic = af::periodic_axes(b.bc);
+    for (uint32_t a = 0; a < 3; ++a) p[8 + a] = periodic[a] ? 1u : 0u;
+    ag::write_projection_params(p, u.layout, af::face_kinds(b.bc), af::projection_floats(s, kRho, kStepS));
+    return p;
+}
+
+// The preconditioner's kernels on a built case, its solids put on the device
+// by init_solids() from `upload`.
+class MgDevice {
+public:
+    [[nodiscard]] static std::optional<MgDevice> create(VulkanContext& ctx, const Built& b,
+                                                        const ag::SolidsUpload& upload,
+                                                        uint32_t workgroup_size = kWorkgroupSize) {
+        MgDevice dev;
+        dev.layout_ = upload.layout;
+        dev.workgroup_size_ = workgroup_size;
+        dev.params_ = mg_params(b, upload);
+        const uint64_t cells = cells_of(b.shape);
+        std::vector<RunnerBuffer> buffers(kBufferCount);
+        for (uint32_t i = 0; i < kBufferCount; ++i) {
+            buffers[i] = {std::string(ag::kAirflowSetBuffers[i].name), 4u, BufferKind::device_only};
+            if (const uint64_t bytes = ag::solids_binding_bytes(upload, i); bytes > 0u) {
+                buffers[i] = {std::string(ag::kAirflowSetBuffers[i].name), bytes, BufferKind::staged};
+            }
+        }
+        buffers[kParams] = {"airflow_params", dev.params_.size() * 4u, BufferKind::staged};
+        buffers[kPressure] = {"airflow_pressure", cells * 4u, BufferKind::staged};
+        buffers[kMgRhs] = {"airflow_rhs", cells * 4u, BufferKind::staged};
+        buffers[kMgResidual] = {"airflow_residual", cells * 4u, BufferKind::staged};
+        buffers[kMgMultigrid] = {"airflow_multigrid", std::max<uint64_t>(dev.layout_.multigrid_floats, 1u) * 4u,
+                                 BufferKind::staged};
+        const SpirvVariantSet* const kernels[] = {
+            &gen::kSpvVariants_airflow_mg_smooth, &gen::kSpvVariants_airflow_mg_residual,
+            &gen::kSpvVariants_airflow_mg_restrict_full, &gen::kSpvVariants_airflow_mg_prolong};
+        auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers,
+                                                          .kernels = kernels,
+                                                          .push_bytes = sizeof(ag::ProjectionPush),
+                                                          .workgroup_size = workgroup_size});
+        if (!runner) {
+            ADD_FAILURE() << runner.error().context;
+            return std::nullopt;
+        }
+        dev.runner_ = std::move(*runner);
+        if (!check(ag::init_solids(*dev.runner_, dev.params_, upload, static_cast<uint32_t>(
+                                                                         ag::projection_params_words(upload.layout)),
+                                   b.closed_regions, af::kSolidsCgIterations, af::kSolidsCgCap))) {
+            return std::nullopt;
+        }
+        return dev;
+    }
+
+    [[nodiscard]] const ag::MgLayout& layout() const noexcept { return layout_; }
+    [[nodiscard]] uint32_t workgroup_size() const noexcept { return workgroup_size_; }
+
+    [[nodiscard]] bool upload_levels(const af::Multigrid& mg) {
+        const MgArrays a = mg_pack(mg, layout_);
+        return check(runner_->upload(kPressure, bytes_of(a.p0))) && check(runner_->upload(kMgRhs, bytes_of(a.b0))) &&
+               check(runner_->upload(kMgResidual, bytes_of(a.r0))) &&
+               check(runner_->upload(kMgMultigrid, bytes_of(a.coarse)));
+    }
+
+    [[nodiscard]] bool read_levels(af::Multigrid& mg) const {
+        MgArrays a = mg_pack(mg, layout_);
+        if (!check(runner_->read(kPressure, writable_bytes_of(a.p0))) ||
+            !check(runner_->read(kMgRhs, writable_bytes_of(a.b0))) ||
+            !check(runner_->read(kMgResidual, writable_bytes_of(a.r0))) ||
+            !check(runner_->read(kMgMultigrid, writable_bytes_of(a.coarse)))) {
+            return false;
+        }
+        mg_unpack(a, layout_, mg);
+        return true;
+    }
+
+    template <class T>
+    [[nodiscard]] bool read(uint32_t at, std::vector<T>& out) const {
+        return check(runner_->read(at, writable_bytes_of(out)));
+    }
+
+    [[nodiscard]] bool run(const std::vector<ChainCommand>& chain) {
+        const auto id = runner_->record(chain);
+        if (!id) {
+            ADD_FAILURE() << id.error().context;
+            return false;
+        }
+        return check(runner_->submit(*id, 1));
+    }
+
+private:
+    ag::MgLayout layout_;
+    uint32_t workgroup_size_ = kWorkgroupSize;
+    std::vector<uint32_t> params_;
+    std::unique_ptr<ChainRunner> runner_;
+};
+
+// Fixed-seed noise, with its subnormals, in every level's p, b and r.
+void fill_levels(af::Multigrid& mg, uint64_t seed) {
+    for (af::PoissonLevel& L : mg.levels) {
+        fill_noise(L.p, seed++, 1.0f);
+        fill_noise(L.b, seed++, 2.0f);
+        fill_noise(L.r, seed++, 4.0f);
+    }
+}
+
+// The values of every level's p, b and r whose bits differ between a and b,
+// and how many values that is; r is left out on the levels in `skip_r`.
+struct LevelsDiff {
+    std::size_t differ = 0;
+    std::size_t values = 0;
+};
+
+[[nodiscard]] LevelsDiff levels_differ(const af::Multigrid& a, const af::Multigrid& b, bool skip_coarsest_r) {
+    LevelsDiff d;
+    for (std::size_t l = 0; l < a.levels.size(); ++l) {
+        const af::PoissonLevel& x = a.levels[l];
+        const af::PoissonLevel& y = b.levels[l];
+        d.differ += differing(x.p, y.p) + differing(x.b, y.b);
+        d.values += x.p.size() + x.b.size();
+        if (skip_coarsest_r && l + 1u == a.levels.size()) continue;
+        d.differ += differing(x.r, y.r);
+        d.values += x.r.size();
+    }
+    return d;
+}
+
+// The case's level shapes, finest first, as "16x16x16 > 8x8x8 > ...".
+[[nodiscard]] std::string level_shapes(const af::Multigrid& mg) {
+    std::string out;
+    for (const af::PoissonLevel& L : mg.levels) {
+        if (!out.empty()) out += " > ";
+        out += std::to_string(L.nx) + "x" + std::to_string(L.ny) + "x" + std::to_string(L.nz);
+    }
+    return out;
+}
+
+// One symmetric V(2,2) on the device from level 0's b = r and p = 0, every
+// other level's p, b and r NaN (each must be written before it is read).
+[[nodiscard]] af::Multigrid precondition_start(const af::Multigrid& mg, const std::vector<float>& r) {
+    af::Multigrid start = mg;
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (af::PoissonLevel& L : start.levels) {
+        std::fill(L.p.begin(), L.p.end(), nan);
+        std::fill(L.b.begin(), L.b.end(), nan);
+        std::fill(L.r.begin(), L.r.end(), nan);
+    }
+    start.levels[0].b = r;
+    std::fill(start.levels[0].p.begin(), start.levels[0].p.end(), 0.0f);
+    return start;
+}
+
+// A fixed r for the preconditioner: noise, 0 in the solid cells (the CG's
+// mask).
+[[nodiscard]] std::vector<float> masked_r(const Built& b, uint64_t seed) {
+    std::vector<float> r(cells_of(b.shape));
+    fill_noise(r, seed, 3.0f);
+    for (std::size_t i = 0; i < r.size(); ++i) {
+        if (b.s.regions.label[i] == af::kNoRegion) r[i] = 0.0f;
+    }
+    return r;
+}
+
+}  // namespace
+
+// attach_solid_field() (fluid_step.hpp), the tail set_solids() now calls: a
+// field built apart and attached to a fresh scratch reaches set_solids()'
+// state bit for bit -- the field, the regions, every level's face weights,
+// CG's vectors -- on the three cases. Refused before the scratch changes for
+// a field of another shape.
+TEST(AirflowSolidsChain, AttachSolidFieldReachesSetSolidsState) {
+    for (const SolidsCase& c : solids_cases()) {
+        SCOPED_TRACE(c.name);
+        auto built = build(c);
+        ASSERT_TRUE(built.has_value());
+        const af::FluidScratch& want = built->s;
+        const af::MacGrid g = *af::make_grid(c.shape, c.bc);
+        af::SolidField f = *af::make_solid_field(c.shape);
+        const auto parts = c.scene.parts();
+        ASSERT_TRUE(af::build_solids(f, c.shape, af::periodic_axes(c.bc), parts, c.scene.sampler()).has_value());
+        auto s = af::make_fluid_scratch(g, c.bc, solids_config());
+        ASSERT_TRUE(s.has_value());
+        ASSERT_TRUE(af::attach_solid_field(*s, g, c.bc, std::move(f)).has_value());
+        const af::FluidScratch& got = *s;
+        EXPECT_TRUE(got.solids.any);
+        std::size_t differ = 0;
+        for (uint32_t a = 0; a < 3; ++a) {
+            differ += differing(got.solids.theta[a], want.solids.theta[a]);
+            differ += differing(got.solids.wall[a], want.solids.wall[a]);
+            differ += differing(got.solids.phi[a], want.solids.phi[a]);
+            differ += got.solids.link[a] == want.solids.link[a] ? 0u : 1u;
+            differ += got.solids.layer[a] == want.solids.layer[a] ? 0u : 1u;
+        }
+        EXPECT_EQ(differ, 0u) << "the field";
+        EXPECT_EQ(got.regions.count, want.regions.count);
+        EXPECT_GT(got.regions.count, 0u);
+        EXPECT_EQ(got.regions.label, want.regions.label);
+        EXPECT_EQ(got.projection.pcg.x.size(), g.p.size());
+        EXPECT_EQ(got.projection.pcg.best.size(), g.p.size());
+        const af::Multigrid& mg = got.projection.mg;
+        ASSERT_EQ(mg.levels.size(), want.projection.mg.levels.size());
+        std::size_t weights = 0;
+        std::size_t weights_differ = 0;
+        for (std::size_t l = 0; l < mg.levels.size(); ++l) {
+            for (uint32_t a = 0; a < 3; ++a) {
+                const std::vector<float>& w = mg.levels[l].w[a];
+                ASSERT_EQ(w.size(), want.projection.mg.levels[l].w[a].size()) << "level " << l << " axis " << a;
+                EXPECT_FALSE(w.empty()) << "level " << l << " axis " << a << " is not weighted";
+                weights += w.size();
+                weights_differ += differing(w, want.projection.mg.levels[l].w[a]);
+            }
+        }
+        // Level 0's weights are the field's apertures.
+        for (uint32_t a = 0; a < 3; ++a) weights_differ += differing(mg.levels[0].w[a], got.solids.theta[a]);
+        EXPECT_EQ(weights_differ, 0u);
+        std::printf("measure: %s: attached: %u regions, %zu face weights on %zu levels, 0 differing expected: %zu\n",
+                    c.name.c_str(), got.regions.count, weights, mg.levels.size(), weights_differ);
+    }
+
+    // A field of another shape: refused, the scratch as it was.
+    const SolidsCase c = s1_sphere();
+    const af::MacGrid g = *af::make_grid(c.shape, c.bc);
+    auto s = af::make_fluid_scratch(g, c.bc, solids_config());
+    ASSERT_TRUE(s.has_value());
+    const af::GridShape other{c.shape.nx, c.shape.ny, c.shape.nz + 1u, c.shape.dx};
+    const auto refused = af::attach_solid_field(*s, g, c.bc, *af::make_solid_field(other));
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(s->solids.theta[0].empty());
+    EXPECT_TRUE(s->projection.mg.levels[0].w[0].empty());
+}
+
+// solids_upload(): the scratch's solids as init_solids() puts them on the
+// device. Every level is weighted (B2's level table: the weighted word and
+// off_w0..2) and holds set_weights()' face weights bit for bit at its
+// offsets in airflow_mg_weights; the field is pack_solid_field()'s, the
+// labels the regions'; solids_binding_bytes() sizes bindings 12-18 alone.
+TEST(AirflowSolidsChain, TheSolidsUploadHoldsSetWeightsFaceWeightsOnEveryLevel) {
+    for (const SolidsCase& c : solids_cases()) {
+        SCOPED_TRACE(c.name);
+        auto built = build(c);
+        ASSERT_TRUE(built.has_value());
+        const Built& b = *built;
+        const auto upload = ag::solids_upload(b.s);
+        ASSERT_TRUE(upload.has_value()) << upload.error().context;
+        const ag::SolidsUpload& u = *upload;
+        const af::Multigrid& mg = b.s.projection.mg;
+        ASSERT_EQ(u.layout.levels.size(), mg.levels.size());
+        std::size_t weights = 0;
+        std::size_t mismatched = 0;
+        for (std::size_t l = 0; l < mg.levels.size(); ++l) {
+            const af::PoissonLevel& L = mg.levels[l];
+            const auto& e = u.layout.levels[l];
+            EXPECT_EQ(e[0], L.nx);
+            EXPECT_EQ(e[1], L.ny);
+            EXPECT_EQ(e[2], L.nz);
+            EXPECT_EQ(e[9], 1u) << "level " << l << " is not weighted";
+            for (uint32_t a = 0; a < 3; ++a) {
+                ASSERT_FALSE(L.w[a].empty()) << "level " << l;
+                ASSERT_LE(uint64_t{e[6 + a]} + L.w[a].size(), u.layout.weights.size()) << "level " << l;
+                for (std::size_t i = 0; i < L.w[a].size(); ++i) {
+                    mismatched += bits(u.layout.weights[e[6 + a] + i]) == bits(L.w[a][i]) ? 0u : 1u;
+                }
+                weights += L.w[a].size();
+            }
+        }
+        EXPECT_EQ(mismatched, 0u);
+        EXPECT_EQ(u.layout.weights.size(), weights);
+        const ag::PackedSolidField want = ag::pack_solid_field(b.s.solids);
+        EXPECT_EQ(differing(u.field.apertures, want.apertures), 0u);
+        EXPECT_EQ(u.field.apertures.size(), want.apertures.size());
+        EXPECT_EQ(differing(u.field.wall_velocity, want.wall_velocity), 0u);
+        EXPECT_EQ(differing(u.field.phi, want.phi), 0u);
+        EXPECT_EQ(u.field.face_tags, want.face_tags);
+        EXPECT_EQ(u.field.wall_links, want.wall_links);
+        EXPECT_TRUE(u.field.has_solids);
+        EXPECT_EQ(u.labels, b.s.regions.label);
+        const auto size = [](const auto& v) { return std::max<uint64_t>(4u, uint64_t{v.size()} * sizeof(v[0])); };
+        for (uint32_t binding = 0; binding < ag::kAirflowSetBuffers.size(); ++binding) {
+            uint64_t expected = 0;
+            if (binding == kMgWeights) expected = size(u.layout.weights);
+            if (binding == kApertures) expected = size(want.apertures);
+            if (binding == kWallVelocity) expected = size(want.wall_velocity);
+            if (binding == kPhi) expected = size(want.phi);
+            if (binding == kFaceTags) expected = size(want.face_tags);
+            if (binding == kWallLinks) expected = size(want.wall_links);
+            if (binding == kRegionLabels) expected = size(b.s.regions.label);
+            EXPECT_EQ(ag::solids_binding_bytes(u, binding), expected) << "binding " << binding;
+        }
+        std::printf("measure: %s: %s, %zu face weights uploaded, %zu differ from set_weights()'\n", c.name.c_str(),
+                    level_shapes(mg).c_str(), weights, mismatched);
+    }
+}
+
+// The full-weighting restriction of every level onto the next, from
+// fixed-seed noise in every level's p, b and r, against
+// restrict_full_weighting() and cycle_sym()'s zeroed coarse p: adds and
+// multiplies in the CPU's order, so bit for bit, and no other value written.
+// The cases reach each part of reach(): S1's halving, S3's periodic wraps,
+// the held ring's odd axes (a partial last cell) and its held axis.
+// Mutations: `wzy * (w * r)`; plan A's restriction (the children's sum).
+TEST(GpuAirflowSolids, FullWeightingMatchesTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    for (const SolidsCase& c : solids_cases()) {
+        SCOPED_TRACE(c.name);
+        auto built = build(c);
+        ASSERT_TRUE(built.has_value());
+        const Built& b = *built;
+        const auto upload = ag::solids_upload(b.s);
+        ASSERT_TRUE(upload.has_value());
+        ASSERT_EQ(upload->layout.levels.size(), b.s.projection.mg.levels.size());
+        auto dev = MgDevice::create(*ctx, b, *upload);
+        ASSERT_TRUE(dev.has_value());
+        af::Multigrid base = b.s.projection.mg;
+        fill_levels(base, 0xF0ull);
+        const std::size_t levels = base.levels.size();
+        ASSERT_GE(levels, 2u);
+        std::printf("[GpuAirflowSolids] %s: levels %s\n", c.name.c_str(), level_shapes(base).c_str());
+        for (uint32_t l = 0; l + 1u < levels; ++l) {
+            SCOPED_TRACE("level " + std::to_string(l));
+            af::Multigrid cpu = base;
+            {
+                const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+                af::restrict_full_weighting(cpu.levels[l], cpu.levels[l + 1u]);
+            }
+            std::fill(cpu.levels[l + 1u].p.begin(), cpu.levels[l + 1u].p.end(), 0.0f);
+            ASSERT_TRUE(dev->upload_levels(base));
+            ASSERT_TRUE(dev->run({ag::restrict_full_dispatch(dev->layout(), kMgPipelines, l, dev->workgroup_size())}));
+            af::Multigrid gpu = base;
+            ASSERT_TRUE(dev->read_levels(gpu));
+            const af::PoissonLevel& C = cpu.levels[l + 1u];
+            expect_none_differ(bit_equal, differing(gpu.levels[l + 1u].b, C.b), C.b.size(),
+                               c.name + ": the full weighting onto level " + std::to_string(l + 1u));
+            EXPECT_EQ(differing(gpu.levels[l + 1u].p, C.p), 0u) << "the coarse p zeroed";
+            const LevelsDiff all = levels_differ(gpu, cpu, false);
+            const std::size_t own = differing(gpu.levels[l + 1u].b, C.b);
+            EXPECT_EQ(all.differ - own, 0u) << "a value other than the coarse b and p was written";
+        }
+    }
+}
+
+// One symmetric V(2,2), precondition(), from a fixed r (noise, 0 in the solid
+// cells) on the three cases, with init_solids()' face weights: level 0's p
+// (the CG's z) and every value the cycle writes on every level -- each
+// level's p and b, and r but on the coarsest -- bit for bit, from a start
+// whose every other value is NaN. First, init_solids()' words and weights on
+// the device are the host's: word 16, the pcg block, and set_weights()'.
+// Mutations: clear_weights()' on-plane weights uploaded in place of
+// set_weights()'; post-smoothing red first; the bare OpFDiv smoother.
+TEST(GpuAirflowSolids, ThePreconditionerMatchesTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    for (const SolidsCase& c : solids_cases()) {
+        SCOPED_TRACE(c.name);
+        auto built = build(c);
+        ASSERT_TRUE(built.has_value());
+        const Built& b = *built;
+        const auto upload = ag::solids_upload(b.s);
+        ASSERT_TRUE(upload.has_value());
+        ASSERT_EQ(upload->layout.levels.size(), b.s.projection.mg.levels.size());
+        auto dev = MgDevice::create(*ctx, b, *upload);
+        ASSERT_TRUE(dev.has_value());
+
+        // init_solids()' words: B5.2a's params (params_for(): word 16 and the
+        // pcg block by solids_flags() and write_pcg_block()).
+        const std::vector<uint32_t> want_params = params_for(b.shape, &b);
+        std::vector<uint32_t> params(want_params.size());
+        ASSERT_TRUE(dev->read(kParams, params));
+        EXPECT_EQ(params, want_params);
+        std::vector<float> weights(upload->layout.weights.size());
+        ASSERT_TRUE(dev->read(kMgWeights, weights));
+        EXPECT_EQ(weights.size(), b.layout.weights.size()) << "set_weights()' face weights on the device";
+        if (weights.size() == b.layout.weights.size()) {
+            EXPECT_EQ(differing(weights, b.layout.weights), 0u) << "set_weights()' face weights on the device";
+        }
+
+        const std::vector<float> r = masked_r(b, 0x9C0ull);
+        af::Multigrid cpu = b.s.projection.mg;
+        cpu.levels[0].b = r;
+        {
+            const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+            af::precondition(cpu);
+        }
+        std::vector<ChainCommand> chain;
+        ag::append_symmetric_v_cycle(chain, dev->layout(), kMgPipelines, 0, dev->workgroup_size());
+        const af::Multigrid start = precondition_start(b.s.projection.mg, r);
+        ASSERT_TRUE(dev->upload_levels(start));
+        ASSERT_TRUE(dev->run(chain));
+        af::Multigrid gpu = start;
+        ASSERT_TRUE(dev->read_levels(gpu));
+        const std::size_t cells = cells_of(b.shape);
+        expect_none_differ(bit_equal, differing(gpu.levels[0].p, cpu.levels[0].p), cells,
+                           c.name + ": the preconditioner's z (level 0's p), " + std::to_string(chain.size()) +
+                               " dispatches");
+        const LevelsDiff all = levels_differ(gpu, cpu, true);
+        expect_none_differ(bit_equal, all.differ, all.values, c.name + ": every value the cycle writes");
+        std::size_t moved = 0;
+        for (const float x : cpu.levels[0].p) moved += x != 0.0f ? 1u : 0u;
+        EXPECT_GT(moved, cells / 2u) << "the cycle left z mostly 0";
+    }
+}
+
+// The full weighting on every level and the whole symmetric V(2,2) give the
+// same bits at workgroup sizes 32, 64 and 128, on the three cases: each
+// invocation's work is fixed by its index.
+TEST(GpuAirflowSolids, TheFullWeightingAndThePreconditionerGiveTheSameBitsAtEveryWorkgroupSize) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    for (const SolidsCase& c : solids_cases()) {
+        SCOPED_TRACE(c.name);
+        auto built = build(c);
+        ASSERT_TRUE(built.has_value());
+        const Built& b = *built;
+        const auto upload = ag::solids_upload(b.s);
+        ASSERT_TRUE(upload.has_value());
+        ASSERT_EQ(upload->layout.levels.size(), b.s.projection.mg.levels.size());
+        af::Multigrid noisy = b.s.projection.mg;
+        fill_levels(noisy, 0x5B0ull);
+        const af::Multigrid start = precondition_start(b.s.projection.mg, masked_r(b, 0x5B9ull));
+        // Every level's arrays after the chain at one workgroup size.
+        const auto run = [&](uint32_t wg, bool cycle) -> std::optional<af::Multigrid> {
+            auto dev = MgDevice::create(*ctx, b, *upload, wg);
+            if (!dev) return std::nullopt;
+            std::vector<ChainCommand> chain;
+            if (cycle) {
+                ag::append_symmetric_v_cycle(chain, dev->layout(), kMgPipelines, 0, wg);
+            } else {
+                for (uint32_t l = 0; l + 1u < noisy.levels.size(); ++l) {
+                    chain.push_back(ag::restrict_full_dispatch(dev->layout(), kMgPipelines, l, wg));
+                }
+            }
+            const af::Multigrid& in = cycle ? start : noisy;
+            if (!dev->upload_levels(in) || !dev->run(chain)) return std::nullopt;
+            af::Multigrid out = in;
+            if (!dev->read_levels(out)) return std::nullopt;
+            return out;
+        };
+        for (const bool cycle : {false, true}) {
+            const char* what = cycle ? "the symmetric V(2,2)" : "airflow_mg_restrict_full";
+            SCOPED_TRACE(what);
+            const auto first = run(64, cycle);
+            ASSERT_TRUE(first.has_value());
+            for (const uint32_t wg : {32u, 128u}) {
+                const auto other = run(wg, cycle);
+                ASSERT_TRUE(other.has_value());
+                const LevelsDiff d = levels_differ(*other, *first, false);
+                std::printf("[GpuAirflowSolids] %s, %s at %u: %zu of %zu values differ from 64's\n", c.name.c_str(),
+                            what, wg, d.differ, d.values);
+                EXPECT_EQ(d.differ, 0u) << "at " << wg;
+            }
         }
     }
 }

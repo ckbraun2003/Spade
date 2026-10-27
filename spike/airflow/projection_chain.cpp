@@ -81,12 +81,13 @@ compute::ChainCommand projection_dispatch(uint32_t pipeline, const ProjectionPus
 }
 
 void append_sweeps(std::vector<compute::ChainCommand>& out, const MgLayout& layout, const ProjectionPipelines& p,
-                   uint32_t level, uint32_t sweeps, uint32_t workgroup_size) {
+                   uint32_t level, uint32_t sweeps, uint32_t workgroup_size, bool black_first) {
     const auto& L = layout.levels[level];
     // Each colour's slots: (nx + 1) / 2 a row (airflow_mg_smooth.slang).
     const auto slots = static_cast<uint32_t>(uint64_t{(L[0] + 1u) / 2u} * L[1] * L[2]);
     for (uint32_t s = 0; s < sweeps; ++s) {
-        for (uint32_t colour = 0; colour < 2; ++colour) {
+        for (uint32_t step = 0; step < 2; ++step) {
+            const uint32_t colour = black_first ? 1u - step : step;  // smooth_red_black()'s rule
             out.push_back(projection_dispatch(p.smooth, {.a = level, .b = colour, .count = slots}, workgroup_size));
         }
     }

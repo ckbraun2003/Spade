@@ -24,10 +24,14 @@
 #include <glm/glm.hpp>
 
 #include "compute/vulkan/dispatch_chain.hpp"
+#include "core/error.hpp"
+#include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/regions.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/wall_load.hpp"
+#include "spike/airflow/chain_runner.hpp"
+#include "spike/airflow/projection_chain.hpp"
 
 namespace spade::airflow_gpu {
 
@@ -140,6 +144,76 @@ void append_measure(std::vector<compute::ChainCommand>& out, const physics::airf
 
 // One airflow_pcg_scalars op.
 [[nodiscard]] compute::ChainCommand scalars_dispatch(const SolidsPipelines& p, ScalarsOp op);
+
+// ===========================================================================
+// B5.2b (Physics, 2026-10-27; a block of its own, before B5.3's and B5.5's):
+// the symmetric V(2,2) preconditioner on the device -- the full-weighting
+// restriction (airflow_mg_restrict_full) and multigrid.cpp's cycle_sym() as a
+// chain over B2's smoother, residual and prolongation -- and init_solids(),
+// which puts a grid's solids on the device for a runner (the GPU step's host
+// side, B7).
+// ===========================================================================
+
+// --- the preconditioner -------------------------------------------------------
+
+// The preconditioner's pipelines: B2's smoother, residual and prolongation
+// (mg's other members are not dispatched), and the full weighting.
+struct PreconditionPipelines {
+    ProjectionPipelines mg;
+    uint32_t restrict_full = 0;  // airflow_mg_restrict_full
+};
+
+// multigrid.cpp's restrict_full_weighting() of level `level` onto level + 1,
+// with the coarse p set to 0 (cycle_sym()'s std::fill): one invocation per
+// coarse cell, push {level, 0, coarse cells, 0}.
+[[nodiscard]] compute::ChainCommand restrict_full_dispatch(const MgLayout& layout, const PreconditionPipelines& p,
+                                                           uint32_t level, uint32_t workgroup_size);
+
+// One symmetric V(2,2) cycle from level `level` down, multigrid.cpp's
+// cycle_sym() dispatch for dispatch: kPreSweeps sweeps red first, the
+// residual, the full weighting, the coarser cycle, the prolongation, then
+// kPostSweeps sweeps BLACK first; on the coarsest level kCoarsestSymSweeps
+// sweeps red first, then as many black first. From level 0 it is
+// precondition()'s cycle: the input is level 0's b (airflow_rhs; the CG's r)
+// with level 0's p (airflow_pressure) at 0, as precondition() sets it, and
+// the output level 0's p. Every coarser level's p, b and r, and level 0's r,
+// are written before they are read. The face weights are the levels'
+// (init_solids()).
+void append_symmetric_v_cycle(std::vector<compute::ChainCommand>& out, const MgLayout& layout,
+                              const PreconditionPipelines& p, uint32_t level, uint32_t workgroup_size);
+
+// --- init_solids(): a grid's solids on the device -----------------------------
+
+// What init_solids() puts on the device, from the CPU's own scratch after
+// set_solids() or attach_solid_field() (fluid_step.hpp): the field and every
+// level's face weights are the CPU's bits, never recomputed on the device.
+struct SolidsUpload {
+    PackedSolidField field;        // bindings 13-17, pack_solid_field()
+    MgLayout layout;               // mg_layout() after set_weights(): the level table for airflow_params
+                                   // (write_projection_params()), the weights for airflow_mg_weights (12)
+    std::vector<uint32_t> labels;  // airflow_region_labels (18): the solid cells, the CG's mask
+    // B5.3 (the closed regions) adds the region table, airflow_region_table (19), here.
+};
+
+// The upload for the scratch's solids. Refused as mg_layout() refuses. A
+// host call: it allocates.
+[[nodiscard]] Result<SolidsUpload> solids_upload(const physics::airflow::FluidScratch& s);
+
+// The bytes airflow-set binding `binding` needs for the upload, at least 4
+// (an empty array binds as a placeholder); 0 for a binding init_solids() does
+// not write.
+[[nodiscard]] uint64_t solids_binding_bytes(const SolidsUpload& u, uint32_t binding) noexcept;
+
+// Puts the upload on `runner`, whose buffers are the airflow set in binding
+// order (kAirflowSetBuffers, binding_base 0), those it writes sized by
+// solids_binding_bytes() or more. Into `params`, which holds the projection's
+// words written from u.layout (write_projection_params()) and the other
+// blocks, it writes word 16's solid bits and the pcg block at `pcg_block`
+// (write_pcg_block(): the closed-region count, B5.3's, then pcg.hpp's
+// constants, the floor and the cap); then it uploads airflow_params whole and
+// bindings 12 to 18. Refused as ChainRunner::upload() refuses.
+[[nodiscard]] Result<void> init_solids(ChainRunner& runner, std::span<uint32_t> params, const SolidsUpload& u,
+                                       uint32_t pcg_block, uint32_t closed_regions, uint32_t floor, uint32_t cap);
 
 }  // namespace spade::airflow_gpu
 
