@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/fpv_5inch.model.yaml", hash: "13423ab8d43d055c"}
+model: {file: "drones/fpv_5inch.model.yaml", hash: "f428feff22d5dc96"}
 built_by: "tests/library_drones.hpp: fpv_5inch(), a direct AirframeSpec"
 parts:
   prop: {file: "parts/uiuc_mit_5x4.prop.yaml", hash: "4585675f13954361"}
@@ -70,6 +70,9 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.1735, grade: assumed, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule, on the assumed layout"}
+  "meshes.body.edge_radius": {value: 0.006, grade: assumed, note: "a fifth of the body's smallest extent: every edge and corner rounded"}
+  "meshes.bell.chamfer": {value: 0.0014000000000000002, grade: assumed, note: "a tenth of the bell's radius (the motor file's shape)"}
+  "meshes.segments": {value: 4, grade: assumed, note: "steps across a rounded edge, so a tube or a bell is 32 chords around"}
   "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
   "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
   "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
@@ -78,10 +81,13 @@ inputs:
   "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
   "meshes.prop.hub_height": {value: 0.006350000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
   "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
+  "drag[0].coeffs": {value: [0.006356456317007542, 0.010198771953582764, 0.007642705924808979], grade: assumed, note: "the drag the compile estimates from the drone's L5 parts (these rows without the meshes, which the estimate cannot see): one componentwise body, 0.5 rho C_d A per axis, frozen bit for bit (Physics' Q3, 2026-10-26), on the assumed layout"}
+  "drag[0].mount.position": {value: [0, 0.016591588035225868, 0], grade: assumed, note: "the centre of mass of the drone as it wears its meshes, so the drag adds no torque, as the estimate's"}
+  "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes, the estimate's"}
 not_carried: []
 checks:
   - {test: "FpvThrustToWeightIsReported", reference: 8, unit: "1", grade: assumed, note: "typical 5-inch racers sit around 8-14 (no single source)", band: [0, 0.75], report_only: true}
 assumptions:
   - "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's induced inflow (Physics, 2026-10-21)"
-  - "drag: none is given, so the compile estimates it from the parts' shapes (best-effort; vehicles/airframe_compile.hpp)"
+  - "drag: given as drag[0], the estimate the compile makes from the drone's L5 parts (the same rows without the meshes, which it cannot see), frozen bit for bit (Physics' Q3, 2026-10-26)"
 caveat: "the frame is assumed (220 mm motor to motor, true X) until one is cited, and its mass closes on the L4a header's 0.500 kg estimate"

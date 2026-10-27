@@ -105,6 +105,9 @@ using spade::vehicles::BasicQuadParams;
 using spade::vehicles::MountPose;
 using spade::vehicles::PartInertia;
 using spade::vehicles::SteadyPoint;
+using ld::Committed;
+using ld::committed_library;
+using ld::library_dir;
 
 template <class T>
 [[nodiscard]] testing::AssertionResult IsOk(const char* expr, const spade::Result<T>& r) {
@@ -123,9 +126,6 @@ template <class T>
     out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     return true;
 }
-
-// The committed library, in the SOURCE tree: the generator writes here.
-[[nodiscard]] fs::path library_dir() { return fs::path(SPADE_ASSETS_DIR) / "library"; }
 
 // SPADE_LIBRARY_WRITE set: write the drones' files instead of comparing them.
 // A read-only null check before any thread starts, as env_gate_is_set() in
@@ -195,28 +195,6 @@ template <class T>
         out += (out.size() > 1 ? ", " : "") + std::string(buf);
     }
     return out + "]";
-}
-
-// The library as committed, and its registry. The index alone, its dir set:
-// load_library() refuses an entry whose file is missing, and the generator is
-// what writes the drones' model files (test_library_thumbnails.cpp's
-// the_index()). The committed files themselves are checked byte for byte below.
-struct Committed {
-    Library library{};
-    SourceRegistry registry{};
-};
-
-[[nodiscard]] spade::Result<Committed> committed_library() {
-    std::string text;
-    if (!read_bytes(library_dir() / "library.yaml", text)) {
-        return std::unexpected(spade::Error{spade::Code::io_error, "library.yaml can't be read"});
-    }
-    spade::Result<Library> library = sc::library_from_yaml(text);
-    if (!library) return std::unexpected(library.error());
-    library->dir = library_dir();
-    spade::Result<SourceRegistry> registry = sc::load_library_sources(*library);
-    if (!registry) return std::unexpected(registry.error());
-    return Committed{std::move(*library), std::move(*registry)};
 }
 
 [[nodiscard]] const LibraryEntry* entry_for(const Library& library, std::string_view file) {
@@ -475,8 +453,27 @@ using Rest = std::span<const Segment>;
     return std::nullopt;
 }
 
+// The look's rows' values (L7b2), from what the meshes are drawn from:
+// EveryLibraryDroneWearsItsMeshes ties the meshes to the rows.
+[[nodiscard]] Found look_value(const spade::vehicles::BasicQuadLook& look, std::string_view path) {
+    if (path == "meshes.body.edge_radius") return look.body_edge_radius;
+    if (path == "meshes.bell.chamfer") return look.bell_chamfer;
+    if (path == "meshes.segments") return static_cast<double>(look.segments);
+    return std::nullopt;
+}
+
+// Whether `path` names a field of a record the drone wears as a mesh (L7b2):
+// its rows describe the record the look was worn on, the L5 drone's.
+[[nodiscard]] bool names_a_worn_record(const AirframeSpec& s, std::string_view path) {
+    const std::vector<Segment> all = segments_of(path);
+    const Segment& head = all.front();
+    return head.name == "parts" && head.index && *head.index < s.parts.size() &&
+           s.parts[*head.index].geometry.source == spade::vehicles::GeometrySource::mesh;
+}
+
 // A path's value in what the drone was built from: a basic quad's params
-// first, the Crazyflie's fit targets, the props' mesh, then the spec.
+// first, the Crazyflie's fit targets, the props' mesh, the look, then the
+// spec -- a worn record's field the L5 drone's.
 [[nodiscard]] Found drone_value(const ld::BuiltDrone& drone, std::string_view path) {
     if (drone.params) {
         if (Found v = params_value(*drone.params, path)) return v;
@@ -486,6 +483,8 @@ using Rest = std::span<const Segment>;
         if (path == "inertia") return ld::vec_value(drone.targets->inertia);
     }
     if (Found v = prop_mesh_value(drone.prop_mesh, path)) return v;
+    if (Found v = look_value(drone.look, path)) return v;
+    if (names_a_worn_record(drone.spec, path)) return spec_value(drone.l5, path);
     return spec_value(drone.spec, path);
 }
 
@@ -500,27 +499,45 @@ constexpr std::array<std::string_view, 1> kWithdrawn{"kat_datapack"};
 
 // -- The generator ---------------------------------------------------------------
 
-// A prop's mesh sidecar (L7c1): its path from the model file's folder, and
-// its mesh.
+// A mesh sidecar (L7c1, L7b2): its path from the model file's folder, its
+// mesh, and what drew it, in metres.
 struct Sidecar {
     std::string file{};
     std::shared_ptr<const spade::TriangleMesh> mesh{};
+    spade::MeshProvenance provenance{};
 };
 
 struct Generated {
     std::string model{};
     std::string sources{};
-    std::vector<Sidecar> sidecars{};  // one per hand
+    std::vector<Sidecar> sidecars{};  // one per mesh: each prop hand, the body, the arms, the bells
 };
 
-// A prop sidecar's provenance: what drew it, in metres.
-[[nodiscard]] spade::MeshProvenance prop_provenance(const ld::BuiltDrone& drone) {
-    return spade::MeshProvenance{"world/mesh_shapes.hpp prop(), from " + drone.parts.files[0] + "'s blade",
-                                 spade::MeshUnit::metre, 0.0};
+// A mesh part's sidecar, by what the part is: a prop by its hand (L7c1), and
+// the body, the arms and the bells (L7b2), each kind one mesh. Any other mesh
+// part is none the library draws, and is refused.
+[[nodiscard]] spade::Result<Sidecar> sidecar_of(const ld::BuiltDrone& drone, const spade::vehicles::PartDesc& p) {
+    const auto of = [&](std::string_view name, std::string drawn_by) {
+        return Sidecar{std::string(drone.def.stem) + "/" + std::string(name) + ".spmesh", p.mesh,
+                       spade::MeshProvenance{"world/mesh_shapes.hpp " + std::move(drawn_by), spade::MeshUnit::metre,
+                                             0.0}};
+    };
+    using spade::vehicles::PartAttach;
+    if (p.attach == PartAttach::rotor && p.rotor < drone.spec.rotors.size()) {
+        const bool ccw = drone.spec.rotors[p.rotor].spin_dir > 0.0;
+        return of(ccw ? "prop_ccw" : "prop_cw", "prop(), from " + drone.parts.files[0] + "'s blade");
+    }
+    if (p.attach == PartAttach::body && p.role == "body") return of("body", "rounded_box(), the body's record");
+    if (p.attach == PartAttach::body && p.role == "arm") return of("arm", "capped_tube(), the arms' records");
+    if (p.attach == PartAttach::body && p.role == "motor") {
+        return of("bell", "motor_bell(), from " + drone.parts.files[1] + "'s shape");
+    }
+    return std::unexpected(
+        spade::Error{spade::Code::invalid_argument, "part '" + p.name + "': no mesh the library draws"});
 }
 
-// The drone's model file text, its sidecar's and its props' meshes: the
-// compiled model with its chain, each prop named <stem>/prop_<hand>.spmesh
+// The drone's model file text, its sidecar's and its meshes: the compiled
+// model with its chain, each mesh part naming its sidecar <stem>/<kind>.spmesh
 // (the model pins each mesh's hash), and the sidecar pinning the model's text
 // and the committed part files.
 [[nodiscard]] spade::Result<Generated> generate(const ld::BuiltDrone& drone) {
@@ -533,14 +550,16 @@ struct Generated {
     std::vector<Sidecar> sidecars;
     for (spade::vehicles::PartDesc& p : file.model.parts) {
         if (!p.mesh) continue;
-        if (p.attach != spade::vehicles::PartAttach::rotor || p.rotor >= drone.spec.rotors.size()) {
-            return std::unexpected(
-                spade::Error{spade::Code::invalid_argument, "part '" + p.name + "': only a prop's mesh is named"});
-        }
-        const bool ccw = drone.spec.rotors[p.rotor].spin_dir > 0.0;
-        p.mesh_file = std::string(drone.def.stem) + (ccw ? "/prop_ccw.spmesh" : "/prop_cw.spmesh");
-        if (std::ranges::none_of(sidecars, [&](const Sidecar& c) { return c.file == p.mesh_file; })) {
-            sidecars.push_back(Sidecar{p.mesh_file, p.mesh});
+        spade::Result<Sidecar> named = sidecar_of(drone, p);
+        if (!named) return std::unexpected(named.error());
+        p.mesh_file = named->file;
+        const auto held = std::ranges::find_if(sidecars, [&](const Sidecar& c) { return c.file == p.mesh_file; });
+        if (held == sidecars.end()) {
+            sidecars.push_back(std::move(*named));
+        } else if (held->mesh->content_hash() != p.mesh->content_hash()) {
+            return std::unexpected(spade::Error{spade::Code::invalid_argument,
+                                                "part '" + p.name + "': its mesh is not the one " + held->file +
+                                                    " holds"});
         }
     }
     spade::Result<std::string> model = sc::model_to_yaml(file);
@@ -603,7 +622,7 @@ void expect_file_is_its_compiled_spec(std::string_view stem, std::string_view te
             std::error_code ec;
             fs::create_directories(path.parent_path(), ec);
             ASSERT_FALSE(ec) << spade::path_text(path.parent_path()) << ": " << ec.message();
-            ASSERT_OK(spade::save_mesh_file(path, *c.mesh, prop_provenance(*drone)));
+            ASSERT_OK(spade::save_mesh_file(path, *c.mesh, c.provenance));
             std::printf("SPADE_LIBRARY_WRITE: wrote %s.\n", spade::path_text(path).c_str());
         }
         std::printf("SPADE_LIBRARY_WRITE: review the diff, name its cause (TD-1), and have a fresh Docker gcc leg "
@@ -621,7 +640,7 @@ void expect_file_is_its_compiled_spec(std::string_view stem, std::string_view te
         EXPECT_TRUE(committed == *text) << mismatch(path, committed, *text, test);
     }
 
-    // Each prop's sidecar is committed beside the model as generated, and its
+    // Each mesh's sidecar is committed beside the model as generated, and its
     // folder holds nothing else (TD-5).
     const fs::path model_dir = outputs[0].first.parent_path();
     for (const Sidecar& c : files->sidecars) {
@@ -629,7 +648,7 @@ void expect_file_is_its_compiled_spec(std::string_view stem, std::string_view te
         const spade::Result<spade::LoadedMesh> committed = spade::load_mesh_file(path, c.mesh->content_hash());
         ASSERT_OK(committed) << " -- generate it: set SPADE_LIBRARY_WRITE=1 and run ctest -R LibraryDrones." << test
                              << ".";
-        EXPECT_TRUE(committed->provenance == prop_provenance(*drone)) << spade::path_text(path);
+        EXPECT_TRUE(committed->provenance == c.provenance) << spade::path_text(path);
     }
     std::error_code ec;
     for (const fs::directory_entry& e : fs::directory_iterator(model_dir / fs::path(std::string(stem)), ec)) {
@@ -638,14 +657,15 @@ void expect_file_is_its_compiled_spec(std::string_view stem, std::string_view te
             << spade::path_text(e.path()) << " is no sidecar the generator writes";
     }
 
-    // The model loads back with its chain, its props its only mesh parts, each
-    // on its rotor.
+    // The model loads back with its chain, and every mesh part's sidecar is
+    // one committed above (EveryLibraryDroneWearsItsMeshes says which parts).
     const spade::Result<ModelFile> loaded = sc::load_model_file(outputs[0].first);
     ASSERT_OK(loaded);
     EXPECT_TRUE(loaded->model.propulsion.has_value()) << "a library drone carries its chain";
     for (const spade::vehicles::PartDesc& part : loaded->model.parts) {
-        EXPECT_EQ(part.mesh != nullptr, part.attach == spade::vehicles::PartAttach::rotor)
-            << part.name << ": only a prop is a mesh part";
+        if (!part.mesh) continue;
+        EXPECT_TRUE(std::ranges::any_of(files->sidecars, [&](const Sidecar& c) { return c.file == part.mesh_file; }))
+            << part.name << ": its mesh file '" << part.mesh_file << "' is no sidecar committed beside the model";
     }
 }
 
@@ -1472,5 +1492,178 @@ TEST(LibraryDrones, ThePropsAreNeverSolids) {
             props += p.attach == spade::vehicles::PartAttach::rotor ? 1u : 0u;
         }
         EXPECT_EQ(props, drone->spec.rotors.size());
+    }
+}
+
+// ===========================================================================
+// The meshes (L7b2 of the realistic drones plan, docs/design/core/plans/
+// 2026-10-26-l7-realistic-drones-draft.md): every drone wears its rounded
+// body, capped arms and motor bells, of its own masses, and keeps the drag
+// its L5 parts gave it.
+// ===========================================================================
+
+namespace {
+
+// The look's rows, every drone's, each graded assumed (the plan's global
+// constraint: a mesh parameter no source gives is a row).
+constexpr std::array<std::string_view, 3> kLookRows{"meshes.body.edge_radius", "meshes.bell.chamfer",
+                                                    "meshes.segments"};
+
+// Each drone's compiled mass before L7b2, as committed (addbf28 and L7c1):
+// the meshes keep it.
+constexpr std::array<std::pair<std::string_view, float>, 6> kL5Mass{{
+    {"phantom3_class", 1.28f},
+    {"iris_plus_class", 1.282f},
+    {"fpv_5inch", 0.5f},
+    {"crazyflie_class", 0.029f},
+    {"basic_quad_6inch", 0.602437496f},
+    {"basic_quad_competition", 0.7f},
+}};
+
+}  // namespace
+
+// Every drone wears its meshes: the body, arm[0..3] and motor[0..3] are mesh
+// parts beside the props, each regenerated here from the drone's meshes.*
+// rows and its records -- the body's size, the arms' radius and length, the
+// motor file's shape -- as shapes:: draws them (THE LOOK, vehicles/
+// basic_quad.hpp: a tube or a bell 8 x segments chords around), one body,
+// one arm for the four and one bell for the four; the ESC and the pack stay
+// analytic.
+TEST(LibraryDrones, EveryLibraryDroneWearsItsMeshes) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    for (const ld::DroneDef& def : ld::kDrones) {
+        SCOPED_TRACE(def.stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, def.stem);
+        ASSERT_OK(drone);
+        std::array<double, kLookRows.size()> v{};
+        for (std::size_t i = 0; i < kLookRows.size(); ++i) {
+            const ModelInput* row = drone->inputs.find(kLookRows[i]);
+            ASSERT_NE(row, nullptr) << kLookRows[i];
+            EXPECT_EQ(row->ref.grade, Grade::assumed) << kLookRows[i];
+            const double* x = std::get_if<double>(&row->value);
+            ASSERT_NE(x, nullptr) << kLookRows[i];
+            v[i] = *x;
+        }
+        const auto segments = static_cast<uint32_t>(v[2]);
+        const AirframeSpec& l5 = drone->l5;  // the records the look is worn on
+        ASSERT_GE(l5.parts.size(), 5u);
+        ASSERT_TRUE(l5.motor.shape.has_value());
+        const auto body = spade::shapes::rounded_box(l5.parts[0].size, v[0], segments);
+        const auto arm = spade::shapes::capped_tube(l5.parts[1].size.x, l5.parts[1].size.y, 8u * segments);
+        const auto bell =
+            spade::shapes::motor_bell(l5.motor.shape->size.x, l5.motor.shape->size.y, v[1], 8u * segments);
+        ASSERT_OK(body);
+        ASSERT_OK(arm);
+        ASSERT_OK(bell);
+
+        const auto compiled = spade::vehicles::compile_airframe(drone->spec);
+        ASSERT_OK(compiled);
+        std::size_t meshes = 0;
+        for (const spade::vehicles::PartDesc& p : compiled->model.parts) {
+            SCOPED_TRACE(p.name);
+            if (p.attach == spade::vehicles::PartAttach::rotor) {
+                EXPECT_NE(p.mesh, nullptr) << "a prop (L7c1)";
+                ++meshes;
+                continue;
+            }
+            const spade::shapes::GeneratedMesh* want = nullptr;
+            if (p.name == "body") want = &*body;
+            if (p.name.starts_with("arm[")) want = &*arm;
+            if (p.name.starts_with("motor[")) want = &*bell;
+            if (want == nullptr) {
+                EXPECT_EQ(p.mesh, nullptr) << "the ESC and the pack stay analytic";
+                continue;
+            }
+            ASSERT_NE(p.mesh, nullptr) << "a mesh part";
+            EXPECT_EQ(p.mesh->content_hash(), want->mesh->content_hash());
+            EXPECT_EQ(p.min_feature, want->min_feature);
+            ++meshes;
+        }
+        EXPECT_EQ(meshes, 9u + drone->spec.rotors.size()) << "the body, four arms, four bells and the props";
+    }
+}
+
+// The meshes keep each drone's mass and axes: the compiled mass is the L5
+// drone's float, pinned (a body or arm record keeps its mass to within
+// rounding, the bells exactly, and the fitted drones meet their targets
+// through the remainder), and the principal axes stay the design axes. The
+// inertia moves -- a rounded box, capsules and bells are not a box, thin
+// tubes and cylinders -- and each axis's shift against the L5 drone is
+// reported for READY (TD-1; the lead's Q4).
+TEST(LibraryDrones, TheMeshesKeepEachDronesMassAndAxes) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    for (const auto& [stem, mass] : kL5Mass) {
+        SCOPED_TRACE(stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, stem);
+        ASSERT_OK(drone);
+        const auto worn = spade::vehicles::compile_airframe(drone->spec);
+        const auto l5 = spade::vehicles::compile_airframe(drone->l5);
+        ASSERT_OK(worn);
+        ASSERT_OK(l5);
+        EXPECT_EQ(l5->inertia.mass, mass) << "the L5 drone, as committed before the meshes";
+        EXPECT_EQ(worn->inertia.mass, mass) << worn->inertia.mass;
+        EXPECT_EQ(l5->model.design_to_principal, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        EXPECT_EQ(worn->model.design_to_principal, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        constexpr std::array<const char*, 3> kAxis{"x", "y", "z"};
+        for (int a = 0; a < 3; ++a) {
+            const double was = l5->inertia.principal_moments[a];
+            const double now = worn->inertia.principal_moments[a];
+            report(std::string(stem) + ".inertia_shift." + kAxis[static_cast<std::size_t>(a)], (now - was) / was,
+                   "the meshes' principal moment against the L5 drone's, relative");
+        }
+    }
+}
+
+// The frozen drag (Physics' Q3, 2026-10-26): a mesh drone's drag must be
+// given, since the estimate cannot see a mesh, so each drone gives the
+// estimate its own L5 drone compiles to -- one componentwise body at the
+// centre of mass -- and compiles to it bit for bit. Its coefficients and
+// mount are drag[0] rows cited as the drone's proxy_radius is, from the same
+// layout (derived where the layout cites a source; a derived grade needs
+// one), the mount's turn assumed. The competition quad keeps Kat's fitted
+// drag[0].
+TEST(LibraryDrones, TheFrozenDragIsTheAnalyticEstimateBitForBit) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    using spade::vehicles::Provenance;
+    for (const ld::DroneDef& def : ld::kDrones) {
+        SCOPED_TRACE(def.stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, def.stem);
+        ASSERT_OK(drone);
+        const auto worn = spade::vehicles::compile_airframe(drone->spec);
+        const auto l5 = spade::vehicles::compile_airframe(drone->l5);
+        ASSERT_OK(worn);
+        ASSERT_OK(l5);
+        ASSERT_EQ(drone->spec.drag.size(), 1u) << "a mesh drone gives its drag";
+        EXPECT_EQ(worn->fit.drag, Provenance::given);
+        if (ld::is_competition(def.stem)) {
+            const ModelInput* row = drone->inputs.find("drag[0].coeffs");
+            ASSERT_NE(row, nullptr);
+            EXPECT_EQ(row->ref.grade, Grade::fitted) << "Kat's";
+            continue;
+        }
+        EXPECT_EQ(l5->fit.drag, Provenance::estimated) << "the L5 drone's drag was the estimate";
+        ASSERT_EQ(l5->model.drag_bodies.size(), 1u);
+        ASSERT_EQ(worn->model.drag_bodies.size(), 1u);
+        const spade::vehicles::DragBodyDesc& a = worn->model.drag_bodies[0];
+        const spade::vehicles::DragBodyDesc& b = l5->model.drag_bodies[0];
+        EXPECT_EQ(a.mode, b.mode);
+        EXPECT_EQ(a.area, b.area);
+        EXPECT_EQ(a.coeffs, b.coeffs);
+        EXPECT_EQ(a.local_pos, b.local_pos);
+        EXPECT_EQ(a.local_orient, b.local_orient);
+        const ModelInput* proxy = drone->inputs.find("proxy_radius");
+        ASSERT_NE(proxy, nullptr);
+        for (const std::string_view path : {"drag[0].coeffs", "drag[0].mount.position"}) {
+            const ModelInput* row = drone->inputs.find(path);
+            ASSERT_NE(row, nullptr) << path;
+            EXPECT_EQ(row->ref.grade, proxy->ref.grade) << path << ": cited as the layout it comes from";
+            EXPECT_EQ(row->ref.source, proxy->ref.source) << path;
+        }
+        const ModelInput* turn = drone->inputs.find("drag[0].mount.orientation");
+        ASSERT_NE(turn, nullptr);
+        EXPECT_EQ(turn->ref.grade, Grade::assumed);
     }
 }

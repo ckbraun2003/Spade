@@ -35,186 +35,105 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [0, 0.0166079998, 0]
-  body: {mass: 0.5, inertia_diag: [0.001088541, 0.00208942126, 0.00119579094]}
+  com_offset: [0, 0.016591588, 0]
+  body: {mass: 0.5, inertia_diag: [0.00108989771, 0.00209262082, 0.0011964736]}
   proxy_radius: 0.173500001
   rotors:
-    - {local_pos: [0.0777817443, 0.00339200022, 0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
-    - {local_pos: [0.0777817443, 0.00339200022, -0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
-    - {local_pos: [-0.0777817443, 0.00339200022, -0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
-    - {local_pos: [-0.0777817443, 0.00339200022, 0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
+    - {local_pos: [0.0777817443, 0.00340841198, 0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
+    - {local_pos: [0.0777817443, 0.00340841198, -0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
+    - {local_pos: [-0.0777817443, 0.00340841198, -0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
+    - {local_pos: [-0.0777817443, 0.00340841198, 0.0777817443], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0150692631, radius: 0.063500002, thrust_coeff: 1.46489447e-06, torque_coeff: 1.94001899e-08}
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.00635645632, 0.010198772, 0.00764270592], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [0, -0.0166079998, 0], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [0, -0.016591588, 0], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [0, -0.0166079998, 0], orientation: [1, 0, 0, 0]}
+      mount: {position: [0, -0.016591588, 0], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0299999993
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: box, transform: 0, params: [0.0350000001, 0.0149999997, 0.0199999996, 0]}
+        mesh: {file: "fpv_5inch/body.spmesh", hash: "0x50b4e34a6e51794f"}
     - name: "arm[0]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0388908722, -0.0166079998, 0.0388908722], orientation: [0.707106769, 0.5, 0, -0.5]}
+      mount: {position: [0.0388908722, -0.016591588, 0.0388908722], orientation: [0.707106769, 0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0549999997, 0, 0]}
+        mesh: {file: "fpv_5inch/arm.spmesh", hash: "0x16e32f13945ffa14"}
     - name: "arm[1]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0388908722, -0.0166079998, -0.0388908722], orientation: [0.707106769, -0.5, 0, -0.5]}
+      mount: {position: [0.0388908722, -0.016591588, -0.0388908722], orientation: [0.707106769, -0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0549999997, 0, 0]}
+        mesh: {file: "fpv_5inch/arm.spmesh", hash: "0x16e32f13945ffa14"}
     - name: "arm[2]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0388908722, -0.0166079998, -0.0388908722], orientation: [0.707106769, -0.5, 0, 0.5]}
+      mount: {position: [-0.0388908722, -0.016591588, -0.0388908722], orientation: [0.707106769, -0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0549999997, 0, 0]}
+        mesh: {file: "fpv_5inch/arm.spmesh", hash: "0x16e32f13945ffa14"}
     - name: "arm[3]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0388908722, -0.0166079998, 0.0388908722], orientation: [0.707106769, 0.5, 0, 0.5]}
+      mount: {position: [-0.0388908722, -0.016591588, 0.0388908722], orientation: [0.707106769, 0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0549999997, 0, 0]}
+        mesh: {file: "fpv_5inch/arm.spmesh", hash: "0x16e32f13945ffa14"}
     - name: "motor[0]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0777817443, -0.00660800003, 0.0777817443], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0777817443, 0.00340841198, 0.0777817443], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0199999996
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.00999999978, 0, 0]}
+        mesh: {file: "fpv_5inch/bell.spmesh", hash: "0x8778dd048b5a2047"}
     - name: "motor[1]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0777817443, -0.00660800003, -0.0777817443], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0777817443, 0.00340841198, -0.0777817443], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0199999996
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.00999999978, 0, 0]}
+        mesh: {file: "fpv_5inch/bell.spmesh", hash: "0x8778dd048b5a2047"}
     - name: "motor[2]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0777817443, -0.00660800003, -0.0777817443], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0777817443, 0.00340841198, -0.0777817443], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0199999996
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.00999999978, 0, 0]}
+        mesh: {file: "fpv_5inch/bell.spmesh", hash: "0x8778dd048b5a2047"}
     - name: "motor[3]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0777817443, -0.00660800003, 0.0777817443], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0777817443, 0.00340841198, 0.0777817443], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0199999996
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0140000004, 0.00999999978, 0, 0]}
+        mesh: {file: "fpv_5inch/bell.spmesh", hash: "0x8778dd048b5a2047"}
     - name: "esc"
       role: "esc"
       attach: "body"
       rotor: 0
-      mount: {position: [0, -0.0166079998, 0], orientation: [1, 0, 0, 0]}
+      mount: {position: [0, -0.016591588, 0], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00800000038
       shape:
@@ -232,7 +151,7 @@ model:
       role: "battery"
       attach: "body"
       rotor: 0
-      mount: {position: [0, 0.0113920001, 0], orientation: [1, 0, 0, 0]}
+      mount: {position: [0, 0.0114084119, 0], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0299999993
       shape:
@@ -254,7 +173,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 5.68959986e-05
       shape:
-        mesh: {file: "fpv_5inch/prop_ccw.spmesh", hash: "0xa33af86ccaad8bac"}
+        mesh: {file: "fpv_5inch/prop_ccw.spmesh", hash: "0x490eee3e678d5da4"}
     - name: "prop[1]"
       role: "prop"
       attach: "rotor"
@@ -263,7 +182,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 5.68959986e-05
       shape:
-        mesh: {file: "fpv_5inch/prop_cw.spmesh", hash: "0x731c65280076dbc4"}
+        mesh: {file: "fpv_5inch/prop_cw.spmesh", hash: "0xed76a2a78e13c37c"}
     - name: "prop[2]"
       role: "prop"
       attach: "rotor"
@@ -272,7 +191,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 5.68959986e-05
       shape:
-        mesh: {file: "fpv_5inch/prop_ccw.spmesh", hash: "0xa33af86ccaad8bac"}
+        mesh: {file: "fpv_5inch/prop_ccw.spmesh", hash: "0x490eee3e678d5da4"}
     - name: "prop[3]"
       role: "prop"
       attach: "rotor"
@@ -281,7 +200,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 5.68959986e-05
       shape:
-        mesh: {file: "fpv_5inch/prop_cw.spmesh", hash: "0x731c65280076dbc4"}
+        mesh: {file: "fpv_5inch/prop_cw.spmesh", hash: "0xed76a2a78e13c37c"}
   propulsion:
     kv: 194.25514574696888
     resistance: 0.053000000000000005

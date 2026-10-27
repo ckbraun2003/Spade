@@ -35,186 +35,105 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [-3.59938467e-19, 0.0157413837, 1.79969234e-19]
-  body: {mass: 0.602437496, inertia_diag: [0.00204026932, 0.00328483852, 0.00152840803]}
+  com_offset: [-3.59938467e-19, 0.015727153, 1.79969234e-19]
+  body: {mass: 0.602437496, inertia_diag: [0.00204522396, 0.00329297595, 0.00152898999]}
   proxy_radius: 0.20426248
   rotors:
-    - {local_pos: [0.0799999982, 0.00625861622, 0.100000001], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
-    - {local_pos: [0.0799999982, 0.00625861622, -0.100000001], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
-    - {local_pos: [-0.0799999982, 0.00625861622, -0.100000001], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
-    - {local_pos: [-0.0799999982, 0.00625861622, 0.100000001], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
+    - {local_pos: [0.0799999982, 0.00627284683, 0.100000001], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
+    - {local_pos: [0.0799999982, 0.00627284683, -0.100000001], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
+    - {local_pos: [-0.0799999982, 0.00627284683, -0.100000001], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
+    - {local_pos: [-0.0799999982, 0.00627284683, 0.100000001], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0275666546, radius: 0.0762000009, thrust_coeff: 3.03760498e-06, torque_coeff: 4.82738791e-08}
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.00776117854, 0.0126193864, 0.00835610554], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [3.59938467e-19, -0.0157413837, -1.79969234e-19], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [3.59938467e-19, -0.015727153, -1.79969234e-19], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [3.59938467e-19, -0.0157413837, -1.79969234e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [3.59938467e-19, -0.015727153, -1.79969234e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0350000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: box, transform: 0, params: [0.0450000018, 0.0175000001, 0.0299999993, 0]}
+        mesh: {file: "basic_quad_6inch/body.spmesh", hash: "0x8e038618841e74ff"}
     - name: "arm[0]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0399999991, -0.0157413837, 0.0500000007], orientation: [0.707106769, 0.55215764, 0, -0.441726118]}
+      mount: {position: [0.0399999991, -0.015727153, 0.0500000007], orientation: [0.707106769, 0.55215764, 0, -0.441726118]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0640312433, 0, 0]}
+        mesh: {file: "basic_quad_6inch/arm.spmesh", hash: "0xf0b2d77e91cadc10"}
     - name: "arm[1]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0399999991, -0.0157413837, -0.0500000007], orientation: [0.707106769, -0.55215764, 0, -0.441726118]}
+      mount: {position: [0.0399999991, -0.015727153, -0.0500000007], orientation: [0.707106769, -0.55215764, 0, -0.441726118]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0640312433, 0, 0]}
+        mesh: {file: "basic_quad_6inch/arm.spmesh", hash: "0xf0b2d77e91cadc10"}
     - name: "arm[2]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0399999991, -0.0157413837, -0.0500000007], orientation: [0.707106769, -0.55215764, 0, 0.441726118]}
+      mount: {position: [-0.0399999991, -0.015727153, -0.0500000007], orientation: [0.707106769, -0.55215764, 0, 0.441726118]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0640312433, 0, 0]}
+        mesh: {file: "basic_quad_6inch/arm.spmesh", hash: "0xf0b2d77e91cadc10"}
     - name: "arm[3]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0399999991, -0.0157413837, 0.0500000007], orientation: [0.707106769, 0.55215764, 0, 0.441726118]}
+      mount: {position: [-0.0399999991, -0.015727153, 0.0500000007], orientation: [0.707106769, 0.55215764, 0, 0.441726118]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0120000001
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.00600000005, 0.0640312433, 0, 0]}
+        mesh: {file: "basic_quad_6inch/arm.spmesh", hash: "0xf0b2d77e91cadc10"}
     - name: "motor[0]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0799999982, -0.0032413837, 0.100000001], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0799999982, 0.00627284683, 0.100000001], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0189999994
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0144999996, 0.00949999969, 0, 0]}
+        mesh: {file: "basic_quad_6inch/bell.spmesh", hash: "0x07e88791265f898c"}
     - name: "motor[1]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0799999982, -0.0032413837, -0.100000001], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.0799999982, 0.00627284683, -0.100000001], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0189999994
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0144999996, 0.00949999969, 0, 0]}
+        mesh: {file: "basic_quad_6inch/bell.spmesh", hash: "0x07e88791265f898c"}
     - name: "motor[2]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0799999982, -0.0032413837, -0.100000001], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0799999982, 0.00627284683, -0.100000001], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0189999994
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0144999996, 0.00949999969, 0, 0]}
+        mesh: {file: "basic_quad_6inch/bell.spmesh", hash: "0x07e88791265f898c"}
     - name: "motor[3]"
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0799999982, -0.0032413837, 0.100000001], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.0799999982, 0.00627284683, 0.100000001], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0189999994
       shape:
-        sdf:
-          transforms:
-            # [0]
-            - world_to_local: [1, 0, 0, 0,
-                               0, 1, 0, 0,
-                               0, 0, 1, 0,
-                               0, 0, 0, 1]
-              scale: 1
-          nodes:
-            - {prim: cylinder, transform: 0, params: [0.0144999996, 0.00949999969, 0, 0]}
+        mesh: {file: "basic_quad_6inch/bell.spmesh", hash: "0x07e88791265f898c"}
     - name: "esc"
       role: "esc"
       attach: "body"
       rotor: 0
-      mount: {position: [3.59938467e-19, -0.0157413837, -1.79969234e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [3.59938467e-19, -0.015727153, -1.79969234e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00800000038
       shape:
@@ -232,7 +151,7 @@ model:
       role: "battery"
       attach: "body"
       rotor: 0
-      mount: {position: [3.59938467e-19, 0.0147586167, -1.79969234e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [3.59938467e-19, 0.0147728473, -1.79969234e-19], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0299999993
       shape:
@@ -254,7 +173,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 6.82751997e-05
       shape:
-        mesh: {file: "basic_quad_6inch/prop_ccw.spmesh", hash: "0xbf7eb059c3c63b33"}
+        mesh: {file: "basic_quad_6inch/prop_ccw.spmesh", hash: "0x1c081088e2bcefa3"}
     - name: "prop[1]"
       role: "prop"
       attach: "rotor"
@@ -263,7 +182,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 6.82751997e-05
       shape:
-        mesh: {file: "basic_quad_6inch/prop_cw.spmesh", hash: "0x47611b9580ce0873"}
+        mesh: {file: "basic_quad_6inch/prop_cw.spmesh", hash: "0x8648bfcbbb502ae3"}
     - name: "prop[2]"
       role: "prop"
       attach: "rotor"
@@ -272,7 +191,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 6.82751997e-05
       shape:
-        mesh: {file: "basic_quad_6inch/prop_ccw.spmesh", hash: "0xbf7eb059c3c63b33"}
+        mesh: {file: "basic_quad_6inch/prop_ccw.spmesh", hash: "0x1c081088e2bcefa3"}
     - name: "prop[3]"
       role: "prop"
       attach: "rotor"
@@ -281,7 +200,7 @@ model:
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 6.82751997e-05
       shape:
-        mesh: {file: "basic_quad_6inch/prop_cw.spmesh", hash: "0x47611b9580ce0873"}
+        mesh: {file: "basic_quad_6inch/prop_cw.spmesh", hash: "0x8648bfcbbb502ae3"}
   propulsion:
     kv: 178.02358370342162
     resistance: 0.063

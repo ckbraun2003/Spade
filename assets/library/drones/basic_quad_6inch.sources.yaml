@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/basic_quad_6inch.model.yaml", hash: "13970471cd429369"}
+model: {file: "drones/basic_quad_6inch.model.yaml", hash: "addacf314c794fd2"}
 built_by: "vehicles::basic_quad_airframe()"
 parts:
   prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
@@ -29,6 +29,9 @@ inputs:
   "air_density": {value: 1.225, grade: assumed, note: "ISA sea level: the compile's operating point"}
   "gravity": {value: 9.80665, grade: assumed, note: "standard gravity: the compile's operating point"}
   "state_of_charge": {value: 1, grade: assumed, note: "a full pack: the compile's operating point"}
+  "meshes.body.edge_radius": {value: 0.007000000000000001, grade: assumed, note: "a fifth of the body's smallest extent: every edge and corner rounded"}
+  "meshes.bell.chamfer": {value: 0.0014500000000000001, grade: assumed, note: "a tenth of the bell's radius (the motor file's shape)"}
+  "meshes.segments": {value: 4, grade: assumed, note: "steps across a rounded edge, so a tube or a bell is 32 chords around"}
   "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
   "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
   "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
@@ -38,6 +41,9 @@ inputs:
   "meshes.prop.hub_height": {value: 0.007620000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
   "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
   "proxy_radius": {value: 0.204262484748657, grade: assumed, note: "basic_quad_airframe()'s rule: the arm's length plus the propeller's radius"}
+  "drag[0].coeffs": {value: [0.0077611785382032394, 0.012619386427104473, 0.008356105536222458], grade: assumed, note: "the drag the compile estimates from the drone's L5 parts (these rows without the meshes, which the estimate cannot see): one componentwise body, 0.5 rho C_d A per axis, frozen bit for bit (Physics' Q3, 2026-10-26), on basic_quad's defaults"}
+  "drag[0].mount.position": {value: [-3.599384670175295e-19, 0.015727153047919273, 1.7996923350876474e-19], grade: assumed, note: "the centre of mass of the drone as it wears its meshes, so the drag adds no torque, as the estimate's"}
+  "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes, the estimate's"}
 not_carried: []
 checks:
   - {test: "BasicQuadDefaultsHover", reference: 6656.321773575963, unit: "rpm", source: "uiuc_propdb", grade: derived, note: "the L4a header's hover_rpm for triblade_6inch_scaled (tests/library_props.gen.hpp), the tool's at about 0.602 kg; a larger gap means the header's run choice must be re-checked", band: [-0.001, 0.001], report_only: false}
@@ -45,5 +51,5 @@ assumptions:
   - "kappa (C_Q = kappa C_T / D) applies only to a prop without a table; no other L5 drone uses it (Physics, 2026-10-22). One exception: basic_quad_competition keeps kappa = 0.022 m from kat_competition_700, graded assumed. No yaw-torque measurement exists. The legacy CTBR sim never read kappa, so nothing ever tested it. And it is about twice what catalog props give (k_Q/k_T 9-12 mm). (The lead, 2026-10-22.)"
   - "tri-blade tables: mit_5x4 (three-blade, 5 in), scaled to 6 in per Physics' rule"
   - "the shared wake is not modelled: a rotor's thrust does not respond to its neighbour's induced inflow (Physics, 2026-10-21)"
-  - "drag: none is given, so the compile estimates it from the parts' shapes (best-effort; vehicles/airframe_compile.hpp)"
+  - "drag: given as drag[0], the estimate the compile makes from the drone's L5 parts (the same rows without the meshes, which it cannot see), frozen bit for bit (Physics' Q3, 2026-10-26)"
 caveat: "every number is a default basic_quad assumes: a generic 6-inch quad, its prop the tri-blade stand-in"

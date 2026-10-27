@@ -31,8 +31,9 @@
 //
 // THE LOOK (L7b1 of the realistic drones plan), optional and none by
 // default: the same parts as generated meshes (world/mesh_shapes.hpp), each
-// part's mass unchanged. The body becomes a rounded_box of body_size, a mesh
-// record of density body_mass / V; each arm a capped_tube of arm_radius whose
+// part's mass unchanged to within rounding (the bell exactly; a body or arm
+// record's mass is density x V, in double). The body becomes a rounded_box of
+// body_size, a mesh record of density body_mass / V; each arm a capped_tube of arm_radius whose
 // cap centres are L apart, at the arm's pose, of density its mass / V (the
 // four share one mesh); and every motor the motor_bell its shape sizes (a
 // cylinder: radius, length), as AirframeSpec::motor_mesh, of the motor's
@@ -171,6 +172,19 @@ struct BasicQuadParams {
 // parts are measured once (airframe_composite()), so its refusal comes back
 // unchanged. Otherwise the compile's rules are left to compile_airframe().
 [[nodiscard]] Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& params);
+
+// THE LOOK, worn on any spec laid out as basic_quad_airframe() lays one out:
+// parts[0] the body box, parts[1..4] the four arm tubes of one size and
+// nothing after them, and a motor whose shape is a cylinder. It is how
+// basic_quad_airframe() wears params.look, and how a builder of the same
+// layout wears one (the library's direct drones, L7b2): one rule (TD-9). The
+// body becomes the rounded_box of its record's size, the arms the one
+// capped_tube of theirs, and the motors the bell, as THE LOOK above says.
+// invalid_argument, the spec unchanged: another layout (naming the record), a
+// motor shape that is not a cylinder, look.segments outside
+// [1, shapes::kMaxBoxSegments], and a generator's refusal, after "look: the
+// body: ", "look: the arms: " or "look: the bells: ".
+[[nodiscard]] Result<void> wear_look(AirframeSpec& spec, const BasicQuadLook& look);
 
 // THE FIT, for any spec: the `remainder` record that brings `spec`'s parts to
 // `mass` and, with `inertia`, to that diagonal about their centre of mass, in
