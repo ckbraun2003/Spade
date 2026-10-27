@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -98,29 +99,54 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
 }
 
 // Appends `model`'s parts, prepared once by render_parts::prepare_parts(),
-// posed by `body` (a body row: a LiveRun's body(), or body_at()) and still:
-// the rotor spans are zero, so a rotor part shows no spin. bind_parts()
-// writes statics (a CsgSubtree indexes them), so a caller binds each frame
-// into a copy of its base scene. All or nothing: whatever posed_parts() or
-// bind_parts() refuse, nothing is appended.
+// posed by `body` (a body row: a LiveRun's body(), or body_at()), each rotor
+// part turned by its rotor's omega and blade azimuth psi (L7c2, Core's
+// posing rule): one of each per model rotor, a run's rows' omegas and its
+// azimuths. Empty spans pose it still. bind_parts() writes statics (a
+// CsgSubtree indexes them), so a caller binds each frame into a copy of its
+// base scene. All or nothing: whatever posed_parts() or bind_parts() refuse,
+// nothing is appended.
 [[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
                                                        const render_parts::PreparedParts& prepared,
                                                        const vehicles::ModelType& model, const BodyState& body,
+                                                       std::span<const float> rotor_omega, std::span<const float> psi,
                                                        const render_parts::PartsLook& look) {
-    const std::vector<float> still(model.rotors.size(), 0.0f);
+    std::vector<float> still;
+    if (rotor_omega.empty() && psi.empty()) {
+        still.assign(model.rotors.size(), 0.0f);
+        rotor_omega = still;
+        psi = still;
+    }
     const Result<vehicles::PosedParts> posed =
-        vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
+        vehicles::posed_parts(model, body, rotor_omega, psi, vehicles::PartFilter::all);
     if (!posed) return std::unexpected(posed.error());
     return render_parts::bind_parts(prepared, *posed, look, scene);
 }
 
+// The same, still: a rotor part shows no spin (thumbnails, placement).
+[[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
+                                                       const render_parts::PreparedParts& prepared,
+                                                       const vehicles::ModelType& model, const BodyState& body,
+                                                       const render_parts::PartsLook& look) {
+    return append_vehicle_parts(scene, prepared, model, body, {}, {}, look);
+}
+
 // The same, posed at the vehicle's DESIGN frame (pos, orient): a scene's
-// start pose, a run's state_of().
+// start pose, a run's state_of(); its props turned, or still.
+[[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
+                                                       const render_parts::PreparedParts& prepared,
+                                                       const vehicles::ModelType& model, glm::vec3 pos,
+                                                       glm::quat orient, std::span<const float> rotor_omega,
+                                                       std::span<const float> psi,
+                                                       const render_parts::PartsLook& look) {
+    return append_vehicle_parts(scene, prepared, model, body_at(model, pos, orient), rotor_omega, psi, look);
+}
+
 [[nodiscard]] inline Result<void> append_vehicle_parts(render::RenderScene& scene,
                                                        const render_parts::PreparedParts& prepared,
                                                        const vehicles::ModelType& model, glm::vec3 pos,
                                                        glm::quat orient, const render_parts::PartsLook& look) {
-    return append_vehicle_parts(scene, prepared, model, body_at(model, pos, orient), look);
+    return append_vehicle_parts(scene, prepared, model, body_at(model, pos, orient), {}, {}, look);
 }
 
 // Whether any piece is a CSG root. Such a piece marches at the pose it was
