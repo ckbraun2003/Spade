@@ -14,6 +14,10 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **A part wholly inside another is covered** (Physics, merged `09e4d43`).
+  - Such a part (one that closes no face of its own) adds the run-line note "<part>: covered by '<coverer>'". The field is the coverer's alone.
+  - A part that's only partly covered is refused with new text naming the faces left open ("... 'body' closes C of the B faces it would block; B-C stay open").
+  - The library drones' solids now build for the Phantom, the Iris and both basic quads. The FPV is refused because its ESC sits 2 mm (dx/2 at 4 mm) under the body's skin; that's a grid-resolution limit, and nothing needs the FPV's solids yet.
 - **The smoke tour flies the library Phantom** (Interface, merged `0f51c4e`).
   - The tour has 13 stills. `editor_placed_drone` comes before `editor_airflow`.
   - editor.add_drone, editor.airflow and editor.fly place the meshed Phantom, not the reference quad.
