@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <format>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -160,11 +161,24 @@ namespace detail {
     return {};
 }
 
-// A flow layer's legend as the toolbar shows it: the quantity and the range
-// its colours span ("C_p -1.25 to 0.8", "speed |u| 0 to 9.96 m/s"), and
-// what the colour may claim (ViewLegend::note), verbatim; empty when the
-// quantity says it all.
+// A flow layer's name as its legend shows it.
+[[nodiscard]] inline std::string_view layer_name(render::FlowView layer) noexcept {
+    switch (layer) {
+        case render::FlowView::volume: return "volume";
+        case render::FlowView::vortex_iso: return "vortex cores";
+        case render::FlowView::streamlines: return "streamlines";
+        case render::FlowView::slice: return "slice";
+        case render::FlowView::surface_cp: return "surface C_p";
+    }
+    return "flow";
+}
+
+// A flow layer's legend as the view's corner shows it: whose it is
+// (layer_name()), the quantity and the range its colours span ("C_p -1.25
+// to 0.8", "speed |u| 0 to 9.96 m/s"), and what the colour may claim
+// (ViewLegend::note), verbatim; empty when the quantity says it all.
 struct LegendLine {
+    std::string layer;
     std::string scale;
     std::string note;
 };
@@ -173,19 +187,19 @@ struct LegendLine {
     LegendLine line;
     line.scale = std::format("{} {:.3g} to {:.3g}", legend.quantity, legend.range.min, legend.range.max);
     if (!legend.unit.empty()) line.scale += " " + legend.unit;
+    line.layer = std::string(layer_name(legend.layer));
     line.note = legend.note;
     return line;
 }
 
-// The toolbar's legend lines, each scale (with its note) once: layers that
-// share a scale, as Run air's streamlines and cores share the speed's, show
-// it once (the lead, 2026-10-27).
+// The legend lines, each layer's scale (with its note) once; layers of one
+// kind sharing a scale show it once (the lead, 2026-10-27).
 [[nodiscard]] inline std::vector<LegendLine> legend_lines(const std::vector<render::ViewLegend>& legends) {
     std::vector<LegendLine> lines;
     for (const render::ViewLegend& legend : legends) {
         LegendLine line = legend_line(legend);
         const bool shown = std::any_of(lines.begin(), lines.end(), [&line](const LegendLine& l) {
-            return l.scale == line.scale && l.note == line.note;
+            return l.layer == line.layer && l.scale == line.scale && l.note == line.note;
         });
         if (!shown) lines.push_back(std::move(line));
     }

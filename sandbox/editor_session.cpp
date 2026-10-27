@@ -335,8 +335,7 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             air_speed_.frame(air_frame_->frames, air_frame_->t_s,
                              std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
         }
-        w.panels().air_band =
-            air_frame_ ? air_speed_.line() + " \xc2\xb7 " + air_frame_->run_label : air_speed_.line();  // a middle dot
+        w.panels().air_band = editor::air_band(air_speed_.line(), air_frame_ ? air_frame_->run_label : std::string{});
     }
     // Run air's default view (§5): the vortex cores (once there are any) and
     // streamlines seeded under each disc, over the chosen base, as the tour's

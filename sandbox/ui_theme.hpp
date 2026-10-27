@@ -42,6 +42,7 @@ inline constexpr const char* kHierarchy = "Hierarchy";
 inline constexpr const char* kInspector = "Inspector";
 inline constexpr const char* kDrone = "Drone";
 inline constexpr const char* kToolbar = "Toolbar";
+inline constexpr const char* kDockspace = "spade dockspace";  // its ID: the view is its central node
 inline constexpr const char* kLibrary = "Library";
 
 // ---- the fonts ----

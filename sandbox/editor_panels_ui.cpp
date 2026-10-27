@@ -168,28 +168,24 @@ void toolbar(ed::EditorPanels& p) {
     press(p.paused ? "Resume" : "Pause", p.paused ? ed::Command::resume : ed::Command::pause, p.running && !p.air);
     press("Step", ed::Command::step, p.running && !p.air);
     // The bar keeps to one line with Save, File and the scene's name on it
-    // (the lead, 2026-10-27): Run air's band yields first (its speed leads,
-    // its run label is elided), then the flow legend; each whole on hover.
-    // The middle (Undo through the base's legend) is last frame's width.
+    // (the lead, 2026-10-27): Run air's band is elided at its end, never
+    // below its speed and the run's kind (band_floor()), whole on hover. The
+    // flow layers' legends are in the view's corner (flow_legend()). The
+    // middle (Undo through the base's legend) is last frame's width.
     static float middle = 0.0f;
     const ImGuiStyle& style = ImGui::GetStyle();
     const auto button_width = [&style](const char* label) { return ImGui::CalcTextSize(label).x + 2.0f * style.FramePadding.x; };
     const float trailing = 4.0f * ui::kBase + button_width("Save") + style.ItemSpacing.x + button_width("File") +
                            6.0f * ui::kBase + ImGui::CalcTextSize(p.title.c_str()).x;
-    constexpr const char* kClaim = "(what it may claim)";
-    const std::vector<ed::LegendLine> legends = ed::legend_lines(p.legends);
-    float legend_width = 0.0f;
-    for (const ed::LegendLine& line : legends) {
-        legend_width += ImGui::CalcTextSize(line.scale.c_str()).x + style.ItemSpacing.x;
-        if (!line.note.empty()) legend_width += ImGui::CalcTextSize(kClaim).x + style.ItemSpacing.x;
-    }
     ImGui::AlignTextToFramePadding();
     if (p.air_band.empty()) {
         ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
     } else {
-        const float room =
-            ImGui::GetContentRegionAvail().x - 6.0f * ui::kBase - middle - legend_width - trailing;
-        ui::cell_text(p.air_band, ui::Tone::dim, std::max(room, 0.0f));
+        const std::string_view floor = ed::band_floor(p.air_band);
+        const float least =
+            ImGui::CalcTextSize(floor.data(), floor.data() + floor.size()).x + ImGui::CalcTextSize("...").x;
+        const float room = ImGui::GetContentRegionAvail().x - 6.0f * ui::kBase - middle - trailing;
+        ui::cell_text(p.air_band, ui::Tone::dim, std::max(room, least));
         if (ImGui::BeginItemTooltip()) {
             ImGui::TextUnformatted(p.air_band.c_str());
             ImGui::EndTooltip();
@@ -267,30 +263,6 @@ void toolbar(ed::EditorPanels& p) {
             ImGui::SameLine();
         }
         middle = ImGui::GetCursorPosX() - middle_from;
-        // Each flow layer's legend, a scale shared by layers once: its
-        // scale, then what its colour may claim (ViewLegend::note) under a
-        // marker whose tooltip reads it verbatim, so the toolbar stays one
-        // line; elided short of Save, File and the scene's name.
-        for (const ed::LegendLine& line : legends) {
-            const float room = ImGui::GetContentRegionAvail().x - trailing;
-            if (room <= 0.0f) break;
-            ui::cell_text(line.scale, ui::Tone::dim, room);
-            if (ImGui::BeginItemTooltip()) {
-                ImGui::TextUnformatted(line.scale.c_str());
-                ImGui::EndTooltip();
-            }
-            ImGui::SameLine();
-            if (line.note.empty()) continue;
-            if (ImGui::GetContentRegionAvail().x - trailing < ImGui::CalcTextSize(kClaim).x) break;
-            ImGui::TextDisabled("%s", kClaim);
-            if (ImGui::BeginItemTooltip()) {
-                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
-                ImGui::TextUnformatted(line.note.c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::EndTooltip();
-            }
-            ImGui::SameLine();
-        }
     }
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
     press("Save", ed::Command::save);
@@ -972,6 +944,40 @@ void library(ed::EditorPanels& p) {
     ImGui::End();
 }
 
+// ---- the flow legend --------------------------------------------------------
+
+// The flow layers' legends (the lead's ruling A, 2026-10-27), in the view's
+// lower right as the HUD's stats are in its lower left: one line per layer,
+// named ("vortex cores · speed |u| 0 to 5.37 m/s"), then what its colour may
+// claim (ViewLegend::note) under a marker whose tooltip reads it verbatim.
+// Drawn only while a flow layer is.
+void flow_legend(const ed::EditorPanels& p) {
+    const std::vector<ed::LegendLine> lines = ed::legend_lines(p.legends);
+    if (lines.empty()) return;
+    ImVec2 at;
+    ImVec2 size;
+    ui::viewport_rect(ImGui::GetID(ui::kDockspace), at, size);
+    ImGui::SetNextWindowPos(ImVec2(at.x + size.x - 3.0f * ui::kBase, at.y + size.y - 3.0f * ui::kBase),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(ui::kHudAlpha);
+    if (ImGui::Begin("##flow legend", nullptr, ui::kHudFlags)) {
+        for (const ed::LegendLine& line : lines) {
+            const std::string text = line.layer + ui::kDot + line.scale;
+            ImGui::TextUnformatted(text.c_str());
+            if (line.note.empty()) continue;
+            ImGui::SameLine();
+            ImGui::TextDisabled("(what it may claim)");
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                ImGui::TextUnformatted(line.note.c_str());
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+    }
+    ImGui::End();
+}
+
 }  // namespace
 
 void draw_editor_panels(editor::EditorPanels& panels) {
@@ -979,6 +985,7 @@ void draw_editor_panels(editor::EditorPanels& panels) {
     hierarchy(panels);
     inspector(panels);
     library(panels);
+    flow_legend(panels);
 }
 
 }  // namespace spade::sandbox
