@@ -111,9 +111,10 @@ namespace detail {
 // when absent), with its thumbnail drawn on the CPU renderer from
 // `mesh_roots`, and a drone's mesh parts' sidecars beside its file (its
 // placed parts name them by their content). An item the renderer can't
-// draw is saved without a thumbnail, and LibrarySaved says why. Refused by name, writing nothing: a name the scene
-// has no vehicle or asset of; a model or object Core's writer refuses; an
-// index that won't read; and a write that fails (what it wrote is removed).
+// draw is saved without a thumbnail, and LibrarySaved says why. Refused by
+// name, writing nothing: a name the scene has no vehicle or asset of; a model
+// or object Core's writer refuses; an index that won't read; and a write that
+// fails (what it wrote is removed).
 [[nodiscard]] inline Result<LibrarySaved> save_to_library(const std::filesystem::path& dir,
                                                           const scene::SceneDesc& scene, std::string_view name,
                                                           std::span<const std::filesystem::path> mesh_roots) {
