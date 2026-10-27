@@ -7,6 +7,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,7 @@
 #include "analysis/live_run.hpp"
 #include "analysis_powered_quad.hpp"
 #include "core/flow_volume.hpp"
+#include "physics/blade_azimuth.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_identity.hpp"
@@ -270,4 +272,94 @@ TEST(AnalysisLiveRunSave, RefusesAnotherPropulsion) {
     const spade::Result<an::LiveRun> none = an::LiveRun::restore(file, r, bare);
     ASSERT_FALSE(none.has_value()) << "restored without its propulsion";
     EXPECT_NE(none.error().context.find("propulsion chain"), std::string::npos) << none.error().context;
+}
+
+// L7c2, the props spin (Core's posing rule, docs/design/core/plans/
+// 2026-10-26-l7-realistic-drones-draft.md): one blade azimuth per rotor, 0 at
+// the start (the authored pose), advanced after every step by P11's
+// advance_blade_azimuths() with the rows the step left; saved and restored
+// (version 3), so a resumed film's props don't jump. A version 2 save has
+// none, and is refused by name.
+TEST(AnalysisLiveRunAzimuth, ALiveRunAdvancesTheAzimuthEachStepAndARestoredRunResumesIt) {
+    EXPECT_EQ(an::kLiveRunSaveVersion, 3u);
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    an::LiveRun run = started(r, p.model);
+    ASSERT_FALSE(p.model.rotors.empty());
+    std::vector<float> rule(p.model.rotors.size(), 0.0f);
+    ASSERT_TRUE(std::ranges::equal(run.blade_azimuth(), rule)) << "the authored pose";
+    const float h = static_cast<float>(run.step_s());
+    for (int i = 1; i <= 40; ++i) {
+        ASSERT_TRUE(run.step(an::controls_at(powered_turn(), static_cast<float>(run.state().t_s))).has_value());
+        ASSERT_TRUE(spade::physics::advance_blade_azimuths(rule, run.rotor_rows(), h));
+        ASSERT_TRUE(std::ranges::equal(run.blade_azimuth(), rule)) << "step " << i;
+    }
+    EXPECT_GT(rule.front(), 0.0f) << "armed at half throttle, the props turn";
+    EXPECT_EQ(run.azimuth_refused(), "");
+
+    const spade::test::TempDir dir("live_save");
+    const fs::path file = dir.path() / "turning.livesave";
+    ASSERT_TRUE(run.save(file).has_value());
+    spade::Result<an::LiveRun> resumed = an::LiveRun::restore(file, r, p.model);
+    ASSERT_TRUE(resumed.has_value()) << resumed.error().context;
+    EXPECT_TRUE(std::ranges::equal(resumed->blade_azimuth(), run.blade_azimuth())) << "resumed where it was saved";
+    (void)fly(run, 2, powered_turn());
+    (void)fly(*resumed, 2, powered_turn());
+    EXPECT_TRUE(std::ranges::equal(resumed->blade_azimuth(), run.blade_azimuth())) << "and on as the unbroken run";
+
+    std::vector<char> v2 = bytes_of(file);
+    ASSERT_GT(v2.size(), 12u);
+    v2[8] = 2;  // the version follows the 8-byte magic
+    write_bytes(file, v2);
+    const spade::Result<an::LiveRun> old = an::LiveRun::restore(file, r, p.model);
+    ASSERT_FALSE(old.has_value()) << "a version 2 save has no azimuth";
+    EXPECT_EQ(old.error().code, spade::Code::schema_mismatch) << old.error().context;
+    EXPECT_NE(old.error().context.find("version 2; this build reads version 3"), std::string::npos)
+        << old.error().context;
+}
+
+// A refusal never fails a step (the posing rule): psi is drawn only. An
+// azimuth put outside [0, 2 pi) holds, the run steps on with its other rotors
+// turning, and LiveRun names the first refusal, once, for its host to show.
+TEST(AnalysisLiveRunAzimuth, ARefusedAzimuthHoldsAndIsNamedOnceWithoutFailingAStep) {
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    an::LiveRun run = started(r, p.model);
+    ASSERT_GE(p.model.rotors.size(), 2u);
+    std::vector<float> psi(p.model.rotors.size(), 0.0f);
+    psi.front() = spade::physics::kAzimuthTwoPi;
+    run.set_test_blade_azimuth(psi);
+    const an::Controls half{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    ASSERT_TRUE(run.step(half).has_value()) << "a refused azimuth never fails a step";
+    ASSERT_TRUE(run.step(half).has_value());
+    EXPECT_EQ(run.blade_azimuth().front(), spade::physics::kAzimuthTwoPi) << "the refused rotor holds";
+    EXPECT_GT(run.blade_azimuth().back(), 0.0f) << "the others turn";
+    EXPECT_EQ(run.azimuth_refused(), "step 1: a rotor's blade azimuth was refused (advance_blade_azimuths()); it holds");
+}
+
+// Restore copies the rows (the posing rule): a resumed run's rotors are the
+// saved run's before it steps, not at rest, so its first drawn frame poses
+// them as they were.
+TEST(AnalysisLiveRunAzimuth, ARestoredRunsRotorRowsAreTheSavedRunsBeforeAnyStep) {
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    an::LiveRun run = started(r, p.model);
+    (void)fly(run, 2, powered_turn());
+    ASSERT_FALSE(run.rotor_rows().empty());
+    ASSERT_GT(run.rotor_rows().front().omega, 0.0f) << "armed at half throttle, the props turn";
+
+    const spade::test::TempDir dir("live_save");
+    const fs::path file = dir.path() / "rows.livesave";
+    ASSERT_TRUE(run.save(file).has_value());
+    const spade::Result<an::LiveRun> resumed = an::LiveRun::restore(file, r, p.model);
+    ASSERT_TRUE(resumed.has_value()) << resumed.error().context;
+    ASSERT_EQ(resumed->rotor_rows().size(), run.rotor_rows().size());
+    for (std::size_t i = 0; i < run.rotor_rows().size(); ++i) {
+        const spade::vehicles::RotorRow& saved = run.rotor_rows()[i];
+        const spade::vehicles::RotorRow& back = resumed->rotor_rows()[i];
+        EXPECT_EQ(back.enabled, saved.enabled) << "rotor " << i;
+        EXPECT_EQ(back.radius, saved.radius) << "rotor " << i;
+        EXPECT_EQ(back.omega, saved.omega) << "rotor " << i << ": as saved, before any step";
+        EXPECT_EQ(back.omega_cmd, saved.omega_cmd) << "rotor " << i;
+    }
 }

@@ -168,8 +168,9 @@ void toolbar(ed::EditorPanels& p) {
     press(p.paused ? "Resume" : "Pause", p.paused ? ed::Command::resume : ed::Command::pause, p.running && !p.air);
     press("Step", ed::Command::step, p.running && !p.air);
     // The bar keeps to one line with Save, File and the scene's name on it
-    // (the lead, 2026-10-27): Run air's band is elided at its end, never
-    // below its speed and the run's kind (band_floor()), whole on hover. The
+    // (the lead, 2026-10-27): Run air's band sheds the run's kind first when
+    // short (band_shown()), then is elided at its end, never below its speed
+    // and its backend's name (band_floor()), whole on hover. The
     // flow layers' legends are in the view's corner (flow_legend()). The
     // middle (Undo through the base's legend) is last frame's width.
     static float middle = 0.0f;
@@ -181,11 +182,13 @@ void toolbar(ed::EditorPanels& p) {
     if (p.air_band.empty()) {
         ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
     } else {
-        const std::string_view floor = ed::band_floor(p.air_band);
-        const float least =
-            ImGui::CalcTextSize(floor.data(), floor.data() + floor.size()).x + ImGui::CalcTextSize("...").x;
+        const std::string floor = ed::band_floor(p.air_band);
+        const float least = ImGui::CalcTextSize(floor.c_str()).x + ImGui::CalcTextSize("...").x;
         const float room = ImGui::GetContentRegionAvail().x - 6.0f * ui::kBase - middle - trailing;
-        ui::cell_text(p.air_band, ui::Tone::dim, std::max(room, least));
+        const std::string shown = ed::band_shown(p.air_band, room, [](std::string_view t) {
+            return ImGui::CalcTextSize(t.data(), t.data() + t.size()).x;
+        });
+        ui::cell_text(shown, ui::Tone::dim, std::max(room, least));
         if (ImGui::BeginItemTooltip()) {
             ImGui::TextUnformatted(p.air_band.c_str());
             ImGui::EndTooltip();
