@@ -69,14 +69,17 @@
 #include "airflow_pcg_measure.spv.gen.hpp"
 #include "airflow_pcg_scalars.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
+#include "airflow_region_mean.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
 #include "airflow_solid_divergence.spv.gen.hpp"
 #include "airflow_solid_gradient.spv.gen.hpp"
+#include "airflow_solid_velocities.spv.gen.hpp"
 #include "airflow_tile_dot.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "airflow_tile_sum_probe.spv.gen.hpp"
 #include "airflow_velocity_bc.spv.gen.hpp"
 #include "airflow_viscous.spv.gen.hpp"
+#include "airflow_wall_load.spv.gen.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
@@ -1514,7 +1517,7 @@ struct OpCensus {
 // airflow_actuator_gather (Rendering, rendering/exact-kernels). The others
 // hold no float division or root and pass as they did. B5's rows (Physics)
 // also hold the exact profile's estimates to where div32_ftz is called: only
-// airflow_pcg_scalars traces one.
+// airflow_pcg_scalars and airflow_solid_velocities trace one.
 TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     // Whether a row checks the E1/E2 estimates the scan traced.
     enum class Estimates { unchecked, none, some };
@@ -1555,7 +1558,11 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_pcg_scalars, false, Estimates::some},
                               {gen::kSpvVariants_airflow_solid_divergence, false, Estimates::none},
                               {gen::kSpvVariants_airflow_solid_gradient, false, Estimates::none},
-                              {gen::kSpvVariants_airflow_pcg_apply, false, Estimates::none}};
+                              {gen::kSpvVariants_airflow_pcg_apply, false, Estimates::none},
+                              // B5.3 and B5.5 (Physics): only the interior's free-slip means divide.
+                              {gen::kSpvVariants_airflow_region_mean, false, Estimates::none},
+                              {gen::kSpvVariants_airflow_solid_velocities, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_wall_load, false, Estimates::none}};
     for (const Kernel& k : kernels) {
         ASSERT_EQ(k.variants.count, spade::compute::kSupportedWorkgroupSizes.size()) << k.variants.name;
         for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {

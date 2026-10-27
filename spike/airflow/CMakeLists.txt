@@ -91,6 +91,13 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_solid_divergence)
 spade_slang_kernel_variants(spade_airflow_runner airflow_solid_gradient)
 spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_apply)
 
+# B5.3 and B5.5 (Physics; tests/test_gpu_airflow_solids.cpp): the closed
+# regions' means and the CG's gauge, what a closed face holds (both interior
+# modes; div32_ftz), and the wall load.
+spade_slang_kernel_variants(spade_airflow_runner airflow_region_mean)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_velocities)
+spade_slang_kernel_variants(spade_airflow_runner airflow_wall_load)
+
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit
 # build-order edge, and not the link to spade::compute).
