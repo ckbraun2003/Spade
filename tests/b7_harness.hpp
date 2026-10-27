@@ -38,8 +38,6 @@
 #include "core/flow_volume.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
-#include "physics/airflow/multigrid.hpp"
-#include "physics/airflow/pcg.hpp"
 #include "physics/airflow/publish.hpp"
 #include "physics/airflow/regions.hpp"
 #include "physics/airflow/wall_load.hpp"
@@ -144,18 +142,14 @@ class FluidStepper {
 using MakeStepper = std::function<spade::Result<std::unique_ptr<FluidStepper>>(
     const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg, const SolidField* solids)>;
 
-// A scratch for the seam's solids: a field already built, set as set_solids()
-// sets its own after build_solids() (fluid_step.cpp): the regions labelled,
-// the multigrid's face weights and the CG's vectors.
+// A scratch for the seam's solids: a field already built, attached as
+// set_solids() attaches its own after build_solids() (attach_solid_field(),
+// fluid_step.hpp, B5.2b).
 [[nodiscard]] inline spade::Result<FluidScratch> scratch_with(const MacGrid& g, const DomainBc& bc,
                                                               const FluidConfig& cfg, const SolidField* solids) {
     spade::Result<FluidScratch> s = make_fluid_scratch(g, bc, cfg);
     if (!s || solids == nullptr || !solids->any) return s;
-    if (spade::Result<void> ok = check_grid(g.shape, bc, true); !ok) return std::unexpected(ok.error());
-    s->solids = *solids;
-    label_regions(s->regions, g.shape, periodic_axes(bc), s->solids);
-    set_weights(s->projection.mg, {s->solids.theta[0], s->solids.theta[1], s->solids.theta[2]});
-    if (s->projection.pcg.x.size() != g.p.size()) s->projection.pcg = make_pcg_scratch(g.p.size());
+    if (spade::Result<void> ok = attach_solid_field(*s, g, bc, *solids); !ok) return std::unexpected(ok.error());
     return s;
 }
 
