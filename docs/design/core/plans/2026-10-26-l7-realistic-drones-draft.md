@@ -382,6 +382,10 @@ The lead asked Physics for P11's four answers and for Q3.
 
 **L7b1 (the lead and Physics, 2026-10-27).** Passed at `fb6a90c`. No per-branch leg: batch 18's leg covers the two engine .cpp files. Physics' wording note, fixed in L7b2: the look keeps each part's mass to within rounding (the bell exactly), not "unchanged".
 
+**L7b2 (the lead, 2026-10-27).**
+1. Enclosed parts (ruling (a)). A part wholly inside another, such as an ESC in the stack or a pack inside the shell, closes no face, and today's classifier refuses it as a leak. That happens at 4 mm on all five drones built to the solids rule. The ruling is that such a part is covered, not leaking: it adds nothing to the boundary, and its mass stays in the composite. The change is Physics', in `physics/airflow/solids.cpp`. Until it merges, L7b2's solids test names each drone's refusal by its enclosed part. When it merges, `kEnclosedPartsAreCovered` in `tests/test_library_drone_solids.cpp` turns true in the same change, and every drone is clean walls. Moving the parts or dropping them from the model was declined: either would move goldens or misdraw parts to get round a classifier rule.
+2. The frozen drag's grades. The plan says to grade the drag rows derived, but a derived grade needs a source, and the FPV's and the 6-inch's layouts cite none. `drag[0].coeffs` and `drag[0].mount.position` are therefore cited as each drone's `proxy_radius` row is, from the same layout. They are derived from NASA or Luis & Le Ny where the layout cites a source, and assumed where it cites none. `drag[0].mount.orientation` is assumed. The competition quad keeps Kat's fitted drag.
+
 ## Open questions for the lead (each with a recommendation)
 
 1. **Where props enter the spec.** (a) The generic `AirframeSpec::rotor_parts`: massless, with the builder picking the hand. (b) One mesh per hand in `PropBlock`, picked by spin_dir in the compile. PropBlock is a part-file struct, so its writer would have to refuse the field. (c) `attach`/`rotor` on `PartGeometrySpec`: such a record carries mass, and the composite needs mass > 0, so the prop would be counted twice. **Recommend (a).**
