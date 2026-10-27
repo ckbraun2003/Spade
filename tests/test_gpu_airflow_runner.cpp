@@ -63,6 +63,7 @@
 #include "airflow_mg_prolong.spv.gen.hpp"
 #include "airflow_mg_residual.spv.gen.hpp"
 #include "airflow_mg_restrict.spv.gen.hpp"
+#include "airflow_mg_restrict_full.spv.gen.hpp"
 #include "airflow_mg_smooth.spv.gen.hpp"
 #include "airflow_pack_f16.spv.gen.hpp"
 #include "airflow_pcg_apply.spv.gen.hpp"
@@ -1538,6 +1539,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_mg_smooth, false},
                               {gen::kSpvVariants_airflow_mg_residual, false},
                               {gen::kSpvVariants_airflow_mg_restrict, false},
+                              // B5.2b's full weighting (Physics): no division.
+                              {gen::kSpvVariants_airflow_mg_restrict_full, false, Estimates::none},
                               {gen::kSpvVariants_airflow_mg_prolong, false},
                               {gen::kSpvVariants_airflow_remove_mean, false},
                               // B3's advection, velocity conditions and viscosity (Rendering). The

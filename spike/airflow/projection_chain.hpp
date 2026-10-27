@@ -109,9 +109,13 @@ struct ProjectionPush {
 [[nodiscard]] compute::ChainCommand projection_dispatch(uint32_t pipeline, const ProjectionPush& push,
                                                         uint32_t workgroup_size);
 
-// `sweeps` red-black sweeps on level `level` (smooth_red_black()'s order).
+// `sweeps` red-black sweeps on level `level` (smooth_red_black()'s order):
+// each sweep red (colour 0) then black (1), or, with black_first, black then
+// red (the symmetric cycle's post-smoothing and its coarsest level's second
+// half, multigrid.cpp's cycle_sym(); plan B's B5, ruling 4). The default is
+// B2's order, its dispatches unchanged.
 void append_sweeps(std::vector<compute::ChainCommand>& out, const MgLayout& layout, const ProjectionPipelines& p,
-                   uint32_t level, uint32_t sweeps, uint32_t workgroup_size);
+                   uint32_t level, uint32_t sweeps, uint32_t workgroup_size, bool black_first = false);
 
 // One V(2,2) cycle from level `level` down (cycle()'s order).
 void append_v_cycle(std::vector<compute::ChainCommand>& out, const MgLayout& layout, const ProjectionPipelines& p,
