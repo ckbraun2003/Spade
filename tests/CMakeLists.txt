@@ -298,6 +298,9 @@ add_executable(spade_tests
 # test_gpu_airflow_solids.cpp (plan B, B5): the solids projection's kernels
 # against projection.cpp, pcg.cpp and reduce.cpp, GpuAirflowSolids* on the
 # device; AirflowSolidsChain (the packer, the pcg block) on the host.
+# test_gpu_airflow_d1_device.cpp (plan B, B7): B7's acceptance harness
+# (b7_harness.hpp) on GpuFluid against the CPU's run, GpuB7Acceptance* on the
+# device; the 32 steps and the times opt-in (SPADE_AIRFLOW_VALIDATION).
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -318,6 +321,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_viscous.cpp
         test_gpu_airflow_solids.cpp
         test_gpu_airflow_step.cpp
+        test_gpu_airflow_d1_device.cpp
     )
 endif()
 
