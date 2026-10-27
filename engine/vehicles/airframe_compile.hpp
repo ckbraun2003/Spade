@@ -96,6 +96,19 @@
 // every node transform into the mesh's positions and a record's pose is
 // rigid.
 //
+// ROTOR PARTS (L7c1 of the realistic drones plan; the lead's ruling 3,
+// 2026-10-26). AirframeSpec::rotor_parts are parts that turn with their
+// rotor -- a propeller's mesh, drawn on its hub -- and have no mass: the
+// propeller's mass is PropBlock's, on the hub. Each becomes a PartDesc
+// attached to its rotor (posed_parts() turns it by R_y(s_k psi_k)), its mount
+// in the hub frame rounded to float once, with no design -> body conversion,
+// after every rigid part, in declaration order, so no rigid part's index
+// moves. It enters no composite, drag or fit, and parts never enter
+// model_identity(), so only parts_identity() moves. Refused, each one issue
+// at rotor_parts[k].<field>: a rotor out of range, no mesh, a mount not
+// finite or turned by a zero quaternion, a min_feature not finite and > 0,
+// and a name the model's rules refuse. These stop only the final model.
+//
 // DRAG AND MESHES (Physics' rule, 2026-10-13). The best-effort drag estimate
 // reads the records' inertia shapes, and a mesh record has none; yet its
 // solid is real external area, unlike a point or a tensor record. So with no

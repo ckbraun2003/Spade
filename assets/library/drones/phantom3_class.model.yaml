@@ -246,6 +246,42 @@ model:
               scale: 1
           nodes:
             - {prim: box, transform: 0, params: [0.0599999987, 0.0199999996, 0.0250000004, 0]}
+    - name: "prop[0]"
+      role: "prop"
+      attach: "rotor"
+      rotor: 0
+      mount: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+      surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
+      min_feature: 0.000391631998
+      shape:
+        mesh: {file: "phantom3_class/prop_ccw.spmesh", hash: "0x748fb7c9d15b02ef"}
+    - name: "prop[1]"
+      role: "prop"
+      attach: "rotor"
+      rotor: 1
+      mount: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+      surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
+      min_feature: 0.000391631998
+      shape:
+        mesh: {file: "phantom3_class/prop_cw.spmesh", hash: "0xf62ceaeb13eb22df"}
+    - name: "prop[2]"
+      role: "prop"
+      attach: "rotor"
+      rotor: 2
+      mount: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+      surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
+      min_feature: 0.000391631998
+      shape:
+        mesh: {file: "phantom3_class/prop_ccw.spmesh", hash: "0x748fb7c9d15b02ef"}
+    - name: "prop[3]"
+      role: "prop"
+      attach: "rotor"
+      rotor: 3
+      mount: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+      surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
+      min_feature: 0.000391631998
+      shape:
+        mesh: {file: "phantom3_class/prop_cw.spmesh", hash: "0xf62ceaeb13eb22df"}
   propulsion:
     kv: 100.5309649148734
     resistance: 0.10600000000000001

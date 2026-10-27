@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/basic_quad_6inch.model.yaml", hash: "3d3462cd333217fd"}
+model: {file: "drones/basic_quad_6inch.model.yaml", hash: "13970471cd429369"}
 built_by: "vehicles::basic_quad_airframe()"
 parts:
   prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
@@ -29,6 +29,14 @@ inputs:
   "air_density": {value: 1.225, grade: assumed, note: "ISA sea level: the compile's operating point"}
   "gravity": {value: 9.80665, grade: assumed, note: "standard gravity: the compile's operating point"}
   "state_of_charge": {value: 1, grade: assumed, note: "a full pack: the compile's operating point"}
+  "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
+  "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
+  "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
+  "meshes.prop.thickness_tip": {value: 0.08, grade: assumed, note: "8% thick at its last station"}
+  "meshes.prop.chord_points": {value: 8, grade: assumed, note: "8 points on each surface: a drawing's resolution"}
+  "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
+  "meshes.prop.hub_height": {value: 0.007620000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
+  "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
   "proxy_radius": {value: 0.204262484748657, grade: assumed, note: "basic_quad_airframe()'s rule: the arm's length plus the propeller's radius"}
 not_carried: []
 checks:
