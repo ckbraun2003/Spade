@@ -749,8 +749,9 @@ TEST(EditorImport, ASidecarThatCantBeCarriedSavesNothing) {
 
 // A drone with imported parts goes to the library with their sidecars (the
 // lead, 2026-10-27: Save to library carries mesh parts; until then it was
-// refused in Core's words): the panel lists it, and each part's sidecar is
-// beside its file, at the content-named path the part gives.
+// refused in Core's words): the panel lists it, loaded from the library with
+// its meshes, each part's sidecar beside its file under its content's name
+// ("imported/<h>.spmesh", not the scene's "imported/guard/ring.spmesh").
 TEST(EditorImport, SaveToLibraryCarriesADroneWithImportedPartsAndTheirSidecars) {
     TempDir t{"editor-import-library"};
     auto w = with_imports(t.path());
@@ -768,15 +769,16 @@ TEST(EditorImport, SaveToLibraryCarriesADroneWithImportedPartsAndTheirSidecars) 
     EXPECT_TRUE(w->panels().status.starts_with("saved '")) << w->panels().status;
     const fs::path library = mine.parent_path() / "library";
     EXPECT_TRUE(fs::exists(library / "library.yaml"));
-    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    ASSERT_FALSE(w->panels().library.empty());
+    const ed::LibraryItem& saved = w->panels().library.back();
+    ASSERT_TRUE(saved.model.has_value()) << saved.name;
     std::size_t meshes = 0;
-    for (const spade::vehicles::ModelType& m : s.models) {
-        if (m.name != s.vehicles.at(0).model) continue;
-        for (const spade::vehicles::PartDesc& part : m.parts) {
-            if (!part.mesh) continue;
-            ++meshes;
-            EXPECT_TRUE(fs::exists(library / part.mesh_file)) << part.mesh_file;
-        }
+    for (const spade::vehicles::PartDesc& part : saved.model->parts) {
+        if (part.mesh_file.empty()) continue;
+        ++meshes;
+        EXPECT_TRUE(fs::exists(library / part.mesh_file)) << part.mesh_file;
+        ASSERT_NE(part.mesh, nullptr) << part.mesh_file;
+        EXPECT_EQ(part.mesh_file, spade::scene::placed_mesh_file(*part.mesh)) << "named by its content";
     }
     EXPECT_GT(meshes, 0u) << "the drone has imported parts";
 }
