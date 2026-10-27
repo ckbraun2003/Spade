@@ -25,6 +25,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -44,8 +45,16 @@ using namespace spade::physics::airflow;
 struct DroneSolids {
     spade::Result<void> ok;
     SolidField field;
-    std::size_t rigid_parts = 0;  // the model's parts that are not on a rotor
+    std::size_t rigid_parts = 0;     // the model's parts that are not on a rotor
+    std::vector<std::string> names;  // the solid parts', in order, as field.classes are
 };
+
+// How many times `what` occurs in `s`.
+[[nodiscard]] std::size_t occurrences(std::string_view s, std::string_view what) {
+    std::size_t n = 0;
+    for (std::size_t at = s.find(what); at != std::string_view::npos; at = s.find(what, at + what.size())) ++n;
+    return n;
+}
 
 // The drone `stem`, built from the committed library and compiled, posed
 // upright at rest at the origin with rigid_only, in a grid holding its posed
@@ -55,9 +64,11 @@ struct DroneSolids {
 // its far face on a plane of cell centres or faces by construction: the
 // Phantom's and the Iris's 50 mm bodies, 12.5 cells at 4 mm, whose tops on
 // the cell centres the classifier refused, 500-odd runs leaking, once the
-// meshes kept the design axes exactly (L7b2, reported to Physics).
+// meshes kept the design axes exactly (L7b2, reported to Physics). Until
+// build_solids() answers, `ok` is a refusal of its own, so a drone that is
+// never gridded is never taken for one that built.
 [[nodiscard]] DroneSolids build_drone_solids(std::string_view stem, float dx) {
-    DroneSolids out{{}, {}, 0};
+    DroneSolids out{std::unexpected(spade::Error{spade::Code::internal, "the drone was never gridded"}), {}, 0, {}};
     const spade::Result<ld::Committed> lib = ld::committed_library();
     EXPECT_TRUE(lib.has_value()) << (lib ? "" : lib.error().context);
     if (!lib) return out;
@@ -104,6 +115,7 @@ struct DroneSolids {
     const auto parts = solids.parts();
     EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
     if (!parts) return out;
+    for (const SolidPart& p : *parts) out.names.push_back(p.name);
     out.ok = build_solids(out.field, shape, {}, *parts, solids.sampler());
     std::printf("%.*s at dx %.1f mm (%ux%ux%u): %s\n", static_cast<int>(stem.size()), stem.data(), 1000.0 * dx,
                 shape.nx, shape.ny, shape.nz, out.ok ? out.field.run_line.c_str() : out.ok.error().context.c_str());
@@ -116,39 +128,50 @@ struct DroneSolids {
 constexpr bool kEnclosedPartsAreCovered = false;
 
 // The five drones built to the solids rule (each part 8 mm or more across),
-// each with what the classifier says of its enclosed part until (a): a pack
-// or an ESC that closes no face is refused as a leak, or, crossed thin, is
-// measured a sheet.
+// each with its enclosed part and what the classifier says of it until (a):
+// a pack or an ESC that closes no face is refused as a leak, or, crossed
+// thin, is measured a sheet -- the drone's one sheet, every other part a wall.
 struct Enclosed {
     std::string_view stem;
-    std::string_view today;  // in the refusal, or in the run line
+    std::string_view part;  // the enclosed part
+    bool refused;           // until (a): refused as a leak, or else measured a sheet
 };
 constexpr std::array<Enclosed, 5> kDrones{{
-    {"phantom3_class", "part 'battery' leaks: it closes no face"},
-    {"iris_plus_class", "part 'battery' leaks: it closes no face"},
-    {"fpv_5inch", "part 'esc' leaks: it closes no face"},
-    {"basic_quad_6inch", "; esc: sheet (measured"},
-    {"basic_quad_competition", "; esc: sheet (measured"},
+    {"phantom3_class", "battery", true},
+    {"iris_plus_class", "battery", true},
+    {"fpv_5inch", "esc", true},
+    {"basic_quad_6inch", "esc", false},
+    {"basic_quad_competition", "esc", false},
 }};
 
 // At 4 mm every rigid part of the five drones is a wall -- no sheet, one
 // class per rigid part, any leak at an edge within the classifier's own rule
 // (a note, as the reference quad's at 6 mm; the meshed arms at 45 degrees
 // leave a few) -- once an enclosed part is covered; until then each names its
-// enclosed part, which closes no face.
+// enclosed part, which closes no face: refused by name, or the one sheet
+// among walls.
 TEST(LibraryDroneSolids, AtFourMillimetresEachDroneIsWallsOrNamesItsEnclosedPart) {
-    for (const auto& [stem, today] : kDrones) {
+    for (const auto& [stem, part, refused] : kDrones) {
         SCOPED_TRACE(stem);
         const DroneSolids b = build_drone_solids(stem, 0.004f);
-        if (!kEnclosedPartsAreCovered) {
-            const std::string& said = b.ok ? b.field.run_line : b.ok.error().context;
-            EXPECT_NE(said.find(today), std::string::npos) << said;
+        if (!kEnclosedPartsAreCovered && refused) {
+            EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
+            if (b.ok.has_value()) continue;
+            const std::string leaks = "part '" + std::string(part) + "' leaks: it closes no face";
+            EXPECT_NE(b.ok.error().context.find(leaks), std::string::npos) << b.ok.error().context;
             continue;
         }
-        ASSERT_TRUE(b.ok.has_value()) << b.ok.error().context;
+        EXPECT_TRUE(b.ok.has_value()) << b.ok.error().context;
+        if (!b.ok.has_value()) continue;
         EXPECT_EQ(b.field.classes.size(), b.rigid_parts);
-        for (const SolidClass& c : b.field.classes) EXPECT_EQ(c.role, SolidRole::wall);
-        EXPECT_EQ(b.field.run_line.find(": sheet ("), std::string::npos) << b.field.run_line;
+        EXPECT_EQ(b.names.size(), b.field.classes.size());
+        if (b.names.size() != b.field.classes.size()) continue;
+        for (std::size_t i = 0; i < b.field.classes.size(); ++i) {
+            const bool sheet = !kEnclosedPartsAreCovered && b.names[i] == part;
+            EXPECT_EQ(b.field.classes[i].role, sheet ? SolidRole::sheet : SolidRole::wall) << b.names[i];
+        }
+        const std::size_t sheets = kEnclosedPartsAreCovered ? 0u : 1u;
+        EXPECT_EQ(occurrences(b.field.run_line, ": sheet ("), sheets) << b.field.run_line;
     }
 }
 
