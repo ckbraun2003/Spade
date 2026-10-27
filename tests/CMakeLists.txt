@@ -291,6 +291,8 @@ add_executable(spade_tests
 # test_gpu_airflow_viscous.cpp (plan B, B3): the velocity conditions and the
 # implicit viscosity against boundaries.cpp and viscous.cpp,
 # GpuAirflowViscous* on the device.
+# test_gpu_airflow_step.cpp (plan B, B7): GpuFluid, the whole step on the
+# device, against fluid_step(), GpuAirflowStep* on the device.
 # test_gpu_airflow_solids.cpp (plan B, B5): the solids projection's kernels
 # against projection.cpp, pcg.cpp and reduce.cpp, GpuAirflowSolids* on the
 # device; AirflowSolidsChain (the packer, the pcg block) on the host.
@@ -313,6 +315,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_actuator.cpp
         test_gpu_airflow_viscous.cpp
         test_gpu_airflow_solids.cpp
+        test_gpu_airflow_step.cpp
     )
 endif()
 

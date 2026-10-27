@@ -17,6 +17,8 @@ add_library(spade_airflow_runner STATIC
     solids_chain.cpp
     publish_chain.hpp
     publish_chain.cpp
+    step_chain.hpp
+    step_chain.cpp
 )
 target_include_directories(spade_airflow_runner PUBLIC "${PROJECT_SOURCE_DIR}")
 target_compile_features(spade_airflow_runner PUBLIC cxx_std_23)
@@ -78,6 +80,11 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16)
 # B4's rotor discs, spread_actuator() as a gather
 # (tests/test_gpu_airflow_actuator.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather)
+
+# B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):
+# the swap and add_and_clear as one add a face
+# (tests/test_gpu_airflow_step.cpp).
+spade_slang_kernel_variants(spade_airflow_runner airflow_add_increments)
 
 # B5's solids projection (Physics; tests/test_gpu_airflow_solids.cpp): the
 # CG's dots (pass 0; airflow_tile_sum ends them), its max-norm and its

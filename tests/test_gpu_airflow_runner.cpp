@@ -55,6 +55,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "airflow_actuator_gather.spv.gen.hpp"
+#include "airflow_add_increments.spv.gen.hpp"
 #include "airflow_add_one.spv.gen.hpp"
 #include "airflow_advection.spv.gen.hpp"
 #include "airflow_copy.spv.gen.hpp"
@@ -1549,6 +1550,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_pack_f16, true},
                               // B4's rotor discs (Rendering).
                               {gen::kSpvVariants_airflow_actuator_gather, false},
+                              // B7's step (Rendering): one add a face.
+                              {gen::kSpvVariants_airflow_add_increments, false, Estimates::none},
                               // B5's solids projection (Physics): only the quotients divide.
                               {gen::kSpvVariants_airflow_tile_dot, false, Estimates::none},
                               {gen::kSpvVariants_airflow_pcg_measure, false, Estimates::none},
