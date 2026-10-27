@@ -109,8 +109,9 @@ namespace detail {
 
 // Saves the scene's vehicle or asset `name` into the library at `dir` (made
 // when absent), with its thumbnail drawn on the CPU renderer from
-// `mesh_roots`. An item the renderer can't draw is saved without one, and
-// LibrarySaved says why. Refused by name, writing nothing: a name the scene
+// `mesh_roots`, and a drone's mesh parts' sidecars beside its file (its
+// placed parts name them by their content). An item the renderer can't
+// draw is saved without a thumbnail, and LibrarySaved says why. Refused by name, writing nothing: a name the scene
 // has no vehicle or asset of; a model or object Core's writer refuses; an
 // index that won't read; and a write that fails (what it wrote is removed).
 [[nodiscard]] inline Result<LibrarySaved> save_to_library(const std::filesystem::path& dir,
@@ -121,6 +122,7 @@ namespace detail {
     // The item: its file's text, its kind and its panel item (for the thumbnail).
     std::string text;
     LibraryItem item;
+    scene::SceneDesc sidecars;  // a saved model alone, for its mesh parts' sidecars
     scene::LibraryKind kind = scene::LibraryKind::model;
     std::string category;
     std::string extension;
@@ -135,22 +137,29 @@ namespace detail {
             return std::unexpected(detail::save_refusal("vehicle '" + std::string(name) + "' flies model '" +
                                                         vehicle->model + "', which the scene doesn't have"));
         }
-        const scene::ModelFile file{*model};
-        // Only what Core would place back (TD-9): a model add_model() refuses,
-        // as it refuses one with mesh parts (N3, N15's imported parts), is not
-        // saved, and the refusal is Core's. Placed into a copy of this scene
-        // under a free name, so the scene it would become is judged whole.
+        // Only what Core would place back (TD-9), as the library places it
+        // (add_model_with_meshes()): a model it refuses is not saved, and the
+        // refusal is Core's. Placed into a copy of this scene under a free
+        // name, so the scene it would become is judged whole. The file is
+        // that placed copy under the model's own name: each mesh part names
+        // its sidecar by its content ("imported/<h>.spmesh"), written beside
+        // the model file below (the lead, 2026-10-27; L7c1's props).
         scene::SceneDesc trial = scene;
-        std::string trial_name = file.model.name + "_placed";
+        std::string trial_name = model->name + "_placed";
         while (std::any_of(trial.models.begin(), trial.models.end(),
                            [&](const vehicles::ModelType& m) { return m.name == trial_name; })) {
             trial_name += "_";
         }
-        if (Result<void> placed = scene::add_model(trial, file, trial_name); !placed) {
+        if (Result<void> placed = scene::add_model_with_meshes(trial, scene::ModelFile{*model}, trial_name); !placed) {
             return std::unexpected(detail::save_refusal("'" + std::string(name) +
                                                         "' would not place back from the library, so it was not "
                                                         "saved: " + placed.error().context));
         }
+        const auto copy = std::find_if(trial.models.begin(), trial.models.end(),
+                                       [&](const vehicles::ModelType& m) { return m.name == trial_name; });
+        scene::ModelFile file{copy != trial.models.end() ? *copy : *model};
+        file.model.name = model->name;
+        sidecars.models.push_back(file.model);
         Result<std::string> t = scene::model_to_yaml(file);
         if (!t) return std::unexpected(detail::save_refusal("'" + std::string(name) + "': " + t.error().context));
         text = std::move(*t);
@@ -232,19 +241,38 @@ namespace detail {
     Result<std::string> index_text = scene::library_to_yaml(library);
     if (!index_text) return std::unexpected(detail::save_refusal(index_text.error().context));
 
-    // Write: the item, its thumbnail, then the index. A failure removes what
-    // this save made.
+    // Write: a model's sidecars, the item, its thumbnail, then the index. A
+    // failure removes what this save made (a sidecar already there is the
+    // same content, its name being the content's, and stays).
     const bool had_dir = fs::exists(dir, ec);
     std::vector<fs::path> made;
+    std::vector<fs::path> made_folders;
     const auto undo = [&](const Error& e) -> Result<LibrarySaved> {
         std::error_code ignored;
         for (const fs::path& p : made) fs::remove(p, ignored);
+        for (const fs::path& f : made_folders) fs::remove(f, ignored);  // only when empty
         if (!saved.thumbnail.empty()) fs::remove(dir / "thumbnails", ignored);  // only when empty
         if (!had_dir) fs::remove(dir, ignored);                                 // only when empty
         return std::unexpected(detail::save_refusal(e.context));
     };
     fs::create_directories(saved.thumbnail.empty() ? dir : dir / "thumbnails", ec);
     if (ec) return undo(Error{Code::io_error, "can't make '" + dir.generic_string() + "': " + ec.message()});
+    std::vector<fs::path> fresh;
+    for (const vehicles::ModelType& m : sidecars.models) {
+        for (const vehicles::PartDesc& part : m.parts) {
+            if (!part.mesh || part.mesh_file.empty()) continue;
+            const fs::path p = dir / part.mesh_file;
+            if (!fs::exists(p, ec) && std::find(fresh.begin(), fresh.end(), p) == fresh.end()) {
+                if (!fs::exists(p.parent_path(), ec)) made_folders.push_back(p.parent_path());
+                fresh.push_back(p);
+            }
+        }
+    }
+    const Result<void> meshes = scene::write_placed_meshes(sidecars, dir);
+    for (const fs::path& p : fresh) {
+        if (fs::exists(p, ec)) made.push_back(p);
+    }
+    if (!meshes) return undo(meshes.error());
     if (Result<void> w = write_atomically(saved.file, text); !w) return undo(w.error());
     made.push_back(saved.file);
     if (!saved.thumbnail.empty()) {
