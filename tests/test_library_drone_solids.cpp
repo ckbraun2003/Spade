@@ -9,13 +9,13 @@
 // by name, with the cell size they need.
 //
 // A part wholly inside another -- an ESC in the stack, a pack inside the
-// shell -- closes no face, and the classifier refuses it as a leak today. The
+// shell -- closes no face, and the classifier refused it as a leak. The
 // lead's ruling (a), 2026-10-27: such a part is covered, not leaking (it adds
 // nothing to the boundary; its mass stays in the composite), Physics' change
-// in physics/airflow/solids.cpp. Until it merges each drone names what the
-// classifier says of its enclosed part -- a leak it refuses, or a sheet it
-// measures; when it merges, kEnclosedPartsAreCovered turns true in the same
-// change and every drone is clean walls.
+// in physics/airflow/solids.cpp, which turned kEnclosedPartsAreCovered true.
+// A covered part is announced on the run line with the parts that cover it;
+// one that comes within about 1 dx of its cover's surface is exposed, and
+// refused with the faces it would block and how many stay open.
 #include <gtest/gtest.h>
 
 #include <array>
@@ -122,44 +122,105 @@ struct DroneSolids {
     return out;
 }
 
+// The run line's notes after its head ("solids: N parts, ..."), each
+// "<part>: ...", in order.
+[[nodiscard]] std::vector<std::string> run_line_notes(const std::string& line) {
+    std::vector<std::string> out;
+    std::size_t at = line.find("; ");
+    while (at != std::string::npos) {
+        const std::size_t next = line.find("; ", at + 2u);
+        out.push_back(line.substr(at + 2u, next == std::string::npos ? std::string::npos : next - at - 2u));
+        at = next;
+    }
+    return out;
+}
+
+// An arm's leak at an edge: "arm[<k>]: leaks at an edge (...)".
+[[nodiscard]] bool arm_edge_leak(std::string_view note) {
+    constexpr std::string_view arm = "arm[";
+    constexpr std::string_view leak = "]: leaks at an edge (";
+    if (!note.starts_with(arm)) return false;
+    const std::size_t close = note.find(leak);
+    if (close == std::string_view::npos || close == arm.size()) return false;
+    for (std::size_t i = arm.size(); i < close; ++i) {
+        if (note[i] < '0' || note[i] > '9') return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 // Ruling (a) in solids.cpp: an enclosed part is covered, not a leak.
-constexpr bool kEnclosedPartsAreCovered = false;
+constexpr bool kEnclosedPartsAreCovered = true;
 
 // The five drones built to the solids rule (each part 8 mm or more across),
-// each with its enclosed part and what the classifier says of it until (a):
-// a pack or an ESC that closes no face is refused as a leak, or, crossed
-// thin, is measured a sheet -- the drone's one sheet, every other part a wall.
+// each with its enclosed part and what the classifier said of it before (a):
+// a pack or an ESC that closes no face was refused as a leak, or, crossed
+// thin, was measured a sheet -- the drone's one sheet, every other part a wall.
+// With (a) a drone builds, its run line's notes -- an arm's leak at an edge
+// aside -- exactly `notes`, in order; or it is refused with exactly `exposed`.
+// Pinned findings (Physics, 2026-10-27, reported to Core and the lead): the
+// FPV's ESC, 36 mm across in z in a 40 mm stack, comes 2 mm from the stack's
+// faces, inside 1 dx, and is exposed; the Phantom's and the Iris's bodies and
+// the Iris's motor[3] leak at an edge.
 struct Enclosed {
     std::string_view stem;
-    std::string_view part;  // the enclosed part
-    bool refused;           // until (a): refused as a leak, or else measured a sheet
+    std::string_view part;                  // the enclosed part
+    bool refused;                           // before (a): refused as a leak, or else measured a sheet
+    std::string_view exposed;               // with (a): the refusal in full; empty when the drone builds
+    std::array<std::string_view, 4> notes;  // with (a): the run line's notes but an arm's edge leaks
 };
 constexpr std::array<Enclosed, 5> kDrones{{
-    {"phantom3_class", "battery", true},
-    {"iris_plus_class", "battery", true},
-    {"fpv_5inch", "esc", true},
-    {"basic_quad_6inch", "esc", false},
-    {"basic_quad_competition", "esc", false},
+    {"phantom3_class",
+     "battery",
+     true,
+     "",
+     {"body: leaks at an edge (3 runs, open area 0.667 dx^2, 0.04% of its largest face)", "esc: covered by 'body'",
+      "battery: covered by 'body'"}},
+    {"iris_plus_class",
+     "battery",
+     true,
+     "",
+     {"body: leaks at an edge (6 runs, open area 0.981 dx^2, 0.07% of its largest face)",
+      "motor[3]: leaks at an edge (1 runs, open area 0.108 dx^2, 0.22% of its largest face)", "esc: covered by 'body'",
+      "battery: covered by 'body'"}},
+    {"fpv_5inch",
+     "esc",
+     true,
+     "airflow solids: part 'esc' leaks: it closes no face of its own at dx = 4.0 mm and is exposed where it is not "
+     "covered ('body', 'arm[0]', 'arm[1]', 'arm[2]' and 'arm[3]' close 817 of the 880 faces it would block; 63 stay "
+     "open); declare min_feature or refine dx",
+     {}},
+    {"basic_quad_6inch", "esc", false, "", {"esc: covered by 'body'"}},
+    {"basic_quad_competition", "esc", false, "", {"esc: covered by 'body'"}},
 }};
 
-// At 4 mm every rigid part of the five drones is a wall -- no sheet, one
-// class per rigid part, any leak at an edge within the classifier's own rule
-// (a note, as the reference quad's at 6 mm; the meshed arms at 45 degrees
-// leave a few) -- once an enclosed part is covered; until then each names its
-// enclosed part, which closes no face: refused by name, or the one sheet
-// among walls.
+// At 4 mm every rigid part of a drone that builds is a wall -- no sheet, one
+// class per rigid part -- its enclosed parts covered by the body, and any leak
+// at an edge (a note, within the classifier's own rule) an arm's, the meshed
+// arms at 45 degrees leaving a few, but for the findings pinned above. Before
+// (a) each named its enclosed part, which closes no face: refused by name, or
+// the one sheet among walls.
 TEST(LibraryDroneSolids, AtFourMillimetresEachDroneIsWallsOrNamesItsEnclosedPart) {
-    for (const auto& [stem, part, refused] : kDrones) {
+    for (const auto& [stem, part, refused, exposed, notes] : kDrones) {
         SCOPED_TRACE(stem);
         const DroneSolids b = build_drone_solids(stem, 0.004f);
-        if (!kEnclosedPartsAreCovered && refused) {
+        if (kEnclosedPartsAreCovered && !exposed.empty()) {
             EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
             if (b.ok.has_value()) continue;
-            const std::string leaks = "part '" + std::string(part) + "' leaks: it closes no face";
-            EXPECT_NE(b.ok.error().context.find(leaks), std::string::npos) << b.ok.error().context;
+            EXPECT_EQ(b.ok.error().context, exposed);
             continue;
+        }
+        // Nested, not `!kEnclosedPartsAreCovered && refused`: with the flag
+        // true that is a constant condition, MSVC's C4127 (an error here).
+        if (!kEnclosedPartsAreCovered) {
+            if (refused) {
+                EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
+                if (b.ok.has_value()) continue;
+                const std::string leaks = "part '" + std::string(part) + "' leaks: it closes no face";
+                EXPECT_NE(b.ok.error().context.find(leaks), std::string::npos) << b.ok.error().context;
+                continue;
+            }
         }
         EXPECT_TRUE(b.ok.has_value()) << b.ok.error().context;
         if (!b.ok.has_value()) continue;
@@ -172,6 +233,20 @@ TEST(LibraryDroneSolids, AtFourMillimetresEachDroneIsWallsOrNamesItsEnclosedPart
         }
         const std::size_t sheets = kEnclosedPartsAreCovered ? 0u : 1u;
         EXPECT_EQ(occurrences(b.field.run_line, ": sheet ("), sheets) << b.field.run_line;
+        if (!kEnclosedPartsAreCovered) continue;
+        std::vector<std::string> others;
+        for (const std::string& note : run_line_notes(b.field.run_line)) {
+            if (!arm_edge_leak(note)) {
+                others.push_back(note);
+            }
+        }
+        std::vector<std::string> expected;
+        for (const std::string_view n : notes) {
+            if (!n.empty()) {
+                expected.emplace_back(n);
+            }
+        }
+        EXPECT_EQ(others, expected) << b.field.run_line;
     }
 }
 

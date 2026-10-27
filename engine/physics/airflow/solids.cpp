@@ -68,6 +68,32 @@ void open_everything(SolidField& f) {
     return std::max(q.distance + 0.5f * t, 0.0f);
 }
 
+// Each component's sample index range over the box [lo, hi] (m), inclusive
+// and clipped to the grid; empty where the box misses it.
+[[nodiscard]] std::array<SolidRange, 3> sampled_range(const GridShape& s, glm::vec3 lo, glm::vec3 hi) noexcept {
+    const float inv_dx = 1.0f / s.dx;
+    std::array<SolidRange, 3> range{};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const std::array<uint32_t, 3> dims = sample_dims(s, c);
+        range[c].empty = false;
+        for (uint32_t a = 0; a < 3; ++a) {
+            const float off = a == c ? 0.0f : 0.5f;
+            const float q0 = -std::floor(-(lo[static_cast<glm::length_t>(a)] * inv_dx - off));  // ceil
+            const float q1 = std::floor(hi[static_cast<glm::length_t>(a)] * inv_dx - off);
+            const float top = static_cast<float>(dims[a] - 1u);
+            const float c0 = std::max(q0, 0.0f);
+            const float c1 = std::min(q1, top);
+            if (c1 < c0) {
+                range[c].empty = true;
+                break;
+            }
+            range[c].lo[a] = static_cast<uint32_t>(c0);
+            range[c].hi[a] = static_cast<uint32_t>(c1);
+        }
+    }
+    return range;
+}
+
 // Pass 1 (theta, the wall velocity and phi in range) and the periodic copy.
 // closes[p] is set when a sample part p wins has theta = 0. Every sample in
 // range is reset to open first, so a second pass leaves nothing of the first.
@@ -448,6 +474,70 @@ struct CellBox {
     return out;
 }
 
+// A blob's cover (the lead's ruling, 2026-10-27): over part p's sampled range
+// (its box grown by 2 dx), the samples p alone would block (its own phi <=
+// dx/2, theta < 1), and of them those closed (theta = 0) by another part, the
+// sample's winner. `by` marks, per part, a winner of a covered sample.
+struct Cover {
+    uint32_t blocking = 0;
+    uint32_t covered = 0;
+    std::vector<uint8_t> by;
+};
+
+[[nodiscard]] Result<Cover> cover_of(const SolidField& f, const GridShape& s, const SolidSampler& sample, uint32_t p,
+                                     std::span<const SolidPart> parts) {
+    Cover out;
+    out.by.assign(parts.size(), 0u);
+    const glm::vec3 grow(2.0f * s.dx);
+    const std::array<SolidRange, 3> range = sampled_range(s, parts[p].box_min - grow, parts[p].box_max + grow);
+    const float blocks = 0.5f * s.dx;
+    for (uint32_t c = 0; c < 3; ++c) {
+        if (range[c].empty) continue;
+        const std::array<uint32_t, 3> dims = sample_dims(s, c);
+        const glm::vec3 off(c == 0 ? 0.0f : 0.5f, c == 1 ? 0.0f : 0.5f, c == 2 ? 0.0f : 0.5f);
+        for (uint32_t k = range[c].lo[2]; k <= range[c].hi[2]; ++k) {
+            for (uint32_t j = range[c].lo[1]; j <= range[c].hi[1]; ++j) {
+                for (uint32_t i = range[c].lo[0]; i <= range[c].hi[0]; ++i) {
+                    const std::size_t idx = i + std::size_t{dims[0]} * (j + std::size_t{dims[1]} * k);
+                    const glm::vec3 x = (glm::vec3(static_cast<float>(i), static_cast<float>(j),
+                                                   static_cast<float>(k)) +
+                                         off) *
+                                        s.dx;
+                    const SolidQuery own = sample.part(sample.ctx, p, x);
+                    if (!std::isfinite(own.distance)) {
+                        return std::unexpected(Error{Code::invalid_argument, "airflow solids: the sampler reported a "
+                                                                             "non-finite distance for part '" +
+                                                                                 parts[p].name + "'"});
+                    }
+                    if (!(own.distance <= blocks)) continue;  // p alone leaves it open
+                    ++out.blocking;
+                    if (!closed(f.theta[c][idx])) continue;
+                    const uint32_t winner = sample.nearest(sample.ctx, x).part;
+                    if (winner == p || winner >= parts.size()) continue;
+                    ++out.covered;
+                    out.by[winner] = 1u;
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// The parts `by` marks, quoted, in part order: 'a'; 'a' and 'b'; 'a', 'b'
+// and 'c'.
+[[nodiscard]] std::string quoted_parts(std::span<const SolidPart> parts, const std::vector<uint8_t>& by) {
+    std::vector<std::string> names;
+    for (std::size_t q = 0; q < parts.size(); ++q) {
+        if (by[q] != 0u) names.push_back("'" + parts[q].name + "'");
+    }
+    std::string out;
+    for (std::size_t n = 0; n < names.size(); ++n) {
+        if (n > 0u) out += n + 1u == names.size() ? " and " : ", ";
+        out += names[n];
+    }
+    return out;
+}
+
 [[nodiscard]] std::string fmt(const char* format, double v) {
     char buf[64];
     std::snprintf(buf, sizeof buf, format, v);
@@ -571,26 +661,7 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
     }
 
     // 2. Each component's sampled index range.
-    const float inv_dx = 1.0f / s.dx;
-    std::array<SolidRange, 3> range{};
-    for (uint32_t c = 0; c < 3; ++c) {
-        const std::array<uint32_t, 3> dims = sample_dims(s, c);
-        range[c].empty = false;
-        for (uint32_t a = 0; a < 3; ++a) {
-            const float off = a == c ? 0.0f : 0.5f;
-            const float q0 = -std::floor(-(lo[static_cast<glm::length_t>(a)] * inv_dx - off));  // ceil
-            const float q1 = std::floor(hi[static_cast<glm::length_t>(a)] * inv_dx - off);
-            const float top = static_cast<float>(dims[a] - 1u);
-            const float c0 = std::max(q0, 0.0f);
-            const float c1 = std::min(q1, top);
-            if (c1 < c0) {
-                range[c].empty = true;
-                break;
-            }
-            range[c].lo[a] = static_cast<uint32_t>(c0);
-            range[c].hi[a] = static_cast<uint32_t>(c1);
-        }
-    }
+    const std::array<SolidRange, 3> range = sampled_range(s, lo, hi);
 
     // 3-4. Pass 1 and the periodic copy.
     std::vector<uint8_t> closes(parts.size(), 0u);
@@ -618,6 +689,24 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
             const Leaks& lk = *found;
             const bool blob = closes[p] == 0u;
             if (!blob && lk.runs == 0u) continue;  // resolved
+            // Covered (the lead's ruling, 2026-10-27): a blob whose every sample
+            // it would block another part closes lies inside that part. It
+            // won no closed sample, so it added no boundary: the field stays as
+            // the pass made it, and it never reaches the sheet path below.
+            Cover cover;
+            if (blob) {
+                Result<Cover> cv = cover_of(f, s, sample, p, parts);
+                if (!cv) {
+                    open_everything(f);
+                    f.run_line = "solids: none";
+                    return std::unexpected(cv.error());
+                }
+                cover = std::move(*cv);
+                if (cover.blocking > 0u && cover.covered == cover.blocking) {
+                    notes += "; " + parts[p].name + ": covered by " + quoted_parts(parts, cover.by);
+                    continue;
+                }
+            }
             std::array<float, 3> e{parts[p].extent.x, parts[p].extent.y, parts[p].extent.z};
             std::sort(e.begin(), e.end());
             const float largest_face = e[1] * e[2];
@@ -639,13 +728,22 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
             const std::string not_sheet = lk.thin > 0u && lk.narrow ? " and is thin in more than one direction "
                                                                       "(a wire or a bead, not a sheet)"
                                                                     : "";
-            const std::string where = blob ? "it closes no face at dx = " + mm(s.dx) +
-                                                 " (no face centre lies dx/2 inside it)" + not_sheet
-                                           : "a grid line crosses it at (" + fmt("%.4f", lk.first.x) + ", " +
-                                                 fmt("%.4f", lk.first.y) + ", " + fmt("%.4f", lk.first.z) +
-                                                 ") m without meeting a closed face (" + std::to_string(lk.runs) +
-                                                 " leaking runs, " + std::to_string(lk.off_edge) +
-                                                 " beyond the edge reach)";
+            // A blob no other part closes any of: no face centre lies dx/2
+            // inside it. One partly inside others loses those faces to them,
+            // and is exposed where they do not cover it.
+            const auto covering = static_cast<std::size_t>(std::count(cover.by.begin(), cover.by.end(), uint8_t{1}));
+            const std::string where =
+                !blob ? "a grid line crosses it at (" + fmt("%.4f", lk.first.x) + ", " + fmt("%.4f", lk.first.y) +
+                            ", " + fmt("%.4f", lk.first.z) + ") m without meeting a closed face (" +
+                            std::to_string(lk.runs) + " leaking runs, " + std::to_string(lk.off_edge) +
+                            " beyond the edge reach)"
+                : cover.covered == 0u
+                    ? "it closes no face at dx = " + mm(s.dx) + " (no face centre lies dx/2 inside it)" + not_sheet
+                    : "it closes no face of its own at dx = " + mm(s.dx) + " and is exposed where it is not covered (" +
+                          quoted_parts(parts, cover.by) + (covering == 1u ? " closes " : " close ") +
+                          std::to_string(cover.covered) + " of the " + std::to_string(cover.blocking) +
+                          " faces it would block; " + std::to_string(cover.blocking - cover.covered) +
+                          " stay open)" + not_sheet;
             open_everything(f);
             f.run_line = "solids: none";
             return std::unexpected(Error{Code::invalid_argument, "airflow solids: part '" + parts[p].name +

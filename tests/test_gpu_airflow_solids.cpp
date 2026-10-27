@@ -583,6 +583,45 @@ TEST(AirflowSolidsChain, ThePackerWritesBindings13To17ByTheConfirmedRule) {
     EXPECT_TRUE(q.wall_links.empty());
 }
 
+// A covered part (the lead's ruling, 2026-10-27) reaches the device as
+// nothing: a bead 2 dx across, alone a blob, wholly inside a 12 dx body packs
+// to the body's own bindings 13-17, word for word (test_airflow_solids.cpp's
+// ABeadWhollyInsideABodyIsCoveredAndChangesNothing, at dx = 1 cm). Mutation:
+// the covered test skipped, and the bead is refused.
+TEST(AirflowSolidsChain, ACoveredPartPacksAsTheBodyAlone) {
+    const float dx = 0.01f;
+    const af::GridShape shape{32, 32, 32, dx};
+    Scene alone;
+    alone.shapes.push_back(Shape{.name = "body", .kind = Kind::box, .centre = glm::vec3(16.0f * dx),
+                                 .half = glm::vec3(6.0f * dx), .omega = {0.0f, 0.0f, 1.5f},
+                                 .velocity = {0.5f, 0.0f, -0.25f}, .min_feature = 12.0f * dx});
+    af::SolidField body = *af::make_solid_field(shape);
+    ASSERT_TRUE(af::build_solids(body, shape, {false, false, false}, alone.parts(), alone.sampler()).has_value());
+
+    Scene scene = alone;
+    scene.shapes.push_back(Shape{.name = "bead", .kind = Kind::sphere, .centre = glm::vec3(16.0f * dx), .radius = dx,
+                                 .velocity = {0.0f, 0.75f, 0.0f}, .min_feature = 2.0f * dx});
+    af::SolidField f = *af::make_solid_field(shape);
+    const auto built = af::build_solids(f, shape, {false, false, false}, scene.parts(), scene.sampler());
+    ASSERT_TRUE(built.has_value()) << built.error().context;
+    ASSERT_NE(f.run_line.find("; bead: covered by 'body'"), std::string::npos) << f.run_line;
+
+    const ag::PackedSolidField want = ag::pack_solid_field(body);
+    const ag::PackedSolidField got = ag::pack_solid_field(f);
+    const auto float_words = [](const std::vector<float>& a, const std::vector<float>& b) {
+        std::size_t n = a.size() == b.size() ? 0u : 1u;
+        for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) n += bits(a[i]) == bits(b[i]) ? 0u : 1u;
+        return n;
+    };
+    EXPECT_EQ(float_words(got.apertures, want.apertures), 0u);
+    EXPECT_EQ(float_words(got.wall_velocity, want.wall_velocity), 0u);
+    EXPECT_EQ(float_words(got.phi, want.phi), 0u);
+    EXPECT_EQ(got.face_tags, want.face_tags);
+    EXPECT_EQ(got.wall_links, want.wall_links);
+    EXPECT_EQ(got.has_solids, want.has_solids);
+    EXPECT_FALSE(want.wall_links.empty()) << "the body leaves wall links";
+}
+
 // The pcg block: word 28 its offset, then the closed-region count, pcg.hpp's
 // kResidualAnnounce, kStallGain and kStallIterations, and the floor and cap,
 // nothing else written.

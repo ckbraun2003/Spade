@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -522,6 +523,143 @@ TEST(AirflowSolidsSafeguard, ABeadIsRefusedNotSheeted) {
     const Result<void> r = build_scene(f, shape, parts, scene);
     ASSERT_FALSE(r.has_value()) << f.run_line;
     EXPECT_NE(r.error().context.find("thin in more than one direction"), std::string::npos) << r.error().context;
+}
+
+// --- The enclosed part (the lead's ruling, 2026-10-27) ----------------------
+
+// How many words of two arrays differ, bit for bit (a size mismatch: one).
+template <class T>
+[[nodiscard]] std::size_t words_differing(const std::vector<T>& a, const std::vector<T>& b) {
+    if (a.size() != b.size()) return 1u;
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < a.size(); ++i) n += std::memcmp(&a[i], &b[i], sizeof(T)) == 0 ? 0u : 1u;
+    return n;
+}
+
+// Every array of two solid fields, and their ranges: the words that differ.
+[[nodiscard]] std::size_t field_words_differing(const SolidField& a, const SolidField& b) {
+    std::size_t n = a.any == b.any ? 0u : 1u;
+    for (uint32_t c = 0; c < 3; ++c) {
+        n += words_differing(a.theta[c], b.theta[c]) + words_differing(a.wall[c], b.wall[c]) +
+             words_differing(a.phi[c], b.phi[c]) + words_differing(a.link[c], b.link[c]) +
+             words_differing(a.fill1[c], b.fill1[c]) + words_differing(a.fill2[c], b.fill2[c]) +
+             words_differing(a.layer[c], b.layer[c]);
+        const bool same_range = a.range[c].empty == b.range[c].empty && a.range[c].lo == b.range[c].lo &&
+                                a.range[c].hi == b.range[c].hi;
+        n += same_range ? 0u : 1u;
+    }
+    return n + words_differing(a.links, b.links);  // 12 floats a link, no padding
+}
+
+// A 12 dx box, the body, and a bead 2 dx across on a cell corner: alone the
+// bead closes no face (its nearest face centres lie 0.71 dx from its centre,
+// theta 0.21) and is refused (ATwoDxSphereAtItsWorstAlignmentIsRefused). The
+// bead and the body move differently, so a sample the bead won would show.
+[[nodiscard]] Shape enclosing_body() {
+    return Shape{.name = "body", .kind = Kind::box, .centre = {16.0f, 16.0f, 16.0f}, .half = {6.0f, 6.0f, 6.0f},
+                 .velocity = {0.5f, 0.0f, 0.0f}, .min_feature = 12.0f};
+}
+
+[[nodiscard]] Shape bead_at(glm::vec3 centre) {
+    return Shape{.name = "bead", .kind = Kind::sphere, .centre = centre, .radius = 1.0f,
+                 .velocity = {0.0f, 0.75f, 0.0f}, .min_feature = 2.0f};
+}
+
+// The bead at the body's centre: every face it would block (its own phi <=
+// dx/2, within 1.5 dx of its centre) lies 4.5 dx or more inside the body, which
+// closes it. Covered: accepted, announced naming the body, and the field is
+// the body's alone, bit for bit. Mutation: the covered test skipped, and the
+// bead is refused.
+TEST(AirflowSolidsSafeguard, ABeadWhollyInsideABodyIsCoveredAndChangesNothing) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    Scene alone;
+    alone.shapes.push_back(enclosing_body());
+    const SolidField reference = built(shape, alone);
+    ASSERT_TRUE(reference.any);
+
+    Scene scene = alone;
+    scene.shapes.push_back(bead_at({16.0f, 16.0f, 16.0f}));
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_scene(f, shape, scene.parts(), scene);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(f.run_line, "solids: 2 parts, 2 walls, 0 sheets; bead: covered by 'body'");
+    ASSERT_EQ(f.classes.size(), 2u);
+    EXPECT_EQ(f.classes[1].role, SolidRole::wall);
+    EXPECT_EQ(field_words_differing(f, reference), 0u) << "the covered bead adds no boundary";
+}
+
+// The same bead alone in free air is refused as today, and poking half out of
+// the body's +x face (its centre on the face plane x = 22) it is refused too,
+// and the refusal says what was measured. Within 1.5 dx of the bead's centre
+// lie 12 face centres of each component, 36 it would block; the body closes
+// those at x <= 21.5 (phi <= -dx/2): 4 u faces (x = 21) and 6 each of v and
+// w (x = 21.5), 16 in all, and the 20 at x >= 22 stay open. Mutation: covered
+// when ANY face it would block is closed, and the half-out bead is accepted.
+TEST(AirflowSolidsSafeguard, ABeadPokingOutOfABodyIsRefusedAsExposed) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    {
+        Scene free_air;
+        free_air.shapes.push_back(bead_at({16.0f, 16.0f, 16.0f}));
+        SolidField f = *make_solid_field(shape);
+        const Result<void> r = build_scene(f, shape, free_air.parts(), free_air);
+        ASSERT_FALSE(r.has_value()) << f.run_line;
+        EXPECT_EQ(r.error().context, "airflow solids: part 'bead' leaks: it closes no face at dx = 1000.0 mm (no face "
+                                     "centre lies dx/2 inside it); declare min_feature or refine dx");
+        EXPECT_EQ(f.run_line, "solids: none");
+    }
+    Scene scene;
+    scene.shapes.push_back(enclosing_body());
+    scene.shapes.push_back(bead_at({22.0f, 16.0f, 16.0f}));
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_scene(f, shape, scene.parts(), scene);
+    ASSERT_FALSE(r.has_value()) << f.run_line;
+    EXPECT_EQ(r.error().context, "airflow solids: part 'bead' leaks: it closes no face of its own at dx = 1000.0 mm "
+                                 "and is exposed where it is not covered ('body' closes 16 of the 36 faces it would "
+                                 "block; 20 stay open); declare min_feature or refine dx");
+    EXPECT_EQ(f.run_line, "solids: none");
+}
+
+// Two nested parts that each close faces of their own: a core filling the
+// body's lower half, listed first, ties the body's distance along the faces
+// they share and wins those samples (a tie to the lower part); the body wins
+// the rest. Neither is a blob, so the covered rule never looks at them: no
+// note, and with one velocity the field is the body's alone, bit for bit.
+TEST(AirflowSolidsSafeguard, NestedPartsThatEachCloseFacesAreUnchanged) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    Scene alone;
+    alone.shapes.push_back(enclosing_body());
+    const SolidField reference = built(shape, alone);
+
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "core", .kind = Kind::box, .centre = {16.0f, 16.0f, 13.0f},
+                                 .half = {6.0f, 6.0f, 3.0f}, .velocity = {0.5f, 0.0f, 0.0f}, .min_feature = 6.0f});
+    scene.shapes.push_back(enclosing_body());
+    SolidField f = *make_solid_field(shape);
+    const Result<void> r = build_scene(f, shape, scene.parts(), scene);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(f.run_line, "solids: 2 parts, 2 walls, 0 sheets");
+    EXPECT_EQ(field_words_differing(f, reference), 0u);
+    // Each part closes faces of its own: closed samples it wins.
+    uint32_t closed_by[2] = {0u, 0u};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const uint32_t n[3] = {shape.nx + (c == 0 ? 1u : 0u), shape.ny + (c == 1 ? 1u : 0u),
+                               shape.nz + (c == 2 ? 1u : 0u)};
+        for (uint32_t k = 0; k < n[2]; ++k) {
+            for (uint32_t j = 0; j < n[1]; ++j) {
+                for (uint32_t i = 0; i < n[0]; ++i) {
+                    const std::size_t idx = i + std::size_t{n[0]} * (j + std::size_t{n[1]} * k);
+                    if (!closed(f.theta[c][idx])) continue;
+                    const glm::vec3 x(static_cast<float>(i) + (c == 0 ? 0.0f : 0.5f),
+                                      static_cast<float>(j) + (c == 1 ? 0.0f : 0.5f),
+                                      static_cast<float>(k) + (c == 2 ? 0.0f : 0.5f));
+                    const uint32_t winner = Scene::nearest(&scene, x).part;
+                    if (winner < 2u) ++closed_by[winner];
+                }
+            }
+        }
+    }
+    EXPECT_GT(closed_by[0], 0u) << "the core";
+    EXPECT_GT(closed_by[1], 0u) << "the body";
 }
 
 // The free-slip interior (design section 3, approved 2026-10-13): a closed
