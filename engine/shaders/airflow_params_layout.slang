@@ -17,7 +17,8 @@
 //   25     g_coef          h / (rho * dx)                          float
 //   26     inv_count       remove_mean's 1 / count                 float
 //   27     off_face_block  in words, into airflow_params: the face block below
-//   28-31  free (B5's amendment claims them)
+//   28     off_pcg_block   in words, into airflow_params: the pcg block below
+//   29-31  free
 //   32-    the level table: level l at 32 + 12 l,
 //          {nx, ny, nz, off_p, off_b, off_r, off_w0, off_w1, off_w2, weighted, 0, 0}
 //   then   the face block, at word 27's offset, 22 floats (B3's viscosity and
@@ -27,10 +28,17 @@
 //          a side's face velocity is its wall's wall_velocity for a wall and
 //          the ambient otherwise (an inflow's ghost; an outlet's is unread),
 //          so fixed_normal_velocity(side) is face_velocity(side, axis).
+//   then   the pcg block, at word 28's offset, after the face block, 6 words
+//          (B5's solids CG; Physics, 2026-10-26): {the closed-region count,
+//          kResidualAnnounce (float), kStallGain (float), kStallIterations,
+//          the floor, the cap}, the constants from physics/airflow/pcg.hpp and
+//          the solve's floor and cap as solve_pcg_to() takes them, all
+//          written by the host (spike/airflow/solids_chain.hpp's
+//          write_pcg_block()).
 //
 // APPEND-ONLY. A word, once given a meaning, keeps it: words 0-16 are already
 // coded against (Rendering's B3 and B6). A new scalar takes a free word in
-// 27-31; past those, the table moves only by a new layout with its own name.
+// 29-31; past those, the table moves only by a new layout with its own name.
 //
 // THE FLOAT WORDS ARE THE HOST'S (TD-9): inv_dx is 1.0f / dx, and b_coef,
 // g_coef, inv_count and alpha are the CPU's own expressions (projection.cpp's
@@ -91,6 +99,16 @@ float viscous_alpha() { return asfloat(airflow_params[airflow_params[27]]); }
 // side: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z; c: 0 x, 1 y, 2 z.
 float face_velocity(uint side, uint c) { return asfloat(airflow_params[airflow_params[27] + 1u + 3u * side + c]); }
 float ambient_velocity(uint c) { return asfloat(airflow_params[airflow_params[27] + 19u + c]); }
+
+// --- word 28 and the pcg block --------------------------------------------------
+
+uint offset_pcg_block() { return airflow_params[28]; }
+uint pcg_closed_regions() { return airflow_params[airflow_params[28]]; }
+float pcg_residual_announce() { return asfloat(airflow_params[airflow_params[28] + 1u]); }
+float pcg_stall_gain() { return asfloat(airflow_params[airflow_params[28] + 2u]); }
+uint pcg_stall_iterations() { return airflow_params[airflow_params[28] + 3u]; }
+uint pcg_floor() { return airflow_params[airflow_params[28] + 4u]; }
+uint pcg_cap() { return airflow_params[airflow_params[28] + 5u]; }
 
 // --- the level table ---------------------------------------------------------
 

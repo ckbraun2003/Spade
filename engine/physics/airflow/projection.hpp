@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "physics/airflow/multigrid.hpp"
@@ -67,5 +69,22 @@ struct ProjectionReport {
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
                          const SolidField* solids = nullptr, FluidRegions* regions = nullptr,
                          uint32_t cg_cap = kSolidsCgCap) noexcept;
+
+// The solids' projection's first and last stages, as project() runs them
+// with solids, so the GPU twins (plan B's B5: airflow_solid_divergence and
+// airflow_solid_gradient) are held to the CPU's own code.
+//
+// The right side before the region means come off: per cell,
+// b_coef * (((du + dv) + dw) * inv_dx) of the aperture flux
+// theta u + (1 - theta) u_wall, and 0 in a cell of no region. `b` holds the
+// grid's cells.
+void solid_divergence(const MacGrid& g, const SolidField& f, const FluidRegions& regions,
+                      const ProjectionFloats& floats, std::span<float> b) noexcept;
+
+// From the grid's p: every face with theta > 0 that is not fixed subtracts
+// g_coef (p_hi - p_lo) as plan A does; every face with theta = 0 takes the
+// wall's velocity; a fixed-velocity domain face is left as it is.
+void subtract_gradient_with_apertures(MacGrid& g, const std::array<FaceKind, 6>& kinds, float g_coef,
+                                      const SolidField& f) noexcept;
 
 }  // namespace spade::physics::airflow
