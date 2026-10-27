@@ -70,8 +70,9 @@
 
 namespace spade::analysis {
 
-// The save file's version (LiveRun::save()). 2: the propulsion it flew.
-inline constexpr uint32_t kLiveRunSaveVersion = 2;
+// The save file's version (LiveRun::save()). 2: the propulsion it flew. 3:
+// the blade azimuths (L7c2), so a resumed film's props don't jump.
+inline constexpr uint32_t kLiveRunSaveVersion = 3;
 
 // How fast the hold turns the drone toward the controls' attitude, per axis.
 inline constexpr float kHoldRateDegPerS = 180.0f;
@@ -197,8 +198,8 @@ class LiveRun {
     [[nodiscard]] double step_s() const noexcept;  // h
 
     // The held body row (its centre of mass and principal axes), as Core's
-    // posed_parts() takes it: what a host draws the solid drone from. The
-    // blade azimuth psi is Physics' rule (P11); until it lands, pass zeros.
+    // posed_parts() takes it: what a host draws the solid drone from, with
+    // blade_azimuth() and the rows' omegas.
     [[nodiscard]] const BodyState& body() const noexcept;
     // The rotors' rows after the last step, in the model's rotor order: each
     // one's speed, k_T, radius, and hub and axis in the body. With body(), what
@@ -206,6 +207,16 @@ class LiveRun {
     // held at the box's centre, the published volume's frame. Empty for a
     // model without rotors.
     [[nodiscard]] std::span<const vehicles::RotorRow> rotor_rows() const noexcept;
+    // The blade azimuth psi, one per rotor in the model's rotor order, in
+    // [0, 2 pi): 0 at the start (the authored pose), advanced after each step
+    // by P11's advance_blade_azimuths() with the rows as the step left them
+    // (L7c2, Core's posing rule). What posed_parts() turns each rotor's parts
+    // by. Drawn only: nothing reads it back into the run. Saved and restored.
+    [[nodiscard]] std::span<const float> blade_azimuth() const noexcept;
+    // The first step whose azimuths were refused, named, or "": a refused
+    // rotor holds its psi and the step goes on (psi is drawn only), and a
+    // host shows this line. A stepping run never makes one.
+    [[nodiscard]] const std::string& azimuth_refused() const noexcept;
 
     // The run's solids: whether the model's parts are in the grid, what
     // set_solids() made of them, and the pressure's residual.
@@ -271,6 +282,11 @@ class LiveRun {
     // V-cycles), as is a run on a device. No host sets it. 0, the default, unsets it: a run is the same
     // to the bit. It is not saved: a restored run starts unset.
     void set_test_solids_max_iterations(uint32_t n) noexcept;
+
+    // FOR TESTS ONLY: sets the blade azimuths, one per rotor (another count is
+    // ignored), so a test can put one outside [0, 2 pi) and see it refused
+    // (L7c2). No host sets it.
+    void set_test_blade_azimuth(std::span<const float> psi) noexcept;
 
   private:
     struct Impl;

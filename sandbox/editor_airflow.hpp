@@ -466,18 +466,38 @@ class AirSpeed {
     return band;
 }
 
-// The least of the band the bar shows (the lead's ruling A, 2026-10-27, and
-// slice 3's): its speed, the run's kind and its backend's name ("GPU" or
-// "CPU"; the CPU's why goes with the rest). Past that, the band is elided at
-// its end.
-[[nodiscard]] inline std::string_view band_floor(std::string_view band) noexcept {
+// The band without the run's kind ("air at 1/3 speed · GPU · 32³, dx 39 mm,
+// R/dx 3"): when the bar is short the kind goes first, so the backend's name
+// and the grid's dx outlast it (the lead, 2026-10-27).
+[[nodiscard]] inline std::string band_without_kind(std::string_view band) {
     constexpr std::string_view kDot = " \xc2\xb7 ";
     const std::size_t first = band.find(kDot);
-    if (first == std::string_view::npos) return band;
+    if (first == std::string_view::npos) return std::string(band);
     const std::size_t second = band.find(kDot, first + kDot.size());
-    if (second == std::string_view::npos) return band;
-    const std::size_t backend = second + kDot.size();
-    return band.substr(0, std::min(band.find(kDot, backend), band.find(':', backend)));
+    if (second == std::string_view::npos) return std::string(band);
+    return std::string(band.substr(0, first)).append(band.substr(second));
+}
+
+// The least of the band the bar shows (the lead's rulings, 2026-10-27): its
+// speed and its backend's name ("GPU" or "CPU"; the CPU's why goes with the
+// rest). The run's kind goes before it (band_without_kind()); past that, the
+// band is elided at its end.
+[[nodiscard]] inline std::string band_floor(std::string_view band) {
+    constexpr std::string_view kDot = " \xc2\xb7 ";
+    const std::string kindless = band_without_kind(band);
+    const std::size_t first = kindless.find(kDot);
+    if (first == std::string::npos) return kindless;
+    const std::size_t backend = first + kDot.size();
+    return kindless.substr(0, std::min(kindless.find(kDot, backend), kindless.find(':', backend)));
+}
+
+// The band as the bar shows it in `room`, `width` measuring text: whole when
+// it fits, else without the run's kind (band_without_kind()), which the bar
+// elides at its end, never below band_floor().
+[[nodiscard]] inline std::string band_shown(std::string_view band, float room,
+                                            const std::function<float(std::string_view)>& width) {
+    if (width(band) <= room) return std::string(band);
+    return band_without_kind(band);
 }
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
