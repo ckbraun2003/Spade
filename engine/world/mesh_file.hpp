@@ -104,7 +104,10 @@ struct LoadedMesh {
 };
 
 // Writes `mesh` and `provenance` to `path`, replacing any file there, in the
-// layout above. It creates no directory.
+// layout above. It creates no directory. REPLACED WHOLE: the bytes go to
+// "<path>.tmp-spade" beside it, renamed over `path` once all are written, so
+// `path` is never written in place; a refused write leaves it as it was and
+// removes the temporary.
 [[nodiscard]] Result<void> save_mesh_file(const std::filesystem::path& path, const TriangleMesh& mesh,
                                           const MeshProvenance& provenance = {});
 

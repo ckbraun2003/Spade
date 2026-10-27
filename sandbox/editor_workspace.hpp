@@ -578,12 +578,20 @@ class EditorWorkspace {
             case Command::redo: history(redo_, undo_, false); return;
             case Command::save: {
                 const Serials before = serials();
+                if (const Result<void> staged = stage_placed_meshes(); !staged) {
+                    panels_.status = staged.error().context;
+                    return;
+                }
                 const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
                 save_into(before, save_scene(docs_.scene, docs_.world, meshes));
                 return;
             }
             case Command::save_as: {
                 const Serials before = serials();
+                if (const Result<void> staged = stage_placed_meshes(); !staged) {
+                    panels_.status = staged.error().context;
+                    return;
+                }
                 const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
                 save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, meshes));
                 list_sources();
@@ -692,6 +700,23 @@ class EditorWorkspace {
             }
         }
         settle(before, applied);
+    }
+
+    // L7b0: a placed drone's mesh parts name imported/<hash>.spmesh
+    // (scene::add_model_with_meshes()), with their meshes in memory, as the
+    // drone's file loaded them. Before Save, each such sidecar that neither
+    // the staging folder nor the scene's folder holds yet is written into the
+    // staging folder (scene::write_placed_meshes(), which the command line's
+    // --save calls too), so meshes_to_copy() carries it. One that can't be
+    // written saves nothing: the status says why.
+    [[nodiscard]] Result<void> stage_placed_meshes() {
+        const std::filesystem::path held[] = {docs_.scene.path.parent_path()};
+        if (Result<void> r = scene::write_placed_meshes(docs_.scene.desc(), staging_.path(), held); !r) {
+            const std::string why = staging_.path().empty() ? " (" + staging_.why_not() + ")" : std::string();
+            return std::unexpected(
+                Error{r.error().code, "save: " + r.error().context + why + "; the scene was not saved"});
+        }
+        return {};
     }
 
     // What Save copies beside the scene (copy_fallback_meshes(), all or

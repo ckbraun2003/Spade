@@ -15,6 +15,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,8 @@ namespace {
 constexpr char kMagic[8] = {'S', 'P', 'A', 'D', 'E', 'M', 'S', 'H'};
 // After the header and the source: the hash's 8 bytes.
 constexpr uint64_t kTrailerBytes = 8;
+// save_mesh_file()'s temporary, beside its target: "<name>.spmesh.tmp-spade".
+constexpr std::string_view kTempSuffix = ".tmp-spade";
 static_assert(kMeshFileHeaderBytes == 8 + 4 + 4 + 4 + 4 + 8 + 4, "mesh_file.hpp's table");
 
 // "mesh file '<path>'": every message's subject.
@@ -99,6 +102,7 @@ Result<void> save_mesh_file(const std::filesystem::path& path, const TriangleMes
     const uint32_t triangle_count = mesh.triangle_count();
 
     std::string bytes;
+    std::filesystem::path tmp;
     try {
         bytes.reserve(kMeshFileHeaderBytes + provenance.source.size() + 12 * positions.size() + 4 * indices.size() +
                       kTrailerBytes);
@@ -118,16 +122,36 @@ Result<void> save_mesh_file(const std::filesystem::path& path, const TriangleMes
         for (const uint32_t i : indices) put32(bytes, i);
         put64(bytes, mesh.content_hash());
 
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            return std::unexpected(refusal(Code::io_error, path, "cannot be opened for writing"));
+        // REPLACED WHOLE, never written in place: the bytes go to a temporary
+        // beside `path`, renamed over it once they are all written. A write
+        // that fails, or a run stopped mid-write, leaves `path` as it was, so
+        // no reader (nor the editor's Save, which keeps a sidecar it finds)
+        // takes part of one for a whole one. The temporary is removed on a
+        // failure.
+        tmp = path;
+        tmp += kTempSuffix;
+        const auto failed = [&](std::string why) {
+            std::error_code ignored;
+            std::filesystem::remove(tmp, ignored);
+            return std::unexpected(refusal(Code::io_error, path, std::move(why)));
+        };
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (!out) {
+                return failed("cannot be opened for writing (its temporary, " + path_text(tmp.filename()) + ")");
+            }
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            out.close();
+            if (!out) return failed("writing it failed");
         }
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        out.close();
-        if (!out) {
-            return std::unexpected(refusal(Code::io_error, path, "writing it failed"));
-        }
+        std::error_code ec;
+        std::filesystem::rename(tmp, path, ec);
+        if (ec) return failed("it cannot be replaced (" + ec.message() + ")");
     } catch (const std::exception& e) {
+        if (!tmp.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove(tmp, ignored);
+        }
         return std::unexpected(refusal(Code::io_error, path, std::string("writing it failed: ") + e.what()));
     }
     return {};
