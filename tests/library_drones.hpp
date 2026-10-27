@@ -38,7 +38,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -379,6 +382,35 @@ struct DroneParts {
         out.files[i] = file;
     }
     return out;
+}
+
+// -- The committed library -----------------------------------------------------
+
+// The committed library, in the SOURCE tree: the generator writes here.
+[[nodiscard]] inline std::filesystem::path library_dir() {
+    return std::filesystem::path(SPADE_ASSETS_DIR) / "library";
+}
+
+// The library as committed, and its registry. The index alone, its dir set:
+// load_library() refuses an entry whose file is missing, and the generator is
+// what writes the drones' model files (test_library_thumbnails.cpp's
+// the_index()). tests/test_library_drones.cpp checks the committed files
+// byte for byte; tests/test_library_drone_solids.cpp builds from them too.
+struct Committed {
+    scene::Library library{};
+    scene::SourceRegistry registry{};
+};
+
+[[nodiscard]] inline Result<Committed> committed_library() {
+    std::ifstream in(library_dir() / "library.yaml", std::ios::binary);
+    if (!in) return std::unexpected(Error{Code::io_error, "library.yaml can't be read"});
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    Result<scene::Library> library = scene::library_from_yaml(text);
+    if (!library) return std::unexpected(library.error());
+    library->dir = library_dir();
+    Result<scene::SourceRegistry> registry = scene::load_library_sources(*library);
+    if (!registry) return std::unexpected(registry.error());
+    return Committed{std::move(*library), std::move(*registry)};
 }
 
 // -- The six drones ------------------------------------------------------------
@@ -1204,6 +1236,9 @@ struct BuiltDrone {
     std::optional<BasicQuadParams> params{};  // a basic quad's
     std::optional<FitTargets> targets{};      // the Crazyflie's
     shapes::PropMeshSpec prop_mesh{};         // what every drone's props are drawn from (L7c1)
+    vehicles::BasicQuadLook look{};           // what its body, arms and bells are drawn from (L7b2)
+    AirframeSpec bare{};  // the spec as its rows give it, before the look and the frozen drag (L7b2)
+    AirframeSpec l5{};    // the drone as L5 built it, without meshes: what the frozen drag is (L7b2)
     AirframeSpec spec{};
     DroneNotes notes{};
 };

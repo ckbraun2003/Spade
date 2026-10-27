@@ -292,6 +292,10 @@ Result<AirframeSpec> basic_quad_airframe(const BasicQuadParams& p) {
     return s;
 }
 
+Result<void> wear_look(AirframeSpec&, const BasicQuadLook&) {
+    return std::unexpected(invalid("wear_look() is L7b2's, not yet written"));  // RED
+}
+
 Result<PartInertia> fit_remainder(const AirframeSpec& spec, double mass, const std::optional<glm::dvec3>& inertia) {
     if (const std::optional<Error> e = non_finite_target(mass, inertia)) return std::unexpected(*e);
 

@@ -600,3 +600,72 @@ TEST(BasicQuad, BasicQuadWithoutALookIsTheSameSpecBitForBit) {
     ASSERT_TRUE(measured.has_value()) << measured.error().context;
     EXPECT_EQ(rest.position, glm::dvec3(measured->inertia.center_of_mass));
 }
+
+// THE LOOK, worn on a spec (L7b2): wear_look() on an unlooked basic quad's
+// spec gives the looked quad's, record for record and bit for bit, so the
+// library's direct drones and basic_quad_airframe() wear one rule (TD-9).
+TEST(BasicQuad, WearingTheLookIsTheLookedBasicQuadsSpec) {
+    BasicQuadParams p;
+    p.look = a_look();
+    const spade::Result<AirframeSpec> looked = spade::vehicles::basic_quad_airframe(p);
+    ASSERT_TRUE(looked.has_value()) << looked.error().context;
+    p.look.reset();
+    spade::Result<AirframeSpec> worn = spade::vehicles::basic_quad_airframe(p);
+    ASSERT_TRUE(worn.has_value()) << worn.error().context;
+    const spade::Result<void> wore = spade::vehicles::wear_look(*worn, a_look());
+    ASSERT_TRUE(wore.has_value()) << wore.error().context;
+
+    ASSERT_EQ(worn->parts.size(), looked->parts.size());
+    for (std::size_t k = 0; k < worn->parts.size(); ++k) {
+        const PartInertia& a = worn->parts[k];
+        const PartInertia& b = looked->parts[k];
+        SCOPED_TRACE(b.geometry.name);
+        EXPECT_EQ(a.geometry.source, b.geometry.source);
+        ASSERT_NE(a.geometry.mesh, nullptr);
+        ASSERT_NE(b.geometry.mesh, nullptr);
+        EXPECT_EQ(a.geometry.mesh->content_hash(), b.geometry.mesh->content_hash());
+        EXPECT_EQ(bits(a.geometry.density), bits(b.geometry.density));
+        EXPECT_EQ(bits(a.geometry.min_feature), bits(b.geometry.min_feature));
+        EXPECT_EQ(bits(a.mass), bits(b.mass));
+        EXPECT_EQ(a.shape, b.shape);
+        EXPECT_EQ(a.position, b.position);
+        EXPECT_EQ(a.orientation, b.orientation);
+    }
+    ASSERT_TRUE(worn->motor_mesh.has_value());
+    ASSERT_TRUE(looked->motor_mesh.has_value());
+    EXPECT_EQ(worn->motor_mesh->mesh->content_hash(), looked->motor_mesh->mesh->content_hash());
+    EXPECT_EQ(bits(worn->motor_mesh->min_feature), bits(looked->motor_mesh->min_feature));
+}
+
+// A layout the look cannot wear is refused, naming the record, and the spec
+// is left as it was: a record after the arms (a remainder already fitted), an
+// arm that is not a tube, arms of two sizes, and a motor whose shape is not a
+// cylinder.
+TEST(BasicQuad, TheLookRefusesALayoutItCannotWear) {
+    const spade::Result<AirframeSpec> spec = spade::vehicles::basic_quad_airframe(BasicQuadParams{});
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    ASSERT_TRUE(spec->motor.shape.has_value());
+    const auto expect_unworn = [](AirframeSpec s, std::string_view needle) {
+        SCOPED_TRACE(needle);
+        const spade::Result<void> r = spade::vehicles::wear_look(s, a_look());
+        ASSERT_FALSE(r.has_value());
+        EXPECT_EQ(r.error().code, Code::invalid_argument);
+        EXPECT_TRUE(contains(r.error().context, needle)) << r.error().context;
+        EXPECT_FALSE(s.motor_mesh.has_value()) << "the spec is unchanged";
+        for (const PartInertia& part : s.parts) {
+            EXPECT_EQ(part.geometry.mesh, nullptr) << part.geometry.name << ": the spec is unchanged";
+        }
+    };
+    AirframeSpec fitted = *spec;
+    fitted.parts.push_back(fitted.parts[0]);
+    expect_unworn(fitted, "parts[5]");
+    AirframeSpec boxed = *spec;
+    boxed.parts[2].shape = PartShape::box;
+    expect_unworn(boxed, "parts[2]");
+    AirframeSpec uneven = *spec;
+    uneven.parts[4].size.x *= 2.0;
+    expect_unworn(uneven, "parts[4]");
+    AirframeSpec square = *spec;
+    square.motor.shape->shape = PartShape::box;
+    expect_unworn(square, "motor.shape");
+}

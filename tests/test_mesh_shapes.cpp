@@ -475,9 +475,47 @@ TEST(MeshShapes, ABadSpecIsRefusedByName) {
     EXPECT_TRUE(bad([](Spec& s) { s.section.chord_points = 0xFFFFFFFFu; }, "chord_points"));
 }
 
+// A shape's tensor has its shape's symmetry to rounding (L7b2): a mesh worn
+// as a mass-bearing part must not tilt a symmetric drone's principal axes.
+// The rounded box is mirror symmetric in all three axes, so its products of
+// inertia vanish; a lathe of n = 4m chords has quarter-turn symmetry about Y,
+// so its products vanish and Ixx = Izz. "Vanish" is the composite's own
+// zeroing rule (composite_inertia.cpp): at most 1e-12 of the trace, far under
+// float output. One diagonal in every rounded-box cell gave about 1e-6, and
+// ring vertices from cos32 / sin32 of each angle apart about 1e-10.
+TEST(MeshShapes, EachShapesTensorHasItsShapesSymmetry) {
+    struct Case {
+        const char* name;
+        spade::Result<sh::GeneratedMesh> made;
+        bool lathe;  // quarter-turn symmetric about Y: Ixx = Izz too
+    };
+    const std::array<Case, 4> cases{{
+        {"rounded_box", sh::rounded_box(glm::dvec3(0.18, 0.05, 0.14), 0.008, 4), false},
+        {"rounded_box, 1 segment", sh::rounded_box(glm::dvec3(0.03, 0.02, 0.05), 0.004, 1), false},
+        {"capped_tube", sh::capped_tube(0.008, 0.1, 32), true},
+        {"motor_bell", sh::motor_bell(0.014, 0.02, 0.002, 24), true},
+    }};
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.name);
+        ASSERT_OK(c.made);
+        const glm::dmat3& t = c.made->mesh->mass_properties().inertia;
+        const double trace = t[0][0] + t[1][1] + t[2][2];
+        const double tolerance = 1e-12 * trace;
+        EXPECT_LE(std::fabs(t[1][0]), tolerance) << "Ixy " << t[1][0] << " of trace " << trace;
+        EXPECT_LE(std::fabs(t[2][0]), tolerance) << "Ixz " << t[2][0] << " of trace " << trace;
+        EXPECT_LE(std::fabs(t[2][1]), tolerance) << "Iyz " << t[2][1] << " of trace " << trace;
+        if (c.lathe) {
+            EXPECT_LE(std::fabs(t[0][0] - t[2][2]), tolerance) << "Ixx - Izz of trace " << trace;
+        }
+    }
+}
+
 // The bits, pinned from MSVC; the Docker gcc leg reproduces them (TD-12). A
 // moved pin needs a named cause (TD-1): the generator, make_mesh(), or
-// sin32 / cos32.
+// sin32 / cos32. L7b2 moved all five for the generators' symmetry
+// (EachShapesTensorHasItsShapesSymmetry): a rounded box's cells split toward
+// each face's centre, and a ring of 4m chords -- a tube's, a bell's, a prop's
+// hub -- built from its first quarter by exact quarter turns.
 TEST(MeshShapes, TheShapesHashesArePinned) {
     struct Pin {
         const char* name;
@@ -487,11 +525,11 @@ TEST(MeshShapes, TheShapesHashesArePinned) {
         uint64_t hash;
     };
     const std::array<Pin, 5> pins{{
-        {"rounded_box", sh::rounded_box(glm::dvec3(0.18, 0.05, 0.14), 0.008, 4), 488, 972, 0x9b7d104776d20217ull},
-        {"capped_tube", sh::capped_tube(0.008, 0.1, 16), 130, 256, 0x35d5ca89a90b8bb0ull},
-        {"motor_bell", sh::motor_bell(0.014, 0.02, 0.002, 24), 74, 144, 0xc0f0c9eb78b3738aull},
-        {"prop ccw", sh::prop(mit_5x4(), sh::PropHand::ccw), 952, 1888, 0xba8259637c414104ull},
-        {"prop cw", sh::prop(mit_5x4(), sh::PropHand::cw), 952, 1888, 0xa02f71ec080e93dcull},
+        {"rounded_box", sh::rounded_box(glm::dvec3(0.18, 0.05, 0.14), 0.008, 4), 488, 972, 0x1d1bea82bc1ae81full},
+        {"capped_tube", sh::capped_tube(0.008, 0.1, 16), 130, 256, 0x0daa45297fbef734ull},
+        {"motor_bell", sh::motor_bell(0.014, 0.02, 0.002, 24), 74, 144, 0xf03a29362915f3f7ull},
+        {"prop ccw", sh::prop(mit_5x4(), sh::PropHand::ccw), 952, 1888, 0xf244ae80035931dcull},
+        {"prop cw", sh::prop(mit_5x4(), sh::PropHand::cw), 952, 1888, 0x4d06f5840a5162f4ull},
     }};
     for (const Pin& p : pins) {
         SCOPED_TRACE(p.name);
