@@ -10,9 +10,15 @@
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
 //              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
+//   flow_movie --video d1-hover|case ... --gpu
 //
 // --cpu draws stills on the CPU renderer, the GL views' reference; --view
 // limits stills to one view.
+//
+// --gpu steps a LiveRun film's fluid on the device (B7's GpuFluid, in the
+// Vulkan build), with no parts in the flow and the rotors held at the
+// program's one set of controls (gpu_live.hpp); its cache is <stem>-gpu, and
+// it never stops at a budget.
 //
 // The simulation keeps the solver's state every 20 frames, so a run stopped
 // by --budget-seconds or --frame-budget (exit 3), or by the box, continues
@@ -66,6 +72,9 @@
 #include "arm_pressure.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
+#ifdef SPADE_FLOW_MOVIE_GPU
+#include "gpu_live.hpp"
+#endif
 #include "live_case.hpp"
 #include "recorder.hpp"
 #include "subnormal_scan.hpp"
@@ -183,6 +192,7 @@ struct Film {
     std::shared_ptr<const LiveCase> run;
     std::shared_ptr<std::map<uint64_t, std::string>> run_labels;
     std::function<spade::Result<void>(const FrameLog&, render::RenderScene&)> decorate;
+    bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
 };
 
 [[nodiscard]] std::string fixed(double x, int decimals) {
@@ -201,7 +211,11 @@ struct Film {
 // With the build (build_identity()), what a snapshot must match to be
 // continued (Physics' and the lead's rule: never into another case or commit).
 [[nodiscard]] std::string film_identity(const Film& film) {
-    if (film.run) return film.stem + ": " + std::to_string(film.frames) + " frames of LiveRun; " + film.run->identity;
+    if (film.run) {
+        return film.stem + ": " + std::to_string(film.frames) +
+               (film.gpu ? " frames of GpuFluid, no parts, the rotors held; " : " frames of LiveRun; ") +
+               film.run->identity;
+    }
     const AirflowCase& c = film.airflow;
     return film.stem + ": " + std::to_string(film.frames) + " frames over " + std::to_string(total_steps(c)) +
            " steps of h " + fixed(c.fluid.h, 6) + " on " + std::to_string(c.shape.nx) + "x" +
@@ -1003,8 +1017,9 @@ constexpr float kVortexFloor = -5.0f;
 
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
-// RND-9), and the controls and run line in its captions.
-[[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem) {
+// RND-9), and the controls and run line in its captions. `gpu`: its fluid
+// on GpuFluid with no parts in the flow (--gpu), which its card says first.
+[[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1013,13 +1028,16 @@ constexpr float kVortexFloor = -5.0f;
     Film film;
     film.stem = std::move(stem);
     film.run = run;
+    film.gpu = gpu;
     film.frames = frames;
     film.time_unit = " s";
     film.airflow.name = run->name;
     film.airflow.t_end = static_cast<float>(run->seconds);
     film.airflow.fluid.h = run->c.time.step.value_or(1.0e-3f);
     const char* kinds[] = {"hover", "forward flight", "hover in wind"};
-    film.airflow.settings = std::string("LiveRun, the drone held at the box's centre: ") +
+    film.airflow.settings = std::string(gpu ? "the fluid on the GPU (B7's GpuFluid), NO PARTS in the flow, the "
+                                              "rotors held at their hover speed; the drone held at the box's centre: "
+                                            : "LiveRun, the drone held at the box's centre: ") +
                             kinds[static_cast<uint32_t>(run->c.flight.kind) % 3u] + " at " +
                             fixed(run->c.flight.speed, 1) + " m/s, flying " + run->program_name + " for " +
                             fixed(run->seconds, 2) + " s";
@@ -1168,9 +1186,24 @@ struct Options {
     uint32_t subnormal_locate = 0;  // --subnormal-locate N: what raises them, N steps of one run; no film
     fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
+    bool gpu = false;  // --gpu: a LiveRun film's fluid on GpuFluid, no parts (gpu_live.hpp)
 };
 
 constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continue
+
+// --gpu's frames (gpu_live.hpp), which never stop at a budget.
+[[nodiscard]] spade::Result<bool> simulate_gpu_film(const Film& film, const fs::path& cache, const CacheMark& mark) {
+#ifdef SPADE_FLOW_MOVIE_GPU
+    if (auto done = simulate_gpu(*film.run, film.frames, film.stem, cache, mark); !done) {
+        return std::unexpected(done.error());
+    }
+    return true;
+#else
+    (void)cache;
+    (void)mark;
+    return std::unexpected(spade::Error{spade::Code::unavailable, film.stem + ": --gpu needs the Vulkan build"});
+#endif
+}
 
 // d1-hover's length: D1-3's window ends 0.50 s after arming (armed at 0), and
 // the lead's floor is 0.55 s; 18 frames.
@@ -1229,15 +1262,18 @@ constexpr double kD1Seconds = 0.6;
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     }
     if (film.run && started && !finished && !fs::exists(cache / "live.save", ec)) {
-        // Stopped before its first save: nothing to continue from.
-        std::printf("[ %s ] an unfinished LiveRun cache with no save; starting it again\n", film.stem.c_str());
+        // Stopped before its first save (a --gpu film keeps none): nothing to
+        // continue from.
+        std::printf("[ %s ] an unfinished %s cache with no save; starting it again\n", film.stem.c_str(),
+                    film.gpu ? "GPU film's" : "LiveRun");
         fs::remove_all(cache, ec);
     } else if (started && !finished && theirs.build != mine.build) {
         return refuse_cache("build's unfinished simulation", theirs.build, mine.build);
     }
     if (!finished) {
-        auto done = film.run ? simulate_live(film, cache, mine, opt.budget_seconds, opt.frame_budget)
-                             : simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
+        auto done = film.gpu   ? simulate_gpu_film(film, cache, mine)
+                    : film.run ? simulate_live(film, cache, mine, opt.budget_seconds, opt.frame_budget)
+                               : simulate(film, cache, mine, opt.budget_seconds, opt.frame_budget);
         if (!done) return std::unexpected(done.error());
         if (!*done) return std::optional<std::vector<fs::path>>{};
     } else {
@@ -1403,16 +1439,32 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opt.grid = g;
+        } else if (arg == "--gpu") {
+            opt.gpu = true;
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;
         }
     }
+    if (opt.gpu) {
+#ifndef SPADE_FLOW_MOVIE_GPU
+        std::fprintf(stderr, "flow_movie: --gpu needs the Vulkan build (SPADE_VULKAN), which builds GpuFluid\n");
+        return 2;
+#else
+        const bool live = opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
+                          opt.video == "d1-hover";
+        if (!live || opt.step_time > 0u || opt.subnormal_scan > 0u || opt.subnormal_locate > 0u) {
+            std::fprintf(stderr, "flow_movie: --gpu films a LiveRun case (d1-hover, case, case-*), and only films "
+                                 "it\n");
+            return 2;
+        }
+#endif
+    }
     if (opt.video.empty()) {
         std::fprintf(stderr, "usage: flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-smoke "
                              "[--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N] [--resimulate] [--keep-cache]\n"
                              "       flow_movie --case FILE.case.yaml [--controls FILE] [--out DIR] [--seconds S] "
-                             "[--drop-cache]\n");
+                             "[--drop-cache] [--gpu]\n");
         return 2;
     }
     if (opt.out.empty()) opt.out = default_out();
@@ -1447,7 +1499,8 @@ int main(int argc, char** argv) {
         }
         auto lc = smoke  ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
                   : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
-                  : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid))
+                  : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid),
+                                        !opt.gpu)
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
         if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
@@ -1456,10 +1509,12 @@ int main(int argc, char** argv) {
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
         auto film = case_film(std::move(*lc), frames,
-                              smoke ? "case-smoke"
-                              : quad ? "case-quad"
-                              : d1   ? "d1-hover"
-                                     : "case-" + opt.case_file.stem().string());
+                              std::string(smoke ? "case-smoke"
+                                          : quad ? "case-quad"
+                                          : d1   ? "d1-hover"
+                                                 : "case-" + opt.case_file.stem().string()) +
+                                  (opt.gpu ? "-gpu" : ""),
+                              opt.gpu);
         if (!film) return fail(film.error());
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {

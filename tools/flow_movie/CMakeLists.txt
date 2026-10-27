@@ -19,7 +19,8 @@ add_executable(flow_movie
     arm_pressure.hpp
     arm_pressure.cpp
     subnormal_scan.hpp
-    subnormal_scan.cpp)
+    subnormal_scan.cpp
+    frame_check.hpp)
 target_compile_features(flow_movie PRIVATE cxx_std_23)
 # spade::analysis: the validation reel reads the V1 records through
 # Interface's one reader (TD-9).
@@ -40,6 +41,15 @@ endif()
 # from it (the release build keeps no PDB).
 if(MSVC)
     target_link_options(flow_movie PRIVATE /MAP)
+endif()
+
+# --gpu (plan B, B7's G2): a LiveRun film's fluid on GpuFluid, from the
+# airflow chain runner, which the root CMakeLists adds before this directory
+# when SPADE_VULKAN is on.
+if(TARGET spade_airflow_runner)
+    target_sources(flow_movie PRIVATE gpu_live.hpp gpu_live.cpp)
+    target_link_libraries(flow_movie PRIVATE spade_airflow_runner)
+    target_compile_definitions(flow_movie PRIVATE SPADE_FLOW_MOVIE_GPU=1)
 endif()
 
 # The smoke test: two frames of a small case through GL, ffmpeg and the
@@ -99,3 +109,26 @@ set_tests_properties(GpuFlowMovie.CaseSmokeRendersTwoFrames PROPERTIES
     SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "case-smoke: wrote"
     TIMEOUT 120)
+
+# --gpu (B7's G2): two frames of D1's no-parts film with its fluid on
+# GpuFluid, at D1's 4 mm on a 112x80x112 box that holds the rotors' discs,
+# each frame checked for a non-finite sample before it is cached; and a
+# program that leaves the hover (the case smoke's showcase) refused, since the
+# GPU film's discs never change. Skip as the smoke above does.
+if(TARGET spade_airflow_runner)
+    add_test(NAME GpuFlowMovie.GpuD1RendersTwoFrames
+        COMMAND flow_movie --video d1-hover --gpu --grid 112x80x112 --seconds 0.0667 --drop-cache
+                --out "${CMAKE_CURRENT_BINARY_DIR}/d1-gpu")
+    set_tests_properties(GpuFlowMovie.GpuD1RendersTwoFrames PROPERTIES
+        LABELS "spade;gpu"
+        SKIP_RETURN_CODE 77
+        PASS_REGULAR_EXPRESSION "steps on the GPU in .*d1-hover-gpu: wrote"
+        TIMEOUT 300)
+    add_test(NAME GpuFlowMovie.GpuRefusesAMovingProgram
+        COMMAND flow_movie --video case-smoke --gpu --simulate-only --out "${CMAKE_CURRENT_BINARY_DIR}/smoke-gpu")
+    set_tests_properties(GpuFlowMovie.GpuRefusesAMovingProgram PROPERTIES
+        LABELS "spade;gpu"
+        SKIP_RETURN_CODE 77
+        PASS_REGULAR_EXPRESSION "--gpu holds the rotors at the program's first controls"
+        TIMEOUT 120)
+endif()

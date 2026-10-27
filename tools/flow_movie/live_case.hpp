@@ -75,9 +75,11 @@ struct LiveCase {
 
 // D1's hover preview: tests/d1_case.hpp's d1_case() (the one builder flow_movie,
 // Physics' B7 and Test/Docs' harness share), as a film. `grid` replaces
-// kD1Grid, for a measurement.
+// kD1Grid, for a measurement. Without `parts_in_flow`, the parts are drawn
+// only, and the film's title and card say "no parts" (--gpu, B7's G2).
 using spade::testing::kD1Grid;
 [[nodiscard]] spade::Result<LiveCase> d1_live_case(double seconds,
-                                                   const spade::physics::airflow::GridShape& grid = kD1Grid);
+                                                   const spade::physics::airflow::GridShape& grid = kD1Grid,
+                                                   bool parts_in_flow = true);
 
 }  // namespace flow_movie
