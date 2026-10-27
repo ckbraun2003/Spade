@@ -270,13 +270,14 @@ TEST(B7AcceptanceRecord, ThePhysicalCheckBoundsTheFlowAbove) {
     run.c.steps = 2;
     run.c.cpu_peak = 88.7;
     run.bound = 55.1;
-    EXPECT_EQ(physical_line(run, "known-open (Physics' cause pending)").rfind(
-                  "physical: FAIL, known-open (Physics' cause pending): the CPU's largest |u|, |v| or |w| over steps "
-                  "1 to 2 = 88.7 m/s against 55.1 m/s (4 x (2 v_h + the wind))",
-                  0),
+    const std::string open = "known-open: D1 without solids, plan A's top-face blow-up (Physics' triage 1)";
+    EXPECT_EQ(physical_line(run, open).rfind("physical: FAIL, " + open +
+                                                 "; the CPU's largest |u|, |v| or |w| over steps 1 to 2 = 88.7 m/s "
+                                                 "against 55.1 m/s (4 x (2 v_h + the wind))",
+                                             0),
               0u)
-        << physical_line(run, "known-open (Physics' cause pending)");
+        << physical_line(run, open);
     run.c.cpu_peak = 5.0;
     run.physical = true;
-    EXPECT_EQ(physical_line(run).rfind("physical: PASS: ", 0), 0u) << physical_line(run);
+    EXPECT_EQ(physical_line(run).rfind("physical: PASS; ", 0), 0u) << physical_line(run);
 }

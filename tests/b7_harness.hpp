@@ -814,12 +814,13 @@ struct B7Run {
 };
 
 // The physical check's own line, after the block (not a record measure): a
-// FAIL the lead has named known-open says so (`known_open`, its reason).
+// FAIL the lead has named known-open says so (`known_open`, naming its own
+// item, so one fix can't close another's line by accident).
 [[nodiscard]] inline std::string physical_line(const B7Run& run, const std::string& known_open = {}) {
     const std::string open = known_open.empty() ? std::string() : ", " + known_open;
     return airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n,
-                             "physical: %s%s: the CPU's largest |u|, |v| or |w| over steps 1 to %u = %.4g m/s against "
+                             "physical: %s%s; the CPU's largest |u|, |v| or |w| over steps 1 to %u = %.4g m/s against "
                              "%.4g m/s (%.0f x (2 v_h + the wind))\n",
                              run.physical ? "PASS" : "FAIL", open.c_str(), run.c.steps, run.c.cpu_peak, run.bound,
                              kPhysicalFactor);

@@ -96,8 +96,11 @@ class GpuFluidStepper : public FluidStepper {
 
 // D1 without its solids diverges on the CPU itself (2026-10-27), and GpuFluid
 // follows it bit for bit: its physical line is printed, not asserted, until
-// Physics fixes the cause (the lead).
-constexpr const char* kD1KnownOpen = "known-open (Physics' cause pending)";
+// Physics fixes the cause (the lead). The real D1 at G3 gets its own item,
+// "known-open: D1 disc-plane face growth (Physics' triage 2)", so one fix
+// can't close the other's line.
+constexpr const char* kD1KnownOpen =
+    "known-open: D1 without solids, plan A's top-face blow-up (Physics' triage 1)";
 
 // The harness on `box` with GpuFluid under `plan`: the block printed and read
 // back, the values bit-equal over the plan's steps, the discs moving the air
