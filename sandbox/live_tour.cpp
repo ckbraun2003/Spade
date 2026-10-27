@@ -101,15 +101,16 @@ constexpr std::array kSteps = {
     StepName{"editor", "world"},         StepName{"editor", "conflict"},
     StepName{"editor", "views"},         StepName{"editor", "save"},
     StepName{"editor", "library"},       StepName{"editor", "add_drone"},
-    StepName{"editor", "add_objects"},   StepName{"editor", "fly"},
+    StepName{"editor", "airflow"},       StepName{"editor", "add_objects"},
+    StepName{"editor", "fly"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 11> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 12> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
-                                                         "editor_part",     "editor_drone"};
+                                                         "editor_part",     "editor_drone",    "editor_airflow"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -1351,6 +1352,43 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const end_goal::Verdict rests = end_goal::placed_at(p);
         s.check(rests.ok, "placed-at", rests.detail);
         command(editor::Command::undo);
+        then(10);
+    });
+
+    // INT-15 (T3): Run air on the library's quad, placed as add_drone places
+    // it and given an airflow region, the Pilot section arming it. The
+    // worker's frames reach the view, which draws the streamlines and, once
+    // there are any, the vortex cores around the drone (§5's default view).
+    // At 32^3 a frame of air takes about a second of wall time: the step
+    // waits for kAirFrames of them (a minute at most). Stopped and undone after.
+    t.step("editor", "airflow", [&] {
+        if (!open()) return;
+        constexpr uint64_t kAirFrames = 12;  // 0.4 s of air
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        arm("Reference quad (test fixture)");
+        click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
+        const std::string quad = w().panels().selection.name;
+        if (!s.check(!quad.empty() && model_of(quad) != nullptr, "placed", w().panels().status)) return;
+        w().panels().pending.push_back(editor::AddAirflowRegion{quad});
+        w().apply_panels();
+        if (!s.check(!scene_now().airflow.empty(), "region", w().panels().status)) return;
+        command(editor::Command::run_air);
+        if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
+        w().panels().pilot.controls = analysis::Controls{true, 0.6f, 0.0f, 0.0f, 0.0f};
+        std::shared_ptr<const editor::AirFrame> frame;
+        for (int i = 0; i < 3600; ++i) {
+            then(1);
+            frame = w().air() != nullptr ? w().air()->latest() : nullptr;
+            if (frame && (!frame->error.empty() || frame->frames >= kAirFrames)) break;
+        }
+        s.check(frame && frame->error.empty() && frame->frames >= kAirFrames, "publishes",
+                !frame ? "no frame handed over" : !frame->error.empty() ? frame->error
+                                                                         : std::to_string(frame->frames) + " frames");
+        then(5);
+        t.snapshot("editor_airflow");
+        command(editor::Command::stop);
+        command(editor::Command::undo);  // the region
+        command(editor::Command::undo);  // the drone
         then(10);
     });
 

@@ -338,6 +338,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         w.panels().air_band =
             air_frame_ ? air_frame_->run_label + " \xc2\xb7 " + air_speed_.line() : air_speed_.line();  // a middle dot
     }
+    // Run air's default view (§5): the vortex cores (once there are any) and
+    // streamlines seeded under each disc, over the chosen base, as the tour's
+    // airflow chapter draws them; no flow layers once the air stops.
+    view_.spec.layers = air_frame_ ? airflow::airflow_view(air_frame_->volume, air_frame_->probes,
+                                                           air_frame_->speed_top)
+                                         .layers
+                                   : std::vector<render::FlowViewSpec>{};
     // The view's mode into the scene and options, and the menu for its
     // backend and inputs (N19), with Run air's volume when there is one.
     last_view_ = ViewDrawn{};

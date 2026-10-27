@@ -174,6 +174,7 @@ struct AirFrame {
     std::vector<end_goal::RotorProbe> probes;
     std::string run_label;
     std::string pressure_line;
+    float speed_top = 1.0f;  // the colour scale's top: twice the hover's induced speed (airflow::speed_top())
     std::string error;  // "" while the air runs; else why it stopped, in the last frame
 };
 #if defined(_MSC_VER)
@@ -210,7 +211,9 @@ class AirflowRun {
         Result<analysis::LiveRun> run = analysis::LiveRun::start(*resolved, *model);
         if (!run) return std::unexpected(detail::air_refusal(region, run.error().context));
         if (prepare) prepare(*run);
-        std::unique_ptr<AirflowRun> out(new AirflowRun(std::move(*run), drone->vehicle->start.pos, std::move(program)));
+        const float top = airflow::speed_top(*model, region.density, 9.80665f);
+        std::unique_ptr<AirflowRun> out(
+            new AirflowRun(std::move(*run), drone->vehicle->start.pos, top, std::move(program)));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -241,8 +244,8 @@ class AirflowRun {
     }
 
   private:
-    AirflowRun(analysis::LiveRun run, glm::vec3 at, std::optional<analysis::ControlProgram> program)
-        : run_(std::move(run)), at_(at), program_(std::move(program)) {}
+    AirflowRun(analysis::LiveRun run, glm::vec3 at, float speed_top, std::optional<analysis::ControlProgram> program)
+        : run_(std::move(run)), at_(at), speed_top_(speed_top), program_(std::move(program)) {}
 
     void work(const std::stop_token& stop) noexcept {
         try {
@@ -296,6 +299,7 @@ class AirflowRun {
         frame->probes = airflow::probes_of(run_);
         for (end_goal::RotorProbe& p : frame->probes) p.hub += at_;
         frame->run_label = run_.run_label();
+        frame->speed_top = speed_top_;
         frame->pressure_line = run_.pressure_line();
         std::shared_ptr<const AirFrame> done = std::move(frame);
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -312,6 +316,7 @@ class AirflowRun {
 
     analysis::LiveRun run_;  // the worker's alone once it starts
     glm::vec3 at_;
+    float speed_top_;
     std::optional<analysis::ControlProgram> program_;
     FlowVolume scratch_;  // advance_frame()'s, the worker's
     mutable std::mutex mutex_;
