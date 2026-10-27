@@ -15,6 +15,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -173,6 +174,7 @@ struct AirFrame {
     std::vector<end_goal::RotorProbe> probes;
     std::string run_label;
     std::string pressure_line;
+    float speed_top = 1.0f;  // the colour scale's top: twice the hover's induced speed (airflow::speed_top())
     std::string error;  // "" while the air runs; else why it stopped, in the last frame
 };
 #if defined(_MSC_VER)
@@ -209,7 +211,9 @@ class AirflowRun {
         Result<analysis::LiveRun> run = analysis::LiveRun::start(*resolved, *model);
         if (!run) return std::unexpected(detail::air_refusal(region, run.error().context));
         if (prepare) prepare(*run);
-        std::unique_ptr<AirflowRun> out(new AirflowRun(std::move(*run), drone->vehicle->start.pos, std::move(program)));
+        const float top = airflow::speed_top(*model, region.density, 9.80665f);
+        std::unique_ptr<AirflowRun> out(
+            new AirflowRun(std::move(*run), drone->vehicle->start.pos, top, std::move(program)));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -240,8 +244,8 @@ class AirflowRun {
     }
 
   private:
-    AirflowRun(analysis::LiveRun run, glm::vec3 at, std::optional<analysis::ControlProgram> program)
-        : run_(std::move(run)), at_(at), program_(std::move(program)) {}
+    AirflowRun(analysis::LiveRun run, glm::vec3 at, float speed_top, std::optional<analysis::ControlProgram> program)
+        : run_(std::move(run)), at_(at), speed_top_(speed_top), program_(std::move(program)) {}
 
     void work(const std::stop_token& stop) noexcept {
         try {
@@ -295,6 +299,7 @@ class AirflowRun {
         frame->probes = airflow::probes_of(run_);
         for (end_goal::RotorProbe& p : frame->probes) p.hub += at_;
         frame->run_label = run_.run_label();
+        frame->speed_top = speed_top_;
         frame->pressure_line = run_.pressure_line();
         std::shared_ptr<const AirFrame> done = std::move(frame);
         const std::lock_guard<std::mutex> lock(mutex_);
@@ -311,6 +316,7 @@ class AirflowRun {
 
     analysis::LiveRun run_;  // the worker's alone once it starts
     glm::vec3 at_;
+    float speed_top_;
     std::optional<analysis::ControlProgram> program_;
     FlowVolume scratch_;  // advance_frame()'s, the worker's
     mutable std::mutex mutex_;
@@ -334,6 +340,38 @@ inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64
     ++cache.resolves;
     return cache;
 }
+
+// The band's speed (§9): simulated time over wall time across the last few
+// frames handed over, as the window saw them ("air at 1/30 speed"). The wall
+// clock is the caller's (the sandbox's steady_clock), never the run's.
+class AirSpeed {
+  public:
+    // A frame seen at `wall_s`; one seen before (the same count) is ignored.
+    void frame(uint64_t frames, double t_s, double wall_s) {
+        if (!samples_.empty() && frames <= samples_.back().frames) return;
+        samples_.push_back(Sample{frames, t_s, wall_s});
+        if (samples_.size() > kWindow) samples_.pop_front();
+    }
+
+    [[nodiscard]] std::string line() const {
+        if (samples_.empty()) return "waiting for the air's first frame";
+        const double sim = samples_.back().t_s - samples_.front().t_s;
+        const double wall = samples_.back().wall_s - samples_.front().wall_s;
+        if (samples_.size() < 2 || !(wall > 0.0) || !(sim > 0.0)) return "the air is starting";
+        const double ratio = sim / wall;
+        if (ratio >= 1.0) return "air at full speed";
+        return std::format("air at 1/{:.0f} speed", 1.0 / ratio);
+    }
+
+  private:
+    struct Sample {
+        uint64_t frames = 0;
+        double t_s = 0.0;
+        double wall_s = 0.0;
+    };
+    static constexpr std::size_t kWindow = 8;
+    std::deque<Sample> samples_;
+};
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
 // in its own colour, not an axis's).

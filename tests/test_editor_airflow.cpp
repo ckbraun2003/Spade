@@ -285,3 +285,22 @@ TEST(EditorAirflow, TheInspectorsLineResolvesOncePerSceneState) {
     EXPECT_TRUE(refused.refused);
     EXPECT_EQ(refused.text, ed::region_line(turned, turned.airflow.back()));
 }
+
+// The band's speed (§9): simulated time over wall time across the last few
+// frames handed over, "air at 1/30 speed"; a frame seen again counts once.
+TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
+    ed::AirSpeed speed;
+    EXPECT_EQ(speed.line(), "waiting for the air's first frame");
+    speed.frame(1, 1.0 / 30.0, 10.0);
+    EXPECT_EQ(speed.line(), "the air is starting");
+    speed.frame(2, 2.0 / 30.0, 11.0);
+    EXPECT_EQ(speed.line(), "air at 1/30 speed");
+    speed.frame(2, 2.0 / 30.0, 11.4);  // the same frame, read again by the next displayed frame
+    EXPECT_EQ(speed.line(), "air at 1/30 speed");
+    speed.frame(3, 3.0 / 30.0, 11.6);
+    EXPECT_EQ(speed.line(), "air at 1/24 speed");
+    ed::AirSpeed fast;
+    fast.frame(1, 0.5, 1.0);
+    fast.frame(2, 1.5, 2.0);
+    EXPECT_EQ(fast.line(), "air at full speed");
+}

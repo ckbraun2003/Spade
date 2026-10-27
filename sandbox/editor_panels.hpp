@@ -42,9 +42,10 @@ struct Selection {
 // The toolbar and the menus. Open and Save As use EditorPanels::path.
 // Save to library saves the selection (EDT-020).
 // arm and level act on the pilot (N17): arm toggles arming, level levels the
-// tilt setpoint.
+// tilt setpoint. run_air runs the selected drone's airflow region (INT-15);
+// stop ends either run.
 enum class Command { run, stop, pause, resume, step, undo, redo, save, save_as, open, load_item, save_to_library,
-                     arm, level, import_parts };
+                     arm, level, import_parts, run_air };
 
 struct HierarchyRow {
     Selection target;
@@ -81,11 +82,16 @@ struct EditorPanels {
     // (moved by every edit, undo and redo).
     uint64_t scene_opened = 0;
     uint64_t scene_serial = 0;
+    // While Run air runs (INT-15): its speed, then its run label, which the
+    // command bar shows in place of the tick, elided at the label's end
+    // before Save and File would leave the bar; the session fills it.
+    std::string air_band;
     AirLineCache air_line;  // kept by the panels between frames
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
     std::string title;                        // the scene file's name, " *" when anything is unsaved
     bool running = false;
+    bool air = false;  // Run air runs: Pause and Step are a Run's, off
     bool paused = false;
     uint64_t tick = 0;
     bool can_undo = false;

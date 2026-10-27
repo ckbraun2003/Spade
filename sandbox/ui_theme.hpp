@@ -249,17 +249,19 @@ inline bool begin_graded_properties(const char* id) {
 // inspector's values ran off it). Every property table's cell text goes
 // through here (UiConventions). Dim for a label or a grade, warning for an
 // assumed one. The caller shows the whole text on hover when it matters.
+// `max_width` ends it sooner, for text that must leave room after it on a
+// line (the toolbar's band and legend).
 enum class Tone { normal, dim, warning };
 
-inline void cell_text(std::string_view text, Tone tone = Tone::normal) {
+inline void cell_text(std::string_view text, Tone tone = Tone::normal, float max_width = FLT_MAX) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (window->SkipItems) return;
     const char* begin = text.data();
     const char* end = text.data() + text.size();
     const ImVec2 size = ImGui::CalcTextSize(begin, end);
     const ImVec2 at(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
-    const float right =
-        std::min(window->DC.CursorPos.x + std::max(ImGui::GetContentRegionAvail().x, 0.0f), window->InnerClipRect.Max.x);
+    const float right = std::min(window->DC.CursorPos.x + std::max(std::min(ImGui::GetContentRegionAvail().x, max_width), 0.0f),
+                                 window->InnerClipRect.Max.x);
     const float width = std::max(std::min(size.x, right - at.x), 0.0f);
     const ImRect box(at, ImVec2(at.x + width, at.y + size.y));
     ImGui::ItemSize(ImVec2(width, size.y), 0.0f);

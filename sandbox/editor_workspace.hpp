@@ -40,6 +40,7 @@
 #include "builtin_records.hpp"
 #include "core/error.hpp"
 #include "drone_view.hpp"
+#include "editor_airflow.hpp"
 #include "editor_document.hpp"
 #include "editor_files.hpp"
 #include "editor_import.hpp"
@@ -115,6 +116,8 @@ class EditorWorkspace {
     [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
     [[nodiscard]] const EditorRun* run() const noexcept { return run_ ? &*run_ : nullptr; }
+    // Run air's (INT-15): the region's air on its worker; none when stopped.
+    [[nodiscard]] const AirflowRun* air() const noexcept { return air_.get(); }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }
     [[nodiscard]] const BuiltinRecords& records() const noexcept { return records_; }
     // Changes whenever composed() does.
@@ -194,13 +197,14 @@ class EditorWorkspace {
     // flies a drone. Called every frame, with no keys held when ImGui has the
     // keyboard, so a released arrow levels the drone.
     void pilot_keys(const flight::PilotKeys& keys, float dt) {
-        if (!run_ || panels_.pilot.vehicle.empty()) return;
+        if ((!run_ && !air_) || panels_.pilot.vehicle.empty()) return;
         flight::apply_pilot_keys(keys, dt, panels_.pilot.controls);
     }
 
     // Steps the run by `dt` seconds of whole built-in steps, the remainder
     // carried, while it runs and is not paused.
     void advance(float dt) {
+        if (air_) air_->set_controls(panels_.pilot.controls);  // the worker reads them at its next frame
         if (!run_ || paused_ || !(dt > 0.0f) || !std::isfinite(dt)) return;
         carry_ns_ += static_cast<uint64_t>(std::llround(static_cast<double>(dt) * 1e9));
         const uint64_t steps = carry_ns_ / kBuiltinStepNs;
@@ -219,7 +223,8 @@ class EditorWorkspace {
         panels_.records = &records_;
         const std::string file = docs_.scene.path.empty() ? std::string("untitled") : docs_.scene.path.filename().string();
         panels_.title = file + (docs_.scene.dirty() || docs_.world.dirty() ? " *" : "");
-        panels_.running = run_.has_value();
+        panels_.running = run_.has_value() || air_ != nullptr;
+        panels_.air = air_ != nullptr;
         panels_.paused = paused_;
         panels_.tick = run_ ? run_->tick() : 0u;
         panels_.can_undo = !undo_.empty();
@@ -476,6 +481,13 @@ class EditorWorkspace {
     }
 
     void after_change() {
+        // The air's drone was placed where the scene had it at Run air: a
+        // change stops it (a Run carries edits; the air can't).
+        if (air_) {
+            air_.reset();
+            panels_.pilot = PilotPanel{};
+            panels_.status = "the air stopped: the scene changed; Run air again";
+        }
         if (Result<void> composed = recompose(); !composed) {
             panels_.status = composed.error().context;
             return;
@@ -519,6 +531,38 @@ class EditorWorkspace {
         panels_.selection = Selection{Selection::Kind::object, *placed};
     }
 
+    // Run air (INT-15, D1): the selected drone's follow region, else the
+    // scene's first, on its worker; the drone held and flown by the Pilot
+    // section, the rest of the scene not simulated. Refused, naming why.
+    void run_air() {
+        if (air_) return;
+        if (run_) {
+            panels_.status = "Run air: the scene is running; Stop it first";
+            return;
+        }
+        const scene::SceneDesc& s = docs_.scene.desc();
+        const scene::SceneAirflowRegion* region = nullptr;
+        for (const scene::SceneAirflowRegion& r : s.airflow) {
+            if (r.kind != scene::AirflowKind::follow) continue;
+            const bool selected = panels_.selection.kind == Selection::Kind::object && r.follows == panels_.selection.name;
+            if (selected || region == nullptr) region = &r;
+            if (selected) break;
+        }
+        if (region == nullptr) {
+            panels_.status = "Run air: no drone here has an airflow region; select a drone and Add airflow region";
+            return;
+        }
+        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region);
+        if (!started) {
+            panels_.status = started.error().context;
+            return;
+        }
+        air_ = std::move(*started);
+        panels_.pilot = PilotPanel{};
+        panels_.pilot.vehicle = region->follows;
+        panels_.status.clear();
+    }
+
     // N17: the selection when it is a drone Run flies, else the first one;
     // disarmed, level, throttle 0. When none is flown, why.
     void choose_pilot() {
@@ -551,6 +595,10 @@ class EditorWorkspace {
     void command(Command c) {
         switch (c) {
             case Command::run:
+                if (air_) {
+                    panels_.status = "Run: the air is running; Stop it first";
+                    return;
+                }
                 if (!run_) {
                     Result<EditorRun> started = EditorRun::start(docs_.scene.desc(), docs_.world.desc(), records_);
                     if (!started) {
@@ -563,13 +611,17 @@ class EditorWorkspace {
                 }
                 paused_ = false;
                 return;
+            case Command::run_air: run_air(); return;
             case Command::stop:
+                air_.reset();  // joins the worker: at most one step
                 run_.reset();
                 panels_.pilot = PilotPanel{};
                 paused_ = false;
                 carry_ns_ = 0;
                 return;
-            case Command::pause: paused_ = true; return;
+            case Command::pause:
+                if (!air_) paused_ = true;  // a Run's; the air runs on
+                return;
             case Command::resume: paused_ = false; return;
             case Command::step:
                 if (run_) step_run(kStepTicks);
@@ -832,6 +884,7 @@ class EditorWorkspace {
 
     OpenedScene docs_;
     uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
+    std::unique_ptr<AirflowRun> air_;  // Run air's worker; reset (joined) by Stop and by a change
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
     std::vector<render::FallbackMesh> fallback_meshes_;  // N11: what Save copies beside the scene

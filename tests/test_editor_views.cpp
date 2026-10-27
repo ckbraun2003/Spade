@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/vec3.hpp>
@@ -337,4 +338,24 @@ TEST(EditorViews, AFlowLegendShowsItsScaleAndWhatItMayClaim) {
     const LegendLine s = legend_line(speed);
     EXPECT_EQ(s.scale, "speed |u| 0 to 9.96 m/s");
     EXPECT_TRUE(s.note.empty());
+}
+
+// The toolbar shows a scale once (the lead, 2026-10-27): Run air's
+// streamlines and vortex cores share the speed's scale, which read twice and
+// pushed Save and File off the bar. The same scale with another note still
+// shows, so no note is lost.
+TEST(EditorViews, LayersSharingAScaleShowItOnce) {
+    spade::render::ViewLegend lines;
+    lines.quantity = "speed |u|";
+    lines.unit = "m/s";
+    lines.range.min = 0.0f;
+    lines.range.max = 5.37f;
+    const spade::render::ViewLegend cores = lines;
+    spade::render::ViewLegend noted = lines;
+    noted.note = "seeded where the flow is, not where the walls are";
+    const std::vector<LegendLine> shown = legend_lines({lines, cores, noted});
+    ASSERT_EQ(shown.size(), 2u);
+    EXPECT_EQ(shown[0].scale, "speed |u| 0 to 5.37 m/s");
+    EXPECT_TRUE(shown[0].note.empty());
+    EXPECT_EQ(shown[1].note, noted.note);
 }

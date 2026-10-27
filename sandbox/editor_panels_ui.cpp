@@ -164,11 +164,39 @@ void toolbar(ed::EditorPanels& p) {
         ImGui::SameLine();
     };
     press(p.running ? "Stop" : "Run", p.running ? ed::Command::stop : ed::Command::run);
-    press(p.paused ? "Resume" : "Pause", p.paused ? ed::Command::resume : ed::Command::pause, p.running);
-    press("Step", ed::Command::step, p.running);
+    press("Run air", ed::Command::run_air, !p.running);
+    press(p.paused ? "Resume" : "Pause", p.paused ? ed::Command::resume : ed::Command::pause, p.running && !p.air);
+    press("Step", ed::Command::step, p.running && !p.air);
+    // The bar keeps to one line with Save, File and the scene's name on it
+    // (the lead, 2026-10-27): Run air's band yields first (its speed leads,
+    // its run label is elided), then the flow legend; each whole on hover.
+    // The middle (Undo through the base's legend) is last frame's width.
+    static float middle = 0.0f;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const auto button_width = [&style](const char* label) { return ImGui::CalcTextSize(label).x + 2.0f * style.FramePadding.x; };
+    const float trailing = 4.0f * ui::kBase + button_width("Save") + style.ItemSpacing.x + button_width("File") +
+                           6.0f * ui::kBase + ImGui::CalcTextSize(p.title.c_str()).x;
+    constexpr const char* kClaim = "(what it may claim)";
+    const std::vector<ed::LegendLine> legends = ed::legend_lines(p.legends);
+    float legend_width = 0.0f;
+    for (const ed::LegendLine& line : legends) {
+        legend_width += ImGui::CalcTextSize(line.scale.c_str()).x + style.ItemSpacing.x;
+        if (!line.note.empty()) legend_width += ImGui::CalcTextSize(kClaim).x + style.ItemSpacing.x;
+    }
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
+    if (p.air_band.empty()) {
+        ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
+    } else {
+        const float room =
+            ImGui::GetContentRegionAvail().x - 6.0f * ui::kBase - middle - legend_width - trailing;
+        ui::cell_text(p.air_band, ui::Tone::dim, std::max(room, 0.0f));
+        if (ImGui::BeginItemTooltip()) {
+            ImGui::TextUnformatted(p.air_band.c_str());
+            ImGui::EndTooltip();
+        }
+    }
     ImGui::SameLine(0.0f, 6.0f * ui::kBase);
+    const float middle_from = ImGui::GetCursorPosX();
     press("Undo", ed::Command::undo, p.can_undo);
     press("Redo", ed::Command::redo, p.can_redo);
     ImGui::SameLine(0.0f, 4.0f * ui::kBase);
@@ -238,15 +266,23 @@ void toolbar(ed::EditorPanels& p) {
             ImGui::TextDisabled("%s: %s", legend.quantity.c_str(), legend.key.c_str());
             ImGui::SameLine();
         }
-        // Each flow layer's legend: its scale, then what its colour may claim
-        // (ViewLegend::note) under a marker whose tooltip reads it verbatim,
-        // so the toolbar stays one line.
-        for (const render::ViewLegend& layer : p.legends) {
-            const ed::LegendLine line = ed::legend_line(layer);
-            ImGui::TextDisabled("%s", line.scale.c_str());
+        middle = ImGui::GetCursorPosX() - middle_from;
+        // Each flow layer's legend, a scale shared by layers once: its
+        // scale, then what its colour may claim (ViewLegend::note) under a
+        // marker whose tooltip reads it verbatim, so the toolbar stays one
+        // line; elided short of Save, File and the scene's name.
+        for (const ed::LegendLine& line : legends) {
+            const float room = ImGui::GetContentRegionAvail().x - trailing;
+            if (room <= 0.0f) break;
+            ui::cell_text(line.scale, ui::Tone::dim, room);
+            if (ImGui::BeginItemTooltip()) {
+                ImGui::TextUnformatted(line.scale.c_str());
+                ImGui::EndTooltip();
+            }
             ImGui::SameLine();
             if (line.note.empty()) continue;
-            ImGui::TextDisabled("(what it may claim)");
+            if (ImGui::GetContentRegionAvail().x - trailing < ImGui::CalcTextSize(kClaim).x) break;
+            ImGui::TextDisabled("%s", kClaim);
             if (ImGui::BeginItemTooltip()) {
                 ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
                 ImGui::TextUnformatted(line.note.c_str());
