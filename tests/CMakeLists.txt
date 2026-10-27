@@ -299,6 +299,9 @@ add_executable(spade_tests
 # test_gpu_airflow_solids.cpp (plan B, B5): the solids projection's kernels
 # against projection.cpp, pcg.cpp and reduce.cpp, GpuAirflowSolids* on the
 # device; AirflowSolidsChain (the packer, the pcg block) on the host.
+# test_gpu_live_fluid.cpp (B7's seam, slice 2): LiveRun's fluid on GpuFluid
+# (spike/airflow/live_fluid.hpp) against its CPU run, GpuLiveFluid* on the
+# device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -319,6 +322,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_viscous.cpp
         test_gpu_airflow_solids.cpp
         test_gpu_airflow_step.cpp
+        test_gpu_live_fluid.cpp
     )
 endif()
 
