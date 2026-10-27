@@ -14,25 +14,32 @@
 //                        frame_fault(): the bound, ten times the expected
 //                        speed and at least ten; a solid interior's no-data
 //                        passes and a poisoned fluid cell beside it doesn't;
-//                        a frame without an expected speed is refused.
+//                        a frame without an expected speed is refused;
+//                        write_frame() caches a frame that passes and refuses
+//                        one that doesn't, unwritten, naming its frame and
+//                        step.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "../tools/flow_movie/cache.hpp"
 #include "../tools/flow_movie/frame_check.hpp"
 #include "core/fp16.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
+#include "unique_temp.hpp"
 
 namespace {
 
 namespace af = spade::physics::airflow;
+namespace fs = std::filesystem;
 using flow_movie::FastestCell;
 using flow_movie::fastest_cell;
 using flow_movie::first_non_finite;
@@ -189,6 +196,34 @@ TEST(FlowMovieFrameCheck, ASolidInteriorsNoDataPassesAndAPoisonedCellBesideItDoe
     EXPECT_NE(why.find(" past the 64 its parts' interior publishes as no data: the fluid went NaN"),
               std::string::npos)
         << why;
+}
+
+// A film's first frame, still air, passes and is cached; its second, a cell
+// at 100 m/s in a 5 m/s case, is refused before anything is written, naming
+// its frame (counted from 1), the step it was published after and why.
+TEST(FlowMovieFrameCheck, WriteFrameCachesAPassingFrameAndRefusesAFaultUnwritten) {
+    spade::FlowVolume f;
+    f.header.nx = 3;
+    f.header.ny = 2;
+    f.header.nz = 2;
+    const std::size_t halves = 3u * 2u * 2u * spade::kFlowHalvesPerCell;
+    f.v.assign(halves, 0x0000u);
+    f.s.assign(halves, 0x0000u);
+    const spade::test::TempDir dir("frame_check_cache");
+    const FrameBound bound{.expected_speed = 5.0f};
+    const flow_movie::FrameLog first{.step = 120, .time = 0.25, .live = {}};
+    ASSERT_TRUE(flow_movie::write_frame(dir.path(), 0, f, first, bound).has_value());
+    f.v[at(2, 1, 0, spade::kFlowU)] = spade::fp16::from_f32(100.0f).bits;
+    const flow_movie::FrameLog second{.step = 240, .time = 0.5, .live = {}};
+    const spade::Result<void> refused = flow_movie::write_frame(dir.path(), 1, f, second, bound);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::internal);
+    EXPECT_EQ(refused.error().context,
+              "frame 2, after step 240 (t 0.500000): max |v| 100.0 at cell (2, 1, 0), past the bound 50.0 (10 x the "
+              "case's expected top speed, 5.00): the flow blew up; the frame is not cached and the film stops");
+    EXPECT_EQ(flow_movie::cached_frames(dir.path()), 1u);
+    EXPECT_FALSE(fs::exists(dir.path() / "frame-00001.bin"));
+    EXPECT_FALSE(fs::exists(dir.path() / "frame.tmp")) << "nothing begun";
 }
 
 }  // namespace
