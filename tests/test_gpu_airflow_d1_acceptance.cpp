@@ -290,7 +290,18 @@ void tally_field(Comparison& c, uint32_t step, const char* field, const std::vec
     }
 }
 
+// The fault first (Physics' review): a step that faults on one side reads at
+// that step even when both counts agree. Its quantity, faces and index count
+// only where either side faulted.
 void tally_health(Comparison& c, uint32_t step, const FluidHealth& cpu, const FluidHealth& cand) {
+    tally(c, step, "fault", 0, cpu.fault != cand.fault, cpu.fault != cand.fault ? 1.0 : 0.0);
+    if (cpu.fault != FluidFault::none || cand.fault != FluidFault::none) {
+        tally(c, step, "fault quantity", 0, cpu.quantity != cand.quantity, cpu.quantity != cand.quantity ? 1.0 : 0.0);
+        tally(c, step, "fault faces", 0, cpu.faces != cand.faces, cpu.faces != cand.faces ? 1.0 : 0.0);
+        tally(c, step, "fault index", 0, cpu.index != cand.index, cpu.index != cand.index ? 1.0 : 0.0);
+    }
+    tally(c, step, "unconverged", 0, cpu.unconverged != cand.unconverged,
+          cpu.unconverged != cand.unconverged ? 1.0 : 0.0);
     tally(c, step, "pressure_iterations", 0, cpu.pressure_iterations != cand.pressure_iterations,
           std::fabs(static_cast<double>(cand.pressure_iterations) - static_cast<double>(cpu.pressure_iterations)));
     tally(c, step, "pressure_residual", 0, bits_differ(cpu.pressure_residual, cand.pressure_residual),
@@ -566,7 +577,9 @@ TEST(B7Acceptance, TheCpuStandInIsBitEqualToTheCpu) {
     EXPECT_EQ(record->at(0).measures[0].verdict, an::Verdict::within);
     EXPECT_EQ(record->at(0).measures[1].verdict, an::Verdict::within);
     const MacGrid& g = box->grid;
-    const uint64_t per_step = g.u.size() + g.v.size() + g.w.size() + g.p.size() + 4u + 6u;
+    // Health: the fault, unconverged and the four counts (no fault, so not its
+    // details); the wall load's 6 components.
+    const uint64_t per_step = g.u.size() + g.v.size() + g.w.size() + g.p.size() + 6u + 6u;
     EXPECT_EQ(run->c.compared, kComparedSteps * per_step);
     EXPECT_EQ(run->c.differing, 0u);
     EXPECT_GT(run->c.solids_compared, 0u);
