@@ -50,6 +50,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -74,8 +75,11 @@
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/basic_quad.hpp"
 #include "vehicles/model_type.hpp"
+#include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_flags.hpp"
 #include "vehicles/propulsion_steady.hpp"
+#include "world/mesh.hpp"
+#include "world/mesh_shapes.hpp"
 
 namespace {
 
@@ -1249,5 +1253,153 @@ TEST(LibraryDrones, BasicQuadCompetitionCarriesKatsProvenance) {
         const bool named = std::any_of(sources->not_carried.begin(), sources->not_carried.end(),
                                        [&](const std::string& n) { return n.starts_with(prefix); });
         EXPECT_TRUE(named) << "not_carried names " << key;
+    }
+}
+
+// ===========================================================================
+// The props (L7c1 of the realistic drones plan, docs/design/core/plans/
+// 2026-10-26-l7-realistic-drones-draft.md): every hub wears its prop, drawn
+// still until L7c2.
+// ===========================================================================
+
+namespace {
+
+// The props' mesh rows, every drone's, each graded assumed (the plan's
+// global constraint: a mesh parameter no source gives is a row).
+constexpr std::array<std::string_view, 8> kPropRows{
+    "meshes.prop.camber",       "meshes.prop.camber_at",   "meshes.prop.thickness_root", "meshes.prop.thickness_tip",
+    "meshes.prop.chord_points", "meshes.prop.hub_gap",     "meshes.prop.hub_height",     "meshes.prop.hub_segments"};
+
+}  // namespace
+
+// Every hub wears the prop of its own hand: prop[k] on rotor k, in the hub's
+// frame at psi = 0 (an identity mount: the disc in the rotor plane), one
+// mesh per hand -- ccw on every +1 rotor, cw on every -1 rotor -- the cw the
+// ccw mirrored in z, both outward.
+TEST(LibraryDrones, EachHubWearsThePropOfItsOwnHand) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    for (const ld::DroneDef& def : ld::kDrones) {
+        SCOPED_TRACE(def.stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, def.stem);
+        ASSERT_OK(drone);
+        const AirframeSpec& s = drone->spec;
+        ASSERT_EQ(s.rotor_parts.size(), s.rotors.size());
+        std::shared_ptr<const spade::TriangleMesh> ccw;
+        std::shared_ptr<const spade::TriangleMesh> cw;
+        for (std::size_t k = 0; k < s.rotor_parts.size(); ++k) {
+            const spade::vehicles::RotorPartSpec& p = s.rotor_parts[k];
+            EXPECT_EQ(p.name, ld::indexed("prop", k));
+            EXPECT_EQ(p.role, "prop");
+            EXPECT_EQ(p.rotor, k);
+            EXPECT_EQ(p.mount.position, glm::dvec3(0.0));
+            EXPECT_EQ(p.mount.orientation, glm::dquat(1.0, 0.0, 0.0, 0.0));
+            ASSERT_NE(p.mesh, nullptr);
+            EXPECT_GT(p.min_feature, 0.0f);
+            std::shared_ptr<const spade::TriangleMesh>& hand = s.rotors[k].spin_dir > 0.0 ? ccw : cw;
+            if (!hand) hand = p.mesh;
+            EXPECT_EQ(p.mesh, hand) << p.name << ": one mesh per hand";
+        }
+        ASSERT_NE(ccw, nullptr);
+        ASSERT_NE(cw, nullptr);
+        EXPECT_NE(ccw->content_hash(), cw->content_hash());
+        const auto a = ccw->positions();
+        const auto b = cw->positions();
+        ASSERT_EQ(a.size(), b.size());
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (!(b[i] == glm::vec3(a[i].x, a[i].y, -a[i].z))) {
+                ADD_FAILURE() << "vertex " << i << ": the cw prop is not the ccw mirrored in z";
+                break;
+            }
+        }
+        EXPECT_GT(ccw->mass_properties().volume, 0.0);
+        EXPECT_GT(cw->mass_properties().volume, 0.0);
+    }
+}
+
+// Each prop is its part file's blade through shapes::prop(), with the prop
+// block's diameter and blade count and the drone's meshes.prop.* rows:
+// regenerated here from the committed part file, each hand's hash and
+// min_feature are the spec's.
+TEST(LibraryDrones, EachPropIsGeneratedFromItsPartFilesBlade) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    for (const ld::DroneDef& def : ld::kDrones) {
+        SCOPED_TRACE(def.stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, def.stem);
+        ASSERT_OK(drone);
+        const std::string file = ld::part_file(sc::PartKind::prop, def.parts[0]);
+        const LibraryEntry* entry = entry_for(lib->library, file);
+        ASSERT_NE(entry, nullptr) << file;
+        const spade::Result<PartFile> part = sc::load_library_part(lib->library, *entry, lib->registry);
+        ASSERT_OK(part);
+        const auto* prop = std::get_if<sc::PropPart>(&*part);
+        ASSERT_NE(prop, nullptr) << file;
+        ASSERT_TRUE(prop->blade.has_value()) << file << " carries no blade";
+
+        spade::shapes::PropMeshSpec m;
+        m.diameter = prop->block.diameter;
+        m.blades = prop->block.blades;
+        m.r_over_r = prop->blade->r_over_r;
+        m.c_over_r = prop->blade->c_over_r;
+        m.beta_deg = prop->blade->beta_deg;
+        m.hub_cutout = prop->blade->hub_cutout;
+        std::array<double, kPropRows.size()> v{};
+        for (std::size_t i = 0; i < kPropRows.size(); ++i) {
+            const ModelInput* row = drone->inputs.find(kPropRows[i]);
+            ASSERT_NE(row, nullptr) << kPropRows[i];
+            EXPECT_EQ(row->ref.grade, Grade::assumed) << kPropRows[i];
+            const double* x = std::get_if<double>(&row->value);
+            ASSERT_NE(x, nullptr) << kPropRows[i];
+            v[i] = *x;
+        }
+        m.section = spade::shapes::PropSection{v[0], v[1], v[2], v[3], static_cast<uint32_t>(v[4])};
+        m.hub_gap = v[5];
+        m.hub_height = v[6];
+        m.hub_segments = static_cast<uint32_t>(v[7]);
+        const auto ccw = spade::shapes::prop(m, spade::shapes::PropHand::ccw);
+        const auto cw = spade::shapes::prop(m, spade::shapes::PropHand::cw);
+        ASSERT_OK(ccw);
+        ASSERT_OK(cw);
+        ASSERT_FALSE(drone->spec.rotor_parts.empty());
+        for (const spade::vehicles::RotorPartSpec& p : drone->spec.rotor_parts) {
+            const spade::shapes::GeneratedMesh& want = drone->spec.rotors[p.rotor].spin_dir > 0.0 ? *ccw : *cw;
+            ASSERT_NE(p.mesh, nullptr) << p.name;
+            EXPECT_EQ(p.mesh->content_hash(), want.mesh->content_hash()) << p.name;
+            EXPECT_EQ(p.min_feature, want.min_feature) << p.name;
+        }
+    }
+}
+
+// The props are never solids: posed rigid_only, as the airflow's solids pose
+// a model, each drone's parts are the ones it has without its props, and its
+// one rotor part per rotor is attached to the rotor.
+TEST(LibraryDrones, ThePropsAreNeverSolids) {
+    const spade::Result<Committed> lib = committed_library();
+    ASSERT_OK(lib);
+    for (const ld::DroneDef& def : ld::kDrones) {
+        SCOPED_TRACE(def.stem);
+        const spade::Result<ld::BuiltDrone> drone = ld::build_drone(lib->library, lib->registry, def.stem);
+        ASSERT_OK(drone);
+        AirframeSpec bare = drone->spec;
+        bare.rotor_parts.clear();
+        const auto with = spade::vehicles::compile_airframe(drone->spec);
+        const auto without = spade::vehicles::compile_airframe(bare);
+        ASSERT_OK(with);
+        ASSERT_OK(without);
+        spade::BodyState body{};
+        body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+        using spade::vehicles::PartFilter;
+        const auto rigid = spade::vehicles::posed_parts(with->model, body, {}, {}, PartFilter::rigid_only);
+        const auto rigid_bare = spade::vehicles::posed_parts(without->model, body, {}, {}, PartFilter::rigid_only);
+        ASSERT_OK(rigid);
+        ASSERT_OK(rigid_bare);
+        EXPECT_EQ(rigid->parts.size(), rigid_bare->parts.size());
+        EXPECT_EQ(rigid->parts.size(), without->model.parts.size());
+        std::size_t props = 0;
+        for (const spade::vehicles::PartDesc& p : with->model.parts) {
+            props += p.attach == spade::vehicles::PartAttach::rotor ? 1u : 0u;
+        }
+        EXPECT_EQ(props, drone->spec.rotors.size());
     }
 }
