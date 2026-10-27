@@ -13,6 +13,10 @@ add_library(spade_airflow_runner STATIC
     chain_runner.cpp
     projection_chain.hpp
     projection_chain.cpp
+    solids_chain.hpp
+    solids_chain.cpp
+    publish_chain.hpp
+    publish_chain.cpp
 )
 target_include_directories(spade_airflow_runner PUBLIC "${PROJECT_SOURCE_DIR}")
 target_compile_features(spade_airflow_runner PUBLIC cxx_std_23)
@@ -74,6 +78,18 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16)
 # B4's rotor discs, spread_actuator() as a gather
 # (tests/test_gpu_airflow_actuator.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather)
+
+# B5's solids projection (Physics; tests/test_gpu_airflow_solids.cpp): the
+# CG's dots (pass 0; airflow_tile_sum ends them), its max-norm and its
+# quotients (div32_ftz), the aperture divergence and gradient, and the
+# operator over a CG vector (mg_levels.slang's stencil_from()). They import
+# airflow_pcg.slang, which -depfile tracks.
+spade_slang_kernel_variants(spade_airflow_runner airflow_tile_dot)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_measure)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_scalars)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_divergence)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_gradient)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_apply)
 
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit

@@ -310,6 +310,7 @@ struct GlTargetSink::Impl {
 
     // The live smoke's hooks; see the header.
     float fixed_dt = 0.0f;
+    bool scripted = false;  // set_scripted_input()
     std::string caption;
     std::string card;
     GlTargetSink::FrameTap tap;
@@ -588,6 +589,7 @@ FrameInput GlTargetSink::poll() {
     // every tool in this category settled on, adopted rather than invented.
     double cx = 0.0, cy = 0.0;
     glfwGetCursorPos(impl_->window, &cx, &cy);
+    if (impl_->scripted) cx = cy = -1.0e6;  // a scripted run: the real cursor is nowhere
 
     // CURSOR POSITION IS IN WINDOW COORDINATES AND THE PICKER NEEDS
     // FRAMEBUFFER ONES. On a HiDPI display the two differ by the content
@@ -1035,6 +1037,19 @@ void GlTargetSink::tap_frame() {
 void GlTargetSink::set_caption(std::string text) { impl_->caption = std::move(text); }
 void GlTargetSink::set_card(std::string text) { impl_->card = std::move(text); }
 void GlTargetSink::set_fixed_delta(float seconds) noexcept { impl_->fixed_dt = seconds > 0.0f ? seconds : 0.0f; }
+void GlTargetSink::set_scripted_input(bool on) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    impl_->scripted = on;
+    ImGuiIO& io = ImGui::GetIO();
+    if (on) {
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+    } else {
+        io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+    }
+#else
+    (void)on;
+#endif
+}
 void GlTargetSink::set_frame_tap(FrameTap tap) { impl_->tap = std::move(tap); }
 void GlTargetSink::capture_next_present() noexcept { impl_->capture_armed = true; }
 

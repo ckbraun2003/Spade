@@ -65,8 +65,14 @@
 #include "airflow_mg_restrict.spv.gen.hpp"
 #include "airflow_mg_smooth.spv.gen.hpp"
 #include "airflow_pack_f16.spv.gen.hpp"
+#include "airflow_pcg_apply.spv.gen.hpp"
+#include "airflow_pcg_measure.spv.gen.hpp"
+#include "airflow_pcg_scalars.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
+#include "airflow_solid_divergence.spv.gen.hpp"
+#include "airflow_solid_gradient.spv.gen.hpp"
+#include "airflow_tile_dot.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "airflow_tile_sum_probe.spv.gen.hpp"
 #include "airflow_velocity_bc.spv.gen.hpp"
@@ -1506,11 +1512,16 @@ struct OpCensus {
 // do it through fp32_math's div32_ftz and sqrt32_ftz: airflow_mg_smooth,
 // airflow_advection's periodic wrap, airflow_publish_fields and
 // airflow_actuator_gather (Rendering, rendering/exact-kernels). The others
-// hold no float division or root and pass as they did.
+// hold no float division or root and pass as they did. B5's rows (Physics)
+// also hold the exact profile's estimates to where div32_ftz is called: only
+// airflow_pcg_scalars traces one.
 TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
+    // Whether a row checks the E1/E2 estimates the scan traced.
+    enum class Estimates { unchecked, none, some };
     struct Kernel {
         const SpirvVariantSet& variants;
         bool integer_only;  // no float arithmetic: integer work, or a copy's loads and stores
+        Estimates estimates = Estimates::unchecked;
     };
     const Kernel kernels[] = {{gen::kSpvVariants_airflow_copy, true},
                               {gen::kSpvVariants_airflow_add_one, false},
@@ -1537,7 +1548,14 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_publish_fields, false},
                               {gen::kSpvVariants_airflow_pack_f16, true},
                               // B4's rotor discs (Rendering).
-                              {gen::kSpvVariants_airflow_actuator_gather, false}};
+                              {gen::kSpvVariants_airflow_actuator_gather, false},
+                              // B5's solids projection (Physics): only the quotients divide.
+                              {gen::kSpvVariants_airflow_tile_dot, false, Estimates::none},
+                              {gen::kSpvVariants_airflow_pcg_measure, false, Estimates::none},
+                              {gen::kSpvVariants_airflow_pcg_scalars, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_solid_divergence, false, Estimates::none},
+                              {gen::kSpvVariants_airflow_solid_gradient, false, Estimates::none},
+                              {gen::kSpvVariants_airflow_pcg_apply, false, Estimates::none}};
     for (const Kernel& k : kernels) {
         ASSERT_EQ(k.variants.count, spade::compute::kSupportedWorkgroupSizes.size()) << k.variants.name;
         for (const uint32_t wg : spade::compute::kSupportedWorkgroupSizes) {
@@ -1551,6 +1569,11 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
             EXPECT_TRUE(scan.well_formed) << module;
             EXPECT_TRUE(scan.findings.empty()) << module << ": " << scan.findings.size() << " policy findings";
             EXPECT_EQ(scan.decorated_ops, scan.contractable_ops) << module << ": an op lacks NoContraction";
+            if (k.estimates == Estimates::none) {
+                EXPECT_EQ(scan.estimate_ops, 0u) << module << ": an estimate where no div32_ftz is called";
+            } else if (k.estimates == Estimates::some) {
+                EXPECT_GT(scan.estimate_ops, 0u) << module << ": no div32_ftz estimate traced";
+            }
             if (k.integer_only) {
                 EXPECT_EQ(scan.contractable_ops, 0u) << module;
                 EXPECT_GT(scan.store_count, 0u) << module;

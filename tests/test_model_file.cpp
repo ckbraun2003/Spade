@@ -29,10 +29,12 @@
 
 #include <cfloat>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -1135,6 +1137,175 @@ TEST(AddModel, AModelWithMeshPartsIsRefusedAndTheSceneIsUnchanged) {
     // Its SDF parts alone are placed.
     ASSERT_OK(spade::scene::add_model(scene, *reference, "quad_ref_1"));
     EXPECT_EQ(scene.models.size(), 2u);
+}
+
+// PLACING A MODEL WITH MESH PARTS (L7b0 of the realistic drones plan):
+// add_model_with_meshes() places it as add_model() places any other, all or
+// nothing, with each mesh part's sidecar re-pointed under the scene's
+// imported/ folder and named by its mesh, so a part sharing a mesh shares
+// the name; the file's own model keeps its paths, and no identity moves.
+namespace {
+
+struct Meshed {
+    ModelFile file;
+    MeshPtr small;
+    MeshPtr large;
+};
+
+[[nodiscard]] std::optional<Meshed> meshed_reference() {
+    const std::optional<ModelFile> reference = reference_model_file();
+    if (!reference) return std::nullopt;
+    Meshed out{*reference, tetra_mesh(0.25), tetra_mesh(0.3)};
+    if (out.small == nullptr || out.large == nullptr) return std::nullopt;
+    PartDesc a = mesh_part(out.small, "meshes/small.spmesh");
+    a.name = "hull_a";
+    PartDesc b = mesh_part(out.small, "meshes/small.spmesh");
+    b.name = "hull_b";
+    b.mount_pos = {0.0f, 0.05f, 0.1f};
+    PartDesc c = mesh_part(out.large, "meshes/large.spmesh");
+    c.name = "hull_c";
+    out.file.model.parts.push_back(a);
+    out.file.model.parts.push_back(b);
+    out.file.model.parts.push_back(c);
+    return out;
+}
+
+[[nodiscard]] std::string hex16(uint64_t v) {
+    char buf[17];
+    std::snprintf(buf, sizeof buf, "%016llx", static_cast<unsigned long long>(v));
+    return buf;
+}
+
+}  // namespace
+
+TEST(AddModel, AModelWithMeshPartsIsPlacedWithItsSidecarsNamedByTheirMeshes) {
+    SceneDesc scene = stage();
+    const std::optional<Meshed> m = meshed_reference();
+    ASSERT_TRUE(m.has_value());
+    ASSERT_OK(spade::scene::validate_model_file(m->file));
+
+    const std::string small = spade::scene::placed_mesh_file(*m->small);
+    const std::string large = spade::scene::placed_mesh_file(*m->large);
+    EXPECT_EQ(small, "imported/" + hex16(m->small->content_hash()) + ".spmesh");
+    EXPECT_EQ(large, "imported/" + hex16(m->large->content_hash()) + ".spmesh");
+    EXPECT_NE(small, large);
+
+    ASSERT_OK(spade::scene::add_model_with_meshes(scene, m->file, "quad_ref_1"));
+    ASSERT_EQ(scene.models.size(), 2u);
+    const ModelType& placed = scene.models.back();
+    EXPECT_EQ(placed.name, "quad_ref_1");
+    ASSERT_EQ(placed.parts.size(), m->file.model.parts.size());
+    for (std::size_t i = 0; i < placed.parts.size(); ++i) {
+        const PartDesc& p = placed.parts[i];
+        const PartDesc& f = m->file.model.parts[i];
+        SCOPED_TRACE(p.name);
+        EXPECT_EQ(p.name, f.name);
+        EXPECT_EQ(p.mesh, f.mesh) << "the mesh stays as loaded";
+        if (!p.mesh) {
+            EXPECT_EQ(p.mesh_file, f.mesh_file) << "an SDF part has no sidecar";
+            continue;
+        }
+        EXPECT_EQ(p.mesh_file, p.mesh == m->small ? small : large);
+    }
+    EXPECT_EQ(m->file.model.parts.back().mesh_file, "meshes/large.spmesh") << "the file's own model is untouched";
+
+    // No identity moves: they are add_model()'s, the model renamed.
+    ModelType renamed = m->file.model;
+    renamed.name = "quad_ref_1";
+    EXPECT_EQ(spade::vehicles::parts_identity(placed), spade::vehicles::parts_identity(renamed));
+    EXPECT_EQ(spade::vehicles::model_identity(placed), spade::vehicles::model_identity(renamed));
+}
+
+TEST(AddModel, AModelWithMeshPartsIsPlacedAllOrNothing) {
+    SceneDesc scene = stage();
+    const std::optional<Meshed> m = meshed_reference();
+    ASSERT_TRUE(m.has_value());
+    const std::string before = text_of(scene);
+    const spade::Result<void> r = spade::scene::add_model_with_meshes(scene, m->file, scene.models.at(0).name);
+    ASSERT_FALSE(r);
+    EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(r.error().context, "is taken by a model in the scene")) << r.error().context;
+    EXPECT_EQ(text_of(scene), before);
+}
+
+TEST(AddModel, AModelWithoutMeshPartsIsPlacedAsAddModelPlacesIt) {
+    const std::optional<ModelFile> reference = reference_model_file();
+    ASSERT_TRUE(reference.has_value());
+    SceneDesc one = stage();
+    SceneDesc two = stage();
+    ASSERT_OK(spade::scene::add_model(one, *reference, "quad_ref_1"));
+    ASSERT_OK(spade::scene::add_model_with_meshes(two, *reference, "quad_ref_1"));
+    EXPECT_EQ(text_of(two), text_of(one));
+}
+
+// The scene's text names each placed sidecar; with the sidecars written
+// where it says, beside the scene, the scene reads back with the meshes.
+TEST(AddModel, APlacedMeshPartReadsBackFromBesideItsScene) {
+    SceneDesc scene = stage();
+    const std::optional<Meshed> m = meshed_reference();
+    ASSERT_TRUE(m.has_value());
+    ASSERT_OK(spade::scene::add_model_with_meshes(scene, m->file, "quad_ref_1"));
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(scene);
+    ASSERT_OK(text);
+
+    const spade::test::TempDir dir("model-placed-meshes");
+    std::filesystem::create_directories(dir.path() / "imported");
+    for (const MeshPtr& mesh : {m->small, m->large}) {
+        ASSERT_OK(spade::save_mesh_file(dir.path() / spade::scene::placed_mesh_file(*mesh), *mesh));
+    }
+    const std::filesystem::path path = dir.path() / "stage.scene.yaml";
+    write_text(path, *text);
+    const spade::Result<SceneDesc> back = spade::scene::load_scene_file(path);
+    ASSERT_OK(back);
+    ASSERT_EQ(back->models.size(), 2u);
+    const ModelType& read = back->models.back();
+    ASSERT_EQ(read.parts.size(), scene.models.back().parts.size());
+    for (std::size_t i = 0; i < read.parts.size(); ++i) {
+        const PartDesc& p = read.parts[i];
+        const PartDesc& placed = scene.models.back().parts[i];
+        SCOPED_TRACE(p.name);
+        EXPECT_EQ(p.mesh_file, placed.mesh_file);
+        ASSERT_EQ(p.mesh == nullptr, placed.mesh == nullptr);
+        if (p.mesh) {
+            EXPECT_EQ(p.mesh->content_hash(), placed.mesh->content_hash());
+        }
+    }
+}
+
+// write_placed_meshes() (L7b0's review: the editor's Save and the command
+// line's --save share it): each placed sidecar the scene names is written
+// once, from its mesh, into `into`, unless a folder holds it already, which
+// is kept as it is; with nowhere to write one it is refused, by the part.
+TEST(AddModel, ThePlacedSidecarsAreWrittenOnceAndAHeldOneIsKept) {
+    SceneDesc scene = stage();
+    const std::optional<Meshed> m = meshed_reference();
+    ASSERT_TRUE(m.has_value());
+    ASSERT_OK(spade::scene::add_model_with_meshes(scene, m->file, "quad_ref_1"));
+    const std::string small = spade::scene::placed_mesh_file(*m->small);
+    const std::string large = spade::scene::placed_mesh_file(*m->large);
+    const spade::test::TempDir dir("model-write-placed");
+    const std::filesystem::path held = dir.path() / "held";
+    const std::filesystem::path into = dir.path() / "into";
+    std::filesystem::create_directories(held / "imported");
+    write_text(held / small, "held, so kept as it is");
+    const std::filesystem::path holds[] = {held};
+
+    // hull_c's large mesh is held nowhere, and there is no folder for it.
+    const spade::Result<void> nowhere = spade::scene::write_placed_meshes(scene, {}, holds);
+    ASSERT_FALSE(nowhere.has_value());
+    EXPECT_EQ(nowhere.error().code, spade::Code::unavailable);
+    EXPECT_NE(nowhere.error().context.find("part 'hull_c'"), std::string::npos) << nowhere.error().context;
+
+    ASSERT_OK(spade::scene::write_placed_meshes(scene, into, holds));
+    EXPECT_FALSE(std::filesystem::exists(into / small)) << "hull_a's and hull_b's mesh is held";
+    ASSERT_OK(spade::load_mesh_file(into / large, m->large->content_hash()));
+    std::ifstream kept(held / small, std::ios::binary);
+    EXPECT_EQ(std::string(std::istreambuf_iterator<char>(kept), std::istreambuf_iterator<char>()),
+              "held, so kept as it is");
+
+    // All held now: nothing to write, so no folder is needed.
+    const std::filesystem::path both[] = {held, into};
+    ASSERT_OK(spade::scene::write_placed_meshes(scene, {}, both));
 }
 
 TEST(AddModel, ThePlacedChainSurvivesTheScenesText) {

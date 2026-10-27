@@ -196,6 +196,7 @@ add_executable(spade_tests
     test_analysis_controls.cpp
     test_analysis_live_run.cpp
     test_analysis_live_run_save.cpp
+    test_d1_case.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
@@ -291,6 +292,9 @@ add_executable(spade_tests
 # test_gpu_airflow_viscous.cpp (plan B, B3): the velocity conditions and the
 # implicit viscosity against boundaries.cpp and viscous.cpp,
 # GpuAirflowViscous* on the device.
+# test_gpu_airflow_solids.cpp (plan B, B5): the solids projection's kernels
+# against projection.cpp, pcg.cpp and reduce.cpp, GpuAirflowSolids* on the
+# device; AirflowSolidsChain (the packer, the pcg block) on the host.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -309,6 +313,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_publish.cpp
         test_gpu_airflow_actuator.cpp
         test_gpu_airflow_viscous.cpp
+        test_gpu_airflow_solids.cpp
     )
 endif()
 
@@ -437,6 +442,8 @@ if(SPADE_BUILD_SANDBOX)
         test_flight_controller.cpp
         test_pilot_keys.cpp
         test_editor_import.cpp
+        # Placing a drone with mesh parts (L7b0): its sidecars staged, carried by Save.
+        test_editor_place_meshes.cpp
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp

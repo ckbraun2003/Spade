@@ -63,15 +63,18 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "arm_pressure.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
 #include "live_case.hpp"
 #include "recorder.hpp"
+#include "subnormal_scan.hpp"
 #include "views.hpp"
 
 #include "physics/airflow/publish.hpp"
 #include "core/fp16.hpp"
 #include "render/raster_cpu.hpp"
+#include "render/view_mode.hpp"
 #include "render_parts/render_parts.hpp"
 #include "vehicles/part_pose.hpp"
 
@@ -144,11 +147,19 @@ constexpr std::size_t kSidebarWidth = 62;
 
 // One view of a film: a clip of its own, from the same cached frames.
 struct View {
+    using Shot = std::function<spade::Result<void>(const spade::FlowVolume&, uint32_t frame, uint32_t frames,
+                                                   render::RenderScene&, render::Camera&)>;
+    using OnParts = std::function<spade::Result<std::string>(const spade::FlowVolume&, render::RenderScene&)>;
+    View(std::string name_, std::string label_, Shot shot_, OnParts on_parts_ = {})
+        : name(std::move(name_)), label(std::move(label_)), shot(std::move(shot_)), on_parts(std::move(on_parts_)) {}
+
     std::string name;   // the clip's file name
     std::string label;  // the caption naming what it shows
-    std::function<spade::Result<void>(const spade::FlowVolume&, uint32_t frame, uint32_t frames,
-                                      render::RenderScene&, render::Camera&)>
-        shot;
+    Shot shot;
+    // What the view draws on the film's parts, after decorate() put them in
+    // the scene (C_p on the walls), returning a caption line to show under
+    // the label (the legend's note, verbatim), or "". Empty: nothing.
+    OnParts on_parts;
 };
 
 struct Film {
@@ -295,12 +306,8 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                                                 double budget_s, uint32_t frame_budget) {
     namespace an = spade::analysis;
     const LiveCase& lc = *film.run;
-    auto resolved = an::resolve(lc.c, lc.run_model);
-    if (!resolved) {
-        std::string issues;
-        for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
-        return std::unexpected(spade::Error{spade::Code::invalid_argument, film.stem + ": the case does not resolve: " + issues});
-    }
+    auto resolved = resolve_live(lc);
+    if (!resolved) return std::unexpected(spade::Error{resolved.error().code, film.stem + ": " + resolved.error().context});
     std::error_code ec;
     fs::create_directories(cache, ec);
     const fs::path save = cache / "live.save";
@@ -326,6 +333,16 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     }
     std::ofstream lines(cache / "run.txt", std::ios::binary | std::ios::trunc);
     for (const std::string& line : kept) lines << line << '\n';
+    // convergence.csv: after every frame, LiveRun's pressure convergence (D1's
+    // record, 2026-10-22). LiveRun counts unconverged steps since its start or
+    // restore (its save does not keep the count), so each line names the frame
+    // its count runs from; a frame's own unconverged steps are the difference
+    // from the line before within one count. Appended: a run killed after its
+    // save repeats the frames after it, and the last line for a frame is the
+    // one its cached frame came from.
+    const bool new_log = !fs::exists(cache / "convergence.csv", ec);
+    std::ofstream convergence(cache / "convergence.csv", std::ios::binary | std::ios::app);
+    if (new_log) convergence << "frame,t_s,steps,counted_from_frame,unconverged_steps,last_residual\n";
     spade::FlowVolume volume;
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
@@ -338,6 +355,11 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         if (auto wrote = write_frame(cache, k, volume, log); !wrote) return std::unexpected(wrote.error());
         lines << frame->steps << '\t' << run->run_label() << '\n';
+        char residual[32];
+        std::snprintf(residual, sizeof residual, "%.3e", static_cast<double>(run->solids().pressure_residual));
+        convergence << frame->frame << ',' << fixed(frame->t_s, 6) << ',' << frame->steps << ',' << first << ','
+                    << run->solids().unconverged_steps << ',' << residual << '\n';
+        convergence.flush();
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
                                  (frame_budget > 0u && k + 1u - first >= frame_budget);
@@ -366,9 +388,62 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     return true;
 }
 
+// --step-time: starts the run (or fails naming why), prints its grid, its
+// solids' line and run label, then times `steps` single steps, each with its
+// pressure residual. The D1 run's go or no-go before its long run (the lead:
+// over 30 s a step is reported first); nothing is cached.
+[[nodiscard]] int step_time_report(const LiveCase& lc, uint32_t steps) {
+    namespace an = spade::analysis;
+    using Clock = std::chrono::steady_clock;
+    auto resolved = resolve_live(lc);
+    if (!resolved) {
+        std::fprintf(stderr, "flow_movie: %s\n", resolved.error().context.c_str());
+        return 1;
+    }
+    const spade::physics::airflow::GridShape& g = resolved->base;
+    std::printf("[ step time ] %s: %u x %u x %u cells at %.4f m (%.2f M cells, %.0f MiB), h %.3f ms\n",
+                lc.name.c_str(), g.nx, g.ny, g.nz, static_cast<double>(g.dx),
+                static_cast<double>(g.nx) * g.ny * g.nz / 1e6, static_cast<double>(resolved->base_bytes) / 1048576.0,
+                static_cast<double>(*lc.c.time.step) * 1e3);
+    std::fflush(stdout);
+    const Clock::time_point t0 = Clock::now();
+    auto run = an::LiveRun::start(*resolved, lc.run_model);
+    if (!run) {
+        std::fprintf(stderr, "flow_movie: start: %s\n", run.error().context.c_str());
+        return 1;
+    }
+    const double start_s = std::chrono::duration<double>(Clock::now() - t0).count();
+    const an::LiveSolids& solids = run->solids();
+    std::printf("[ step time ] start %.1f s; solids in the flow: %s, %u solid cells\n", start_s,
+                solids.any ? "yes" : "no", solids.solid_cells);
+    std::printf("[ step time ] run line: %s\n", solids.run_line.c_str());
+    std::printf("[ step time ] run label: %s\n", run->run_label().c_str());
+    std::fflush(stdout);
+    double total = 0.0;
+    for (uint32_t i = 0; i < steps; ++i) {
+        const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
+        const Clock::time_point s0 = Clock::now();
+        if (auto stepped = run->step(controls); !stepped) {
+            std::fprintf(stderr, "flow_movie: step %u: %s\n", i + 1u, stepped.error().context.c_str());
+            return 1;
+        }
+        const double dt = std::chrono::duration<double>(Clock::now() - s0).count();
+        total += dt;
+        std::printf("[ step time ] step %u: %.2f s; residual %.2e, unconverged so far %llu\n", i + 1u, dt,
+                    static_cast<double>(run->solids().pressure_residual),
+                    static_cast<unsigned long long>(run->solids().unconverged_steps));
+        std::fflush(stdout);
+    }
+    if (steps > 0u) {
+        std::printf("[ step time ] mean %.2f s a step over %u\n", total / steps, steps);
+    }
+    return 0;
+}
+
 // --- render many times -----------------------------------------------------------------
 
-[[nodiscard]] std::vector<Caption> standard_captions(const Film& film, const View& view, const FrameLog& log) {
+[[nodiscard]] std::vector<Caption> standard_captions(const Film& film, const View& view, const FrameLog& log,
+                                                     const std::string& note = {}) {
     const AirflowCase& c = film.airflow;
     const CaptionText extra = film.captions ? film.captions(log) : CaptionText{};
     std::vector<std::string> top{c.settings};
@@ -385,6 +460,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     }
     bottom.insert(bottom.end(), extra.bottom.begin(), extra.bottom.end());
     bottom.push_back(view.label);
+    if (!note.empty()) bottom.push_back(note);
     bottom.push_back("t = " + fixed(log.time, film.time_decimals) + film.time_unit + "   (step " +
                      std::to_string(log.step) + " of " + std::to_string(total_steps(c)) + ")");
     return layout(c.name, top, bottom, film.picture_x != 0.0f ? kSidebarWidth : kFullWidth);
@@ -425,9 +501,15 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return std::unexpected(drawn.error());
             }
+            std::string note;
+            if (film.views[v].on_parts) {
+                auto on = film.views[v].on_parts(volume, scene);
+                if (!on) return std::unexpected(on.error());
+                note = std::move(*on);
+            }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (auto drew = stage.draw(scene, camera, rgba); !drew) return std::unexpected(drew.error());
-            if (auto added = clips[v]->add_frame(rgba, standard_captions(film, film.views[v], log)); !added) {
+            if (auto added = clips[v]->add_frame(rgba, standard_captions(film, film.views[v], log, note)); !added) {
                 return std::unexpected(added.error());
             }
         }
@@ -490,6 +572,12 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
             }
+            std::string note;
+            if (view.on_parts) {
+                auto on = view.on_parts(volume, scene);
+                if (!on) return std::unexpected(on.error());
+                note = std::move(*on);
+            }
             offset_picture(camera, volume, film.picture_x, encoder);
             if (cpu) {
                 if (auto drew = draw_cpu(scene, camera, encoder, rgba); !drew) return drew;
@@ -499,9 +587,89 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             const fs::path png =
                 dir / (film.stem + "-" + view.name + "-" + std::to_string(k) + (cpu ? "-cpu" : "") + ".png");
             if (auto saved = save_png(encoder, rgba, png); !saved) return saved;
-            std::printf("still: %s (t %s)\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str());
+            std::printf("still: %s (t %s)%s%s\n", png.string().c_str(), fixed(log.time, film.time_decimals).c_str(),
+                        note.empty() ? "" : "; ", note.c_str());
         }
     }
+    return {};
+}
+
+// The inflow's pressure: the mean gauge pressure over the inlet face's cell
+// layer (x = 0, the wind's upstream face), no-data cells left out. What D1's
+// C_p is taken against (Physics: "against the inflow's pressure").
+[[nodiscard]] double inflow_pressure(const spade::FlowVolume& v) {
+    const spade::FlowVolumeHeader& h = v.header;
+    double sum = 0.0;
+    uint64_t n = 0;
+    for (uint32_t k = 0; k < h.nz; ++k) {
+        for (uint32_t j = 0; j < h.ny; ++j) {
+            const float p = spade::fp16::to_f32(v.s[spade::flow_cell_index(h, 0u, j, k) * spade::kFlowHalvesPerCell]);
+            if (std::isfinite(p)) {
+                sum += p;
+                ++n;
+            }
+        }
+    }
+    return n > 0u ? sum / static_cast<double>(n) : 0.0;
+}
+
+// --arm-pressure: D1's arm-top samples (arm_pressure.hpp) over every cached
+// frame, for Physics' record: a row per frame and rotor, and every sample, as
+// CSV beside the cache (arm-pressure.csv, arm-samples.csv), the rows printed
+// too. The inflow's pressure is inflow_pressure()'s, and C_p is over the C_p
+// view's q, the discs' loading T/A.
+[[nodiscard]] spade::Result<void> arm_pressure_report(const Film& film, const fs::path& cache) {
+    if (!film.run) {
+        return std::unexpected(
+            spade::Error{spade::Code::invalid_argument, "--arm-pressure reads a LiveRun film's frames"});
+    }
+    const LiveCase& lc = *film.run;
+    const float two_v_h = std::max(1.0f, lc.speed_max - lc.c.flight.speed);
+    const double q = 0.5 * static_cast<double>(lc.c.fluid.density) * two_v_h * two_v_h;
+    const fs::path rows_path = cache / "arm-pressure.csv", samples_path = cache / "arm-samples.csv";
+    std::ofstream rows(rows_path, std::ios::binary | std::ios::trunc);
+    std::ofstream each(samples_path, std::ios::binary | std::ios::trunc);
+    rows << "frame,t_s,step,rotor,span_from_m,span_to_m,samples,mean_p_pa,p_inflow_pa,mean_dp_pa,cp\n";
+    each << "frame,t_s,rotor,from_centre_m,x_m,y_m,z_m,p_pa\n";
+    spade::FlowVolume volume;
+    FrameLog log;
+    const uint32_t frames = cached_frames(cache);
+    for (uint32_t k = 0; k < frames; ++k) {
+        if (auto read = read_frame(cache, k, volume, log); !read) return read;
+        if (log.live.size() < 7u) {
+            return std::unexpected(spade::Error{spade::Code::internal, "a LiveRun frame's log holds no held body"});
+        }
+        spade::BodyState b{};
+        b.pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]),
+                          static_cast<float>(log.live[2]));
+        b.orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                             static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+        std::vector<ArmSample> samples;
+        auto arms = arm_pressures(lc.run_model, b, volume, samples);
+        if (!arms) return std::unexpected(arms.error());
+        const double p_in = inflow_pressure(volume);
+        char line[320];
+        for (const ArmPressure& a : *arms) {
+            const double dp = a.mean - p_in;
+            std::snprintf(line, sizeof line, "%u,%.6f,%llu,%u,%.4f,%.4f,%u,%.4f,%.4f,%.4f,%.5f\n", k, log.time,
+                          static_cast<unsigned long long>(log.step), a.rotor, static_cast<double>(a.span_from),
+                          static_cast<double>(a.span_to), a.samples, a.mean, p_in, dp, dp / q);
+            rows << line;
+            std::printf("[ arm pressure ] %s", line);
+        }
+        for (const ArmSample& s : samples) {
+            std::snprintf(line, sizeof line, "%u,%.6f,%u,%.4f,%.5f,%.5f,%.5f,%.4f\n", k, log.time, s.rotor,
+                          static_cast<double>(s.from_centre), static_cast<double>(s.at.x),
+                          static_cast<double>(s.at.y), static_cast<double>(s.at.z), s.pressure);
+            each << line;
+        }
+    }
+    if (!rows || !each) {
+        return std::unexpected(spade::Error{spade::Code::io_error, "writing " + rows_path.string() + " or " +
+                                                                       samples_path.string()});
+    }
+    std::printf("[ arm pressure ] %u frames, q %.2f Pa: %s, %s\n", frames, q, rows_path.string().c_str(),
+                samples_path.string().c_str());
     return {};
 }
 
@@ -938,6 +1106,40 @@ constexpr float kVortexFloor = -5.0f;
             camera = orbit(centre, 1.7f * std::max(size.x, size.y), 0.0f, 0.0f);
             return {};
         }});
+    if (!run->run_model.parts.empty()) {
+        // The parts are in the flow (D1): C_p on them, as the editor's C_p
+        // view reads it (RND-8, R2.4: one cell off each wall, on the seen
+        // side), against the inflow's pressure, over the discs' loading T/A
+        // = 1/2 rho (2 v_h)^2. The legend's note goes under the label as
+        // apply_view() gives it (D1-4: the caption quotes it verbatim).
+        const float two_v_h = std::max(1.0f, run->speed_max - run->c.flight.speed);
+        const float q = 0.5f * run->c.fluid.density * two_v_h * two_v_h;
+        film.views.push_back(View{
+            "cp",
+            "C_p = (p - p_inflow) / q on the airframe, q = 1/2 rho (2 v_h)^2 = T/A = " + fixed(q, 1) +
+                " Pa; blue -1 to red +1",
+            [](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+               render::Camera& camera) -> spade::Result<void> {
+                // Close on the drone, from above and upstream, so the arms'
+                // tops under the discs show.
+                camera = orbit(volume_centre(v), 0.35f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
+                return {};
+            },
+            [q](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                render::FlowViewSpec cp;
+                cp.kind = render::FlowView::surface_cp;
+                cp.colours = render::ColourMapId::cool_warm;
+                cp.range_min = -1.0f;
+                cp.range_max = 1.0f;
+                cp.q_ref = q;
+                cp.p_ref = static_cast<float>(inflow_pressure(v));
+                render::RenderOptions options;
+                auto legends = render::apply_view(render::ViewSpec{render::ViewBase::shaded, {cp}}, &v, scene,
+                                                  options);
+                if (!legends) return std::unexpected(legends.error());
+                return legends->empty() ? std::string() : legends->front().note;
+            }});
+    }
     return film;
 }
 
@@ -960,9 +1162,19 @@ struct Options {
     uint32_t frame_budget = 0;    // 0: none
     fs::path case_file;           // --case: a .case.yaml flown through LiveRun
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
+    uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
+    bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
+    uint32_t subnormal_scan = 0;  // --subnormal-scan N: D1's subnormal scan, N steps of two runs; no film
+    uint32_t subnormal_locate = 0;  // --subnormal-locate N: what raises them, N steps of one run; no film
+    fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
+    std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
 };
 
 constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continue
+
+// d1-hover's length: D1-3's window ends 0.50 s after arming (armed at 0), and
+// the lead's floor is 0.55 s; 18 frames.
+constexpr double kD1Seconds = 0.6;
 
 [[nodiscard]] fs::path default_out() {
     const char* profile = std::getenv("USERPROFILE");
@@ -998,6 +1210,10 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
                                                 "\". --resimulate starts it again"});
     };
     if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
+    if (opt.arm_pressure) {
+        if (auto measured = arm_pressure_report(film, cache); !measured) return std::unexpected(measured.error());
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
     if (opt.probe_swirl >= 0) {
         if (auto probed = probe_swirl(film, cache, static_cast<uint32_t>(opt.probe_swirl)); !probed) {
             return std::unexpected(probed.error());
@@ -1170,6 +1386,23 @@ int main(int argc, char** argv) {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--arm-pressure") {
+            opt.arm_pressure = true;
+        } else if (arg == "--step-time") {
+            opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--subnormal-scan") {
+            opt.subnormal_scan = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--subnormal-locate") {
+            opt.subnormal_locate = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--from-save") {
+            opt.from_save = value();
+        } else if (arg == "--grid") {
+            spade::physics::airflow::GridShape g = kD1Grid;
+            if (std::sscanf(value().c_str(), "%ux%ux%u", &g.nx, &g.ny, &g.nz) != 3) {
+                std::fprintf(stderr, "flow_movie: --grid takes NXxNYxNZ, as 224x160x168\n");
+                return 2;
+            }
+            opt.grid = g;
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;
@@ -1205,20 +1438,28 @@ int main(int argc, char** argv) {
         if (!film) return fail(film.error());
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
-    } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad") {
-        const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad";
-        if (!smoke && !quad && opt.case_file.empty()) {
+    } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
+               opt.video == "d1-hover") {
+        const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad", d1 = opt.video == "d1-hover";
+        if (!smoke && !quad && !d1 && opt.case_file.empty()) {
             std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
             return 2;
         }
         auto lc = smoke  ? smoke_live_case(opt.seconds > 0.0 ? opt.seconds : 2.0 / spade::analysis::kFramesPerSecond)
                   : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
+                  : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid))
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
+        if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
+        if (opt.subnormal_scan > 0u) return subnormal_scan(*lc, opt.subnormal_scan, opt.from_save, opt.out);
+        if (opt.subnormal_locate > 0u) return subnormal_locate(*lc, opt.subnormal_locate, opt.from_save);
         const auto frames = std::max<uint32_t>(
             2u, static_cast<uint32_t>(std::lround(lc->seconds * spade::analysis::kFramesPerSecond)));
         auto film = case_film(std::move(*lc), frames,
-                              smoke ? "case-smoke" : quad ? "case-quad" : "case-" + opt.case_file.stem().string());
+                              smoke ? "case-smoke"
+                              : quad ? "case-quad"
+                              : d1   ? "d1-hover"
+                                     : "case-" + opt.case_file.stem().string());
         if (!film) return fail(film.error());
         films.push_back(std::move(*film));
     } else if (opt.video == "cavity") {

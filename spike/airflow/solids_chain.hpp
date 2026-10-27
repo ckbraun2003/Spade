@@ -1,0 +1,140 @@
+#pragma once
+
+// ---------------------------------------------------------------------------
+// solids_chain.hpp (plan B, task B5) -- the GPU solids projection's host
+// side, for the chain runner: the solid field packed as bindings 13-17 hold
+// it, the words of airflow_params B5 writes (word 16's bits, word 28's pcg
+// block), the table of where the CG's vectors and scalars live, and the
+// dispatches of B5's reductions. The CPU twins, and the authority, are
+// engine/physics/airflow/projection.cpp's project() with solids and pcg.cpp's
+// solve_pcg_to().
+//
+// ONE HOME (TD-9; the lead, 2026-10-22 and 2026-10-26): pack_solid_field()
+// is the one host packer of a SolidField (B3's test-local copy retires with
+// it), and PcgVector and the kSlot* constants are the host's twin of
+// engine/shaders/airflow_pcg.slang's tables. Every host placement and read of
+// a CG vector or slot goes through them.
+// ---------------------------------------------------------------------------
+
+#include <array>
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "compute/vulkan/dispatch_chain.hpp"
+#include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/solids.hpp"
+
+namespace spade::airflow_gpu {
+
+// --- airflow_params' words (airflow_params_layout.slang) ----------------------
+
+inline constexpr uint32_t kParamsFlags = 16;       // the flags word
+inline constexpr uint32_t kParamsFlagSolids = 1;   // bit 0: has_solids()
+inline constexpr uint32_t kParamsFlagTheta = 2;    // bit 1: has_apertures()
+inline constexpr uint32_t kParamsPcgBlock = 28;    // off_pcg_block: the pcg block's offset, in words
+inline constexpr uint32_t kPcgBlockWords = 6;      // {closed regions, announce, gain, stall iterations, floor, cap}
+
+// --- airflow_pcg and airflow_scalars (airflow_pcg.slang's tables) -------------
+
+// airflow_pcg's vectors, each the grid's cells, vector v at v * cells.
+enum PcgVector : uint32_t {
+    kPcgX = 0,     // the unknown
+    kPcgB = 1,     // the right side
+    kPcgR = 2,     // the residual
+    kPcgZ = 3,     // the preconditioned residual
+    kPcgD = 4,     // the search direction
+    kPcgQ = 5,     // A d, or A x when measuring
+    kPcgBest = 6,  // the x that measured least (P2d)
+};
+inline constexpr uint32_t kPcgVectors = 7;  // pcg_bytes()' seven floats a cell
+
+// Where vector v starts in airflow_pcg, in floats.
+[[nodiscard]] uint64_t pcg_offset(PcgVector v, const physics::airflow::GridShape& shape) noexcept;
+
+// airflow_scalars' slots: 0 is remove_mean()'s (projection_chain.hpp's
+// kMeanSlot); B5's are 1-31.
+inline constexpr uint32_t kSlotRz = 1;        // r . z
+inline constexpr uint32_t kSlotDq = 2;        // d . q
+inline constexpr uint32_t kSlotRzNext = 3;    // r . z after an iteration's preconditioner
+inline constexpr uint32_t kSlotAlpha = 4;     // rz / dq
+inline constexpr uint32_t kSlotBeta = 5;      // rz_next / rz
+inline constexpr uint32_t kSlotRMax = 6;      // max |b - q| over the cells in a region
+inline constexpr uint32_t kSlotBMax = 7;      // max |b| over the same cells
+inline constexpr uint32_t kSlotResidual = 8;  // b_max > 0 ? r_max / b_max : 0
+inline constexpr uint32_t kScalarSlots = 32;  // airflow_scalars' floats: slot 0 and B5's
+
+// --- the solid field (bindings 13-17) -----------------------------------------
+
+// A SolidField as the device holds it, by the rule Physics confirmed to
+// Rendering on 2026-10-22:
+//   apertures, wall_velocity, phi: theta, the wall velocity and phi, one float
+//     per face, u then v then w, component c's faces from aperture_base(c),
+//     each in mac_grid.hpp's index;
+//   face_tags: words 0 .. F - 1 (F = F_u + F_v + F_w, every face) the face's
+//     wall-link index, link[c][idx] or kNoWallLinks; then the free-slip
+//     layer, one byte a face, little-endian, four a word, face f in byte
+//     f % 4 of word F + f / 4;
+//   wall_links: 12 words a link, inv_f[0..5] then wall[0..5], as floats' bits.
+// An array with nothing in it (no wall link) is empty: its binding is bound
+// as a placeholder and never read.
+struct PackedSolidField {
+    std::vector<float> apertures;      // binding 13, airflow_apertures
+    std::vector<float> wall_velocity;  // binding 14, airflow_wall_velocity
+    std::vector<float> phi;            // binding 15, airflow_phi
+    std::vector<uint32_t> face_tags;   // binding 16, airflow_face_tags
+    std::vector<uint32_t> wall_links;  // binding 17, airflow_wall_links
+    bool has_solids = false;           // SolidField::any: has_solids() and has_apertures()
+};
+
+inline constexpr uint32_t kWallLinkWords = 12;
+
+// Where component c's faces start in apertures, wall_velocity, phi and
+// face_tags: 0 for u, F_u for v, F_u + F_v for w (airflow_pcg.slang's
+// aperture_base()).
+[[nodiscard]] uint64_t aperture_base(const physics::airflow::GridShape& shape, uint32_t c) noexcept;
+
+// The packing above. A host call: it allocates.
+[[nodiscard]] PackedSolidField pack_solid_field(const physics::airflow::SolidField& f);
+
+// airflow_params word 16's solid bits: has_solids() and has_apertures() iff
+// the field has a part (SolidField::any).
+[[nodiscard]] uint32_t solids_flags(const PackedSolidField& packed) noexcept;
+
+// Writes word 28 (= offset) and the pcg block at `offset`: the closed-region
+// count, then pcg.hpp's kResidualAnnounce, kStallGain and kStallIterations,
+// then the solve's floor and cap. `params` holds offset + kPcgBlockWords.
+void write_pcg_block(std::span<uint32_t> params, uint32_t offset, uint32_t closed_regions, uint32_t floor,
+                     uint32_t cap) noexcept;
+
+// --- the reductions' dispatches -----------------------------------------------
+
+// B5's kernels' pipelines in a runner (RunnerDesc::kernels); a chain names
+// only those it dispatches.
+struct SolidsPipelines {
+    uint32_t tile_sum = 0;  // airflow_tile_sum: the dots' passes 1 and 2
+    uint32_t tile_dot = 0;
+    uint32_t measure = 0;
+    uint32_t scalars = 0;
+};
+
+// airflow_pcg_scalars' ops.
+enum class ScalarsOp : uint32_t { alpha = 0, beta = 1, residual = 2 };
+
+// fixed_tile_dot(a, b) into airflow_scalars[slot]: airflow_tile_dot (pass 0),
+// then airflow_tile_sum's pass 1 and pass 2 with reduce.hpp's
+// kReduceBlockTiles. airflow_partials holds a float a tile.
+void append_tile_dot(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                     const SolidsPipelines& p, PcgVector a, PcgVector b, uint32_t slot, uint32_t workgroup_size);
+
+// The max-norm's r_max and b_max over b and q into kSlotRMax and kSlotBMax:
+// airflow_pcg_measure's three passes, with `block` tiles a block (the
+// solver's is kReduceBlockTiles; any block gives the same bits).
+// airflow_partials holds two floats a tile.
+void append_measure(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                    const SolidsPipelines& p, uint32_t workgroup_size, uint32_t block);
+
+// One airflow_pcg_scalars op.
+[[nodiscard]] compute::ChainCommand scalars_dispatch(const SolidsPipelines& p, ScalarsOp op);
+
+}  // namespace spade::airflow_gpu

@@ -15,7 +15,11 @@ add_executable(flow_movie
     views.hpp
     views.cpp
     live_case.hpp
-    live_case.cpp)
+    live_case.cpp
+    arm_pressure.hpp
+    arm_pressure.cpp
+    subnormal_scan.hpp
+    subnormal_scan.cpp)
 target_compile_features(flow_movie PRIVATE cxx_std_23)
 # spade::analysis: the validation reel reads the V1 records through
 # Interface's one reader (TD-9).
@@ -31,6 +35,11 @@ target_compile_definitions(flow_movie PRIVATE GLFW_INCLUDE_NONE
 
 if(WIN32)
     target_compile_definitions(flow_movie PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+# flow_movie.map beside the exe: --subnormal-locate names fault addresses
+# from it (the release build keeps no PDB).
+if(MSVC)
+    target_link_options(flow_movie PRIVATE /MAP)
 endif()
 
 # The smoke test: two frames of a small case through GL, ffmpeg and the

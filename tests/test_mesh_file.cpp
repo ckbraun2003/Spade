@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -450,6 +451,93 @@ TEST(MeshFile, WhatMakeMeshRefusesIsRefusedWithItsOwnMessage) {
         EXPECT_EQ(context.substr(context.size() - detail.size()), detail) << "make_mesh()'s own words: " << context;
         EXPECT_TRUE(contains(context, kFileName)) << context;
     }
+}
+
+// REPLACED WHOLE (L7b0's review): the bytes go to a temporary renamed over
+// the target, which is never written in place, so a write that fails or is
+// stopped part-way leaves no part of a sidecar at its name for a reader -- or
+// the editor's Save, which keeps a sidecar it finds -- to take for a whole
+// one. A target hard-linked to another name shows it: written in place, the
+// other name's bytes would change too.
+TEST(MeshFile, ASaveReplacesItsTargetWholeAndNeverWritesItInPlace) {
+    const TempDir dir("mesh-file-replace");
+    const MeshPtr mesh = built(cube({0.0, 0.0, 0.0}, 0.2, MeshUnit::metre));
+    ASSERT_NE(mesh, nullptr);
+    const std::filesystem::path other = dir.path() / "other.bin";
+    {
+        std::ofstream out(other, std::ios::binary);
+        out << "the other name's bytes";
+    }
+    const std::filesystem::path target = dir.path() / "linked.spmesh";
+    std::error_code ec;
+    std::filesystem::create_hard_link(other, target, ec);
+    if (ec) {
+        GTEST_SKIP() << "no hard links in " << spade::path_text(dir.path()) << ": " << ec.message();
+    }
+
+    const spade::Result<void> saved = spade::save_mesh_file(target, *mesh);
+    ASSERT_TRUE(saved.has_value()) << saved.error().context;
+    const std::vector<uint8_t> kept = read_bytes(other);
+    EXPECT_EQ(std::string(kept.begin(), kept.end()), "the other name's bytes") << "the target was written in place";
+    const spade::Result<LoadedMesh> back = spade::load_mesh_file(target, mesh->content_hash());
+    EXPECT_TRUE(back.has_value()) << (back ? "" : back.error().context);
+    std::filesystem::path tmp = target;
+    tmp += ".tmp-spade";
+    EXPECT_FALSE(std::filesystem::exists(tmp)) << "the temporary outlived the save";
+}
+
+// A refused save leaves its target as it was and no temporary beside it:
+// here the target is a folder, which no file replaces.
+TEST(MeshFile, ARefusedSaveLeavesItsTargetAndNoTemporary) {
+    const TempDir dir("mesh-file-refused");
+    const MeshPtr mesh = built(cube({0.0, 0.0, 0.0}, 0.2, MeshUnit::metre));
+    ASSERT_NE(mesh, nullptr);
+    const std::filesystem::path target = dir.path() / "taken.spmesh";
+    std::filesystem::create_directories(target / "inside");
+
+    const spade::Result<void> saved = spade::save_mesh_file(target, *mesh);
+    ASSERT_FALSE(saved.has_value());
+    EXPECT_EQ(saved.error().code, Code::io_error);
+    EXPECT_TRUE(std::filesystem::is_directory(target / "inside"));
+    std::filesystem::path tmp = target;
+    tmp += ".tmp-spade";
+    EXPECT_FALSE(std::filesystem::exists(tmp)) << "the temporary outlived the refusal";
+}
+
+// A target another program holds open (L7b0's review; the lead asked for
+// the Windows behaviour by name). On Windows the reader here opens it
+// without FILE_SHARE_DELETE, so the rename over it fails: the save is
+// refused, the temporary removed, and the target keeps its bytes. Elsewhere
+// rename(2) replaces the name, and the reader keeps what it opened.
+TEST(MeshFile, ATargetHeldOpenIsReplacedOrRefusedCleanly) {
+    const TempDir dir("mesh-file-held");
+    const MeshPtr mesh = built(cube({0.0, 0.0, 0.0}, 0.2, MeshUnit::metre));
+    ASSERT_NE(mesh, nullptr);
+    const std::filesystem::path target = dir.path() / "held.spmesh";
+    {
+        std::ofstream out(target, std::ios::binary);
+        out << "held open";
+    }
+    std::ifstream reader(target, std::ios::binary);
+    ASSERT_TRUE(reader.is_open());
+
+    const spade::Result<void> saved = spade::save_mesh_file(target, *mesh);
+    std::filesystem::path tmp = target;
+    tmp += ".tmp-spade";
+    EXPECT_FALSE(std::filesystem::exists(tmp)) << "the temporary outlived the save";
+    const std::string seen((std::istreambuf_iterator<char>(reader)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(seen, "held open") << "the reader keeps what it opened";
+    reader.close();
+#ifdef _WIN32
+    ASSERT_FALSE(saved.has_value());
+    EXPECT_EQ(saved.error().code, Code::io_error);
+    EXPECT_TRUE(contains(saved.error().context, "cannot be replaced")) << saved.error().context;
+    const std::vector<uint8_t> kept = read_bytes(target);
+    EXPECT_EQ(std::string(kept.begin(), kept.end()), "held open");
+#else
+    ASSERT_TRUE(saved.has_value()) << saved.error().context;
+    EXPECT_TRUE(spade::load_mesh_file(target, mesh->content_hash()).has_value());
+#endif
 }
 
 }  // namespace

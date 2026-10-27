@@ -61,4 +61,25 @@ struct PublishCounts {
 // With subnormals flushed as fluid_step() flushes them (fluid_step.hpp).
 [[nodiscard]] Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out);
 
+// THE HEADER FROM THE HALVES (plan B, B6; the lead, 2026-10-26): what
+// publish_render_volume() puts in the header, from the halves alone, by the
+// same rule in the same place (TD-9), for halves packed elsewhere (the GPU's
+// pack_f16, spike/airflow/publish_chain.hpp). Per channel, the minimum and
+// maximum of the stored halves (fp16::to_f32) that are not no-data, in cell
+// order with `<` and `>`, so a tie of -0 and +0 keeps the first; 0 and 0 for
+// a channel with none. no_data counts the kNoDataBits halves: exactly the
+// halves from_f32 calls no data, since its every other result is finite
+// (fp16.hpp). origin, cell, the dims, extrapolated_cells and the generation
+// are left as they are. Refused (invalid_argument): v or s not nx ny nz x
+// kFlowHalvesPerCell halves.
+[[nodiscard]] Result<void> flow_header_from_halves(FlowVolume& volume);
+
+// The solid cells publish_render_volume() writes from their fluid side, the
+// first solid layer (PublishCounts::extrapolated), by its own neighbour walk:
+// a solid cell with a fluid face-neighbour, across the wrap on a periodic
+// axis. It depends on the mask and the periodic axes only, never on the flow,
+// so a caller counts it once per mask. Refused (invalid_argument): a solid
+// mask whose size does not match the shape's.
+[[nodiscard]] Result<uint32_t> extrapolated_cells(const GridShape& shape, const PublishInput& in);
+
 }  // namespace spade::physics::airflow
