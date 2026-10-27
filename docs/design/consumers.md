@@ -14,6 +14,12 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **LiveRun carries each rotor's blade azimuth; save version 3** (Interface, L7c2 LiveRun-first, merged `cc22a71`).
+  - `LiveRun::blade_azimuth()` returns one psi per rotor, starting at 0 and advanced each step by `physics::advance_blade_azimuths()`. It's drawn only: nothing reads it back.
+  - A refused azimuth holds that rotor and is named once by `azimuth_refused()`.
+  - `kLiveRunSaveVersion` is 3: the rotor count and psi follow the held omega. A version 2 save is refused by name ("version 2; this build reads version 3").
+  - A restore now copies the rotor rows, so `rotor_rows()` equals the saved run's before any step.
+  - The editor's band drops the run's kind first when space is short; its floor is speed plus backend.
 - **The editor's Run air runs on the GPU** (Interface, Run air on the GPU, slice 3, merged `1333c83`).
   - With Vulkan on, spade_sandbox links spade_airflow_runner and starts the air through `start_live_run()`. A refused device runs the CPU, and the band says why.
   - The band reads "air at 1/N speed · actuator disc · GPU · 32³, dx …" (or "CPU: <reason>").
