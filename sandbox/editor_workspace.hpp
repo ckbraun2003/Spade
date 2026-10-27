@@ -221,6 +221,7 @@ class EditorWorkspace {
         panels_.scene_serial = docs_.scene.serial();
         panels_.world = &docs_.world.desc();
         panels_.records = &records_;
+        panels_.grid_cell = grid_cell_line(records_, run_ ? &*run_ : nullptr);
         const std::string file = docs_.scene.path.empty() ? std::string("untitled") : docs_.scene.path.filename().string();
         panels_.title = file + (docs_.scene.dirty() || docs_.world.dirty() ? " *" : "");
         panels_.running = run_.has_value() || air_ != nullptr;

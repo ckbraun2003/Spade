@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -107,10 +108,11 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 12> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 13> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
-                                                         "editor_part",     "editor_drone",    "editor_airflow"};
+                                                         "editor_part",     "editor_drone",    "editor_placed_drone",
+                                                         "editor_airflow"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -124,9 +126,9 @@ constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "edi
 //   The rest half is the step's hard "rests" check.
 const std::vector<KnownOpen> kKnownOpen = {
     {"editor.add_drone/placed-at",
-     "ground contact is the model's one proxy sphere (reference quad 0.150 m, its rotor reach); resting on the "
-     "lowest posed part buries it 106 mm, so Run lifts the drone. Physics owns the fix: contact against the posed "
-     "parts."},
+     "ground contact is the model's one proxy sphere (its rotor reach: the Phantom's 0.296 m, the reference "
+     "quad's 0.150 m before 2026-10-27); resting on the lowest posed part buries it, so Run lifts the drone. "
+     "Physics owns the fix: contact against the posed parts."},
 };
 
 [[nodiscard]] std::string fmt(float v) {
@@ -1217,11 +1219,13 @@ void editor_tour(Tour& t, const fs::path& assets) {
 
     // N14a: the library's drone, placed by a click, rests on its own lowest
     // part and stays still for 1.0 s of Run (placed-at), and keeps its model,
-    // parts and propulsion identities (propulsion-kept). Undone after.
+    // parts and propulsion identities (propulsion-kept). Undone after. The
+    // Phantom (the lead, 2026-10-27), its props L7c1's mesh parts, which
+    // drawn counts and the close still editor_placed_drone shows.
     t.step("editor", "add_drone", [&] {
         if (!open()) return;
         const Result<scene::ModelFile> file =
-            scene::load_model_file(assets / "library" / "drones" / "reference_quad.model.yaml");
+            scene::load_model_file(assets / "library" / "drones" / "phantom3_class.model.yaml");
         if (!s.check(file.has_value(), "file", file ? "read" : file.error().context)) return;
         const std::size_t before = scene_now().vehicles.size();
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
@@ -1229,7 +1233,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const glm::vec3 eye = session->camera().to_render_camera().position;
         const glm::vec3 dir = glm::normalize(target - eye);
         const std::optional<float> hit = editor::detail::march(w().composed().world.sdf, eye, dir);
-        arm("Reference quad (test fixture)");
+        arm("Phantom 3-class quad");
         click_towards(target);
         if (!s.check(hit.has_value() && scene_now().vehicles.size() == before + 1, "placed",
                      hit ? w().panels().status : "the click's ray met no surface")) {
@@ -1336,6 +1340,22 @@ void editor_tour(Tour& t, const fs::path& assets) {
                      : end_goal::Verdict{false, "drawn: absent: prepare_parts() refused: " + prepared.error().context};
         s.check(drawn.ok, "drawn", drawn.detail);
 
+        // A close still of the placed drone, its props on every hub filling
+        // the frame (the lead, 2026-10-27): Test/Docs checks them against it.
+        // Unselected, so it is drawn in its own colours; the camera put back.
+        {
+            const OrbitCamera before = session->camera();
+            w().panels().selection = editor::Selection{};
+            session->camera().target = placed.start.pos;
+            session->camera().yaw = 0.6f;
+            session->camera().pitch = 0.5f;
+            session->camera().distance = 0.8f;
+            then(2);
+            t.snapshot("editor_placed_drone");
+            then(1);  // the still is the next frame drawn
+            session->camera() = before;
+        }
+
         // Still: 1.0 s of Run (240 ticks at the editor's 240 Hz), disarmed.
         w().panels().selection = editor::Selection{};
         command(editor::Command::run);
@@ -1355,7 +1375,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(10);
     });
 
-    // INT-15 (T3): Run air on the library's quad, placed as add_drone places
+    // INT-15 (T3): Run air on the library's Phantom, placed as add_drone places
     // it and given an airflow region, the Pilot section arming it. The
     // worker's frames reach the view, which draws the streamlines and, once
     // there are any, the vortex cores around the drone (§5's default view).
@@ -1365,13 +1385,14 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!open()) return;
         constexpr uint64_t kAirFrames = 12;  // 0.4 s of air
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
-        arm("Reference quad (test fixture)");
+        arm("Phantom 3-class quad");
         click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
         const std::string quad = w().panels().selection.name;
         if (!s.check(!quad.empty() && model_of(quad) != nullptr, "placed", w().panels().status)) return;
         w().panels().pending.push_back(editor::AddAirflowRegion{quad});
         w().apply_panels();
         if (!s.check(!scene_now().airflow.empty(), "region", w().panels().status)) return;
+        const auto from = std::chrono::steady_clock::now();  // the frames' wall time, for the record
         command(editor::Command::run_air);
         if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
         w().panels().pilot.controls = analysis::Controls{true, 0.6f, 0.0f, 0.0f, 0.0f};
@@ -1383,16 +1404,21 @@ void editor_tour(Tour& t, const fs::path& assets) {
         }
         session->camera().yaw = 0.52f;
         session->camera().pitch = 0.35f;
-        session->camera().distance = 1.6f;
+        // Twice the box's edge (1.6 m for the reference quad's 0.8 m box).
+        const scene::SceneAirflowRegion& region = scene_now().airflow.back();
+        session->camera().distance = 2.0f * static_cast<float>(region.cells.nx) * region.cells.dx;
         std::shared_ptr<const editor::AirFrame> frame;
         for (int i = 0; i < 3600; ++i) {
             then(1);
             frame = w().air() != nullptr ? w().air()->latest() : nullptr;
             if (frame && (!frame->error.empty() || frame->frames >= kAirFrames)) break;
         }
+        const float wall_s =
+            static_cast<float>(std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count());
         s.check(frame && frame->error.empty() && frame->frames >= kAirFrames, "publishes",
-                !frame ? "no frame handed over" : !frame->error.empty() ? frame->error
-                                                                         : std::to_string(frame->frames) + " frames");
+                !frame                  ? "no frame handed over"
+                : !frame->error.empty() ? frame->error
+                                        : std::to_string(frame->frames) + " frames in " + fmt(wall_s) + " s of wall time");
         then(5);
         t.snapshot("editor_airflow");
         then(20);  // the snapshot is the next frame drawn: the air still running
@@ -1627,7 +1653,8 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(10);
     });
 
-    // N17: the placed reference quad flown from the pilot's keys (the lead's
+    // N17: the placed Phantom (the reference quad until 2026-10-27; its
+    // headless twin passes on both) flown from the pilot's keys (the lead's
     // Q1 to Q3). Run pilots the selected drone, disarmed at rest; Space arms it
     // to idle; PageUp, held, throttles it to 1.3 m g, inside the band climbs
     // was simulated for (full throttle climbs past it); Up, held, tilts the
@@ -1640,7 +1667,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!open()) return;
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
         const std::size_t before = scene_now().vehicles.size();
-        arm("Reference quad (test fixture)");
+        arm("Phantom 3-class quad");
         click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
         if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
         const std::string quad = scene_now().vehicles.back().name;

@@ -39,6 +39,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <optional>
 #include <string>
@@ -185,6 +186,11 @@ class EditorRun {
     // until world file v3 carries them.
     [[nodiscard]] static constexpr bool records_saved_with_world() noexcept { return false; }
 
+    // The grid's cell this run uses, and the vehicle it was sized for: ""
+    // when the records' own cell fits every drone (build()).
+    [[nodiscard]] float grid_cell() const noexcept { return cell_; }
+    [[nodiscard]] const std::string& cell_sized_for() const noexcept { return sized_for_; }
+
   private:
     EditorRun(std::unique_ptr<scene::SceneRun> run, std::vector<std::string> names, const BuiltinRecords& records)
         : run_(std::move(run)), names_(std::move(names)), records_(records) {}
@@ -206,9 +212,22 @@ class EditorRun {
                 if (m != nullptr && m->propulsion) v.start.rotor_omega = 0.0f;
             }
         }
+        // The grid's cell fits the scene's largest drone: spawn() refuses a
+        // cell under twice a model's proxy radius (the Phantom's 0.296 m, the
+        // Iris+'s 0.365 m, against the editor's 0.5 m). Never under the
+        // records' own cell, so a scene whose drones fit runs as it did.
+        BuiltinRecords sized = records;
+        std::string sized_for;
+        for (const scene::SceneVehicle& v : scene.vehicles) {
+            const vehicles::ModelType* m = model_of(v);
+            if (m != nullptr && 2.0f * m->proxy_radius > sized.grid.cell_size) {
+                sized.grid.cell_size = 2.0f * m->proxy_radius;
+                sized_for = v.name;
+            }
+        }
         const Result<scene::ComposedScene> composed = compose_together(run_scene, world);
         if (!composed) return std::unexpected(composed.error());
-        Result<scene::SceneRun> run = scene::instantiate(*composed, instance_of(records), kBuiltinStepNs,
+        Result<scene::SceneRun> run = scene::instantiate(*composed, instance_of(sized), kBuiltinStepNs,
                                                          kBuiltinSubsteps);
         if (!run) return std::unexpected(run.error());
         // Flushed, so the controllers can command before the first step.
@@ -217,6 +236,8 @@ class EditorRun {
         names.reserve(scene.vehicles.size());
         for (const scene::SceneVehicle& v : scene.vehicles) names.push_back(v.name);
         EditorRun out(std::make_unique<scene::SceneRun>(std::move(*run)), std::move(names), records);
+        out.cell_ = sized.grid.cell_size;
+        out.sized_for_ = std::move(sized_for);
         out.flight_.resize(scene.vehicles.size());
         out.why_not_.resize(scene.vehicles.size());
         for (std::size_t i = 0; i < scene.vehicles.size(); ++i) {
@@ -248,7 +269,20 @@ class EditorRun {
     std::vector<std::optional<flight::FlightController>> flight_;  // parallel: the flown vehicles' controllers
     std::vector<std::string> why_not_;                             // parallel: why one isn't flown
     BuiltinRecords records_;
+    float cell_ = 0.0f;      // grid_cell()
+    std::string sized_for_;  // cell_sized_for()
     uint64_t ticks_ = 0;
 };
+
+// The inspector's Grid cell row (the lead, 2026-10-27): the records' cell,
+// or, while a Run whose cell was sized for a drone is going, the run's and
+// why.
+[[nodiscard]] inline std::string grid_cell_line(const BuiltinRecords& records, const EditorRun* run) {
+    if (run != nullptr && !run->cell_sized_for().empty()) {
+        return std::format("{:.3f} m, sized for '{}'; the records' {:.3f} m", run->grid_cell(), run->cell_sized_for(),
+                           records.grid.cell_size);
+    }
+    return std::format("{:.3f} m", records.grid.cell_size);
+}
 
 }  // namespace spade::sandbox::editor

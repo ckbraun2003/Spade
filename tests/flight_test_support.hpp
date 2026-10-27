@@ -36,6 +36,11 @@ struct FlightRig {
     return std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
 }
 
+// The library's Phantom, which the tour's editor chapters place and fly.
+[[nodiscard]] inline std::filesystem::path phantom_file() {
+    return std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "phantom3_class.model.yaml";
+}
+
 // Every rotor's speed for a hover: the weight shared evenly along +Y.
 [[nodiscard]] inline float hover_omega(const vehicles::ModelType& m) {
     const float weight = m.body.mass * 9.80665f;
@@ -44,14 +49,14 @@ struct FlightRig {
     return std::sqrt(weight / k);
 }
 
-// The reference quad level at `at`, still, its rotors at `rotor_omega` (none:
+// `model_file`'s drone level at `at`, still, its rotors at `rotor_omega` (none:
 // at hover_omega()), in `world` (none: a bare one, open air), flushed so it
 // takes rotor commands at once. Fails the calling test, and returns none,
 // when anything refuses.
-[[nodiscard]] inline std::optional<FlightRig> reference_quad_rig(glm::vec3 at,
-                                                                 std::optional<float> rotor_omega = std::nullopt,
-                                                                 std::optional<WorldDesc> world = std::nullopt) {
-    const Result<scene::ModelFile> file = scene::load_model_file(reference_quad_file());
+[[nodiscard]] inline std::optional<FlightRig> model_rig(const std::filesystem::path& model_file, glm::vec3 at,
+                                                        std::optional<float> rotor_omega = std::nullopt,
+                                                        std::optional<WorldDesc> world = std::nullopt) {
+    const Result<scene::ModelFile> file = scene::load_model_file(model_file);
     if (!file) {
         ADD_FAILURE() << file.error().context;
         return std::nullopt;
@@ -94,6 +99,13 @@ struct FlightRig {
         return std::nullopt;
     }
     return FlightRig{std::move(*sim), *ref, file->model};
+}
+
+// model_rig() of the library's reference quad.
+[[nodiscard]] inline std::optional<FlightRig> reference_quad_rig(glm::vec3 at,
+                                                                 std::optional<float> rotor_omega = std::nullopt,
+                                                                 std::optional<WorldDesc> world = std::nullopt) {
+    return model_rig(reference_quad_file(), at, rotor_omega, std::move(world));
 }
 
 }  // namespace spade::sandbox::flight::test
