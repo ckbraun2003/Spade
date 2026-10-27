@@ -330,6 +330,101 @@ void check_mesh_records(const AirframeSpec& s, Issues& out) {
     return r;
 }
 
+// THE MOTOR'S MESH (L7b1; Q2 (a), the lead's ruling, 2026-10-26). With
+// AirframeSpec::motor_mesh, each rotor's motor is a mesh record of the
+// motor's own mass, exactly motor.mass, its mesh in the hub frame. It is
+// resolved as resolve_mesh_record() resolves one -- at the hub applied to the
+// mesh's centroid, turned as the hub, with (motor.mass / V) I_unit about the
+// centroid -- but of the motor's mass rather than a density's. Its part is
+// the mesh AT THE HUB: no half-extent shift (THE MOTOR'S PLACE), since the
+// mesh already hangs beside the rotor plane; motor.shape is not read.
+// Nothing when the mesh or the mass cannot give it (check_motor_mesh() lists
+// why).
+[[nodiscard]] std::optional<MeshMass> motor_mesh_mass(const AirframeSpec& s) noexcept {
+    if (!s.motor_mesh || !s.motor_mesh->mesh || !positive(s.motor.mass)) return std::nullopt;
+    const MeshMassProperties& mp = s.motor_mesh->mesh->mass_properties();
+    if (!positive(mp.volume)) return std::nullopt;
+    MeshMass out;
+    out.mass = s.motor.mass;
+    out.centroid = mp.centroid;
+    out.inertia = (s.motor.mass / mp.volume) * mp.inertia;
+    for (int c = 0; c < 3; ++c)
+        for (int r = 0; r < 3; ++r) {
+            if (!is_finite(out.inertia[c][r])) return std::nullopt;
+        }
+    return out;
+}
+
+// A rotor's motor record under THE MOTOR'S MESH. One that cannot give its
+// mass, or whose hub orientation is zero or not finite, stands in as a unit
+// point mass at the hub, as resolve_mesh_record()'s does: its issue is
+// listed (the motor mesh's, or the hub's, once), and it stops the composite.
+[[nodiscard]] PartInertia motor_mesh_record(const AirframeSpec& s, const RotorSpec& r, std::string name) {
+    PartInertia p;
+    p.mass = 1.0;
+    p.position = r.hub.position;
+    p.orientation = r.hub.orientation;
+    p.geometry = PartGeometrySpec{.source = GeometrySource::mesh,
+                                  .name = std::move(name),
+                                  .role = "motor",
+                                  .mesh = s.motor_mesh->mesh,
+                                  .density = 0.0,
+                                  .min_feature = s.motor_mesh->min_feature};
+    const std::optional<MeshMass> m = motor_mesh_mass(s);
+    const glm::dquat& q = r.hub.orientation;
+    if (!m || !positive(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z)) return p;
+    p.mass = m->mass;
+    p.position = r.hub.position + glm::mat3_cast(glm::normalize(q)) * m->centroid;
+    p.shape = PartShape::tensor;
+    p.tensor = m->inertia;
+    return p;
+}
+
+// THE MOTOR'S MESH's own rules, each one issue at motor_mesh[0].<field>:
+// a mesh, whose volume is finite and > 0 and gives a finite inertia with the
+// motor's mass; a min_feature finite and > 0; a motor mass that is not 0
+// (which means "counted elsewhere", and would drop the mesh with the motor's
+// record; a negative or non-finite one is motor[0].mass's, check_blocks());
+// and no pusher rotor (YAGNI: a bell hangs below its hub, and none of the
+// library's drones pushes). Like a mesh record's, they stop the composite
+// and the fit: the mesh is the motors' inertia.
+void check_motor_mesh(const AirframeSpec& s, Issues& out) {
+    if (!s.motor_mesh) return;
+    const MotorMeshSpec& m = *s.motor_mesh;
+    const double volume = m.mesh ? m.mesh->mass_properties().volume : 0.0;
+    if (!m.mesh) {
+        out.add("motor_mesh", 0, "mesh", "a motor mesh without a mesh");
+    } else if (!positive(volume)) {
+        out.add("motor_mesh", 0, "mesh",
+                "the mesh's volume is " + shortest(volume) + " m^3, not finite and > 0 (inside out?)");
+    } else if (positive(s.motor.mass) && !motor_mesh_mass(s)) {
+        out.add("motor_mesh", 0, "mesh",
+                "the motor's mass (" + shortest(s.motor.mass) + " kg) over the mesh's volume (" + shortest(volume) +
+                    " m^3) does not give a finite inertia");
+    }
+    if (!(std::isfinite(m.min_feature) && m.min_feature > 0.0f)) {
+        out.add("motor_mesh", 0, "min_feature",
+                "a motor mesh declares its smallest feature, finite and > 0 m, found " +
+                    shortest(static_cast<double>(m.min_feature)));
+    }
+    if (s.motor.mass == 0.0) {
+        out.add("motor_mesh", 0, "mass",
+                "a motor mesh carries the motor's mass, and motor.mass is 0 ('counted elsewhere'), which would drop "
+                "the mesh with the motor's record: give the motor its mass, or no mesh");
+    }
+    std::size_t first = 0;
+    std::size_t pushers = 0;
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        if (s.rotors[k].pusher && pushers++ == 0) first = k;
+    }
+    if (pushers > 0) {
+        const std::string more = pushers > 1 ? " (and " + std::to_string(pushers - 1) + " more)" : "";
+        out.add("motor_mesh", 0, "pusher",
+                "rotors[" + std::to_string(first) + "] is a pusher" + more +
+                    ": a motor mesh hangs below its hub, for tractors only");
+    }
+}
+
 // Every mass: the spec's parts, then at each rotor a motor beside its hub
 // (motor_pose) and a propeller on it, then the ESC and the battery. `origin`
 // records, for each, its kind and index, so a part issue can name what the
@@ -350,12 +445,17 @@ struct PartList {
 
 [[nodiscard]] PartList gather_parts(const AirframeSpec& s) {
     PartList out;
-    const auto push = [&](PartInertia p, std::string kind, std::size_t index, bool drag) {
-        out.placement.push_back(MountPose{.position = p.position, .orientation = p.orientation});
-        if (p.geometry.source == GeometrySource::mesh) p = resolve_mesh_record(p);
+    const auto push_at = [&](PartInertia p, const MountPose& placement, std::string kind, std::size_t index,
+                             bool drag) {
+        out.placement.push_back(placement);
         out.parts.push_back(std::move(p));
         out.origin.emplace_back(std::move(kind), index);
         out.drag_source.push_back(drag);
+    };
+    const auto push = [&](PartInertia p, std::string kind, std::size_t index, bool drag) {
+        const MountPose placement{.position = p.position, .orientation = p.orientation};
+        if (p.geometry.source == GeometrySource::mesh) p = resolve_mesh_record(p);
+        push_at(std::move(p), placement, std::move(kind), index, drag);
     };
     for (std::size_t k = 0; k < s.parts.size(); ++k) {
         PartInertia p = s.parts[k];
@@ -379,9 +479,15 @@ struct PartList {
     }
     for (std::size_t k = 0; k < s.rotors.size(); ++k) {
         if (s.motor.mass > 0.0) {
-            push(block_part(s.motor.mass, motor_pose(s.rotors[k], s.motor.shape), s.motor.shape, point,
-                            block("motor[" + std::to_string(k) + "]", "motor")),
-                 "motor", k, true);
+            std::string name = "motor[" + std::to_string(k) + "]";
+            if (s.motor_mesh) {
+                // THE MOTOR'S MESH: the mesh at the hub, of the motor's mass.
+                push_at(motor_mesh_record(s, s.rotors[k], std::move(name)), s.rotors[k].hub, "motor", k, true);
+            } else {
+                push(block_part(s.motor.mass, motor_pose(s.rotors[k], s.motor.shape), s.motor.shape, point,
+                                block(std::move(name), "motor")),
+                     "motor", k, true);
+            }
         }
         if (s.prop.mass > 0.0) {
             push(block_part(s.prop.mass, s.rotors[k].hub, s.prop.shape, disc, mass_only), "prop", k, false);
@@ -806,27 +912,39 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     }
 }
 
-[[nodiscard]] Built build(const AirframeSpec& s) {
-    Built out;
-    check_blocks(s, out.issues);
-    check_mesh_records(s, out.issues);
+// Every record the compile gathers, and every problem that stops its
+// composite and its fit, each listed where the spec wrote it: the blocks'
+// (check_blocks), the mesh records' and the motor mesh's own rules, and the
+// parts' (composite_inertia_issues). compile_airframe() and
+// airframe_composite() both start here (TD-9).
+[[nodiscard]] PartList checked_parts(const AirframeSpec& s, Issues& out) {
+    check_blocks(s, out);
+    check_mesh_records(s, out);
+    check_motor_mesh(s, out);
 
-    const PartList parts = gather_parts(s);
+    PartList parts = gather_parts(s);
     for (const PartIssue& pi : composite_inertia_issues(parts.parts)) {
         const auto& [kind, index] = parts.origin[pi.index];
         if (kind == "parts") {
-            out.issues.add(kind, index, pi.field, pi.message);
+            out.add(kind, index, pi.field, pi.message);
             continue;
         }
         // A block's part: its shape and mass were checked once, as the
-        // block's. Only its pose is its own, and that is the hub's (a
-        // motor's moved off it by a finite amount, motor_pose) or the
-        // mount's, reported once however many parts sit there.
+        // block's (a motor mesh's, as the motor mesh's). Only its pose is its
+        // own, and that is the hub's (a motor's moved off it by a finite
+        // amount, motor_pose) or the mount's, reported once however many
+        // parts sit there.
         if (pi.field != "position" && pi.field != "orientation") continue;
         const bool at_hub = kind == "motor" || kind == "prop";
-        out.issues.add_once(at_hub ? "rotors" : kind, at_hub ? index : 0, at_hub ? "hub" : "mount",
-                            "is not finite, or its orientation is zero");
+        out.add_once(at_hub ? "rotors" : kind, at_hub ? index : 0, at_hub ? "hub" : "mount",
+                     "is not finite, or its orientation is zero");
     }
+    return parts;
+}
+
+[[nodiscard]] Built build(const AirframeSpec& s) {
+    Built out;
+    const PartList parts = checked_parts(s, out.issues);
     // ONE CALL LISTS EVERYTHING (Kat's question 2). A block or part problem
     // stops the composite and the fit; a model-rule problem stops only the
     // final model, so the fit still runs and its own problems are listed too.
@@ -1051,6 +1169,18 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     return out;
 }
 
+// The issues joined into one error, as compile_airframe() and
+// airframe_composite() refuse: "<who>: kind[index].field: message; ...".
+[[nodiscard]] Error joined(const char* who, const std::vector<AirframeIssue>& list) {
+    std::string message = std::string(who) + ":";
+    for (const AirframeIssue& i : list) {
+        message += " " + i.kind + "[" + std::to_string(i.index) + "]";
+        if (!i.field.empty()) message += "." + i.field;
+        message += ": " + i.message + ";";
+    }
+    return Error{Code::invalid_argument, message};
+}
+
 }  // namespace
 
 Result<PropulsionChain> airframe_propulsion_chain(const AirframeSpec& spec) {
@@ -1069,17 +1199,24 @@ Result<PropulsionChain> airframe_propulsion_chain(const AirframeSpec& spec) {
 
 std::vector<AirframeIssue> check_airframe(const AirframeSpec& spec) { return build(spec).issues.list; }
 
+Result<AirframeComposite> airframe_composite(const AirframeSpec& spec) {
+    Issues issues;
+    const PartList parts = checked_parts(spec, issues);
+    if (!issues.list.empty()) return std::unexpected(joined("airframe_composite", issues.list));
+    const Result<CompositeInertia> inertia = composite_inertia(parts.parts);
+    if (!inertia) {
+        return std::unexpected(
+            Error{Code::invalid_argument, "airframe_composite: airframe[0].parts: " + inertia.error().context});
+    }
+    AirframeComposite out;
+    out.inertia = *inertia;
+    for (const PartInertia& p : parts.parts) out.mass += p.mass;  // in gather order
+    return out;
+}
+
 Result<CompiledAirframe> compile_airframe(const AirframeSpec& spec) {
     Built b = build(spec);
-    if (!b.issues.list.empty() || !b.result) {
-        std::string message = "compile_airframe:";
-        for (const AirframeIssue& i : b.issues.list) {
-            message += " " + i.kind + "[" + std::to_string(i.index) + "]";
-            if (!i.field.empty()) message += "." + i.field;
-            message += ": " + i.message + ";";
-        }
-        return std::unexpected(Error{Code::invalid_argument, message});
-    }
+    if (!b.issues.list.empty() || !b.result) return std::unexpected(joined("compile_airframe", b.issues.list));
     return std::move(*b.result);
 }
 
