@@ -97,6 +97,23 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
     const std::array<FaceKind, 6> kinds = face_kinds(bc);
     set_kinds(s.mg, kinds);
     const ProjectionFloats floats = projection_floats(sh, rho, h);
+    solid_divergence(g, f, regions, floats, s.pcg.b);
+    remove_region_means(s.pcg.b, regions, sh);
+    std::copy(g.p.begin(), g.p.end(), s.pcg.x.begin());
+    GaugeCtx ctx{&regions, &sh};
+    const PcgResult solved = solve_pcg_to(s.mg, s.pcg, n_v, cg_cap, kResidualAnnounce,
+                                          PcgGauge{&gauge_regions, &ctx, regions.solid.data()});
+    std::copy(s.pcg.x.begin(), s.pcg.x.end(), g.p.begin());
+
+    subtract_gradient_with_apertures(g, kinds, floats.g_coef, f);
+    return {solved.residual, solved.iterations, solved.stalled};
+}
+
+}  // namespace
+
+void solid_divergence(const MacGrid& g, const SolidField& f, const FluidRegions& regions,
+                      const ProjectionFloats& floats, std::span<float> b) noexcept {
+    const GridShape& sh = g.shape;
     const float inv_dx = floats.inv_dx;
     const float b_coef = floats.b_coef;
     const auto flux = [&](uint32_t c, std::size_t idx, const std::vector<float>& vel) {
@@ -108,24 +125,21 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
             for (uint32_t i = 0; i < sh.nx; ++i) {
                 const std::size_t c = cell_index(sh, i, j, k);
                 if (regions.label[c] == kNoRegion) {
-                    s.pcg.b[c] = 0.0f;
+                    b[c] = 0.0f;
                     continue;
                 }
                 const float du = flux(0, u_index(sh, i + 1u, j, k), g.u) - flux(0, u_index(sh, i, j, k), g.u);
                 const float dv = flux(1, v_index(sh, i, j + 1u, k), g.v) - flux(1, v_index(sh, i, j, k), g.v);
                 const float dw = flux(2, w_index(sh, i, j, k + 1u), g.w) - flux(2, w_index(sh, i, j, k), g.w);
-                s.pcg.b[c] = b_coef * (((du + dv) + dw) * inv_dx);
+                b[c] = b_coef * (((du + dv) + dw) * inv_dx);
             }
         }
     }
-    remove_region_means(s.pcg.b, regions, sh);
-    std::copy(g.p.begin(), g.p.end(), s.pcg.x.begin());
-    GaugeCtx ctx{&regions, &sh};
-    const PcgResult solved = solve_pcg_to(s.mg, s.pcg, n_v, cg_cap, kResidualAnnounce,
-                                          PcgGauge{&gauge_regions, &ctx, regions.solid.data()});
-    std::copy(s.pcg.x.begin(), s.pcg.x.end(), g.p.begin());
+}
 
-    const float g_coef = floats.g_coef;
+void subtract_gradient_with_apertures(MacGrid& g, const std::array<FaceKind, 6>& kinds, float g_coef,
+                                      const SolidField& f) noexcept {
+    const GridShape& sh = g.shape;
     subtract_gradient_solids(
         sh.nx, sh.ny, sh.nz, kinds[kXMinus], kinds[kXPlus], g_coef, g.p,
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.u[u_index(sh, q, a, b)]; },
@@ -141,10 +155,7 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); },
         [&](uint32_t q, uint32_t a, uint32_t b) { return w_index(sh, a, b, q); }, f.theta[2], f.wall[2]);
-    return {solved.residual, solved.iterations, solved.stalled};
 }
-
-}  // namespace
 
 ProjectionFloats projection_floats(const GridShape& shape, float rho, float h) noexcept {
     ProjectionFloats f;

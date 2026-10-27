@@ -5,8 +5,9 @@
 // stencil() and weighted_stencil(), its CPU twin and the authority for every
 // expression). Imported by airflow_mg_smooth, airflow_mg_residual,
 // airflow_mg_restrict and airflow_mg_prolong, so the four read a level by one
-// rule (TD-9). The level table, the face kinds and every other params word
-// are airflow_params_layout's.
+// rule (TD-9), and by B5's airflow_pcg_apply, whose operator is level 0's
+// stencil over a CG vector (stencil_from()). The level table, the face kinds
+// and every other params word are airflow_params_layout's.
 //
 // WHERE A LEVEL LIVES (Core's B0 table). Level 0 is the grid's own arrays: p
 // in airflow_pressure, b in airflow_rhs, r in airflow_residual. Levels 1..L
@@ -88,11 +89,25 @@ struct Stencil {
     float diag;
 };
 
+// THE STENCIL'S SOURCE (plan B's B5, ruling 4; Physics, with Rendering's
+// review, 2026-10-26): what p_nb is read from. kStencilLevelP is the level's
+// own p (level_p()), which every multigrid kernel reads; any other value is
+// the offset, in floats, of one of airflow_pcg's vectors (airflow_pcg.slang)
+// on level 0, whose cells the CG's vectors share: pressure.cpp's
+// apply_operator() over a CG vector, with level 0's weights.
+static const uint kStencilLevelP = 0xFFFFFFFFu;
+
+float stencil_source(Level L, uint src, uint c) {
+    if (src == kStencilLevelP) return level_p(L, c);
+    return airflow_pcg[src + c];
+}
+
 // The neighbour sum and the diagonal of cell c, faces -x, +x, -y, +y, -z, +z
-// (pressure.cpp's stencil() and weighted_stencil()). A face to another cell,
-// or across a periodic axis of more than one cell, adds w p_nb and w; a
-// pressure outlet adds 2 w to the diagonal; a fixed-velocity face nothing.
-Stencil stencil(Level L, uint3 c) {
+// (pressure.cpp's stencil() and weighted_stencil()), p_nb read from `src`
+// (above). A face to another cell, or across a periodic axis of more than one
+// cell, adds w p_nb and w; a pressure outlet adds 2 w to the diagonal; a
+// fixed-velocity face nothing.
+Stencil stencil_from(Level L, uint3 c, uint src) {
     Stencil s;
     s.sum = 0.0;
     s.diag = 0.0;
@@ -105,7 +120,7 @@ Stencil stencil(Level L, uint3 c) {
             uint3 nb = c;
             if (!edge) {
                 nb[axis] = dir == 0u ? c[axis] - 1u : c[axis] + 1u;
-                s.sum += w * level_p(L, cell_at(L, nb));
+                s.sum += w * stencil_source(L, src, cell_at(L, nb));
                 s.diag += w;
                 continue;
             }
@@ -113,7 +128,7 @@ Stencil stencil(Level L, uint3 c) {
             if (kind == kFacePeriodic) {
                 if (L.n[axis] > 1u) {
                     nb[axis] = dir == 0u ? L.n[axis] - 1u : 0u;
-                    s.sum += w * level_p(L, cell_at(L, nb));
+                    s.sum += w * stencil_source(L, src, cell_at(L, nb));
                     s.diag += w;
                 }
             } else if (kind == kFacePressureOutlet) {
@@ -123,3 +138,6 @@ Stencil stencil(Level L, uint3 c) {
     }
     return s;
 }
+
+// The stencil over the level's own p: every multigrid kernel's.
+Stencil stencil(Level L, uint3 c) { return stencil_from(L, c, kStencilLevelP); }
