@@ -245,6 +245,12 @@ class GlTargetSink final : public TargetSink {
     // scripted tour steps the same on any machine. 0 restores the clock.
     void set_fixed_delta(float seconds) noexcept;
 
+    // A scripted run (the live tour): ImGui ignores the mouse (no hover, no
+    // tooltip) and the session sees the cursor off the view, so a pointer
+    // left over the window reaches no still and no check. The thumbnails
+    // check failed on a tooltip under a parked cursor (2026-10-27).
+    void set_scripted_input(bool on) noexcept;
+
     // Receives a presented frame: RGBA8, rows BOTTOM-UP as GL reads them, read
     // from the back buffer after the overlay is drawn and before the swap.
     using FrameTap = std::function<void(const uint8_t* rgba, uint32_t width, uint32_t height)>;
