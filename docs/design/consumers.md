@@ -14,6 +14,9 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **attach_solid_field() and the GPU preconditioner** (Physics, B5.2b, merged `f7a9a2a`).
+  - **On the CPU**, `physics::airflow::attach_solid_field(s, g, bc, field)` attaches a solid field already built for g's shape, reaching `set_solids()`' state bit for bit. `set_solids()` now calls it. Behaviour is unchanged: it refuses as `check_grid()` does, and refuses a field made for another shape.
+  - **On the GPU**, there's the `airflow_mg_restrict_full` kernel and `solids_chain`'s symmetric V(2,2) chain and init_solids hook. `projection_chain`'s `append_sweeps()` gains `black_first = false`, and the default records B2's commands unchanged.
 - **Props on the library drones** (Core, L7c1, merged `d8640b9`).
   - **The spec:** `AirframeSpec::rotor_parts` holds `RotorPartSpec{name, role, rotor, mount, mesh, min_feature}`, where `mount` is in the hub frame at psi 0. Each compiles to a massless `PartAttach::rotor` mesh part, placed after every rigid part.
   - **What changes:** only `parts_identity()`. Mass, inertia, drag and `model_identity()` are unchanged.
