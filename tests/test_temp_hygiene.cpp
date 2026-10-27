@@ -35,8 +35,12 @@ const std::string kPattern = std::string("temp_directory") + "_path";
 
 // The files allowed to call it, relative to tests/: the header that names
 // every temp path, and its own test, which checks those names against the
-// real temp directory and writes nothing there.
-constexpr const char* kAllowed[] = {"unique_temp.hpp", "test_unique_temp.cpp"};
+// real temp directory and writes nothing there; and one product use with its
+// own argument (the lead's grant, 2026-10-22): the editor's import staging
+// (N15, ImportStaging), a folder per workspace under spade-editor-imports
+// named by a random 64-bit token and removed with the workspace, so no two
+// runs share a name.
+constexpr const char* kAllowed[] = {"unique_temp.hpp", "test_unique_temp.cpp", "../sandbox/editor_workspace.hpp"};
 
 // The text with // and /* */ comments blanked, keeping line breaks so line
 // numbers survive. String literals are not parsed; a "//" inside one only

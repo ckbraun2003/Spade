@@ -365,6 +365,80 @@ TEST(SandboxEndGoalMeasure, TheRestGapIsTheLeastDistanceToTheWorldWithoutTheObje
     EXPECT_TRUE(std::isnan(eg::rest_gap(world, {})));
 }
 
+// A box collider (half extents 0.5, 0.4, 0.3) standing `bottom` above the
+// ground, and a mesh like its surface nets: a grid over its bottom face and its
+// top face's corners, each `inset` inside the surface.
+struct RestCase {
+    spade::SdfProgram collider = program({leaf(spade::SdfPrim::box)});
+    glm::mat4 pose{1.0f};
+    std::vector<glm::vec3> vertices;
+};
+
+[[nodiscard]] RestCase box_rest_case(float bottom, float inset) {
+    RestCase c;
+    c.pose[3] = glm::vec4(0.0f, bottom + 0.4f, 0.0f, 1.0f);
+    for (const float x : {-0.4f, -0.2f, 0.0f, 0.2f, 0.4f}) {
+        for (const float z : {-0.2f, 0.0f, 0.2f}) c.vertices.emplace_back(x, bottom + inset, z);
+    }
+    for (const float x : {-0.4f, 0.4f}) {
+        for (const float z : {-0.2f, 0.2f}) c.vertices.emplace_back(x, bottom + 0.8f - inset, z);
+    }
+    return c;
+}
+
+// The bias the march removes: a mesh 6 mm inside reads 6 mm high, past the
+// +5 mm band, while the collider marched under its lowest vertices reads the
+// true 3 mm.
+TEST(SandboxEndGoalMeasure, AnSdfObjectRestsOnItsCollidersLowestPoints) {
+    const RestCase c = box_rest_case(0.003f, 0.006f);
+    EXPECT_NEAR(eg::rest_gap(ground(), c.vertices), 0.009f, 1e-6f);
+    const std::vector<glm::vec3> points = eg::collider_rest_points(c.collider, c.pose, c.vertices);
+    ASSERT_EQ(points.size(), 15u);  // the bottom grid; the top corners are past the band
+    for (const glm::vec3& p : points) {
+        EXPECT_LE(p.y, 0.003f + 1e-6f) << p.x << ", " << p.z;
+        EXPECT_GT(p.y, 0.003f - eg::kRestMarchTolerance) << p.x << ", " << p.z;
+    }
+    EXPECT_NEAR(eg::rest_gap(ground(), points), 0.003f, eg::kRestMarchTolerance);
+}
+
+// Posed by a yaw of 90 degrees and a scale of 2, the box is 1.2 by 1.6 by 2.0
+// and buried 1 mm.
+TEST(SandboxEndGoalMeasure, TheCollidersPoseTurnsAndScalesIt) {
+    RestCase c;
+    c.pose = glm::mat4(glm::vec4(0.0f, 0.0f, -2.0f, 0.0f), glm::vec4(0.0f, 2.0f, 0.0f, 0.0f),
+                       glm::vec4(2.0f, 0.0f, 0.0f, 0.0f), glm::vec4(1.0f, 0.799f, -2.0f, 1.0f));
+    for (const float x : {-0.5f, 0.0f, 0.5f}) {
+        for (const float z : {-0.9f, 0.0f, 0.9f}) c.vertices.emplace_back(1.0f + x, 0.003f, -2.0f + z);
+    }
+    const std::vector<glm::vec3> points = eg::collider_rest_points(c.collider, c.pose, c.vertices);
+    ASSERT_EQ(points.size(), 9u);
+    EXPECT_NEAR(eg::rest_gap(ground(), points), -0.001f, eg::kRestMarchTolerance);
+}
+
+// A column beside the object meets nothing and gives no point; a vertex set
+// whose lowest column starts inside the object can't be the object's.
+TEST(SandboxEndGoalMeasure, AColumnBesideTheObjectGivesNoPoint) {
+    RestCase c = box_rest_case(0.0f, 0.004f);
+    c.vertices.emplace_back(2.0f, 0.004f, 0.0f);
+    EXPECT_EQ(eg::collider_rest_points(c.collider, c.pose, c.vertices).size(), 15u);
+    const std::vector<glm::vec3> beside{{2.0f, 0.004f, 0.0f}};
+    EXPECT_TRUE(eg::collider_rest_points(c.collider, c.pose, beside).empty());
+    const std::vector<glm::vec3> top_only{{0.0f, 0.796f, 0.0f}};  // 0.25 m under it is inside the box
+    EXPECT_TRUE(eg::collider_rest_points(c.collider, c.pose, top_only).empty());
+}
+
+TEST(SandboxEndGoalMeasure, NoRestPointsFromBadInputs) {
+    const RestCase c = box_rest_case(0.0f, 0.004f);
+    EXPECT_TRUE(eg::collider_rest_points(c.collider, c.pose, {}).empty());
+    EXPECT_TRUE(eg::collider_rest_points(spade::SdfProgram{}, c.pose, c.vertices).empty());
+    std::vector<glm::vec3> nan_vertex = c.vertices;
+    nan_vertex[2].x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_TRUE(eg::collider_rest_points(c.collider, c.pose, nan_vertex).empty());
+    glm::mat4 stretched = c.pose;
+    stretched[0] *= 2.0f;  // not a uniform scale
+    EXPECT_TRUE(eg::collider_rest_points(c.collider, stretched, c.vertices).empty());
+}
+
 TEST(SandboxEndGoalMeasure, ANonFinitePointMakesTheRestGapNaN) {
     const spade::SdfProgram world = ground();
     const spade::render::RenderScene scene = box_scene(0.0f);
@@ -548,6 +622,24 @@ TEST(SandboxEndGoalImport, NamesAnUnnamedMeshByItsFilesStem) {
     m.shown_name = "park_bench";
     const eg::Verdict v = eg::import_named(m);
     EXPECT_TRUE(v.ok) << v.detail;
+}
+
+// read_gltf names an object by its node first, then its mesh
+// (engine/world/mesh_import/gltf.cpp), and the editor shows that name, so the
+// node's name decides when it has one (Interface, N15, 2026-10-22).
+TEST(SandboxEndGoalImport, TakesTheNodesNameBeforeTheMeshs) {
+    eg::ImportShown m = good_import();
+    m.node_name = "bench_left";
+    m.shown_name = "bench_left";
+    const eg::Verdict v = eg::import_named(m);
+    EXPECT_TRUE(v.ok) << v.detail;
+    m.shown_name = "bench";  // the mesh's name, where the node has its own
+    const eg::Verdict mesh = eg::import_named(m);
+    EXPECT_TRUE(judged_fail(mesh)) << mesh.detail;
+    m.mesh_name.clear();  // a named node over an unnamed mesh
+    m.shown_name = "bench_left";
+    const eg::Verdict node = eg::import_named(m);
+    EXPECT_TRUE(node.ok) << node.detail;
 }
 
 TEST(SandboxEndGoalImport, FailsAWrongNameOrSourceOrSidecar) {

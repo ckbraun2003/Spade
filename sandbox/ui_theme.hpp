@@ -28,6 +28,8 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include "text_fit.hpp"
+
 namespace spade::sandbox::ui {
 
 // ---- the scales ----
@@ -96,8 +98,10 @@ inline constexpr ImVec4 kWarning{0.95f, 0.71f, 0.29f, 1.00f};
 // z blue, the accent); the handle under the cursor or dragged in the warning
 // colour, as Unity marks it.
 [[nodiscard]] inline ImU32 axis_colour(int axis, bool hot) {
-    static constexpr ImVec4 kAxes[3] = {{0.89f, 0.32f, 0.29f, 1.00f}, {0.45f, 0.78f, 0.33f, 1.00f}, kAccent};
-    return ImGui::ColorConvertFloat4ToU32(hot ? kWarning : kAxes[axis < 0 || axis > 2 ? 0 : axis]);
+    // 3: an airflow region's box (editor_airflow.hpp's kRegionLine), a pale grey.
+    static constexpr ImVec4 kAxes[4] = {
+        {0.89f, 0.32f, 0.29f, 1.00f}, {0.45f, 0.78f, 0.33f, 1.00f}, kAccent, {0.80f, 0.82f, 0.86f, 0.85f}};
+    return ImGui::ColorConvertFloat4ToU32(hot ? kWarning : kAxes[axis < 0 || axis > 3 ? 0 : axis]);
 }
 
 inline void apply_theme() {
@@ -227,25 +231,115 @@ inline bool begin_properties(const char* id, float label_width = kLabelWidth) {
 
 inline void end_properties() { ImGui::EndTable(); }
 
+// Graded rows (INT-14): the label, its grade in a fixed column so a long
+// value never pushes it out of view, then the value. Ended by end_properties().
+inline constexpr float kGradeWidth = 20.0f * kBase;
+
+inline bool begin_graded_properties(const char* id) {
+    if (!ImGui::BeginTable(id, 3, ImGuiTableFlags_SizingStretchProp)) return false;
+    ImGui::TableSetupColumn("label", ImGuiTableColumnFlags_WidthFixed, kLabelWidth);
+    ImGui::TableSetupColumn("grade", ImGuiTableColumnFlags_WidthFixed, kGradeWidth);
+    ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+    return true;
+}
+
+// A table cell's text, placed as ImGui::Text places it but ended with an
+// ellipsis at the cell's right edge, or the panel's when that comes first,
+// so it never runs past its panel (the lead, 2026-10-22, after the part
+// inspector's values ran off it). Every property table's cell text goes
+// through here (UiConventions). Dim for a label or a grade, warning for an
+// assumed one. The caller shows the whole text on hover when it matters.
+enum class Tone { normal, dim, warning };
+
+inline void cell_text(std::string_view text, Tone tone = Tone::normal) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+    const char* begin = text.data();
+    const char* end = text.data() + text.size();
+    const ImVec2 size = ImGui::CalcTextSize(begin, end);
+    const ImVec2 at(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const float right =
+        std::min(window->DC.CursorPos.x + std::max(ImGui::GetContentRegionAvail().x, 0.0f), window->InnerClipRect.Max.x);
+    const float width = std::max(std::min(size.x, right - at.x), 0.0f);
+    const ImRect box(at, ImVec2(at.x + width, at.y + size.y));
+    ImGui::ItemSize(ImVec2(width, size.y), 0.0f);
+    if (!ImGui::ItemAdd(box, 0)) return;
+    if (tone != Tone::normal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, tone == Tone::warning ? kWarning
+                                                                     : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    }
+    ImGui::RenderTextEllipsis(window->DrawList, at, ImVec2(right, at.y + size.y), right, right, begin, end, &size);
+    if (tone != Tone::normal) ImGui::PopStyleColor();
+}
+
+// cell_text(), cut from the LEFT instead (text_fit.hpp's left_cut()): ImGui's
+// ellipsis first, then the longest tail that fits, for a field path whose
+// end tells rows apart ("...0].hub.position.x"; the lead, 2026-10-26). The
+// caller shows the whole on hover.
+inline void cell_path(std::string_view text, Tone tone = Tone::normal) {
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems) return;
+    const ImVec2 at(window->DC.CursorPos.x, window->DC.CursorPos.y + window->DC.CurrLineTextBaseOffset);
+    const float right =
+        std::min(window->DC.CursorPos.x + std::max(ImGui::GetContentRegionAvail().x, 0.0f), window->InnerClipRect.Max.x);
+    ImFont* font = ImGui::GetFont();
+    const float scale = ImGui::GetFontSize() / font->FontSize;
+    const float ellipsis = font->EllipsisWidth * scale;
+    const auto measure = [](std::string_view s) { return ImGui::CalcTextSize(s.data(), s.data() + s.size()).x; };
+    const std::size_t cut = left_cut(text, std::max(right - at.x, 0.0f), ellipsis, measure);
+    const std::string_view tail = text.substr(cut);
+    const float tail_at = at.x + (cut > 0 ? ellipsis : 0.0f);
+    const ImVec2 size(std::min(tail_at - at.x + measure(tail), std::max(right - at.x, 0.0f)), ImGui::GetTextLineHeight());
+    ImGui::ItemSize(size, 0.0f);
+    if (!ImGui::ItemAdd(ImRect(at, ImVec2(at.x + size.x, at.y + size.y)), 0)) return;
+    if (tone != Tone::normal) {
+        ImGui::PushStyleColor(ImGuiCol_Text, tone == Tone::warning ? kWarning
+                                                                     : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    }
+    if (cut > 0) {
+        ImVec2 dot = at;
+        for (int i = 0; i < font->EllipsisCharCount; ++i, dot.x += font->EllipsisCharStep * scale) {
+            font->RenderChar(window->DrawList, ImGui::GetFontSize(), dot, ImGui::GetColorU32(ImGuiCol_Text),
+                             font->EllipsisChar);
+        }
+    }
+    ImGui::RenderTextClipped(ImVec2(tail_at, at.y), ImVec2(right, at.y + size.y), tail.data(), tail.data() + tail.size(),
+                             nullptr, ImVec2(0.0f, 0.0f));
+    if (tone != Tone::normal) ImGui::PopStyleColor();
+}
+
+// A caption drawn into `draw` at `at`, ended with cell_text()'s ellipsis at
+// `width` (a library tile's name under its image; the lead, 2026-10-22). Dim
+// for an item that isn't placed. The caller shows the whole of it on hover.
+inline void caption(ImDrawList* draw, ImVec2 at, float width, std::string_view text, bool dim) {
+    const float right = at.x + std::max(width, 0.0f);
+    if (dim) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    ImGui::RenderTextEllipsis(draw, at, ImVec2(right, at.y + ImGui::GetTextLineHeight()), right, right, text.data(),
+                              text.data() + text.size(), nullptr);
+    if (dim) ImGui::PopStyleColor();
+}
+
 // Starts a row: the label on the left, then the next widget fills the value
 // column. Give that widget a hidden label ("##wind").
 inline void property_row(const char* label) {
     ImGui::TableNextRow();
     ImGui::TableSetColumnIndex(0);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextDisabled("%s", label);
+    cell_text(label, Tone::dim);
     ImGui::TableSetColumnIndex(1);
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
 
-// A read-only row: the label, then formatted text.
+// A read-only row: the label, then formatted text, elided as cell_text().
 inline void value_row(const char* label, const char* format, ...) IM_FMTARGS(2);
 inline void value_row(const char* label, const char* format, ...) {
     property_row(label);
+    char text[512];
     va_list args;
     va_start(args, format);
-    ImGui::TextV(format, args);
+    ImFormatStringV(text, sizeof text, format, args);
     va_end(args);
+    cell_text(text);
 }
 
 // A list row; a selected row takes the accent.
@@ -267,6 +361,10 @@ inline void status_text(std::string_view text) {
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
 }
+
+// A value's grade (INT-14): an assumed one in the warning colour, so it is
+// never shown as measured; any other dimmed.
+inline void grade_text(std::string_view text, bool assumed) { cell_text(text, assumed ? Tone::warning : Tone::dim); }
 
 // Vertical room between groups, instead of a separator.
 inline void gap() { ImGui::Dummy(ImVec2(0.0f, kBase)); }
@@ -311,7 +409,8 @@ inline void build_layout(ImGuiID dockspace, Layout layout) {
         const ImGuiID top = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Up, bar, nullptr, &centre);
         const ImGuiID left = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Left, 0.18f, nullptr, &centre);
         const ImGuiID right = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Right, 0.30f, nullptr, &centre);
-        const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.24f, nullptr, &centre);
+        // The library's strip: a category, a 96-pixel tile and its name (N14b).
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(centre, ImGuiDir_Down, 0.30f, nullptr, &centre);
         if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(top)) {
             ImGuiDockNodeFlags bar_flags = node->LocalFlags;
             bar_flags |= ImGuiDockNodeFlags_NoTabBar;

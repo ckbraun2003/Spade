@@ -1,0 +1,34 @@
+part_version: 1
+battery:
+  cells_series: 6
+  cells_parallel: 1
+  cell_capacity: 1.3
+  cell_resistance: 0.004
+  cell_voltage_nominal: 3.7
+  cell_voltage_full: 4.2
+  cell_voltage_cutoff: 3.3
+  ocv_table:
+    - [0, 3.3]
+    - [0.2, 3.6]
+    - [0.5, 3.75]
+    - [0.8, 3.95]
+    - [1, 4.2]
+  c_rating: 75
+  polarization_resistance: 0
+  polarization_capacitance: 0
+  mass: 0.24
+  shape: {kind: box, size: [0.075, 0.03, 0.035]}
+sources:
+  cells_series: {grade: assumed, note: "6S; no pack listing cited"}
+  cells_parallel: {grade: assumed, note: "one cell per series step"}
+  cell_capacity: {grade: assumed, note: "1300 mAh"}
+  cell_resistance: {grade: assumed, note: "typical of a 1300 mAh cell"}
+  cell_voltage_nominal: {grade: assumed, note: "LiPo nominal"}
+  cell_voltage_full: {grade: assumed, note: "LiPo full"}
+  cell_voltage_cutoff: {grade: assumed, note: "a usual LiPo cutoff"}
+  ocv_table: {grade: assumed, note: "the chain's current LiPo shape (ruling 8)"}
+  c_rating: {grade: assumed, note: "typical of a 1300 mAh FPV pack; 97.5 A binds slightly at full throttle"}
+  polarization_resistance: {grade: assumed, note: "not modelled (0)"}
+  polarization_capacitance: {grade: assumed, note: "not modelled (0)"}
+  mass: {grade: assumed, note: "the plan's ~240 g; no listing cited"}
+  shape: {grade: assumed, note: "a 75 x 30 x 35 mm pack"}

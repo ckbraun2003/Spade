@@ -328,8 +328,8 @@ struct ImuSample {
 // value cannot answer "derived from WHAT?" on its own, and the alternative is
 // a later author recovering tau by inverting a float.
 //
-// That precompute is why sensor_gnss.slang contains no exp and no divide --
-// fp32_math.slang:83-88 records that an OpFDiv is DEVICE-DEPENDENT, and a
+// That precompute is why sensor_gnss.slang's recursion has no exp and no divide --
+// fp32_math.slang:118-119 records that an OpFDiv is DEVICE-DEPENDENT, and a
 // recursive bias filter accumulates an ulp rather than tolerating it.
 // ---------------------------------------------------------------------------
 // @cpp-type   spade::sensors::GnssSensorRow

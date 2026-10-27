@@ -49,6 +49,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -72,6 +73,12 @@ inline constexpr uint32_t kLiveRunSaveVersion = 2;
 inline constexpr float kHoldRateDegPerS = 180.0f;
 inline constexpr uint64_t kFramesPerSecond = 30;
 
+// N15: the role the editor gives a part imported as a solid. A part of this
+// role the grid can't resolve is refused by name, as any part is, and the
+// refusal adds the other way out: marking it drawn only
+// (vehicles::kDrawnOnlyRole), which leaves it out of the air.
+inline constexpr std::string_view kImportedPartRole = "imported";
+
 struct LiveState {
     double t_s = 0.0;  // simulated, whole steps of h
     uint64_t steps = 0;
@@ -85,12 +92,24 @@ struct LiveState {
 
 // What a run's solids are (LiveRun::solids()).
 struct LiveSolids {
-    bool any = false;                 // the model's rigid parts are in the grid
+    bool any = false;                 // the model's rigid parts, but the drawn-only, are in the grid
+    std::vector<std::string> drawn_only;  // the parts drawn but not in the air (N15), in posed order
     std::string run_line;             // set_solids()' own line: parts, walls, sheets, leaks
     uint32_t solid_cells = 0;         // the grid's solid cells: the mask the volume publishes with
     float pressure_residual = 0.0f;   // the last step's max|r| / max|b|; 0 without solids
+    uint32_t pressure_iterations = 0;  // the last step's CG iterations; 0 without solids
     uint64_t unconverged_steps = 0;   // steps whose residual was past 1e-4, since start
+    uint64_t stalled_steps = 0;       // of those, the CG stalled at fp32's floor (P2d)
+    uint64_t capped_steps = 0;        // of those, the CG reached its cap: the two sum to unconverged_steps
 };
+
+// What a run says of its solids' pressure, "" when no step was unconverged:
+// how many steps were, how many of them stalled at fp32's floor and how many
+// stopped at the CG's cap of `cap` iterations, naming only what occurred
+// (P2d; the lead, 2026-10-22), then the last residual. For example "pressure
+// unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64
+// iterations (last max|r|/max|b| 2.0e-03)".
+[[nodiscard]] std::string solids_health_line(const LiveSolids& solids, uint32_t cap);
 
 struct LiveFrame {
     uint64_t frame = 0;  // 1 for the first
@@ -159,9 +178,15 @@ class LiveRun {
     // 128³, dx 12.5 mm, R/dx 6 · motors at their current limit" (UTF-8).
     [[nodiscard]] std::string run_label() const;
 
-    // run_label(), then " · t = 0.250 s", then how many steps the pressure
-    // was unconverged on, when any were.
+    // run_label(), then " · t = 0.250 s", then pressure_line() when it says
+    // anything.
     [[nodiscard]] std::string run_line() const;
+
+    // solids_health_line() for this run, its cap the one the solve runs to:
+    // the larger of the CG's floor and its cap (pcg clamps a cap to its
+    // floor), or the test's limit. "" while every step's pressure converged.
+    // The airflow view's status line shows it in the warning tone.
+    [[nodiscard]] std::string pressure_line() const;
 
     // The controls flown so far, a point wherever they changed: the live
     // session as a program, for "queue at higher fidelity".
@@ -184,6 +209,26 @@ class LiveRun {
     // state of charge), model or parts, and a model without its chain.
     [[nodiscard]] static Result<LiveRun> restore(const std::filesystem::path& file, const ResolvedCase& resolved,
                                                  const vehicles::ModelType& model);
+
+    // FOR TESTS ONLY: C8q's one-ulp ensemble (Test/Docs' end-goal checks,
+    // "Its verdict is an ensemble's"). Each step, after the rotors' discs are
+    // spread (none without rotors) and before the fluid steps, `nudge` gets
+    // this step's velocity increments (the u, v and w faces) to move a few
+    // of them by an ulp. No host sets it. Unset, the default, a run is the
+    // same to the bit. It is not saved: a restored run starts unset. nullptr
+    // unsets it.
+    using TestIncrementNudge = void (*)(void* context, std::span<float> du, std::span<float> dv, std::span<float> dw);
+    void set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept;
+
+    // FOR TESTS ONLY: at most `n` CG iterations per solids step, so a test can
+    // force a capped solve (P2d; the lead's ruling, 2026-10-22). In a run with
+    // solids it sets each fluid step's FluidConfig::cg_cap AND n_v (the CG's
+    // floor) to `n`, passed straight to fluid_step: pcg clamps a cap to its
+    // floor, and at the floor of 8 every case a test can size converges
+    // (~1e-6). A run without solids is left alone (there n_v is plan A's
+    // V-cycles). No host sets it. 0, the default, unsets it: a run is the same
+    // to the bit. It is not saved: a restored run starts unset.
+    void set_test_solids_max_iterations(uint32_t n) noexcept;
 
   private:
     struct Impl;

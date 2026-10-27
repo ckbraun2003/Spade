@@ -206,7 +206,7 @@ void DroneSession::attach(GlTargetSink& sink) {
 DroneSession::~DroneSession() {
     if (sink_ != nullptr) {
         sink_->attach_drone(nullptr);
-        sink_->set_gap_line({});
+        sink_->set_status_line({});
     }
 }
 
@@ -237,7 +237,7 @@ spade::Result<void> DroneSession::frame(const FrameInput& in, float dt) {
         drone_frame(scene_, binding_, *drone_, panel_.readouts.orientation, blur_);
 
     // SL10: the HUD names what the active path does not draw.
-    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
+    sink_->set_status_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
     const auto r0 = std::chrono::steady_clock::now();
     if (gpu_) {
         sink_->begin_gpu_frame();
@@ -305,7 +305,7 @@ void AirflowSession::attach(GlTargetSink& sink) {
 }
 
 AirflowSession::~AirflowSession() {
-    if (sink_ != nullptr) sink_->set_gap_line({});
+    if (sink_ != nullptr) sink_->set_status_line({});
 }
 
 void AirflowSession::show_slice() {
@@ -375,7 +375,9 @@ spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
     }
 
     const spade::render::Camera rc = camera_.to_render_camera();
-    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
+    const airflow::StatusLine status = airflow::status_line(
+        run_->pressure_line(), gpu_ ? render_gap_line(GpuRenderer::unhonoured(options)) : std::string{});
+    sink_->set_status_line(status.text, status.warning);
     const auto r0 = std::chrono::steady_clock::now();
     if (gpu_) {
         // Uploaded every frame: the flow layers and the bound parts change

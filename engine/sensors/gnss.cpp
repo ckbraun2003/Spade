@@ -75,10 +75,10 @@ namespace {
 //
 // That keeps the Slang twin's recursion exact BY CONSTRUCTION: the multiply is
 // exact, and what differs across backends is only the draws, which CORE-3
-// bands at their source (TD-14). shaders/fp32_math.slang:83-88 is explicit that "an OpFDiv is
-// not merely less accurate, it is DEVICE-DEPENDENT" -- which is why log32_div()
-// is a restoring integer long division, and it is domain-restricted and must
-// not be reached for as a general divide. Other kernels do divide
+// bands at their source (TD-14). shaders/fp32_math.slang:118-119 is explicit that "an OpFDiv is
+// not merely less accurate, it is DEVICE-DEPENDENT" -- which is why
+// fp32_math.slang's div32_ftz is the exact division, the device's estimate
+// corrected in integers. Other kernels do divide
 // (collision_dynamic.slang), but those are BANDED physics paths where an ulp
 // sits inside a band. A RECURSIVE BIAS FILTER DOES NOT TOLERATE ERROR, IT
 // ACCUMULATES IT: an ulp of retention error compounds on every emission and

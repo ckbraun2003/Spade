@@ -33,10 +33,10 @@
   - Placing a library object adds exactly one asset, under a name no other asset has.
   - Its x and z equal the pick point's, to 1 mm.
   - It **rests on the picked surface,** whether that is the ground or another object. Measured with the scene's SDF without the object, the gap from its lowest collider point to the surface beneath lies within [−2, +5] mm.
-  - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. A gate (a torus and two posts) is three. The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
+  - It is **drawn**: the render scene gains one drawable per union primitive of the object's collider, plus one per CSG root (as `scene_from_world()` splits a collider), or one per mesh for an import. The library's gate is one CSG frame, a box minus a box, so it is one drawable (Interface, N15, 2026-10-22). The expected count is taken from the object's collider, not from `scene_from_world()`'s output (TD-4). Each drawable sits at the asset's pose to 1e-5 m, with the asset's material.
   - After 1.0 s of Run it has moved no more than 10 mm and tilted no more than 2°.
   - *Catches:* the tour's dropped builder checks `on-ground` and `rendered`; a buried, floating or doubled object; an object placed but not drawn.
-- **import-named:** the imported object's name is the glTF mesh's name, or the file's stem when the mesh has none, and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
+- **import-named:** the imported object's name is `read_gltf`'s, as the editor shows it: the glTF node's name, else its mesh's, else the file's stem when it has neither (Interface, N15, 2026-10-22; it read the mesh's alone before, which failed a correct import whose node and mesh are named differently), and the source shown is the imported path. The `.spmesh` sidecar it wrote loads back with the vertex and triangle counts `read_gltf` read. *Catches:* an unnamed import; a sidecar not written or not readable.
 - Known-open entry: `mesh-contact-open` (§6 of the design).
 
 ## 4. `editor.fly`
@@ -57,6 +57,7 @@
   - *Lower bound 0.5:* the prediction uses the static thrust, but the rotor model lowers thrust in climb. Its inflow closure λ(V_c / v_h), with λ(x + λ) = 1, gives λ ≈ 0.84 at 2 m/s.
     - Simulated for the reference quad (point mass, λ, ground effect and C_D A = 0.01 m²), the ratio Δh / Δh_pred from 2R up is 0.70 to 0.71 at F_y = 1.1, 1.2 and 1.4 m g. Drag at these speeds changes it by under 0.01.
     - So 0.5 leaves 0.2 for frame-rate integration and anything the point mass leaves out.
+    - This holds for moderate climb speeds only, as simulated above. At full throttle the reference quad climbs at about 29 m/s, where drag is no longer small: N17's `editor.fly` scored 0.498 there, just under 0.5. Physics agrees that is physical, not a defect (the lead, 2026-10-22). The step is therefore staged as a 1.3 m g throttle step (Interface, N17, merged `4f25016`), which scores 0.696. A full-throttle climb below 0.5 is staged outside the premise and isn't a failure. Any later use at higher thrust needs the bound derived again first, with drag in it.
     - A pinned, paused or stuck drone, or thrust that never reaches the body, gives Δh ≈ 0.
   - *Upper bound 1.10:* out of ground effect, nothing in the simulation lifts beyond the rotors' static thrust, and inflow only lowers it. Missing gravity gives 11 × Δh_pred at the premise's minimum thrust, and thrust applied twice gives over 2×.
 - **follows-attitude:**
@@ -104,10 +105,40 @@ LiveRun, drone held (design decision 1), until P2b.
     - a disc misplaced by more than its slipstream's radius (about 0.73R at 2R below);
     - a thrust off by ×2 or more, where the true bias is 10% or less.
   - **C8's band where it holds, as C8q (approved by the lead, 2026-10-19: an opt-in validation record, run in a quiet window):**
-    - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), inviscid with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above.
-    - The band: each rotor within C8's 10%, and the four within 10% of their mean. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the mutual band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run).
+    - The setup: the reference quad, held at C8's R/dx 10 (128³ in a 0.975 m box), with h = dx/8 as in C8, still air, no floor. The measure, development rule and window are the same as above. It runs on `LiveRun`, the stepping core behind the editor's airflow chapter.
+      - **Air's viscosity, not inviscid** (Physics, 2026-10-22, before any run). ν is the case's 1.46e-5 m²/s: the case refuses ν ≤ 0, and this is the editor's real value. The cell Reynolds number is about 5300, effectively inviscid, and C8's 10% is unchanged. The record states ν as a difference from C8, ruled immaterial before the run: viscous spreading reaches about 0.05R by 0.5 s, and the probe disc's edge sits about 0.23R inside the slipstream.
+      - **The model's parts cleared: no solids** (Physics, 2026-10-22, before any run). This is what the editor's airflow chapter flies (`sandbox/airflow_live.hpp`), and it keeps C8's bare-disc premise. With the body in the grid, the 10% wouldn't hold as a validation claim:
+        - the motor and arm shadow about 20% of each probe disc;
+        - the body sits 0.66 dx under the inboard 11% of each disc;
+        - with solids the pressure solve is MGPCG, not plan A's;
+        - C8 at +6.0% leaves only 4% of headroom.
+
+        The body-in case stays with `downwash` (±25%). One body-in run, report only and with no band, may run in a quiet window. A band ever set from it is a regression band (it catches change), never a validation band (01).
+    - **The bands, as changed on 2026-10-22.** This is Physics' proposal with the lead's approval. It was made after the first ensemble's MISS, and before the new banded measure's first run.
+      - **Banded: rotor 0 alone,** in the quad's own `LiveRun` case: cff9429's box, seeds and window.
+        - The hover throttle is trimmed on the four-rotor model, so rotor 0 spins as it does in the quad.
+        - Rotors 1 to 3 push nothing. Their thrust coefficient is the least normal float, since a model refuses 0, and their torque is 0.
+        - Rotor 0 keeps its own torque, as it flies, so the path tests the swirl too.
+        - The reference is momentum theory's v_h (1 + 2/√5), and the band is C8's [0.9, 1.1]: the same disc and the same measure as C8.
+        - It hasn't run with its torque yet. The only number so far is torque-free: 1.0617. Physics expects about 4% lower with the swirl, inside the band. That is an expectation, not a measure.
+      - **Report only: each rotor's ratio in the four-rotor quad,** recorded as the four rotors together: their wakes' interaction and the open box's response to four times the flux, not separated. It has no closed-form reference. Per-rotor momentum theory assumes an isolated wake, and the quad's rotor tips are 0.9R apart. A "quad reference" written now would be fitted to our own result, so none is set (01).
+      - **Banded, unchanged: the symmetry band,** the four rotors within 10% of their mean, in the four-rotor runs. The layout is symmetric under quarter turns, and the spin direction is second order on the axial velocity. The four are equal only statistically, though: each pair is a mirror image with its spin flipped, and an inviscid wake averaged over 0.20 s can scatter more than 5%. So the band is 10%, not the 5% first proposed (Physics, 2026-10-19, before any run). It held at 0.0009.
+      - **Why** (the record, `c8q-reference-quad.md`):
+        - The first ensemble, at cff9429, read every rotor at 0.816 to 0.817 of momentum theory. That is a MISS, and the record keeps it as it came.
+        - Two diagnostics, one run each (report only), not ensembles. Without the discs' torque, the four read 0.846 to 0.857, so the swirl accounts for about 4%. Rotor 0 alone, without torque, read 1.0617, C8's +5.7% within half a percent.
+        - So the engine's disc path stands, and the deficit comes with the four rotors together.
+        - Linear mutual induction gives only about 3% of it. That treats each neighbour's inflow as a sink at its disc, with the neighbours at 2.89R and 4.08R and the probe 2R below.
+        - The rest is the wakes' mixing or the open box's response to four times the flux, and nothing yet separates the two.
+        - The four-wake reference is the measured-data case queued in the demonstration plan (item 10, master `2f29a32`).
+        - The reference stays momentum theory and the band stays C8's. Nothing was widened or shifted to take in the 0.81.
+      - **What C8q no longer claims:** the quad's four-rotor downwash is reported, not validated against a reference. The validation claim is the per-rotor path through `LiveRun`: the model's rotor rows, their discs, the fluid, the published volume and the probe, at C8's accuracy.
+      - **Was** (2026-10-19 to 2026-10-22): each of the four rotors within C8's 10%, and the four within 10% of their mean.
     - It appends a validation record to `tests/data/airflow/records/c8q-reference-quad.md`. The record also reports the observed mutual spread, (max − min) / mean of the four rotors' means, as a number. Any later tightening is then set in advance from evidence: for example, a run at a 0.5 s window with its band fixed before it runs (the lead, 2026-10-19).
-    - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release. It's saved and restored across 10-minute chunks.
+    - **Its verdict is an ensemble's** (the lead, 2026-10-22, before its first run; 01-verification, "A case judged past its horizon"; `2026-10-22-c8-spread.md`). The window lies past the wake's horizon `T_p`, so one run is one trajectory, and on C8 a 1-ulp nudge moved a one-run verdict across the band.
+      - Four runs that differ only by a nudge in the test, as C8's: run 0 as it is, and three with 1 ulp up on 110 of the discs' increments, each from its own seed, all fixed before the first run. The nudge goes in through `LiveRun::set_test_increment_nudge()`, a test-only hook that is never saved and leaves an unset run the same to the bit (the lead's grant, on Interface's review, 2026-10-22).
+      - Four, not C8's eight, because each run is about 35 minutes. On C8 the 0.5R disc's spread across 16 runs was an sd of 0.38% (`2026-10-22-c8-spread.md`), against a 10% band.
+      - Each banded measure must hold on the ensemble's mean and on the worst run. That is rotor 0 alone over its four runs, and the symmetry band over the four-rotor runs (the lead, 2026-10-22). So C8q runs two ensembles of four, rotor 0 alone and the quad, each about 19 minutes on four threads. The record reports each rotor's spread across the runs.
+    - It's heavy: 4 times C8's cells and 1.4 times its steps, so about 5.5 times C8's 6-minute run, roughly 35 minutes in release, per run. That is an estimate: two steps are timed in one short job before the ensemble's job is sized (the lead, 2026-10-22). Timed: 1.77 s a step, so about 16 minutes for a run's 526 steps. A stopped job is re-queued whole. A run resumes from its save only where the job itself resumes from one, as D1's film does; C8q's job doesn't (the lead, 2026-10-22).
     - Falling outside 10% is a finding for Physics, not a change to the band.
 - **downwash-present** (on screen, 32³), the cheap a-priori check on the live view. For each rotor i:
   - The point, measure, reference, premise, development and window are `downwash`'s, at the live region's R/dx, which must be 2 or more.
@@ -154,6 +185,12 @@ Test/Docs owns these, at Interface's request, so a step never measures what its 
     - So the end-goal step places objects upright, with nothing else within 5 mm sideways. A least distance is not "beneath": a wall that close would read as the rest.
     - It doesn't measure a tilted primitive: a 0.5 m sphere tilted 15° reads up to about 8 mm high, past the +5 mm band.
     - It doesn't measure a CSG object either: its surface-nets mesh sits up to half a mesh cell inside the surface.
+      - So an SDF object's lowest points come from its collider (`collider_rest_points`, Test/Docs' own measure since 2026-10-22, on `test-docs/csg-rest`; until then N15's step marched it itself with the editor's pick march). The step hands over the raw inputs: the collider, the object's pose, and its posed drawables' vertices.
+        - The collider is posed by the object's pose, which must be rigid with a uniform scale; any other pose gives no points.
+        - It is marched straight up from 0.25 m below the lowest vertex, in the column of each vertex within 5 cm of the lowest, and stops within 0.1 mm below the surface. So a point reads low by less than 0.1 mm, never high.
+        - A column that meets nothing within 0.6 m gives no point. A march that starts inside the object gives none at all, since those can't be the object's vertices. So do no vertices, an empty collider, and a non-finite vertex or distance.
+        - `rest_gap` then measures the points, and no points is its NaN, which fails.
+      - The measure is independent of the placing: the editor rests an object by `rest_height()`, not by marching its collider.
 
 ## 8. Headless tests, red first
 
@@ -175,4 +212,4 @@ These go on a Test/Docs branch, against stubs, before each feature lands. Batch 
 
 - **Interface:** agree on the predicates' home. Each end-goal step exposes the per-frame observables above (body state, rotor ω and thrust, the pick point and the posed parts) to the predicate.
 - **Physics:** confirm that k_T ω² is the right T for momentum theory here (P7a's static value, exact in hover), and review the downwash reasoning in §5.
-- **The lead:** decided, 2026-10-19: ±25% on screen, as a coupling check; C8q at C8's 10% for validation.
+- **The lead:** decided, 2026-10-19: ±25% on screen, as a coupling check; C8q at C8's 10% for validation. Changed 2026-10-22, on Physics' proposal: C8q's banded measure is rotor 0 alone in the quad's case, the quad's per-rotor ratios are report only, and the symmetry band stays (§5).

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 
@@ -48,7 +49,22 @@ inline constexpr uint32_t kDiscPoints = kDiscRings * kDiscAngles;
 // 2 dx about the centre) that leaves the grid.
 [[nodiscard]] Result<void> check_disc(const ActuatorDisc& disc, const GridShape& shape);
 
-// Adds one step's increments for a checked disc.
+// One disc's spread, formed on the host: what spread_actuator() adds from.
+// Its second consumer is the GPU's actuator_gather (plan B, B4), whose upload
+// packs it, so the two spread by one rule (TD-9).
+struct DiscSpread {
+    std::array<glm::vec3, kDiscPoints> points{};   // grid frame, m: kDiscRings rings of kDiscAngles
+    std::array<glm::vec3, kDiscPoints> tangent{};  // each point's swirl direction over its radius; 0 without swirl
+    float scale = 0.0f;                            // h thrust / (kDiscPoints rho dx^3)
+    float swirl_scale = 0.0f;                      // h torque / (kDiscPoints rho dx^3)
+    float reach = 0.0f;                            // radius + 2 dx: no point's weight reaches past it
+    bool swirl = false;                            // torque != 0
+};
+
+[[nodiscard]] DiscSpread disc_spread(const ActuatorDisc& disc, const GridShape& shape, float rho, float h) noexcept;
+
+// Adds one step's increments for a checked disc, with subnormals flushed as
+// fluid_step() flushes them (fluid_step.hpp).
 void spread_actuator(const ActuatorDisc& disc, const GridShape& shape, float rho, float h, std::span<float> du,
                      std::span<float> dv, std::span<float> dw) noexcept;
 

@@ -35,6 +35,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <expected>
 #include <filesystem>
 #include <limits>
 #include <numbers>
@@ -263,35 +264,47 @@ inline constexpr std::size_t kDownwashMinFrames = 6;
 inline constexpr float kLevelRad = 0.017453292519943295f;  // 1 degree
 inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m g
 
-// Each rotor's mean probe_downwash() over the window, against its mean
-// momentum-theory reference, judged by `rule`. The frames are in time order,
-// from arming.
-[[nodiscard]] inline Verdict downwash(std::span<const DownwashFrame> frames, const DownwashCase& c,
-                                      const DownwashRule& rule) {
+// Each rotor's window means: the mean probe_downwash() over the window and
+// the mean momentum-theory reference over the same frames. What downwash()
+// and C8q judge.
+struct DownwashMeans {
+    std::vector<double> u;  // per rotor, m/s
+    std::vector<double> v;  // per rotor, m/s
+    std::size_t count = 0;  // frames in the window
+    std::string window;     // "[t_dev, t_end] s"
+    float r_over_dx = 0.0f;
+};
+
+// The means for `rule`'s resolution, or the Verdict that says why the frames
+// can't be judged. The frames are in time order, from arming.
+[[nodiscard]] inline std::expected<DownwashMeans, Verdict> downwash_means(std::span<const DownwashFrame> frames,
+                                                                          const DownwashCase& c,
+                                                                          const DownwashRule& rule) {
     using detail::num;
     const std::string name = std::string(rule.name) + ": ";
+    const auto fail = [&name](const std::string& why) { return std::unexpected(Verdict{false, name + why}); };
     if (!(detail::positive(c.density) && detail::positive(c.mass) && detail::positive(c.gravity))) {
-        return {false, name + "mis-staged: the case's density " + num(c.density) + ", mass " + num(c.mass) +
-                           " and gravity " + num(c.gravity) + " must all be positive"};
+        return fail("mis-staged: the case's density " + num(c.density) + ", mass " + num(c.mass) +
+                        " and gravity " + num(c.gravity) + " must all be positive");
     }
-    if (frames.empty()) return {false, name + "absent: no frames were recorded"};
-    if (const std::string fault = detail::time_fault(frames); !fault.empty()) return {false, name + "absent: " + fault};
+    if (frames.empty()) return fail("absent: no frames were recorded");
+    if (const std::string fault = detail::time_fault(frames); !fault.empty()) return fail("absent: " + fault);
     const std::size_t n = frames.back().rotors.size();
-    if (n == 0) return {false, name + "absent: the model has no rotors"};
+    if (n == 0) return fail("absent: the model has no rotors");
     for (const DownwashFrame& f : frames) {
         if (f.rotors.size() != n || f.u_down.size() != n || f.probe.size() != n) {
-            return {false, name + "absent: the frame at t = " + num(f.t_s) + " s lacks a rotor"};
+            return fail("absent: the frame at t = " + num(f.t_s) + " s lacks a rotor");
         }
         bool finite = std::isfinite(f.cell) && std::isfinite(f.floor_y) && std::isfinite(f.tilt_rad);
         for (const RotorProbe& r : f.rotors) {
             finite = finite && detail::finite(r.hub) && detail::finite(r.axis) && std::isfinite(r.radius) &&
                      std::isfinite(r.thrust);
         }
-        if (!finite) return {false, name + "absent: the frame at t = " + num(f.t_s) + " s holds a non-finite state"};
+        if (!finite) return fail("absent: the frame at t = " + num(f.t_s) + " s holds a non-finite state");
         for (std::size_t i = 0; i < n; ++i) {
             if (!(f.rotors[i].radius > 0.0f)) {
-                return {false, name + "mis-staged: rotor " + std::to_string(i) + "'s radius is " +
-                                   num(f.rotors[i].radius)};
+                return fail("mis-staged: rotor " + std::to_string(i) + "'s radius is " +
+                                num(f.rotors[i].radius));
             }
         }
     }
@@ -302,7 +315,7 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
     const float cell = frames.back().cell;
     const float r_over_dx = cell > 0.0f ? r_min / cell : 0.0f;
     if (!(r_over_dx >= rule.min_r_over_dx)) {
-        return {false, name + "under-resolved: R/dx " + num(r_over_dx) + " is below " + num(rule.min_r_over_dx)};
+        return fail("under-resolved: R/dx " + num(r_over_dx) + " is below " + num(rule.min_r_over_dx));
     }
 
     // Developed, from the last frame's thrust: the controls are constant, so
@@ -315,23 +328,23 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
         const RotorProbe& r = frames.back().rotors[i];
         const float v = momentum_theory_2r(r.thrust, r.radius, c.density);
         if (!(v > 0.0f)) {
-            return {false, name + "rotor " + std::to_string(i) + " makes no thrust at the last frame, t = " +
-                               num(frames.back().t_s) + " s"};
+            return fail("rotor " + std::to_string(i) + " makes no thrust at the last frame, t = " +
+                            num(frames.back().t_s) + " s");
         }
         v_min = std::min(v_min, v);
         hub_top = std::max(hub_top, r.hub.y);
     }
     const float hub_above_floor = hub_top - frames.back().floor_y;
     if (!(hub_above_floor > 0.0f)) {
-        return {false, name + "mis-staged: the hubs are " + num(hub_above_floor) +
-                           " m above the published volume's floor"};
+        return fail("mis-staged: the hubs are " + num(hub_above_floor) +
+                        " m above the published volume's floor");
     }
     const double t_dev = std::max(kDevelopFloorS, kDevelopTransits * hub_above_floor / v_min);
     const double t_end = t_dev + kDownwashWindowS;
     const std::string window = "[" + num(t_dev) + ", " + num(t_end) + "] s";
     if (frames.back().t_s + detail::kTimeEps < t_end) {
-        return {false, name + "absent: the frames end at t = " + num(frames.back().t_s) + " s, before the window " +
-                           window + " closes"};
+        return fail("absent: the frames end at t = " + num(frames.back().t_s) + " s, before the window " +
+                        window + " closes");
     }
 
     const float weight = c.mass * c.gravity;
@@ -341,27 +354,27 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
     for (const DownwashFrame& f : frames) {
         if (f.t_s > t_end + detail::kTimeEps) break;
         if (!f.controls_constant) {
-            return {false, name + "mis-staged: the controls changed at t = " + num(f.t_s) + " s"};
+            return fail("mis-staged: the controls changed at t = " + num(f.t_s) + " s");
         }
         if (!(f.tilt_rad <= kLevelRad)) {
-            return {false, name + "mis-staged: tilted " + num(f.tilt_rad / kLevelRad) + " degrees at t = " +
-                               num(f.t_s) + " s, past 1"};
+            return fail("mis-staged: tilted " + num(f.tilt_rad / kLevelRad) + " degrees at t = " +
+                            num(f.t_s) + " s, past 1");
         }
         if (f.t_s + detail::kTimeEps < t_dev) continue;
         float total = 0.0f;
         for (const RotorProbe& r : f.rotors) total += r.thrust;
         if (!(total >= kLoadedFraction * weight)) {
-            return {false, name + "mis-staged: the rotors carry " + num(total) + " N at t = " + num(f.t_s) +
-                               " s, under half the weight, " + num(weight) + " N"};
+            return fail("mis-staged: the rotors carry " + num(total) + " N at t = " + num(f.t_s) +
+                            " s, under half the weight, " + num(weight) + " N");
         }
         for (std::size_t i = 0; i < n; ++i) {
             if (f.probe[i] == ProbeStatus::outside) {
-                return {false, name + "absent: rotor " + std::to_string(i) + "'s probe is outside the published " +
-                                   "volume at t = " + num(f.t_s) + " s"};
+                return fail("absent: rotor " + std::to_string(i) + "'s probe is outside the published " +
+                                "volume at t = " + num(f.t_s) + " s");
             }
             if (f.probe[i] != ProbeStatus::ok || !std::isfinite(f.u_down[i])) {
-                return {false, name + "absent: no data at rotor " + std::to_string(i) + "'s probe at t = " +
-                                   num(f.t_s) + " s"};
+                return fail("absent: no data at rotor " + std::to_string(i) + "'s probe at t = " +
+                                num(f.t_s) + " s");
             }
             u_sum[i] += f.u_down[i];
             v_sum[i] += momentum_theory_2r(f.rotors[i].thrust, f.rotors[i].radius, c.density);
@@ -369,23 +382,189 @@ inline constexpr float kLoadedFraction = 0.5f;             // sum T >= this x m 
         ++count;
     }
     if (count < kDownwashMinFrames) {
-        return {false, name + "absent: " + std::to_string(count) + " frames in the window " + window + ", fewer than " +
-                           std::to_string(kDownwashMinFrames)};
+        return fail("absent: " + std::to_string(count) + " frames in the window " + window + ", fewer than " +
+                        std::to_string(kDownwashMinFrames));
     }
 
+    DownwashMeans m;
+    m.u.resize(n);
+    m.v.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        m.u[i] = u_sum[i] / static_cast<double>(count);
+        m.v[i] = v_sum[i] / static_cast<double>(count);
+    }
+    m.count = count;
+    m.window = window;
+    m.r_over_dx = r_over_dx;
+    return m;
+}
+
+// Each rotor's mean probe_downwash() over the window, against its mean
+// momentum-theory reference, judged by `rule`. The frames are in time order,
+// from arming.
+[[nodiscard]] inline Verdict downwash(std::span<const DownwashFrame> frames, const DownwashCase& c,
+                                      const DownwashRule& rule) {
+    const std::expected<DownwashMeans, Verdict> m = downwash_means(frames, c, rule);
+    if (!m) return m.error();
+    const std::string name = std::string(rule.name) + ": ";
+    const std::size_t n = m->u.size();
+    using detail::num;
     bool ok = true;
     std::string measured;
     for (std::size_t i = 0; i < n; ++i) {
-        const double u = u_sum[i] / static_cast<double>(count);
-        const double v = v_sum[i] / static_cast<double>(count);
+        const double u = m->u[i];
+        const double v = m->v[i];
         const double ratio = v > 0.0 ? u / v : std::numeric_limits<double>::quiet_NaN();
         const bool in = ratio >= rule.lo && ratio <= rule.hi;
         ok = ok && in;
         measured += "rotor " + std::to_string(i) + " " + num(u) + " / " + num(v) + " m/s = " + num(ratio) +
                     (in ? "" : " (OUT)") + "; ";
     }
-    return {ok, name + measured + "band [" + num(rule.lo) + ", " + num(rule.hi) + "], " + std::to_string(count) +
-                    " frames in " + window + ", R/dx " + num(r_over_dx)};
+    return {ok, name + measured + "band [" + num(rule.lo) + ", " + num(rule.hi) + "], " + std::to_string(m->count) +
+                    " frames in " + m->window + ", R/dx " + num(m->r_over_dx)};
+}
+
+// C8q (§5, "C8's band where it holds"; the bands as changed on 2026-10-22,
+// before their run): the reference quad at C8's R/dx 10, headless, with the
+// model's parts cleared. Banded: rotor 0 alone, in the quad's own case, within
+// C8's 10% of momentum theory; and the four-rotor quad's rotors within 10% of
+// their mean. Report only: the quad's per-rotor ratios to momentum theory,
+// which read the four rotors together (their wakes' interaction and the open
+// box's response to four times the flux, not separated) and have no
+// closed-form reference.
+inline constexpr DownwashRule kC8q{"c8q", 0.90f, 1.10f, 10.0f};
+inline constexpr double kC8qMutual = 0.10;
+
+// C8q's two bands on one set of per-rotor means.
+struct C8qBands {
+    std::vector<double> ratio;   // per rotor: u / v
+    double ratio_off = 0.0;      // the largest |u / v - 1|
+    double mutual_off = 0.0;     // the largest |u_i - mean u| / mean u
+    double mutual_spread = 0.0;  // (max u - min u) / mean u: reported, not judged
+    bool ratio_ok = false;       // every ratio in kC8q's band
+    bool mutual_ok = false;      // mutual_off within kC8qMutual
+    bool ok = false;             // both
+};
+
+[[nodiscard]] inline C8qBands c8q_bands(std::span<const double> u, std::span<const double> v) {
+    C8qBands b;
+    double sum = 0.0;
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = -std::numeric_limits<double>::infinity();
+    for (const double x : u) {
+        sum += x;
+        lo = std::min(lo, x);
+        hi = std::max(hi, x);
+    }
+    const double mean = u.empty() ? 0.0 : sum / static_cast<double>(u.size());
+    bool in = !u.empty() && u.size() == v.size() && mean > 0.0;
+    for (std::size_t i = 0; i < u.size(); ++i) {
+        const double r = i < v.size() && v[i] > 0.0 ? u[i] / v[i] : std::numeric_limits<double>::quiet_NaN();
+        b.ratio.push_back(r);
+        in = in && r >= static_cast<double>(kC8q.lo) && r <= static_cast<double>(kC8q.hi);
+        // Written so that a NaN carries through.
+        if (const double off = std::fabs(r - 1.0); !(off <= b.ratio_off)) b.ratio_off = off;
+        if (const double off = std::fabs(u[i] - mean) / mean; !(off <= b.mutual_off)) b.mutual_off = off;
+    }
+    b.mutual_spread = (hi - lo) / mean;
+    b.ratio_ok = in;
+    b.mutual_ok = b.mutual_off <= kC8qMutual;
+    b.ok = b.ratio_ok && b.mutual_ok;
+    return b;
+}
+
+// The runs' mean: each rotor's u and v averaged over the runs. The runs must
+// agree on their rotors (c8q() checks).
+[[nodiscard]] inline DownwashMeans ensemble_mean(std::span<const DownwashMeans> runs) {
+    DownwashMeans m;
+    if (runs.empty()) return m;
+    m.u.assign(runs[0].u.size(), 0.0);
+    m.v.assign(runs[0].v.size(), 0.0);
+    for (const DownwashMeans& r : runs) {
+        for (std::size_t i = 0; i < m.u.size() && i < r.u.size(); ++i) m.u[i] += r.u[i];
+        for (std::size_t i = 0; i < m.v.size() && i < r.v.size(); ++i) m.v[i] += r.v[i];
+        m.count += r.count;
+    }
+    for (double& x : m.u) x /= static_cast<double>(runs.size());
+    for (double& x : m.v) x /= static_cast<double>(runs.size());
+    m.window = runs[0].window;
+    m.r_over_dx = runs[0].r_over_dx;
+    return m;
+}
+
+// C8q's verdict as changed on 2026-10-22: two ensembles'. `rotor0` is rotor 0
+// alone's runs, one rotor each, banded by kC8q on the runs' mean and on every
+// run. `quad` is the four-rotor quad's runs, banded by kC8qMutual on the runs'
+// mean and on every run; their ratios to momentum theory are reported, never
+// judged.
+[[nodiscard]] inline Verdict c8q(std::span<const DownwashMeans> rotor0, std::span<const DownwashMeans> quad) {
+    using detail::num;
+    if (rotor0.empty()) return {false, "c8q: absent: no runs of rotor 0 alone"};
+    if (quad.empty()) return {false, "c8q: absent: no runs of the quad"};
+    for (const DownwashMeans& r : rotor0) {
+        if (r.u.size() != 1 || r.v.size() != 1) {
+            return {false, "c8q: absent: a run of rotor 0 alone holds " + std::to_string(r.u.size()) + " rotors"};
+        }
+    }
+    const std::size_t n = quad[0].u.size();
+    for (const DownwashMeans& r : quad) {
+        if (n < 2 || r.u.size() != n || r.v.size() != n) {
+            return {false, "c8q: absent: the quad's runs disagree on the rotors"};
+        }
+    }
+    // (max - min) / mean of rotor i's u across the runs.
+    const auto spread = [](std::span<const DownwashMeans> runs, std::size_t i, double mean) {
+        double lo = std::numeric_limits<double>::infinity();
+        double hi = -std::numeric_limits<double>::infinity();
+        for (const DownwashMeans& r : runs) {
+            lo = std::min(lo, r.u[i]);
+            hi = std::max(hi, r.u[i]);
+        }
+        return (hi - lo) / mean;
+    };
+    const auto out = [](bool in) { return in ? std::string() : std::string(" (OUT)"); };
+
+    // Rotor 0 alone: kC8q's band, on the runs' mean and on every run.
+    const DownwashMeans m0 = ensemble_mean(rotor0);
+    const C8qBands b0 = c8q_bands(m0.u, m0.v);
+    bool ok = b0.ratio_ok;
+    std::vector<C8qBands> each0;
+    std::size_t worst0 = 0;
+    for (std::size_t k = 0; k < rotor0.size(); ++k) {
+        each0.push_back(c8q_bands(rotor0[k].u, rotor0[k].v));
+        ok = ok && each0[k].ratio_ok;
+        if (!(each0[k].ratio_off <= each0[worst0].ratio_off)) worst0 = k;
+    }
+
+    // The quad: kC8qMutual's band, on the runs' mean and on every run.
+    const DownwashMeans mq = ensemble_mean(quad);
+    const C8qBands bq = c8q_bands(mq.u, mq.v);
+    ok = ok && bq.mutual_ok;
+    std::vector<C8qBands> eachq;
+    std::size_t worstq = 0;
+    for (std::size_t k = 0; k < quad.size(); ++k) {
+        eachq.push_back(c8q_bands(quad[k].u, quad[k].v));
+        ok = ok && eachq[k].mutual_ok;
+        if (!(eachq[k].mutual_off <= eachq[worstq].mutual_off)) worstq = k;
+    }
+
+    std::string detail = "c8q: rotor 0 alone, the " + std::to_string(rotor0.size()) + " runs' mean " + num(m0.u[0]) +
+                         " / " + num(m0.v[0]) + " m/s = " + num(b0.ratio[0]) + out(b0.ratio_ok) + "; the worst run, run " +
+                         std::to_string(worst0) + ", off by " + num(each0[worst0].ratio_off) +
+                         out(each0[worst0].ratio_ok) + "; its spread across the runs " + num(spread(rotor0, 0, m0.u[0])) +
+                         "; band [" + num(kC8q.lo) + ", " + num(kC8q.hi) + "]. The quad, the " +
+                         std::to_string(quad.size()) + " runs' mean, report only: ";
+    for (std::size_t i = 0; i < n; ++i) {
+        detail += "rotor " + std::to_string(i) + " " + num(mq.u[i]) + " / " + num(mq.v[i]) + " m/s = " +
+                  num(bq.ratio[i]) + "; ";
+    }
+    detail += "the " + std::to_string(n) + " off their mean by " + num(bq.mutual_off) + " at most (spread " +
+              num(bq.mutual_spread) + ")" + out(bq.mutual_ok) + "; the worst run by the mutual band, run " +
+              std::to_string(worstq) + ", off by " + num(eachq[worstq].mutual_off) + out(eachq[worstq].mutual_ok) +
+              "; each rotor's spread across the runs:";
+    for (std::size_t i = 0; i < n; ++i) detail += " " + num(spread(quad, i, mq.u[i]));
+    detail += "; mutual " + num(kC8qMutual) + ", " + mq.window + ", R/dx " + num(mq.r_over_dx);
+    return {ok, detail};
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +1025,69 @@ inline constexpr float kStillTilt = 0.03490658503988659f;  // 2 degrees
     return least;
 }
 
+// An SDF object's lowest points, for rest_gap (§7a). Its surface-nets mesh
+// sits up to half a mesh cell inside its surface, so its vertices can't judge
+// a rest: they read high. Its collider can. The collider, posed by
+// world_from_object (rigid, with uniform scale), is marched straight up from
+// kRestMarchBelow under the lowest posed vertex, in the column of each vertex
+// within kRestMarchBand of the lowest, to within kRestMarchTolerance of its
+// surface. Each march stops below the surface, so a point reads low by less
+// than the tolerance, never high. A column that meets nothing within
+// kRestMarchReach gives no point. Empty, so rest_gap's NaN: no vertices, an
+// empty collider, a non-finite vertex or distance, a pose that isn't rigid
+// with uniform scale, or a march that starts inside the object (the vertices
+// can't be the object's). This is the step's measure for an SDF object, not
+// the editor's own pick march (Test/Docs, 2026-10-22). Precondition: the
+// collider validated.
+inline constexpr float kRestMarchBelow = 0.25f;     // m below the lowest vertex
+inline constexpr float kRestMarchBand = 0.05f;      // m above the lowest: the vertices marched under
+inline constexpr float kRestMarchReach = 0.6f;      // m: the farthest a march goes
+inline constexpr float kRestMarchTolerance = 1e-4f; // m: where it stops below the surface
+
+[[nodiscard]] inline std::vector<glm::vec3> collider_rest_points(const SdfProgram& collider,
+                                                                 const glm::mat4& world_from_object,
+                                                                 std::span<const glm::vec3> vertices) {
+    if (collider.nodes.empty() || vertices.empty()) return {};
+    // The pose's scale: its three axes' common length, refused unless common.
+    const float s = glm::length(glm::vec3(world_from_object[0]));
+    for (int axis = 1; axis < 3; ++axis) {
+        if (!(std::abs(glm::length(glm::vec3(world_from_object[axis])) - s) <= 1e-5f * s)) return {};
+    }
+    if (!(std::isfinite(s) && s > 0.0f)) return {};
+    // The collider posed: each node's world_to_local now starts from the
+    // world, and its distances grow by the pose's scale.
+    SdfProgram posed = collider;
+    const glm::mat4 object_from_world = glm::inverse(world_from_object);
+    for (SdfTransform& x : posed.transforms) {
+        x.world_to_local = x.world_to_local * object_from_world;
+        x.scale *= s;
+    }
+
+    float low = std::numeric_limits<float>::infinity();
+    for (const glm::vec3& v : vertices) {
+        if (!detail::finite(v)) return {};
+        low = std::min(low, v.y);
+    }
+    const float from = low - kRestMarchBelow;
+    std::vector<glm::vec3> points;
+    for (const glm::vec3& v : vertices) {
+        if (v.y > low + kRestMarchBand) continue;
+        const glm::vec3 start(v.x, from, v.z);
+        float t = 0.0f;
+        for (int step = 0; step < 512 && t <= kRestMarchReach; ++step) {
+            const float d = eval(posed, start + glm::vec3(0.0f, t, 0.0f));
+            if (!std::isfinite(d)) return {};
+            if (step == 0 && d <= 0.0f) return {};  // starts inside: these aren't the object's vertices
+            if (d < kRestMarchTolerance) {
+                points.push_back(start + glm::vec3(0.0f, t, 0.0f));
+                break;
+            }
+            t += 0.9f * d;  // short of the bound, as the editor's march steps
+        }
+    }
+    return points;
+}
+
 // ---------------------------------------------------------------------------
 // IMAGES (§1 thumbnails, §6 views). "Differs" is the doc's: at least 1% of
 // the pixels differ by more than 8/255 in red, green or blue.
@@ -1107,6 +1349,7 @@ namespace detail {
 
 struct ImportShown {
     std::string shown_name;    // what the editor names the imported object
+    std::string node_name;     // the glTF node's own name; empty when it has none
     std::string mesh_name;     // the glTF mesh's own name; empty when it has none
     std::string file;          // the path imported
     std::string shown_source;  // what the editor shows as its source
@@ -1119,8 +1362,12 @@ struct ImportShown {
 
 [[nodiscard]] inline Verdict import_named(const ImportShown& m) {
     const std::string name = "import-named: ";
-    const std::string expected = m.mesh_name.empty() ? std::filesystem::path(m.file).stem().string() : m.mesh_name;
-    if (expected.empty()) return {false, name + "absent: neither the mesh nor the file gives a name"};
+    // read_gltf's order, as the editor shows it: the node's name, then the
+    // mesh's; the editor names one with neither by the file's stem.
+    const std::string expected = !m.node_name.empty()   ? m.node_name
+                                 : !m.mesh_name.empty() ? m.mesh_name
+                                                        : std::filesystem::path(m.file).stem().string();
+    if (expected.empty()) return {false, name + "absent: neither the node, the mesh nor the file gives a name"};
     if (m.gltf_triangles == 0) return {false, name + "absent: read_gltf read no triangles"};
     if (m.shown_name != expected) return {false, name + "named '" + m.shown_name + "', not '" + expected + "'"};
     if (m.shown_source != m.file) {

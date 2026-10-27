@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -20,11 +21,15 @@
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/publish.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/target.hpp"
 #include "render_parts/render_parts.hpp"
 #include "render/view_mode.hpp"
+#include "vehicles/model_part.hpp"
 #include "vehicles/rotor.hpp"
+#include "world/sdf.hpp"
 
 #include "../sandbox/airflow_live.hpp"
 #include "../sandbox/orbit_camera.hpp"
@@ -65,6 +70,21 @@ std::vector<eg::RotorProbe> x_quad() {
         r.push_back(p);
     }
     return r;
+}
+
+// A sphere of `radius` at the design origin: a body thick enough to be a
+// solid in the live grid.
+[[nodiscard]] spade::vehicles::PartDesc ball_part(float radius) {
+    spade::vehicles::PartDesc ball;
+    ball.name = "body";
+    ball.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(radius, 0.0f, 0.0f, 0.0f);
+    ball.shape.nodes = {n};
+    ball.min_feature = 2.0f * radius;
+    return ball;
 }
 
 // The chapter's grid, with no data: what airflow_view() reads is the header.
@@ -317,4 +337,116 @@ TEST(SandboxAirflowLive, ThePosterFrameMeasured) {
     fs::create_directories(out.parent_path());
     ASSERT_TRUE(spade::sandbox::png::write_file(out, spade::sandbox::png::encode_rgba(pixels.data(), kW, kH, false)));
     std::printf("  the CPU's frame: %s\n", out.string().c_str());
+}
+
+// The view's HUD status line (the lead, 2026-10-22): the run's pressure line,
+// then what the render path does not draw, joined by a dot; in the warning
+// tone when the pressure was unconverged, so a stalled or capped run catches
+// the eye. Empty for a converged run on a path that draws everything.
+TEST(SandboxAirflowLive, ItsStatusLineIsThePressureInTheWarningToneThenTheGap) {
+    const std::string pressure = "pressure unconverged on 1 step: 1 stalled at fp32's floor (last max|r|/max|b| 2.0e-03)";
+    const std::string gap = "GL does not draw: mode";
+    const af::StatusLine none = af::status_line("", "");
+    EXPECT_EQ(none.text, "");
+    EXPECT_FALSE(none.warning);
+    const af::StatusLine gap_only = af::status_line("", gap);
+    EXPECT_EQ(gap_only.text, gap);
+    EXPECT_FALSE(gap_only.warning);
+    const af::StatusLine unconverged = af::status_line(pressure, "");
+    EXPECT_EQ(unconverged.text, pressure);
+    EXPECT_TRUE(unconverged.warning);
+    const af::StatusLine both = af::status_line(pressure, gap);
+    EXPECT_EQ(both.text, pressure + " \xc2\xb7 " + gap);
+    EXPECT_TRUE(both.warning);
+}
+
+// M0 (the editor's airflow run, INT-15; the lead's D3, 2026-10-26): LiveRun's
+// cost at the live 32^3 grid on this box, measured before the editor's pacing
+// is built on it. Opt-in (SPADE_LIVE_BENCH=1); its numbers mean something in
+// release. The library's reference quad at 25 mm cells (R/dx 3), armed at
+// half throttle: first its rotors as discs with nothing solid (plan A's
+// pressure, as the tour's chapter flies it), then with a 0.1 m ball as its
+// body (4 cells across, so the solids' CG runs). Each run warms for one
+// frame, then times 3 frames whole (a frame is 1/30 s of whole steps, then
+// the volume's publish, as the editor's frames will be), then 60 steps one by
+// one, with the solids' mean CG iterations and their capped and stalled
+// steps. The publish is then timed on its own, on a grid of the same case
+// (Physics' checks, P-3: a frame less its steps is too noisy to read it by).
+TEST(SandboxAirflowLive, M0TimesLiveRunAt32Cubed) {
+    if (!env_gate_is_set("SPADE_LIVE_BENCH")) GTEST_SKIP() << "set SPADE_LIVE_BENCH=1 to time LiveRun at 32^3 (M0)";
+    const spade::Result<af::LiveQuad> q = af::live_quad(library_quad());
+    ASSERT_TRUE(q.has_value()) << q.error().context;
+    using clock = std::chrono::steady_clock;
+    const auto ms = [](clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+    const an::Controls half{true, 0.5f, 0.0f, 0.0f, 0.0f};
+#if defined(NDEBUG)
+    const char* build = "release";
+#else
+    const char* build = "debug: not a measure";
+#endif
+    for (const bool solid : {false, true}) {
+        spade::vehicles::ModelType model = q->run_model;
+        if (solid) model.parts = {ball_part(0.05f)};
+        spade::Result<an::LiveRun> run = an::LiveRun::start(q->resolved, model);
+        ASSERT_TRUE(run.has_value()) << run.error().context;
+        EXPECT_EQ(run->solids().any, solid) << run->run_label();
+        spade::FlowVolume volume;
+        ASSERT_TRUE(run->advance_frame(half, volume).has_value());  // warm
+        constexpr int kFrames = 3;
+        const uint64_t before = run->state().steps;
+        const clock::time_point f0 = clock::now();
+        for (int i = 0; i < kFrames; ++i) ASSERT_TRUE(run->advance_frame(half, volume).has_value());
+        const double frames = ms(clock::now() - f0);
+        const uint64_t frame_steps = run->state().steps - before;
+        constexpr int kSteps = 60;
+        double total = 0.0;
+        double worst = 0.0;
+        double iterations = 0.0;
+        for (int i = 0; i < kSteps; ++i) {
+            const clock::time_point t0 = clock::now();
+            ASSERT_TRUE(run->step(half).has_value());
+            const double t = ms(clock::now() - t0);
+            total += t;
+            worst = std::max(worst, t);
+            iterations += static_cast<double>(run->solids().pressure_iterations);
+        }
+        const double step = total / kSteps;
+        // iterations: the CG's per solids step; plan A's are its V-cycles
+        // (fluid_step.hpp's pressure_iterations), not a CG count.
+        std::printf("m0-bench: %s; %s; %s; h %.4f s; a step %.2f ms mean, %.2f max of %d; a frame %.1f ms mean, "
+                    "%.1f steps; CG iterations %.1f mean a step, %llu capped, %llu stalled\n",
+                    build, solid ? "a solid body" : "discs only", run->run_label().c_str(), run->step_s(), step, worst,
+                    kSteps, frames / kFrames, static_cast<double>(frame_steps) / kFrames,
+                    solid ? iterations / kSteps : 0.0,
+                    static_cast<unsigned long long>(run->solids().capped_steps),
+                    static_cast<unsigned long long>(run->solids().stalled_steps));
+    }
+
+    // The publish on its own: the case's grid, all fluid, a deterministic
+    // velocity pattern, its origin and periodic axes as LiveRun sets them;
+    // one publish to size the volume, then 10 timed.
+    namespace pa = spade::physics::airflow;
+    spade::Result<pa::MacGrid> grid = pa::make_grid(q->resolved.base, q->resolved.domain);
+    ASSERT_TRUE(grid.has_value()) << grid.error().context;
+    for (std::size_t i = 0; i < grid->u.size(); ++i) grid->u[i] = 0.001f * static_cast<float>(i % 97u);
+    for (std::size_t i = 0; i < grid->v.size(); ++i) grid->v[i] = -0.002f * static_cast<float>(i % 89u);
+    for (std::size_t i = 0; i < grid->w.size(); ++i) grid->w[i] = 0.0015f * static_cast<float>(i % 83u);
+    const pa::GridShape& g = q->resolved.base;
+    pa::PublishInput in;
+    in.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
+    in.periodic = pa::periodic_axes(q->resolved.domain);
+    spade::FlowVolume published;
+    ASSERT_TRUE(pa::publish_render_volume(*grid, in, published).has_value());
+    constexpr int kPublishes = 10;
+    double publish_total = 0.0;
+    double publish_worst = 0.0;
+    for (int i = 0; i < kPublishes; ++i) {
+        const clock::time_point t0 = clock::now();
+        ASSERT_TRUE(pa::publish_render_volume(*grid, in, published).has_value());
+        const double t = ms(clock::now() - t0);
+        publish_total += t;
+        publish_worst = std::max(publish_worst, t);
+    }
+    std::printf("m0-bench: %s; a publish at %ux%ux%u, all fluid: %.2f ms mean, %.2f max of %d\n", build, g.nx, g.ny,
+                g.nz, publish_total / kPublishes, publish_worst, kPublishes);
 }

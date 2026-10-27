@@ -100,7 +100,8 @@ Kat, `content/airframes/competition-700.airframe.json`: the competition drone, w
 
 ### `kat_datapack`
 
-Kat, `design-specs/integration/drone-builder-datapack.md` section 7.2: the best candidate parts set for the competition drone.
+Kat, `design-specs/integration/drone-builder-datapack.md` section 7.4: the candidate pair for the competition drone, 4S and 2450 KV (line 325), which is not withdrawn.
 
 - **License:** `facts_cite`.
 - **Used for:** the competition quad's choice of parts. Nothing in it that took its shape from APC is used.
+- **Withdrawn:** section 7.2's fit was withdrawn on 2026-10-21, because its inputs included APC-derived rows (the datapack's own note, line 307). A re-run on measured data only is owed, and is not scheduled (Kat, 2026-10-22). Until it lands, nothing fitted cites it: the competition parts that name this source (`comp_2207_2450kv`, `comp_4s`) are `assumed`, and each says so in its note.

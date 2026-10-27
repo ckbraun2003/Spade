@@ -19,13 +19,19 @@
 
 #pragma once
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -36,12 +42,15 @@
 #include "drone_view.hpp"
 #include "editor_document.hpp"
 #include "editor_files.hpp"
+#include "editor_import.hpp"
 #include "editor_library.hpp"
+#include "editor_library_save.hpp"
 #include "editor_panels.hpp"
 #include "editor_pick.hpp"
 #include "editor_run.hpp"
 #include "editor_scene_edits.hpp"
 #include "editor_world_edits.hpp"
+#include "pilot_keys.hpp"
 #include "scene/compose.hpp"
 #include "world/sdf.hpp"
 
@@ -51,21 +60,6 @@ namespace spade::sandbox::editor {
 inline constexpr uint64_t kStepTicks = 4;
 
 namespace detail {
-
-// How far above the ground a library item's origin sits when it rests there.
-[[nodiscard]] inline float rest_height(const LibraryItem& item) {
-    if (item.kind == LibraryItem::Kind::model) return kDroneBodyHalf.y;
-    if (!item.asset || item.asset->collider.nodes.size() != 1) return 0.0f;
-    const SdfNode& n = item.asset->collider.nodes[0];
-    switch (static_cast<SdfPrim>(n.kind)) {
-        case SdfPrim::sphere: return n.params.x;
-        case SdfPrim::box: return n.params.y;
-        case SdfPrim::cylinder: return n.params.y;
-        case SdfPrim::capsule: return n.params.x + n.params.y;
-        case SdfPrim::torus: return n.params.y;
-        default: return 0.0f;
-    }
-}
 
 // An asset's half extents about its origin, before its pose: a one-primitive
 // collider's own, or a unit's.
@@ -97,8 +91,8 @@ class EditorWorkspace {
     [[nodiscard]] static Result<std::unique_ptr<EditorWorkspace>> create(OpenedScene opened) {
         std::unique_ptr<EditorWorkspace> w(new EditorWorkspace(std::move(opened)));
         if (Result<void> composed = w->recompose(); !composed) return std::unexpected(composed.error());
-        w->panels_.library = builtin_library();
         w->list_sources();
+        w->load_library();
         w->refresh_panels();
         return w;
     }
@@ -109,6 +103,14 @@ class EditorWorkspace {
     // told where it is (assets/library/meshes is the library's mesh root).
     void set_fallback_meshes(std::vector<render::FallbackMesh> meshes) { fallback_meshes_ = std::move(meshes); }
     [[nodiscard]] const std::filesystem::path& assets_dir() const noexcept { return assets_; }
+    // N15's staging folder (D1): the view's second root, after the scene's
+    // folder; Save copies what the scene uses from it beside the scene.
+    [[nodiscard]] const std::filesystem::path& import_staging() const noexcept { return staging_.path(); }
+    // Keeps the staging folder from looking like a crashed session's
+    // (ImportStaging::keep_alive()); apply_panels() calls it each frame.
+    void keep_staging_alive(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+        staging_.keep_alive(now);
+    }
     [[nodiscard]] EditorPanels& panels() noexcept { return panels_; }
     [[nodiscard]] const EditorPanels& panels() const noexcept { return panels_; }
     [[nodiscard]] const OpenedScene& documents() const noexcept { return docs_; }
@@ -129,7 +131,15 @@ class EditorWorkspace {
             settle(before, apply(docs_.world, e));
         }
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
+        keep_staging_alive();
         refresh_panels();
+        // A selection ends a part's or a drone's inspection (the lead's Q1),
+        // and so does the library moving under it.
+        if (panels_.inspected && (panels_.selection.kind != Selection::Kind::none ||
+                                  *panels_.inspected >= panels_.library.size() ||
+                                  !has_grades(panels_.library[*panels_.inspected]))) {
+            panels_.inspected.reset();
+        }
     }
 
     // A click in the view along the ray from `origin` in `direction`.
@@ -180,6 +190,14 @@ class EditorWorkspace {
         refresh_panels();
     }
 
+    // N17: the pilot's keys for a frame of `dt` seconds, acting only while Run
+    // flies a drone. Called every frame, with no keys held when ImGui has the
+    // keyboard, so a released arrow levels the drone.
+    void pilot_keys(const flight::PilotKeys& keys, float dt) {
+        if (!run_ || panels_.pilot.vehicle.empty()) return;
+        flight::apply_pilot_keys(keys, dt, panels_.pilot.controls);
+    }
+
     // Steps the run by `dt` seconds of whole built-in steps, the remainder
     // carried, while it runs and is not paused.
     void advance(float dt) {
@@ -195,6 +213,8 @@ class EditorWorkspace {
     void refresh_panels() {
         const scene::SceneDesc& s = docs_.scene.desc();
         panels_.scene = &s;
+        panels_.scene_opened = opened_;
+        panels_.scene_serial = docs_.scene.serial();
         panels_.world = &docs_.world.desc();
         panels_.records = &records_;
         const std::string file = docs_.scene.path.empty() ? std::string("untitled") : docs_.scene.path.filename().string();
@@ -218,6 +238,11 @@ class EditorWorkspace {
             panels_.selection = Selection{};
         }
         if (panels_.armed && *panels_.armed >= panels_.library.size()) panels_.armed.reset();
+        panels_.selected_source.clear();
+        if (panels_.selection.kind == Selection::Kind::object) {
+            const scene::SceneAsset* a = find_asset(s, panels_.selection.name);
+            if (a != nullptr) panels_.selected_source = import_source(a->visual.mesh_ref);
+        }
     }
 
     // The selected object's framing: a vehicle within its reach, where the run
@@ -258,6 +283,86 @@ class EditorWorkspace {
 
   private:
     enum class Doc { scene, world };
+
+    // N15's staging folder (D1): the workspace's own, under the system's temp
+    // folder, made by the first import, removed with the workspace, so an
+    // import never saved leaves nothing behind. Its name is a random 64-bit
+    // token (TestHygiene's one product use). A crashed session leaves its
+    // folder behind, so starting sweeps the token folders whose newest file is
+    // over a day old (the lead, 2026-10-22), and an open workspace touches its
+    // own folder's "alive" at most once an hour (keep_alive(), from
+    // apply_panels()), so only an orphan ever looks that old (Test/Docs: a
+    // session open over a day could not otherwise save). Without a temp
+    // folder there is no staging, and an import is refused by name, never
+    // staged in the working directory (Test/Docs' review).
+    class ImportStaging {
+      public:
+        ImportStaging() {
+            std::error_code ec;
+            const std::filesystem::path temp = std::filesystem::temp_directory_path(ec);
+            if (ec || temp.empty()) {
+                why_not_ = "the system's temp folder could not be found" +
+                           (ec ? " (" + ec.message() + ")" : std::string()) + ", so nothing can be staged";
+                return;
+            }
+            std::random_device rd;
+            const uint64_t token = (static_cast<uint64_t>(rd()) << 32) ^ rd();
+            path_ = temp / "spade-editor-imports" / std::to_string(token);
+            sweep(path_.parent_path());
+        }
+        ~ImportStaging() {
+            std::error_code ec;
+            if (!path_.empty()) std::filesystem::remove_all(path_, ec);
+        }
+        ImportStaging(const ImportStaging&) = delete;
+        ImportStaging& operator=(const ImportStaging&) = delete;
+        // Empty when there is no temp folder; why_not() then says so.
+        [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+        [[nodiscard]] const std::string& why_not() const noexcept { return why_not_; }
+
+        // Touches <path>/alive when the folder exists (an import was staged)
+        // and an hour has passed since the last touch by `now`.
+        void keep_alive(std::chrono::steady_clock::time_point now) {
+            namespace fs = std::filesystem;
+            if (path_.empty() || (touched_ && now - *touched_ < std::chrono::hours(1))) return;
+            std::error_code ec;
+            if (!fs::is_directory(path_, ec)) return;
+            const fs::path alive = path_ / "alive";
+            if (!fs::exists(alive, ec)) std::ofstream(alive, std::ios::binary).put('\n');
+            fs::last_write_time(alive, fs::file_time_type::clock::now(), ec);
+            if (!ec) touched_ = now;
+        }
+
+      private:
+        // Removes each folder under `root` named like a token (digits only)
+        // whose newest file is over a day old: a live session's is younger.
+        static void sweep(const std::filesystem::path& root) {
+            namespace fs = std::filesystem;
+            const fs::file_time_type stale = fs::file_time_type::clock::now() - std::chrono::hours(24);
+            std::vector<fs::path> gone;
+            std::error_code ec;
+            for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+                const std::string name = path_text(it->path().filename());
+                const bool token = !name.empty() && std::all_of(name.begin(), name.end(), [](char c) {
+                    return c >= '0' && c <= '9';
+                });
+                std::error_code e;
+                if (!token || !it->is_directory(e)) continue;
+                fs::file_time_type newest = fs::last_write_time(it->path(), e);
+                for (fs::recursive_directory_iterator r(it->path(), e), done; !e && r != done; r.increment(e)) {
+                    std::error_code t;
+                    const fs::file_time_type when = r->last_write_time(t);
+                    if (!t) newest = std::max(newest, when);
+                }
+                if (!e && newest < stale) gone.push_back(it->path());
+            }
+            for (const fs::path& p : gone) fs::remove_all(p, ec);
+        }
+
+        std::filesystem::path path_;
+        std::string why_not_;
+        std::optional<std::chrono::steady_clock::time_point> touched_;
+    };
     struct Serials {
         uint64_t scene = 0;
         uint64_t world = 0;
@@ -272,6 +377,66 @@ class EditorWorkspace {
     // assets/worlds/) tells where the built-ins are, which is kept; a scene
     // elsewhere is the user's, and its folder lists as saved. Read when a
     // scene is opened or saved, not every frame.
+    // The default library, from the assets folder a built-in scene told of
+    // (INT-14); what would not load is named in the panel.
+    // Then the project's (EDT-020): the scene's own folder's library/, once
+    // something was saved there.
+    void load_library() {
+        panels_.armed.reset();
+        panels_.library.clear();
+        panels_.library_problems.clear();
+        if (assets_.empty()) {
+            panels_.library_problems.push_back(
+                "the default library: this scene is not in an assets folder, so its library/library.yaml was "
+                "not found; open a built-in scene, or load a model or object file");
+        } else {
+            LibraryLoad load = load_library_items(assets_ / "library" / "library.yaml");
+            panels_.library = std::move(load.items);
+            panels_.library_problems = std::move(load.problems);
+        }
+        if (const Result<std::filesystem::path> dir = project_library_dir(docs_.scene.path); dir) {
+            std::error_code ec;
+            if (std::filesystem::exists(*dir / "library.yaml", ec)) {
+                LibraryLoad project = load_library_items(*dir / "library.yaml");
+                for (LibraryItem& item : project.items) panels_.library.push_back(std::move(item));
+                for (std::string& problem : project.problems) panels_.library_problems.push_back(std::move(problem));
+            }
+        }
+        ++panels_.library_generation;
+    }
+
+    // Save to library (EDT-020): the selected vehicle or asset into the
+    // project library, drawn from the meshes the view draws with, then listed
+    // after what the panel has. A refusal goes to the status line.
+    void save_selection_to_library() {
+        if (panels_.selection.kind != Selection::Kind::object) {
+            panels_.status = "Save to library: select a vehicle or an object to save";
+            return;
+        }
+        const Result<std::filesystem::path> dir = project_library_dir(docs_.scene.path);
+        if (!dir) {
+            panels_.status = dir.error().context;
+            return;
+        }
+        std::vector<std::filesystem::path> roots{docs_.scene.path.parent_path()};
+        if (!assets_.empty()) roots.push_back(assets_ / "library" / "meshes");
+        const Result<LibrarySaved> saved =
+            save_to_library(*dir, docs_.scene.desc(), panels_.selection.name, roots);
+        if (!saved) {
+            panels_.status = saved.error().context;
+            return;
+        }
+        LibraryLoad project = load_library_items(*dir / "library.yaml");
+        for (LibraryItem& item : project.items) {
+            if (item.name != saved->name) continue;
+            panels_.library.push_back(std::move(item));
+            ++panels_.library_generation;
+            break;
+        }
+        panels_.status = "saved '" + saved->name + "' to " + saved->file.generic_string() +
+                         (saved->no_thumbnail.empty() ? std::string() : "; no thumbnail: " + saved->no_thumbnail);
+    }
+
     void list_sources() {
         namespace fs = std::filesystem;
         const fs::path dir = docs_.scene.path.parent_path();
@@ -343,7 +508,7 @@ class EditorWorkspace {
         }
         SdfPose at;
         at.position = origin + dir * *t;
-        at.position.y += detail::rest_height(item);
+        at.position.y += rest_height(item);
         const Serials before = serials();
         const Result<std::string> placed = place(docs_.scene, item, at);
         if (!placed) {
@@ -354,8 +519,30 @@ class EditorWorkspace {
         panels_.selection = Selection{Selection::Kind::object, *placed};
     }
 
+    // N17: the selection when it is a drone Run flies, else the first one;
+    // disarmed, level, throttle 0. When none is flown, why.
+    void choose_pilot() {
+        panels_.pilot = PilotPanel{};
+        const Selection& s = panels_.selection;
+        if (s.kind == Selection::Kind::object && run_->flies(s.name)) {
+            panels_.pilot.vehicle = s.name;
+        } else if (const std::optional<std::string> first = run_->first_flown(); first) {
+            panels_.pilot.vehicle = *first;
+        } else {
+            panels_.pilot.why_not = "nothing to fly: no drone here has a propulsion chain";
+            for (const scene::SceneVehicle& v : docs_.scene.desc().vehicles) {
+                if (const std::string why = run_->why_not(v.name); !why.empty()) {
+                    panels_.pilot.why_not += "; " + why;
+                    break;
+                }
+            }
+        }
+    }
+
     void step_run(uint64_t steps) {
-        if (Result<void> stepped = run_->step(static_cast<uint32_t>(steps)); !stepped) {
+        if (Result<void> stepped = run_->step(static_cast<uint32_t>(steps), panels_.pilot.vehicle,
+                                              panels_.pilot.controls);
+            !stepped) {
             panels_.status = stepped.error().context;
             paused_ = true;
         }
@@ -372,11 +559,13 @@ class EditorWorkspace {
                     }
                     run_.emplace(std::move(*started));
                     carry_ns_ = 0;
+                    choose_pilot();
                 }
                 paused_ = false;
                 return;
             case Command::stop:
                 run_.reset();
+                panels_.pilot = PilotPanel{};
                 paused_ = false;
                 carry_ns_ = 0;
                 return;
@@ -389,17 +578,174 @@ class EditorWorkspace {
             case Command::redo: history(redo_, undo_, false); return;
             case Command::save: {
                 const Serials before = serials();
-                save_into(before, save_scene(docs_.scene, docs_.world, fallback_meshes_));
+                const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
+                save_into(before, save_scene(docs_.scene, docs_.world, meshes));
                 return;
             }
             case Command::save_as: {
                 const Serials before = serials();
-                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, fallback_meshes_));
+                const std::vector<render::FallbackMesh> meshes = meshes_to_copy();
+                save_into(before, save_scene_as(docs_.scene, docs_.world, panels_.path, meshes));
                 list_sources();
+                load_library();  // a new folder: its project library
                 return;
             }
             case Command::open: open(panels_.path); return;
+            case Command::load_item: {
+                Result<LibraryItem> item =
+                    is_gltf(panels_.item_path) ? import_item(panels_.item_path) : item_from_file(panels_.item_path);
+                if (!item) {
+                    panels_.status = item.error().context;
+                    return;
+                }
+                panels_.library.push_back(std::move(*item));
+                ++panels_.library_generation;
+                panels_.armed = panels_.library.size() - 1;
+                panels_.status.clear();
+                return;
+            }
+            case Command::save_to_library: save_selection_to_library(); return;
+            case Command::import_parts: import_parts(panels_.item_path); return;
+            case Command::arm: {
+                flight::PilotKeys space;
+                space.arm_pressed = true;
+                pilot_keys(space, 0.0f);
+                return;
+            }
+            case Command::level: {
+                flight::PilotKeys r;
+                r.level_pressed = true;
+                pilot_keys(r, 0.0f);
+                return;
+            }
         }
+    }
+
+    // N15: a .gltf or .glb, by its extension, any case.
+    [[nodiscard]] static bool is_gltf(const std::filesystem::path& file) {
+        std::string ext = path_text(file.extension());
+        for (char& c : ext) c = (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+        return ext == ".gltf" || ext == ".glb";
+    }
+
+    // N15: a glTF as an "imported" library item, armed by Load from file. Its
+    // sidecar is staged (D1); its asset is visual only (a mesh obstacle's
+    // collider waits for N9), drawn with the world's first material. Its
+    // source stays empty, so placing it adds the asset, not an object file;
+    // `file` keeps the path imported.
+    [[nodiscard]] Result<LibraryItem> import_item(const std::filesystem::path& file) {
+        const WorldDesc& world = docs_.world.desc();
+        if (world.materials.empty()) {
+            return std::unexpected(Error{Code::invalid_argument, detail::import_prefix(file) +
+                                                                     "the world has no material to draw it with"});
+        }
+        if (staging_.path().empty()) {
+            return std::unexpected(Error{Code::unavailable, detail::import_prefix(file) + staging_.why_not()});
+        }
+        Result<ImportedMesh> got = import_gltf_object(file, staging_.path(), docs_.scene.desc(), world,
+                                                      docs_.scene.path.parent_path());
+        if (!got) return std::unexpected(got.error());
+        LibraryItem item;
+        item.kind = LibraryItem::Kind::asset;
+        item.name = got->name;
+        scene::SceneAsset a;
+        a.name = got->name;
+        a.visual.mesh_ref = got->ref;
+        a.visual.material = world.materials.front().name;
+        item.asset = std::move(a);
+        item.mesh = got->mesh;
+        item.category = "imported";
+        item.file = got->source;
+        import_sources_[got->ref] = got->source;
+        return item;
+    }
+
+    // N15: every mesh of `file` as a part of the selected drone's model (D2),
+    // staged (D1), as one undoable edit. A refused edit unstages them.
+    void import_parts(const std::filesystem::path& file) {
+        const scene::SceneDesc& s = docs_.scene.desc();
+        const scene::SceneVehicle* v =
+            panels_.selection.kind == Selection::Kind::object ? find_vehicle(s, panels_.selection.name) : nullptr;
+        if (v == nullptr) {
+            panels_.status = "Import parts: select a drone to import the parts onto";
+            return;
+        }
+        if (staging_.path().empty()) {
+            panels_.status = detail::import_prefix(file) + staging_.why_not();
+            return;
+        }
+        Result<std::vector<ImportedMesh>> got =
+            import_gltf_parts(file, staging_.path(), s, docs_.world.desc(), docs_.scene.path.parent_path());
+        if (!got) {
+            panels_.status = got.error().context;
+            return;
+        }
+        const AddMeshParts edit{v->name, *got};
+        const Serials before = serials();
+        const Result<void> applied = apply(docs_.scene, edit);
+        std::error_code ec;
+        for (const ImportedMesh& m : *got) {
+            if (applied) {
+                import_sources_[m.ref] = m.source;
+            } else {
+                std::filesystem::remove(m.sidecar, ec);
+            }
+        }
+        settle(before, applied);
+    }
+
+    // What Save copies beside the scene (copy_fallback_meshes(), all or
+    // nothing, keeping a copy already there): the view's fallbacks (N11),
+    // then every imported sidecar the scene names, an asset's or a part's
+    // (N15, D1), from the staging folder, else the scene's folder as it was
+    // (a Save As elsewhere).
+    [[nodiscard]] std::vector<render::FallbackMesh> meshes_to_copy() const {
+        namespace fs = std::filesystem;
+        constexpr std::string_view kSidecar = ".spmesh";
+        std::vector<render::FallbackMesh> out = fallback_meshes_;
+        const scene::SceneDesc& s = docs_.scene.desc();
+        std::vector<std::string> files;
+        for (const scene::SceneAsset& a : s.assets) {
+            if (a.visual.mesh_ref.starts_with("imported/")) files.push_back(a.visual.mesh_ref + std::string(kSidecar));
+        }
+        for (const vehicles::ModelType& m : s.models) {
+            for (const vehicles::PartDesc& p : m.parts) {
+                if (p.mesh_file.starts_with("imported/") && p.mesh_file.ends_with(kSidecar)) files.push_back(p.mesh_file);
+            }
+        }
+        for (const std::string& file : files) {
+            const std::string ref = file.substr(0, file.size() - kSidecar.size());
+            const bool listed = std::any_of(out.begin(), out.end(), [&](const auto& m) { return m.ref == ref; });
+            if (listed) continue;
+            for (const fs::path& root : {staging_.path(), docs_.scene.path.parent_path()}) {
+                if (root.empty()) continue;  // never the working directory
+                const fs::path from = root / fs::path(std::u8string(file.begin(), file.end()));
+                std::error_code ec;
+                if (!fs::exists(from, ec)) continue;
+                out.push_back(render::FallbackMesh{ref, from, 1});
+                break;
+            }
+        }
+        return out;
+    }
+
+    // N15: the path an imported mesh came from: this session's import, else
+    // the provenance of its sidecar beside the scene or staged; empty for a
+    // ref not under imported/. Read once per ref.
+    [[nodiscard]] std::string import_source(const std::string& ref) {
+        if (!ref.starts_with("imported/")) return {};
+        if (const auto it = import_sources_.find(ref); it != import_sources_.end()) return it->second;
+        std::string source;
+        for (const std::filesystem::path& root : {docs_.scene.path.parent_path(), staging_.path()}) {
+            if (root.empty()) continue;  // never the working directory
+            const std::filesystem::path sidecar = root / std::filesystem::path(ref + ".spmesh");
+            std::error_code ec;
+            if (!std::filesystem::exists(sidecar, ec)) continue;
+            if (const Result<LoadedMesh> m = load_mesh_file(sidecar); m) source = m->provenance.source;
+            break;
+        }
+        import_sources_[ref] = source;
+        return source;
     }
 
     // One step back (or forward) in the shared history.
@@ -441,6 +787,7 @@ class EditorWorkspace {
             return;
         }
         docs_ = std::move(*opened);
+        ++opened_;  // its serials start over: a new cache key
         records_ = records_for(docs_.scene.path);
         composed_ = *c;
         ++composition_;
@@ -450,15 +797,21 @@ class EditorWorkspace {
         undo_.clear();
         redo_.clear();
         panels_.selection = Selection{};
+        panels_.pilot = PilotPanel{};
         panels_.armed.reset();
+        import_sources_.clear();
         panels_.status.clear();
         list_sources();
+        load_library();
     }
 
     OpenedScene docs_;
+    uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
     std::vector<render::FallbackMesh> fallback_meshes_;  // N11: what Save copies beside the scene
+    ImportStaging staging_;                              // N15: where imports are staged until Save
+    std::map<std::string, std::string> import_sources_;  // N15: an imported ref -> the path it came from
     scene::ComposedScene composed_;
     uint64_t composition_ = 0;
     std::optional<EditorRun> run_;

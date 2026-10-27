@@ -11,11 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "core/detail/flush_subnormals.hpp"  // MXCSR, for the flush-mode test at the end
 #include "core/fp32_math.hpp"
-
-#if defined(__x86_64__) || defined(_M_X64)
-#include <xmmintrin.h>  // MXCSR, for the flush-mode test at the end
-#endif
 #include "core/rng.hpp"
 
 // ---------------------------------------------------------------------------
@@ -629,19 +626,8 @@ TEST(Fp32Log, TheLn2SplitMultipliesExactlyAcrossEveryExponentAndEveryExpQuotient
 // ---------------------------------------------------------------------------
 namespace {
 
-#if defined(__x86_64__) || defined(_M_X64)
-// Sets MXCSR's FTZ (bit 15) and DAZ (bit 6) for its lifetime, and restores the
-// previous MXCSR on every exit.
-class ScopedFlushSubnormals {
-public:
-    ScopedFlushSubnormals() : saved_(_mm_getcsr()) { _mm_setcsr(saved_ | 0x8040u); }
-    ~ScopedFlushSubnormals() { _mm_setcsr(saved_); }
-    ScopedFlushSubnormals(const ScopedFlushSubnormals&) = delete;
-    ScopedFlushSubnormals& operator=(const ScopedFlushSubnormals&) = delete;
-
-private:
-    unsigned int saved_;
-};
+// The scope is engine/core/detail/flush_subnormals.hpp's (one home, TD-9).
+using spade::math::ScopedFlushSubnormals;
 
 struct FlushMismatches {
     uint64_t count = 0;
@@ -650,9 +636,30 @@ struct FlushMismatches {
     uint32_t flushed = 0;   // its result under FTZ + DAZ
 };
 
+// The flushed half of one chunk: each argument's bits under FTZ + DAZ against
+// `expected`, its default-mode bits. Every float op of the half runs in here,
+// so strictly inside the wrapper's scope (the header's wrapper rule).
+SPADE_NOINLINE void compare_flushed(float (*f)(float), uint64_t base, uint64_t n, const uint32_t* expected,
+                                    FlushMismatches& out) {
+    for (uint64_t i = 0; i < n; ++i) {
+        const uint32_t arg = static_cast<uint32_t>(base + i);
+        const uint32_t got = bits_of(f(float_of(arg)));
+        if (got != expected[i]) {
+            if (out.count == 0) out = FlushMismatches{0, arg, expected[i], got};
+            ++out.count;
+        }
+    }
+}
+
+// The wrapper: the scope, then one call, and no float work of its own.
+void compare_flushed_in_scope(float (*f)(float), uint64_t base, uint64_t n, const uint32_t* expected,
+                              FlushMismatches& out) {
+    const ScopedFlushSubnormals flush;
+    compare_flushed(f, base, n, expected, out);
+}
+
 // Every argument from `first` to `last` (as bit patterns, ascending), in
-// chunks: the default-mode bits first, then the flushed ones. Nothing inside
-// the flushed scope does float arithmetic of its own.
+// chunks: the default-mode bits first, then the flushed ones.
 [[nodiscard]] FlushMismatches flush_mismatches(float (*f)(float), uint32_t first, uint32_t last) {
     constexpr uint64_t kChunk = 1u << 16;
     std::vector<uint32_t> expected(kChunk);
@@ -660,26 +667,14 @@ struct FlushMismatches {
     for (uint64_t base = first; base <= last; base += kChunk) {
         const uint64_t n = std::min<uint64_t>(kChunk, uint64_t{last} - base + 1u);
         for (uint64_t i = 0; i < n; ++i) expected[i] = bits_of(f(float_of(static_cast<uint32_t>(base + i))));
-        const ScopedFlushSubnormals flush;
-        for (uint64_t i = 0; i < n; ++i) {
-            const uint32_t arg = static_cast<uint32_t>(base + i);
-            const uint32_t got = bits_of(f(float_of(arg)));
-            if (got != expected[i]) {
-                if (out.count == 0) out = FlushMismatches{0, arg, expected[i], got};
-                ++out.count;
-            }
-        }
+        compare_flushed_in_scope(f, base, n, expected.data(), out);
     }
     return out;
 }
-#endif
 
 }  // namespace
 
 TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
-#if !(defined(__x86_64__) || defined(_M_X64))
-    GTEST_SKIP() << "needs x86 MXCSR (FTZ, DAZ) to flush subnormals on the host";
-#else
     struct Case {
         const char* what;
         float (*f)(float);
@@ -707,5 +702,4 @@ TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
         }
         EXPECT_EQ(m.count, 0u) << c.what << ": " << m.count << " results change when subnormals flush" << first;
     }
-#endif
 }

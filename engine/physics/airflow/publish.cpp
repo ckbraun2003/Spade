@@ -4,6 +4,7 @@
 #include <cmath>
 #include <string>
 
+#include "core/detail/flush_subnormals.hpp"
 #include "core/fp16.hpp"
 #include "core/lambda2.hpp"
 
@@ -106,9 +107,9 @@ struct Context {
             x.g.p[cell_index(x.g.shape, i, j, k)], std::sqrt(w2), q_hat, lambda2_hat(G)};
 }
 
-}  // namespace
-
-Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
+// publish_render_volume()'s body, run under its wrapper's scope (the wrapper
+// rule, core/detail/flush_subnormals.hpp); Core's lambda2_hat() runs inside it.
+SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
     out.generation = 0;  // unnamed until it is whole: a refusal may leave it part-written
     const GridShape& s = g.shape;
     const std::size_t cells = std::size_t{s.nx} * s.ny * s.nz;
@@ -216,6 +217,16 @@ Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput
     h.extrapolated_cells = counts.extrapolated;
     out.generation = next_flow_generation();  // a new content, for a reader's cache
     return counts;
+}
+
+}  // namespace
+
+// Subnormals flushed as fluid_step() flushes them (spec section 4.5 as amended
+// 2026-10-22; the GPU's twin is B6's publish_fields). An f16 texel cannot
+// show the flush; B6's fp32 comparison can.
+Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
+    const spade::math::ScopedFlushSubnormals flush;
+    return publish_flushed(g, in, out);
 }
 
 }  // namespace spade::physics::airflow

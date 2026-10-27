@@ -96,8 +96,9 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
     const GridShape& sh = g.shape;
     const std::array<FaceKind, 6> kinds = face_kinds(bc);
     set_kinds(s.mg, kinds);
-    const float inv_dx = 1.0f / sh.dx;
-    const float b_coef = rho * sh.dx * sh.dx / h;
+    const ProjectionFloats floats = projection_floats(sh, rho, h);
+    const float inv_dx = floats.inv_dx;
+    const float b_coef = floats.b_coef;
     const auto flux = [&](uint32_t c, std::size_t idx, const std::vector<float>& vel) {
         const float t = f.theta[c][idx];
         return t * vel[idx] + (1.0f - t) * f.wall[c][idx];
@@ -124,7 +125,7 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
                                           PcgGauge{&gauge_regions, &ctx, regions.solid.data()});
     std::copy(s.pcg.x.begin(), s.pcg.x.end(), g.p.begin());
 
-    const float g_coef = h / (rho * sh.dx);
+    const float g_coef = floats.g_coef;
     subtract_gradient_solids(
         sh.nx, sh.ny, sh.nz, kinds[kXMinus], kinds[kXPlus], g_coef, g.p,
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.u[u_index(sh, q, a, b)]; },
@@ -140,10 +141,20 @@ ProjectionReport project_solids(MacGrid& g, const DomainBc& bc, float rho, float
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.w[w_index(sh, a, b, q)]; },
         [&](uint32_t q, uint32_t a, uint32_t b) { return cell_index(sh, a, b, q); },
         [&](uint32_t q, uint32_t a, uint32_t b) { return w_index(sh, a, b, q); }, f.theta[2], f.wall[2]);
-    return {solved.residual, solved.iterations};
+    return {solved.residual, solved.iterations, solved.stalled};
 }
 
 }  // namespace
+
+ProjectionFloats projection_floats(const GridShape& shape, float rho, float h) noexcept {
+    ProjectionFloats f;
+    f.b_coef = rho * shape.dx * shape.dx / h;
+    f.g_coef = h / (rho * shape.dx);
+    f.inv_dx = 1.0f / shape.dx;
+    f.inv_count = static_cast<float>(
+        1.0 / static_cast<double>(std::size_t{shape.nx} * shape.ny * shape.nz));  // remove_mean()'s
+    return f;
+}
 
 ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc& bc) {
     ProjectionScratch s;
@@ -166,7 +177,8 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
     set_kinds(s.mg, kinds);
     divergence(g, s.div);
     PoissonLevel& f = s.mg.levels[0];
-    const float b_coef = rho * sh.dx * sh.dx / h;
+    const ProjectionFloats floats = projection_floats(sh, rho, h);
+    const float b_coef = floats.b_coef;
     for (std::size_t c = 0; c < f.b.size(); ++c) f.b[c] = b_coef * s.div[c];
     const bool closed = std::none_of(kinds.begin(), kinds.end(),
                                      [](FaceKind k) { return k == FaceKind::pressure_outlet; });
@@ -189,7 +201,7 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
     }
     const float solve_residual = b_max > 0.0f ? r_max / b_max : 0.0f;
 
-    const float g_coef = h / (rho * sh.dx);
+    const float g_coef = floats.g_coef;
     subtract_gradient(
         sh.nx, sh.ny, sh.nz, kinds[kXMinus], kinds[kXPlus], g_coef, g.p,
         [&](uint32_t q, uint32_t a, uint32_t b) -> float& { return g.u[u_index(sh, q, a, b)]; },

@@ -69,6 +69,9 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - **Drag elements:** a wall part has none once the coupling is two-way (D4), because the grid's integrated wall force replaces it. In one-way (D1–D3) the sim keeps its drag model for flight, and the grid's wall force is display only. So the drag element's presence follows the coupling mode, not the part's surface kind. A porous part's drag, two-way, is its Darcy–Forchheimer sink's reaction.
 - **P3. Wall pressure.** The surface pressure at body surface points, and the integrated force and moment, for display (one-way). In D4 that force replaces the body's drag element, so nothing is counted twice.
 - **P4. The actuator line.** Per blade: elements along a rotating line, with lift and drag from tabulated airfoil polars, chord and twist.
+  - *Amended 2026-10-26 (with P11, merged at 97ddfdd):*
+    - **The convention.** Blade `b` of `B` lies at azimuth `s_k ψ + 2π b / B` about the hub's +Y. `ψ` is P11's and grows with `ω ≥ 0` whatever the hand, and `s_k` is the rotor's `spin_dir`, as `posed_parts()` turns a drawn blade. So a drawn blade and P4's line coincide.
+    - **Its floating-point flags** (Core's note). P11's rule is header-only, so `ψ + ω h` compiles under each includer's FP flags, while `spade_fp_strict` is PRIVATE to the engine libraries (`engine/CMakeLists.txt:94-106`). That is fine while `ψ` is visual only. When P4 feeds `ψ` into the step, the rule moves into an engine `.cpp` built once under `spade_fp_strict`, and its callers link it, so every caller's bits are the engine's.
   - **Its input is one blade definition per rotor** (Cameron, backlog `cd298d6`, Q3):
     - the blade count and radius, the hub radius, and stations along the span, each with chord, twist and an airfoil;
     - the airfoil's polars, `C_l` and `C_d` against α, imported with their source;
@@ -93,6 +96,14 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
   - Small-propeller thrust and power data (the UIUC propeller database) for the actuator line.
 - **P10. The dye scalar** (Rendering). Tracers stand in for D1.
 - **P11. The blade azimuth `ψ`**, a per-rotor array Physics owns, declared by the airflow module. It is advanced by `ω h` each step and read by the actuator line and blade-resolved models. It sits outside `RotorRow`, so every existing golden holds.
+  - *Amended 2026-10-26 (P11 merged at 97ddfdd; Core's L7 plan; the lead's order):* P11's home is `engine/physics/blade_azimuth.hpp`, header-only and not the airflow module, because the editor's Run is a plain `Simulation` without that module.
+    - `advance_blade_azimuth(float& psi, float omega, float h)` computes `ψ ← ψ + ω h`, then subtracts `kAzimuthTwoPi` (6.28318548f, `0x40C90FDB`) while `ψ ≥` it, giving [0, 2π) with `+ - *` only and no `fmod`.
+    - `ω` is the rotor row's value after the rotors' step, the one its forces used.
+    - A disabled rotor holds its `ψ`.
+    - `ψ` outside [0, 2π), a negative or non-finite `ω` or `h`, or `ω h` above 64 rad is refused: `ψ` is held and the call returns false.
+    - `advance_blade_azimuths(psi, rows, h)` advances every rotor.
+    - It is held on the host, outside registered state, with nothing read back. The editor's Run and LiveRun call it, and `posed_parts()` applies `s_k` (`R_y(s_k ψ)`).
+    - For now it is visual only (Core's L7c2).
 
 **Core**
 - **C1. Per-part model geometry, `CORE-7`** (`../../core/2026-10-12-model-parts-design.md`, approved). `ModelType::parts` gives each part a role (rigid, or spinning with rotor k), a body-frame mount, an exact `SdfProgram` shape and a wall or porous surface. A posing rule gives one world-frame SDF of the posed parts and the wall velocity `v + ω × r`. Parts are in YAML. Core builds it right after stage 5 Task 1. D1 uses it if it has landed, otherwise a harness SDF from `QuadrotorParams`. CAD inputs follow `CORE-6`: native CSG parts now, imported triangle meshes with exact BVH distance, and STEP through an offline tool later.
@@ -132,6 +143,12 @@ Cameron expects this: "real time analysis being cool and all, but some stuff wil
 8. Plan B with P8. D2 needs it.
 9. **P2c, the solids' coarse face weights** (the lead's ruling 1c, 2026-10-21). Series/harmonic coarse face weights, so a coarse face sees every fine plane it spans instead of every second one. This also fixes P2's finding 2, the sheet blindness. Since 2026-10-21 the solids' CG runs by residual: a floor of `kSolidsCgIterations` (8), then on to 1e-4, with a cap of 32. A cell-centred sphere needs 24 iterations because the coarse levels see a different body; P2c brings the count back toward the floor. It follows plan B's GPU work unless the cap starts firing. Even-grid solids bits shift at about 1e-6, inside the bands, so the solids goldens are re-cut under TD-1 with the lead's word.
 9. P5 and P9. D3 needs them.
+10. **The quad's four wakes against measured data** (the lead, 2026-10-22, from C8q's finding; after the GPU solver, once L5 builds the drones). A quad-level case against NASA Ames' measured hover and wind-tunnel data for the Phantom 3 and Iris+ classes (thrust and inflow per rotor; the library plan names the sources). Four interacting wakes have no closed-form reference:
+    - C8q measured each rotor of the reference quad (tips 0.9R apart) at 0.81 of single-rotor momentum theory, and at 0.85 without swirl; rotor 0 alone in the same case read 1.06, C8's disc.
+    - Linear mutual induction (each neighbour's inflow, as a sink at its disc) accounts for only about 3% at C8q's probe, 0.5R wide and 2R below. The rest, the wakes' mixing or the open box's response to four times the flux, is not yet separated.
+    - C8q keeps the banded single-rotor check (rotor 0 alone, against momentum theory in C8's band) and reports the four-rotor ratios only.
+11. **The swirl's root relief** (later). P1's constant circulation reaches the disc's inner ring at 0.41R, and it costs C8q's quad about 4% of the downwash at its 0.5R probe (0.81 against 0.85 without torque). The change: a circulation rising from 0 at the hub, as a real rotor's root unloads, designed and measured against C8q.
+    - *Withdrawn 2026-10-22, after C8q's banded run:* a lone rotor's swirl costs nothing at the probe (1.066 of momentum theory with its torque, the four runs' mean, against 1.0617 without it). So the quad's ~4% from torque comes only with the neighbours, through the four wakes' interaction, not from a core vortex in each wake. Root relief is not indicated. The swirl's part in the quad goes to item 10's measured-data case.
 
 ## Spec changes (Cameron's, 2026-10-12)
 

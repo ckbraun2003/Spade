@@ -238,6 +238,9 @@ struct LiveRun::Impl {
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
     LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
+    LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
+    void* test_nudge_context = nullptr;
+    uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -346,24 +349,41 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     if (!posed) {
         return std::unexpected(Error{posed.error().code, "the model's parts at the hover: " + posed.error().context});
     }
-    const bool with_solids = !posed->parts.empty();
-    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
-    Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
-    if (!scratch) return std::unexpected(scratch.error());
-    impl->scratch = std::move(*scratch);
     // The world's origin is the box's centre, where the drone is held.
     const af::GridShape& g = resolved.base;
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
-    if (with_solids) {
-        // A local: its sampler borrows it and impl->model, and set_solids()
-        // is done with both on return (vehicles/airflow_solids.hpp).
-        const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
-        Result<std::vector<af::SolidPart>> parts = solids.parts();
-        if (!parts) {
-            return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+    // The parts the air sees: every posed part but those marked drawn only
+    // (N15, vehicles/airflow_solids.hpp). They say whether the run has
+    // solids, so a model of drawn-only parts flies as one without them: plan
+    // A at the case's n_v. A local: its sampler borrows it and impl->model,
+    // and set_solids() is done with both on return.
+    const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
+    impl->solids.drawn_only = solids.drawn_only();
+    Result<std::vector<af::SolidPart>> parts = solids.parts();
+    if (!parts) {
+        return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
+    }
+    // An imported part the grid can't resolve is refused by name, as any part
+    // is, with the other way out (N15, Physics' ruling): the classifier's
+    // refusal, ahead of set_solids()'s, which would give the same words.
+    for (const af::SolidPart& sp : *parts) {
+        const bool imported = std::any_of(impl->model.parts.begin(), impl->model.parts.end(), [&](const auto& d) {
+            return d.name == sp.name && d.role == kImportedPartRole;
+        });
+        if (!imported) continue;
+        if (Result<af::SolidClass> k = af::classify_part(sp, g.dx); !k) {
+            return std::unexpected(Error{k.error().code, "the model's parts as solids: " + k.error().context +
+                                                             ", or mark part '" + sp.name + "' visual-only"});
         }
+    }
+    const bool with_solids = !parts->empty();
+    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
+    Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
+    if (!scratch) return std::unexpected(scratch.error());
+    impl->scratch = std::move(*scratch);
+    if (with_solids) {
         if (Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
             !set) {
             return std::unexpected(Error{set.error().code, "the model's parts as solids: " + set.error().context});
@@ -492,9 +512,15 @@ Result<void> LiveRun::step(const Controls& controls) {
             af::spread_actuator(d, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch.du, r.scratch.dv, r.scratch.dw);
         }
     }
+    if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
 
     // The fluid.
-    const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, r.fluid, r.scratch);
+    af::FluidConfig fluid = r.fluid;
+    if (r.test_max_iterations != 0 && r.solids.any) {
+        fluid.n_v = r.test_max_iterations;
+        fluid.cg_cap = r.test_max_iterations;
+    }
+    const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, fluid, r.scratch);
     if (health.fault != af::FluidFault::none) {
         r.fault = "the fluid faulted at step " + std::to_string(r.state.steps + 1) + ": " +
                   af::describe(health, r.resolved.base);
@@ -503,7 +529,10 @@ Result<void> LiveRun::step(const Controls& controls) {
     if (r.solids.any) {
         // L6: an unconverged pressure is announced (run_line()), never refused.
         r.solids.pressure_residual = health.pressure_residual;
+        r.solids.pressure_iterations = health.pressure_iterations;
         if (health.unconverged) ++r.solids.unconverged_steps;
+        if (health.stalled) ++r.solids.stalled_steps;
+        if (health.capped) ++r.solids.capped_steps;
     }
 
     ++r.state.steps;
@@ -551,22 +580,51 @@ std::string LiveRun::run_label() const {
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
+    if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
+        out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");
+        for (std::size_t i = 0; i < drawn.size(); ++i) out += (i == 0 ? "'" : ", '") + drawn[i] + "'";
+    }
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
     }
     return out;
 }
 
-std::string LiveRun::run_line() const {
-    std::string out = run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
-    if (const LiveSolids& s = impl_->solids; s.unconverged_steps > 0) {
-        out += std::format(" \xc2\xb7 pressure unconverged on {} steps (last max|r|/max|b| {:.1e})",
-                           s.unconverged_steps, s.pressure_residual);
+std::string solids_health_line(const LiveSolids& s, uint32_t cap) {
+    if (s.unconverged_steps == 0) return {};
+    std::string out =
+        std::format("pressure unconverged on {} step{}", s.unconverged_steps, s.unconverged_steps == 1 ? "" : "s");
+    std::string why;
+    if (s.stalled_steps > 0) why = std::format("{} stalled at fp32's floor", s.stalled_steps);
+    if (s.capped_steps > 0) {
+        why += std::format("{}{} at the CG's cap of {} iteration{}", why.empty() ? "" : ", ", s.capped_steps, cap,
+                           cap == 1 ? "" : "s");
     }
+    if (!why.empty()) out += ": " + why;
+    out += std::format(" (last max|r|/max|b| {:.1e})", s.pressure_residual);
     return out;
 }
 
+std::string LiveRun::run_line() const {
+    std::string out = run_label() + std::format(" \xc2\xb7 t = {:.3f} s", impl_->state.t_s);
+    if (const std::string pressure = pressure_line(); !pressure.empty()) out += " \xc2\xb7 " + pressure;
+    return out;
+}
+
+std::string LiveRun::pressure_line() const {
+    const af::FluidConfig& f = impl_->fluid;
+    const uint32_t limit = impl_->test_max_iterations;
+    return solids_health_line(impl_->solids, limit != 0 && impl_->solids.any ? limit : std::max(f.n_v, f.cg_cap));
+}
+
 const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
+
+void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept {
+    impl_->test_nudge = nudge;
+    impl_->test_nudge_context = context;
+}
+
+void LiveRun::set_test_solids_max_iterations(uint32_t n) noexcept { impl_->test_max_iterations = n; }
 
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 

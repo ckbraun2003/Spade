@@ -281,7 +281,10 @@ TEST(AnalysisValidation, TheV1RecordsRead) {
                 EXPECT_FALSE(m.tolerance.has_value()) << m.quantity;
             }
         }
-        if (rec.source == "c8-actuator-disc.md") {
+        // C8's own record, the CPU's: its first measure a speed. The file's
+        // other record, the GPU gather in the CPU step, opens on a count since
+        // K2b (the increments differing, 0 of all).
+        if (rec.source == "c8-actuator-disc.md" && rec.identity == "C8 actuator-disc far wake") {
             c8 = true;
             EXPECT_EQ(rec.measures.at(0).unit, "m/s");
         }

@@ -35,7 +35,8 @@ struct WallLoad {
 };
 
 // `about` is in the grid's frame (the world shifted by the grid's minimum
-// corner). No solids, or regions not labelled for this grid: zero.
+// corner). No solids, or regions not labelled for this grid: zero. With
+// subnormals flushed as fluid_step() flushes them (fluid_step.hpp).
 [[nodiscard]] WallLoad wall_load(const MacGrid& g, const SolidField& f, const FluidRegions& r,
                                  glm::vec3 about) noexcept;
 

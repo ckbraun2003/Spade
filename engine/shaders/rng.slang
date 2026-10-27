@@ -73,10 +73,11 @@
 //     first execution.
 //
 //     It remains a real allowance and NOT a claim that Vulkan's sqrt is
-//     correctly rounded. A tighter implementation (an integer correctly
-//     rounded sqrt, as log32_div is for division) is allowed but not
-//     required: CORE-3 as amended by the user's ruling of 2026-10-05, under
-//     which CPU<->GPU results are banded everywhere (TD-14).
+//     correctly rounded. An exact square root exists (fp32_math.slang's
+//     sqrt32_ftz, as div32_ftz is for division), but moving rng_next_gauss
+//     onto it is Cameron's call: R3 was lifted on 2026-10-22 only for the
+//     airflow solver (backlog, "Bit-exact GPU airflow"), so this path stays
+//     banded under CORE-3 (TD-14: banded until a kernel is exact).
 //
 //     LIVE REPRODUCTION, kept alongside the declaration deliberately:
 //     tests/test_gpu_parity.cpp's GnssDrawsMatchTheCpuWithinTheCore3Band

@@ -1,10 +1,21 @@
-// The editor's library: the built-in items, and placing a copy of one into a
-// scene. Display-free (SL15b).
+// The editor's library: the default library's items, a file's, the built-in
+// ones, and placing a copy of one into a scene. Display-free (SL15b).
 //
-// The built-in items ship with the editor: the quadrotor template (the
-// sandbox stand's airframe), and the primitive assets -- box, sphere, cylinder
-// and capsule -- at unit size, as the builder makes them. Library files, and
-// Save to library, come with Core's model and asset files (Task 13).
+// THE PANEL lists Core's default library (assets/library/library.yaml,
+// scene::load_library()) in its index's order, grouped by category (INT-14).
+// An entry that won't load is named, and the rest still load. A part (a
+// motor, prop, ESC or battery: index v2, Core's L2) is read against the
+// library's sources registry and listed inspect-only: it is built into a
+// drone, never placed on its own. Load from file
+// reads a *.model.yaml or *.object.yaml by its extension, as the index does.
+// The built-in items -- the quadrotor template (the sandbox stand's airframe)
+// and the unit primitives, as the builder makes them -- left the panel; the
+// tests keep them.
+//
+// A FILE'S ITEM is placed through Core (TD-9): AddModelFile and AddObjectFile
+// read its file and go through scene::add_model(), which keeps the chain, and
+// scene::add_object(), which adds the materials. A built-in is placed as it
+// is, by AddVehicle and AddAsset.
 //
 // Placing copies (EDT-012): a model goes in once per placed vehicle, under its
 // own unique name, with the vehicle that flies it; an asset goes in as an
@@ -18,34 +29,66 @@
 #pragma once
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
+#include <format>
+#include <limits>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include "core/error.hpp"
 #include "drone_sim.hpp"
+#include "drone_view.hpp"
 #include "editor_document.hpp"
 #include "editor_scene_edits.hpp"
+#include "png_reader.hpp"
+#include "scene/library.hpp"
+#include "scene/model_file.hpp"
+#include "scene/model_sources.hpp"
+#include "scene/object_file.hpp"
+#include "scene/part_file.hpp"
 #include "scene/scene_file.hpp"
+#include "vehicle_draw.hpp"
+#include "vehicles/model_part.hpp"
+#include "vehicles/part_pose.hpp"
 #include "vehicles/quadrotor.hpp"
+#include "world/aabb.hpp"
 #include "world/builder.hpp"
+#include "world/mesh.hpp"
 #include "world/sdf.hpp"
 
 namespace spade::sandbox::editor {
 
+// A library thumbnail's side, in pixels (INT-14, N14b): the PNGs
+// library_thumbnail.hpp draws, and the panel's tiles, 1:1.
+inline constexpr uint32_t kThumbnailSize = 96;
+
 struct LibraryItem {
-    enum class Kind { model, asset };
+    enum class Kind { model, asset, part };
     Kind kind = Kind::asset;
-    std::string name;
-    std::optional<vehicles::ModelType> model;  // set for a model
-    std::optional<scene::SceneAsset> asset;    // set for an asset
+    std::string name;                          // what the panel shows
+    std::optional<vehicles::ModelType> model;  // set for a model: a model file's, its chain included
+    std::optional<scene::SceneAsset> asset;    // set for an asset: an object file's object
+    std::vector<MaterialDesc> materials{};     // an object file's own materials
+    std::optional<scene::PartFile> part{};     // set for a part, its sources (grades) included
+    std::optional<scene::ModelSources> sources{};  // set for a library drone with its sidecar (L5): its grades
+    std::string category{};                    // the index's, "from file" or "imported"; empty for a built-in
+    std::string file{};                        // as the index spells it, or the path loaded from
+    std::string source{};                      // the path placing reads; empty for a built-in
+    std::optional<png::Image> thumbnail{};     // the image its entry names, decoded; none without one
+    std::shared_ptr<const TriangleMesh> mesh{};  // an import's (N15), for its rest; its asset has no collider
 };
 
 // One primitive at its collider's origin, as WorldBuilder lays out its
@@ -99,6 +142,390 @@ struct LibraryItem {
     return out;
 }
 
+// The panel's group for an item: its category, else a built-in's kind (a
+// vehicle's, by vehicle_kind_of()) or "assets".
+[[nodiscard]] inline std::string panel_category(const LibraryItem& item) {
+    if (!item.category.empty()) return item.category;
+    if (item.kind == LibraryItem::Kind::model && item.model) return vehicle_kind_of(*item.model);
+    return "assets";
+}
+
+// Whether place() takes `item`: a model or an asset, not a part.
+[[nodiscard]] inline bool placeable(const LibraryItem& item) {
+    return (item.kind == LibraryItem::Kind::model && item.model) ||
+           (item.kind == LibraryItem::Kind::asset && item.asset);
+}
+
+// INT-14's grades: a part's inspector row, one per cited field in
+// cited_fields()' order, with the value as the part's canonical text writes
+// it (a table "table, N points", a list "list, N values", a string unquoted)
+// and its citation (scene/library_sources.hpp's grades, strongest first). An
+// assumed value is never shown as measured; a drone's per-field grades come
+// with L5's sidecar (the lead, 2026-10-22).
+struct PartRow {
+    std::string field;  // its path: "kv", "blade.airfoil"; a drone's input's: "rotors[0].hub.position.x"
+    std::string value;
+    scene::Grade grade = scene::Grade::assumed;
+    std::string source;  // the registry id; empty for an assumed value citing none
+    std::string note;
+};
+
+namespace detail {
+
+[[nodiscard]] inline const scene::PartSources& sources_of(const scene::PartFile& part) {
+    return std::visit([](const auto& p) -> const scene::PartSources& { return p.sources; }, part);
+}
+
+// A value as its row shows it.
+[[nodiscard]] inline std::string shown_value(std::string_view v) {
+    if (v.size() >= 2 && v.front() == '"' && v.back() == '"') return std::string(v.substr(1, v.size() - 2));
+    if (!v.empty() && v.front() == '[') {
+        const bool none = v.find_first_not_of("[] ") == std::string_view::npos;
+        const std::size_t n = none ? 0u : static_cast<std::size_t>(std::count(v.begin(), v.end(), ',')) + 1u;
+        return "list, " + std::to_string(n) + (n == 1u ? " value" : " values");
+    }
+    return std::string(v);
+}
+
+// The values in a part's canonical text (part_to_yaml()), by field path:
+// the kind's block, two spaces in. A key with no value of its own opens a
+// table (its "- " rows counted) or a map (its keys, deeper, as "key.sub").
+[[nodiscard]] inline std::map<std::string, std::string> part_values(std::string_view text, std::string_view kind) {
+    std::map<std::string, std::string> out;
+    bool in_block = false;
+    std::string open;
+    std::size_t rows = 0;
+    const auto close = [&] {
+        if (!open.empty() && rows > 0u) {
+            out[open] = "table, " + std::to_string(rows) + (rows == 1u ? " point" : " points");
+        }
+        open.clear();
+        rows = 0;
+    };
+    const auto value_after = [](std::string_view content, std::size_t colon) {
+        std::string_view v = content.substr(colon + 1);
+        if (!v.empty() && v.front() == ' ') v.remove_prefix(1);
+        return v;
+    };
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t end = text.find('\n', at);
+        if (end == std::string_view::npos) end = text.size();
+        std::string_view line = text.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        const std::size_t indent = line.find_first_not_of(' ');
+        if (indent == std::string_view::npos || line[indent] == '#') continue;
+        const std::string_view content = line.substr(indent);
+        if (indent == 0) {
+            close();
+            in_block = content.size() == kind.size() + 1 && content.substr(0, kind.size()) == kind &&
+                       content.back() == ':';
+            continue;
+        }
+        if (!in_block) continue;
+        if (indent == 2) {
+            close();
+            const std::size_t colon = content.find(':');
+            if (colon == std::string_view::npos) continue;
+            const std::string key(content.substr(0, colon));
+            const std::string_view v = value_after(content, colon);
+            if (v.empty()) {
+                open = key;
+            } else {
+                out[key] = shown_value(v);
+            }
+        } else if (!open.empty()) {
+            if (content == "-" || content.substr(0, 2) == "- ") {
+                ++rows;
+                continue;
+            }
+            const std::size_t colon = content.find(':');
+            if (colon == std::string_view::npos) continue;
+            out[open + "." + std::string(content.substr(0, colon))] = shown_value(value_after(content, colon));
+        }
+    }
+    close();
+    return out;
+}
+
+}  // namespace detail
+
+// `part`'s rows; part_to_yaml()'s refusal, verbatim.
+[[nodiscard]] inline Result<std::vector<PartRow>> part_rows(const scene::PartFile& part) {
+    const Result<std::string> text = scene::part_to_yaml(part);
+    if (!text) return std::unexpected(text.error());
+    const std::map<std::string, std::string> values =
+        detail::part_values(*text, scene::part_kind_name(scene::part_kind(part)));
+    const scene::PartSources& sources = detail::sources_of(part);
+    std::vector<PartRow> rows;
+    for (const std::string& field : scene::cited_fields(part)) {
+        PartRow row;
+        row.field = field;
+        if (const auto v = values.find(field); v != values.end()) row.value = v->second;
+        const auto cited = std::find_if(sources.begin(), sources.end(),
+                                        [&](const scene::FieldSource& f) { return f.field == field; });
+        if (cited != sources.end()) {
+            row.grade = cited->ref.grade;
+            row.source = cited->ref.source;
+            row.note = cited->ref.note;
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// A cell's text for a value (the lead, 2026-10-22): a fractional number to
+// 4 significant figures, the hover keeping the whole of it; an integer, a
+// count, a word or a shape as written.
+[[nodiscard]] inline std::string short_value(std::string_view value) {
+    double x = 0.0;
+    const char* const end = value.data() + value.size();
+    const auto [stop, ec] = std::from_chars(value.data(), end, x);
+    const bool fractional = value.find_first_of(".eE") != std::string_view::npos;
+    if (value.empty() || !fractional || ec != std::errc() || stop != end || !std::isfinite(x)) {
+        return std::string(value);
+    }
+    char text[32];
+    std::snprintf(text, sizeof text, "%.4g", x);
+    return text;
+}
+
+// The sidecar beside a library drone's model file (L5, scene/
+// model_sources.hpp): "drones/x.model.yaml" -> "drones/x.sources.yaml"; ""
+// for a file that is not a model file.
+[[nodiscard]] inline std::string sidecar_file(std::string_view model_file) {
+    constexpr std::string_view kModel = ".model.yaml";
+    if (model_file.size() <= kModel.size() || !model_file.ends_with(kModel)) return {};
+    return std::string(model_file.substr(0, model_file.size() - kModel.size())) + ".sources.yaml";
+}
+
+// A library drone's rows (the lead's Q2, deferred to L5): its sidecar's
+// inputs in their order, each value as the sidecar writes it (shortest
+// round-trip; a vector as a flow sequence, "[1, 0, 0, 0]"), with its citation.
+[[nodiscard]] inline std::vector<PartRow> model_rows(const scene::ModelSources& sources) {
+    std::vector<PartRow> rows;
+    rows.reserve(sources.inputs.size());
+    for (const scene::ModelInput& in : sources.inputs) {
+        PartRow row;
+        row.field = in.path;
+        if (const double* x = std::get_if<double>(&in.value)) {
+            row.value = std::format("{}", *x);
+        } else {
+            const std::vector<double>& v = std::get<std::vector<double>>(in.value);
+            row.value = "[";
+            for (std::size_t i = 0; i < v.size(); ++i) row.value += (i == 0 ? "" : ", ") + std::format("{}", v[i]);
+            row.value += "]";
+        }
+        row.grade = in.ref.grade;
+        row.source = in.ref.source;
+        row.note = in.ref.note;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// Whether `item` has grades to inspect: a part, or a library drone with its
+// sidecar.
+[[nodiscard]] inline bool has_grades(const LibraryItem& item) {
+    return (item.kind == LibraryItem::Kind::part && item.part) ||
+           (item.kind == LibraryItem::Kind::model && item.sources);
+}
+
+// Whether `item` has any field (a part's) or input (a drone's) graded
+// assumed: its tile says so.
+[[nodiscard]] inline bool any_assumed(const LibraryItem& item) {
+    if (item.kind == LibraryItem::Kind::model && item.sources) {
+        return std::any_of(item.sources->inputs.begin(), item.sources->inputs.end(),
+                           [](const scene::ModelInput& in) { return in.ref.grade == scene::Grade::assumed; });
+    }
+    if (item.kind != LibraryItem::Kind::part || !item.part) return false;
+    const scene::PartSources& sources = detail::sources_of(*item.part);
+    return std::any_of(sources.begin(), sources.end(),
+                       [](const scene::FieldSource& f) { return f.ref.grade == scene::Grade::assumed; });
+}
+
+// A library's items in its index's order, and what would not load, verbatim:
+// the index (then there are no items), or each entry that won't (Core's
+// refusal names it: "library entry '<name>': ...").
+struct LibraryLoad {
+    std::vector<LibraryItem> items;
+    std::vector<std::string> problems;
+};
+
+namespace detail {
+
+[[nodiscard]] inline LibraryItem model_item(const scene::ModelFile& f) {
+    LibraryItem item;
+    item.kind = LibraryItem::Kind::model;
+    item.model = f.model;
+    return item;
+}
+
+[[nodiscard]] inline LibraryItem object_item(const scene::ObjectFile& f) {
+    LibraryItem item;
+    item.kind = LibraryItem::Kind::asset;
+    item.asset = f.object;
+    item.materials = f.materials;
+    return item;
+}
+
+// The lowest point of `model`'s parts, its DESIGN frame at the origin, level
+// and still: each part's box (part_bounds()) through its posed frame. A
+// scene's start pose places the design frame, and the body is body_at() of
+// it (to_body_state(), as the sim spawns it and the session draws it). None
+// when no part can be posed and bounded.
+[[nodiscard]] inline std::optional<float> lowest_part_point(const vehicles::ModelType& model) {
+    const BodyState body = body_at(model, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    const Result<vehicles::PosedParts> posed =
+        vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
+    if (!posed) return std::nullopt;
+    std::optional<float> low;
+    for (const vehicles::PosedPart& p : posed->parts) {
+        const Result<Aabb> box = vehicles::part_bounds(model.parts[p.part]);
+        if (!box) continue;
+        for (uint32_t c = 0; c < 8; ++c) {
+            const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
+                                   (c & 4u) != 0 ? box->max.z : box->min.z);
+            const float y = (p.origin + p.orient * corner).y;
+            low = low ? std::min(*low, y) : y;
+        }
+    }
+    return low;
+}
+
+}  // namespace detail
+
+// Every entry of the index at `index`, loaded (load_library_model(),
+// load_library_object(), or load_library_part() against the sources
+// registry, read once when the first part or sidecar needs it). A drone's
+// sidecar (L5) is loaded and checked as the drone's own test checks it
+// (check_model_sources()); one that won't load or check is named and left
+// off, the drone kept, so the editor shows no citation the library refuses.
+[[nodiscard]] inline LibraryLoad load_library_items(const std::filesystem::path& index) {
+    LibraryLoad out;
+    const Result<scene::Library> library = scene::load_library(index);
+    if (!library) {
+        out.problems.push_back(library.error().context);
+        return out;
+    }
+    std::optional<Result<scene::SourceRegistry>> registry;
+    const auto registry_read = [&] {
+        if (!registry) {
+            registry = scene::load_library_sources(*library);
+            if (!*registry) out.problems.push_back((*registry).error().context);
+        }
+        return registry->has_value();  // named once, above
+    };
+    for (const scene::LibraryEntry& e : library->entries) {
+        LibraryItem item;
+        if (e.kind != scene::LibraryKind::model && e.kind != scene::LibraryKind::object) {
+            if (!registry_read()) continue;
+            Result<scene::PartFile> f = scene::load_library_part(*library, e, **registry);
+            if (!f) {
+                out.problems.push_back(f.error().context);
+                continue;
+            }
+            item.kind = LibraryItem::Kind::part;
+            item.part = std::move(*f);
+        } else if (e.kind == scene::LibraryKind::model) {
+            const Result<scene::ModelFile> f = scene::load_library_model(*library, e);
+            if (!f) {
+                out.problems.push_back(f.error().context);
+                continue;
+            }
+            item = detail::model_item(*f);
+            if (const std::string sidecar = sidecar_file(e.file);
+                !sidecar.empty() && std::filesystem::exists(library->dir / sidecar)) {
+                Result<scene::ModelSources> s = scene::load_model_sources(library->dir / sidecar);
+                if (!s) {
+                    out.problems.push_back("library entry '" + e.name + "': " + s.error().context);
+                } else if (registry_read()) {
+                    if (const Result<void> checked = scene::check_model_sources(*library, **registry, *s); !checked) {
+                        out.problems.push_back("library entry '" + e.name + "': its sources " + sidecar + ": " +
+                                               checked.error().context);
+                    } else {
+                        item.sources = std::move(*s);
+                    }
+                }
+            }
+        } else {
+            const Result<scene::ObjectFile> f = scene::load_library_object(*library, e);
+            if (!f) {
+                out.problems.push_back(f.error().context);
+                continue;
+            }
+            item = detail::object_item(*f);
+        }
+        item.name = e.name;
+        item.category = e.category;
+        item.file = e.file;
+        item.source = (library->dir / e.file).generic_string();
+        if (!e.thumbnail.empty()) {
+            // One that won't decode is named; the entry is still listed, a name without a tile.
+            Result<png::Image> image = png::read_file(library->dir / e.thumbnail);
+            if (image) {
+                item.thumbnail = std::move(*image);
+            } else {
+                out.problems.push_back("'" + e.name + "': its thumbnail " + image.error().context);
+            }
+        }
+        out.items.push_back(std::move(item));
+    }
+    return out;
+}
+
+// Load from file: a model or object file, by its extension as the index
+// reads one, as an item in the "from file" category, named as the file's
+// model or object is.
+[[nodiscard]] inline Result<LibraryItem> item_from_file(const std::filesystem::path& path) {
+    const std::string file = path.generic_string();
+    const std::string leaf = path.filename().generic_string();
+    const auto ends = [&](std::string_view suffix) { return leaf.size() > suffix.size() && leaf.ends_with(suffix); };
+    LibraryItem item;
+    if (ends(".model.yaml")) {
+        const Result<scene::ModelFile> f = scene::load_model_file(path);
+        if (!f) return std::unexpected(f.error());
+        item = detail::model_item(*f);
+        item.name = f->model.name;
+    } else if (ends(".object.yaml")) {
+        const Result<scene::ObjectFile> f = scene::load_object_file(path);
+        if (!f) return std::unexpected(f.error());
+        item = detail::object_item(*f);
+        item.name = f->object.name;
+    } else {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "load '" + file + "': a library file is a *.model.yaml (a drone) or a "
+                                     "*.object.yaml (anything else)"});
+    }
+    item.category = "from file";
+    item.file = file;
+    item.source = file;
+    return item;
+}
+
+// How far above the ground an item's origin sits when it rests there
+// (Test/Docs' placed-at): a drone on its own lowest posed part, or on the
+// built-in drone's body when it has no parts; an asset on its collider's box
+// (sdf_bounds()), an import (N15) on its mesh's lowest vertex, or at its
+// origin when neither can be found.
+[[nodiscard]] inline float rest_height(const LibraryItem& item) {
+    if (item.kind == LibraryItem::Kind::model) {
+        if (!item.model || item.model->parts.empty()) return kDroneBodyHalf.y;
+        const std::optional<float> low = detail::lowest_part_point(*item.model);
+        return low ? -*low : kDroneBodyHalf.y;
+    }
+    if (!item.asset) return 0.0f;
+    if (item.asset->collider.nodes.empty() && item.mesh) {
+        float low = std::numeric_limits<float>::infinity();
+        for (const glm::vec3& p : item.mesh->positions()) low = std::min(low, p.y);
+        return std::isfinite(low) ? -low : 0.0f;
+    }
+    const Result<Aabb> box = sdf_bounds(item.asset->collider);
+    return box ? -box->min.y : 0.0f;
+}
+
 // ---- the scene picker (SL13; editor plan Task 11) ----
 
 // A scene the editor can open: a built-in scene file (assets/scenes/), a
@@ -144,12 +571,24 @@ inline void add_scene_files(std::vector<SceneSource>& out, const std::filesystem
 // unique in the scene. A model is placed as a vehicle at rest at the pose,
 // flying its own copy of the model; a vehicle has no scale, so a pose whose
 // scale is not 1 is refused rather than dropped (L6). An asset takes the whole
-// pose. Nothing changes on a refusal.
+// pose. A file's item goes through Core (AddModelFile, AddObjectFile), named
+// as its file's model or object is. Nothing changes on a refusal.
 [[nodiscard]] inline Result<std::string> place(SceneDocument& doc, const LibraryItem& item, const SdfPose& at) {
+    if (item.kind == LibraryItem::Kind::part) {
+        const std::string_view what = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
+        return std::unexpected(Error{Code::invalid_argument, "place '" + item.name + "': a " + std::string(what) +
+                                                                 " is built into a drone, not placed on its own"});
+    }
     if (item.kind == LibraryItem::Kind::asset) {
         if (!item.asset) {
             return std::unexpected(
                 Error{Code::invalid_argument, "place '" + item.name + "': the library item has no asset"});
+        }
+        if (!item.source.empty()) {
+            if (const Result<void> r = apply(doc, AddObjectFile{item.source, item.asset->name, at}); !r) {
+                return std::unexpected(r.error());
+            }
+            return doc.desc().assets.back().name;
         }
         scene::SceneAsset a = *item.asset;
         a.pose = at;
@@ -166,9 +605,13 @@ inline void add_scene_files(std::vector<SceneSource>& out, const std::filesystem
                                          ": a vehicle has no scale; place it at scale 1"});
     }
     scene::SceneVehicle v;
-    v.name = item.name;
     v.start.pos = at.position;
     v.start.orient = at.rotation;
+    if (!item.source.empty()) {
+        if (const Result<void> r = apply(doc, AddModelFile{item.source, v}); !r) return std::unexpected(r.error());
+        return doc.desc().vehicles.back().name;
+    }
+    v.name = item.name;
     if (const Result<void> r = apply(doc, AddVehicle{std::move(v), *item.model}); !r) {
         return std::unexpected(r.error());
     }

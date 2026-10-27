@@ -436,3 +436,136 @@ TEST(GpuDenormProbe, EveryFp32OpClassIsExplainedByAFlushVariant) {
         EXPECT_EQ(t.contracted, 0) << cls.name << ": the driver contracted a NoContraction mul + add (d)";
     }
 }
+
+// ===========================================================================
+// THE EDGE AT 2^-126 (the FTZ plan, docs/design/physics/plans/
+// 2026-10-22-airflow-ftz-plan.md, Task 4; decision D8). A multiply is the one
+// op that can round across the smallest normal: a quotient or square root
+// never does, and a sum below 2^-126 is exact. Three flush rules part there:
+//   before rounding    the exact product below 2^-126 flushes;
+//   after rounding     the product rounded to 24 bits with an unbounded
+//                      exponent flushes if that is below 2^-126 (x86 MXCSR's
+//                      FTZ: the CPU twin's scope);
+//   flush of gradual   the IEEE (gradual-underflow) result flushes if it is
+//                      subnormal.
+// "upper" (2^-126 - 2^-172) separates before rounding from the other two;
+// "lower" (just past half an ulp of the 2^-127 binade below 2^-126)
+// separates after rounding from flush of gradual. Each row runs with every
+// sign pair through the probe's mul mode. The device must give what the CPU
+// twin's scope gives: the after-rounding answer, the bits the box's CPU gave
+// under FTZ+DAZ (measured 2026-10-22, the plan's facts F4; AirflowFtz pins
+// the host's own bits inside the scope on the same rows). Every answer is
+// computed here from the exact product, which a double holds (24 x 24 bits),
+// scaled by powers of two only: no libm. A device that fits another rule
+// fails, naming it (D8: the divergence goes to the lead). Measured 2026-10-22
+// on the RTX 3060 Ti, driver 572.83: after rounding, every row and sign.
+// Mutation: the expected bits the host's IEEE product (no flush): the lower,
+// daz and 2^-70 rows go red.
+// ===========================================================================
+namespace {
+
+struct EdgeAnswers {
+    float gradual = 0.0f;           // IEEE 754, subnormals kept, operands included
+    float before = 0.0f;            // tininess before rounding
+    float after = 0.0f;             // tininess after rounding: the CPU scope
+    float flush_of_gradual = 0.0f;  // the gradual result, flushed
+};
+
+// The three flush rules read a subnormal operand as a zero of its sign (the
+// standing table's finding: the device flushes mul's inputs); the gradual
+// answer keeps it, as the IEEE host does.
+[[nodiscard]] EdgeAnswers edge_answers(float a, float b) {
+    const double exact = static_cast<double>(flush(a)) * static_cast<double>(flush(b));  // exact: 48 bits
+    const float signed_zero = (std::signbit(a) != std::signbit(b)) ? -0.0f : 0.0f;
+    EdgeAnswers r;
+    r.gradual = static_cast<float>(static_cast<double>(a) * static_cast<double>(b));  // one rounding of an exact value
+    const float flushed_gradual = static_cast<float>(exact);
+    const bool tiny_exact = std::fabs(exact) < 0x1p-126;
+    r.before = tiny_exact ? signed_zero : static_cast<float>(exact);
+    // 24 bits with an unbounded exponent: scaled into float's normal range,
+    // rounded there by the conversion, scaled back exactly.
+    const double rounded = static_cast<double>(static_cast<float>(exact * 0x1p64)) * 0x1p-64;
+    r.after = std::fabs(rounded) < 0x1p-126 ? signed_zero : static_cast<float>(rounded);
+    r.flush_of_gradual = subnormal(flushed_gradual) ? signed_zero : flushed_gradual;
+    return r;
+}
+
+}  // namespace
+
+TEST(GpuDenormProbe, AProductJustBelowTheSmallestNormalFlushesAsTheCpuScopeDoes) {
+    struct Row {
+        const char* name;
+        uint32_t a;
+        uint32_t b;
+    };
+    const Row rows[] = {
+        {"upper", 0x1FFFFFFEu, 0x20000001u},          // 2^-126 - 2^-172
+        {"lower", 0x1FFFF448u, 0x200005DCu},          // in [2^-126 - 2^-150, 2^-126 - 2^-151)
+        {"exact", 0x20000000u, 0x20000000u},          // 2^-126
+        {"daz", 0x00400000u, 0x3F800000u},            // 2^-127 x 1: a subnormal operand
+        {"2^-70 squared", 0x1C800000u, 0x1C800000u},  // 2^-140
+    };
+    // The host is IEEE here (the standing test asserts it), so its own
+    // product is the gradual answer: a check on the model.
+    for (const Row& row : rows) {
+        volatile float a = float_of(row.a);
+        volatile float b = float_of(row.b);
+        ASSERT_EQ(bits_of(a * b), bits_of(edge_answers(float_of(row.a), float_of(row.b)).gradual))
+            << row.name << ": the model's gradual answer is not the host's IEEE product";
+    }
+
+    if (!vulkan_available()) GTEST_SKIP() << "no Vulkan device: the edge is a device measurement";
+    BackendDesc desc{.kind = BackendKind::vulkan};
+    auto created = VulkanContext::create(desc);
+    ASSERT_TRUE(created.has_value()) << created.error().context;
+    VulkanContext& ctx = **created;
+    print_device(ctx);
+
+    std::vector<float> args = {float_of(static_cast<uint32_t>(Op::mul))};
+    struct Case {
+        const char* name;
+        float a;
+        float b;
+    };
+    std::vector<Case> cases;
+    for (const Row& row : rows) {
+        for (const uint32_t sa : {0u, 0x80000000u}) {
+            for (const uint32_t sb : {0u, 0x80000000u}) {
+                cases.push_back({row.name, float_of(row.a | sa), float_of(row.b | sb)});
+                args.push_back(cases.back().a);
+                args.push_back(cases.back().b);
+                args.push_back(0.0f);
+            }
+        }
+    }
+    std::vector<float> out(cases.size());
+    const auto ran = run_probe(ctx, probe_spirv(), args, out);
+    ASSERT_TRUE(ran.has_value()) << ran.error().context;
+
+    int discriminating = 0;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        const EdgeAnswers r = edge_answers(c.a, c.b);
+        const uint32_t device = bits_of(out[i]);
+        std::string fits;
+        const auto fit = [&](const char* rule, float answer) {
+            if (device == bits_of(answer)) fits += fits.empty() ? rule : std::string(", ") + rule;
+        };
+        fit("before rounding", r.before);
+        fit("after rounding", r.after);
+        fit("flush of gradual", r.flush_of_gradual);
+        fit("gradual (no flush)", r.gradual);
+        if (fits.empty()) fits = "NONE";
+        if (bits_of(r.after) != bits_of(r.before) || bits_of(r.after) != bits_of(r.flush_of_gradual)) ++discriminating;
+        std::printf("[GpuDenormProbe] edge %-14s a=0x%08" PRIX32 " b=0x%08" PRIX32 "  device=0x%08" PRIX32
+                    "  before=0x%08" PRIX32 " after=0x%08" PRIX32 " flush-of-gradual=0x%08" PRIX32
+                    " gradual=0x%08" PRIX32 "  fits: %s\n",
+                    c.name, bits_of(c.a), bits_of(c.b), device, bits_of(r.before), bits_of(r.after),
+                    bits_of(r.flush_of_gradual), bits_of(r.gradual), fits.c_str());
+        EXPECT_EQ(device, bits_of(r.after)) << c.name << ": the device does not flush as the CPU scope does (after "
+                                                         "rounding); it fits: "
+                                            << fits;
+    }
+    std::fflush(stdout);
+    EXPECT_GT(discriminating, 0) << "no row separates the rules";
+}

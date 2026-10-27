@@ -140,6 +140,14 @@ if(SPADE_BUILD_SANDBOX)
     add_subdirectory(sandbox)
 endif()
 
+# Plan B's airflow chain runner (spike/airflow): its own target, not linked into
+# Simulation, not installed and not exported (G1). AFTER engine/, whose
+# spade:: targets and kernel manifest it follows; BEFORE tests/, which link it
+# and order their compile after its kernel generators.
+if(SPADE_VULKAN)
+    add_subdirectory(spike/airflow)
+endif()
+
 enable_testing()
 add_subdirectory(tests)
 

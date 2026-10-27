@@ -176,7 +176,7 @@ struct MotorBlock {
     double resistance = 0.0;       // ohm, line to line
     double no_load_current = 0.0;  // A; held constant (the model has no speed-dependent loss)
     double no_load_voltage = 0.0;  // V, recorded only
-    double current_max = 0.0;      // A, continuous
+    double current_max = 0.0;      // A, the motor's rated maximum: the instantaneous clamp with the ESC's burst (no thermal state)
     double pole_pairs = 0.0;       // 0 drops the inductance term
     double inductance = 0.0;       // H, line to line; 0 drops the inductance term
     double rotor_inertia = 0.0;    // kg m^2, bell and shaft

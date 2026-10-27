@@ -13,6 +13,16 @@
 # container uses, so a check never reads a volume a leg is building and any
 # number of checks can run beside legs. GCC_CHECK_VOLUME=<volume> picks one.
 #
+# Generated headers (the kernels' .spv.gen.hpp, bindings.gen.hpp) are read
+# from the worktree's own build first, then the volume's: the volume's are its
+# leg commit's, so a branch's new or changed kernel would otherwise be checked
+# against old headers or none. A directory only the build has (a volume older
+# than the kernel's target) is read from the build alone, so a volume's age
+# does not fail a file falsely. The build is build-ninja/release when it exists;
+# GCC_CHECK_BUILD=<dir under the worktree> names another, and an empty value
+# uses the volume's alone. A .slang newer than the build's last generator
+# output is named in a gcc note: build first.
+#
 # --compile (first argument): compile each named .cpp in full, with the leg
 # volume's own Release command line (-O3), plus -Wall -Wextra -Wpedantic
 # -Werror. -fsyntax-only never runs the optimiser, so it misses the warnings
@@ -41,6 +51,15 @@ fi
 for f in "$@"; do
     [ -f "$f" ] || { echo "gcc-check: $f: no such file" >&2; exit 2; }
 done
+build=${GCC_CHECK_BUILD-build-ninja/release}
+case $build in
+    /*|?:*) echo "gcc-check: GCC_CHECK_BUILD=$build: name a directory under the worktree root" >&2; exit 2 ;;
+esac
+if [ -n "${GCC_CHECK_BUILD:-}" ] && [ ! -d "$build" ]; then
+    echo "gcc-check: GCC_CHECK_BUILD=$build: no such directory" >&2
+    exit 2
+fi
+[ -d "$build" ] || build=
 
 image=$(docker images -q "$prefix" | head -n 1)
 if [ -z "$image" ]; then
@@ -74,14 +93,36 @@ fi
 
 MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
   -v "$volume:/leg:ro" -v "$(pwd -W):/src:ro" -v "$here:/gcc-check:ro" "$image" bash -c '
-  volume=$1; mode=$2; shift 2
+  volume=$1; mode=$2; build=$3; shift 3
   if [ ! -d /leg/build/_deps ]; then
     echo "gcc-check: volume $volume has no configured build (/leg/build/_deps)"; exit 2
   fi
   echo "gcc-check: volume $volume, commit $(cat /leg/commit 2>/dev/null || echo unrecorded); $(g++-13 --version | head -n 1)"
-  mkdir -p /tmp/s && for d in engine sandbox tests tools include src examples; do
+  mkdir -p /tmp/s && for d in engine sandbox tests tools include src examples spike; do
     if [ -d /src/$d ]; then cp -r /src/$d /tmp/s; fi
   done; cd /tmp/s
+  # Every generated-header directory the volume or the worktree build holds,
+  # the build copy ahead. One only the build has (a volume older than the
+  # kernel target) comes from the branch, and is read alone.
+  gendirs() { cd "$1" && find . -maxdepth 4 -path ./_deps -prune -o -type d -path "*/generated/spade_slang" -print; }
+  gen=(); mine=()
+  for g in $({ gendirs /leg/build; [ -z "$build" ] || gendirs "/src/$build"; } | sort -u); do
+    g=${g#./}
+    if [ -n "$build" ] && [ -d "/src/$build/$g" ]; then gen+=("-I/src/$build/$g"); mine+=("/src/$build/$g"); fi
+    if [ -d "/leg/build/$g" ]; then gen+=("-I/leg/build/$g"); fi
+  done
+  if [ ${#mine[@]} -gt 0 ]; then
+    echo "gcc-check: generated headers from $build first, then the volume"
+    # The newest output of any kind: slangc rewrites its .spv on every run, but
+    # both header generators leave an unchanged header untouched.
+    newest=$(find "${mine[@]}" -maxdepth 1 -type f -printf "%T@ %p\n" | sort -n | tail -n 1 | cut -d" " -f2)
+    stale=($(find /src/engine/shaders /src/spike -name "*.slang" -newer "$newest" 2>/dev/null | sed "s|^/src/||" | sort))
+    if [ ${#stale[@]} -gt 0 ]; then
+      echo "gcc note: ${#stale[@]} .slang file(s) changed since $build last generated its headers (${stale[*]:0:3}): build first, or this check reads stale ones"
+    fi
+  else
+    echo "gcc-check: generated headers from the volume alone (its leg commit); GCC_CHECK_BUILD=<dir> names a worktree build"
+  fi
   D=/leg/build/_deps; rc=0; compile=()
   for f in "$@"; do
     # --compile: a .cpp goes to the full compile below; a header stays here.
@@ -92,13 +133,13 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
       -DSPADE_ENGINE_DIR=\"/src/engine\" -DSPADE_GOLDEN_DIR=\"/src/tests/golden\" \
       -DSPADE_TESTS_DIR=\"/src/tests\" -DSPADE_TEST_OUTPUT_DIR=\"/tmp/test-output\" \
       -DSPADE_ASSETS_DIR=\"/src/assets\" \
-      -Iengine -Isandbox -Iengine/tools/viewer -I/leg/build/engine/generated/spade_slang \
+      -Iengine -Isandbox -Iengine/tools/viewer -I. "${gen[@]}" \
       -I$D/glm-src -I$D/glad-src/include -I$D/glfw-src/include -I$D/imgui-src -I$D/imgui-src/backends \
       -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
       -isystem $D/googletest-src/googletest/include -isystem $D/benchmark-src/include \
       "$tu" && echo "gcc ok:   $f" || { echo "gcc FAIL: $f"; rc=1; }
   done
   if [ ${#compile[@]} -gt 0 ]; then
-    python3 /gcc-check/gcc_check_compile.py "$volume" "${compile[@]}" || rc=1
+    GCC_CHECK_BUILD=$build GCC_CHECK_GEN="${mine[*]}" python3 /gcc-check/gcc_check_compile.py "$volume" "${compile[@]}" || rc=1
   fi
-  exit $rc' _ "$volume" "$mode" "$@"
+  exit $rc' _ "$volume" "$mode" "$build" "$@"

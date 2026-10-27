@@ -26,6 +26,7 @@ inline constexpr uint64_t kCoarsestCells = 1024;
 
 struct Multigrid {
     std::vector<PoissonLevel> levels;  // [0] the finest
+    std::array<bool, 3> periodic{};    // make_multigrid()'s: the axes set_weights() wraps
 };
 
 // The hierarchy for an nx x ny x nz grid. Face kinds are set by set_kinds().
@@ -55,15 +56,20 @@ void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 
 // The face weights of every level (the solids design, section 3; a host call:
 // it allocates). Level 0 copies `fine`, the MAC grid's u, v and w apertures.
-// Each coarser face is the mean of the faces of the level above on its own
-// plane that it covers (2 x 2, or 2 or 1 across an axis that is not
-// coarsened), summed with the second transverse axis outer. A coarse face
-// covers only every second fine plane: a sheet on another plane is invisible
-// to it (finding 2), which is why the solids path solves by CG (pcg.hpp).
+// Each coarser face sees every plane of the level above that its path from
+// coarse centre to coarse centre crosses (P2c, the lead's order,
+// 2026-10-21): on each plane the mean of the faces it covers (2 x 2, or 2 or
+// 1 across an axis that is not coarsened), and those means in series along
+// its normal, 2 / (0.5 / lo + 1 / own + 0.5 / hi). A domain face and a face
+// across a held axis keep their own plane's mean (multigrid.cpp,
+// coarsen_weights()). Before, a coarse face read its own plane only, every
+// second fine plane, and a sheet on another was invisible to it (finding 2);
+// the solids path still solves by CG (pcg.hpp).
 void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine);
 // Every level back to plan A's stencil: no weights, except on the levels past
-// the halving rule, which take the weights of unit fine faces (a host call:
-// it allocates). make_multigrid() calls it.
+// the halving rule, which take the on-plane mean of unit fine faces, as
+// before P2c, bit for bit (a host call: it allocates). make_multigrid()
+// calls it.
 void clear_weights(Multigrid& mg);
 // The coarsest level make_multigrid() would build, with no allocation.
 [[nodiscard]] std::array<uint32_t, 3> multigrid_coarsest(uint32_t nx, uint32_t ny, uint32_t nz,

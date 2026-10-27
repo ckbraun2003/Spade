@@ -95,6 +95,10 @@ struct FrameInput {
     float attitude_roll = 0.0f;   // Right = +1, Left = -1
     float attitude_yaw = 0.0f;    // Z = +1, X = -1
     bool level_pressed = false;        // R, edge -- pitch and roll back to 0
+    // The editor's pilot (N17, pilot_keys.hpp) also takes the attitude keys
+    // above, and these two.
+    bool arm_pressed = false;  // Space, edge -- arm or disarm
+    float throttle = 0.0f;     // PageUp = +1, PageDown = -1
 };
 
 // An orbit rig: a target point, a direction to it, and a distance.

@@ -7,6 +7,13 @@
 // vehicle the editor adds gets its own copy of its model, so an edit to one
 // vehicle's model never reaches another (the user's Q1, EDT-019).
 //
+// A model or object FILE goes in through Core's one function for it (TD-9):
+// scene::add_model(), which keeps the model's chain, and scene::add_object(),
+// which adds the object's materials. Core never renames, so the editor makes
+// the names unique first. The edit carries the file's path, the form its text
+// has (EDT-002), and reads the file when it is applied; undo restores the
+// scene, never the file (INT-14).
+//
 // docs/design/interface/plans/2026-10-05-editor-design.md §3-§4;
 // 2026-10-05-editor-plan.md Tasks 2 and 3.
 
@@ -14,6 +21,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -21,8 +29,14 @@
 #include <variant>
 #include <vector>
 
+#include <glm/gtc/quaternion.hpp>
+
+#include "analysis/case.hpp"
 #include "editor_document.hpp"
+#include "editor_import.hpp"
 #include "editor_model_params.hpp"
+#include "scene/model_file.hpp"
+#include "scene/object_file.hpp"
 
 namespace spade::sandbox::editor {
 
@@ -32,6 +46,20 @@ struct AddAsset {
 struct AddVehicle {
     scene::SceneVehicle vehicle;  // its name is made unique
     vehicles::ModelType model;    // copied for this vehicle alone, under a unique model name
+};
+// A model file, placed as a vehicle: the file's model goes in under its own
+// name made unique, and the vehicle (its name made unique too, the model's
+// when empty) flies it.
+struct AddModelFile {
+    std::string file;             // the model file's path, as given
+    scene::SceneVehicle vehicle;  // `model` is set to the copy's name
+};
+// An object file, placed as an asset at `pose`, under `name` made unique
+// (the object's own when empty).
+struct AddObjectFile {
+    std::string file;  // the object file's path, as given
+    std::string name;
+    SdfPose pose;
 };
 struct RemoveObject {
     std::string name;  // an asset or a vehicle; a vehicle's model goes too when nothing else uses it
@@ -84,10 +112,44 @@ struct SetModelParam {
     std::string field;
     ParamValue value;
 };
+// N15: meshes staged from a glTF (editor_import.hpp's import_gltf_parts()),
+// added to the model a vehicle flies as imported_part() makes them, the model
+// copied first as SetModelParam's is. A mesh the edit doesn't hold (its text
+// form carries none) is read from its sidecar. A name the model's parts
+// already have is refused.
+struct AddMeshParts {
+    std::string vehicle;
+    std::vector<ImportedMesh> meshes;
+};
+// N15: what an imported part's rows edit (D4): drawn only or a solid, its
+// declared smallest feature (m), and its mount's turn. An authored part is
+// refused.
+struct SetImportedPart {
+    std::string vehicle;
+    std::string part;
+    bool visual_only = false;
+    float min_feature = 0.0f;
+    glm::quat mount_orient{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+// The editor's airflow run (INT-15, T1): a one-way follow region around a
+// drone, named <vehicle>_air, with the plan's §4 defaults (kAirCells^3
+// cubic cells, dx its largest rotor's radius over 3 floored to the
+// millimetre, analysis::Fluid's air, as the tour's live run flies it: the
+// case refuses scene v5's inviscid 0); one region per drone (M2).
+struct AddAirflowRegion {
+    std::string vehicle;
+};
+struct RemoveAirflowRegion {
+    std::string name;
+};
+
+inline constexpr uint32_t kAirCells = 32;  // §4: the live grid the tour flies
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
-                               RepointWorld, SetModelParam>;
+                               RepointWorld, SetModelParam, AddModelFile, AddObjectFile, AddMeshParts,
+                               SetImportedPart, AddAirflowRegion, RemoveAirflowRegion>;
 
 namespace detail {
 
@@ -158,6 +220,31 @@ inline Result<bool> change(scene::SceneDesc& s, const AddVehicle& e) {
     return true;
 }
 
+inline Result<bool> change(scene::SceneDesc& s, const AddModelFile& e) {
+    const Result<scene::ModelFile> file = scene::load_model_file(e.file);
+    if (!file) return std::unexpected(Error{file.error().code, "add-model-file: " + file.error().context});
+    const std::string model = lowest_free(file->model.name.empty() ? "model" : file->model.name,
+                                          [&](std::string_view n) { return model_taken(s, n); });
+    if (const Result<void> added = scene::add_model(s, *file, model); !added) return std::unexpected(added.error());
+    scene::SceneVehicle v = e.vehicle;
+    v.name = lowest_free(v.name.empty() ? model : v.name, [&](std::string_view n) { return object_taken(s, n); });
+    v.model = model;
+    s.vehicles.push_back(std::move(v));
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddObjectFile& e) {
+    const Result<scene::ObjectFile> file = scene::load_object_file(e.file);
+    if (!file) return std::unexpected(Error{file.error().code, "add-object-file: " + file.error().context});
+    const std::string& own = e.name.empty() ? file->object.name : e.name;
+    const std::string name =
+        lowest_free(own.empty() ? "object" : own, [&](std::string_view n) { return object_taken(s, n); });
+    if (const Result<void> added = scene::add_object(s, *file, name, e.pose); !added) {
+        return std::unexpected(added.error());
+    }
+    return true;
+}
+
 inline Result<bool> change(scene::SceneDesc& s, const RemoveObject& e) {
     if (const auto it = std::find_if(s.assets.begin(), s.assets.end(), [&](const auto& a) { return a.name == e.name; });
         it != s.assets.end()) {
@@ -181,6 +268,52 @@ inline Result<bool> change(scene::SceneDesc& s, const RemoveObject& e) {
     if (!still_used) {
         std::erase_if(s.models, [&](const auto& m) { return m.name == model; });
     }
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddAirflowRegion& e) {
+    const scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
+    if (v == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, "add an airflow region: no vehicle is named '" + e.vehicle +
+                                                                 "' in this scene; check the name in the hierarchy"});
+    }
+    for (const scene::SceneAirflowRegion& r : s.airflow) {
+        if (r.kind == scene::AirflowKind::follow && r.follows == e.vehicle) {
+            return std::unexpected(Error{Code::invalid_argument, "add an airflow region around '" + e.vehicle +
+                                                                     "': airflow region '" + r.name +
+                                                                     "' already follows it; one region holds one drone"});
+        }
+    }
+    float radius = 0.0f;
+    if (const vehicles::ModelType* m = find_named(s.models, v->model)) {
+        for (const vehicles::RotorDesc& rotor : m->rotors) radius = std::max(radius, rotor.radius);
+    }
+    if (!(radius > 0.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "add an airflow region around '" + e.vehicle +
+                                                                 "': its model '" + v->model +
+                                                                 "' has no rotors, so there is no air to drive"});
+    }
+    scene::SceneAirflowRegion r;
+    r.name = lowest_free(e.vehicle + "_air", [&](std::string_view n) {
+        return std::any_of(s.airflow.begin(), s.airflow.end(), [&](const auto& x) { return x.name == n; });
+    });
+    r.kind = scene::AirflowKind::follow;
+    r.follows = e.vehicle;
+    r.cells = physics::airflow::GridShape{kAirCells, kAirCells, kAirCells, std::floor(radius / 3.0f * 1000.0f) / 1000.0f};
+    r.density = analysis::Fluid{}.density;
+    r.kinematic_viscosity = analysis::Fluid{}.kinematic_viscosity;
+    r.coupling = scene::AirflowCoupling::one_way;
+    s.airflow.push_back(std::move(r));
+    return true;
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const RemoveAirflowRegion& e) {
+    const auto it = std::find_if(s.airflow.begin(), s.airflow.end(), [&](const auto& r) { return r.name == e.name; });
+    if (it == s.airflow.end()) {
+        return std::unexpected(Error{Code::invalid_argument, "remove an airflow region: no airflow region is named '" +
+                                                                 e.name + "' in this scene"});
+    }
+    s.airflow.erase(it);
     return true;
 }
 
@@ -304,6 +437,31 @@ inline Result<bool> change(scene::SceneDesc& s, const RepointWorld& e) {
     return a == b;  // uint32_t, std::string
 }
 
+// Puts `edited` in for the model `v` flies, if ModelType::issues() has no
+// objection (EDT-014): in place when no other vehicle flies it, else as this
+// vehicle's own copy, the others keeping theirs (copy-on-first-edit, EDT-019).
+// `refused` ends the refusal.
+inline Result<bool> commit_model(scene::SceneDesc& s, scene::SceneVehicle& v, vehicles::ModelType edited,
+                                 std::string_view refused) {
+    if (const std::string problems = describe_issues(edited); !problems.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "model '" + edited.name + "' of '" + v.name +
+                                                                 "' would not be valid: " + problems + "; " +
+                                                                 std::string(refused)});
+    }
+    const std::string model = v.model;
+    const bool shared = std::any_of(s.vehicles.begin(), s.vehicles.end(),
+                                    [&](const auto& other) { return other.name != v.name && other.model == model; });
+    vehicles::ModelType* m = find_named(s.models, model);
+    if (!shared && m != nullptr) {
+        *m = std::move(edited);
+        return true;
+    }
+    edited.name = lowest_free(model, [&](std::string_view n) { return model_taken(s, n); });
+    v.model = edited.name;
+    s.models.push_back(std::move(edited));  // pointers into s.models may dangle from here
+    return true;
+}
+
 inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
     scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
     if (v == nullptr) return std::unexpected(no_object("set a model parameter", e.vehicle));
@@ -320,24 +478,74 @@ inline Result<bool> change(scene::SceneDesc& s, const SetModelParam& e) {
     if (Result<void> set = set_model_param(edited, e.element, e.index, e.field, e.value); !set) {
         return std::unexpected(set.error());
     }
-    if (const std::string problems = describe_issues(edited); !problems.empty()) {
-        return std::unexpected(Error{Code::invalid_argument, "model '" + m->name + "' of '" + e.vehicle +
-                                                                 "' would not be valid: " + problems +
-                                                                 "; the edit was not made"});
-    }
+    return commit_model(s, *v, std::move(edited), "the edit was not made");
+}
 
-    const std::string model = v->model;
-    const bool shared = std::any_of(s.vehicles.begin(), s.vehicles.end(),
-                                    [&](const auto& other) { return other.name != e.vehicle && other.model == model; });
-    if (!shared) {
-        *m = std::move(edited);
-        return true;
+// The vehicle `e` names and the model it flies, or why not, for `what`.
+template <class Edit>
+[[nodiscard]] Result<std::pair<scene::SceneVehicle*, vehicles::ModelType*>> flown(scene::SceneDesc& s, const Edit& e,
+                                                                                 std::string_view what) {
+    scene::SceneVehicle* v = find_named(s.vehicles, e.vehicle);
+    if (v == nullptr) return std::unexpected(no_object(what, e.vehicle));
+    vehicles::ModelType* m = find_named(s.models, v->model);
+    if (m == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, std::string(what) + " '" + e.vehicle + "': its model '" +
+                                                                 v->model + "' is not in this scene"});
     }
-    // Copy-on-first-edit: this vehicle gets its own model, the others keep theirs.
-    edited.name = lowest_free(model, [&](std::string_view n) { return model_taken(s, n); });
-    v->model = edited.name;
-    s.models.push_back(std::move(edited));  // `m` may dangle from here; it is not used again
-    return true;
+    return std::pair{v, m};
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const AddMeshParts& e) {
+    const auto at = flown(s, e, "import parts onto");
+    if (!at) return std::unexpected(at.error());
+    const auto [v, m] = *at;
+    if (e.meshes.empty()) return false;
+    vehicles::ModelType edited = *m;
+    for (const ImportedMesh& staged : e.meshes) {
+        if (find_named(edited.parts, staged.name) != nullptr) {
+            return std::unexpected(Error{Code::invalid_argument, "import parts onto '" + e.vehicle + "': model '" +
+                                                                     m->name + "' has a part '" + staged.name +
+                                                                     "' already; the parts were not added"});
+        }
+        ImportedMesh held = staged;
+        if (!held.mesh) {
+            Result<LoadedMesh> read = load_mesh_file(held.sidecar);
+            if (!read) {
+                return std::unexpected(Error{read.error().code, "import parts onto '" + e.vehicle + "': part '" +
+                                                                    held.name + "''s mesh could not be read from " +
+                                                                    path_text(held.sidecar) + ": " +
+                                                                    read.error().context +
+                                                                    "; the parts were not added"});
+            }
+            held.mesh = std::move(read->mesh);
+        }
+        edited.parts.push_back(imported_part(held));
+    }
+    return commit_model(s, *v, std::move(edited), "the parts were not added");
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const SetImportedPart& e) {
+    const auto at = flown(s, e, "set an imported part of");
+    if (!at) return std::unexpected(at.error());
+    const auto [v, m] = *at;
+    const vehicles::PartDesc* now = find_named(m->parts, e.part);
+    if (now == nullptr) {
+        return std::unexpected(Error{Code::invalid_argument, "set an imported part of '" + e.vehicle + "': model '" +
+                                                                 m->name + "' has no part '" + e.part + "'"});
+    }
+    if (!is_imported_part(*now)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "set an imported part of '" + e.vehicle + "': part '" + e.part +
+                                         "' is not imported; only an imported part's role, min_feature and "
+                                         "mount are set here"});
+    }
+    vehicles::ModelType edited = *m;
+    vehicles::PartDesc& p = *find_named(edited.parts, e.part);
+    p.role = std::string(e.visual_only ? vehicles::kDrawnOnlyRole : analysis::kImportedPartRole);
+    p.min_feature = e.min_feature;
+    p.mount_orient = e.mount_orient;
+    if (p.role == now->role && p.min_feature == now->min_feature && p.mount_orient == now->mount_orient) return false;
+    return commit_model(s, *v, std::move(edited), "the edit was not made");
 }
 
 }  // namespace detail

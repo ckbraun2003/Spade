@@ -12,7 +12,8 @@
 // ===========================================================================
 // WHAT THIS KERNEL DOES NOT CONTAIN, AND WHY THAT IS THE DESIGN
 //
-// NO exp(). NO DIVISION. gnss.hpp section 2's Gauss-Markov model is
+// NO exp(). NO division in the recursion: log32's division is div32_ftz, exact
+// (E1/E2). gnss.hpp section 2's Gauss-Markov model is
 //
 //   bias <- bias * exp(-dt/tau) + N(0, sigma_bias * sqrt(1 - exp(-2 dt/tau)))
 //
@@ -24,10 +25,10 @@
 // That is not an optimisation: it keeps the recursion's own arithmetic exact,
 // a multiply by byte-identical per-sensor constants, so the only difference it
 // carries across backends is the draws', which CORE-3 bands at their source
-// (TD-14 bands this sensor; parity.hpp's gnss rows). fp32_math.slang:83-88: "an OpFDiv is not merely
-// less accurate, it is DEVICE-DEPENDENT" -- which is why log32_div() is a
-// restoring integer long division, domain-restricted, and must not be reached
-// for as a general divide. Other kernels do divide (collision_dynamic.slang),
+// (TD-14 bands this sensor; parity.hpp's gnss rows). fp32_math.slang:118-119: "an OpFDiv is not merely
+// less accurate, it is DEVICE-DEPENDENT" -- which is why fp32_math.slang's
+// div32_ftz is the exact division, the device's estimate corrected in
+// integers. Other kernels do divide (collision_dynamic.slang),
 // but those are banded physics paths where an ulp sits inside a band.
 //
 //   A RECURSIVE BIAS FILTER DOES NOT TOLERATE ERROR, IT ACCUMULATES IT.

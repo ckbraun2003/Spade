@@ -15,6 +15,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -24,15 +25,30 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
+#include "core/path_text.hpp"
+#include "render_parts/render_parts.hpp"
 #include "editor_session.hpp"
+#include "pilot_keys.hpp"
 #include "end_goal_checks.hpp"
 #include "gl_target_sink.hpp"
+#include "png_reader.hpp"
 #include "png_writer.hpp"
+#include "scene/library.hpp"
+#include "scene/model_file.hpp"
 #include "scene_sessions.hpp"
+#include "sim/design_frame.hpp"
+#include "vehicles/model_identity.hpp"
+#include "vehicles/model_part.hpp"
+#include "vehicles/part_pose.hpp"
+#include "vehicles/propulsion_steady.hpp"
+#include "world/aabb.hpp"
+#include "world/mesh_file.hpp"
+#include "world/mesh_import.hpp"
 
 #ifdef _WIN32
 #define SPADE_POPEN _popen
@@ -84,28 +100,76 @@ constexpr std::array kSteps = {
     StepName{"editor", "undo"},          StepName{"editor", "run"},
     StepName{"editor", "world"},         StepName{"editor", "conflict"},
     StepName{"editor", "views"},         StepName{"editor", "save"},
+    StepName{"editor", "library"},       StepName{"editor", "add_drone"},
+    StepName{"editor", "add_objects"},   StepName{"editor", "fly"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 8> kSnapshots = {"editor_picker",   "editor_vehicle", "editor_place",
-                                                        "editor_gizmo",    "editor_inspect", "editor_running",
-                                                        "editor_world",    "editor_conflict"};
+constexpr std::array<std::string_view, 11> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+                                                         "editor_gizmo",    "editor_inspect",  "editor_running",
+                                                         "editor_world",    "editor_conflict", "editor_objects",
+                                                         "editor_part",     "editor_drone"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
 constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "editor"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
-// one that stops firing fails the run (it has expired, so delete it). None
-// today: airflow/not-available went when the chapter went live on the
-// library's reference quad (N4).
-const std::vector<KnownOpen> kKnownOpen = {};
+// one that stops firing fails the run (it has expired, so delete it).
+// airflow/not-available went when the chapter went live on the library's
+// reference quad (N4).
+// - editor.add_drone/placed-at (the lead, 2026-10-22): its stillness half.
+//   The rest half is the step's hard "rests" check.
+const std::vector<KnownOpen> kKnownOpen = {
+    {"editor.add_drone/placed-at",
+     "ground contact is the model's one proxy sphere (reference quad 0.150 m, its rotor reach); resting on the "
+     "lowest posed part buries it 106 mm, so Run lifts the drone. Physics owns the fix: contact against the posed "
+     "parts."},
+};
 
 [[nodiscard]] std::string fmt(float v) {
     char text[32];
     std::snprintf(text, sizeof text, "%.3f", static_cast<double>(v));
     return text;
+}
+
+// N15's tour crate (editor.add_objects): a closed box mesh named `name`,
+// `side` m, standing on y = 0 about its origin, as a .gltf whose buffer is a
+// .bin beside it (read_gltf() reads a relative buffer file). Built here, so
+// assets/ gains nothing. True when both are written.
+[[nodiscard]] bool write_box_gltf(const fs::path& gltf, std::string_view name, float side) {
+    static constexpr uint32_t kTriangles[12][3] = {
+        {0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+        {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5},
+    };
+    std::string bin;
+    for (uint32_t v = 0; v < 8; ++v) {
+        const float p[3] = {side * (static_cast<float>(v & 1u) - 0.5f), side * static_cast<float>((v >> 1) & 1u),
+                            side * (static_cast<float>((v >> 2) & 1u) - 0.5f)};
+        bin.append(reinterpret_cast<const char*>(p), sizeof p);
+    }
+    for (const auto& t : kTriangles) bin.append(reinterpret_cast<const char*>(t), sizeof t);
+    const auto g = [](float v) {
+        char text[32];
+        std::snprintf(text, sizeof text, "%.9g", static_cast<double>(v));
+        return std::string(text);
+    };
+    const fs::path bin_file = fs::path(gltf).replace_extension(".bin");
+    const std::string doc =
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"name\":\"" + std::string(name) + "\",\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+        "\"indices\":1}]}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":8,\"type\":\"VEC3\","
+        "\"min\":[" + g(-0.5f * side) + ",0," + g(-0.5f * side) + "],\"max\":[" + g(0.5f * side) + "," + g(side) +
+        "," + g(0.5f * side) + "]},{\"bufferView\":1,\"componentType\":5125,\"count\":36,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":96},{\"buffer\":0,\"byteOffset\":96,"
+        "\"byteLength\":144}],\"buffers\":[{\"byteLength\":" + std::to_string(bin.size()) + ",\"uri\":\"" +
+        path_text(bin_file.filename()) + "\"}]}";
+    std::ofstream b(bin_file, std::ios::binary);
+    b.write(bin.data(), static_cast<std::streamsize>(bin.size()));
+    std::ofstream j(gltf, std::ios::binary);
+    j.write(doc.data(), static_cast<std::streamsize>(doc.size()));
+    return b.good() && j.good();
 }
 
 [[nodiscard]] float mean_rotor_omega(const DroneReadouts& r) {
@@ -640,7 +704,14 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 }
             }
         }
-        if (!s.check(!ec, "work-copy", ec ? ec.message() : "assets/scenes and assets/worlds copied")) return;
+        // The library too: the workspace reads it beside the scenes (INT-14).
+        if (!ec) {
+            fs::copy(assets / "library", work / "library",
+                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        }
+        if (!s.check(!ec, "work-copy", ec ? ec.message() : "assets/scenes, assets/worlds and assets/library copied")) {
+            return;
+        }
         const fs::path file = work / "scenes" / "hover.scene.yaml";
         Result<editor::OpenedScene> opened = editor::open_scene(file);
         if (!s.check(opened.has_value(), "opens", opened ? file.filename().string() : opened.error().context)) return;
@@ -699,9 +770,9 @@ void editor_tour(Tour& t, const fs::path& assets) {
     t.step("editor", "place", [&] {
         if (!open()) return;
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
-        arm("box");
+        arm("Box");
         click_towards(glm::vec3(at.x + 1.0f, 0.0f, at.z));
-        arm("box");
+        arm("Box");
         click_towards(glm::vec3(at.x - 1.0f, 0.0f, at.z));
         std::string names;
         for (const scene::SceneAsset& a : scene_now().assets) names += (names.empty() ? "" : ", ") + a.name;
@@ -976,6 +1047,646 @@ void editor_tour(Tour& t, const fs::path& assets) {
         s.check(equal, "byte-equal",
                 back ? (equal ? "saved, reopened, every byte equal" : "differs") : back.error().context);
         then(20);
+    });
+
+    // N14a (INT-14): the Library panel lists the default library's index, in
+    // its order (Test/Docs' lists-index). N14b: each entry's tile shows its own
+    // thumbnail file's image (thumbnails).
+    t.step("editor", "library", [&] {
+        if (!open()) return;
+        const Result<scene::Library> index = scene::load_library(assets / "library" / "library.yaml");
+        if (!s.check(index.has_value(), "index", index ? "read" : index.error().context)) return;
+        std::vector<end_goal::LibraryEntry> want;
+        for (const scene::LibraryEntry& e : index->entries) want.push_back({e.name, e.category, e.file});
+        std::vector<end_goal::LibraryEntry> shown;
+        for (const editor::LibraryItem& i : w().panels().library) shown.push_back({i.name, i.category, i.file});
+        const end_goal::Verdict listed = end_goal::lists_index(want, shown);
+        s.check(listed.ok, "lists-index", listed.detail);
+
+        // thumbnails: each file decoded here, never the panel's copy. The
+        // panel scrolls, so the step brings the first tile not yet seen into
+        // view, grabs the frame, and cuts out every tile the panel reports
+        // wholly visible, until each is seen or a scroll shows nothing new.
+        std::vector<png::Image> files;
+        for (const scene::LibraryEntry& e : index->entries) {
+            Result<png::Image> f = png::read_file(index->dir / e.thumbnail);
+            if (!f) {
+                s.check(false, "thumbnails", "thumbnails: absent: '" + e.name + "': " + f.error().context);
+                return;
+            }
+            files.push_back(std::move(*f));
+        }
+        std::vector<std::vector<uint8_t>> cut(files.size());  // each tile as shown, top row first
+        std::vector<ViewportRect> where(files.size());
+        std::vector<bool> seen(files.size(), false);
+        for (std::size_t page = 0; page < files.size(); ++page) {
+            const auto next = std::find(seen.begin(), seen.end(), false);
+            if (next == seen.end()) break;
+            w().panels().library_scroll_to = static_cast<std::size_t>(next - seen.begin());
+            then(3);  // the scroll lands, then a frame draws the tiles there
+            t.recorder().want_grab();
+            then(1);
+            const std::vector<uint8_t>& frame = t.recorder().grabbed();
+            const uint32_t fw = t.recorder().grabbed_width();
+            const uint32_t fh = t.recorder().grabbed_height();
+            if (frame.empty()) {
+                s.check(false, "grabbed", "absent: no frame captured for the library's tiles");
+                return;
+            }
+            const std::vector<std::optional<ViewportRect>>& tiles = w().panels().library_tiles;
+            bool any = false;
+            for (std::size_t i = 0; i < files.size() && i < tiles.size(); ++i) {
+                const std::optional<ViewportRect>& r = tiles[i];
+                if (seen[i] || !r || r->empty() || r->x + r->width > fw || r->y + r->height > fh) continue;
+                const std::size_t row_bytes = static_cast<std::size_t>(r->width) * 4u;
+                cut[i].resize(row_bytes * r->height);
+                for (uint32_t row = 0; row < r->height; ++row) {
+                    // The frame's rows run bottom-up; the tile's y runs down from the top.
+                    const std::size_t from =
+                        (static_cast<std::size_t>(fh - 1u - (r->y + row)) * fw + r->x) * 4u;
+                    std::copy_n(frame.begin() + static_cast<std::ptrdiff_t>(from), row_bytes,
+                                cut[i].begin() + static_cast<std::ptrdiff_t>(row * row_bytes));
+                }
+                where[i] = *r;
+                seen[i] = true;
+                any = true;
+            }
+            if (!any) break;
+        }
+        w().panels().library_scroll_to = 0;
+        std::vector<end_goal::PixelsView> shown_tiles;
+        std::vector<end_goal::PixelsView> decoded;
+        for (std::size_t i = 0; i < files.size(); ++i) {
+            decoded.push_back(end_goal::PixelsView{files[i].width, files[i].height,
+                                                   static_cast<std::size_t>(files[i].width) * 4u, files[i].rgba});
+            shown_tiles.push_back(seen[i] ? end_goal::PixelsView{where[i].width, where[i].height,
+                                                                 static_cast<std::size_t>(where[i].width) * 4u, cut[i]}
+                                          : end_goal::PixelsView{});
+        }
+        const end_goal::Verdict thumbs = end_goal::thumbnails(shown_tiles, decoded);
+        s.check(thumbs.ok, "thumbnails", thumbs.detail);
+
+        // INT-14's grades: the first part with a field assumed is inspected
+        // as its tile's click inspects it (inspect_item()) and drawn: the
+        // inspector shows it in place of the selection (part-inspected), and
+        // each tile is marked assumed exactly when its part has a field
+        // assumed, as the panel drew the marks (assumed-marked).
+        std::optional<std::size_t> part;
+        for (std::size_t i = 0; i < w().panels().library.size() && !part; ++i) {
+            const editor::LibraryItem& candidate = w().panels().library[i];
+            if (candidate.kind == editor::LibraryItem::Kind::part && editor::any_assumed(candidate)) part = i;
+        }
+        if (!part) {
+            s.check(false, "part-inspected", "absent: no library part has a field assumed");
+            return;
+        }
+        const editor::LibraryItem item = w().panels().library[*part];
+        w().panels().selection = editor::Selection{editor::Selection::Kind::scene, ""};
+        editor::inspect_item(w().panels(), *part);
+        w().panels().library_scroll_to = *part;
+        then(3);
+        const Result<std::vector<editor::PartRow>> rows = editor::part_rows(*item.part);
+        std::size_t assumed_rows = 0;
+        if (rows) {
+            for (const editor::PartRow& r : *rows) assumed_rows += r.grade == scene::Grade::assumed ? 1u : 0u;
+        }
+        const bool in_inspector =
+            w().panels().inspected == part && w().panels().selection.kind == editor::Selection::Kind::none;
+        s.check(in_inspector && rows.has_value(), "part-inspected",
+                "'" + item.name + "': " +
+                    (rows ? std::to_string(rows->size()) + " fields, " + std::to_string(assumed_rows) + " assumed"
+                          : rows.error().context) +
+                    (in_inspector ? "; the inspector shows it in place of the selection" : "; NOT shown"));
+        t.snapshot("editor_part");
+        then(1);  // the still is the next frame drawn: it draws while the part is inspected
+        const std::vector<editor::LibraryItem>& lib = w().panels().library;
+        const std::vector<bool>& badges = w().panels().library_badges;
+        bool match = badges.size() == lib.size();
+        std::size_t marked = 0;
+        std::string wrong;
+        for (std::size_t i = 0; match && i < lib.size(); ++i) {
+            const bool want = editor::any_assumed(lib[i]);
+            if (badges[i]) ++marked;
+            if (badges[i] != want) {
+                match = false;
+                wrong = "'" + lib[i].name + "' is " + (badges[i] ? "marked" : "not marked") +
+                        (want ? " with a field assumed" : " with none assumed");
+            }
+        }
+        s.check(match, "assumed-marked",
+                match ? std::to_string(marked) + " of " + std::to_string(lib.size()) +
+                            " tiles marked assumed, each a part or drone with a grade assumed"
+                      : (wrong.empty() ? std::to_string(badges.size()) + " marks drawn for " +
+                                             std::to_string(lib.size()) + " tiles"
+                                       : wrong));
+
+        // L5's sidecars (the lead's Q2): the first library drone with an
+        // input assumed is inspected as its tile's click inspects it, its
+        // inputs' grades in place of the selection (drone-inspected).
+        std::optional<std::size_t> drone;
+        for (std::size_t i = 0; i < lib.size() && !drone; ++i) {
+            if (lib[i].kind == editor::LibraryItem::Kind::model && editor::any_assumed(lib[i])) drone = i;
+        }
+        if (!drone) {
+            s.check(false, "drone-inspected", "absent: no library drone has an input assumed in its sources");
+        } else {
+            const editor::LibraryItem d = lib[*drone];
+            w().panels().selection = editor::Selection{editor::Selection::Kind::scene, ""};
+            editor::inspect_item(w().panels(), *drone);
+            w().panels().library_scroll_to = *drone;
+            then(3);
+            const std::vector<editor::PartRow> rows = editor::model_rows(*d.sources);
+            const auto assumed_inputs = std::count_if(rows.begin(), rows.end(), [](const editor::PartRow& r) {
+                return r.grade == scene::Grade::assumed;
+            });
+            const bool drone_shown =
+                w().panels().inspected == drone && w().panels().selection.kind == editor::Selection::Kind::none;
+            s.check(drone_shown && !rows.empty(), "drone-inspected",
+                    "'" + d.name + "': " + std::to_string(rows.size()) + " inputs, " +
+                        std::to_string(assumed_inputs) + " assumed, built from " +
+                        std::to_string(d.sources->parts.size()) + " part files" +
+                        (drone_shown ? "; the inspector shows it in place of the selection" : "; NOT shown"));
+            t.snapshot("editor_drone");
+            then(1);  // the still is the next frame drawn: it draws while the drone is inspected
+        }
+        w().panels().inspected.reset();
+        w().panels().library_scroll_to = 0;
+        then(10);
+    });
+
+    // N14a: the library's drone, placed by a click, rests on its own lowest
+    // part and stays still for 1.0 s of Run (placed-at), and keeps its model,
+    // parts and propulsion identities (propulsion-kept). Undone after.
+    t.step("editor", "add_drone", [&] {
+        if (!open()) return;
+        const Result<scene::ModelFile> file =
+            scene::load_model_file(assets / "library" / "drones" / "reference_quad.model.yaml");
+        if (!s.check(file.has_value(), "file", file ? "read" : file.error().context)) return;
+        const std::size_t before = scene_now().vehicles.size();
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        const glm::vec3 target(at.x, 0.0f, at.z + 1.5f);  // clear of the boxes placed at x +-1
+        const glm::vec3 eye = session->camera().to_render_camera().position;
+        const glm::vec3 dir = glm::normalize(target - eye);
+        const std::optional<float> hit = editor::detail::march(w().composed().world.sdf, eye, dir);
+        arm("Reference quad (test fixture)");
+        click_towards(target);
+        if (!s.check(hit.has_value() && scene_now().vehicles.size() == before + 1, "placed",
+                     hit ? w().panels().status : "the click's ray met no surface")) {
+            return;
+        }
+        const scene::SceneVehicle placed = scene_now().vehicles.back();
+        const vehicles::ModelType* model = model_of(placed.name);
+        if (!s.check(model != nullptr && model->propulsion.has_value() && file->model.propulsion.has_value(),
+                     "has-chain", model == nullptr ? "no model" : placed.model)) {
+            return;
+        }
+        const std::vector<end_goal::Identity> ids{
+            {"model", vehicles::model_identity(file->model), vehicles::model_identity(*model)},
+            {"parts", vehicles::parts_identity(file->model), vehicles::parts_identity(*model)},
+            {"propulsion", vehicles::propulsion_identity(*file->model.propulsion),
+             vehicles::propulsion_identity(*model->propulsion)}};
+        const end_goal::Verdict kept = end_goal::identities_kept("propulsion-kept", ids, end_goal::kDroneIdentities);
+        s.check(kept.ok, "propulsion-kept", kept.detail);
+
+        // The rest: its lowest posed part over the surface beneath, by the
+        // scene's SDF (the drone is not in it).
+        end_goal::Placement p;
+        p.pick = eye + dir * *hit;
+        p.position = placed.start.pos;
+        // The start pose is the design frame's; the body is the sim's
+        // to_body_state() of it (design_to_principal, com_offset).
+        const FrameState spawn =
+            to_body_state(FrameState{placed.start.pos, placed.start.orient, glm::vec3(0.0f), glm::vec3(0.0f)},
+                          glm::normalize(model->design_to_principal), model->com_offset);
+        BodyState body{};
+        body.pos = spawn.pos;
+        body.orient = spawn.orient;
+        const std::vector<float> still(model->rotors.size(), 0.0f);
+        const Result<vehicles::PosedParts> posed =
+            vehicles::posed_parts(*model, body, still, still, vehicles::PartFilter::all);
+        float low = std::numeric_limits<float>::infinity();
+        if (posed) {
+            for (const vehicles::PosedPart& part : posed->parts) {
+                const Result<Aabb> box = vehicles::part_bounds(model->parts[part.part]);
+                if (!box) continue;
+                for (uint32_t c = 0; c < 8; ++c) {
+                    const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x,
+                                           (c & 2u) != 0 ? box->max.y : box->min.y,
+                                           (c & 4u) != 0 ? box->max.z : box->min.z);
+                    low = std::min(low, (part.origin + part.orient * corner).y);
+                }
+            }
+        }
+        const glm::vec3 above(placed.start.pos.x, placed.start.pos.y + 5.0f, placed.start.pos.z);
+        const std::optional<float> down =
+            editor::detail::march(w().composed().world.sdf, above, glm::vec3(0.0f, -1.0f, 0.0f));
+        p.rest_gap = down ? low - (above.y - *down) : std::numeric_limits<float>::quiet_NaN();
+        // placed-at's rest half, a hard check by its own limits: where asked,
+        // resting on its own lowest part. Its stillness half is known-open.
+        const float dx = std::abs(p.position.x - p.pick.x);
+        const float dz = std::abs(p.position.z - p.pick.z);
+        s.check(dx <= end_goal::kPlaceXZ && dz <= end_goal::kPlaceXZ && p.rest_gap >= end_goal::kRestLo &&
+                    p.rest_gap <= end_goal::kRestHi,
+                "rests",
+                fmt(std::max(dx, dz) * 1000.0f) + " mm from the pick; its lowest part " + fmt(p.rest_gap * 1000.0f) +
+                    " mm above the surface (within [-2, +5])");
+
+        // drawn: one drawable per part (render_parts), each at its posed
+        // part's transform. Measured against this step's own posing and
+        // prepare_parts(), never the session's: a part counts as drawn when
+        // the frame holds as many items labelled "<vehicle>/<part>" as the
+        // part has pieces, each the posed part's frame times its piece's.
+        then(2);  // a frame binds the placed drone
+        p.drawables_declared = model->parts.size();
+        const Result<render_parts::PreparedParts> prepared = render_parts::prepare_parts(*model);
+        if (posed && prepared) {
+            const render::RenderScene& frame = session->render_scene();
+            const auto label = [&](const std::string& name) -> std::optional<uint32_t> {
+                for (uint32_t i = 0; i < frame.labels.size(); ++i) {
+                    if (frame.labels[i] == name) return i;
+                }
+                return std::nullopt;
+            };
+            const std::optional<uint32_t> object = label(placed.name);
+            for (const vehicles::PosedPart& part : posed->parts) {
+                const render_parts::PreparedPart& pieces = prepared->parts.at(part.part);
+                const std::optional<uint32_t> mine = label(placed.name + "/" + pieces.name);
+                std::vector<const render::DrawItem*> items;
+                for (const render::DrawItem& item : frame.statics) {
+                    if (object && mine && item.object_label == *object && item.part_label == *mine) items.push_back(&item);
+                }
+                if (items.empty() || items.size() != pieces.pieces.size()) continue;
+                ++p.drawables_added;
+                const glm::mat4 world_from_part = glm::translate(glm::mat4(1.0f), part.origin) * glm::mat4_cast(part.orient);
+                for (std::size_t k = 0; k < items.size(); ++k) {
+                    const glm::mat4 want = world_from_part * pieces.pieces[k].part_from_piece;
+                    const glm::mat4& got = items[k]->local_to_world;
+                    p.drawable_offset = std::max(p.drawable_offset, glm::length(glm::vec3(got[3]) - glm::vec3(want[3])));
+                    for (int c = 0; c < 3; ++c) {
+                        const glm::vec3 a = glm::normalize(glm::vec3(got[c]));
+                        const glm::vec3 b = glm::normalize(glm::vec3(want[c]));
+                        p.drawable_turn = std::max(p.drawable_turn, std::asin(std::min(1.0f, glm::length(glm::cross(a, b)))));
+                    }
+                }
+            }
+        }
+        const end_goal::Verdict drawn =
+            prepared ? end_goal::drawn_as_declared(p)
+                     : end_goal::Verdict{false, "drawn: absent: prepare_parts() refused: " + prepared.error().context};
+        s.check(drawn.ok, "drawn", drawn.detail);
+
+        // Still: 1.0 s of Run (240 ticks at the editor's 240 Hz), disarmed.
+        w().panels().selection = editor::Selection{};
+        command(editor::Command::run);
+        const editor::EditorRun* run = w().run();
+        const uint64_t from = run != nullptr ? run->tick() : 0u;
+        for (int i = 0; i < 200 && run != nullptr && run->tick() < from + 240u; ++i) {
+            then(1);
+            run = w().run();
+        }
+        const std::optional<FrameState> now = run != nullptr ? run->state_of(placed.name) : std::nullopt;
+        p.moved_after_run = now ? glm::length(now->pos - placed.start.pos) : std::numeric_limits<float>::quiet_NaN();
+        p.tilted_after_run = now ? end_goal::tilt_of(now->orient) : std::numeric_limits<float>::quiet_NaN();
+        command(editor::Command::stop);
+        const end_goal::Verdict rests = end_goal::placed_at(p);
+        s.check(rests.ok, "placed-at", rests.detail);
+        command(editor::Command::undo);
+        then(10);
+    });
+
+    // N15 (I5): a gate and a wall from the library, and a glTF crate written
+    // here into the work folder and imported by Load from file, each placed
+    // by a click on clear ground: object-added for each (Test/Docs' §3),
+    // import-named for the crate. Measured from raw inputs, never through the
+    // editor's own placing:
+    // - the world's SDF from before the click is the world without it;
+    // - an SDF object's lowest points are Test/Docs' own measure
+    //   (collider_rest_points(), §7a): its collider, posed by the object's
+    //   pose, marched up under its drawables' lowest vertices (a CSG object's
+    //   mesh, the library gate's, sits up to half a cell inside its surface,
+    //   so its vertices can't judge a rest); the crate's are its posed
+    //   vertices, which lie on its surface;
+    // - the editor passes scene_from_world() no labels, so the object's
+    //   drawables are those labelled with the nodes and the prop it added
+    //   (render/scene.hpp's defaults); a primitive's pose is the object's
+    //   times its collider transform, a CSG root's mesh is in world space
+    //   (the identity), the crate's the object's;
+    // - each drawable's material is the object's: its collider node's, or
+    //   the palette default for a collider naming none, or its visual's.
+    // The objects are placed upright at scale 1. Undone after.
+    t.step("editor", "add_objects", [&] {
+        if (!open()) return;
+        const fs::path crate = work / "crate.gltf";
+        if (!s.check(write_box_gltf(crate, "crate", 0.4f), "crate-file", path_text(crate))) return;
+        w().panels().item_path = path_text(crate);
+        command(editor::Command::load_item);
+        const bool armed = w().panels().armed.has_value();
+        if (!s.check(armed, "imported",
+                     armed ? "Load from file armed '" + w().panels().library.at(*w().panels().armed).name + "'"
+                           : w().panels().status)) {
+            return;
+        }
+        const std::string crate_item = w().panels().library.at(*w().panels().armed).name;
+        w().panels().armed.reset();
+
+        const auto pose_matrix = [](const SdfPose& pose) {
+            return glm::translate(glm::mat4(1.0f), pose.position) * glm::mat4_cast(pose.rotation) *
+                   glm::scale(glm::mat4(1.0f), glm::vec3(pose.scale));
+        };
+        // The largest gap and turn between two frames: their origins, and
+        // their axes' directions.
+        const auto widen = [](const glm::mat4& got, const glm::mat4& want, float& offset, float& turn) {
+            offset = std::max(offset, glm::length(glm::vec3(got[3]) - glm::vec3(want[3])));
+            for (int c = 0; c < 3; ++c) {
+                const glm::vec3 a = glm::normalize(glm::vec3(got[c]));
+                const glm::vec3 b = glm::normalize(glm::vec3(want[c]));
+                turn = std::max(turn, std::asin(std::min(1.0f, glm::length(glm::cross(a, b)))));
+            }
+        };
+        // The object's drawables in the current frame, each with its node's
+        // index in the collider, or -1 for the prop.
+        struct Mine {
+            render::DrawItem item;
+            int node = -1;
+        };
+        const auto mine = [&](const WorldDesc& before, const WorldDesc& now) {
+            std::vector<Mine> out;
+            const render::RenderScene& frame = session->render_scene();
+            for (const render::DrawItem& item : frame.statics) {
+                if (item.object_label >= frame.labels.size()) continue;
+                const std::string& label = frame.labels[item.object_label];
+                for (std::size_t i = before.sdf.nodes.size(); i < now.sdf.nodes.size(); ++i) {
+                    if (label == "sdf node " + std::to_string(i)) {
+                        out.push_back(Mine{item, static_cast<int>(i - before.sdf.nodes.size())});
+                    }
+                }
+                for (std::size_t p = before.props.size(); p < now.props.size(); ++p) {
+                    if (label == "prop " + std::to_string(p) + ": " + now.props[p].mesh_ref) out.push_back(Mine{item, -1});
+                }
+            }
+            return out;
+        };
+        const auto items_of = [](const std::vector<Mine>& m) {
+            std::vector<render::DrawItem> out;
+            for (const Mine& x : m) out.push_back(x.item);
+            return out;
+        };
+
+        // Places `item` by a click towards `target` and judges it; its name,
+        // or none when nothing was placed.
+        const auto place_and_judge = [&](const std::string& what, const std::string& item,
+                                         glm::vec3 target) -> std::optional<std::string> {
+            const WorldDesc before = w().composed().world;
+            end_goal::Placement p;
+            p.assets_before = scene_now().assets.size();
+            const glm::vec3 eye = session->camera().to_render_camera().position;
+            const glm::vec3 dir = glm::normalize(target - eye);
+            const std::optional<float> hit = editor::detail::march(before.sdf, eye, dir);
+            arm(item);
+            click_towards(target);
+            then(2);  // a frame binds it
+            p.assets_after = scene_now().assets.size();
+            const bool placed = hit.has_value() && p.assets_after > p.assets_before;
+            if (!s.check(placed, "placed",
+                         what + (placed   ? " placed as '" + scene_now().assets.back().name + "'"
+                                 : !hit ? ": the click met no surface"
+                                        : ": nothing placed: " + w().panels().status))) {
+                return std::nullopt;
+            }
+            const scene::SceneAsset a = scene_now().assets.back();
+            p.name_unique = std::count_if(scene_now().assets.begin(), scene_now().assets.end(),
+                                          [&](const scene::SceneAsset& x) { return x.name == a.name; }) == 1;
+            p.pick = eye + dir * *hit;
+            p.position = a.pose.position;
+            const WorldDesc& now = w().composed().world;
+            const std::vector<Mine> drawn = mine(before, now);
+            p.drawables_added = drawn.size();
+            p.drawables_declared = !a.collider.nodes.empty() ? end_goal::declared_drawables(a.collider)
+                                   : a.visual.mesh_ref.empty() ? 0u
+                                                               : 1u;
+            const auto material = [&](const std::string& name) -> std::optional<uint32_t> {
+                for (uint32_t i = 0; i < now.materials.size(); ++i) {
+                    if (now.materials[i].name == name) return i;
+                }
+                return std::nullopt;
+            };
+            const glm::mat4 pose = pose_matrix(a.pose);
+            p.materials_match = !drawn.empty();
+            for (const Mine& m : drawn) {
+                glm::mat4 want = pose;
+                uint32_t got = m.item.material_override;
+                bool ok = false;
+                if (m.node >= 0 && static_cast<std::size_t>(m.node) < a.collider.nodes.size()) {
+                    const SdfNode& n = a.collider.nodes[static_cast<std::size_t>(m.node)];
+                    want = static_cast<SdfOp>(n.op) != SdfOp::none
+                               ? glm::mat4(1.0f)
+                               : pose * glm::inverse(a.collider.transforms.at(n.transform).world_to_local);
+                    ok = a.collider_materials.empty()
+                             ? (got == render::kNoMaterial || got == 0u)
+                             : material(a.collider_materials.at(static_cast<std::size_t>(m.node))) == got;
+                } else if (m.node < 0) {
+                    ok = material(a.visual.material) == got;
+                }
+                p.materials_match = p.materials_match && ok;
+                widen(m.item.local_to_world, want, p.drawable_offset, p.drawable_turn);
+            }
+
+            // The rest, over the world without it.
+            const render::RenderScene& frame = session->render_scene();
+            const std::vector<render::DrawItem> items = items_of(drawn);
+            const std::vector<glm::vec3> vertices = end_goal::posed_vertices(frame, items);
+            const std::vector<glm::vec3> lowest =
+                a.collider.nodes.empty() ? vertices : end_goal::collider_rest_points(a.collider, pose, vertices);
+            p.rest_gap = end_goal::rest_gap(before.sdf, lowest);
+
+            // Still: 1.0 s of Run (240 ticks), its drawables judged in the
+            // run's own frame against where they were drawn.
+            w().panels().selection = editor::Selection{};
+            command(editor::Command::run);
+            const editor::EditorRun* run = w().run();
+            const uint64_t start_tick = run != nullptr ? run->tick() : 0u;
+            for (int i = 0; i < 200 && run != nullptr && run->tick() < start_tick + 240u; ++i) {
+                then(1);
+                run = w().run();
+            }
+            const std::vector<Mine> after = mine(before, w().composed().world);
+            if (run == nullptr || run->tick() < start_tick + 240u || after.size() != drawn.size()) {
+                p.moved_after_run = std::numeric_limits<float>::quiet_NaN();
+            } else {
+                for (std::size_t k = 0; k < after.size(); ++k) {
+                    widen(after[k].item.local_to_world, drawn[k].item.local_to_world, p.moved_after_run,
+                          p.tilted_after_run);
+                }
+            }
+            command(editor::Command::stop);
+            const end_goal::Verdict v = end_goal::object_added(p);
+            s.check(v.ok, "object-added", what + ": " + v.detail);
+            return a.name;
+        };
+
+        // The crate's name and source as shown, and its sidecar loading back
+        // with what read_gltf() read.
+        const auto judge_import = [&](const std::string& name) {
+            end_goal::ImportShown m;
+            m.shown_name = name;
+            m.node_name = "";  // write_box_gltf() names the mesh, not its node
+            m.mesh_name = "crate";
+            m.file = path_text(crate);
+            w().panels().selection = editor::Selection{editor::Selection::Kind::object, name};
+            w().refresh_panels();
+            m.shown_source = w().panels().selected_source;
+            if (const Result<std::vector<MeshObject>> read = read_gltf(crate); read && read->size() == 1) {
+                m.gltf_vertices = read->front().mesh->positions().size();
+                m.gltf_triangles = read->front().mesh->triangle_count();
+            }
+            std::string ref;
+            for (const scene::SceneAsset& a : scene_now().assets) {
+                if (a.name == name) ref = a.visual.mesh_ref;
+            }
+            const Result<LoadedMesh> sidecar = load_mesh_file(w().import_staging() / fs::path(ref + ".spmesh"));
+            m.sidecar_loaded = sidecar.has_value() && sidecar->mesh != nullptr;
+            if (m.sidecar_loaded) {
+                m.sidecar_vertices = sidecar->mesh->positions().size();
+                m.sidecar_triangles = sidecar->mesh->triangle_count();
+            }
+            const end_goal::Verdict v = end_goal::import_named(m);
+            s.check(v.ok, "import-named", v.detail);
+            w().panels().selection = editor::Selection{};
+        };
+
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        struct Placing {
+            std::string what;
+            std::string item;
+            glm::vec3 target;
+        };
+        const std::vector<Placing> placings{{"gate", "Gate", glm::vec3(at.x - 3.0f, 0.0f, at.z - 3.0f)},
+                                            {"wall", "Wall", glm::vec3(at.x + 3.0f, 0.0f, at.z - 3.0f)},
+                                            {"crate", crate_item, glm::vec3(at.x, 0.0f, at.z - 2.5f)}};
+        std::size_t placed = 0;
+        for (const Placing& pl : placings) {
+            const std::optional<std::string> name = place_and_judge(pl.what, pl.item, pl.target);
+            if (!name) break;
+            ++placed;
+            if (pl.what == "crate") judge_import(*name);
+        }
+        if (placed == placings.size()) {
+            t.snapshot("editor_objects");
+            then(1);  // the still is the next frame drawn: it draws before the undos
+        }
+        for (std::size_t i = 0; i < placed; ++i) command(editor::Command::undo);
+        then(10);
+    });
+
+    // N17: the placed reference quad flown from the pilot's keys (the lead's
+    // Q1 to Q3). Run pilots the selected drone, disarmed at rest; Space arms it
+    // to idle; PageUp, held, throttles it to 1.3 m g, inside the band climbs
+    // was simulated for (full throttle climbs past it); Up, held, tilts the
+    // nose toward the keys' 30 degrees down. Judged by armed, climbs and
+    // follows-attitude on the run's own frames, so none depends on the spawn
+    // height (Run's pop: editor.add_drone/placed-at). follows-attitude counts
+    // from the press, the setpoint's 0.5 s ramp included; the headless twin
+    // is FlightController.TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows.
+    t.step("editor", "fly", [&] {
+        if (!open()) return;
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        const std::size_t before = scene_now().vehicles.size();
+        arm("Reference quad (test fixture)");
+        click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
+        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
+        const std::string quad = scene_now().vehicles.back().name;
+        const vehicles::ModelType* placed = model_of(quad);
+        if (!s.check(placed != nullptr && placed->propulsion.has_value(), "has-chain", quad)) return;
+        const vehicles::ModelType m = *placed;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, quad};
+        command(editor::Command::run);
+        const editor::PilotPanel& pilot = w().panels().pilot;
+        if (!s.check(w().run() != nullptr && pilot.vehicle == quad, "piloted",
+                     pilot.vehicle.empty() ? pilot.why_not : "flying " + pilot.vehicle)) {
+            command(editor::Command::stop);
+            command(editor::Command::undo);
+            return;
+        }
+
+        const WorldDesc& world = w().documents().world.desc();
+        const float density = world.environment.air_density;
+        const float gravity = glm::length(world.environment.gravity);
+        const auto now_s = [&] {
+            const editor::EditorRun* run = w().run();
+            return run != nullptr ? static_cast<double>(run->tick()) * static_cast<double>(kBuiltinStepNs) * 1e-9 : 0.0;
+        };
+        // `n` frames with `keys` held, each recorded as editor.fly records it:
+        // the piloted drone's design-frame attitude (+X the nose) and rotors.
+        std::vector<end_goal::FlightFrame> frames;
+        const auto fly = [&](int n, const FrameInput& keys) -> bool {
+            for (int i = 0; i < n; ++i) {
+                if (!t.pump(1, [keys](int) { return keys; }, draw)) return false;
+                const editor::EditorRun* run = w().run();
+                const std::optional<VehicleRef> ref = run != nullptr ? run->vehicle_ref(quad) : std::nullopt;
+                if (!ref) return s.check(false, "flying", "the run or the drone went away");
+                const Result<const BodyState*> body = run->sim().body(ref->body);
+                if (!body) return s.check(false, "flying", body.error().context);
+                end_goal::FlightFrame f;
+                f.t_s = now_s();
+                f.height = (*body)->pos.y;
+                f.velocity = (*body)->vel;
+                f.attitude = (*body)->orient * m.design_to_principal;
+                std::vector<end_goal::RotorProbe> probes;
+                for (uint32_t r = 0; r < ref->rotor_count; ++r) {
+                    const Result<const vehicles::RotorRow*> row = run->sim().rotor(*ref, r);
+                    if (!row) continue;  // armed() names the frame that lacks it
+                    probes.push_back(end_goal::probe_rotor(**row, **body));
+                    f.rotor_omega.push_back((*row)->omega);
+                }
+                f.thrust_up = end_goal::vertical_thrust(probes);
+                frames.push_back(std::move(f));
+            }
+            return true;
+        };
+        const int per_second = static_cast<int>(std::lround(1.0f / kDt));
+        FrameInput none;
+        FrameInput space;
+        space.arm_pressed = true;
+        FrameInput page_up;
+        page_up.throttle = 1.0f;
+        FrameInput up_arrow;
+        up_arrow.attitude_pitch = -1.0f;  // Up: the nose down
+
+        if (!fly(per_second * 3 / 2, none)) return;  // disarmed: Run's pop, then at rest
+        const double arm_s = now_s();
+        if (!fly(1, space) || !fly(per_second * 3 / 2, none)) return;
+        const double throttle_up_s = now_s();
+        const std::size_t until_up = frames.size();
+        const double per_rotor = 1.3 * static_cast<double>(m.body.mass) * static_cast<double>(gravity) /
+                                 static_cast<double>(m.rotors.size());
+        const vehicles::SteadyPoint hold = vehicles::steady_state_for_thrust(*m.propulsion, per_rotor, density, 0.0,
+                                                                            analysis::kDefaultStateOfCharge);
+        const double idle_duty = analysis::kDefaultIdleDuty;
+        const float target = static_cast<float>((hold.duty - idle_duty) / (1.0 - idle_duty));
+        for (int i = 0; i < per_second * 3 && pilot.controls.throttle < target; ++i) {
+            if (!fly(1, page_up)) return;
+        }
+        const int rest = static_cast<int>(std::lround((throttle_up_s + 3.0 - now_s()) * per_second));
+        if (!fly(std::max(rest, 0), none)) return;
+        const double press_s = now_s();
+        if (!fly(per_second * 5 / 2, up_arrow)) return;
+        command(editor::Command::stop);
+
+        const Result<vehicles::DutyCommand> idle = vehicles::rotor_omega_for_duty(
+            *m.propulsion, analysis::kDefaultIdleDuty, density, analysis::kDefaultStateOfCharge);
+        const std::vector<float> idle_command(m.rotors.size(), idle ? idle->omega_cmd : 0.0f);
+        const std::vector<end_goal::FlightFrame> before_up(frames.begin(),
+                                                           frames.begin() + static_cast<std::ptrdiff_t>(until_up));
+        const end_goal::Verdict armed = end_goal::armed(before_up, arm_s, idle_command);
+        s.check(armed.ok, "armed", idle ? armed.detail : idle.error().context);
+        const end_goal::Verdict climbed =
+            end_goal::climbs(frames, throttle_up_s, m.body.mass, gravity, m.rotors.front().radius);
+        s.check(climbed.ok, "climbs", climbed.detail);
+        const end_goal::Verdict followed =
+            end_goal::follows_attitude(frames, press_s, -flight::kTiltMaxDeg * 0.017453292519943295f);
+        s.check(followed.ok, "follows-attitude", followed.detail);
+        command(editor::Command::undo);
+        then(10);
     });
 
     session.reset();  // detaches its panels while the window is still open

@@ -8,7 +8,7 @@
 //   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-quad|case-smoke
 //   flow_movie --video case --case FILE.case.yaml [--controls FILE]
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
-//              [--resimulate] [--keep-cache] [--simulate-only]
+//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
 //
 // --cpu draws stills on the CPU renderer, the GL views' reference; --view
@@ -18,6 +18,11 @@
 // by --budget-seconds or --frame-budget (exit 3), or by the box, continues
 // from there when run again. A cache from another case or build is refused;
 // --resimulate starts again from rest.
+//
+// After its render, a film's cache goes, unless --keep-cache; a LiveRun
+// film's (--case, case-*) stays unless --drop-cache, since it is the only
+// copy of a run that may have taken hours (D1's lost its frames to its own
+// render, 2026-10-22, before they were sampled).
 //
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
@@ -1146,6 +1151,7 @@ struct Options {
     uint32_t stills = 0;
     bool resimulate = false;
     bool keep_cache = false;
+    bool drop_cache = false;  // --drop-cache: a LiveRun film's cache goes after its render
     bool simulate_only = false;
     bool cpu = false;  // stills on the CPU renderer instead of GL
     std::string view;  // stills of this view only
@@ -1260,7 +1266,14 @@ constexpr double kD1Seconds = 0.6;
     }
     auto clips = render_film(film, cache, stage, encoder, opt.out / "clips");
     if (!clips) return std::unexpected(clips.error());
-    if (!opt.keep_cache) fs::remove_all(cache, ec);
+    // A LiveRun film's cache stays unless --drop-cache: it may hold hours of
+    // run (see the header). Any other film's goes unless --keep-cache.
+    if (film.run && !opt.drop_cache) {
+        std::printf("[ %s ] kept the cache in %s (--drop-cache removes it)\n", film.stem.c_str(),
+                    cache.string().c_str());
+    } else if (film.run || !opt.keep_cache) {
+        fs::remove_all(cache, ec);
+    }
     return std::optional<std::vector<fs::path>>{std::move(*clips)};
 }
 
@@ -1350,6 +1363,8 @@ int main(int argc, char** argv) {
             opt.resimulate = true;
         } else if (arg == "--keep-cache") {
             opt.keep_cache = true;
+        } else if (arg == "--drop-cache") {
+            opt.drop_cache = true;
         } else if (arg == "--cpu") {
             opt.cpu = true;
         } else if (arg == "--view") {
@@ -1396,7 +1411,8 @@ int main(int argc, char** argv) {
     if (opt.video.empty()) {
         std::fprintf(stderr, "usage: flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-smoke "
                              "[--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N] [--resimulate] [--keep-cache]\n"
-                             "       flow_movie --case FILE.case.yaml [--controls FILE] [--out DIR] [--seconds S]\n");
+                             "       flow_movie --case FILE.case.yaml [--controls FILE] [--out DIR] [--seconds S] "
+                             "[--drop-cache]\n");
         return 2;
     }
     if (opt.out.empty()) opt.out = default_out();

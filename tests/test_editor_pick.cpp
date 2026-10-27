@@ -9,8 +9,10 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include <glm/glm.hpp>
 
@@ -19,6 +21,7 @@
 #include "../sandbox/editor_run.hpp"
 #include "editor_test_support.hpp"
 #include "scene/compose.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -111,4 +114,20 @@ TEST(EditorPick, ARunningVehicleIsPickedWhereTheRunHasIt) {
     const ComposedScene c = composed(s);
     EXPECT_EQ(ed::pick(s, c, &*run, now + glm::vec3(0.0f, 0.0f, 6.0f), kForward), std::optional<std::string>(name));
     EXPECT_EQ(ed::pick(s, c, &*run, start + glm::vec3(0.0f, 0.0f, 6.0f), kForward), kNothing);
+}
+
+// The hit is on the surface, not short of it, so what a click places rests
+// there. N15's editor.add_objects measured objects the tour placed from its
+// camera, about 8 m off, floating 7.5 to 8.9 mm: the march stopped within
+// 1e-3 of the distance travelled. From 10 m, and from 30 m at a grazing
+// 4 degrees, the hit point is within 0.1 mm of the surface by the SDF itself.
+TEST(EditorPick, TheRayMeetsTheSurfaceWithinATenthOfAMillimetreFromAfar) {
+    const ComposedScene c = composed(support::sample_scene());
+    for (const auto& [eye, target] : {std::pair{glm::vec3(0.0f, 3.42f, 9.4f), glm::vec3(0.0f, 0.0f, 0.0f)},
+                                      std::pair{glm::vec3(0.0f, 2.0f, 0.0f), glm::vec3(0.0f, 0.0f, -30.0f)}}) {
+        const glm::vec3 dir = glm::normalize(target - eye);
+        const std::optional<float> t = ed::detail::march(c.world.sdf, eye, dir);
+        ASSERT_TRUE(t.has_value());
+        EXPECT_LT(std::abs(spade::eval(c.world.sdf, eye + dir * *t)), 1e-4f) << "from " << glm::length(target - eye) << " m";
+    }
 }

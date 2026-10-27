@@ -23,7 +23,9 @@
 #include "editor_library.hpp"
 #include "editor_display.hpp"
 #include "editor_model_params.hpp"
+#include "editor_airflow.hpp"
 #include "editor_panels.hpp"
+#include "pilot_keys.hpp"  // kPilotKeysHelp
 #include "ui_theme.hpp"
 
 namespace spade::sandbox {
@@ -405,6 +407,26 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
         if (changed) p.pending.push_back(ed::SetVehicleStart{v.name, next});
         ui::end_properties();
     }
+    // The editor's airflow run (INT-15, T1): the drone's follow region, its
+    // resolved grid or the refusal, and Add or Remove.
+    if (ui::section("Airflow", true)) {
+        const scene::SceneAirflowRegion* region = nullptr;
+        for (const scene::SceneAirflowRegion& r : p.scene->airflow) {
+            if (r.kind == scene::AirflowKind::follow && r.follows == v.name) region = &r;
+        }
+        if (region == nullptr) {
+            if (ImGui::Button("Add airflow region")) p.pending.push_back(ed::AddAirflowRegion{v.name});
+        } else {
+            ImGui::TextUnformatted(region->name.c_str());
+            const ed::AirLineCache& line = ed::air_line(p.air_line, p.scene_opened, p.scene_serial, *p.scene, *region);
+            if (line.refused) {
+                ui::status_text(line.text);
+            } else {
+                ImGui::TextDisabled("%s", line.text.c_str());
+            }
+            if (ImGui::Button("Remove airflow region")) p.pending.push_back(ed::RemoveAirflowRegion{region->name});
+        }
+    }
     if (model == nullptr) return;
     if (ui::section("Model", true) && ui::begin_properties("model")) {
         model_param_rows(p, v.name, *model, Element::model, 0, Rows::common);
@@ -425,6 +447,40 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             }
         }
     }
+    // N15: the parts imported from a glTF, open, each saying what it is and
+    // is not (D4); its role, min_feature and mount are its rows.
+    std::size_t imported = 0;
+    for (const vehicles::PartDesc& part : model->parts) imported += ed::is_imported_part(part) ? 1u : 0u;
+    const std::string heading = "Imported parts (" + std::to_string(imported) + ")";
+    if (imported > 0 && ui::section(heading.c_str(), true)) {
+        for (std::size_t i = 0; i < model->parts.size(); ++i) {
+            const vehicles::PartDesc& part = model->parts[i];
+            if (!ed::is_imported_part(part)) continue;
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::TextUnformatted(part.name.c_str());
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextDisabled("%s", ed::imported_part_note(part).c_str());
+            ImGui::TextDisabled("%s", ed::min_feature_note(part).c_str());
+            ImGui::PopTextWrapPos();
+            if (ui::begin_properties(("imported" + std::to_string(i)).c_str())) {
+                ed::SetImportedPart next{v.name, part.name, part.role == vehicles::kDrawnOnlyRole, part.min_feature,
+                                         part.mount_orient};
+                ui::property_row("Visual only");
+                bool changed = ImGui::Checkbox("##visual", &next.visual_only);
+                float feature_mm = 0.0f;
+                if (float_row("min_feature (mm)", "##feature", part.min_feature * 1000.0f, 0.1f, feature_mm,
+                              "%.3g")) {
+                    next.min_feature = feature_mm / 1000.0f;
+                    changed = true;
+                }
+                ui::property_row("Mount (\xC2\xB0)");
+                changed |= drag_attitude("##mount", part.mount_orient, next.mount_orient);
+                if (changed) p.pending.push_back(next);
+                ui::end_properties();
+            }
+            ImGui::PopID();
+        }
+    }
     // The internals, folded (§13's progressive disclosure).
     if (ui::section("Advanced", false) && ui::begin_properties("advanced")) {
         model_param_rows(p, v.name, *model, Element::model, 0, Rows::advanced);
@@ -434,6 +490,11 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
 
 void inspect_asset(ed::EditorPanels& p, const scene::SceneAsset& a) {
     ui::title(a.name.c_str());
+    if (!p.selected_source.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("imported from %s", p.selected_source.c_str());
+        ImGui::PopTextWrapPos();
+    }
     if (ui::section("Transform", true) && ui::begin_properties("transform")) {
         SdfPose next = a.pose;
         bool changed = vec3_row("Position (m)", "##pos", a.pose.position, 0.01f, next.position);
@@ -592,6 +653,105 @@ void inspect_world(ed::EditorPanels& p) {
     }
 }
 
+// While Run runs: who it flies, what the pilot holds, the keys, and the
+// buttons (N17; the lead's Q1, Q2). Nothing flown: why.
+void pilot_section(ed::EditorPanels& p) {
+    if (!p.running || !ui::section("Pilot", true)) return;
+    const ed::PilotPanel& pilot = p.pilot;
+    if (pilot.vehicle.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", pilot.why_not.c_str());
+        ImGui::PopTextWrapPos();
+        ui::gap();
+        return;
+    }
+    ImGui::Text("Flying %s, %s", pilot.vehicle.c_str(), pilot.controls.armed ? "armed" : "disarmed");
+    if (ui::begin_properties("pilot")) {
+        ui::value_row("Throttle", "%.0f%%", static_cast<double>(pilot.controls.throttle) * 100.0);
+        ui::value_row("Pitch, roll (\xC2\xB0)", "%.0f, %.0f", static_cast<double>(pilot.controls.pitch_deg),
+                      static_cast<double>(pilot.controls.roll_deg));
+        ui::value_row("Heading (\xC2\xB0)", "%.0f", static_cast<double>(pilot.controls.yaw_deg));
+        ui::end_properties();
+    }
+    if (ImGui::Button(pilot.controls.armed ? "Disarm" : "Arm")) p.commands.push_back(ed::Command::arm);
+    ImGui::SameLine();
+    if (ImGui::Button("Level")) p.commands.push_back(ed::Command::level);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", flight::kPilotKeysHelp);
+    ImGui::PopTextWrapPos();
+    ui::gap();
+}
+
+// Graded rows (INT-14): each cited field's or input's path, cut from the left
+// so its end shows, then its grade, an assumed one in the warning colour,
+// then its value, a fractional one to 4 significant figures, elided at its
+// edge; the whole value, the source and the note on hover.
+void graded_rows(const std::vector<ed::PartRow>& rows) {
+    if (ui::begin_graded_properties("##graded")) {
+        for (const ed::PartRow& r : rows) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ui::cell_path(r.field, ui::Tone::dim);
+            bool hovered = ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(1);
+            ui::grade_text(scene::grade_name(r.grade), r.grade == scene::Grade::assumed);
+            hovered = hovered || ImGui::IsItemHovered();
+            ImGui::TableSetColumnIndex(2);
+            ui::cell_text(ed::short_value(r.value));
+            hovered = hovered || ImGui::IsItemHovered();
+            if (hovered) {
+                std::string tip = r.field + ": " + r.value + "\n" + std::string(scene::grade_name(r.grade));
+                tip += r.source.empty() ? ", citing no source" : ": " + r.source;
+                if (!r.note.empty()) tip += "\n" + r.note;
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+        }
+        ui::end_properties();
+    }
+}
+
+// A library part (INT-14), inspect-only: its graded fields.
+void inspect_part(const ed::LibraryItem& item) {
+    const std::string_view kind = item.part ? scene::part_kind_name(scene::part_kind(*item.part)) : "part";
+    ui::title(item.name.c_str());
+    ImGui::TextDisabled("%.*s, built into a drone; inspect-only", static_cast<int>(kind.size()), kind.data());
+    if (!item.part) return;
+    const Result<std::vector<ed::PartRow>> rows = ed::part_rows(*item.part);
+    if (!rows) {
+        ui::status_text(rows.error().context);
+        return;
+    }
+    graded_rows(*rows);
+}
+
+// A library drone with its sidecar (L5; the lead's Q2): what holds for the
+// whole drone, its inputs graded as a part's fields are, then the part files
+// it was built from. Placeable: its tile's click arms it as well.
+void inspect_drone(const std::vector<ed::LibraryItem>& library, const ed::LibraryItem& item) {
+    ui::title(item.name.c_str());
+    if (!item.sources) return;
+    const scene::ModelSources& s = *item.sources;
+    ImGui::TextDisabled("drone, %zu inputs from its sources file", s.inputs.size());
+    if (!s.caveat.empty()) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextDisabled("%s", s.caveat.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    graded_rows(ed::model_rows(s));
+    if (s.parts.empty()) return;
+    ui::gap();
+    ImGui::TextDisabled("Built from");
+    if (ui::begin_properties("##built")) {
+        for (const scene::PinnedPart& part : s.parts) {
+            const auto named = std::find_if(library.begin(), library.end(),
+                                            [&](const ed::LibraryItem& i) { return i.file == part.file; });
+            ui::value_row(std::string(scene::part_kind_name(part.kind)).c_str(), "%s",
+                          named != library.end() ? named->name.c_str() : part.file.c_str());
+        }
+        ui::end_properties();
+    }
+}
+
 void inspector(ed::EditorPanels& p) {
     if (!ImGui::Begin(ui::kInspector, nullptr, ui::kPanelFlags)) {
         ImGui::End();
@@ -607,8 +767,20 @@ void inspector(ed::EditorPanels& p) {
         ImGui::End();
         return;
     }
+    pilot_section(p);
     switch (p.selection.kind) {
-        case ed::Selection::Kind::none: ImGui::TextDisabled("Select an object, the scene or the world."); break;
+        case ed::Selection::Kind::none:
+            if (p.inspected && *p.inspected < p.library.size()) {
+                const ed::LibraryItem& item = p.library[*p.inspected];
+                if (item.kind == ed::LibraryItem::Kind::part) {
+                    inspect_part(item);
+                } else {
+                    inspect_drone(p.library, item);
+                }
+            } else {
+                ImGui::TextDisabled("Select an object, the scene or the world.");
+            }
+            break;
         case ed::Selection::Kind::scene: inspect_scene(p); break;
         case ed::Selection::Kind::world: inspect_world(p); break;
         case ed::Selection::Kind::object: {
@@ -638,40 +810,128 @@ void library(ed::EditorPanels& p) {
         ImGui::End();
         return;
     }
-    // Vehicle models by the kind their model makes them, then the assets (§4).
-    std::vector<std::string> kinds;
+    // Load from file, then what would not load, verbatim; then the default
+    // library by category, in its index's order (INT-14), then what Load from
+    // file added.
+    ImGui::TextDisabled("Load from file");
+    std::string item_path = p.item_path;
+    if (edit_text("##item_path", p.item_path, item_path)) p.item_path = item_path;
+    if (ImGui::Button("Load")) p.commands.push_back(ed::Command::load_item);
+    // Save to library (EDT-020): the selected vehicle or object, into the
+    // scene's folder's library/ (never the default library).
+    ImGui::SameLine();
+    ImGui::BeginDisabled(p.selection.kind != ed::Selection::Kind::object);
+    if (ImGui::Button("Save selection to library")) p.commands.push_back(ed::Command::save_to_library);
+    // N15: the path's glTF as the selected drone's parts, one per mesh.
+    ImGui::SameLine();
+    if (ImGui::Button("Import as the drone's parts")) p.commands.push_back(ed::Command::import_parts);
+    ImGui::EndDisabled();
+    if (p.armed) ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
+    for (const std::string& problem : p.library_problems) ui::status_text(problem);
+    ui::gap();
+    std::vector<std::string> categories;
     for (const ed::LibraryItem& item : p.library) {
-        if (item.kind != ed::LibraryItem::Kind::model || !item.model) continue;
-        const std::string k = ed::vehicle_kind_of(*item.model);
-        if (std::find(kinds.begin(), kinds.end(), k) == kinds.end()) kinds.push_back(k);
+        const std::string c = ed::panel_category(item);
+        if (std::find(categories.begin(), categories.end(), c) == categories.end()) categories.push_back(c);
     }
-    const auto row = [&p](std::size_t i) {
+    // N14b: each category a run of tiles that wraps at the panel's edge; the
+    // panel itself scrolls (§13: no child windows). A tile is its thumbnail
+    // 1:1 at whole pixels inside a 2-pixel frame (the accent when armed), its
+    // name below. A tile wholly in view records where its image was drawn,
+    // for the tour's thumbnails check.
+    p.library_tiles.assign(p.library.size(), std::nullopt);
+    p.library_badges.assign(p.library.size(), false);
+    const float image = static_cast<float>(ed::kThumbnailSize);
+    const float frame = 2.0f;
+    const float tile = image + 2.0f * frame;
+    const float spacing = 2.0f * ui::kBase;
+    const float line = ImGui::GetTextLineHeightWithSpacing();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 clip_min = draw->GetClipRectMin();
+    const ImVec2 clip_max = draw->GetClipRectMax();
+    const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    const auto tile_of = [&](std::size_t i) {
+        const ed::LibraryItem& item = p.library[i];
         ImGui::PushID(static_cast<int>(i));
+        ImGui::BeginGroup();
+        const ImVec2 cursor = ImGui::GetCursorScreenPos();
+        const ImVec2 at(std::floor(cursor.x), std::floor(cursor.y));
+        ImGui::SetCursorScreenPos(at);
+        const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(tile, tile));
+        const bool hovered = ImGui::IsItemHovered();
+        if (p.library_scroll_to && *p.library_scroll_to == i) {
+            ImGui::SetScrollHereY(0.0f);
+            p.library_scroll_to.reset();
+        }
+        const bool placeable = ed::placeable(item);
         const bool armed = p.armed && *p.armed == i;
-        if (ui::list_row(p.library[i].name.c_str(), armed)) {
+        const bool marked = armed || (p.inspected && *p.inspected == i);
+        const ImU32 edge = marked ? ImGui::GetColorU32(ui::kAccent)
+                                 : ImGui::GetColorU32(hovered && placeable ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+        draw->AddRectFilled(at, ImVec2(at.x + tile, at.y + tile), edge);
+        const ImVec2 lo(at.x + frame, at.y + frame);
+        const ImVec2 hi(lo.x + image, lo.y + image);
+        const std::uintptr_t texture = i < p.library_textures.size() ? p.library_textures[i] : 0u;
+        if (texture != 0u) {
+            draw->AddImage((ImTextureID)texture, lo, hi);
+            if (lo.x >= clip_min.x && lo.y >= clip_min.y && hi.x <= clip_max.x && hi.y <= clip_max.y) {
+                p.library_tiles[i] = ViewportRect{static_cast<uint32_t>(std::lround(lo.x * scale.x)),
+                                                  static_cast<uint32_t>(std::lround(lo.y * scale.y)),
+                                                  static_cast<uint32_t>(std::lround(image * scale.x)),
+                                                  static_cast<uint32_t>(std::lround(image * scale.y))};
+            }
+        } else {
+            draw->AddRectFilled(lo, hi, ImGui::GetColorU32(ImGuiCol_WindowBg));
+        }
+        // A part is inspected, never armed (the lead's Q1); a library drone
+        // with its sidecar is inspected and armed (L5).
+        if (clicked && ed::has_grades(item)) ed::inspect_item(p, i);
+        if (clicked && placeable) {
             if (armed) {
                 p.armed.reset();
             } else {
                 p.armed = i;
             }
         }
+        // The name, ended with an ellipsis at the tile's width so the grid
+        // keeps its rhythm; hovering the tile or its name shows the whole.
+        const ImVec2 name_at(at.x, at.y + tile + style.ItemSpacing.y);
+        ui::caption(draw, name_at, tile, item.name, !placeable);
+        if (hovered || ImGui::IsMouseHoveringRect(name_at, ImVec2(name_at.x + tile, name_at.y + line))) {
+            if (placeable && ed::has_grades(item)) {
+                ImGui::SetTooltip("%s: click to place it; the inspector shows where its inputs came from",
+                                  item.name.c_str());
+            } else if (placeable) {
+                ImGui::SetTooltip("%s", item.name.c_str());
+            } else {  // a part: inspect-only (INT-14)
+                ImGui::SetTooltip("%s: built into a drone, not placed on its own; click to inspect it",
+                                  item.name.c_str());
+            }
+        }
+        // A part with any field assumed says so under its name, never over
+        // its image: the tour's thumbnails check reads every pixel of it.
+        const bool assumed = ed::any_assumed(item);
+        if (assumed) {
+            draw->AddText(ImVec2(name_at.x, name_at.y + line), ImGui::GetColorU32(ui::kWarning), "assumed");
+            p.library_badges[i] = true;
+        }
+        ImGui::Dummy(ImVec2(tile, assumed ? 2.0f * line : line));
+        ImGui::EndGroup();
         ImGui::PopID();
     };
-    for (const std::string& k : kinds) {
-        if (!ui::section(k.c_str(), true)) continue;
+    for (const std::string& c : categories) {
+        ImGui::TextDisabled("%s", c.c_str());
+        bool first_tile = true;
         for (std::size_t i = 0; i < p.library.size(); ++i) {
-            const ed::LibraryItem& item = p.library[i];
-            if (item.kind == ed::LibraryItem::Kind::model && item.model && ed::vehicle_kind_of(*item.model) == k) row(i);
+            if (ed::panel_category(p.library[i]) != c) continue;
+            // The next tile on this line when it fits, else on the next.
+            if (!first_tile && ImGui::GetItemRectMax().x + spacing + tile <= right) ImGui::SameLine(0.0f, spacing);
+            first_tile = false;
+            tile_of(i);
         }
-    }
-    if (ui::section("Assets", true)) {
-        for (std::size_t i = 0; i < p.library.size(); ++i) {
-            if (p.library[i].kind == ed::LibraryItem::Kind::asset) row(i);
-        }
-    }
-    if (p.armed) {
         ui::gap();
-        ImGui::TextDisabled("Click in the view to place %s.", p.library[*p.armed].name.c_str());
     }
     ImGui::End();
 }

@@ -278,8 +278,10 @@ const glm::vec3 kSelectionAccent{0.29f, 0.56f, 0.89f};
 }
 
 // THE INDEX the committed library.yaml must read as, in order: the reference
-// quad first (N4's model file, tests/test_library_quad.cpp pins it), then the
-// content table's objects.
+// quad first (N4's model file, tests/test_library_quad.cpp pins it), then L5's
+// six drones, so the drones category stays together
+// (tests/test_library_drones.cpp pins them), then the content table's
+// objects, then L4's parts.
 struct IndexRow {
     std::string_view name;
     std::string_view category;
@@ -289,10 +291,66 @@ struct IndexRow {
 
 [[nodiscard]] std::vector<IndexRow> expected_index() {
     std::vector<IndexRow> out;
-    out.push_back({"Reference quad", "drones", "drones/reference_quad.model.yaml", LibraryKind::model});
+    // L5's drones, in the L5 draft's names (Interface owns the category).
+    out.push_back({"Phantom 3-class quad", "drones", "drones/phantom3_class.model.yaml", LibraryKind::model});
+    out.push_back({"Iris+-class quad", "drones", "drones/iris_plus_class.model.yaml", LibraryKind::model});
+    out.push_back({"5-inch FPV quad", "drones", "drones/fpv_5inch.model.yaml", LibraryKind::model});
+    out.push_back({"Crazyflie-class micro", "drones", "drones/crazyflie_class.model.yaml", LibraryKind::model});
+    out.push_back({"Basic quad, 6-inch", "drones", "drones/basic_quad_6inch.model.yaml", LibraryKind::model});
+    out.push_back({"Basic quad, competition", "drones", "drones/basic_quad_competition.model.yaml",
+                   LibraryKind::model});
     for (const ObjectRow& row : content_table()) {
         out.push_back({row.name, row.category, row.file, LibraryKind::object});
     }
+    // L4's part entries, after the objects: props, motors, ESCs, batteries.
+    out.push_back({"APC Thin Electric 10x5 (Phantom 3 class)", "props", "parts/uiuc_apce_10x5.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"APC Thin Electric 9x4.5 (Iris+ class)", "props", "parts/uiuc_apce_9x4.5.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"Micro Invent 5x4 three-blade (5-inch FPV)", "props", "parts/uiuc_mit_5x4.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"Crazyflie 47 mm two-blade", "props", "parts/uiuc_cfnq_45t1.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"6-inch three-blade (scaled stand-in)", "props", "parts/triblade_6inch_scaled.prop.yaml",
+                   LibraryKind::prop});
+    out.push_back({"2312 960 KV (Phantom 3 class)", "motors", "parts/phantom3_2312_960kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"920 KV (Iris+ class)", "motors", "parts/iris_920kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2207 1855 KV (5-inch FPV)", "motors", "parts/fpv_2207_1855kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"7x16 coreless (Crazyflie)", "motors", "parts/cf_7x16_coreless.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2306 1700 KV (basic quad)", "motors", "parts/fpv_2306_1700kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"2207 2450 KV (competition)", "motors", "parts/comp_2207_2450kv.motor.yaml",
+                   LibraryKind::motor});
+    out.push_back({"Four 20 A ESCs (Phantom 3 class)", "ESCs", "parts/phantom3_4x20a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"Four 20 A ESCs (Iris+ class)", "ESCs", "parts/iris_4x20a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (5-inch FPV)", "ESCs", "parts/fpv_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"Brushed 4-channel drive (Crazyflie)", "ESCs", "parts/cf_brushed_4ch.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (basic quad)", "ESCs", "parts/basic_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"45 A 4-in-1 (competition)", "ESCs", "parts/comp_4in1_45a.esc.yaml",
+                   LibraryKind::esc});
+    out.push_back({"4S 4480 mAh LiHV (Phantom 3)", "batteries", "parts/phantom3_4s_4480.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"3S 5100 mAh (Iris+)", "batteries", "parts/iris_3s_5100.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"6S 1300 mAh (5-inch FPV, basic quad)", "batteries", "parts/fpv_6s_1300.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"1S 250 mAh (Crazyflie)", "batteries", "parts/cf_1s_250.battery.yaml",
+                   LibraryKind::battery});
+    out.push_back({"4S 1500 mAh (competition)", "batteries", "parts/comp_4s.battery.yaml",
+                   LibraryKind::battery});
+    // The engine's test fixture, labelled plainly and last: its category is
+    // last in Interface's order (L6; INT-14).
+    out.push_back({"Reference quad (test fixture)", "test fixtures", "drones/reference_quad.model.yaml",
+                   LibraryKind::model});
     return out;
 }
 
@@ -445,6 +503,23 @@ entries:
         << why(extra);
 }
 
+// A version 2 index names every suffix it reads, part files included; a
+// version 1 index keeps its own two.
+TEST(Library, AnUnknownSuffixIsRefusedNamingThatVersionsKinds) {
+    const spade::Result<Library> v2 = spade::scene::library_from_yaml(
+        "library_version: 2\nentries:\n  - {name: X, category: c, file: x.yaml}\n");
+    EXPECT_EQ(code_of(v2), code(spade::Code::invalid_argument));
+    EXPECT_TRUE(why(v2).starts_with("entries[0].file 'x.yaml' must end in .model.yaml (a model file), .object.yaml "
+                                    "(an object file), or .motor.yaml, .prop.yaml, .esc.yaml or .battery.yaml (a "
+                                    "part file) ("))
+        << why(v2);
+    const spade::Result<Library> v1 = spade::scene::library_from_yaml(
+        "library_version: 1\nentries:\n  - {name: X, category: c, file: x.yaml}\n");
+    EXPECT_TRUE(why(v1).starts_with("entries[0].file 'x.yaml' must end in .model.yaml (a model file) or "
+                                    ".object.yaml (an object file) ("))
+        << why(v1);
+}
+
 TEST(Library, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
     struct Case {
         std::string what;
@@ -583,6 +658,177 @@ TEST(Library, AThumbnailIsOptionalAndFollowsTheFilesPathRule) {
     EXPECT_EQ(why(outside),
               "entries[0].thumbnail '../box.png' must not have a '..' segment: an entry stays inside the library's "
               "folder (line 6, column 16)");
+}
+
+// ===========================================================================
+// Writing (library_to_yaml): Save to library (EDT-020)
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] LibraryEntry entry_of(std::string name, std::string category, std::string file, std::string thumbnail,
+                                    LibraryKind kind) {
+    LibraryEntry e;
+    e.name = std::move(name);
+    e.category = std::move(category);
+    e.file = std::move(file);
+    e.thumbnail = std::move(thumbnail);
+    e.kind = kind;
+    return e;
+}
+
+// Read back equal: every field of every entry, in order.
+void expect_same_entries(const Library& written, const Library& read) {
+    ASSERT_EQ(read.entries.size(), written.entries.size());
+    for (std::size_t i = 0; i < written.entries.size(); ++i) {
+        SCOPED_TRACE("entry " + std::to_string(i));
+        EXPECT_EQ(read.entries[i].name, written.entries[i].name);
+        EXPECT_EQ(read.entries[i].category, written.entries[i].category);
+        EXPECT_EQ(read.entries[i].file, written.entries[i].file);
+        EXPECT_EQ(read.entries[i].thumbnail, written.entries[i].thumbnail);
+        EXPECT_EQ(read.entries[i].kind, written.entries[i].kind);
+    }
+}
+
+// Writes `library`, reads it back equal, and writes that again to the same
+// text (canonical). The text, or empty after a failure.
+[[nodiscard]] std::string round_trip(const Library& library) {
+    const spade::Result<std::string> text = spade::scene::library_to_yaml(library);
+    EXPECT_OK(text);
+    if (!text) return {};
+    const spade::Result<Library> back = spade::scene::library_from_yaml(*text);
+    EXPECT_OK(back);
+    if (!back) return {};
+    expect_same_entries(library, *back);
+    EXPECT_TRUE(back->dir.empty());
+    const spade::Result<std::string> again = spade::scene::library_to_yaml(*back);
+    EXPECT_OK(again);
+    if (again) {
+        EXPECT_EQ(*again, *text) << "the text is not canonical";
+    }
+    return *text;
+}
+
+[[nodiscard]] std::size_t count_of(const std::string& text, std::string_view needle) {
+    std::size_t n = 0;
+    for (std::size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+    return n;
+}
+
+void expect_write_refused(const Library& library, std::string_view needle) {
+    const spade::Result<std::string> r = spade::scene::library_to_yaml(library);
+    EXPECT_EQ(code_of(r), code(spade::Code::invalid_argument)) << why(r);
+    EXPECT_EQ(why(r).rfind("library_to_yaml: ", 0), 0u) << why(r);
+    EXPECT_NE(why(r).find(needle), std::string::npos) << "missing '" << needle << "' in: " << why(r);
+    EXPECT_EQ(why(r).find("(line "), std::string::npos) << "a line of text the caller never sees: " << why(r);
+}
+
+[[nodiscard]] Library two_objects() {
+    Library library;
+    library.entries = {entry_of("Box", "Obstacles", "obstacles/box.object.yaml", "", LibraryKind::object),
+                       entry_of("Gate", "Obstacles", "obstacles/gate.object.yaml", "thumbnails/gate.png",
+                                LibraryKind::object)};
+    return library;
+}
+
+}  // namespace
+
+constexpr char kOddBytes[] = "ctl \x01\x7f\r\n\\ nul \0 end";
+
+TEST(LibraryText, AVersion1IndexWritesCanonicalTextThatReadsBackEqual) {
+    Library library;
+    library.dir = "somewhere/else";
+    library.entries = {
+        entry_of("Reference quad", "Drones", "drones/reference_quad.model.yaml", "thumbnails/reference_quad.png",
+                 LibraryKind::model),
+        // Every string is double-quoted, so text the plain style would
+        // misread (an alias, a comment, a quote, a key) reads back as written.
+        entry_of("*not an alias: \"quoted\" #1", "Props & obstacles", "obstacles/gate.object.yaml", "",
+                 LibraryKind::object),
+        entry_of("Caf\xc3\xa9 2", "Tab\there", "obstacles/box.object.yaml", "", LibraryKind::object),
+        // Every byte comes back: control bytes, a NUL, a CR and LF, a
+        // backslash, DEL, and bytes that are not UTF-8.
+        entry_of(std::string(kOddBytes, sizeof(kOddBytes) - 1), "\xff\xfe not UTF-8", "obstacles/odd.object.yaml", "",
+                 LibraryKind::object),
+    };
+    const std::string text = round_trip(library);
+    EXPECT_NE(text.find("\nlibrary_version: 1\n"), std::string::npos) << text;
+    EXPECT_NE(text.find("entries:\n"
+                        "  - name: \"Reference quad\"\n"
+                        "    category: \"Drones\"\n"
+                        "    file: \"drones/reference_quad.model.yaml\"\n"
+                        "    thumbnail: \"thumbnails/reference_quad.png\"\n"
+                        "  - name: "),
+              std::string::npos)
+        << text;
+    // A thumbnail only where the entry has one; dir is not the text's.
+    EXPECT_EQ(count_of(text, "thumbnail:"), 1u) << text;
+    EXPECT_EQ(text.find("somewhere"), std::string::npos) << text;
+    EXPECT_EQ(text.find('\r'), std::string::npos) << "LF only, as the scene's files";
+}
+
+TEST(LibraryText, APartEntryWritesVersion2AndNoEntriesWritesAnEmptySequence) {
+    Library library;
+    library.entries = {
+        entry_of("Quad", "Drones", "drones/quad.model.yaml", "", LibraryKind::model),
+        entry_of("Motor", "Motors", "parts/m.motor.yaml", "thumbnails/m.png", LibraryKind::motor),
+        entry_of("Prop", "Props", "parts/p.prop.yaml", "", LibraryKind::prop),
+        entry_of("ESC", "ESCs", "parts/e.esc.yaml", "", LibraryKind::esc),
+        entry_of("Pack", "Batteries", "parts/b.battery.yaml", "", LibraryKind::battery),
+    };
+    EXPECT_NE(round_trip(library).find("\nlibrary_version: 2\n"), std::string::npos);
+
+    // The lowest version that holds the entries: without the parts, 1.
+    library.entries.resize(1);
+    EXPECT_NE(round_trip(library).find("\nlibrary_version: 1\n"), std::string::npos);
+
+    // No entries is an empty sequence, which reads back as none.
+    const std::string none = round_trip(Library{});
+    EXPECT_NE(none.find("\nentries: []\n"), std::string::npos) << none;
+}
+
+TEST(LibraryText, TheCommittedIndexReadsBackEqual) {
+    const spade::Result<Library> committed = spade::scene::load_library(library_dir() / "library.yaml");
+    ASSERT_OK(committed);
+    ASSERT_FALSE(committed->entries.empty());
+    (void)round_trip(*committed);
+}
+
+TEST(LibraryText, WhatTheReaderWouldRefuseIsRefusedByName) {
+    Library empty_name = two_objects();
+    empty_name.entries[0].name.clear();
+    expect_write_refused(empty_name, "entries[0].name must not be empty");
+
+    Library twin = two_objects();
+    twin.entries[1].name = "BOX";
+    expect_write_refused(twin, "entries[1].name 'BOX' is entries[0]'s name 'Box' ignoring case");
+
+    Library outside = two_objects();
+    outside.entries[0].file = "../box.object.yaml";
+    expect_write_refused(outside, "entries[0].file '../box.object.yaml' must not have a '..' segment");
+
+    Library unknown = two_objects();
+    unknown.entries[0].file = "obstacles/box.yaml";
+    expect_write_refused(unknown, "entries[0].file 'obstacles/box.yaml' must end in");
+
+    Library backslash = two_objects();
+    backslash.entries[1].thumbnail = "thumbnails\\gate.png";
+    expect_write_refused(backslash, "entries[1].thumbnail 'thumbnails\\gate.png' must use forward slashes");
+
+    // A kind that is not its file's would read back as the file's.
+    Library wrong_kind = two_objects();
+    wrong_kind.entries[0].kind = LibraryKind::model;
+    expect_write_refused(wrong_kind,
+                         "entries[0].kind is a model, but its file 'obstacles/box.object.yaml' makes it an object");
+    Library part_named_model = two_objects();
+    part_named_model.entries[1].kind = LibraryKind::prop;
+    expect_write_refused(part_named_model,
+                         "entries[1].kind is a prop part, but its file 'obstacles/gate.object.yaml' makes it an "
+                         "object");
+    Library part_file_as_object = two_objects();
+    part_file_as_object.entries[0].file = "parts/m.motor.yaml";
+    expect_write_refused(part_file_as_object,
+                         "entries[0].kind is an object, but its file 'parts/m.motor.yaml' makes it a motor part");
 }
 
 // ===========================================================================
@@ -908,7 +1154,7 @@ TEST(LibraryIndex, TheCommittedIndexIsTheTablesEntriesInOrderAndEveryOneLoads) {
         EXPECT_EQ(e.category, expected[i].category);
         EXPECT_EQ(e.file, expected[i].file);
         EXPECT_EQ(e.kind, expected[i].kind);
-        EXPECT_TRUE(e.thumbnail.empty()) << "thumbnails come later, rendered by Rendering";
+        EXPECT_FALSE(e.thumbnail.empty()) << "N14b: every entry has its thumbnail";
     }
     EXPECT_OK(spade::scene::check_library_contents(*library));
 

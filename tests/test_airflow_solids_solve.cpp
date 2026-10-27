@@ -1,6 +1,7 @@
 // The pressure solve with solids (the solids design, section 3; spec 1.5 as
-// amended 2026-10-13): face weights, their coarse means, the symmetric
-// V-cycle, CG, and the fluid regions (P2 Tasks 3-5).
+// amended 2026-10-13): face weights, their coarse weights (the plane means
+// in series since P2c), the symmetric V-cycle, CG, and the fluid regions (P2
+// Tasks 3-5).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -93,28 +94,75 @@ TEST(AirflowSolidsSolve, AClosedFaceDecouplesItsCells) {
     for (const float v : out) EXPECT_EQ(v, 0.0f);
 }
 
-// A coarse face's weight is the mean of the fine faces on its plane that it
-// covers: 2 x 2 of them.
-TEST(AirflowSolidsSolve, CoarseWeightsAreTheMeanOfTheFacesTheyCover) {
-    Multigrid mg = make_multigrid(8, 8, 8);
-    std::array<std::vector<float>, 3> fine = ones(8, 8, 8);
+// THE COARSE FACE RULE (multigrid.cpp, coarsen_weights(); P2c, the lead's
+// order, 2026-10-21): on each fine plane that the path from coarse centre to
+// coarse centre crosses, the mean of the 2 x 2 faces the coarse face covers;
+// along the normal, those means in series, 2 / (0.5 / lo + 1 / own + 0.5 /
+// hi), with lo and hi the planes inside the coarse cells either side. The
+// helpers below follow coarsen_weights()' order of operations, so the checks
+// are exact. Each of the four tests names its mutation; run once
+// (2026-10-21, set_weights() on the own plane's mean): all four fail.
+
+// The mean of the 2 x 2 x faces on fine plane i under coarse face (J, K) of a
+// grid nx cells long and ny wide, the second transverse axis outer.
+[[nodiscard]] float plane_mean_x(const std::vector<float>& u, uint32_t nx, uint32_t ny, uint32_t i, uint32_t J,
+                                 uint32_t K) {
+    const auto f = [&](uint32_t j, uint32_t k) { return u[i + (nx + 1u) * (j + ny * k)]; };
+    float sum = 0.0f;
+    sum += f(2u * J, 2u * K);
+    sum += f(2u * J + 1u, 2u * K);
+    sum += f(2u * J, 2u * K + 1u);
+    sum += f(2u * J + 1u, 2u * K + 1u);
+    return sum * 0.25f;
+}
+
+// The series of three plane means; any closed plane closes it.
+[[nodiscard]] float series3(float lo, float own, float hi) {
+    if (lo == 0.0f || own == 0.0f || hi == 0.0f) return 0.0f;
+    return 2.0f / ((0.5f / lo + 1.0f / own) + 0.5f / hi);
+}
+
+// The fine weights (q * 7 + c) mod 5 quarters: 0 to 1, a fifth of them closed.
+[[nodiscard]] std::array<std::vector<float>, 3> quarters(uint32_t nx, uint32_t ny, uint32_t nz) {
+    std::array<std::vector<float>, 3> fine = ones(nx, ny, nz);
     for (uint32_t c = 0; c < 3; ++c) {
         for (std::size_t q = 0; q < fine[c].size(); ++q) fine[c][q] = static_cast<float>((q * 7u + c) % 5u) * 0.25f;
     }
+    return fine;
+}
+
+// Every interior coarse face is the series of the three plane means; a domain
+// face keeps its own plane's mean. No coarse weight leaves [0, 1]. Mutation:
+// the own plane's mean everywhere (the rule before P2c), which moves most of
+// the interior faces here.
+TEST(AirflowSolidsSolve, CoarseWeightsAreTheSeriesOfThePlaneMeansTheyCross) {
+    Multigrid mg = make_multigrid(8, 8, 8);
+    const std::array<std::vector<float>, 3> fine = quarters(8, 8, 8);
     set_weights(mg, {fine[0], fine[1], fine[2]});
     ASSERT_GE(mg.levels.size(), 2u);
     const PoissonLevel& coarse = mg.levels[1];
     ASSERT_EQ(coarse.w[0].size(), std::size_t{5} * 4 * 4);
+    uint32_t moved = 0;
     for (uint32_t K = 0; K < 4; ++K) {
         for (uint32_t J = 0; J < 4; ++J) {
             for (uint32_t I = 0; I <= 4; ++I) {
-                const auto f = [&](uint32_t i, uint32_t j, uint32_t k) { return fine[0][i + 9u * (j + 8u * k)]; };
-                float sum = 0.0f;
-                sum += f(2u * I, 2u * J, 2u * K);
-                sum += f(2u * I, 2u * J + 1u, 2u * K);
-                sum += f(2u * I, 2u * J, 2u * K + 1u);
-                sum += f(2u * I, 2u * J + 1u, 2u * K + 1u);
-                EXPECT_EQ(coarse.w[0][I + 5u * (J + 4u * K)], sum * 0.25f) << I << "," << J << "," << K;
+                const float own = plane_mean_x(fine[0], 8, 8, 2u * I, J, K);
+                const bool domain = I == 0u || I == 4u;
+                const float expected =
+                    domain ? own
+                           : series3(plane_mean_x(fine[0], 8, 8, 2u * I - 1u, J, K), own,
+                                     plane_mean_x(fine[0], 8, 8, 2u * I + 1u, J, K));
+                EXPECT_EQ(coarse.w[0][I + 5u * (J + 4u * K)], expected) << I << "," << J << "," << K;
+                if (expected != own) ++moved;
+            }
+        }
+    }
+    EXPECT_GT(moved, 24u) << "most interior faces differ from their own plane's mean";
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        for (const std::vector<float>& w : mg.levels[l].w) {
+            for (const float x : w) {
+                EXPECT_GE(x, 0.0f);
+                EXPECT_LE(x, 1.0f);
             }
         }
     }
@@ -122,11 +170,62 @@ TEST(AirflowSolidsSolve, CoarseWeightsAreTheMeanOfTheFacesTheyCover) {
     for (const PoissonLevel& L : mg.levels) EXPECT_TRUE(L.w[0].empty());
 }
 
+// A periodic axis wraps: coarse face 0 reads fine planes 7, 0 and 1, and face
+// 4, which mirrors it, gives the same bits. Mutation: no wrap (face 0 a domain
+// face, its own plane's mean).
+TEST(AirflowSolidsSolve, APeriodicCoarseFaceWrapsAndKeepsItsMirror) {
+    Multigrid mg = make_multigrid(8, 8, 8, {true, false, false});
+    std::array<std::vector<float>, 3> fine = quarters(8, 8, 8);
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 8; ++j) fine[0][8u + 9u * (j + 8u * k)] = fine[0][9u * (j + 8u * k)];
+    }
+    set_weights(mg, {fine[0], fine[1], fine[2]});
+    const PoissonLevel& coarse = mg.levels[1];
+    uint32_t moved = 0;
+    for (uint32_t K = 0; K < 4; ++K) {
+        for (uint32_t J = 0; J < 4; ++J) {
+            const float own = plane_mean_x(fine[0], 8, 8, 0, J, K);
+            const float expected = series3(plane_mean_x(fine[0], 8, 8, 7, J, K), own,
+                                           plane_mean_x(fine[0], 8, 8, 1, J, K));
+            EXPECT_EQ(coarse.w[0][5u * (J + 4u * K)], expected) << J << "," << K;
+            EXPECT_EQ(coarse.w[0][4u + 5u * (J + 4u * K)], coarse.w[0][5u * (J + 4u * K)]) << J << "," << K;
+            if (expected != own) ++moved;
+        }
+    }
+    EXPECT_GT(moved, 0u);
+}
+
+// An odd axis (15 cells: 8 coarse, the last covering fine cell 14 alone): the
+// face before the partial cell has no plane inside it, so its series drops
+// that half, 1.5 / (0.5 / lo + 1 / own); the last face is the domain's and
+// keeps its own plane's mean.
+TEST(AirflowSolidsSolve, AnOddAxissPartialCellDropsItsMissingPlane) {
+    Multigrid mg = make_multigrid(15, 16, 16);
+    ASSERT_GE(mg.levels.size(), 2u);
+    const PoissonLevel& coarse = mg.levels[1];
+    ASSERT_EQ(coarse.nx, 8u);
+    ASSERT_EQ(coarse.ny, 8u);
+    const std::array<std::vector<float>, 3> fine = quarters(15, 16, 16);
+    set_weights(mg, {fine[0], fine[1], fine[2]});
+    const auto mean = [&](uint32_t i, uint32_t J, uint32_t K) { return plane_mean_x(fine[0], 15, 16, i, J, K); };
+    for (uint32_t K = 0; K < 8; ++K) {
+        for (uint32_t J = 0; J < 8; ++J) {
+            const auto w = [&](uint32_t I) { return coarse.w[0][I + 9u * (J + 8u * K)]; };
+            EXPECT_EQ(w(6), series3(mean(11, J, K), mean(12, J, K), mean(13, J, K))) << J << "," << K;
+            const float lo = mean(13, J, K);
+            const float own = mean(14, J, K);
+            EXPECT_EQ(w(7), lo == 0.0f || own == 0.0f ? 0.0f : 1.5f / (0.5f / lo + 1.0f / own)) << J << "," << K;
+            EXPECT_EQ(w(8), mean(15, J, K)) << J << "," << K;
+        }
+    }
+}
+
 // --- The symmetric V-cycle and CG (P2 Task 4) -------------------------------
 
 // S3's channel: 32 x 8 x 8 cells, every axis periodic, dx 1, and a sheet
 // 0.25 dx thick across the whole section, its mid-plane on fine face plane
-// `plane` (16: every level sees it; 17: no coarse level does).
+// `plane` (16: on a face plane of every level; 17: on none, and seen by every
+// level through the coarse faces' series since P2c).
 [[nodiscard]] std::array<std::vector<float>, 3> sheet_weights(uint32_t plane) {
     const GridShape shape{32, 8, 8, 1.0f};
     airflow_test::Scene scene;
@@ -150,6 +249,37 @@ TEST(AirflowSolidsSolve, CoarseWeightsAreTheMeanOfTheFacesTheyCover) {
     const std::array<std::vector<float>, 3> w = sheet_weights(plane);
     set_weights(mg, {w[0], w[1], w[2]});
     return mg;
+}
+
+// Finding 2 (the lead's): S3's sheet on fine plane 17, which no coarse face's
+// own plane holds, now reaches every coarse level. The coarse cell holding it
+// (fine cells 16 and 17) is closed off on both sides: level 1's faces on fine
+// planes 16 and 18, and level 2's on level 1's planes 8 and 10, are 0 across
+// the whole section, while the faces beyond them stay open. Mutation: the own
+// plane's mean, which left every coarse face open (measured: 1).
+TEST(AirflowSolidsSolve, ASheetOnAnOddPlaneReachesEveryCoarseLevel) {
+    const Multigrid mg = sheet_multigrid(17);
+    ASSERT_EQ(mg.levels.size(), 3u);
+    const PoissonLevel& l1 = mg.levels[1];  // 16 x 4 x 4
+    const PoissonLevel& l2 = mg.levels[2];  // 8 x 2 x 2
+    for (uint32_t K = 0; K < 4; ++K) {
+        for (uint32_t J = 0; J < 4; ++J) {
+            const auto w = [&](uint32_t I) { return l1.w[0][I + 17u * (J + 4u * K)]; };
+            EXPECT_EQ(w(8), 0.0f) << J << "," << K;
+            EXPECT_EQ(w(9), 0.0f) << J << "," << K;
+            EXPECT_GT(w(7), 0.0f) << J << "," << K;
+            EXPECT_GT(w(10), 0.0f) << J << "," << K;
+        }
+    }
+    for (uint32_t K = 0; K < 2; ++K) {
+        for (uint32_t J = 0; J < 2; ++J) {
+            const auto w = [&](uint32_t I) { return l2.w[0][I + 9u * (J + 2u * K)]; };
+            EXPECT_EQ(w(4), 0.0f) << J << "," << K;
+            EXPECT_EQ(w(5), 0.0f) << J << "," << K;
+            EXPECT_GT(w(3), 0.0f) << J << "," << K;
+            EXPECT_GT(w(6), 0.0f) << J << "," << K;
+        }
+    }
 }
 
 void remove_mean_gauge(void* ctx, std::span<float> cells) noexcept {
@@ -225,6 +355,41 @@ TEST(AirflowSolidsSolve, ASheetOnEitherParityConvergesInEightIterations) {
     }
 }
 
+// The stall rule (P2d, pcg.hpp): the same solve on the odd plane with a mark
+// below fp32's floor (1e-9). The true residual stops near the floor measured
+// above, the solve starts again once from it, stalls again and stops there,
+// stalled, inside its cap, at fp32's floor, below the announcement's mark.
+// It returns the x that measured least, an earlier one than its last
+// (measured 2026-10-22: 1.53e-5 on the 9th of 17; its last 2.29e-5), and
+// the residual recomputed here from that x is the one reported. Mutations:
+// the stall rule off, which runs it to the cap; the last x returned (17 of
+// 17); the least's residual returned with the last x.
+TEST(AirflowSolidsSolve, AMarkBelowFp32sFloorStallsInsideTheCap) {
+    Multigrid mg = sheet_multigrid(17);
+    PcgScratch s = make_pcg_scratch(32u * 8u * 8u);
+    s.b = blocked_flow_rhs(sheet_weights(17));
+    const PcgResult res = solve_pcg_to(mg, s, kSolidsCgIterations, kSolidsCgCap, 1.0e-9f,
+                                       PcgGauge{&remove_mean_gauge, nullptr, nullptr});
+    std::printf("a mark of 1e-9: %.3e after %u iterations (measured on %u), %s\n", static_cast<double>(res.residual),
+                res.iterations, res.residual_at, res.stalled ? "stalled" : "not stalled");
+    EXPECT_TRUE(res.stalled);
+    EXPECT_GT(res.residual, 1.0e-9f);
+    EXPECT_LE(res.residual, kResidualAnnounce);
+    EXPECT_GE(res.iterations, kSolidsCgIterations + 2u * kStallIterations) << "two stalls: the restart's and the stop's";
+    EXPECT_LT(res.iterations, kSolidsCgCap);
+    EXPECT_GE(res.residual_at, kSolidsCgIterations);
+    EXPECT_LT(res.residual_at, res.iterations) << "the least was an earlier x than the last";
+    std::vector<float> ax(s.x.size());
+    apply_operator(mg.levels[0], s.x, ax);
+    float r_max = 0.0f;
+    float b_max = 0.0f;
+    for (std::size_t i = 0; i < ax.size(); ++i) {
+        r_max = std::max(r_max, std::fabs(s.b[i] - ax[i]));
+        b_max = std::max(b_max, std::fabs(s.b[i]));
+    }
+    EXPECT_EQ(res.residual, r_max / b_max) << "the residual is the returned x's";
+}
+
 TEST(AirflowSolidsSolve, TheFixedTileDotIsTheTileSumOfProducts) {
     std::vector<float> a(9u * 7u * 5u);
     std::vector<float> b(a.size());
@@ -297,6 +462,87 @@ TEST(AirflowRegions, EachClosedRegionLosesItsOwnMean) {
     // fp32 rounding of a few hundred values of order 4: about 3e-7.
     EXPECT_NEAR(mean[0] / r.cells[0], 0.0, 1.0e-5);
     EXPECT_NEAR(mean[1] / r.cells[1], 0.0, 1.0e-5);
+}
+
+// B5.1's two-level order per region (regions.hpp), spelled out here: a
+// 61x45x43 box (2112 tiles: 8 blocks of 256 and 64 more, ragged tiles on
+// every far edge) cut by a sheet on face plane x = 21 into two closed
+// regions, so the tiles at ti = 5 hold both. Each region's sum is its cells'
+// tile partials from 0 in (k, j, i), each block's partials of it from 0 in
+// tile order, and its block sums from 0 in block order; the means and x after
+// remove_region_means() are those bits. Mutation: B1's order (each region's
+// tile partials in one chain).
+TEST(AirflowRegions, EachRegionSumsItsTilesInBlocksOf256) {
+    const GridShape shape{61, 45, 43, 1.0f};
+    airflow_test::Scene scene;
+    scene.shapes.push_back(airflow_test::Shape{.name = "divider", .kind = airflow_test::Kind::box,
+                                               .centre = {21.0f, 22.5f, 21.5f}, .half = {0.125f, 40.0f, 40.0f},
+                                               .min_feature = 0.25f});
+    SolidField f = *make_solid_field(shape);
+    std::vector<SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(0.25f, 45.0f, 43.0f);
+    ASSERT_TRUE(build_solids(f, shape, {}, parts, scene.sampler()).has_value());
+    FluidRegions r;
+    label_regions(r, shape, {}, f);
+    ASSERT_EQ(r.count, 2u);
+    ASSERT_EQ(r.cells[0], 21u * 45u * 43u);
+    ASSERT_EQ(r.cells[1], 40u * 45u * 43u);
+    ASSERT_EQ(check_regions(r, shape, walls(), f).region, kNoRegion);
+
+    std::vector<float> x(std::size_t{shape.nx} * shape.ny * shape.nz);
+    Lcg rng;
+    for (std::size_t c = 0; c < x.size(); ++c) x[c] = 1000.0f * rng.next() + (r.label[c] == 0u ? 3000.0f : -1000.0f);
+
+    // The definition.
+    std::array<float, 2> sum{};
+    std::array<float, 2> chain{};  // B1's order
+    std::array<float, 2> block{};
+    std::array<bool, 2> block_met{};
+    std::size_t tiles = 0;
+    for (uint32_t tk = 0; tk < shape.nz; tk += 4u) {
+        for (uint32_t tj = 0; tj < shape.ny; tj += 4u) {
+            for (uint32_t ti = 0; ti < shape.nx; ti += 4u) {
+                std::array<float, 2> tile{};
+                std::array<bool, 2> met{};
+                for (uint32_t k = tk; k < std::min(tk + 4u, shape.nz); ++k) {
+                    for (uint32_t j = tj; j < std::min(tj + 4u, shape.ny); ++j) {
+                        for (uint32_t i = ti; i < std::min(ti + 4u, shape.nx); ++i) {
+                            const std::size_t c = cell_index(shape, i, j, k);
+                            tile[r.label[c]] += x[c];
+                            met[r.label[c]] = true;
+                        }
+                    }
+                }
+                for (std::size_t id = 0; id < 2; ++id) {
+                    if (!met[id]) continue;
+                    block[id] += tile[id];
+                    block_met[id] = true;
+                    chain[id] += tile[id];
+                }
+                if (++tiles % 256u == 0u || (tk + 4u >= shape.nz && tj + 4u >= shape.ny && ti + 4u >= shape.nx)) {
+                    for (std::size_t id = 0; id < 2; ++id) {
+                        if (block_met[id]) sum[id] += block[id];
+                        block[id] = 0.0f;
+                        block_met[id] = false;
+                    }
+                }
+            }
+        }
+    }
+    ASSERT_EQ(tiles, 2112u);
+    std::array<float, 2> mean{};
+    std::vector<float> expected = x;
+    for (std::size_t id = 0; id < 2; ++id) {
+        const auto inv = static_cast<float>(1.0 / static_cast<double>(r.cells[id]));
+        mean[id] = sum[id] * inv;
+        EXPECT_NE(mean[id], chain[id] * inv) << "region " << id << ": the data does not tell the orders apart";
+    }
+    for (std::size_t c = 0; c < x.size(); ++c) expected[c] -= mean[r.label[c]];
+
+    remove_region_means(x, r, shape);
+    EXPECT_EQ(r.total[0], mean[0]);
+    EXPECT_EQ(r.total[1], mean[1]);
+    EXPECT_TRUE(same_bits(x, expected));
 }
 
 // Design test 5's region refusal: the -x wall moves in at 1 m/s and the +x

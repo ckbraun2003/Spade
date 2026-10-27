@@ -102,6 +102,65 @@ TEST(UiConventions, StyleIsSetOnlyInTheTheme) {
     EXPECT_TRUE(fs::exists(sandbox_dir() / "ui_theme.hpp"));
 }
 
+// A property table's cells draw their text through ui_theme.hpp's
+// cell_text() (and value_row(), which uses it), which elides with an
+// ellipsis at the cell's edge, so no cell's text runs past its panel (the
+// lead, 2026-10-22, after the part inspector's values ran off it). A raw
+// text call between begin_properties() or begin_graded_properties() and
+// end_properties() would draw past it.
+TEST(UiConventions, APropertyTablesCellsDrawTextOnlyThroughCellText) {
+    const std::vector<std::string_view> raw = {"ImGui::Text(",        "ImGui::TextUnformatted(", "ImGui::TextDisabled(",
+                                               "ImGui::TextWrapped(", "ImGui::LabelText(",       "ImGui::BulletText("};
+    std::vector<Hit> hits;
+    std::size_t tables = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(sandbox_dir())) {
+        const fs::path& p = entry.path();
+        if (!entry.is_regular_file() || (p.extension() != ".cpp" && p.extension() != ".hpp")) continue;
+        const std::string name = p.filename().string();
+        if (name == "ui_theme.hpp") continue;  // the helpers themselves
+        std::ifstream in(p);
+        std::string line;
+        std::size_t number = 0;
+        bool in_block_comment = false;
+        int depth = 0;
+        while (std::getline(in, line)) {
+            ++number;
+            std::string code;
+            for (std::size_t i = 0; i < line.size(); ++i) {
+                if (in_block_comment) {
+                    if (line.compare(i, 2, "*/") == 0) {
+                        in_block_comment = false;
+                        ++i;
+                    }
+                    continue;
+                }
+                if (line.compare(i, 2, "//") == 0) break;
+                if (line.compare(i, 2, "/*") == 0) {
+                    in_block_comment = true;
+                    ++i;
+                    continue;
+                }
+                code += line[i];
+            }
+            if (code.find("ui::begin_properties(") != std::string::npos ||
+                code.find("ui::begin_graded_properties(") != std::string::npos) {
+                ++depth;
+                ++tables;
+            }
+            if (depth > 0) {
+                for (const std::string_view call : raw) {
+                    if (code.find(call) != std::string::npos) {
+                        hits.push_back({name + ":" + std::to_string(number), std::string(call)});
+                    }
+                }
+            }
+            if (code.find("ui::end_properties()") != std::string::npos && depth > 0) --depth;
+        }
+    }
+    EXPECT_GT(tables, 5u) << "the scan found too few property tables under " << sandbox_dir();
+    EXPECT_TRUE(hits.empty()) << "raw text in a property table's cells (use ui::cell_text()):" << list(hits);
+}
+
 // The UI font (§13, the lead's conditions of 2026-10-06): OFL or Apache-2.0,
 // its licence vendored beside it, one regular and one semibold weight.
 TEST(UiConventions, TheUiFontShipsWithItsLicence) {

@@ -45,6 +45,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "core/path_text.hpp"
 #include "editor_library.hpp"
 #include "editor_model_params.hpp"
 #include "editor_scene_edits.hpp"
@@ -683,6 +684,16 @@ inline Result<void> put_edit(Writer& w, const AddVehicle& e) {
 
 // ---- the other scene edits ----
 
+inline Result<void> put_edit(Writer& w, const AddAirflowRegion& e) {
+    w.kw("add-air-region").word(e.vehicle);
+    return {};
+}
+
+inline Result<void> put_edit(Writer& w, const RemoveAirflowRegion& e) {
+    w.kw("remove-air-region").word(e.name);
+    return {};
+}
+
 inline Result<void> put_edit(Writer& w, const RemoveObject& e) {
     w.kw("remove").word(e.name);
     return {};
@@ -722,6 +733,16 @@ inline Result<void> put_edit(Writer& w, const AddMaterial& e) {
     put(w, e.material);
     return {};
 }
+inline Result<void> put_edit(Writer& w, const AddModelFile& e) {
+    w.kw("add-model-file").word(e.file).word(e.vehicle.name);
+    put(w, e.vehicle.start);
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const AddObjectFile& e) {
+    w.kw("add-object-file").word(e.file).word(e.name);
+    put(w, e.pose);
+    return {};
+}
 inline Result<void> put_edit(Writer& w, const RepointWorld& e) {
     w.kw("repoint-world").word(e.file).hex(e.hash);
     return {};
@@ -740,6 +761,17 @@ inline Result<void> put_edit(Writer& w, const SetModelParam& e) {
     }
     w.kw("set-model-param").word(e.vehicle).kw(element_word(e.element)).u(e.index).kw(e.field);
     put_value(w, e.value);
+    return {};
+}
+
+inline Result<void> put_edit(Writer& w, const AddMeshParts& e) {
+    w.kw("add-mesh-parts").word(e.vehicle).u(e.meshes.size());
+    for (const ImportedMesh& m : e.meshes) w.word(m.name).word(m.ref).word(path_text(m.sidecar));
+    return {};
+}
+inline Result<void> put_edit(Writer& w, const SetImportedPart& e) {
+    w.kw("set-imported-part").word(e.vehicle).word(e.part).kw(e.visual_only ? "visual-only" : "solid");
+    w.kw("min-feature").f(e.min_feature).kw("rot").q(e.mount_orient);
     return {};
 }
 
@@ -857,8 +889,9 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 }
 
 inline constexpr std::string_view kSceneVerbs =
-    "a scene edit (add-asset, add-vehicle, remove, rename, duplicate, move, set-asset-pose, set-asset-material, "
-    "set-collider-material, set-vehicle-start, add-material, repoint-world or set-model-param)";
+    "a scene edit (add-asset, add-vehicle, add-model-file, add-object-file, remove, rename, duplicate, move, "
+    "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world, "
+    "set-model-param, add-mesh-parts, set-imported-part, add-air-region or remove-air-region)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -875,8 +908,24 @@ inline constexpr std::string_view kWorldVerbs =
         out = text::get_add_asset(r);
     } else if (verb == "add-vehicle") {
         out = text::get_add_vehicle(r);
+    } else if (verb == "add-model-file") {
+        AddModelFile e;
+        e.file = r.word("a model file path");
+        e.vehicle.name = r.word("a vehicle name");
+        e.vehicle.start = text::get_start(r);
+        out = e;
+    } else if (verb == "add-object-file") {
+        AddObjectFile e;
+        e.file = r.word("an object file path");
+        e.name = r.word("an asset name");
+        e.pose = text::get_pose(r);
+        out = e;
     } else if (verb == "remove") {
         out = RemoveObject{r.word("an asset or vehicle name")};
+    } else if (verb == "add-air-region") {
+        out = AddAirflowRegion{r.word("a vehicle name")};
+    } else if (verb == "remove-air-region") {
+        out = RemoveAirflowRegion{r.word("an airflow region name")};
     } else if (verb == "rename") {
         RenameObject e;
         e.from = r.word("an asset or vehicle name");
@@ -928,6 +977,34 @@ inline constexpr std::string_view kWorldVerbs =
             r.reject("a parameter of " + std::string(text::element_word(e.element)) +
                      " in the inspector's table (model_params())");
         }
+        out = e;
+    } else if (verb == "add-mesh-parts") {
+        AddMeshParts e;
+        e.vehicle = r.word("a vehicle name");
+        const std::size_t n = r.count("a count of meshes");
+        for (std::size_t i = 0; i < n && r.ok(); ++i) {
+            ImportedMesh m;
+            m.name = r.word("a part name");
+            m.ref = r.word("its mesh ref");
+            const std::string sidecar = r.word("its sidecar's path");
+            m.sidecar = std::filesystem::path(std::u8string(sidecar.begin(), sidecar.end()));
+            e.meshes.push_back(std::move(m));
+        }
+        out = e;
+    } else if (verb == "set-imported-part") {
+        SetImportedPart e;
+        e.vehicle = r.word("a vehicle name");
+        e.part = r.word("a part name");
+        const std::string kind = r.word("visual-only or solid");
+        if (kind == "visual-only") {
+            e.visual_only = true;
+        } else if (kind != "solid") {
+            r.reject("visual-only or solid");
+        }
+        r.expect("min-feature");
+        e.min_feature = r.f("its min_feature (m)");
+        r.expect("rot");
+        e.mount_orient = r.q("its mount's turn (w x y z)");
         out = e;
     } else {
         r.reject(text::kSceneVerbs);

@@ -13,7 +13,9 @@
 #include "screen_ray.hpp"   // ray_from_screen()
 #include "unit_meshes.hpp"  // the unit meshes
 #include "drone_view.hpp"     // detail::lambert()
+#include "editor_airflow.hpp"
 #include "editor_pick.hpp"
+#include "pilot_keys.hpp"
 #include "gl_target_sink.hpp"
 #include "render/mesh_resolver.hpp"
 #include "render_gap.hpp"
@@ -70,7 +72,7 @@ void EditorSession::attach(GlTargetSink& sink) {
 EditorSession::~EditorSession() {
     if (sink_ != nullptr) {
         sink_->attach_editor(nullptr);
-        sink_->set_gap_line({});
+        sink_->set_status_line({});
         sink_->set_view_lines({});
     }
 }
@@ -119,10 +121,12 @@ render::ViewInputs EditorSession::view_inputs() {
 // vehicles and the selection draw with. Only when the composition changed.
 Result<void> EditorSession::rebuild_scene() {
     // N11: the world's meshes, from the scene's folder first, then the
-    // library's. A ref that resolves nowhere draws as the resolver's magenta
-    // stand-in and is named in the status; Save copies the library's beside
-    // the scene.
+    // imports staged this session (N15, D1), then the library's. A ref that
+    // resolves nowhere draws as the resolver's magenta stand-in and is named
+    // in the status; Save copies the staged and the library's beside the
+    // scene.
     std::vector<std::filesystem::path> roots{workspace_->documents().scene.path.parent_path()};
+    if (!workspace_->import_staging().empty()) roots.push_back(workspace_->import_staging());
     if (!workspace_->assets_dir().empty()) roots.push_back(workspace_->assets_dir() / "library" / "meshes");
     const render::ResolvedMeshes meshes = render::resolve_meshes(workspace_->composed().world, roots);
     workspace_->set_fallback_meshes(meshes.from_fallback);
@@ -292,6 +296,19 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         }
     }
 
+    // The pilot's keys (N17), every frame: none while ImGui has the keyboard,
+    // so a released arrow levels the drone.
+    flight::PilotKeys keys;
+    if (!in.ui_captured_keyboard) {
+        keys.arm_pressed = in.arm_pressed;
+        keys.throttle = in.throttle;
+        keys.pitch = in.attitude_pitch;
+        keys.roll = in.attitude_roll;
+        keys.yaw = in.attitude_yaw;
+        keys.level_pressed = in.level_pressed;
+    }
+    w.pilot_keys(keys, dt);
+
     const auto p0 = std::chrono::steady_clock::now();
     w.advance(dt);
     const float physics_ms = ms_since(p0);
@@ -332,11 +349,18 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     // The gizmo, on the selection where it is now (after this frame's edits).
     const std::optional<editor::GizmoPose> target = gizmo_target();
     const editor::GizmoHandle shown = drag_ ? drag_->handle() : hot_;
-    sink_->set_view_lines(target ? editor::gizmo_lines(w.panels().tool, rc, view.width, view.height, target->position,
-                                                       shown)
-                                 : std::vector<editor::GizmoLine>{});
+    std::vector<editor::GizmoLine> lines =
+        target ? editor::gizmo_lines(w.panels().tool, rc, view.width, view.height, target->position, shown)
+               : std::vector<editor::GizmoLine>{};
+    // Each airflow region's box around its drone (INT-15, T1).
+    if (w.panels().scene != nullptr) {
+        const std::vector<editor::GizmoLine> boxes =
+            editor::region_box_lines(*w.panels().scene, rc, view.width, view.height);
+        lines.insert(lines.begin(), boxes.begin(), boxes.end());
+    }
+    sink_->set_view_lines(std::move(lines));
     // SL10: the HUD names what the active path does not draw.
-    sink_->set_gap_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
+    sink_->set_status_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
     if (gpu_) {
         for (const std::string_view name : GpuRenderer::unhonoured(options_)) {
             if (!last_view_.unhonoured.empty()) last_view_.unhonoured += ", ";

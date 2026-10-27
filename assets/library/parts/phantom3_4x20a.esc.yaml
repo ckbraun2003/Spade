@@ -1,0 +1,20 @@
+part_version: 1
+esc:
+  current_continuous: 20
+  current_burst: 25
+  current_total: 0
+  channels: 4
+  on_resistance: 0.006
+  braking: true
+  protocol: "PWM"
+  mass: 0.028
+  shape: {kind: box, size: [0.04, 0.008, 0.04]}
+sources:
+  current_continuous: {grade: assumed, note: "four 20 A ESCs; covers 15 A"}
+  current_burst: {grade: assumed, note: "four 20 A ESCs; covers 15 A"}
+  current_total: {grade: assumed, note: "no board total (0)"}
+  channels: {grade: assumed, note: "four boards as one block"}
+  on_resistance: {grade: assumed, note: "typical 20 A ESC"}
+  braking: {grade: assumed, note: "synchronous-rectified drive"}
+  mass: {grade: assumed, note: "four x ~7 g"}
+  shape: {grade: assumed, note: "the four as one block"}

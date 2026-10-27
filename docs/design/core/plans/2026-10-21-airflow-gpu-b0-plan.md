@@ -39,7 +39,7 @@
 | 3 | `airflow_w` | R | |
 | 4 | `airflow_pressure` | R | the warm start, also the finest multigrid level's p |
 | 5 | `airflow_next` | D | advection's output u, v, w, packed; the CPU swaps it in |
-| 6 | `airflow_advect` | D | MacCormack's hat, lo and hi over all faces, packed |
+| 6 | `airflow_advect` | S | MacCormack's hat, lo and hi over all faces, packed. Also B6's fp32 publish scratch, which P8 reads back, so it is staged (Physics, 2026-10-21; B1's `kAirflowSetBuffers` lists it so, with static_asserts tying that table to the generated bindings) |
 | 7 | `airflow_increments` | D | du, dv, dw, packed: the sources' increments, the actuator's force included |
 | 8 | `airflow_viscous_rhs` | D | the viscous solve's right side |
 | 9 | `airflow_rhs` | D | the projection's divergence, the finest level's b |

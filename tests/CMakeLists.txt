@@ -55,6 +55,8 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_fp32_exact.cpp
+    test_spirv_scan_estimates.cpp
     test_core_fp16.cpp
     test_core_flow_volume.cpp
     test_core_lambda2.cpp
@@ -67,6 +69,7 @@ add_executable(spade_tests
     test_mesh.cpp
     test_mesh_field.cpp
     test_mesh_mass.cpp
+    test_mesh_shapes.cpp
     test_mesh_file.cpp
     test_mesh_import.cpp
     test_state.cpp
@@ -88,6 +91,7 @@ add_executable(spade_tests
     test_airflow_solids_solve.cpp
     test_airflow_solids_step.cpp
     test_airflow_wall_load.cpp
+    test_airflow_ftz.cpp
     test_airflow_check_grid.cpp
     test_vehicles_airflow_solids.cpp
     test_airflow_validation.cpp
@@ -100,6 +104,7 @@ add_executable(spade_tests
     test_composite_inertia.cpp
     test_propulsion_steady.cpp
     test_airframe_compile.cpp
+    test_basic_quad.cpp
     test_quadrotor.cpp
     test_imu.cpp
     test_gnss.cpp
@@ -111,8 +116,12 @@ add_executable(spade_tests
     test_object_file.cpp
     test_library_quad.cpp
     test_library.cpp
+    test_library_props.cpp
     test_library_sources.cpp
+    test_model_sources.cpp
     test_part_file.cpp
+    test_library_parts.cpp
+    test_library_drones.cpp
     test_determinism.cpp
     test_set_body_state.cpp
     test_sim_medium.cpp
@@ -122,6 +131,7 @@ add_executable(spade_tests
     test_model_parts.cpp
     test_model_propulsion.cpp
     test_part_pose.cpp
+    test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
@@ -266,6 +276,20 @@ add_executable(spade_tests
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
+# test_gpu_airflow_runner.cpp (plan B, B1): the airflow chain runner
+# (spike/airflow, spade_airflow_runner, linked below) and its test kernels;
+# GpuAirflowRunner* on the device, AirflowRunnerSpirv on the host.
+# test_gpu_airflow_projection.cpp (plan B, B2): the multigrid projection on the
+# runner against plan A's CPU projection, GpuAirflowProjection* on the device.
+# test_gpu_airflow_advection.cpp (plan B, B3): the advection kernel against
+# advect.cpp, GpuAirflowAdvection* on the device.
+# test_gpu_airflow_publish.cpp (plan B, B6): the publish kernels against
+# publish_render_volume, GpuAirflowPublish* on the device.
+# test_gpu_airflow_actuator.cpp (plan B, B4): the rotor discs' gather against
+# spread_actuator(), GpuAirflowActuator* on the device.
+# test_gpu_airflow_viscous.cpp (plan B, B3): the velocity conditions and the
+# implicit viscosity against boundaries.cpp and viscous.cpp,
+# GpuAirflowViscous* on the device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -278,6 +302,12 @@ if(SPADE_VULKAN)
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
         test_gpu_device_limits.cpp
+        test_gpu_airflow_runner.cpp
+        test_gpu_airflow_projection.cpp
+        test_gpu_airflow_advection.cpp
+        test_gpu_airflow_publish.cpp
+        test_gpu_airflow_actuator.cpp
+        test_gpu_airflow_viscous.cpp
     )
 endif()
 
@@ -375,6 +405,9 @@ if(SPADE_BUILD_SANDBOX)
         # The D1 hover preview: the body in the flow, no leak, the downwash
         # with the body, the C_p legend's note, and publishing with solids.
         test_sandbox_d1_checks.cpp
+        # C8q: LiveRun's test nudge (unset, a run the same to the bit) and the
+        # ensemble judge; the 128^3 four-run record is opt-in (SPADE_C8Q).
+        test_end_goal_c8q.cpp
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
@@ -388,6 +421,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_hash_follow.cpp
         test_editor_run.cpp
         test_editor_edit_text.cpp
+        test_editor_airflow.cpp
         test_editor_cli.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
@@ -395,6 +429,13 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_workspace.cpp
         test_editor_display.cpp
         test_editor_gizmo.cpp
+        test_png_reader.cpp
+        test_library_thumbnails.cpp
+        test_editor_library_save.cpp
+        test_flight_mixer.cpp
+        test_flight_controller.cpp
+        test_pilot_keys.cpp
+        test_editor_import.cpp
         # The default library's primitives (N3) against the editor's built-in
         # ones (builtin_library()); the rest of the library is test_library.cpp.
         test_library_builtin.cpp
@@ -495,6 +536,8 @@ if(SPADE_VULKAN)
         spade::compute
         volk
         Vulkan::Headers
+        # Plan B's chain runner and its kernels' generated headers (B1).
+        spade_airflow_runner
     )
     # Build-ORDER edge onto the D9 generators (S6 Task 3). The generated
     # headers' include DIRECTORY already arrives with spade::compute's PUBLIC
@@ -584,6 +627,27 @@ add_test(NAME StampIdentity.ArchiveFallback
 set_tests_properties(StampIdentity.ArchiveFallback PROPERTIES
     LABELS spade
     TIMEOUT 60)
+
+# The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
+# throwaway bare repositories: every push without the owner's word refused, a
+# reader that closes early included, and the authorised one let through
+# (push_guard_test.sh says why the piped cases). Only where sh and git are
+# found: Git for Windows' sh sits beside its git, so it is looked for there.
+# The installed hook is checked against this copy by the lead's push step, not
+# here. LABELS spade, as above.
+find_package(Git QUIET)
+if(GIT_FOUND)
+    get_filename_component(SPADE_GIT_DIR "${GIT_EXECUTABLE}" DIRECTORY)
+    find_program(SPADE_SH NAMES sh HINTS "${SPADE_GIT_DIR}/../bin" "${SPADE_GIT_DIR}/../usr/bin")
+endif()
+if(GIT_FOUND AND SPADE_SH)
+    cmake_path(SET SPADE_PUSH_GUARD NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/pre-push-guard.sh")
+    add_test(NAME PushGuard.RefusesEveryPushWithoutTheOwnersWord
+        COMMAND "${SPADE_SH}" "${CMAKE_CURRENT_SOURCE_DIR}/push_guard_test.sh" "${SPADE_PUSH_GUARD}" "${GIT_EXECUTABLE}")
+    set_tests_properties(PushGuard.RefusesEveryPushWithoutTheOwnersWord PROPERTIES
+        LABELS spade
+        TIMEOUT 120)
+endif()
 
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a

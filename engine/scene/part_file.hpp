@@ -43,7 +43,10 @@
 // propeller's thin disc): {kind: sphere | box | cylinder | tube, size: [x, y,
 // z]} with vehicles::BlockShape's meaning per kind (vehicles/
 // composite_inertia.hpp), or {kind: tensor, tensor: [9 numbers, row-major]}.
-// `point` is refused: it is what leaving the key out means.
+// `point` is refused: it is what leaving the key out means. The member a kind
+// does not use (`size` on a tensor, `tensor` on the others) has no key, so the
+// writer refuses one that is set (any bit, -0 too) rather than drop it: every
+// struct it accepts reads back the same.
 //
 // BLADE (a propeller only, optional): the blade definition for the actuator
 // line (P-b), {r_over_r: [...], c_over_r: [...], beta_deg: [...], hub_cutout:
@@ -63,16 +66,19 @@
 // block's keys, less those two, plus `shape` when the part has one and the
 // five blade keys when it has a blade. `sources` holds exactly those, no more
 // and no fewer: a field without a citation is refused by its path, and so is
-// a citation of a field the part does not have. In a citation, `source` is
+// a citation of a field the part does not have, or of an identity string
+// ("the motor's field 'stator' takes no citation"). In a citation, `source` is
 // left out for an assumed value that cites none, and `note` is left out when
 // there is none; an empty one is refused (leave the key out). The registry's
 // rules (a listed, usable source; a note on a derived or an assumed value)
 // are check_source_ref()'s, run by check_part_sources().
 //
-// Unknown, missing and duplicate keys are refused at every level, blamed on
-// "part schema v1", with the dotted path and the line and column. A
-// part_version this build does not read is schema_mismatch, read before any
-// other key.
+// Unknown, missing and duplicate keys are refused at every level, by the
+// dotted path, and from the readers with the line and column. An unknown key
+// in the top level, the block, a shape, the blade or a citation is blamed on
+// "part schema v1"; an unknown key in `sources` is a citation of something
+// the part does not cite, refused as SOURCES says. A part_version this build
+// does not read is schema_mismatch, read before any other key.
 // ---------------------------------------------------------------------------
 #pragma once
 

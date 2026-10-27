@@ -58,7 +58,10 @@ Against published data, beside the goldens. Each case's tolerance was fixed in p
 | C1, Re 100, 128² (opt-in) | the same | 0.0037; 0.0087 | ≤ 0.02 | within | `c1-cavity.md` |
 | C1, Re 400, 128² (opt-in) | the same; Table II's point 117 left out of v, as decided before any run | 0.0076; 0.0065 | ≤ 0.02 | within | `c1-cavity.md` |
 | C0 Taylor–Green vortex, 64³, inviscid (opt-in) | kinetic energy per unit mass, t = 0 to 10 | 0.125 to 0.0701 | none | report only (DNS data enter at V3) | `c0-taylor-green.md` |
-| C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within | `c8-actuator-disc.md` |
+| C8 actuator disc's far wake (opt-in) | axial velocity on the axis 2R below | 7.4124 m/s against momentum theory's 7.5777 | within 10% | within for that one run; rounding-sensitive (below) | `c8-actuator-disc.md` |
+| C8, re-cut 2026-10-22 (opt-in): eight runs, 1 ulp apart | the mean downwash over the faces within 0.5R of the axis 2R below, steps 385 to 768 of 768: the eight runs' mean; their worst | 8.0333 and 8.0597 m/s against momentum theory's 7.5777 (+6.0%, +6.4%) | within 10% | within | `c8-actuator-disc.md` |
+
+C8's far wake is chaotic past its horizon, step 104 at the probe. On the axis, 3 of 16 one-ulp-nudged runs missed the 10%: the disc's 48 points leave a hub within 2.1 cells of the axis unloaded, and the axis probe sits in that hub's meandering wake. The re-cut (2026-10-22; Physics signed off the measure and the runs before the run) reads the 0.5R disc mean, and its verdict is the eight runs': their mean and their worst run within 10%. Its +6% comes from the disc's point loading, not the solver (Physics' note in the record). The measurement and the GPU's band past the horizon are in `docs/design/test-docs/2026-10-22-c8-spread.md`.
 
 **P2** (solids, 2026-10-20, CPU reference, MSVC 14.43 release; tolerances in `docs/design/test-docs/2026-10-13-solids-tolerances.md`, fixed before the first run, except where marked `TD-2`):
 
@@ -75,6 +78,24 @@ Against published data, beside the goldens. Each case's tolerance was fixed in p
 gcc-13.3 reproduced the planar Couette (5.624e-8, and the control's 6.459e-2) and design test 7's θ (2.980e-8) and closed faces (4336 and 4336) digit for digit, in P2's leg at `4e53383` (2097 passed, 0 failed). Design test 7's φ passed its 4-ulp band there, though the leg's JUnit file cut its record short of the ulp count.
 
 S2 checks the solution, not the wall treatment. It passes at 16 with the viscous wall links (0.0052) and without them (0.0602). The planar Couette check is the one that tells the treatments apart.
+
+**P3** (the wall load and Publish beside the solids, 2026-10-22, CPU reference, MSVC 19.43 release, records at `f4ddf75`, merged at `cf83678`; tolerances in `docs/design/test-docs/2026-10-13-solids-tolerances.md`, fixed before the first run, except where marked `TD-2`):
+
+| Case | Measure | Result | Tolerance | Verdict | Record |
+|---|---|---|---|---|---|
+| S1 sphere in a uniform stream, R/dx 6 (in the gate) and 12 (opt-in) | the added mass C_M = F_x h / (ρ V U) from `wall_load()`, step 1 from cold | 0.4915; 0.4957 | 0.5 ± 0.24; 0.5 ± 0.12 | within | `s1-sphere.md` |
+| S1, the same | max \|C_p − C_p,pot\| over 52 samples one cell out along the normal, step 3 | 0.0813; 0.0449 | ≤ 0.32; ≤ 0.2 | within | `s1-sphere.md` |
+| S1, the same | the drag \|F_x\| / (½ ρ U² π R²) from `wall_load()`, step 3, at U h/dx 0.1 and 0.05 | 0.0612 and 0.0390; 0.0423 and 0.0363 | none (`TD-2`: the lead's ruling, 2026-10-22, `d2d03ed`; a floor c₀ of about 0.02 at R/dx 6 and 0.03 at 12 has no root cause yet, P3c) | report only | `s1-sphere.md` |
+| S1, the same | the side forces max(\|F_y\|, \|F_z\|) / (½ ρ U² π R²), step 3 | 6.70e-7; 3.21e-5 | ≤ 0.01 | within | `s1-sphere.md` |
+| S1, the same | the worse of steps 1 and 3's final relative residuals | 3.509e-6; 1.189e-5 | ≤ 1e-4 | within | `s1-sphere.md` |
+| S1, the order check (opt-in) | e(12) / e(6) for C_p at the fixed radius 7R/6 (e(6) 0.0813, e(12) 0.0375) | 0.461 | ≤ 0.7 | within | `s1-sphere.md` |
+| S3 sheet across a channel, an even plane and an odd one (in the gate) | P3's force on the sheet, F h / (ρ U L A) from `wall_load()` | 0.968752 and 0.968751 | 1 ± 0.033 | within | `s3-sheet.md` |
+| S5 Publish beside a sheet (in the gate) | max \|\|ω\| − S\| / S, and max \|q̂\| / S, over the 128 cells next to the sheet | 0; 0 | ≤ 1e-3 each | within | `s5-publish-sheet.md` |
+
+- **The steps, and `T_p`:** every P3 measure is read at steps 1 to 3 from a cold start (S1), after one projection (S3), or with no step (S5). That is inside any horizon, so a single run carries each verdict (01-verification, "A case judged past its horizon").
+- **The drag:** the drag rows carry no claim below the floor. The grade row above names the floor as P3's known limit.
+- **The gcc leg:** P3's gcc-13.3 leg at `4fe3977` passed, 2201 passed and 0 failed.
+- **S3:** its closed faces, max \|u\| / U and pressure step are P2's rows, unchanged at `f4ddf75`.
 
 ## Writing a physics test
 

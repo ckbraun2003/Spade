@@ -245,6 +245,7 @@ add_library(spade_world STATIC
     world/world_file.cpp
     world/mesh.cpp
     world/mesh_mass.cpp
+    world/mesh_shapes.cpp
     world/mesh_file.cpp
 )
 add_library(spade::world ALIAS spade_world)
@@ -933,6 +934,7 @@ add_library(spade_vehicles STATIC
     vehicles/composite_inertia.cpp
     vehicles/propulsion_steady.cpp
     vehicles/airframe_compile.cpp
+    vehicles/basic_quad.cpp
 )
 add_library(spade::vehicles ALIAS spade_vehicles)
 set_target_properties(spade_vehicles PROPERTIES EXPORT_NAME vehicles)
@@ -995,6 +997,7 @@ add_library(spade_scene STATIC
     scene/library.cpp
     scene/library_sources.cpp
     scene/model_file.cpp
+    scene/model_sources.cpp
     scene/object_file.cpp
     scene/part_file.cpp
     scene/scene_file.cpp

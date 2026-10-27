@@ -15,6 +15,7 @@
 
 #include <bit>
 #include <cstdint>
+#include <filesystem>
 #include <set>
 #include <string>
 #include <vector>
@@ -22,7 +23,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "../sandbox/editor_edit_text.hpp"
+#include "core/path_text.hpp"
 #include "editor_test_support.hpp"
+#include "unique_temp.hpp"
+#include "world/mesh.hpp"
+#include "world/mesh_file.hpp"
+#include "world/sdf.hpp"
 
 namespace {
 
@@ -34,11 +40,70 @@ using spade::Result;
 // The hover scene plus a plain box "box_1" and a visual panel "panel".
 [[nodiscard]] spade::scene::SceneDesc base_scene() {
     spade::scene::SceneDesc s = support::with_asset(support::sample_scene(), "box_1");
+    // A fixed airflow region for remove-air-region (test_scene_airflow.cpp's
+    // tunnel), which follows no vehicle, so add-air-region's drone is free.
+    spade::scene::SceneAirflowRegion tunnel;
+    tunnel.name = "tunnel";
+    tunnel.kind = spade::scene::AirflowKind::fixed;
+    tunnel.min_corner = glm::vec3(-2.0f, 0.0f, -12.0f);
+    tunnel.cells = spade::physics::airflow::GridShape{64, 32, 32, 0.05f};
+    tunnel.faces.face = {spade::physics::airflow::FaceBc::open, spade::physics::airflow::FaceBc::open,
+                         spade::physics::airflow::FaceBc::wall, spade::physics::airflow::FaceBc::wall,
+                         spade::physics::airflow::FaceBc::periodic, spade::physics::airflow::FaceBc::periodic};
+    tunnel.density = 1.2f;
+    tunnel.kinematic_viscosity = 1.5e-5f;
+    s.airflow.push_back(tunnel);
     spade::scene::SceneAsset panel = support::asset_named("panel");
     panel.visual.mesh_ref = "props/panel";
     panel.visual.material = "red";
     s.assets.push_back(panel);
+    // N15: an imported part for set-imported-part (a 5 cm ball, so it needs
+    // no sidecar).
+    spade::vehicles::PartDesc ring;
+    ring.name = "ring";
+    ring.role = std::string(spade::analysis::kImportedPartRole);
+    ring.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(0.05f, 0.0f, 0.0f, 0.0f);
+    ring.shape.nodes = {n};
+    ring.min_feature = 0.1f;
+    s.models.at(0).parts.push_back(ring);
     return s;
+}
+
+// N15: a staged mesh for add-mesh-parts, its sidecar in a folder of its own
+// that lasts the test program: a 20 cm cube.
+[[nodiscard]] ed::ImportedMesh staged_cube() {
+    static const spade::test::TempDir dir("edit-text-mesh");
+    static constexpr uint32_t kTriangles[12][3] = {
+        {0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+        {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5},
+    };
+    spade::MeshInput input;
+    input.unit = spade::MeshUnit::metre;
+    for (uint32_t v = 0; v < 8; ++v) {
+        input.positions.push_back(0.2 * glm::dvec3(static_cast<double>(v & 1u), static_cast<double>((v >> 1) & 1u),
+                                                   static_cast<double>((v >> 2) & 1u)));
+    }
+    for (const auto& t : kTriangles) input.indices.insert(input.indices.end(), {t[0], t[1], t[2]});
+    ed::ImportedMesh m;
+    m.name = "guard ring";
+    m.ref = "imported/guard/guard_ring";
+    m.sidecar = dir.path() / "imported" / "guard" / "guard_ring.spmesh";
+    m.source = "guard.gltf";
+    const spade::Result<std::shared_ptr<const spade::TriangleMesh>> mesh = spade::make_mesh(input, m.name);
+    EXPECT_TRUE(mesh.has_value()) << (mesh ? "" : mesh.error().context);
+    if (!mesh) return m;
+    m.mesh = *mesh;
+    std::filesystem::create_directories(m.sidecar.parent_path());
+    spade::MeshProvenance provenance;
+    provenance.source = m.source;
+    provenance.unit = spade::MeshUnit::metre;
+    const spade::Result<void> saved = spade::save_mesh_file(m.sidecar, *m.mesh, provenance);
+    EXPECT_TRUE(saved.has_value()) << (saved ? "" : saved.error().context);
+    return m;
 }
 
 // The hover world plus a spawn "pad", a prop, and a terrain box (piece 1,
@@ -108,10 +173,15 @@ using spade::Result;
     blue.name = "blue paint";
     blue.base_color = glm::vec4(0.1f, 0.2f, 0.3f, 1.0f);
     blue.shading = spade::MaterialShading::unlit;
+    const std::filesystem::path library = std::filesystem::path(SPADE_ASSETS_DIR) / "library";
+    const spade::scene::SceneVehicle placed{"library quad", "", base.vehicles.at(0).start};
     return {
         ed::AddAsset{crate},
         ed::AddAsset{compound_asset()},
         ed::AddVehicle{launched, model},
+        ed::AddModelFile{(library / "drones" / "reference_quad.model.yaml").generic_string(), placed},
+        ed::AddObjectFile{(library / "obstacles" / "gate.object.yaml").generic_string(), "gate one",
+                          pose_of(glm::vec3(3.0f, 0.0f, 1.0f), 0.4f, 1.0f)},
         ed::RemoveObject{"box_1"},
         ed::RenameObject{"box_1", "big box"},
         ed::DuplicateObject{"hover_quad_0"},
@@ -129,6 +199,10 @@ using spade::Result;
         ed::SetModelParam{"hover_quad_0", Element::drag_body, 0, "coeffs", glm::vec3(0.5f, 0.6f, 0.7f)},
         ed::SetModelParam{"hover_quad_0", Element::rotor, 0, "local_orient",
                           glm::angleAxis(0.05f, glm::vec3(0.0f, 0.0f, 1.0f))},
+        ed::AddMeshParts{"hover_quad_0", {staged_cube()}},
+        ed::SetImportedPart{"hover_quad_0", "ring", true, 0.025f, glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))},
+        ed::AddAirflowRegion{"hover_quad_0"},
+        ed::RemoveAirflowRegion{"tunnel"},
     };
 }
 

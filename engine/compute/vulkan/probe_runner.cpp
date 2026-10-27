@@ -18,9 +18,10 @@ static_assert(sizeof(ProbePushConstants) == 8,
               "the probe push-constant block is two uints; a kernel's ProbeParams must match");
 
 // How long a probe dispatch may take before the fence wait is called a
-// failure. Ten seconds is three orders of magnitude past the largest chunk
-// this program dispatches (2^21 elements finish in single-digit milliseconds
-// on the Iris) and still short enough that a hung device fails a test rather
+// failure. Ten seconds is two orders of magnitude past the largest chunk
+// this program dispatches (the exact sweep's 2^24 elements, tests/
+// test_gpu_fp32_math.cpp; the batteries' 2^21 finish in single-digit
+// milliseconds on the Iris) and still short enough that a hung device fails a test rather
 // than hanging CI. VK_WHOLE_SIZE-style "wait forever" (UINT64_MAX) is
 // deliberately not used: a test that hangs is strictly worse than one that
 // fails with a named reason.
