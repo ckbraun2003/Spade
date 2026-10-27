@@ -118,6 +118,9 @@ class EditorWorkspace {
     [[nodiscard]] const EditorRun* run() const noexcept { return run_ ? &*run_ : nullptr; }
     // Run air's (INT-15): the region's air on its worker; none when stopped.
     [[nodiscard]] const AirflowRun* air() const noexcept { return air_.get(); }
+    // Where Run air's fluid steps (slice 3): the window gives the GPU's
+    // starter (editor_air_gpu.hpp); until given one, the CPU's.
+    void set_air_starter(AirStarter starter) { air_starter_ = std::move(starter); }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }
     [[nodiscard]] const BuiltinRecords& records() const noexcept { return records_; }
     // Changes whenever composed() does.
@@ -553,7 +556,7 @@ class EditorWorkspace {
             panels_.status = "Run air: no drone here has an airflow region; select a drone and Add airflow region";
             return;
         }
-        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region);
+        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region, std::nullopt, {}, air_starter_);
         if (!started) {
             panels_.status = started.error().context;
             return;
@@ -885,6 +888,7 @@ class EditorWorkspace {
 
     OpenedScene docs_;
     uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
+    AirStarter air_starter_ = cpu_air_starter();
     std::unique_ptr<AirflowRun> air_;  // Run air's worker; reset (joined) by Stop and by a change
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened

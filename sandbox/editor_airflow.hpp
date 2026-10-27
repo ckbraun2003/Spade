@@ -8,6 +8,11 @@
 // drone.
 // T2 (§9): AirflowRun, the air on a worker thread. The worker owns LiveRun
 // alone; at each publish it hands the window a fresh, immutable AirFrame.
+// Run air on the GPU (Rendering's design note, docs/design/rendering/plans/
+// 2026-10-27-run-air-on-gpu.md, slice 3): a run starts through an
+// AirStarter, on a device or on the CPU, and says which; every frame it
+// publishes is held to ten times its top speed. The GPU's starter is
+// editor_air_gpu.hpp's, so this header stays free of Vulkan's.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -34,6 +39,7 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
+#include "core/fp16.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_panels.hpp"
 #include "scene/scene_file.hpp"
@@ -182,13 +188,67 @@ struct AirFrame {
 #pragma warning(pop)
 #endif
 
+// Where Run air's fluid steps (Run air on the GPU, slice 3; the lead,
+// 2026-10-27): a starter builds the run's LiveRun for a resolved case and
+// its flown model, on a device or on the CPU, and names which in `backend`:
+// "GPU", or "CPU: " and why not the GPU (a device's refusal verbatim).
+// `keep` holds what the run's fluid needs to outlive it (a device's
+// context); the run is destroyed first.
+struct AirStart {
+    analysis::LiveRun run;
+    std::string backend;
+    std::shared_ptr<void> keep;
+};
+using AirStarter = std::function<Result<AirStart>(const analysis::ResolvedCase&, const vehicles::ModelType&)>;
+
+// LiveRun::start() on the CPU, Run air's run before slice 3 to the bit, its
+// backend "CPU: " and `why`. The editor's window gives Run air the GPU's
+// starter (editor_air_gpu.hpp); given none, Run air takes this one.
+[[nodiscard]] inline AirStarter cpu_air_starter(std::string why = "no Vulkan device") {
+    return [why = std::move(why)](const analysis::ResolvedCase& resolved,
+                                  const vehicles::ModelType& model) -> Result<AirStart> {
+        Result<analysis::LiveRun> run = analysis::LiveRun::start(resolved, model);
+        if (!run) return std::unexpected(run.error());
+        return AirStart{std::move(*run), "CPU: " + why, nullptr};
+    };
+}
+
+// Why published frame `frame` stops the air, or "" (the lead, 2026-10-27):
+// its fastest cell, by the published u, v and w, past ten times the run's
+// top speed. The device can step a NaN into a finite flow where the CPU
+// faults, so this bound is Run air's guard on both backends. A non-finite
+// half is passed over: the publish refuses those.
+[[nodiscard]] inline std::string air_frame_fault(const FlowVolume& volume, float speed_top, uint64_t frame) {
+    const std::size_t nx = volume.header.nx, ny = volume.header.ny;
+    const std::size_t cells = volume.v.size() / kFlowHalvesPerCell;
+    float fastest = 0.0f;  // its speed squared
+    std::size_t at = 0;
+    for (std::size_t c = 0; c < cells; ++c) {
+        const uint16_t* h = volume.v.data() + c * kFlowHalvesPerCell;
+        const float u = fp16::to_f32(h[kFlowU]);
+        const float v = fp16::to_f32(h[kFlowV]);
+        const float w = fp16::to_f32(h[kFlowW]);
+        const float s2 = u * u + v * v + w * w;
+        if (std::isfinite(s2) && s2 > fastest) {
+            fastest = s2;
+            at = c;
+        }
+    }
+    const float bound = 10.0f * speed_top;
+    if (!(fastest > bound * bound)) return {};
+    return std::format("frame {}: the fastest cell, ({}, {}, {}), is at {:.1f} m/s, past ten times the top speed "
+                       "({:.1f} m/s)",
+                       frame, at % nx, at / nx % ny, at / (nx * ny), std::sqrt(fastest), bound);
+}
+
 // The air on a worker thread (§9, the lead's D3 after M0: a 32^3 step is
 // over a displayed frame's budget). The worker steps LiveRun one step at a
 // time, so stop() waits at most one step, and each frame's last step and
 // publish are advance_frame()'s, so a program's run is the one thread's to
 // the bit. The window reads latest() each displayed frame. A refused step
-// or publish, or an exception, ends the worker with its error in a last
-// frame, never std::terminate. Not movable: the worker holds `this`.
+// or publish, a frame past the bound (air_frame_fault(), not handed over),
+// or an exception, ends the worker with its error in a last frame, never
+// std::terminate. Not movable: the worker holds `this`.
 class AirflowRun {
   public:
     // FOR TESTS: called with the run on the caller's thread before the
@@ -198,23 +258,25 @@ class AirflowRun {
     // Builds the case and LiveRun on the caller's thread, then starts the
     // worker. With a program, each frame's controls are the program's at
     // the frame's start (the tour: deterministic); without one, the last
-    // set_controls() (the Pilot section; unarmed until set). Refused before
-    // any thread exists, as air_case() and LiveRun::start() refuse.
+    // set_controls() (the Pilot section; unarmed until set). The run is the
+    // starter's: on the CPU unless given another. Refused before any thread
+    // exists, as air_case() and the starter refuse.
     [[nodiscard]] static Result<std::unique_ptr<AirflowRun>> start(
         const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
-        std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {}) {
+        std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {},
+        const AirStarter& starter = cpu_air_starter()) {
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
         const Result<analysis::ResolvedCase> resolved = air_case(s, region);
         if (!resolved) return std::unexpected(resolved.error());
         const Result<vehicles::ModelType> model = air_model(s, region);
         if (!model) return std::unexpected(model.error());
-        Result<analysis::LiveRun> run = analysis::LiveRun::start(*resolved, *model);
-        if (!run) return std::unexpected(detail::air_refusal(region, run.error().context));
-        if (prepare) prepare(*run);
+        Result<AirStart> started = starter(*resolved, *model);
+        if (!started) return std::unexpected(detail::air_refusal(region, started.error().context));
+        if (prepare) prepare(started->run);
         const float top = airflow::speed_top(*model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
-            new AirflowRun(std::move(*run), drone->vehicle->start.pos, top, std::move(program)));
+            new AirflowRun(std::move(*started), drone->vehicle->start.pos, top, std::move(program)));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -223,6 +285,9 @@ class AirflowRun {
     AirflowRun(const AirflowRun&) = delete;
     AirflowRun& operator=(const AirflowRun&) = delete;
     ~AirflowRun() { stop(); }
+
+    // Where the run's fluid steps: "GPU", or "CPU: " and why (its starter's).
+    [[nodiscard]] const std::string& backend() const noexcept { return backend_; }
 
     // The last frame handed over; none before the first publish.
     [[nodiscard]] std::shared_ptr<const AirFrame> latest() const {
@@ -245,8 +310,13 @@ class AirflowRun {
     }
 
   private:
-    AirflowRun(analysis::LiveRun run, glm::vec3 at, float speed_top, std::optional<analysis::ControlProgram> program)
-        : run_(std::move(run)), at_(at), speed_top_(speed_top), program_(std::move(program)) {}
+    AirflowRun(AirStart started, glm::vec3 at, float speed_top, std::optional<analysis::ControlProgram> program)
+        : keep_(std::move(started.keep)),
+          run_(std::move(started.run)),
+          backend_(std::move(started.backend)),
+          at_(at),
+          speed_top_(speed_top),
+          program_(std::move(program)) {}
 
     void work(const std::stop_token& stop) noexcept {
         try {
@@ -279,6 +349,9 @@ class AirflowRun {
                 if (const Result<void> stepped = run_.step(c); !stepped) return fail(stepped.error().context);
             }
             if (const Result<analysis::LiveFrame> f = run_.advance_frame(c, scratch_); !f) return fail(f.error().context);
+            if (const std::string fault = air_frame_fault(scratch_, speed_top_, run_.state().frames); !fault.empty()) {
+                return fail(fault);
+            }
             hand_over();
         }
     }
@@ -315,7 +388,9 @@ class AirflowRun {
         latest_ = std::move(frame);
     }
 
-    analysis::LiveRun run_;  // the worker's alone once it starts
+    std::shared_ptr<void> keep_;  // the starter's: outlives run_
+    analysis::LiveRun run_;       // the worker's alone once it starts
+    std::string backend_;
     glm::vec3 at_;
     float speed_top_;
     std::optional<analysis::ControlProgram> program_;
@@ -374,23 +449,35 @@ class AirSpeed {
     std::deque<Sample> samples_;
 };
 
-// The command bar's band while the air runs (§9): its speed, then the run's
-// label ("air at 1/43 speed · actuator disc · 32³, dx 25 mm, R/dx 3").
-[[nodiscard]] inline std::string air_band(std::string_view speed, std::string_view run_label) {
+// The command bar's band while the air runs (§9): its speed, the run's
+// kind, where its fluid steps (Run air on the GPU, slice 3: "GPU", or "CPU: "
+// and why), then the rest of the run's label ("air at 1/2 speed · actuator
+// disc · GPU · 32³, dx 25 mm, R/dx 3"). Before the first frame, its speed
+// alone.
+[[nodiscard]] inline std::string air_band(std::string_view speed, std::string_view run_label,
+                                          std::string_view backend) {
+    constexpr std::string_view kDot = " \xc2\xb7 ";  // a middle dot
     std::string band(speed);
-    if (!run_label.empty()) band.append(" \xc2\xb7 ").append(run_label);  // a middle dot
+    if (run_label.empty()) return band;
+    const std::size_t kind = run_label.find(kDot);
+    band.append(kDot).append(run_label.substr(0, kind));
+    if (!backend.empty()) band.append(kDot).append(backend);
+    if (kind != std::string_view::npos) band.append(run_label.substr(kind));
     return band;
 }
 
-// The least of the band the bar shows (the lead's ruling A, 2026-10-27): its
-// speed and the run's kind, up to the label's first dot. Past that, the band
-// is elided at its end.
+// The least of the band the bar shows (the lead's ruling A, 2026-10-27, and
+// slice 3's): its speed, the run's kind and its backend's name ("GPU" or
+// "CPU"; the CPU's why goes with the rest). Past that, the band is elided at
+// its end.
 [[nodiscard]] inline std::string_view band_floor(std::string_view band) noexcept {
     constexpr std::string_view kDot = " \xc2\xb7 ";
     const std::size_t first = band.find(kDot);
     if (first == std::string_view::npos) return band;
     const std::size_t second = band.find(kDot, first + kDot.size());
-    return second == std::string_view::npos ? band : band.substr(0, second);
+    if (second == std::string_view::npos) return band;
+    const std::size_t backend = second + kDot.size();
+    return band.substr(0, std::min(band.find(kDot, backend), band.find(':', backend)));
 }
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it

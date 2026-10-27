@@ -14,6 +14,9 @@
 #include "unit_meshes.hpp"  // the unit meshes
 #include "drone_view.hpp"     // detail::lambert()
 #include "editor_airflow.hpp"
+#ifdef SPADE_EDITOR_AIR_GPU
+#include "editor_air_gpu.hpp"  // Run air on the GPU (slice 3)
+#endif
 #include "editor_pick.hpp"
 #include "pilot_keys.hpp"
 #include "gl_target_sink.hpp"
@@ -46,6 +49,12 @@ Result<std::unique_ptr<EditorSession>> EditorSession::create(editor::OpenedScene
     if (!workspace) return std::unexpected(workspace.error());
     std::unique_ptr<EditorSession> s(new EditorSession());
     s->workspace_ = std::move(*workspace);
+    // Run air on the GPU when it can, else on the CPU, saying why (slice 3).
+#ifdef SPADE_EDITOR_AIR_GPU
+    s->workspace_->set_air_starter(editor::gpu_air_starter());
+#else
+    s->workspace_->set_air_starter(editor::cpu_air_starter("this build has no Vulkan"));
+#endif
     if (Result<void> built = s->rebuild_scene(); !built) return std::unexpected(built.error());
     // The editor opens framed on the first vehicle, as F would frame it, or
     // looking at the origin.
@@ -335,7 +344,8 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             air_speed_.frame(air_frame_->frames, air_frame_->t_s,
                              std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
         }
-        w.panels().air_band = editor::air_band(air_speed_.line(), air_frame_ ? air_frame_->run_label : std::string{});
+        w.panels().air_band = editor::air_band(air_speed_.line(), air_frame_ ? air_frame_->run_label : std::string{},
+                                               w.air()->backend());
     }
     // Run air's default view (§5): the vortex cores (once there are any) and
     // streamlines seeded under each disc, over the chosen base, as the tour's

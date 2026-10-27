@@ -68,6 +68,16 @@ endif()
 
 target_compile_features(spade_sandbox PRIVATE cxx_std_23)
 
+# Run air on the GPU (slice 3; the lead's grant, 2026-10-27): the editor's
+# window starts Run air through spike/airflow's start_live_run()
+# (editor_air_gpu.hpp). The root adds spike/airflow after this directory, under
+# the same option, so the runner is linked by name: that resolves when CMake
+# generates, not here.
+if(SPADE_VULKAN)
+    target_link_libraries(spade_sandbox PRIVATE spade_airflow_runner)
+    target_compile_definitions(spade_sandbox PRIVATE SPADE_EDITOR_AIR_GPU=1)
+endif()
+
 if(WIN32)
     # GetProcessMemoryInfo, for the memory figure the user asked to sit beside
     # the fps. Linked OUTSIDE the backend guard on purpose: working_set_bytes()
