@@ -850,7 +850,7 @@ void GlTargetSink::draw_overlay() {
     const ui::Layout layout = impl_->editor != nullptr  ? ui::Layout::editor
                               : impl_->drone != nullptr ? ui::Layout::drone
                                                         : ui::Layout::none;
-    const ImGuiID dockspace = ImGui::GetID("spade dockspace");
+    const ImGuiID dockspace = ImGui::GetID(ui::kDockspace);
     if (!impl_->layout_ever_built || layout != impl_->layout_built) {
         ui::build_layout(dockspace, layout);
         impl_->layout_built = layout;

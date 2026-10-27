@@ -21,9 +21,13 @@
 #include <span>
 #include <vector>
 
+#include <glm/glm.hpp>
+
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/regions.hpp"
 #include "physics/airflow/solids.hpp"
+#include "physics/airflow/wall_load.hpp"
 
 namespace spade::airflow_gpu {
 
@@ -136,5 +140,82 @@ void append_measure(std::vector<compute::ChainCommand>& out, const physics::airf
 
 // One airflow_pcg_scalars op.
 [[nodiscard]] compute::ChainCommand scalars_dispatch(const SolidsPipelines& p, ScalarsOp op);
+
+}  // namespace spade::airflow_gpu
+
+// ===========================================================================
+// B5.3 AND B5.5 (Physics, 2026-10-27; appended as a block of its own): the
+// closed regions' means (the CG's gauge), what a closed face holds, and the
+// wall load. Their kernels are airflow_region_mean, airflow_solid_velocities
+// and airflow_wall_load; their CPU twins regions.cpp's remove_region_means(),
+// solids.cpp's apply_solid_velocities() and wall_load.cpp's wall_load(). The
+// table constants below are airflow_pcg.slang's of the same names (TD-9).
+// ===========================================================================
+
+namespace spade::airflow_gpu {
+
+// --- the region table (airflow_region_table, binding 19) ----------------------
+
+// Closed region j's record, kRegionWords words from kRegionWords * j; after
+// the C records, a word per region id: its closed index, or kNoRegion when it
+// is pinned.
+inline constexpr uint32_t kRegionWords = 4;
+inline constexpr uint32_t kRegionId = 0;          // its region id
+inline constexpr uint32_t kRegionCells = 1;       // its cells
+inline constexpr uint32_t kRegionReciprocal = 2;  // the host's 1 / cells (float bits), remove_region_means()'
+inline constexpr uint32_t kRegionMean = 3;        // its mean (float bits), written by the device
+
+struct RegionTable {
+    std::vector<uint32_t> words;  // binding 19's words
+    uint32_t closed = 0;          // C: the pcg block's closed-region count (write_pcg_block())
+};
+
+// The table for the regions as the last check_regions() left them: each
+// closed region in id order, then the id-to-index words. A host call: it
+// allocates.
+[[nodiscard]] RegionTable pack_region_table(const physics::airflow::FluidRegions& r);
+
+// The floats airflow_partials needs for the means of `closed` regions: a sum
+// and a met flag per closed region a tile.
+[[nodiscard]] uint64_t region_partials_floats(const physics::airflow::GridShape& shape, uint32_t closed) noexcept;
+
+// Each closed region's mean of airflow_pcg's vector v into the table:
+// airflow_region_mean's passes 0-2, with reduce.hpp's kReduceBlockTiles.
+// `closed` is the table's C; with none, nothing is appended.
+void append_region_means(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                         uint32_t pipeline, PcgVector v, uint32_t closed, uint32_t workgroup_size);
+
+// remove_region_means(v), the CG's gauge (projection.cpp's gauge_regions()):
+// the means, then pass 3, each closed region's cells less its mean.
+void append_remove_region_means(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                                uint32_t pipeline, PcgVector v, uint32_t closed, uint32_t workgroup_size);
+
+// --- the interior --------------------------------------------------------------
+
+// apply_solid_velocities(g, f, mode) on airflow_u, _v and _w: airflow_solid_
+// velocities' pass 0 (rigid), or passes 1 and 2 (extrapolate: layer 2 after
+// layer 1), each over every face.
+void append_solid_velocities(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                             uint32_t pipeline, physics::airflow::SolidInterior mode, uint32_t workgroup_size);
+
+// --- the wall load (airflow_wall_load, binding 27) -------------------------------
+
+inline constexpr uint32_t kWallLoadForce = 0;   // F's x, y, z
+inline constexpr uint32_t kWallLoadMoment = 3;  // M's x, y, z
+inline constexpr uint32_t kWallLoadAbout = 6;   // the point M is taken about: the host's input
+inline constexpr uint32_t kWallLoadFloats = 9;
+inline constexpr uint32_t kWallLoadTerms = 6;   // airflow_partials' floats a tile
+
+// Binding 27's floats before the chain: the load 0, the point `about` (the
+// grid's frame, as wall_load() takes it).
+[[nodiscard]] std::array<float, kWallLoadFloats> wall_load_words(glm::vec3 about) noexcept;
+
+// The load in binding 27's floats after the chain.
+[[nodiscard]] physics::airflow::WallLoad wall_load_of(std::span<const float, kWallLoadFloats> words) noexcept;
+
+// wall_load(g, f, regions, about) from airflow_pressure into binding 27:
+// airflow_wall_load's three passes, with reduce.hpp's kReduceBlockTiles.
+void append_wall_load(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
+                      uint32_t pipeline, uint32_t workgroup_size);
 
 }  // namespace spade::airflow_gpu

@@ -14,6 +14,25 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **GpuFluid, the whole fluid step on the GPU** (Rendering, G1, merged `e34d2be`). New `spike/airflow/step_chain.hpp`, namespace `spade::airflow_gpu`:
+  - `GpuFluid::create(ctx, g, bc, cfg, solids, wg)`;
+  - `step(discs)` takes at most `kMaxDiscs` = 16 discs;
+  - `read(g)`, `publish(origin, out)` and `shape()`;
+  - `disc_records()` packs the discs on the host;
+  - a new kernel, `airflow_add_increments`.
+
+  Each step is bit-equal to the CPU's `fluid_step()` without solids. Limits until G3:
+  - a SolidField with parts is refused;
+  - health reports only `pressure_iterations = n_v`, with no scan for NaN or infinity and no residual.
+
+  Nothing existing changes.
+- **Region means, the solid interior and the wall load on the GPU** (Physics, B5.3 and B5.5, merged `5b34e16`). There are three new kernels: `airflow_region_mean`, `airflow_solid_velocities` and `airflow_wall_load`. New in `spike/airflow/solids_chain.hpp`:
+  - `pack_region_table()` fills binding 19, and `region_partials_floats()` sizes the partials;
+  - `append_region_means()` and `append_remove_region_means()` (the CG's gauge);
+  - `append_solid_velocities(…, SolidInterior, wg)`;
+  - `append_wall_load()` writes binding 27, with `wall_load_words(about)` before and `wall_load_of(words)` after.
+
+  Each is bit-equal to its CPU twin. They add to what was there; nothing existing changes.
 - **The smoke tour gains `editor.airflow`** (Interface, T3, merged `adcd27e`). Between `editor.add_drone` and `editor.add_objects`, the tour runs Run air on a placed quad. It waits for 12 air frames (a minute at most) and writes a 12th still, `editor_airflow.png`. A tour that counts steps or stills re-counts. `editor::Command` gains `run_air`, and `ui::cell_text()` takes an optional `max_width`. Nothing else changes.
 - **A drone with mesh parts can be placed** (Core, L7b0, merged `78d4e7f`). `scene::add_model_with_meshes(scene, file, name)` re-points each mesh part's `mesh_file` to `imported/<16-hex content hash>.spmesh` relative to the scene. `scene::write_placed_meshes(scene, into, held_in)` writes those sidecars from memory, and the editor's Save and `--edit … --save` both call it. `scene::placed_mesh_file(mesh)` names one. `add_model()` still refuses mesh parts. `save_mesh_file()` now replaces its target whole, through `<path>.tmp-spade` and a rename.
 - **The blade azimuth** (Physics, P11, merged `97ddfdd`). New header-only `engine/physics/blade_azimuth.hpp`: `spade::physics::advance_blade_azimuth(float& psi, float omega, float h)` and `advance_blade_azimuths(psi, rows, h)`, psi += omega h wrapped into [0, 2 pi) by subtracting `kAzimuthTwoPi`; a disabled rotor holds; bad inputs hold psi and return false. Host-held and visual (pass it to `posed_parts()`); nothing in the step reads it. Additive: nothing existing changes.

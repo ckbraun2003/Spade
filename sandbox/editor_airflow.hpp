@@ -24,6 +24,7 @@
 #include <format>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -372,6 +373,25 @@ class AirSpeed {
     static constexpr std::size_t kWindow = 8;
     std::deque<Sample> samples_;
 };
+
+// The command bar's band while the air runs (§9): its speed, then the run's
+// label ("air at 1/43 speed · actuator disc · 32³, dx 25 mm, R/dx 3").
+[[nodiscard]] inline std::string air_band(std::string_view speed, std::string_view run_label) {
+    std::string band(speed);
+    if (!run_label.empty()) band.append(" \xc2\xb7 ").append(run_label);  // a middle dot
+    return band;
+}
+
+// The least of the band the bar shows (the lead's ruling A, 2026-10-27): its
+// speed and the run's kind, up to the label's first dot. Past that, the band
+// is elided at its end.
+[[nodiscard]] inline std::string_view band_floor(std::string_view band) noexcept {
+    constexpr std::string_view kDot = " \xc2\xb7 ";
+    const std::size_t first = band.find(kDot);
+    if (first == std::string_view::npos) return band;
+    const std::size_t second = band.find(kDot, first + kDot.size());
+    return second == std::string_view::npos ? band : band.substr(0, second);
+}
 
 // A GizmoLine's axis for an airflow region's box (ui::axis_colour() draws it
 // in its own colour, not an axis's).

@@ -359,3 +359,24 @@ TEST(EditorViews, LayersSharingAScaleShowItOnce) {
     EXPECT_TRUE(shown[0].note.empty());
     EXPECT_EQ(shown[1].note, noted.note);
 }
+
+// The view's corner names each flow layer's legend (the lead's ruling A,
+// 2026-10-27): Run air's vortex cores and streamlines are both coloured by
+// speed, over different ranges, so each line says whose scale it is.
+TEST(EditorViews, EachFlowLegendNamesItsLayer) {
+    spade::render::ViewLegend cores;
+    cores.layer = spade::render::FlowView::vortex_iso;
+    cores.quantity = "speed |u|";
+    cores.unit = "m/s";
+    cores.range.min = 0.0f;
+    cores.range.max = 5.37f;
+    spade::render::ViewLegend lines = cores;
+    lines.layer = spade::render::FlowView::streamlines;
+    lines.range.max = 10.74f;
+    const std::vector<LegendLine> shown = legend_lines({cores, lines});
+    ASSERT_EQ(shown.size(), 2u);
+    EXPECT_EQ(shown[0].layer, "vortex cores");
+    EXPECT_EQ(shown[0].scale, "speed |u| 0 to 5.37 m/s");
+    EXPECT_EQ(shown[1].layer, "streamlines");
+    EXPECT_EQ(shown[1].scale, "speed |u| 0 to 10.7 m/s");
+}
