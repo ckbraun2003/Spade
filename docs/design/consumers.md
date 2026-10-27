@@ -14,6 +14,12 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Props on the library drones** (Core, L7c1, merged `d8640b9`).
+  - **The spec:** `AirframeSpec::rotor_parts` holds `RotorPartSpec{name, role, rotor, mount, mesh, min_feature}`, where `mount` is in the hub frame at psi 0. Each compiles to a massless `PartAttach::rotor` mesh part, placed after every rigid part.
+  - **What changes:** only `parts_identity()`. Mass, inertia, drag and `model_identity()` are unchanged.
+  - **The library drones:** all six carry `prop[k]` on every rotor. Their sidecars are `drones/<stem>/prop_{ccw,cw}.spmesh`, pinned by hash, and `.gitattributes` marks `*.spmesh` binary.
+  - **Posing and solids:** `posed_parts()` turns each prop by R_y(s_k psi). `PartFilter::rigid_only` drops them, so they never become solids.
+  - **One refusal:** `add_model()` now refuses a placed library drone, because the drone has mesh parts. Place one with `add_model_with_meshes()`.
 - **GpuFluid, the whole fluid step on the GPU** (Rendering, G1, merged `e34d2be`). New `spike/airflow/step_chain.hpp`, namespace `spade::airflow_gpu`:
   - `GpuFluid::create(ctx, g, bc, cfg, solids, wg)`;
   - `step(discs)` takes at most `kMaxDiscs` = 16 discs;
