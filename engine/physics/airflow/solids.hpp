@@ -54,6 +54,11 @@
 // thin tau, announced, and sampled again. Any other leak -- a blob thin in
 // more than one direction (a wire, a bead) included -- is refused by name:
 // declare min_feature or refine dx.
+// A blob is COVERED (the lead, 2026-10-27) when every sample it would block
+// alone (its own phi <= dx/2) is closed by another part, which wins it: it
+// lies inside that part, adds no boundary and is never sheeted, and the run
+// line names the parts that cover it. A blob covered only in part is exposed,
+// and refused with the faces it would block and how many stay open.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 
