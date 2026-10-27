@@ -22,6 +22,8 @@
 
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
+#include "core/flow_volume.hpp"
+#include "core/fp16.hpp"
 
 #include "../sandbox/editor_airflow.hpp"
 #include "../sandbox/editor_scene_edits.hpp"
@@ -146,6 +148,28 @@ constexpr an::Controls kHalf{true, 0.5f, 0.0f, 0.0f, 0.0f};
 // boundaries overwrite (du's middle at 20^3 is i = 0, j = 0).
 void nan_into_du(void*, std::span<float> du, std::span<float>, std::span<float>) {
     std::fill(du.begin(), du.end(), std::numeric_limits<float>::quiet_NaN());
+}
+
+// `frame` against a one-thread LiveRun of the same case and program, started
+// as Run air started it before Run air on the GPU (LiveRun::start() on the
+// CPU): the same steps, time and halves, to the bit.
+void expect_one_threads_frame(const spade::scene::SceneDesc& s, const spade::scene::SceneAirflowRegion& region,
+                              const an::ControlProgram& program, const ed::AirFrame& frame) {
+    const Result<an::ResolvedCase> resolved = ed::air_case(s, region);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    const Result<spade::vehicles::ModelType> model = ed::air_model(s, region);
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    Result<an::LiveRun> one = an::LiveRun::start(*resolved, *model);
+    ASSERT_TRUE(one.has_value()) << one.error().context;
+    spade::FlowVolume v;
+    while (one->state().frames < frame.frames) {
+        const an::Controls c = an::controls_at(program, static_cast<float>(one->state().t_s));
+        ASSERT_TRUE(one->advance_frame(c, v).has_value());
+    }
+    EXPECT_EQ(frame.steps, one->state().steps);
+    EXPECT_EQ(frame.t_s, one->state().t_s);
+    EXPECT_TRUE(frame.volume.v == v.v) << "the velocities differ from one thread's";
+    EXPECT_TRUE(frame.volume.s == v.s) << "the scalars differ from one thread's";
 }
 
 }  // namespace
@@ -306,14 +330,21 @@ TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
     EXPECT_EQ(fast.line(), "air at full speed");
 }
 
-// The band (§9) and its floor (the lead's ruling A, 2026-10-27): the speed,
-// then the run's label; elided at its end, it never loses its speed or the
-// run's kind ("actuator disc").
-TEST(EditorAirflow, TheBandsFloorIsItsSpeedAndTheRunsKind) {
-    const std::string band = ed::air_band("air at 1/43 speed", "actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
-    EXPECT_EQ(band, "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
-    EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 actuator disc");
-    EXPECT_EQ(ed::air_band("waiting for the air's first frame", ""), "waiting for the air's first frame");
+// The band (§9) and its floor (the lead's ruling A, 2026-10-27, and Run air
+// on the GPU's): the speed, the run's kind, where its fluid steps ("GPU", or
+// "CPU: " and why), then the rest of the run's label; elided at its end, it
+// never loses its speed, the run's kind or its backend's name (the CPU's why
+// goes with the rest).
+TEST(EditorAirflow, TheBandsFloorIsItsSpeedTheRunsKindAndItsBackend) {
+    const std::string label = "actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3";
+    const std::string gpu = ed::air_band("air at 1/2 speed", label, "GPU");
+    EXPECT_EQ(gpu, "air at 1/2 speed \xc2\xb7 actuator disc \xc2\xb7 GPU \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(ed::band_floor(gpu), "air at 1/2 speed \xc2\xb7 actuator disc \xc2\xb7 GPU");
+    const std::string cpu = ed::air_band("air at 1/43 speed", label, "CPU: no Vulkan device");
+    EXPECT_EQ(cpu,
+              "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU: no Vulkan device \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(ed::band_floor(cpu), "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU");
+    EXPECT_EQ(ed::air_band("waiting for the air's first frame", "", "GPU"), "waiting for the air's first frame");
     EXPECT_EQ(ed::band_floor("waiting for the air's first frame"), "waiting for the air's first frame");
 }
 
@@ -353,4 +384,50 @@ TEST(EditorAirflow, ThePlacedPhantomsAirStartsAndPublishes) {
     EXPECT_TRUE(frame->error.empty()) << frame->error;
     EXPECT_GE(frame->frames, 1u);
     EXPECT_TRUE(frame->run_label.starts_with("actuator disc")) << frame->run_label;
+}
+
+// The CPU fallback (Run air on the GPU, slice 3; the lead, 2026-10-27): a run
+// its starter puts on the CPU is today's run to the bit, and says why it
+// isn't on the GPU. The starter Run air takes when given none is that one,
+// with no device.
+TEST(EditorAirflow, TheCpuFallbackIsTodaysRunToTheBitAndSaysWhy) {
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    const an::ControlProgram program{{{0.0f, kHalf}}};
+    Result<std::unique_ptr<ed::AirflowRun>> run =
+        ed::AirflowRun::start(s, region, program, {}, ed::cpu_air_starter("the device was lost"));
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ((*run)->backend(), "CPU: the device was lost");
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 2);
+    (*run)->stop();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->error.empty()) << frame->error;
+    ASSERT_GE(frame->frames, 2u);
+    expect_one_threads_frame(s, region, program, *frame);
+
+    Result<std::unique_ptr<ed::AirflowRun>> plain = ed::AirflowRun::start(s, region, program);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    EXPECT_EQ((*plain)->backend(), "CPU: no Vulkan device");
+}
+
+// Run air's guard (the lead, 2026-10-27): a published frame whose fastest
+// cell, by its u, v and w, is past ten times the run's top speed is a fault
+// naming the frame, the cell and both speeds; at the bound it is not. The
+// device can step a NaN into a finite flow where the CPU faults, so this is
+// the guard on both backends; a non-finite half is the publish's to refuse,
+// and the scan passes over it.
+TEST(EditorAirflow, AFrameFasterThanTenTimesTheTopSpeedIsAFault) {
+    spade::FlowVolume v;
+    v.header.nx = v.header.ny = v.header.nz = 2;
+    v.v.assign(8u * spade::kFlowHalvesPerCell, 0);
+    v.s.assign(8u * spade::kFlowHalvesPerCell, 0);
+    const std::size_t at = spade::flow_cell_index(v.header, 1, 0, 1) * spade::kFlowHalvesPerCell;
+    v.v[at + spade::kFlowU] = spade::fp16::from_f32(60.0f).bits;
+    v.v[at + spade::kFlowV] = spade::fp16::from_f32(80.0f).bits;
+    v.v[spade::kFlowW] = spade::fp16::kNoDataBits;  // cell (0, 0, 0)
+    EXPECT_EQ(ed::air_frame_fault(v, 10.0f, 7), "") << "100 m/s is at the bound, not past it";
+    v.v[at + spade::kFlowW] = spade::fp16::from_f32(10.0f).bits;
+    EXPECT_EQ(ed::air_frame_fault(v, 10.0f, 7),
+              "frame 7: the fastest cell, (1, 0, 1), is at 100.5 m/s, past ten times the top speed (100.0 m/s)");
 }

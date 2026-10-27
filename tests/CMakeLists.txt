@@ -477,6 +477,14 @@ if(SPADE_BUILD_SANDBOX)
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
 endif()
 
+# Run air on the GPU (Rendering's design note, slice 3): the editor's
+# AirflowRun through gpu_air_starter() (sandbox/editor_air_gpu.hpp) against
+# its CPU run, GpuEditorAirflow* on the device. The sandbox's tests and the
+# device's both.
+if(SPADE_BUILD_SANDBOX AND SPADE_VULKAN)
+    target_sources(spade_tests PRIVATE test_gpu_editor_airflow.cpp)
+endif()
+
 # GlRenderer on a real GL context (SR-13 back-face culling first). GPU-gated:
 # its suite is GpuGlRenderer, so it carries the `gpu` label, runs on the
 # development box and skips by name where no display or GL 4.3 context exists

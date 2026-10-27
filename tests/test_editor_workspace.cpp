@@ -701,3 +701,27 @@ TEST(EditorWorkspaceRun, TheGridCellRowShowsTheRunsSizedCellAndWhy) {
     command(*w, Command::stop);
     EXPECT_EQ(w->panels().grid_cell, before);
 }
+
+// Run air on the GPU (slice 3; the lead, 2026-10-27): Run air starts through
+// the starter the editor was given (the window gives it the GPU's,
+// editor_air_gpu.hpp), and the run says where its fluid steps; given none,
+// the CPU's, saying so.
+TEST(EditorWorkspaceAir, RunAirStartsThroughTheEditorsStarter) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    (void)quad_with_region(*w);
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->air()->backend(), "CPU: no Vulkan device");
+    command(*w, Command::stop);
+    int calls = 0;
+    w->set_air_starter([&calls](const spade::analysis::ResolvedCase& r, const spade::vehicles::ModelType& m) {
+        ++calls;
+        return ed::cpu_air_starter("told so")(r, m);
+    });
+    command(*w, Command::run_air);
+    ASSERT_NE(w->air(), nullptr) << w->panels().status;
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(w->air()->backend(), "CPU: told so");
+    command(*w, Command::stop);
+}
