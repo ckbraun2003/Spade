@@ -376,6 +376,12 @@ The lead asked Physics for P11's four answers and for Q3.
 - The `.gitattributes` `*.spmesh binary` grant moves from L7b2 to L7c1.
 - reference_quad stays a fixture, so the lead asks Interface to fly an L5 drone in the tour's editor chapters, where the props will show.
 
+**L7c2's two calls (the lead, 2026-10-27).** Both stand.
+1. A psi refusal never fails a step, since psi is only drawn. The rotor holds, and the owner surfaces it once.
+2. EditorRun's batched no-pilot step goes one step at a time when any vehicle has rotors, which keeps Cameron's Q6 ruling of honest psi. Its cost is measured: Interface's READY for the EditorRun part gives Run's frame time on the hover scene, batched against one at a time. If one at a time costs more than a few ms a frame, it goes to the lead before merging. Psi is never approximated.
+
+**L7b1 (the lead and Physics, 2026-10-27).** Passed at `fb6a90c`. No per-branch leg: batch 18's leg covers the two engine .cpp files. Physics' wording note, fixed in L7b2: the look keeps each part's mass to within rounding (the bell exactly), not "unchanged".
+
 ## Open questions for the lead (each with a recommendation)
 
 1. **Where props enter the spec.** (a) The generic `AirframeSpec::rotor_parts`: massless, with the builder picking the hand. (b) One mesh per hand in `PropBlock`, picked by spin_dir in the compile. PropBlock is a part-file struct, so its writer would have to refuse the field. (c) `attach`/`rotor` on `PartGeometrySpec`: such a record carries mass, and the composite needs mass > 0, so the prop would be counted twice. **Recommend (a).**
