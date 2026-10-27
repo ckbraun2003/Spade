@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -94,6 +95,19 @@
 // (the content hash covers it). Scale: none is left to drop, since B6 bakes
 // every node transform into the mesh's positions and a record's pose is
 // rigid.
+//
+// ROTOR PARTS (L7c1 of the realistic drones plan; the lead's ruling 3,
+// 2026-10-26). AirframeSpec::rotor_parts are parts that turn with their
+// rotor -- a propeller's mesh, drawn on its hub -- and have no mass: the
+// propeller's mass is PropBlock's, on the hub. Each becomes a PartDesc
+// attached to its rotor (posed_parts() turns it by R_y(s_k psi_k)), its mount
+// in the hub frame rounded to float once, with no design -> body conversion,
+// after every rigid part, in declaration order, so no rigid part's index
+// moves. It enters no composite, drag or fit, and parts never enter
+// model_identity(), so only parts_identity() moves. Refused, each one issue
+// at rotor_parts[k].<field>: a rotor out of range, no mesh, a mount not
+// finite or turned by a zero quaternion, a min_feature not finite and > 0,
+// and a name the model's rules refuse. These stop only the final model.
 //
 // DRAG AND MESHES (Physics' rule, 2026-10-13). The best-effort drag estimate
 // reads the records' inertia shapes, and a mesh record has none; yet its
@@ -269,6 +283,18 @@ struct ImuSpec {
     double sigma_bg = 0.0;
 };
 
+// A part that turns with its rotor (ROTOR PARTS, L7c1): a propeller's
+// mesh, drawn on its hub. It has no mass (the lead's ruling 3, 2026-10-26):
+// the propeller's mass is PropBlock's.
+struct RotorPartSpec {
+    std::string name;                            // the model part's name
+    std::string role;                            // a free label ("prop")
+    uint32_t rotor = 0;                          // its rotor: an index into AirframeSpec::rotors
+    MountPose mount;                             // part -> the HUB frame, at psi = 0
+    std::shared_ptr<const TriangleMesh> mesh{};
+    float min_feature = 0.0f;                    // m, its smallest feature, as a part declares it
+};
+
 struct AirframeSpec {
     std::string name;               // non-empty
     uint32_t param_schema_id = 0;
@@ -283,6 +309,7 @@ struct AirframeSpec {
     std::vector<RotorSpec> rotors;  // at least one
     std::vector<DragSpec> drag;     // empty: estimated from the parts (best-effort); refused beside a mesh record
     std::vector<ImuSpec> imus;
+    std::vector<RotorPartSpec> rotor_parts;  // parts that turn with a rotor: massless, after every rigid part
     double proxy_radius = 0.0;      // m, >= 0
 
     // The fit's operating point: hover in still air.
@@ -292,7 +319,7 @@ struct AirframeSpec {
 };
 
 // One problem: what kind of entry ("airframe", "parts", "motor", "prop",
-// "esc", "battery", "rotors", "drag", "imus", "model"), its index within that
+// "esc", "battery", "rotors", "drag", "imus", "rotor_parts", "model"), its index within that
 // kind (0 for the single blocks), the field and a message. A block's shape is
 // "<block>[0].shape"; a bad pose is "rotors[k].hub", "drag[k].mount" or
 // "imus[k].mount", once; a list too long is "<list>[0].count"; a part

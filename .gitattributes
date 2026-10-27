@@ -7,3 +7,7 @@
 # a build from an archive, which has no git (the Docker leg, a source tarball),
 # still names its commit (cmake/stamp_identity.cmake, core/build_identity.hpp).
 cmake/archive_commit.txt export-subst
+
+# A mesh sidecar (world/mesh_file.hpp) is binary: never given CRLF, never
+# diffed as text (L7c1; the lead's grant, 2026-10-27).
+*.spmesh binary

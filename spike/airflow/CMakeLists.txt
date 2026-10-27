@@ -97,6 +97,9 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_scalars)
 spade_slang_kernel_variants(spade_airflow_runner airflow_solid_divergence)
 spade_slang_kernel_variants(spade_airflow_runner airflow_solid_gradient)
 spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_apply)
+# B5.2b: the symmetric V(2,2) preconditioner's full-weighting restriction
+# (mg_levels.slang's levels; B2's smoother, residual and prolongation do the rest).
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict_full)
 
 # B5.3 and B5.5 (Physics; tests/test_gpu_airflow_solids.cpp): the closed
 # regions' means and the CG's gauge, what a closed face holds (both interior

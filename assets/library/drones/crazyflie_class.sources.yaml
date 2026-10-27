@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/crazyflie_class.model.yaml", hash: "10b98284b828b431"}
+model: {file: "drones/crazyflie_class.model.yaml", hash: "f49d36e392f1ed99"}
 built_by: "tests/library_drones.hpp: crazyflie_class(), its remainder by vehicles::fit_remainder()"
 parts:
   prop: {file: "parts/uiuc_cfnq_45t1.prop.yaml", hash: "195515386e096cf4"}
@@ -70,6 +70,14 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.063225, source: "luis_leny_2016", grade: derived, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule"}
+  "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
+  "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
+  "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
+  "meshes.prop.thickness_tip": {value: 0.08, grade: assumed, note: "8% thick at its last station"}
+  "meshes.prop.chord_points": {value: 8, grade: assumed, note: "8 points on each surface: a drawing's resolution"}
+  "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
+  "meshes.prop.hub_height": {value: 0.0023495, grade: assumed, note: "the hub 5% of the diameter tall"}
+  "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
   "mass": {value: 0.029, source: "bitcraze_cf21_datasheet", grade: published, note: "fit_remainder()'s mass target: the Crazyflie 2.1's 29 g"}
   "inertia": {value: [1.395e-05, 2.173e-05, 1.436e-05], source: "luis_leny_2016", grade: measured, note: "fit_remainder()'s inertia target: Luis & Le Ny's (Ixx, Iyy, Izz) = (1.395, 1.436, 2.173)e-5 kg m^2 of a Crazyflie 2.0 (second-hand) as design (x roll, y yaw, z pitch), not scaled by 29/27 (Physics, 2026-10-22)"}
   "parts[5].mass": {value: 0.008000000000000004, source: "bitcraze_cf21_datasheet", grade: fitted, note: "mass-only at the CoM so the composite meets Luis & Le Ny's tensor: the targets less the parts, by fit_remainder()"}

@@ -14,6 +14,15 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **attach_solid_field() and the GPU preconditioner** (Physics, B5.2b, merged `f7a9a2a`).
+  - **On the CPU**, `physics::airflow::attach_solid_field(s, g, bc, field)` attaches a solid field already built for g's shape, reaching `set_solids()`' state bit for bit. `set_solids()` now calls it. Behaviour is unchanged: it refuses as `check_grid()` does, and refuses a field made for another shape.
+  - **On the GPU**, there's the `airflow_mg_restrict_full` kernel and `solids_chain`'s symmetric V(2,2) chain and init_solids hook. `projection_chain`'s `append_sweeps()` gains `black_first = false`, and the default records B2's commands unchanged.
+- **Props on the library drones** (Core, L7c1, merged `d8640b9`).
+  - **The spec:** `AirframeSpec::rotor_parts` holds `RotorPartSpec{name, role, rotor, mount, mesh, min_feature}`, where `mount` is in the hub frame at psi 0. Each compiles to a massless `PartAttach::rotor` mesh part, placed after every rigid part.
+  - **What changes:** only `parts_identity()`. Mass, inertia, drag and `model_identity()` are unchanged.
+  - **The library drones:** all six carry `prop[k]` on every rotor. Their sidecars are `drones/<stem>/prop_{ccw,cw}.spmesh`, pinned by hash, and `.gitattributes` marks `*.spmesh` binary.
+  - **Posing and solids:** `posed_parts()` turns each prop by R_y(s_k psi). `PartFilter::rigid_only` drops them, so they never become solids.
+  - **One refusal:** `add_model()` now refuses a placed library drone, because the drone has mesh parts. Place one with `add_model_with_meshes()`.
 - **GpuFluid, the whole fluid step on the GPU** (Rendering, G1, merged `e34d2be`). New `spike/airflow/step_chain.hpp`, namespace `spade::airflow_gpu`:
   - `GpuFluid::create(ctx, g, bc, cfg, solids, wg)`;
   - `step(discs)` takes at most `kMaxDiscs` = 16 discs;

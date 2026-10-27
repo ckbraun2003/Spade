@@ -1888,3 +1888,135 @@ TEST(AirframeCompile, AMeshTensorWithProductsCompilesAsTheTextbookTensor) {
         expect_same_body(*mesh, *want, c.bit_exact, c.what);
     }
 }
+
+// ---------------------------------------------------------------------------
+// ROTOR PARTS (L7c1 of the realistic drones plan, docs/design/core/plans/
+// 2026-10-26-l7-realistic-drones-draft.md): a propeller drawn on its hub.
+
+namespace {
+
+// A flat blade-like box, 100 x 2 x 10 mm, centred on its hub.
+[[nodiscard]] MeshPtr blade_box() {
+    return mesh_of(box_input(glm::dvec3(-0.05, -0.001, -0.005), glm::dvec3(0.1, 0.002, 0.01)));
+}
+
+[[nodiscard]] RotorPartSpec prop_on(uint32_t rotor, MeshPtr mesh) {
+    return RotorPartSpec{.name = "prop[" + std::to_string(rotor) + "]",
+                         .role = "prop",
+                         .rotor = rotor,
+                         .mount = MountPose{.position = glm::dvec3(0.0, 0.004, 0.0)},
+                         .mesh = std::move(mesh),
+                         .min_feature = 0.002f};
+}
+
+// The reference quad with a prop on every hub, one mesh shared.
+[[nodiscard]] AirframeSpec quad_with_props() {
+    AirframeSpec s = reference_quad();
+    const MeshPtr blade = blade_box();
+    for (uint32_t k = 0; k < 4; ++k) s.rotor_parts.push_back(prop_on(k, blade));
+    return s;
+}
+
+}  // namespace
+
+// ROTOR PARTS. Each record becomes a part attached to its rotor, after every
+// rigid part, its mount in the hub frame rounded to float once (no design ->
+// body conversion: the hub frame is the hub's), carrying its mesh. Posed at
+// psi = 0 it sits at its hub, offset along the hub's thrust axis by its mount.
+TEST(AirframeCompile, ARotorPartRidesItsHubAtAzimuthZero) {
+    AirframeSpec s = reference_quad();
+    const auto without = compile_airframe(s);
+    s.rotor_parts.push_back(prop_on(1, blade_box()));
+    const auto with = compile_airframe(s);
+    ASSERT_TRUE(without.has_value()) << without.error().context;
+    ASSERT_TRUE(with.has_value()) << with.error().context;
+    const ModelType& m = with->model;
+    ASSERT_EQ(m.parts.size(), without->model.parts.size() + 1);
+    const PartDesc& p = m.parts.back();
+    EXPECT_EQ(p.name, "prop[1]");
+    EXPECT_EQ(p.role, "prop");
+    EXPECT_EQ(p.attach, PartAttach::rotor);
+    EXPECT_EQ(p.rotor, 1u);
+    EXPECT_EQ(p.mesh, s.rotor_parts[0].mesh);
+    EXPECT_EQ(p.min_feature, 0.002f);
+    EXPECT_EQ(p.surface.kind, PartSurface::Kind::wall);
+    EXPECT_EQ(p.mount_pos, glm::vec3(0.0f, 0.004f, 0.0f));
+    EXPECT_EQ(p.mount_orient, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    EXPECT_TRUE(m.issues().empty());
+
+    spade::BodyState body{};
+    body.pos = glm::vec3(0.0f);
+    body.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::vector<float> still(m.rotors.size(), 0.0f);
+    const auto posed = posed_parts(m, body, still, still, PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    ASSERT_EQ(posed->parts.size(), m.parts.size());
+    const PosedPart& at = posed->parts.back();
+    const glm::vec3 hub = world_of(m, body, s.rotors[1].hub.position);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(at.hub[i], hub[i], 1e-6f) << i;
+        EXPECT_NEAR(at.origin[i], hub[i] + (i == 1 ? 0.004f : 0.0f), 1e-6f) << i;
+    }
+}
+
+// A rotor part adds nothing but itself: the body, the inertia, the drag, the
+// fit and model_identity stay bit for bit, the rigid parts keep their indices,
+// and only parts_identity moves.
+TEST(AirframeCompile, ARotorPartAddsNoMassNoDragAndNoModelIdentity) {
+    const auto without = compile_airframe(reference_quad());
+    const auto with = compile_airframe(quad_with_props());
+    ASSERT_TRUE(without.has_value()) << without.error().context;
+    ASSERT_TRUE(with.has_value()) << with.error().context;
+    expect_same_body(*with, *without, true, "four props");
+    ASSERT_EQ(with->model.drag_bodies.size(), without->model.drag_bodies.size());
+    for (std::size_t k = 0; k < with->model.drag_bodies.size(); ++k) {
+        const DragBodyDesc& a = with->model.drag_bodies[k];
+        const DragBodyDesc& b = without->model.drag_bodies[k];
+        EXPECT_EQ(a.mode, b.mode) << k;
+        EXPECT_EQ(std::bit_cast<uint32_t>(a.area), std::bit_cast<uint32_t>(b.area)) << k;
+        EXPECT_TRUE(same_bits(a.coeffs, b.coeffs)) << k;
+        EXPECT_TRUE(same_bits(a.local_pos, b.local_pos)) << k;
+    }
+    EXPECT_EQ(std::bit_cast<uint64_t>(with->fit.thrust_coeff), std::bit_cast<uint64_t>(without->fit.thrust_coeff));
+    EXPECT_EQ(std::bit_cast<uint64_t>(with->fit.tau), std::bit_cast<uint64_t>(without->fit.tau));
+    EXPECT_EQ(model_identity(with->model), model_identity(without->model));
+    EXPECT_NE(parts_identity(with->model), parts_identity(without->model));
+    ASSERT_EQ(with->model.parts.size(), without->model.parts.size() + 4);
+    for (std::size_t k = 0; k < without->model.parts.size(); ++k) {
+        EXPECT_EQ(with->model.parts[k].name, without->model.parts[k].name) << "the rigid parts keep their indices";
+    }
+}
+
+// A rotor part is refused by name, at rotor_parts[k].<field>, each fault one
+// issue: a rotor out of range, no mesh, a mount not finite or turned by a
+// zero quaternion, a min_feature not finite and > 0, and a name the model's
+// rules refuse (empty, or another part's).
+TEST(AirframeCompile, ARotorPartIsRefusedByNameAndField) {
+    struct Case {
+        const char* what;
+        void (*change)(RotorPartSpec&);
+        const char* field;
+    };
+    const Case cases[] = {
+        {"a rotor out of range", [](RotorPartSpec& p) { p.rotor = 4; }, "rotor"},
+        {"no mesh", [](RotorPartSpec& p) { p.mesh = nullptr; }, "mesh"},
+        {"a NaN mount", [](RotorPartSpec& p) { p.mount.position.y = std::nan(""); }, "mount"},
+        {"a zero turn", [](RotorPartSpec& p) { p.mount.orientation = glm::dquat(0.0, 0.0, 0.0, 0.0); }, "mount"},
+        {"a min_feature of 0", [](RotorPartSpec& p) { p.min_feature = 0.0f; }, "min_feature"},
+        {"no name", [](RotorPartSpec& p) { p.name.clear(); }, "name"},
+        {"a motor's name", [](RotorPartSpec& p) { p.name = "motor[0]"; }, "name"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        AirframeSpec s = reference_quad();
+        s.rotor_parts.push_back(prop_on(2, blade_box()));
+        c.change(s.rotor_parts.back());
+        const std::vector<AirframeIssue> issues = check_airframe(s);
+        ASSERT_EQ(issues.size(), 1u) << listed(issues);
+        EXPECT_TRUE(has_issue(issues, "rotor_parts", 0, c.field)) << listed(issues);
+        const auto refused = compile_airframe(s);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_TRUE(mentions(refused.error().context, std::string("rotor_parts[0].") + c.field))
+            << refused.error().context;
+    }
+}

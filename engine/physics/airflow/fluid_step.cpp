@@ -223,7 +223,24 @@ Result<void> set_solids(FluidScratch& s, const MacGrid& g, const DomainBc& bc, s
         clear_weights(s.projection.mg);
         return {};
     }
-    label_regions(s.regions, g.shape, periodic, s.solids);
+    // The field moves out and back in: it was made for g's shape under this
+    // check_grid(), so attaching it is never refused here.
+    return attach_solid_field(s, g, bc, std::move(s.solids));
+}
+
+Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainBc& bc, SolidField field) {
+    if (Result<void> ok = check_grid(g.shape, bc, true); !ok) return ok;
+    if (field.theta[0].size() != g.u.size() || field.theta[1].size() != g.v.size() ||
+        field.theta[2].size() != g.w.size()) {
+        return std::unexpected(
+            Error{Code::invalid_argument, "airflow solids: the solid field was not made for this grid's shape"});
+    }
+    s.solids = std::move(field);
+    if (!s.solids.any) {
+        clear_weights(s.projection.mg);
+        return {};
+    }
+    label_regions(s.regions, g.shape, periodic_axes(bc), s.solids);
     set_weights(s.projection.mg, {s.solids.theta[0], s.solids.theta[1], s.solids.theta[2]});
     if (s.projection.pcg.x.size() != g.p.size()) s.projection.pcg = make_pcg_scratch(g.p.size());
     return {};
