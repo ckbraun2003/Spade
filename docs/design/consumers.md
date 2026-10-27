@@ -14,6 +14,11 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **The smoke tour flies the library Phantom** (Interface, merged `0f51c4e`).
+  - The tour has 13 stills. `editor_placed_drone` comes before `editor_airflow`.
+  - editor.add_drone, editor.airflow and editor.fly place the meshed Phantom, not the reference quad.
+  - EditorRun sizes the grid cell to max(the records' cell, 2 × the largest proxy radius), and the inspector's row names the drone it was sized for.
+  - A scene of reference quads only stays bit for bit the records.
 - **The library drones wear rigid meshes** (Core, L7b2, merged `fc85801`).
   - Each drone's body, arms and motor bells are now mesh parts, with sidecars `drones/<stem>/{body,arm,bell}.spmesh`.
   - `vehicles::wear_look()` puts basic_quad's look on a spec's records.
