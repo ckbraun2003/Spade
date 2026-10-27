@@ -747,8 +747,11 @@ TEST(EditorImport, ASidecarThatCantBeCarriedSavesNothing) {
     EXPECT_TRUE(w->documents().scene.dirty());
 }
 
-// Core's words, in the panel's status line: the drone isn't saved.
-TEST(EditorImport, SaveToLibraryRefusesADroneWithImportedPartsInCoresWords) {
+// A drone with imported parts goes to the library with their sidecars (the
+// lead, 2026-10-27: Save to library carries mesh parts; until then it was
+// refused in Core's words): the panel lists it, and each part's sidecar is
+// beside its file, at the content-named path the part gives.
+TEST(EditorImport, SaveToLibraryCarriesADroneWithImportedPartsAndTheirSidecars) {
     TempDir t{"editor-import-library"};
     auto w = with_imports(t.path());
     ASSERT_NE(w, nullptr);
@@ -761,12 +764,21 @@ TEST(EditorImport, SaveToLibraryRefusesADroneWithImportedPartsInCoresWords) {
     w->panels().selection =
         ed::Selection{ed::Selection::Kind::object, w->documents().scene.desc().vehicles.at(0).name};
     run(*w, ed::Command::save_to_library);
-    EXPECT_EQ(w->panels().library.size(), items);
-    const std::string& status = w->panels().status;
-    EXPECT_NE(status.find("Save to library: "), std::string::npos) << status;
-    EXPECT_NE(status.find("has mesh parts; their sidecars would need copying beside the scene"), std::string::npos)
-        << status;
-    EXPECT_FALSE(fs::exists(mine.parent_path() / "library" / "library.yaml"));
+    EXPECT_EQ(w->panels().library.size(), items + 1) << w->panels().status;
+    EXPECT_TRUE(w->panels().status.starts_with("saved '")) << w->panels().status;
+    const fs::path library = mine.parent_path() / "library";
+    EXPECT_TRUE(fs::exists(library / "library.yaml"));
+    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    std::size_t meshes = 0;
+    for (const spade::vehicles::ModelType& m : s.models) {
+        if (m.name != s.vehicles.at(0).model) continue;
+        for (const spade::vehicles::PartDesc& part : m.parts) {
+            if (!part.mesh) continue;
+            ++meshes;
+            EXPECT_TRUE(fs::exists(library / part.mesh_file)) << part.mesh_file;
+        }
+    }
+    EXPECT_GT(meshes, 0u) << "the drone has imported parts";
 }
 
 // A crashed session leaves its staging folder behind (the lead, 2026-10-22).
