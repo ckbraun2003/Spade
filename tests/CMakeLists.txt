@@ -198,6 +198,9 @@ add_executable(spade_tests
     test_analysis_live_run_save.cpp
     test_d1_case.cpp
     test_flow_movie_frame_check.cpp
+    # write_frame(), which every film's frames pass through (the lead's grant,
+    # 2026-10-27): the recorder's cache, compiled in from the tool.
+    ../tools/flow_movie/cache.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
