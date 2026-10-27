@@ -14,6 +14,12 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **The editor's Run air runs on the GPU** (Interface, Run air on the GPU, slice 3, merged `1333c83`).
+  - With Vulkan on, spade_sandbox links spade_airflow_runner and starts the air through `start_live_run()`. A refused device runs the CPU, and the band says why.
+  - The band reads "air at 1/N speed · actuator disc · GPU · 32³, dx …" (or "CPU: <reason>").
+  - Each published frame is bounded at 10 × the top speed; past it, the air stops, naming the frame and cell.
+  - The smoke's editor.airflow/publishes line now adds the wall time, fps and backend.
+  - The Phantom: 1/3 of real time on the GPU, against 1/39 on the CPU.
 - **A part wholly inside another is covered** (Physics, merged `09e4d43`).
   - Such a part (one that closes no face of its own) adds the run-line note "<part>: covered by '<coverer>'". The field is the coverer's alone.
   - A part that's only partly covered is refused with new text naming the faces left open ("... 'body' closes C of the B faces it would block; B-C stay open").
