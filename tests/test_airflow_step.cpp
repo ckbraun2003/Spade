@@ -277,8 +277,8 @@ TEST(AirflowActuator, ADiscWhoseSupportLeavesTheGridIsRefused) {
 }
 
 // P1 (the demonstration plan; spec §3.1): the swirl. The disc's torque goes to
-// the air as tangential forces about its axis, torque / (48 r) at a point on
-// the ring of radius r (constant circulation: the ideal rotor under the
+// the air as tangential forces about its axis, torque / (n r) at each of its n
+// points on the ring of radius r (constant circulation: the ideal rotor under the
 // disc's uniform thrust loading), so the points' sum of r |f| is the torque.
 // Peskin's kernel keeps first moments, so the air's angular momentum about
 // the centre gains h * torque along the axis, by the right-hand rule, and its

@@ -376,9 +376,13 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
 // The far wake is chaotic past its horizon T_p (step 104 at the probe, under
 // the banded-parity plan's rule), so one run is one trajectory, and a measure
 // read from it moves with a last bit. On the axis 2R below, C8's first
-// measure, 3 of 16 one-ulp-nudged runs missed the 10%: the disc's 48 points
-// leave a hub within 2.1 cells of the axis unloaded (the inner ring at 0.408R,
-// Peskin's reach 2 cells), and the axis sits in that hub's meandering wake.
+// measure, 3 of 16 one-ulp-nudged runs missed the 10% with the 3 x 16 disc:
+// its 48 points left a hub within 2.1 cells of the axis unloaded (the inner
+// ring at 0.408R, Peskin's reach 2 cells), and the axis sat in that hub's
+// meandering wake. The 5 x 32 disc that C8's R/dx 10 takes since 2026-10-27
+// (inner ring at 0.316R, 3.16 cells) still leaves the four axis faces nearly
+// unloaded, at 0.001x the uniform disc: the eight runs' axis measures span
+// 7.7495 to 8.0064 m/s, +2.3% to +5.7% of momentum theory.
 // The measure is the mean downwash over the 80 v faces within 0.5R of the
 // axis, 2R below (the end-goal checks' probe disc), over steps 385 to 768. The
 // verdict is an ensemble's: eight runs that differ only by a nudge in this
@@ -387,11 +391,13 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
 // signed off by Physics before this run:
 // docs/design/test-docs/2026-10-22-c8-spread.md.
 //
-// Physics' note on the bias: the disc mean reads about 6% above momentum
-// theory's uniform disc. spread_actuator's 48 points load the disc unevenly:
-// an unloaded hub, and 1.34x the uniform thrust per area inside 0.5R.
-// Annular momentum theory gives up to sqrt 1.34 = 1.16x there, and mixing
-// reduces it. The bias belongs to the disc's point loading, not the solver.
+// Physics' note on the bias: with the 3 x 16 disc the disc mean read about 6%
+// above momentum theory's uniform disc. Its 48 points loaded the disc
+// unevenly: an unloaded hub, and 1.34x the uniform thrust per area inside
+// 0.5R. Annular momentum theory gives up to sqrt 1.34 = 1.16x there, and
+// mixing reduces it. The 5 x 32 disc (2026-10-27) puts 0.80x the uniform
+// thrust inside 0.5R by its points, spread to 0.99x over the measure's 80
+// faces, and the mean reads 4.1% above: what remains is not the 0.5R loading.
 
 constexpr uint32_t kC8Steps = 768;
 constexpr std::size_t kC8Nudged = 110;
