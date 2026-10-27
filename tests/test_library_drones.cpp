@@ -1590,7 +1590,10 @@ TEST(LibraryDrones, EveryLibraryDroneWearsItsMeshes) {
 // through the remainder), and the principal axes stay the design axes. The
 // inertia moves -- a rounded box, capsules and bells are not a box, thin
 // tubes and cylinders -- and each axis's shift against the L5 drone is
-// reported for READY (TD-1; the lead's Q4).
+// reported for READY (TD-1; the lead's Q4). So does the centre of mass, and
+// its shift is reported beside the inertia's: each bell's top edge is
+// chamfered, which puts its centroid below the motor cylinder's middle, so
+// every drone's centre of mass moves down by some microns (the lead, 2026-10-27).
 TEST(LibraryDrones, TheMeshesKeepEachDronesMassAndAxes) {
     const spade::Result<Committed> lib = committed_library();
     ASSERT_OK(lib);
@@ -1612,6 +1615,12 @@ TEST(LibraryDrones, TheMeshesKeepEachDronesMassAndAxes) {
             const double now = worn->inertia.principal_moments[a];
             report(std::string(stem) + ".inertia_shift." + kAxis[static_cast<std::size_t>(a)], (now - was) / was,
                    "the meshes' principal moment against the L5 drone's, relative");
+        }
+        for (int a = 0; a < 3; ++a) {
+            const double was = l5->model.com_offset[a];
+            const double now = worn->model.com_offset[a];
+            report(std::string(stem) + ".com_shift." + kAxis[static_cast<std::size_t>(a)], now - was,
+                   "the meshes' centre of mass against the L5 drone's, design frame, m");
         }
     }
 }
