@@ -103,3 +103,76 @@ float face_wall(uint c, uint idx) { return airflow_wall_velocity[aperture_base(c
 
 // solids.hpp's closed(): theta exactly 0.
 bool face_closed(uint c, uint idx) { return face_theta(c, idx) == 0.0; }
+
+// ===========================================================================
+// B5.3 AND B5.5 (Physics, 2026-10-27; appended): the region table, the
+// free-slip layer and the wall load's floats. The host's twin of the
+// constants below is spike/airflow/solids_chain.hpp's of the same names, and
+// a test (AirflowSolidsChain) holds the two alike.
+// ===========================================================================
+//
+// airflow_region_table (binding 19), uint words, packed by the host
+// (solids_chain.hpp's pack_region_table(), from regions.hpp's FluidRegions).
+// C, the closed regions, is the pcg block's count (pcg_closed_regions()):
+//    kRegionWords j + kRegionId           closed region j's region id (j < C,
+//                                         in id order)
+//                   + kRegionCells        its cells
+//                   + kRegionReciprocal   the host's reciprocal of its cells
+//                                         (float bits; remove_region_means()')
+//                   + kRegionMean         its mean (float bits), written by
+//                                         airflow_region_mean
+//    kRegionWords C + id                  region id's closed index j, or
+//                                         kNoRegion when it is pinned
+//
+// The free-slip layer (airflow_face_tags, binding 16, pack_solid_field()'s
+// rule): face f's layer, 0, 1 or 2, is byte f % 4 of word F + f / 4, F every
+// face, f = aperture_base(c) + idx.
+//
+// airflow_wall_load (binding 27), kWallLoadFloats floats: the force at
+// kWallLoadForce, the moment at kWallLoadMoment (x, y, z each, written by
+// airflow_wall_load), and the point the moment is taken about at
+// kWallLoadAbout (the grid's frame, written by the host before the chain).
+
+static const uint kRegionWords = 4u;
+static const uint kRegionId = 0u;
+static const uint kRegionCells = 1u;
+static const uint kRegionReciprocal = 2u;
+static const uint kRegionMean = 3u;
+
+static const uint kWallLoadForce = 0u;
+static const uint kWallLoadMoment = 3u;
+static const uint kWallLoadAbout = 6u;
+static const uint kWallLoadFloats = 9u;
+
+uint region_of_closed(uint j) { return airflow_region_table[kRegionWords * j + kRegionId]; }
+
+float region_reciprocal(uint j) { return asfloat(airflow_region_table[kRegionWords * j + kRegionReciprocal]); }
+
+float region_mean(uint j) { return asfloat(airflow_region_table[kRegionWords * j + kRegionMean]); }
+
+void set_region_mean(uint j, float mean) { airflow_region_table[kRegionWords * j + kRegionMean] = asuint(mean); }
+
+// Region id's closed index, or kNoRegion when the region is pinned.
+uint region_closed_index(uint id) { return airflow_region_table[kRegionWords * pcg_closed_regions() + id]; }
+
+// Every face, u then v then w: where the free-slip layer's bytes start in
+// airflow_face_tags.
+uint faces_total() {
+    const uint3 n = grid_dims();
+    return aperture_base(2u) + n.x * n.y * (n.z + 1u);
+}
+
+// The face's free-slip layer: 0, or 1 or 2 (solids.hpp's SolidField::layer).
+uint face_layer(uint c, uint idx) {
+    const uint f = aperture_base(c) + idx;
+    return (airflow_face_tags[faces_total() + f / 4u] >> (8u * (f % 4u))) & 0xFFu;
+}
+
+// The load's term q, kWallLoadForce + q: F's x, y, z, then M's. (A kernel
+// named for the binding cannot name the binding itself.)
+void set_wall_load(uint q, float value) { airflow_wall_load[kWallLoadForce + q] = value; }
+
+float3 wall_load_about() {
+    return float3(airflow_wall_load[kWallLoadAbout], airflow_wall_load[kWallLoadAbout + 1u],
+                  airflow_wall_load[kWallLoadAbout + 2u]);
+}

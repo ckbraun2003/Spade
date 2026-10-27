@@ -1202,3 +1202,779 @@ TEST(GpuAirflowSolids, SameBitsAtEveryWorkgroupSize) {
         }
     }
 }
+
+// ===========================================================================
+// B5.3 AND B5.5 (Physics, 2026-10-27; appended as a block of its own): the
+// closed regions' means, the interior and the wall load
+// (engine/shaders/kernels/airflow_region_mean, airflow_solid_velocities and
+// airflow_wall_load) against regions.cpp's remove_region_means(), solids.cpp's
+// apply_solid_velocities() and wall_load.cpp's wall_load(), through
+// solids_chain.hpp's append_remove_region_means(), append_solid_velocities()
+// and append_wall_load(). Their own device (LoadDevice) binds the whole
+// airflow set, the region table (19) and the wall load (27) with it.
+// ===========================================================================
+
+#include "airflow_region_mean.spv.gen.hpp"
+#include "airflow_solid_velocities.spv.gen.hpp"
+#include "airflow_wall_load.spv.gen.hpp"
+#include "physics/airflow/wall_load.hpp"
+
+namespace {
+
+// Bindings past B5.2a's Buffer list (bindings.slang section F).
+constexpr uint32_t kRegionTableBinding = 19;
+constexpr uint32_t kWallLoadBinding = 27;
+
+// LoadDevice's RunnerDesc::kernels order.
+enum LoadPipeline : uint32_t {
+    kRegionMeanPipeline = 0,
+    kSolidVelocitiesPipeline,
+    kWallLoadPipeline,
+};
+
+// B5.3 and B5.5's kernels on one grid, with the solid field `f` packed
+// (pack_solid_field()), the regions' labels and their table
+// (pack_region_table(), its closed count in the pcg block), and partials for
+// the widest of the two reductions.
+class LoadDevice {
+public:
+    [[nodiscard]] static std::optional<LoadDevice> create(VulkanContext& ctx, const af::GridShape& s,
+                                                          const af::SolidField& f, const af::FluidRegions& r,
+                                                          uint32_t workgroup_size = kWorkgroupSize) {
+        LoadDevice dev;
+        dev.table_ = ag::pack_region_table(r);
+        const ag::PackedSolidField packed = ag::pack_solid_field(f);
+        std::vector<uint32_t> params = params_for(s, nullptr);
+        params[ag::kParamsFlags] = ag::solids_flags(packed);
+        const auto block = static_cast<uint32_t>(params.size());
+        params.resize(block + ag::kPcgBlockWords, 0u);
+        ag::write_pcg_block(params, block, dev.table_.closed, af::kSolidsCgIterations, af::kSolidsCgCap);
+        const uint64_t cells = cells_of(s);
+        const auto faces = faces_of(s);
+        const uint64_t partials =
+            std::max<uint64_t>({ag::region_partials_floats(s, dev.table_.closed),
+                                uint64_t{ag::kWallLoadTerms} * ag::tile_sum_tiles(s), uint64_t{1}});
+        const auto size_of = [](const auto& v) {
+            return std::max<uint64_t>(4u, uint64_t{v.size()} * sizeof(v[0]));
+        };
+        std::vector<RunnerBuffer> buffers(ag::kAirflowSetBuffers.size());
+        for (uint32_t i = 0; i < buffers.size(); ++i) {
+            buffers[i] = {std::string(ag::kAirflowSetBuffers[i].name), 4u, BufferKind::device_only};
+        }
+        buffers[kParams] = {"airflow_params", params.size() * 4u, BufferKind::staged};
+        buffers[kU] = {"airflow_u", faces[0] * 4ull, BufferKind::staged};
+        buffers[kV] = {"airflow_v", faces[1] * 4ull, BufferKind::staged};
+        buffers[kW] = {"airflow_w", faces[2] * 4ull, BufferKind::staged};
+        buffers[kPressure] = {"airflow_pressure", cells * 4u, BufferKind::staged};
+        buffers[kApertures] = {"airflow_apertures", size_of(packed.apertures), BufferKind::resident};
+        buffers[kWallVelocity] = {"airflow_wall_velocity", size_of(packed.wall_velocity), BufferKind::resident};
+        buffers[kPhi] = {"airflow_phi", size_of(packed.phi), BufferKind::resident};
+        buffers[kFaceTags] = {"airflow_face_tags", size_of(packed.face_tags), BufferKind::resident};
+        buffers[kWallLinks] = {"airflow_wall_links", size_of(packed.wall_links), BufferKind::resident};
+        buffers[kRegionLabels] = {"airflow_region_labels", size_of(r.label), BufferKind::resident};
+        buffers[kRegionTableBinding] = {"airflow_region_table", size_of(dev.table_.words), BufferKind::staged};
+        buffers[kPcg] = {"airflow_pcg", ag::kPcgVectors * cells * 4u, BufferKind::staged};
+        buffers[kPartials] = {"airflow_partials", partials * 4u, BufferKind::staged};
+        buffers[kWallLoadBinding] = {"airflow_wall_load", ag::kWallLoadFloats * 4u, BufferKind::staged};
+        const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_region_mean,
+                                                  &gen::kSpvVariants_airflow_solid_velocities,
+                                                  &gen::kSpvVariants_airflow_wall_load};
+        auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers,
+                                                          .kernels = kernels,
+                                                          .push_bytes = sizeof(ag::ProjectionPush),
+                                                          .workgroup_size = workgroup_size});
+        if (!runner) {
+            ADD_FAILURE() << runner.error().context;
+            return std::nullopt;
+        }
+        dev.runner_ = std::move(*runner);
+        ChainRunner& chain_runner = *dev.runner_;
+        const auto put = [&](uint32_t at, const auto& v) {
+            return v.empty() || check(chain_runner.upload(at, bytes_of(v)));
+        };
+        if (!put(kParams, params) || !put(kApertures, packed.apertures) || !put(kWallVelocity, packed.wall_velocity) ||
+            !put(kPhi, packed.phi) || !put(kFaceTags, packed.face_tags) || !put(kWallLinks, packed.wall_links) ||
+            !put(kRegionLabels, r.label) || !put(kRegionTableBinding, dev.table_.words)) {
+            return std::nullopt;
+        }
+        return dev;
+    }
+
+    [[nodiscard]] const ag::RegionTable& table() const noexcept { return table_; }
+
+    template <class T>
+    [[nodiscard]] bool upload(uint32_t at, const std::vector<T>& v) {
+        return check(runner_->upload(at, bytes_of(v)));
+    }
+    template <class T>
+    [[nodiscard]] bool read(uint32_t at, std::vector<T>& v) const {
+        return check(runner_->read(at, writable_bytes_of(v)));
+    }
+
+    [[nodiscard]] bool upload_grid(const af::MacGrid& g) {
+        return upload(kU, g.u) && upload(kV, g.v) && upload(kW, g.w) && upload(kPressure, g.p);
+    }
+    [[nodiscard]] bool read_grid(af::MacGrid& g) const {
+        return read(kU, g.u) && read(kV, g.v) && read(kW, g.w) && read(kPressure, g.p);
+    }
+
+    // Records and submits `chain` once.
+    [[nodiscard]] bool run(const std::vector<ChainCommand>& chain) {
+        const auto id = runner_->record(chain);
+        if (!id) {
+            ADD_FAILURE() << id.error().context;
+            return false;
+        }
+        return check(runner_->submit(*id, 1));
+    }
+
+private:
+    ag::RegionTable table_;
+    std::unique_ptr<ChainRunner> runner_;
+};
+
+// --- the region means (B5.3) ---------------------------------------------------
+
+struct RegionCase {
+    std::string name;
+    af::GridShape shape;
+    af::SolidField f;
+    af::FluidRegions r;
+    uint32_t pinned = 0;  // the regions an outlet pins
+};
+
+// AirflowRegions' geometry: a box of dx 1 m cut by sheets 0.25 m thick across
+// it on the face planes x = `planes`, walls on every side, but the +x side an
+// outlet (open in still air) when `outlet` is set; labelled and checked as the
+// step does.
+[[nodiscard]] std::optional<RegionCase> sheet_box(const std::string& name, const af::GridShape& shape,
+                                                  const std::vector<float>& planes, bool outlet) {
+    RegionCase rc{name, shape, *af::make_solid_field(shape), {}, 0};
+    Scene scene;
+    for (const float x : planes) {
+        scene.shapes.push_back(Shape{.name = "divider at " + std::to_string(x),
+                                     .kind = Kind::box,
+                                     .centre = {x, 0.5f * static_cast<float>(shape.ny),
+                                                0.5f * static_cast<float>(shape.nz)},
+                                     .half = {0.125f, 40.0f, 40.0f},
+                                     .min_feature = 0.25f});
+    }
+    std::vector<af::SolidPart> parts = scene.parts();
+    for (af::SolidPart& p : parts) {
+        p.extent = glm::vec3(0.25f, static_cast<float>(shape.ny), static_cast<float>(shape.nz));
+    }
+    if (const auto built = af::build_solids(rc.f, shape, {}, parts, scene.sampler()); !built) {
+        ADD_FAILURE() << name << ": " << built.error().context;
+        return std::nullopt;
+    }
+    af::label_regions(rc.r, shape, {}, rc.f);
+    af::DomainBc bc;
+    bc.face.fill(af::FaceBc::wall);
+    if (outlet) bc.face[af::kXPlus] = af::FaceBc::open;
+    if (af::check_regions(rc.r, shape, bc, rc.f).region != af::kNoRegion) {
+        ADD_FAILURE() << name << ": a closed region does not balance";
+        return std::nullopt;
+    }
+    for (const uint8_t closed : rc.r.closed) rc.pinned += closed == 0u ? 1u : 0u;
+    return rc;
+}
+
+// x for the gauge: per cell fixed-seed noise of 1000 about a mean that
+// differs by region (3000, -1000, 500, ...), with one value in 61 a subnormal
+// (read as zero by both twins' flush), and noise in a solid cell too.
+[[nodiscard]] std::vector<float> region_values(const af::FluidRegions& r, uint64_t seed) {
+    constexpr float kOffsets[] = {3000.0f, -1000.0f, 500.0f, -250.0f};
+    SplitMix rng{seed};
+    std::vector<float> x(r.label.size());
+    for (std::size_t c = 0; c < x.size(); ++c) {
+        const float noise = 1000.0f * rng.unit();
+        if ((c + 1u) % 61u == 0u) {
+            x[c] = noise < 0.0f ? -1.0e-40f : 3.0e-41f;
+            continue;
+        }
+        const uint32_t id = r.label[c];
+        x[c] = id == af::kNoRegion ? noise : noise + kOffsets[id % 4u];
+    }
+    return x;
+}
+
+}  // namespace
+
+// pack_region_table() on AirflowRegions' box cut in three, the +x region an
+// outlet's: the two closed regions' records in id order (id, cells, the
+// reciprocal remove_region_means() multiplies by, a mean of 0), then each
+// region's closed index, kNoRegion for the pinned one.
+TEST(AirflowSolidsChain, TheRegionTableHoldsTheClosedRegions) {
+    const auto rc = sheet_box("61x45x43 in three", {61, 45, 43, 1.0f}, {21.0f, 42.0f}, true);
+    ASSERT_TRUE(rc.has_value());
+    ASSERT_EQ(rc->r.count, 3u);
+    ASSERT_EQ(rc->pinned, 1u);
+    const ag::RegionTable t = ag::pack_region_table(rc->r);
+    EXPECT_EQ(t.closed, 2u);
+    ASSERT_EQ(t.words.size(), 2u * ag::kRegionWords + 3u);
+    for (uint32_t j = 0; j < 2u; ++j) {
+        const uint32_t* w = &t.words[ag::kRegionWords * j];
+        EXPECT_EQ(w[ag::kRegionId], j);
+        EXPECT_EQ(w[ag::kRegionCells], rc->r.cells[j]);
+        EXPECT_EQ(w[ag::kRegionReciprocal], bits(static_cast<float>(1.0 / static_cast<double>(rc->r.cells[j]))));
+        EXPECT_EQ(w[ag::kRegionMean], 0u);
+    }
+    EXPECT_EQ(t.words[2u * ag::kRegionWords + 0u], 0u);
+    EXPECT_EQ(t.words[2u * ag::kRegionWords + 1u], 1u);
+    EXPECT_EQ(t.words[2u * ag::kRegionWords + 2u], af::kNoRegion);
+    EXPECT_EQ(ag::region_partials_floats(rc->shape, t.closed), 2u * 2u * 2112u);
+}
+
+// The host's region-table and wall-load constants are airflow_pcg.slang's:
+// every `static const uint kRegion*` and `kWallLoad*` there has the value of
+// solids_chain.hpp's constant of the same name; and the load's floats round
+// trip.
+TEST(AirflowSolidsChain, TheRegionAndWallLoadTablesAreAirflowPcgSlangs) {
+    const std::map<std::string, uint32_t> host{
+        {"kRegionWords", ag::kRegionWords},       {"kRegionId", ag::kRegionId},
+        {"kRegionCells", ag::kRegionCells},       {"kRegionReciprocal", ag::kRegionReciprocal},
+        {"kRegionMean", ag::kRegionMean},         {"kWallLoadForce", ag::kWallLoadForce},
+        {"kWallLoadMoment", ag::kWallLoadMoment}, {"kWallLoadAbout", ag::kWallLoadAbout},
+        {"kWallLoadFloats", ag::kWallLoadFloats}};
+    std::ifstream in(std::string(SPADE_ENGINE_DIR) + "/shaders/airflow_pcg.slang");
+    ASSERT_TRUE(in.good()) << SPADE_ENGINE_DIR << "/shaders/airflow_pcg.slang";
+    std::stringstream text;
+    text << in.rdbuf();
+    const std::string source = text.str();
+    const std::regex constant(R"(static const uint (k(?:Region|WallLoad)\w+) = (\d+)u;)");
+    std::map<std::string, uint32_t> device;
+    for (auto it = std::sregex_iterator(source.begin(), source.end(), constant); it != std::sregex_iterator(); ++it) {
+        device[(*it)[1].str()] = static_cast<uint32_t>(std::stoul((*it)[2].str()));
+    }
+    EXPECT_EQ(device, host);
+    const glm::vec3 about(0.25f, -1.5f, 3.0f);
+    std::array<float, ag::kWallLoadFloats> w = ag::wall_load_words(about);
+    for (uint32_t q = 0; q < ag::kWallLoadTerms; ++q) {
+        EXPECT_EQ(bits(w[q]), 0u) << q;
+    }
+    EXPECT_EQ(glm::vec3(w[ag::kWallLoadAbout], w[ag::kWallLoadAbout + 1u], w[ag::kWallLoadAbout + 2u]), about);
+    for (uint32_t q = 0; q < ag::kWallLoadTerms; ++q) w[q] = static_cast<float>(q + 1u);
+    const af::WallLoad load = ag::wall_load_of(w);
+    EXPECT_EQ(load.force, glm::vec3(1.0f, 2.0f, 3.0f));
+    EXPECT_EQ(load.moment, glm::vec3(4.0f, 5.0f, 6.0f));
+}
+
+// remove_region_means() on the device, as the CG's gauge of airflow_pcg's r:
+// each closed region's mean (the table's) and r after it, against the CPU's,
+// with every other vector untouched. On AirflowRegions' 61x45x43 box cut in
+// three (2112 tiles: 8 blocks of 256 and 64 more, a sheet's tiles holding two
+// regions), the +x region an outlet's: two closed regions and a pinned one; on
+// its 16 x 8 x 8 box cut in two (one block); and on S3's channel, whose one
+// region is closed across the periodic seam. Mutations: a region summed in
+// array order; the pinned region gauged.
+TEST(GpuAirflowSolids, RegionMeansMatchTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    std::vector<RegionCase> cases;
+    {
+        auto three = sheet_box("61x45x43 in three, +x an outlet", {61, 45, 43, 1.0f}, {21.0f, 42.0f}, true);
+        ASSERT_TRUE(three.has_value());
+        cases.push_back(std::move(*three));
+        auto two = sheet_box("16x8x8 in two", {16, 8, 8, 1.0f}, {5.0f}, false);
+        ASSERT_TRUE(two.has_value());
+        cases.push_back(std::move(*two));
+        auto s3 = build(s3_sheet());
+        ASSERT_TRUE(s3.has_value());
+        cases.push_back(RegionCase{s3->name, s3->shape, s3->s.solids, s3->s.regions, 0});
+    }
+    ASSERT_EQ(cases[0].r.count, 3u);
+    EXPECT_EQ(cases[0].pinned, 1u);
+    bool any_pinned_moves = false;
+    for (RegionCase& rc : cases) {
+        SCOPED_TRACE(rc.name);
+        const af::GridShape& s = rc.shape;
+        const uint32_t cells = cells_of(s);
+        const std::vector<float> x = region_values(rc.r, 0x5E61ull + rc.r.count);
+        std::vector<float> cpu = x;
+        af::FluidRegions r = rc.r;
+        {
+            const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+            af::remove_region_means(cpu, r, s);
+        }
+        // The data tells the mutations apart: some closed region's sum in array
+        // order is not its two-level sum, and the pinned region's mean is not 0.
+        bool array_order_differs = false;
+        {
+            const spade::math::ScopedFlushSubnormals flush;
+            for (uint32_t id = 0; id < r.count; ++id) {
+                float sum = 0.0f;
+                for (uint32_t c = 0; c < cells; ++c) {
+                    if (r.label[c] == id) sum += x[c];
+                }
+                const float mean = sum * static_cast<float>(1.0 / static_cast<double>(r.cells[id]));
+                if (r.closed[id] != 0u) {
+                    array_order_differs = array_order_differs || bits(mean) != bits(r.total[id]);
+                    std::printf("[GpuAirflowSolids] %s: region %u closed, %u cells, mean %s, in array order %s\n",
+                                rc.name.c_str(), id, r.cells[id], hex(r.total[id]).c_str(), hex(mean).c_str());
+                } else {
+                    any_pinned_moves = any_pinned_moves || mean != 0.0f;
+                    std::printf("[GpuAirflowSolids] %s: region %u pinned, %u cells, mean %s (left alone)\n",
+                                rc.name.c_str(), id, r.cells[id], hex(mean).c_str());
+                }
+            }
+        }
+        EXPECT_TRUE(array_order_differs) << "the data does not tell array order apart; change the seed";
+
+        auto dev = LoadDevice::create(*ctx, s, rc.f, rc.r);
+        ASSERT_TRUE(dev.has_value());
+        EXPECT_EQ(dev->table().closed, r.count - rc.pinned);
+        PcgVectors pcg(cells);
+        for (uint32_t v = 0; v < ag::kPcgVectors; ++v) {
+            std::vector<float> noise(cells);
+            fill_noise(noise, 0x6A0ull + v, 2.0f);
+            pcg.set(static_cast<ag::PcgVector>(v), noise);
+        }
+        pcg.set(ag::kPcgR, x);
+        ASSERT_TRUE(dev->upload(kPcg, pcg.all));
+        std::vector<ChainCommand> chain;
+        ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table().closed, kWorkgroupSize);
+        ASSERT_TRUE(dev->run(chain));
+        PcgVectors gpu(cells);
+        ASSERT_TRUE(dev->read(kPcg, gpu.all));
+        std::vector<uint32_t> table(dev->table().words.size());
+        ASSERT_TRUE(dev->read(kRegionTableBinding, table));
+
+        const std::size_t moved = differing(cpu, x);
+        std::printf("[GpuAirflowSolids] %s: %u regions, %u pinned; the CPU's gauge moved %zu of %u cells\n",
+                    rc.name.c_str(), r.count, rc.pinned, moved, cells);
+        EXPECT_GT(moved, 0u);
+        expect_none_differ(bit_equal, differing(gpu.copy(ag::kPcgR), cpu), cells, rc.name + ": r after the gauge");
+        gpu.set(ag::kPcgR, pcg.copy(ag::kPcgR));
+        EXPECT_EQ(differing(gpu.all, pcg.all), 0u) << "a vector other than r was written";
+        std::size_t means = 0;
+        for (uint32_t j = 0; j < dev->table().closed; ++j) {
+            const uint32_t id = table[ag::kRegionWords * j + ag::kRegionId];
+            ASSERT_LT(id, r.count);
+            const uint32_t got = table[ag::kRegionWords * j + ag::kRegionMean];
+            std::printf("[GpuAirflowSolids] %s: closed region %u (id %u): gpu mean 0x%08x\n", rc.name.c_str(), j, id,
+                        got);
+            means += got != bits(r.total[id]) ? 1u : 0u;
+        }
+        expect_none_differ(bit_equal, means, dev->table().closed, rc.name + ": the means");
+    }
+    EXPECT_TRUE(any_pinned_moves) << "no pinned region's mean is off 0, so gauging it would not show";
+}
+
+// --- the interior (B5.5) -------------------------------------------------------
+
+namespace {
+
+// A free-slip layer-1 sample with exactly three sources (open neighbours of
+// its own component), and those sources in its mean's order.
+struct ThreeSources {
+    uint32_t c = 0;
+    std::size_t idx = 0;
+    std::array<std::size_t, 3> sources{};
+};
+
+[[nodiscard]] std::optional<ThreeSources> three_source_sample(const af::GridShape& s, const af::SolidField& f) {
+    for (uint32_t c = 0; c < 3; ++c) {
+        const std::array<uint32_t, 3> dims{c == 0 ? s.nx + 1u : s.nx, c == 1 ? s.ny + 1u : s.ny,
+                                           c == 2 ? s.nz + 1u : s.nz};
+        const std::size_t stride[3] = {1u, dims[0], std::size_t{dims[0]} * dims[1]};
+        for (const uint32_t idx : f.fill1[c]) {
+            const uint32_t q[3] = {static_cast<uint32_t>(idx % dims[0]), static_cast<uint32_t>((idx / dims[0]) % dims[1]),
+                                   static_cast<uint32_t>(idx / (std::size_t{dims[0]} * dims[1]))};
+            ThreeSources out{c, idx, {}};
+            uint32_t n = 0;
+            for (uint32_t a = 0; a < 3; ++a) {
+                for (uint32_t up = 0; up < 2; ++up) {
+                    if (up == 0 ? q[a] == 0u : q[a] + 1u == dims[a]) continue;
+                    const std::size_t nb = up == 0 ? idx - stride[a] : idx + stride[a];
+                    if (af::closed(f.theta[c][nb])) continue;
+                    if (n < 3u) out.sources[n] = nb;
+                    ++n;
+                }
+            }
+            if (n == 3u) return out;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::vector<float>& component(af::MacGrid& g, uint32_t c) {
+    return c == 0 ? g.u : (c == 1 ? g.v : g.w);
+}
+
+}  // namespace
+
+// apply_solid_velocities() on the device, both interior modes, on S1's sphere
+// (it moves and spins: every closed face has its own wall velocity), from a
+// noisy u, v and w: every face's bits, and p untouched. The extrapolated mode
+// covers the free-slip fill: both layers (each mean's sources summed in the
+// CPU's order, divided with div32_ftz), layer 2 from layer 1's results. One
+// layer-1 sample's three sources are 0.5, 0.25 and 0.250244140625, which sum
+// to 0x3F800800 exactly: its mean is the host's 0x3EAAB555, where the 3060
+// Ti's own division gives 0x3EAAB556. Mutations: a bare `/`; both layers in
+// one dispatch; layer 2 before layer 1 (the fill's order).
+TEST(GpuAirflowSolids, TheInteriorMatchesTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    auto built = build(s1_sphere());
+    ASSERT_TRUE(built.has_value());
+    const Built& b = *built;
+    const af::GridShape& s = b.shape;
+    const af::SolidField& f = b.s.solids;
+    std::size_t closed = 0;
+    std::size_t layer1 = 0;
+    std::size_t layer2 = 0;
+    for (uint32_t c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < f.theta[c].size(); ++i) closed += af::closed(f.theta[c][i]) ? 1u : 0u;
+        layer1 += f.fill1[c].size();
+        layer2 += f.fill2[c].size();
+    }
+    std::printf("[GpuAirflowSolids] %s: %zu closed faces, %zu in free-slip layer 1, %zu in layer 2\n", b.name.c_str(),
+                closed, layer1, layer2);
+    ASSERT_GT(layer1, 0u);
+    ASSERT_GT(layer2, 0u);
+    ASSERT_GT(closed, layer1 + layer2) << "no closed face keeps its wall velocity";
+
+    af::MacGrid g = noisy_grid(s, b.bc, 0x1E7ull);
+    const auto planted = three_source_sample(s, f);
+    ASSERT_TRUE(planted.has_value()) << "no layer-1 sample has three sources";
+    const float sources[3] = {0.5f, 0.25f, f32(0x3E802000u)};
+    for (uint32_t n = 0; n < 3; ++n) component(g, planted->c)[planted->sources[n]] = sources[n];
+
+    auto dev = LoadDevice::create(*ctx, s, f, b.s.regions);
+    ASSERT_TRUE(dev.has_value());
+    for (const af::SolidInterior mode : {af::SolidInterior::rigid, af::SolidInterior::extrapolate}) {
+        const std::string what = mode == af::SolidInterior::rigid ? "rigid" : "extrapolated";
+        SCOPED_TRACE(what);
+        af::MacGrid cpu = g;
+        {
+            const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+            af::apply_solid_velocities(cpu, f, mode);
+        }
+        const float at = component(cpu, planted->c)[planted->idx];
+        if (mode == af::SolidInterior::extrapolate) {
+            EXPECT_EQ(bits(at), 0x3EAAB555u) << "the planted sample's host bits";
+        }
+        ASSERT_TRUE(dev->upload_grid(g));
+        std::vector<ChainCommand> chain;
+        ag::append_solid_velocities(chain, s, kSolidVelocitiesPipeline, mode, kWorkgroupSize);
+        ASSERT_TRUE(dev->run(chain));
+        af::MacGrid out = g;
+        ASSERT_TRUE(dev->read_grid(out));
+        const std::size_t changed = differing(cpu.u, g.u) + differing(cpu.v, g.v) + differing(cpu.w, g.w);
+        std::printf("[GpuAirflowSolids] %s: the CPU wrote %zu faces; the planted sample cpu %s, gpu %s\n",
+                    what.c_str(), changed, hex(at).c_str(), hex(component(out, planted->c)[planted->idx]).c_str());
+        EXPECT_GT(changed, 0u);
+        expect_none_differ(bit_equal, differing(out.u, cpu.u), out.u.size(), what + ": u");
+        expect_none_differ(bit_equal, differing(out.v, cpu.v), out.v.size(), what + ": v");
+        expect_none_differ(bit_equal, differing(out.w, cpu.w), out.w.size(), what + ": w");
+        EXPECT_EQ(differing(out.p, g.p), 0u) << "p was written";
+    }
+}
+
+// --- the wall load (B5.5) ------------------------------------------------------
+
+namespace {
+
+struct LoadRig {
+    af::GridShape shape;
+    af::MacGrid g;
+    af::FluidScratch s;
+};
+
+// AirflowWallLoad's sphere: R = 6 dx centred on the middle cell corner of a
+// 32^3 box, set as solids, still air outside.
+[[nodiscard]] std::optional<LoadRig> load_sphere(float dx) {
+    const af::GridShape shape{32, 32, 32, dx};
+    const af::DomainBc bc;
+    auto g = af::make_grid(shape, bc);
+    if (!g) return std::nullopt;
+    auto s = af::make_fluid_scratch(*g, bc, af::FluidConfig{.h = 0.001f});
+    if (!s) return std::nullopt;
+    LoadRig rig{shape, std::move(*g), std::move(*s)};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = glm::vec3(16.0f * dx),
+                                 .radius = 6.0f * dx, .min_feature = 12.0f * dx});
+    if (const auto set = af::set_solids(rig.s, rig.g, bc, scene.parts(), scene.sampler()); !set) {
+        ADD_FAILURE() << set.error().context;
+        return std::nullopt;
+    }
+    return rig;
+}
+
+// AirflowWallLoad's sheet: across a periodic 32 x 8 x 8 channel on face plane
+// 16, p_l = 2000 Pa on its -x side and p_r = 500 Pa on its +x side.
+[[nodiscard]] std::optional<LoadRig> load_sheet(float dx) {
+    const af::GridShape shape{32, 8, 8, dx};
+    af::DomainBc bc;
+    bc.face.fill(af::FaceBc::periodic);
+    auto g = af::make_grid(shape, bc);
+    if (!g) return std::nullopt;
+    auto s = af::make_fluid_scratch(*g, bc, af::FluidConfig{.h = 0.001f});
+    if (!s) return std::nullopt;
+    LoadRig rig{shape, std::move(*g), std::move(*s)};
+    Scene scene;
+    scene.shapes.push_back(Shape{.name = "sheet", .kind = Kind::box, .centre = {16.0f * dx, 4.0f * dx, 4.0f * dx},
+                                 .half = {0.125f * dx, 20.0f * dx, 20.0f * dx}, .min_feature = 0.25f * dx});
+    std::vector<af::SolidPart> parts = scene.parts();
+    parts[0].extent = glm::vec3(0.25f * dx, 8.0f * dx, 8.0f * dx);
+    if (const auto set = af::set_solids(rig.s, rig.g, bc, parts, scene.sampler()); !set) {
+        ADD_FAILURE() << set.error().context;
+        return std::nullopt;
+    }
+    for (uint32_t k = 0; k < 8; ++k) {
+        for (uint32_t j = 0; j < 8; ++j) {
+            for (uint32_t i = 0; i < 32; ++i) rig.g.p[af::cell_index(shape, i, j, k)] = i < 16u ? 2000.0f : 500.0f;
+        }
+    }
+    return rig;
+}
+
+// p(x) at every fluid cell's centre, NaN in every solid one (never read).
+template <class P>
+void write_load_pressure(LoadRig& rig, P p) {
+    const af::GridShape& sh = rig.shape;
+    for (uint32_t k = 0; k < sh.nz; ++k) {
+        for (uint32_t j = 0; j < sh.ny; ++j) {
+            for (uint32_t i = 0; i < sh.nx; ++i) {
+                const std::size_t c = af::cell_index(sh, i, j, k);
+                const glm::vec3 x((static_cast<float>(i) + 0.5f) * sh.dx, (static_cast<float>(j) + 0.5f) * sh.dx,
+                                  (static_cast<float>(k) + 0.5f) * sh.dx);
+                rig.g.p[c] = rig.s.regions.solid[c] != 0u ? std::numeric_limits<float>::quiet_NaN() : p(x);
+            }
+        }
+    }
+}
+
+// The cell's area vector A_c (wall_load.cpp's a), or 0 where it is solid.
+[[nodiscard]] glm::vec3 cell_area(const LoadRig& rig, uint32_t i, uint32_t j, uint32_t k) {
+    const af::GridShape& s = rig.shape;
+    const af::SolidField& f = rig.s.solids;
+    if (rig.s.regions.solid[af::cell_index(s, i, j, k)] != 0u) return glm::vec3(0.0f);
+    const float area = s.dx * s.dx;
+    return {area * (f.theta[0][af::u_index(s, i + 1u, j, k)] - f.theta[0][af::u_index(s, i, j, k)]),
+            area * (f.theta[1][af::v_index(s, i, j + 1u, k)] - f.theta[1][af::v_index(s, i, j, k)]),
+            area * (f.theta[2][af::w_index(s, i, j, k + 1u)] - f.theta[2][af::w_index(s, i, j, k)])};
+}
+
+// wall_load.cpp's -p_c A_c for one cell, as its body forms it.
+[[nodiscard]] glm::vec3 cell_push(const LoadRig& rig, uint32_t i, uint32_t j, uint32_t k) {
+    const std::size_t c = af::cell_index(rig.shape, i, j, k);
+    if (rig.s.regions.solid[c] != 0u) return glm::vec3(0.0f);
+    return -rig.g.p[c] * cell_area(rig, i, j, k);
+}
+
+// What two of the named mutations would give, under the step's flush: the
+// force summed in array order, and the moment with x_c without its half cell.
+struct LoadMutants {
+    glm::vec3 force_in_array_order{0.0f};
+    glm::vec3 moment_without_half{0.0f};
+};
+
+[[nodiscard]] LoadMutants load_mutants(const LoadRig& rig, glm::vec3 about) {
+    const spade::math::ScopedFlushSubnormals flush;
+    const af::GridShape& s = rig.shape;
+    LoadMutants out;
+    for (uint32_t k = 0; k < s.nz; ++k) {
+        for (uint32_t j = 0; j < s.ny; ++j) {
+            for (uint32_t i = 0; i < s.nx; ++i) out.force_in_array_order += cell_push(rig, i, j, k);
+        }
+    }
+    out.moment_without_half =
+        af::fixed_tile_sum_of<glm::vec3>(s.nx, s.ny, s.nz, [&](uint32_t i, uint32_t j, uint32_t k, std::size_t) {
+            const glm::vec3 x(static_cast<float>(i) * s.dx, static_cast<float>(j) * s.dx,
+                              static_cast<float>(k) * s.dx);
+            return glm::cross(x - about, cell_push(rig, i, j, k));
+        });
+    return out;
+}
+
+[[nodiscard]] std::size_t load_differs(const af::WallLoad& a, const af::WallLoad& b) {
+    std::size_t n = 0;
+    for (int q = 0; q < 3; ++q) {
+        n += bits(a.force[q]) != bits(b.force[q]) ? 1u : 0u;
+        n += bits(a.moment[q]) != bits(b.moment[q]) ? 1u : 0u;
+    }
+    return n;
+}
+
+[[nodiscard]] std::string load_text(const af::WallLoad& l) {
+    return "F (" + hex(l.force.x) + ", " + hex(l.force.y) + ", " + hex(l.force.z) + "), M (" + hex(l.moment.x) +
+           ", " + hex(l.moment.y) + ", " + hex(l.moment.z) + ")";
+}
+
+}  // namespace
+
+// wall_load() on the device: the force's and the moment's bits, on
+// AirflowWallLoad's cases (the sphere under a pressure falling upward, about
+// its centre and about another point; the sphere in a uniform 1000 Pa; the
+// sheet carrying a pressure jump across a periodic channel) and on the field
+// of AirflowFtz.AWallLoadReadsASubnormalPressureAsZero (the sphere at dx 0.1,
+// p = 2^-130 in the cut cell with the largest area vector, 0 in the other
+// fluid cells, NaN in the solid ones: 0 on both twins, the CPU's because its
+// wrapper flushes). The CPU twin is called as it is, under its own scope (the
+// test opens none, so the third mutation shows). Mutations: the force's tiles
+// in array order; x_c without its half cell; the CPU twin's body unscoped.
+TEST(GpuAirflowSolids, TheWallLoadMatchesTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    bool array_order_differs = false;
+    bool half_cell_differs = false;
+    // The CPU's load, and the device's against it.
+    const auto check_load = [&](const LoadRig& rig, glm::vec3 about, const std::string& what) -> af::WallLoad {
+        SCOPED_TRACE(what);
+        const af::WallLoad cpu = af::wall_load(rig.g, rig.s.solids, rig.s.regions, about);
+        const LoadMutants m = load_mutants(rig, about);
+        for (int q = 0; q < 3; ++q) {
+            array_order_differs = array_order_differs || bits(m.force_in_array_order[q]) != bits(cpu.force[q]);
+            half_cell_differs = half_cell_differs || bits(m.moment_without_half[q]) != bits(cpu.moment[q]);
+        }
+        std::printf("[GpuAirflowSolids] %s: cpu %s\n", what.c_str(), load_text(cpu).c_str());
+        auto dev = LoadDevice::create(*ctx, rig.shape, rig.s.solids, rig.s.regions);
+        if (!dev) {
+            ADD_FAILURE() << "no device";
+            return cpu;
+        }
+        const std::array<float, ag::kWallLoadFloats> words = ag::wall_load_words(about);
+        std::vector<ChainCommand> chain;
+        ag::append_wall_load(chain, rig.shape, kWallLoadPipeline, kWorkgroupSize);
+        std::vector<float> out(ag::kWallLoadFloats);
+        if (!dev->upload(kPressure, rig.g.p) ||
+            !dev->upload(kWallLoadBinding, std::vector<float>(words.begin(), words.end())) || !dev->run(chain) ||
+            !dev->read(kWallLoadBinding, out)) {
+            return cpu;
+        }
+        const af::WallLoad gpu = ag::wall_load_of(std::span<const float, ag::kWallLoadFloats>(out.data(), out.size()));
+        std::printf("[GpuAirflowSolids] %s: gpu %s\n", what.c_str(), load_text(gpu).c_str());
+        expect_none_differ(bit_equal, load_differs(gpu, cpu), 6u, what + ": the force and moment");
+        EXPECT_EQ(glm::vec3(out[ag::kWallLoadAbout], out[ag::kWallLoadAbout + 1u], out[ag::kWallLoadAbout + 2u]),
+                  about)
+            << "the point was written";
+        return cpu;
+    };
+
+    {
+        const float dx = 0.01f;
+        auto rig = load_sphere(dx);
+        ASSERT_TRUE(rig.has_value());
+        const glm::vec3 c(16.0f * dx);
+        write_load_pressure(*rig, [&](glm::vec3 x) { return 1000.0f * (c.y - x.y); });
+        (void)check_load(*rig, c, "the sphere, p falling upward, about its centre");
+        (void)check_load(*rig, c + glm::vec3(0.05f, -0.02f, 0.03f), "the sphere, p falling upward, about o");
+        write_load_pressure(*rig, [](glm::vec3) { return 1000.0f; });
+        (void)check_load(*rig, c, "the sphere, a uniform 1000 Pa");
+    }
+    {
+        const float dx = 0.01f;
+        const auto rig = load_sheet(dx);
+        ASSERT_TRUE(rig.has_value());
+        (void)check_load(*rig, glm::vec3(16.0f * dx, 4.0f * dx, 4.0f * dx), "the sheet, a pressure jump");
+    }
+    {
+        // AirflowFtz's field: the cut cell with the largest area vector (the sum
+        // of its components' magnitudes) takes p = 2^-130.
+        const float dx = 0.1f;
+        auto rig = load_sphere(dx);
+        ASSERT_TRUE(rig.has_value());
+        write_load_pressure(*rig, [](glm::vec3) { return 0.0f; });
+        const af::GridShape& sh = rig->shape;
+        std::size_t cut = rig->g.p.size();
+        float largest = 0.0f;
+        for (uint32_t k = 0; k < sh.nz; ++k) {
+            for (uint32_t j = 0; j < sh.ny; ++j) {
+                for (uint32_t i = 0; i < sh.nx; ++i) {
+                    const std::size_t at = af::cell_index(sh, i, j, k);
+                    if (rig->s.regions.solid[at] != 0u) continue;
+                    const glm::vec3 a = cell_area(*rig, i, j, k);
+                    const float size = std::fabs(a.x) + std::fabs(a.y) + std::fabs(a.z);
+                    if (size > largest) {
+                        largest = size;
+                        cut = at;
+                    }
+                }
+            }
+        }
+        ASSERT_LT(cut, rig->g.p.size()) << "no cut cell";
+        rig->g.p[cut] = f32(0x00080000u);  // 2^-130
+        const af::WallLoad cpu =
+            check_load(*rig, glm::vec3(32.0f * dx, 0.0f, 0.0f), "AirflowFtz's subnormal pressure (2^-130)");
+        for (int q = 0; q < 3; ++q) {
+            EXPECT_EQ(cpu.force[q], 0.0f) << "the CPU twin did not flush: force " << q;
+            EXPECT_EQ(cpu.moment[q], 0.0f) << "the CPU twin did not flush: moment " << q;
+        }
+    }
+    EXPECT_TRUE(array_order_differs) << "no case tells the force's array order apart";
+    EXPECT_TRUE(half_cell_differs) << "no case tells x_c without its half cell apart";
+}
+
+// B5.3 and B5.5's kernels give the same bits at workgroup sizes 32, 64 and
+// 128: airflow_region_mean (the gauge of r) on AirflowRegions' box cut in
+// three, airflow_solid_velocities (extrapolated) and airflow_wall_load on S1's
+// sphere; every word each leaves in the grid, airflow_pcg, the region table
+// and the wall load.
+TEST(GpuAirflowSolids, TheRegionMeansInteriorAndLoadGiveTheSameBitsAtEveryWorkgroupSize) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const auto box = sheet_box("61x45x43 in three, +x an outlet", {61, 45, 43, 1.0f}, {21.0f, 42.0f}, true);
+    ASSERT_TRUE(box.has_value());
+    const auto built = build(s1_sphere());
+    ASSERT_TRUE(built.has_value());
+    const Built& b = *built;
+    const glm::vec3 about = glm::vec3(8.0f * b.shape.dx) + glm::vec3(0.003f, -0.002f, 0.001f);
+
+    // Each kernel's chain at one workgroup size, and every word it leaves.
+    const auto run = [&](const std::string& kernel, uint32_t wg) -> std::optional<std::vector<uint32_t>> {
+        const bool regions = kernel == "airflow_region_mean";
+        const af::GridShape& s = regions ? box->shape : b.shape;
+        const af::FluidRegions& r = regions ? box->r : b.s.regions;
+        auto dev = LoadDevice::create(*ctx, s, regions ? box->f : b.s.solids, r, wg);
+        if (!dev) return std::nullopt;
+        af::MacGrid g = noisy_grid(s, regions ? af::DomainBc{} : b.bc, 0x5B35ull);
+        PcgVectors pcg(cells_of(s));
+        pcg.set(ag::kPcgR, region_values(r, 0x5B37ull));
+        const std::array<float, ag::kWallLoadFloats> words = ag::wall_load_words(about);
+        if (!dev->upload_grid(g) || !dev->upload(kPcg, pcg.all) ||
+            !dev->upload(kWallLoadBinding, std::vector<float>(words.begin(), words.end()))) {
+            return std::nullopt;
+        }
+        std::vector<ChainCommand> chain;
+        if (regions) {
+            ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table().closed, wg);
+        }
+        if (kernel == "airflow_solid_velocities") {
+            ag::append_solid_velocities(chain, s, kSolidVelocitiesPipeline, af::SolidInterior::extrapolate, wg);
+        }
+        if (kernel == "airflow_wall_load") ag::append_wall_load(chain, s, kWallLoadPipeline, wg);
+        std::vector<uint32_t> table(dev->table().words.size());
+        std::vector<float> load(ag::kWallLoadFloats);
+        if (!dev->run(chain) || !dev->read_grid(g) || !dev->read(kPcg, pcg.all) ||
+            !dev->read(kRegionTableBinding, table) || !dev->read(kWallLoadBinding, load)) {
+            return std::nullopt;
+        }
+        std::vector<uint32_t> all = table;
+        for (const std::vector<float>* x : {&g.u, &g.v, &g.w, &g.p, &pcg.all, &load}) {
+            for (const float v : *x) all.push_back(bits(v));
+        }
+        return all;
+    };
+    for (const char* kernel : {"airflow_region_mean", "airflow_solid_velocities", "airflow_wall_load"}) {
+        SCOPED_TRACE(kernel);
+        const auto first = run(kernel, 64);
+        ASSERT_TRUE(first.has_value());
+        for (const uint32_t wg : {32u, 128u}) {
+            const auto other = run(kernel, wg);
+            ASSERT_TRUE(other.has_value());
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < first->size(); ++i) n += (*other)[i] != (*first)[i] ? 1u : 0u;
+            std::printf("[GpuAirflowSolids] %s at %u: %zu of %zu words differ from 64's\n", kernel, wg, n,
+                        first->size());
+            EXPECT_EQ(n, 0u) << "at " << wg;
+        }
+    }
+}
