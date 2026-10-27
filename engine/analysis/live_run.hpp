@@ -45,6 +45,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -59,6 +60,9 @@
 #include "analysis/controls.hpp"
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "physics/airflow/actuator.hpp"
+#include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/publish.hpp"
 #include "state/layout.hpp"  // BodyState
 #include "vehicles/model_type.hpp"
 #include "vehicles/propulsion_steady.hpp"
@@ -132,14 +136,49 @@ struct LiveFrame {
 // at zero throttle the drone would climb).
 [[nodiscard]] Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelType& model);
 
+// THE FLUID ON A DEVICE (B7's seam; Rendering's design note,
+// docs/design/rendering/plans/2026-10-27-run-air-on-gpu.md, the lead
+// 2026-10-27). A run steps its fluid on the CPU, fluid_step() on its own
+// grid, unless start() is handed a maker for another: B7's GpuFluid. Each
+// step LiveRun forms the rotors' discs and hands them over; the device
+// spreads them and steps, and publishes each frame. It starts from the CPU's
+// own fields, faces, config and solids, so a device that steps as
+// fluid_step() does flies the CPU's run to the bit.
+class LiveFluid {
+  public:
+    virtual ~LiveFluid() = default;
+    // One fluid step with this step's discs, in the grid's frame. A fault is
+    // the health's, as fluid_step() reports it; an error is a step that
+    // didn't run.
+    [[nodiscard]] virtual Result<physics::airflow::FluidHealth> step(
+        std::span<const physics::airflow::ActuatorDisc> discs) = 0;
+    // The fluid now, as publish_render_volume() gives it, into `out`.
+    [[nodiscard]] virtual Result<void> publish(const physics::airflow::PublishInput& in, FlowVolume& out) = 0;
+    // u, v, w and p now, into `g`, a grid of the run's shape: what save() writes.
+    [[nodiscard]] virtual Result<void> read(physics::airflow::MacGrid& g) const = 0;
+};
+
+// What a device starts from: the run's own, as start() built them.
+struct LiveFluidStart {
+    const physics::airflow::MacGrid& grid;        // the first u, v, w and p
+    const physics::airflow::DomainBc& domain;     // the box's faces
+    const physics::airflow::FluidConfig& config;  // rho, nu, h and the pressure's
+    const physics::airflow::SolidField* solids;   // the parts in the air; null without
+};
+using LiveFluidMaker = std::function<Result<std::unique_ptr<LiveFluid>>(const LiveFluidStart&)>;
+
 class LiveRun {
   public:
     // Builds the grid (the resolved base and drone-box faces), the fluid and
     // the held drone. Refused by name: a case without time.step (until
     // Physics' step rule exists), a model with rotors and no propulsion
     // chain, an idle, state of charge or chain the throttle map refuses, a grid
-    // make_grid() refuses, and a model or world the Simulation refuses.
-    [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model);
+    // make_grid() refuses, and a model or world the Simulation refuses. With
+    // `fluid`, the fluid steps on the device it makes (LiveFluid), and its
+    // refusal refuses the run: "the fluid's device: " and why. A host that
+    // would rather fly on the CPU starts again without it.
+    [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model,
+                                               const LiveFluidMaker& fluid = {});
 
     LiveRun(LiveRun&&) noexcept;
     LiveRun& operator=(LiveRun&&) noexcept;
@@ -199,14 +238,16 @@ class LiveRun {
     // the hold, the recorded controls, Core's Simulation snapshot and
     // Physics' grid (u, v, w, p), under one FNV-1a checksum. Solids and the
     // fluid's scratch are rebuilt, not saved (Physics). A faulted run isn't
-    // saved: its last good save is the one before the fault.
+    // saved: its last good save is the one before the fault. A run on a
+    // device saves the fields it reads back (LiveFluid::read()).
     [[nodiscard]] Result<void> save(const std::filesystem::path& file) const;
 
     // Rebuilds the run from the case and model, then its saved state.
     // Refused by name: a missing file (io_error), a foreign or short one, a
     // version this build doesn't read (schema_mismatch), a checksum that
     // doesn't match, another case (it pins the chain and holds the idle and
-    // state of charge), model or parts, and a model without its chain.
+    // state of charge), model or parts, and a model without its chain. A
+    // restored run steps on the CPU.
     [[nodiscard]] static Result<LiveRun> restore(const std::filesystem::path& file, const ResolvedCase& resolved,
                                                  const vehicles::ModelType& model);
 
@@ -216,7 +257,8 @@ class LiveRun {
     // this step's velocity increments (the u, v and w faces) to move a few
     // of them by an ulp. No host sets it. Unset, the default, a run is the
     // same to the bit. It is not saved: a restored run starts unset. nullptr
-    // unsets it.
+    // unsets it. A run on a device never calls it: the increments are the
+    // CPU's.
     using TestIncrementNudge = void (*)(void* context, std::span<float> du, std::span<float> dv, std::span<float> dw);
     void set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept;
 
@@ -226,7 +268,7 @@ class LiveRun {
     // floor) to `n`, passed straight to fluid_step: pcg clamps a cap to its
     // floor, and at the floor of 8 every case a test can size converges
     // (~1e-6). A run without solids is left alone (there n_v is plan A's
-    // V-cycles). No host sets it. 0, the default, unsets it: a run is the same
+    // V-cycles), as is a run on a device. No host sets it. 0, the default, unsets it: a run is the same
     // to the bit. It is not saved: a restored run starts unset.
     void set_test_solids_max_iterations(uint32_t n) noexcept;
 

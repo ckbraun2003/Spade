@@ -241,6 +241,7 @@ struct LiveRun::Impl {
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
     uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
+    std::unique_ptr<LiveFluid> device;  // the fluid, when start() was handed one; null: the CPU's, above
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -294,7 +295,8 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
     return ShowcaseTrim{throttle(hover.duty), throttle(climb.duty)};
 }
 
-Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model) {
+Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
+                               const LiveFluidMaker& fluid) {
     const AnalysisCase& c = resolved.spec;
     const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
@@ -436,6 +438,16 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->held.orient = at_rest.orient;
     impl->held.vel = at_rest.vel;
     impl->held.omega_body = at_rest.omega;
+    // The fluid's device, from the run's own first fields (B7's seam).
+    if (fluid) {
+        const af::SolidField* field = impl->solids.any ? &impl->scratch.solids : nullptr;
+        Result<std::unique_ptr<LiveFluid>> device =
+            fluid(LiveFluidStart{impl->grid, resolved.domain, impl->fluid, field});
+        if (!device) {
+            return std::unexpected(Error{device.error().code, "the fluid's device: " + device.error().context});
+        }
+        impl->device = std::move(*device);
+    }
     return LiveRun(std::move(impl));
 }
 
@@ -508,19 +520,31 @@ Result<void> LiveRun::step(const Controls& controls) {
         if (Result<void> d = vehicles::rotor_discs(r.rows, r.held, r.grid_origin, r.resolved.base, r.discs); !d) {
             return std::unexpected(d.error());
         }
+    }
+
+    // The fluid: on the device start() was handed, which spreads the discs
+    // itself, or here on the CPU.
+    af::FluidHealth health;
+    if (r.device) {
+        const Result<af::FluidHealth> on_device = r.device->step(r.discs);
+        if (!on_device) {
+            r.fault = "the fluid's device failed at step " + std::to_string(r.state.steps + 1) + ": " +
+                      on_device.error().context;
+            return std::unexpected(Error{on_device.error().code, r.fault});
+        }
+        health = *on_device;
+    } else {
         for (const af::ActuatorDisc& d : r.discs) {
             af::spread_actuator(d, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch.du, r.scratch.dv, r.scratch.dw);
         }
+        if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
+        af::FluidConfig fluid = r.fluid;
+        if (r.test_max_iterations != 0 && r.solids.any) {
+            fluid.n_v = r.test_max_iterations;
+            fluid.cg_cap = r.test_max_iterations;
+        }
+        health = af::fluid_step(r.grid, r.resolved.domain, fluid, r.scratch);
     }
-    if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
-
-    // The fluid.
-    af::FluidConfig fluid = r.fluid;
-    if (r.test_max_iterations != 0 && r.solids.any) {
-        fluid.n_v = r.test_max_iterations;
-        fluid.cg_cap = r.test_max_iterations;
-    }
-    const af::FluidHealth health = af::fluid_step(r.grid, r.resolved.domain, fluid, r.scratch);
     if (health.fault != af::FluidFault::none) {
         r.fault = "the fluid faulted at step " + std::to_string(r.state.steps + 1) + ": " +
                   af::describe(health, r.resolved.base);
@@ -552,8 +576,14 @@ Result<LiveFrame> LiveRun::advance_frame(const Controls& controls, FlowVolume& o
     while (r.state.steps * r.h_ns < end_ns) {
         if (Result<void> s = step(controls); !s) return std::unexpected(s.error());
     }
-    const Result<af::PublishCounts> published = af::publish_render_volume(r.grid, r.publish, out);
-    if (!published) return std::unexpected(published.error());
+    if (r.device) {
+        if (const Result<void> published = r.device->publish(r.publish, out); !published) {
+            return std::unexpected(published.error());
+        }
+    } else if (const Result<af::PublishCounts> published = af::publish_render_volume(r.grid, r.publish, out);
+               !published) {
+        return std::unexpected(published.error());
+    }
     r.state.frames = next;
     return LiveFrame{next, r.state.t_s, r.state.steps};
 }
@@ -668,7 +698,12 @@ Result<void> LiveRun::save(const std::filesystem::path& file) const {
     const Result<SnapshotBlob> snapshot = r.sim->snapshot();
     if (!snapshot) return std::unexpected(snapshot.error());
     w.bytes(as_text(snapshot->bytes()));
-    const std::vector<std::byte> grid = af::grid_to_bytes(r.grid);
+    af::MacGrid fields;  // a device's, read back
+    if (r.device) {
+        fields = r.grid;
+        if (const Result<void> got = r.device->read(fields); !got) return std::unexpected(got.error());
+    }
+    const std::vector<std::byte> grid = af::grid_to_bytes(r.device ? fields : r.grid);
     w.bytes(as_text(grid));
     w.put<uint64_t>(rng::fnv1a64(w.out));
     return detail::replace_file(file, w.out);
