@@ -11,15 +11,22 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "../sandbox/editor_run.hpp"
 #include "../sandbox/editor_scene_edits.hpp"
 #include "../sandbox/editor_world_edits.hpp"
 #include "editor_test_support.hpp"
+#include "physics/blade_azimuth.hpp"
 #include "scene/compose.hpp"
 #include "scene/model_file.hpp"
 #include "vehicles/propulsion_steady.hpp"
@@ -293,4 +300,111 @@ TEST(EditorRun, ARunSizesItsCellForItsLargestDroneNamingIt) {
     EXPECT_EQ(run->grid_cell(), 2.0f * proxy);
     EXPECT_EQ(run->cell_sized_for(), "phantom");
     EXPECT_TRUE(run->state_of("phantom").has_value());
+}
+
+// The props spin (L7c2, Core's posing rule): each vehicle's blade azimuths
+// start at 0 (the authored pose) and turn after every step by P11's rule,
+// with the rows the step left and h the step's duration; a still rotor stays
+// at 0; a rebuild carries them by name. The hover quads hold their spawn
+// speed (no chain); the Phantom is flown, disarmed, its rotors at 0.
+TEST(EditorRun, TheEditorRunTurnsEachPropByItsRotorsOmegaEachTick) {
+    const spade::scene::SceneDesc s =
+        with_library_drone(support::sample_scene(), "phantom3_class", "phantom", glm::vec3(-4.0f, 0.4f, 4.0f));
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, support::sample_world(), ed::records_for(support::hover_scene()));
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const spade::VehicleRef hover = run->vehicle_ref("hover_quad_0").value();
+    ASSERT_GT(hover.rotor_count, 0u);
+    std::vector<float> rule(hover.rotor_count, 0.0f);
+    EXPECT_TRUE(std::ranges::equal(run->blade_azimuth("hover_quad_0"), rule)) << "the authored pose";
+    const float h = run->sim().substep_h() * static_cast<float>(run->sim().substeps());
+    std::vector<spade::vehicles::RotorRow> rows(hover.rotor_count);
+    for (int t = 1; t <= 30; ++t) {
+        ASSERT_TRUE(run->step(1).has_value());
+        for (uint32_t r = 0; r < hover.rotor_count; ++r) rows[r] = *run->sim().rotor(hover, r).value();
+        ASSERT_TRUE(spade::physics::advance_blade_azimuths(rule, rows, h));
+        ASSERT_TRUE(std::ranges::equal(run->blade_azimuth("hover_quad_0"), rule)) << "tick " << t;
+        const std::span<const float> omega = run->rotor_omega("hover_quad_0");
+        ASSERT_EQ(omega.size(), rows.size());
+        for (uint32_t r = 0; r < hover.rotor_count; ++r) EXPECT_EQ(omega[r], rows[r].omega) << "rotor " << r;
+    }
+    EXPECT_GT(rule.front(), 0.0f) << "the hover quad's rotors turn";
+    const std::span<const float> phantom = run->blade_azimuth("phantom");
+    ASSERT_EQ(phantom.size(), run->vehicle_ref("phantom")->rotor_count);
+    EXPECT_TRUE(std::all_of(phantom.begin(), phantom.end(), [](float p) { return p == 0.0f; }))
+        << "a still rotor stays at 0";
+    EXPECT_TRUE(run->blade_azimuth("nobody").empty());
+    EXPECT_TRUE(run->rotor_omega("nobody").empty());
+    EXPECT_EQ(run->azimuth_refused(), "");
+
+    ASSERT_TRUE(run->rebuild(s, support::sample_world()).has_value());
+    EXPECT_TRUE(std::ranges::equal(run->blade_azimuth("hover_quad_0"), rule)) << "carried by name";
+}
+
+// Drawn only (L7c2): the azimuth is never read back. A Run that turns its
+// props, stepping one at a time because its drones have rotors, is bit for
+// bit the scene file's run stepped in one batch.
+TEST(EditorRun, TheAzimuthIsNeverReadBack) {
+    ed::EditorRun run = start_hover();
+    const auto composed = spade::scene::compose_file(support::hover_scene());
+    ASSERT_TRUE(composed.has_value());
+    auto from_file = spade::scene::instantiate(*composed, spade::sandbox::instance_of(ed::records_for(support::hover_scene())),
+                                               spade::sandbox::kBuiltinStepNs, spade::sandbox::kBuiltinSubsteps);
+    ASSERT_TRUE(from_file.has_value()) << from_file.error().context;
+    ASSERT_TRUE(run.step(120).has_value());
+    ASSERT_TRUE(from_file->sim.step(120).has_value());
+    ASSERT_FALSE(run.blade_azimuth("hover_quad_0").empty());
+    EXPECT_GT(run.blade_azimuth("hover_quad_0").front(), 0.0f) << "the props turned";
+    EXPECT_EQ(spade::testing::state_digest(run.sim()), spade::testing::state_digest(from_file->sim));
+}
+
+// A refusal never fails a step (the posing rule): an azimuth put outside
+// [0, 2 pi) holds, the Run steps on with the vehicle's other props turning,
+// and the Run names the first refusal, once, for the status line.
+TEST(EditorRun, ARefusedAzimuthHoldsAndIsNamedOnceWithoutFailingAStep) {
+    ed::EditorRun run = start_hover();
+    const uint32_t rotors = run.vehicle_ref("hover_quad_0")->rotor_count;
+    ASSERT_GE(rotors, 2u);
+    std::vector<float> psi(rotors, 0.0f);
+    psi.front() = spade::physics::kAzimuthTwoPi;
+    run.set_test_blade_azimuth("hover_quad_0", psi);
+    ASSERT_TRUE(run.step(2).has_value()) << "a refused azimuth never fails a step";
+    EXPECT_EQ(run.blade_azimuth("hover_quad_0").front(), spade::physics::kAzimuthTwoPi) << "the refused rotor holds";
+    EXPECT_GT(run.blade_azimuth("hover_quad_0").back(), 0.0f) << "the others turn";
+    EXPECT_EQ(run.azimuth_refused(),
+              "tick 1: a blade azimuth of 'hover_quad_0' was refused (advance_blade_azimuths()); it holds");
+}
+
+// Run's frame time on the Phantom scene (the lead, 2026-10-27): a frame is 4
+// steps (60 fps of 4 ms steps), timed batched, one sim.step(4) as Run
+// stepped a scene with no drone flown before the props turned, against one
+// at a time, EditorRun::step(4) with each step's controllers and azimuths.
+// Opt-in: SPADE_EDITOR_TIMINGS.
+TEST(EditorRun, FrameTimeBatchedAgainstOneAtATimeOnThePhantomScene) {
+    if (std::getenv("SPADE_EDITOR_TIMINGS") == nullptr) GTEST_SKIP() << "opt-in: SPADE_EDITOR_TIMINGS";
+    const spade::scene::SceneDesc s = with_library_drone(support::sample_scene(), "phantom3_class", "phantom3_class",
+                                                         glm::vec3(0.0f, 0.025f, 1.5f));
+    const spade::WorldDesc world = support::sample_world();
+    ed::BuiltinRecords records = ed::records_for(support::hover_scene());
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, world, records);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    records.grid.cell_size = run->grid_cell();
+    const Result<spade::scene::ComposedScene> composed = ed::compose_together(s, world);
+    ASSERT_TRUE(composed.has_value()) << composed.error().context;
+    Result<spade::scene::SceneRun> batched =
+        spade::scene::instantiate(*composed, spade::sandbox::instance_of(records), spade::sandbox::kBuiltinStepNs,
+                                  spade::sandbox::kBuiltinSubsteps);
+    ASSERT_TRUE(batched.has_value()) << batched.error().context;
+    constexpr int kFrames = 600;
+    constexpr uint32_t kStepsPerFrame = 4;
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0 = Clock::now();
+    for (int f = 0; f < kFrames; ++f) ASSERT_TRUE(batched->sim.step(kStepsPerFrame).has_value());
+    const Clock::time_point t1 = Clock::now();
+    for (int f = 0; f < kFrames; ++f) ASSERT_TRUE(run->step(kStepsPerFrame, "phantom3_class").has_value());
+    const Clock::time_point t2 = Clock::now();
+    const double one_batch = std::chrono::duration<double, std::milli>(t1 - t0).count() / kFrames;
+    const double one_at_a_time = std::chrono::duration<double, std::milli>(t2 - t1).count() / kFrames;
+    std::printf("Run's frame (%u steps) on the Phantom scene: batched %.4f ms, one at a time %.4f ms (%d frames)\n",
+                kStepsPerFrame, one_batch, one_at_a_time, kFrames);
+    EXPECT_GT(run->blade_azimuth("hover_quad_0").front(), 0.0f);
 }

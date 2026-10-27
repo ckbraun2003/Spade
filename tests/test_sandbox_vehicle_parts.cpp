@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <filesystem>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -20,6 +21,7 @@
 #include "reference_airframe.hpp"
 #include "render/scene.hpp"
 #include "render_parts/render_parts.hpp"
+#include "scene/model_file.hpp"
 #include "sim/design_frame.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/part_pose.hpp"
@@ -191,4 +193,50 @@ TEST(SandboxVehicleParts, OnlyACsgRootPartNeedsAnUploadEveryFrame) {
     rp::PreparedParts carved = *prepared;
     carved.parts.front().pieces.front().is_csg = true;
     EXPECT_TRUE(has_csg_pieces(carved));
+}
+
+// The props spin (L7c2, Core's posing rule): given its rotors' omegas and
+// blade azimuths, a vehicle's parts are bound as posed_parts() poses them at
+// that omega and psi, and a turned prop sits elsewhere than a still one. The
+// library's Phantom, whose props are rotor parts (L7c1).
+TEST(SandboxVehicleParts, AVehiclesPropsArePosedByTheirAzimuth) {
+    const spade::Result<spade::scene::ModelFile> file = spade::scene::load_model_file(
+        std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "phantom3_class.model.yaml");
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    const vh::ModelType& model = file->model;
+    ASSERT_FALSE(model.rotors.empty());
+    const auto prepared = rp::prepare_parts(model);
+    ASSERT_TRUE(prepared.has_value()) << prepared.error().context;
+    const spade::BodyState body = spade::sandbox::body_at(
+        model, glm::vec3(1.5f, 0.75f, -2.0f), glm::angleAxis(0.6f, glm::normalize(glm::vec3(0.2f, 1.0f, 0.1f))));
+    const std::vector<float> omega(model.rotors.size(), 600.0f);
+    std::vector<float> psi(model.rotors.size());
+    for (std::size_t k = 0; k < psi.size(); ++k) psi[k] = 0.4f + 0.9f * static_cast<float>(k);
+
+    spade::render::RenderScene drawn = palette_scene();
+    ASSERT_TRUE(append_vehicle_parts(drawn, *prepared, model, body, omega, psi, look()).has_value());
+    const auto posed = vh::posed_parts(model, body, omega, psi, vh::PartFilter::all);
+    ASSERT_TRUE(posed.has_value()) << posed.error().context;
+    spade::render::RenderScene want = palette_scene();
+    ASSERT_TRUE(rp::bind_parts(*prepared, *posed, look(), want).has_value());
+    ASSERT_EQ(drawn.statics.size(), want.statics.size());
+    for (std::size_t i = 0; i < want.statics.size(); ++i) {
+        EXPECT_TRUE(drawn.statics[i].local_to_world == want.statics[i].local_to_world) << "item " << i;
+    }
+
+    spade::render::RenderScene still = palette_scene();
+    ASSERT_TRUE(append_vehicle_parts(still, *prepared, model, body, look()).has_value());
+    ASSERT_EQ(still.statics.size(), drawn.statics.size());
+    std::size_t turned = 0;
+    for (std::size_t i = 0; i < still.statics.size(); ++i) {
+        if (!(still.statics[i].local_to_world == drawn.statics[i].local_to_world)) ++turned;
+    }
+    EXPECT_GT(turned, 0u) << "no prop turned with its azimuth";
+
+    spade::render::RenderScene empty = palette_scene();
+    ASSERT_TRUE(append_vehicle_parts(empty, *prepared, model, body, {}, {}, look()).has_value());
+    ASSERT_EQ(empty.statics.size(), still.statics.size());
+    for (std::size_t i = 0; i < still.statics.size(); ++i) {
+        EXPECT_TRUE(empty.statics[i].local_to_world == still.statics[i].local_to_world) << "empty spans pose it still";
+    }
 }
