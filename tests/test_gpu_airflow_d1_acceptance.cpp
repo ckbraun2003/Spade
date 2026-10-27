@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -32,6 +33,7 @@
 
 #include "airflow_record.hpp"
 #include "airflow_solid_shapes.hpp"
+#include "d1_case.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "physics/airflow/actuator.hpp"
@@ -41,6 +43,9 @@
 #include "physics/airflow/publish.hpp"
 #include "physics/airflow/regions.hpp"
 #include "physics/airflow/wall_load.hpp"
+#include "vehicles/airflow_solids.hpp"
+#include "vehicles/part_pose.hpp"
+#include "vehicles/rotor_discs.hpp"
 
 namespace {
 
@@ -58,6 +63,18 @@ constexpr double kStepBoundMs = 190.0;   // the plan's 2x profiling trigger (B7)
 constexpr uint32_t kNudgeStep = 5;       // s0: the nudged stand-in's first wrong step
 constexpr uint64_t kNsPerSecond = 1'000'000'000;
 static_assert(2 * kFilmFrames == an::kFramesPerSecond, "the film's 0.50 s");
+
+// What a run compares and times. The CPU stand-in can't afford the D1 box's
+// film (1316 steps at ~20 s), so there its plan compares 2 steps, times one,
+// and leaves the film out of the block.
+struct RunPlan {
+    uint32_t compared = kComparedSteps;
+    uint32_t warm = kWarmSteps;
+    uint32_t timed = kTimedSteps;
+    bool film = true;  // the film's 0.50 s, kFilmFrames frames
+};
+constexpr RunPlan kFullPlan{};
+constexpr RunPlan kD1StandInPlan{.compared = 2, .warm = 0, .timed = 1, .film = false};
 
 // The GPU fluid step as B7 drives it: the seam Physics agreed with Rendering
 // (2026-10-27), provisional. Rendering's GpuFluid (spike/airflow/step_chain)
@@ -192,7 +209,9 @@ struct B7Box {
     DomainBc bc;
     FluidConfig cfg;
     uint64_t h_ns = 0;
-    Scene scene;
+    // set_solids() on a fresh scratch, as LiveRun calls it: the CPU's own run
+    // builds its solids through this, the candidate gets `solids`.
+    std::function<spade::Result<void>(FluidScratch&, const MacGrid&, const DomainBc&)> set_box_solids;
     SolidField solids;
     std::vector<uint8_t> solid_cells;  // the publish's mask (LiveRun's publish.solid)
     std::vector<ActuatorDisc> discs;
@@ -220,13 +239,15 @@ struct B7Box {
                                      .thrust = 2.0f * box.cfg.rho * area * vh * vh, .torque = 1.0e-4f});
     if (spade::Result<void> ok = check_disc(box.discs[0], shape); !ok) return std::unexpected(ok.error());
     box.about = {0.15f, 0.14f, 0.13f};
-    box.scene.shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = box.about,
-                                     .radius = 4.0f * dx, .min_feature = 8.0f * dx});
+    auto scene = std::make_shared<Scene>();
+    scene->shapes.push_back(Shape{.name = "sphere", .kind = Kind::sphere, .centre = box.about,
+                                  .radius = 4.0f * dx, .min_feature = 8.0f * dx});
+    box.set_box_solids = [scene](FluidScratch& s, const MacGrid& g, const DomainBc& bc) {
+        return set_solids(s, g, bc, scene->parts(), scene->sampler());
+    };
     spade::Result<FluidScratch> s = make_fluid_scratch(box.grid, box.bc, box.cfg);
     if (!s) return std::unexpected(s.error());
-    if (spade::Result<void> ok = set_solids(*s, box.grid, box.bc, box.scene.parts(), box.scene.sampler()); !ok) {
-        return std::unexpected(ok.error());
-    }
+    if (spade::Result<void> ok = box.set_box_solids(*s, box.grid, box.bc); !ok) return std::unexpected(ok.error());
     box.solids = s->solids;
     box.solid_cells = s->regions.solid;
     box.config = airflow_test::formatted([&](char* b, std::size_t n) {
@@ -235,6 +256,112 @@ struct B7Box {
                              "(15, 14, 13) dx; one disc R 6 dx at (17, 30, 12) dx pushing -y, thrust %.4f N (v_h "
                              "1 m/s), torque 1e-4 N m; rho 1.225, nu 1.4607e-5, h 5 ms, CG floor %u",
                              static_cast<double>(box.discs[0].thrust), kSolidsCgIterations);
+    });
+    return box;
+}
+
+// The D1 box's solids, kept for the set_solids() calls: the parts borrow the
+// model.
+struct D1Solids {
+    spade::vehicles::ModelType model;
+    std::optional<spade::vehicles::AirflowSolids> solids;
+    std::vector<SolidPart> parts;
+};
+
+// The D1 box from the one builder (tests/d1_case.hpp): kD1Grid at 4 mm, the
+// reference quad's rigid parts as solids, held at hover in the case's wind.
+// LiveRun takes one step for its rotors' rows and held body; the discs are
+// those rows at their commanded hover speed, held constant. The box's solids
+// must be LiveRun's (its set_solids() line and solid cells), or it refuses.
+[[nodiscard]] spade::Result<B7Box> d1_box() {
+    namespace vh = spade::vehicles;
+    spade::Result<spade::testing::PoweredQuad> q = spade::testing::d1_case(0.5);
+    if (!q) return std::unexpected(q.error());
+    spade::Result<an::ResolvedCase> resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid);
+    if (!resolved) return std::unexpected(resolved.error());
+    const GridShape& shape = resolved->base;
+    const glm::vec3 origin = -0.5f * shape.dx *
+                             glm::vec3(static_cast<float>(shape.nx), static_cast<float>(shape.ny),
+                                       static_cast<float>(shape.nz));
+    std::vector<vh::RotorRow> rows;
+    spade::BodyState body{};
+    std::string live_line;
+    uint32_t live_cells = 0;
+    {
+        spade::Result<an::LiveRun> run = an::LiveRun::start(*resolved, q->run_model);
+        if (!run) return std::unexpected(run.error());
+        if (spade::Result<void> s = run->step(an::Controls{.armed = true, .throttle = q->trim.hover}); !s) {
+            return std::unexpected(s.error());
+        }
+        rows.assign(run->rotor_rows().begin(), run->rotor_rows().end());
+        body = run->body();
+        live_line = run->solids().run_line;
+        live_cells = run->solids().solid_cells;
+    }
+
+    B7Box box;
+    box.name = "D1 box 240x177x168";
+    box.bc = resolved->domain;
+    const an::AnalysisCase& c = resolved->spec;
+    box.h_ns = static_cast<uint64_t>(static_cast<double>(*c.time.step) * static_cast<double>(kNsPerSecond) + 0.5);
+    box.cfg = FluidConfig{.rho = c.fluid.density, .nu = c.fluid.kinematic_viscosity,
+                          .h = static_cast<float>(static_cast<double>(box.h_ns) / static_cast<double>(kNsPerSecond)),
+                          .n_v = kSolidsCgIterations};
+    spade::Result<MacGrid> g = make_grid(shape, box.bc);
+    if (!g) return std::unexpected(g.error());
+    box.grid = std::move(*g);
+
+    // The parts as LiveRun poses them: the held body, its rotors still.
+    auto d1 = std::make_shared<D1Solids>();
+    d1->model = q->run_model;
+    spade::BodyState hover{};
+    hover.pos = body.pos;
+    hover.orient = body.orient;
+    const std::vector<float> still(d1->model.rotors.size(), 0.0f);
+    spade::Result<vh::PosedParts> posed = vh::posed_parts(d1->model, hover, still, still, vh::PartFilter::rigid_only);
+    if (!posed) return std::unexpected(posed.error());
+    d1->solids.emplace(d1->model, std::move(*posed), origin);
+    spade::Result<std::vector<SolidPart>> parts = d1->solids->parts();
+    if (!parts) return std::unexpected(parts.error());
+    d1->parts = std::move(*parts);
+    box.set_box_solids = [d1](FluidScratch& s, const MacGrid& grid, const DomainBc& bc) {
+        return set_solids(s, grid, bc, d1->parts, d1->solids->sampler());
+    };
+    spade::Result<FluidScratch> s = make_fluid_scratch(box.grid, box.bc, box.cfg);
+    if (!s) return std::unexpected(s.error());
+    if (spade::Result<void> ok = box.set_box_solids(*s, box.grid, box.bc); !ok) return std::unexpected(ok.error());
+    const auto cells = static_cast<uint32_t>(
+        std::count_if(s->regions.solid.begin(), s->regions.solid.end(), [](uint8_t m) { return m != 0u; }));
+    if (s->solids.run_line != live_line || cells != live_cells) {
+        return std::unexpected(spade::Error{spade::Code::internal, "the D1 box's solids aren't LiveRun's: '" +
+                                                                       s->solids.run_line + "', " +
+                                                                       std::to_string(cells) + " solid cells, "
+                                                                       "against '" + live_line + "', " +
+                                                                       std::to_string(live_cells)});
+    }
+    box.solids = s->solids;
+    box.solid_cells = s->regions.solid;
+
+    for (vh::RotorRow& r : rows) r.omega = r.omega_cmd;
+    box.discs.resize(rows.size());
+    if (spade::Result<void> d = vh::rotor_discs(rows, body, origin, shape, box.discs); !d) {
+        return std::unexpected(d.error());
+    }
+    box.about = body.pos - origin;  // the body's centre of mass, in the grid's frame
+    float thrust = 0.0f;
+    for (const ActuatorDisc& d : box.discs) thrust += d.thrust;
+    box.config = airflow_test::formatted([&](char* b, std::size_t n) {
+        return std::snprintf(b, n,
+                             "D1: %ux%ux%u at dx 4 mm (kD1Grid, tests/d1_case.hpp), wind (%.1f, %.1f, %.1f) m/s; "
+                             "the reference quad's rigid parts as solids, LiveRun's own (%s); held at hover, its %zu "
+                             "rotors as actuator discs at their commanded hover speed, %.0f rad/s, %.3f N in all; "
+                             "rho %.4g, nu %.4e, h %.2f ms, CG floor %u",
+                             shape.nx, shape.ny, shape.nz, static_cast<double>(box.bc.ambient.x),
+                             static_cast<double>(box.bc.ambient.y), static_cast<double>(box.bc.ambient.z),
+                             live_line.c_str(), box.discs.size(),
+                             rows.empty() ? 0.0 : static_cast<double>(rows[0].omega_cmd), static_cast<double>(thrust),
+                             static_cast<double>(box.cfg.rho), static_cast<double>(box.cfg.nu),
+                             static_cast<double>(box.cfg.h) * 1000.0, kSolidsCgIterations);
     });
     return box;
 }
@@ -372,9 +499,7 @@ void tally_solids(Comparison& c, const SolidField& cpu, const SolidField& cand) 
 [[nodiscard]] spade::Result<Comparison> compare_with_cpu(const B7Box& box, const MakeStepper& make, uint32_t steps) {
     spade::Result<FluidScratch> s = make_fluid_scratch(box.grid, box.bc, box.cfg);
     if (!s) return std::unexpected(s.error());
-    if (spade::Result<void> ok = set_solids(*s, box.grid, box.bc, box.scene.parts(), box.scene.sampler()); !ok) {
-        return std::unexpected(ok.error());
-    }
+    if (spade::Result<void> ok = box.set_box_solids(*s, box.grid, box.bc); !ok) return std::unexpected(ok.error());
     CpuStandIn cpu(box.grid, box.bc, box.cfg, std::move(*s));
     spade::Result<std::unique_ptr<FluidStepper>> made = make(box.grid, box.bc, box.cfg, &box.solids);
     if (!made) return std::unexpected(made.error());
@@ -429,23 +554,24 @@ struct Timing {
 // the initial state again, the film's 0.50 s, read back and published at each
 // frame as LiveRun's advance_frame() does: frame k at the first step at or
 // past round(k / kFramesPerSecond) s.
-[[nodiscard]] spade::Result<Timing> time_candidate(const B7Box& box, const MakeStepper& make) {
+[[nodiscard]] spade::Result<Timing> time_candidate(const B7Box& box, const MakeStepper& make, const RunPlan& plan) {
     using clock = std::chrono::steady_clock;
     Timing t;
     {
         spade::Result<std::unique_ptr<FluidStepper>> made = make(box.grid, box.bc, box.cfg, &box.solids);
         if (!made) return std::unexpected(made.error());
         std::vector<double> ms;
-        for (uint32_t k = 0; k < kWarmSteps + kTimedSteps; ++k) {
+        for (uint32_t k = 0; k < plan.warm + plan.timed; ++k) {
             const clock::time_point t0 = clock::now();
             const spade::Result<FluidHealth> h = (*made)->step(box.discs);
             const clock::time_point t1 = clock::now();
             if (!h) return std::unexpected(h.error());
-            if (k >= kWarmSteps) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            if (k >= plan.warm) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
         }
         std::sort(ms.begin(), ms.end());
         t.step_ms = ms[ms.size() / 2];
     }
+    if (!plan.film) return t;
     spade::Result<std::unique_ptr<FluidStepper>> made = make(box.grid, box.bc, box.cfg, &box.solids);
     if (!made) return std::unexpected(made.error());
     const GridShape& s = box.grid.shape;
@@ -478,8 +604,12 @@ struct Timing {
 // record reader, so a format slip fails here and not at the paste. The
 // verdicts are the call site's.
 [[nodiscard]] std::string b7_block(const std::string& box, const std::string& config, const std::string& build,
-                                   const Comparison& c, const Timing& t, bool bits_within, bool solids_within,
-                                   bool time_within) {
+                                   const RunPlan& plan, const Comparison& c, const Timing& t, bool bits_within,
+                                   bool solids_within, bool time_within) {
+    const std::string film = plan.film ? airflow_test::formatted([&](char* b, std::size_t n) {
+        return std::snprintf(b, n, "0.50 s of the box's time in %u steps, published at every 1/30 s", t.film_steps);
+    })
+                                       : std::string("the film's 0.50 s not run on this box");
     const std::string first =
         c.first_step == 0 ? std::string("none differ") : airflow_test::formatted([&](char* b, std::size_t n) {
             return std::snprintf(b, n,
@@ -488,13 +618,13 @@ struct Timing {
                                  c.first_field.c_str(), c.first_index, c.first_gap, c.largest_gap[0],
                                  c.largest_gap[1], c.largest_gap[2], c.largest_gap[3]);
         });
-    return airflow_test::formatted([&](char* b, std::size_t n) {
+    std::string block = airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(
             b, n,
             "=== validation record: B7 acceptance, %s, %s against the CPU ===\n"
             "path: %s, %s\n"
             "config: %s; steps 1 to %u compared from the initial state; the step time the median of %u steps after "
-            "%u warm-up; 0.50 s of the box's time in %u steps, published at every 1/30 s\n"
+            "%u warm-up; %s\n"
             "measure: the values differing from the CPU's run over steps 1 to %u (u, v, w and p, each step's health "
             "and wall load) = %llu of %llu\n"
             "reference: the CPU's run of the same box, LiveRun's step order (engine/analysis/live_run.cpp)\n"
@@ -515,19 +645,24 @@ struct Timing {
             "reference: the plan's expectation, about 95 ms at the D1 box "
             "(docs/design/physics/plans/2026-10-22-airflow-gpu-solver-plan.md, B7)\n"
             "tolerance: <= 190 ms (the plan's 2x profiling trigger, B7, fixed before the run)\n"
-            "verdict: %s\n"
-            "measure: the wall time for 0.50 s of the box's time (%u steps), publishing at the film's frame times "
-            "= %.2f s\n"
-            "reference: the plan's estimate, about 2 minutes at the D1 box (B7)\n"
-            "tolerance: none (report only)\n"
-            "verdict: report only\n",
+            "verdict: %s\n",
             box.c_str(), c.candidate.c_str(), c.candidate.c_str(), build.c_str(), config.c_str(), c.steps,
-            kTimedSteps, kWarmSteps, t.film_steps, c.steps, static_cast<unsigned long long>(c.differing),
+            plan.timed, plan.warm, film.c_str(), c.steps, static_cast<unsigned long long>(c.differing),
             static_cast<unsigned long long>(c.compared), bits_within ? "within" : "MISS",
             static_cast<unsigned long long>(c.solids_differing), static_cast<unsigned long long>(c.solids_compared),
-            solids_within ? "within" : "MISS", first.c_str(), c.first_step, kTimedSteps, kWarmSteps, t.step_ms,
-            time_within ? "within" : "MISS", t.film_steps, t.film_s);
+            solids_within ? "within" : "MISS", first.c_str(), c.first_step, plan.timed, plan.warm, t.step_ms,
+            time_within ? "within" : "MISS");
     });
+    if (!plan.film) return block;
+    return block + airflow_test::formatted([&](char* b, std::size_t n) {
+               return std::snprintf(b, n,
+                                    "measure: the wall time for 0.50 s of the box's time (%u steps), publishing at "
+                                    "the film's frame times = %.2f s\n"
+                                    "reference: the plan's estimate, about 2 minutes at the D1 box (B7)\n"
+                                    "tolerance: none (report only)\n"
+                                    "verdict: report only\n",
+                                    t.film_steps, t.film_s);
+           });
 }
 
 // The harness on one box: the comparison, the times, and the block judged.
@@ -537,13 +672,13 @@ struct B7Run {
     std::string block;
 };
 
-[[nodiscard]] spade::Result<B7Run> run_b7(const B7Box& box, const MakeStepper& make) {
-    spade::Result<Comparison> c = compare_with_cpu(box, make, kComparedSteps);
+[[nodiscard]] spade::Result<B7Run> run_b7(const B7Box& box, const MakeStepper& make, const RunPlan& plan = kFullPlan) {
+    spade::Result<Comparison> c = compare_with_cpu(box, make, plan.compared);
     if (!c) return std::unexpected(c.error());
-    spade::Result<Timing> t = time_candidate(box, make);
+    spade::Result<Timing> t = time_candidate(box, make, plan);
     if (!t) return std::unexpected(t.error());
     B7Run run{std::move(*c), *t, {}};
-    run.block = b7_block(box.name, box.config, airflow_test::build_line(), run.c, run.t, run.c.differing == 0u,
+    run.block = b7_block(box.name, box.config, airflow_test::build_line(), plan, run.c, run.t, run.c.differing == 0u,
                          run.c.solids_differing == 0u, run.t.step_ms <= kStepBoundMs);
     return run;
 }
@@ -589,6 +724,32 @@ TEST(B7Acceptance, TheCpuStandInIsBitEqualToTheCpu) {
     EXPECT_EQ(run->t.film_steps, 100u);
 }
 
+// The harness on the real D1 box, the one the GPU run takes: the CPU stand-in
+// against the CPU for 2 steps, one step timed (a CPU's, so its verdict is
+// printed, not asserted), the film left out. A few minutes in release.
+TEST(B7Acceptance, TheCpuStandInIsBitEqualToTheCpuInTheD1Box) {
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run the B7 stand-in in D1 (~3 min)";
+    const spade::Result<B7Box> box = d1_box();
+    ASSERT_TRUE(box.has_value()) << box.error().context;
+    ASSERT_EQ(box->discs.size(), 4u);
+    const spade::Result<B7Run> run = run_b7(*box, &CpuStandIn::create, kD1StandInPlan);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    std::fputs(run->block.c_str(), stdout);
+    const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    ASSERT_EQ(record->at(0).measures.size(), 4u) << "the film is left out";
+    EXPECT_EQ(record->at(0).measures[0].verdict, an::Verdict::within);
+    EXPECT_EQ(record->at(0).measures[1].verdict, an::Verdict::within);
+    const MacGrid& g = box->grid;
+    const uint64_t per_step = g.u.size() + g.v.size() + g.w.size() + g.p.size() + 6u + 6u;
+    EXPECT_EQ(run->c.compared, kD1StandInPlan.compared * per_step);
+    EXPECT_EQ(run->c.differing, 0u);
+    EXPECT_EQ(run->c.solids_differing, 0u);
+    EXPECT_EQ(run->c.first_step, 0u);
+    EXPECT_GT(run->c.cpu_speed, 1.0) << "the wind and the discs must move the air";
+}
+
 // The MISS control: one v sample 1 ulp up after step s0's fluid step, on the
 // disc's axis 2 cells below it. The comparison must find it at step s0, in
 // that sample and nothing else there, and the block must read MISS.
@@ -622,7 +783,8 @@ TEST(B7Acceptance, ANudgedRunIsAMissAtItsFirstStep) {
 
 // The block reads as one validation record of five measures: measures 1, 2
 // and 4 judged, within on a bit-equal run inside the step bound and MISS on
-// one with differing values past it; 3 and 5 report only.
+// one with differing values past it; 3 and 5 report only; and four measures
+// for a plan without the film.
 TEST(B7AcceptanceRecord, TheBlockReadsAsAValidationRecord) {
     Comparison within;
     within.candidate = "a test candidate";
@@ -644,7 +806,8 @@ TEST(B7AcceptanceRecord, TheBlockReadsAsAValidationRecord) {
     const std::array<an::Verdict, 5> judged_miss = {an::Verdict::miss, an::Verdict::miss, an::Verdict::report_only,
                                                     an::Verdict::miss, an::Verdict::report_only};
     const auto a = airflow_test::read_as_record(
-        b7_block("a test box", "a test config", "a test build", within, fast, true, true, true), "b7-test.md");
+        b7_block("a test box", "a test config", "a test build", kFullPlan, within, fast, true, true, true),
+        "b7-test.md");
     ASSERT_TRUE(a.has_value()) << a.error().context;
     ASSERT_EQ(a->size(), 1u);
     ASSERT_EQ(a->at(0).measures.size(), 5u);
@@ -653,7 +816,8 @@ TEST(B7AcceptanceRecord, TheBlockReadsAsAValidationRecord) {
     }
     EXPECT_EQ(a->at(0).measures[2].number, 0.0) << "no differing step reads 0";
     const auto b = airflow_test::read_as_record(
-        b7_block("a test box", "a test config", "a test build", miss, slow, false, false, false), "b7-test.md");
+        b7_block("a test box", "a test config", "a test build", kFullPlan, miss, slow, false, false, false),
+        "b7-test.md");
     ASSERT_TRUE(b.has_value()) << b.error().context;
     ASSERT_EQ(b->size(), 1u);
     ASSERT_EQ(b->at(0).measures.size(), 5u);
@@ -662,4 +826,12 @@ TEST(B7AcceptanceRecord, TheBlockReadsAsAValidationRecord) {
     }
     EXPECT_EQ(b->at(0).measures[2].number, 5.0);
     EXPECT_EQ(b->at(0).measures[3].number, 250.0);
+    // A plan without the film: four measures, the step time last.
+    const auto d = airflow_test::read_as_record(
+        b7_block("a test box", "a test config", "a test build", kD1StandInPlan, within, fast, true, true, true),
+        "b7-test.md");
+    ASSERT_TRUE(d.has_value()) << d.error().context;
+    ASSERT_EQ(d->size(), 1u);
+    ASSERT_EQ(d->at(0).measures.size(), 4u);
+    EXPECT_EQ(d->at(0).measures[3].number, 80.0);
 }
