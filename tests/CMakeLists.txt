@@ -302,6 +302,9 @@ add_executable(spade_tests
 # test_gpu_airflow_d1_device.cpp (plan B, B7): B7's acceptance harness
 # (b7_harness.hpp) on GpuFluid against the CPU's run, GpuB7Acceptance* on the
 # device; the 32 steps and the times opt-in (SPADE_AIRFLOW_VALIDATION).
+# test_gpu_live_fluid.cpp (B7's seam, slice 2): LiveRun's fluid on GpuFluid
+# (spike/airflow/live_fluid.hpp) against its CPU run, GpuLiveFluid* on the
+# device.
 if(SPADE_VULKAN)
     target_sources(spade_tests PRIVATE
         test_compute_context.cpp
@@ -323,6 +326,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_solids.cpp
         test_gpu_airflow_step.cpp
         test_gpu_airflow_d1_device.cpp
+        test_gpu_live_fluid.cpp
     )
 endif()
 
