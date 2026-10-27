@@ -655,7 +655,7 @@ void inspect_world(ed::EditorPanels& p) {
             ui::value_row("Restitution", "%.2f", p.records->contacts.restitution_e);
             ui::value_row("Friction", "%.2f", p.records->contacts.friction_mu);
             ui::value_row("Contact proxy", "%.3f m", p.records->contacts.proxy_radius);
-            ui::value_row("Grid cell", "%.3f m", p.records->grid.cell_size);
+            ui::value_row("Grid cell", "%s", p.grid_cell.c_str());
             ui::end_properties();
         }
     }

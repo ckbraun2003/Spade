@@ -89,6 +89,7 @@ struct EditorPanels {
     AirLineCache air_line;  // kept by the panels between frames
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
+    std::string grid_cell;                    // its Grid cell row (grid_cell_line()): a Run's sized cell, and why
     std::string title;                        // the scene file's name, " *" when anything is unsaved
     bool running = false;
     bool air = false;  // Run air runs: Pause and Step are a Run's, off
