@@ -14,6 +14,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -330,22 +331,35 @@ TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
     EXPECT_EQ(fast.line(), "air at full speed");
 }
 
-// The band (§9) and its floor (the lead's ruling A, 2026-10-27, and Run air
+// The band (§9) and its floor (the lead's rulings, 2026-10-27, and Run air
 // on the GPU's): the speed, the run's kind, where its fluid steps ("GPU", or
-// "CPU: " and why), then the rest of the run's label; elided at its end, it
-// never loses its speed, the run's kind or its backend's name (the CPU's why
-// goes with the rest).
-TEST(EditorAirflow, TheBandsFloorIsItsSpeedTheRunsKindAndItsBackend) {
+// "CPU: " and why), then the rest of the run's label. When the bar is short
+// the kind goes first, so the backend's name and the grid's dx outlast it;
+// then the band is elided at its end, never below its speed and its
+// backend's name (the CPU's why goes with the rest).
+TEST(EditorAirflow, TheBandShedsTheRunsKindFirstAndItsFloorIsItsSpeedAndBackend) {
     const std::string label = "actuator disc \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3";
     const std::string gpu = ed::air_band("air at 1/2 speed", label, "GPU");
     EXPECT_EQ(gpu, "air at 1/2 speed \xc2\xb7 actuator disc \xc2\xb7 GPU \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
-    EXPECT_EQ(ed::band_floor(gpu), "air at 1/2 speed \xc2\xb7 actuator disc \xc2\xb7 GPU");
+    EXPECT_EQ(ed::band_without_kind(gpu), "air at 1/2 speed \xc2\xb7 GPU \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(ed::band_floor(gpu), "air at 1/2 speed \xc2\xb7 GPU");
     const std::string cpu = ed::air_band("air at 1/43 speed", label, "CPU: no Vulkan device");
     EXPECT_EQ(cpu,
               "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU: no Vulkan device \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
-    EXPECT_EQ(ed::band_floor(cpu), "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU");
-    EXPECT_EQ(ed::air_band("waiting for the air's first frame", "", "GPU"), "waiting for the air's first frame");
-    EXPECT_EQ(ed::band_floor("waiting for the air's first frame"), "waiting for the air's first frame");
+    EXPECT_EQ(ed::band_without_kind(cpu),
+              "air at 1/43 speed \xc2\xb7 CPU: no Vulkan device \xc2\xb7 32\xc2\xb3, dx 25 mm, R/dx 3");
+    EXPECT_EQ(ed::band_floor(cpu), "air at 1/43 speed \xc2\xb7 CPU");
+    const std::string waiting = "waiting for the air's first frame";
+    EXPECT_EQ(ed::air_band(waiting, "", "GPU"), waiting);
+    EXPECT_EQ(ed::band_without_kind(waiting), waiting);
+    EXPECT_EQ(ed::band_floor(waiting), waiting);
+
+    // The bar's choice, each byte a unit wide: whole when it fits, else
+    // without its kind (which the bar then elides at its end).
+    const auto bytes = [](std::string_view t) { return static_cast<float>(t.size()); };
+    EXPECT_EQ(ed::band_shown(gpu, static_cast<float>(gpu.size()), bytes), gpu);
+    EXPECT_EQ(ed::band_shown(gpu, static_cast<float>(gpu.size()) - 1.0f, bytes), ed::band_without_kind(gpu));
+    EXPECT_EQ(ed::band_shown(waiting, 1.0f, bytes), waiting);
 }
 
 // The library's Phantom (the lead, 2026-10-27), which editor.airflow runs
