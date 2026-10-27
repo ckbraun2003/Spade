@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/iris_plus_class.model.yaml", hash: "41242a58152cd9c3"}
+model: {file: "drones/iris_plus_class.model.yaml", hash: "fb1656cfdafeec0b"}
 built_by: "tests/library_drones.hpp: iris_plus_class(), a direct AirframeSpec"
 parts:
   prop: {file: "parts/uiuc_apce_9x4.5.prop.yaml", hash: "6df9a97da6bd64de"}
@@ -70,6 +70,14 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.3653196115763888, source: "nasa_ames_2016", grade: derived, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule"}
+  "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
+  "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
+  "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
+  "meshes.prop.thickness_tip": {value: 0.08, grade: assumed, note: "8% thick at its last station"}
+  "meshes.prop.chord_points": {value: 8, grade: assumed, note: "8 points on each surface: a drawing's resolution"}
+  "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
+  "meshes.prop.hub_height": {value: 0.01219, grade: assumed, note: "the hub 5% of the diameter tall"}
+  "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
 not_carried: []
 checks:
   - {test: "IrisPlusHoversAtNasasBaselineRpm", reference: 5400, unit: "rpm", source: "nasa_ames_2016", grade: measured, note: "hover at 2.8 lb (12.46 N) at 5,400 rpm (NASA Table 2), like for like. It reads about -4.9%: the 9x4.5's static C_T sits about 10% above its low-J points, and sqrt(1.10) is about 4.9% in rpm; its own mass is report-only (Physics, 2026-10-22)", band: [-0.05, 0.05], report_only: false}

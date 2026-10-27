@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/basic_quad_competition.model.yaml", hash: "ca6d46a6b9bd135b"}
+model: {file: "drones/basic_quad_competition.model.yaml", hash: "9b00749da7691e3f"}
 built_by: "vehicles::basic_quad_airframe(), then Kat's drag as drag[0]"
 parts:
   prop: {file: "parts/triblade_6inch_scaled.prop.yaml", hash: "82082d320c34e718"}
@@ -32,6 +32,14 @@ inputs:
   "air_density": {value: 1.225, grade: assumed, note: "ISA sea level: the compile's operating point"}
   "gravity": {value: 9.80665, grade: assumed, note: "standard gravity: the compile's operating point"}
   "state_of_charge": {value: 1, grade: assumed, note: "a full pack: the compile's operating point"}
+  "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
+  "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
+  "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
+  "meshes.prop.thickness_tip": {value: 0.08, grade: assumed, note: "8% thick at its last station"}
+  "meshes.prop.chord_points": {value: 8, grade: assumed, note: "8 points on each surface: a drawing's resolution"}
+  "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
+  "meshes.prop.hub_height": {value: 0.007620000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
+  "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
   "drag[0].coeffs": {value: [0.028, 0.028, 0.028], source: "kat_competition_700", grade: fitted, note: "Kat's F_i = -0.028 |v_i| v_i on the body axes is the engine's componentwise law (physics/forces.cpp), in kg/m with no rho conversion (Physics, 2026-10-22)", kat: {source: "tuned", confidence: "high", date: "2026-07-29"}}
   "drag[0].mount.position": {value: [-9.704638042836974e-20, 0.014814178459346294, 1.9409276085673949e-19], grade: assumed, note: "at the centre of mass, the remainder's place, so the drag adds no torque, as in Kat's law"}
   "drag[0].mount.orientation": {value: [1, 0, 0, 0], grade: assumed, note: "the body axes"}

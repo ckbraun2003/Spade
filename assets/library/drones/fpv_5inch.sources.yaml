@@ -7,7 +7,7 @@
 # =============================================================================
 
 model_sources_version: 1
-model: {file: "drones/fpv_5inch.model.yaml", hash: "bebb5c6843302ca4"}
+model: {file: "drones/fpv_5inch.model.yaml", hash: "13423ab8d43d055c"}
 built_by: "tests/library_drones.hpp: fpv_5inch(), a direct AirframeSpec"
 parts:
   prop: {file: "parts/uiuc_mit_5x4.prop.yaml", hash: "4585675f13954361"}
@@ -70,6 +70,14 @@ inputs:
   "imus[0].sigma_ba": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "imus[0].sigma_bg": {value: 0, grade: assumed, note: "noise-free: L5 adds no sensor model"}
   "proxy_radius": {value: 0.1735, grade: assumed, note: "the hub's reach in the rotor plane plus the propeller's radius, basic_quad's rule, on the assumed layout"}
+  "meshes.prop.camber": {value: 0.04, grade: assumed, note: "a 4% camber line, drawn: the part file gives no section"}
+  "meshes.prop.camber_at": {value: 0.4, grade: assumed, note: "the camber's peak at 40% of the chord"}
+  "meshes.prop.thickness_root": {value: 0.12, grade: assumed, note: "12% thick at the blade's first station"}
+  "meshes.prop.thickness_tip": {value: 0.08, grade: assumed, note: "8% thick at its last station"}
+  "meshes.prop.chord_points": {value: 8, grade: assumed, note: "8 points on each surface: a drawing's resolution"}
+  "meshes.prop.hub_gap": {value: 0.0005, grade: assumed, note: "0.5 mm between the hub and each blade's root"}
+  "meshes.prop.hub_height": {value: 0.006350000000000001, grade: assumed, note: "the hub 5% of the diameter tall"}
+  "meshes.prop.hub_segments": {value: 16, grade: assumed, note: "16 chords around the hub"}
 not_carried: []
 checks:
   - {test: "FpvThrustToWeightIsReported", reference: 8, unit: "1", grade: assumed, note: "typical 5-inch racers sit around 8-14 (no single source)", band: [0, 0.75], report_only: true}

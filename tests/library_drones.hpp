@@ -58,6 +58,7 @@
 #include "vehicles/airframe_compile.hpp"
 #include "vehicles/basic_quad.hpp"
 #include "vehicles/composite_inertia.hpp"
+#include "world/mesh_shapes.hpp"
 
 namespace spade::test::library_drones {
 
@@ -342,6 +343,7 @@ struct DroneParts {
     vehicles::MotorBlock motor{};
     vehicles::EscBlock esc{};
     vehicles::BatteryBlock battery{};
+    std::optional<scene::BladeGeometry> blade{};  // the prop file's, which its mesh is drawn from (L7c1)
 };
 
 [[nodiscard]] inline std::string part_file(scene::PartKind kind, std::string_view id) {
@@ -367,7 +369,10 @@ struct DroneParts {
             return std::unexpected(invalid("'" + file + "' is not a " +
                                            std::string(scene::part_kind_name(kPartKinds[i])) + " part"));
         }
-        if (const auto* p = std::get_if<scene::PropPart>(&*part)) out.prop = p->block;
+        if (const auto* p = std::get_if<scene::PropPart>(&*part)) {
+            out.prop = p->block;
+            out.blade = p->blade;
+        }
         if (const auto* m = std::get_if<scene::MotorPart>(&*part)) out.motor = m->block;
         if (const auto* e = std::get_if<scene::EscPart>(&*part)) out.esc = e->block;
         if (const auto* b = std::get_if<scene::BatteryPart>(&*part)) out.battery = b->block;
@@ -455,6 +460,81 @@ inline void read_operating_point(AirframeSpec& s, InputReader& r) {
     return m;
 }
 
+// -- The props (L7c1) ----------------------------------------------------------
+
+// The props' mesh rows, every drone's: what shapes::prop() needs beyond the
+// part file's blade, its diameter and its blade count. No source gives a
+// section or a hub, so each is assumed (the realistic drones plan's rule: a
+// mesh parameter no source gives is a row).
+inline void add_prop_rows(DroneInputs& in, const DroneParts& parts) {
+    in.add("meshes.prop.camber", 0.04, assumed("a 4% camber line, drawn: the part file gives no section"));
+    in.add("meshes.prop.camber_at", 0.4, assumed("the camber's peak at 40% of the chord"));
+    in.add("meshes.prop.thickness_root", 0.12, assumed("12% thick at the blade's first station"));
+    in.add("meshes.prop.thickness_tip", 0.08, assumed("8% thick at its last station"));
+    in.add("meshes.prop.chord_points", 8.0, assumed("8 points on each surface: a drawing's resolution"));
+    in.add("meshes.prop.hub_gap", 0.0005, assumed("0.5 mm between the hub and each blade's root"));
+    in.add("meshes.prop.hub_height", 0.05 * parts.prop.diameter, assumed("the hub 5% of the diameter tall"));
+    in.add("meshes.prop.hub_segments", 16.0, assumed("16 chords around the hub"));
+}
+
+// The props' mesh: the part file's blade, the prop block's diameter and blade
+// count, and the rows. Read before the reader's status(), which refuses an
+// unread row.
+[[nodiscard]] inline shapes::PropMeshSpec read_prop_mesh(const DroneParts& parts, InputReader& r) {
+    shapes::PropMeshSpec m;
+    m.diameter = parts.prop.diameter;
+    m.blades = parts.prop.blades;
+    if (parts.blade) {
+        m.r_over_r = parts.blade->r_over_r;
+        m.c_over_r = parts.blade->c_over_r;
+        m.beta_deg = parts.blade->beta_deg;
+        m.hub_cutout = parts.blade->hub_cutout;
+    }
+    m.section.camber = r.number("meshes.prop.camber");
+    m.section.camber_at = r.number("meshes.prop.camber_at");
+    m.section.thickness_root = r.number("meshes.prop.thickness_root");
+    m.section.thickness_tip = r.number("meshes.prop.thickness_tip");
+    m.section.chord_points = static_cast<std::uint32_t>(r.number("meshes.prop.chord_points"));
+    m.hub_gap = r.number("meshes.prop.hub_gap");
+    m.hub_height = r.number("meshes.prop.hub_height");
+    m.hub_segments = static_cast<std::uint32_t>(r.number("meshes.prop.hub_segments"));
+    return m;
+}
+
+// The props' mesh as the table gives it, for a reader of the rows (as
+// basic_quad_params() is): problem() only, since the rest of the table is
+// another builder's.
+[[nodiscard]] inline Result<shapes::PropMeshSpec> prop_mesh_params(const DroneParts& parts,
+                                                                   const DroneInputs& inputs) {
+    InputReader r(inputs);
+    shapes::PropMeshSpec m = read_prop_mesh(parts, r);
+    if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
+    return m;
+}
+
+// Every hub's prop: prop[k] on rotor k, in its hub's frame at psi = 0 (an
+// identity mount), the ccw hand on a +1 rotor and the cw on a -1, one mesh
+// per hand. Massless: the propeller's mass is the prop block's
+// (AirframeSpec::rotor_parts).
+[[nodiscard]] inline Result<void> wear_props(AirframeSpec& s, const DroneParts& parts,
+                                             const shapes::PropMeshSpec& m) {
+    if (!parts.blade) return std::unexpected(invalid("'" + parts.files[0] + "' carries no blade to draw its prop"));
+    const Result<shapes::GeneratedMesh> ccw = shapes::prop(m, shapes::PropHand::ccw);
+    if (!ccw) return std::unexpected(ccw.error());
+    const Result<shapes::GeneratedMesh> cw = shapes::prop(m, shapes::PropHand::cw);
+    if (!cw) return std::unexpected(cw.error());
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        const shapes::GeneratedMesh& hand = s.rotors[k].spin_dir > 0.0 ? *ccw : *cw;
+        s.rotor_parts.push_back(vehicles::RotorPartSpec{.name = indexed("prop", k),
+                                                        .role = "prop",
+                                                        .rotor = static_cast<std::uint32_t>(k),
+                                                        .mount = {},  // the hub's own frame
+                                                        .mesh = hand.mesh,
+                                                        .min_feature = hand.min_feature});
+    }
+    return {};
+}
+
 // -- A direct drone ------------------------------------------------------------
 
 // A direct drone's own numbers and their citations (the draft's section 3).
@@ -530,6 +610,7 @@ inline void add_direct_rows(DroneInputs& in, const DirectQuad& q, const DronePar
         in.add(std::string("imus[0].") + sigma, 0.0, assumed("noise-free: L5 adds no sensor model"));
     }
     in.add("proxy_radius", length + 0.5 * parts.prop.diameter, q.proxy_ref);
+    add_prop_rows(in, parts);
 }
 
 [[nodiscard]] inline PartInertia read_record(InputReader& r, const std::string& at, std::string name,
@@ -589,7 +670,9 @@ inline void add_direct_rows(DroneInputs& in, const DirectQuad& q, const DronePar
                                                       std::string name) {
     InputReader r(inputs);
     AirframeSpec s = read_direct_quad(parts, r, std::move(name));
+    const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    if (Result<void> w = wear_props(s, parts, props); !w) return std::unexpected(w.error());
     return s;
 }
 
@@ -821,6 +904,7 @@ struct FitTargets {
 [[nodiscard]] inline Result<AirframeSpec> crazyflie_class(const DroneParts& parts, const DroneInputs& inputs) {
     InputReader r(inputs);
     AirframeSpec s = read_direct_quad(parts, r, "crazyflie_class");
+    const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
     const double mass = r.number("mass");
     const glm::dvec3 inertia = r.vec3("inertia");
     if (Result<void> st = r.problem(); !st) return std::unexpected(st.error());
@@ -831,6 +915,7 @@ struct FitTargets {
     r.same("parts[5].tensor", mat_value(rest->tensor));
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
     s.parts.push_back(std::move(*rest));
+    if (Result<void> w = wear_props(s, parts, props); !w) return std::unexpected(w.error());
     return s;
 }
 
@@ -936,6 +1021,7 @@ inline constexpr std::string_view kBasicProxy =
     add_default(in, "battery.mount.position", vec_value(d.battery.mount.position), "battery.mount");
     add_default(in, "battery.mount.orientation", quat_value(d.battery.mount.orientation), "battery.mount");
     add_operating_point(in);
+    add_prop_rows(in, parts);
     Result<BasicQuadParams> p = basic_quad_params("basic_quad_6inch", parts, in);
     if (!p) return std::unexpected(p.error());
     Result<AirframeSpec> spec = vehicles::basic_quad_airframe(*p);
@@ -952,7 +1038,9 @@ inline constexpr std::string_view kBasicProxy =
     if (!s) return std::unexpected(s.error());
     read_operating_point(*s, r);
     r.same("proxy_radius", s->proxy_radius);
+    const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    if (Result<void> w = wear_props(*s, parts, props); !w) return std::unexpected(w.error());
     return s;
 }
 
@@ -1020,6 +1108,7 @@ inline constexpr std::string_view kKatArms =
                 "torque."),
            kat_motor_block());
     add_operating_point(in);
+    add_prop_rows(in, parts);
 
     // What basic_quad_airframe() makes of them: the remainder, at the centre of
     // mass, which also places the drag.
@@ -1068,7 +1157,9 @@ inline constexpr std::string_view kKatArms =
     r.same("parts[5].mass", s->parts[5].mass);
     r.same("parts[5].position", vec_value(s->parts[5].position));
     r.same("parts[5].tensor", mat_value(s->parts[5].tensor));
+    const shapes::PropMeshSpec props = read_prop_mesh(parts, r);
     if (Result<void> st = r.status(); !st) return std::unexpected(st.error());
+    if (Result<void> w = wear_props(*s, parts, props); !w) return std::unexpected(w.error());
     return s;
 }
 
@@ -1112,6 +1203,7 @@ struct BuiltDrone {
     DroneInputs inputs{};
     std::optional<BasicQuadParams> params{};  // a basic quad's
     std::optional<FitTargets> targets{};      // the Crazyflie's
+    shapes::PropMeshSpec prop_mesh{};         // what every drone's props are drawn from (L7c1)
     AirframeSpec spec{};
     DroneNotes notes{};
 };
@@ -1147,7 +1239,8 @@ struct BuiltDrone {
 }
 
 // The drone named `stem`, from the committed library's part files: its table,
-// its spec (the table's alone), its params or fit targets, and its notes.
+// its spec (the table's alone), its props' mesh, its params or fit targets,
+// and its notes.
 [[nodiscard]] inline Result<BuiltDrone> build_drone(const scene::Library& library,
                                                     const scene::SourceRegistry& registry, std::string_view stem) {
     const DroneDef* def = find_drone(stem);
@@ -1163,6 +1256,9 @@ struct BuiltDrone {
     Result<AirframeSpec> spec = drone_spec(stem, out.parts, out.inputs);
     if (!spec) return std::unexpected(spec.error());
     out.spec = std::move(*spec);
+    Result<shapes::PropMeshSpec> mesh = prop_mesh_params(out.parts, out.inputs);
+    if (!mesh) return std::unexpected(mesh.error());
+    out.prop_mesh = std::move(*mesh);
     if (stem == "basic_quad_6inch" || is_competition(stem)) {
         Result<BasicQuadParams> p = basic_quad_params(stem, out.parts, out.inputs);
         if (!p) return std::unexpected(p.error());

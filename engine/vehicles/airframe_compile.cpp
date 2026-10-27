@@ -513,6 +513,35 @@ void check_mesh_drag(const AirframeSpec& s, const PartList& parts, Issues& out) 
                 ", whose area the estimate cannot see: give a DragSpec (zero coefficients for none)");
 }
 
+// ROTOR PARTS' own rules (L7c1), each one issue at rotor_parts[k].<field>,
+// naming the part: a rotor in range, a mesh, a finite mount turned by a
+// nonzero quaternion, and a min_feature finite and > 0. A name is the model's
+// rule (add_model_issues). They read no mass, so like a model rule they stop
+// only the final model.
+void check_rotor_parts(const AirframeSpec& s, Issues& out) {
+    for (std::size_t k = 0; k < s.rotor_parts.size(); ++k) {
+        const RotorPartSpec& p = s.rotor_parts[k];
+        const std::string who = "rotor part '" + p.name + "'";
+        if (p.rotor >= s.rotors.size()) {
+            out.add("rotor_parts", k, "rotor",
+                    who + ": rotor " + std::to_string(p.rotor) + " is out of range: the airframe has " +
+                        std::to_string(s.rotors.size()));
+        }
+        if (!p.mesh) out.add("rotor_parts", k, "mesh", who + ": no mesh");
+        const glm::dvec3& x = p.mount.position;
+        const glm::dquat& q = p.mount.orientation;
+        if (!(is_finite(x.x) && is_finite(x.y) && is_finite(x.z) &&
+              positive(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z))) {
+            out.add("rotor_parts", k, "mount", who + ": its mount is not finite, or its orientation is zero");
+        }
+        if (!(std::isfinite(p.min_feature) && p.min_feature > 0.0f)) {
+            out.add("rotor_parts", k, "min_feature",
+                    who + ": its smallest feature must be finite and > 0 m, found " +
+                        shortest(static_cast<double>(p.min_feature)));
+        }
+    }
+}
+
 // The local projected areas of one shape, onto the planes normal to its local
 // x, y and z: what a flow along that axis sees.
 [[nodiscard]] glm::dvec3 local_areas(const PartInertia& p) noexcept {
@@ -687,6 +716,19 @@ struct Built {
                                    .surface = kWall,
                                    .min_feature = 2.0f});
     }
+    // ROTOR PARTS, after them, as the model will hold them: only their names
+    // are read here (check_rotor_parts() lists the rest once).
+    for (const RotorPartSpec& r : s.rotor_parts) {
+        m.parts.push_back(PartDesc{.name = r.name,
+                                   .role = r.role,
+                                   .attach = PartAttach::rotor,
+                                   .rotor = r.rotor < s.rotors.size() ? r.rotor : 0u,
+                                   .mount_pos = glm::vec3(0.0f),
+                                   .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                   .shape = one_primitive(SdfPrim::sphere, glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)),
+                                   .surface = kWall,
+                                   .min_feature = 2.0f});
+    }
     return m;
 }
 
@@ -734,6 +776,11 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
                 }
                 break;
             case E::part: {
+                // A rotor part's, at its record (after every rigid part).
+                if (i.index >= solids.size()) {
+                    out.add_once("rotor_parts", i.index - solids.size(), i.field, i.message);
+                    break;
+                }
                 // At the part's record (TD-9: one record per part). Only a
                 // name can fault here; the rest are stand-ins or fixed. A
                 // block's part has a fixed name, so a block's part that
@@ -788,6 +835,7 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
     // whose mesh and density ARE its mass (check_mesh_records, above).
     const bool fit_possible = out.issues.list.empty();
     check_geometry(s, out.issues);
+    check_rotor_parts(s, out.issues);
     check_mesh_drag(s, parts, out.issues);
     add_model_issues(s, parts, out.issues);
     if (!fit_possible) return out;
@@ -975,6 +1023,24 @@ void add_model_issues(const AirframeSpec& s, const PartList& parts, Issues& out)
                                        .shape = one_primitive(solid->kind, to_float(solid->params)),
                                        .surface = kWall,
                                        .min_feature = static_cast<float>(solid->min_feature)});
+    }
+
+    // ROTOR PARTS (L7c1), after every rigid part, so no rigid part's index
+    // moves: each its mesh on its rotor, its mount in the hub frame rounded to
+    // float once (no design -> body conversion: the hub frame is the hub's).
+    // No composite, drag or fit read them.
+    for (const RotorPartSpec& r : s.rotor_parts) {
+        model.parts.push_back(PartDesc{.name = r.name,
+                                       .role = r.role,
+                                       .attach = PartAttach::rotor,
+                                       .rotor = r.rotor,
+                                       .mount_pos = to_float(r.mount.position),
+                                       .mount_orient = to_float(glm::normalize(r.mount.orientation)),
+                                       .shape = {},
+                                       .mesh = r.mesh,
+                                       .mesh_file = {},
+                                       .surface = kWall,
+                                       .min_feature = r.min_feature});
     }
 
     if (const Result<void> v = model.validate(); !v) {
