@@ -424,7 +424,12 @@ Result<SolveChainIds> record_solve(ChainRunner& runner, const SolveChains& chain
     return ids;
 }
 
-Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor, uint32_t cap) {
+namespace {
+
+// run_solve()'s submits, through the finish's: the host loop that follows
+// the device's decision word (B5.6's projection runs it too).
+[[nodiscard]] Result<void> submit_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor,
+                                        uint32_t cap) {
     const uint32_t scalars = compute::gen::kBinding_airflow_scalars;
     if (Result<void> ok = runner.submit(ids.setup, 1); !ok) return std::unexpected(ok.error());
     if (Result<void> ok = runner.submit(ids.iteration, floor); !ok) return std::unexpected(ok.error());
@@ -449,7 +454,14 @@ Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, ui
         if (Result<void> ok = runner.submit(ids.iteration, 1); !ok) return std::unexpected(ok.error());
         if (Result<void> ok = runner.submit(ids.measure, 1); !ok) return std::unexpected(ok.error());
     }
-    if (Result<void> ok = runner.submit(ids.finish, 1); !ok) return std::unexpected(ok.error());
+    return runner.submit(ids.finish, 1);
+}
+
+}  // namespace
+
+Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor, uint32_t cap) {
+    if (Result<void> ok = submit_solve(runner, ids, floor, cap); !ok) return std::unexpected(ok.error());
+    const uint32_t scalars = compute::gen::kBinding_airflow_scalars;
     std::array<float, kScalarSlots> s{};
     if (Result<void> ok = runner.read(scalars, std::as_writable_bytes(std::span(s))); !ok) {
         return std::unexpected(ok.error());
@@ -459,6 +471,53 @@ Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, ui
                         .stalled = s[kSlotStalled] != 0.0f,
                         .residual_at = static_cast<uint32_t>(s[kSlotResidualAt]),
                         .capped = s[kSlotCapped] != 0.0f};
+}
+
+}  // namespace spade::airflow_gpu
+
+// ===========================================================================
+// B5.6 (Physics, 2026-10-27; appended as a block of its own): the solids
+// projection's chains and its host call.
+// ===========================================================================
+
+namespace spade::airflow_gpu {
+
+SolveChains projection_chains(const af::GridShape& shape, const MgLayout& layout, const ProjectionSolidsPipelines& p,
+                              uint32_t closed, uint32_t workgroup_size) {
+    SolveChains c = solve_chains(shape, layout, p.solve, closed, workgroup_size);
+    // In front of the setup (projection.cpp:100-101): b, then its regions'
+    // means removed. Neither kernel reads the stop word, which the setup's
+    // first op (the scalars' start) clears.
+    std::vector<compute::ChainCommand> rhs;
+    rhs.push_back(projection_dispatch(p.solid_divergence, {.count = cells_of(shape)}, workgroup_size));
+    append_remove_region_means(rhs, shape, p.solve.region_mean, kPcgB, closed, workgroup_size);
+    c.setup.insert(c.setup.begin(), rhs.begin(), rhs.end());
+    // Behind the finish (:106, :108): the grid's p <- x, the gradient with
+    // theta on each component, then the health word.
+    c.finish.push_back(projection_dispatch(
+        p.solve.update, {.a = static_cast<uint32_t>(UpdateOp::p_from_x), .count = cells_of(shape)}, workgroup_size));
+    const std::array<uint32_t, 3> faces{(shape.nx + 1u) * shape.ny * shape.nz, shape.nx * (shape.ny + 1u) * shape.nz,
+                                        shape.nx * shape.ny * (shape.nz + 1u)};
+    for (uint32_t k = 0; k < 3; ++k) {
+        c.finish.push_back(projection_dispatch(p.solid_gradient, {.a = k, .count = faces[k]}, workgroup_size));
+    }
+    c.finish.push_back(scalars_dispatch(p.solve.solids, ScalarsOp::health));
+    return c;
+}
+
+Result<GpuProjectionReport> project_with_solids(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor,
+                                                uint32_t cap) {
+    if (Result<void> ok = submit_solve(runner, ids, floor, cap); !ok) return std::unexpected(ok.error());
+    std::array<float, kSlotHealth + kHealthSlots> word{};
+    if (Result<void> ok = runner.read(compute::gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(word)));
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    return GpuProjectionReport{
+        .report = {.residual = word[kSlotHealthResidual],
+                   .iterations = static_cast<uint32_t>(word[kSlotHealthIterations]),
+                   .stalled = word[kSlotHealthStalled] != 0.0f},
+        .capped = word[kSlotHealthCapped] != 0.0f};
 }
 
 }  // namespace spade::airflow_gpu

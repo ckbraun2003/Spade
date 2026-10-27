@@ -27,6 +27,7 @@
 #include "core/error.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/projection.hpp"
 #include "physics/airflow/regions.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/wall_load.hpp"
@@ -86,8 +87,15 @@ inline constexpr uint32_t kSlotExact = 20;       // a step's denominator was exa
 inline constexpr uint32_t kSlotKeepBest = 21;    // the measure keeps x as best
 inline constexpr uint32_t kSlotTakeBest = 22;    // the finish returns best
 inline constexpr uint32_t kSlotCapped = 23;      // the finish: above the mark, not stalled
+// B5.6's health word (airflow_pcg_scalars' health): the finish's slots, copied.
+inline constexpr uint32_t kSlotHealthResidual = 24;    // slot 8's: ProjectionReport's residual
+inline constexpr uint32_t kSlotHealthIterations = 25;  // slot 11's: its iterations
+inline constexpr uint32_t kSlotHealthStalled = 26;     // slot 12's: its stalled
+inline constexpr uint32_t kSlotHealthCapped = 27;      // slot 23's: FluidHealth's capped
 inline constexpr uint32_t kSlotDecision = 9;     // the decision word {stop, restart, iterations, stalled}
 inline constexpr uint32_t kDecisionSlots = 4;    // its 16 bytes
+inline constexpr uint32_t kSlotHealth = 24;      // the health word {residual, iterations, stalled, capped}
+inline constexpr uint32_t kHealthSlots = 4;      // its 16 bytes
 inline constexpr uint32_t kScalarSlots = 32;     // airflow_scalars' floats: slot 0 and B5's
 
 // --- the solid field (bindings 13-17) -----------------------------------------
@@ -144,8 +152,8 @@ struct SolidsPipelines {
     uint32_t scalars = 0;
 };
 
-// airflow_pcg_scalars' ops: B5.1b's quotients, then B5.4's decisions (the
-// kernel's header).
+// airflow_pcg_scalars' ops: B5.1b's quotients, then B5.4's decisions and
+// B5.6's health word (the kernel's header).
 enum class ScalarsOp : uint32_t {
     alpha = 0,
     beta = 1,
@@ -156,6 +164,7 @@ enum class ScalarsOp : uint32_t {
     gate = 6,
     decide = 7,
     finish = 8,
+    health = 9,
 };
 
 // fixed_tile_dot(a, b) into airflow_scalars[slot]: airflow_tile_dot (pass 0),
@@ -353,6 +362,7 @@ enum class UpdateOp : uint32_t {
     direction = 6,      // d = z + beta d
     keep_best = 7,      // best <- x, when the measure kept it
     take_best = 8,      // x <- best, when the finish returns it
+    p_from_x = 9,       // B5.6: the grid's p (airflow_pressure) <- x, unmasked
 };
 
 // The solve's pipelines in a runner (RunnerDesc::kernels).
@@ -383,7 +393,8 @@ struct SolvePipelines {
 // finish's measure (:130) is the measure chain's: the host submits a measure
 // after the floor's iterations whatever stopped them, and the decision takes
 // it as the finish's when an exact zero stopped the solve unmeasured. The
-// grid's p <- x, the gradient with theta and the health word are B5.6's.
+// grid's p <- x, the gradient with theta and the health word are B5.6's
+// (projection_chains(), below).
 struct SolveChains {
     std::vector<compute::ChainCommand> setup;
     std::vector<compute::ChainCommand> iteration;
@@ -436,5 +447,60 @@ struct GpuPcgResult {
 // (Code::internal). The solution is in airflow_pcg's x.
 [[nodiscard]] Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor,
                                              uint32_t cap);
+
+}  // namespace spade::airflow_gpu
+
+// ===========================================================================
+// B5.6 (Physics, 2026-10-27; appended as a block of its own): THE SOLIDS
+// PROJECTION ON THE DEVICE, projection.cpp's project_solids() (its CPU twin
+// and the authority; project() with solids): B5.4's five chains with the
+// right side in front of the setup and, behind the finish, the grid's p <- x,
+// the gradient with theta and the health word; the host follows the device's
+// decision word as run_solve() does. It is the hook a GPU step calls in place
+// of plan A's projection (projection_chain()) when its field has solids.
+// ===========================================================================
+
+namespace spade::airflow_gpu {
+
+// The projection's pipelines in a runner (RunnerDesc::kernels): the solve's,
+// and B5.2a's aperture divergence and gradient.
+struct ProjectionSolidsPipelines {
+    SolvePipelines solve;
+    uint32_t solid_divergence = 0;  // airflow_solid_divergence
+    uint32_t solid_gradient = 0;    // airflow_solid_gradient
+};
+
+// project_solids()'s chains: solve_chains()' five, with
+//   in front of the setup  b <- (rho dx^2 / h) times the aperture divergence
+//                          of theta u* + (1 - theta) u_wall, 0 in a solid
+//                          cell (projection.cpp:100), then each closed
+//                          region's mean removed from b (:101)
+//   behind the finish      the grid's p <- x (:106), the gradient with theta
+//                          on u, v and w: a face with theta > 0 subtracts it,
+//                          a face with theta = 0 takes the wall's velocity
+//                          (:108), then the health word
+// The finish's additions read only what a stop leaves live (x, the solid
+// field, u*, the scalars' residual and slots 9-23; the plan's B5 as amended
+// 2026-10-27). `closed` is the region table's C.
+[[nodiscard]] SolveChains projection_chains(const physics::airflow::GridShape& shape, const MgLayout& layout,
+                                            const ProjectionSolidsPipelines& p, uint32_t closed,
+                                            uint32_t workgroup_size);
+
+// project()'s ProjectionReport with solids as the device leaves it in the
+// health word, and FluidHealth's capped (above the mark, not stalled).
+struct GpuProjectionReport {
+    physics::airflow::ProjectionReport report;
+    bool capped = false;
+};
+
+// The projection on `runner`, set up as run_solve()'s (the airflow set in
+// binding order, binding_base 0, airflow_scalars staged; init_solids() with
+// `floor` and `cap`, the step's n_v and cg_cap), with `ids` record_solve()'s
+// of projection_chains(): from u* in airflow_u, _v and _w and the grid's p in
+// airflow_pressure. The host submits as run_solve() does, never deciding,
+// then reads the health word. It leaves the projected velocity in airflow_u,
+// _v and _w and the solved p in airflow_pressure. Refused as run_solve() is.
+[[nodiscard]] Result<GpuProjectionReport> project_with_solids(ChainRunner& runner, const SolveChainIds& ids,
+                                                              uint32_t floor, uint32_t cap);
 
 }  // namespace spade::airflow_gpu

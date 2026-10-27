@@ -77,6 +77,7 @@
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
+#include "physics/airflow/advect.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -211,13 +212,14 @@ struct SolidsCase {
 }
 
 // S3's channel: 32 x 8 x 8, dx 1/32 m, every axis periodic, its sheet 0.25 dx
-// thick across the section on face plane 17 (test_airflow_solids_step.cpp's
-// s3_sheet()); the sheet moves.
-[[nodiscard]] SolidsCase s3_sheet() {
+// thick across the section on face plane `plane`, 17 (odd) unless named
+// (test_airflow_solids_step.cpp's s3_sheet()); the sheet moves.
+[[nodiscard]] SolidsCase s3_sheet(uint32_t plane = 17) {
     const float dx = 1.0f / 32.0f;
-    SolidsCase c{"S3's sheet on plane 17", {32, 8, 8, dx}, {}, {}};
+    SolidsCase c{"S3's sheet on plane " + std::to_string(plane), {32, 8, 8, dx}, {}, {}};
     c.bc.face.fill(af::FaceBc::periodic);
-    c.scene.shapes.push_back(Shape{.name = "sheet", .kind = Kind::box, .centre = {17.0f * dx, 4.0f * dx, 4.0f * dx},
+    c.scene.shapes.push_back(Shape{.name = "sheet", .kind = Kind::box,
+                                   .centre = {static_cast<float>(plane) * dx, 4.0f * dx, 4.0f * dx},
                                    .half = {0.125f * dx, 20.0f * dx, 20.0f * dx},
                                    .velocity = {0.5f, 0.25f, -0.25f}, .min_feature = 0.25f * dx});
     return c;
@@ -604,7 +606,8 @@ TEST(AirflowSolidsChain, ThePcgBlockHoldsPcgHppsConstants) {
 
 // The host's tables are airflow_pcg.slang's: every `static const uint kPcg*`
 // and `kSlot*` in the module has the value of solids_chain.hpp's constant of
-// the same name, and the vectors are pcg_bytes()' seven floats a cell.
+// the same name, the decision and health words are laid out as the host
+// reads them, and the vectors are pcg_bytes()' seven floats a cell.
 TEST(AirflowSolidsChain, TheHostsTablesAreAirflowPcgSlangs) {
     const std::map<std::string, uint32_t> host{
         {"kPcgX", ag::kPcgX},       {"kPcgB", ag::kPcgB},         {"kPcgR", ag::kPcgR},
@@ -621,7 +624,11 @@ TEST(AirflowSolidsChain, TheHostsTablesAreAirflowPcgSlangs) {
         {"kSlotBest", ag::kSlotBest},             {"kSlotBestAt", ag::kSlotBestAt},
         {"kSlotMeasured", ag::kSlotMeasured},     {"kSlotExact", ag::kSlotExact},
         {"kSlotKeepBest", ag::kSlotKeepBest},     {"kSlotTakeBest", ag::kSlotTakeBest},
-        {"kSlotCapped", ag::kSlotCapped},         {"kSlotDecision", ag::kSlotDecision}};
+        {"kSlotCapped", ag::kSlotCapped},         {"kSlotDecision", ag::kSlotDecision},
+        // B5.6's health word.
+        {"kSlotHealthResidual", ag::kSlotHealthResidual},     {"kSlotHealthIterations", ag::kSlotHealthIterations},
+        {"kSlotHealthStalled", ag::kSlotHealthStalled},       {"kSlotHealthCapped", ag::kSlotHealthCapped},
+        {"kSlotHealth", ag::kSlotHealth}};
     std::ifstream in(std::string(SPADE_ENGINE_DIR) + "/shaders/airflow_pcg.slang");
     ASSERT_TRUE(in.good()) << SPADE_ENGINE_DIR << "/shaders/airflow_pcg.slang";
     std::stringstream text;
@@ -640,6 +647,13 @@ TEST(AirflowSolidsChain, TheHostsTablesAreAirflowPcgSlangs) {
     EXPECT_EQ(ag::kSlotRestart, ag::kSlotDecision + 1u);
     EXPECT_EQ(ag::kSlotIterations, ag::kSlotDecision + 2u);
     EXPECT_EQ(ag::kSlotStalled, ag::kSlotDecision + ag::kDecisionSlots - 1u);
+    // The health word the host reads: {residual, iterations, stalled, capped}.
+    EXPECT_NE(source.find("static const uint kHealthSlots = " + std::to_string(ag::kHealthSlots) + "u;"),
+              std::string::npos);
+    EXPECT_EQ(ag::kSlotHealthResidual, ag::kSlotHealth);
+    EXPECT_EQ(ag::kSlotHealthIterations, ag::kSlotHealth + 1u);
+    EXPECT_EQ(ag::kSlotHealthStalled, ag::kSlotHealth + 2u);
+    EXPECT_EQ(ag::kSlotHealthCapped, ag::kSlotHealth + ag::kHealthSlots - 1u);
     EXPECT_EQ(uint64_t{ag::kPcgVectors} * 1000u * sizeof(float), af::pcg_bytes(1000u));
     EXPECT_EQ(ag::pcg_offset(ag::kPcgBest, af::GridShape{5, 7, 9, 1.0f}), 6u * 5u * 7u * 9u);
     for (const auto& [name, slot] : host) {
@@ -2846,17 +2860,18 @@ void expect_path(const SolveCase& c, const af::PcgResult& r) {
 
 // airflow_params for a case with the upload's level table, with room for the
 // pcg block after it (init_solids() writes word 16 and the block).
-[[nodiscard]] std::vector<uint32_t> solve_params(const SolveCase& c, const ag::SolidsUpload& u) {
+[[nodiscard]] std::vector<uint32_t> solve_params(const af::GridShape& shape, const af::DomainBc& bc,
+                                                const ag::SolidsUpload& u) {
     std::vector<uint32_t> p(ag::projection_params_words(u.layout) + ag::kPcgBlockWords, 0u);
-    p[0] = c.shape.nx;
-    p[1] = c.shape.ny;
-    p[2] = c.shape.nz;
-    p[4] = bits(c.shape.dx);
-    p[5] = bits(1.0f / c.shape.dx);
+    p[0] = shape.nx;
+    p[1] = shape.ny;
+    p[2] = shape.nz;
+    p[4] = bits(shape.dx);
+    p[5] = bits(1.0f / shape.dx);
     p[6] = bits(kStepS);
-    const std::array<bool, 3> periodic = af::periodic_axes(c.bc);
+    const std::array<bool, 3> periodic = af::periodic_axes(bc);
     for (uint32_t a = 0; a < 3; ++a) p[8 + a] = periodic[a] ? 1u : 0u;
-    ag::write_projection_params(p, u.layout, af::face_kinds(c.bc), af::projection_floats(c.shape, kRho, kStepS));
+    ag::write_projection_params(p, u.layout, af::face_kinds(bc), af::projection_floats(shape, kRho, kStepS));
     return p;
 }
 
@@ -2876,7 +2891,7 @@ public:
                                                            uint32_t workgroup_size = kWorkgroupSize) {
         SolveDevice dev;
         dev.cells_ = cells_of(c.shape);
-        dev.params_ = solve_params(c, u);
+        dev.params_ = solve_params(c.shape, c.bc, u);
         const uint64_t cells = dev.cells_;
         std::vector<RunnerBuffer> buffers(ag::kAirflowSetBuffers.size());
         for (uint32_t i = 0; i < buffers.size(); ++i) {
@@ -3045,6 +3060,364 @@ TEST(GpuAirflowSolids, TheSolveGivesTheSameBitsAtEveryWorkgroupSize) {
             std::printf("measure: %s at %u against 32: %zu of %zu airflow_pcg values, %zu of %u scalars differ\n",
                         c.name.c_str(), wg, vectors, gpu->pcg.all.size(), scalars, ag::kScalarSlots);
             EXPECT_EQ(vectors, 0u) << wg;
+            EXPECT_EQ(scalars, 0u) << wg;
+        }
+    }
+}
+
+// ===========================================================================
+// B5.6 (Physics, 2026-10-27; appended as a block of its own): THE SOLIDS
+// PROJECTION ON THE DEVICE -- solids_chain.hpp's projection_chains() and
+// project_with_solids(): B5.4's solve with the aperture divergence and b's
+// region means in front, and the grid's p <- x, the gradient with theta and
+// the health word behind -- against projection.cpp's project() with solids,
+// inside the CPU's own steps. The GPU has no full step yet (Rendering's
+// step_chain), so each step runs the CPU's step up to its projection,
+// projects the same u* and p on both twins, compares, and goes on from the
+// CPU's state (B4's C8GpuGatherInTheCpuStep's pattern). The stages before the
+// projection are step_flushed()'s, here in the test; each step checks that
+// the CPU twin's projection of their u* is fluid_step()'s own result, bit for
+// bit, so the stages cannot drift from the step's.
+// ===========================================================================
+
+namespace {
+
+// ProjectionDevice's RunnerDesc::kernels order: SolveDevice's, then these.
+enum ProjectionPipeline : uint32_t {
+    kProjectionSolidDivergence = kSolveUpdate + 1u,
+    kProjectionSolidGradient,
+};
+
+constexpr ag::ProjectionSolidsPipelines kProjectionPipelines{.solve = kSolvePipelines,
+                                                             .solid_divergence = kProjectionSolidDivergence,
+                                                             .solid_gradient = kProjectionSolidGradient};
+
+// fluid_step.cpp's step_flushed() up to its project(), for a step with
+// solids and nu = 0 (no viscous solve), on `g` and `s`: the regions checked,
+// the boundaries and the solids' velocities, advection, the sources'
+// increments added (add_and_clear()), the boundaries and the solids'
+// velocities again. Called under the step's flush, and out of line as the
+// step's body is (the wrapper rule, flush_subnormals.hpp). False on a region
+// fault.
+SPADE_NOINLINE bool up_to_projection(af::MacGrid& g, const af::DomainBc& bc, const af::FluidConfig& cfg,
+                                     af::FluidScratch& s) noexcept {
+    if (af::check_regions(s.regions, g.shape, bc, s.solids).region != af::kNoRegion) return false;
+    af::apply_velocity_boundaries(g, bc);
+    af::apply_solid_velocities(g, s.solids, cfg.interior);
+    af::advect_velocity(g, s.next, bc, cfg.h, s.advect);
+    g.u.swap(s.next.u);
+    g.v.swap(s.next.v);
+    g.w.swap(s.next.w);
+    for (const auto& [vel, d] : {std::pair{&g.u, &s.du}, std::pair{&g.v, &s.dv}, std::pair{&g.w, &s.dw}}) {
+        for (std::size_t i = 0; i < vel->size(); ++i) {
+            (*vel)[i] += (*d)[i];
+            (*d)[i] = 0.0f;
+        }
+    }
+    af::apply_velocity_boundaries(g, bc);
+    af::apply_solid_velocities(g, s.solids, cfg.interior);
+    return true;
+}
+
+// The CPU twin: project() with the scratch's solids and regions
+// (projection.cpp's project_solids()), out of line, under the caller's flush.
+SPADE_NOINLINE af::ProjectionReport cpu_project(af::MacGrid& g, const af::DomainBc& bc, const af::FluidConfig& cfg,
+                                                af::FluidScratch& s) noexcept {
+    return af::project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, &s.solids, &s.regions, cfg.cg_cap);
+}
+
+// One step of a case on the CPU: u* and the p the projection starts from,
+// the twin's projection of them, and the scratch as the projection found it
+// (its regions checked this step).
+struct CpuStep {
+    af::MacGrid star;
+    af::MacGrid projected;
+    af::ProjectionReport report;
+    bool capped = false;  // FluidHealth's: above the mark, not stalled
+    af::FluidScratch pre;
+};
+
+// A case's run on the CPU's own step (solids_config(), the GPU's rho and h).
+class CpuRun {
+public:
+    [[nodiscard]] static std::optional<CpuRun> start(const SolidsCase& c) {
+        CpuRun run;
+        run.bc_ = c.bc;
+        run.cfg_ = solids_config();
+        run.g_ = *af::make_grid(c.shape, c.bc);
+        auto s = af::make_fluid_scratch(run.g_, c.bc, run.cfg_);
+        if (!s) {
+            ADD_FAILURE() << c.name << ": " << s.error().context;
+            return std::nullopt;
+        }
+        run.s_ = std::move(*s);
+        if (const auto set = af::set_solids(run.s_, run.g_, c.bc, c.scene.parts(), c.scene.sampler()); !set) {
+            ADD_FAILURE() << c.name << ": " << set.error().context;
+            return std::nullopt;
+        }
+        if (!run.s_.solids.any) {
+            ADD_FAILURE() << c.name << ": no solid";
+            return std::nullopt;
+        }
+        return run;
+    }
+
+    [[nodiscard]] const af::FluidConfig& config() const noexcept { return cfg_; }
+
+    // The step's stages to u* on copies, the twin's projection of u*, then
+    // fluid_step() itself, from which the next step goes on. The twin's grid
+    // and report are the step's own.
+    [[nodiscard]] std::optional<CpuStep> step() {
+        CpuStep out{g_, {}, {}, false, s_};
+        {
+            const spade::math::ScopedFlushSubnormals flush;  // the step's mode
+            if (!up_to_projection(out.star, bc_, cfg_, out.pre)) {
+                ADD_FAILURE() << "a region fault before the projection";
+                return std::nullopt;
+            }
+        }
+        out.projected = out.star;
+        af::FluidScratch twin = out.pre;  // project() writes its solver's state
+        {
+            const spade::math::ScopedFlushSubnormals flush;
+            out.report = cpu_project(out.projected, bc_, cfg_, twin);
+        }
+        out.capped = out.report.residual > af::kResidualAnnounce && !out.report.stalled;
+        const af::FluidHealth health = af::fluid_step(g_, bc_, cfg_, s_);
+        if (health.fault != af::FluidFault::none) {
+            ADD_FAILURE() << "the step faulted";
+            return std::nullopt;
+        }
+        EXPECT_EQ(differing(out.projected.u, g_.u), 0u) << "u: the twin is not the step's projection";
+        EXPECT_EQ(differing(out.projected.v, g_.v), 0u) << "v: the twin is not the step's projection";
+        EXPECT_EQ(differing(out.projected.w, g_.w), 0u) << "w: the twin is not the step's projection";
+        EXPECT_EQ(differing(out.projected.p, g_.p), 0u) << "p: the twin is not the step's projection";
+        EXPECT_EQ(out.report.iterations, health.pressure_iterations);
+        EXPECT_EQ(bits(out.report.residual), bits(health.pressure_residual));
+        EXPECT_EQ(out.report.stalled, health.stalled);
+        EXPECT_EQ(out.capped, health.capped);
+        return out;
+    }
+
+private:
+    af::DomainBc bc_;
+    af::FluidConfig cfg_;
+    af::MacGrid g_;
+    af::FluidScratch s_;
+};
+
+struct GpuProjection {
+    ag::GpuProjectionReport report;
+    af::MacGrid grid;             // u, v, w and p after the projection
+    std::vector<float> scalars;   // airflow_scalars after it
+};
+
+// The projection's kernels on a grid: its solids put on the device by
+// init_solids(), projection_chains()' five chains recorded once.
+class ProjectionDevice {
+public:
+    [[nodiscard]] static std::optional<ProjectionDevice> create(VulkanContext& ctx, const af::GridShape& shape,
+                                                                const af::DomainBc& bc, const ag::SolidsUpload& u,
+                                                                const af::FluidConfig& cfg,
+                                                                uint32_t workgroup_size = kWorkgroupSize) {
+        ProjectionDevice dev;
+        dev.cells_ = cells_of(shape);
+        dev.floor_ = cfg.n_v;
+        dev.cap_ = cfg.cg_cap;
+        dev.params_ = solve_params(shape, bc, u);
+        const uint64_t cells = dev.cells_;
+        const auto faces = faces_of(shape);
+        std::vector<RunnerBuffer> buffers(ag::kAirflowSetBuffers.size());
+        for (uint32_t i = 0; i < buffers.size(); ++i) {
+            buffers[i] = {std::string(ag::kAirflowSetBuffers[i].name), 4u, BufferKind::device_only};
+            if (const uint64_t bytes = ag::solids_binding_bytes(u, i); bytes > 0u) {
+                buffers[i] = {std::string(ag::kAirflowSetBuffers[i].name), bytes, BufferKind::staged};
+            }
+        }
+        const auto set = [&](uint32_t at, uint64_t floats, BufferKind kind) {
+            buffers[at] = {std::string(ag::kAirflowSetBuffers[at].name), std::max<uint64_t>(floats, 1u) * 4u, kind};
+        };
+        set(kParams, dev.params_.size(), BufferKind::staged);
+        set(kU, faces[0], BufferKind::staged);
+        set(kV, faces[1], BufferKind::staged);
+        set(kW, faces[2], BufferKind::staged);
+        set(kPressure, cells, BufferKind::staged);
+        set(kMgRhs, cells, BufferKind::device_only);
+        set(kMgResidual, cells, BufferKind::device_only);
+        set(kMgMultigrid, u.layout.multigrid_floats, BufferKind::device_only);
+        set(kPcg, ag::kPcgVectors * cells, BufferKind::staged);
+        set(kScalars, ag::kScalarSlots, BufferKind::staged);
+        set(kPartials, ag::solve_partials_floats(shape, u.regions.closed), BufferKind::device_only);
+        const SpirvVariantSet* const kernels[] = {
+            &gen::kSpvVariants_airflow_tile_sum,         &gen::kSpvVariants_airflow_tile_dot,
+            &gen::kSpvVariants_airflow_pcg_measure,      &gen::kSpvVariants_airflow_pcg_scalars,
+            &gen::kSpvVariants_airflow_pcg_apply,        &gen::kSpvVariants_airflow_region_mean,
+            &gen::kSpvVariants_airflow_mg_smooth,        &gen::kSpvVariants_airflow_mg_residual,
+            &gen::kSpvVariants_airflow_mg_restrict_full, &gen::kSpvVariants_airflow_mg_prolong,
+            &gen::kSpvVariants_airflow_pcg_update,       &gen::kSpvVariants_airflow_solid_divergence,
+            &gen::kSpvVariants_airflow_solid_gradient};
+        auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers,
+                                                          .kernels = kernels,
+                                                          .push_bytes = sizeof(ag::ProjectionPush),
+                                                          .workgroup_size = workgroup_size});
+        if (!runner) {
+            ADD_FAILURE() << runner.error().context;
+            return std::nullopt;
+        }
+        dev.runner_ = std::move(*runner);
+        const auto block = static_cast<uint32_t>(ag::projection_params_words(u.layout));
+        if (!check(ag::init_solids(*dev.runner_, dev.params_, u, block, dev.floor_, dev.cap_))) return std::nullopt;
+        const ag::SolveChains chains =
+            ag::projection_chains(shape, u.layout, kProjectionPipelines, u.regions.closed, workgroup_size);
+        auto ids = ag::record_solve(*dev.runner_, chains);
+        if (!ids) {
+            ADD_FAILURE() << ids.error().context;
+            return std::nullopt;
+        }
+        dev.ids_ = *ids;
+        return dev;
+    }
+
+    // project_with_solids() from u* and its p (`star`), every CG vector and
+    // scalar NaN before it, so a value read before it is written shows.
+    [[nodiscard]] std::optional<GpuProjection> project(const af::MacGrid& star) {
+        const PcgVectors pcg(cells_);
+        const std::vector<float> scalars(ag::kScalarSlots, std::numeric_limits<float>::quiet_NaN());
+        ChainRunner& r = *runner_;
+        if (!check(r.upload(kU, bytes_of(star.u))) || !check(r.upload(kV, bytes_of(star.v))) ||
+            !check(r.upload(kW, bytes_of(star.w))) || !check(r.upload(kPressure, bytes_of(star.p))) ||
+            !check(r.upload(kPcg, bytes_of(pcg.all))) || !check(r.upload(kScalars, bytes_of(scalars)))) {
+            return std::nullopt;
+        }
+        auto report = ag::project_with_solids(r, ids_, floor_, cap_);
+        if (!report) {
+            ADD_FAILURE() << report.error().context;
+            return std::nullopt;
+        }
+        GpuProjection out{*report, star, std::vector<float>(ag::kScalarSlots)};
+        if (!check(r.read(kU, writable_bytes_of(out.grid.u))) || !check(r.read(kV, writable_bytes_of(out.grid.v))) ||
+            !check(r.read(kW, writable_bytes_of(out.grid.w))) ||
+            !check(r.read(kPressure, writable_bytes_of(out.grid.p))) ||
+            !check(r.read(kScalars, writable_bytes_of(out.scalars)))) {
+            return std::nullopt;
+        }
+        return out;
+    }
+
+private:
+    uint32_t cells_ = 0;
+    uint32_t floor_ = 0;
+    uint32_t cap_ = 0;
+    std::vector<uint32_t> params_;
+    ag::SolveChainIds ids_;
+    std::unique_ptr<ChainRunner> runner_;
+};
+
+// The plan's B5.6 cases: S1's sphere, S3's sheet on planes 16 and 17, and
+// the held periodic ring, each for 4 steps from rest.
+constexpr int kProjectionSteps = 4;
+
+[[nodiscard]] std::vector<SolidsCase> projection_cases() {
+    return {s1_sphere(), s3_sheet(16), s3_sheet(17), held_ring()};
+}
+
+[[nodiscard]] std::string path_of(const af::ProjectionReport& r, bool capped) {
+    char text[96];
+    std::snprintf(text, sizeof(text), "%s%s after %u (%s)", r.stalled ? "stalled at " : "", hex(r.residual).c_str(),
+                  r.iterations, capped ? "capped" : (r.stalled ? "stalled" : "met the mark"));
+    return text;
+}
+
+}  // namespace
+
+// The solids projection on the device (the plan's B5.6): in each of a case's
+// steps, from the same u* and p, 0 values of p, u, v and w differ from
+// project()'s with solids, and the health is equal -- the count, the
+// residual's bits, stalled and capped. The cases: S1's sphere, S3's sheet on
+// planes 16 and 17 (even and odd), and the held periodic ring, 4 steps each;
+// the CPU twin runs under the step's flush. Mutation: one ulp nudged into the
+// GPU's b.
+TEST(GpuAirflowSolids, TheSolidsProjectionMatchesTheCpuBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    for (const SolidsCase& c : projection_cases()) {
+        SCOPED_TRACE(c.name);
+        auto run = CpuRun::start(c);
+        ASSERT_TRUE(run.has_value());
+        std::optional<ProjectionDevice> dev;
+        std::vector<uint32_t> table;
+        for (int step = 1; step <= kProjectionSteps; ++step) {
+            SCOPED_TRACE("step " + std::to_string(step));
+            const auto cpu = run->step();
+            ASSERT_TRUE(cpu.has_value());
+            if (!dev) {
+                const auto upload = ag::solids_upload(cpu->pre);
+                ASSERT_TRUE(upload.has_value()) << upload.error().context;
+                table = upload->regions.words;
+                dev = ProjectionDevice::create(*ctx, c.shape, c.bc, *upload, run->config());
+                ASSERT_TRUE(dev.has_value());
+            }
+            // The device's region table is still the step's.
+            EXPECT_EQ(ag::pack_region_table(cpu->pre.regions).words, table);
+            const auto gpu = dev->project(cpu->star);
+            ASSERT_TRUE(gpu.has_value());
+            const af::ProjectionReport& g = gpu->report.report;
+            const std::string what = c.name + ", step " + std::to_string(step);
+            std::printf("measure: %s: the GPU %s; the CPU %s\n", what.c_str(),
+                        path_of(g, gpu->report.capped).c_str(), path_of(cpu->report, cpu->capped).c_str());
+            expect_none_differ(bit_equal, differing(gpu->grid.p, cpu->projected.p), cpu->projected.p.size(),
+                               what + ": p");
+            expect_none_differ(bit_equal, differing(gpu->grid.u, cpu->projected.u), cpu->projected.u.size(),
+                               what + ": u");
+            expect_none_differ(bit_equal, differing(gpu->grid.v, cpu->projected.v), cpu->projected.v.size(),
+                               what + ": v");
+            expect_none_differ(bit_equal, differing(gpu->grid.w, cpu->projected.w), cpu->projected.w.size(),
+                               what + ": w");
+            if (bit_equal) {
+                EXPECT_EQ(g.iterations, cpu->report.iterations);
+                EXPECT_EQ(bits(g.residual), bits(cpu->report.residual));
+                EXPECT_EQ(g.stalled, cpu->report.stalled);
+                EXPECT_EQ(gpu->report.capped, cpu->capped);
+            }
+        }
+    }
+}
+
+// The projection gives the same bits at workgroup sizes 32, 64 and 128 (the
+// SameBitsAtEveryWorkgroupSize row of B5.6's two ops, airflow_pcg_update's p
+// <- x and airflow_pcg_scalars' health word, with the chains they run in): u,
+// v, w, p and every scalar after it, on step 1 of S3's sheet on plane 16 (a
+// closed region: b's means) and of S1's sphere (the solid cells).
+TEST(GpuAirflowSolids, TheSolidsProjectionGivesTheSameBitsAtEveryWorkgroupSize) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    for (const SolidsCase& c : {s3_sheet(16), s1_sphere()}) {
+        SCOPED_TRACE(c.name);
+        auto run = CpuRun::start(c);
+        ASSERT_TRUE(run.has_value());
+        const auto cpu = run->step();
+        ASSERT_TRUE(cpu.has_value());
+        const auto upload = ag::solids_upload(cpu->pre);
+        ASSERT_TRUE(upload.has_value()) << upload.error().context;
+        std::optional<GpuProjection> first;
+        for (const uint32_t wg : {32u, 64u, 128u}) {
+            auto dev = ProjectionDevice::create(*ctx, c.shape, c.bc, *upload, run->config(), wg);
+            ASSERT_TRUE(dev.has_value()) << wg;
+            auto gpu = dev->project(cpu->star);
+            ASSERT_TRUE(gpu.has_value()) << wg;
+            if (!first) {
+                first = std::move(gpu);
+                continue;
+            }
+            const std::size_t grid = differing(gpu->grid.u, first->grid.u) + differing(gpu->grid.v, first->grid.v) +
+                                     differing(gpu->grid.w, first->grid.w) + differing(gpu->grid.p, first->grid.p);
+            const std::size_t scalars = differing(gpu->scalars, first->scalars);
+            std::printf("measure: %s at %u against 32: %zu of u, v, w and p's values, %zu of %u scalars differ\n",
+                        c.name.c_str(), wg, grid, scalars, ag::kScalarSlots);
+            EXPECT_EQ(grid, 0u) << wg;
             EXPECT_EQ(scalars, 0u) << wg;
         }
     }

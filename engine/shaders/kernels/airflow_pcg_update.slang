@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
-// airflow_pcg_update.slang (plan B, task B5.4) -- THE CG'S VECTOR WORK on the
-// GPU: pcg.cpp's solve_pcg_to(), its CPU twin and the authority, over
-// airflow_pcg's vectors (airflow_pcg.slang) and level 0's p and b (the
+// airflow_pcg_update.slang (plan B, tasks B5.4 and B5.6) -- THE CG'S VECTOR
+// WORK on the GPU: pcg.cpp's solve_pcg_to(), its CPU twin and the authority,
+// over airflow_pcg's vectors (airflow_pcg.slang) and level 0's p and b (the
 // preconditioner's, mg_levels.slang's level_p() and level_b()), one
 // invocation per cell, the op chosen by the push:
 //   op 0  x <- p, masked          (projection.cpp:102's copy, pcg.cpp:70)
@@ -14,6 +14,9 @@
 //   op 6  d = z + beta d                               (pcg.cpp:127)
 //   op 7  best <- x, when the measure kept it          (pcg.cpp:103)
 //   op 8  x <- best, when the finish returns it        (pcg.cpp:134)
+//   op 9  the grid's p (airflow_pressure) <- x, unmasked
+//                                 (B5.6: projection.cpp:106, the solve's x
+//                                 copied back)
 // "Masked" is pcg.cpp's mask(): a cell marked solid (airflow_pcg.slang's
 // solid_cell()) holds 0. Alpha and beta are airflow_pcg_scalars' slots, and
 // keep_best and take_best its flags.
@@ -21,7 +24,8 @@
 // THE STOP WORD: ops 0 to 7 return at once while it is set, so the
 // iterations a submit runs past an exact zero (the plan's B5: "every kernel
 // returns at once if the stop word is set") leave x, r, d and best as the
-// stop left them. Op 8 runs only after the stop, from the finish.
+// stop left them. Ops 8 and 9 run only after the stop, from the finish, and
+// read only what a stop leaves live (best, x and the take_best flag).
 //
 // Every operation is a correctly rounded add, subtract or multiply,
 // uncontracted (-fp-mode precise), in the CPU's order, so each vector is the
@@ -29,9 +33,10 @@
 //
 // SET 1, bindings.slang section F: reads airflow_params (the dims), airflow_
 // region_labels (18) and airflow_scalars (21); reads and writes airflow_pcg
-// (20), airflow_pressure (4, level 0's p) and airflow_rhs (9, level 0's b).
+// (20), airflow_pressure (4, level 0's p, and after op 9 the grid's) and
+// airflow_rhs (9, level 0's b).
 //
-// A MISUSE SHOWS AS NaN: an op past 8 writes a NaN x.
+// A MISUSE SHOWS AS NaN: an op past 9 writes a NaN x.
 // ---------------------------------------------------------------------------
 
 import bindings;
@@ -41,7 +46,7 @@ import mg_levels;
 
 // The airflow push convention: 16 bytes, the count in word 2.
 struct PcgUpdatePush {
-    uint op;  // 0 x <- p ... 8 x <- best
+    uint op;  // 0 x <- p ... 9 p <- x
     uint unused0;
     uint count;  // the grid's cells
     uint unused1;
@@ -58,6 +63,7 @@ static const uint kOpXR = 5u;
 static const uint kOpDirection = 6u;
 static const uint kOpKeepBest = 7u;
 static const uint kOpTakeBest = 8u;
+static const uint kOpPFromX = 9u;
 
 // pcg.cpp's mask() of one cell's value.
 float masked(uint c, float v) { return solid_cell(c) ? 0.0f : v; }
@@ -72,7 +78,11 @@ void airflow_pcg_update(uint3 tid : SV_DispatchThreadID) {
         if (slot_set(kSlotTakeBest)) { pcg_set(kPcgX, c, pcg_get(kPcgBest, c)); }
         return;
     }
-    if (op > kOpTakeBest) {
+    if (op == kOpPFromX) {
+        airflow_pressure[c] = pcg_get(kPcgX, c);
+        return;
+    }
+    if (op > kOpPFromX) {
         pcg_set(kPcgX, c, asfloat(0x7FC00000u));
         return;
     }
