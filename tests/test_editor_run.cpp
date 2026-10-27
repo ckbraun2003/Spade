@@ -380,7 +380,15 @@ TEST(EditorRun, ARefusedAzimuthHoldsAndIsNamedOnceWithoutFailingAStep) {
 // at a time, EditorRun::step(4) with each step's controllers and azimuths.
 // Opt-in: SPADE_EDITOR_TIMINGS.
 TEST(EditorRun, FrameTimeBatchedAgainstOneAtATimeOnThePhantomScene) {
-    if (std::getenv("SPADE_EDITOR_TIMINGS") == nullptr) GTEST_SKIP() << "opt-in: SPADE_EDITOR_TIMINGS";
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const bool opted = std::getenv("SPADE_EDITOR_TIMINGS") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!opted) GTEST_SKIP() << "opt-in: SPADE_EDITOR_TIMINGS";
     const spade::scene::SceneDesc s = with_library_drone(support::sample_scene(), "phantom3_class", "phantom3_class",
                                                          glm::vec3(0.0f, 0.025f, 1.5f));
     const spade::WorldDesc world = support::sample_world();
