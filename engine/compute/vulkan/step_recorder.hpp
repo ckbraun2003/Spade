@@ -379,7 +379,8 @@ private:
     // wrong physics rather than an error, so it must never be reachable.
     //
     // Every pipeline shares pipeline_layout_ (see the class note above).
-    [[nodiscard]] Result<void> make_pipeline(const SpirvVariantSet& variants,
+    // `report` is the context's, for make_compute_pipeline's float-controls check.
+    [[nodiscard]] Result<void> make_pipeline(const SpirvVariantSet& variants, const DeviceReport& report,
                                               VkShaderModule& out_module, VkPipeline& out_pipeline);
 
     // No VkPhysicalDevice member as of S6 Task 6: this class allocates no

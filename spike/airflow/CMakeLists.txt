@@ -38,79 +38,85 @@ target_link_libraries(spade_airflow_runner
 # including it defines functions and sets variables, and creates no target.
 include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
 
+# EVERY AIRFLOW KERNEL IS NAN_PRESERVE (2026-10-27): each declares
+# SignedZeroInfNanPreserve 32, so a NaN reaches the step's end as on the CPU
+# rather than vanishing in a driver's min/max (SpadeSlang.cmake's "THE AIRFLOW
+# KERNELS PIN NaN PRESERVATION"). Rule P6 holds every module here to it
+# (AirflowRunnerSpirv.KernelsHoldTheDeterminismRules); a new kernel passes it too.
+
 # The runner's test kernels (engine/shaders/kernels/airflow_*.slang), compiled
 # at every workgroup size in SPADE_SLANG_WORKGROUP_SIZES. Registered on THIS
 # target, after engine/'s kernel manifest is written, so spade_compute's
 # generated headers and test_slang_layouts.cpp's kernel count are unchanged;
 # tests/test_gpu_airflow_runner.cpp scans these three modules itself.
-spade_slang_kernel_variants(spade_airflow_runner airflow_copy)
-spade_slang_kernel_variants(spade_airflow_runner airflow_add_one)
-spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum)
+spade_slang_kernel_variants(spade_airflow_runner airflow_copy NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_add_one NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum NAN_PRESERVE)
 # B5.0b's test-only probe: airflow_tile_sum's last pass with loads issued
 # ahead, and a two-level order, measured by an opt-in test; no chain uses it.
-spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum_probe)
+spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum_probe NAN_PRESERVE)
 
 # B2's projection kernels, the CPU's multigrid V-cycle and its divergence and
 # gradient (tests/test_gpu_airflow_projection.cpp; AirflowRunnerSpirv scans
 # them with the three above). They import mg_levels.slang and
 # airflow_params_layout.slang, which -depfile tracks.
-spade_slang_kernel_variants(spade_airflow_runner airflow_divergence)
-spade_slang_kernel_variants(spade_airflow_runner airflow_gradient_subtract)
-spade_slang_kernel_variants(spade_airflow_runner airflow_mg_smooth)
-spade_slang_kernel_variants(spade_airflow_runner airflow_mg_residual)
-spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict)
-spade_slang_kernel_variants(spade_airflow_runner airflow_mg_prolong)
-spade_slang_kernel_variants(spade_airflow_runner airflow_remove_mean)
+spade_slang_kernel_variants(spade_airflow_runner airflow_divergence NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_gradient_subtract NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_smooth NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_residual NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_prolong NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_remove_mean NAN_PRESERVE)
 
 # B3's advection kernel, advect.cpp term for term
 # (tests/test_gpu_airflow_advection.cpp).
-spade_slang_kernel_variants(spade_airflow_runner airflow_advection)
+spade_slang_kernel_variants(spade_airflow_runner airflow_advection NAN_PRESERVE)
 
 # B3's velocity conditions and implicit viscosity, boundaries.cpp and
 # viscous.cpp term for term (tests/test_gpu_airflow_viscous.cpp; the lead's
 # grant, 2026-10-22). airflow_viscous imports fp32_math.slang.
-spade_slang_kernel_variants(spade_airflow_runner airflow_velocity_bc)
-spade_slang_kernel_variants(spade_airflow_runner airflow_viscous)
+spade_slang_kernel_variants(spade_airflow_runner airflow_velocity_bc NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_viscous NAN_PRESERVE)
 
 # B6's publish kernels, publish_render_volume's channels and their binary16
 # pack (tests/test_gpu_airflow_publish.cpp).
-spade_slang_kernel_variants(spade_airflow_runner airflow_publish_fields)
-spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16)
+spade_slang_kernel_variants(spade_airflow_runner airflow_publish_fields NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16 NAN_PRESERVE)
 
 # B4's rotor discs, spread_actuator() as a gather
 # (tests/test_gpu_airflow_actuator.cpp).
-spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather)
+spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather NAN_PRESERVE)
 
 # B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):
 # the swap and add_and_clear as one add a face
 # (tests/test_gpu_airflow_step.cpp).
-spade_slang_kernel_variants(spade_airflow_runner airflow_add_increments)
+spade_slang_kernel_variants(spade_airflow_runner airflow_add_increments NAN_PRESERVE)
 
 # B5's solids projection (Physics; tests/test_gpu_airflow_solids.cpp): the
 # CG's dots (pass 0; airflow_tile_sum ends them), its max-norm and its
 # quotients (div32_ftz), the aperture divergence and gradient, and the
 # operator over a CG vector (mg_levels.slang's stencil_from()). They import
 # airflow_pcg.slang, which -depfile tracks.
-spade_slang_kernel_variants(spade_airflow_runner airflow_tile_dot)
-spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_measure)
-spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_scalars)
-spade_slang_kernel_variants(spade_airflow_runner airflow_solid_divergence)
-spade_slang_kernel_variants(spade_airflow_runner airflow_solid_gradient)
-spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_apply)
+spade_slang_kernel_variants(spade_airflow_runner airflow_tile_dot NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_measure NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_scalars NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_divergence NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_gradient NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_apply NAN_PRESERVE)
 # B5.2b: the symmetric V(2,2) preconditioner's full-weighting restriction
 # (mg_levels.slang's levels; B2's smoother, residual and prolongation do the rest).
-spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict_full)
+spade_slang_kernel_variants(spade_airflow_runner airflow_mg_restrict_full NAN_PRESERVE)
 
 # B5.3 and B5.5 (Physics; tests/test_gpu_airflow_solids.cpp): the closed
 # regions' means and the CG's gauge, what a closed face holds (both interior
 # modes; div32_ftz), and the wall load.
-spade_slang_kernel_variants(spade_airflow_runner airflow_region_mean)
-spade_slang_kernel_variants(spade_airflow_runner airflow_solid_velocities)
-spade_slang_kernel_variants(spade_airflow_runner airflow_wall_load)
+spade_slang_kernel_variants(spade_airflow_runner airflow_region_mean NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_solid_velocities NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_wall_load NAN_PRESERVE)
 
 # B5.4 (Physics; tests/test_gpu_airflow_solids.cpp): the solids CG's vector
 # work (no division); its decisions are airflow_pcg_scalars'.
-spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_update)
+spade_slang_kernel_variants(spade_airflow_runner airflow_pcg_update NAN_PRESERVE)
 
 # chain_runner.hpp includes bindings.gen.hpp: compile after every generator
 # (SpadeSlang.cmake's spade_slang_attach_generated() says why an explicit

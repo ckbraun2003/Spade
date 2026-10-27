@@ -370,13 +370,15 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     }
     vkUpdateDescriptorSets(self->device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    // Pipeline i = kernels[i], Core's selection and creation (dispatch_chain).
+    // Pipeline i = kernels[i], Core's selection and creation (dispatch_chain),
+    // which refuses a kernel whose float controls the device lacks.
     self->shaders_.assign(desc.kernels.size(), VK_NULL_HANDLE);
     self->pipelines_.assign(desc.kernels.size(), VK_NULL_HANDLE);
     for (std::size_t k = 0; k < desc.kernels.size(); ++k) {
-        if (Result<void> made =
-                compute::make_compute_pipeline(self->device_, self->pipeline_layout_, *desc.kernels[k], wg,
-                                               "airflow runner", self->shaders_[k], self->pipelines_[k]);
+        if (Result<void> made = compute::make_compute_pipeline(self->device_, self->pipeline_layout_,
+                                                               *desc.kernels[k], wg, ctx.device_report(),
+                                                               "airflow runner", self->shaders_[k],
+                                                               self->pipelines_[k]);
             !made) {
             return std::unexpected(made.error());
         }

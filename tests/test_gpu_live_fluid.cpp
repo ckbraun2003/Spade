@@ -12,13 +12,19 @@
 //                 device's refusals (parts, a workgroup size, no device)
 //                 fall back to the CPU by name, and the case's own don't;
 //                 the frame's wall time on both, opt-in
-//                 (SPADE_AIRFLOW_TIMINGS).
+//                 (SPADE_AIRFLOW_TIMINGS); one NaN in the air reaches the
+//                 step's end as on the CPU and ends both runs at their first
+//                 frame, and a device that can't preserve it is refused by
+//                 name (the airflow kernels' SignedZeroInfNanPreserve,
+//                 2026-10-27).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -26,11 +32,14 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "airflow_advection.spv.gen.hpp"
 #include "airflow_exact_device.hpp"
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
@@ -38,9 +47,13 @@
 #include "analysis_powered_quad.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
+#include "compute/vulkan/dispatch_chain.hpp"
 #include "core/flow_volume.hpp"
 #include "gpu_skip.hpp"
+#include "physics/airflow/actuator.hpp"
+#include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/publish.hpp"
 #include "spike/airflow/live_fluid.hpp"
 #include "unique_temp.hpp"
 #include "vehicles/model_part.hpp"
@@ -120,6 +133,54 @@ using spade::compute::VulkanContext;
     return p;
 }
 
+// `g` with one quiet NaN in an interior u face, the box's middle.
+[[nodiscard]] af::MacGrid with_a_nan(af::MacGrid g) {
+    g.u[af::u_index(g.shape, g.shape.nx / 2, g.shape.ny / 2, g.shape.nz / 2)] =
+        std::numeric_limits<float>::quiet_NaN();
+    return g;
+}
+
+// How many NaNs and infinities u, v, w and p hold.
+[[nodiscard]] std::array<std::size_t, 4> non_finite(const af::MacGrid& g) {
+    const std::vector<float>* arrays[4] = {&g.u, &g.v, &g.w, &g.p};
+    std::array<std::size_t, 4> n{};
+    for (std::size_t q = 0; q < 4; ++q) {
+        for (const float x : *arrays[q]) n[q] += std::isfinite(x) ? 0u : 1u;
+    }
+    return n;
+}
+
+// LiveRun's own CPU fluid (live_run.cpp's step: the discs spread into the
+// increments, then fluid_step(); the publish publish_render_volume()'s) as a
+// LiveFluid, so a CPU run can start from a poisoned grid as a device's can.
+class CpuLiveFluid final : public an::LiveFluid {
+  public:
+    CpuLiveFluid(af::MacGrid g, af::DomainBc bc, af::FluidConfig cfg, af::FluidScratch s)
+        : grid_(std::move(g)), bc_(std::move(bc)), cfg_(cfg), scratch_(std::move(s)) {}
+
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc> discs) override {
+        for (const af::ActuatorDisc& d : discs) {
+            af::spread_actuator(d, grid_.shape, cfg_.rho, cfg_.h, scratch_.du, scratch_.dv, scratch_.dw);
+        }
+        return af::fluid_step(grid_, bc_, cfg_, scratch_);
+    }
+    [[nodiscard]] spade::Result<void> publish(const af::PublishInput& in, spade::FlowVolume& out) override {
+        const spade::Result<af::PublishCounts> published = af::publish_render_volume(grid_, in, out);
+        if (!published) return std::unexpected(published.error());
+        return {};
+    }
+    [[nodiscard]] spade::Result<void> read(af::MacGrid& g) const override {
+        g = grid_;
+        return {};
+    }
+
+  private:
+    af::MacGrid grid_;
+    af::DomainBc bc_;
+    af::FluidConfig cfg_;
+    af::FluidScratch scratch_;
+};
+
 }  // namespace
 
 // 60 steps of the changing program: every frame's halves, the rotors and the
@@ -169,9 +230,8 @@ TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
 // A flow past binary16's range (a poisoned start: 100 km/s through the box,
 // finite, so the device steps it as the CPU does) reaches the first frame:
 // its publish fails, naming the samples it can't hold, and every step after
-// is refused the same, so the run ends there with no frame published. (A
-// NaN start doesn't serve: the device's first step leaves no NaN where the
-// CPU's faults, measured 2026-10-27.)
+// is refused the same, so the run ends there with no frame published. (A NaN
+// start ends it at the same frame: ANanEndsBothRunsAtTheirFirstFrame.)
 TEST(GpuLiveFluid, AFlowPastTheVolumesRangeEndsTheRunAtItsFrame) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -233,6 +293,152 @@ TEST(GpuLiveFluid, ItsRefusalsFallBackToTheCpuByName) {
     ASSERT_FALSE(refused.has_value());
     EXPECT_NE(refused.error().context.find("a live run needs the case's time.step"), std::string::npos)
         << refused.error().context;
+}
+
+// One NaN in an interior u face of the editor's still air, one step: the
+// device's u, v, w and p hold as many NaNs and infinities as the CPU's, whose
+// step faults there (fluid_step's non_finite). Counts, not payloads: a NaN's
+// bits are no part of TD-14. Before the airflow kernels preserved NaN
+// (2026-10-27), this device's advection clamp dropped the NaN and its step
+// ended with none. A device that can't preserve it refuses the fluid.
+TEST(GpuLiveFluid, ANanReachesTheStepsEndAsOnTheCpu) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = editor_case(p);
+    std::unique_ptr<af::MacGrid> grid;
+    std::unique_ptr<af::DomainBc> domain;
+    std::unique_ptr<af::FluidConfig> config;
+    const an::LiveFluidMaker kept = [&](const an::LiveFluidStart& s) -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+        grid = std::make_unique<af::MacGrid>(with_a_nan(s.grid));
+        domain = std::make_unique<af::DomainBc>(s.domain);
+        config = std::make_unique<af::FluidConfig>(s.config);
+        return std::unexpected(spade::Error{spade::Code::unavailable, "the run's start is kept, not run"});
+    };
+    ASSERT_FALSE(an::LiveRun::start(r, p.model, kept).has_value());
+    ASSERT_NE(grid, nullptr);
+
+    af::MacGrid cpu = *grid;
+    spade::Result<af::FluidScratch> scratch = af::make_fluid_scratch(cpu, *domain, *config);
+    ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
+    EXPECT_EQ(af::fluid_step(cpu, *domain, *config, *scratch).fault, af::FluidFault::non_finite);
+
+    auto fluid = ag::GpuFluid::create(*ctx, *grid, *domain, *config);
+    if (!ctx->device_report().signed_zero_inf_nan_preserve_f32) {
+        ASSERT_FALSE(fluid.has_value()) << "a device without NaN preservation ran the airflow kernels";
+        EXPECT_EQ(fluid.error().code, spade::Code::unavailable);
+        EXPECT_NE(fluid.error().context.find("shaderSignedZeroInfNanPreserveFloat32"), std::string::npos)
+            << fluid.error().context;
+        return;
+    }
+    ASSERT_TRUE(fluid.has_value()) << fluid.error().context;
+    ASSERT_TRUE((*fluid)->step({}).has_value());
+    af::MacGrid gpu = *grid;
+    ASSERT_TRUE((*fluid)->read(gpu).has_value());
+
+    const std::array<std::size_t, 4> on_cpu = non_finite(cpu);
+    const std::array<std::size_t, 4> on_gpu = non_finite(gpu);
+    std::printf("[ live    ] one NaN u face, one step on 32^3: non-finite u %zu, v %zu, w %zu, p %zu on the CPU; "
+                "%zu, %zu, %zu, %zu on the device\n",
+                on_cpu[0], on_cpu[1], on_cpu[2], on_cpu[3], on_gpu[0], on_gpu[1], on_gpu[2], on_gpu[3]);
+    EXPECT_GT(on_cpu[0], 0u);
+    EXPECT_EQ(on_gpu, on_cpu);
+}
+
+// The same NaN through LiveRun ends both runs at their first frame: the
+// CPU's at step 1, its fluid's fault named; the device's at the frame's
+// publish, where GpuLiveFluid finds a non-finite flow (GpuFluid's step has no
+// scan for one), the frame's samples named and every step after refused.
+TEST(GpuLiveFluid, ANanEndsBothRunsAtTheirFirstFrame) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    if (!ctx->device_report().signed_zero_inf_nan_preserve_f32) {
+        GTEST_SKIP() << "the device refuses the airflow kernels (ANanReachesTheStepsEndAsOnTheCpu)";
+    }
+    const an::LiveFluidMaker gpu_maker = ag::gpu_live_fluid(*ctx);
+    const an::LiveFluidMaker on_gpu = [&gpu_maker](const an::LiveFluidStart& s) {
+        const af::MacGrid g = with_a_nan(s.grid);
+        return gpu_maker(an::LiveFluidStart{g, s.domain, s.config, s.solids});
+    };
+    const an::LiveFluidMaker on_cpu =
+        [](const an::LiveFluidStart& s) -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+        af::MacGrid g = with_a_nan(s.grid);
+        spade::Result<af::FluidScratch> scratch = af::make_fluid_scratch(g, s.domain, s.config);
+        if (!scratch) return std::unexpected(scratch.error());
+        return std::make_unique<CpuLiveFluid>(std::move(g), s.domain, s.config, std::move(*scratch));
+    };
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = editor_case(p);
+    an::LiveRun cpu = started(r, p.model, on_cpu);
+    an::LiveRun gpu = started(r, p.model, on_gpu);
+    const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+
+    const spade::Result<an::LiveFrame> fa = cpu.advance_frame(armed, a);
+    ASSERT_FALSE(fa.has_value());
+    EXPECT_NE(fa.error().context.find("the fluid faulted at step 1: airflow fluid step: a non-finite "),
+              std::string::npos)
+        << fa.error().context;
+    EXPECT_EQ(cpu.state().frames, 0u);
+    EXPECT_EQ(cpu.state().steps, 0u);
+
+    const spade::Result<an::LiveFrame> fb = gpu.advance_frame(armed, b);
+    ASSERT_FALSE(fb.has_value());
+    EXPECT_NE(fb.error().context.find("the published flow holds "), std::string::npos) << fb.error().context;
+    EXPECT_EQ(gpu.state().frames, 0u);
+    const uint64_t steps = gpu.state().steps;
+    const spade::Result<void> next = gpu.step(armed);
+    ASSERT_FALSE(next.has_value());
+    EXPECT_EQ(next.error().context,
+              "the fluid's device failed at step " + std::to_string(steps + 1) + ": " + fb.error().context);
+}
+
+// The refusal itself, which no device of ours gives: check_float_controls()
+// (compute/vulkan/dispatch_chain.hpp, before every pipeline is made) on
+// airflow_advection's module, which declares SignedZeroInfNanPreserve 32,
+// against a device without the float control and one with it, and on a
+// module that declares none. Then make_compute_pipeline() itself, given null
+// handles: its refusal is the same and comes before any Vulkan call. Host
+// only: no device needed.
+TEST(GpuLiveFluid, ADeviceWithoutNanPreservationIsRefusedByName) {
+    namespace sc = spade::compute;
+    for (const sc::SpirvVariant& v : sc::gen::kSpvVariants_airflow_advection.all()) {
+        EXPECT_TRUE(sc::declares_nan_preserve_f32(v.code())) << "local size " << v.workgroup_size;
+    }
+    const std::span<const uint32_t> code = sc::gen::kSpvVariants_airflow_advection.all().front().code();
+    sc::DeviceReport lacking;
+    lacking.device_name = "a device";
+    lacking.float_controls_queryable = true;
+    const spade::Result<void> refused = sc::check_float_controls(code, lacking, "airflow runner", "airflow_advection");
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_EQ(refused.error().context,
+              "airflow runner: kernel 'airflow_advection' declares SignedZeroInfNanPreserve for fp32, and a device "
+              "does not support it (shaderSignedZeroInfNanPreserveFloat32 false). Without it a driver may drop a "
+              "NaN the CPU carries, so the kernel does not run here.");
+
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    const spade::Result<void> made = sc::make_compute_pipeline(
+        VK_NULL_HANDLE, VK_NULL_HANDLE, sc::gen::kSpvVariants_airflow_advection,
+        sc::gen::kSpvVariants_airflow_advection.all().front().workgroup_size, lacking, "airflow runner", module,
+        pipeline);
+    ASSERT_FALSE(made.has_value());
+    EXPECT_EQ(made.error().code, refused.error().code);
+    EXPECT_EQ(made.error().context, refused.error().context);
+    EXPECT_EQ(module, VK_NULL_HANDLE);
+    EXPECT_EQ(pipeline, VK_NULL_HANDLE);
+
+    sc::DeviceReport preserving = lacking;
+    preserving.signed_zero_inf_nan_preserve_f32 = true;
+    EXPECT_TRUE(sc::check_float_controls(code, preserving, "airflow runner", "airflow_advection").has_value());
+
+    const uint32_t bare[] = {0x07230203u, 0x00010500u, 0u, 1u, 0u};  // a header and nothing declared
+    EXPECT_FALSE(sc::declares_nan_preserve_f32(bare));
+    EXPECT_TRUE(sc::check_float_controls(bare, lacking, "airflow runner", "bare").has_value());
 }
 
 // The whole LiveRun frame (the drone, its discs, the fluid and the publish)

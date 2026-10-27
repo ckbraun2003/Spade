@@ -30,6 +30,19 @@ rather than naming arrays one by one, which is what keeps
 tests/test_slang_layouts.cpp's SPIR-V policy scan automatically covering every
 compiled variant instead of a hand-maintained list of them.
 
+WHY --nan-preserve (the airflow kernels, 2026-10-27). Without the
+SignedZeroInfNanPreserve execution mode, Vulkan lets a driver assume no float is
+NaN, and the RTX 3060 Ti's driver 572.83 does: it compiles advection's clamp, a
+pair of ordered compares and branches in the SPIR-V, into a min/max that drops
+a NaN where the CPU's carries it (Rendering's bisect, docs/design/backlog.md).
+slangc v2026.14.1 has no flag for the mode, so this flag adds it to each module
+before embedding: the capability, the SPV_KHR_float_controls extension, and
+`OpExecutionMode <entry> SignedZeroInfNanPreserve 32` on every entry point. No
+new ids, so the header's bound stands. A device that does not support the mode
+for fp32 is refused by name when the pipeline is made
+(compute/vulkan/dispatch_chain.hpp); rule P6 in engine/testing/spirv_scan.hpp
+checks that exactly the airflow modules declare it.
+
 USAGE
     embed_spirv.py --input <module>.spv --output <module>.spv.gen.hpp \
                    --symbol <module>
@@ -37,7 +50,8 @@ USAGE
     embed_spirv.py --variant 32=<module>.wg32.spv \
                    --variant 64=<module>.wg64.spv \
                    --variant 128=<module>.wg128.spv \
-                   --output <module>.spv.gen.hpp --symbol <module>
+                   --output <module>.spv.gen.hpp --symbol <module> \
+                   [--nan-preserve]
 """
 
 from __future__ import annotations
@@ -48,6 +62,16 @@ import sys
 from pathlib import Path
 
 SPIRV_MAGIC = 0x07230203
+
+# What --nan-preserve writes (Khronos SPIRV-Headers, unified1/spirv.hpp).
+OP_EXTENSION = 10
+OP_ENTRY_POINT = 15
+OP_EXECUTION_MODE = 16
+OP_CAPABILITY = 17
+CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE = 4466
+EXECUTION_MODE_SIGNED_ZERO_INF_NAN_PRESERVE = 4461
+FLOAT_WIDTH_32 = 32
+FLOAT_CONTROLS_EXTENSION = "SPV_KHR_float_controls"
 
 BANNER = """// GENERATED FILE -- DO NOT EDIT, DO NOT COMMIT.
 //
@@ -72,6 +96,73 @@ def read_module(path: Path) -> tuple[int, ...]:
     return words
 
 
+def instructions(words: tuple[int, ...]):
+    """Yield (word index, opcode, word count) for each instruction past the header."""
+    i = 5
+    while i < len(words):
+        count = words[i] >> 16
+        if count == 0 or i + count > len(words):
+            raise ValueError(f"truncated or zero-length instruction at word {i}")
+        yield i, words[i] & 0xFFFF, count
+        i += count
+
+
+def literal_string(text: str) -> list[int]:
+    """`text` as a SPIR-V literal: UTF-8, NUL-terminated, packed little-endian into words."""
+    data = text.encode("utf-8") + b"\0"
+    data += b"\0" * (-len(data) % 4)
+    return list(struct.unpack(f"<{len(data) // 4}I", data))
+
+
+def preserve_nan(words: tuple[int, ...]) -> tuple[int, ...]:
+    """`words` declaring SignedZeroInfNanPreserve for fp32 (this file's --nan-preserve note).
+
+    The capability goes after the module's last OpCapability, the extension
+    after its last OpExtension (or the capabilities, when it has none), and the
+    mode after its last OpEntryPoint, once per entry point: the order SPIR-V's
+    logical layout requires. Whatever the module already declares is kept, not
+    repeated."""
+    entries: list[int] = []
+    moded: list[int] = []
+    has_capability = False
+    has_extension = False
+    last_capability = last_extension = last_entry = None
+    for i, op, count in instructions(words):
+        if op == OP_CAPABILITY:
+            last_capability = i
+            has_capability |= words[i + 1] == CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE
+        elif op == OP_EXTENSION:
+            last_extension = i
+            has_extension |= list(words[i + 1 : i + count]) == literal_string(FLOAT_CONTROLS_EXTENSION)
+        elif op == OP_ENTRY_POINT:
+            last_entry = i
+            entries.append(words[i + 2])
+        elif (op == OP_EXECUTION_MODE and count == 4 and
+              words[i + 2] == EXECUTION_MODE_SIGNED_ZERO_INF_NAN_PRESERVE and words[i + 3] == FLOAT_WIDTH_32):
+            moded.append(words[i + 1])
+    if last_capability is None or last_entry is None:
+        raise ValueError("--nan-preserve: the module has no OpCapability or no OpEntryPoint")
+
+    after: dict[int, list[int]] = {}
+    if not has_capability:
+        after.setdefault(last_capability, []).extend(
+            [(2 << 16) | OP_CAPABILITY, CAPABILITY_SIGNED_ZERO_INF_NAN_PRESERVE])
+    if not has_extension:
+        name = literal_string(FLOAT_CONTROLS_EXTENSION)
+        anchor = last_capability if last_extension is None else last_extension
+        after.setdefault(anchor, []).extend([((1 + len(name)) << 16) | OP_EXTENSION] + name)
+    for entry in entries:
+        if entry not in moded:
+            after.setdefault(last_entry, []).extend(
+                [(4 << 16) | OP_EXECUTION_MODE, entry, EXECUTION_MODE_SIGNED_ZERO_INF_NAN_PRESERVE, FLOAT_WIDTH_32])
+
+    out = list(words[:5])
+    for i, _, count in instructions(words):
+        out.extend(words[i : i + count])
+        out.extend(after.get(i, []))
+    return tuple(out)
+
+
 def parse_variant(spec: str) -> tuple[int, Path]:
     """Parse a `--variant SIZE=PATH` argument."""
     size_text, separator, path_text = spec.partition("=")
@@ -86,11 +177,14 @@ def parse_variant(spec: str) -> tuple[int, Path]:
     return size, Path(path_text)
 
 
-def emit_array(lines: list[str], symbol: str, source: Path, words: tuple[int, ...]) -> None:
+def emit_array(lines: list[str], symbol: str, source: Path, words: tuple[int, ...],
+               nan_preserve: bool) -> None:
     """Append one embedded uint32_t[] plus its word count."""
+    as_emitted = ("as slangc emitted them, plus SignedZeroInfNanPreserve 32\n"
+                  "// (embed_spirv.py --nan-preserve)" if nan_preserve else "exactly as slangc emitted them")
     lines.append(
         f"// {source.name}: {len(words)} words ({len(words) * 4} bytes), little-endian,\n"
-        f"// exactly as slangc emitted them. vkCreateShaderModule takes this array\n"
+        f"// {as_emitted}. vkCreateShaderModule takes this array\n"
         f"// verbatim -- no byte-swapping, no header stripping."
     )
     lines.append(f"inline constexpr uint32_t kSpv_{symbol}[] = {{")
@@ -115,6 +209,11 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--symbol", required=True)
+    parser.add_argument(
+        "--nan-preserve",
+        action="store_true",
+        help="declare SignedZeroInfNanPreserve 32 on every entry point (the airflow kernels)",
+    )
     args = parser.parse_args(argv)
 
     if (args.input is None) == (not args.variant):
@@ -131,13 +230,14 @@ def main(argv: list[str]) -> int:
     # walks one table type and no module can be omitted from the SPIR-V policy
     # scan by being the odd one out.
     entries: list[tuple[int, str, Path, tuple[int, ...]]] = []
+    read = (lambda path: preserve_nan(read_module(path))) if args.nan_preserve else read_module
     try:
         if args.input is not None:
-            entries.append((64, args.symbol, args.input, read_module(args.input)))
+            entries.append((64, args.symbol, args.input, read(args.input)))
         else:
             for spec in args.variant:
                 size, path = parse_variant(spec)
-                entries.append((size, f"{args.symbol}_wg{size}", path, read_module(path)))
+                entries.append((size, f"{args.symbol}_wg{size}", path, read(path)))
     except ValueError as error:
         print(f"embed_spirv.py: error: {error}", file=sys.stderr)
         return 1
@@ -162,7 +262,7 @@ def main(argv: list[str]) -> int:
     lines.append("namespace spade::compute::gen {")
     lines.append("")
     for _, array_symbol, source, words in entries:
-        emit_array(lines, array_symbol, source, words)
+        emit_array(lines, array_symbol, source, words, args.nan_preserve)
 
     lines.append(
         f"// Every compiled module for {args.symbol}.slang, keyed by the local size it\n"

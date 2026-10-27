@@ -60,9 +60,36 @@ ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, 
     return counts;
 }
 
+bool declares_nan_preserve_f32(std::span<const uint32_t> code) noexcept {
+    constexpr uint32_t kOpExecutionMode = 16;
+    constexpr std::size_t kHeaderWords = 5;
+    for (std::size_t i = kHeaderWords; i < code.size();) {
+        const uint32_t word_count = code[i] >> 16;
+        if (word_count == 0 || i + word_count > code.size()) return false;
+        // OpExecutionMode <entry point> <mode> <width>
+        if ((code[i] & 0xFFFFu) == kOpExecutionMode && word_count == 4 &&
+            code[i + 2] == kSpirvExecutionModeSignedZeroInfNanPreserve && code[i + 3] == 32u) {
+            return true;
+        }
+        i += word_count;
+    }
+    return false;
+}
+
+Result<void> check_float_controls(std::span<const uint32_t> code, const DeviceReport& report, std::string_view who,
+                                  std::string_view kernel) {
+    if (!declares_nan_preserve_f32(code) || report.signed_zero_inf_nan_preserve_f32) return {};
+    return std::unexpected(Error{
+        Code::unavailable,
+        std::string(who) + ": kernel '" + std::string(kernel) + "' declares SignedZeroInfNanPreserve for fp32, and " +
+            report.device_name + " does not support it (shaderSignedZeroInfNanPreserveFloat32 " +
+            (report.float_controls_queryable ? "false" : "not queryable below Vulkan 1.2") +
+            "). Without it a driver may drop a NaN the CPU carries, so the kernel does not run here."});
+}
+
 Result<void> make_compute_pipeline(VkDevice device, VkPipelineLayout layout, const SpirvVariantSet& variants,
-                                   uint32_t workgroup_size, const char* who, VkShaderModule& out_module,
-                                   VkPipeline& out_pipeline) {
+                                   uint32_t workgroup_size, const DeviceReport& report, const char* who,
+                                   VkShaderModule& out_module, VkPipeline& out_pipeline) {
     // THE SELECTION (S6 Task 9b). A null answer means the build did not compile
     // this kernel for the size create() accepted -- i.e.
     // cmake/SpadeSlang.cmake's SPADE_SLANG_WORKGROUP_SIZES and
@@ -79,6 +106,9 @@ Result<void> make_compute_pipeline(VkDevice device, VkPipelineLayout layout, con
                 std::to_string(workgroup_size) +
                 ". cmake/SpadeSlang.cmake's SPADE_SLANG_WORKGROUP_SIZES must list every size "
                 "compute/backend.hpp's kSupportedWorkgroupSizes admits."});
+    }
+    if (Result<void> controls = check_float_controls(variant->code(), report, who, variants.name); !controls) {
+        return controls;
     }
 
     VkShaderModuleCreateInfo shader_info{};

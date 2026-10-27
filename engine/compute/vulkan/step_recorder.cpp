@@ -369,8 +369,8 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
                   "every PipelineSlot needs exactly one kernel variant set");
 
     for (const auto& source : kPipelineSources) {
-        if (Result<void> made = self->make_pipeline(source.variants, self->shaders_[source.slot],
-                                                     self->pipelines_[source.slot]);
+        if (Result<void> made = self->make_pipeline(source.variants, ctx.device_report(),
+                                                     self->shaders_[source.slot], self->pipelines_[source.slot]);
             !made) {
             return std::unexpected(made.error());
         }
@@ -415,13 +415,13 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     return self;
 }
 
-Result<void> StepRecorder::make_pipeline(const SpirvVariantSet& variants, VkShaderModule& out_module,
-                                           VkPipeline& out_pipeline) {
+Result<void> StepRecorder::make_pipeline(const SpirvVariantSet& variants, const DeviceReport& report,
+                                           VkShaderModule& out_module, VkPipeline& out_pipeline) {
     // The selection, the shader module and the pipeline: dispatch_chain.hpp's
     // make_compute_pipeline, shared with the airflow chain runner (its design
     // note §1). The messages name "StepRecorder", as they always have.
-    return make_compute_pipeline(device_, pipeline_layout_, variants, workgroup_size_, "StepRecorder", out_module,
-                                 out_pipeline);
+    return make_compute_pipeline(device_, pipeline_layout_, variants, workgroup_size_, report, "StepRecorder",
+                                 out_module, out_pipeline);
 }
 
 // ---------------------------------------------------------------------------

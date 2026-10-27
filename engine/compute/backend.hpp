@@ -158,6 +158,10 @@ struct DeviceReport {
     std::string driver_info;
     bool denorm_preserve_f32 = false;
     bool denorm_flush_to_zero_f32 = false;
+    // shaderSignedZeroInfNanPreserveFloat32: the airflow kernels declare the
+    // mode (SPIR-V rule P6), and compute/vulkan/dispatch_chain.hpp refuses
+    // their pipelines on a device without it.
+    bool signed_zero_inf_nan_preserve_f32 = false;
     // The device's limits (stage 7 §7.1, CORE-5 as amended 2026-10-12), so
     // every run records what its device admits; compute/device_limits.hpp
     // checks against them by name.
@@ -167,7 +171,7 @@ struct DeviceReport {
 // One line for logs, gate output and front ends, e.g. "NVIDIA GeForce RTX 3060
 // Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no
 // mode requested, device default (preserve supported: no, flush-to-zero
-// supported: no)".
+// supported: no); fp32 NaN preservation supported: yes".
 [[nodiscard]] inline std::string describe(const DeviceReport& report) {
     static constexpr char kHex[] = "0123456789ABCDEF";
     std::string hex = "0x00000000";
@@ -184,7 +188,8 @@ struct DeviceReport {
            "; fp32 denormals: no mode requested, device default ";
     if (!report.float_controls_queryable) return out + "(float controls not queryable below Vulkan 1.2)";
     return out + "(preserve supported: " + (report.denorm_preserve_f32 ? "yes" : "no") +
-           ", flush-to-zero supported: " + (report.denorm_flush_to_zero_f32 ? "yes" : "no") + ")";
+           ", flush-to-zero supported: " + (report.denorm_flush_to_zero_f32 ? "yes" : "no") +
+           "); fp32 NaN preservation supported: " + (report.signed_zero_inf_nan_preserve_f32 ? "yes" : "no");
 }
 
 struct BackendDesc {

@@ -21,9 +21,11 @@
 #include <cstdint>
 #include <functional>
 #include <span>
+#include <string_view>
 
 #include <volk.h>
 
+#include "compute/backend.hpp"
 #include "compute/spirv_variants.hpp"
 #include "core/error.hpp"
 
@@ -60,13 +62,32 @@ ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, 
                                   std::span<const ChainCommand> commands, uint32_t push_offset, uint32_t push_size,
                                   const ChainMark& mark);
 
+// SPIR-V's SignedZeroInfNanPreserve execution mode (SPV_KHR_float_controls;
+// Khronos SPIRV-Headers' unified1/spirv.hpp). The airflow kernels declare it at
+// width 32 (embed_spirv.py --nan-preserve; SPIR-V rule P6).
+inline constexpr uint32_t kSpirvExecutionModeSignedZeroInfNanPreserve = 4461;
+
+// Whether `code` declares SignedZeroInfNanPreserve at width 32 on an entry point.
+[[nodiscard]] bool declares_nan_preserve_f32(std::span<const uint32_t> code) noexcept;
+
+// The float controls `code` declares, against what `report`'s device supports.
+// A module declaring SignedZeroInfNanPreserve 32 on a device without
+// shaderSignedZeroInfNanPreserveFloat32 is refused (unavailable, naming `who`,
+// `kernel` and the float control): a mode the device does not support is a
+// Vulkan valid-usage violation, undefined behaviour rather than an error, so
+// it must never reach vkCreateShaderModule. Pure: no Vulkan call.
+[[nodiscard]] Result<void> check_float_controls(std::span<const uint32_t> code, const DeviceReport& report,
+                                                std::string_view who, std::string_view kernel);
+
 // One VkShaderModule + compute VkPipeline from the variant of `variants`
 // compiled for `workgroup_size`, on `layout`. Refused (invalid_argument,
 // naming `who` and the kernel) when no such variant was compiled: a module
 // dispatched on a grid divided by another size gives wrong physics silently.
+// Refused by check_float_controls() when `report`'s device lacks a float
+// control the variant declares.
 [[nodiscard]] Result<void> make_compute_pipeline(VkDevice device, VkPipelineLayout layout,
                                                  const SpirvVariantSet& variants, uint32_t workgroup_size,
-                                                 const char* who, VkShaderModule& out_module,
-                                                 VkPipeline& out_pipeline);
+                                                 const DeviceReport& report, const char* who,
+                                                 VkShaderModule& out_module, VkPipeline& out_pipeline);
 
 }  // namespace spade::compute

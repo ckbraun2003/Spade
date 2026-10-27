@@ -128,6 +128,7 @@ namespace {
     report.driver_info = driver.driverInfo;
     report.denorm_preserve_f32 = float_controls.shaderDenormPreserveFloat32 == VK_TRUE;
     report.denorm_flush_to_zero_f32 = float_controls.shaderDenormFlushToZeroFloat32 == VK_TRUE;
+    report.signed_zero_inf_nan_preserve_f32 = float_controls.shaderSignedZeroInfNanPreserveFloat32 == VK_TRUE;
     return report;
 }
 
