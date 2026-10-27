@@ -213,6 +213,8 @@ class EditorWorkspace {
     void refresh_panels() {
         const scene::SceneDesc& s = docs_.scene.desc();
         panels_.scene = &s;
+        panels_.scene_opened = opened_;
+        panels_.scene_serial = docs_.scene.serial();
         panels_.world = &docs_.world.desc();
         panels_.records = &records_;
         const std::string file = docs_.scene.path.empty() ? std::string("untitled") : docs_.scene.path.filename().string();
@@ -785,6 +787,7 @@ class EditorWorkspace {
             return;
         }
         docs_ = std::move(*opened);
+        ++opened_;  // its serials start over: a new cache key
         records_ = records_for(docs_.scene.path);
         composed_ = *c;
         ++composition_;
@@ -803,6 +806,7 @@ class EditorWorkspace {
     }
 
     OpenedScene docs_;
+    uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened
     std::vector<render::FallbackMesh> fallback_meshes_;  // N11: what Save copies beside the scene

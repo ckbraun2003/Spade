@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <vector>
@@ -291,4 +292,68 @@ TEST(EditorSceneEdits, AFollowedVehicleIsNotRemovedFromUnderItsRegion) {
     EXPECT_NE(r.error().context.find("'hover_quad_0'"), std::string::npos) << r.error().context;
     EXPECT_NE(r.error().context.find("region 'drone box' follows it"), std::string::npos) << r.error().context;
     EXPECT_EQ(support::text_of(d.desc()), before);
+}
+
+// T1 of the editor's airflow run (INT-15; the plan's §1 and §4): "Add
+// airflow region" on a drone puts a one-way follow region around it, named
+// <drone>_air: 32^3 cubic cells, dx its largest rotor's radius over 3,
+// floored to the millimetre, so R/dx >= 3; analysis::Fluid's air (the
+// case refuses scene v5's inviscid 0).
+// Undo takes it out; Remove does too, and its undo puts it back.
+TEST(EditorSceneEdits, AnAirflowRegionIsAddedAroundADroneAndRemoved) {
+    auto d = doc_of(support::sample_scene());
+    const Result<void> added = ed::apply(d, ed::AddAirflowRegion{"hover_quad_0"});
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    ASSERT_EQ(d.desc().airflow.size(), 1u);
+    const spade::scene::SceneAirflowRegion r = d.desc().airflow[0];
+    EXPECT_EQ(r.name, "hover_quad_0_air");
+    EXPECT_EQ(r.kind, spade::scene::AirflowKind::follow);
+    EXPECT_EQ(r.follows, "hover_quad_0");
+    EXPECT_EQ(r.coupling, spade::scene::AirflowCoupling::one_way);
+    EXPECT_EQ(r.cells.nx, 32u);
+    EXPECT_EQ(r.cells.ny, 32u);
+    EXPECT_EQ(r.cells.nz, 32u);
+    float radius = 0.0f;
+    for (const auto& m : d.desc().models) {
+        if (m.name != vehicle(d.desc(), "hover_quad_0")->model) continue;
+        for (const auto& rotor : m.rotors) radius = std::max(radius, rotor.radius);
+    }
+    ASSERT_GT(radius, 0.0f);
+    EXPECT_FLOAT_EQ(r.cells.dx, std::floor(radius / 3.0f * 1000.0f) / 1000.0f);
+    EXPECT_GE(radius / r.cells.dx, 3.0f);
+    EXPECT_FLOAT_EQ(r.density, spade::analysis::Fluid{}.density);
+    EXPECT_FLOAT_EQ(r.kinematic_viscosity, spade::analysis::Fluid{}.kinematic_viscosity);
+    ASSERT_TRUE(d.undo());
+    EXPECT_TRUE(d.desc().airflow.empty());
+
+    ASSERT_TRUE(ed::apply(d, ed::AddAirflowRegion{"hover_quad_0"}).has_value());
+    const Result<void> removed = ed::apply(d, ed::RemoveAirflowRegion{"hover_quad_0_air"});
+    ASSERT_TRUE(removed.has_value()) << removed.error().context;
+    EXPECT_TRUE(d.desc().airflow.empty());
+    ASSERT_TRUE(d.undo());
+    ASSERT_EQ(d.desc().airflow.size(), 1u);
+    EXPECT_EQ(d.desc().airflow[0].name, "hover_quad_0_air");
+}
+
+// Refused, naming why, and changing nothing: a vehicle not in the scene; a
+// second region around one drone (M2: one region, one drone); a region not
+// in the scene; a drone whose model has no rotors, so no air to drive.
+TEST(EditorSceneEdits, AnAirflowRegionEditIsRefusedNamingWhy) {
+    spade::scene::SceneDesc s = support::sample_scene();
+    auto d = doc_of(s);
+    const auto refused = [&](ed::SceneDocument& doc, const ed::SceneEdit& e, std::string_view says) {
+        const std::string before = support::text_of(doc.desc());
+        const Result<void> r = ed::apply(doc, e);
+        ASSERT_FALSE(r.has_value()) << says;
+        EXPECT_NE(r.error().context.find(says), std::string::npos) << r.error().context;
+        EXPECT_EQ(support::text_of(doc.desc()), before);
+    };
+    refused(d, ed::AddAirflowRegion{"no_such"}, "'no_such'");
+    ASSERT_TRUE(ed::apply(d, ed::AddAirflowRegion{"hover_quad_0"}).has_value());
+    refused(d, ed::AddAirflowRegion{"hover_quad_0"}, "airflow region 'hover_quad_0_air' already follows it");
+    refused(d, ed::RemoveAirflowRegion{"no_such_air"}, "no airflow region is named 'no_such_air'");
+
+    for (auto& m : s.models) m.rotors.clear();
+    auto bare = doc_of(s);
+    refused(bare, ed::AddAirflowRegion{"hover_quad_0"}, "has no rotors");
 }

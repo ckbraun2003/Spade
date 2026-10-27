@@ -69,6 +69,7 @@ add_executable(spade_tests
     test_mesh.cpp
     test_mesh_field.cpp
     test_mesh_mass.cpp
+    test_mesh_shapes.cpp
     test_mesh_file.cpp
     test_mesh_import.cpp
     test_state.cpp
@@ -130,6 +131,7 @@ add_executable(spade_tests
     test_model_parts.cpp
     test_model_propulsion.cpp
     test_part_pose.cpp
+    test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
@@ -423,6 +425,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_hash_follow.cpp
         test_editor_run.cpp
         test_editor_edit_text.cpp
+        test_editor_airflow.cpp
         test_editor_cli.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp

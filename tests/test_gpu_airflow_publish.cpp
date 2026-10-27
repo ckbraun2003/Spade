@@ -13,7 +13,20 @@
 //                       (|omega|, q-hat and lambda2-hat take fp32_math's
 //                       exact sqrt and division; another device keeps their
 //                       band); the same bits at workgroup sizes 32, 64 and
-//                       128.
+//                       128. B6's seam (spike/airflow/publish_chain.hpp):
+//                       the whole FlowVolume read back from the device,
+//                       header and all, publish_render_volume's on the
+//                       device of record, on the three boxes and a fourth
+//                       with a solid slab across a periodic edge and a NaN
+//                       beside the block.
+//   AirflowPublishHeader  (no device) flow_header_from_halves() and
+//                       extrapolated_cells(), publish's header rule and
+//                       neighbour walk: the header they make is publish's,
+//                       field for field, on the four boxes; a range is the
+//                       stored halves' in cell order (the tie of -0 and +0
+//                       kept first), no-data counted per half; and from_f32
+//                       calls a value no data exactly when its half is
+//                       kNoDataBits.
 //
 // The box is 16 x 12 x 20 at 1/16 m, no two sizes alike. The velocity is a
 // swirl about y with a shear and fixed-seed noise, so every channel varies;
@@ -56,6 +69,7 @@
 #include "physics/airflow/publish.hpp"
 #include "physics/airflow/regions.hpp"
 #include "spike/airflow/chain_runner.hpp"
+#include "spike/airflow/publish_chain.hpp"
 
 namespace {
 
@@ -87,6 +101,14 @@ struct CellPush {
 };
 
 constexpr uint32_t kFieldsPipeline = 0, kPackPipeline = 1;
+
+// read_flow_volume() reads section F's bindings with the runner's
+// binding_base 0, as this test binds them.
+static_assert(kPublishV == gen::kBinding_airflow_publish_v && kPublishS == gen::kBinding_airflow_publish_s);
+
+// The grid's minimum corner in the world: not the origin, so the header's
+// copy of it is seen.
+constexpr glm::vec3 kOrigin{0.5f, -1.25f, 2.0f};
 
 // |omega|, q-hat and lambda2-hat take fp32_math's sqrt32_ftz and div32_ftz,
 // and publish_render_volume() flushes as the device does, so on the device of
@@ -241,11 +263,61 @@ struct Box {
     return out;
 }
 
-[[nodiscard]] spade::FlowVolume publish_on_cpu(const af::MacGrid& g, const Box& box) {
+// The solids box on a periodic x and z, with a solid slab across the x edge
+// (i 0..1, j 0..2, k 0..3): its six cells (0, 0..1, 0..2) reach fluid only
+// across a wrap (x, and z at k = 0), so the first layer is counted only by a
+// walk that wraps. The slab's faces stay open (theta only bends gradients).
+[[nodiscard]] Box edge_box(const af::GridShape& s) {
+    Box b = solids_box(s);
+    b.name = "edge-nan";
+    b.periodic = {true, false, true};
+    for (uint32_t k = 0; k < 4u; ++k) {
+        for (uint32_t j = 0; j < 3u; ++j) {
+            for (uint32_t i = 0; i < 2u; ++i) b.solid[af::cell_index(s, i, j, k)] = 1u;
+        }
+    }
+    return b;
+}
+
+// The swirl with a NaN on the u face between cells (4, 5, 9) and (5, 5, 9):
+// both cells' u, q-hat and lambda2-hat are NaN, and so are the gradients
+// beside them. The solid (6, 5, 9) takes (5, 5, 9)'s channels, its one fluid
+// neighbour: no data in u, q-hat and lambda2-hat, and still counted as
+// extrapolated. Its dye is 0 like every cell's until the solver carries dye
+// (P10), so no extrapolated cell is no data in every channel today: only the
+// deep cells are.
+[[nodiscard]] af::MacGrid nan_swirl(const af::GridShape& s) {
+    af::MacGrid g = swirl(s);
+    g.u[af::u_index(s, 5, 5, 9)] = std::bit_cast<float>(0x7FC00000u);
+    return g;
+}
+
+// The four cases the seam's tests run: the three boxes on the swirl, and the
+// edge box on the NaN swirl.
+struct Case {
+    af::MacGrid g;
+    Box box;
+};
+
+[[nodiscard]] std::vector<Case> seam_cases(const af::GridShape& s) {
+    std::vector<Case> out;
+    for (Box& b : boxes(s)) out.push_back(Case{swirl(s), std::move(b)});
+    out.push_back(Case{nan_swirl(s), edge_box(s)});
+    return out;
+}
+
+// The box as publish's input; its spans point into `box`.
+[[nodiscard]] af::PublishInput input_of(const Box& box) {
     af::PublishInput in;
+    in.origin = kOrigin;
     in.solid = box.solid;
     in.periodic = box.periodic;
     for (uint32_t c = 0; c < 3; ++c) in.theta[c] = box.theta[c];
+    return in;
+}
+
+[[nodiscard]] spade::FlowVolume publish_on_cpu(const af::MacGrid& g, const Box& box) {
+    const af::PublishInput in = input_of(box);
     spade::FlowVolume out;
     const auto done = af::publish_render_volume(g, in, out);
     EXPECT_TRUE(done.has_value()) << box.name << ": " << done.error().context;
@@ -253,10 +325,12 @@ struct Box {
 }
 
 // What the device holds after the chain: the fp32 channels (8 per cell) and
-// the halves, as FlowVolume::v and ::s hold them.
+// the halves, as FlowVolume::v and ::s hold them; after the full chain, the
+// volume read_flow_volume() makes of them.
 struct Published {
     std::vector<float> channels;
     std::vector<uint16_t> v, s;
+    spade::FlowVolume volume;
 };
 
 [[nodiscard]] ChainCommand dispatch(uint32_t pipeline, uint32_t cells, uint32_t workgroup_size) {
@@ -333,8 +407,12 @@ struct Published {
 
     const auto count = static_cast<uint32_t>(cells);
     std::vector<ChainCommand> chain;
-    if (channels == nullptr) chain.push_back(dispatch(kFieldsPipeline, count, workgroup_size));
-    chain.push_back(dispatch(kPackPipeline, count, workgroup_size));
+    if (channels == nullptr) {
+        spade::airflow_gpu::append_publish(chain, {.fields = kFieldsPipeline, .pack = kPackPipeline}, count,
+                                           workgroup_size);
+    } else {
+        chain.push_back(dispatch(kPackPipeline, count, workgroup_size));
+    }
     const auto id = r.record(chain);
     if (!id) {
         ADD_FAILURE() << id.error().context;
@@ -349,8 +427,19 @@ struct Published {
         !check(r.read(kPublishV, writable_bytes_of(out.v))) || !check(r.read(kPublishS, writable_bytes_of(out.s)))) {
         return std::nullopt;
     }
+    if (channels == nullptr) {
+        const auto extrapolated = af::extrapolated_cells(s, input_of(box));
+        if (!extrapolated) {
+            ADD_FAILURE() << extrapolated.error().context;
+            return std::nullopt;
+        }
+        if (!check(spade::airflow_gpu::read_flow_volume(r, s, kOrigin, *extrapolated, out.volume))) {
+            return std::nullopt;
+        }
+    }
     return out;
 }
+
 
 // A half's place on the number line, so adjacent halves are one apart.
 [[nodiscard]] int32_t ordered(uint16_t h) noexcept {
@@ -385,6 +474,56 @@ struct ChannelDiff {
 }
 
 constexpr const char* kChannelNames[kChannels] = {"u", "v", "w", "dye", "p", "|omega|", "q-hat", "lambda2-hat"};
+
+// The header fields that differ in any bit, named; empty when none do.
+[[nodiscard]] std::string header_differences(const spade::FlowVolumeHeader& a, const spade::FlowVolumeHeader& b) {
+    std::string out;
+    const auto field = [&](const std::string& name, uint32_t x, uint32_t y) {
+        if (x == y) return;
+        char line[96];
+        std::snprintf(line, sizeof line, " %s 0x%08x != 0x%08x;", name.c_str(), x, y);
+        out += line;
+    };
+    for (int axis = 0; axis < 3; ++axis) field("origin", bits(a.origin[axis]), bits(b.origin[axis]));
+    field("cell", bits(a.cell), bits(b.cell));
+    field("nx", a.nx, b.nx);
+    field("ny", a.ny, b.ny);
+    field("nz", a.nz, b.nz);
+    for (uint32_t c = 0; c < kChannels; ++c) {
+        field(std::string(kChannelNames[c]) + " min", bits(a.channel_min[c]), bits(b.channel_min[c]));
+        field(std::string(kChannelNames[c]) + " max", bits(a.channel_max[c]), bits(b.channel_max[c]));
+    }
+    field("no_data", a.no_data, b.no_data);
+    field("extrapolated_cells", a.extrapolated_cells, b.extrapolated_cells);
+    return out;
+}
+
+// FNV-1a over a volume's halves and header bits: publish's output named in
+// one word, printed so a refactor of publish shows it moved nothing.
+[[nodiscard]] uint64_t digest(const spade::FlowVolume& volume) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    const auto word = [&](uint32_t w) {
+        for (int b = 0; b < 4; ++b) {
+            h ^= (w >> (8 * b)) & 0xFFu;
+            h *= 0x100000001B3ull;
+        }
+    };
+    for (const uint16_t x : volume.v) word(x);
+    for (const uint16_t x : volume.s) word(x);
+    const spade::FlowVolumeHeader& hd = volume.header;
+    for (int axis = 0; axis < 3; ++axis) word(bits(hd.origin[axis]));
+    word(bits(hd.cell));
+    word(hd.nx);
+    word(hd.ny);
+    word(hd.nz);
+    for (uint32_t c = 0; c < kChannels; ++c) {
+        word(bits(hd.channel_min[c]));
+        word(bits(hd.channel_max[c]));
+    }
+    word(hd.no_data);
+    word(hd.extrapolated_cells);
+    return h;
+}
 
 constexpr uint32_t kWorkgroupSize = 64;
 
@@ -525,24 +664,67 @@ TEST(GpuAirflowPublish, SameBitsAtEveryWorkgroupSize) {
     return v[v.size() / 2u];
 }
 
+// B6's seam: append_publish() and read_flow_volume() give the whole volume
+// publish_render_volume() gives, header and all, on the device of record:
+// every half, every header field to the bit (generation aside), on the three
+// boxes and the edge box on the NaN swirl. Another device keeps the halves'
+// band, and its header must still be publish's rule on its own halves with
+// the CPU's dims, origin and extrapolated count.
+TEST(GpuAirflowPublish, TheVolumeFromTheDeviceIsPublishRenderVolumes) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    for (const Case& c : seam_cases(kShape)) {
+        const spade::FlowVolume cpu = publish_on_cpu(c.g, c.box);
+        const auto gpu = publish_on_gpu(*ctx, c.g, c.box, kWorkgroupSize);
+        ASSERT_TRUE(gpu.has_value()) << c.box.name;
+        const spade::FlowVolume& got = gpu->volume;
+        EXPECT_NE(got.generation, 0u) << c.box.name;
+        EXPECT_NE(got.generation, cpu.generation) << c.box.name;
+        std::printf("[ publish ] seam %-8s no-data %u (CPU %u), extrapolated %u (CPU %u)\n", c.box.name,
+                    got.header.no_data, cpu.header.no_data, got.header.extrapolated_cells,
+                    cpu.header.extrapolated_cells);
+        EXPECT_EQ(got.header.extrapolated_cells, cpu.header.extrapolated_cells) << c.box.name;
+        if (bit_equal) {
+            EXPECT_EQ(header_differences(got.header, cpu.header), "") << c.box.name;
+            EXPECT_TRUE(got.v == cpu.v && got.s == cpu.s) << c.box.name << ": the halves are not the CPU's";
+            continue;
+        }
+        spade::FlowVolume own = got;
+        own.header.channel_min.fill(7.0f);
+        ASSERT_TRUE(af::flow_header_from_halves(own).has_value());
+        EXPECT_EQ(header_differences(got.header, own.header), "") << c.box.name;
+        EXPECT_TRUE(got.header.nx == cpu.header.nx && got.header.ny == cpu.header.ny &&
+                    got.header.nz == cpu.header.nz && bits(got.header.cell) == bits(cpu.header.cell))
+            << c.box.name;
+    }
+}
+
 // P8's rule (plan B, B6): read the fp32 channels back and pack them on the
 // CPU, or pack on the device and read the halves back; keep the cheaper. On
-// plan B's D1 box (B7), 224 x 168 x 160, 6.0 M cells, with one runner and two
-// chains: the fields alone, and the fields then the pack. Each path is timed
-// on the host from its submit to its last byte packed, the median of five,
-// with the kernels' own times from the chains' marks. Opt-in
-// (SPADE_AIRFLOW_P8=1): about 1 GiB of device memory and a minute on the box.
-// Measured 2026-10-21, NVIDIA GeForce RTX 3060 Ti: publish_fields 1.25 ms,
-// pack_f16 0.75 ms. B1's staging as drafted (HOST_COHERENT, not cached): fp32
-// back + CPU pack 1176 ms (read 808 ms of 184 MiB, pack 347 ms), device pack
-// + halves back 404 ms. With HOST_CACHED staging: 348 ms (read 19 ms, pack
-// 327 ms) against 13 ms. Kept: the device pack, by P8's rule, either way.
+// plan B's D1 box (B7, as amended 2026-10-21), 240 x 177 x 168 at 4 mm, 7.14 M
+// cells, with one runner and two chains: the fields alone, and the fields
+// then the pack. Each path is timed on the host from its submit to its last
+// byte packed, the median of five, with the kernels' own times from the
+// chains' marks. Opt-in (SPADE_AIRFLOW_P8=1): about 1 GiB of device memory
+// and a minute on the box.
+// Measured 2026-10-26, NVIDIA GeForce RTX 3060 Ti, HOST_CACHED staging:
+// publish_fields 6.21 ms (|omega|, q-hat and lambda2-hat exact since K4),
+// pack_f16 1.10 ms; fp32 back + CPU pack 426.8 ms (read 30.4 ms of 218 MiB,
+// pack 389.2 ms), device pack + halves back 23.4 ms (read 16.2 ms of
+// 109 MiB). Kept: the device pack, by P8's rule.
+// First measured 2026-10-21 at the first box, 224 x 168 x 160 (6.0 M cells),
+// before K4: publish_fields 1.25 ms, pack_f16 0.75 ms. B1's staging as drafted
+// (HOST_COHERENT, not cached): fp32 back + CPU pack 1176 ms (read 808 ms of
+// 184 MiB, pack 347 ms), device pack + halves back 404 ms. With HOST_CACHED
+// staging: 348 ms (read 19 ms, pack 327 ms) against 13 ms.
 TEST(GpuAirflowPublish, P8ReadbackCostAtTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     if (!env_gate_is_set("SPADE_AIRFLOW_P8")) GTEST_SKIP() << "P8's measurement: set SPADE_AIRFLOW_P8=1 to run it";
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const af::GridShape shape{224, 168, 160, 0.004f};
+    const af::GridShape shape{240, 177, 168, 0.004f};
     const af::MacGrid g = swirl(shape);
     const std::size_t cells = cell_count(shape);
     const auto n = face_counts(shape);
@@ -632,6 +814,140 @@ TEST(GpuAirflowPublish, P8ReadbackCostAtTheD1Box) {
     std::printf("[ P8 ] device pack + halves back: %.1f ms (read %.1f ms of %.0f MiB)\n", median(half_total),
                 median(half_read), static_cast<double>((v.size() + s.size()) * 2u) / 1048576.0);
     std::printf("[ P8 ] keep: %s\n", median(half_total) <= median(fp32_total) ? "the device pack" : "the CPU pack");
+}
+
+// ===========================================================================
+// AirflowPublishHeader (no device)
+// ===========================================================================
+
+// flow_header_from_halves() counts a half as no data when it is kNoDataBits,
+// where publish counted from_f32's flag: the two agree for every input
+// because from_f32 returns kNoDataBits for every no-data case and otherwise
+// a zero or a magnitude below 0x7C00, never an exponent field of 31
+// (fp16.hpp). Swept here: NaNs of both signs and several payloads, the
+// infinities, the edge of the range (65504, 65519.99, 65520 and past),
+// FLT_MAX, the subnormal edges, and a strided sweep of every bit pattern.
+TEST(AirflowPublishHeader, NoDataIsExactlyTheNoDataBits) {
+    std::vector<uint32_t> inputs = {0x7FC00000u, 0x7F800001u, 0x7FC00001u, 0x7FFFFFFFu, 0xFFC00000u, 0xFF800001u,
+                                    0x7F800000u, 0xFF800000u, 0x7F7FFFFFu, 0xFF7FFFFFu, 0x00000000u, 0x80000000u,
+                                    0x00000001u, 0x33800000u, 0x33000000u, 0x387FC000u};
+    for (const float x : {65504.0f, 65519.99f, 65520.0f, 65536.0f, 1.0e6f}) {
+        inputs.push_back(bits(x));
+        inputs.push_back(bits(-x));
+    }
+    for (uint64_t i = 0; i <= 0xFFFFFFFFull; i += 4093u) inputs.push_back(static_cast<uint32_t>(i));
+    std::size_t disagreeing = 0;
+    std::size_t no_data = 0;
+    for (const uint32_t f : inputs) {
+        const spade::fp16::Half h = spade::fp16::from_f32(std::bit_cast<float>(f));
+        no_data += h.no_data ? 1u : 0u;
+        const bool by_bits = h.bits == spade::fp16::kNoDataBits;
+        const bool exponent_31 = (h.bits & 0x7C00u) == 0x7C00u;
+        if ((h.no_data != by_bits || (!h.no_data && exponent_31)) && disagreeing++ < 8u) {
+            ADD_FAILURE() << "f32 0x" << std::hex << f << ": half 0x" << h.bits << ", no_data " << h.no_data;
+        }
+    }
+    std::printf("[ header ] %zu inputs, %zu no data, %zu disagreeing\n", inputs.size(), no_data, disagreeing);
+    EXPECT_EQ(disagreeing, 0u);
+    EXPECT_GT(no_data, 1000u);  // the sweep crossed the NaNs, the infinities and the range's edge
+}
+
+// A range is the stored halves' in cell order: -0 seen before +0 stays the
+// minimum, +0 seen before -0 stays both; a channel with no valid half keeps
+// 0 and 0; no-data is counted per half; the header's other fields are left
+// as they were. A size that does not match the dims is refused.
+TEST(AirflowPublishHeader, TheRangeIsTheStoredHalvesInCellOrder) {
+    constexpr uint16_t kNo = spade::fp16::kNoDataBits;
+    spade::FlowVolume vol;
+    vol.header.origin = kOrigin;
+    vol.header.cell = 0.25f;
+    vol.header.nx = 3;
+    vol.header.ny = 1;
+    vol.header.nz = 1;
+    vol.header.channel_min.fill(7.0f);
+    vol.header.channel_max.fill(7.0f);
+    vol.header.no_data = 99;
+    vol.header.extrapolated_cells = 2;
+    vol.generation = 5;
+    // Per cell: u, v, w, dye | p, |omega|, q-hat, lambda2-hat.
+    vol.v = {0x8000, 0x0000, kNo, kNo,  //
+             0x0000, 0x8000, kNo, 0x3C00,  //
+             0x3C00, kNo, kNo, kNo};
+    vol.s = {0xC000, 0x3800, 0x3800, 0x3800,  //
+             0x0001, 0x3800, 0x3800, 0x3800,  //
+             0x7BFF, 0x3800, 0x3800, 0x3800};
+    ASSERT_TRUE(af::flow_header_from_halves(vol).has_value());
+    const spade::FlowVolumeHeader& h = vol.header;
+    EXPECT_EQ(bits(h.channel_min[0]), 0x80000000u) << "u: -0 came first and +0 is no less";
+    EXPECT_EQ(bits(h.channel_max[0]), bits(1.0f));
+    EXPECT_EQ(bits(h.channel_min[1]), 0u) << "v: +0 came first and -0 is no less";
+    EXPECT_EQ(bits(h.channel_max[1]), 0u) << "v: +0 came first and -0 is no more";
+    EXPECT_EQ(bits(h.channel_min[2]), 0u) << "w: no valid half keeps 0";
+    EXPECT_EQ(bits(h.channel_max[2]), 0u) << "w: no valid half keeps 0";
+    EXPECT_EQ(h.channel_min[3], 1.0f);
+    EXPECT_EQ(h.channel_max[3], 1.0f);
+    EXPECT_EQ(h.channel_min[4], -2.0f);
+    EXPECT_EQ(h.channel_max[4], 65504.0f);
+    EXPECT_EQ(h.channel_min[5], 0.5f);
+    EXPECT_EQ(h.no_data, 6u) << "per half: v 1, w 3, dye 2";
+    EXPECT_EQ(header_differences(h, spade::FlowVolumeHeader{.origin = kOrigin, .cell = 0.25f, .nx = 3, .ny = 1,
+                                                            .nz = 1, .channel_min = h.channel_min,
+                                                            .channel_max = h.channel_max, .no_data = 6,
+                                                            .extrapolated_cells = 2}),
+              "");
+    EXPECT_EQ(vol.generation, 5u) << "the generation is the caller's";
+    vol.s.pop_back();
+    const auto refused = af::flow_header_from_halves(vol);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+}
+
+// The header flow_header_from_halves() and extrapolated_cells() make from
+// publish's own halves is publish's, field for field, on the three boxes and
+// the edge box on the NaN swirl (deep cells, a wrapped first layer, NaN
+// channels). Each case's digest is printed: a refactor of publish that moves
+// no bit prints the same four.
+TEST(AirflowPublishHeader, TheHeaderFromTheHalvesIsPublishs) {
+    for (const Case& c : seam_cases(kShape)) {
+        const spade::FlowVolume cpu = publish_on_cpu(c.g, c.box);
+        spade::FlowVolume rebuilt;
+        rebuilt.v = cpu.v;
+        rebuilt.s = cpu.s;
+        rebuilt.header.origin = kOrigin;
+        rebuilt.header.cell = kShape.dx;
+        rebuilt.header.nx = kShape.nx;
+        rebuilt.header.ny = kShape.ny;
+        rebuilt.header.nz = kShape.nz;
+        rebuilt.header.channel_min.fill(7.0f);
+        rebuilt.header.channel_max.fill(-7.0f);
+        rebuilt.header.no_data = 99;
+        ASSERT_TRUE(af::flow_header_from_halves(rebuilt).has_value()) << c.box.name;
+        const auto extrapolated = af::extrapolated_cells(kShape, input_of(c.box));
+        ASSERT_TRUE(extrapolated.has_value()) << c.box.name;
+        rebuilt.header.extrapolated_cells = *extrapolated;
+        std::printf("[ header ] %-8s digest %016llx, no-data %u, extrapolated %u\n", c.box.name,
+                    static_cast<unsigned long long>(digest(cpu)), cpu.header.no_data,
+                    cpu.header.extrapolated_cells);
+        EXPECT_EQ(header_differences(rebuilt.header, cpu.header), "") << c.box.name;
+    }
+    // The edge box's own counts: its first layer wraps, and the solid beside
+    // the NaN is no data in u and still extrapolated.
+    const Case edge{nan_swirl(kShape), edge_box(kShape)};
+    const spade::FlowVolume cpu = publish_on_cpu(edge.g, edge.box);
+    af::PublishInput no_wrap = input_of(edge.box);
+    no_wrap.periodic = {false, false, false};
+    const auto unwrapped = af::extrapolated_cells(kShape, no_wrap);
+    ASSERT_TRUE(unwrapped.has_value());
+    EXPECT_EQ(*unwrapped + 6u, cpu.header.extrapolated_cells) << "(0, 0..1, 0..2) reach fluid only by a wrap";
+    const std::size_t at = af::cell_index(kShape, 6, 5, 9) * spade::kFlowHalvesPerCell;
+    EXPECT_EQ(cpu.v[at + spade::kFlowU], spade::fp16::kNoDataBits) << "the solid beside the NaN: u is no data";
+    EXPECT_NE(cpu.v[at + spade::kFlowDye], spade::fp16::kNoDataBits) << "dye is 0 until P10";
+    const std::vector<uint8_t> wrong(cell_count(kShape) - 1u, 0u);
+    af::PublishInput refused_in;
+    refused_in.solid = wrong;
+    const auto refused = af::extrapolated_cells(kShape, refused_in);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
 }
 
 }  // namespace

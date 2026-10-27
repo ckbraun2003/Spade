@@ -13,6 +13,7 @@
 #include "screen_ray.hpp"   // ray_from_screen()
 #include "unit_meshes.hpp"  // the unit meshes
 #include "drone_view.hpp"     // detail::lambert()
+#include "editor_airflow.hpp"
 #include "editor_pick.hpp"
 #include "pilot_keys.hpp"
 #include "gl_target_sink.hpp"
@@ -348,9 +349,16 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     // The gizmo, on the selection where it is now (after this frame's edits).
     const std::optional<editor::GizmoPose> target = gizmo_target();
     const editor::GizmoHandle shown = drag_ ? drag_->handle() : hot_;
-    sink_->set_view_lines(target ? editor::gizmo_lines(w.panels().tool, rc, view.width, view.height, target->position,
-                                                       shown)
-                                 : std::vector<editor::GizmoLine>{});
+    std::vector<editor::GizmoLine> lines =
+        target ? editor::gizmo_lines(w.panels().tool, rc, view.width, view.height, target->position, shown)
+               : std::vector<editor::GizmoLine>{};
+    // Each airflow region's box around its drone (INT-15, T1).
+    if (w.panels().scene != nullptr) {
+        const std::vector<editor::GizmoLine> boxes =
+            editor::region_box_lines(*w.panels().scene, rc, view.width, view.height);
+        lines.insert(lines.begin(), boxes.begin(), boxes.end());
+    }
+    sink_->set_view_lines(std::move(lines));
     // SL10: the HUD names what the active path does not draw.
     sink_->set_status_line(gpu_ ? render_gap_line(GpuRenderer::unhonoured(options_)) : std::string{});
     if (gpu_) {

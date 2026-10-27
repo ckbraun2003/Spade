@@ -10,7 +10,9 @@
 // a unit after the value where there is one. The verdict is computed from the
 // same comparison the EXPECT uses, so the record cannot disagree with the
 // test. Whoever pastes a block into tests/data/airflow/records/ adds
-// "commit:" and "date:" after its opening line.
+// "commit:" and "date:" after its opening line. Each block is formatted by a
+// function below and read back by the record reader in the test that prints
+// it, so a format slip fails there and not at the paste.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -27,6 +29,7 @@
 #include <thread>
 #include <vector>
 
+#include "airflow_record.hpp"
 #include "data/airflow/ghia1982_cavity.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
@@ -35,6 +38,7 @@ namespace {
 
 using namespace spade::physics::airflow;
 namespace ref = spade::testing::airflow_reference;
+namespace an = spade::analysis;
 
 [[nodiscard]] bool validation_enabled() {
 #if defined(_MSC_VER)
@@ -62,6 +66,119 @@ namespace ref = spade::testing::airflow_reference;
 }
 
 [[nodiscard]] const char* verdict(bool within) { return within ? "within" : "MISS"; }
+
+// ---- The record blocks, as printed --------------------------------------------
+
+// C1's block: two measures, each with the verdict its caller computed.
+[[nodiscard]] std::string c1_block(double re, uint32_t n, double t_end, uint32_t steps, double h, double u_error,
+                                   double tolerance, const char* origin, bool u_within,
+                                   const std::string& v_quantity, double v_error, bool v_within) {
+    return airflow_test::formatted([&](char* out, std::size_t cap) {
+        return std::snprintf(
+            out, cap,
+            "=== validation record: C1 lid-driven cavity, Re %.0f, %ux%u ===\n"
+            "path: %s\n"
+            "config: %ux%u (a quasi-2D slab, z periodic), Re %.0f, T %.0f (%u steps of h = %.6f), n_v 2, "
+            "visc_sweeps 8, rho 1, U 1\n"
+            "measure: max |u - u_Ghia| on x = 0.5 = %.4f\n"
+            "reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)\n"
+            "tolerance: <= %.2f (%s, fixed before the first run)\n"
+            "verdict: %s\n"
+            "measure: %s = %.4f\n"
+            "reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavity.hpp)\n"
+            "tolerance: <= %.2f (%s, fixed before the first run)\n"
+            "verdict: %s\n",
+            re, n, n, path_line().c_str(), n, n, re, t_end, steps, h, u_error, tolerance, origin,
+            verdict(u_within), v_quantity.c_str(), v_error, tolerance, origin, verdict(v_within));
+    });
+}
+
+// C0's block, in pieces as the run prints them: the head, one kinetic-energy
+// measure per mark, and the residual measure last.
+[[nodiscard]] std::string c0_head(double h) {
+    return airflow_test::formatted([&](char* out, std::size_t cap) {
+        return std::snprintf(
+            out, cap,
+            "=== validation record: C0 Taylor-Green vortex, 64^3 ===\n"
+            "path: %s\n"
+            "config: 64^3 periodic 2 pi box, inviscid (the numerics' own dissipation), h = %.6f, n_v 2\n",
+            path_line().c_str(), h);
+    });
+}
+
+[[nodiscard]] std::string c0_energy_measure(double t, double mark, double ke) {
+    return airflow_test::formatted([&](char* out, std::size_t cap) {
+        return std::snprintf(
+            out, cap,
+            "measure: kinetic energy per unit mass at t = %.3f (the first step at or past %.1f) = %.6f\n"
+            "reference: none (report only; DNS data enter at V3, spec \xc2\xa7" "11.6)\n"
+            "tolerance: none (report only)\n"
+            "verdict: report only\n",
+            t, mark, ke);
+    });
+}
+
+[[nodiscard]] std::string c0_residual_measure(double worst, double announce, bool within) {
+    return airflow_test::formatted([&](char* out, std::size_t cap) {
+        return std::snprintf(
+            out, cap,
+            "measure: plan A's largest projection residual max|r| / max|b| over the run = %.3e\n"
+            "reference: kPlanAResidualAnnounce = %.2e, 4 x V1's largest (1.754e-2, this run, 2026-10-21)\n"
+            "tolerance: <= the mark (a step above it is announced, L6)\n"
+            "verdict: %s\n",
+            worst, announce, verdict(within));
+    });
+}
+
+// C8's block: four measures, the first two judged, the last two report only.
+[[nodiscard]] std::string c8_block(double thrust, double h, uint32_t steps, std::size_t nudged,
+                                   const std::string& seed_list, double mean, double expected, bool mean_within,
+                                   std::size_t worst, double worst_mean, bool worst_within, double deviation,
+                                   double axis_lo, double axis_hi, double axis_run0) {
+    return airflow_test::formatted([&](char* out, std::size_t cap) {
+        return std::snprintf(
+            out, cap,
+            "=== validation record: C8 actuator-disc far wake ===\n"
+            "path: %s\n"
+            "config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
+            "h = %.6f, n_v 2, %u steps; eight runs that differ only by a nudge in the test, 1 ulp up on %zu "
+            "increments, seed s: run 0 as it is, runs 1 to 7 seeds %s. So the spread is the measure's "
+            "sensitivity to rounding, not a physical uncertainty\n"
+            "measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R "
+            "below the disc, steps 385 to %u = %.4f m/s\n"
+            "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8); the "
+            "vortex-cylinder model's mean over the same faces is 7.5909 m/s\n"
+            "tolerance: within 10%% (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run; the "
+            "measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)\n"
+            "verdict: %s\n"
+            "measure: the worst of the eight runs, run %zu, the same mean = %.4f m/s\n"
+            "reference: momentum theory, %.4f m/s, as above\n"
+            "tolerance: within 10%% (as above: the verdict holds across the spread)\n"
+            "verdict: %s\n"
+            "measure: the eight runs' largest deviation from their mean, the same mean = %.4f m/s\n"
+            "reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a "
+            "case judged past its horizon)\n"
+            "tolerance: none\n"
+            "verdict: report only\n"
+            "measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs %.4f "
+            "to %.4f) = %.4f m/s\n"
+            "reference: momentum theory, %.4f m/s, as above\n"
+            "tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)\n"
+            "verdict: report only\n",
+            path_line().c_str(), thrust, h, steps, nudged, seed_list.c_str(), steps, mean, expected,
+            verdict(mean_within), worst, worst_mean, expected, verdict(worst_within), deviation, axis_lo, axis_hi,
+            axis_run0, expected);
+    });
+}
+
+// `block` as the record reader reads it: one record, the measures in order.
+void read_measures(const std::string& block, std::vector<an::ValidationMeasure>& measures) {
+    measures.clear();
+    const auto record = airflow_test::read_as_record(block, "test-airflow-validation.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    measures = record->at(0).measures;
+}
 
 // u on the line x = 0.5 at height y. The u faces at i = n/2 sit at
 // y_j = (j + 1/2) / n; below the first, u falls linearly to the floor's 0;
@@ -103,6 +220,14 @@ void take_max(double& worst, double e) noexcept {
     if (std::isnan(e) || e > worst) worst = e;
 }
 
+// C1's block read back; two measures.
+void c1_block_reads(const std::string& block) {
+    const auto record = airflow_test::read_as_record(block, "test-airflow-validation.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    EXPECT_EQ(record->at(0).measures.size(), 2u);
+}
+
 // The cavity at `re` on an n x n slab to time t_end; the two measures against
 // Ghia's tables, each checked against `tolerance`. With `skip_v_point_117`,
 // Table II's point 117 is left out of the v maximum (Re 400: printed
@@ -139,21 +264,12 @@ constexpr const char* kGateOrigin = "plan A Task 11's gate band";
                                        ? "max |v - v_Ghia| on y = 0.5, Table II point 117 left out (printed -0.23827, a "
                                          "suspected typo in the original)"
                                        : "max |v - v_Ghia| on y = 0.5";
-    std::printf("=== validation record: C1 lid-driven cavity, Re %.0f, %ux%u ===\n"
-                "path: %s\n"
-                "config: %ux%u (a quasi-2D slab, z periodic), Re %.0f, T %.0f (%u steps of h = %.6f), n_v 2, "
-                "visc_sweeps 8, rho 1, U 1\n"
-                "measure: max |u - u_Ghia| on x = 0.5 = %.4f\n"
-                "reference: Ghia, Ghia & Shin (1982), Table I (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (%s, fixed before the first run)\n"
-                "verdict: %s\n"
-                "measure: %s = %.4f\n"
-                "reference: Ghia, Ghia & Shin (1982), Table II (tests/data/airflow/ghia1982_cavity.hpp)\n"
-                "tolerance: <= %.2f (%s, fixed before the first run)\n"
-                "verdict: %s\n",
-                re, n, n, path_line().c_str(), n, n, re, t_end, steps, static_cast<double>(cfg.h), r.u_error,
-                tolerance, origin, verdict(r.u_within), v_quantity.c_str(), r.v_error, tolerance, origin,
-                verdict(r.v_within));
+    const std::string block = c1_block(re, n, t_end, steps, static_cast<double>(cfg.h), r.u_error, tolerance, origin,
+                                       r.u_within, v_quantity, r.v_error, r.v_within);
+    std::fputs(block.c_str(), stdout);
+    // The block as printed reads as one record of two measures, or the paste
+    // would refuse it. (A void helper: run_cavity returns a value.)
+    c1_block_reads(block);
     return r;
 }
 
@@ -212,18 +328,16 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
     const FluidConfig cfg{.rho = 1.0f, .nu = 0.0f, .h = 0.5f * g.shape.dx, .n_v = 2};
     FluidScratch s = *make_fluid_scratch(g, bc, cfg);
     const double ke0 = kinetic_energy(g);
-    std::printf("=== validation record: C0 Taylor-Green vortex, 64^3 ===\n"
-                "path: %s\n"
-                "config: 64^3 periodic 2 pi box, inviscid (the numerics' own dissipation), h = %.6f, n_v 2\n",
-                path_line().c_str(), static_cast<double>(cfg.h));
+    std::string block = c0_head(static_cast<double>(cfg.h));
+    std::fputs(block.c_str(), stdout);
     // Every 0.5 (plan A's C0 line), at the first step at or past each mark,
     // labelled with that step's actual time (Test/Docs' review, 2026-10-12).
-    const auto report = [](double t, double mark, double ke) {
-        std::printf("measure: kinetic energy per unit mass at t = %.3f (the first step at or past %.1f) = %.6f\n"
-                    "reference: none (report only; DNS data enter at V3, spec \xc2\xa7" "11.6)\n"
-                    "tolerance: none (report only)\n"
-                    "verdict: report only\n",
-                    t, mark, ke);
+    std::size_t marks = 0;  // the energy measures printed
+    const auto report = [&](double t, double mark, double ke) {
+        const std::string piece = c0_energy_measure(t, mark, ke);
+        std::fputs(piece.c_str(), stdout);
+        block += piece;
+        ++marks;
     };
     report(0.0, 0.0, ke0);
     double ke = ke0;
@@ -244,13 +358,18 @@ TEST(AirflowValidation, C0TaylorGreenDissipationIsRecorded) {
     EXPECT_LT(ke, ke0);
     // Plan A's announcement mark is fixed from this run (the lead's decision
     // 2a, 2026-10-21): 4 times V1's largest residual, which C0 sets.
-    std::printf("measure: plan A's largest projection residual max|r| / max|b| over the run = %.3e\n"
-                "reference: kPlanAResidualAnnounce = %.2e, 4 x V1's largest (1.754e-2, this run, 2026-10-21)\n"
-                "tolerance: <= the mark (a step above it is announced, L6)\n"
-                "verdict: %s\n",
-                static_cast<double>(worst), static_cast<double>(kPlanAResidualAnnounce),
-                worst <= kPlanAResidualAnnounce ? "within" : "MISS");
+    const std::string residual = c0_residual_measure(static_cast<double>(worst),
+                                                     static_cast<double>(kPlanAResidualAnnounce),
+                                                     worst <= kPlanAResidualAnnounce);
+    std::fputs(residual.c_str(), stdout);
+    block += residual;
     EXPECT_LE(worst, kPlanAResidualAnnounce);
+    // The block as printed reads as one record: a measure per mark, then the
+    // residual's.
+    const auto record = airflow_test::read_as_record(block, "test-airflow-validation.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    EXPECT_EQ(record->at(0).measures.size(), marks + 1u);
 }
 
 // ---- C8, the actuator disc's far wake -----------------------------------------
@@ -450,38 +569,18 @@ TEST(AirflowValidation, C8ActuatorDiscFarWakeAgainstMomentumTheory) {
         seed_list += hex;
     }
     const auto [axis_lo, axis_hi] = std::minmax_element(axis.begin(), axis.end());
-    std::printf("=== validation record: C8 actuator-disc far wake ===\n"
-                "path: %s\n"
-                "config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T %.4f N, v_h 4 m/s, still air, inviscid, "
-                "h = %.6f, n_v 2, %u steps; eight runs that differ only by a nudge in the test, 1 ulp up on %zu "
-                "increments, seed s: run 0 as it is, runs 1 to 7 seeds %s. So the spread is the measure's "
-                "sensitivity to rounding, not a physical uncertainty\n"
-                "measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R "
-                "below the disc, steps 385 to %u = %.4f m/s\n"
-                "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8); the "
-                "vortex-cylinder model's mean over the same faces is 7.5909 m/s\n"
-                "tolerance: within 10%% (plan A Task 11, spec \xc2\xa7" "11.2, fixed before the first run; the "
-                "measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)\n"
-                "verdict: %s\n"
-                "measure: the worst of the eight runs, run %zu, the same mean = %.4f m/s\n"
-                "reference: momentum theory, %.4f m/s, as above\n"
-                "tolerance: within 10%% (as above: the verdict holds across the spread)\n"
-                "verdict: %s\n"
-                "measure: the eight runs' largest deviation from their mean, the same mean = %.4f m/s\n"
-                "reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a "
-                "case judged past its horizon)\n"
-                "tolerance: none\n"
-                "verdict: report only\n"
-                "measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs %.4f "
-                "to %.4f) = %.4f m/s\n"
-                "reference: momentum theory, %.4f m/s, as above\n"
-                "tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)\n"
-                "verdict: report only\n",
-                path_line().c_str(), static_cast<double>(c.disc.thrust), static_cast<double>(c.cfg.h), kC8Steps,
-                kC8Nudged, seed_list.c_str(), kC8Steps, mean, expected, verdict(mean_within), worst, disc[worst],
-                expected, verdict(worst_within), deviation, *axis_lo, *axis_hi, axis[0], expected);
+    const std::string block = c8_block(static_cast<double>(c.disc.thrust), static_cast<double>(c.cfg.h), kC8Steps,
+                                       kC8Nudged, seed_list, mean, expected, mean_within, worst, disc[worst],
+                                       worst_within, deviation, *axis_lo, *axis_hi, axis[0]);
+    std::fputs(block.c_str(), stdout);
     EXPECT_TRUE(mean_within) << mean << " against " << expected;
     EXPECT_TRUE(worst_within) << "run " << worst << ": " << disc[worst] << " against " << expected;
+    // The block as printed reads as one record of four measures, or the paste
+    // would refuse it.
+    const auto record = airflow_test::read_as_record(block, "test-airflow-validation.md");
+    ASSERT_TRUE(record.has_value()) << record.error().context;
+    ASSERT_EQ(record->size(), 1u);
+    EXPECT_EQ(record->at(0).measures.size(), 4u);
 }
 
 // The measurement behind C8's measure: every probe after every step, opt-in.
@@ -536,6 +635,53 @@ TEST(AirflowValidation, C8OneUlpEnsembleProbes) {
                         first + m, static_cast<unsigned long long>(seeds[m]), window_mean(r, kAxis2R, 257, 384));
         }
     }
+}
+
+// The record blocks read as validation records: one record each, the measures
+// in order, each with its verdict. Fixed numbers, no simulation.
+TEST(AirflowValidationRecord, EachRecordBlockReadsAsAValidationRecord) {
+    const std::optional<an::Verdict> unchecked;
+    const auto expect_verdicts = [](const std::string& block, const std::vector<std::optional<an::Verdict>>& want) {
+        std::vector<an::ValidationMeasure> measures;
+        ASSERT_NO_FATAL_FAILURE(read_measures(block, measures));
+        ASSERT_EQ(measures.size(), want.size());
+        for (std::size_t i = 0; i < want.size(); ++i) {
+            if (want[i]) {
+                EXPECT_EQ(measures[i].verdict, *want[i]) << measures[i].quantity;
+            }
+        }
+    };
+    constexpr an::Verdict kWithin = an::Verdict::within;
+    constexpr an::Verdict kMiss = an::Verdict::miss;
+    constexpr an::Verdict kReport = an::Verdict::report_only;
+
+    // C1: within, then MISS (with Table II's point 117 left out of the v measure).
+    expect_verdicts(c1_block(100.0, 32, 20.0, 1280, 0.015625, 0.0123, 0.06, kGateOrigin, true,
+                             "max |v - v_Ghia| on y = 0.5", 0.0234, true),
+                    {kWithin, kWithin});
+    expect_verdicts(c1_block(400.0, 128, 60.0, 15360, 0.00390625, 0.0734, 0.02, kSpecOrigin, false,
+                             "max |v - v_Ghia| on y = 0.5, Table II point 117 left out (printed -0.23827, a "
+                             "suspected typo in the original)",
+                             0.0812, false),
+                    {kMiss, kMiss});
+
+    // C0: a head, the energy measures, the residual's. Its residual measure
+    // prints "within" though C0's records are report only (Physics fixes that
+    // after this change), so its verdict is not asserted here.
+    for (const bool residual_within : {true, false}) {
+        const std::string block = c0_head(0.049087) + c0_energy_measure(0.0, 0.0, 0.25) +
+                                  c0_energy_measure(0.5011, 0.5, 0.2498) + c0_energy_measure(1.0022, 1.0, 0.2471) +
+                                  c0_residual_measure(0.0123, 0.071, residual_within);
+        expect_verdicts(block, {kReport, kReport, kReport, unchecked});
+    }
+
+    // C8: the first two judged, the last two report only.
+    expect_verdicts(c8_block(1.2315, 0.00125, 768, 110, "0x1C8, 0x1C9, 0x1CA", 8.0397, 7.5777, true, 3, 8.1234, true,
+                             0.1234, 7.9, 8.2, 8.05),
+                    {kWithin, kWithin, kReport, kReport});
+    expect_verdicts(c8_block(1.2315, 0.00125, 768, 110, "0x1C8, 0x1C9, 0x1CA", 9.1234, 7.5777, false, 5, 9.5678,
+                             false, 0.7654, 7.9, 8.2, 8.05),
+                    {kMiss, kMiss, kReport, kReport});
 }
 
 }  // namespace
