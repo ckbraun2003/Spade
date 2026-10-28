@@ -47,6 +47,7 @@ struct DroneSolids {
     SolidField field;
     std::size_t rigid_parts = 0;     // the model's parts that are not on a rotor
     std::vector<std::string> names;  // the solid parts', in order, as field.classes are
+    std::vector<SolidPart> parts;    // and the parts themselves, in the grid's frame
 };
 
 // How many times `what` occurs in `s`.
@@ -59,16 +60,18 @@ struct DroneSolids {
 // The drone `stem`, built from the committed library and compiled, posed
 // upright at rest at the origin with rigid_only, in a grid holding its posed
 // parts' boxes and 2 dx more on every side (the classifier's reach), plus a
-// cell for the rounding, and a third of a cell more below. The box's corner
-// is a part's own face, so a part a whole or half number of cells across put
-// its far face on a plane of cell centres or faces by construction: the
-// Phantom's and the Iris's 50 mm bodies, 12.5 cells at 4 mm, whose tops on
-// the cell centres the classifier refused, 500-odd runs leaking, once the
-// meshes kept the design axes exactly (L7b2, reported to Physics). Until
+// cell for the rounding. The box's corner is a part's own face, on a plane of
+// cell faces, so a part a whole or half number of cells across puts its far
+// face on a plane of cell faces or centres by construction: the Phantom's and
+// the Iris's 50 mm bodies, 12.5 cells at 4 mm, have their tops on a plane of
+// cell centres. The classifier refused them, 500-odd runs leaking, once the
+// meshes kept the design axes exactly (L7b2, reported to Physics), and this
+// grid sat a third of a cell lower until Physics' tie fix (d) made the
+// classifier's verdict independent of a surface on a grid plane. Until
 // build_solids() answers, `ok` is a refusal of its own, so a drone that is
 // never gridded is never taken for one that built.
 [[nodiscard]] DroneSolids build_drone_solids(std::string_view stem, float dx) {
-    DroneSolids out{std::unexpected(spade::Error{spade::Code::internal, "the drone was never gridded"}), {}, 0, {}};
+    DroneSolids out{std::unexpected(spade::Error{spade::Code::internal, "the drone was never gridded"}), {}, 0, {}, {}};
     const spade::Result<ld::Committed> lib = ld::committed_library();
     EXPECT_TRUE(lib.has_value()) << (lib ? "" : lib.error().context);
     if (!lib) return out;
@@ -102,8 +105,8 @@ struct DroneSolids {
             hi = glm::max(hi, p.box_max);
         }
     }
-    const glm::vec3 origin = lo - glm::vec3(3.0f * dx + dx / 3.0f);
-    const glm::vec3 size = hi - lo + glm::vec3(6.0f * dx + dx / 3.0f);
+    const glm::vec3 origin = lo - glm::vec3(3.0f * dx);
+    const glm::vec3 size = hi - lo + glm::vec3(6.0f * dx);
     const auto cells = [dx](float metres) { return static_cast<uint32_t>(std::ceil(metres / dx)); };
     const GridShape shape{cells(size.x), cells(size.y), cells(size.z), dx};
     const spade::Result<SolidField> field = make_solid_field(shape);
@@ -116,6 +119,7 @@ struct DroneSolids {
     EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
     if (!parts) return out;
     for (const SolidPart& p : *parts) out.names.push_back(p.name);
+    out.parts = *parts;
     out.ok = build_solids(out.field, shape, {}, *parts, solids.sampler());
     std::printf("%.*s at dx %.1f mm (%ux%ux%u): %s\n", static_cast<int>(stem.size()), stem.data(), 1000.0 * dx,
                 shape.nx, shape.ny, shape.nz, out.ok ? out.field.run_line.c_str() : out.ok.error().context.c_str());
@@ -159,30 +163,35 @@ constexpr bool kEnclosedPartsAreCovered = true;
 // thin, was measured a sheet -- the drone's one sheet, every other part a wall.
 // With (a) a drone builds, its run line's notes -- an arm's leak at an edge
 // aside -- exactly `notes`, in order; or it is refused with exactly `exposed`.
-// Pinned findings (Physics, 2026-10-27, reported to Core and the lead): the
-// FPV's ESC, 36 mm across in z in a 40 mm stack, comes 2 mm from the stack's
-// faces, inside 1 dx, and is exposed; the Phantom's and the Iris's bodies and
-// the Iris's motor[3] leak at an edge.
+// Pinned findings (Physics, 2026-10-27, reported to Core and the lead;
+// re-pinned on this grid by Physics' tie fix (d), 2026-10-28): the FPV's
+// ESC, 36 mm across in z in a 40 mm stack, comes 2 mm from the stack's faces,
+// inside 1 dx, and is exposed; the Phantom's, the Iris's and the competition
+// quad's bodies, the Iris's four motors and the competition quad's motor[3]
+// leak at an edge.
 struct Enclosed {
     std::string_view stem;
     std::string_view part;                  // the enclosed part
     bool refused;                           // before (a): refused as a leak, or else measured a sheet
     std::string_view exposed;               // with (a): the refusal in full; empty when the drone builds
-    std::array<std::string_view, 4> notes;  // with (a): the run line's notes but an arm's edge leaks
+    std::array<std::string_view, 7> notes;  // with (a): the run line's notes but an arm's edge leaks
 };
 constexpr std::array<Enclosed, 5> kDrones{{
     {"phantom3_class",
      "battery",
      true,
      "",
-     {"body: leaks at an edge (3 runs, open area 0.667 dx^2, 0.04% of its largest face)", "esc: covered by 'body'",
+     {"body: leaks at an edge (5 runs, open area 0.575 dx^2, 0.04% of its largest face)", "esc: covered by 'body'",
       "battery: covered by 'body'"}},
     {"iris_plus_class",
      "battery",
      true,
      "",
-     {"body: leaks at an edge (6 runs, open area 0.981 dx^2, 0.07% of its largest face)",
-      "motor[3]: leaks at an edge (1 runs, open area 0.108 dx^2, 0.22% of its largest face)", "esc: covered by 'body'",
+     {"body: leaks at an edge (1 runs, open area 0.383 dx^2, 0.03% of its largest face)",
+      "motor[0]: leaks at an edge (1 runs, open area 0.065 dx^2, 0.13% of its largest face)",
+      "motor[1]: leaks at an edge (1 runs, open area 0.140 dx^2, 0.29% of its largest face)",
+      "motor[2]: leaks at an edge (2 runs, open area 0.005 dx^2, 0.01% of its largest face)",
+      "motor[3]: leaks at an edge (1 runs, open area 0.025 dx^2, 0.05% of its largest face)", "esc: covered by 'body'",
       "battery: covered by 'body'"}},
     {"fpv_5inch",
      "esc",
@@ -192,7 +201,12 @@ constexpr std::array<Enclosed, 5> kDrones{{
      "open); declare min_feature or refine dx",
      {}},
     {"basic_quad_6inch", "esc", false, "", {"esc: covered by 'body'"}},
-    {"basic_quad_competition", "esc", false, "", {"esc: covered by 'body'"}},
+    {"basic_quad_competition",
+     "esc",
+     false,
+     "",
+     {"body: leaks at an edge (1 runs, open area 0.250 dx^2, 0.07% of its largest face)",
+      "motor[3]: leaks at an edge (1 runs, open area 0.178 dx^2, 0.36% of its largest face)", "esc: covered by 'body'"}},
 }};
 
 // At 4 mm every rigid part of a drone that builds is a wall -- no sheet, one
@@ -260,4 +274,29 @@ TEST(LibraryDroneSolids, TheCrazyflieNamesTheCellSizeItNeeds) {
     const std::string& why = b.ok.error().context;
     EXPECT_NE(why.find("part 'arm[0]'"), std::string::npos) << why;
     EXPECT_NE(why.find("needs dx <= 2.5 mm"), std::string::npos) << why;
+}
+
+// The no-offset Phantom (Physics' tie fix (d), the lead 2026-10-28): its
+// 50 mm body, 12.5 cells at 4 mm, stands on a plane of cell faces, so its top
+// -- the drone's up axis is y -- is exactly the float the classifier computes
+// for a plane of cell centres, (k + 0.5) dx. On master d4a9bdd it was refused,
+// a grid line crossing the body without meeting a closed face. It builds, its
+// run line pinned.
+TEST(LibraryDroneSolids, ThePhantomsBodyTopOnACellCentrePlaneBuilds) {
+    const float dx = 0.004f;
+    const DroneSolids b = build_drone_solids("phantom3_class", dx);
+    std::size_t body = b.parts.size();
+    for (std::size_t i = 0; i < b.parts.size(); ++i) {
+        if (b.parts[i].name == "body") body = i;
+    }
+    ASSERT_LT(body, b.parts.size());
+    const float top = b.parts[body].box_max.y;
+    const float k = std::floor(top / dx);
+    EXPECT_EQ(k, 15.0f) << top;  // 62 mm up: the grid's 3 dx under the body, its lowest part, and its 50 mm
+    EXPECT_EQ((k + 0.5f) * dx, top) << "the body's top, " << top << " m, is not on the centre plane " << k;
+    ASSERT_TRUE(b.ok.has_value()) << b.ok.error().context;
+    EXPECT_EQ(b.field.run_line,
+              "solids: 11 parts, 11 walls, 0 sheets; body: leaks at an edge (5 runs, open area 0.575 dx^2, 0.04% of its "
+              "largest face); arm[1]: leaks at an edge (1 runs, open area 0.147 dx^2, 0.08% of its largest face); esc: "
+              "covered by 'body'; battery: covered by 'body'");
 }

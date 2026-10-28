@@ -8,6 +8,19 @@ namespace spade::physics::airflow {
 
 namespace {
 
+// THE TIE (Physics' fix (d), 2026-10-28). A surface on a plane of cell
+// centres or faces -- a part a whole or half number of cells across, from a
+// corner on a grid plane -- puts samples exactly on the classifier's
+// thresholds, where the field's last-bit rounding decides: a mesh's closest
+// point is rebuilt in fp32, so a sample on its face reads a distance of a few
+// ulps, either sign, and a gradient along the rounding, as often sideways as
+// out (Core's documented contract). So each threshold holds within kTraceHit
+// dx, the trace's own "on the surface", on the solid's side: a face within it
+// of dx/2 inside is closed (the ramp at or below kTraceHit); a cell centre
+// within it of the surface is not outside, so no run ends on a surface; a
+// face within it of dx/2 outside is one a part would block.
+constexpr float kTraceHit = 1.0e-4f;  // times dx
+
 [[nodiscard]] std::string mm(float metres) {
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.1f mm", static_cast<double>(metres) * 1000.0);
@@ -141,7 +154,8 @@ void open_everything(SolidField& f) {
                     f.wall[c][idx] = q.velocity[static_cast<glm::length_t>(c)];
                     if (cl.role == SolidRole::wall) {
                         f.phi[c][idx] = q.distance;
-                        f.theta[c][idx] = std::min(std::max(0.5f + q.distance * inv_dx, 0.0f), 1.0f);
+                        const float ramp = 0.5f + q.distance * inv_dx;  // closed within kTraceHit (the tie)
+                        f.theta[c][idx] = ramp <= kTraceHit ? 0.0f : std::min(ramp, 1.0f);
                     } else {
                         const float d_mid = sheet_mid_distance(sample, q.part, q, x, s.dx);
                         f.phi[c][idx] = d_mid;
@@ -227,7 +241,6 @@ void open_everything(SolidField& f) {
 constexpr int kEdgeReachCells = 4;
 constexpr float kEdgeAreaFraction = 0.02f;
 constexpr int kTraceSteps = 32;
-constexpr float kTraceHit = 1.0e-4f;  // times dx
 constexpr float kSheetWidthCells = 2.0f;
 
 // Whether a thin crossing's material is a sheet's there (the lead, 2026-10-13:
@@ -391,6 +404,7 @@ struct CellBox {
         }
     }
     const float dx = s.dx;
+    const float on = kTraceHit * dx;  // a centre this near the surface is on it, not outside (the tie)
     for (uint32_t a = 0; a < 3; ++a) {
         const uint32_t a1 = (a + 1u) % 3u;
         const uint32_t a2 = (a + 2u) % 3u;
@@ -407,7 +421,7 @@ struct CellBox {
                     ijk[outer] = u;
                     ijk[inner] = v;
                     const float phi = cache[at(ijk[0], ijk[1], ijk[2])];
-                    if (!(phi > 0.0f)) continue;  // inside: the run goes on
+                    if (!(phi > on)) continue;  // inside, or on the surface: the run goes on
                     if (o1 >= 0) {
                         // A run from o1 to q.
                         uint32_t c1[3] = {ijk[0], ijk[1], ijk[2]};
@@ -476,7 +490,7 @@ struct CellBox {
 
 // A blob's cover (the lead's ruling, 2026-10-27): over part p's sampled range
 // (its box grown by 2 dx), the samples p alone would block (its own phi <=
-// dx/2, theta < 1), and of them those closed (theta = 0) by another part, the
+// dx/2 within kTraceHit dx, theta < 1), and of them those closed (theta = 0) by another part, the
 // sample's winner. `by` marks, per part, a winner of a covered sample.
 struct Cover {
     uint32_t blocking = 0;
@@ -490,7 +504,7 @@ struct Cover {
     out.by.assign(parts.size(), 0u);
     const glm::vec3 grow(2.0f * s.dx);
     const std::array<SolidRange, 3> range = sampled_range(s, parts[p].box_min - grow, parts[p].box_max + grow);
-    const float blocks = 0.5f * s.dx;
+    const float blocks = (0.5f + kTraceHit) * s.dx;  // dx/2, within kTraceHit (the tie)
     for (uint32_t c = 0; c < 3; ++c) {
         if (range[c].empty) continue;
         const std::array<uint32_t, 3> dims = sample_dims(s, c);
