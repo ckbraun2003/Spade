@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+#include <ostream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -200,55 +201,100 @@ constexpr std::array<Enclosed, 5> kDrones{{
 // at an edge (a note, within the classifier's own rule) an arm's, the meshed
 // arms at 45 degrees leaving a few, but for the findings pinned above. Before
 // (a) each named its enclosed part, which closes no face: refused by name, or
-// the one sheet among walls.
-TEST(LibraryDroneSolids, AtFourMillimetresEachDroneIsWallsOrNamesItsEnclosedPart) {
-    for (const auto& [stem, part, refused, exposed, notes] : kDrones) {
-        SCOPED_TRACE(stem);
-        const DroneSolids b = build_drone_solids(stem, 0.004f);
-        if (kEnclosedPartsAreCovered && !exposed.empty()) {
-            EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
-            if (b.ok.has_value()) continue;
-            EXPECT_EQ(b.ok.error().context, exposed);
-            continue;
-        }
-        // Nested, not `!kEnclosedPartsAreCovered && refused`: with the flag
-        // true that is a constant condition, MSVC's C4127 (an error here).
-        if (!kEnclosedPartsAreCovered) {
-            if (refused) {
-                EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
-                if (b.ok.has_value()) continue;
-                const std::string leaks = "part '" + std::string(part) + "' leaks: it closes no face";
-                EXPECT_NE(b.ok.error().context.find(leaks), std::string::npos) << b.ok.error().context;
-                continue;
-            }
-        }
-        EXPECT_TRUE(b.ok.has_value()) << b.ok.error().context;
-        if (!b.ok.has_value()) continue;
-        EXPECT_EQ(b.field.classes.size(), b.rigid_parts);
-        EXPECT_EQ(b.names.size(), b.field.classes.size());
-        if (b.names.size() != b.field.classes.size()) continue;
-        for (std::size_t i = 0; i < b.field.classes.size(); ++i) {
-            const bool sheet = !kEnclosedPartsAreCovered && b.names[i] == part;
-            EXPECT_EQ(b.field.classes[i].role, sheet ? SolidRole::sheet : SolidRole::wall) << b.names[i];
-        }
-        const std::size_t sheets = kEnclosedPartsAreCovered ? 0u : 1u;
-        EXPECT_EQ(occurrences(b.field.run_line, ": sheet ("), sheets) << b.field.run_line;
-        if (!kEnclosedPartsAreCovered) continue;
-        std::vector<std::string> others;
-        for (const std::string& note : run_line_notes(b.field.run_line)) {
-            if (!arm_edge_leak(note)) {
-                others.push_back(note);
-            }
-        }
-        std::vector<std::string> expected;
-        for (const std::string_view n : notes) {
-            if (!n.empty()) {
-                expected.emplace_back(n);
-            }
-        }
-        EXPECT_EQ(others, expected) << b.field.run_line;
-    }
+// the one sheet among walls. One test per drone, so each meets the debug
+// ctest limit on its own (batch 18's gate: the five in one test ran past 60 s).
+void PrintTo(const Enclosed& drone, std::ostream* out) { *out << drone.stem; }
+
+namespace {
+
+// Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
+[[nodiscard]] bool debug_build() {
+#if defined(NDEBUG)
+    return false;
+#else
+    return true;
+#endif
 }
+
+// TD-5's "debug: runs in release" (test-docs/01-verification.md, Guards; the
+// lead, 2026-10-28): the two drones whose 4 mm build alone runs past ctest's
+// 60 s in debug, each with its measurement (Physics' profile: nearly all of it
+// one nearest() per face sample over every part). They come off when Core's
+// mesh-box cull in sample_parts() (vehicles/part_pose.cpp) brings them under.
+struct DebugSkip {
+    std::string_view stem;
+    std::string_view why;
+};
+constexpr std::array<DebugSkip, 2> kDebugSkips{{
+    {"phantom3_class",
+     "debug build: phantom3_class takes 68 s in debug (measured 2026-10-28; ctest's limit is 60 s); runs in the "
+     "release gate (5 s) and every leg (TD-5; the basic quads' builds cover build_solids and cover_of in debug)"},
+    {"iris_plus_class",
+     "debug build: iris_plus_class takes 107 s in debug (measured 2026-10-28; ctest's limit is 60 s); runs in the "
+     "release gate (7 s) and every leg (TD-5; the basic quads' builds cover build_solids and cover_of in debug)"},
+}};
+
+}  // namespace
+
+class LibraryDroneSolidsAtFourMillimetres : public testing::TestWithParam<Enclosed> {};
+
+TEST_P(LibraryDroneSolidsAtFourMillimetres, IsWallsOrNamesItsEnclosedPart) {
+    const auto& [stem, part, refused, exposed, notes] = GetParam();
+    if (debug_build()) {
+        for (const DebugSkip& skip : kDebugSkips) {
+            if (skip.stem == stem) {
+                GTEST_SKIP() << skip.why;
+            }
+        }
+    }
+    SCOPED_TRACE(stem);
+    const DroneSolids b = build_drone_solids(stem, 0.004f);
+    if (kEnclosedPartsAreCovered && !exposed.empty()) {
+        EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
+        if (b.ok.has_value()) return;
+        EXPECT_EQ(b.ok.error().context, exposed);
+        return;
+    }
+    // Nested, not `!kEnclosedPartsAreCovered && refused`: with the flag
+    // true that is a constant condition, MSVC's C4127 (an error here).
+    if (!kEnclosedPartsAreCovered) {
+        if (refused) {
+            EXPECT_FALSE(b.ok.has_value()) << b.field.run_line;
+            if (b.ok.has_value()) return;
+            const std::string leaks = "part '" + std::string(part) + "' leaks: it closes no face";
+            EXPECT_NE(b.ok.error().context.find(leaks), std::string::npos) << b.ok.error().context;
+            return;
+        }
+    }
+    EXPECT_TRUE(b.ok.has_value()) << b.ok.error().context;
+    if (!b.ok.has_value()) return;
+    EXPECT_EQ(b.field.classes.size(), b.rigid_parts);
+    EXPECT_EQ(b.names.size(), b.field.classes.size());
+    if (b.names.size() != b.field.classes.size()) return;
+    for (std::size_t i = 0; i < b.field.classes.size(); ++i) {
+        const bool sheet = !kEnclosedPartsAreCovered && b.names[i] == part;
+        EXPECT_EQ(b.field.classes[i].role, sheet ? SolidRole::sheet : SolidRole::wall) << b.names[i];
+    }
+    const std::size_t sheets = kEnclosedPartsAreCovered ? 0u : 1u;
+    EXPECT_EQ(occurrences(b.field.run_line, ": sheet ("), sheets) << b.field.run_line;
+    if (!kEnclosedPartsAreCovered) return;
+    std::vector<std::string> others;
+    for (const std::string& note : run_line_notes(b.field.run_line)) {
+        if (!arm_edge_leak(note)) {
+            others.push_back(note);
+        }
+    }
+    std::vector<std::string> expected;
+    for (const std::string_view n : notes) {
+        if (!n.empty()) {
+            expected.emplace_back(n);
+        }
+    }
+    EXPECT_EQ(others, expected) << b.field.run_line;
+}
+
+INSTANTIATE_TEST_SUITE_P(EachDrone, LibraryDroneSolidsAtFourMillimetres, testing::ValuesIn(kDrones),
+                         [](const testing::TestParamInfo<Enclosed>& info) { return std::string(info.param.stem); });
 
 // The Crazyflie keeps its true size (Q5 (a)), so at 4 mm its first arm --
 // 5 mm across, below 2 dx in two extents -- is refused by name, with the
