@@ -150,8 +150,14 @@ A record is never edited. A re-run adds a new dated record beside the old one, a
     | Test | Debug time measured | Release time | Covered in debug by | Since |
     |---|---|---|---|---|
     | Solids S2, circular Couette at `R₁/dx` 16 (Physics, P2) | 99.7 s (2026-10-20) | 14.7 s | `AirflowSolidsStep.PlanarCouetteFlowHoldsItsLinearProfile` (0.16 s in debug) | `9732a07` |
+    | The Phantom's solids at 4 mm, `EachDrone/LibraryDroneSolidsAtFourMillimetres.IsWallsOrNamesItsEnclosedPart/phantom3_class` (Core, L7b2) | 68 s (2026-10-28; 67.5 s Physics, 70.5 s Core) | 5 s | the basic quads' 4 mm builds, `…/basic_quad_6inch` and `…/basic_quad_competition` (40 to 57 s in debug): the same `build_solids` and `cover_of` | Core's `4e196ca` |
+    | The Iris+'s solids at 4 mm, `EachDrone/LibraryDroneSolidsAtFourMillimetres.IsWallsOrNamesItsEnclosedPart/iris_plus_class` (Core, L7b2) | 107 s (2026-10-28; 107.2 s Physics, 109.7 s Core) | 7 s | as the Phantom's | Core's `4e196ca` |
 
     S2's skip text: "debug build: S2 takes 100 s in debug (measured 2026-10-20; ctest's limit is 60 s); runs in the release gate (15 s) and every leg (TD-5; the planar Couette check covers the wall links in debug)".
+
+    The Phantom's skip text: "debug build: phantom3_class takes 68 s in debug (measured 2026-10-28; ctest's limit is 60 s); runs in the release gate (5 s) and every leg (TD-5; the basic quads' builds cover build_solids and cover_of in debug)". The Iris+'s is the same with "iris_plus_class takes 107 s" and "(7 s)".
+
+    The two drone rows are temporary. They come off when the `build_solids` speed-up lands (Core's mesh-box cull in `sample_parts()`) and Physics measures every drone under about 30 s in debug. The basic quads that cover them run at 40 to 57 s in debug, the higher figure under load, so they are close to ctest's limit themselves.
 - **Two transcriptions of one authority** need a test that compares them, or they fork silently. Prefer deriving one from the other.
 
 ## Consumer smoke
