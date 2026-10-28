@@ -1,6 +1,7 @@
 #include "spike/airflow/step_chain.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -16,19 +17,31 @@
 #include "airflow_mg_prolong.spv.gen.hpp"
 #include "airflow_mg_residual.spv.gen.hpp"
 #include "airflow_mg_restrict.spv.gen.hpp"
+#include "airflow_mg_restrict_full.spv.gen.hpp"
 #include "airflow_mg_smooth.spv.gen.hpp"
 #include "airflow_pack_f16.spv.gen.hpp"
+#include "airflow_pcg_apply.spv.gen.hpp"
+#include "airflow_pcg_measure.spv.gen.hpp"
+#include "airflow_pcg_scalars.spv.gen.hpp"
+#include "airflow_pcg_update.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
+#include "airflow_region_mean.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
+#include "airflow_solid_divergence.spv.gen.hpp"
+#include "airflow_solid_gradient.spv.gen.hpp"
+#include "airflow_solid_velocities.spv.gen.hpp"
+#include "airflow_tile_dot.spv.gen.hpp"
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "airflow_velocity_bc.spv.gen.hpp"
 #include "airflow_viscous.spv.gen.hpp"
+#include "airflow_wall_load.spv.gen.hpp"
 #include "bindings.gen.hpp"
 #include "core/detail/flush_subnormals.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/projection.hpp"
 #include "physics/airflow/publish.hpp"
+#include "physics/airflow/regions.hpp"
 #include "spike/airflow/publish_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -57,6 +70,18 @@ enum Pipeline : uint32_t {
     kRemoveMean,
     kPublishFields,
     kPackF16,
+    // With solids only (B5's): the runner without them makes none of these.
+    kTileDot,
+    kPcgMeasure,
+    kPcgScalars,
+    kPcgApply,
+    kRegionMean,
+    kRestrictFull,
+    kPcgUpdate,
+    kSolidDivergence,
+    kSolidGradient,
+    kSolidVelocities,
+    kWallLoad,
 };
 
 constexpr ProjectionPipelines kProjection{.divergence = kDivergence,
@@ -68,6 +93,32 @@ constexpr ProjectionPipelines kProjection{.divergence = kDivergence,
                                           .tile_sum = kTileSum,
                                           .remove_mean = kRemoveMean};
 constexpr PublishPipelines kPublish{.fields = kPublishFields, .pack = kPackF16};
+constexpr ProjectionSolidsPipelines kProjectionSolids{
+    .solve = {.solids = {.tile_sum = kTileSum, .tile_dot = kTileDot, .measure = kPcgMeasure, .scalars = kPcgScalars},
+              .precondition = {.mg = kProjection, .restrict_full = kRestrictFull},
+              .apply = kPcgApply,
+              .region_mean = kRegionMean,
+              .update = kPcgUpdate},
+    .solid_divergence = kSolidDivergence,
+    .solid_gradient = kSolidGradient};
+
+// The kernels in Pipeline's order: the step's and the publish's, then B5's.
+constexpr std::array<const compute::SpirvVariantSet*, kPackF16 + 1> kStepKernels = {
+    &gen::kSpvVariants_airflow_velocity_bc,     &gen::kSpvVariants_airflow_advection,
+    &gen::kSpvVariants_airflow_actuator_gather, &gen::kSpvVariants_airflow_add_increments,
+    &gen::kSpvVariants_airflow_viscous,         &gen::kSpvVariants_airflow_divergence,
+    &gen::kSpvVariants_airflow_mg_smooth,       &gen::kSpvVariants_airflow_mg_residual,
+    &gen::kSpvVariants_airflow_mg_restrict,     &gen::kSpvVariants_airflow_mg_prolong,
+    &gen::kSpvVariants_airflow_gradient_subtract, &gen::kSpvVariants_airflow_tile_sum,
+    &gen::kSpvVariants_airflow_remove_mean,     &gen::kSpvVariants_airflow_publish_fields,
+    &gen::kSpvVariants_airflow_pack_f16};
+constexpr std::array<const compute::SpirvVariantSet*, kWallLoad - kPackF16> kSolidsKernels = {
+    &gen::kSpvVariants_airflow_tile_dot,         &gen::kSpvVariants_airflow_pcg_measure,
+    &gen::kSpvVariants_airflow_pcg_scalars,      &gen::kSpvVariants_airflow_pcg_apply,
+    &gen::kSpvVariants_airflow_region_mean,      &gen::kSpvVariants_airflow_mg_restrict_full,
+    &gen::kSpvVariants_airflow_pcg_update,       &gen::kSpvVariants_airflow_solid_divergence,
+    &gen::kSpvVariants_airflow_solid_gradient,   &gen::kSpvVariants_airflow_solid_velocities,
+    &gen::kSpvVariants_airflow_wall_load};
 
 // The face block's words (airflow_params_layout.slang): alpha, a velocity per
 // side, the ambient.
@@ -154,10 +205,8 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) {
         return std::unexpected(invalid("visc_sweeps must be at least 1 when nu > 0"));
     }
-    if (Result<void> ok = af::check_grid(g.shape, bc, false); !ok) return std::unexpected(ok.error());
-    if (solids != nullptr && solids->any) {
-        return std::unexpected(invalid("a SolidField with parts needs Physics' solids hooks (B7's G3)"));
-    }
+    const bool with_solids = solids != nullptr && solids->any;
+    if (Result<void> ok = af::check_grid(g.shape, bc, with_solids); !ok) return std::unexpected(ok.error());
     const af::GridShape& s = g.shape;
     const auto n = face_counts(s);
     const uint32_t total = n[0] + n[1] + n[2];
@@ -171,19 +220,50 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     self->bc_ = bc;
     self->cfg_ = cfg;
     self->workgroup_size_ = workgroup_size;
-
-    af::Multigrid mg = af::make_multigrid(s.nx, s.ny, s.nz, af::periodic_axes(bc));
+    self->solids_ = with_solids;
     const std::array<af::FaceKind, 6> kinds = af::face_kinds(bc);
-    af::set_kinds(mg, kinds);
-    auto layout = mg_layout(mg);
-    if (!layout) return std::unexpected(layout.error());
-    self->layout_ = std::move(*layout);
 
-    // airflow_params: the header, the level table, then the face block. Its
-    // floats are the CPU's own expressions under the step's flush
+    // With solids, the CPU's own scratch for the field, as LiveRun's
+    // set_solids() leaves it (attach_solid_field()): its levels' face weights,
+    // its region labels, and the regions as check_regions() leaves them, which
+    // the region table packs. The scratch goes once the upload is made.
+    std::optional<SolidsUpload> upload;
+    if (with_solids) {
+        Result<af::FluidScratch> scratch = af::make_fluid_scratch(g, bc, cfg);
+        if (!scratch) return std::unexpected(scratch.error());
+        if (Result<void> ok = af::attach_solid_field(*scratch, g, bc, *solids); !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (const af::RegionFault rf = af::check_regions(scratch->regions, s, bc, scratch->solids);
+            rf.region != af::kNoRegion) {
+            self->fault_ = af::FluidHealth{.fault = af::FluidFault::ill_posed_region, .faces = rf.faces,
+                                           .index = rf.cell};
+        }
+        Result<SolidsUpload> made = solids_upload(*scratch);
+        if (!made) return std::unexpected(made.error());
+        upload = std::move(*made);
+        af::PublishInput mask;
+        mask.solid = scratch->regions.solid;
+        mask.periodic = af::periodic_axes(bc);
+        Result<uint32_t> extrapolated = af::extrapolated_cells(s, mask);
+        if (!extrapolated) return std::unexpected(extrapolated.error());
+        self->extrapolated_ = *extrapolated;
+        self->layout_ = upload->layout;
+    } else {
+        af::Multigrid mg = af::make_multigrid(s.nx, s.ny, s.nz, af::periodic_axes(bc));
+        af::set_kinds(mg, kinds);
+        auto layout = mg_layout(mg);
+        if (!layout) return std::unexpected(layout.error());
+        self->layout_ = std::move(*layout);
+    }
+
+    // airflow_params: the header, the level table, then the face block; with
+    // solids, the pcg block after it (init_solids() writes it and word 16).
+    // Its floats are the CPU's own expressions under the step's flush
     // (airflow_params_layout.slang).
     const std::size_t level_words = projection_params_words(self->layout_);
-    std::vector<uint32_t> params(level_words + kFaceBlockWords, 0u);
+    const std::size_t pcg_block = level_words + kFaceBlockWords;
+    std::vector<uint32_t> params(pcg_block + (with_solids ? kPcgBlockWords : 0u), 0u);
     {
         const spade::math::ScopedFlushSubnormals flush;
         const std::array<bool, 3> periodic = af::periodic_axes(bc);
@@ -244,16 +324,27 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     set(gen::kBinding_airflow_partials, tile_sum_tiles(s), BufferKind::device_only);
     set(gen::kBinding_airflow_publish_v, 2u * cells, BufferKind::staged);
     set(gen::kBinding_airflow_publish_s, 2u * cells, BufferKind::staged);
+    std::vector<const compute::SpirvVariantSet*> kernels(kStepKernels.begin(), kStepKernels.end());
+    if (with_solids) {
+        // The field, the labels and the table (bindings 12-19, init_solids()'s),
+        // the CG's vectors, its scalars read by the host loop (run_solve()),
+        // the reductions' partials and the wall load.
+        for (uint32_t b = 0; b < buffers.size(); ++b) {
+            if (const uint64_t bytes = solids_binding_bytes(*upload, b); bytes > 0u) {
+                buffers[b].bytes = bytes;
+                buffers[b].kind = BufferKind::resident;
+            }
+        }
+        set(gen::kBinding_airflow_pcg, uint64_t{kPcgVectors} * cells, BufferKind::device_only);
+        set(gen::kBinding_airflow_scalars, kScalarSlots, BufferKind::staged);
+        set(gen::kBinding_airflow_partials,
+            std::max({uint64_t{tile_sum_tiles(s)}, solve_partials_floats(s, upload->regions.closed),
+                      uint64_t{kWallLoadTerms} * tile_sum_tiles(s)}),
+            BufferKind::device_only);
+        set(gen::kBinding_airflow_wall_load, kWallLoadFloats, BufferKind::staged);
+        kernels.insert(kernels.end(), kSolidsKernels.begin(), kSolidsKernels.end());
+    }
 
-    const compute::SpirvVariantSet* const kernels[] = {
-        &gen::kSpvVariants_airflow_velocity_bc,     &gen::kSpvVariants_airflow_advection,
-        &gen::kSpvVariants_airflow_actuator_gather, &gen::kSpvVariants_airflow_add_increments,
-        &gen::kSpvVariants_airflow_viscous,         &gen::kSpvVariants_airflow_divergence,
-        &gen::kSpvVariants_airflow_mg_smooth,       &gen::kSpvVariants_airflow_mg_residual,
-        &gen::kSpvVariants_airflow_mg_restrict,     &gen::kSpvVariants_airflow_mg_prolong,
-        &gen::kSpvVariants_airflow_gradient_subtract, &gen::kSpvVariants_airflow_tile_sum,
-        &gen::kSpvVariants_airflow_remove_mean,     &gen::kSpvVariants_airflow_publish_fields,
-        &gen::kSpvVariants_airflow_pack_f16};
     auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers,
                                                       .kernels = kernels,
                                                       .push_bytes = sizeof(ProjectionPush),
@@ -263,14 +354,29 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     ChainRunner& r = *self->runner_;
 
     const auto bytes = [](const auto& v) { return std::as_bytes(std::span(v)); };
-    if (Result<void> ok = r.upload(gen::kBinding_airflow_params, bytes(params)); !ok) return std::unexpected(ok.error());
+    if (with_solids) {
+        // airflow_params whole, with word 16's solid bits and the pcg block,
+        // and bindings 12-19.
+        if (Result<void> ok = init_solids(r, params, *upload, static_cast<uint32_t>(pcg_block), cfg.n_v, cfg.cg_cap);
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+        auto ids = record_solve(r, projection_chains(s, self->layout_, kProjectionSolids, upload->regions.closed,
+                                                     workgroup_size));
+        if (!ids) return std::unexpected(ids.error());
+        self->projection_ = *ids;
+    } else {
+        if (Result<void> ok = r.upload(gen::kBinding_airflow_params, bytes(params)); !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (Result<void> ok = r.upload(gen::kBinding_airflow_mg_weights, bytes(self->layout_.weights)); !ok) {
+            return std::unexpected(ok.error());
+        }
+    }
     if (Result<void> ok = r.upload(gen::kBinding_airflow_u, bytes(g.u)); !ok) return std::unexpected(ok.error());
     if (Result<void> ok = r.upload(gen::kBinding_airflow_v, bytes(g.v)); !ok) return std::unexpected(ok.error());
     if (Result<void> ok = r.upload(gen::kBinding_airflow_w, bytes(g.w)); !ok) return std::unexpected(ok.error());
     if (Result<void> ok = r.upload(gen::kBinding_airflow_pressure, bytes(g.p)); !ok) return std::unexpected(ok.error());
-    if (Result<void> ok = r.upload(gen::kBinding_airflow_mg_weights, bytes(self->layout_.weights)); !ok) {
-        return std::unexpected(ok.error());
-    }
     // The increments start cleared, as make_fluid_scratch()'s du.
     const ChainCommand clear[] = {dispatch(kAddIncrements, 1u, 0u, total, 0u, workgroup_size)};
     auto cleared = r.record(clear);
@@ -285,7 +391,13 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     const uint32_t wg = workgroup_size_;
     const auto n = face_counts(s);
     std::vector<ChainCommand> chain;
+    // apply_solid_velocities(g, solids, cfg.interior), after each
+    // apply_velocity_boundaries() of the step.
+    const auto solid_velocities = [&] {
+        if (solids_) append_solid_velocities(chain, s, kSolidVelocities, cfg_.interior, wg);
+    };
     append_velocity_bc(chain, s, wg);
+    solid_velocities();
     for (const uint32_t pass : {0u, 1u}) {
         for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(kAdvection, c, pass, n[c], 0u, wg));
     }
@@ -294,13 +406,18 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     }
     chain.push_back(dispatch(kAddIncrements, 0u, 0u, n[0] + n[1] + n[2], 0u, wg));
     append_velocity_bc(chain, s, wg);
+    solid_velocities();
     if (cfg_.nu > 0.0f) {
         append_viscous(chain, s, af::periodic_axes(bc_), cfg_.visc_sweeps, wg);
         append_velocity_bc(chain, s, wg);
+        solid_velocities();
     }
-    const std::vector<ChainCommand> projection =
-        projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg);
-    chain.insert(chain.end(), projection.begin(), projection.end());
+    // With solids the projection is project_with_solids()' own chains (step()).
+    if (!solids_) {
+        const std::vector<ChainCommand> projection =
+            projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg);
+        chain.insert(chain.end(), projection.begin(), projection.end());
+    }
     auto id = runner_->record(chain);
     if (!id) return std::unexpected(id.error());
     step_chains_[disc_count] = *id;
@@ -323,10 +440,61 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
             uploaded_discs_ = std::move(records);
         }
     }
+    // A region that can't balance faults every step before it starts, as the
+    // CPU's step_flushed() returns its fault.
+    if (fault_.fault != af::FluidFault::none) return fault_;
     auto id = step_chain_for(static_cast<uint32_t>(discs.size()));
     if (!id) return std::unexpected(id.error());
     if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
-    return af::FluidHealth{.pressure_iterations = cfg_.n_v};
+    if (!solids_) return af::FluidHealth{.pressure_iterations = cfg_.n_v};
+    Result<GpuProjectionReport> projected = project_with_solids(*runner_, projection_, cfg_.n_v, cfg_.cg_cap);
+    if (!projected) return std::unexpected(projected.error());
+    // fluid_step()'s health from the CG's report, with solids.
+    const af::ProjectionReport& rep = projected->report;
+    // A non-finite flow, which the CPU's scan() names. The report can't show
+    // one: its max-norms pass over a NaN, so a solve gone NaN reads converged
+    // (residual 0). r . z is a sum over the region's cells, so it carries any
+    // NaN or infinity the divergence took from u, v or w. The pressure is
+    // named and no sample: the device scans none (Physics' review of G3,
+    // 2026-10-28). Kept, as the CPU keeps its fault: every later step returns
+    // it without stepping.
+    std::array<float, kScalarSlots> scalars{};
+    if (Result<void> ok = runner_->read(gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(scalars)));
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (!std::isfinite(rep.residual) || !std::isfinite(scalars[kSlotRz])) {
+        fault_ = af::FluidHealth{.fault = af::FluidFault::non_finite, .quantity = 3};
+        return fault_;
+    }
+    af::FluidHealth h{};
+    h.pressure_residual = rep.residual;
+    h.pressure_iterations = rep.iterations;
+    h.unconverged = rep.residual > af::kResidualAnnounce;
+    h.capped = h.unconverged && !rep.stalled;
+    h.stalled = h.unconverged && rep.stalled;
+    return h;
+}
+
+Result<af::WallLoad> GpuFluid::wall_load(glm::vec3 about) {
+    if (!solids_) return af::WallLoad{};
+    if (!wall_load_chain_) {
+        std::vector<ChainCommand> chain;
+        append_wall_load(chain, shape_, kWallLoad, workgroup_size_);
+        auto id = runner_->record(chain);
+        if (!id) return std::unexpected(id.error());
+        wall_load_chain_ = *id;
+    }
+    const std::array<float, kWallLoadFloats> words = wall_load_words(about);
+    if (Result<void> ok = runner_->upload(gen::kBinding_airflow_wall_load, std::as_bytes(std::span(words))); !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (Result<void> ok = runner_->submit(*wall_load_chain_, 1); !ok) return std::unexpected(ok.error());
+    std::array<float, kWallLoadFloats> out{};
+    if (Result<void> ok = runner_->read(gen::kBinding_airflow_wall_load, std::as_writable_bytes(std::span(out))); !ok) {
+        return std::unexpected(ok.error());
+    }
+    return wall_load_of(out);
 }
 
 Result<void> GpuFluid::read(af::MacGrid& g) const {
@@ -352,8 +520,9 @@ Result<void> GpuFluid::publish(glm::vec3 origin, FlowVolume& out) {
         publish_chain_ = *id;
     }
     if (Result<void> ok = runner_->submit(*publish_chain_, 1); !ok) return ok;
-    // No solid cell, so none is extrapolated (extrapolated_cells()).
-    return read_flow_volume(*runner_, shape_, origin, 0u, out);
+    // The solid cells written from their fluid side, counted once at create()
+    // (extrapolated_cells(); 0 without solids).
+    return read_flow_volume(*runner_, shape_, origin, extrapolated_, out);
 }
 
 }  // namespace spade::airflow_gpu

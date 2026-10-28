@@ -7,16 +7,20 @@
 //
 //   GpuLiveFluid  60 steps of a changing program, the rotors' discs changing
 //                 every step, the CPU's run to the bit on the device of
-//                 record, frame by frame and in the save; a flow past the
-//                 volume's range ends the run at its frame, naming it; the
-//                 device's refusals (parts, a workgroup size, no device)
-//                 fall back to the CPU by name, and the case's own don't;
+//                 record, frame by frame and in the save; with a ball in the
+//                 air (G3) too, where a NaN beside the ball faults the first
+//                 step and a flow past the volume's range around it still
+//                 ends the run at its frame; a flow past the volume's range
+//                 ends the run at its frame, naming it; the device's
+//                 refusals (a workgroup size, no device) fall back to the
+//                 CPU by name, and the case's own don't;
 //                 the frame's wall time on both, opt-in
 //                 (SPADE_AIRFLOW_TIMINGS); one NaN in the air reaches the
 //                 step's end as on the CPU and ends both runs at their first
-//                 frame, and a device that can't preserve it is refused by
-//                 name (the airflow kernels' SignedZeroInfNanPreserve,
-//                 2026-10-27).
+//                 frame.
+//   AirflowFloatControls  host only: a device that can't preserve a NaN is
+//                 refused by name (the airflow kernels'
+//                 SignedZeroInfNanPreserve, 2026-10-27).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -34,6 +38,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -227,6 +232,109 @@ TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
     EXPECT_TRUE(saved == bytes(dir.path() / "gpu.bin"));
 }
 
+// The quad with its ball in the air (G3: GpuFluid takes the run's solids),
+// three frames of the changing program: every frame's halves the CPU's run's
+// to the bit on the device of record, so the publish's solid cells (the
+// first layer extrapolated, the rest no-data) pass the seam's scan.
+TEST(GpuLiveFluid, FliesTheBallQuadToTheBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool exact = spade::testing::airflow_bit_equal_device(*ctx);
+    const Powered p = with_ball_body();
+    const an::ResolvedCase r = editor_case(p);
+    an::LiveRun cpu = started(r, p.model, {});
+    an::LiveRun gpu = started(r, p.model, ag::gpu_live_fluid(*ctx));
+    ASSERT_TRUE(gpu.solids().any);
+    const an::ControlProgram program = changing();
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    std::size_t differ = 0;
+    std::size_t halves = 0;
+    while (cpu.state().frames < 3) {
+        const an::Controls c = an::controls_at(program, static_cast<float>(cpu.state().t_s));
+        const spade::Result<an::LiveFrame> fa = cpu.advance_frame(c, a);
+        const spade::Result<an::LiveFrame> fb = gpu.advance_frame(c, b);
+        ASSERT_TRUE(fa.has_value()) << fa.error().context;
+        ASSERT_TRUE(fb.has_value()) << fb.error().context;
+        ASSERT_EQ(fa->steps, fb->steps);
+        const std::size_t d = differing(a.v, b.v) + differing(a.s, b.s);
+        differ += d;
+        halves += a.v.size() + a.s.size();
+        if (exact) {
+            ASSERT_EQ(d, 0u) << "frame " << fa->frame;
+        }
+        EXPECT_EQ(a.header.extrapolated_cells, b.header.extrapolated_cells);
+    }
+    std::printf("[ live    ] the ball quad, %llu steps on 32^3: %zu of %zu published halves differ, %u cells "
+                "extrapolated (device of record: %s)\n",
+                static_cast<unsigned long long>(gpu.state().steps), differ, halves, b.header.extrapolated_cells,
+                exact ? "yes" : "no");
+    EXPECT_GT(b.header.extrapolated_cells, 0u);
+    EXPECT_EQ(cpu.state().rotor_omega, gpu.state().rotor_omega);
+}
+
+// A NaN in an open u face beside the ball (its neighbour along x cut or
+// closed): with parts in the air the device's step faults on it, as the CPU's
+// does (non_finite, the pressure named: the CG's r . z carries it), so the run
+// ends at its first step, before any publish.
+TEST(GpuLiveFluid, ANanBesideTheBallFaultsItsFirstStep) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const an::LiveFluidMaker gpu = ag::gpu_live_fluid(*ctx);
+    std::optional<std::size_t> poisoned_face;
+    const an::LiveFluidMaker poisoned = [&gpu, &poisoned_face](const an::LiveFluidStart& s) {
+        af::MacGrid g = s.grid;
+        if (s.solids != nullptr) {
+            const std::vector<float>& theta = s.solids->theta[0];
+            const std::size_t row = g.shape.nx + 1u;
+            for (std::size_t f = 0; f + 1u < theta.size() && !poisoned_face; ++f) {
+                if (f % row < g.shape.nx && theta[f] == 1.0f && theta[f + 1u] < 1.0f) poisoned_face = f;
+            }
+        }
+        if (poisoned_face) g.u[*poisoned_face] = std::numeric_limits<float>::quiet_NaN();
+        return gpu(an::LiveFluidStart{g, s.domain, s.config, s.solids});
+    };
+    const Powered p = with_ball_body();
+    an::LiveRun run = started(editor_case(p), p.model, poisoned);
+    ASSERT_TRUE(poisoned_face.has_value()) << "no open u face beside the ball";
+    const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    spade::FlowVolume v;
+    const spade::Result<an::LiveFrame> frame = run.advance_frame(armed, v);
+    ASSERT_FALSE(frame.has_value());
+    std::printf("[ live    ] a NaN at u face %zu, beside the ball: %s\n", *poisoned_face, frame.error().context.c_str());
+    EXPECT_NE(frame.error().context.find("faulted at step 1"), std::string::npos) << frame.error().context;
+    EXPECT_NE(frame.error().context.find("non-finite p"), std::string::npos) << frame.error().context;
+    EXPECT_EQ(run.state().frames, 0u);
+}
+
+// The seam's scan skips only the cells the solid mask marks: a flow past
+// binary16's range around the ball (100 km/s through the box, finite, so no
+// step faults) reaches the fluid's halves beside it, and the run ends at its
+// first frame, naming them.
+TEST(GpuLiveFluid, AFlowPastTheVolumesRangeAroundTheBallEndsTheRunAtItsFrame) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const an::LiveFluidMaker gpu = ag::gpu_live_fluid(*ctx);
+    const an::LiveFluidMaker poisoned = [&gpu](const an::LiveFluidStart& s) {
+        af::MacGrid g = s.grid;
+        std::fill(g.u.begin(), g.u.end(), 1.0e5f);
+        return gpu(an::LiveFluidStart{g, s.domain, s.config, s.solids});
+    };
+    const Powered p = with_ball_body();
+    an::LiveRun run = started(editor_case(p), p.model, poisoned);
+    ASSERT_TRUE(run.solids().any);
+    const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    spade::FlowVolume v;
+    const spade::Result<an::LiveFrame> frame = run.advance_frame(armed, v);
+    ASSERT_FALSE(frame.has_value());
+    std::printf("[ live    ] 100 km/s around the ball: %s\n", frame.error().context.c_str());
+    EXPECT_NE(frame.error().context.find("the published flow holds "), std::string::npos) << frame.error().context;
+    EXPECT_EQ(run.state().frames, 0u);
+}
+
 // A flow past binary16's range (a poisoned start: 100 km/s through the box,
 // finite, so the device steps it as the CPU does) reaches the first frame:
 // its publish fails, naming the samples it can't hold, and every step after
@@ -258,9 +366,9 @@ TEST(GpuLiveFluid, AFlowPastTheVolumesRangeEndsTheRunAtItsFrame) {
               "the fluid's device failed at step " + std::to_string(steps + 1) + ": " + frame.error().context);
 }
 
-// What the device refuses falls back to the CPU, the refusal kept by name:
-// parts in the air (until G3), a workgroup size with no variant, and no
-// device. A refusal of the case itself is start()'s, not a fallback.
+// What the device refuses falls back to the CPU, the refusal kept by name: a
+// workgroup size with no variant, and no device. Parts in the air don't
+// (G3). A refusal of the case itself is start()'s, not a fallback.
 TEST(GpuLiveFluid, ItsRefusalsFallBackToTheCpuByName) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -272,10 +380,11 @@ TEST(GpuLiveFluid, ItsRefusalsFallBackToTheCpuByName) {
     ASSERT_TRUE(on_gpu.has_value()) << on_gpu.error().context;
     EXPECT_EQ(on_gpu->cpu_because, "");
 
+    // Parts in the air run on the device since G3.
     const Powered ball = with_ball_body();
     const spade::Result<ag::LiveRunOn> parts = ag::start_live_run(editor_case(ball), ball.model, ctx.get());
     ASSERT_TRUE(parts.has_value()) << parts.error().context;
-    EXPECT_EQ(parts->cpu_because, "GpuFluid: a SolidField with parts needs Physics' solids hooks (B7's G3)");
+    EXPECT_EQ(parts->cpu_because, "");
     EXPECT_TRUE(parts->run.solids().any);
 
     const spade::Result<ag::LiveRunOn> odd = ag::start_live_run(r, p.model, ctx.get(), 48);
@@ -402,8 +511,9 @@ TEST(GpuLiveFluid, ANanEndsBothRunsAtTheirFirstFrame) {
 // against a device without the float control and one with it, and on a
 // module that declares none. Then make_compute_pipeline() itself, given null
 // handles: its refusal is the same and comes before any Vulkan call. Host
-// only: no device needed.
-TEST(GpuLiveFluid, ADeviceWithoutNanPreservationIsRefusedByName) {
+// only: no device needed, so its suite is not a Gpu* one and the CPU tiers
+// and the leg run it (Core's review, 2026-10-28).
+TEST(AirflowFloatControls, ADeviceWithoutNanPreservationIsRefusedByName) {
     namespace sc = spade::compute;
     for (const sc::SpirvVariant& v : sc::gen::kSpvVariants_airflow_advection.all()) {
         EXPECT_TRUE(sc::declares_nan_preserve_f32(v.code())) << "local size " << v.workgroup_size;
