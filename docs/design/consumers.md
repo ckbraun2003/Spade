@@ -14,6 +14,10 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **The smoke tour has 14 stills** (Interface, merged `524929e`).
+  - `editor_fly_props` is the armed Phantom close, its props turned.
+  - The new check `editor.fly/props-turned` names the azimuths, making 100 checks.
+  - `props_turned()` in sandbox/vehicle_draw.hpp compares each azimuth with the authored pose, modulo the prop's blades.
 - **Plan A's multigrid takes the true partial-cell stencil** (Physics, C4, merged `facc900`).
   - `clear_weights()` post-processes each level's partial coarse cell: the domain face is scaled by 1/t and the inner face by 2/(1+t), with t the level's own fraction, never compounded.
   - Odd open grids that diverged now contract (D1 1.922 → 0.222; 81-tall boxes 1.556 → 0.19).
