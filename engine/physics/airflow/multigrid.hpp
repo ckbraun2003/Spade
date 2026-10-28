@@ -21,7 +21,9 @@ inline constexpr uint32_t kCoarsestSweeps = 32;
 
 // The largest coarsest level the halving rule may leave (the lead's decision
 // A, 2026-10-21): past it make_multigrid() coarsens axis by axis. Above every
-// golden's and record's coarsest level (at most 960 cells), so none moves.
+// golden's and record's coarsest level (at most 960 cells), so none moves:
+// each of their grids halves throughout, so none carries plan A's weights,
+// and C4's partial cells (clear_weights()) move none either.
 inline constexpr uint64_t kCoarsestCells = 1024;
 
 struct Multigrid {
@@ -68,8 +70,12 @@ void set_kinds(Multigrid& mg, const std::array<FaceKind, 6>& kind) noexcept;
 void set_weights(Multigrid& mg, const std::array<std::span<const float>, 3>& fine);
 // Every level back to plan A's stencil: no weights, except on the levels past
 // the halving rule, which take the on-plane mean of unit fine faces, as
-// before P2c, bit for bit (a host call: it allocates). make_multigrid()
-// calls it.
+// before P2c, and then each partial last cell's true stencil (C4, the lead's
+// ruling, 2026-10-27): where an odd axis leaves a level's last cell covering
+// t < 1 of a whole one, the domain face beyond it weighs x (float)(1 / t)
+// and the face before it x (float)(2 / (1 + t)), t that level's own
+// (multigrid.cpp, true_partial_cells()). A host call: it allocates.
+// make_multigrid() calls it.
 void clear_weights(Multigrid& mg);
 // The coarsest level make_multigrid() would build, with no allocation.
 [[nodiscard]] std::array<uint32_t, 3> multigrid_coarsest(uint32_t nx, uint32_t ny, uint32_t nz,

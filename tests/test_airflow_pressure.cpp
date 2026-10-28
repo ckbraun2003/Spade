@@ -4,14 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
+#include "core/detail/flush_subnormals.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/pressure.hpp"
@@ -177,6 +180,327 @@ TEST(AirflowMultigrid, TwoRunsAreBitIdentical) {
         return mg.levels[0].p;
     };
     EXPECT_EQ(run(), run());
+}
+
+// ---------------------------------------------------------------------------
+// C4 (the lead's ruling, 2026-10-27): plan A's partial coarse cell takes its
+// true stencil as weights (clear_weights()). The oracle here counts in fine
+// cells; clear_weights() takes t from the halved lengths.
+// ---------------------------------------------------------------------------
+
+// One axis at one level: t, the fraction of a whole cell its last cell
+// covers (1: none is partial), and the levels that have held it (its faces
+// weigh 4 times as much for each).
+struct AxisAt {
+    double t = 1.0;
+    uint32_t held = 0;
+};
+
+[[nodiscard]] std::vector<std::array<AxisAt, 3>> axes_by_level(const Multigrid& mg) {
+    const uint64_t n0[3] = {mg.levels[0].nx, mg.levels[0].ny, mg.levels[0].nz};
+    std::vector<std::array<AxisAt, 3>> out(mg.levels.size());
+    uint64_t span[3] = {1u, 1u, 1u};  // the fine cells a whole cell spans
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        out[l] = out[l - 1u];
+        const PoissonLevel& f = mg.levels[l - 1u];
+        const PoissonLevel& c = mg.levels[l];
+        const uint32_t nf[3] = {f.nx, f.ny, f.nz};
+        const uint32_t nc[3] = {c.nx, c.ny, c.nz};
+        for (uint32_t a = 0; a < 3; ++a) {
+            if (nc[a] != nf[a]) {
+                span[a] *= 2u;
+            } else if (nf[a] > 1u) {
+                ++out[l][a].held;
+            }
+            const uint64_t last = n0[a] - (uint64_t{nc[a]} - 1u) * span[a];  // the fine cells the last one covers
+            out[l][a].t = static_cast<double>(last) / static_cast<double>(span[a]);
+        }
+    }
+    return out;
+}
+
+// A face's plan A weight before C4: 4 for each level that held its axis,
+// times each transverse axis' t where the face's column is in that axis'
+// last cell (the on-plane mean of unit fine faces, a closed partner 0).
+[[nodiscard]] float unpatched_weight(const std::array<AxisAt, 3>& ax, const uint32_t (&n)[3], uint32_t a,
+                                     const uint32_t (&C)[3]) {
+    float w = 1.0f;
+    for (uint32_t h = 0; h < ax[a].held; ++h) w *= 4.0f;
+    for (uint32_t b = 0; b < 3; ++b) {
+        if (b != a && C[b] + 1u == n[b]) w *= static_cast<float>(ax[b].t);
+    }
+    return w;
+}
+
+// Every plan A weight against the rule: level 0 holds none; on each coarser
+// level the domain face beyond a partial last cell is the unpatched weight x
+// (float)(1 / t), the face before it x (float)(2 / (1 + t)), with t that
+// level's own, and every other face (a periodic axis' too) the unpatched
+// weight. Bit for bit; counted, with the first face that differs.
+struct WeightAudit {
+    uint64_t outer = 0;  // domain faces beyond a partial cell
+    uint64_t inner = 0;  // faces before one
+    uint64_t other = 0;
+    uint64_t outer_bad = 0;
+    uint64_t inner_bad = 0;
+    uint64_t other_bad = 0;
+    std::string first_bad;
+};
+
+[[nodiscard]] WeightAudit audit_weights(const Multigrid& mg) {
+    WeightAudit out;
+    const std::vector<std::array<AxisAt, 3>> ax = axes_by_level(mg);
+    for (uint32_t a = 0; a < 3; ++a) {
+        if (!mg.levels[0].w[a].empty()) {
+            ++out.other_bad;
+            out.first_bad = "level 0 holds weights";
+        }
+    }
+    for (std::size_t l = 1; l < mg.levels.size(); ++l) {
+        const PoissonLevel& L = mg.levels[l];
+        const uint32_t n[3] = {L.nx, L.ny, L.nz};
+        for (uint32_t a = 0; a < 3; ++a) {
+            const uint32_t dim[3] = {n[0] + (a == 0 ? 1u : 0u), n[1] + (a == 1 ? 1u : 0u), n[2] + (a == 2 ? 1u : 0u)};
+            if (L.w[a].size() != std::size_t{dim[0]} * dim[1] * dim[2]) {
+                ++out.other_bad;
+                if (out.first_bad.empty()) {
+                    out.first_bad = "level " + std::to_string(l) + " axis " + std::to_string(a) + ": " +
+                                    std::to_string(L.w[a].size()) + " weights";
+                }
+                continue;
+            }
+            const double t = ax[l][a].t;
+            const bool partial = !mg.periodic[a] && t < 1.0;
+            const auto outer = static_cast<float>(1.0 / t);
+            const auto inner = static_cast<float>(2.0 / (1.0 + t));
+            for (uint32_t K = 0; K < dim[2]; ++K) {
+                for (uint32_t J = 0; J < dim[1]; ++J) {
+                    for (uint32_t I = 0; I < dim[0]; ++I) {
+                        const uint32_t C[3] = {I, J, K};
+                        const float base = unpatched_weight(ax[l], n, a, C);
+                        float want = base;
+                        uint64_t* count = &out.other;
+                        uint64_t* bad = &out.other_bad;
+                        if (partial && C[a] == n[a]) {
+                            want = base * outer;
+                            count = &out.outer;
+                            bad = &out.outer_bad;
+                        } else if (partial && C[a] + 1u == n[a]) {
+                            want = base * inner;
+                            count = &out.inner;
+                            bad = &out.inner_bad;
+                        }
+                        ++*count;
+                        const float got = L.w[a][I + std::size_t{dim[0]} * (J + std::size_t{dim[1]} * K)];
+                        if (std::bit_cast<uint32_t>(got) != std::bit_cast<uint32_t>(want)) {
+                            ++*bad;
+                            if (out.first_bad.empty()) {
+                                char buf[200];
+                                std::snprintf(buf, sizeof buf,
+                                              "level %zu axis %u face (%u, %u, %u): %.9g, want %.9g (unpatched %.9g, "
+                                              "t %.9g)",
+                                              l, a, I, J, K, static_cast<double>(got), static_cast<double>(want),
+                                              static_cast<double>(base), t);
+                                out.first_bad = buf;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// C4's weights, bit for bit, on a grid with one partial level, a periodic
+// axis and a held one: 32 x 13 x 3, x periodic. Level 1 is 16 x 7 x 3: y's
+// last cell covers one fine cell of two (t = 0.5), so the +y domain face
+// weighs (float)(1 / 0.5) = 2 and the face before it (float)(2 / 1.5);
+// every other weight is plan A's as before: the x faces (periodic, wrapped
+// as ever) 0.5 on the partial row, the z faces (z held) 4 times that. Every
+// coarser level carries weights (a partial cell fails halved_throughout()),
+// so C4 never meets an empty one. Mutation: the inner factor dropped.
+TEST(AirflowMultigridPartialCells, ThePartialCellsFacesTakeItsTrueStencilBitForBit) {
+    const Multigrid mg = make_multigrid(32, 13, 3, {true, false, false});
+    ASSERT_EQ(mg.levels.size(), 2u);
+    const PoissonLevel& L = mg.levels[1];
+    ASSERT_EQ((std::array<uint32_t, 3>{L.nx, L.ny, L.nz}), (std::array<uint32_t, 3>{16, 7, 3}));
+    const WeightAudit audit = audit_weights(mg);
+    EXPECT_EQ(audit.outer, 48u) << "the +y domain face, 16 x 3";
+    EXPECT_EQ(audit.inner, 48u);
+    EXPECT_EQ(audit.outer_bad, 0u) << audit.first_bad;
+    EXPECT_EQ(audit.inner_bad, 0u) << audit.first_bad;
+    EXPECT_EQ(audit.other_bad, 0u) << audit.first_bad;
+    const auto wx = [&L](uint32_t I, uint32_t J, uint32_t K) { return L.w[0][I + 17u * (J + 7u * K)]; };
+    const auto wy = [&L](uint32_t I, uint32_t J, uint32_t K) { return L.w[1][I + 16u * (J + 8u * K)]; };
+    const auto wz = [&L](uint32_t I, uint32_t J, uint32_t K) { return L.w[2][I + 16u * (J + 7u * K)]; };
+    EXPECT_EQ(wy(5, 7, 1), 2.0f);
+    EXPECT_EQ(wy(5, 6, 1), static_cast<float>(2.0 / 1.5));
+    EXPECT_EQ(wy(5, 5, 1), 1.0f);
+    EXPECT_EQ(wy(5, 0, 1), 1.0f) << "the -y face: no partial cell there";
+    EXPECT_EQ(wx(0, 6, 1), 0.5f);
+    EXPECT_EQ(wx(16, 6, 1), 0.5f) << "the periodic mirror";
+    EXPECT_EQ(wx(3, 5, 1), 1.0f);
+    EXPECT_EQ(wz(3, 6, 2), 2.0f);
+    EXPECT_EQ(wz(3, 5, 2), 4.0f);
+}
+
+// No compounding. On D1's grid, 240 x 177 x 168 (7 levels), y's last cell
+// is partial on every coarser level -- t 0.5, 0.25, 0.125, 0.0625, then
+// 0.53125 and 0.765625 -- and x's and z's on some, and each level's factors
+// use its own t alone: level 4's +y face weighs 16, not 1024 (the product
+// down the levels). Mutation: the factors applied inside clear_weights()'
+// level loop, so each level coarsens the patched one above.
+TEST(AirflowMultigridPartialCells, EachLevelsFactorsUseItsOwnPartialCellAlone) {
+    const Multigrid mg = make_multigrid(240, 177, 168);
+    ASSERT_EQ(mg.levels.size(), 7u);
+    const std::vector<std::array<AxisAt, 3>> ax = axes_by_level(mg);
+    const double want_y[7] = {1.0, 0.5, 0.25, 0.125, 0.0625, 0.53125, 0.765625};
+    for (std::size_t l = 0; l < 7u; ++l) {
+        EXPECT_EQ(ax[l][1].t, want_y[l]) << l;
+        std::printf("D1 level %zu (%u x %u x %u): t %.6g, %.6g, %.6g\n", l, mg.levels[l].nx, mg.levels[l].ny,
+                    mg.levels[l].nz, ax[l][0].t, ax[l][1].t, ax[l][2].t);
+    }
+    const WeightAudit audit = audit_weights(mg);
+    std::printf("D1 weights: %llu outer, %llu inner, %llu other faces\n",
+                static_cast<unsigned long long>(audit.outer), static_cast<unsigned long long>(audit.inner),
+                static_cast<unsigned long long>(audit.other));
+    EXPECT_EQ(audit.outer_bad, 0u) << audit.first_bad;
+    EXPECT_EQ(audit.inner_bad, 0u) << audit.first_bad;
+    EXPECT_EQ(audit.other_bad, 0u) << audit.first_bad;
+    const PoissonLevel& L4 = mg.levels[4];
+    EXPECT_EQ(L4.w[1][0u + 15u * (12u + 13u * 0u)], 16.0f) << "level 4's +y face at x 0, z 0";
+}
+
+// The bound: in D1's hierarchy every plan A weight is finite, above 0 and at
+// most 16, and 16 is level 4's +y face, 1 / t at t = 1/16.
+TEST(AirflowMultigridPartialCells, D1sWeightsAreFinitePositiveAndAtMost16) {
+    const Multigrid mg = make_multigrid(240, 177, 168);
+    uint64_t bad = 0;
+    float most = 0.0f;
+    std::size_t most_level = 0;
+    uint32_t most_axis = 0;
+    for (std::size_t l = 0; l < mg.levels.size(); ++l) {
+        for (uint32_t a = 0; a < 3; ++a) {
+            for (const float w : mg.levels[l].w[a]) {
+                if (!std::isfinite(w) || !(w > 0.0f) || w > 16.0f) ++bad;
+                if (w > most) {
+                    most = w;
+                    most_level = l;
+                    most_axis = a;
+                }
+            }
+        }
+    }
+    std::printf("D1's largest weight %.9g, level %zu axis %u\n", static_cast<double>(most), most_level, most_axis);
+    EXPECT_EQ(bad, 0u);
+    EXPECT_EQ(most, 16.0f);
+    EXPECT_EQ(most_level, 4u);
+    EXPECT_EQ(most_axis, 1u);
+}
+
+// The plan A V-cycle's own contraction by power iteration, as the triage's
+// HomogeneousFactors measured it (2026-10-27, job C): b = 0, p a fixed
+// pseudo-random field, `cycles` cycles, max|r| after each over the one
+// before; the last such factor and the worst.
+struct Contraction {
+    float last = 0.0f;
+    float worst = 0.0f;
+};
+
+[[nodiscard]] Contraction contraction(Multigrid& mg, const std::array<FaceKind, 6>& kinds, uint32_t cycles = 20) {
+    set_kinds(mg, kinds);
+    PoissonLevel& f = mg.levels[0];
+    std::fill(f.b.begin(), f.b.end(), 0.0f);
+    uint32_t x = 0x9E3779B9u;
+    for (float& p : f.p) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        p = static_cast<float>(x >> 8) * (2.0f / 16777216.0f) - 1.0f;
+    }
+    const bool closed =
+        std::none_of(kinds.begin(), kinds.end(), [](FaceKind k) { return k == FaceKind::pressure_outlet; });
+    const spade::math::ScopedFlushSubnormals flush;
+    if (closed) remove_mean(f.p, f.nx, f.ny, f.nz);
+    residual(f);
+    float prev = max_abs(f.r);
+    Contraction out;
+    for (uint32_t n = 1; n <= cycles; ++n) {
+        v_cycle(mg);
+        if (closed) remove_mean(f.p, f.nx, f.ny, f.nz);
+        residual(f);
+        const float r = max_abs(f.r);
+        out.last = prev > 0.0f ? r / prev : 0.0f;
+        out.worst = std::max(out.worst, out.last);
+        prev = r;
+        if (!std::isfinite(r) || r == 0.0f) break;
+    }
+    return out;
+}
+
+// D1's faces (the triage's): the wind enters at +x, every other face an outlet.
+[[nodiscard]] std::array<FaceKind, 6> d1_faces() {
+    DomainBc bc;
+    bc.ambient = glm::vec3(-3.0f, 0.0f, 0.0f);
+    return face_kinds(bc);
+}
+
+[[nodiscard]] bool env_set(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name) != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// The cycle contracts on the smallest odd grids, open on their odd axis,
+// whose plan A cycle diverged before C4 (a scan of 19 grids, 2026-10-27,
+// with D1's faces). 512 x 33 x 1, z walls (levels 256 x 17, 128 x 9 and
+// 64 x 5: y's t 0.5, 0.25, 0.125), went from 1.004 a cycle to 0.109; 64 x
+// 33 x 64, the smallest 3D one, from 1.016 to 0.158 (and 112 x 81 x 112
+// from 1.556 to 0.19, as the triage's job C measured). Every cycle of the
+// 20, the worst included. Mutation: the inner factor dropped (so cut, the
+// scan measured 0.449 and 0.461).
+TEST(AirflowMultigridPartialCells, PlanAsCycleContractsOnTheSmallestOddGridsThatDiverged) {
+    struct Case {
+        uint32_t nx, ny, nz;
+        bool z_walls;
+    };
+    for (const Case c : {Case{512, 33, 1, true}, Case{64, 33, 64, false}}) {
+        std::array<FaceKind, 6> kinds = d1_faces();
+        if (c.z_walls) kinds[kZMinus] = kinds[kZPlus] = FaceKind::fixed_velocity;
+        Multigrid mg = make_multigrid(c.nx, c.ny, c.nz);
+        const Contraction k = contraction(mg, kinds);
+        std::printf("plan A's cycle on %u x %u x %u%s: %.4g a cycle, worst %.4g\n", c.nx, c.ny, c.nz,
+                    c.z_walls ? " (z walls)" : "", static_cast<double>(k.last), static_cast<double>(k.worst));
+        EXPECT_LT(k.last, 0.3f) << c.nx << "x" << c.ny << "x" << c.nz;
+        EXPECT_LT(k.worst, 0.3f) << c.nx << "x" << c.ny << "x" << c.nz;
+    }
+}
+
+// THE PROBE (opt-in, SPADE_C4_PROBE=1), carried so the triage's scratch
+// branch can go: the cycle's contraction on the odd grids and their even
+// twins, with the rule as built. Job C (2026-10-27, before C4): 112 x 81 x
+// 112 1.556, 112 x 80 x 112 0.170; 240 x 177 x 168 1.922, 240 x 176 x 168
+// 0.477. With the scratch's C4: 0.19 and 0.222, 0.203 on 176.
+TEST(AirflowMultigridPartialCells, ProbeTheOddGridsAgainstTheirEvenTwins) {
+    if (!env_set("SPADE_C4_PROBE")) {
+        GTEST_SKIP() << "opt-in: SPADE_C4_PROBE=1";
+    }
+    const std::array<FaceKind, 6> kinds = d1_faces();
+    for (const std::array<uint32_t, 3>& n :
+         {std::array<uint32_t, 3>{112, 81, 112}, std::array<uint32_t, 3>{112, 80, 112},
+          std::array<uint32_t, 3>{240, 177, 168}, std::array<uint32_t, 3>{240, 176, 168}}) {
+        Multigrid mg = make_multigrid(n[0], n[1], n[2]);
+        const Contraction c = contraction(mg, kinds);
+        std::printf("C4 probe %u x %u x %u, D1's faces, %zu levels: last factor %.4g, worst %.4g\n", n[0], n[1], n[2],
+                    mg.levels.size(), static_cast<double>(c.last), static_cast<double>(c.worst));
+        std::fflush(stdout);
+    }
 }
 
 [[nodiscard]] float max_divergence(const MacGrid& g) {
