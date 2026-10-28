@@ -22,7 +22,8 @@
 //
 // Per velocity sample (u, v, w arrays, MacGrid's indexing):
 //   theta  the face's open fraction. A wall part: clamp(0.5 + phi / dx, 0, 1)
-//          (Batty, Bertails & Bridson 2007). A sheet: 0 where its mid-surface
+//          (Batty, Bertails & Bridson 2007), closed (0) wherever 0.5 + phi / dx
+//          is at most 1e-4 (THE TIE, below). A sheet: 0 where its mid-surface
 //          crosses the segment between the face's two cell centres, half-open
 //          (-dx/2, dx/2] along the face's axis, so a sheet on a cell-centre
 //          plane closes exactly one face; otherwise 1.
@@ -37,7 +38,8 @@
 // classifier calls a wall is measured on the grid it meets:
 //   (A) a blob: it closes no face (no sample it wins has theta = 0);
 //   (B) leaking runs: along each axis, a run joins two cell centres outside it
-//       with k >= 0 centres inside between; for k = 0 the Lipschitz screen
+//       (phi > 1e-4 dx: a centre on the surface is not outside, THE TIE) with
+//       k >= 0 centres inside or on it between; for k = 0 the Lipschitz screen
 //       phi1 + phi2 <= dx and a sphere-traced hit admit it. Traces from both
 //       ends give the entry, the exit and their normals; the crossing is thin
 //       when n_in . n_out <= -0.5 and tau = chord |n_in . e| < 2 dx, and a thin
@@ -55,10 +57,22 @@
 // more than one direction (a wire, a bead) included -- is refused by name:
 // declare min_feature or refine dx.
 // A blob is COVERED (the lead, 2026-10-27) when every sample it would block
-// alone (its own phi <= dx/2) is closed by another part, which wins it: it
-// lies inside that part, adds no boundary and is never sheeted, and the run
-// line names the parts that cover it. A blob covered only in part is exposed,
-// and refused with the faces it would block and how many stay open.
+// alone (its own phi <= dx/2, within 1e-4 dx: THE TIE) is closed by another
+// part, which wins it: it lies inside that part, adds no boundary and is never
+// sheeted, and the run line names the parts that cover it. A blob covered only
+// in part is exposed, and refused with the faces it would block and how many
+// stay open.
+//
+// THE TIE (Physics' fix (d), 2026-10-28). Each threshold above holds within
+// 1e-4 dx (the traces' own "on the surface") on the solid's side: a point on
+// a mesh's surface reads a distance of plus or minus rounding with an
+// arbitrary gradient (Core's documented contract for the mesh field), so a
+// surface on a plane of cell centres or faces must not turn a verdict on the
+// sign of that rounding. Not yet for a sheet (the lead, 2026-10-28: left
+// while no part is a sheet at the D1 film's 4 mm): a sheet's crossing, the
+// half-open +-dx/2 test in pass 1 and where a sheet meets a wall
+// (solids.cpp), still takes that sign when its mid-surface lies exactly dx/2
+// from a face.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 

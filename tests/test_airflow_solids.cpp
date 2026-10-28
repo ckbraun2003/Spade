@@ -1,21 +1,24 @@
 // The solid field (the solids design, sections 2-4; P2's Tasks 1, 2 and 8):
 // apertures from one sampler, labelled sheets, the classifier, the measured
 // safeguard and the viscous wall links. Shapes and bounds are analytic
-// (tests/airflow_solid_shapes.hpp); expectations are worked from the
-// geometry, not read from the code (TD-4).
+// (tests/airflow_solid_shapes.hpp), but for the tie's meshed box;
+// expectations are worked from the geometry, not read from the code (TD-4).
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "airflow_solid_shapes.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/viscous.hpp"
+#include "world/mesh.hpp"
 
 namespace {
 
@@ -660,6 +663,93 @@ TEST(AirflowSolidsSafeguard, NestedPartsThatEachCloseFacesAreUnchanged) {
     }
     EXPECT_GT(closed_by[0], 0u) << "the core";
     EXPECT_GT(closed_by[1], 0u) << "the body";
+}
+
+// --- A surface on a grid plane (the tie fix (d), 2026-10-28) ----------------
+
+// A box as a triangle mesh (12 triangles, outward), its corners at lo and hi
+// in the grid's own frame, sampled through the mesh field: a sample on one
+// of its faces reads the closest point's rounding, not an exact zero (an
+// analytic box may give exact zeros, and hide the tie).
+struct MeshedBox {
+    std::shared_ptr<const spade::TriangleMesh> mesh;
+    SolidPart part;
+
+    static SolidQuery nearest(const void* ctx, glm::vec3 x) noexcept {
+        const spade::MeshSample s = spade::mesh_sample(*static_cast<const MeshedBox*>(ctx)->mesh, x);
+        return SolidQuery{s.distance, s.gradient, 0u, glm::vec3(0.0f)};
+    }
+    static SolidQuery one(const void* ctx, uint32_t /*part*/, glm::vec3 x) noexcept { return nearest(ctx, x); }
+    [[nodiscard]] SolidSampler sampler() const { return SolidSampler{this, &MeshedBox::nearest, &MeshedBox::one}; }
+};
+
+[[nodiscard]] MeshedBox meshed_box(glm::vec3 lo, glm::vec3 hi) {
+    constexpr uint32_t kBoxTriangles[12][3] = {{0, 2, 1}, {1, 2, 3}, {4, 5, 6}, {5, 7, 6}, {0, 1, 4}, {1, 5, 4},
+                                               {2, 6, 3}, {3, 6, 7}, {0, 4, 2}, {2, 4, 6}, {1, 3, 5}, {3, 7, 5}};
+    std::vector<glm::dvec3> positions;
+    for (uint32_t v = 0; v < 8; ++v) {
+        positions.emplace_back((v & 1u) != 0 ? hi.x : lo.x, ((v >> 1) & 1u) != 0 ? hi.y : lo.y,
+                               ((v >> 2) & 1u) != 0 ? hi.z : lo.z);  // floats, so each rounds back exactly
+    }
+    std::vector<uint32_t> indices;
+    for (const auto& t : kBoxTriangles) indices.insert(indices.end(), {t[0], t[1], t[2]});
+    MeshedBox b;
+    b.mesh = spade::make_mesh(spade::MeshInput{.positions = std::move(positions),
+                                               .indices = std::move(indices),
+                                               .unit = spade::MeshUnit::metre},
+                              "box")
+                 .value();
+    b.part = SolidPart{.name = "box", .porous = false, .min_feature = 0.0f, .extent = hi - lo, .box_min = lo,
+                       .box_max = hi};
+    return b;
+}
+
+// A meshed box wall 8 cells square, its sides on the face planes x, y = 4 dx
+// and 12 dx and its bottom on z = 4 dx, at dx = 4 mm (not a power of two, so
+// the field rounds). Its top lies on the cell-centre plane z = 10.5 dx -- the
+// float the classifier computes for the centres, (10 + 0.5) dx -- or on the
+// face plane z = 10 dx, each also moved 1 ulp up and down. A face whose
+// centre lies dx/2 or more inside is closed, and every side puts a plane of
+// faces exactly dx/2 inside it. Worked from the geometry: u closes i = 5..11,
+// j = 4..11 and k = 4..9 under either top (7 x 8 x 6 = 336), v the same by
+// symmetry; w closes i, j = 4..11 and k = 5..10 under the centre-plane top
+// (384) but k = 5..9 under the face-plane top (320), one plane fewer. All six
+// build as one wall with no note.
+TEST(AirflowSolidsTie, AMeshedBoxOnAGridPlaneGivesOneVerdictWithinAnUlp) {
+    const float dx = 0.004f;
+    const GridShape shape{16, 16, 16, dx};
+    const float centre_plane = (10.0f + 0.5f) * dx;
+    const float face_plane = 10.0f * dx;
+    const float up = std::numeric_limits<float>::infinity();
+    struct Placement {
+        const char* what;
+        float top;
+        std::array<uint32_t, 3> closed;
+    };
+    const std::array<Placement, 6> placements{{
+        {"top on the centre plane", centre_plane, {336u, 336u, 384u}},
+        {"top 1 ulp above the centre plane", std::nextafter(centre_plane, up), {336u, 336u, 384u}},
+        {"top 1 ulp below the centre plane", std::nextafter(centre_plane, -up), {336u, 336u, 384u}},
+        {"top on the face plane", face_plane, {336u, 336u, 320u}},
+        {"top 1 ulp above the face plane", std::nextafter(face_plane, up), {336u, 336u, 320u}},
+        {"top 1 ulp below the face plane", std::nextafter(face_plane, -up), {336u, 336u, 320u}},
+    }};
+    for (const Placement& pl : placements) {
+        SCOPED_TRACE(pl.what);
+        const MeshedBox box = meshed_box(glm::vec3(4.0f * dx, 4.0f * dx, 4.0f * dx),
+                                         glm::vec3(12.0f * dx, 12.0f * dx, pl.top));
+        const std::vector<SolidPart> parts{box.part};
+        SolidField f = *make_solid_field(shape);
+        const Result<void> r = build_solids(f, shape, {}, parts, box.sampler());
+        EXPECT_TRUE(r.has_value()) << r.error().context;
+        if (!r.has_value()) continue;
+        EXPECT_EQ(f.run_line, "solids: 1 parts, 1 walls, 0 sheets");
+        std::array<uint32_t, 3> closed_faces{};
+        for (uint32_t c = 0; c < 3; ++c) {
+            for (const float t : f.theta[c]) closed_faces[c] += closed(t) ? 1u : 0u;
+        }
+        EXPECT_EQ(closed_faces, pl.closed);
+    }
 }
 
 // The free-slip interior (design section 3, approved 2026-10-13): a closed
