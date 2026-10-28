@@ -38,6 +38,13 @@
 //              the gcc-13 Docker leg reproduces all nine on a fresh -NoSeed
 //              volume at 8baa559 (build-docker/8baa5596acc8-8baa559-fresh,
 //              2026-10-13): FINAL
+//   kept       2026-10-27, by the dense disc (physics/airflow-dense-disc): a
+//              disc's points follow its R/dx (the lead's density rule, 3 x 16
+//              up to 10 x 64). These three discs are R/dx 2, 3 and 2, so 3
+//              rings of 16 as before, spread to the bit as before: their
+//              digests are the FINAL ones above, unchanged. (The branch's
+//              interim 10 x 64 everywhere had moved all three; the rule
+//              brought them back.)
 // A change to any value here is a golden regeneration under TD-1, with its
 // reason in the commit.
 #include <gtest/gtest.h>

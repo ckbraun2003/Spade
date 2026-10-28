@@ -6,8 +6,10 @@
 //
 //   GpuAirflowActuator   the gather against spread_actuator() on the
 //                        reference quad's four discs: level and tilted, with
-//                        the rotors' swirl and thrust-only; the same bits at
-//                        workgroup sizes 32, 64 and 128; and, opt-in, C8's
+//                        the rotors' swirl and thrust-only; discs of three
+//                        point counts in one dispatch (the density rule);
+//                        the same bits at workgroup sizes 32, 64 and 128;
+//                        and, opt-in, C8's
 //                        far wake with the gather's increments in the CPU
 //                        step, judged past its horizon against C8's one-ulp
 //                        ensemble ("GPU gather in the CPU step": not the
@@ -57,6 +59,7 @@
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/rotor_discs.hpp"
 #include "spike/airflow/chain_runner.hpp"
+#include "spike/airflow/step_chain.hpp"
 
 namespace {
 
@@ -67,6 +70,10 @@ using spade::airflow_gpu::BufferKind;
 using spade::airflow_gpu::ChainRunner;
 using spade::airflow_gpu::RunnerBuffer;
 using spade::airflow_gpu::RunnerDesc;
+// The discs' records as the step chain packs them (step_chain.hpp, its layout
+// derived from af::kDiscPoints): the parity tests below fail if the slang
+// module's hand-written kDiscStride or kTangentsAt disagree with it.
+using spade::airflow_gpu::disc_records;
 using spade::compute::ChainCommand;
 using spade::compute::SpirvVariantSet;
 using spade::compute::VulkanContext;
@@ -88,7 +95,6 @@ constexpr float kBandRelative = 4.0f * 2.08e-7f;
 // Set 1's bindings the gather uses (bindings.slang section F); the runner
 // binds buffers[i] at binding i, so every binding up to the last is given.
 constexpr uint32_t kParams = 0, kIncrements = 7, kDiscs = 22, kBufferCount = 23;
-constexpr uint32_t kDiscStride = 304;  // floats per disc record (airflow_actuator_gather.slang)
 
 // The kernel's push block: face_count in word 2, as every airflow kernel's.
 struct GatherPush {
@@ -159,31 +165,6 @@ template <class T>
         const auto disc = af::disc_from_rotor(rotor, body, glm::vec3(0.0f), s);
         EXPECT_TRUE(disc.has_value()) << "rotor " << r << ": " << disc.error().context;
         if (disc) out.push_back(*disc);
-    }
-    return out;
-}
-
-// The discs' records, as the kernel reads them, from disc_spread().
-[[nodiscard]] std::vector<float> disc_records(std::span<const af::ActuatorDisc> discs, const af::GridShape& s,
-                                              float rho, float h) {
-    std::vector<float> out(std::max<std::size_t>(discs.size(), 1u) * kDiscStride, 0.0f);
-    for (std::size_t d = 0; d < discs.size(); ++d) {
-        const af::DiscSpread sp = af::disc_spread(discs[d], s, rho, h);
-        float* r = out.data() + d * kDiscStride;
-        for (uint32_t a = 0; a < 3; ++a) {
-            r[a] = discs[d].centre[static_cast<glm::length_t>(a)];
-            r[4 + a] = discs[d].axis[static_cast<glm::length_t>(a)];
-        }
-        r[3] = sp.reach;
-        r[7] = sp.scale;
-        r[8] = sp.swirl_scale;
-        r[9] = sp.swirl ? 1.0f : 0.0f;
-        for (uint32_t i = 0; i < af::kDiscPoints; ++i) {
-            for (uint32_t a = 0; a < 3; ++a) {
-                r[16 + 3 * i + a] = sp.points[i][static_cast<glm::length_t>(a)];
-                r[160 + 3 * i + a] = sp.tangent[i][static_cast<glm::length_t>(a)];
-            }
-        }
     }
     return out;
 }
@@ -368,6 +349,50 @@ TEST(GpuAirflowActuator, GatherMatchesSpreadActuatorOnTheQuadsDiscs) {
     }
 }
 
+// The density rule's counts mixed in one dispatch (the lead, 2026-10-27):
+// three discs of different R/dx in a 64 x 48 x 64 box at 5 mm, each record
+// carrying its own n -- 10 x 64 (R/dx 19, swirling), 5 x 32 (R/dx 9.6,
+// tilted, swirling) and 3 x 16 (R/dx 3, thrust-only). The last sits at the
+// corner check_disc allows, its reach box on the origin, where the record's
+// unused slots (0) would add their weight if the gather read past its n.
+// Red check: the slang's loop to kDiscPoints instead of the record's count.
+TEST(GpuAirflowActuator, GatherMatchesSpreadActuatorAcrossPointCounts) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    constexpr af::GridShape kMixed{64, 48, 64, 0.005f};
+    constexpr float kSmall = 0.015f;
+    const float corner = kSmall + 2.0f * kMixed.dx;  // check_disc's reach: the box from the origin
+    const std::vector<af::ActuatorDisc> discs = {
+        {.centre = {0.16f, 0.12f, 0.16f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.095f, .thrust = 1.29f,
+         .torque = -0.0131f},
+        {.centre = {0.25f, 0.17f, 0.25f}, .axis = glm::normalize(glm::vec3(0.3f, -1.0f, 0.2f)), .radius = 0.048f,
+         .thrust = 0.6f, .torque = 0.004f},
+        {.centre = {corner, corner, corner}, .axis = {0.0f, -1.0f, 0.0f}, .radius = kSmall, .thrust = 0.05f},
+    };
+    const uint32_t points[3] = {640, 160, 48};
+    for (std::size_t i = 0; i < discs.size(); ++i) {
+        ASSERT_TRUE(af::check_disc(discs[i], kMixed).has_value()) << "disc " << i;
+        ASSERT_EQ(af::disc_spread(discs[i], kMixed, kRho, kStepS).count, points[i]) << "disc " << i;
+    }
+    const std::vector<float> start = noisy_start(kMixed);
+    const std::vector<float> cpu = spread_on_cpu(kMixed, discs, start, kStepS);
+    const auto gpu = gather_on_gpu(*ctx, kMixed, discs, start, kStepS, kWorkgroupSize);
+    ASSERT_TRUE(gpu.has_value());
+    const float added = largest_added(cpu, start);
+    ASSERT_GT(added, 0.0f) << "the discs added nothing";
+    const Diff d = diff(*gpu, cpu);
+    std::printf("[ actuator ] 640, 160 and 48 points: %zu of %zu faces differ, worst %.3g m/s (largest increment "
+                "%.3g m/s)\n",
+                d.differing, start.size(), static_cast<double>(d.worst), static_cast<double>(added));
+    if (bit_equal) {
+        EXPECT_EQ(d.differing, 0u);
+    } else {
+        EXPECT_LE(d.worst, kBandRelative * added);
+    }
+}
+
 // The gather's time in the D1 box (240 x 177 x 168 at 4 mm, R/dx 19), the
 // quad's discs tilted with swirl at the box's middle: u, v and w, the fastest
 // of five. Opt-in with SPADE_AIRFLOW_TIMINGS, as the projection's D1 time is;
@@ -462,7 +487,7 @@ namespace {
         "= %.4f m/s\n"
         "reference: momentum theory, v_h (1 + 2/sqrt 5) = %.4f m/s (tests/data/airflow/README.md, C8)\n"
         "tolerance: within 10%% (C8's: plan A Task 11, spec \xc2\xa7" "11.2; run 0's verdict, the run being C8's "
-        "run 0: past T_p C8's own verdict is its ensemble's, abaafcc)\n"
+        "run 0: past T_p C8's own verdict is its ensemble's, the 5 x 32 disc's of 2026-10-27)\n"
         "verdict: %s\n",
         device.c_str(), thrust, h, steps, increments_differing, increments, verdict(increments_differing == 0u), steps,
         series_differing, 2u * steps, verdict(series_differing == 0u), first, steps, mean, expected,
@@ -486,7 +511,7 @@ namespace {
 // series and a mean past 10%.
 TEST(AirflowActuatorRecord, TheBitEqualC8BlockReadsAsAValidationRecord) {
     const auto within =
-        read_as_record(c8_bit_equal_block("a test device", 1.2315, 0.00125, 768, 0, 1593344, 0, 385, 8.0397, 7.5777));
+        read_as_record(c8_bit_equal_block("a test device", 1.2315, 0.00125, 768, 0, 1593344, 0, 385, 7.9008, 7.5777));
     ASSERT_TRUE(within.has_value()) << within.error().context;
     ASSERT_EQ(within->size(), 1u);
     ASSERT_EQ(within->at(0).measures.size(), 3u);
@@ -522,16 +547,17 @@ TEST(AirflowActuatorRecord, TheBitEqualC8BlockReadsAsAValidationRecord) {
 // ELSEWHERE the gather may differ from spread_actuator() in last bits, and
 // the far wake is chaotic past its horizon T_p, so the run is judged as a
 // path that is not bit-identical to the CPU's (test-docs/01-verification.md,
-// "A case judged past its horizon"; C8's numbers from its re-cut record,
-// abaafcc, and docs/design/test-docs/2026-10-22-c8-spread.md):
+// "A case judged past its horizon"; C8's numbers from its record of
+// 2026-10-27, the 5 x 32 disc's ensemble, and, for T_p and the parting,
+// docs/design/test-docs/2026-10-22-c8-spread.md, measured with the 3 x 16):
 //   * up to T_p (step 104), both probes' series against the CPU's run, banded
 //     per TD-14: 4x the measured gap, never under 4 ulps of the scene's scale;
 //   * past T_p, C8's measure, the mean downwash over the 80 v faces within
 //     0.5R of the axis 2R below over steps 385 to 768: within C8's 10% of
 //     momentum theory, and within 4x the ensemble's largest deviation
-//     (0.0437 m/s) of the ensemble's mean (8.0333 m/s);
+//     (0.0902 m/s) of the ensemble's mean (7.8893 m/s);
 //   * the run leaves the CPU's by 1e-3 on the axis probe no sooner than the
-//     one-ulp ensemble's earliest member does (step 141 of 16).
+//     one-ulp ensemble's earliest member does (step 141 of 16, the 3 x 16's).
 // Opt-in with C8 (SPADE_AIRFLOW_VALIDATION=1): three 768-step runs side by
 // side, about 6 minutes, so, as C8 is, run from the test binary with
 // --gtest_filter (ctest gives a Gpu test 180 s).
@@ -560,9 +586,9 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
     constexpr uint32_t kSteps = 768;
     constexpr uint32_t kTp = 104;                  // C8's horizon (the spread note, section 4)
     constexpr uint32_t kFirst = 385;               // C8's window: steps 385 to 768
-    constexpr double kEnsembleMean = 8.0333;       // the eight runs' mean of the measure (abaafcc)
-    constexpr double kEnsembleDeviation = 0.0437;  // their largest deviation from it
-    constexpr uint32_t kEarliestParting = 141;     // the 16 members' earliest 1e-3 parting
+    constexpr double kEnsembleMean = 7.8893;       // the eight runs' mean of the measure (5 x 32, 2026-10-27)
+    constexpr double kEnsembleDeviation = 0.0902;  // their largest deviation from it
+    constexpr uint32_t kEarliestParting = 141;     // the 16 members' earliest 1e-3 parting (3 x 16)
     // Up to T_p: 4x the measured gap, never under 4 ulps of momentum theory's
     // 7.5777 m/s as a float (2^-21 m/s each). Measured 2026-10-22 at 3eacd6a
     // (RTX 3060 Ti): the axis 3.45e-5, the 0.5R mean 7.21e-6. The axis is a
@@ -701,7 +727,8 @@ TEST(GpuAirflowActuator, C8GpuGatherInTheCpuStep) {
                 "tolerance: within 10%% (C8's: plan A Task 11, spec \xc2\xa7" "11.2)\n"
                 "verdict: %s\n"
                 "measure: the same mean = %.4f m/s\n"
-                "reference: C8's one-ulp ensemble, the mean of its eight runs = %.4f m/s (C8's record, abaafcc)\n"
+                "reference: C8's one-ulp ensemble, the mean of its eight runs = %.4f m/s (C8's record of "
+                "2026-10-27, the 5 x 32 disc)\n"
                 "tolerance: within 4x the ensemble's largest deviation, 4 x %.4f = %.4f m/s (test-docs/"
                 "01-verification.md, a case judged past its horizon)\n"
                 "verdict: %s\n"

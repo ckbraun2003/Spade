@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <format>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -1415,10 +1416,15 @@ void editor_tour(Tour& t, const fs::path& assets) {
         }
         const float wall_s =
             static_cast<float>(std::chrono::duration<double>(std::chrono::steady_clock::now() - from).count());
+        // Where the air ran (slice 3): "the GPU", or "the CPU: " and why.
+        const std::string on = w().air() == nullptr ? std::string("nowhere")
+                               : w().air()->backend() == "GPU" ? std::string("the GPU")
+                                                               : "the " + w().air()->backend();
         s.check(frame && frame->error.empty() && frame->frames >= kAirFrames, "publishes",
                 !frame                  ? "no frame handed over"
                 : !frame->error.empty() ? frame->error
-                                        : std::to_string(frame->frames) + " frames in " + fmt(wall_s) + " s of wall time");
+                                        : std::format("{} frames in {} s of wall time, {:.1f} fps, on {}", frame->frames,
+                                                      fmt(wall_s), static_cast<float>(frame->frames) / wall_s, on));
         then(5);
         t.snapshot("editor_airflow");
         then(20);  // the snapshot is the next frame drawn: the air still running

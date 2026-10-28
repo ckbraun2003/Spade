@@ -127,10 +127,11 @@ std::vector<float> disc_records(std::span<const af::ActuatorDisc> discs, const a
         r[7] = sp.scale;
         r[8] = sp.swirl_scale;
         r[9] = sp.swirl ? 1.0f : 0.0f;
+        r[10] = static_cast<float>(sp.count);
         for (uint32_t i = 0; i < af::kDiscPoints; ++i) {
             for (uint32_t a = 0; a < 3; ++a) {
-                r[16 + 3 * i + a] = sp.points[i][static_cast<glm::length_t>(a)];
-                r[160 + 3 * i + a] = sp.tangent[i][static_cast<glm::length_t>(a)];
+                r[kDiscPointsAt + 3 * i + a] = sp.points[i][static_cast<glm::length_t>(a)];
+                r[kDiscTangentsAt + 3 * i + a] = sp.tangent[i][static_cast<glm::length_t>(a)];
             }
         }
     }

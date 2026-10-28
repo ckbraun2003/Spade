@@ -23,6 +23,7 @@
 #include "physics/airflow/grid_io.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
+#include "physics/blade_azimuth.hpp"
 #include "sim/design_frame.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -227,6 +228,8 @@ struct LiveRun::Impl {
     glm::vec3 grid_origin{0.0f};               // the grid's minimum corner, world frame
     std::vector<float> omega_cmd;              // this step's command, one per rotor
     std::vector<vehicles::RotorRow> rows;      // the rotors after the drone's step
+    std::vector<float> psi;                    // their blade azimuths (L7c2), drawn only
+    std::string azimuth_refused;               // the first step whose azimuths were refused, named
     std::vector<af::ActuatorDisc> discs;       // their discs, in the grid's frame
     glm::quat q_bd{1.0f, 0.0f, 0.0f, 0.0f};  // the model's design -> principal, normalized
     BodyState held{};                        // the body row at the hold
@@ -428,6 +431,7 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->state.rotor_omega.assign(model.rotors.size(), 0.0f);
     impl->omega_cmd.assign(model.rotors.size(), 0.0f);
     impl->rows.resize(model.rotors.size());
+    impl->psi.assign(model.rotors.size(), 0.0f);
     impl->discs.resize(model.rotors.size());
     impl->q_bd = glm::normalize(model.design_to_principal);
     const Result<const BodyState*> spawned = impl->sim->body(impl->vehicle.body);
@@ -514,6 +518,12 @@ Result<void> LiveRun::step(const Controls& controls) {
         r.rows[i] = **row;
         r.state.rotor_omega[i] = (*row)->omega;
     }
+    // The blade azimuths by P11's rule, with the rows as the step left them.
+    // Drawn only: a refused rotor holds, and the step goes on.
+    if (!physics::advance_blade_azimuths(r.psi, r.rows, r.fluid.h) && r.azimuth_refused.empty()) {
+        r.azimuth_refused = std::format(
+            "step {}: a rotor's blade azimuth was refused (advance_blade_azimuths()); it holds", r.state.steps + 1);
+    }
 
     // The rotors' discs at the held body, into the fluid's step.
     if (!r.rows.empty()) {
@@ -596,6 +606,10 @@ std::span<const vehicles::RotorRow> LiveRun::rotor_rows() const noexcept { retur
 
 const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
+std::span<const float> LiveRun::blade_azimuth() const noexcept { return impl_->psi; }
+
+const std::string& LiveRun::azimuth_refused() const noexcept { return impl_->azimuth_refused; }
+
 std::string LiveRun::run_label() const {
     const Impl& r = *impl_;
     const af::GridShape& g = r.resolved.base;
@@ -609,6 +623,9 @@ std::string LiveRun::run_label() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
+    std::vector<float> radii;  // each rotor's disc, spread on the base grid
+    for (const ResolvedRotor& x : rotors) radii.push_back(x.radius);
+    if (const std::string note = af::disc_spacing_note(radii, g.dx); !note.empty()) out += " \xc2\xb7 " + note;
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
     if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
         out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");
@@ -656,6 +673,10 @@ void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) 
 
 void LiveRun::set_test_solids_max_iterations(uint32_t n) noexcept { impl_->test_max_iterations = n; }
 
+void LiveRun::set_test_blade_azimuth(std::span<const float> psi) noexcept {
+    if (psi.size() == impl_->psi.size()) std::copy(psi.begin(), psi.end(), impl_->psi.begin());
+}
+
 const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_->flown; }
 
 Result<void> LiveRun::save(const std::filesystem::path& file) const {
@@ -688,6 +709,8 @@ Result<void> LiveRun::save(const std::filesystem::path& file) const {
     w.put(r.held.orient);
     w.put(r.held.vel);
     w.put(r.held.omega_body);
+    w.put<uint32_t>(static_cast<uint32_t>(r.psi.size()));
+    for (const float psi : r.psi) w.put(psi);
     std::string controls;
     if (!r.flown.points.empty()) {
         Result<std::string> text = program_to_yaml(r.flown);
@@ -790,6 +813,13 @@ Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const Resolv
     const glm::quat held_orient = rd.quat();
     const glm::vec3 held_vel = rd.vec();
     const glm::vec3 held_omega = rd.vec();
+    const uint32_t azimuths = rd.get<uint32_t>();
+    if (rd.ok && azimuths != model.rotors.size()) {
+        return refuse(Code::invalid_argument, std::format("holds {} blade azimuths for a model with {} rotors", azimuths,
+                                                          model.rotors.size()));
+    }
+    std::vector<float> psi(azimuths);
+    for (float& p : psi) p = rd.get<float>();
     const std::string_view controls = rd.bytes();
     const std::string_view snapshot = rd.bytes();
     const std::string_view grid = rd.bytes();
@@ -824,9 +854,13 @@ Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const Resolv
     r.held.orient = held_orient;
     r.held.vel = held_vel;
     r.held.omega_body = held_omega;
+    r.psi = std::move(psi);
+    // The rows as the saved run's last step left them, so a resumed run poses
+    // its rotors before it steps.
     for (uint32_t i = 0; i < r.state.rotor_omega.size(); ++i) {
         const Result<const vehicles::RotorRow*> row = r.sim->rotor(r.vehicle, i);
         if (!row) return std::unexpected(row.error());
+        r.rows[i] = **row;
         r.state.rotor_omega[i] = (*row)->omega;
     }
     return run;

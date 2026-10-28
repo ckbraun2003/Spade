@@ -84,6 +84,7 @@ add_executable(spade_tests
     test_airflow_advect.cpp
     test_airflow_configs.cpp
     test_airflow_step.cpp
+    test_airflow_dense_disc.cpp
     test_airflow_publish.cpp
     test_rotor_discs.cpp
     test_airflow_grid_io.cpp
@@ -475,6 +476,14 @@ if(SPADE_BUILD_SANDBOX)
         test_sandbox_airflow_live.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
+endif()
+
+# Run air on the GPU (Rendering's design note, slice 3): the editor's
+# AirflowRun through gpu_air_starter() (sandbox/editor_air_gpu.hpp) against
+# its CPU run, GpuEditorAirflow* on the device. The sandbox's tests and the
+# device's both.
+if(SPADE_BUILD_SANDBOX AND SPADE_VULKAN)
+    target_sources(spade_tests PRIVATE test_gpu_editor_airflow.cpp)
 endif()
 
 # GlRenderer on a real GL context (SR-13 back-face culling first). GPU-gated:
