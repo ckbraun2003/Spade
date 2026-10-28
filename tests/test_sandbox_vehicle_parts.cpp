@@ -240,3 +240,18 @@ TEST(SandboxVehicleParts, AVehiclesPropsArePosedByTheirAzimuth) {
         EXPECT_TRUE(empty.statics[i].local_to_world == still.statics[i].local_to_world) << "empty spans pose it still";
     }
 }
+
+// What a still has to show for its props to be seen turned (the lead,
+// 2026-10-27): a rotor counts when its azimuth is `at_least` or more from the
+// authored pose, a prop of n blades repeating every 2 pi / n.
+TEST(SandboxVehicleParts, APropIsTurnedWhenItsAzimuthIsFarFromTheAuthoredPoseModuloItsBlades) {
+    constexpr float kDeg = 0.017453292519943295f;
+    constexpr float kPi = 3.14159265358979f;
+    const std::vector<float> psi = {0.0f, kPi, 0.5f, 2.0f, 3.0f};
+    // 0 and pi are a two-blade prop's authored pose; 0.5 rad is 28.6 degrees
+    // from it; 2.0 rad is 65 degrees; 3.0 rad is 8 degrees short of pi.
+    EXPECT_EQ(spade::sandbox::props_turned(psi, 2, 25.0f * kDeg), 2u);
+    EXPECT_EQ(spade::sandbox::props_turned(psi, 2, 30.0f * kDeg), 1u);
+    EXPECT_EQ(spade::sandbox::props_turned(psi, 1, 25.0f * kDeg), 4u) << "one blade: pi is half a turn away";
+    EXPECT_EQ(spade::sandbox::props_turned({}, 2, 25.0f * kDeg), 0u);
+}
