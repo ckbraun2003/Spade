@@ -1031,9 +1031,10 @@ float mesh_eval(const TriangleMesh& mesh, glm::vec3 p) noexcept {
 }
 
 float mesh_box_distance2(const TriangleMesh& mesh, glm::vec3 p) noexcept {
-    (void)mesh;
-    (void)p;
-    return 0.0f;  // RED: declared, not yet bounded
+    // The shell tree's root holds every shell's box, so every triangle's: the
+    // vertices' fp32 min and max. A non-finite p bounds nothing.
+    if (!finite(p)) return 0.0f;
+    return box_distance2(p, mesh.shell_nodes_[0]);
 }
 
 }  // namespace spade

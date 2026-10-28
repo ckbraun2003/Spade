@@ -9,6 +9,7 @@
 #include "vehicles/part_pose.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -222,7 +223,31 @@ PartSample sample_parts(const ModelType& model, const PosedParts& posed, glm::ve
         assert(p.part < model.parts.size());
         const SdfTransform& t = p.world_to_part;
         const glm::vec3 local(t.world_to_local * glm::vec4(x, 1.0f));
-        const SdfSample s = part_sample(model.parts[p.part], local);
+        const PartDesc& part = model.parts[p.part];
+        // THE CULL (the lead, 2026-10-28): a mesh part whose box is farther
+        // than the best so far is not queried, and the answer is the same
+        // bits. mesh_box_distance2() is never more than the query's squared
+        // distance, rounding included (world/mesh.cpp's box_distance2: every
+        // closest point lies in its triangle's box); fp32 sqrt and the multiply
+        // by a pose's scale (> 0) are monotone; so the part's distance is at
+        // least the bound once local is outside the box (b2 > 0), where the
+        // part's distance is positive, and the strict < below could not pick
+        // it. Inside the box (b2 = 0) the bound says nothing -- x can be deeper
+        // in this part than in an earlier one (an arm's root in the body) -- so
+        // it is never culled; nor is an analytic part, nor a non-finite point
+        // (b2 = 0). The order is kept, so ties still go to the lower part.
+        // THE RESIDUAL: the positive sign is the solid's; the computed one can
+        // round negative within ulps of a face just outside the box
+        // (world/mesh.hpp, THE FIELD), and then the part would have won only
+        // were the best so far within the same rounding of 0 -- a sample on
+        // two parts' surfaces at once, which the classifier's tie rule treats
+        // as one verdict. Deterministic either way; pinned at 0 mismatches on
+        // the library drones (tests/test_part_cull.cpp).
+        if (part.mesh != nullptr) {
+            const float b2 = mesh_box_distance2(*part.mesh, local);
+            if (b2 > 0.0f && std::sqrt(b2) * t.scale > out.distance) continue;
+        }
+        const SdfSample s = part_sample(part, local);
         const float distance = s.distance * t.scale;
         if (distance < out.distance) {
             out.distance = distance;
