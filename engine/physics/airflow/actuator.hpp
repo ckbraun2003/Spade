@@ -70,7 +70,9 @@ struct DiscDensity {
 // points 2.4 dx apart (over 2 dx)").
 [[nodiscard]] std::string disc_spacing_note(std::span<const float> radii, float dx);
 
-// Peskin's 4-point kernel, in cells.
+// Peskin's 4-point kernel, in cells: exactly 0 from 2 cells, and also 0 for a
+// NaN or an infinity (both comparisons fail), so a non-finite point adds
+// nothing to a spread (check_disc refuses one upstream).
 [[nodiscard]] float peskin4(float r) noexcept;
 
 // Refused (invalid_argument): a radius not positive and finite; a thrust or a
