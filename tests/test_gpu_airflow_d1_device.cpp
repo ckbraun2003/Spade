@@ -94,14 +94,6 @@ class GpuFluidStepper : public FluidStepper {
     return std::move(*result);
 }
 
-// D1 without its solids diverges on the CPU itself (2026-10-27), and GpuFluid
-// follows it bit for bit: its physical line is printed, not asserted, until
-// Physics fixes the cause (the lead). The real D1 at G3 gets its own item,
-// "known-open: D1 disc-plane face growth (Physics' triage 2)", so one fix
-// can't close the other's line.
-constexpr const char* kD1KnownOpen =
-    "known-open: D1 without solids, plan A's top-face blow-up (Physics' triage 1)";
-
 // The harness on `box` with GpuFluid under `plan`: the block printed and read
 // back, the values bit-equal over the plan's steps, the discs moving the air
 // and the flow staying physical (unless `known_open` names why it doesn't).
@@ -145,7 +137,7 @@ TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheStandInBoxWithoutItsSphere) {
 TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheD1BoxWithoutItsSolids) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     // The wind is along -x and v starts at 0: any v is the discs'.
-    expect_bit_equal(d1_box(BoxSolids::none), kShortPlan, 2u, 0.1, kD1KnownOpen);
+    expect_bit_equal(d1_box(BoxSolids::none), kShortPlan, 2u, 0.1);
 }
 
 // The full plan: 32 steps compared, the step's median and the film's 0.50 s
@@ -160,7 +152,7 @@ TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheStandInBox) {
 TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run B7's full GPU plan in D1";
-    expect_bit_equal(d1_box(BoxSolids::none), kFullPlan, 4u, 1.0, kD1KnownOpen);
+    expect_bit_equal(d1_box(BoxSolids::none), kFullPlan, 4u, 1.0);
 }
 
 }  // namespace

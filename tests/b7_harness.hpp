@@ -227,8 +227,8 @@ struct B7Box {
     glm::vec3 about{0.0f};  // the wall load's moment point: the body's centre
 };
 
-// A box with its solids, or without them for a candidate that can't take
-// them yet (GpuFluid until G3).
+// A box with its solids, or without them: plan A's V-cycles, the path LiveRun
+// runs when a run has no solids.
 enum class BoxSolids { with, none };
 
 // A fresh scratch's solids for `box`, set as LiveRun sets them.
@@ -277,8 +277,8 @@ enum class BoxSolids { with, none };
     box.solid_cells = s->regions.solid;
     const std::string body =
         with ? std::string("a sphere R 4 dx at (15, 14, 13) dx")
-             : std::string("no solids until G3 (the sphere left out; GpuFluid takes solids with Physics' hooks)");
-    const std::string solve = with ? "CG floor " + std::to_string(kSolidsCgIterations)
+             : std::string("no solids (the sphere left out)");
+    const std::string solve = with ? "CG floor " + std::to_string(box.cfg.n_v) + ", cap " + std::to_string(box.cfg.cg_cap)
                                    : "n_v " + std::to_string(box.cfg.n_v) + " (plan A's V-cycles)";
     box.config = airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n,
@@ -391,8 +391,8 @@ struct D1Solids {
     for (const ActuatorDisc& d : box.discs) thrust += d.thrust;
     const std::string solids_text =
         with ? "the reference quad's rigid parts as solids, LiveRun's own (" + live_line + ")"
-             : std::string("no solids until G3 (the quad's parts left out; GpuFluid takes solids with Physics' hooks)");
-    const std::string solve = with ? "CG floor " + std::to_string(kSolidsCgIterations)
+             : std::string("no solids (the quad's parts left out)");
+    const std::string solve = with ? "CG floor " + std::to_string(box.cfg.n_v) + ", cap " + std::to_string(box.cfg.cg_cap)
                                    : "n_v " + std::to_string(box.cfg.n_v) + " (plan A's V-cycles)";
     box.config = airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n,
@@ -447,10 +447,11 @@ struct Comparison {
 // fastest air its discs and wind should make, the far wake's 2 v_h of its
 // fastest disc (momentum theory, v_h = sqrt(T / (2 rho pi R^2))) plus the
 // wind's speed: 8 m/s in the stand-in box, 55 m/s in D1. A diverging run
-// passes it within steps (D1 without solids, 2026-10-27: 88.7 m/s at step 2,
-// 8.8e23 m/s at step 32, from the top face by the inflow). The real D1 passes
-// it at step 14: one disc-plane sample at 0.71 R grows about 4 m/s a step, to
-// 135.7 m/s at step 32 (Physics' triage).
+// passes it within steps. Before C4 (facc900), D1 without solids reached
+// 88.7 m/s at step 2 and 8.8e23 m/s at step 32, from the top face by the
+// inflow; before the dense disc (58720c6), one disc-plane sample of the real
+// D1 at 0.71 R grew about 4 m/s a step, past the bound at step 14 (Physics'
+// triage, 2026-10-27).
 inline constexpr double kPhysicalFactor = 4.0;
 
 [[nodiscard]] inline double physical_bound(const B7Box& box) {
