@@ -459,7 +459,7 @@ TEST(AirflowFtz, ATinyDiscsSpreadLeavesNoSubnormal) {
             for_each_sample(shape, c, [&](std::size_t, glm::vec3 x) {
                 float sum = 0.0f;
                 float swirl_sum = 0.0f;
-                for (uint32_t i = 0; i < kDiscPoints; ++i) {
+                for (uint32_t i = 0; i < sp.count; ++i) {
                     const glm::vec3 f = (x - sp.points[i]) * inv_dx;
                     const float w = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
                     sum += w;

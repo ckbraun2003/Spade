@@ -20,8 +20,14 @@
 // DISCS. One record of kDiscStride floats per disc, packed on the host from
 // disc_spread() (actuator.hpp), the CPU's own points, tangents and scales:
 //   [0-2] centre, grid frame   [3] reach   [4-6] axis   [7] scale
-//   [8] swirl_scale   [9] swirl (1 or 0)   [10-15] unused
-//   [16-159] the 48 points' xyz   [160-303] the 48 tangents-over-radius' xyz
+//   [8] swirl_scale   [9] swirl (1 or 0)   [10] n, the disc's point count
+//   (a float, exact: disc_spread()'s rings x angles by its R/dx, at most
+//   kDiscPoints)   [11-15] unused   [16-1935] room for kDiscPoints = 640
+//   points' xyz   [1936-3855] their tangents-over-radius' xyz. A disc's n
+//   points come first; the slots past them are 0 and never read. Hand-written
+//   here; spike/airflow/step_chain.hpp derives the same layout from
+//   af::kDiscPoints, and the GpuAirflowActuator parity tests, which pack with
+//   step_chain's disc_records(), fail if the two disagree.
 //
 // PARITY. -fp-mode precise keeps the arithmetic uncontracted, every value
 // comes from the host or is a correctly rounded add, subtract or multiply,
@@ -46,10 +52,10 @@ struct GatherPush {
 [[vk::push_constant]] ConstantBuffer<GatherPush> gather_push;
 
 // --- the disc records ------------------------------------------------------
-static const uint kDiscStride = 304u;
-static const uint kDiscPoints = 48u;
+static const uint kDiscPoints = 640u;
 static const uint kPointsAt = 16u;
-static const uint kTangentsAt = 160u;
+static const uint kTangentsAt = kPointsAt + 3u * kDiscPoints;
+static const uint kDiscStride = kPointsAt + 6u * kDiscPoints;
 
 float3 disc_vec3(uint at) { return float3(airflow_discs[at], airflow_discs[at + 1u], airflow_discs[at + 2u]); }
 
@@ -106,12 +112,13 @@ void airflow_actuator_gather(uint3 tid : SV_DispatchThreadID) {
         const float scale = airflow_discs[base + 7u];
         const float swirl_scale = airflow_discs[base + 8u];
         const bool swirl = airflow_discs[base + 9u] != 0.0;
+        const uint count = uint(airflow_discs[base + 10u]);
         if (axis_c == 0.0 && !swirl) continue;
         // Outside this box every point's weight is exactly 0, so skipping it changes nothing.
         if (abs(x.x - centre.x) > reach || abs(x.y - centre.y) > reach || abs(x.z - centre.z) > reach) continue;
         float sum = 0.0;
         float swirl_sum = 0.0;
-        for (uint i = 0u; i < kDiscPoints; ++i) {
+        for (uint i = 0u; i < count; ++i) {
             const float3 f = (x - disc_vec3(base + kPointsAt + 3u * i)) * inv_dx;
             const float w = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
             sum += w;

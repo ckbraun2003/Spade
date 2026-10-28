@@ -53,9 +53,15 @@ namespace spade::airflow_gpu {
 
 // airflow_actuator_gather's disc record (airflow_discs, binding 22), in
 // floats: [0-2] the centre in the grid's frame, [3] the reach, [4-6] the
-// axis, [7] the scale, [8] the swirl's scale, [9] 1 with swirl, [16-159] the
-// kDiscPoints points and [160-303] their tangents, three floats each.
-inline constexpr uint32_t kDiscStride = 304;
+// axis, [7] the scale, [8] the swirl's scale, [9] 1 with swirl, [10] the
+// disc's point count (disc_spread()'s rings x angles, at most kDiscPoints;
+// the slots past it stay 0), from kDiscPointsAt room for kDiscPoints points
+// and from kDiscTangentsAt their tangents, three floats each. Derived from af::kDiscPoints, so a change of
+// the spread moves the layout with it; the slang module's hand-written copy
+// is pinned to this one by the GpuAirflowActuator parity tests.
+inline constexpr uint32_t kDiscPointsAt = 16;
+inline constexpr uint32_t kDiscTangentsAt = kDiscPointsAt + 3 * physics::airflow::kDiscPoints;
+inline constexpr uint32_t kDiscStride = kDiscPointsAt + 6 * physics::airflow::kDiscPoints;
 
 // The discs a step takes: airflow_discs' records.
 inline constexpr uint32_t kMaxDiscs = 16;

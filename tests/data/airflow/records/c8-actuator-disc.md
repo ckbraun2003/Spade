@@ -117,3 +117,51 @@ verdict: within
 ```
 
 Test/Docs' note on this block (2026-10-26): the run is C8's run 0 to the bit. Besides the 0 of 1536, its 0.5R mean, 8.0397 m/s, is run 0's 8.039714 (`docs/design/test-docs/2026-10-22-c8-spread.md`) and the CPU's run in B4's block above. The path line's "flush-to-zero supported: no" is the device's report of a mode a kernel could request. With none requested, its arithmetic flushes (a sign-preserving FTZ and DAZ), and the CPU step flushes as it does (`1130608`): that is `TD-14`'s "both twins flush".
+
+## 2026-10-27: the disc's density follows R/dx, 5 rings of 32
+
+```text
+=== validation record: C8 actuator-disc far wake ===
+commit: 80902bc (physics/airflow-dense-disc, the density rule's work in progress with master 01ba8a9 merged; squashed into the disc's commit before the merge; queue ticket spade-physics-dense-cpu2-80902bc)
+date: 2026-10-27
+path: CPU reference, MSVC 1943, release
+config: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; eight runs that differ only by a nudge in the test, 1 ulp up on 110 increments, seed s: run 0 as it is, runs 1 to 7 seeds 0x1C8, 0x1C9, 0x1CA, 0x1CB, 0x1CC, 0x1CD, 0x1CE. So the spread is the measure's sensitivity to rounding, not a physical uncertainty
+measure: the eight runs' mean of the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 7.8893 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8); the vortex-cylinder model's mean over the same faces is 7.5909 m/s
+tolerance: within 10% (plan A Task 11, spec §11.2, fixed before the first run; the measure and the eight runs fixed before this run, docs/design/test-docs/2026-10-22-c8-spread.md)
+verdict: within
+measure: the worst of the eight runs, run 6, the same mean = 7.9796 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: within 10% (as above: the verdict holds across the spread)
+verdict: within
+measure: the eight runs' largest deviation from their mean, the same mean = 0.0902 m/s
+reference: the spread's size: past T_p the GPU's band is 4x it (test-docs/01-verification.md, a case judged past its horizon)
+tolerance: none
+verdict: report only
+measure: C8's first measure, the axis 2R below over steps 257 to 384, run 0 (the eight runs 7.7495 to 8.0064) = 7.9698 m/s
+reference: momentum theory, 7.5777 m/s, as above
+tolerance: none (report only since 2026-10-22: the axis sits in the disc's unloaded hub)
+verdict: report only
+```
+
+```text
+=== validation record: C8 actuator-disc far wake, GPU gather in the CPU step ===
+commit: 80902bc (physics/airflow-dense-disc, as the block above; queue ticket spade-physics-dense-gpu2-80902bc)
+date: 2026-10-27
+path: the CPU step (release) with airflow_actuator_gather's increments (plan B, B4; its square roots fp32_math's sqrt32_ftz), on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no)
+config: as C8: 64x128x64 at dx 1 cm, R 0.1 m (10 cells), T 1.2315 N, v_h 4 m/s, still air, inviscid, h = 0.001250, n_v 2, 768 steps; the gather's increments copied in each step
+measure: the gathered increments differing from spread_actuator()'s in any bit = 0 of 1593344
+reference: spread_actuator(), the CPU step's own increments
+tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: an exact kernel on the device of record)
+verdict: within
+measure: both probes' values (the axis and the 0.5R mean, 2R below) differing from the CPU's run over steps 1 to 768 = 0 of 1536
+reference: the CPU's run, spread_actuator() each step
+tolerance: 0, bit-equal: the run is the CPU's run (TD-14 as amended 2026-10-22: an exact kernel on the device of record)
+verdict: within
+measure: the mean downwash over the 80 v faces within 0.5R of the axis, 2R below the disc, steps 385 to 768 = 7.9120 m/s
+reference: momentum theory, v_h (1 + 2/sqrt 5) = 7.5777 m/s (tests/data/airflow/README.md, C8)
+tolerance: within 10% (C8's: plan A Task 11, spec §11.2; run 0's verdict, the run being C8's run 0: past T_p C8's own verdict is its ensemble's, the 5 x 32 disc's of 2026-10-27)
+verdict: within
+```
+
+Physics' note on these blocks (2026-10-27): the library's actuator disc takes its point density from R/dx (the lead's ruling of 2026-10-27: rings clamp(ceil(R/2dx), 3, 10), angles the least of 16, 32 and 64 at or above pi R/dx, so the points stay about 2 dx apart or closer; D1 at R/dx 19 keeps the 10 rings of 64 that ended triage 2's 85-150 m/s jet, and the editor's Run air at R/dx 3 keeps the 3 x 16). C8's disc at R/dx 10 is 5 rings of 32 (160 points). Against the 3 x 16 ensemble above, its mean goes from 8.0333 to 7.8893 m/s (+6.0% to +4.1% against momentum theory), the worst run from 8.0597 to 7.9796 (run 6 both times), the largest deviation from 0.0437 to 0.0902 m/s, and the axis measure from 7.4124 to 7.9698 m/s (the eight runs 6.3611-7.5019, now 7.7495-8.0064). The 5 x 32's inner ring is at 0.316R (3.16 cells), so the four axis faces stay nearly unloaded, at 0.001x the uniform disc's thrust per area (the 3 x 16 at 0): the CPU block's "unloaded hub" holds. Inside 0.5R its points put 0.80x the uniform thrust (the 3 x 16 1.34x), spread to 0.99x over the measure's 80 faces, so the remaining +4.1% is not the 0.5R loading. The GPU block's run is the CPU's run 0 to the bit (0 of 1536), and its verdict is run 0's: this ensemble's verdict is the CPU block's. GpuAirflowActuator's band off the device of record is now 7.8893 m/s within 4 x 0.0902.

@@ -623,6 +623,9 @@ std::string LiveRun::run_label() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
+    std::vector<float> radii;  // each rotor's disc, spread on the base grid
+    for (const ResolvedRotor& x : rotors) radii.push_back(x.radius);
+    if (const std::string note = af::disc_spacing_note(radii, g.dx); !note.empty()) out += " \xc2\xb7 " + note;
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
     if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
         out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");

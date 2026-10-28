@@ -58,3 +58,7 @@ Physics, from Rendering's recovered log and the lead's words, 2026-10-22. This i
 - **Provenance:** the file was recovered from the run's log after the render removed the cache (`convergence.csv.recovered`, with its README beside it). The posted video is `Videos/Research/Spade/2026-10-22_1202_d1-hover-parts-in-flow.mp4`.
 - **The run line:** the counts are as burned into every view. The advisory row reads "nothing follows the counts" in that line.
 - **The case run, against the spec's §1** (Rendering, from `live_case.cpp`'s `d1_live_case` on 1f5fb1a and the run's log): the grid is 240 x 177 x 168, not 224 x 160 x 168. LiveRun holds the drone at the grid's centre, so `kD1Grid` is the smallest box about it that keeps each of the spec's clearances on both sides. `nu` is 1.4607e-5 m2/s, the case's ISA default, not 1.5e-5. The air moves along -x, the mirror of the spec's +x, which the plus layout makes equivalent. None of these bears on the measures above, which are the run line's counts and the solver's own residuals.
+
+## 2026-10-27: the disc this record was measured with
+
+measured with the 3×16 disc, whose concentrated forcing drove a non-physical 85-150 m/s jet near each disc (triage 2, 2026-10-27); superseded by the dense disc; re-measured on the GPU at B7b
