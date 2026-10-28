@@ -68,7 +68,11 @@
 // a mesh's surface reads a distance of plus or minus rounding with an
 // arbitrary gradient (Core's documented contract for the mesh field), so a
 // surface on a plane of cell centres or faces must not turn a verdict on the
-// sign of that rounding.
+// sign of that rounding. Not yet for a sheet (the lead, 2026-10-28: left
+// while no part is a sheet at the D1 film's 4 mm): a sheet's crossing, the
+// half-open +-dx/2 test in pass 1 and where a sheet meets a wall
+// (solids.cpp), still takes that sign when its mid-surface lies exactly dx/2
+// from a face.
 // ---------------------------------------------------------------------------
 namespace spade::physics::airflow {
 
