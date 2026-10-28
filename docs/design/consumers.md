@@ -14,6 +14,15 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Props turn in the editor** (Interface, L7c2 editor half, merged `eeeb4ad`).
+  - `append_vehicle_parts` takes rotor_omega and psi spans; empty spans draw the drone still, and the still overloads are unchanged.
+  - EditorRun holds psi and omega per vehicle (`blade_azimuth(name)`, `rotor_omega(name)`). It steps one tick at a time when a vehicle has rotors and batches otherwise.
+  - AirFrame carries the vehicle, its rotor omega and psi.
+- **The airflow kernels preserve NaN; SPIR-V rule P6** (Rendering, merged `1d2b5a4`; signed by Cameron).
+  - Every airflow kernel declares `SignedZeroInfNanPreserve 32` (`embed_spirv.py --nan-preserve`, `spade_slang_kernel_variants(... NAN_PRESERVE)`).
+  - `DeviceReport` gains `signed_zero_inf_nan_preserve_f32`, with a line in `describe()`.
+  - `make_compute_pipeline()` takes a `const DeviceReport&` and refuses an airflow kernel on a device without the feature (Code::unavailable, naming the kernel). The host then runs the CPU, naming why.
+  - The GPU now carries a NaN where the CPU does; the payload may differ.
 - **The actuator disc's points follow the grid** (Physics, merged `58720c6`).
   - `spread_actuator()` places rings = clamp(ceil(R/(2 dx)), 3, 10) and angles = the smallest of 16/32/64 at or above π R/dx, so points sit at most about 2 dx apart. The swirl is kept.
   - The disc record's header [10] carries the point count, and the GPU gather loops to it; the stride stays 3856.
