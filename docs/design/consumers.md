@@ -14,6 +14,12 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Plan A's multigrid takes the true partial-cell stencil** (Physics, C4, merged `facc900`).
+  - `clear_weights()` post-processes each level's partial coarse cell: the domain face is scaled by 1/t and the inner face by 2/(1+t), with t the level's own fraction, never compounded.
+  - Odd open grids that diverged now contract (D1 1.922 → 0.222; 81-tall boxes 1.556 → 0.19).
+  - No stored golden moves: every recorded grid halves evenly. The GPU takes the weights as data.
+  - The solids preconditioner (`set_weights`) is unchanged.
+  - With the dense disc, real D1 is physical: at most 20.01 m/s over 32 steps, and bit-equal on the GPU.
 - **Props turn in the editor** (Interface, L7c2 editor half, merged `eeeb4ad`).
   - `append_vehicle_parts` takes rotor_omega and psi spans; empty spans draw the drone still, and the still overloads are unchanged.
   - EditorRun holds psi and omega per vehicle (`blade_azimuth(name)`, `rotor_omega(name)`). It steps one tick at a time when a vehicle has rotors and batches otherwise.
