@@ -20,6 +20,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -109,11 +110,11 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 13> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 14> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
                                                          "editor_part",     "editor_drone",    "editor_placed_drone",
-                                                         "editor_airflow"};
+                                                         "editor_airflow",  "editor_fly_props"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -1736,7 +1737,48 @@ void editor_tour(Tour& t, const fs::path& assets) {
 
         if (!fly(per_second * 3 / 2, none)) return;  // disarmed: Run's pop, then at rest
         const double arm_s = now_s();
-        if (!fly(1, space) || !fly(per_second * 3 / 2, none)) return;
+        if (!fly(1, space) || !fly(per_second, none)) return;
+
+        // A close still of the armed Phantom at idle, its props turned by the
+        // Run's blade azimuths (L7c2; the lead, 2026-10-27): the first frame
+        // drawn in the last half second at idle with two props or more 25
+        // degrees or more from the authored pose (tick 0's,
+        // editor_placed_drone's; its props have two blades). props-turned
+        // names each azimuth. Unselected, so it is drawn in its own colours;
+        // the camera and the selection put back. Its frames are recorded and
+        // inside the 1.5 s at idle, so the flight's timeline is its twin's.
+        int still_frames = 0;
+        {
+            const OrbitCamera camera = session->camera();
+            const editor::Selection selection = w().panels().selection;
+            const std::optional<FrameState> on = w().run() != nullptr ? w().run()->state_of(quad) : std::nullopt;
+            w().panels().selection = editor::Selection{};
+            session->camera().target = on ? on->pos : glm::vec3(at.x, 0.0f, at.z + 1.5f);
+            session->camera().yaw = 0.6f;
+            session->camera().pitch = 0.5f;
+            session->camera().distance = 0.8f;
+            if (!fly(2, none)) return;
+            still_frames = 2;
+            constexpr float kDeg = 0.017453292519943295f;
+            uint32_t turned = 0;
+            std::string azimuths;
+            for (int i = 0; i < per_second / 2 - 2 && turned < 2; ++i) {
+                t.snapshot("editor_fly_props");
+                if (!fly(1, none)) return;  // the still is the next frame drawn
+                ++still_frames;
+                const std::span<const float> psi =
+                    w().run() != nullptr ? w().run()->blade_azimuth(quad) : std::span<const float>();
+                turned = props_turned(psi, 2, 25.0f * kDeg);
+                azimuths.clear();
+                for (const float p : psi) azimuths += std::format("{}{:.0f}", azimuths.empty() ? "" : ", ", p / kDeg);
+            }
+            s.check(turned >= 2, "props-turned",
+                    std::format("{} of {} props 25 degrees or more from the authored pose; azimuths {} degrees",
+                                turned, m.rotors.size(), azimuths));
+            session->camera() = camera;
+            w().panels().selection = selection;
+        }
+        if (!fly(per_second / 2 - still_frames, none)) return;  // the rest of the 1.5 s at idle
         const double throttle_up_s = now_s();
         const std::size_t until_up = frames.size();
         const double per_rotor = 1.3 * static_cast<double>(m.body.mass) * static_cast<double>(gravity) /

@@ -416,3 +416,33 @@ TEST(EditorRun, FrameTimeBatchedAgainstOneAtATimeOnThePhantomScene) {
                 kStepsPerFrame, one_batch, one_at_a_time, kFrames);
     EXPECT_GT(run->blade_azimuth("hover_quad_0").front(), 0.0f);
 }
+
+// Core's review (2026-10-27): a rebuild that changes a vehicle's rotor count
+// starts its props at 0, the authored pose, one per rotor of its new model;
+// only a vehicle whose rotor count holds carries its azimuths.
+TEST(EditorRun, ARebuildThatChangesARotorCountStartsItsPropsAtZero) {
+    ed::EditorRun run = start_hover();
+    ASSERT_TRUE(run.step(30).has_value());
+    ASSERT_FALSE(run.blade_azimuth("hover_quad_0").empty());
+    ASSERT_GT(run.blade_azimuth("hover_quad_0").front(), 0.0f) << "the props turned";
+
+    spade::scene::SceneDesc s = support::sample_scene();
+    const auto vehicle = std::find_if(s.vehicles.begin(), s.vehicles.end(),
+                                      [](const spade::scene::SceneVehicle& v) { return v.name == "hover_quad_0"; });
+    ASSERT_NE(vehicle, s.vehicles.end());
+    const auto model = std::find_if(s.models.begin(), s.models.end(),
+                                    [&](const spade::vehicles::ModelType& m) { return m.name == vehicle->model; });
+    ASSERT_NE(model, s.models.end());
+    const std::size_t rotors = model->rotors.size();
+    for (std::size_t k = 0; k < 2; ++k) {
+        auto rotor = model->rotors[k];
+        rotor.local_pos *= 1.5f;
+        model->rotors.push_back(rotor);
+    }
+    const Result<void> rebuilt = run.rebuild(s, support::sample_world());
+    ASSERT_TRUE(rebuilt.has_value()) << rebuilt.error().context;
+    const std::span<const float> after = run.blade_azimuth("hover_quad_0");
+    ASSERT_EQ(after.size(), rotors + 2);
+    EXPECT_TRUE(std::all_of(after.begin(), after.end(), [](float p) { return p == 0.0f; }))
+        << "a changed rotor count starts at 0";
+}

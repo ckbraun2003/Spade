@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -147,6 +148,20 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
                                                        const vehicles::ModelType& model, glm::vec3 pos,
                                                        glm::quat orient, const render_parts::PartsLook& look) {
     return append_vehicle_parts(scene, prepared, model, body_at(model, pos, orient), {}, {}, look);
+}
+
+// How many of the rotors whose azimuths are `psi` sit `at_least` radians or
+// more from their authored pose (psi 0), each prop of `blades` blades looking
+// the same every 2 pi / blades: what a still has to show for its props to be
+// seen turned (the lead, 2026-10-27).
+[[nodiscard]] inline uint32_t props_turned(std::span<const float> psi, uint32_t blades, float at_least) {
+    const float period = 6.28318530717958f / static_cast<float>(std::max(blades, 1u));
+    uint32_t turned = 0;
+    for (const float p : psi) {
+        const float r = std::fmod(std::fmod(p, period) + period, period);
+        if (std::min(r, period - r) >= at_least) ++turned;
+    }
+    return turned;
 }
 
 // Whether any piece is a CSG root. Such a piece marches at the pose it was
