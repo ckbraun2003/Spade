@@ -206,7 +206,8 @@ constexpr std::array<Enclosed, 5> kDrones{{
      false,
      "",
      {"body: leaks at an edge (1 runs, open area 0.250 dx^2, 0.07% of its largest face)",
-      "motor[3]: leaks at an edge (1 runs, open area 0.178 dx^2, 0.36% of its largest face)", "esc: covered by 'body'"}},
+      "motor[3]: leaks at an edge (1 runs, open area 0.178 dx^2, 0.36% of its largest face)",
+      "esc: covered by 'body'"}},
 }};
 
 // At 4 mm every rigid part of a drone that builds is a wall -- no sheet, one
@@ -296,7 +297,8 @@ TEST(LibraryDroneSolids, ThePhantomsBodyTopOnACellCentrePlaneBuilds) {
     EXPECT_EQ((k + 0.5f) * dx, top) << "the body's top, " << top << " m, is not on the centre plane " << k;
     ASSERT_TRUE(b.ok.has_value()) << b.ok.error().context;
     EXPECT_EQ(b.field.run_line,
-              "solids: 11 parts, 11 walls, 0 sheets; body: leaks at an edge (5 runs, open area 0.575 dx^2, 0.04% of its "
+              "solids: 11 parts, 11 walls, 0 sheets; body: leaks at an edge (5 runs, "
+              "open area 0.575 dx^2, 0.04% of its "
               "largest face); arm[1]: leaks at an edge (1 runs, open area 0.147 dx^2, 0.08% of its largest face); esc: "
               "covered by 'body'; battery: covered by 'body'");
 }
