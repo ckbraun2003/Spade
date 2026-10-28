@@ -213,6 +213,11 @@ SPADE_NOINLINE void spread_flushed(const ActuatorDisc& d, const GridShape& s, fl
             float swirl_sum = 0.0f;
             for (uint32_t i = 0; i < count; ++i) {
                 const glm::vec3 f = (x - pts[i]) * inv_dx;
+                // peskin4 is exactly 0 from 2 cells, so the term adds +0 to both sums: skip it, axis by axis. A
+                // non-finite f (a NaN) takes the old path; the order of the terms that remain is unchanged.
+                if (std::isfinite(f.x) && std::fabs(f.x) >= 2.0f) continue;
+                if (std::isfinite(f.y) && std::fabs(f.y) >= 2.0f) continue;
+                if (std::isfinite(f.z) && std::fabs(f.z) >= 2.0f) continue;
                 const float w = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
                 sum += w;
                 if (swirl) swirl_sum += tangent[i][cl] * w;

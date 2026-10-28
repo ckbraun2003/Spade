@@ -14,6 +14,15 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **GpuFluid takes solids (G3)** (Rendering, merged `68761817`).
+  - `GpuFluid::create()` with a SolidField that has parts checks the regions once, uploads B5's bindings, and steps in fluid_step's order with `project_with_solids()`.
+  - Its health is fluid_step's, including a sticky `non_finite` (p) fault, read from the staged r·z.
+  - `wall_load(about)` reads B5's 9 floats.
+  - `start_live_run()` now puts a live run with parts in the air on the GPU. The publish scan skips solid cells.
+  - Real D1 with its solids is bit-equal on the GPU at about 295 ms a step.
+  - The host-only refusal test is `AirflowFloatControls.*`.
+- **The solids classifier's tie rule** (Physics, merged `30ed4282`). Each threshold holds within 1e-4 dx on the solid's side, so a mesh face on a cell-centre plane gives one verdict. The library drones' run-line notes changed (the Phantom's body: 5 runs, 0.575 dx²). The S1 47³ side forces fall from 1.88e-3 to 5.51e-6.
+- **The CPU spread skips exactly-zero kernel terms** (Physics, merged `1c144c56`). Bits are unchanged; D1's spread goes from 4.6 to 1.1 s a step.
 - **The smoke tour has 14 stills** (Interface, merged `524929e`).
   - `editor_fly_props` is the armed Phantom close, its props turned.
   - The new check `editor.fly/props-turned` names the azimuths, making 100 checks.

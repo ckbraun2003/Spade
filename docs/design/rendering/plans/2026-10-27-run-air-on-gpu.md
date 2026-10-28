@@ -20,7 +20,7 @@ LiveRun keeps everything else: the drone, the controls, the discs, the clock, th
 
 | Direction | What | When | Size at 32³ |
 |---|---|---|---|
-| host to device | the discs' records (`disc_records()`) | each step they change; under the Pilot section, every step | 4 x 304 floats, 4.9 KB |
+| host to device | the discs' records (`disc_records()`) | each step they change; under the Pilot section, every step | 4 x 3856 floats, 61.7 KB (the dense disc, 58720c6) |
 | device to host | nothing | each step | |
 | device to host | the published halves (`publish()`) | each frame, 30 a second | 32,768 cells x 16 B, 512 KB |
 | device to host | u, v, w and p (`read()`) | only for LiveRun's save, or a test | 0.53 MB |

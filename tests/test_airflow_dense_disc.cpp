@@ -13,6 +13,9 @@
 //                      measured rings, the thrust and torque the increments
 //                      carry, the largest single-face increment for D1's
 //                      disc, and the run line's note past the cap.
+//   AirflowSpreadSkip  in the gate: the spread's skip past 2 cells, bit for
+//                      bit against the loop that adds every term; its
+//                      speed-up opt-in (SPADE_AIRFLOW_TIMINGS=1, release).
 //   AirflowDiscPeak    opt-in (SPADE_DISC_PEAK=1): D1 with its solids through
 //                      fluid_step() itself, SPADE_DISC_PEAK_STEPS steps (40),
 //                      each step's peak |u, v, w| and its faces over 55 m/s.
@@ -36,6 +39,7 @@
 #include <glm/glm.hpp>
 
 #include "b7_harness.hpp"
+#include "core/detail/flush_subnormals.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -246,6 +250,161 @@ TEST(AirflowDenseDisc, TheLargestFaceIncrementForD1sDiscIsUnderSixMetresASecond)
     std::printf("[ dense ] D1's disc: the largest single-face increment %.4f m/s per step (h %.2f ms)\n",
                 static_cast<double>(largest), static_cast<double>(kH) * 1e3);
     EXPECT_LT(largest, 6.0f);
+}
+
+// ===========================================================================
+// AirflowSpreadSkip
+// ===========================================================================
+
+// spread_actuator()'s loop as it was before the skip (every point, each term
+// added), copied: the reference the skipped spread must equal bit for bit.
+// peskin4 is 0 from 2 cells, so a term it skips adds +0 to the sums.
+void unskipped_spread(const ActuatorDisc& d, const GridShape& s, std::vector<float>& du, std::vector<float>& dv,
+                      std::vector<float>& dw) {
+    const spade::math::ScopedFlushSubnormals flush;
+    const DiscSpread spread = disc_spread(d, s, kRho, kH);
+    const float inv_dx = 1.0f / s.dx;
+    std::vector<float>* out[3] = {&du, &dv, &dw};
+    for (uint32_t c = 0; c < 3; ++c) {
+        const auto cl = static_cast<glm::length_t>(c);
+        const float axis_c = d.axis[cl];
+        if (axis_c == 0.0f && !spread.swirl) continue;
+        for_each_sample(s, c, [&](std::size_t idx, glm::vec3 x) {
+            if (std::fabs(x.x - d.centre.x) > spread.reach || std::fabs(x.y - d.centre.y) > spread.reach ||
+                std::fabs(x.z - d.centre.z) > spread.reach) {
+                return;
+            }
+            float sum = 0.0f;
+            float swirl_sum = 0.0f;
+            for (uint32_t i = 0; i < spread.count; ++i) {
+                const glm::vec3 f = (x - spread.points[i]) * inv_dx;
+                const float w = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
+                sum += w;
+                if (spread.swirl) swirl_sum += spread.tangent[i][cl] * w;
+            }
+            (*out[c])[idx] += spread.swirl ? spread.scale * axis_c * sum + spread.swirl_scale * swirl_sum
+                                           : spread.scale * axis_c * sum;
+        });
+    }
+}
+
+[[nodiscard]] Increments zero_increments(const GridShape& s) {
+    return Increments{std::vector<float>(std::size_t{s.nx + 1u} * s.ny * s.nz, 0.0f),
+                      std::vector<float>(std::size_t{s.nx} * (s.ny + 1u) * s.nz, 0.0f),
+                      std::vector<float>(std::size_t{s.nx} * s.ny * (s.nz + 1u), 0.0f)};
+}
+
+// Faces whose bits differ between two spreads (a NaN equals the same NaN).
+[[nodiscard]] std::size_t faces_differing(const Increments& a, const Increments& b) {
+    std::size_t n = 0;
+    const std::vector<float>* x[3] = {&a.du, &a.dv, &a.dw};
+    const std::vector<float>* y[3] = {&b.du, &b.dv, &b.dw};
+    for (int c = 0; c < 3; ++c) {
+        for (std::size_t i = 0; i < x[c]->size(); ++i) {
+            n += std::bit_cast<uint32_t>((*x[c])[i]) != std::bit_cast<uint32_t>((*y[c])[i]) ? 1u : 0u;
+        }
+    }
+    return n;
+}
+
+[[nodiscard]] std::size_t skipped_vs_unskipped(const ActuatorDisc& d, const GridShape& s) {
+    Increments want = zero_increments(s);
+    unskipped_spread(d, s, want.du, want.dv, want.dw);
+    return faces_differing(spread(d, s), want);
+}
+
+// D1's four discs: R/dx 19 (10 x 64), the hover thrust, the torque's sign
+// alternating with the spin, each hub at its own sub-cell offset in the box.
+[[nodiscard]] ActuatorDisc d1_disc_n(int n) {
+    ActuatorDisc d = d1_disc();
+    const float off[4] = {0.0f, 0.25f, 0.5f, 0.75f};
+    d.centre += glm::vec3(off[n] * kBox.dx, -off[3 - n] * kBox.dx, off[(n + 1) % 4] * kBox.dx);
+    if (n % 2 == 1) d.torque = -d.torque;
+    return d;
+}
+
+TEST(AirflowSpreadSkip, D1sDiscsSpreadBitForBitAsTheUnskippedLoopDoes) {
+#ifdef NDEBUG
+    constexpr int kDiscs = 4;
+#else
+    constexpr int kDiscs = 1;  // a debug spread of 640 points is about 10x slower; release covers all four
+#endif
+    for (int n = 0; n < kDiscs; ++n) {
+        EXPECT_EQ(skipped_vs_unskipped(d1_disc_n(n), kBox), 0u) << "D1 disc " << n;
+    }
+}
+
+TEST(AirflowSpreadSkip, ARunAirDiscAndASwirlDiscSpreadBitForBit) {
+    const GridShape box{32, 32, 32, 0.004f};
+    // The Run's 3 x 16 disc (R/dx 2): thrust only, then with a torque, tilted.
+    ActuatorDisc air{.centre = {16.3f * 0.004f, 15.7f * 0.004f, 16.0f * 0.004f},
+                     .axis = glm::normalize(glm::vec3(0.2f, -1.0f, 0.1f)),
+                     .radius = 2.0f * 0.004f,
+                     .thrust = 1.3f,
+                     .torque = 0.0f};
+    ASSERT_EQ(disc_density(air.radius, box.dx).count, 48u);
+    EXPECT_EQ(skipped_vs_unskipped(air, box), 0u) << "thrust only";
+    air.torque = -0.004f;
+    EXPECT_EQ(skipped_vs_unskipped(air, box), 0u) << "swirl";
+    // A swirl disc at 10 x 64 about the x axis.
+    ActuatorDisc big = d1_disc({1.0f, 0.0f, 0.0f});
+    big.centre = {24.0f * 0.004f, 23.5f * 0.004f, 23.5f * 0.004f};
+    EXPECT_EQ(skipped_vs_unskipped(big, kBox), 0u) << "R/dx 19 about x";
+}
+
+TEST(AirflowSpreadSkip, ADiscWhoseCentreIsNaNStillAgreesBitForBit) {
+    const GridShape box{12, 12, 12, 0.004f};
+    ActuatorDisc d{.centre = {24.0f * 0.002f, 24.0f * 0.002f, 24.0f * 0.002f},
+                   .axis = {0.0f, -1.0f, 0.0f},
+                   .radius = 2.0f * 0.004f,
+                   .thrust = 1.0f,
+                   .torque = -0.01f};
+    d.centre.y = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_EQ(skipped_vs_unskipped(d, box), 0u);
+}
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)  // getenv
+#endif
+[[nodiscard]] bool spread_timings_enabled() {
+    const char* e = std::getenv("SPADE_AIRFLOW_TIMINGS");
+    return e != nullptr && *e != '\0' && std::strcmp(e, "0") != 0;
+}
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+// The skip itself: the 640-point disc spreads several times faster than the
+// loop that adds every term (only the points within 2 cells of a sample are
+// summed). Red on a spread without the skip, where
+// the two are the same loop (ratio 1). Opt-in (SPADE_AIRFLOW_TIMINGS=1), as
+// the other timing tests are: a wall-clock ratio flakes under a loaded
+// queue, and the bit tests above pin the skip's correctness. Release only:
+// debug timing is not the shipped loop's.
+TEST(AirflowSpreadSkip, TheSkipMakesD1sDiscSeveralTimesFaster) {
+#ifndef NDEBUG
+    GTEST_SKIP() << "release timing";
+#else
+    if (!spread_timings_enabled()) GTEST_SKIP() << "opt-in: SPADE_AIRFLOW_TIMINGS=1";
+    const ActuatorDisc d = d1_disc();
+    const auto ms = [](auto&& run) {
+        double best = 1.0e300;
+        for (int rep = 0; rep < 2; ++rep) {
+            const auto t0 = std::chrono::steady_clock::now();
+            run();
+            const auto t1 = std::chrono::steady_clock::now();
+            best = std::min(best, std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        return best;
+    };
+    Increments a = zero_increments(kBox);
+    Increments b = zero_increments(kBox);
+    const double skipped = ms([&] { spread_actuator(d, kBox, kRho, kH, a.du, a.dv, a.dw); });
+    const double full = ms([&] { unskipped_spread(d, kBox, b.du, b.dv, b.dw); });
+    std::printf("[ skip ] D1's disc: skipped %.0f ms, unskipped %.0f ms (%.1fx)\n", skipped, full, full / skipped);
+    EXPECT_GT(full, 3.0 * skipped);
+#endif
 }
 
 // ===========================================================================
