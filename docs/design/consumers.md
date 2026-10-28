@@ -14,6 +14,14 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **The actuator disc's points follow the grid** (Physics, merged `58720c6`).
+  - `spread_actuator()` places rings = clamp(ceil(R/(2 dx)), 3, 10) and angles = the smallest of 16/32/64 at or above π R/dx, so points sit at most about 2 dx apart. The swirl is kept.
+  - The disc record's header [10] carries the point count, and the GPU gather loops to it; the stride stays 3856.
+  - Run air (R/dx 3) keeps 3x16 to the bit, along with the TD-1 digests.
+  - D1 (R/dx 19) is 10x64. Its disc jet falls from about 150 to 20.1 m/s.
+  - The C8 (5x32) and C8q (6x32) records are re-measured; d1-hover is dated as superseded, to be re-measured on the GPU at B7b.
+  - Past R/dx 20, the run line notes the spacing in dx.
+  - `tools/flow_movie/resume_check.cmake` reads the state's magic as hex (CMake 4.2's text-mode LIMIT).
 - **LiveRun carries each rotor's blade azimuth; save version 3** (Interface, L7c2 LiveRun-first, merged `cc22a71`).
   - `LiveRun::blade_azimuth()` returns one psi per rotor, starting at 0 and advanced each step by `physics::advance_blade_azimuths()`. It's drawn only: nothing reads it back.
   - A refused azimuth holds that rotor and is named once by `azimuth_refused()`.
