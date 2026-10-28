@@ -15,9 +15,15 @@
 //
 // THE FIELD: mesh_sample() and mesh_eval(), fp32, host calls (no step reads
 // a mesh yet).
-//   * DISTANCE is exact: the closest point of the closest triangle, by
-//     Ericson's region classification (math::closest_on_triangle), found
-//     through a two-level BVH and then square-rooted once.
+//   * DISTANCE is exact up to fp32 rounding: the closest point of the
+//     closest triangle, by Ericson's region classification
+//     (math::closest_on_triangle), found through a two-level BVH and then
+//     square-rooted once. A point ON a face is not always given
+//     |p - c| = 0: c, rebuilt in fp32, can land a few ulps of the
+//     coordinates' magnitude away, so the distance reads a few ulps of either
+//     sign and the gradient points along that rounding, not along the face's
+//     normal. A caller that thresholds at the surface allows for it, as the
+//     airflow classifier's tie rule does (physics/airflow/solids.hpp, THE TIE).
 //   * THE SIGN is (p - c) . n, n the angle-weighted pseudonormal of the
 //     feature c lies on (Baerentzen and Aanaes 2005): a face's normal; an
 //     edge's two face normals summed; a vertex's face normals weighted by
@@ -185,7 +191,7 @@ inline constexpr uint32_t kMaxMeshShells = 4096;
 
 // The field at a point (the header comment's THE FIELD).
 struct MeshSample {
-    float distance = kSdfEmptyDistance;  // exact Euclidean distance to the surface, negative inside
+    float distance = kSdfEmptyDistance;  // Euclidean distance to the surface, to fp32 rounding; negative inside
     glm::vec3 gradient{0.0f};            // sign * (p - c) / |p - c|; on the surface, the feature's unit pseudonormal
     uint32_t triangle = 0;               // the closest: minimum (distance squared, triangle index)
 };
@@ -193,7 +199,8 @@ struct MeshSample {
 // The distance, sign and gradient at p, in the mesh's frame (metres). The
 // gradient is (p - c) / |p - c| componentwise, negated inside, c the closest
 // point; at the surface (|p - c| = 0) it is the closest feature's unit
-// pseudonormal and the distance is +0. A non-finite p returns MeshSample{}.
+// pseudonormal and the distance is +0; a point on a face can read a few ulps
+// instead (THE FIELD). A non-finite p returns MeshSample{}.
 // p must keep |p - c|^2 finite in fp32 (|p| well under 1e19 m).
 [[nodiscard]] MeshSample mesh_sample(const TriangleMesh& mesh, glm::vec3 p) noexcept;
 
