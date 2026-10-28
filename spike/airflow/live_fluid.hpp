@@ -11,13 +11,17 @@
 // so start() refuses them by name; start_live_run() then starts again on
 // the CPU and says why. The context outlives the run.
 //
-// GpuFluid has no scan for a NaN or an infinity yet (its health carries the
-// pressure's iterations only), so each frame it publishes is checked on the
-// host: a half with binary16's all-ones exponent (a NaN, an infinity or a
-// value past its range, physics/airflow/publish.hpp) fails the publish,
-// naming how many and the first one's cell, and every step after it, so the
-// run ends there. The device takes no parts yet (G3), so no publish of its
-// has a solid interior's no-data to allow.
+// Without parts GpuFluid has no scan for a NaN or an infinity (its health
+// carries the pressure's iterations only); with parts its step faults on one
+// (step_chain.hpp's HEALTH), but not on a finite flow past binary16's range.
+// So each frame it publishes is checked on the host: a half with binary16's
+// all-ones exponent (a NaN, an infinity or a value past its range,
+// physics/airflow/publish.hpp) fails the publish, naming how many and the
+// first one's cell, and every step after it, so the run ends there. With
+// parts in the air (G3), the cells the publish's solid mask marks are left
+// out of the scan: below their first layer they are no-data by publish's rule
+// (fp16::kNoDataBits, a NaN), and the first layer is its fluid neighbours'
+// mean, which the scan reads (the lead, 2026-10-28).
 //
 // Header only: its users link spade_airflow_runner and spade::analysis.
 // ---------------------------------------------------------------------------
@@ -59,7 +63,12 @@ class GpuLiveFluid final : public analysis::LiveFluid {
         const auto scan = [&](const std::vector<uint16_t>& halves) {
             for (std::size_t at = 0; at < halves.size(); ++at) {
                 if ((halves[at] & 0x7C00u) != 0x7C00u) continue;
-                if (bad++ == 0u) first = at / kFlowHalvesPerCell;
+                const std::size_t cell = at / kFlowHalvesPerCell;
+                // A cell the mask marks solid is no-data by publish's rule
+                // (below its first layer); its first layer is the mean of its
+                // fluid neighbours, which are scanned themselves.
+                if (cell < in.solid.size() && in.solid[cell] != 0u) continue;
+                if (bad++ == 0u) first = cell;
             }
         };
         scan(out.v);  // V and S lay their cells out alike: the first is V's, else S's

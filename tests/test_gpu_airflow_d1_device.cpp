@@ -1,15 +1,18 @@
 // B7's acceptance harness (tests/b7_harness.hpp) on Rendering's GpuFluid
-// (spike/airflow/step_chain.hpp, G1): the whole fluid step on the device
-// against the CPU's run, bit for bit on the device of record (TD-14 as
-// amended 2026-10-22; elsewhere skipped). Until G3 GpuFluid takes no solids
-// and reports no wall load, and its health is pressure_iterations alone, so
-// the boxes run without their solids and the block names the rest "not
-// compared" (the lead, 2026-10-27).
+// (spike/airflow/step_chain.hpp, G1 and G3): the whole fluid step on the
+// device against the CPU's run, bit for bit on the device of record (TD-14 as
+// amended 2026-10-22; elsewhere skipped). With solids (G3) GpuFluid reports
+// the CG's health and the wall load; the solid field itself is proved through
+// the step (bit-equal u, v, w, p and wall load on a part), not read back, so
+// the block names it "not compared" (the lead, 2026-10-28). Without solids its
+// health is pressure_iterations alone (plan A), as at G1.
 //
-//   GpuB7Acceptance   2 steps in the stand-in box and in the D1 box, each
-//                     without its solids, under a minute; with
-//                     SPADE_AIRFLOW_VALIDATION=1, 32 steps in each with the
-//                     step time and the film's 0.50 s, the block printed.
+//   GpuB7Acceptance   2 steps in the stand-in box with its sphere and
+//                     without it, and in the D1 box without its solids, under
+//                     a minute; with SPADE_AIRFLOW_VALIDATION=1, 32 steps in
+//                     each with the step time and the film's 0.50 s, and the
+//                     D1 box with its solids, 2 steps then 32, the block
+//                     printed.
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -43,24 +46,39 @@ constexpr Reports kG1Reports{.fault = false,
                              .wall_load = false,
                              .solids = false};
 
+// What GpuFluid reports at G3 with solids: the CG's report (the health's
+// residual, iterations, unconverged, capped and stalled) and the wall load.
+// No scan for a NaN (the fault), and the solid field is proved through the
+// step rather than read back (read_solids: YAGNI, the lead, 2026-10-28).
+constexpr Reports kG3Reports{.fault = false,
+                             .unconverged = true,
+                             .pressure_iterations = true,
+                             .pressure_residual = true,
+                             .stalled = true,
+                             .capped = true,
+                             .wall_load = true,
+                             .solids = false};
+
 // GpuFluid through the seam. Its reads go into a grid of the fluid's shape.
 class GpuFluidStepper : public FluidStepper {
   public:
-    GpuFluidStepper(std::unique_ptr<ag::GpuFluid> gpu, const MacGrid& shaped) : gpu_(std::move(gpu)), shaped_(shaped) {}
+    GpuFluidStepper(std::unique_ptr<ag::GpuFluid> gpu, const MacGrid& shaped, bool solids)
+        : gpu_(std::move(gpu)), shaped_(shaped), solids_(solids) {}
 
     [[nodiscard]] static MakeStepper maker(VulkanContext& ctx) {
         return [&ctx](const MacGrid& g, const DomainBc& bc, const FluidConfig& cfg,
                       const SolidField* solids) -> spade::Result<std::unique_ptr<FluidStepper>> {
+            const bool with = solids != nullptr && solids->any;
             spade::Result<std::unique_ptr<ag::GpuFluid>> gpu =
-                ag::GpuFluid::create(ctx, g, bc, cfg, solids != nullptr && solids->any ? solids : nullptr);
+                ag::GpuFluid::create(ctx, g, bc, cfg, with ? solids : nullptr);
             if (!gpu) return std::unexpected(gpu.error());
-            return std::make_unique<GpuFluidStepper>(std::move(*gpu), g);
+            return std::make_unique<GpuFluidStepper>(std::move(*gpu), g, with);
         };
     }
 
-    [[nodiscard]] std::string name() const override { return "GpuFluid (G1)"; }
+    [[nodiscard]] std::string name() const override { return solids_ ? "GpuFluid (G3)" : "GpuFluid (G1)"; }
 
-    [[nodiscard]] Reports reports() const override { return kG1Reports; }
+    [[nodiscard]] Reports reports() const override { return solids_ ? kG3Reports : kG1Reports; }
 
     [[nodiscard]] spade::Result<FluidHealth> step(std::span<const ActuatorDisc> discs) override {
         return gpu_->step(discs);
@@ -71,12 +89,11 @@ class GpuFluidStepper : public FluidStepper {
         return gpu_->read(out);
     }
 
-    [[nodiscard]] spade::Result<WallLoad> wall_load(glm::vec3) override {
-        return std::unexpected(spade::Error{spade::Code::unavailable, "GpuFluid has no wall load until G3"});
-    }
+    [[nodiscard]] spade::Result<WallLoad> wall_load(glm::vec3 about) override { return gpu_->wall_load(about); }
 
     [[nodiscard]] spade::Result<void> read_solids(SolidField&) override {
-        return std::unexpected(spade::Error{spade::Code::unavailable, "GpuFluid takes no solids until G3"});
+        return std::unexpected(
+            spade::Error{spade::Code::unavailable, "GpuFluid's solid field is proved through the step, not read back"});
     }
 
     [[nodiscard]] spade::Result<void> publish(const PublishInput& in, spade::FlowVolume& out) override {
@@ -85,7 +102,8 @@ class GpuFluidStepper : public FluidStepper {
 
   private:
     std::unique_ptr<ag::GpuFluid> gpu_;
-    MacGrid shaped_;  // the initial grid: a read's shape
+    MacGrid shaped_;      // the initial grid: a read's shape
+    bool solids_ = false;  // made with a field that has parts (G3)
 };
 
 [[nodiscard]] std::unique_ptr<VulkanContext> make_context() {
@@ -131,7 +149,13 @@ void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std:
     EXPECT_EQ(record->at(0).measures[0].verdict, an::Verdict::within);
     EXPECT_NE(record->at(0).measures[0].quantity.find("not compared: fault"), std::string::npos)
         << record->at(0).measures[0].quantity;
-    EXPECT_EQ(run->c.compared, plan.compared * values_per_step(box->grid, kG1Reports));
+    if (box->solids.any) {
+        // G3 compares the whole health but the fault, and the wall load: a
+        // report kG3Reports dropped would join this list (Test/Docs' review).
+        EXPECT_NE(record->at(0).measures[0].quantity.find("not compared: fault, the solids)"), std::string::npos)
+            << record->at(0).measures[0].quantity;
+    }
+    EXPECT_EQ(run->c.compared, plan.compared * values_per_step(box->grid, run->c.reports));
     EXPECT_EQ(run->c.differing, 0u);
     EXPECT_EQ(run->c.first_step, 0u);
     EXPECT_GT(run->c.cpu_speed, speed) << "the air must move, or the comparison proves nothing";
@@ -161,6 +185,37 @@ TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheD1Box) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run B7's full GPU plan in D1";
     expect_bit_equal(d1_box(BoxSolids::none), kFullPlan, 4u, 1.0, kD1KnownOpen);
+}
+
+// G3: the boxes with their solids, GpuFluid reporting the CG's health and the
+// wall load. The stand-in's 2 steps are seconds on both sides, so they join
+// the short set (Test/Docs, 2026-10-28).
+TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheStandInBoxWithItsSphere) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    expect_bit_equal(stand_in_box(BoxSolids::with), kShortPlan, 2u, 0.01);
+}
+
+TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheStandInBoxWithItsSphere) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run B7's full GPU plan";
+    expect_bit_equal(stand_in_box(BoxSolids::with), kFullPlan, 4u, 0.1);
+}
+
+// The real D1 (B7a): the reference quad's rigid parts as solids, its discs
+// the dense disc's (58720c6). The dense disc's spread costs the CPU's side 30
+// to 47 s a step, so both runs are opt-in: 2 steps (83 s), then 32 with the
+// times and the film's 0.50 s (21 minutes; Rendering's box, 2026-10-28). The
+// flow must stay physical: no known-open line.
+TEST(GpuB7Acceptance, TwoStepsMatchTheCpuInTheD1BoxWithItsSolids) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run D1 with its solids";
+    expect_bit_equal(d1_box(BoxSolids::with), kShortPlan, 2u, 0.1);
+}
+
+TEST(GpuB7Acceptance, ThirtyTwoStepsAndTheTimesInTheD1BoxWithItsSolids) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (!validation_enabled()) GTEST_SKIP() << "set SPADE_AIRFLOW_VALIDATION=1 to run B7's full GPU plan in D1";
+    expect_bit_equal(d1_box(BoxSolids::with), kFullPlan, 4u, 1.0);
 }
 
 }  // namespace
