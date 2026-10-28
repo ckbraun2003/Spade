@@ -638,6 +638,14 @@ TEST(SlangSpirv, FloatControlsPinned) {
                 << "fields as `uint2` (shaders/shared/layouts.slang) and do the arithmetic through "
                 << "engine/shaders/u64.slang.";
 
+            // Rule P6's forbidden half (2026-10-27), named like P3 and P4: none of
+            // engine/'s kernels declares NaN preservation. Only the airflow kernels
+            // require it, and AirflowRunnerSpirv checks that they do.
+            EXPECT_FALSE(scan.declares_nan_preserve())
+                << module << ": declares SignedZeroInfNanPreserve, which only the airflow kernels may "
+                << "(engine/testing/spirv_scan.hpp, P6); a device without the float control would be "
+                << "refused for this kernel too";
+
             // Rule P5 (S6 Task 8 review, minor M8), named for the same reason P3
             // and P4 are: one property, one way to be wrong, and a failure log that
             // says which fact broke.
@@ -834,6 +842,52 @@ TEST(SlangSpirv, RuleP3RefusesAnyDenormalMode) {
         EXPECT_TRUE(scan.well_formed) << r.what;
         EXPECT_EQ(scan.denorm_requests.size(), std::size_t{1}) << r.what;
         EXPECT_EQ(findings_named(scan, "P3"), std::size_t{1}) << r.what;
+    }
+}
+
+// Rule P6 (2026-10-27): NaN preservation is declared exactly where it is
+// required. From the same stripped module as P3's battery, each shape a
+// declaration can take is scanned both ways: a module that must preserve NaN
+// passes only with the capability and the mode at 32 on its entry point, and
+// any other module passes only with neither. Each failing shape gives exactly
+// one P6 finding.
+TEST(SlangSpirv, RuleP6DeclaresNanPreservationExactlyWhereRequired) {
+    namespace st = spade::testing;
+    const std::span<const uint32_t> code = kSpirvModules[0].variants.all().front().code();
+    const st::SpirvProfile profile = kSpirvModules[0].profile;
+    const std::vector<uint32_t> none = without_denorm_requests(code);
+    const auto capability = [](std::vector<uint32_t> words) {
+        return with_instruction(std::move(words), st::spv_op::kCapability,
+                                {st::kCapabilitySignedZeroInfNanPreserve}, false);
+    };
+    const auto mode = [](std::vector<uint32_t> words, uint32_t width) {
+        return with_instruction(std::move(words), st::spv_op::kExecutionMode,
+                                {st::kExecutionModeSignedZeroInfNanPreserve, width}, true);
+    };
+
+    struct Shape {
+        const char* what;
+        std::vector<uint32_t> words;
+        std::size_t required_findings;   // P6 findings under NanPreserve::required
+        std::size_t forbidden_findings;  // and under NanPreserve::forbidden
+    };
+    const Shape shapes[] = {
+        {"no declaration", none, 1, 0},
+        {"the capability and the mode at 32", mode(capability(none), st::kFloatWidth32), 0, 1},
+        {"the mode at 32 without the capability", mode(none, st::kFloatWidth32), 1, 1},
+        {"the capability without the mode", capability(none), 1, 1},
+        {"the mode at 16 beside the mode at 32",
+         mode(mode(capability(none), st::kFloatWidth32), 16), 1, 1},
+    };
+    for (const Shape& s : shapes) {
+        const st::SpirvScanResult required = st::scan_spirv(s.words, profile, st::NanPreserve::required);
+        const st::SpirvScanResult forbidden = st::scan_spirv(s.words, profile, st::NanPreserve::forbidden);
+        EXPECT_TRUE(required.well_formed) << s.what;
+        EXPECT_EQ(required.entry_points, std::size_t{1}) << s.what;
+        EXPECT_EQ(findings_named(required, "P6"), s.required_findings) << s.what << ", required";
+        EXPECT_EQ(findings_named(forbidden, "P6"), s.forbidden_findings) << s.what << ", forbidden";
+        EXPECT_EQ(findings_named(st::scan_spirv(s.words, profile), "P6"), s.forbidden_findings)
+            << s.what << ": forbidden is the default";
     }
 }
 

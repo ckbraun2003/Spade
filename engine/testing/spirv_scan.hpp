@@ -145,11 +145,35 @@
 //       tests/test_slang_layouts.cpp so a failure log names the rule rather
 //       than quoting a string.
 //
-// (P1 through P5 are PARITY. P3 was added by S6 Task 4, P4 and P5 by Task 8;
+//   P6. NaN PRESERVATION IS DECLARED EXACTLY WHERE IT IS REQUIRED (2026-10-27).
+//       A module scanned with NanPreserve::required (the airflow kernels)
+//       declares the SignedZeroInfNanPreserve capability and
+//       `OpExecutionMode <entry> SignedZeroInfNanPreserve 32` on every entry
+//       point; any other module (NanPreserve::forbidden, the default) declares
+//       neither. No module declares the mode at another width.
+//       - Why required: without the mode, Vulkan lets a driver assume no float
+//         is NaN. The RTX 3060 Ti (driver 572.83) compiled advection's clamp
+//         into a min/max that drops a NaN the CPU carries, so a GPU airflow run
+//         healed a fault the CPU stops on (Rendering's bisect;
+//         docs/design/backlog.md). slangc has no flag for the mode;
+//         embed_spirv.py --nan-preserve adds it.
+//       - Why forbidden elsewhere: the mode needs the device's
+//         shaderSignedZeroInfNanPreserveFloat32, the one float control
+//         compute/vulkan/dispatch_chain.hpp checks before making a pipeline.
+//         A kernel that declares it without need would refuse devices it
+//         could run on, and one at another width would need a feature that
+//         nothing checks.
+//       - CORE-5 stands: the airflow modules declare a requirement and a
+//         device without it is refused by name for them, admitted for the
+//         rest. It is not a denormal mode, so P3 is unchanged.
+//       - Checked in EVERY profile.
+//
+// (P1 through P6 are PARITY. P3 was added by S6 Task 4, P4 and P5 by Task 8;
 // P3 and P4 came from a device measurement and P5 from a review finding -- see
 // their text above. P3 was amended on 2026-10-05, from "DenormPreserve 32
 // required" to "no denormal mode requested", under the user's ruling that
-// ended bit-exact CPU<->GPU parity.)
+// ended bit-exact CPU<->GPU parity. P6 came from a device measurement, the
+// NaN bisect of 2026-10-27.)
 //
 // Profile EXACT -- PARITY, plus the two rules the global constraints impose on
 // the fp32_math module (Task 4) and on anything else that must be
@@ -357,6 +381,19 @@ inline constexpr uint32_t kCapabilityDenormPreserve = 4464;
 inline constexpr uint32_t kCapabilityDenormFlushToZero = 4465;
 inline constexpr uint32_t kFloatWidth32 = 32;
 
+// Rule P6's mode and capability (the same extension and source; the neighbours
+// of the four above: RoundingModeRTE is 4462 and 4467). embed_spirv.py
+// --nan-preserve writes these two values, and compute/vulkan/dispatch_chain.hpp
+// reads them to refuse a device without the mode.
+inline constexpr uint32_t kExecutionModeSignedZeroInfNanPreserve = 4461;
+inline constexpr uint32_t kCapabilitySignedZeroInfNanPreserve = 4466;
+
+// Whether rule P6 requires a module to declare NaN preservation or forbids it.
+enum class NanPreserve {
+    forbidden,  // engine/'s kernels: no declaration at all
+    required,   // the airflow kernels: the capability, and the mode at 32 on every entry point
+};
+
 // SPIR-V Capability Int64 (rule P4). Worth stating that it sits in a run of
 // neighbours an off-by-one would silently mistake it for -- Float64 is 10,
 // Int64Atomics is 12 -- so a mis-transcription would produce a rule that never
@@ -372,7 +409,7 @@ inline constexpr uint32_t kSpirvMagic = 0x07230203u;
 // returns every finding rather than the first, so a failing test names all of
 // them at once instead of forcing one round trip per violation.
 struct SpirvFinding {
-    std::string rule;     // "P1", "P2", "P3", "P4", "P5", "E1", "E2"
+    std::string rule;     // "P1", "P2", "P3", "P4", "P5", "P6", "E1", "E2"
     std::string message;  // what was found, with the offending word index
 };
 
@@ -447,6 +484,11 @@ struct SpirvScanResult {
     // E1/E2 (exact only): the OpFDiv and InverseSqrt results traced as
     // estimates, each to the integer conversions it may reach. 0 under parity.
     std::size_t estimate_ops = 0;
+    // Rule P6 (EVERY profile): the SignedZeroInfNanPreserve declarations.
+    std::size_t entry_points = 0;                    // OpEntryPoint instructions
+    std::size_t nan_preserve_32 = 0;                 // entry points given the mode at width 32
+    std::size_t nan_preserve_other_widths = 0;       // the mode at any other width
+    bool declares_nan_preserve_capability = false;  // OpCapability SignedZeroInfNanPreserve
 
     // Populated for every profile, cheap and unconditional -- not every caller
     // needs them (test_slang_layouts.cpp's integer_only branch is today's user),
@@ -460,6 +502,14 @@ struct SpirvScanResult {
 
     [[nodiscard]] bool clean() const noexcept { return well_formed && findings.empty(); }
     [[nodiscard]] bool requests_denorm_mode() const noexcept { return !denorm_requests.empty(); }
+    // P6's two passing shapes: everything NanPreserve::required asks, or nothing at all.
+    [[nodiscard]] bool preserves_nan() const noexcept {
+        return declares_nan_preserve_capability && entry_points > 0 && nan_preserve_32 == entry_points &&
+               nan_preserve_other_widths == 0;
+    }
+    [[nodiscard]] bool declares_nan_preserve() const noexcept {
+        return declares_nan_preserve_capability || nan_preserve_32 > 0 || nan_preserve_other_widths > 0;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -469,10 +519,12 @@ struct SpirvScanResult {
 // decorate -- but relying on that ordering to check "is this result decorated"
 // in a single pass would make the checker depend on a layout rule instead of
 // on the fact being checked. Pass 1 collects the decorated result ids and the
-// GLSL.std.450 import id; pass 2 judges the instructions.
+// GLSL.std.450 import id; pass 2 judges the instructions. `nan` is rule P6's
+// question, which the module's caller answers: only the airflow kernels pass
+// NanPreserve::required.
 // ---------------------------------------------------------------------------
-[[nodiscard]] inline SpirvScanResult scan_spirv(std::span<const uint32_t> words,
-                                                SpirvProfile profile) {
+[[nodiscard]] inline SpirvScanResult scan_spirv(std::span<const uint32_t> words, SpirvProfile profile,
+                                                NanPreserve nan = NanPreserve::forbidden) {
     SpirvScanResult result;
 
     // Header: magic, version, generator, bound, schema -- five words minimum.
@@ -539,6 +591,21 @@ struct SpirvScanResult {
                                                                       : "OpCapability DenormFlushToZero") +
                 " at word " + std::to_string(i));
         }
+        // P6, collected here for P3's reason: the capability, and each entry
+        // point's mode by its width.
+        if (opcode == spv_op::kCapability && word_count >= 2 &&
+            words[i + 1] == kCapabilitySignedZeroInfNanPreserve) {
+            result.declares_nan_preserve_capability = true;
+        }
+        if (opcode == spv_op::kExecutionMode && word_count >= 3 &&
+            words[i + 2] == kExecutionModeSignedZeroInfNanPreserve) {
+            if (word_count >= 4 && words[i + 3] == kFloatWidth32) {
+                ++result.nan_preserve_32;
+            } else {
+                ++result.nan_preserve_other_widths;
+            }
+        }
+        if (opcode == spv_op::kEntryPoint) ++result.entry_points;
         // A vector type follows its component's declaration, as SPIR-V
         // requires of every type but a forward pointer.
         if (opcode == spv_op::kTypeInt && word_count >= 2) int_types.push_back(words[i + 1]);
@@ -830,6 +897,27 @@ struct SpirvScanResult {
              "mode runs this module as undefined behaviour; no kernel may request one. Is a "
              "-denorm-mode flag back in cmake/SpadeSlang.cmake, or did a slangc update change "
              "its default?"});
+    }
+
+    // P6: NaN preservation declared exactly where it is required. Once for the
+    // module, like P3, with the counts that decide it.
+    const std::string nan_counts = "capability " + std::string(result.declares_nan_preserve_capability ? "yes" : "no") +
+                                   ", mode at 32 on " + std::to_string(result.nan_preserve_32) + " of " +
+                                   std::to_string(result.entry_points) + " entry points, at other widths " +
+                                   std::to_string(result.nan_preserve_other_widths);
+    if (nan == NanPreserve::required && !result.preserves_nan()) {
+        result.findings.push_back(
+            {"P6", "NaN preservation is required and not fully declared (" + nan_counts +
+                       "). An airflow kernel without `SignedZeroInfNanPreserve 32` lets a driver drop a "
+                       "NaN the CPU carries; is NAN_PRESERVE missing from its "
+                       "spade_slang_kernel_variants() call?"});
+    }
+    if (nan == NanPreserve::forbidden && result.declares_nan_preserve()) {
+        result.findings.push_back(
+            {"P6", "NaN preservation is declared (" + nan_counts +
+                       ") by a module that must not: only the airflow kernels require the device's "
+                       "shaderSignedZeroInfNanPreserveFloat32, the one float control checked when a "
+                       "pipeline is made"});
     }
 
     result.well_formed = true;

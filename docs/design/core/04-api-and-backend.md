@@ -32,6 +32,7 @@
 
 - **Headless by construction.** No surface is needed to step or to sense.
 - **Any Vulkan 1.1 device is admitted** (`CORE-5`). The kernels are SPIR-V 1.3, and request no fp32 denormal mode (`SPIR-V rule P3`), so each device runs them with its own denormal default. Vulkan results are banded against the CPU (`TD-14`) and deterministic per device and driver. A device below 1.1 is refused by name.
+- **The airflow kernels preserve NaN** (`SPIR-V rule P6`, 2026-10-27). Each declares `SignedZeroInfNanPreserve 32` (`embed_spirv.py --nan-preserve`), because without the mode a driver may drop a NaN the CPU carries: the RTX 3060 Ti's turned advection's clamp into a NaN-dropping min/max. A device without `shaderSignedZeroInfNanPreserveFloat32` is refused for them by name when their pipelines are made (`make_compute_pipeline`) and admitted for everything else (`CORE-5`). engine/'s kernels declare no float control.
 - **A run says what produced it** (`L6`). The context records the device, the driver and the float controls. `Simulation::vulkan_device_report()` returns them, and `compute::describe()` prints one line.
 - **The state mirror is derived storage.** It uploads and reads back every registered array, and calls nothing that registers state.
 - **Record once per shape.** The whole substep chain is recorded once and resubmitted per step. The only per-step input is the tick, written through a persistently mapped buffer.

@@ -1520,7 +1520,10 @@ struct OpCensus {
 // airflow_actuator_gather (Rendering, rendering/exact-kernels). The others
 // hold no float division or root and pass as they did. B5's rows (Physics)
 // also hold the exact profile's estimates to where div32_ftz is called: only
-// airflow_pcg_scalars and airflow_solid_velocities trace one.
+// airflow_pcg_scalars and airflow_solid_velocities trace one. Rule P6's
+// required half (2026-10-27): every airflow kernel declares
+// SignedZeroInfNanPreserve 32 (spike/airflow/CMakeLists.txt's NAN_PRESERVE), so
+// no driver may drop a NaN the CPU carries.
 TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
     // Whether a row checks the E1/E2 estimates the scan traced.
     enum class Estimates { unchecked, none, some };
@@ -1581,10 +1584,13 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
         for (const spade::compute::SpirvVariant& v : k.variants.all()) {
             const std::string module = std::string(k.variants.name) + " (local size " +
                                        std::to_string(v.workgroup_size) + ")";
-            const spade::testing::SpirvScanResult scan =
-                spade::testing::scan_spirv(v.code(), spade::testing::SpirvProfile::exact);
+            const spade::testing::SpirvScanResult scan = spade::testing::scan_spirv(
+                v.code(), spade::testing::SpirvProfile::exact, spade::testing::NanPreserve::required);
             EXPECT_TRUE(scan.well_formed) << module;
             EXPECT_TRUE(scan.findings.empty()) << module << ": " << scan.findings.size() << " policy findings";
+            for (const spade::testing::SpirvFinding& finding : scan.findings) {
+                ADD_FAILURE() << module << " [" << finding.rule << "] " << finding.message;
+            }
             EXPECT_EQ(scan.decorated_ops, scan.contractable_ops) << module << ": an op lacks NoContraction";
             if (k.estimates == Estimates::none) {
                 EXPECT_EQ(scan.estimate_ops, 0u) << module << ": an estimate where no div32_ftz is called";
@@ -1598,6 +1604,7 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                 EXPECT_GT(scan.contractable_ops, 0u) << module << ": no float op; is this the right module?";
             }
             EXPECT_FALSE(scan.requests_denorm_mode()) << module;
+            EXPECT_TRUE(scan.preserves_nan()) << module << ": SignedZeroInfNanPreserve 32 is not declared";
             EXPECT_FALSE(scan.declares_int64) << module;
             EXPECT_EQ(scan.entry_point_name, "main") << module;
 

@@ -110,16 +110,24 @@
 # SlangSpirv.FloatControlsPinned before any device runs it. That covers a flag
 # put back here and a future slangc default alike.
 #
-# WHAT IS *NOT* PINNED, stated rather than left unsaid: the other two
-# float-controls execution modes, signed-zero/Inf/NaN preservation and
-# round-to-nearest-even rounding. slangc v2026.14.1 exposes no flag for either
-# (`slangc -h` lists only -denorm-mode-fp16/32/64, and no float-controls entry
-# appears in `slangc -h capability`). The Iris Plus advertised both as
-# supported and honoured them in practice:
-# GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost compares +-0, +-inf and NaN
-# through all four fp32_math kernels and matched bit for bit. So the exposure
-# is a missing PIN, not a missing behaviour. Recorded here for whoever next
-# revisits the toolchain pins.
+# WHAT IS *NOT* PINNED, stated rather than left unsaid: round-to-nearest-even
+# rounding, and signed-zero/Inf/NaN preservation outside the airflow kernels.
+# slangc v2026.14.1 exposes no flag for either (`slangc -h` lists only
+# -denorm-mode-fp16/32/64, and no float-controls entry appears in `slangc -h
+# capability`). The Iris Plus advertised both as supported and honoured them
+# in practice: GpuFp32Math.EdgeCasesAreBitIdenticalToTheHost compares +-0,
+# +-inf and NaN through all four fp32_math kernels and matched bit for bit.
+#
+# THE AIRFLOW KERNELS PIN NaN PRESERVATION (2026-10-27). The missing pin was a
+# missing behaviour on the RTX 3060 Ti (driver 572.83): it compiled advection's
+# clamp into a min/max that drops a NaN the CPU carries (Rendering's bisect;
+# docs/design/backlog.md). So spade_slang_kernel_variants(... NAN_PRESERVE)
+# has embed_spirv.py add `SignedZeroInfNanPreserve 32` to every variant, and
+# spike/airflow/CMakeLists.txt passes it for every airflow kernel. A device
+# without shaderSignedZeroInfNanPreserveFloat32 is refused by name when the
+# pipeline is made (compute/vulkan/dispatch_chain.hpp), and rule P6
+# (engine/testing/spirv_scan.hpp) checks that the airflow modules declare it
+# and engine/'s kernels do not.
 # ==============================================================================
 
 if(NOT SPADE_SLANGC)
@@ -350,7 +358,10 @@ function(spade_slang_kernel target name)
 endfunction()
 
 # ------------------------------------------------------------------------------
-# spade_slang_kernel_variants(<target> <name>)
+# spade_slang_kernel_variants(<target> <name> [NAN_PRESERVE])
+#
+# NAN_PRESERVE has the embed step declare SignedZeroInfNanPreserve 32 on every
+# variant (this file's header, "THE AIRFLOW KERNELS PIN NaN PRESERVATION").
 #
 # spade_slang_kernel() above, but compiled ONCE PER SIZE in
 # SPADE_SLANG_WORKGROUP_SIZES, and embedded as ONE header holding all of them:
@@ -391,8 +402,18 @@ function(spade_slang_kernel_variants target name)
         message(FATAL_ERROR "spade_slang_kernel_variants: no such kernel source: ${_src}")
     endif()
 
+    cmake_parse_arguments(PARSE_ARGV 2 _arg "NAN_PRESERVE" "" "")
+    if(_arg_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "spade_slang_kernel_variants(${name}): unknown arguments ${_arg_UNPARSED_ARGUMENTS}")
+    endif()
+
     set(_spv_outputs "")
     set(_embed_args "")
+    set(_embed_note "")
+    if(_arg_NAN_PRESERVE)
+        set(_embed_args --nan-preserve)
+        set(_embed_note ", SignedZeroInfNanPreserve 32")
+    endif()
 
     foreach(_wg IN LISTS SPADE_SLANG_WORKGROUP_SIZES)
         set(_spv "${_gen_dir}/${name}.wg${_wg}.spv")
@@ -448,7 +469,7 @@ function(spade_slang_kernel_variants target name)
                 --output "${_hpp}"
                 --symbol "${name}"
         DEPENDS ${_spv_outputs} "${SPADE_SLANG_TOOLS_DIR}/embed_spirv.py"
-        COMMENT "embed_spirv.py: ${name}.wg{${_wg_list}}.spv -> ${name}.spv.gen.hpp"
+        COMMENT "embed_spirv.py: ${name}.wg{${_wg_list}}.spv -> ${name}.spv.gen.hpp${_embed_note}"
         VERBATIM
     )
 
