@@ -200,6 +200,15 @@ struct MeshSample {
 // mesh_sample(mesh, p).distance.
 [[nodiscard]] float mesh_eval(const TriangleMesh& mesh, glm::vec3 p) noexcept;
 
+// The squared distance from p to the mesh's box -- its vertices' fp32 min and
+// max, the BVH's root -- in the mesh's frame, spelt as the query spells a
+// triangle's (box_distance2, mesh.cpp). It is never more than the query's
+// squared distance at p, rounding included, so its square root bounds
+// |mesh_sample(mesh, p).distance| from below. It is 0 inside the box, where it
+// bounds nothing, and 0 for a non-finite p. sample_parts() culls a mesh part
+// by it (vehicles/part_pose.cpp).
+[[nodiscard]] float mesh_box_distance2(const TriangleMesh& mesh, glm::vec3 p) noexcept;
+
 namespace detail {
 
 // One node of a mesh's BVH: internal layout, derived at make_mesh() and never
@@ -236,6 +245,7 @@ private:
     friend Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input,
                                                                  std::string_view name);
     friend MeshSample mesh_sample(const TriangleMesh& mesh, glm::vec3 p) noexcept;
+    friend float mesh_box_distance2(const TriangleMesh& mesh, glm::vec3 p) noexcept;
     TriangleMesh() = default;
 
     // The query, over every shell or over `shell` alone (kEveryShell: all).

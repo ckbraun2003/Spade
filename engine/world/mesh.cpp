@@ -1030,4 +1030,10 @@ float mesh_eval(const TriangleMesh& mesh, glm::vec3 p) noexcept {
     return mesh_sample(mesh, p).distance;
 }
 
+float mesh_box_distance2(const TriangleMesh& mesh, glm::vec3 p) noexcept {
+    (void)mesh;
+    (void)p;
+    return 0.0f;  // RED: declared, not yet bounded
+}
+
 }  // namespace spade
