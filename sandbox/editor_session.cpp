@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -207,11 +208,21 @@ void EditorSession::draw_items() {
         if (model == nullptr) continue;
         glm::vec3 pos = v.start.pos;
         glm::quat orient = v.start.orient;
+        // L7c2: its props turned by the Run's azimuths while the Run has it,
+        // else by Run air's when it is the air's drone; still otherwise.
+        std::span<const float> omega;
+        std::span<const float> psi;
         if (w.run() != nullptr) {
             if (const std::optional<FrameState> now = w.run()->state_of(v.name)) {
                 pos = now->pos;
                 orient = now->orient;
+                omega = w.run()->rotor_omega(v.name);
+                psi = w.run()->blade_azimuth(v.name);
             }
+        }
+        if (psi.empty() && air_frame_ && air_frame_->vehicle == v.name) {
+            omega = air_frame_->rotor_omega;
+            psi = air_frame_->psi;
         }
         const bool is_selected = selected.kind == editor::Selection::Kind::object && selected.name == v.name;
         VehicleLook look = look_;
@@ -226,7 +237,8 @@ void EditorSession::draw_items() {
             parts.rotor = look_.rotor_material;
             parts.porous = look.body_material;
             parts.object_name = v.name;  // segmentation: each drone its own colour, not its model's
-            if (Result<void> bound = append_vehicle_parts(scene_, prepared, *model, pos, orient, parts); bound) {
+            if (Result<void> bound = append_vehicle_parts(scene_, prepared, *model, pos, orient, omega, psi, parts);
+                bound) {
                 drawn = true;
             } else {
                 workspace_->panels().status = "'" + v.name + "' draws as its layout: " + bound.error().context;

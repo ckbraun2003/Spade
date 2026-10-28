@@ -26,6 +26,13 @@
 // controller refuses (its layout, its chain) is not flown, and why_not() says
 // why.
 //
+// THE PROPS (L7c2, Core's posing rule): each vehicle's blade azimuths, one
+// per rotor, held here outside the Simulation: 0 at start(), turned after
+// every step by P11's advance_blade_azimuths() with the rows the step left,
+// carried by name on a rebuild. Drawn only: nothing reads them back, so a
+// Run steps one at a time whenever a vehicle has rotors, bit for bit as a
+// batch would.
+//
 // THE RECORDS (EDT-018): turbulence, contacts and the broad-phase grid are not
 // in the world file until v3, so they come from the scene file's stem
 // (builtin_records.hpp) or a default, and are not saved with the world.
@@ -42,6 +49,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -51,6 +59,7 @@
 #include "builtin_records.hpp"
 #include "editor_files.hpp"
 #include "flight_controller.hpp"
+#include "physics/blade_azimuth.hpp"
 #include "scene/compose.hpp"
 #include "sim/simulation.hpp"
 #include "state/layout.hpp"
@@ -77,11 +86,14 @@ class EditorRun {
     }
 
     // `steps` steps. Before each, every flown vehicle's controller commands
-    // its rotors: `piloted` with `controls`, every other one disarmed.
+    // its rotors: `piloted` with `controls`, every other one disarmed. After
+    // each, every vehicle's props turn (turn_props()). With no vehicle flown
+    // and no rotor, the steps go in one batch.
     [[nodiscard]] Result<void> step(uint32_t steps, std::string_view piloted = {},
                                     const analysis::Controls& controls = {}) {
         const bool any = std::any_of(flight_.begin(), flight_.end(), [](const auto& f) { return f.has_value(); });
-        if (!any) {
+        const bool props = std::any_of(psi_.begin(), psi_.end(), [](const auto& p) { return !p.empty(); });
+        if (!any && !props) {
             if (Result<void> s = run_->sim.step(steps); !s) return s;
             ticks_ += steps;
             return {};
@@ -100,8 +112,37 @@ class EditorRun {
             }
             if (Result<void> r = run_->sim.step(1); !r) return r;
             ++ticks_;
+            if (Result<void> r = turn_props(); !r) return r;
         }
         return {};
+    }
+
+    // The named vehicle's blade azimuths, one per rotor in its model's order,
+    // in [0, 2 pi) (L7c2): 0 at start(), turned after every step, carried by
+    // a rebuild while its rotor count holds. Drawn only. Empty for a vehicle
+    // the run doesn't have.
+    [[nodiscard]] std::span<const float> blade_azimuth(std::string_view name) const {
+        const std::optional<std::size_t> i = index_of(name);
+        return i ? std::span<const float>(psi_[*i]) : std::span<const float>();
+    }
+
+    // Its rotors' omegas as the last step left them (rad/s): what
+    // posed_parts() takes with blade_azimuth(). Empty likewise.
+    [[nodiscard]] std::span<const float> rotor_omega(std::string_view name) const {
+        const std::optional<std::size_t> i = index_of(name);
+        return i ? std::span<const float>(omega_[*i]) : std::span<const float>();
+    }
+
+    // The first step whose azimuths were refused, named, or "": a refused
+    // rotor holds and the run goes on (psi is drawn only), and the status
+    // line shows this once. A stepping run never makes one.
+    [[nodiscard]] const std::string& azimuth_refused() const noexcept { return azimuth_refused_; }
+
+    // FOR TESTS ONLY: sets the named vehicle's azimuths (another count is
+    // ignored), so a test can put one outside [0, 2 pi) and see it refused.
+    void set_test_blade_azimuth(std::string_view name, std::span<const float> psi) {
+        const std::optional<std::size_t> i = index_of(name);
+        if (i && psi.size() == psi_[*i].size()) std::copy(psi.begin(), psi.end(), psi_[*i].begin());
     }
 
     // Whether Run flies `name` (a drone whose chain the controller took).
@@ -155,6 +196,12 @@ class EditorRun {
         }
         Result<EditorRun> next = build(carried, world, records_, false);
         if (!next) return std::unexpected(next.error());
+        // The props carry by name, while a vehicle's rotor count holds.
+        for (std::size_t j = 0; j < next->names_.size(); ++j) {
+            const std::optional<std::size_t> i = index_of(next->names_[j]);
+            if (i && psi_[*i].size() == next->psi_[j].size()) next->psi_[j] = psi_[*i];
+        }
+        next->azimuth_refused_ = azimuth_refused_;
         const uint64_t ticks = ticks_;
         *this = std::move(*next);
         ticks_ = ticks;
@@ -240,6 +287,13 @@ class EditorRun {
         out.sized_for_ = std::move(sized_for);
         out.flight_.resize(scene.vehicles.size());
         out.why_not_.resize(scene.vehicles.size());
+        out.psi_.resize(scene.vehicles.size());
+        out.omega_.resize(scene.vehicles.size());
+        for (std::size_t i = 0; i < scene.vehicles.size(); ++i) {
+            out.psi_[i].assign(out.run_->vehicles[i].rotor_count, 0.0f);
+            out.omega_[i].assign(out.run_->vehicles[i].rotor_count, 0.0f);
+            if (Result<void> rows = out.read_rows(i); !rows) return std::unexpected(rows.error());
+        }
         for (std::size_t i = 0; i < scene.vehicles.size(); ++i) {
             const vehicles::ModelType* m = model_of(scene.vehicles[i]);
             if (m == nullptr || !m->propulsion) {
@@ -264,10 +318,45 @@ class EditorRun {
         return std::nullopt;
     }
 
+    // Vehicle i's rotor rows into rows_, and their omegas into omega_[i].
+    [[nodiscard]] Result<void> read_rows(std::size_t i) {
+        const VehicleRef& ref = run_->vehicles[i];
+        rows_.resize(ref.rotor_count);
+        for (uint32_t r = 0; r < ref.rotor_count; ++r) {
+            const Result<const vehicles::RotorRow*> row = run_->sim.rotor(ref, r);
+            if (!row) return std::unexpected(row.error());
+            rows_[r] = **row;
+            omega_[i][r] = (*row)->omega;
+        }
+        return {};
+    }
+
+    // Each vehicle's blade azimuths by P11's rule, with the rows as the step
+    // left them and h the step's duration (L7c2, Core's posing rule). Drawn
+    // only: nothing is read back. A refused rotor holds and the step stands;
+    // azimuth_refused() names the first.
+    [[nodiscard]] Result<void> turn_props() {
+        const float h = run_->sim.substep_h() * static_cast<float>(run_->sim.substeps());
+        for (std::size_t i = 0; i < psi_.size(); ++i) {
+            if (psi_[i].empty()) continue;
+            if (Result<void> rows = read_rows(i); !rows) return rows;
+            if (!physics::advance_blade_azimuths(psi_[i], rows_, h) && azimuth_refused_.empty()) {
+                azimuth_refused_ = std::format(
+                    "tick {}: a blade azimuth of '{}' was refused (advance_blade_azimuths()); it holds", ticks_,
+                    names_[i]);
+            }
+        }
+        return {};
+    }
+
     std::unique_ptr<scene::SceneRun> run_;  // never null; held by pointer so a rebuild swaps it whole
     std::vector<std::string> names_;  // scene order, parallel to run_->vehicles
     std::vector<std::optional<flight::FlightController>> flight_;  // parallel: the flown vehicles' controllers
     std::vector<std::string> why_not_;                             // parallel: why one isn't flown
+    std::vector<std::vector<float>> psi_;    // parallel: each vehicle's blade azimuths (L7c2), drawn only
+    std::vector<std::vector<float>> omega_;  // parallel: its rotors' omegas as the last step left them
+    std::vector<vehicles::RotorRow> rows_;   // read_rows()' scratch
+    std::string azimuth_refused_;            // azimuth_refused()
     BuiltinRecords records_;
     float cell_ = 0.0f;      // grid_cell()
     std::string sized_for_;  // cell_sized_for()

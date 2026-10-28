@@ -588,11 +588,14 @@ class EditorWorkspace {
     }
 
     void step_run(uint64_t steps) {
+        const bool named = !run_->azimuth_refused().empty();
         if (Result<void> stepped = run_->step(static_cast<uint32_t>(steps), panels_.pilot.vehicle,
                                               panels_.pilot.controls);
             !stepped) {
             panels_.status = stepped.error().context;
             paused_ = true;
+        } else if (!named && !run_->azimuth_refused().empty()) {
+            panels_.status = run_->azimuth_refused();  // a refused blade azimuth holds and Run goes on (L7c2)
         }
     }
 

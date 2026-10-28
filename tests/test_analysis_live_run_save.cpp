@@ -363,3 +363,46 @@ TEST(AnalysisLiveRunAzimuth, ARestoredRunsRotorRowsAreTheSavedRunsBeforeAnyStep)
         EXPECT_EQ(back.omega_cmd, saved.omega_cmd) << "rotor " << i;
     }
 }
+
+// Drawn only (the posing rule; Core's review, 2026-10-27): the azimuth is
+// never read back. Twin runs, one turning its props and one whose azimuths
+// are all refused and so held (set_test_blade_azimuth() at 2 pi), are bit
+// for bit the same three frames on: the state, the rows, the held body and
+// the fluid's every published frame.
+TEST(AnalysisLiveRunAzimuth, TheAzimuthIsNeverReadBack) {
+    const an::test::PoweredQuad p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p.model);
+    an::LiveRun turning = started(r, p.model);
+    an::LiveRun held = started(r, p.model);
+    held.set_test_blade_azimuth(std::vector<float>(p.model.rotors.size(), spade::physics::kAzimuthTwoPi));
+    const std::vector<spade::FlowVolume> a = fly(turning, 3, powered_turn());
+    const std::vector<spade::FlowVolume> b = fly(held, 3, powered_turn());
+    ASSERT_FALSE(std::ranges::equal(turning.blade_azimuth(), held.blade_azimuth())) << "one turned, one held";
+    EXPECT_TRUE(std::ranges::all_of(held.blade_azimuth(), [](float v) { return v == spade::physics::kAzimuthTwoPi; }));
+    EXPECT_EQ(turning.azimuth_refused(), "");
+    EXPECT_NE(held.azimuth_refused(), "");
+
+    expect_same_frames(a, b);
+    const an::LiveState& s = turning.state();
+    const an::LiveState& t = held.state();
+    EXPECT_EQ(s.steps, t.steps);
+    EXPECT_EQ(s.frames, t.frames);
+    EXPECT_EQ(s.t_s, t.t_s);
+    EXPECT_TRUE(s.attitude == t.attitude);
+    EXPECT_TRUE(s.omega_body == t.omega_body);
+    EXPECT_EQ(s.armed, t.armed);
+    EXPECT_EQ(s.rotor_omega, t.rotor_omega);
+    EXPECT_EQ(s.propulsion_flags, t.propulsion_flags);
+    EXPECT_TRUE(turning.body().pos == held.body().pos);
+    EXPECT_TRUE(turning.body().orient == held.body().orient);
+    EXPECT_TRUE(turning.body().vel == held.body().vel);
+    EXPECT_TRUE(turning.body().omega_body == held.body().omega_body);
+    ASSERT_EQ(turning.rotor_rows().size(), held.rotor_rows().size());
+    for (std::size_t i = 0; i < turning.rotor_rows().size(); ++i) {
+        const spade::vehicles::RotorRow& x = turning.rotor_rows()[i];
+        const spade::vehicles::RotorRow& y = held.rotor_rows()[i];
+        EXPECT_EQ(x.enabled, y.enabled) << "rotor " << i;
+        EXPECT_EQ(x.omega, y.omega) << "rotor " << i;
+        EXPECT_EQ(x.omega_cmd, y.omega_cmd) << "rotor " << i;
+    }
+}

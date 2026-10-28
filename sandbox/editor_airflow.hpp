@@ -27,6 +27,7 @@
 #include <mutex>
 #include <optional>
 #include <format>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -178,6 +179,9 @@ struct AirFrame {
     uint64_t steps = 0;
     double t_s = 0.0;  // simulated
     BodyState body{};
+    std::string vehicle;             // the region's drone
+    std::vector<float> rotor_omega;  // its rotors as the frame left them, rad/s (L7c2)
+    std::vector<float> psi;          // their blade azimuths (LiveRun::blade_azimuth()), drawn only
     std::vector<end_goal::RotorProbe> probes;
     std::string run_label;
     std::string pressure_line;
@@ -276,7 +280,8 @@ class AirflowRun {
         if (prepare) prepare(started->run);
         const float top = airflow::speed_top(*model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
-            new AirflowRun(std::move(*started), drone->vehicle->start.pos, top, std::move(program)));
+            new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
+                           std::move(program)));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -310,10 +315,12 @@ class AirflowRun {
     }
 
   private:
-    AirflowRun(AirStart started, glm::vec3 at, float speed_top, std::optional<analysis::ControlProgram> program)
+    AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top,
+               std::optional<analysis::ControlProgram> program)
         : keep_(std::move(started.keep)),
           run_(std::move(started.run)),
           backend_(std::move(started.backend)),
+          vehicle_(std::move(vehicle)),
           at_(at),
           speed_top_(speed_top),
           program_(std::move(program)) {}
@@ -370,6 +377,10 @@ class AirflowRun {
         frame->t_s = run_.state().t_s;
         frame->body = run_.body();
         frame->body.pos += at_;
+        frame->vehicle = vehicle_;
+        frame->rotor_omega = run_.state().rotor_omega;
+        const std::span<const float> psi = run_.blade_azimuth();
+        frame->psi.assign(psi.begin(), psi.end());
         frame->probes = airflow::probes_of(run_);
         for (end_goal::RotorProbe& p : frame->probes) p.hub += at_;
         frame->run_label = run_.run_label();
@@ -391,6 +402,7 @@ class AirflowRun {
     std::shared_ptr<void> keep_;  // the starter's: outlives run_
     analysis::LiveRun run_;       // the worker's alone once it starts
     std::string backend_;
+    std::string vehicle_;  // the region's drone
     glm::vec3 at_;
     float speed_top_;
     std::optional<analysis::ControlProgram> program_;

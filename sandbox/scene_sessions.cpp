@@ -346,7 +346,8 @@ spade::Result<void> AirflowSession::frame(const FrameInput& in, float dt) {
     if (fw == 0u || fh == 0u) return {};
 
     scene_ = base_;
-    if (const spade::Result<void> bound = append_vehicle_parts(scene_, prepared_, quad_.draw_model, run_->body(), look_);
+    if (const spade::Result<void> bound = append_vehicle_parts(scene_, prepared_, quad_.draw_model, run_->body(),
+                                                               run_->state().rotor_omega, run_->blade_azimuth(), look_);
         !bound) {
         return std::unexpected(spade::Error{bound.error().code, "the quad's parts would not bind: " + bound.error().context});
     }
