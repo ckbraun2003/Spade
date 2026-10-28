@@ -330,6 +330,11 @@ TEST(LibraryDroneSolids, TheCrazyflieNamesTheCellSizeItNeeds) {
 // a grid line crossing the body without meeting a closed face. It builds, its
 // run line pinned.
 TEST(LibraryDroneSolids, ThePhantomsBodyTopOnACellCentrePlaneBuilds) {
+    if (debug_build()) {
+        GTEST_SKIP() << "debug build: the Phantom's 4 mm build takes 60.1 s under ctest and 80.9 s run directly in "
+                        "debug (measured 2026-10-28; ctest's limit is 60 s); runs in the release gate and every leg "
+                        "(TD-5; the basic quads' builds cover build_solids and cover_of in debug)";
+    }
     const float dx = 0.004f;
     const DroneSolids b = build_drone_solids("phantom3_class", dx);
     std::size_t body = b.parts.size();
