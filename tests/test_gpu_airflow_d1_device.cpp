@@ -114,10 +114,9 @@ class GpuFluidStepper : public FluidStepper {
 
 // The harness on `box` with GpuFluid under `plan`: the block printed and read
 // back, the values bit-equal over the plan's steps, the discs moving the air
-// and the flow staying physical (unless `known_open` names why it doesn't).
-// The step time's verdict is printed for the record, not asserted.
-void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std::size_t measures, double speed,
-                      const std::string& known_open = {}) {
+// and the flow staying physical. The step time's verdict is printed for the
+// record, not asserted.
+void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std::size_t measures, double speed) {
     ASSERT_TRUE(box.has_value()) << box.error().context;
     const std::unique_ptr<VulkanContext> ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -129,11 +128,9 @@ void expect_bit_equal(const spade::Result<B7Box>& box, const RunPlan& plan, std:
     ASSERT_TRUE(run.has_value()) << run.error().context;
     std::fputs(run->block.c_str(), stdout);
     std::printf("the CPU's largest |v| at step %u: %.4f m/s\n", plan.compared, run->c.cpu_speed);
-    const std::string physical = physical_line(*run, known_open);
+    const std::string physical = physical_line(*run);
     std::fputs(physical.c_str(), stdout);
-    if (known_open.empty()) {
-        EXPECT_TRUE(run->physical) << physical;
-    }
+    EXPECT_TRUE(run->physical) << physical;
     const auto record = airflow_test::read_as_record(run->block, "b7-acceptance.md");
     ASSERT_TRUE(record.has_value()) << record.error().context;
     ASSERT_EQ(record->size(), 1u);
