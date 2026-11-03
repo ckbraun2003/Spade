@@ -662,13 +662,13 @@ BENCHMARK(BM_StepDenseBodiesGpu)
 
 // Copied from tools/viewer/scenes.cpp's demo_quadrotor_params() -- see the
 // file header comment for why this is a copy, not a shared include. Same
-// airframe: 1 kg, three distinct principal moments, 18 cm arms, 13 cm props.
+// airframe: 1 kg, three distinct principal moments, 19 cm arms, 13 cm props.
 [[nodiscard]] spade::vehicles::QuadrotorParams bench_quadrotor_params() {
     spade::vehicles::QuadrotorParams p;
     p.name = "bench_quad";
     p.mass = 1.0f;
     p.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
-    p.arm_length = 0.18f;
+    p.arm_length = 0.19f;
     p.rotor_height = 0.02f;
     p.proxy_radius = 0.2f;
     for (spade::vehicles::RotorParams& rotor : p.rotors) {

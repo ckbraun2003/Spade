@@ -158,7 +158,7 @@ struct QuadrotorParams {
 
     float mass = 1.0f;                    // kg, > 0
     glm::vec3 inertia_diag{1.0f};         // body-frame PRINCIPAL moments, kg m^2, componentwise > 0
-    float arm_length = 0.15f;             // L: COM to rotor hub, in the body XZ plane, m, > 0
+    float arm_length = 0.18f;             // L: COM to rotor hub, in the body XZ plane, m, > 0 (make_quadrotor())
     float rotor_height = 0.0f;            // hz: rotor plane above the COM, body +Y, m (any sign)
     float proxy_radius = 0.0f;            // m, >= 0; CONSUMED as of D-S6-2 (model_type.hpp)
 
@@ -205,7 +205,11 @@ struct QuadrotorParams {
 // So a ModelType that comes out of this function is valid BY CONSTRUCTION, and
 // the only failures a caller sees are its own parameters: a non-positive mass,
 // inertia, arm length or rotor radius; a spin_dirs entry that is not +1/-1/0;
-// a non-finite anything. Codes: invalid_argument, always.
+// a non-finite anything; and two discs that overlap, their hubs closer than
+// their radii summed, so their blades would meet (the first such pair named,
+// with the arm length that clears every pair; tips that touch are allowed).
+// The defaults clear: 0.18 m arms put adjacent hubs L sqrt2 = 0.255 m apart
+// against 2 R = 0.24 m. Codes: invalid_argument, always.
 // ---------------------------------------------------------------------------
 [[nodiscard]] Result<ModelType> make_quadrotor(const QuadrotorParams& params);
 

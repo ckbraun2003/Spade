@@ -1058,7 +1058,7 @@ namespace {
     spade::vehicles::QuadrotorParams p;
     p.mass = 1.0f;
     p.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
-    p.arm_length = 0.18f;
+    p.arm_length = 0.19f;
     p.rotor_height = 0.02f;
     for (spade::vehicles::RotorParams& rotor : p.rotors) {
         rotor.tau = 0.02f;
@@ -1193,8 +1193,14 @@ TEST(ModuleRows, DespawnLeavesEveryAttachedArrayAsAFreshSimulationHasIt) {
 // one of them carrying rotors AND a receiver -- and every reservation's slot,
 // and the whole walk's digest at three boundaries, must be what the hand
 // cascade's order produced.
-// The digests were printed on a346cda's hand cascade before any Task 4 engine
-// change: they are its values, not regenerated ones.
+// The digests were first printed on a346cda's hand cascade before any Task 4
+// engine change, and the declared cascade matched them on master to 0fcb99f.
+// Re-pinned 2026-11-03 (TD-1) when test_quad()'s arms grew from 0.18 m to
+// 0.19 m, because make_quadrotor() refuses its 0.13 m discs on 0.18 m arms (the
+// blades would meet). The rotor rows carry the hubs, so the bytes moved with
+// the input, not the cascade: the slots asserted here did not move. Old -> new:
+// 0x4223c0e1cd3b5bc4 -> 0x0fa9621989bbae2c, 0xc9c283214c6c1020 ->
+// 0xb039b8b3184e3ba8, 0x09c9140ec8ca9496 -> 0x51766f98a3450f16.
 TEST(ModuleRows, InterleavedChurnLeavesTodaysSlotsAndBytes) {
     auto sim = spade::Simulation::create(world_with(spade::Capacities{4, 16, 4, 1}), 2'000'000, 2);
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
@@ -1284,9 +1290,9 @@ TEST(ModuleRows, InterleavedChurnLeavesTodaysSlotsAndBytes) {
     ASSERT_TRUE(sim->step(2).has_value());
     const uint64_t after_fg = digest();
 
-    EXPECT_EQ(after_a, 0x4223c0e1cd3b5bc4ULL) << "a freed while d was reserved";
-    EXPECT_EQ(after_bc, 0xc9c283214c6c1020ULL) << "b and c freed in one flush";
-    EXPECT_EQ(after_fg, 0x09c9140ec8ca9496ULL) << "f and g in b's and c's slots, two steps on";
+    EXPECT_EQ(after_a, 0x0fa9621989bbae2cULL) << "a freed while d was reserved";
+    EXPECT_EQ(after_bc, 0xb039b8b3184e3ba8ULL) << "b and c freed in one flush";
+    EXPECT_EQ(after_fg, 0x51766f98a3450f16ULL) << "f and g in b's and c's slots, two steps on";
 }
 
 // A developer's attached arrays, through the same door as the built-ins: a

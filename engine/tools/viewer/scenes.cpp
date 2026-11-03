@@ -70,7 +70,7 @@ namespace {
 //
 // A real, asymmetric-by-construction set of numbers (vehicles/quadrotor.hpp's
 // own test-airframe note applies here too -- equal moments would let an
-// axis-swap bug hide): mass 1 kg, three DISTINCT principal moments, 18 cm
+// axis-swap bug hide): mass 1 kg, three DISTINCT principal moments, 19 cm
 // arms, 13 cm props -- a small racing-class quadrotor. hover_command() for
 // these numbers is ~450 rad/s; every scene spawns INTO that trim
 // (VehicleSpawn::rotor_omega -- sim/simulation.hpp's doc comment on why that
@@ -87,7 +87,7 @@ namespace {
     p.visual_ref = "meshes/quadrotor_demo";
     p.mass = 1.0f;
     p.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
-    p.arm_length = 0.18f;
+    p.arm_length = 0.19f;
     p.rotor_height = 0.02f;
     p.proxy_radius = 0.2f;
     for (spade::vehicles::RotorParams& rotor : p.rotors) {
