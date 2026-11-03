@@ -206,11 +206,21 @@ TEST(AirflowStep, ANonFiniteValueStopsTheStepAndNamesItsSample) {
     ASSERT_EQ(first.fault, FluidFault::non_finite);
     const std::string why = describe(first, g.shape);
     EXPECT_NE(why.find("non-finite"), std::string::npos) << why;
+    EXPECT_NE(why.find("at sample ("), std::string::npos) << why;
     const MacGrid after = g;
     const FluidHealth second = fluid_step(g, bc, cfg, s);
     EXPECT_EQ(second.fault, FluidFault::non_finite) << "poisoned";
     EXPECT_EQ(second.index, first.index);
     EXPECT_EQ(std::memcmp(g.u.data(), after.u.data(), g.u.size() * sizeof(float)), 0) << "a poisoned step changes nothing";
+}
+
+// A fault found on the device (GpuFluid's, from the CG's r . z) names its
+// quantity and no sample: describe() makes none up from kNoSample.
+TEST(AirflowStep, ADeviceFaultNamesNoSample) {
+    const FluidHealth device{.fault = FluidFault::non_finite, .quantity = 3, .index = kNoSample};
+    const std::string why = describe(device, GridShape{8, 8, 8, 0.125f});
+    EXPECT_NE(why.find("non-finite p, found on the device"), std::string::npos) << why;
+    EXPECT_EQ(why.find("sample ("), std::string::npos) << why;
 }
 
 TEST(AirflowStep, AHealthyStepReportsNoFault) {

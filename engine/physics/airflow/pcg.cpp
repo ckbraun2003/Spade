@@ -49,6 +49,8 @@ PcgResult solve_pcg_to(Multigrid& mg, PcgScratch& s, uint32_t floor, uint32_t ca
         apply_operator(L, s.x, s.q);
         float r_max = 0.0f;
         float b_max = 0.0f;
+        // std::max passes over a NaN (its compare is false), so a solve gone NaN
+        // measures converged: fluid_step()'s scan() is what finds one.
         for (std::size_t i = 0; i < n; ++i) {
             if (g.solid != nullptr && g.solid[i] != 0u) continue;
             r_max = std::max(r_max, std::fabs(s.b[i] - s.q[i]));
