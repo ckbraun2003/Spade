@@ -483,8 +483,11 @@ endif()
 # AirflowRun through gpu_air_starter() (sandbox/editor_air_gpu.hpp) against
 # its CPU run, GpuEditorAirflow* on the device. The sandbox's tests and the
 # device's both.
+# test_gpu_airflow_records.cpp (plan B, B8): S1, S3 and C8q's boxes through
+# B7's harness on GpuFluid, the records' GPU blocks, GpuB8Records* on the
+# device; C8q's case comes from c8q_case.hpp, which reads the sandbox.
 if(SPADE_BUILD_SANDBOX AND SPADE_VULKAN)
-    target_sources(spade_tests PRIVATE test_gpu_editor_airflow.cpp)
+    target_sources(spade_tests PRIVATE test_gpu_editor_airflow.cpp test_gpu_airflow_records.cpp)
 endif()
 
 # GlRenderer on a real GL context (SR-13 back-face culling first). GPU-gated:

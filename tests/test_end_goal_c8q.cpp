@@ -40,6 +40,7 @@
 #include "analysis/live_run.hpp"
 #include "analysis/validation.hpp"
 #include "analysis_powered_quad.hpp"
+#include "c8q_case.hpp"
 #include "core/flow_volume.hpp"
 #include "scene/model_file.hpp"
 #include "unique_temp.hpp"
@@ -386,31 +387,14 @@ TEST(EndGoalC8qJudge, AReferenceOfZeroIsNeverInside) {
 // C8q's case, timed and run (opt-in)
 // ---------------------------------------------------------------------------
 
-inline constexpr float kC8qBoxM = 0.975f;
-inline constexpr uint32_t kC8qCells = 128;
-inline constexpr uint32_t kC8qFrames = 15;  // to 0.50 s: t_dev 0.30 s plus the 0.20 s window
+using spade::testing::C8qVariant;
+using spade::testing::kC8qBoxM;
+using spade::testing::kC8qFrames;
 inline constexpr uint64_t kC8qSeeds[] = {0, 0x1C8, 0x1C9, 0x1CA};
 
-// The library's reference quad, its parts cleared as the editor's airflow
-// chapter flies it, held level in still air: a 0.975 m box at 128^3 (R/dx
-// 10.0), h = dx/8 as C8's, air's viscosity (Physics, 2026-10-22), no floor,
-// armed at the hover throttle from t = 0.
-//
-// Its variants:
-// - rotor_0_alone, C8q's banded measure (§5, 2026-10-22): rotors 1 to 3 push
-//   nothing and spread no swirl. Their thrust coefficient is the least normal
-//   float, about 1e-32 N at hover, since a model refuses 0, and their torque
-//   coefficient is 0. Rotor 0 keeps its own torque, as it flies. The hover
-//   throttle is trimmed on the four-rotor model first, so rotor 0's speed, and
-//   with it its reference, are the quad's. Only rotor 0 is judged, against a
-//   quarter of the weight, so the loaded premise reads its share as it reads
-//   the quad's.
-// Physics' discriminating runs for the first ensemble's miss, one run each:
-// - no_torque: every rotor's torque coefficient is 0, so the discs spread no
-//   swirl;
-// - rotor_0_alone_no_torque: rotor 0 alone, as above, with its torque at 0 too.
-enum class C8qVariant { as_flown, rotor_0_alone, no_torque, rotor_0_alone_no_torque };
-
+// C8q's case from its one builder (tests/c8q_case.hpp, where its variants
+// are told), with the judge's premise: the case's density and the mass whose
+// weight the judged rotors carry.
 struct C8qCase {
     spade::vehicles::ModelType model;
     an::ResolvedCase resolved;
@@ -420,42 +404,11 @@ struct C8qCase {
 };
 
 [[nodiscard]] std::optional<C8qCase> c8q_case(C8qVariant variant = C8qVariant::as_flown) {
-    const fs::path file = fs::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
-    spade::Result<spade::scene::ModelFile> loaded = spade::scene::load_model_file(file);
-    EXPECT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().context);
-    if (!loaded) return std::nullopt;
-    C8qCase q;
-    q.model = loaded->model;
-    q.model.parts.clear();
-    if (variant == C8qVariant::no_torque || variant == C8qVariant::rotor_0_alone_no_torque) {
-        for (auto& rotor : q.model.rotors) rotor.torque_coeff = 0.0f;
-    }
-    an::AnalysisCase c;
-    c.model = an::pin_model(file.generic_string(), q.model);
-    c.power = an::Power{.idle = static_cast<float>(af::kIdleDuty),
-                        .state_of_charge = static_cast<float>(af::kStateOfCharge)};
-    c.rotors.assign(q.model.rotors.size(), an::RotorSetup{});
-    c.grid.box = kC8qBoxM;
-    c.grid.spacing = kC8qBoxM / static_cast<float>(kC8qCells);
-    c.time.step = *c.grid.spacing / 8.0f;
-    c.time.duration = static_cast<float>(kC8qFrames) / static_cast<float>(an::kFramesPerSecond);
-    const spade::Result<an::ShowcaseTrim> trim = an::showcase_trim(c, q.model);
-    EXPECT_TRUE(trim.has_value()) << (trim ? "" : trim.error().context);
-    if (!trim) return std::nullopt;
-    q.hover = an::Controls{true, trim->hover, 0.0f, 0.0f, 0.0f};
-    float judged_mass = q.model.body.mass;
-    if (variant == C8qVariant::rotor_0_alone || variant == C8qVariant::rotor_0_alone_no_torque) {
-        for (std::size_t i = 1; i < q.model.rotors.size(); ++i) {
-            q.model.rotors[i].thrust_coeff = std::numeric_limits<float>::min();
-            q.model.rotors[i].torque_coeff = 0.0f;
-        }
-        c.model = an::pin_model(file.generic_string(), q.model);
-        judged_mass /= static_cast<float>(q.model.rotors.size());
-        q.rotor_0_only = true;
-    }
-    q.resolved = resolved(c, q.model);
-    q.judged = eg::DownwashCase{c.fluid.density, judged_mass, 9.80665f};
-    return q;
+    spade::Result<spade::testing::C8qAir> air = spade::testing::c8q_air(variant);
+    EXPECT_TRUE(air.has_value()) << (air ? "" : air.error().context);
+    if (!air) return std::nullopt;
+    return C8qCase{std::move(air->model), std::move(air->resolved), air->hover,
+                   eg::DownwashCase{air->c.fluid.density, air->judged_mass, 9.80665f}, air->rotor_0_only};
 }
 
 TEST(EndGoalC8q, TimesStartAndTwoStepsAtRDxTen) {

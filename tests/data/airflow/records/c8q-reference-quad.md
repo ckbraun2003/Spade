@@ -232,3 +232,32 @@ verdict: report only
 ```
 
 Physics' note on this block (2026-10-27): the library's actuator disc now takes its point density from R/dx (the lead's ruling of 2026-10-27: rings clamp(ceil(R/2dx), 3, 10), angles the least of 16, 32 and 64 at or above pi R/dx), so C8q's discs at R/dx 10.0037 are 6 rings of 32 (192 points), where the banded run above had 3 x 16. Rotor 0 alone reads 10.5116 m/s (10.5364 with the 3 x 16), its worst run 0.0639 off momentum theory (0.0666); the quad's rotors 0.7860, 0.7870, 0.7886 and 0.7921 (0.8167, 0.8156, 0.8161 and 0.8170), off their mean by 0.0047 at most (0.0009), the worst run by the mutual band 0.0179 (0.0089). Both bands hold.
+
+## 2026-11-03: C8q on the device (B8)
+
+GpuFluid, the whole step on the device of record (RTX 3060 Ti, driver 572.83), against the CPU's run of the same box over 32 steps: TD-14 as amended, bit-equal. The step time is report only (the lead, 2026-11-03). The box from C8q's one builder (tests/c8q_case.hpp), without solids, so GpuFluid without them (G1), which reports only pressure_iterations of the health fields.
+
+```text
+=== validation record: B8, the whole step on the device, C8q reference quad, 128^3, GpuFluid (G1) against the CPU ===
+commit: dfefd3fc (test-docs/b8-gpu-records; queue ticket spade-testdocs-b8-records-dfefd3fc)
+date: 2026-11-03
+path: GpuFluid (G1), MSVC 1943, release, on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no); fp32 NaN preservation supported: yes
+config: C8q from its one builder (tests/c8q_case.hpp, as flown): the library's reference quad, its parts cleared, held level at the box's centre in still air, no floor; 128x128x128 at dx 7.617 mm (R/dx 10.00) in a 0.975 m box; its 4 rotors as actuator discs at their commanded hover speed, 801 rad/s, 5.158 N in all, held constant; rho 1.225, nu 1.4607e-05, h 0.000952 s, n_v 2 (plan A's V-cycles); steps 1 to 32 compared from the initial state; the step time the median of 9 steps after 3 warm-up; the film's 0.50 s not run on this box
+measure: the values differing from the CPU's run over steps 1 to 32 (u, v, w and p, pressure_iterations; not compared: fault, unconverged, pressure_residual, stalled, capped, the wall load, the solids) = 0 of 270008352
+reference: the CPU's run of the same box, LiveRun's step order (engine/analysis/live_run.cpp)
+tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: on the device of record, every kernel exact and both twins flush)
+verdict: within
+measure: the first differing step, 0 if none (none differ) = 0
+reference: the CPU's run of the same box
+tolerance: none (report only)
+verdict: report only
+measure: the candidate's step time, the median of 9 steps after 3 warm-up = 13.1 ms
+reference: none (report only): at the D1 box, Cameron's bound of 190 ms a step with the bits kept (2026-11-03, docs/design/backlog.md) and the plan's estimate of about 95 ms (docs/design/physics/plans/2026-10-22-airflow-gpu-solver-plan.md, B7)
+tolerance: none (report only)
+verdict: report only
+```
+
+Beside the block, as the run printed them (checks, not measures; the floor is the check other devices run, the lead's ruling 2026-11-03, backlog 145386d9):
+
+- `physical: PASS; the CPU's largest |u|, |v| or |w| over steps 1 to 32 = 12.38 m/s against 42.97 m/s (4 x (2 v_h + the stream))`
+- `floor: PASS; the candidate's largest |u|, |v| or |w| over steps 1 to 32 = 12.38 m/s against 42.97 m/s; its mean speed at step 32 = 0.182294 m/s, the CPU's 0.182294 m/s (within 10% + 1e-04 m/s)`

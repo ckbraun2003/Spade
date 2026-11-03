@@ -8,7 +8,8 @@
 // record block is read back as pasted. A candidate names what it can't yet
 // report, and the block names those "not compared", never a match (the lead,
 // 2026-10-27). The CPU stand-ins are in test_gpu_airflow_d1_acceptance.cpp,
-// Rendering's GpuFluid in test_gpu_airflow_d1_device.cpp.
+// Rendering's GpuFluid in b7_gpu.hpp (B7's and B8's tests); B8's record
+// boxes in b8_boxes.hpp.
 
 #include <algorithm>
 #include <array>
@@ -31,6 +32,7 @@
 
 #include <glm/glm.hpp>
 
+#include "airflow_floor.hpp"
 #include "airflow_record.hpp"
 #include "airflow_solid_shapes.hpp"
 #include "d1_case.hpp"
@@ -57,7 +59,7 @@ inline constexpr uint32_t kComparedSteps = 32;  // N: the steps compared with th
 inline constexpr uint32_t kWarmSteps = 3;       // W: the steps before the timed ones
 inline constexpr uint32_t kTimedSteps = 9;      // M: the step time is their median
 inline constexpr uint32_t kFilmFrames = 15;     // the film's 0.50 s at LiveRun's frame rate
-inline constexpr double kStepBoundMs = 190.0;   // the plan's 2x profiling trigger (B7)
+inline constexpr double kStepBoundMs = 190.0;   // Cameron's bound at the D1 box (2026-11-03); was B7's 2x trigger
 inline constexpr uint32_t kNudgeStep = 5;       // s0: the nudged stand-in's first wrong step
 inline constexpr uint64_t kNsPerSecond = 1'000'000'000;
 static_assert(2 * kFilmFrames == an::kFramesPerSecond, "the film's 0.50 s");
@@ -120,6 +122,9 @@ class FluidStepper {
     virtual ~FluidStepper() = default;
     // The record's name for it: the path line's, and the opening line's.
     [[nodiscard]] virtual std::string name() const = 0;
+    // The device it runs on, as the path line names it (compute::describe());
+    // empty on the host.
+    [[nodiscard]] virtual std::string device() const { return {}; }
     // What it reports beside u, v, w and p; the rest is not compared.
     [[nodiscard]] virtual Reports reports() const { return {}; }
     // One step in LiveRun's order: each disc spread into the increments,
@@ -211,7 +216,8 @@ class CpuStandIn : public FluidStepper {
 // LiveRun's set_solids() builds for it, its discs, and its step in whole ns
 // for the film's frame times.
 struct B7Box {
-    std::string name;    // the record's opening line
+    std::string title = "B7 acceptance";  // the record's opening line: its title, then the box
+    std::string name;
     std::string config;  // its config line, before the harness's counts
     MacGrid grid;        // the initial state
     DomainBc bc;
@@ -290,6 +296,41 @@ enum class BoxSolids { with, none };
     return box;
 }
 
+// What LiveRun's first step gives a quad held at hover: its rotors' rows and
+// the held body, and its solids' run line and solid cells. That step's
+// pressure is capped at one CG iteration: the rows, the held body and the
+// solids don't depend on it. C4324: BodyState's alignment pads the struct, as
+// engine/physics/schedule.hpp notes for its own.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
+struct LiveHover {
+    std::vector<spade::vehicles::RotorRow> rows;
+    spade::BodyState body{};
+    std::string line;
+    uint32_t cells = 0;
+};
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+[[nodiscard]] inline spade::Result<LiveHover> live_hover(const an::ResolvedCase& resolved,
+                                                         const spade::vehicles::ModelType& run_model, float throttle) {
+    spade::Result<an::LiveRun> run = an::LiveRun::start(resolved, run_model);
+    if (!run) return std::unexpected(run.error());
+    run->set_test_solids_max_iterations(1);
+    if (spade::Result<void> s = run->step(an::Controls{.armed = true, .throttle = throttle}); !s) {
+        return std::unexpected(s.error());
+    }
+    LiveHover h;
+    h.rows.assign(run->rotor_rows().begin(), run->rotor_rows().end());
+    h.body = run->body();
+    h.line = run->solids().run_line;
+    h.cells = run->solids().solid_cells;
+    return h;
+}
+
 // The D1 box's solids, kept for the set_solids() calls: the parts borrow the
 // model.
 struct D1Solids {
@@ -300,12 +341,11 @@ struct D1Solids {
 
 // The D1 box from the one builder (tests/d1_case.hpp): kD1Grid at 4 mm, the
 // reference quad's rigid parts as solids, held at hover in the case's wind.
-// LiveRun takes one step for its rotors' rows and held body; the discs are
-// those rows at their commanded hover speed, held constant. That step's
-// pressure is capped at one CG iteration: the rows, the held body and the
-// solids don't depend on it. The box's solids must be LiveRun's (its
-// set_solids() line and solid cells), or it refuses. Without solids it is
-// the same air and discs, at plan A's V-cycles.
+// LiveRun takes one step for its rotors' rows and held body (live_hover());
+// the discs are those rows at their commanded hover speed, held constant.
+// The box's solids must be LiveRun's (its set_solids() line and solid
+// cells), or it refuses. Without solids it is the same air and discs, at
+// plan A's V-cycles.
 [[nodiscard]] inline spade::Result<B7Box> d1_box(BoxSolids solids = BoxSolids::with) {
     namespace vh = spade::vehicles;
     const bool with = solids == BoxSolids::with;
@@ -317,22 +357,12 @@ struct D1Solids {
     const glm::vec3 origin = -0.5f * shape.dx *
                              glm::vec3(static_cast<float>(shape.nx), static_cast<float>(shape.ny),
                                        static_cast<float>(shape.nz));
-    std::vector<vh::RotorRow> rows;
-    spade::BodyState body{};
-    std::string live_line;
-    uint32_t live_cells = 0;
-    {
-        spade::Result<an::LiveRun> run = an::LiveRun::start(*resolved, q->run_model);
-        if (!run) return std::unexpected(run.error());
-        run->set_test_solids_max_iterations(1);
-        if (spade::Result<void> s = run->step(an::Controls{.armed = true, .throttle = q->trim.hover}); !s) {
-            return std::unexpected(s.error());
-        }
-        rows.assign(run->rotor_rows().begin(), run->rotor_rows().end());
-        body = run->body();
-        live_line = run->solids().run_line;
-        live_cells = run->solids().solid_cells;
-    }
+    spade::Result<LiveHover> live = live_hover(*resolved, q->run_model, q->trim.hover);
+    if (!live) return std::unexpected(live.error());
+    std::vector<vh::RotorRow>& rows = live->rows;
+    const spade::BodyState& body = live->body;
+    const std::string& live_line = live->line;
+    const uint32_t live_cells = live->cells;
 
     B7Box box;
     box.name = with ? "D1 box 240x177x168" : "D1 box 240x177x168 without its solids";
@@ -415,6 +445,7 @@ struct D1Solids {
 // first in that order. Only what the candidate reports is compared.
 struct Comparison {
     std::string candidate;
+    std::string device;  // the candidate's, empty on the host
     Reports reports;
     uint32_t steps = 0;
     uint64_t compared = 0;
@@ -429,6 +460,9 @@ struct Comparison {
     std::array<double, 4> largest_gap{};  // u, v, w and p: the largest |candidate - CPU| of the run
     double cpu_speed = 0.0;             // the CPU's largest |v| at step N: the discs move the air
     double cpu_peak = 0.0;              // the CPU's largest |u|, |v| or |w| over steps 1 to N (peak_speed())
+    double candidate_peak = 0.0;        // the candidate's, the same way
+    double cpu_mean = 0.0;              // the CPU's mean speed at step N (mean_speed())
+    double candidate_mean = 0.0;        // the candidate's
 };
 
 // The largest |u|, |v| or |w| sample, infinite if any is not finite.
@@ -443,16 +477,29 @@ struct Comparison {
     return peak;
 }
 
+// The mean of |u|, |v| and |w| over every face sample: the sanity floor's
+// coarse reading of how much the air moves.
+[[nodiscard]] inline double mean_speed(const MacGrid& g) {
+    double sum = 0.0;
+    std::size_t n = 0;
+    for (const std::vector<float>* comp : {&g.u, &g.v, &g.w}) {
+        for (const float x : *comp) sum += std::fabs(static_cast<double>(x));
+        n += comp->size();
+    }
+    return n == 0 ? 0.0 : sum / static_cast<double>(n);
+}
+
 // The bound a physical flow in the box stays under: kPhysicalFactor times the
-// fastest air its discs and wind should make, the far wake's 2 v_h of its
+// fastest air its discs and stream should make, the far wake's 2 v_h of its
 // fastest disc (momentum theory, v_h = sqrt(T / (2 rho pi R^2))) plus the
-// wind's speed: 8 m/s in the stand-in box, 55 m/s in D1. A diverging run
-// passes it within steps. Before C4 (facc900), D1 without solids reached
-// 88.7 m/s at step 2 and 8.8e23 m/s at step 32, from the top face by the
-// inflow; before the dense disc (58720c6), one disc-plane sample of the real
-// D1 at 0.71 R grew about 4 m/s a step, past the bound at step 14 (Physics'
-// triage, 2026-10-27).
-inline constexpr double kPhysicalFactor = 4.0;
+// stream: the wind's speed, or the box's starting flow where that is faster
+// (S3's channel has no wind). 8 m/s in the stand-in box, 55 m/s in D1. A
+// diverging run passes it within steps. Before C4 (facc900), D1 without
+// solids reached 88.7 m/s at step 2 and 8.8e23 m/s at step 32, from the top
+// face by the inflow; before the dense disc (58720c6), one disc-plane sample
+// of the real D1 at 0.71 R grew about 4 m/s a step, past the bound at step 14
+// (Physics' triage, 2026-10-27).
+using spade::testing::kPhysicalFactor;  // tests/airflow_floor.hpp
 
 [[nodiscard]] inline double physical_bound(const B7Box& box) {
     double vh = 0.0;
@@ -460,8 +507,17 @@ inline constexpr double kPhysicalFactor = 4.0;
         const double area = std::numbers::pi * static_cast<double>(d.radius) * static_cast<double>(d.radius);
         vh = std::max(vh, std::sqrt(static_cast<double>(d.thrust) / (2.0 * static_cast<double>(box.cfg.rho) * area)));
     }
-    return kPhysicalFactor * (2.0 * vh + static_cast<double>(glm::length(box.bc.ambient)));
+    const double stream = std::max(static_cast<double>(glm::length(box.bc.ambient)), peak_speed(box.grid));
+    return kPhysicalFactor * (2.0 * vh + stream);
 }
+
+// The sanity floor on every device (tests/airflow_floor.hpp, its numbers and
+// why): the candidate's flow stays finite and under physical_bound() over
+// steps 1 to N, and its mean speed at step N is within kFloorBand of the
+// CPU's, plus kFloorStill.
+using spade::testing::kFloorBand;
+using spade::testing::kFloorStill;
+using spade::testing::mean_within_floor;
 
 inline void tally(Comparison& c, uint32_t step, const char* field, std::size_t index, bool differs, double gap) {
     ++c.compared;
@@ -597,6 +653,7 @@ inline void tally_solids(Comparison& c, const SolidField& cpu, const SolidField&
 
     Comparison c;
     c.candidate = cand.name();
+    c.device = cand.device();
     c.reports = cand.reports();
     c.steps = steps;
     if (c.reports.solids) {
@@ -626,6 +683,7 @@ inline void tally_solids(Comparison& c, const SolidField& cpu, const SolidField&
         tally_field(c, step, "w", a.w, b.w, c.largest_gap[2]);
         tally_field(c, step, "p", a.p, b.p, c.largest_gap[3]);
         c.cpu_peak = std::max(c.cpu_peak, peak_speed(a));
+        c.candidate_peak = std::max(c.candidate_peak, peak_speed(b));
         tally_health(c, step, *ha, *hb);
         if (c.reports.wall_load) {
             const spade::Result<WallLoad> la = cpu.wall_load(box.about);
@@ -636,6 +694,8 @@ inline void tally_solids(Comparison& c, const SolidField& cpu, const SolidField&
         }
     }
     for (const float x : a.v) c.cpu_speed = std::max(c.cpu_speed, std::fabs(static_cast<double>(x)));
+    c.cpu_mean = mean_speed(a);
+    c.candidate_mean = mean_speed(b);
     return c;
 }
 
@@ -708,14 +768,18 @@ struct Timing {
            "; not compared: " + joined(left_out);
 }
 
-// B7's record block as the run prints it. The test reads it back through the
-// record reader, so a format slip fails here and not at the paste. The
-// verdicts are the call site's. The solids' measure is there when they were
-// compared, the step time's when steps were timed, the film's when it ran.
+// B7's record block as the run prints it, `box` its opening line's title and
+// box. The test reads it back through the record reader, so a format slip
+// fails here and not at the paste. The verdicts are the call site's. The
+// solids' measure is there when they were compared, the step time's when
+// steps were timed, the film's when it ran. The step time is a reading, not a
+// grade (the lead, 2026-11-03): the record keeps it so a speedup shows as the
+// record's diff.
 [[nodiscard]] inline std::string b7_block(const std::string& box, const std::string& config,
                                           const std::string& build, const RunPlan& plan, const Comparison& c,
-                                          const Timing& t, bool bits_within, bool solids_within, bool time_within,
+                                          const Timing& t, bool bits_within, bool solids_within,
                                           bool film_diverged = false) {
+    const std::string on = c.device.empty() ? std::string() : ", on " + c.device;
     const std::string film = plan.film ? airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n, "0.50 s of the box's time in %u steps, published at every 1/30 s", t.film_steps);
     })
@@ -741,14 +805,14 @@ struct Timing {
     std::string block = airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(
             b, n,
-            "=== validation record: B7 acceptance, %s, %s against the CPU ===\n"
-            "path: %s, %s\n"
+            "=== validation record: %s, %s against the CPU ===\n"
+            "path: %s, %s%s\n"
             "config: %s; steps 1 to %u compared from the initial state; %s; %s\n"
             "measure: the values differing from the CPU's run over steps 1 to %u (%s) = %llu of %llu\n"
             "reference: the CPU's run of the same box, LiveRun's step order (engine/analysis/live_run.cpp)\n"
             "%s"
             "verdict: %s\n",
-            box.c_str(), c.candidate.c_str(), c.candidate.c_str(), build.c_str(), config.c_str(), c.steps,
+            box.c_str(), c.candidate.c_str(), c.candidate.c_str(), build.c_str(), on.c_str(), config.c_str(), c.steps,
             timed.c_str(), film.c_str(), c.steps, values.c_str(), static_cast<unsigned long long>(c.differing),
             static_cast<unsigned long long>(c.compared), bit_equal, bits_within ? "within" : "MISS");
     });
@@ -779,11 +843,12 @@ struct Timing {
             return std::snprintf(b, n,
                                  "measure: the candidate's step time, the median of %u steps after %u warm-up = "
                                  "%.1f ms\n"
-                                 "reference: the plan's expectation, about 95 ms at the D1 box "
-                                 "(docs/design/physics/plans/2026-10-22-airflow-gpu-solver-plan.md, B7)\n"
-                                 "tolerance: <= 190 ms (the plan's 2x profiling trigger, B7, fixed before the run)\n"
-                                 "verdict: %s\n",
-                                 plan.timed, plan.warm, t.step_ms, time_within ? "within" : "MISS");
+                                 "reference: none (report only): at the D1 box, Cameron's bound of %.0f ms a step "
+                                 "with the bits kept (2026-11-03, docs/design/backlog.md) and the plan's estimate of "
+                                 "about 95 ms (docs/design/physics/plans/2026-10-22-airflow-gpu-solver-plan.md, B7)\n"
+                                 "tolerance: none (report only)\n"
+                                 "verdict: report only\n",
+                                 plan.timed, plan.warm, t.step_ms, kStepBoundMs);
         });
     }
     if (!plan.film) return block;
@@ -804,15 +869,36 @@ struct Timing {
            });
 }
 
-// The harness on one box: the comparison, the times, the block judged, and
-// whether the CPU's flow stayed physical (cpu_peak within physical_bound()).
+// The harness on one box: the comparison, the times, the block judged,
+// whether the CPU's flow stayed physical (cpu_peak within physical_bound()),
+// and whether the candidate's held the sanity floor (kFloorBand above).
 struct B7Run {
     Comparison c;
     Timing t;
     std::string block;
     double bound = 0.0;
     bool physical = false;
+    bool floor = false;
 };
+
+// The sanity floor's verdict on a run: the candidate's peak finite and within
+// the bound, its mean speed at step N within the floor's band of the CPU's.
+[[nodiscard]] inline bool holds_floor(const Comparison& c, double bound) {
+    return std::isfinite(c.candidate_peak) && c.candidate_peak <= bound &&
+           mean_within_floor(c.candidate_mean, c.cpu_mean);
+}
+
+// The sanity floor's own line, after the block (not a record measure).
+[[nodiscard]] inline std::string floor_line(const B7Run& run) {
+    return airflow_test::formatted([&](char* b, std::size_t n) {
+        return std::snprintf(b, n,
+                             "floor: %s; the candidate's largest |u|, |v| or |w| over steps 1 to %u = %.4g m/s against "
+                             "%.4g m/s; its mean speed at step %u = %.6g m/s, the CPU's %.6g m/s (within %.0f%% + %.0e "
+                             "m/s)\n",
+                             run.floor ? "PASS" : "FAIL", run.c.steps, run.c.candidate_peak, run.bound, run.c.steps,
+                             run.c.candidate_mean, run.c.cpu_mean, 100.0 * kFloorBand, kFloorStill);
+    });
+}
 
 // The physical check's own line, after the block (not a record measure): a
 // FAIL the lead has named known-open says so (`known_open`, naming its own
@@ -822,7 +908,7 @@ struct B7Run {
     return airflow_test::formatted([&](char* b, std::size_t n) {
         return std::snprintf(b, n,
                              "physical: %s%s; the CPU's largest |u|, |v| or |w| over steps 1 to %u = %.4g m/s against "
-                             "%.4g m/s (%.0f x (2 v_h + the wind))\n",
+                             "%.4g m/s (%.0f x (2 v_h + the stream))\n",
                              run.physical ? "PASS" : "FAIL", open.c_str(), run.c.steps, run.c.cpu_peak, run.bound,
                              kPhysicalFactor);
     });
@@ -834,10 +920,11 @@ struct B7Run {
     if (!c) return std::unexpected(c.error());
     spade::Result<Timing> t = time_candidate(box, make, plan);
     if (!t) return std::unexpected(t.error());
-    B7Run run{std::move(*c), *t, {}, physical_bound(box), false};
+    B7Run run{std::move(*c), *t, {}, physical_bound(box), false, false};
     run.physical = run.c.cpu_peak <= run.bound;
-    run.block = b7_block(box.name, box.config, airflow_test::build_line(), plan, run.c, run.t, run.c.differing == 0u,
-                         run.c.solids_differing == 0u, run.t.step_ms <= kStepBoundMs, run.t.film_peak > run.bound);
+    run.floor = holds_floor(run.c, run.bound);
+    run.block = b7_block(box.title + ", " + box.name, box.config, airflow_test::build_line(), plan, run.c, run.t,
+                         run.c.differing == 0u, run.c.solids_differing == 0u, run.t.film_peak > run.bound);
     return run;
 }
 
