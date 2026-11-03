@@ -126,6 +126,12 @@ namespace detail {
     return !ends || t < *ends;
 }
 
+// The chapter's drone under the assets root `assets`: what the tour flies and
+// its twins (test_sandbox_airflow_live.cpp) test.
+[[nodiscard]] inline std::filesystem::path chapter_model_file(const std::filesystem::path& assets) {
+    return assets / "library" / "drones" / "reference_quad.model.yaml";
+}
+
 // Loads `model_file` (the library's reference_quad.model.yaml) and resolves
 // the chapter's case for it: box 0.8 m, `spacing` cells (25 mm, 32^3, unless
 // a test asks for coarser), 1 ms steps, flown under the showcase program

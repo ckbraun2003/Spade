@@ -44,9 +44,7 @@ using spade::render::FlowView;
 
 namespace {
 
-fs::path library_quad() {
-    return fs::path(SPADE_ASSETS_DIR) / "library" / "drones" / "reference_quad.model.yaml";
-}
+fs::path library_quad() { return af::chapter_model_file(fs::path(SPADE_ASSETS_DIR)); }
 
 [[nodiscard]] bool env_gate_is_set(const char* name) {
 #if defined(_MSC_VER)
@@ -116,6 +114,19 @@ TEST(SandboxAirflowLive, TheLibraryQuadResolvesAt32Cubed) {
     ASSERT_TRUE(af::hover_ends_at(q->program).has_value());
     EXPECT_FLOAT_EQ(*af::hover_ends_at(q->program), 1.2f);
     EXPECT_FLOAT_EQ(q->resolved.spec.time.duration, 1.2f) << "the chapter flies the hover the check judges";
+}
+
+// The chapter flies the library's Phantom 3-class quad (the lead, 2026-10-27),
+// as the editor's chapters do, its rotors as discs only (the lead's ruling):
+// its 0.1194 m props are 4.8 cells across at 25 mm, the reference quad's 3.0.
+TEST(SandboxAirflowLive, TheChapterFliesTheLibraryPhantom) {
+    EXPECT_EQ(library_quad().filename(), fs::path("phantom3_class.model.yaml"));
+    const spade::Result<af::LiveQuad> q = af::live_quad(library_quad());
+    ASSERT_TRUE(q.has_value()) << q.error().context;
+    EXPECT_EQ(q->draw_model.name, "phantom3_class");
+    EXPECT_EQ(q->run_model.rotors.size(), 4u);
+    ASSERT_EQ(q->resolved.rotors.size(), 4u);
+    EXPECT_NEAR(q->resolved.rotors.front().cells_across_radius, 0.1194f / af::kSpacingM, 1e-3f);
 }
 
 TEST(SandboxAirflowLive, AMissingModelFileIsRefusedNamingIt) {
