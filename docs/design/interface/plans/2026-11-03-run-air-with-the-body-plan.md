@@ -2,7 +2,7 @@
 
 Interface, 2026-11-03, for the lead. Item 1 of `2026-11-03-geometry-and-air-items.md`, Cameron's next visible result (backlog `145386d9`). It builds on Physics' P-1 note (`.agents/physics-p1-note.md`), which the lead ruled on 2026-11-03: N15 is amended for the live run only. Nothing is built yet. Building starts when the lead OKs this plan and Physics' `refused_part` seam is on master.
 
-**Pending:** Rendering's device numbers at 104³ and 125³ with the body: real-time fraction, memory, start-up. The cell cap in §3 waits on them.
+**Pending:** Rendering's device numbers at 104³ and 125³ with the body: real-time fraction, memory, start-up. They set the cell cap in §3 (128 until then). Physics' ruling on the step.
 
 ## What the user sees
 
@@ -36,7 +36,7 @@ The segment " · N parts drawn only: 'a', 'b'" becomes the drawn-only segment be
 
 - **The box is today's:** 32 × floor-to-the-mm(R/3). It doesn't change, so the wake has the room it has now.
 - **The cell:** dx = floor-to-the-mm(min(R/3, F/4)), where F is the largest min_feature among the rigid parts. Then n = ceil(box/dx), in place of `kAirCells`.
-- **A cap I propose: n ≤ n_max, from Rendering's numbers.** With no cap the Crazyflie gets a 1 mm cell, 224³ (11.2 M cells). Past the cap, dx = ceil-to-the-mm(box/n_max), and the loop then draws whatever the coarser cell can't resolve.
+- **The cap (ruled): n ≤ n_max,** 128 until Rendering's numbers set it. With no cap, the Crazyflie would get a 1 mm cell, 224³ (11.2 M cells). Past the cap, dx = box/n_max, and the loop draws whatever the coarser cell can't resolve.
 
 The library drones under the rule (computed from the model files; their boxes as now):
 
@@ -46,9 +46,9 @@ The library drones under the rule (computed from the model files; their boxes as
 | Iris+ | 122 mm | 50 mm | 32³, 40 mm | 107³, 12 mm |
 | reference quad, 6-inch, competition | 76 mm | 35 mm | 32³, 25 mm | 100³, 8 mm |
 | 5-inch FPV | 64 mm | 30 mm | 32³, 21 mm | 96³, 7 mm |
-| Crazyflie | 23 mm | 7 mm | 32³, 7 mm | 224³, 1 mm (the cap applies) |
+| Crazyflie | 23 mm | 7 mm | 32³, 7 mm | 128³, 1.75 mm (the cap; 224³ at 1 mm without it) |
 
-- **The reference quad moves too.** It has 10 rigid parts, F = 35 mm. That needs the lead's OK, since Test/Docs' C8q and the GPU tests use its case. Those tests pin today's grid (§5), so their bits hold.
+- **The reference quad moves too** (ruled). It has 10 rigid parts, F = 35 mm. Test/Docs' C8q and the GPU tests use its case. They pin today's grid (§5), so their bits hold.
 - A drone with no rigid part keeps R/3 at 32³.
 - Saved scenes keep their saved grids. A region saved at 39 mm runs as today: every Phantom part is thin there, so it is discs only, and now it says so.
 
@@ -101,12 +101,10 @@ RED first in each slice.
 
 Each slice is RED then GREEN on its own `interface/*` branch.
 
-## For the lead to decide
+## The lead's rulings (2026-11-03: plan OK, the engine slice first after Physics' seam)
 
-1. **n_max**, once Rendering's numbers are in. 125³ is P-1's largest measured grid.
-2. **The fallback's grid and its words.** I propose R/3 over the same box, and "CPU: <why>; discs only, the body needs the GPU".
-3. **`start_live_run()` taking a fallback case.** It's Rendering's file.
-4. **The reference quad's default moving to 100³ at 8 mm,** like every library drone with rigid parts.
-5. **Physics' typed reason and containing part,** alongside `refused_part`.
-
-**Open for Physics:** the step stays 1 ms (`kAirStepS`) at 7 to 12 mm. The wake's fastest cells then cross about 1 to 1.5 cells a step (11.85 m/s at 12 mm, measured on poster 02). The backtrace has no CFL limit, but does the walls' handling assume less than a cell a step?
+1. **The cap.** n_max is set from Rendering's 104³ and 125³ numbers, and is 128 until they land. A drone that hits the cap takes dx = box/n_max, so the Crazyflie gets 1.75 mm on 128³. The loop then draws, and names, whatever that cell can't hold, so the Crazyflie flies as discs or with its body only.
+2. **The reference quad's default moves to 100³ at 8 mm.** One rule holds for every drone. The tests that pin today's grid keep their bits, and the READY names the moved defaults.
+3. **The fallback.** Discs only on R/3's grid over the same box, as §4 plans. Granted: `start_live_run()` takes an optional fallback case. Rendering reviews it in the editor slice.
+4. **Physics' seam** carries the typed reason (leaks or exposed) and, for an exposed part, the part it lies inside, beside `refused_part`.
+5. **The step.** Physics rules whether 1 ms holds at 7 to 12 mm beside walls, or whether dt follows dx. At 12 mm, the wake's fastest cells cross about 1 to 1.5 cells a step (11.85 m/s, poster 02). The editor slice takes dt from a function of dx, which today returns 1 ms (`kAirStepS`), so either ruling is a one-line change.
