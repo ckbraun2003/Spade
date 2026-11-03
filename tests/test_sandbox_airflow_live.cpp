@@ -97,9 +97,9 @@ spade::FlowVolume header_only(float deepest_lambda2) {
 
 }  // namespace
 
-// The library quad flies with its parts cleared (thinner than a 25 mm cell)
-// and is drawn with them; the case is the chapter's 32^3, flown under the
-// showcase, armed at hover at 0.2 s, until its hover ends at 1.2 s.
+// The chapter's drone flies with its parts cleared (discs only) and is drawn
+// with them; the case is the chapter's 32^3, flown under the showcase, armed
+// at hover at 0.2 s, until its hover ends at 1.2 s.
 TEST(SandboxAirflowLive, TheLibraryQuadResolvesAt32Cubed) {
     const spade::Result<af::LiveQuad> q = af::live_quad(library_quad());
     ASSERT_TRUE(q.has_value()) << q.error().context;
@@ -118,7 +118,7 @@ TEST(SandboxAirflowLive, TheLibraryQuadResolvesAt32Cubed) {
 
 // The chapter flies the library's Phantom 3-class quad (the lead, 2026-10-27),
 // as the editor's chapters do, its rotors as discs only (the lead's ruling):
-// its 0.1194 m props are 4.8 cells across at 25 mm, the reference quad's 3.0.
+// its props' 0.1194 m radius is 4.8 cells at 25 mm, the reference quad's 3.0.
 TEST(SandboxAirflowLive, TheChapterFliesTheLibraryPhantom) {
     EXPECT_EQ(library_quad().filename(), fs::path("phantom3_class.model.yaml"));
     const spade::Result<af::LiveQuad> q = af::live_quad(library_quad());
@@ -374,8 +374,9 @@ TEST(SandboxAirflowLive, ItsStatusLineIsThePressureInTheWarningToneThenTheGap) {
 // M0 (the editor's airflow run, INT-15; the lead's D3, 2026-10-26): LiveRun's
 // cost at the live 32^3 grid on this box, measured before the editor's pacing
 // is built on it. Opt-in (SPADE_LIVE_BENCH=1); its numbers mean something in
-// release. The library's reference quad at 25 mm cells (R/dx 3), armed at
-// half throttle: first its rotors as discs with nothing solid (plan A's
+// release. The chapter's drone at 25 mm cells (the Phantom, R/dx 4.8, since
+// 2026-11-03; the reference quad, R/dx 3, before), armed at half throttle:
+// first its rotors as discs with nothing solid (plan A's
 // pressure, as the tour's chapter flies it), then with a 0.1 m ball as its
 // body (4 cells across, so the solids' CG runs). Each run warms for one
 // frame, then times 3 frames whole (a frame is 1/30 s of whole steps, then

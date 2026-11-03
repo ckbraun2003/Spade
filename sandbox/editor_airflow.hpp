@@ -85,10 +85,10 @@ struct AirDrone {
 }  // namespace detail
 
 // The model Run air flies for `region`: its drone's, with the parts out of
-// the air (drawn, not solid), as the tour's chapter flies the reference
-// quad: at the live grid a drone's arms and props are thinner than a cell
-// (airflow_live.hpp). Physics' P-1, thin parts drawn only and thick ones
-// solid, replaces this.
+// the air (drawn, not solid), as the tour's chapter flies its drone
+// (airflow_live.hpp): discs only until solids enter the air with the GPU's
+// finer grid (the lead's ruling). Physics' P-1, thin parts drawn only and
+// thick ones solid, replaces this.
 [[nodiscard]] inline Result<vehicles::ModelType> air_model(const scene::SceneDesc& s,
                                                            const scene::SceneAirflowRegion& region) {
     const Result<detail::AirDrone> drone = detail::air_drone(s, region);
