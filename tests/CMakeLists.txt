@@ -136,6 +136,7 @@ add_executable(spade_tests
     test_model_propulsion.cpp
     test_part_pose.cpp
     test_part_cull.cpp
+    test_quadrotor_look.cpp
     test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_m1b_bar.cpp

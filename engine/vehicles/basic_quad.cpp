@@ -434,4 +434,78 @@ std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec) {
     return out;
 }
 
+Result<void> wear_props(AirframeSpec& s, const shapes::PropMeshSpec& m) {
+    const Result<shapes::GeneratedMesh> ccw = shapes::prop(m, shapes::PropHand::ccw);
+    if (!ccw) return std::unexpected(ccw.error());
+    const Result<shapes::GeneratedMesh> cw = shapes::prop(m, shapes::PropHand::cw);
+    if (!cw) return std::unexpected(cw.error());
+    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
+        const shapes::GeneratedMesh& hand = s.rotors[k].spin_dir > 0.0 ? *ccw : *cw;
+        s.rotor_parts.push_back(RotorPartSpec{.name = "prop[" + std::to_string(k) + "]",
+                                              .role = "prop",
+                                              .rotor = static_cast<uint32_t>(k),
+                                              .mount = {},  // the hub's own frame
+                                              .mesh = hand.mesh,
+                                              .min_feature = hand.min_feature});
+    }
+    return {};
+}
+
+// THE QUADROTOR'S LOOK (basic_quad.hpp): the X of half spans L sqrt(1/2),
+// turned 45 degrees about +Y onto the airframe's plus, its design origin
+// rotor_height - hub_height above the airframe's centre of mass.
+Result<QuadrotorLook> quadrotor_look(const QuadrotorParams& airframe, BasicQuadParams base,
+                                     const shapes::PropMeshSpec& prop) {
+    if (const Result<ModelType> flown = make_quadrotor(airframe); !flown) return std::unexpected(flown.error());
+    const float radius = airframe.rotors[0].radius;
+    for (std::size_t i = 1; i < kQuadrotorRotorCount; ++i) {
+        if (airframe.rotors[i].radius != radius) {
+            return std::unexpected(invalid("rotors[" + std::to_string(i) + "].radius: the drawn quad has one "
+                                           "propeller, rotor 0's of radius " + text(radius) + " m; found " +
+                                           text(airframe.rotors[i].radius) + " m"));
+        }
+    }
+    const double reach = static_cast<double>(airframe.arm_length) * std::sqrt(0.5);
+    base.half_span_x = reach;
+    base.half_span_z = reach;
+    base.prop.diameter = 2.0 * static_cast<double>(radius);
+    Result<AirframeSpec> spec = basic_quad_airframe(base);
+    if (!spec) return std::unexpected(spec.error());
+
+    QuadrotorLook out;
+    // THE FRAME's front-right, front-left, rear-left and rear-right, turned,
+    // are the airframe's +X, -Z, -X and +Z: rotors 0, 3, 2 and 1.
+    out.rotor = {0u, 3u, 2u, 1u};
+    for (std::size_t i = 0; i < kQuadrotorRotorCount; ++i) {
+        spec->rotors[out.rotor[i]].spin_dir = static_cast<double>(airframe.spin_dirs[i]);
+    }
+    shapes::PropMeshSpec sized = prop;
+    sized.diameter = base.prop.diameter;
+    if (Result<void> worn = wear_props(*spec, sized); !worn) return std::unexpected(worn.error());
+
+    // The turn's half angle, 22.5 degrees: cos = sqrt(2 + sqrt 2) / 2 and
+    // sin = sqrt(2 - sqrt 2) / 2, sqrt only (TD-3).
+    const double root2 = std::sqrt(2.0);
+    const glm::dquat turn(0.5 * std::sqrt(2.0 + root2), 0.0, 0.5 * std::sqrt(2.0 - root2), 0.0);
+    const glm::dvec3 offset(0.0, static_cast<double>(airframe.rotor_height) - base.hub_height, 0.0);
+    out.turn = glm::quat(turn);
+    out.offset = glm::vec3(offset);
+
+    // The airframe's drag where it acts: its body-frame mount, carried into
+    // the drawn design frame. The compile refuses a mesh spec without one.
+    const glm::dquat back = glm::conjugate(turn);
+    DragSpec drag;
+    drag.mode = airframe.drag.mode;
+    drag.area = static_cast<double>(airframe.drag.area);
+    drag.coeffs = glm::dvec3(airframe.drag.coeffs);
+    drag.mount.position = back * (glm::dvec3(airframe.drag.local_pos) - offset);
+    drag.mount.orientation = back * glm::dquat(airframe.drag.local_orient);
+    spec->drag = {drag};
+
+    Result<CompiledAirframe> compiled = compile_airframe(*spec);
+    if (!compiled) return std::unexpected(compiled.error());
+    out.model = std::move(compiled->model);
+    return out;
+}
+
 }  // namespace spade::vehicles

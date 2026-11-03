@@ -88,12 +88,26 @@
 // respond to its neighbour's induced inflow. basic_quad_assumptions() lists
 // that for every spec; the advisories name only real overlaps.
 //
+// THE QUADROTOR'S LOOK (B20-1; the lead's OK, 2026-11-03). quadrotor_look()
+// draws a QuadrotorParams airframe (vehicles/quadrotor.hpp) as a basic quad:
+// drawn only, never flown, so the airframe and its numbers fly unchanged. The
+// airframe is a plus, its hubs on its +-X and +-Z at L, and the basic quad an
+// X, so the look is the X of both half spans L sqrt(1/2), turned 45 degrees
+// about +Y: its rotors 0, 3, 2 and 1 land on the airframe's 0, 1, 2 and 3.
+// Its propeller's diameter is 2R, its rotors spin as the airframe's (so each
+// prop's hand follows), and its design origin sits rotor_height - hub_height
+// above the airframe's centre of mass, so its hubs are the airframe's. Its
+// drag is the airframe's, where it acts. Everything else -- the body, arms,
+// bells, blocks, look and blade -- is the caller's. Its mass and inertia are
+// its parts', not the airframe's (no fit, the lead's ruling).
+//
 // DETERMINISM. Double arithmetic, + - * / and sqrt only (TD-3), in a fixed
 // order. The same params give a bit-identical spec on every conforming
 // platform.
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -101,9 +115,13 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
 #include "vehicles/airframe_compile.hpp"
+#include "vehicles/model_type.hpp"
+#include "vehicles/quadrotor.hpp"
+#include "world/mesh_shapes.hpp"
 
 namespace spade::vehicles {
 
@@ -226,5 +244,34 @@ struct BasicQuadAdvisory {
 // no pair is that close; a close layout that does not overlap is not advised
 // (the shared wake is listed by basic_quad_assumptions() instead).
 [[nodiscard]] std::vector<BasicQuadAdvisory> basic_quad_advisories(const AirframeSpec& spec);
+
+// The propeller on every hub of `spec` (ROTOR PARTS, airframe_compile.hpp):
+// prop[k] on rotor k, in its hub's frame at psi = 0, the ccw hand on a rotor
+// whose spin_dir is above 0 and the cw on any other, one mesh per hand,
+// massless (the propeller's mass is the prop block's). shapes::prop()'s
+// refusal comes back unchanged, the spec untouched. The library's drones and
+// quadrotor_look() wear their props by it (TD-9).
+[[nodiscard]] Result<void> wear_props(AirframeSpec& spec, const shapes::PropMeshSpec& prop);
+
+// THE QUADROTOR'S LOOK (above): the drawn model and where it sits. To draw the
+// airframe whose body is at (pos, orient), pose the model's design frame at
+// (pos + orient * offset, orient * turn), and give the model's rotor rotor[i]
+// airframe rotor i's omega and blade azimuth.
+struct QuadrotorLook {
+    ModelType model;                                     // compiled; drawn, never flown
+    glm::quat turn{1.0f, 0.0f, 0.0f, 0.0f};              // its design frame -> the airframe's body frame
+    glm::vec3 offset{0.0f};                              // its design origin in the airframe's body frame, m
+    std::array<uint32_t, kQuadrotorRotorCount> rotor{};  // rotor[i]: the model's rotor drawn for airframe rotor i
+};
+
+// The look of `airframe`: `base` with its half spans and propeller diameter
+// overwritten, `prop` (the blade) with its diameter overwritten, as THE
+// QUADROTOR'S LOOK says. invalid_argument: make_quadrotor(airframe)'s
+// refusal, verbatim, since an airframe that can't be built isn't drawn; rotors
+// of different radii, naming the first that differs, since the basic quad has
+// one propeller; and the refusals of basic_quad_airframe(base),
+// shapes::prop() and compile_airframe(), unchanged.
+[[nodiscard]] Result<QuadrotorLook> quadrotor_look(const QuadrotorParams& airframe, BasicQuadParams base,
+                                                   const shapes::PropMeshSpec& prop);
 
 }  // namespace spade::vehicles
