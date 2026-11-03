@@ -193,7 +193,8 @@ struct PublishedSpeeds {
 
 // The floor's bound in still air: kPhysicalFactor x 2 v_h of the run's
 // fastest rotor now (momentum theory, v_h = sqrt(T / (2 rho pi R^2)), with
-// T = k_T omega^2).
+// T = k_T omega^2). No stream term, unlike b7's bound: these runs have no
+// wind; a windy case adds the stream's speed here.
 [[nodiscard]] double still_air_bound(const an::LiveRun& run, double rho) {
     double vh = 0.0;
     for (const spade::vehicles::RotorRow& row : run.rotor_rows()) {
@@ -210,9 +211,10 @@ class LiveFloor {
   public:
     explicit LiveFloor(double rho) : rho_(rho) {}
 
-    // One frame: the candidate's published volume finite and holding no more
-    // no-data samples than the CPU's (a NaN or a flow past the range adds
-    // one), its peak and the bound kept.
+    // One frame: the candidate's published volume finite and with the same
+    // no-data count as the CPU's: the solid cells' are fixed by the mask on
+    // every device, and a NaN or a flow past the range adds one. Its peak and
+    // the bound kept.
     void frame(const an::LiveRun& candidate, const spade::FlowVolume& cpu, const spade::FlowVolume& gpu,
                uint64_t number) {
         const PublishedSpeeds s = published_speeds(gpu);
