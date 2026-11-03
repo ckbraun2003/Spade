@@ -83,7 +83,7 @@ inline constexpr const char* kRecordTitle = "B8, the whole step on the device";
                              "S1 as run_s1() sets it up (tests/test_airflow_solids_step.cpp, P3's checks): %u^3 at dx "
                              "%.4g m, R 0.06 m centred on a cell corner, free slip, inviscid, inflow U 1 m/s on -x, "
                              "other faces open, u = U at the start, U h/dx 0.1 (h %.6g s), CG floor %u, cap %u, the "
-                             "interior extrapolated; solids: %s",
+                             "interior extrapolated; %s",
                              cells, static_cast<double>(dx), static_cast<double>(box.cfg.h), box.cfg.n_v,
                              box.cfg.cg_cap, box.solids.run_line.c_str());
     });
@@ -131,7 +131,7 @@ inline constexpr const char* kRecordTitle = "B8, the whole step on the device";
                              "S3 as S3ASheetAcrossAChannelStopsItsFlow sets it up (tests/test_airflow_solids_step.cpp): "
                              "32x8x8 periodic, dx 1/32 m, a sheet 0.25 dx thick on plane %u, rho 1.225, U 1.0 at the "
                              "start, inviscid, h 0.0010, the whole step (the CPU's record is one projection), CG floor "
-                             "%u, cap %u; solids: %s",
+                             "%u, cap %u; %s",
                              plane, box.cfg.n_v, box.cfg.cg_cap, box.solids.run_line.c_str());
     });
     return box;
