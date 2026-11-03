@@ -25,10 +25,23 @@ What is already well pinned, so it isn't listed: GpuFluid's step against `fluid_
 - **Now:** `GpuEditorAirflow` runs the reference quad, and `GpuLiveFluid` runs a ball quad on 32³. The Phantom's mesh-derived solids run only on the CPU (`EditorAirflow.ThePlacedPhantomsAirStartsAndPublishes`).
 - **Proposed:** `GpuEditorAirflow` with the placed Phantom: a few frames to the bit on the device of record, opt-in if slow. It covers mesh solids, the prop-hub geometry and the dense disc together on the GPU. Owners: Interface and Rendering.
 
-## 5. Debug coverage of the drone solids rests on two tests near the limit
+## 5. Debug coverage of the drone solids: closed
 
-- **Now:** the Phantom, the Iris+ and Physics' `ThePhantomsBodyTopOnACellCentrePlaneBuilds` (`e39fdca6`) skip in debug. The basic quads that cover them take 40 to 57 s in debug against ctest's 60 s. The `e39fdca6` skip has no guard-table row, which is moot because Core's cull removes every skip.
-- **Proposed:** when the cull lands, re-time every `LibraryDroneSolids*` case in debug under ctest, `-j 1` and under load. Keep each under about 30 s (Core's target). Then I drop the guard-table rows.
+- **Was:** the Phantom, the Iris+ and Physics' `ThePhantomsBodyTopOnACellCentrePlaneBuilds` (`e39fdca6`) skipped in debug. The basic quads that covered them took 40 to 57 s in debug against ctest's 60 s.
+- **Closed, 2026-11-03:** Core's mesh-box cull (`730568cf`) took every drone skip off, and the drone rows came off `TD-5`'s table at `226c24ce`. Re-timed on master `02d8d0b1`, in debug, under ctest at `-j 1` (the gate's own, `02-build-and-gate.md`), every case is under Core's 30 s:
+
+  | Case | Debug, `-j 1` (s) |
+  |---|---|
+  | `LibraryDroneSolids.TheCrazyflieNamesTheCellSizeItNeeds` | 0.50 |
+  | `LibraryDroneSolids.ThePhantomsBodyTopOnACellCentrePlaneBuilds` | 16.83 |
+  | `LibraryDroneSolidsAtFourMillimetres`, `phantom3_class` | 13.47 |
+  | `LibraryDroneSolidsAtFourMillimetres`, `iris_plus_class` | 21.87 |
+  | `LibraryDroneSolidsAtFourMillimetres`, `fpv_5inch` (refused by name) | 8.97 |
+  | `LibraryDroneSolidsAtFourMillimetres`, `basic_quad_6inch` | 10.07 |
+  | `LibraryDroneSolidsAtFourMillimetres`, `basic_quad_competition` | 11.51 |
+
+- **The load:** jobrun's other heavy slot ran builds for most of the 83 s run (Physics', then Kat's `editor-b` and `editor-d`), and was free for moments between them. An earlier run of the two plain tests, beside Physics' build, gave 0.44 s and 18.25 s.
+- **Nothing left to drop:** master has no drone debug skip, and `TD-5`'s table holds only S2's row.
 
 ## 6. Other GPUs: nothing fails
 
