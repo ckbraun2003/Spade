@@ -33,8 +33,19 @@
 // and handed to set_solids() through vehicles::AirflowSolids. With any, the
 // pressure takes kSolidsCgIterations, the published volume masks the cells
 // inside them (P6), and each step's pressure residual is kept, an
-// unconverged one counted and announced (L6), never refused. A part the
-// grid can't hold is refused by start(), by name, before a step.
+// unconverged one counted and announced (L6), never refused.
+//
+// A PART THE GRID CAN'T HOLD IS DRAWN ONLY, NAMED (P-1, Physics' note; the
+// lead's ruling, 2026-11-03, amending N15 for the live run only). start()
+// classifies each rigid part at the base cell (classify_part()): a sheet, a
+// wire or a porous part is drawn but left out of the air. It builds the rest
+// (set_solids()); a part the measured safeguard refuses (it leaks, or it is
+// exposed inside another) is left out too, and the build is redone without
+// it, one part at a time, until a build is accepted or none is left (discs
+// only). The label names each part left out and why (drawn_only_line()).
+// What else refuses a part still refuses the run: a non-finite sampler, a
+// part outside the grid, a part's own malformed size. The case resolves with
+// ThinWalls::drawn_by_the_live_run, so resolve() leaves thin walls to it.
 //
 // Long calls: start() and advance_frame(). A host runs them off its GUI
 // thread. A LiveRun is used from one thread at a time.
@@ -78,11 +89,64 @@ inline constexpr uint32_t kLiveRunSaveVersion = 3;
 inline constexpr float kHoldRateDegPerS = 180.0f;
 inline constexpr uint64_t kFramesPerSecond = 30;
 
-// N15: the role the editor gives a part imported as a solid. A part of this
-// role the grid can't resolve is refused by name, as any part is, and the
-// refusal adds the other way out: marking it drawn only
-// (vehicles::kDrawnOnlyRole), which leaves it out of the air.
+// N15: the role the editor gives a part imported as a solid. In a live run
+// it is a part like any other: drawn only, named, when the grid can't hold it.
 inline constexpr std::string_view kImportedPartRole = "imported";
+
+// Why a live run draws a part but leaves it out of the air (P-1).
+enum class DrawnReason : uint8_t {
+    marked,   // the user's mark, vehicles::kDrawnOnlyRole (N15)
+    thin,     // classify_part(): a sheet, thinner than 2 cells
+    wire,     // classify_part(): below 2 cells in two extents, a wire or a fastener
+    porous,   // classify_part(): porous parts arrive with the porous task
+    leaks,    // the measured safeguard: it leaks at this cell
+    exposed,  // the measured safeguard: inside another part, exposed near its surface
+};
+
+struct DrawnPart {
+    std::string name;
+    uint32_t part = 0;  // its index in the model's parts
+    DrawnReason why = DrawnReason::marked;
+    std::string inside;  // exposed only: the part it lies inside
+};
+
+// RUN AIR'S GRID AND STEP for a drone flown live (P-1's cell rule and
+// Physics' step rule; the lead's rulings, 2026-11-03).
+//
+// The grid: its box is kLiveBoxCells cells of R/3 to the millimetre below (R
+// the model's largest rotor radius), the box Run air has had; its cell is
+// min(R/3, F/4) to the millimetre below, F the largest declared min_feature
+// among the parts the air can take (rigid walls not marked drawn only), so 4
+// cells span the body; and n = ceil(box/dx) cells a side, at most
+// kLiveMaxCells, past which the cell is box / kLiveMaxCells. Refused: a model
+// without rotors, or whose largest radius is under 3 mm.
+inline constexpr uint32_t kLiveBoxCells = 32;
+inline constexpr uint32_t kLiveMaxCells = 128;  // until Rendering's numbers at 104^3 and 125^3 set it
+
+struct LiveGrid {
+    uint32_t n = 0;   // cells a side
+    float dx = 0.0f;  // m
+};
+
+[[nodiscard]] Result<LiveGrid> live_grid(const vehicles::ModelType& model);
+
+// The step: h = min(kLiveStepCapS, dx / (2 v_h + |wind|)), a CFL of at most 1
+// on the wake's speed. v_h = sqrt(T / (2 rho pi R^2)) is the largest rotor's
+// hover induced speed at T = m g / rotors (rho the case's air, g standard
+// gravity), |wind| the case's flight speed (0 in hover). kLiveStepCapS, the
+// tour's step, for a model without rotors in still air.
+inline constexpr float kLiveStepCapS = 0.001f;
+
+[[nodiscard]] float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx);
+
+// The run label's segment for the parts drawn only at the base cell `dx` (m),
+// "" for none. Grouped by reason, the groups in the order their first part
+// was left out and each group's parts in the model's order, consecutive
+// indexed names joined: "drawn only at 12 mm: arm[0-3], esc (thinner than 2
+// cells); battery (inside 'body', exposed); motor[1] (leaks)". With no part
+// left in the air (`any_left` false) it opens "discs only: every part drawn
+// only at ...".
+[[nodiscard]] std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any_left);
 
 struct LiveState {
     double t_s = 0.0;  // simulated, whole steps of h
@@ -98,7 +162,7 @@ struct LiveState {
 // What a run's solids are (LiveRun::solids()).
 struct LiveSolids {
     bool any = false;                 // the model's rigid parts, but the drawn-only, are in the grid
-    std::vector<std::string> drawn_only;  // the parts drawn but not in the air (N15), in posed order
+    std::vector<DrawnPart> drawn_only;  // the parts drawn but not in the air, in the order left out (P-1)
     std::string run_line;             // set_solids()' own line: parts, walls, sheets, leaks
     uint32_t solid_cells = 0;         // the grid's solid cells: the mask the volume publishes with
     float pressure_residual = 0.0f;   // the last step's max|r| / max|b|; 0 without solids

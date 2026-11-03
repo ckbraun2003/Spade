@@ -221,16 +221,24 @@ struct ResolvedCase {
     std::vector<ResolvedRotor> rotors;
 };
 
+// Who answers for a wall part the finest cell can't resolve (P-1; the lead's
+// ruling, 2026-11-03, amending N15 for the live run only): resolve(), which
+// refuses it, as for every offline run and film (P2); or the live run, which
+// draws it and names why (LiveRun::start()), so resolve() leaves it to it.
+enum class ThinWalls : uint8_t { refused, drawn_by_the_live_run };
+
 // The case against `model`: every problem, not the first. Refused, besides
 // case_issues(): an invalid model; a model changed since the case pinned it
 // (any of its three pins); a rotor without its setup; an idle at or above the
 // model's hover duty (armed at zero throttle it would climb); a missing
 // blade, or one whose
 // hub reaches its rotor's radius; and whatever the finest cell cannot resolve
-// (a wall feature, the line's R, blade-resolved's chord) or the solver cannot
-// hold, each with the spacing it needs (DBC-013..017).
+// (a wall feature, unless `thin` leaves it to the live run; the line's R,
+// blade-resolved's chord) or the solver cannot hold, each with the spacing it
+// needs (DBC-013..017).
 [[nodiscard]] std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c,
-                                                                          const vehicles::ModelType& model);
+                                                                          const vehicles::ModelType& model,
+                                                                          ThinWalls thin = ThinWalls::refused);
 
 // The case's model, read from its file beside the case (`case_file`'s
 // folder) and checked against all three pins in one place. Refused naming

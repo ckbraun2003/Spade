@@ -246,7 +246,9 @@ Result<void> validate_case(const AnalysisCase& c) {
     return std::unexpected(Error{Code::invalid_argument, issues.front().field + ": " + issues.front().message});
 }
 
-std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c, const vehicles::ModelType& model) {
+std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c, const vehicles::ModelType& model,
+                                                            ThinWalls thin) {
+    (void)thin;  // RED: the live run's rule comes in GREEN
     Issues out;
     for (CaseIssue& i : case_issues(c)) out.add(std::move(i.field), std::move(i.message));
     if (Result<void> ok = model.validate(); !ok) out.add("model", ok.error().context);

@@ -365,7 +365,9 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     // A at the case's n_v. A local: its sampler borrows it and impl->model,
     // and set_solids() is done with both on return.
     const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
-    impl->solids.drawn_only = solids.drawn_only();
+    for (const std::string& name : solids.drawn_only()) {  // RED: the user's marks only
+        impl->solids.drawn_only.push_back(DrawnPart{name, 0, DrawnReason::marked, {}});
+    }
     Result<std::vector<af::SolidPart>> parts = solids.parts();
     if (!parts) {
         return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
@@ -627,14 +629,33 @@ std::string LiveRun::run_label() const {
     for (const ResolvedRotor& x : rotors) radii.push_back(x.radius);
     if (const std::string note = af::disc_spacing_note(radii, g.dx); !note.empty()) out += " \xc2\xb7 " + note;
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
-    if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
+    if (const std::vector<DrawnPart>& drawn = r.solids.drawn_only; !drawn.empty()) {  // RED: today's segment
         out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");
-        for (std::size_t i = 0; i < drawn.size(); ++i) out += (i == 0 ? "'" : ", '") + drawn[i] + "'";
+        for (std::size_t i = 0; i < drawn.size(); ++i) out += (i == 0 ? "'" : ", '") + drawn[i].name + "'";
     }
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
     }
     return out;
+}
+
+Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
+    (void)model;  // RED: the rule comes in GREEN
+    return LiveGrid{};
+}
+
+float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
+    (void)c;  // RED: the rule comes in GREEN
+    (void)model;
+    (void)dx;
+    return 0.0f;
+}
+
+std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any_left) {
+    (void)drawn;  // RED: the segment comes in GREEN
+    (void)dx;
+    (void)any_left;
+    return {};
 }
 
 std::string solids_health_line(const LiveSolids& s, uint32_t cap) {
