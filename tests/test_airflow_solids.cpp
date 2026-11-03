@@ -622,6 +622,47 @@ TEST(AirflowSolidsSafeguard, ABeadPokingOutOfABodyIsRefusedAsExposed) {
     EXPECT_EQ(f.run_line, "solids: none");
 }
 
+// The safeguard's refusal is typed, so the live run leaves the part out and
+// says why without reading the words (P-1, the lead, 2026-11-03): the bead
+// alone leaks as part 0; behind the body it is part 1, exposed inside part 0.
+// Any other result leaves the refusal empty: a refusal of another kind (an
+// empty sampler) and an accepted build, each after a refused one. Mutations,
+// each failing here: the part never set; set to 0; not cleared when the field
+// is opened; an exposed part called a leak; the part it lies inside taken as
+// itself.
+TEST(AirflowSolidsSafeguard, TheSafeguardsRefusalIsTyped) {
+    const GridShape shape{32, 32, 32, 1.0f};
+    const auto empty = [](const SolidRefusal& r) {
+        return r.part == kNoSolidPart && r.reason == SolidRefusalReason::none && r.inside == kNoSolidPart;
+    };
+    SolidField f = *make_solid_field(shape);
+    EXPECT_TRUE(empty(f.refused));
+    Scene free_air;
+    free_air.shapes.push_back(bead_at({16.0f, 16.0f, 16.0f}));
+    ASSERT_FALSE(build_scene(f, shape, free_air.parts(), free_air).has_value());
+    EXPECT_EQ(f.refused.part, 0u) << "the bead, leaking alone";
+    EXPECT_EQ(f.refused.reason, SolidRefusalReason::leaks);
+    EXPECT_EQ(f.refused.inside, kNoSolidPart);
+
+    Scene scene;
+    scene.shapes.push_back(enclosing_body());
+    scene.shapes.push_back(bead_at({22.0f, 16.0f, 16.0f}));
+    const std::vector<SolidPart> parts = scene.parts();
+    ASSERT_FALSE(build_scene(f, shape, parts, scene).has_value());
+    EXPECT_EQ(f.refused.part, 1u) << "the bead, exposed behind the body";
+    EXPECT_EQ(f.refused.reason, SolidRefusalReason::exposed);
+    EXPECT_EQ(f.refused.inside, 0u) << "inside the body";
+    ASSERT_FALSE(build_solids(f, shape, {}, parts, SolidSampler{}).has_value());
+    EXPECT_TRUE(empty(f.refused)) << "an empty sampler is not the safeguard's refusal";
+
+    ASSERT_FALSE(build_scene(f, shape, parts, scene).has_value());
+    ASSERT_EQ(f.refused.part, 1u);
+    Scene body_alone;
+    body_alone.shapes.push_back(enclosing_body());
+    ASSERT_TRUE(build_scene(f, shape, body_alone.parts(), body_alone).has_value()) << f.run_line;
+    EXPECT_TRUE(empty(f.refused)) << "an accepted build clears it";
+}
+
 // Two nested parts that each close faces of their own: a core filling the
 // body's lower half, listed first, ties the body's distance along the faces
 // they share and wins those samples (a tie to the lower part); the body wins

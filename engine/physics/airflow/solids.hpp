@@ -142,6 +142,19 @@ struct SolidRange {
     bool empty = true;
 };
 
+// The measured safeguard's refusal, typed (P-1, the lead, 2026-11-03), so a
+// live run leaves the part out by index and says why without reading the
+// words: the part, as its index in build_solids()' `parts`; why (it leaks, or
+// it is exposed inside another part); and for an exposed part the part it lies
+// inside, the first (lowest index) of those that cover it in part.
+enum class SolidRefusalReason : uint8_t { none, leaks, exposed };
+
+struct SolidRefusal {
+    uint32_t part = kNoSolidPart;
+    SolidRefusalReason reason = SolidRefusalReason::none;
+    uint32_t inside = kNoSolidPart;  // exposed only
+};
+
 struct SolidField {
     bool any = false;  // false: no part, every face open (plan A's paths)
     std::array<std::vector<float>, 3> theta;
@@ -155,6 +168,10 @@ struct SolidField {
     std::array<SolidRange, 3> range;             // per component, the sampled box
     std::vector<SolidClass> classes;             // per part
     std::string run_line;
+    // build_solids()' refusal by the measured safeguard; empty (part
+    // kNoSolidPart, reason none) after any other result, a build accepted or
+    // refused for another reason.
+    SolidRefusal refused{};
 };
 
 [[nodiscard]] inline bool closed(float theta) noexcept { return theta == 0.0f; }
@@ -177,7 +194,8 @@ struct SolidField {
 // first. Refused (invalid_argument, naming what), with `field` left with every
 // face open: classify_part()'s refusals; a part wholly outside the grid; a
 // sampler that reports a non-finite distance, gradient or velocity, or
-// a part past the list.
+// a part past the list; and the measured safeguard's, a part that leaks or is
+// exposed, which `field.refused` names by index, with why.
 [[nodiscard]] Result<void> build_solids(SolidField& field, const GridShape& shape, std::array<bool, 3> periodic,
                                         std::span<const SolidPart> parts, const SolidSampler& sample);
 
