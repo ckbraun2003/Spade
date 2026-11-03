@@ -442,7 +442,7 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     {
         const vehicles::AirflowSolids marked(air, *posed, impl->grid_origin);
         for (const std::string& name : marked.drawn_only()) {
-            impl->solids.drawn_only.push_back(DrawnPart{name, declared(name), DrawnReason::marked, {}});
+            impl->solids.drawn_only.push_back(DrawnPart{name, declared(name), DrawnReason::marked, {}, {}});
         }
         const Result<std::vector<af::SolidPart>> all = marked.parts();
         if (!all) return refused(all.error());

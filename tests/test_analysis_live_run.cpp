@@ -601,20 +601,20 @@ TEST(AnalysisLiveRun, TheDrawnOnlyLineGroupsByReasonAndJoinsIndexedNames) {
     using an::DrawnReason;
     EXPECT_EQ(an::drawn_only_line({}, 0.012f, true), "");
     const std::vector<DrawnPart> phantom{
-        {"arm[0]", 1, DrawnReason::thin, {}},     {"arm[1]", 2, DrawnReason::thin, {}},
-        {"arm[2]", 3, DrawnReason::thin, {}},     {"arm[3]", 4, DrawnReason::thin, {}},
-        {"esc", 9, DrawnReason::thin, {}},        {"battery", 10, DrawnReason::exposed, "body"},
-        {"motor[3]", 8, DrawnReason::leaks, {}},  {"motor[1]", 6, DrawnReason::leaks, {}},
+        {"arm[0]", 1, DrawnReason::thin, {}, {}},     {"arm[1]", 2, DrawnReason::thin, {}, {}},
+        {"arm[2]", 3, DrawnReason::thin, {}, {}},     {"arm[3]", 4, DrawnReason::thin, {}, {}},
+        {"esc", 9, DrawnReason::thin, {}, {}},        {"battery", 10, DrawnReason::exposed, "body", {}},
+        {"motor[3]", 8, DrawnReason::leaks, {}, {}},  {"motor[1]", 6, DrawnReason::leaks, {}, {}},
     };
     EXPECT_EQ(an::drawn_only_line(phantom, 0.012f, true),
               "drawn only at 12 mm: arm[0-3], esc (thinner than 2 cells); battery (inside 'body', exposed); "
               "motor[1], motor[3] (leaks)");
     const std::vector<DrawnPart> others{
-        {"antenna", 5, DrawnReason::marked, {}}, {"bolt", 2, DrawnReason::wire, {}},
-        {"skid[0]", 3, DrawnReason::thin, {}},   {"skid[1]", 4, DrawnReason::thin, {}},
-        {"filter", 6, DrawnReason::porous, {}},  {"cell[1]", 8, DrawnReason::exposed, "pack"},
-        {"cell[2]", 9, DrawnReason::exposed, "shell"}, {"lid[a]", 10, DrawnReason::leaks, {}},
-        {"lid[b]", 11, DrawnReason::leaks, {}},
+        {"antenna", 5, DrawnReason::marked, {}, {}}, {"bolt", 2, DrawnReason::wire, {}, {}},
+        {"skid[0]", 3, DrawnReason::thin, {}, {}},   {"skid[1]", 4, DrawnReason::thin, {}, {}},
+        {"filter", 6, DrawnReason::porous, {}, {}},  {"cell[1]", 8, DrawnReason::exposed, "pack", {}},
+        {"cell[2]", 9, DrawnReason::exposed, "shell", {}}, {"lid[a]", 10, DrawnReason::leaks, {}, {}},
+        {"lid[b]", 11, DrawnReason::leaks, {}, {}},
     };
     EXPECT_EQ(an::drawn_only_line(others, 0.00175f, true),
               "drawn only at 1.75 mm: antenna (marked drawn only); bolt (a wire); skid[0-1] (thinner than 2 cells); "
@@ -630,7 +630,7 @@ TEST(AnalysisLiveRun, TheDrawnOnlyLineGroupsByReasonAndJoinsIndexedNames) {
     EXPECT_EQ(an::drawn_only_line(siblings, 0.012f, true),
               "drawn only at 12 mm: motor[0-3] (motor[3] leaks; its siblings with it); cell[1-2] (cell[2] inside "
               "'pack', exposed; its siblings with it); battery (inside 'body', exposed)");
-    const std::vector<DrawnPart> all{{"body", 0, DrawnReason::thin, {}}, {"arm[0]", 1, DrawnReason::wire, {}}};
+    const std::vector<DrawnPart> all{{"body", 0, DrawnReason::thin, {}, {}}, {"arm[0]", 1, DrawnReason::wire, {}, {}}};
     EXPECT_EQ(an::drawn_only_line(all, 0.039f, false),
               "discs only: every part drawn only at 39 mm: body (thinner than 2 cells); arm[0] (a wire)");
 }
@@ -675,7 +675,7 @@ TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
     spade::Result<an::LiveRun> run = phantom_run(m, 48, 0.012f);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     EXPECT_TRUE(run->solids().any);
-    EXPECT_NE(run->solids().run_line.find("solids: 1 part, 1 wall, 0 sheets"), std::string::npos)
+    EXPECT_NE(run->solids().run_line.find("solids: 1 parts, 1 walls, 0 sheets"), std::string::npos)
         << run->solids().run_line;
     EXPECT_EQ(fates(*run),
               (std::vector<std::string>{"arm[0]#1 wire", "arm[1]#2 wire", "arm[2]#3 wire", "arm[3]#4 wire", "esc#9 thin",
