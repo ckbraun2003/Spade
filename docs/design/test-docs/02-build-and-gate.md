@@ -49,6 +49,8 @@ Per-branch debug chunks are dropped.
 
 **At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke. The lead posts the smoke as `C:\Users\Cameron\Desktop\Projects\Videos\Smoke\Spade\<UTC time>_batch-<n>-live-smoke.mp4` with its caption, gets `check_video.py` PASS, then sends a push notification. `Videos\CATEGORIES.md` holds the rules for every posted video (Cameron, 2026-10-21; both leads agreed); `Videos\check_video.py` checks and encodes them. A branch's smoke is not posted; its MP4 stays in `spade-smoke\`.
 
+The debug chunks run at `-j 1`: the gate passes no `-j` and leaves `CTEST_PARALLEL_LEVEL` unset, so each index chunk (`-I 1,440` to `-I 2641,4000`, `-L spade -LE gpu`) runs serially, and the load beside it is jobrun's other heavy slot (the lead, 2026-11-03). Time a debug test the same way: `-j 1`, noting what the other slot ran.
+
 A ready message names the tiers it ran, and which of the conditional ones it skipped and why ("no GPU code changed").
 
 ### Messages and subagents
