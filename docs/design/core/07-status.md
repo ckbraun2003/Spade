@@ -29,15 +29,16 @@
 
 ## Needs a user decision
 
-None open. The sensor dedup (`CORE-4`) is done: stage 4 collapsed the IMU/GNSS pairs (`bd0f640`). The motor offset waits for a decision asked of the lead, not the user (Next).
+None open. The sensor dedup (`CORE-4`) is done: stage 4 collapsed the IMU/GNSS pairs (`bd0f640`).
 
 ## Next
 
+- **The quadrotor's look** (B20-1 of batch 20, the lead's OK 2026-11-03): built on `core/quadrotor-look`. `quadrotor_look()` (`vehicles/basic_quad`) draws a `QuadrotorParams` airframe as a basic quad, turned 45° from the X onto the plus, its hubs, radius and spins the airframe's. It is drawn only, never flown, and its mass is its parts' (no fit). Interface's B draws it in the INT-1 drone box. `wear_props()` moved into the engine from the library's builders (TD-9). It refuses what `make_quadrotor()` refuses, verbatim, so it merges after Physics' overlap refusal.
 - **Per-part geometry and triangle meshes** (`CORE-6`, `CORE-7`; `plans/2026-10-12-parts-meshes-plan.md`, approved 2026-10-12). This is first in Core's queue.
   - **Part A is done.** A1, `ModelType::parts`, merged `6302fcb`; A2, the posing rule, `0503350`; A3, parts in the scene file, `4a39929`; A4, the compile emits parts, `0870cf0`. `parts_identity` merged as `57772c8` (`CORE-7` as amended). A5 is this prose.
   - **Part B, B1 to B5 are done:** the mesh type `86a9c80`, the BVH and the sign `1949df8`, mass properties `2e5e41f`, a mesh as a part `b52d7e2`, the sidecar and scene v3 `40b49b7`.
   - **The readers** are in `spade_mesh_import`: glTF (B6, `1791461`), and binary STL and OBJ (B7, `2aafac1`; OBJ faces of three vertices only). **Next:** B7b, OBJ faces of more than three vertices (fanned when convex and planar), after N5b; then 3MF (B8, with miniz and pugixml, approved). Then B9, Part B's prose, and then the STEP converter (`CORE-6` D). `CORE-6` is import only, so the readers are how geometry arrives.
-  - **The motor offset.** A compiled motor's solid, like its mass, is centred on its hub, so it straddles the rotor plane. The lead chose to fix it as one controlled regeneration: it moves the reference quad's identity and its `parts_identity` pin, by name. It waits for a decision on how an `AirframeSpec` says a rotor is a pusher.
+  - **The motor offset is done** (the lead's ruling, 2026-10-12: `c7c19b08`, `68720beb`). A motor's record, mass and solid together, sits half its extent below its hub for a tractor, and above it for a pusher (`RotorSpec::pusher`, kept by the lead on 2026-11-03). The reference quad's pins were regenerated in `397248aa` (TD-1).
   - **Not scheduled yet:** mass from a mesh in the compile (the plan's `mass_from_geometry`). B4 deferred it to A4, and A4 built inertia-shape parts only. `model_reach` covering the parts' extent waits for Interface's analysis W0 to merge.
 - **The drone builder, Core's part** (`plans/2026-10-03-drone-builder-core-plan.md`): done. A, `transform_of` public, merged `65c2295`. B, the design frame, `7532259`. C, snapshot format v3 with the model registry's identity, `7d46b6d`. D, the scene-file schema and its first golden, `43eac56`.
 - **Module API, stage 4: modules own their state** (`CORE-4`, `plans/2026-10-05-module-api-stage4-plan.md`): done, merged 2026-10-06.

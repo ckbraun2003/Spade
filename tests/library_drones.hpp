@@ -545,27 +545,15 @@ inline void add_prop_rows(DroneInputs& in, const DroneParts& parts) {
     return m;
 }
 
-// Every hub's prop: prop[k] on rotor k, in its hub's frame at psi = 0 (an
-// identity mount), the ccw hand on a +1 rotor and the cw on a -1, one mesh
-// per hand. Massless: the propeller's mass is the prop block's
-// (AirframeSpec::rotor_parts).
+// Every hub's prop, by vehicles::wear_props() (one rule with the drawn
+// quadrotor's, TD-9): prop[k] on rotor k, in its hub's frame at psi = 0, the
+// ccw hand on a +1 rotor and the cw on a -1, one mesh per hand. Massless: the
+// propeller's mass is the prop block's (AirframeSpec::rotor_parts). The
+// library's own refusal first: a prop part file with no blade.
 [[nodiscard]] inline Result<void> wear_props(AirframeSpec& s, const DroneParts& parts,
                                              const shapes::PropMeshSpec& m) {
     if (!parts.blade) return std::unexpected(invalid("'" + parts.files[0] + "' carries no blade to draw its prop"));
-    const Result<shapes::GeneratedMesh> ccw = shapes::prop(m, shapes::PropHand::ccw);
-    if (!ccw) return std::unexpected(ccw.error());
-    const Result<shapes::GeneratedMesh> cw = shapes::prop(m, shapes::PropHand::cw);
-    if (!cw) return std::unexpected(cw.error());
-    for (std::size_t k = 0; k < s.rotors.size(); ++k) {
-        const shapes::GeneratedMesh& hand = s.rotors[k].spin_dir > 0.0 ? *ccw : *cw;
-        s.rotor_parts.push_back(vehicles::RotorPartSpec{.name = indexed("prop", k),
-                                                        .role = "prop",
-                                                        .rotor = static_cast<std::uint32_t>(k),
-                                                        .mount = {},  // the hub's own frame
-                                                        .mesh = hand.mesh,
-                                                        .min_feature = hand.min_feature});
-    }
-    return {};
+    return vehicles::wear_props(s, m);
 }
 
 // -- The look (L7b2) -----------------------------------------------------------
