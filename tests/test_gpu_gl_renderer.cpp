@@ -1043,6 +1043,127 @@ TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
         << m.interior << " by more than 2";
 }
 
+// Kat's sawtooth (2026-10-28) on both paths: a thin gate standing on the
+// ground and a drone-sized box resting beside it, both red, under VQ1's sun
+// (the default), in a shadow map as wide as VQ1's world (~172 m, ~15 cm
+// texels along its long axis). Their lit faces must not shadow themselves on
+// either path -- compared at their own depth, they did in bands on both --
+// and GL's shadows must land where the CPU's do.
+TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
+    // Measured 2026-11-03 on rendering/shadow-acne, 160x120, on an NVIDIA
+    // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 3 of 2896 red pixels
+    // shadowed on each path -- the hole's +x-facing inner wall at its top
+    // corner, which the hole's top truly shades -- where comparing each
+    // point's own depth shadowed 406 on each; 171 shadowed pixels on each
+    // path, 0 misses either way, 0 levels over the 24 interior ones. Pinned at
+    // the measurement; another device may differ, so re-measure there before
+    // widening (03-verification).
+    constexpr size_t kBandRedShadowed = 3;
+    constexpr size_t kBandMisses = 0;
+    constexpr int kBandInterior = 0;
+
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.55f, 0.5f, 0.45f, 1.0f}});
+    b.material(spade::MaterialDesc{.name = "gate", .base_color = {0.85f, 0.15f, 0.1f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(0);
+    const spade::SdfPose gate_at{.position = {0.0f, 1.0f, 0.0f}};
+    b.box(glm::vec3(1.0f, 1.0f, 0.05f), gate_at).material_for_last_node(1);
+    b.box(glm::vec3(0.7f, 0.7f, 0.2f), gate_at).material_for_last_node(1);
+    b.subtract().material_for_last_node(1);
+    b.union_();
+    // A lone box is drawn as a mesh, so its lit faces check the mesh path.
+    b.box(glm::vec3(0.3f, 0.15f, 0.3f), spade::SdfPose{.position = {1.7f, 0.15f, 0.7f}}).material_for_last_node(1);
+    b.union_();
+    RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    auto map = spade::render::build_static_shadow_map(scene);
+    ASSERT_TRUE(map.has_value()) << map.error().context;
+    scene.static_shadow = std::move(*map);
+    Camera camera;  // in front of the gate's lit face, the box to its right
+    camera.position = glm::vec3(0.6f, 1.3f, 3.2f);
+    camera.orientation = glm::angleAxis(glm::radians(-12.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    RenderOptions on = comparable_options();
+    on.shadows = true;
+    const RenderOptions off = comparable_options();
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, on);
+    const std::vector<uint8_t> cpu_off = cpu_rgba(scene, camera, off);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, on, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(scene, off, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+
+    // The gate's and the box's pixels are those red well over green with
+    // shadows off; a shadowed one changes when they turn on.
+    const auto gate_shadowed = [](const std::vector<uint8_t>& with, const std::vector<uint8_t>& without,
+                                  size_t& gate) {
+        size_t shadowed = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            if (static_cast<int>(without[p * 4u]) <= static_cast<int>(without[p * 4u + 1u]) + 50) continue;
+            ++gate;
+            shadowed += same_pixel(with, without, p) ? 0u : 1u;
+        }
+        return shadowed;
+    };
+    size_t cpu_gate = 0, gl_gate = 0;
+    const size_t cpu_acne = gate_shadowed(cpu_on, cpu_off, cpu_gate);
+    const size_t gl_acne = gate_shadowed(gl_on, gl_off, gl_gate);
+    const ShadowMatch m = match_shadows(cpu_on, cpu_off, gl_on, gl_off);
+    std::printf("[ acne    ] gate and box, VQ1-wide map: red pixels shadowed CPU %zu of %zu, GL %zu of %zu; "
+                "shadowed CPU %zu GL %zu, misses %zu and %zu, interior %zu up to %d levels\n",
+                cpu_acne, cpu_gate, gl_acne, gl_gate, m.cpu_shadowed, m.gl_shadowed, m.cpu_misses, m.gl_misses,
+                m.interior, m.max_interior);
+    ASSERT_GT(cpu_gate, kPixels / 20u) << "the gate must fill a twentieth of the frame";
+    ASSERT_GT(gl_gate, kPixels / 20u) << "the gate must fill a twentieth of GL's frame";
+    EXPECT_LE(cpu_acne, kBandRedShadowed) << "a lit red face shadows itself on the CPU";
+    EXPECT_LE(gl_acne, kBandRedShadowed) << "a lit red face shadows itself on GL, on " << renderer_->renderer_name();
+    EXPECT_LE(m.max_interior, kBandInterior) << "inside the shadow (" << m.interior
+                                             << " pixels) GL differs from the CPU by up to " << m.max_interior
+                                             << " levels";
+    EXPECT_LE(m.cpu_misses, kBandMisses) << m.cpu_misses << " of " << m.cpu_shadowed
+                                         << " CPU shadow pixels have no GL shadow within 1 px";
+    EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of " << m.gl_shadowed
+                                        << " GL shadow pixels have no CPU shadow within 1 px";
+}
+
+// The ground alone, in a world as long as VQ1 but laid out along the sun's
+// horizontal (400 m along z), so the ground's slope runs along the map's
+// coarse axis. Nothing but the ground casts, so with shadows on no pixel may
+// change, on either path; compared at its own depth, the ground shadowed
+// itself in bands.
+TEST_F(GpuGlRenderer, TheGroundInAWorldLongAlongTheSunDoesNotShadowItselfOnEitherPath) {
+    spade::WorldBuilder b = csg_builder();
+    b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.55f, 0.5f, 0.45f, 1.0f}});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).material_for_last_node(0);
+    RenderScene scene = csg_scene_or_fail(b);
+    ASSERT_EQ(scene.ground_planes.size(), 1u);
+    scene.bounds =
+        spade::render::Aabb{.min = glm::vec3(-10.0f, -1.0f, -200.0f), .max = glm::vec3(10.0f, 10.0f, 200.0f)};
+    auto map = spade::render::build_static_shadow_map(scene);
+    ASSERT_TRUE(map.has_value()) << map.error().context;
+    scene.static_shadow = std::move(*map);
+    Camera camera;  // over the ground, pitched down at it
+    camera.position = glm::vec3(0.0f, 3.0f, 6.0f);
+    camera.orientation = glm::angleAxis(glm::radians(-30.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    RenderOptions on = comparable_options();
+    on.shadows = true;
+    const RenderOptions off = comparable_options();
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, on);
+    const std::vector<uint8_t> cpu_off = cpu_rgba(scene, camera, off);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, on, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(scene, off, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+    const size_t ground = count_non_black(cpu_off);
+    const size_t cpu_shadowed = count_differing(cpu_on, cpu_off);
+    const size_t gl_shadowed = count_differing(gl_on, gl_off);
+    std::printf("[ acne    ] ground, map long along the sun: shadowed CPU %zu, GL %zu, of %zu ground pixels\n",
+                cpu_shadowed, gl_shadowed, ground);
+    ASSERT_GT(ground, kPixels / 3u) << "the ground must fill a third of the frame";
+    EXPECT_EQ(cpu_shadowed, 0u) << "the ground shadows itself on the CPU";
+    EXPECT_EQ(gl_shadowed, 0u) << "the ground shadows itself on GL, on " << renderer_->renderer_name();
+}
+
 // Pixels whose green channel dominates: the unlit green ball, here.
 [[nodiscard]] size_t count_green(const std::vector<uint8_t>& rgba) {
     size_t n = 0;

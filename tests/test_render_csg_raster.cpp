@@ -10,7 +10,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <span>
 #include <vector>
@@ -333,7 +335,22 @@ TEST(CsgRaster, RefusesAnEmptyOrUnattachedSubtree) {
 // by the map with something in the way.
 struct ShadowTruth {
     uint32_t sun_facing = 0, acne = 0, leaks = 0;
+    uint32_t acne_at_own_depth = 0;  // acne as sample_shadow() judged before its receiver plane
 };
+
+// sample_shadow() before its receiver plane (Kat's sawtooth, 2026-10-28): the
+// point's own depth against the occluder and the fixed bias. Kept to show
+// what acne a scene had that way.
+[[nodiscard]] bool lit_at_own_depth(const spade::render::ShadowMap& map, glm::vec3 world) {
+    const glm::vec4 p = map.light_view_proj * glm::vec4(world, 1.0f);
+    if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) return true;
+    const float size_f = static_cast<float>(map.size);
+    const int last = static_cast<int>(map.size) - 1;
+    const int tx = std::clamp(static_cast<int>((p.x * 0.5f + 0.5f) * size_f), 0, last);
+    const int ty = std::clamp(static_cast<int>((p.y * 0.5f + 0.5f) * size_f), 0, last);
+    const float occluder = map.depth[static_cast<size_t>(ty) * map.size + static_cast<size_t>(tx)];
+    return occluder == spade::render::kNoOccluder || !(p.z < occluder - spade::render::kShadowDepthBias);
+}
 
 [[nodiscard]] ShadowTruth shadow_truth(const WorldDesc& world, const RenderScene& scene, const Camera& camera) {
     ShadowTruth truth;
@@ -355,10 +372,11 @@ struct ShadowTruth {
                 const glm::vec3 n = glm::normalize(spade::gradient(sub.program, hit.p));
                 if (!(glm::dot(n, sun) > 0.0f)) continue;  // no sun term to lose
                 ++truth.sun_facing;
-                const bool map_lit = spade::render::sample_shadow(map, hit.p) > 0.5f;
+                const bool map_lit = spade::render::sample_shadow(map, hit.p, n) > 0.5f;
                 const bool occluded =
                     spade::render::sphere_trace(world.sdf, hit.p + n * 0.01f, sun, 0.0f, 100.0f).hit;
                 truth.acne += (!map_lit && !occluded) ? 1u : 0u;
+                truth.acne_at_own_depth += (!lit_at_own_depth(map, hit.p) && !occluded) ? 1u : 0u;
                 truth.leaks += (map_lit && occluded) ? 1u : 0u;
             }
         }
@@ -438,6 +456,32 @@ TEST(CsgRaster, ShadowsOnMarchedSurfacesStayCloseToTheTruth) {
     EXPECT_LE(b1.acne, kAcneBand) << "of " << b1.sun_facing;
     EXPECT_LE(b1.leaks, kLeakBand) << "of " << b1.sun_facing;
     EXPECT_GT(old.leaks, 2u * b1.leaks) << "the reason for Q2: a 48-cell mesh leaks far more";
+}
+
+// Kat's sawtooth (2026-10-28): a gate, a thin square frame facing +z, under
+// VQ1's sun (the default), in a shadow map as wide as VQ1's world (~172 m,
+// so ~15 cm texels on its long axis). Its lit faces must not shadow themselves. Compared at
+// its own depth, as sample_shadow() did before its receiver plane, the
+// front face shadowed itself in bands.
+TEST(CsgRaster, AGateInAWorldAsWideAsVq1DoesNotShadowItself) {
+    WorldBuilder b = base_builder();
+    const SdfPose at{.position = {0.0f, 2.0f, 0.0f}};
+    b.box(glm::vec3(1.0f, 1.0f, 0.05f), at).box(glm::vec3(0.7f, 0.7f, 0.2f), at).subtract();
+    const Result<WorldDesc> world = b.build();
+    ASSERT_TRUE(world) << world.error().context;
+    const RenderScene scene = scene_or_fail(*world);
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    const spade::render::Aabb vq1{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    const RenderScene wide = with_mesh_and_map(*world, scene, 2, nullptr, vq1);
+    Camera camera;  // in front of the gate, looking along -z at it
+    camera.position = glm::vec3(0.0f, 2.0f, 2.2f);
+    const ShadowTruth t = shadow_truth(*world, wide, camera);
+    std::printf("[ acne    ] gate, VQ1-wide map: %u sun-facing, %u acne (%u at its own depth), %u leaks\n",
+                t.sun_facing, t.acne, t.acne_at_own_depth, t.leaks);
+    ASSERT_GT(t.sun_facing, kWidth * kHeight / 10u) << "the gate's lit face must fill a tenth of the frame";
+    EXPECT_GT(t.acne_at_own_depth, t.sun_facing / 10u) << "the scene must show the sawtooth the old way";
+    EXPECT_EQ(t.acne, 0u);
+    EXPECT_LE(t.leaks, t.sun_facing / 20u);
 }
 
 }  // namespace

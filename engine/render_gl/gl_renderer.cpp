@@ -244,8 +244,11 @@ uniform float uNoOccluder;    // shadow.hpp's kNoOccluder
 uniform float uShadowBias;    // shadow.hpp's kShadowDepthBias
 
 // sample_shadow(): one texel, unfiltered. Lit outside the map's footprint
-// (SR-17 clause 6) and where no caster landed. 1 lit, 0 shadowed.
-float sample_shadow(vec3 world) {
+// (SR-17 clause 6) and where no caster landed. 1 lit, 0 shadowed. `n` is the
+// receiver's unit normal, either sign: its plane, carried to the texel's
+// centre, may lift it toward the sun, never sink it, as shadow.cpp's
+// sample_shadow() does.
+float sample_shadow(vec3 world, vec3 n) {
     if (uShadowEnabled == 0u) return 1.0;
     vec4 p = uLightViewProj * vec4(world, 1.0);
     if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0) return 1.0;
@@ -255,7 +258,15 @@ float sample_shadow(vec3 world) {
     int ty = clamp(int((p.y * 0.5 + 0.5) * size_f), 0, last);
     float occluder = texelFetch(uShadowMap, ivec2(tx, ty), 0).r;
     if (occluder == uNoOccluder) return 1.0;
-    return (p.z < occluder - uShadowBias) ? 0.0 : 1.0;
+    vec3 row0 = vec3(uLightViewProj[0][0], uLightViewProj[1][0], uLightViewProj[2][0]);
+    vec3 row1 = vec3(uLightViewProj[0][1], uLightViewProj[1][1], uLightViewProj[2][1]);
+    vec3 row2 = vec3(uLightViewProj[0][2], uLightViewProj[1][2], uLightViewProj[2][2]);
+    float facing = dot(n, row2);
+    if (abs(facing) < 0.05) facing = facing < 0.0 ? -0.05 : 0.05;
+    float dx = (float(tx) + 0.5) / size_f * 2.0 - 1.0 - p.x;
+    float dy = (float(ty) + 0.5) / size_f * 2.0 - 1.0 - p.y;
+    float along = dx * dot(n, row0) / dot(row0, row0) + dy * dot(n, row1) / dot(row1, row1);
+    return (max(p.z, p.z - along / facing) < occluder - uShadowBias) ? 0.0 : 1.0;
 }
 
 vec3 sky_gradient_color(vec3 ray) {
@@ -890,7 +901,9 @@ vec3 velocity_ramp(float speed, float scale) {
 // `n` is unit. Unlit and emissive keep `base`; lambert takes the sun and
 // ambient, and a shadowed point loses the sun term and keeps the ambient,
 // as raster_cpu's apply_shadow() does.
-vec3 shade_surface(uint shading, vec3 base, vec3 n, vec3 world) {
+// `receiver_n` is the shadow's receiver plane (sample_shadow()): a mesh's
+// triangle normal, a marched surface's gradient.
+vec3 shade_surface(uint shading, vec3 base, vec3 n, vec3 world, vec3 receiver_n) {
     vec3 lit;
     if (shading == 1u || shading == 2u) {
         lit = base;                       // 1 = unlit, 2 = emissive
@@ -900,7 +913,7 @@ vec3 shade_surface(uint shading, vec3 base, vec3 n, vec3 world) {
         // render/scene.hpp's shade_vertex_color(). Negating it lit every
         // world-loaded scene from below on this path only.
         float ndl = max(dot(n, uSunDir), 0.0);
-        lit = base * (uAmbient + uSunColor * uSunIntensity * ndl * sample_shadow(world));
+        lit = base * (uAmbient + uSunColor * uSunIntensity * ndl * sample_shadow(world, receiver_n));
     }
     // SR-17a, per pixel along this pixel's own ray, as raster_cpu does it.
     vec3 eye_to_surface = world - uCamPos;
@@ -967,8 +980,9 @@ void main() {
     }
     // Velocity swaps the colour and keeps the material's shading, as raster_cpu does.
     if (uMode == 3u) { base = velocity_ramp(uSpeed[vInstance], uVelocityScale); }
-    fragColor = vec4(flow_colour_surface(vWorld, flow_face_normal(vWorld), wall,
-                                         shade_surface(m.shading, base, normalize(vNormal), vWorld)), 1.0);
+    vec3 face = flow_face_normal(vWorld);  // in uniform control flow, as it asks
+    fragColor = vec4(flow_colour_surface(vWorld, face, wall,
+                                         shade_surface(m.shading, base, normalize(vNormal), vWorld, face)), 1.0);
 }
 )GLSL";
 
@@ -1077,7 +1091,7 @@ void main() {
         vec3 hit = uCamPos + ray * best_t;
         float view_distance = sqrt(dot(ray, ray)) * best_t;
         // Shaded, then shadowed, then gridded, then blended: raster_cpu's order.
-        color = uPlanes[best].color - uPlanes[best].sun * (1.0 - sample_shadow(hit));
+        color = uPlanes[best].color - uPlanes[best].sun * (1.0 - sample_shadow(hit, uPlanes[best].normal));
         if (uGridEnabled != 0u) {
             float cov = ground_grid_coverage(hit, uPlanes[best].grid_u, uPlanes[best].grid_v, view_distance);
             color = color + (uGridColor - color) * cov;
@@ -1490,7 +1504,7 @@ void main() {
         return;
     }
     vec3 n_eye = dot(n, uCamPos - p) < 0.0 ? -n : n;
-    fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall != 0u, shade_surface(m.shading, base, n, p)), 1.0);
+    fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall != 0u, shade_surface(m.shading, base, n, p, n)), 1.0);
 }
 )GLSL";
 

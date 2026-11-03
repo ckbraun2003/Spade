@@ -55,11 +55,12 @@ struct DrawItem;
 // <cfloat>/<limits> for a single constant.
 inline constexpr float kNoOccluder = -3.402823466e+38f;
 
-// sample_shadow()'s depth bias, in light-clip z. A point is shadowed when its
-// z is below the occluder's by more than this. It trades shadow acne (too
-// small -- a lit surface incorrectly self-shadows against its own quantised
-// shadow-map depth) against peter-panning (too large -- a caster's shadow
-// visibly detaches/shrinks from its own base). TUNED against
+// sample_shadow()'s depth bias, in light-clip z (world metres along the sun).
+// A point is shadowed when its surface's depth at the texel centre is below
+// the occluder's by more than this. The slope a texel spans is taken by the
+// receiver plane (sample_shadow()), so this only covers what that can't: a
+// marched surface against its cruder shadow mesh, and rounding. Too large, a
+// caster's shadow detaches from its own base (peter-panning). TUNED against
 // tests/test_render_shadow.cpp's fixtures (casters and receivers a few world
 // units apart, shadow-map texel footprints on that same scale) -- NOT the
 // same constant as raster_cpu.hpp's kOverlayDepthBias, which biases a
@@ -132,10 +133,21 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // ortho footprint (ruling SR-17: unshadowed past scene.bounds, by design) or
 // when no caster was ever rasterised at that texel; 0.0f when a closer-to-
 // the-sun occluder was found there. Never a value in between -- a single
-// texel sample, no filtering. The gap between "occluder" and "this point" is
-// compared through a fixed bias (shadow.cpp's own kShadowDepthBias) tuned
-// against shadow acne, not exposed here -- callers never see or tune it
-// directly.
+// texel sample, no filtering.
+//
+// RECEIVER PLANE (Kat's sawtooth, 2026-10-28): the occluder a texel holds is
+// the casters' depth at the texel's CENTRE. This point's surface -- the plane
+// through `world_pos` with unit normal `normal`, either sign -- is carried to
+// that centre too, and the depth it has there may LIFT the point toward the
+// sun, never sink it. Comparing the point's own depth alone was off by up to
+// 0.71 texel x tan(normal-to-sun angle): on a world as wide as VQ1's (~160 m,
+// ~15 cm texels) a lit face steep to the sun shadowed itself in bands. So this
+// is a slope-scaled bias exactly as large as each texel needs: on a planar
+// receiver (a face, the ground) only the fixed kShadowDepthBias is left, as
+// at a contact. Never sinking keeps a plane carried past a concave corner (a
+// lit face's foot on lit ground) from going under the other surface and
+// darkening a seam a texel wide. A mesh passes its triangle's own normal, a
+// marched surface its gradient, the ground its plane's.
 //
 // Ruling SR-25 (fix round 1, correcting SR-24's own original wording): the
 // caller applies this result to the SUN term only -- ambient is never
@@ -160,6 +172,6 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // have to be rebuilt every frame the moment any dynamic left the box) --
 // that trade is intentionally left for CK-② to weigh against real frames,
 // not decided unilaterally in a fix round.
-[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos);
+[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal);
 
 }  // namespace spade::render
