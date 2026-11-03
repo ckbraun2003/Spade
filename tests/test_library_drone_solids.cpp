@@ -220,48 +220,10 @@ constexpr std::array<Enclosed, 5> kDrones{{
 // ctest limit on its own (batch 18's gate: the five in one test ran past 60 s).
 void PrintTo(const Enclosed& drone, std::ostream* out) { *out << drone.stem; }
 
-namespace {
-
-// Whether this is a debug build: TD-5's "debug: runs in release" skips name it.
-[[nodiscard]] bool debug_build() {
-#if defined(NDEBUG)
-    return false;
-#else
-    return true;
-#endif
-}
-
-// TD-5's "debug: runs in release" (test-docs/01-verification.md, Guards; the
-// lead, 2026-10-28): the two drones whose 4 mm build alone runs past ctest's
-// 60 s in debug, each with its measurement (Physics' profile: nearly all of it
-// one nearest() per face sample over every part). They come off when Core's
-// mesh-box cull in sample_parts() (vehicles/part_pose.cpp) brings them under.
-struct DebugSkip {
-    std::string_view stem;
-    std::string_view why;
-};
-constexpr std::array<DebugSkip, 2> kDebugSkips{{
-    {"phantom3_class",
-     "debug build: phantom3_class takes 68 s in debug (measured 2026-10-28; ctest's limit is 60 s); runs in the "
-     "release gate (5 s) and every leg (TD-5; the basic quads' builds cover build_solids and cover_of in debug)"},
-    {"iris_plus_class",
-     "debug build: iris_plus_class takes 107 s in debug (measured 2026-10-28; ctest's limit is 60 s); runs in the "
-     "release gate (7 s) and every leg (TD-5; the basic quads' builds cover build_solids and cover_of in debug)"},
-}};
-
-}  // namespace
-
 class LibraryDroneSolidsAtFourMillimetres : public testing::TestWithParam<Enclosed> {};
 
 TEST_P(LibraryDroneSolidsAtFourMillimetres, IsWallsOrNamesItsEnclosedPart) {
     const auto& [stem, part, refused, exposed, notes] = GetParam();
-    if (debug_build()) {
-        for (const DebugSkip& skip : kDebugSkips) {
-            if (skip.stem == stem) {
-                GTEST_SKIP() << skip.why;
-            }
-        }
-    }
     SCOPED_TRACE(stem);
     const DroneSolids b = build_drone_solids(stem, 0.004f);
     if (kEnclosedPartsAreCovered && !exposed.empty()) {
@@ -330,11 +292,6 @@ TEST(LibraryDroneSolids, TheCrazyflieNamesTheCellSizeItNeeds) {
 // a grid line crossing the body without meeting a closed face. It builds, its
 // run line pinned.
 TEST(LibraryDroneSolids, ThePhantomsBodyTopOnACellCentrePlaneBuilds) {
-    if (debug_build()) {
-        GTEST_SKIP() << "debug build: the Phantom's 4 mm build takes 60.1 s under ctest and 80.9 s run directly in "
-                        "debug (measured 2026-10-28; ctest's limit is 60 s); runs in the release gate and every leg "
-                        "(TD-5; the basic quads' builds cover build_solids and cover_of in debug)";
-    }
     const float dx = 0.004f;
     const DroneSolids b = build_drone_solids("phantom3_class", dx);
     std::size_t body = b.parts.size();
