@@ -14,6 +14,9 @@ KAT is a drone SDK and editor, and the consumer Spade was first built for. Spade
 | Scene description (what Kat compiles a build into) | the scene-file format (`engine/scene/scene_file.hpp`, owned by Core) |
 
 **Format changes a consumer sees:**
+- **Shadow acne fixed (Rendering, merged `a5d975bc`).** `render::sample_shadow(map, world_pos, normal)` takes the receiver's unit normal, either sign. A caller of the old two-argument form must pass its surface normal. The receiver's plane is carried to the texel centre and may lift a point toward the sun, never sink it. This is on by default on the CPU and GL paths, with no knob. Lit faces on wide worlds (VQ1) no longer self-shadow in bands, and contact shadows are unchanged. One golden pixel moved (`csg_slab_and_blob_shaded`). Stair-stepped ground shadows are shadow-map resolution, not acne (a `rendering/07-status.md` debt row).
+- **Meshed parts culled by box (Core, merged `730568cf`).** `sample_parts()` skips a mesh part whose box lies farther than the best distance so far, and never culls inside the box. The bits are unchanged (0 mismatches on the library drones). New: `mesh_box_distance2(mesh, p)` in `world/mesh.hpp`. The library drones' 4 mm solids builds now run in debug: Phantom 20 s, Iris 32 s, against 68 s and 107 s before.
+- **The tour's airflow chapter flies the library Phantom (Interface, merged `f7358a37`).** It flies with discs only, at R/dx 4.8 against the reference quad's 3.05. Downwash-present reads 0.812-0.813 of momentum theory per rotor (it was 0.816-0.818). C8q's record stays on the reference quad.
 - **GpuFluid takes solids (G3)** (Rendering, merged `68761817`).
   - `GpuFluid::create()` with a SolidField that has parts checks the regions once, uploads B5's bindings, and steps in fluid_step's order with `project_with_solids()`.
   - Its health is fluid_step's, including a sticky `non_finite` (p) fault, read from the staged r·z.
