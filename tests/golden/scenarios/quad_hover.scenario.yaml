@@ -214,7 +214,7 @@ inputs:
 #   quad_hover: old=0x7b90c4447624aecc new=0xa32fe351f85e7eec
 #   make_quadrotor() now refuses two discs that overlap. 15 cm arms in the
 #   plus layout put neighbouring hubs 0.212 m apart against the 12 cm props'
-#   0.24 m, so this airframe was refused; 18 cm puts them 0.255 m apart. The
+#   0.24 m, so this airframe is refused; 18 cm puts them 0.255 m apart. The
 #   rotor rows carry their hubs, so the digest moves with the arm; nothing in
 #   the step's op order, rng, layout or schedule changed.
 #

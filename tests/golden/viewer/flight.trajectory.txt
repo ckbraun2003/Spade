@@ -1,5 +1,5 @@
 # provenance: captured 2026-11-03T16:43:58-05:00 from commit ab4fdfc34439590cd60f3e538b4196db4b8b68e3 by engine/tools/viewer/capture-v1-baselines.ps1
-# reason: make_quadrotor() refuses overlapping discs (TD-1, the lead's item 3): the demo airframe's arms grew from 0.18 m to 0.19 m, which its 0.13 m props need, so the rotor rows' hubs and the flight move
+# reason: make_quadrotor() refuses overlapping discs (TD-1, the lead's item 3): the demo airframe's arms grew from 0.18 m to 0.19 m, which its 0.13 m props need, so the rotor rows' hubs move, and the flight with them (its moments scale with L)
 # spade_viewer trajectory (INT-4, SL14b): a CPU golden. Format: engine/tools/viewer/trajectory.cpp.
 scene flight
 backend cpu

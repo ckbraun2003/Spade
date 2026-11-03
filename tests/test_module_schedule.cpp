@@ -1190,15 +1190,16 @@ TEST(ModuleRows, DespawnLeavesEveryAttachedArrayAsAFreshSimulationHasIt) {
 // cascade frees in walk order, rotors before gnss_sensors; the hand cascade it
 // replaced freed gnss_sensors before rotors. Spawns and despawns interleave -- a
 // vehicle reserved while a despawn is queued, and two bodies freed in one flush,
-// one of them carrying rotors AND a receiver -- and every reservation's slot,
-// and the whole walk's digest at three boundaries, must be what the hand
-// cascade's order produced.
-// The digests were first printed on a346cda's hand cascade before any Task 4
-// engine change, and the declared cascade matched them on master to 0fcb99f.
-// Re-pinned 2026-11-03 (TD-1) when test_quad()'s arms grew from 0.18 m to
-// 0.19 m, because make_quadrotor() refuses its 0.13 m discs on 0.18 m arms (the
-// blades would meet). The rotor rows carry the hubs, so the bytes moved with
-// the input, not the cascade: the slots asserted here did not move. Old -> new:
+// one of them carrying rotors AND a receiver -- and every reservation's slot
+// is what the hand cascade's order produced, and the whole walk's digest is
+// pinned at three boundaries.
+// History: the three digests were printed on a346cda's hand cascade before any
+// Task 4 engine change, and matched it up to 0fcb99f. They were re-pinned
+// 2026-11-03 (TD-1) from the declared cascade on ab4fdfc3, when test_quad()'s
+// arms grew from 0.18 m to 0.19 m (make_quadrotor() refuses its 0.13 m discs on
+// 0.18 m arms: the blades would meet). The hand cascade never ran with 0.19 m
+// arms, so since then the digests pin the declared cascade against itself;
+// only the slots, which did not move, still witness the hand order. Old -> new:
 // 0x4223c0e1cd3b5bc4 -> 0x0fa9621989bbae2c, 0xc9c283214c6c1020 ->
 // 0xb039b8b3184e3ba8, 0x09c9140ec8ca9496 -> 0x51766f98a3450f16.
 TEST(ModuleRows, InterleavedChurnLeavesTodaysSlotsAndBytes) {
