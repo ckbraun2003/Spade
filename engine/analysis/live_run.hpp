@@ -40,9 +40,10 @@
 // classifies each rigid part at the base cell (classify_part()): a sheet, a
 // wire or a porous part is drawn but left out of the air. It builds the rest
 // (set_solids()); a part the measured safeguard refuses (it leaks, or it is
-// exposed inside another) is left out too, and the build is redone without
-// it, one part at a time, until a build is accepted or none is left (discs
-// only). The label names each part left out and why (drawn_only_line()).
+// exposed inside another) is left out too, with its indexed siblings (L8:
+// motor[3] takes motor[0-2]; the lead, 2026-11-03), and the build is redone
+// without them, one refusal at a time, until a build is accepted or none is
+// left (discs only). The label names each part left out and why (drawn_only_line()).
 // What else refuses a part still refuses the run: a non-finite sampler, a
 // part outside the grid, a part's own malformed size. The case resolves with
 // ThinWalls::drawn_by_the_live_run, so resolve() leaves thin walls to it.
@@ -133,9 +134,10 @@ struct LiveGrid {
 [[nodiscard]] Result<LiveGrid> live_grid(const vehicles::ModelType& model);
 
 // The step: h = min(kLiveStepCapS, dx / (2 v_h + |wind|)), a CFL of at most 1
-// on the wake's speed. v_h = sqrt(T / (2 rho pi R^2)) is the largest rotor's
-// hover induced speed at T = m g / rotors (rho the case's air, g standard
-// gravity), |wind| the case's flight speed (0 in hover). kLiveStepCapS, the
+// on the wake's speed. v_h = sqrt(T / (2 rho pi R^2)) is the largest hover
+// induced speed over the rotors, the smallest disc's, so the fastest wake, at
+// T = m g / rotors (rho the case's air, g standard gravity); |wind| is the
+// case's flight speed (0 in hover). kLiveStepCapS, the
 // tour's step, for a model without rotors in still air.
 inline constexpr float kLiveStepCapS = 0.001f;
 

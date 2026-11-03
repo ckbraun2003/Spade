@@ -62,7 +62,7 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
         case DrawnReason::porous: return "porous";
         case DrawnReason::leaks: return "leaks";
         case DrawnReason::exposed: return "inside '" + d.inside + "', exposed";
-        case DrawnReason::sibling: return "its siblings with it";  // RED: L8's grouping comes in GREEN
+        case DrawnReason::sibling: return "its siblings with it";  // after its refused part's words
     }
     return {};
 }
@@ -428,10 +428,10 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
         while (k < impl->model.parts.size() && impl->model.parts[k].name != name) ++k;
         return k;  // a part's name is unique in its model
     };
-    const auto leave_out = [&](const std::string& name, DrawnReason why, std::string inside) {
+    const auto leave_out = [&](const std::string& name, DrawnReason why, std::string inside, std::string of = {}) {
         const uint32_t k = declared(name);
         air.parts[k].role = std::string(vehicles::kDrawnOnlyRole);
-        impl->solids.drawn_only.push_back(DrawnPart{name, k, why, std::move(inside)});
+        impl->solids.drawn_only.push_back(DrawnPart{name, k, why, std::move(inside), std::move(of)});
     };
     const auto refused = [](const Error& e) {
         return std::unexpected(Error{e.code, "the model's parts as solids: " + e.context});
@@ -491,8 +491,21 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
         const af::SolidRefusal why = impl->scratch.solids.refused;
         if (why.part >= parts->size()) return refused(set.error());
         const bool exposed = why.reason == af::SolidRefusalReason::exposed;
-        leave_out((*parts)[why.part].name, exposed ? DrawnReason::exposed : DrawnReason::leaks,
+        const std::string refused_name = (*parts)[why.part].name;
+        leave_out(refused_name, exposed ? DrawnReason::exposed : DrawnReason::leaks,
                   exposed && why.inside < parts->size() ? (*parts)[why.inside].name : std::string{});
+        // L8 (the lead, 2026-11-03): its indexed siblings still in the air go
+        // with it. The safeguard measures where a part falls on the lattice,
+        // and mirrored parts fall differently by fp32's rounding, so three of
+        // four motors would give the held drone a moment its geometry hasn't.
+        if (const auto stem = indexed_name(refused_name)) {
+            for (const af::SolidPart& sp : *parts) {
+                const auto other = indexed_name(sp.name);
+                if (sp.name != refused_name && other && other->first == stem->first) {
+                    leave_out(sp.name, DrawnReason::sibling, {}, refused_name);
+                }
+            }
+        }
     }
     if (!built) {
         impl->fluid.n_v = case_n_v;
@@ -749,8 +762,11 @@ Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
                                                                  "' has no rotors, so there is no air to drive"});
     }
     // In whole millimetres, so the box and n are exact: R/3, and F/4 (F the
-    // largest declared min_feature of the parts the air can take).
-    const uint32_t r3_mm = static_cast<uint32_t>(radius / 3.0f * 1000.0f);
+    // largest declared min_feature of the parts the air can take), each from
+    // whole micrometres rounded, so a whole millimetre stays one (float32's
+    // R/3 * 1000 falls under one for R 36 mm: the lead's review, 2026-11-03).
+    const auto micrometres = [](float m) { return static_cast<uint64_t>(std::floor(double(m) * 1.0e6 + 0.5)); };
+    const uint32_t r3_mm = static_cast<uint32_t>(micrometres(radius) / 3000u);
     if (r3_mm == 0) {
         return std::unexpected(Error{Code::invalid_argument, "Run air's grid: '" + model.name +
                                                                  "' has rotors under 3 mm in radius, finer than its "
@@ -766,7 +782,7 @@ Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
     }
     const uint32_t box_mm = kLiveBoxCells * r3_mm;
     uint32_t dx_mm = r3_mm;
-    if (feature > 0.0f) dx_mm = std::min(dx_mm, static_cast<uint32_t>(feature / 4.0f * 1000.0f));
+    if (feature > 0.0f) dx_mm = std::min(dx_mm, static_cast<uint32_t>(micrometres(feature) / 4000u));
     if (dx_mm == 0 || (box_mm + dx_mm - 1) / dx_mm > kLiveMaxCells) {
         return LiveGrid{kLiveMaxCells, static_cast<float>(box_mm) / static_cast<float>(kLiveMaxCells) / 1000.0f};
     }
@@ -774,7 +790,7 @@ Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
 }
 
 float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
-    float v_h = 0.0f;  // the largest rotor's hover induced speed
+    float v_h = 0.0f;  // the largest hover induced speed over the rotors: the smallest disc's, the fastest wake
     if (!model.rotors.empty()) {
         const float thrust = model.body.mass * -Environment{}.gravity.y / static_cast<float>(model.rotors.size());
         for (const vehicles::RotorDesc& r : model.rotors) {
@@ -789,10 +805,23 @@ float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float
 
 std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any_left) {
     if (drawn.empty()) return {};
-    std::vector<std::vector<const DrawnPart*>> groups;  // by reason, in the order first left out
+    // By reason, in the order first left out; a part the safeguard refused
+    // and the siblings it took (L8) are one group, keyed by the refused part.
+    const auto took_siblings = [&](const DrawnPart& d) {
+        return std::any_of(drawn.begin(), drawn.end(),
+                           [&](const DrawnPart& s) { return s.why == DrawnReason::sibling && s.of == d.name; });
+    };
+    const auto owner = [&](const DrawnPart& d) -> std::string {
+        if (d.why == DrawnReason::sibling) return d.of;
+        return took_siblings(d) ? d.name : std::string{};
+    };
+    std::vector<std::vector<const DrawnPart*>> groups;
     for (const DrawnPart& d : drawn) {
+        const std::string mine = owner(d);
         const auto same = [&](const std::vector<const DrawnPart*>& g) {
-            return g.front()->why == d.why && g.front()->inside == d.inside;
+            const DrawnPart& f = *g.front();
+            const std::string theirs = owner(f);
+            return mine.empty() ? theirs.empty() && f.why == d.why && f.inside == d.inside : theirs == mine;
         };
         if (const auto g = std::find_if(groups.begin(), groups.end(), same); g != groups.end()) {
             g->push_back(&d);
@@ -804,7 +833,17 @@ std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any
     out += std::format("drawn only at {:g} mm: ", dx * 1000.0f);
     for (std::size_t i = 0; i < groups.size(); ++i) {
         if (i != 0) out += "; ";
-        out += joined_names(groups[i]) + " (" + drawn_words(*groups[i].front()) + ")";
+        const DrawnPart& first = *groups[i].front();
+        const std::string led = owner(first);
+        std::string words = drawn_words(first);
+        if (!led.empty()) {
+            const auto refused = std::find_if(drawn.begin(), drawn.end(), [&](const DrawnPart& d) {
+                return d.name == led && d.why != DrawnReason::sibling;
+            });
+            words = led + " " + (refused != drawn.end() ? drawn_words(*refused) : std::string("refused")) +
+                    "; its siblings with it";
+        }
+        out += joined_names(groups[i]) + " (" + words + ")";
     }
     return out;
 }
