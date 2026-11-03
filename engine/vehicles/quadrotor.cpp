@@ -1,6 +1,9 @@
 #include "vehicles/quadrotor.hpp"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <string>
 
 // ---------------------------------------------------------------------------
 // The quadrotor, assembled. Read quadrotor.hpp's sections 1-3 first: the
@@ -80,6 +83,42 @@ Result<ModelType> make_quadrotor(const QuadrotorParams& params) {
     // than a re-worded copy that can drift.
     if (Result<void> valid = model.validate(); !valid) {
         return std::unexpected(valid.error());
+    }
+
+    // Two discs in the one rotor plane may not overlap: their blades would
+    // meet (the lead, 2026-10-13; the old defaults did, adjacent hubs L sqrt2
+    // = 0.212 m apart against 2 R = 0.24 m). Tips that touch are allowed.
+    // After validate(), so every radius is finite and positive here; in
+    // double, so a pair a hair apart is decided by the geometry, not a float's
+    // rounding. A pair's hubs lie L times a fixed spacing apart (sqrt2 for
+    // neighbours, 2 across), so the arm that clears it is L reach / apart.
+    double clearing_arm = 0.0;
+    std::size_t first = kQuadrotorRotorCount;  // the first overlapping pair, in (i, j) order
+    std::size_t second = kQuadrotorRotorCount;
+    for (std::size_t i = 0; i < kQuadrotorRotorCount; ++i) {
+        for (std::size_t j = i + 1; j < kQuadrotorRotorCount; ++j) {
+            const glm::dvec3 d = glm::dvec3(model.rotors[i].local_pos) - glm::dvec3(model.rotors[j].local_pos);
+            const double apart = std::sqrt(glm::dot(d, d));
+            const double reach =
+                static_cast<double>(model.rotors[i].radius) + static_cast<double>(model.rotors[j].radius);
+            clearing_arm = std::max(clearing_arm, static_cast<double>(params.arm_length) * reach / apart);
+            if (apart < reach && first == kQuadrotorRotorCount) {
+                first = i;
+                second = j;
+            }
+        }
+    }
+    if (first != kQuadrotorRotorCount) {
+        const glm::dvec3 d =
+            glm::dvec3(model.rotors[first].local_pos) - glm::dvec3(model.rotors[second].local_pos);
+        const double reach =
+            static_cast<double>(model.rotors[first].radius) + static_cast<double>(model.rotors[second].radius);
+        char why[256];
+        std::snprintf(why, sizeof why,
+                      "make_quadrotor: rotors %zu and %zu overlap: their hubs are %.4f m apart and their radii sum to "
+                      "%.4f m, so their blades would meet; an arm_length of at least %.4f m clears every pair",
+                      first, second, std::sqrt(glm::dot(d, d)), reach, std::ceil(clearing_arm * 1.0e4) / 1.0e4);
+        return std::unexpected(Error{Code::invalid_argument, std::string(why)});
     }
     return model;
 }

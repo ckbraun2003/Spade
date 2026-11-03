@@ -137,7 +137,7 @@ instances:
 
 step: {dt_ns: 2000000, substeps: 2, steps: 900}
 
-# A 1 kg quadrotor with 12 cm props on 15 cm arms -- roughly a 5-inch racing
+# A 1 kg quadrotor with 12 cm props on 18 cm arms -- roughly a 5-inch racing
 # frame, and deliberately a real set of numbers rather than round ones. The
 # three principal moments are distinct (and Iy is the largest, as it is for a
 # flat airframe), so an X/Z axis swap cannot pass unnoticed.
@@ -148,7 +148,7 @@ models:
       visual_ref:      "meshes/quad_hover"
       mass:            1
       inertia_diag:    [0.0120000001, 0.0209999997, 0.0160000008]
-      arm_length:      0.150000006
+      arm_length:      0.180000007
       rotor_height:    0.0199999996
       proxy_radius:    0.150000006
       # k_T = 1e-5 N s^2 gives a hover shaft speed of sqrt(mg / 4 k_T);
@@ -210,4 +210,12 @@ inputs:
 #   continuation test carries. Its digest moved for the same reason and is
 #   covered by DigestsMatchTheCommittedGoldenCorpus alone.
 #
-expected_digest: "0x7b90c4447624aecc"
+# MOVED 2026-11-03 -- THE ARMS GREW FROM 15 CM TO 18 CM (TD-1, the lead's item 3).
+#   quad_hover: old=0x7b90c4447624aecc new=0xa32fe351f85e7eec
+#   make_quadrotor() now refuses two discs that overlap. 15 cm arms in the
+#   plus layout put neighbouring hubs 0.212 m apart against the 12 cm props'
+#   0.24 m, so this airframe is refused; 18 cm puts them 0.255 m apart. The
+#   rotor rows carry their hubs, so the digest moves with the arm; nothing in
+#   the step's op order, rng, layout or schedule changed.
+#
+expected_digest: "0xa32fe351f85e7eec"

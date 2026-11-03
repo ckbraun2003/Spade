@@ -124,7 +124,7 @@ constexpr float kG = 9.80665f;
 // ===========================================================================
 // The test airframe.
 //
-// A 1 kg quadrotor with 12 cm props on 15 cm arms -- roughly a 5-inch racing
+// A 1 kg quadrotor with 12 cm props on 18 cm arms -- roughly a 5-inch racing
 // frame, and deliberately a REAL set of numbers rather than round ones, so
 // that no assertion below can accidentally hold because two quantities were
 // both 1.
@@ -144,7 +144,7 @@ constexpr float kMass = 1.0f;
 constexpr float kIx = 0.012f;
 constexpr float kIy = 0.021f;
 constexpr float kIz = 0.016f;
-constexpr float kArm = 0.15f;
+constexpr float kArm = 0.18f;  // clears the 0.12 m discs (make_quadrotor() refuses overlapping ones)
 constexpr float kRotorHeight = 0.02f;
 constexpr float kRadius = 0.12f;
 constexpr float kThrustCoeff = 1.0e-5f;
@@ -573,6 +573,50 @@ TEST(Quadrotor, DegenerateAirframeParametersAreRejected) {
     // tau == 0 is LEGAL -- it is the "no lag" degenerate every moment test in
     // this file relies on.
     EXPECT_OK(spade::vehicles::make_quadrotor(test_quad(0.0f, 0.0f)));
+}
+
+// Two discs in the one rotor plane may not overlap: their blades would meet
+// (the lead, 2026-10-13). The old defaults did -- 0.15 m arms in a plus layout
+// put neighbouring hubs L sqrt2 = 0.212 m apart against 2 R = 0.24 m -- and are
+// refused by name, the first pair in (i, j) order, with the arm that clears
+// every pair, rounded up. One larger disc meets its two neighbours, and the
+// first of them is named. Tips that touch are allowed, and the defaults build.
+// Mutations, each failing here: the check skipped; touching refused (<=); the
+// last pair named; the default arm back at 0.15 m.
+TEST(Quadrotor, OverlappingDiscsAreRefusedByName) {
+    {
+        QuadrotorParams p = test_quad(0.02f, 0.9f);
+        p.arm_length = 0.15f;
+        const auto model = spade::vehicles::make_quadrotor(p);
+        ASSERT_FALSE(model.has_value());
+        EXPECT_EQ(model.error().code, spade::Code::invalid_argument);
+        EXPECT_EQ(model.error().context,
+                  "make_quadrotor: rotors 0 and 1 overlap: their hubs are 0.2121 m apart and their radii sum to "
+                  "0.2400 m, so their blades would meet; an arm_length of at least 0.1698 m clears every pair");
+    }
+    {
+        QuadrotorParams p = test_quad(0.02f, 0.9f);  // 0.18 m arms: neighbours 0.2546 m apart
+        p.rotors[2].radius = 0.14f;                   // 0.26 m with either neighbour
+        const auto model = spade::vehicles::make_quadrotor(p);
+        ASSERT_FALSE(model.has_value());
+        EXPECT_NE(model.error().context.find("rotors 1 and 2 overlap"), std::string::npos) << model.error().context;
+    }
+    {
+        // Opposite hubs 2 L = 0.36 m apart, with radii 0.18 m each: the tips
+        // touch, to the bit (0.18f + 0.18f is 2 x 0.18f in double).
+        QuadrotorParams p = test_quad(0.02f, 0.9f);
+        p.rotors[0].radius = 0.18f;
+        p.rotors[2].radius = 0.18f;
+        p.rotors[1].radius = 0.05f;
+        p.rotors[3].radius = 0.05f;
+        EXPECT_OK(spade::vehicles::make_quadrotor(p));
+    }
+    {
+        QuadrotorParams p;  // the defaults' geometry, with thrust to make it valid
+        EXPECT_EQ(p.arm_length, 0.18f);
+        for (RotorParams& rotor : p.rotors) rotor.thrust_coeff = kThrustCoeff;
+        EXPECT_OK(spade::vehicles::make_quadrotor(p));
+    }
 }
 
 // ===========================================================================

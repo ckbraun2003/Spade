@@ -841,7 +841,7 @@ constexpr std::string_view kEngineScope = "under engine/ (tools/ excluded but fo
     params.name = "m1b_quad";
     params.mass = 1.0f;
     params.inertia_diag = glm::vec3(0.02f, 0.03f, 0.025f);
-    params.arm_length = 0.15f;
+    params.arm_length = 0.18f;
     params.rotor_height = 0.0f;
     for (spade::vehicles::RotorParams& rotor : params.rotors) {
         rotor.tau = 0.02f;
@@ -1085,7 +1085,7 @@ TEST(M1B, ResetPreservesRosterRoundTrip) {
     params.name = "m1b_roster_quad";
     params.mass = 1.0f;
     params.inertia_diag = glm::vec3(0.02f, 0.03f, 0.025f);
-    params.arm_length = 0.15f;
+    params.arm_length = 0.18f;
     for (spade::vehicles::RotorParams& rotor : params.rotors) {
         rotor.tau = 0.02f;
         rotor.radius = 0.12f;
