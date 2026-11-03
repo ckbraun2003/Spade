@@ -591,8 +591,7 @@ void drone_box(Tour& t, DroneSession& d) {
 void airflow_chapter(Tour& t, const fs::path& assets, const DrawFn& blank) {
     Smoke& s = t.smoke();
     t.step("airflow", "live", [&] {
-        const fs::path model_file = assets / "library" / "drones" / "reference_quad.model.yaml";
-        Result<std::unique_ptr<AirflowSession>> made = AirflowSession::create(model_file);
+        Result<std::unique_ptr<AirflowSession>> made = AirflowSession::create(airflow::chapter_model_file(assets));
         if (!s.check(made.has_value(), "starts", made ? (*made)->run().run_label() : made.error().context)) return;
         AirflowSession& a = **made;
         a.attach(t.sink());

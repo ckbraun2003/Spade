@@ -1,12 +1,12 @@
-// The tour's airflow chapter, display-free: the library's reference quad
-// (N4) flown live at 32^3 through LiveRun, the flow views drawn over it, and
-// the frames the on-screen downwash check reads. The window (AirflowSession,
-// scene_sessions.hpp) only draws what this decides.
+// The tour's airflow chapter, display-free: the library's Phantom 3-class
+// quad (chapter_model_file()) flown live at 32^3 through LiveRun, the flow
+// views drawn over it, and the frames the on-screen downwash check reads. The
+// window (AirflowSession, scene_sessions.hpp) only draws what this decides.
 //
-// TWO MODELS, ONE DRONE. The run flies the quad with its parts cleared: at
-// 32^3 (25 mm cells) its arms and props are thinner than a cell, so the
-// rotors act on the air as actuator discs and nothing solid sits in the
-// grid. The window draws the same model with its parts, posed by the run's
+// TWO MODELS, ONE DRONE. The run flies the quad with its parts cleared: the
+// rotors act on the air as actuator discs and nothing solid sits in the grid
+// (the lead's ruling, 2026-10-27: solids enter the air with the GPU's finer
+// grid). The window draws the same model with its parts, posed by the run's
 // body, so what is seen is the drone that flies.
 //
 // THE CHECK'S PREMISE. Test/Docs' downwash() judges frames taken while the
@@ -126,7 +126,13 @@ namespace detail {
     return !ends || t < *ends;
 }
 
-// Loads `model_file` (the library's reference_quad.model.yaml) and resolves
+// The chapter's drone under the assets root `assets`: what the tour flies and
+// its twins (test_sandbox_airflow_live.cpp) test.
+[[nodiscard]] inline std::filesystem::path chapter_model_file(const std::filesystem::path& assets) {
+    return assets / "library" / "drones" / "phantom3_class.model.yaml";
+}
+
+// Loads `model_file` (the chapter's: chapter_model_file()) and resolves
 // the chapter's case for it: box 0.8 m, `spacing` cells (25 mm, 32^3, unless
 // a test asks for coarser), 1 ms steps, flown under the showcase program
 // until its hover ends (the pitch at 1.2 s): what the check judges, at
