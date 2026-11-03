@@ -30,6 +30,7 @@ Each was read again at 600 dpi and kept as printed:
 - r/R 0.80, lower:
   - 0.1306: a 6, not an 8, at 600 dpi.
   - x/c 0.24 and 0.34 both print 0.1959. This is kept, a repeat in the original.
+  - A lone "1" under the x/c column, below 0.90, with no value: a mark, not a tap, and left out (the lead's reading).
 - r/R 0.89, upper: the x/c of 0.1272, read 0.73. It is faint, between 0.65 and 0.80.
 - r/R 0.96: the upper x/c of 0.3150 is read 0.39; the lower 0.1467's 1 is faint.
 - r/R 0.50, upper, x/c 0.00: −0.8538, the leading edge's stagnation (C_p +0.85). It is kept, although figure 4 doesn't plot that tap.
@@ -66,3 +67,16 @@ Compare against the scan:
 - each station's tap counts: upper 7, 14, 17, 18, 16; lower 5, 8, 9, 9, 9.
 
 Figure 9's points are a digitizing, not a reading, so they are compared within their ±4° and ±0.01.
+
+## The lead's reading
+
+The lead, 2026-11-03 (decision L7):
+- **Table 17:** read from the page's native JBIG2 scan (2496 × 3295, rotated, the faint cells enlarged). Its 229 numbers, compared by machine against `caradonna1981_rotor.hpp` at 0ff8c6c3, differ nowhere. The counts match: upper 7, 14, 17, 18, 16; lower 5, 8, 9, 9, 9.
+- **The faint cells:** every one agreed as read above, including 0.2000 (0.2030 the other reading), 0.3750, 0.1306 and the three x/c read 0.39, 0.73 and 0.50.
+- **The condition:** the 9 numbers match pp. 2, 42, 45 and 47. The scan's SHA-256 matches.
+- **Figure 9:** the axes calibrated on their ticks by pixel scan at 300 dpi, and the 8 points overlaid. Each sits on a 1250 rpm triangle.
+- **Kept outside the repo**, beside the PDF: `.agents/refs/caradonna1981/lead_reading_table17.txt` and `lead_fig9_overlay.png`.
+- **Three text fixes, no value changes:**
+  - Figure 1's 45 in. is a vertical dimension beside the hot-wire traverse, so R is cited as half the 7.5 ft (2.286 m) diameter.
+  - The integral is worded as measured, within 7.5% (0.925 to 1.055), with the test's band at 10%.
+  - The mark under r/R 0.80's lower x/c column, above.

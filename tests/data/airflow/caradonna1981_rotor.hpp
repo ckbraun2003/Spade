@@ -20,8 +20,9 @@
 //     aspect ratio 6, half a degree of precone, cantilever-mounted; a large
 //     chamber "with special ducting designed to eliminate room
 //     recirculation".
-//   Figure 1 (p. 42 [44]): the rotor's diameter 7.5 ft (2.286 m), its radius
-//     45 in. (1.143 m).
+//   Figure 1 (p. 42 [44]): the rotor's diameter 7.5 ft (2.286 m), so its
+//     radius 1.143 m, half of it. (The figure's 45 in. is a vertical
+//     dimension beside the hot-wire traverse, not the radius.)
 //   Figure 4 (p. 45 [47]): C_T 0.00459 at this condition. Figure 6 (p. 47
 //     [49]) prints 0.00460 for the same run: both are kept, below.
 //   Figure 9 (p. 50 [52]): the tip vortex's descent z/R and radius r/R
@@ -36,7 +37,8 @@
 //   usable text in the appendix tables, so it was no check. No independent
 //   tabulated reproduction of Table 17 was found (SU2's test case holds the
 //   mesh only), so the checks are the report's own: each station's
-//   pressures integrate to within 8% of its printed C_L
+//   pressures integrate near its printed C_L, measured within 7.5% (0.925
+//   to 1.055); the test's band is 10%
 //   (AirflowCaradonnaData.ThePressuresIntegrateNearEachStationsLift), and the
 //   lead's independent reading against the scan, every value and every
 //   count.
@@ -72,7 +74,7 @@ namespace spade::testing::airflow_reference {
 // The rotor (section 2, figure 1) and the condition (Table 17's title,
 // figures 4 and 6).
 inline constexpr int kCaradonnaBlades = 2;
-inline constexpr double kCaradonnaRadiusM = 1.143;     // figure 1: 45 in.
+inline constexpr double kCaradonnaRadiusM = 1.143;     // figure 1: half the 7.5 ft diameter
 inline constexpr double kCaradonnaAspectRatio = 6.0;   // section 2
 inline constexpr double kCaradonnaPreconeDeg = 0.5;    // section 2
 inline constexpr double kCaradonnaCollectiveDeg = 8.0;
