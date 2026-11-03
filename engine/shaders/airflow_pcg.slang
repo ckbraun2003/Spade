@@ -187,6 +187,17 @@ bool face_closed(uint c, uint idx) { return face_theta(c, idx) == 0.0; }
 //                                         airflow_region_mean
 //    kRegionWords C + id                  region id's closed index j, or
 //                                         kNoRegion when it is pinned
+//    L + kRegionListPairs                 the tile lists, from word L (the
+//                                         host's; airflow_region_mean's push
+//                                         word 3): P, the (j, tile) pairs
+//    L + kRegionListGroups                G, the groups (j's pairs in one block
+//                                         of kReduceBlockTiles tiles)
+//    L + kRegionListHeader + j            j's first group (j <= C; word C is G)
+//      then G + 1 words                   group g's first pair (word G is P)
+//      then kRegionPairWords p            pair p's tile (+ kRegionPairTile)
+//                                         and j (+ kRegionPairClosed)
+// The pairs run j, then the tile, in increasing order: exactly the tiles
+// holding a cell of region j. The lists are the labels' (static for a run).
 //
 // The free-slip layer (airflow_face_tags, binding 16, pack_solid_field()'s
 // rule): face f's layer, 0, 1 or 2, is byte f % 4 of word F + f / 4, F every
@@ -202,6 +213,12 @@ static const uint kRegionId = 0u;
 static const uint kRegionCells = 1u;
 static const uint kRegionReciprocal = 2u;
 static const uint kRegionMean = 3u;
+static const uint kRegionListPairs = 0u;
+static const uint kRegionListGroups = 1u;
+static const uint kRegionListHeader = 2u;
+static const uint kRegionPairWords = 2u;
+static const uint kRegionPairTile = 0u;
+static const uint kRegionPairClosed = 1u;
 
 static const uint kWallLoadForce = 0u;
 static const uint kWallLoadMoment = 3u;

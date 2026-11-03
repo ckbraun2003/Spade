@@ -150,10 +150,18 @@ void append_symmetric_v_cycle(std::vector<compute::ChainCommand>& out, const MgL
 Result<SolidsUpload> solids_upload(const af::FluidScratch& s) {
     Result<MgLayout> layout = mg_layout(s.projection.mg);
     if (!layout) return std::unexpected(layout.error());
+    RegionTable regions = pack_region_table(s.regions, s.next.shape);
+    // Every closed region has a cell, so a tile: fewer pairs means the labels
+    // are not the grid's.
+    if (regions.pairs < regions.closed) {
+        return std::unexpected(Error{Code::internal, "airflow solids: " + std::to_string(regions.closed) +
+                                                         " closed regions but " + std::to_string(regions.pairs) +
+                                                         " (region, tile) pairs: the labels are not the grid's"});
+    }
     return SolidsUpload{.field = pack_solid_field(s.solids),
                         .layout = std::move(*layout),
                         .labels = s.regions.label,
-                        .regions = pack_region_table(s.regions)};
+                        .regions = std::move(regions)};
 }
 
 uint64_t solids_binding_bytes(const SolidsUpload& u, uint32_t binding) noexcept {
@@ -217,9 +225,74 @@ inline constexpr uint32_t kInteriorLayer2 = 2;
 // airflow_region_mean's pass 3, the subtract.
 inline constexpr uint32_t kRegionSubtractPass = 3;
 
+// The tile lists (solids_chain.hpp's layout) for closed index `index[id]`:
+// the tiles in remove_region_means()' walk (regions.cpp), reduce.hpp's
+// kReduceTile^3 in increasing t, each listed for every closed region it has a
+// cell of; then each region's tiles cut where t / kReduceBlockTiles changes.
+// Labels that are not the grid's (another size) list nothing.
+void append_tile_lists(RegionTable& out, const af::FluidRegions& r, const af::GridShape& s,
+                       const std::vector<uint32_t>& index) {
+    std::vector<std::vector<uint32_t>> tiles_of(out.closed);
+    if (out.closed > 0u && r.label.size() == cells_of(s)) {
+        std::vector<uint8_t> met(out.closed, 0u);
+        std::vector<uint32_t> touched;
+        uint32_t t = 0;
+        for (uint32_t tk = 0; tk < s.nz; tk += af::kReduceTile) {
+            const uint32_t k_end = std::min(tk + af::kReduceTile, s.nz);
+            for (uint32_t tj = 0; tj < s.ny; tj += af::kReduceTile) {
+                const uint32_t j_end = std::min(tj + af::kReduceTile, s.ny);
+                for (uint32_t ti = 0; ti < s.nx; ti += af::kReduceTile, ++t) {
+                    const uint32_t i_end = std::min(ti + af::kReduceTile, s.nx);
+                    for (uint32_t k = tk; k < k_end; ++k) {
+                        for (uint32_t j = tj; j < j_end; ++j) {
+                            for (uint32_t i = ti; i < i_end; ++i) {
+                                const uint32_t id = r.label[af::cell_index(s, i, j, k)];
+                                if (id == af::kNoRegion || index[id] == af::kNoRegion || met[index[id]] != 0u) {
+                                    continue;
+                                }
+                                met[index[id]] = 1u;
+                                touched.push_back(index[id]);
+                            }
+                        }
+                    }
+                    for (const uint32_t j : touched) {
+                        tiles_of[j].push_back(t);
+                        met[j] = 0u;
+                    }
+                    touched.clear();
+                }
+            }
+        }
+    }
+    std::vector<uint32_t> first_group;  // a word per closed region, then G
+    std::vector<uint32_t> first_pair;   // a word per group, then P
+    std::vector<uint32_t> pairs;        // kRegionPairWords a pair
+    for (uint32_t j = 0; j < out.closed; ++j) {
+        first_group.push_back(static_cast<uint32_t>(first_pair.size()));
+        for (std::size_t n = 0; n < tiles_of[j].size(); ++n) {
+            const uint32_t t = tiles_of[j][n];
+            if (n == 0u || t / af::kReduceBlockTiles != tiles_of[j][n - 1u] / af::kReduceBlockTiles) {
+                first_pair.push_back(static_cast<uint32_t>(pairs.size() / kRegionPairWords));
+            }
+            pairs.push_back(t);  // kRegionPairTile
+            pairs.push_back(j);  // kRegionPairClosed
+        }
+    }
+    out.pairs = static_cast<uint32_t>(pairs.size() / kRegionPairWords);
+    out.groups = static_cast<uint32_t>(first_pair.size());
+    first_group.push_back(out.groups);
+    first_pair.push_back(out.pairs);
+    out.lists = static_cast<uint32_t>(out.words.size());
+    out.words.push_back(out.pairs);   // kRegionListPairs
+    out.words.push_back(out.groups);  // kRegionListGroups
+    out.words.insert(out.words.end(), first_group.begin(), first_group.end());  // from kRegionListHeader
+    out.words.insert(out.words.end(), first_pair.begin(), first_pair.end());
+    out.words.insert(out.words.end(), pairs.begin(), pairs.end());
+}
+
 }  // namespace
 
-RegionTable pack_region_table(const af::FluidRegions& r) {
+RegionTable pack_region_table(const af::FluidRegions& r, const af::GridShape& shape) {
     RegionTable out;
     std::vector<uint32_t> index(r.count, af::kNoRegion);
     for (uint32_t id = 0; id < r.count; ++id) {
@@ -232,31 +305,30 @@ RegionTable pack_region_table(const af::FluidRegions& r) {
         out.words.push_back(0u);  // the mean: the device's
     }
     out.words.insert(out.words.end(), index.begin(), index.end());
+    append_tile_lists(out, r, shape, index);
     return out;
 }
 
-uint64_t region_partials_floats(const af::GridShape& shape, uint32_t closed) noexcept {
-    return 2ull * closed * tile_sum_tiles(shape);
-}
+uint64_t region_partials_floats(const RegionTable& regions) noexcept { return regions.pairs; }
 
 void append_region_means(std::vector<compute::ChainCommand>& out, const af::GridShape& shape, uint32_t pipeline,
-                         PcgVector v, uint32_t closed, uint32_t workgroup_size) {
-    if (closed == 0u) return;
+                         PcgVector v, const RegionTable& regions, uint32_t workgroup_size) {
+    if (regions.closed == 0u) return;
     const uint32_t cells = cells_of(shape);
-    const uint32_t tiles = tile_sum_tiles(shape);
-    const std::array<uint64_t, 3> threads{uint64_t{closed} * tiles, uint64_t{closed} * blocks_of(tiles), closed};
+    const std::array<uint64_t, 3> threads{regions.pairs, regions.groups, regions.closed};
     for (uint32_t pass = 0; pass < 3u; ++pass) {
-        compute::ChainCommand c =
-            projection_dispatch(pipeline, {.a = v, .b = tile_sum_pass_word(pass), .count = cells}, workgroup_size);
+        compute::ChainCommand c = projection_dispatch(
+            pipeline, {.a = v, .b = tile_sum_pass_word(pass), .count = cells, .d = regions.lists}, workgroup_size);
         c.groups = {groups_for(threads[pass], workgroup_size), 1u, 1u};
         out.push_back(c);
     }
 }
 
 void append_remove_region_means(std::vector<compute::ChainCommand>& out, const af::GridShape& shape,
-                                uint32_t pipeline, PcgVector v, uint32_t closed, uint32_t workgroup_size) {
-    if (closed == 0u) return;
-    append_region_means(out, shape, pipeline, v, closed, workgroup_size);
+                                uint32_t pipeline, PcgVector v, const RegionTable& regions,
+                                uint32_t workgroup_size) {
+    if (regions.closed == 0u) return;
+    append_region_means(out, shape, pipeline, v, regions, workgroup_size);
     out.push_back(projection_dispatch(
         pipeline, {.a = v, .b = tile_sum_pass_word(kRegionSubtractPass), .count = cells_of(shape)}, workgroup_size));
 }
@@ -316,7 +388,7 @@ struct CgChain {
     const af::GridShape& shape;
     const MgLayout& layout;
     const SolvePipelines& p;
-    uint32_t closed;
+    const RegionTable& regions;
     uint32_t workgroup_size;
 
     [[nodiscard]] uint32_t cells() const noexcept { return cells_of(shape); }
@@ -341,7 +413,7 @@ struct CgChain {
 
     // gauge(v): remove_region_means() (projection.cpp's gauge_regions()).
     void gauge(std::vector<compute::ChainCommand>& out, PcgVector v) const {
-        append_remove_region_means(out, shape, p.region_mean, v, closed, workgroup_size);
+        append_remove_region_means(out, shape, p.region_mean, v, regions, workgroup_size);
     }
 
     // precond() (pcg.cpp:39-45): level 0's b <- r and its p <- 0
@@ -368,8 +440,8 @@ struct CgChain {
 }  // namespace
 
 SolveChains solve_chains(const af::GridShape& shape, const MgLayout& layout, const SolvePipelines& p,
-                         uint32_t closed, uint32_t workgroup_size) {
-    const CgChain cg{shape, layout, p, closed, workgroup_size};
+                         const RegionTable& regions, uint32_t workgroup_size) {
+    const CgChain cg{shape, layout, p, regions, workgroup_size};
     SolveChains c;
     // setup: the scalars' start (:73-80), x <- p masked (:70), start() (:71).
     cg.scalars(c.setup, ScalarsOp::start);
@@ -388,8 +460,8 @@ SolveChains solve_chains(const af::GridShape& shape, const MgLayout& layout, con
     // measure (:83-109): gauge(x), its subtract behind the gate (a solve
     // stopped and measured leaves x alone), A x, the max-norm, the decision,
     // best <- x.
-    if (closed > 0u) {
-        append_region_means(c.measure, shape, p.region_mean, kPcgX, closed, workgroup_size);
+    if (regions.closed > 0u) {
+        append_region_means(c.measure, shape, p.region_mean, kPcgX, regions, workgroup_size);
         cg.scalars(c.measure, ScalarsOp::gate);
         c.measure.push_back(projection_dispatch(
             p.region_mean, {.a = kPcgX, .b = tile_sum_pass_word(kRegionSubtractPass), .count = cg.cells()},
@@ -407,8 +479,8 @@ SolveChains solve_chains(const af::GridShape& shape, const MgLayout& layout, con
     return c;
 }
 
-uint64_t solve_partials_floats(const af::GridShape& shape, uint32_t closed) noexcept {
-    return std::max<uint64_t>(2ull * tile_sum_tiles(shape), region_partials_floats(shape, closed));
+uint64_t solve_partials_floats(const af::GridShape& shape, const RegionTable& regions) noexcept {
+    return std::max<uint64_t>(2ull * tile_sum_tiles(shape), region_partials_floats(regions));
 }
 
 Result<SolveChainIds> record_solve(ChainRunner& runner, const SolveChains& chains) {
@@ -483,14 +555,14 @@ Result<GpuPcgResult> run_solve(ChainRunner& runner, const SolveChainIds& ids, ui
 namespace spade::airflow_gpu {
 
 SolveChains projection_chains(const af::GridShape& shape, const MgLayout& layout, const ProjectionSolidsPipelines& p,
-                              uint32_t closed, uint32_t workgroup_size) {
-    SolveChains c = solve_chains(shape, layout, p.solve, closed, workgroup_size);
+                              const RegionTable& regions, uint32_t workgroup_size) {
+    SolveChains c = solve_chains(shape, layout, p.solve, regions, workgroup_size);
     // In front of the setup (projection.cpp:100-101): b, then its regions'
     // means removed. Neither kernel reads the stop word, which the setup's
     // first op (the scalars' start) clears.
     std::vector<compute::ChainCommand> rhs;
     rhs.push_back(projection_dispatch(p.solid_divergence, {.count = cells_of(shape)}, workgroup_size));
-    append_remove_region_means(rhs, shape, p.solve.region_mean, kPcgB, closed, workgroup_size);
+    append_remove_region_means(rhs, shape, p.solve.region_mean, kPcgB, regions, workgroup_size);
     c.setup.insert(c.setup.begin(), rhs.begin(), rhs.end());
     // Behind the finish (:106, :108): the grid's p <- x, the gradient with
     // theta on each component, then the health word.
