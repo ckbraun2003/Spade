@@ -736,6 +736,29 @@ TEST(AnalysisLiveRun, RunAirsGridIsP1sCellRule) {
     EXPECT_NE(none.error().context.find("no rotors"), std::string::npos) << none.error().context;
 }
 
+// The floor to the millimetre is exact (the lead's review, 2026-11-03): in
+// float32, R/3 times 1000 falls a hair under a whole millimetre for 132 of
+// the whole-mm thirds from 3 mm to 1 m (R 36 mm gave 11 mm), so the rule
+// rounds to whole micrometres first, in integers.
+TEST(AnalysisLiveRun, RunAirsCellFloorsAWholeMillimetreExactly) {
+    const auto grid = [](float radius, float feature) {
+        spade::vehicles::ModelType m = phantom();
+        for (spade::vehicles::RotorDesc& r : m.rotors) r.radius = radius;
+        if (feature > 0.0f) {
+            for (spade::vehicles::PartDesc& p : m.parts) p.min_feature = std::min(p.min_feature, feature);
+        } else {
+            m.parts.clear();
+        }
+        const spade::Result<an::LiveGrid> g = an::live_grid(m);
+        EXPECT_TRUE(g.has_value()) << (g ? "" : g.error().context);
+        return g ? std::format("{}^3 at {:g} mm", g->n, g->dx * 1000.0f) : std::string("refused");
+    };
+    EXPECT_EQ(grid(0.036f, 0.0f), "32^3 at 12 mm");
+    EXPECT_EQ(grid(0.072f, 0.0f), "32^3 at 24 mm");
+    EXPECT_EQ(grid(0.144f, 0.0f), "32^3 at 48 mm");
+    EXPECT_EQ(grid(0.144f, 0.048f), "128^3 at 12 mm") << "F/4 on a whole millimetre, in 32 cells of 48 mm";
+}
+
 // Physics' step rule (the lead's ruling, 2026-11-03): CFL at most 1 on the
 // wake's 2 v_h, capped at 1 ms. The Phantom (1.28 kg, R 119.4 mm, v_h 5.35
 // m/s in the case's air) keeps 1 ms at 12 mm and takes 0.935 ms at 10 mm; a
