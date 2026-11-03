@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -649,24 +650,28 @@ namespace {
 
 }  // namespace
 
-// At P-1's cell for it, 12 mm, on 48^3 (0.576 m, its 0.49 m span inside):
-// the body is in the air; the arms and the ESC are thinner than 2 cells and
-// the battery, inside the shell, is exposed (Physics' note), each named. The
-// same case leaves out the same parts, and it steps.
+// At P-1's cell for it, 12 mm, on 48^3 (0.576 m, its 0.49 m span inside;
+// held at a cell corner, as on 104^3): the body and three motors are in the
+// air. Measured 2026-11-03, as Physics' note has it: the arms are wires and
+// the ESC a sheet; motor[3] leaks where the grid falls on it (the motors stay
+// in at 2 or 3 of 6 offsets); the battery, inside the shell, is exposed. Each
+// is named, the classifier's first. The same case leaves out the same parts,
+// and it steps.
 TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
     const spade::vehicles::ModelType m = phantom();
     spade::Result<an::LiveRun> run = phantom_run(m, 48, 0.012f);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     EXPECT_TRUE(run->solids().any);
-    const std::vector<std::string> drawn = fates(*run);
-    for (const std::string& f : drawn) EXPECT_FALSE(f.starts_with("body#")) << "the body is in the air: " << f;
-    for (const char* thin : {"arm[0]#", "arm[1]#", "arm[2]#", "arm[3]#", "esc#"}) {
-        EXPECT_TRUE(std::any_of(drawn.begin(), drawn.end(), [&](const std::string& f) { return f.starts_with(thin); }))
-            << thin << " is drawn only";
-    }
-    EXPECT_TRUE(std::find(drawn.begin(), drawn.end(), "battery#10 exposed in body") != drawn.end())
-        << ::testing::PrintToString(drawn);
-    EXPECT_NE(run->run_label().find(" \xc2\xb7 drawn only at 12 mm: "), std::string::npos) << run->run_label();
+    EXPECT_NE(run->solids().run_line.find("solids: 4 parts, 4 walls, 0 sheets"), std::string::npos)
+        << run->solids().run_line;
+    EXPECT_EQ(fates(*run), (std::vector<std::string>{"arm[0]#1 wire", "arm[1]#2 wire", "arm[2]#3 wire", "arm[3]#4 wire",
+                                                     "esc#9 thin", "motor[3]#8 leaks", "battery#10 exposed in body"}));
+    EXPECT_NE(run->run_label().find(" \xc2\xb7 drawn only at 12 mm: arm[0-3] (a wire); esc (thinner than 2 cells); "
+                                    "motor[3] (leaks); battery (inside 'body', exposed)"),
+              std::string::npos)
+        << run->run_label();
+    std::printf("[ p-1 ] the Phantom at 12 mm on 48^3: %s (%u solid cells)\n", run->run_label().c_str(),
+                run->solids().solid_cells);
     spade::Result<an::LiveRun> again = phantom_run(m, 48, 0.012f);
     ASSERT_TRUE(again.has_value()) << again.error().context;
     EXPECT_EQ(again->run_label(), run->run_label());
@@ -677,8 +682,9 @@ TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
 }
 
 // At Run air's cell today, 39 mm on 32^3, every Phantom part is too thin
-// for the grid (P-1: no solid in the air for any library drone): discs only,
-// said so, and to the bit the run of the Phantom with its parts cleared.
+// for the grid (P-1: no solid in the air for any library drone; the body a
+// sheet, the rest wires): discs only, said so, and to the bit the run of the
+// Phantom with its parts cleared.
 TEST(AnalysisLiveRun, ThePhantomAt39mmIsDiscsOnlyToTheBitAsItsDiscsAlone) {
     const spade::vehicles::ModelType m = phantom();
     spade::vehicles::ModelType discs = m;
@@ -688,9 +694,10 @@ TEST(AnalysisLiveRun, ThePhantomAt39mmIsDiscsOnlyToTheBitAsItsDiscsAlone) {
     ASSERT_TRUE(run.has_value()) << run.error().context;
     ASSERT_TRUE(plain.has_value()) << plain.error().context;
     EXPECT_FALSE(run->solids().any);
-    EXPECT_TRUE(run->run_label().starts_with(plain->run_label() +
-                                             " \xc2\xb7 discs only: every part drawn only at 39 mm: "))
-        << run->run_label();
+    EXPECT_EQ(run->run_label(), plain->run_label() +
+                                    " \xc2\xb7 discs only: every part drawn only at 39 mm: body (thinner than 2 "
+                                    "cells); arm[0-3], motor[0-3], esc, battery (a wire)");
+    std::printf("[ p-1 ] the Phantom at 39 mm on 32^3: %s\n", run->run_label().c_str());
     spade::FlowVolume a;
     spade::FlowVolume b;
     armed_frame(*run, a);
