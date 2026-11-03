@@ -62,6 +62,7 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
         case DrawnReason::porous: return "porous";
         case DrawnReason::leaks: return "leaks";
         case DrawnReason::exposed: return "inside '" + d.inside + "', exposed";
+        case DrawnReason::sibling: return "its siblings with it";  // RED: L8's grouping comes in GREEN
     }
     return {};
 }

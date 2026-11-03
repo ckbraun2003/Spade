@@ -473,8 +473,10 @@ void armed_frame(an::LiveRun& run, spade::FlowVolume& v) {
             case an::DrawnReason::porous: why = "porous"; break;
             case an::DrawnReason::leaks: why = "leaks"; break;
             case an::DrawnReason::exposed: why = "exposed"; break;
+            case an::DrawnReason::sibling: why = "sibling"; break;
         }
-        out.push_back(d.name + "#" + std::to_string(d.part) + " " + why + (d.inside.empty() ? "" : " in " + d.inside));
+        out.push_back(d.name + "#" + std::to_string(d.part) + " " + why + (d.inside.empty() ? "" : " in " + d.inside) +
+                      (d.of.empty() ? "" : " of " + d.of));
     }
     return out;
 }
@@ -618,6 +620,16 @@ TEST(AnalysisLiveRun, TheDrawnOnlyLineGroupsByReasonAndJoinsIndexedNames) {
               "drawn only at 1.75 mm: antenna (marked drawn only); bolt (a wire); skid[0-1] (thinner than 2 cells); "
               "filter (porous); cell[1] (inside 'pack', exposed); cell[2] (inside 'shell', exposed); lid[a], lid[b] "
               "(leaks)");
+    // L8: a part the safeguard refused and the indexed siblings it took with it.
+    const std::vector<DrawnPart> siblings{
+        {"motor[3]", 8, DrawnReason::leaks, {}, {}},         {"motor[0]", 5, DrawnReason::sibling, {}, "motor[3]"},
+        {"motor[1]", 6, DrawnReason::sibling, {}, "motor[3]"}, {"motor[2]", 7, DrawnReason::sibling, {}, "motor[3]"},
+        {"cell[2]", 12, DrawnReason::exposed, "pack", {}},   {"cell[1]", 11, DrawnReason::sibling, {}, "cell[2]"},
+        {"battery", 10, DrawnReason::exposed, "body", {}},
+    };
+    EXPECT_EQ(an::drawn_only_line(siblings, 0.012f, true),
+              "drawn only at 12 mm: motor[0-3] (motor[3] leaks; its siblings with it); cell[1-2] (cell[2] inside "
+              "'pack', exposed; its siblings with it); battery (inside 'body', exposed)");
     const std::vector<DrawnPart> all{{"body", 0, DrawnReason::thin, {}}, {"arm[0]", 1, DrawnReason::wire, {}}};
     EXPECT_EQ(an::drawn_only_line(all, 0.039f, false),
               "discs only: every part drawn only at 39 mm: body (thinner than 2 cells); arm[0] (a wire)");
@@ -651,23 +663,28 @@ namespace {
 }  // namespace
 
 // At P-1's cell for it, 12 mm, on 48^3 (0.576 m, its 0.49 m span inside;
-// held at a cell corner, as on 104^3): the body and three motors are in the
-// air. Measured 2026-11-03, as Physics' note has it: the arms are wires and
-// the ESC a sheet; motor[3] leaks where the grid falls on it (the motors stay
-// in at 2 or 3 of 6 offsets); the battery, inside the shell, is exposed. Each
-// is named, the classifier's first. The same case leaves out the same parts,
-// and it steps.
+// held at a cell corner, as on 104^3): the body alone is in the air.
+// Measured 2026-11-03, as Physics' note has it: the arms are wires and the
+// ESC a sheet; motor[3] leaks where the grid falls on it (the mirrored
+// motors fall differently by fp32's rounding), and takes its siblings with
+// it (L8: three of four would give the held drone a moment its geometry
+// hasn't); the battery, inside the shell, is exposed. Each is named, the
+// classifier's first. The same case leaves out the same parts, and it steps.
 TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
     const spade::vehicles::ModelType m = phantom();
     spade::Result<an::LiveRun> run = phantom_run(m, 48, 0.012f);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     EXPECT_TRUE(run->solids().any);
-    EXPECT_NE(run->solids().run_line.find("solids: 4 parts, 4 walls, 0 sheets"), std::string::npos)
+    EXPECT_NE(run->solids().run_line.find("solids: 1 part, 1 wall, 0 sheets"), std::string::npos)
         << run->solids().run_line;
-    EXPECT_EQ(fates(*run), (std::vector<std::string>{"arm[0]#1 wire", "arm[1]#2 wire", "arm[2]#3 wire", "arm[3]#4 wire",
-                                                     "esc#9 thin", "motor[3]#8 leaks", "battery#10 exposed in body"}));
+    EXPECT_EQ(fates(*run),
+              (std::vector<std::string>{"arm[0]#1 wire", "arm[1]#2 wire", "arm[2]#3 wire", "arm[3]#4 wire", "esc#9 thin",
+                                        "motor[3]#8 leaks", "motor[0]#5 sibling of motor[3]",
+                                        "motor[1]#6 sibling of motor[3]", "motor[2]#7 sibling of motor[3]",
+                                        "battery#10 exposed in body"}));
     EXPECT_NE(run->run_label().find(" \xc2\xb7 drawn only at 12 mm: arm[0-3] (a wire); esc (thinner than 2 cells); "
-                                    "motor[3] (leaks); battery (inside 'body', exposed)"),
+                                    "motor[0-3] (motor[3] leaks; its siblings with it); battery (inside 'body', "
+                                    "exposed)"),
               std::string::npos)
         << run->run_label();
     std::printf("[ p-1 ] the Phantom at 12 mm on 48^3: %s (%u solid cells)\n", run->run_label().c_str(),

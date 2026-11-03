@@ -101,6 +101,7 @@ enum class DrawnReason : uint8_t {
     porous,   // classify_part(): porous parts arrive with the porous task
     leaks,    // the measured safeguard: it leaks at this cell
     exposed,  // the measured safeguard: inside another part, exposed near its surface
+    sibling,  // L8: an indexed sibling of a part the safeguard refused, left out with it
 };
 
 struct DrawnPart {
@@ -108,6 +109,7 @@ struct DrawnPart {
     uint32_t part = 0;  // its index in the model's parts
     DrawnReason why = DrawnReason::marked;
     std::string inside;  // exposed only: the part it lies inside
+    std::string of;      // sibling only: the part the safeguard refused
 };
 
 // RUN AIR'S GRID AND STEP for a drone flown live (P-1's cell rule and
