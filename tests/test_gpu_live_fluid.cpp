@@ -7,7 +7,8 @@
 //
 //   GpuLiveFluid  60 steps of a changing program, the rotors' discs changing
 //                 every step, the CPU's run to the bit on the device of
-//                 record, frame by frame and in the save; with a ball in the
+//                 record, frame by frame and in the save, and the sanity
+//                 floor on every device; with a ball in the
 //                 air (G3) too, where a NaN beside the ball faults the first
 //                 step and a flow past the volume's range around it still
 //                 ends the run at its frame; a flow past the volume's range
@@ -38,6 +39,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -46,6 +48,7 @@
 
 #include "airflow_advection.spv.gen.hpp"
 #include "airflow_exact_device.hpp"
+#include "airflow_floor.hpp"
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
@@ -54,6 +57,7 @@
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "core/flow_volume.hpp"
+#include "core/fp16.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
@@ -155,6 +159,92 @@ using spade::compute::VulkanContext;
     return n;
 }
 
+// The sanity floor (tests/airflow_floor.hpp; the lead, 2026-11-03), on the
+// run's published volume, on every device: what the run shows. Its velocity
+// halves past the no-data samples (the solid cells, and any sample the
+// publish can't hold): whether each is finite, the largest |u|, |v| or |w|,
+// and their mean.
+struct PublishedSpeeds {
+    bool finite = true;
+    double peak = 0.0;
+    double mean = 0.0;
+};
+
+[[nodiscard]] PublishedSpeeds published_speeds(const spade::FlowVolume& f) {
+    PublishedSpeeds out;
+    double sum = 0.0;
+    std::size_t n = 0;
+    for (std::size_t i = 0; i + 3 < f.v.size(); i += 4) {
+        for (std::size_t c = 0; c < 3; ++c) {
+            if (f.v[i + c] == spade::fp16::kNoDataBits) continue;
+            const double x = std::fabs(static_cast<double>(spade::fp16::to_f32(f.v[i + c])));
+            if (!std::isfinite(x)) {
+                out.finite = false;
+                continue;
+            }
+            out.peak = std::max(out.peak, x);
+            sum += x;
+            ++n;
+        }
+    }
+    out.mean = n == 0 ? 0.0 : sum / static_cast<double>(n);
+    return out;
+}
+
+// The floor's bound in still air: kPhysicalFactor x 2 v_h of the run's
+// fastest rotor now (momentum theory, v_h = sqrt(T / (2 rho pi R^2)), with
+// T = k_T omega^2).
+[[nodiscard]] double still_air_bound(const an::LiveRun& run, double rho) {
+    double vh = 0.0;
+    for (const spade::vehicles::RotorRow& row : run.rotor_rows()) {
+        const double omega = static_cast<double>(row.omega);
+        const double radius = static_cast<double>(row.radius);
+        const double thrust = static_cast<double>(row.thrust_coeff) * omega * omega;
+        vh = std::max(vh, std::sqrt(thrust / (2.0 * rho * std::numbers::pi * radius * radius)));
+    }
+    return spade::testing::kPhysicalFactor * 2.0 * vh;
+}
+
+// The floor over a run, checked frame by frame and at its end, with its line.
+class LiveFloor {
+  public:
+    explicit LiveFloor(double rho) : rho_(rho) {}
+
+    // One frame: the candidate's published volume finite and holding no more
+    // no-data samples than the CPU's (a NaN or a flow past the range adds
+    // one), its peak and the bound kept.
+    void frame(const an::LiveRun& candidate, const spade::FlowVolume& cpu, const spade::FlowVolume& gpu,
+               uint64_t number) {
+        const PublishedSpeeds s = published_speeds(gpu);
+        finite_ = finite_ && s.finite && gpu.header.no_data == cpu.header.no_data;
+        EXPECT_EQ(gpu.header.no_data, cpu.header.no_data) << "frame " << number;
+        peak_ = std::max(peak_, s.peak);
+        bound_ = std::max(bound_, still_air_bound(candidate, rho_));
+    }
+
+    // At the run's end: finite, the peak under the bound, the last frame's
+    // mean speed within the floor's band of the CPU's.
+    void expect_held(const spade::FlowVolume& cpu, const spade::FlowVolume& gpu) const {
+        const double cpu_mean = published_speeds(cpu).mean;
+        const double gpu_mean = published_speeds(gpu).mean;
+        const bool near = spade::testing::mean_within_floor(gpu_mean, cpu_mean);
+        std::printf("[ live    ] floor: %s; the published largest |u|, |v| or |w| = %.4g m/s against %.4g m/s; "
+                    "its mean speed at the last frame %.6g m/s, the CPU's %.6g m/s (within %.0f%% + %.0e m/s)\n",
+                    finite_ && peak_ <= bound_ && near ? "PASS" : "FAIL", peak_, bound_, gpu_mean, cpu_mean,
+                    100.0 * spade::testing::kFloorBand, spade::testing::kFloorStill);
+        EXPECT_TRUE(finite_);
+        EXPECT_GT(bound_, 0.0);
+        EXPECT_LE(peak_, bound_);
+        EXPECT_TRUE(near) << gpu_mean << " against the CPU's " << cpu_mean;
+    }
+
+  private:
+    double rho_;
+    bool finite_ = true;
+    double peak_ = 0.0;
+    double bound_ = 0.0;
+};
+
 // LiveRun's own CPU fluid (live_run.cpp's step: the discs spread into the
 // increments, then fluid_step(); the publish publish_render_volume()'s) as a
 // LiveFluid, so a CPU run can start from a poisoned grid as a device's can.
@@ -191,6 +281,7 @@ class CpuLiveFluid final : public an::LiveFluid {
 // 60 steps of the changing program: every frame's halves, the rotors and the
 // save (u, v, w and p read back from the device) are the CPU's run's, to the
 // bit on the device of record; elsewhere the differing halves are printed.
+// The sanity floor holds on every device.
 TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -205,6 +296,7 @@ TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
     spade::FlowVolume b;
     std::size_t differ = 0;
     std::size_t halves = 0;
+    LiveFloor live_floor(static_cast<double>(r.spec.fluid.density));
     while (cpu.state().steps < 60) {
         const an::Controls c = an::controls_at(program, static_cast<float>(cpu.state().t_s));
         const spade::Result<an::LiveFrame> fa = cpu.advance_frame(c, a);
@@ -218,10 +310,12 @@ TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
         if (exact) {
             ASSERT_EQ(d, 0u) << "frame " << fa->frame;
         }
+        live_floor.frame(gpu, a, b, fa->frame);
         EXPECT_EQ(a.header.origin, b.header.origin);
     }
     std::printf("[ live    ] %llu steps on 32^3: %zu of %zu published halves differ (device of record: %s)\n",
                 static_cast<unsigned long long>(gpu.state().steps), differ, halves, exact ? "yes" : "no");
+    live_floor.expect_held(a, b);
     EXPECT_EQ(cpu.state().rotor_omega, gpu.state().rotor_omega);
     if (!exact) return;
     const spade::test::TempDir dir("gpu-live-fluid");
@@ -235,7 +329,8 @@ TEST(GpuLiveFluid, FliesTheCpusRunToTheBit) {
 // The quad with its ball in the air (G3: GpuFluid takes the run's solids),
 // three frames of the changing program: every frame's halves the CPU's run's
 // to the bit on the device of record, so the publish's solid cells (the
-// first layer extrapolated, the rest no-data) pass the seam's scan.
+// first layer extrapolated, the rest no-data) pass the seam's scan. The
+// sanity floor holds on every device.
 TEST(GpuLiveFluid, FliesTheBallQuadToTheBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -251,6 +346,7 @@ TEST(GpuLiveFluid, FliesTheBallQuadToTheBit) {
     spade::FlowVolume b;
     std::size_t differ = 0;
     std::size_t halves = 0;
+    LiveFloor live_floor(static_cast<double>(r.spec.fluid.density));
     while (cpu.state().frames < 3) {
         const an::Controls c = an::controls_at(program, static_cast<float>(cpu.state().t_s));
         const spade::Result<an::LiveFrame> fa = cpu.advance_frame(c, a);
@@ -264,12 +360,14 @@ TEST(GpuLiveFluid, FliesTheBallQuadToTheBit) {
         if (exact) {
             ASSERT_EQ(d, 0u) << "frame " << fa->frame;
         }
+        live_floor.frame(gpu, a, b, fa->frame);
         EXPECT_EQ(a.header.extrapolated_cells, b.header.extrapolated_cells);
     }
     std::printf("[ live    ] the ball quad, %llu steps on 32^3: %zu of %zu published halves differ, %u cells "
                 "extrapolated (device of record: %s)\n",
                 static_cast<unsigned long long>(gpu.state().steps), differ, halves, b.header.extrapolated_cells,
                 exact ? "yes" : "no");
+    live_floor.expect_held(a, b);
     EXPECT_GT(b.header.extrapolated_cells, 0u);
     EXPECT_EQ(cpu.state().rotor_omega, gpu.state().rotor_omega);
 }

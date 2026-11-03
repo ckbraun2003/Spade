@@ -32,6 +32,7 @@
 
 #include <glm/glm.hpp>
 
+#include "airflow_floor.hpp"
 #include "airflow_record.hpp"
 #include "airflow_solid_shapes.hpp"
 #include "d1_case.hpp"
@@ -498,7 +499,7 @@ struct Comparison {
 // face by the inflow; before the dense disc (58720c6), one disc-plane sample
 // of the real D1 at 0.71 R grew about 4 m/s a step, past the bound at step 14
 // (Physics' triage, 2026-10-27).
-inline constexpr double kPhysicalFactor = 4.0;
+using spade::testing::kPhysicalFactor;  // tests/airflow_floor.hpp
 
 [[nodiscard]] inline double physical_bound(const B7Box& box) {
     double vh = 0.0;
@@ -510,23 +511,13 @@ inline constexpr double kPhysicalFactor = 4.0;
     return kPhysicalFactor * (2.0 * vh + stream);
 }
 
-// The sanity floor on every device (the lead, 2026-11-03, on Test/Docs' gap
-// 6; docs/design/backlog.md): a check, not a grade, so TD-14 is unchanged and
-// a grade off the device of record waits for a second device to measure a
-// band. The candidate's flow stays finite and under physical_bound() over
+// The sanity floor on every device (tests/airflow_floor.hpp, its numbers and
+// why): the candidate's flow stays finite and under physical_bound() over
 // steps 1 to N, and its mean speed at step N is within kFloorBand of the
-// CPU's, plus kFloorStill for air the step has all but stopped (S3's sheet
-// leaves about 1e-7 m/s, where rounding alone is a large fraction). Loose by
-// design: a run off the device of record parts from the CPU's in its last
-// bits only, while a kernel gone wrong moves the mean by far more, or the
-// flow past the bound. Both fixed before any run off the device (Test/Docs,
-// 2026-11-03).
-inline constexpr double kFloorBand = 0.10;
-inline constexpr double kFloorStill = 1.0e-4;  // m/s
-
-[[nodiscard]] inline bool mean_within_floor(double candidate, double cpu) {
-    return std::fabs(candidate - cpu) <= kFloorBand * std::fabs(cpu) + kFloorStill;
-}
+// CPU's, plus kFloorStill.
+using spade::testing::kFloorBand;
+using spade::testing::kFloorStill;
+using spade::testing::mean_within_floor;
 
 inline void tally(Comparison& c, uint32_t step, const char* field, std::size_t index, bool differs, double gap) {
     ++c.compared;
