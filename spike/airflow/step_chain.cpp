@@ -338,7 +338,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         set(gen::kBinding_airflow_pcg, uint64_t{kPcgVectors} * cells, BufferKind::device_only);
         set(gen::kBinding_airflow_scalars, kScalarSlots, BufferKind::staged);
         set(gen::kBinding_airflow_partials,
-            std::max({uint64_t{tile_sum_tiles(s)}, solve_partials_floats(s, upload->regions.closed),
+            std::max({uint64_t{tile_sum_tiles(s)}, solve_partials_floats(s, upload->regions),
                       uint64_t{kWallLoadTerms} * tile_sum_tiles(s)}),
             BufferKind::device_only);
         set(gen::kBinding_airflow_wall_load, kWallLoadFloats, BufferKind::staged);
@@ -361,7 +361,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
             !ok) {
             return std::unexpected(ok.error());
         }
-        auto ids = record_solve(r, projection_chains(s, self->layout_, kProjectionSolids, upload->regions.closed,
+        auto ids = record_solve(r, projection_chains(s, self->layout_, kProjectionSolids, upload->regions,
                                                      workgroup_size));
         if (!ids) return std::unexpected(ids.error());
         self->projection_ = *ids;

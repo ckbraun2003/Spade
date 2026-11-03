@@ -95,3 +95,36 @@ Beside the block, as the run printed them (checks, not measures; the floor is th
 
 - `physical: PASS; the CPU's largest |u|, |v| or |w| over steps 1 to 32 = 20.08 m/s against 54.97 m/s (4 x (2 v_h + the stream))`
 - `floor: PASS; the candidate's largest |u|, |v| or |w| over steps 1 to 32 = 20.08 m/s against 54.97 m/s; its mean speed at step 32 = 0.402942 m/s, the CPU's 0.402942 m/s (within 10% + 1e-04 m/s)`
+
+## 2026-11-03: the closed-region gauge over each region's own tiles (Rendering)
+
+GpuFluid with the CG's gauge (`airflow_region_mean`) over each closed region's own tiles, packed once at set-up, the whole step on the device of record (RTX 3060 Ti, driver 572.83), against the CPU's run of the same box over 32 steps: TD-14 as amended, bit-equal. The step time is report only: 138.4 ms a step, against B8's 293.1 ms above and Cameron's bound of 190 ms with the bits kept (2026-11-03). The film's 0.50 s took 187.03 s (B8: 390.17 s), report only.
+
+```text
+=== validation record: B7 acceptance, D1 box 240x177x168, GpuFluid (G3) against the CPU ===
+commit: e3329a13 (rendering/gauge-tiles; queue ticket spade-rendering-d1rec-gauge-e3329a13)
+date: 2026-11-03
+path: GpuFluid (G3), MSVC 1943, release, on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no); fp32 NaN preservation supported: yes
+config: D1: 240x177x168 at dx 4 mm (kD1Grid, tests/d1_case.hpp), wind (-3.0, -0.0, 0.0) m/s; the reference quad's rigid parts as solids, LiveRun's own (solids: 10 parts, 10 walls, 0 sheets); held at hover, its 4 rotors as actuator discs at their commanded hover speed, 801 rad/s, 5.158 N in all; rho 1.225, nu 1.4607e-05, h 0.38 ms, CG floor 8, cap 32; steps 1 to 32 compared from the initial state; the step time the median of 9 steps after 3 warm-up; 0.50 s of the box's time in 1316 steps, published at every 1/30 s
+measure: the values differing from the CPU's run over steps 1 to 32 (u, v, w and p, unconverged, pressure_iterations, pressure_residual, stalled, capped, the wall load; not compared: fault, the solids) = 0 of 917091424
+reference: the CPU's run of the same box, LiveRun's step order (engine/analysis/live_run.cpp)
+tolerance: 0, bit-equal (TD-14 as amended 2026-10-22: on the device of record, every kernel exact and both twins flush)
+verdict: within
+measure: the first differing step, 0 if none (none differ) = 0
+reference: the CPU's run of the same box
+tolerance: none (report only)
+verdict: report only
+measure: the candidate's step time, the median of 9 steps after 3 warm-up = 138.4 ms
+reference: none (report only): at the D1 box, Cameron's bound of 190 ms a step with the bits kept (2026-11-03, docs/design/backlog.md) and the plan's estimate of about 95 ms (docs/design/physics/plans/2026-10-22-airflow-gpu-solver-plan.md, B7)
+tolerance: none (report only)
+verdict: report only
+measure: the wall time for 0.50 s of the box's time (1316 steps), publishing at the film's frame times = 187.03 s
+reference: the plan's estimate, about 2 minutes at the D1 box (B7)
+tolerance: none (report only)
+verdict: report only
+```
+
+Beside the block, as the run printed them (checks, not measures; the floor is the check other devices run):
+
+- `physical: PASS; the CPU's largest |u|, |v| or |w| over steps 1 to 32 = 20.08 m/s against 54.97 m/s (4 x (2 v_h + the stream))`
+- `floor: PASS; the candidate's largest |u|, |v| or |w| over steps 1 to 32 = 20.08 m/s against 54.97 m/s; its mean speed at step 32 = 0.402942 m/s, the CPU's 0.402942 m/s (within 10% + 1e-04 m/s)`

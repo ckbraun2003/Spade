@@ -1557,7 +1557,7 @@ TEST(AirflowSolidsChain, TheSolidsUploadHoldsSetWeightsFaceWeightsOnEveryLevel) 
         EXPECT_EQ(u.field.wall_links, want.wall_links);
         EXPECT_TRUE(u.field.has_solids);
         EXPECT_EQ(u.labels, b.s.regions.label);
-        const ag::RegionTable table = ag::pack_region_table(b.s.regions);
+        const ag::RegionTable table = ag::pack_region_table(b.s.regions, b.shape);
         EXPECT_EQ(u.regions.words, table.words);
         EXPECT_EQ(u.regions.closed, b.closed_regions);
         const auto size = [](const auto& v) { return std::max<uint64_t>(4u, uint64_t{v.size()} * sizeof(v[0])); };
@@ -1863,7 +1863,7 @@ public:
                                                           const af::SolidField& f, const af::FluidRegions& r,
                                                           uint32_t workgroup_size = kWorkgroupSize) {
         LoadDevice dev;
-        dev.table_ = ag::pack_region_table(r);
+        dev.table_ = ag::pack_region_table(r, s);
         const ag::PackedSolidField packed = ag::pack_solid_field(f);
         std::vector<uint32_t> params = params_for(s, nullptr);
         params[ag::kParamsFlags] = ag::solids_flags(packed);
@@ -1873,7 +1873,7 @@ public:
         const uint64_t cells = cells_of(s);
         const auto faces = faces_of(s);
         const uint64_t partials =
-            std::max<uint64_t>({ag::region_partials_floats(s, dev.table_.closed),
+            std::max<uint64_t>({ag::region_partials_floats(dev.table_),
                                 uint64_t{ag::kWallLoadTerms} * ag::tile_sum_tiles(s), uint64_t{1}});
         const auto size_of = [](const auto& v) {
             return std::max<uint64_t>(4u, uint64_t{v.size()} * sizeof(v[0]));
@@ -2024,15 +2024,17 @@ struct RegionCase {
 // pack_region_table() on AirflowRegions' box cut in three, the +x region an
 // outlet's: the two closed regions' records in id order (id, cells, the
 // reciprocal remove_region_means() multiplies by, a mean of 0), then each
-// region's closed index, kNoRegion for the pinned one.
+// region's closed index, kNoRegion for the pinned one; the tile lists after
+// those (TheTileListsAreTheTilesEachClosedRegionHasACellIn), a partial a pair.
 TEST(AirflowSolidsChain, TheRegionTableHoldsTheClosedRegions) {
     const auto rc = sheet_box("61x45x43 in three", {61, 45, 43, 1.0f}, {21.0f, 42.0f}, true);
     ASSERT_TRUE(rc.has_value());
     ASSERT_EQ(rc->r.count, 3u);
     ASSERT_EQ(rc->pinned, 1u);
-    const ag::RegionTable t = ag::pack_region_table(rc->r);
+    const ag::RegionTable t = ag::pack_region_table(rc->r, rc->shape);
     EXPECT_EQ(t.closed, 2u);
-    ASSERT_EQ(t.words.size(), 2u * ag::kRegionWords + 3u);
+    ASSERT_EQ(t.lists, 2u * ag::kRegionWords + 3u);
+    ASSERT_GT(t.words.size(), t.lists);
     for (uint32_t j = 0; j < 2u; ++j) {
         const uint32_t* w = &t.words[ag::kRegionWords * j];
         EXPECT_EQ(w[ag::kRegionId], j);
@@ -2043,7 +2045,111 @@ TEST(AirflowSolidsChain, TheRegionTableHoldsTheClosedRegions) {
     EXPECT_EQ(t.words[2u * ag::kRegionWords + 0u], 0u);
     EXPECT_EQ(t.words[2u * ag::kRegionWords + 1u], 1u);
     EXPECT_EQ(t.words[2u * ag::kRegionWords + 2u], af::kNoRegion);
-    EXPECT_EQ(ag::region_partials_floats(rc->shape, t.closed), 2u * 2u * 2112u);
+    EXPECT_EQ(ag::region_partials_floats(t), t.pairs);
+}
+
+// pack_region_table()'s tile lists (solids_chain.hpp's layout), against the
+// cells walked as remove_region_means() walks them (regions.cpp): each
+// reduce.hpp tile in increasing t, met by closed region j when any of its
+// cells is labelled j's id. Region j's pairs are exactly the tiles it met, in
+// increasing t, each naming j; its groups cut them wherever t /
+// kReduceBlockTiles changes and nowhere else; every closed region has a pair.
+// On AirflowRegions' box cut in three (2112 tiles in 9 blocks: a region over
+// several blocks, a sheet's tiles held by two regions) and its 16x8x8 box cut
+// in two (one block).
+TEST(AirflowSolidsChain, TheTileListsAreTheTilesEachClosedRegionHasACellIn) {
+    struct Box {
+        std::string name;
+        af::GridShape shape;
+        std::vector<float> planes;
+        bool outlet;
+    };
+    const Box boxes[] = {{"61x45x43 in three", {61, 45, 43, 1.0f}, {21.0f, 42.0f}, true},
+                         {"16x8x8 in two", {16, 8, 8, 1.0f}, {5.0f}, false}};
+    for (const Box& box : boxes) {
+        SCOPED_TRACE(box.name);
+        const auto rc = sheet_box(box.name, box.shape, box.planes, box.outlet);
+        ASSERT_TRUE(rc.has_value());
+        const af::GridShape& s = rc->shape;
+        const ag::RegionTable t = ag::pack_region_table(rc->r, s);
+        const uint32_t closed = t.closed;
+        ASSERT_GT(closed, 0u);
+
+        std::vector<std::vector<uint32_t>> want(closed);
+        uint32_t tiles = 0;
+        for (uint32_t tk = 0; tk < s.nz; tk += af::kReduceTile) {
+            for (uint32_t tj = 0; tj < s.ny; tj += af::kReduceTile) {
+                for (uint32_t ti = 0; ti < s.nx; ti += af::kReduceTile, ++tiles) {
+                    for (uint32_t j = 0; j < closed; ++j) {
+                        const uint32_t id = t.words[ag::kRegionWords * j + ag::kRegionId];
+                        bool met = false;
+                        for (uint32_t k = tk; k < std::min(tk + af::kReduceTile, s.nz); ++k) {
+                            for (uint32_t jj = tj; jj < std::min(tj + af::kReduceTile, s.ny); ++jj) {
+                                for (uint32_t i = ti; i < std::min(ti + af::kReduceTile, s.nx); ++i) {
+                                    met = met || rc->r.label[af::cell_index(s, i, jj, k)] == id;
+                                }
+                            }
+                        }
+                        if (met) want[j].push_back(tiles);
+                    }
+                }
+            }
+        }
+        ASSERT_EQ(tiles, ag::tile_sum_tiles(s));
+
+        const uint32_t lists = t.lists;
+        ASSERT_EQ(lists, ag::kRegionWords * closed + rc->r.count);
+        ASSERT_EQ(t.words.size(), uint64_t{lists} + ag::kRegionListHeader + (closed + 1u) + (t.groups + 1u) +
+                                      uint64_t{ag::kRegionPairWords} * t.pairs);
+        EXPECT_EQ(t.words[lists + ag::kRegionListPairs], t.pairs);
+        EXPECT_EQ(t.words[lists + ag::kRegionListGroups], t.groups);
+        EXPECT_GE(t.pairs, closed);
+        const uint32_t* first_group = &t.words[lists + ag::kRegionListHeader];
+        const uint32_t* first_pair = first_group + closed + 1u;
+        const uint32_t* pair = first_pair + t.groups + 1u;
+        EXPECT_EQ(first_group[0], 0u);
+        EXPECT_EQ(first_group[closed], t.groups);
+        EXPECT_EQ(first_pair[0], 0u);
+        EXPECT_EQ(first_pair[t.groups], t.pairs);
+        uint32_t spanning = 0;  // closed regions over more than one block
+        for (uint32_t j = 0; j < closed; ++j) {
+            SCOPED_TRACE("closed region " + std::to_string(j));
+            ASSERT_LT(first_group[j], first_group[j + 1u]);
+            ASSERT_LE(first_group[j + 1u], t.groups);
+            std::vector<uint32_t> got;
+            uint32_t previous_block = 0;
+            for (uint32_t g = first_group[j]; g < first_group[j + 1u]; ++g) {
+                ASSERT_LT(first_pair[g], first_pair[g + 1u]);
+                ASSERT_LE(first_pair[g + 1u], t.pairs);
+                const uint32_t block =
+                    pair[ag::kRegionPairWords * first_pair[g] + ag::kRegionPairTile] / af::kReduceBlockTiles;
+                if (g > first_group[j]) {
+                    EXPECT_GT(block, previous_block) << "group " << g << " is in its region's last group's block";
+                }
+                previous_block = block;
+                for (uint32_t p = first_pair[g]; p < first_pair[g + 1u]; ++p) {
+                    EXPECT_EQ(pair[ag::kRegionPairWords * p + ag::kRegionPairClosed], j) << "pair " << p;
+                    const uint32_t tile = pair[ag::kRegionPairWords * p + ag::kRegionPairTile];
+                    EXPECT_EQ(tile / af::kReduceBlockTiles, block) << "pair " << p << " is not its group's block";
+                    got.push_back(tile);
+                }
+            }
+            EXPECT_EQ(got, want[j]);
+            spanning += first_group[j + 1u] - first_group[j] > 1u ? 1u : 0u;
+        }
+        std::vector<uint32_t> holders(tiles, 0u);
+        for (const std::vector<uint32_t>& w : want) {
+            for (const uint32_t tile : w) ++holders[tile];
+        }
+        const auto shared = std::count_if(holders.begin(), holders.end(), [](uint32_t n) { return n > 1u; });
+        std::printf("[AirflowSolidsChain] %s: %u closed regions, %u tiles, %u pairs in %u groups; %u regions over "
+                    "several blocks, %td tiles held by two or more\n",
+                    box.name.c_str(), closed, tiles, t.pairs, t.groups, spanning, shared);
+        if (tiles > af::kReduceBlockTiles) {
+            EXPECT_GT(spanning, 0u) << "no closed region spans blocks: the groups' cut is not exercised";
+            EXPECT_GT(shared, 0) << "no tile is held by two closed regions";
+        }
+    }
 }
 
 // The host's region-table and wall-load constants are airflow_pcg.slang's:
@@ -2054,7 +2160,10 @@ TEST(AirflowSolidsChain, TheRegionAndWallLoadTablesAreAirflowPcgSlangs) {
     const std::map<std::string, uint32_t> host{
         {"kRegionWords", ag::kRegionWords},       {"kRegionId", ag::kRegionId},
         {"kRegionCells", ag::kRegionCells},       {"kRegionReciprocal", ag::kRegionReciprocal},
-        {"kRegionMean", ag::kRegionMean},         {"kWallLoadForce", ag::kWallLoadForce},
+        {"kRegionMean", ag::kRegionMean},         {"kRegionListPairs", ag::kRegionListPairs},
+        {"kRegionListGroups", ag::kRegionListGroups}, {"kRegionListHeader", ag::kRegionListHeader},
+        {"kRegionPairWords", ag::kRegionPairWords}, {"kRegionPairTile", ag::kRegionPairTile},
+        {"kRegionPairClosed", ag::kRegionPairClosed}, {"kWallLoadForce", ag::kWallLoadForce},
         {"kWallLoadMoment", ag::kWallLoadMoment}, {"kWallLoadAbout", ag::kWallLoadAbout},
         {"kWallLoadFloats", ag::kWallLoadFloats}};
     std::ifstream in(std::string(SPADE_ENGINE_DIR) + "/shaders/airflow_pcg.slang");
@@ -2155,7 +2264,7 @@ TEST(GpuAirflowSolids, RegionMeansMatchTheCpuBitForBit) {
         pcg.set(ag::kPcgR, x);
         ASSERT_TRUE(dev->upload(kPcg, pcg.all));
         std::vector<ChainCommand> chain;
-        ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table().closed, kWorkgroupSize);
+        ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table(), kWorkgroupSize);
         ASSERT_TRUE(dev->run(chain));
         PcgVectors gpu(cells);
         ASSERT_TRUE(dev->read(kPcg, gpu.all));
@@ -2566,7 +2675,7 @@ TEST(GpuAirflowSolids, TheRegionMeansInteriorAndLoadGiveTheSameBitsAtEveryWorkgr
         }
         std::vector<ChainCommand> chain;
         if (regions) {
-            ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table().closed, wg);
+            ag::append_remove_region_means(chain, s, kRegionMeanPipeline, ag::kPcgR, dev->table(), wg);
         }
         if (kernel == "airflow_solid_velocities") {
             ag::append_solid_velocities(chain, s, kSolidVelocitiesPipeline, af::SolidInterior::extrapolate, wg);
@@ -2949,7 +3058,7 @@ public:
         set(kMgMultigrid, u.layout.multigrid_floats, BufferKind::device_only);
         set(kPcg, ag::kPcgVectors * cells, BufferKind::staged);
         set(kScalars, ag::kScalarSlots, BufferKind::staged);
-        set(kPartials, ag::solve_partials_floats(c.shape, u.regions.closed), BufferKind::device_only);
+        set(kPartials, ag::solve_partials_floats(c.shape, u.regions), BufferKind::device_only);
         const SpirvVariantSet* const kernels[] = {
             &gen::kSpvVariants_airflow_tile_sum,       &gen::kSpvVariants_airflow_tile_dot,
             &gen::kSpvVariants_airflow_pcg_measure,    &gen::kSpvVariants_airflow_pcg_scalars,
@@ -2973,7 +3082,7 @@ public:
         dev.params_[block + 1u] = bits(c.mark);
         if (!check(dev.runner_->upload(kParams, bytes_of(dev.params_)))) return std::nullopt;
         const ag::SolveChains chains =
-            ag::solve_chains(c.shape, u.layout, kSolvePipelines, u.regions.closed, workgroup_size);
+            ag::solve_chains(c.shape, u.layout, kSolvePipelines, u.regions, workgroup_size);
         auto ids = ag::record_solve(*dev.runner_, chains);
         if (!ids) {
             ADD_FAILURE() << ids.error().context;
@@ -3286,7 +3395,7 @@ public:
         set(kMgMultigrid, u.layout.multigrid_floats, BufferKind::device_only);
         set(kPcg, ag::kPcgVectors * cells, BufferKind::staged);
         set(kScalars, ag::kScalarSlots, BufferKind::staged);
-        set(kPartials, ag::solve_partials_floats(shape, u.regions.closed), BufferKind::device_only);
+        set(kPartials, ag::solve_partials_floats(shape, u.regions), BufferKind::device_only);
         const SpirvVariantSet* const kernels[] = {
             &gen::kSpvVariants_airflow_tile_sum,         &gen::kSpvVariants_airflow_tile_dot,
             &gen::kSpvVariants_airflow_pcg_measure,      &gen::kSpvVariants_airflow_pcg_scalars,
@@ -3307,7 +3416,7 @@ public:
         const auto block = static_cast<uint32_t>(ag::projection_params_words(u.layout));
         if (!check(ag::init_solids(*dev.runner_, dev.params_, u, block, dev.floor_, dev.cap_))) return std::nullopt;
         const ag::SolveChains chains =
-            ag::projection_chains(shape, u.layout, kProjectionPipelines, u.regions.closed, workgroup_size);
+            ag::projection_chains(shape, u.layout, kProjectionPipelines, u.regions, workgroup_size);
         auto ids = ag::record_solve(*dev.runner_, chains);
         if (!ids) {
             ADD_FAILURE() << ids.error().context;
@@ -3399,7 +3508,7 @@ TEST(GpuAirflowSolids, TheSolidsProjectionMatchesTheCpuBitForBit) {
                 ASSERT_TRUE(dev.has_value());
             }
             // The device's region table is still the step's.
-            EXPECT_EQ(ag::pack_region_table(cpu->pre.regions).words, table);
+            EXPECT_EQ(ag::pack_region_table(cpu->pre.regions, c.shape).words, table);
             const auto gpu = dev->project(cpu->star);
             ASSERT_TRUE(gpu.has_value());
             const af::ProjectionReport& g = gpu->report.report;

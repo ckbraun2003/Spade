@@ -187,22 +187,45 @@ void append_measure(std::vector<compute::ChainCommand>& out, const physics::airf
 
 // Closed region j's record, kRegionWords words from kRegionWords * j; after
 // the C records, a word per region id: its closed index, or kNoRegion when it
-// is pinned.
+// is pinned; then, from word L (RegionTable::lists), the tile lists:
+//   L + kRegionListPairs        P, the (closed region, tile) pairs
+//   L + kRegionListGroups       G, the groups: a region's pairs in one block
+//   L + kRegionListHeader + j   closed region j's first group (j <= C; word
+//                               C is G)
+//   then G + 1 words            group g's first pair (word G is P)
+//   then kRegionPairWords p     pair p's tile (+ kRegionPairTile) and closed
+//                               index (+ kRegionPairClosed)
+// The pairs run j in increasing order, then t: exactly the tiles (reduce.hpp's
+// kReduceTile^3, t = ti + tnx (tj + tny tk)) holding a cell labelled region
+// j's id. A group is j's pairs in one block of kReduceBlockTiles consecutive
+// t, so the groups run j, then the block, in increasing order.
 inline constexpr uint32_t kRegionWords = 4;
 inline constexpr uint32_t kRegionId = 0;          // its region id
 inline constexpr uint32_t kRegionCells = 1;       // its cells
 inline constexpr uint32_t kRegionReciprocal = 2;  // the host's 1 / cells (float bits), remove_region_means()'
 inline constexpr uint32_t kRegionMean = 3;        // its mean (float bits), written by the device
+inline constexpr uint32_t kRegionListPairs = 0;
+inline constexpr uint32_t kRegionListGroups = 1;
+inline constexpr uint32_t kRegionListHeader = 2;
+inline constexpr uint32_t kRegionPairWords = 2;
+inline constexpr uint32_t kRegionPairTile = 0;
+inline constexpr uint32_t kRegionPairClosed = 1;
 
 struct RegionTable {
     std::vector<uint32_t> words;  // binding 19's words
     uint32_t closed = 0;          // C: the pcg block's closed-region count (write_pcg_block())
+    uint32_t lists = 0;           // L: the tile lists' first word (airflow_region_mean's push word 3)
+    uint32_t pairs = 0;           // P: at least C, as every closed region has a cell
+    uint32_t groups = 0;          // G
 };
 
-// The table for the regions as the last check_regions() left them: each
-// closed region in id order, then the id-to-index words. A host call: it
-// allocates.
-[[nodiscard]] RegionTable pack_region_table(const physics::airflow::FluidRegions& r);
+// The table for the regions as the last check_regions() left them, on
+// `shape`: each closed region in id order, the id-to-index words, then the
+// tile lists from the labels. The lists hold for these labels and closed set
+// only: whatever relabels the cells or changes which regions are closed
+// (solids that move, P2b) packs the table again. A host call: it allocates.
+[[nodiscard]] RegionTable pack_region_table(const physics::airflow::FluidRegions& r,
+                                            const physics::airflow::GridShape& shape);
 
 // ===========================================================================
 // B5.2b (Physics, 2026-10-27; a block of its own, before B5.3's and B5.5's):
@@ -292,20 +315,20 @@ namespace spade::airflow_gpu {
 // RegionTable, its constants and pack_region_table() are above, before
 // SolidsUpload, which holds the table (B5.4 moved them there).
 
-// The floats airflow_partials needs for the means of `closed` regions: a sum
-// and a met flag per closed region a tile.
-[[nodiscard]] uint64_t region_partials_floats(const physics::airflow::GridShape& shape, uint32_t closed) noexcept;
+// The floats airflow_partials needs for the table's means: a sum a pair.
+[[nodiscard]] uint64_t region_partials_floats(const RegionTable& regions) noexcept;
 
 // Each closed region's mean of airflow_pcg's vector v into the table:
-// airflow_region_mean's passes 0-2, with reduce.hpp's kReduceBlockTiles.
-// `closed` is the table's C; with none, nothing is appended.
+// airflow_region_mean's passes 0-2 over the table's tile lists (P, G and C
+// threads). With no closed region, nothing is appended.
 void append_region_means(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
-                         uint32_t pipeline, PcgVector v, uint32_t closed, uint32_t workgroup_size);
+                         uint32_t pipeline, PcgVector v, const RegionTable& regions, uint32_t workgroup_size);
 
 // remove_region_means(v), the CG's gauge (projection.cpp's gauge_regions()):
 // the means, then pass 3, each closed region's cells less its mean.
 void append_remove_region_means(std::vector<compute::ChainCommand>& out, const physics::airflow::GridShape& shape,
-                                uint32_t pipeline, PcgVector v, uint32_t closed, uint32_t workgroup_size);
+                                uint32_t pipeline, PcgVector v, const RegionTable& regions,
+                                uint32_t workgroup_size);
 
 // --- the interior --------------------------------------------------------------
 
@@ -403,14 +426,16 @@ struct SolveChains {
     std::vector<compute::ChainCommand> finish;
 };
 
-// The chains for `shape` with `layout`'s levels (the upload's) and `closed`
-// closed regions (the region table's C).
+// The chains for `shape` with `layout`'s levels (the upload's) and the
+// upload's region table (its closed regions gauged).
 [[nodiscard]] SolveChains solve_chains(const physics::airflow::GridShape& shape, const MgLayout& layout,
-                                       const SolvePipelines& p, uint32_t closed, uint32_t workgroup_size);
+                                       const SolvePipelines& p, const RegionTable& regions,
+                                       uint32_t workgroup_size);
 
 // The floats airflow_partials needs for the solve: the max-norm's two a tile,
-// or the region means' 2 C a tile when wider (the dots need one).
-[[nodiscard]] uint64_t solve_partials_floats(const physics::airflow::GridShape& shape, uint32_t closed) noexcept;
+// or the region means' one a pair when wider (the dots need one a tile).
+[[nodiscard]] uint64_t solve_partials_floats(const physics::airflow::GridShape& shape,
+                                             const RegionTable& regions) noexcept;
 
 // The chains as `runner` recorded them.
 struct SolveChainIds {
@@ -481,9 +506,9 @@ struct ProjectionSolidsPipelines {
 //                          (:108), then the health word
 // The finish's additions read only what a stop leaves live (x, the solid
 // field, u*, the scalars' residual and slots 9-23; the plan's B5 as amended
-// 2026-10-27). `closed` is the region table's C.
+// 2026-10-27). `regions` is the upload's region table.
 [[nodiscard]] SolveChains projection_chains(const physics::airflow::GridShape& shape, const MgLayout& layout,
-                                            const ProjectionSolidsPipelines& p, uint32_t closed,
+                                            const ProjectionSolidsPipelines& p, const RegionTable& regions,
                                             uint32_t workgroup_size);
 
 // project()'s ProjectionReport with solids as the device leaves it in the
