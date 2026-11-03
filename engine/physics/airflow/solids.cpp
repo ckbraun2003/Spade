@@ -49,6 +49,7 @@ void open_everything(SolidField& f) {
     f.links.clear();
     f.classes.clear();
     f.any = false;
+    f.refused = SolidRefusal{};
 }
 
 // Where a sheet's mid-surface crosses the line through a sample along an axis,
@@ -760,6 +761,13 @@ Result<void> build_solids(SolidField& f, const GridShape& s, std::array<bool, 3>
                           " stay open)" + not_sheet;
             open_everything(f);
             f.run_line = "solids: none";
+            f.refused.part = p;
+            f.refused.reason = SolidRefusalReason::leaks;
+            if (blob && cover.covered > 0u) {
+                f.refused.reason = SolidRefusalReason::exposed;
+                f.refused.inside = static_cast<uint32_t>(
+                    std::find(cover.by.begin(), cover.by.end(), uint8_t{1}) - cover.by.begin());
+            }
             return std::unexpected(Error{Code::invalid_argument, "airflow solids: part '" + parts[p].name +
                                                                      "' leaks: " + where +
                                                                      "; declare min_feature or refine dx"});
