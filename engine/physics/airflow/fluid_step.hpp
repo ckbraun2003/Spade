@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -43,11 +44,16 @@ enum class FluidFault : uint8_t {
     ill_posed_region,  // a closed fluid region whose prescribed domain fluxes do not balance (regions.hpp)
 };
 
+// FluidHealth's index for a non-finite flow found with no sample to name:
+// GpuFluid's fault (spike/airflow/step_chain.cpp), read from the CG's r . z, a
+// sum, since the device scans no sample. scan() never returns it.
+inline constexpr std::size_t kNoSample = std::numeric_limits<std::size_t>::max();
+
 struct FluidHealth {
     FluidFault fault = FluidFault::none;
     uint8_t quantity = 0;   // non_finite: 0 u, 1 v, 2 w, 3 p
     uint8_t faces = 0;      // ill_posed_domain: bit s for each wall face with a normal velocity
-    std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order);
+    std::size_t index = 0;  // non_finite: the first bad sample's index in its array (array order), or kNoSample;
                             // ill_posed_region: the region's first cell (faces: its faces)
     float pressure_residual = 0.0f;  // this step's max|r| / max|b| (pcg.hpp with solids; plan A's after its cycles)
     uint32_t pressure_iterations = 0;  // with solids: the CG iterations taken (solve_pcg_to()); plan A: n_v

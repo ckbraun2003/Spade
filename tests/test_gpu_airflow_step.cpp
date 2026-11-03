@@ -532,6 +532,9 @@ TEST(GpuAirflowStep, ANanWithSolidsFaultsAsOnTheCpu) {
                 static_cast<int>(got->fault), static_cast<unsigned>(got->quantity));
     EXPECT_EQ(got->fault, af::FluidFault::non_finite);
     EXPECT_EQ(got->quantity, 3u);  // the pressure: the CG's r . z is what the device reads back
+    EXPECT_EQ(got->index, af::kNoSample);  // and no sample: the device scans none
+    const std::string why = af::describe(*got, c.shape);
+    EXPECT_NE(why.find("found on the device"), std::string::npos) << why;
 
     // The fault is kept, as the CPU's is: the next step returns it without
     // stepping, the fields as the faulted step left them.

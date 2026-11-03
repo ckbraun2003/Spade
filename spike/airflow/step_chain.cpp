@@ -455,16 +455,16 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
     // one: its max-norms pass over a NaN, so a solve gone NaN reads converged
     // (residual 0). r . z is a sum over the region's cells, so it carries any
     // NaN or infinity the divergence took from u, v or w. The pressure is
-    // named and no sample: the device scans none (Physics' review of G3,
-    // 2026-10-28). Kept, as the CPU keeps its fault: every later step returns
-    // it without stepping.
+    // named and no sample (kNoSample): the device scans none (Physics' review
+    // of G3, 2026-10-28). Kept, as the CPU keeps its fault: every later step
+    // returns it without stepping.
     std::array<float, kScalarSlots> scalars{};
     if (Result<void> ok = runner_->read(gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(scalars)));
         !ok) {
         return std::unexpected(ok.error());
     }
     if (!std::isfinite(rep.residual) || !std::isfinite(scalars[kSlotRz])) {
-        fault_ = af::FluidHealth{.fault = af::FluidFault::non_finite, .quantity = 3};
+        fault_ = af::FluidHealth{.fault = af::FluidFault::non_finite, .quantity = 3, .index = af::kNoSample};
         return fault_;
     }
     af::FluidHealth h{};

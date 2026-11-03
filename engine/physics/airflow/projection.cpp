@@ -202,7 +202,8 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
     std::copy(f.p.begin(), f.p.end(), g.p.begin());
     // The solve's own measure, as the solids path reports it (the lead,
     // 2026-10-21): max|r| / max|b| after the cycles. Reported, never iterated
-    // on; the pressure is already final.
+    // on; the pressure is already final. std::max passes over a NaN, so a NaN
+    // pressure reports 0 here: fluid_step()'s scan() is what finds one.
     residual(f);
     float r_max = 0.0f;
     float b_max = 0.0f;
