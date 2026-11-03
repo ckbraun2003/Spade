@@ -500,6 +500,8 @@ struct GpuProjectionReport {
 // airflow_pressure. The host submits as run_solve() does, never deciding,
 // then reads the health word. It leaves the projected velocity in airflow_u,
 // _v and _w and the solved p in airflow_pressure. Refused as run_solve() is.
+// The report's max-norms pass over a NaN, so a solve gone NaN reads converged:
+// GpuFluid's step reads the CG's r . z to find one (kNoSample).
 [[nodiscard]] Result<GpuProjectionReport> project_with_solids(ChainRunner& runner, const SolveChainIds& ids,
                                                               uint32_t floor, uint32_t cap);
 

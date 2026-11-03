@@ -105,6 +105,10 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
         }
         case FluidFault::non_finite: {
             const uint32_t q = health.quantity;
+            if (health.index == kNoSample) {
+                return std::string("airflow fluid step: a non-finite ") + kQuantityNames[q] +
+                       ", found on the device with no sample to name; the step is refused from here on";
+            }
             const uint64_t cx = q == 0u ? s.nx + 1u : s.nx;
             const uint64_t cy = q == 1u ? s.ny + 1u : s.ny;
             const uint64_t i = health.index % cx;
