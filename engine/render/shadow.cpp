@@ -210,6 +210,36 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
     }
 }
 
+// A receiver almost edge-on to the sun has a near-zero n . forward; its slope
+// is held to 1 / kMinFacing (20) rather than divided by nothing. Such a
+// surface takes almost no sun term anyway.
+constexpr float kMinFacing = 0.05f;
+
+// sample_shadow()'s receiver plane: the light-space depth, at texel (tx, ty)'s
+// centre, of the plane through the point whose light-space position is `p`,
+// with unit normal `normal`. light_view_proj's rows are sx * right, sy * up
+// and forward (build_light_view_proj), so a step of d in ndc is d / s metres
+// along right (up), and along the plane the depth moves -(n . right) /
+// (n . forward) per metre right and -(n . up) / (n . forward) per metre up.
+// Either sign of `normal` gives the same plane.
+[[nodiscard]] float receiver_depth_at_texel_centre(const ShadowMap& map, const glm::vec4& p, const glm::vec3& normal,
+                                                   int tx, int ty) {
+    const glm::mat4& m = map.light_view_proj;
+    const glm::vec3 row0(m[0][0], m[1][0], m[2][0]);
+    const glm::vec3 row1(m[0][1], m[1][1], m[2][1]);
+    const glm::vec3 row2(m[0][2], m[1][2], m[2][2]);
+    float facing = glm::dot(normal, row2);
+    if (std::fabs(facing) < kMinFacing) {
+        facing = facing < 0.0f ? -kMinFacing : kMinFacing;
+    }
+    const float size_f = static_cast<float>(map.size);
+    const float dx = (static_cast<float>(tx) + 0.5f) / size_f * 2.0f - 1.0f - p.x;
+    const float dy = (static_cast<float>(ty) + 0.5f) / size_f * 2.0f - 1.0f - p.y;
+    const float along =
+        dx * glm::dot(normal, row0) / glm::dot(row0, row0) + dy * glm::dot(normal, row1) / glm::dot(row1, row1);
+    return p.z - along / facing;
+}
+
 }  // namespace
 
 void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const DrawItem> items, ShadowMap& map) {
@@ -253,12 +283,12 @@ Result<ShadowMap> build_static_shadow_map(const RenderScene& scene, uint32_t siz
     return map;
 }
 
-float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos) {
+float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal) {
     if (map.size == 0 || map.depth.empty()) {
         return 1.0f;
     }
-    // kShadowDepthBias (shadow.hpp) trades acne against peter-panning; its
-    // comment there says how it was tuned. GL's lookup uses the same value.
+    // kShadowDepthBias (shadow.hpp) says what the bias still covers; GL's
+    // lookup uses the same value and the same receiver plane.
     const glm::vec4 p = map.light_view_proj * glm::vec4(world_pos, 1.0f);
     if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) {
         return 1.0f;  // SR-17: outside the shadow frustum's own footprint -- unshadowed, by design.
@@ -274,7 +304,9 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos) {
     if (occluder == kNoOccluder) {
         return 1.0f;  // no caster ever covered this texel.
     }
-    return (p.z < occluder - kShadowDepthBias) ? 0.0f : 1.0f;
+    // The receiver's plane may lift it toward the sun, never sink it (shadow.hpp).
+    const float depth = std::max(p.z, receiver_depth_at_texel_centre(map, p, normal, tx, ty));
+    return (depth < occluder - kShadowDepthBias) ? 0.0f : 1.0f;
 }
 
 }  // namespace spade::render

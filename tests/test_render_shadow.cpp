@@ -4,7 +4,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -65,6 +67,9 @@ using spade::render::RenderScene;
 using spade::render::RenderTarget;
 using spade::render::sample_shadow;
 using spade::render::ShadowMap;
+
+// A ground receiver's normal (sample_shadow()'s receiver plane).
+const glm::vec3 kUp(0.0f, 1.0f, 0.0f);
 
 // ===========================================================================
 // 1. Fixtures/helpers.
@@ -290,8 +295,8 @@ TEST(SampleShadow, EmptyStaticsMapIsUnconditionallyLitEverywhereInsideBounds) {
 
     const Result<ShadowMap> map = build_static_shadow_map(scene);
     ASSERT_TRUE(map.has_value());
-    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(0.0f, 0.0f, 0.0f)), 1.0f);
-    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(1.5f, 1.0f, -1.0f)), 1.0f);
+    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(0.0f, 0.0f, 0.0f), kUp), 1.0f);
+    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(1.5f, 1.0f, -1.0f), kUp), 1.0f);
 }
 
 // Ruling SR-17: the shadow map is fitted to scene.bounds and a point well
@@ -311,7 +316,130 @@ TEST(SampleShadow, PointOutsideTheOrthoFootprintIsAlwaysLit) {
 
     const Result<ShadowMap> map = build_static_shadow_map(scene);
     ASSERT_TRUE(map.has_value());
-    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(500.0f, 0.0f, 500.0f)), 1.0f);
+    EXPECT_FLOAT_EQ(sample_shadow(*map, glm::vec3(500.0f, 0.0f, 500.0f), kUp), 1.0f);
+}
+
+namespace {
+
+// sample_shadow() before its receiver plane: the point's own depth against
+// the occluder and the fixed bias. Kept to show what acne a scene had then.
+[[nodiscard]] bool lit_at_own_depth(const ShadowMap& map, glm::vec3 world) {
+    const glm::vec4 p = map.light_view_proj * glm::vec4(world, 1.0f);
+    if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) return true;
+    const float size_f = static_cast<float>(map.size);
+    const int last = static_cast<int>(map.size) - 1;
+    const int tx = std::clamp(static_cast<int>((p.x * 0.5f + 0.5f) * size_f), 0, last);
+    const int ty = std::clamp(static_cast<int>((p.y * 0.5f + 0.5f) * size_f), 0, last);
+    const float occluder = map.depth[static_cast<size_t>(ty) * map.size + static_cast<size_t>(tx)];
+    return occluder == spade::render::kNoOccluder || !(p.z < occluder - spade::render::kShadowDepthBias);
+}
+
+}  // namespace
+
+// Kat's sawtooth (2026-10-28) on meshes: a 2 m cube on a ground that casts,
+// under VQ1's sun (the default), in a map as wide as VQ1's world (~172 m, so
+// ~15 cm texels on its long axis). The cube's lit faces and the lit ground must not shadow
+// themselves, and the cube's shadow must reach its foot: no ground point
+// whose ray to the sun runs through the cube a texel and a half inside its
+// sides and top is lit (no peter-panning), and none whose ray passes that far
+// clear of it is shadowed; nearer its edge is the map's resolution. The faces
+// are checked from 10 cm inside their edges, and their feet apart. Compared
+// at their own depth, as sample_shadow() did before its receiver plane, the
+// faces shadowed themselves (measured 712 of 4107 points); the ground did
+// not, its slope running along the map's finer axis.
+TEST(SampleShadow, ACubeOnTheGroundInAWorldAsWideAsVq1) {
+    RenderScene scene;
+    scene.materials = {Material{}};
+    scene.bounds = Aabb{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    scene.meshes.push_back(make_box_mesh(1.0f));
+    scene.meshes.push_back(make_huge_ground_quad());
+    scene.statics.push_back(DrawItem{
+        .mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 1.0f, 0.0f)), .material_override = kNoMaterial});
+    scene.statics.push_back(DrawItem{.mesh_index = 1, .local_to_world = glm::mat4(1.0f), .material_override = kNoMaterial});
+    const Result<ShadowMap> map = build_static_shadow_map(scene);
+    ASSERT_TRUE(map.has_value()) << map.error().context;
+    const glm::mat4& m = map->light_view_proj;
+    const float per_metre = std::min(glm::length(glm::vec3(m[0][0], m[1][0], m[2][0])),
+                                     glm::length(glm::vec3(m[0][1], m[1][1], m[2][1])));
+    const float texel = 2.0f / (per_metre * static_cast<float>(map->size));
+    ASSERT_GT(texel, 0.12f) << "the map must be as coarse as VQ1's";
+    const glm::vec3 sun = scene.lighting.sun_direction;
+
+    struct Face {
+        glm::vec3 normal, centre, u, v;
+    };
+    const Face faces[3] = {
+        {{1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+        {{0.0f, 1.0f, 0.0f}, {0.0f, 2.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+        {{0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+    };
+    uint32_t face_points = 0, face_shadowed = 0, face_shadowed_before = 0;
+    for (const Face& f : faces) {
+        for (int i = -18; i <= 18; ++i) {
+            for (int j = -18; j <= 18; ++j) {
+                const glm::vec3 p =
+                    f.centre + f.u * (0.05f * static_cast<float>(i)) + f.v * (0.05f * static_cast<float>(j));
+                ++face_points;
+                face_shadowed += sample_shadow(*map, p, f.normal) < 0.5f ? 1u : 0u;
+                face_shadowed_before += lit_at_own_depth(*map, p) ? 0u : 1u;
+            }
+        }
+    }
+
+    // The foot of the +x and +z faces, 6 to 14 cm up, where a lit face meets
+    // the lit ground (a concave corner): a face's plane carried past it would
+    // go under the ground and darken a seam there up to a texel tall.
+    uint32_t foot_points = 0, foot_shadowed = 0;
+    for (int k = 0; k <= 4; ++k) {
+        const float up = 0.06f + 0.02f * static_cast<float>(k);
+        for (int j = -18; j <= 18; ++j) {
+            const float s = 0.05f * static_cast<float>(j);
+            foot_shadowed += sample_shadow(*map, glm::vec3(1.0f, up, s), glm::vec3(1.0f, 0.0f, 0.0f)) < 0.5f ? 1u : 0u;
+            foot_shadowed += sample_shadow(*map, glm::vec3(s, up, 1.0f), glm::vec3(0.0f, 0.0f, 1.0f)) < 0.5f ? 1u : 0u;
+            foot_points += 2u;
+        }
+    }
+
+    // Whether the ray from ground point `q` toward the sun meets the cube
+    // grown by `grow` on its sides and top (shrunk when negative).
+    const auto ray_meets_cube = [&](glm::vec3 q, float grow) {
+        const glm::vec3 lo(-1.0f - grow, 0.0f, -1.0f - grow), hi(1.0f + grow, 2.0f + grow, 1.0f + grow);
+        float t_in = 0.0f, t_out = 1000.0f;
+        for (int a = 0; a < 3; ++a) {
+            float t0 = (lo[a] - q[a]) / sun[a], t1 = (hi[a] - q[a]) / sun[a];
+            if (t0 > t1) std::swap(t0, t1);
+            t_in = std::max(t_in, t0);
+            t_out = std::min(t_out, t1);
+        }
+        return t_in < t_out;
+    };
+    const float margin = 1.5f * texel;
+    uint32_t ground_lit = 0, ground_shadowed = 0, acne = 0, acne_before = 0, leaks = 0;
+    for (int i = 0; i <= 130; ++i) {
+        for (int j = 0; j <= 130; ++j) {
+            const glm::vec3 q(-4.0f + 0.05f * static_cast<float>(i), 0.0f, -4.0f + 0.05f * static_cast<float>(j));
+            if (std::fabs(q.x) <= 1.0f && std::fabs(q.z) <= 1.0f) continue;  // under the cube
+            const bool shadowed = sample_shadow(*map, q, kUp) < 0.5f;
+            if (!ray_meets_cube(q, margin)) {
+                ++ground_lit;
+                acne += shadowed ? 1u : 0u;
+                acne_before += lit_at_own_depth(*map, q) ? 0u : 1u;
+            } else if (ray_meets_cube(q, -margin)) {
+                ++ground_shadowed;
+                leaks += shadowed ? 0u : 1u;
+            }
+        }
+    }
+    std::printf("[ acne    ] cube, VQ1-wide map (%.3f m texels): faces %u of %u shadowed (%u at their own depth); "
+                "feet %u of %u; lit ground %u of %u (%u); shadow core lit %u of %u\n",
+                texel, face_shadowed, face_points, face_shadowed_before, foot_shadowed, foot_points, acne, ground_lit,
+                acne_before, leaks, ground_shadowed);
+    ASSERT_GT(ground_shadowed, 200u) << "the cube's shadow must cover the ground";
+    EXPECT_GT(face_shadowed_before, face_points / 10u) << "the faces must show the sawtooth the old way";
+    EXPECT_EQ(face_shadowed, 0u);
+    EXPECT_EQ(foot_shadowed, 0u) << "a lit face's foot on lit ground must stay lit";
+    EXPECT_EQ(acne, 0u);
+    EXPECT_EQ(leaks, 0u) << "the shadow must reach the cube's foot";
 }
 
 // ===========================================================================
@@ -497,11 +625,11 @@ TEST(ShadowStep3, DynamicCasterShadowsTheGroundButCachedStaticMapNeverGainsAnOcc
     scene.static_shadow = *map;
 
     // The cached map already reflects the STATIC caster's own shadow...
-    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(-3.0f, 0.0f, 0.0f)), 0.0f)
+    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(-3.0f, 0.0f, 0.0f), kUp), 0.0f)
         << "the static caster's own shadow must already be baked into the cached map";
     // ...but the dynamic caster does not exist yet from the cached map's own
     // point of view, so its future shadow location must read as lit.
-    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(3.0f, 0.0f, 0.0f)), 1.0f)
+    EXPECT_FLOAT_EQ(sample_shadow(*scene.static_shadow, glm::vec3(3.0f, 0.0f, 0.0f), kUp), 1.0f)
         << "a shadow map built before the dynamic caster existed must not already show its shadow";
 
     const std::vector<float> depth_before_render = scene.static_shadow->depth;

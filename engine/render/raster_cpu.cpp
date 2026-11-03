@@ -669,7 +669,8 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                                const glm::vec3& combined0, const glm::vec3& combined1, const glm::vec3& combined2,
                                const glm::vec3& sun0, const glm::vec3& sun1, const glm::vec3& sun2,
                                const glm::vec3& wpos0, const glm::vec3& wpos1, const glm::vec3& wpos2,
-                               const ShadowMap* shadow, const AtmosphereContext& atmo) {
+                               const glm::vec3& receiver_normal, const ShadowMap* shadow,
+                               const AtmosphereContext& atmo) {
     const bool equal_combined = (combined0 == combined1 && combined1 == combined2);
     // ⚠⚠ `!atmo.active()` IS LOAD-BEARING, NOT DEFENSIVE. The flat fast path
     // paints ONE colour over the whole triangle, and it is only equivalent to
@@ -744,7 +745,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 world = world_over_depth / static_cast<float>(invD);
             }
             if (shadow != nullptr) {
-                const float lit = sample_shadow(*shadow, world);
+                const float lit = sample_shadow(*shadow, world, receiver_normal);
                 const glm::vec3 sun = equal_sun ? sun0
                                                  : (sun0 * static_cast<float>(b0) + sun1 * static_cast<float>(b1) +
                                                     sun2 * static_cast<float>(b2));
@@ -832,8 +833,13 @@ void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Ve
         if (fb.surfaces != nullptr) {
             fb.surface_now.normal = face_normal_toward_eye(vc, poly[0].world, poly[i].world, poly[i + 1].world);
         }
+        // The shadow's receiver plane is this triangle's own, the one the
+        // shadow map rasterised (sample_shadow()); either sign serves.
+        const glm::vec3 across = glm::cross(poly[i].world - poly[0].world, poly[i + 1].world - poly[0].world);
+        const float across_len = glm::length(across);
+        const glm::vec3 receiver_normal = across_len > 0.0f ? across / across_len : glm::vec3(0.0f);
         rasterizeTriangleGouraud(fb, sa, sb, sc, sca.combined, scb.combined, scc.combined, sca.sun, scb.sun, scc.sun,
-                                  poly[0].world, poly[i].world, poly[i + 1].world, shadow, atmo);
+                                  poly[0].world, poly[i].world, poly[i + 1].world, receiver_normal, shadow, atmo);
     }
 }
 
@@ -1220,7 +1226,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                 const ShadedColor shaded = shade_vertex_color(material, scene.lighting, normal);
                 glm::vec3 color = shaded.combined;
                 if (shadow != nullptr) {
-                    color = apply_shadow(shaded, sample_shadow(*shadow, march.p));
+                    color = apply_shadow(shaded, sample_shadow(*shadow, march.p, normal));
                 }
                 if (atmo.active()) {
                     const glm::vec3 eye_to_surface = march.p - atmo.eye;
@@ -1864,7 +1870,7 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
                     if (shadow != nullptr) {
                         // SR-25: ambient survives; only the sun term is
                         // attenuated -- see apply_shadow()'s own comment.
-                        const float lit = sample_shadow(*shadow, vec3f(hit));
+                        const float lit = sample_shadow(*shadow, vec3f(hit), gp.normal);
                         color = apply_shadow(sc, lit);
                     }
 
