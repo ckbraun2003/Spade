@@ -111,12 +111,12 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 
 **The plan's "against a fine-grid reference".** A finer grid of our own solver is not a reference under the rule. So this note gives the plate an exact reference: a plate-like oblate spheroid in Stokes flow. The plan's fine grid becomes the order check.
 
-**Reference.** Jeffery (1922), Proc. R. Soc. Lond. A 102, 161–179: the couple on an ellipsoid with semi-axes (a₁, a₂, a₃), turning at Ω about axis 1 in still fluid, is
+**Reference.** Jeffery (1922), Proc. R. Soc. Lond. A 102, 161–179, eq. (36) with the fluid at rest (its f = ξ = 0), and the integrals of its eqs. (8) and (9) with the lower limit at zero (p. 164). The couple on an ellipsoid with semi-axes (a₁, a₂, a₃), turning at Ω about axis 1 in still fluid, opposes the turn, with magnitude
 
 `L₁ = (16πμ/3) (a₂² + a₃²) / (a₂² α₂ + a₃² α₃) · Ω`, where `α_i = ∫₀^∞ dλ / ((a_i² + λ) Δ)` and `Δ = √((a₁² + λ)(a₂² + λ)(a₃² + λ))`.
 
 - **This case's value:** the spheroid (a, a, a/2) turning about an equatorial axis has `L = 14.2205 μ Ω a³`, by quadrature in double.
-- **The checks on the formula:** it gives the sphere's 8π μ a³ Ω to 10⁻⁹, and, as c → 0, the thin disk's (32/3) μ a³ Ω about a diameter. The test evaluates the formula in double, and Test/Docs reads it against the source before the first run (fetch F1).
+- **The checks on the formula:** it gives the sphere's 8π μ a³ Ω to 10⁻⁹, and, as c → 0, the thin disk's (32/3) μ a³ Ω about a diameter. The test evaluates the formula in double. It was read from the source's scan (fetch F1, below), by eye, so the lead does the second reading.
 - **Why it fits a moving-wall test.** A body turning about a principal axis feels a constant couple in Stokes flow. So the couple's mean over the run is the reference, while the body's section sweeps the lattice: links are rebuilt every step, and nodes are covered and uncovered.
 
 **Configuration.**
@@ -208,9 +208,12 @@ L2d and L3a are unit tests and leave no record.
 
 ## Reference data and fetches
 
-Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple and the Coles–Fernholz form are closed forms that the tests evaluate in double. Two sources should be read before the first run, so each formula's provenance is checked from the paper, not from memory:
-- **F1.** Jeffery, G. B. (1922), "The motion of ellipsoidal particles immersed in a viscous fluid", Proc. R. Soc. Lond. A 102, 161–179, doi:10.1098/rspa.1922.0078: the couple's formula (L2c).
-- **F2.** Nagib, H. M., Chauhan, K. A. & Monkewitz, P. A. (2007), "Approach to an asymptotic state for zero pressure gradient turbulent boundary layers", Phil. Trans. R. Soc. A 365, 755–770, doi:10.1098/rsta.2006.1948: the Coles–Fernholz constants and their scatter about the data (L3b).
+Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple and the Coles–Fernholz form are closed forms that the tests evaluate in double. Two sources are read before the first run, so each formula's provenance is checked from the paper, not from memory (the lead's fetches, L19):
+- **F1, read.** Jeffery, G. B. (1922), "The motion of ellipsoidal particles immersed in a viscous fluid", Proc. R. Soc. Lond. A 102, 161–179, doi:10.1098/rspa.1922.0078: the couple's formula (L2c).
+  - **The copy:** the Royal Society's public-domain deposit on the Internet Archive, item `philtrans09717112`. The publisher's own PDF answered a bot challenge, and that was not worked around.
+  - **The files:** `09717112.pdf` (SHA-256 0b2ba9464ce926aa9c8083d88d495d3e8a49dbd7270655589bd9b8bed364a3c3) and its page scans, `09717112_jp2.zip` (SHA-256 2fdc0f0357f104d40d0fb0cb37a3f13f1aaa16bee0b3f4c1d9a9be2862bcdc56). Each SHA-1 matches the item's own listing. Kept out of the repo, in the main checkout's `.agents/refs/jeffery1922/`.
+  - **The reading:** eqs. (8) and (9) and the zero-limit integrals on p. 164 (scan 0003), and eq. (36) on p. 169 (scan 0008). They were read by eye, since the OCR layer is garbled there, so the lead does the second reading. The formula above is eq. (36)'s L with f = ξ = 0. Its sphere limit, 8π μ a³ Ω, is Stokes's couple.
+- **F2, not read: closed access.** Nagib, H. M., Chauhan, K. A. & Monkewitz, P. A. (2007), "Approach to an asymptotic state for zero pressure gradient turbulent boundary layers", Phil. Trans. R. Soc. A 365, 755–770, doi:10.1098/rsta.2006.1948: the Coles–Fernholz constants and their scatter about the data (L3b). OpenAlex lists no open copy, and the publisher's page answered a bot challenge. Proposed instead, both open, from the same group: Chauhan, Monkewitz & Nagib (2009), Fluid Dyn. Res. 41, 021404, the submitted version on EPFL's Infoscience (record 159338); or Monkewitz, Chauhan & Nagib (2007), Phys. Fluids 19, 115101, open on the publisher's site. Neither is read until the lead approves.
 
 If the lead keeps White's correlation as C5's measure (open item 6), its source, White's *Viscous Fluid Flow*, is a book. A fetch can't reach it, and the spec's form would need a second reading instead.
 
