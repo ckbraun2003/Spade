@@ -43,7 +43,10 @@
 // exposed inside another) is left out too, with its indexed siblings (L8:
 // motor[3] takes motor[0-2]; the lead, 2026-11-03), and the build is redone
 // without them, one refusal at a time, until a build is accepted or none is
-// left (discs only). The label names each part left out and why (drawn_only_line()).
+// left (discs only). Each part left out, but a marked one, takes the parts
+// wholly inside it, its SDF < 0 at their 8 posed box corners (L13: the
+// Phantom's body takes its battery). The label names each part left out and
+// why (drawn_only_line()).
 // What else refuses a part still refuses the run: a non-finite sampler, a
 // part outside the grid, a part's own malformed size. The case resolves with
 // ThinWalls::drawn_by_the_live_run, so resolve() leaves thin walls to it.

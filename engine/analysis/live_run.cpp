@@ -30,6 +30,7 @@
 #include "state/snapshot.hpp"
 #include "vehicles/airflow_solids.hpp"
 #include "vehicles/model_identity.hpp"
+#include "vehicles/model_part.hpp"  // part_bounds()
 #include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_flags.hpp"
 #include "vehicles/rotor_discs.hpp"
@@ -433,11 +434,52 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     };
     const auto leave_out = [&](const std::string& name, DrawnReason why, std::string inside, std::string of = {}) {
         const uint32_t k = declared(name);
+        if (air.parts[k].role == vehicles::kDrawnOnlyRole) return;  // out already
         air.parts[k].role = std::string(vehicles::kDrawnOnlyRole);
         impl->solids.drawn_only.push_back(DrawnPart{name, k, why, std::move(inside), std::move(of)});
     };
     const auto refused = [](const Error& e) {
         return std::unexpected(Error{e.code, "the model's parts as solids: " + e.context});
+    };
+    // L13 (2) (Physics' ruling (a); the lead, 2026-11-03): a part left out
+    // takes every part still in the air whose 8 posed box corners (its
+    // part_bounds() through its pose) all lie inside it, its own SDF < 0 at
+    // each, and each of those takes its own in turn. Lattice-free, so it
+    // holds at any cell, and not by the centre: a part straddling the
+    // surface stays. The Phantom's battery and ESC are 8 of 8 inside its
+    // body, each arm 2 of 8 (Physics, measured). A part the user marked
+    // takes nothing: the mark is the user's modelling choice.
+    const vehicles::AirflowSolids whole(impl->model, *posed, impl->grid_origin);
+    const Result<std::vector<af::SolidPart>> whole_parts = whole.parts();
+    if (!whole_parts) return refused(whole_parts.error());
+    const af::SolidSampler inside_of = whole.sampler();
+    const auto wholly_inside = [&](const vehicles::PosedPart& pp, uint32_t outer) {
+        const Result<Aabb> box = vehicles::part_bounds(impl->model.parts[pp.part]);
+        if (!box) return false;
+        for (uint32_t c = 0; c < 8; ++c) {
+            const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
+                                   (c & 4u) != 0 ? box->max.z : box->min.z);
+            const glm::vec3 x = pp.origin + pp.orient * corner - impl->grid_origin;
+            if (!(inside_of.part(inside_of.ctx, outer, x).distance < 0.0f)) return false;
+        }
+        return true;
+    };
+    const auto take_contents = [&](const std::string& left_out) {
+        std::vector<std::string> outers{left_out};
+        while (!outers.empty()) {
+            const std::string outer = outers.back();
+            outers.pop_back();
+            uint32_t o = 0;
+            while (o < whole_parts->size() && (*whole_parts)[o].name != outer) ++o;
+            if (o == whole_parts->size()) continue;  // not a solid: the user's mark
+            for (const vehicles::PosedPart& pp : posed->parts) {
+                const vehicles::PartDesc& d = air.parts[pp.part];
+                if (d.role == vehicles::kDrawnOnlyRole || !wholly_inside(pp, o)) continue;
+                const std::string name = d.name;
+                leave_out(name, DrawnReason::contained, outer);
+                outers.push_back(name);
+            }
+        }
     };
     // 1. The user's marks, then what the classifier finds at the base cell:
     // a sheet, a wire, a porous part. A part of malformed size is refused.
@@ -463,7 +505,10 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
             }
         }
     }
+    // Each classed out first, so a part the classifier names keeps its own
+    // reason; then what each holds.
     for (auto& [name, why] : classed_out) leave_out(name, why, {});
+    for (const auto& out : classed_out) take_contents(out.first);
     // 2. The rest built; a part the measured safeguard refuses (it leaks, or
     // is exposed inside another) left out and the build redone, until one is
     // accepted or no part is left. With none, the run is discs only: plan A
@@ -501,14 +546,17 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
         // with it. The safeguard measures where a part falls on the lattice,
         // and mirrored parts fall differently by fp32's rounding, so three of
         // four motors would give the held drone a moment its geometry hasn't.
+        std::vector<std::string> gone{refused_name};
         if (const auto stem = indexed_name(refused_name)) {
             for (const af::SolidPart& sp : *parts) {
                 const auto other = indexed_name(sp.name);
                 if (sp.name != refused_name && other && other->first == stem->first) {
                     leave_out(sp.name, DrawnReason::sibling, {}, refused_name);
+                    gone.push_back(sp.name);
                 }
             }
         }
+        for (const std::string& name : gone) take_contents(name);  // L13 (2): what each holds
     }
     if (!built) {
         impl->fluid.n_v = case_n_v;
