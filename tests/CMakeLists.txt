@@ -209,6 +209,10 @@ add_executable(spade_tests
     # write_frame(), which every film's frames pass through (the lead's grant,
     # 2026-10-27): the recorder's cache, compiled in from the tool.
     ../tools/flow_movie/cache.cpp
+    # spade_mesh_pack's run() (CORE-6 D, Task S1), compiled in from the tool,
+    # as the recorder's cache is above.
+    test_mesh_pack.cpp
+    ../tools/mesh_pack/mesh_pack.cpp
 )
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
