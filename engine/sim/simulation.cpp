@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -20,6 +21,7 @@
 #include "core/rng.hpp"
 #include "core/validate.hpp"
 #include "objects/behavior.hpp"
+#include "physics/contact_sets.hpp"
 #include "physics/integrator.hpp"
 #include "sim/builtin_state.hpp"
 #include "vehicles/model_identity.hpp"
@@ -807,8 +809,15 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     // The configuration tables (module-API stage 4, Task 7), built here from
     // no models -- so a pass that reads one before any model is registered
     // sees an empty table -- and rebuilt by register_model().
+    // The contact sets' table and the bound tables (L10) are found here, once.
+    for (std::size_t i = 0; i < sim.schedule_.tables.size(); ++i) {
+        if (sim.schedule_.tables[i].name == physics::kContactSetsTable) sim.contact_table_ = i;
+        if (sim.schedule_.tables[i].binding != compute::kNoBinding) sim.bound_tables_.push_back(i);
+    }
     sim.config_tables_.assign(sim.schedule_.tables.size(), std::vector<float>{});
-    sim.rebuild_config_tables();
+    if (Result<void> built = sim.build_config_tables(sim.config_tables_); !built) {
+        return std::unexpected(built.error());
+    }
     // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
     // ScratchDecl): allocated and zero-filled HERE, once, and never cleared by
     // the engine again -- zero at every substep boundary is the declaring
@@ -892,6 +901,8 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // and binds a derived buffer for each one that names a binding, and
         // never uploads or reads one back.
         shape.scratch = scratch_shapes(sim.schedule_, shape);
+        // The bound configuration tables (L10): a buffer each, at its capacity.
+        shape.tables = table_shapes(sim.schedule_);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -992,6 +1003,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
             !uploaded) {
             return std::unexpected(uploaded.error());
         }
+
+        // THE BOUND CONFIGURATION TABLES (L10), as built from no models above;
+        // register_model() uploads them again each time it rebuilds them.
+        if (Result<void> uploaded = sim.upload_config_tables(sim.config_tables_); !uploaded) {
+            return std::unexpected(uploaded.error());
+        }
     }
 
     return sim;
@@ -1016,13 +1033,126 @@ Result<std::span<const float>> Simulation::config_table(std::string_view name) c
         missing("config_table: no module in this set declares a table '" + std::string(name) + "'"));
 }
 
-void Simulation::rebuild_config_tables() {
+namespace {
+
+// An exact non-negative integer below 2^24, as the contact sets' range rows
+// spell first and count (physics/contact_sets.hpp).
+[[nodiscard]] bool exact_index(float f) noexcept {
+    return f >= 0.0f && f < 16777216.0f && static_cast<float>(static_cast<uint32_t>(f)) == f;
+}
+
+// The contact sets' row layout, checked once per build so neither the CPU
+// pass nor the kernel can read past the table (L10). "" when it holds.
+[[nodiscard]] std::string contact_layout_fault(std::span<const float> t, std::size_t model_count) {
+    if (t.empty()) return {};
+    if (t.size() % physics::kContactSetRowFloats != 0) return "its floats are not whole float4 rows";
+    const std::size_t rows = t.size() / physics::kContactSetRowFloats;
+    if (rows < model_count) {
+        return std::to_string(rows) + " rows cannot hold " + std::to_string(model_count) + " models' range rows";
+    }
+    for (std::size_t m = 0; m < model_count; ++m) {
+        const float first = t[m * physics::kContactSetRowFloats];
+        const float count = t[m * physics::kContactSetRowFloats + 1];
+        const std::string which = "model " + std::to_string(m + 1) + "'s range row";
+        if (!exact_index(first) || !exact_index(count)) return which + " is not two exact integers";
+        const auto f = static_cast<std::size_t>(first);
+        const auto c = static_cast<std::size_t>(count);
+        if (c == 0 && f != 0) return which + " has no points but starts at row " + std::to_string(f);
+        if (c != 0 && (f < model_count || f + c > rows)) {
+            return which + " names rows [" + std::to_string(f) + ", " + std::to_string(f + c) +
+                   "), outside the point rows [" + std::to_string(model_count) + ", " + std::to_string(rows) + ")";
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
+Result<void> Simulation::build_config_tables(std::vector<std::vector<float>>& out) const {
+    out.resize(schedule_.tables.size());
     for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        const modules::CompiledTable& table = schedule_.tables[i];
         // EMPTY, then built: ConfigBuildFn's contract. clear() keeps the
         // capacity, so a table that does not grow is rebuilt in place.
-        config_tables_[i].clear();
-        schedule_.tables[i].build(std::span<const vehicles::ModelType>(models_), config_tables_[i]);
+        out[i].clear();
+        table.build(std::span<const vehicles::ModelType>(models_), out[i]);
+        const std::string name = table.module + "." + table.name;
+        // L11: a fixed capacity, on both backends, so a registration the
+        // device could not take is refused on the CPU too.
+        if (table.capacity != 0 && out[i].size() > table.capacity) {
+            return std::unexpected(Error{Code::capacity_exceeded,
+                                         "register_model: table '" + name + "' would hold " +
+                                             std::to_string(out[i].size()) + " floats, past its capacity of " +
+                                             std::to_string(table.capacity) + " (" + std::to_string(models_.size()) +
+                                             " models)"});
+        }
+        if (i == contact_table_) {
+            if (const std::string fault = contact_layout_fault(out[i], models_.size()); !fault.empty()) {
+                return std::unexpected(internal("register_model: table '" + name +
+                                                "' breaks physics/contact_sets.hpp's row layout: " + fault));
+            }
+        }
     }
+    return {};
+}
+
+Result<void> Simulation::upload_config_tables(const std::vector<std::vector<float>>& tables) {
+    if (!vulkan_backend_) return {};
+    for (std::size_t d = 0; d < bound_tables_.size(); ++d) {
+        const std::vector<float>& t = tables[bound_tables_[d]];
+        if (Result<void> up = vulkan_backend_->upload_table(static_cast<uint32_t>(d),
+                                                              std::as_bytes(std::span<const float>(t)));
+            !up) {
+            return up;
+        }
+    }
+    return {};
+}
+
+// THE REGISTRY IDENTITY (L10/L11), spelt byte by byte so it is the same on
+// every platform. While every configuration table is empty it IS
+// vehicles::model_registry_identity(models_), so such a registry's blobs are
+// master's. Otherwise FNV-1a 64 (core/rng.hpp's constants) over: the byte 0xFE
+// and the 13 ASCII bytes "config_tables"; the models' fold as 8 bytes
+// little-endian; the table count (u32); then per table in schedule order its
+// module, 0x00, its name, 0x00, its float count (u32) and each float's 32-bit
+// pattern (u32), all little-endian.
+uint64_t Simulation::registry_identity() const {
+    const uint64_t models = vehicles::model_registry_identity(models_);
+    bool any = false;
+    for (const std::vector<float>& t : config_tables_) any = any || !t.empty();
+    if (!any) return models;
+    uint64_t h = rng::kFnv1aOffsetBasis;
+    const auto byte = [&h](uint8_t b) {
+        h ^= b;
+        h *= rng::kFnv1aPrime;
+    };
+    const auto u32 = [&byte](uint32_t v) {
+        for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+    };
+    const auto text = [&byte](std::string_view s) {
+        for (const char c : s) byte(static_cast<uint8_t>(c));
+        byte(0);
+    };
+    byte(0xFE);
+    for (const char c : std::string_view("config_tables")) byte(static_cast<uint8_t>(c));
+    for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(models >> (8 * i)));
+    u32(static_cast<uint32_t>(config_tables_.size()));
+    for (std::size_t i = 0; i < config_tables_.size(); ++i) {
+        text(schedule_.tables[i].module);
+        text(schedule_.tables[i].name);
+        u32(static_cast<uint32_t>(config_tables_[i].size()));
+        for (const float f : config_tables_[i]) u32(std::bit_cast<uint32_t>(f));
+    }
+    return h;
+}
+
+uint32_t Simulation::contact_set_of(ModelTypeId model) const noexcept {
+    if (contact_table_ == kNoContactTable || model.is_null()) return 0;
+    const std::vector<float>& t = config_tables_[contact_table_];
+    const std::size_t at = (static_cast<std::size_t>(model.value) - 1u) * physics::kContactSetRowFloats + 1u;
+    if (at >= t.size()) return 0;
+    return t[at] > 0.0f ? model.value : 0u;
 }
 
 // ---------------------------------------------------------------------------
@@ -1378,8 +1508,27 @@ Result<std::vector<compute::GridEntryRow>> Simulation::vulkan_grid_entries() con
 }
 
 Result<std::vector<float>> Simulation::vulkan_config_table(std::string_view name) const {
-    return std::unexpected(Error{Code::unavailable, "vulkan_config_table('" + std::string(name) +
-                                                        "'): not built yet (L10 RED)"});
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_config_table: this Simulation runs on the cpu backend"});
+    }
+    for (std::size_t i = 0; i < schedule_.tables.size(); ++i) {
+        if (schedule_.tables[i].name != name) continue;
+        const auto bound = std::ranges::find(bound_tables_, i);
+        if (bound == bound_tables_.end()) {
+            return std::unexpected(invalid("vulkan_config_table: table '" + std::string(name) +
+                                           "' names no binding, so it has no device copy"));
+        }
+        const auto device = static_cast<uint32_t>(bound - bound_tables_.begin());
+        std::vector<float> out(schedule_.tables[i].capacity);
+        if (Result<void> read = vulkan_backend_->read_table(device, std::as_writable_bytes(std::span<float>(out)));
+            !read) {
+            return std::unexpected(read.error());
+        }
+        return out;
+    }
+    return std::unexpected(
+        missing("vulkan_config_table: no module in this set declares a table '" + std::string(name) + "'"));
 }
 
 Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {
@@ -1470,6 +1619,7 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // of its callers happening to agree.
             b.pos = op.body.pos;
             b.proxy_radius = op.body_proxy_radius;  // D-S6-2; see StructuralOp's field comment
+            b.contact_set = op.body_contact_set;    // L10; likewise
             b.orient = glm::normalize(op.body.orient);
             b.vel = op.body.vel;
             b.mass = op.body.mass;
@@ -2042,8 +2192,22 @@ Result<ModelTypeId> Simulation::register_model(vehicles::ModelType model) {
     models_.push_back(std::move(model));
     // Every configuration table is a function of the whole registry, in
     // registration order, so all of them are rebuilt -- here and only here,
-    // never in a step (sim/module.hpp's ConfigTableDecl).
-    rebuild_config_tables();
+    // never in a step (sim/module.hpp's ConfigTableDecl). ALL OR NOTHING
+    // (L10): built into a copy, checked against the capacities and the
+    // contact sets' layout, uploaded to the device, and only then committed;
+    // a refusal pops the model and leaves every table as it was.
+    std::vector<std::vector<float>> next;
+    if (Result<void> built = build_config_tables(next); !built) {
+        models_.pop_back();
+        return std::unexpected(built.error());
+    }
+    if (Result<void> uploaded = upload_config_tables(next); !uploaded) {
+        models_.pop_back();
+        // Best effort: the device holds the old tables again, or is lost.
+        (void)upload_config_tables(config_tables_);
+        return std::unexpected(uploaded.error());
+    }
+    config_tables_ = std::move(next);
     // ONE-BASED: id 0 is the null id (see ModelTypeId), so the first model
     // registered is 1.
     return ModelTypeId{static_cast<uint32_t>(models_.size())};
@@ -2298,6 +2462,8 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // the world's ContactParams::proxy_radius, i.e. exactly what a model that
     // never customized its proxy produced before this field was consumed.
     body_op.body_proxy_radius = model.proxy_radius;
+    // L10: the model's contact set when it has one, else 0 (the sphere).
+    body_op.body_contact_set = contact_set_of(model_id);
     body_op.body.orient = start.orient;
     body_op.body.vel = start.vel;
     body_op.body.omega_body = start.omega;
@@ -2565,7 +2731,7 @@ Result<SnapshotBlob> Simulation::snapshot() const {
                                        "spawn/despawn ops are not part of the registry walk. Call "
                                        "step() or flush_structural() first."));
     }
-    return save(arenas_, tick_, schedule_.identity, vehicles::model_registry_identity(models_));
+    return save(arenas_, tick_, schedule_.identity, registry_identity());
 }
 
 // ---------------------------------------------------------------------------
@@ -2743,11 +2909,34 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // rows a vehicle spawned carry its model's values; the registry is what a
     // later spawn, vehicle_state() or a viewer consults, so a blob is only
     // meaningful beside the registry it was taken under.
-    if (const uint64_t registry = vehicles::model_registry_identity(models_); blob.model_registry_identity() != registry) {
-        return std::unexpected(invalid("restore: blob was taken under a different model registry (identity " +
-                                       std::to_string(blob.model_registry_identity()) +
-                                       ", this simulation's is " + std::to_string(registry) +
-                                       "); register the same models, in the same order, before restoring"));
+    //
+    // L10/L11: the identity folds every non-empty configuration table too
+    // (registry_identity()), so a blob restores only beside the same tables.
+    // AN OLD BLOB -- taken before L10, whose identity folds the models alone --
+    // is accepted when every body in it holds contact_set 0: no build before
+    // L10 wrote another value (the lane was a zeroed pad), and a 0 lane is
+    // the sphere, which replays as it always did. A non-zero lane beside the
+    // old fold is no blob any build wrote, and is refused.
+    if (const uint64_t registry = registry_identity(); blob.model_registry_identity() != registry) {
+        const uint64_t models_only = vehicles::model_registry_identity(models_);
+        const bool old_blob = blob.model_registry_identity() == models_only && [&blob] {
+            const Result<BlobSection> bodies = find_section(blob, kBodiesArray);
+            if (!bodies || bodies->elem_size != sizeof(BodyState)) return false;
+            for (std::size_t at = offsetof(BodyState, contact_set); at + sizeof(uint32_t) <= bodies->payload.size();
+                 at += sizeof(BodyState)) {
+                uint32_t lane = 0;
+                std::memcpy(&lane, bodies->payload.data() + at, sizeof lane);
+                if (lane != 0) return false;
+            }
+            return true;
+        }();
+        if (!old_blob) {
+            return std::unexpected(invalid(
+                "restore: blob was taken under a different model registry or configuration tables (identity " +
+                std::to_string(blob.model_registry_identity()) + ", this simulation's is " +
+                std::to_string(registry) + ", its models alone " + std::to_string(models_only) +
+                "); register the same models, in the same order, under the same module set, before restoring"));
+        }
     }
     if (Result<void> config = check_replay_config(blob); !config) {
         return config;

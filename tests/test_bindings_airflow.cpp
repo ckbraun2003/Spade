@@ -18,9 +18,10 @@ TEST(BindingsAirflow, TheAirflowSetIsSetOne) {
 }
 
 TEST(BindingsAirflow, TheStateSetIsUnchanged) {
-    // Bindings 0..27 of set 0, as before set 1 existed; the mirror's census
+    // Bindings 0..27 of set 0, as before set 1 existed, and 28, the contact
+    // sets (L10); the mirror's census
     // (GpuStateMirrorTest.DescriptorSetBindsEveryRegistryBinding) binds them.
-    EXPECT_EQ(gen::kBindingCount_state, 28u);
+    EXPECT_EQ(gen::kBindingCount_state, 29u);
 }
 
 TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {

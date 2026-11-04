@@ -160,6 +160,16 @@ public:
     [[nodiscard]] Result<void> upload_grid_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
                                                     uint32_t world_count);
 
+    // A bound configuration table (L10; StepShape::tables[index]): its floats,
+    // then zeros to its capacity, copied to its device buffer. Called at
+    // create and after every register_model(), between steps. invalid_argument
+    // for an index past StepShape::tables or more bytes than the capacity.
+    [[nodiscard]] Result<void> upload_table(uint32_t index, std::span<const std::byte> bytes);
+
+    // That table's whole device buffer, read back: a diagnostic in
+    // read_grid_entries()' shape. `out_bytes` must be exactly its capacity.
+    [[nodiscard]] Result<void> read_table(uint32_t index, std::span<std::byte> out_bytes);
+
     // The StepWitness row (binding 18) the Integrate kernel published on its
     // most recent dispatch -- what closes S6 Task 5's deferred "prove a kernel
     // can READ the per-step buffer" half. Raw bytes, exactly

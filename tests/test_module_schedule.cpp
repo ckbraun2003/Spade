@@ -2583,27 +2583,30 @@ TEST(ModuleTables, APassBindsItsOwnTableAndAnotherModulesOptionally) {
     present.push_back({.name = "reader", .passes = kLookPasses});
     const auto s = compile_schedule(present);
     ASSERT_TRUE(s.has_value()) << s.error().context;
-    ASSERT_EQ(s->tables.size(), 1u);
-    EXPECT_EQ(s->tables[0].module, "massed");
-    EXPECT_EQ(s->tables[0].name, "masses");
+    // The standard set's own table (static_contact.contact_sets, L10) comes
+    // first, in set order; massed's is the second.
+    ASSERT_EQ(s->tables.size(), 2u);
+    EXPECT_EQ(s->tables[0].name, spade::physics::kContactSetsTable);
+    EXPECT_EQ(s->tables[1].module, "massed");
+    EXPECT_EQ(s->tables[1].name, "masses");
     const spade::modules::CompiledPass* copy = compiled_pass(*s, "massed", "copy");
     const spade::modules::CompiledPass* look = compiled_pass(*s, "reader", "look");
     ASSERT_NE(copy, nullptr);
     ASSERT_NE(look, nullptr);
     ASSERT_EQ(copy->state.size(), 2u);
     EXPECT_EQ(copy->state[0].kind, BindingKind::table) << "its own table";
-    EXPECT_EQ(copy->state[0].index, 0u);
+    EXPECT_EQ(copy->state[0].index, 1u);
     EXPECT_EQ(copy->state[1].kind, BindingKind::array);
     ASSERT_EQ(look->state.size(), 1u);
     EXPECT_EQ(look->state[0].kind, BindingKind::table) << "another module's, read optionally";
-    EXPECT_EQ(look->state[0].index, 0u);
+    EXPECT_EQ(look->state[0].index, 1u);
 
     // Without massed the optional read binds nothing and orders nothing.
     spade::modules::ModuleSet absent = spade::modules::standard_modules();
     absent.push_back({.name = "reader", .passes = kLookPasses});
     const auto alone = compile_schedule(absent);
     ASSERT_TRUE(alone.has_value()) << alone.error().context;
-    EXPECT_TRUE(alone->tables.empty());
+    ASSERT_EQ(alone->tables.size(), 1u) << "the standard set's contact_sets alone";
     look = compiled_pass(*alone, "reader", "look");
     ASSERT_NE(look, nullptr);
     ASSERT_EQ(look->state.size(), 1u);

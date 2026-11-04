@@ -80,7 +80,9 @@ namespace spade::compute {
 // THE DERIVED BUFFERS' TABLE (module-API stage 4, Task 7b): every buffer the
 // mirror makes beside the registered walk, as data -- the eleven hand-listed
 // ones (StateMirror::derived_entries(), in that order), then every declared
-// scratch that names a binding (StepShape::scratch, in its order). create()
+// scratch that names a binding (StepShape::scratch, in its order), then every
+// bound configuration table (StepShape::tables, L10: floats at its capacity,
+// checked like a scratch). create()
 // makes, zero-fills and binds each buffer from its row, so a derived buffer's
 // size and binding are spelt once, here. It needs no device, so a test reads
 // the mirror's shapes and bindings on any host.
@@ -176,6 +178,13 @@ public:
     // CollisionDynamic kernel reads it.
     [[nodiscard]] Result<void> upload_grid_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
                                                     uint32_t world_count);
+
+    // A bound configuration table (L10; StepShape::tables[index]): `bytes`,
+    // then zeros to the buffer's size, to the device. invalid_argument for an
+    // index past the tables or more bytes than the buffer holds.
+    [[nodiscard]] Result<void> upload_table(uint32_t index, std::span<const std::byte> bytes);
+    // Its whole buffer back; `out_bytes` must be exactly its size.
+    [[nodiscard]] Result<void> read_table(uint32_t index, std::span<std::byte> out_bytes);
 
     // The persistently-mapped host-visible StepParams buffer (binding 17).
     //
@@ -343,6 +352,11 @@ private:
     // Entry never moves.
     std::vector<Entry> scratch_entries_;
 
+    // Every BOUND CONFIGURATION TABLE (L10), in StepShape::tables' order:
+    // derived buffers at the table's capacity, zero-filled here and filled by
+    // upload_table(). Sized once in create(), like scratch_entries_.
+    std::vector<Entry> table_entries_;
+
     // THE HAND-LISTED derived buffers above, in derived_buffer_shapes()' row
     // order. Until 2026-10-02 there were three hand-kept lists of them, and
     // body_snapshot_ was missing from two.
@@ -353,13 +367,14 @@ private:
     }
 
     // THE ONE WALK over every derived buffer: the hand-listed ones, then every
-    // scratch. create() zero-fills and binds through it and destroy() tears down
-    // through it, so a derived buffer cannot be created in one place and
-    // forgotten in another.
+    // scratch, then every bound table. create() zero-fills and binds through
+    // it and destroy() tears down through it, so a derived buffer cannot be
+    // created in one place and forgotten in another.
     template <class F>
     void for_each_derived(F&& f) {
         for (Entry* e : derived_entries()) f(*e);
         for (Entry& e : scratch_entries_) f(e);
+        for (Entry& e : table_entries_) f(e);
     }
 
     // step_params_ IS THE ONE ENTRY WITH NO DEVICE HALF. Every other buffer

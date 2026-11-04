@@ -119,6 +119,14 @@ Result<void> VulkanBackend::upload_grid_params(std::span<const std::byte> params
     return impl_->mirror->upload_grid_params(params_bytes, elem_size, world_count);
 }
 
+Result<void> VulkanBackend::upload_table(uint32_t index, std::span<const std::byte> bytes) {
+    return impl_->mirror->upload_table(index, bytes);
+}
+
+Result<void> VulkanBackend::read_table(uint32_t index, std::span<std::byte> out_bytes) {
+    return impl_->mirror->read_table(index, out_bytes);
+}
+
 Result<void> VulkanBackend::read_step_witness(std::span<std::byte> out_bytes) {
     return impl_->mirror->read_step_witness(out_bytes);
 }
