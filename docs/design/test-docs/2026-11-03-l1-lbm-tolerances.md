@@ -75,11 +75,11 @@ It solves the incompressible Navier–Stokes equations at any Re (Taylor 1923, P
 
 **Reference.** Spec §11.2's: the dissipation rate ε*(t*) of a spectral DNS at Re 1600 (van Rees et al. 2011, J. Comput. Phys. 230, beside Brachet et al. 1983). Its peak is about 0.0127, near t* ≈ 9. Here t* = t U0/L, K* = K/U0², and ε* = −dK*/dt*.
 
-**Prerequisite: the DNS data is not in the repo.**
-- It goes in `tests/data/airflow/` with its provenance (§11.1): the source, the table or figure, and the digitization method with its reading error.
-- Test/Docs reviews it like a golden before C0b's first run, as Ghia and Caradonna–Tung were reviewed.
-- If it is read from a figure, its reading error must be under a fifth of each band: 2% of the peak and 1% of its time. Otherwise the band's argument fails.
-- Getting the paper or its data is a fetch, and needs the lead's word.
+**The data:** `tests/data/airflow/tgv1600_spectral.hpp` (the lead's fetch L14, 2026-11-03), with its provenance in the header and `tests/data/airflow/README.md`.
+- **What it is:** the High-Order CFD Workshop's case C3.5 reference, tabulated: E_k and ε at t* 0 to 19.99 by 0.01. It is UCL's dealiased pseudo-spectral solution, grid-converged on 512³. The case cites van Rees et al. (2011) for the grid-convergence study, so spec §11.2's "DNS data of van Rees et al." means this file.
+- **Its peak:** ε* 0.012857528187 at t* 8.97.
+- **How it got here:** transcribed by machine, with no figure read and no reading error to carry.
+- **The horizon:** the file ends at t* 19.99, so C0b's series runs to t* 19 and its run to t* 20.
 
 **Configuration.**
 - **The field:** the three-dimensional field in a periodic box of side 2πL.
@@ -97,7 +97,7 @@ It solves the incompressible Navier–Stokes equations at any Re (Taylor 1923, P
 **Measures.**
 - **K*:** sampled every Δt* of at most 0.05 (every 5 steps at 64³, every 10 at 128³), summed in double.
 - **ε*:** central differences of those samples. The peak is the largest sample, unsmoothed, with its t*.
-- **The series:** the record prints ε* at t* = 1, 2, …, 20, report only, each beside the DNS's value at that t*.
+- **The series:** the record prints ε* at t* = 1, 2, …, 19, report only, each beside the DNS's value at that t*.
 
 | Measure | 64³ | 128³ | Built from |
 |---|---|---|---|
@@ -179,7 +179,7 @@ T is 0.47 Re rounded up, which leaves the slowest sound at 1% (above). The NS ti
 | Record | File | Opening line | Measures, in order |
 |---|---|---|---|
 | C0a | `c0-taylor-green.md` | `C0 Taylor-Green, the 2D mode's exact decay, 64x64x1, u_lat 0.05, LBM` (one per N and per series point) | `\|nu_eff / nu - 1\|` with its tolerance. At N 64, the order check `e(64) / e(32)`, tolerance `<= 0.5`, or report only when e(32) is under a tenth of its band. In the series, `nu_eff / nu - 1` signed and the coefficient, both report only |
-| C0b | `c0-taylor-green.md` | `C0 Taylor-Green vortex, Re 1600, 128^3, LBM` (and 64^3) | The peak `epsilon*`; its `t*`; then `epsilon*` at `t*` 1 to 20, report only, each `reference:` line giving the DNS's value |
+| C0b | `c0-taylor-green.md` | `C0 Taylor-Green vortex, Re 1600, 128^3, LBM` (and 64^3) | The peak `epsilon*`; its `t*`; then `epsilon*` at `t*` 1 to 19, report only, each `reference:` line giving the DNS's value |
 | C1 | `c1-cavity.md` | `C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM` (four, one per row) | max `\|u - u_Ghia\|`; max `\|v - v_Ghia\|`; the steadiness; the peak `nu_t / nu`, report only |
 | The map | `l1-stability-map.md` (new) | `L1 stability map, 64^3 Taylor-Green, u_lat 0.25 (Ma 0.433), LBM` (one per u_lat) | For each ν_lat in order: the steps held, of the horizon; K* over K*(0) at the last sample held. Both report only |
 
@@ -246,5 +246,5 @@ The map's block continues with the same two measures at ν_lat 1e-6, 1e-5, 1e-4 
    - C0 and C4 confirm it.
    - A change after a run is a named cause (`TD-2`) and a new configuration, and the old record is kept.
 4. **WALE is not zero in laminar vortices** (above). Spec §11.3's line needs a correction, and the spec is Physics'.
-5. **C0b's DNS data** goes in the repo with its provenance and is reviewed before the first run. The fetch needs the lead's word.
+5. **C0b's DNS data** is in the repo (`tgv1600_spectral.hpp`, fetch L14). Physics reads its provenance with this note. Done.
 6. **The 1.2 margin** for Caradonna–Tung's u_lat: confirm it, or replace it with an argued number, before the map runs.
