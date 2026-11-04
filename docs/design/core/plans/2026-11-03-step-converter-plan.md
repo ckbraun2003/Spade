@@ -1,6 +1,6 @@
 # The STEP converter (CORE-6 D): plan
 
-**Status:** proposed to the lead, 2026-11-03. No code is written until the lead has checked the dependency against Cameron's `CORE-6` sign-off ("Meshes + STEP converter"; no OpenCASCADE or any B-rep kernel in the engine).
+**Status:** approved by the lead, 2026-11-03 (merged `5c2b45d6`; rulings `L23`, in §8). It is `CORE-6` option D as Cameron signed it, so it needs no new ask.
 
 **Goal.** Take a STEP file once, offline, to the engine's own mesh sidecars (`.spmesh`, `world/mesh_file.hpp`): one closed, validated mesh per solid, named, placed, in metres, with the tolerance it was tessellated at recorded in its `MeshProvenance`. This is the design's option D (`2026-10-12-model-parts-design.md` §2): "a script and a page of docs".
 
@@ -120,11 +120,16 @@ spade_mesh_pack IN.{gltf,glb,stl,obj,3mf} --out DIR [--unit U] [--tolerance M] [
 
 S1 needs nothing from the lead's dependency decision and can start on its own.
 
-## 8. Questions for the lead
+## 8. The lead's rulings (`L23`, 2026-11-03)
 
-1. OCCT through the pinned `cadquery-ocp` wheels, out of process (recommended), or a C++ tool that `find_package`s OCCT, OFF by default?
-2. A one-hour spike on truck first, for a non-copyleft path? I expect it to fall short on real exports.
-3. The `step` label, excluded from both gates like `gpu` (Test/Docs' row)?
-4. `d` required on the command line with no default (recommended), or a default recorded in the provenance?
-5. `spade_mesh_pack`: installed beside `spade_analysis_runner` (Kat could pack glTF and 3MF itself), or build-tree only?
-6. Where the user-facing page lives.
+1. **OCCT through the pinned `cadquery-ocp` wheels, out of process.** `tools/step_convert/requirements.txt` gives exact versions and hashes, installed with `pip install --require-hashes -r ...`, so a user's install is the one the tests ran.
+2. **No truck spike.**
+3. **The `step` label** is excluded from both gates like `gpu`, and runs on the development box at the batch gate when the converter changes. Test/Docs' row is asked for before S2's READY.
+4. **`d` is required** on the command line, with no default.
+5. **`spade_mesh_pack` stays build-tree only** for now: Kat already has the readers in `spade::mesh_import`.
+6. **The page is `tools/step_convert/README.md`,** beside `analysis_runner` and `flow_movie`.
+7. **The three STEP fixtures need provenance that is not the converter's own OCCT:** hand-written Part 21, or exports from another CAD tool with the source named. Otherwise the tests would check OCCT against itself.
+
+**What S1 adds for the provenance.** `MeshProvenance::unit` is the unit the source declared, and only the reader knows it for a 3MF (the model's `unit`). So `MeshObject` gains `unit`, the unit its source declared: metre for glTF, the caller's for STL and OBJ, the model's for 3MF. It is a defaulted member of an aggregate, so no caller changes, and a consumers line says so.
+
+The order: S1 (`spade_mesh_pack`) from `5c2b45d6`, then S2, then S3.
