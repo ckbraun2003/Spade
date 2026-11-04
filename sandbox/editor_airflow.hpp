@@ -538,9 +538,21 @@ inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64
     return cache;
 }
 
+// A share of real time as the band and the tour's card say it (D10; the
+// lead, after Rendering's review of 65ce8c16): "at 4.2% of real time" under
+// 10%, "at 37% of real time" from 10% up (whole percent, floored, so 99.6%
+// is not "100%"; {:.2g} would print 100 as "1e+02"), "in real time" at or
+// past it.
+[[nodiscard]] inline std::string real_time_share(double ratio) {
+    if (ratio >= 1.0) return "in real time";
+    const double percent = ratio * 100.0;
+    if (percent < 10.0) return std::format("at {:.2g}% of real time", percent);
+    return std::format("at {}% of real time", static_cast<int>(percent));
+}
+
 // The band's speed (§9): simulated time over wall time across the last few
-// frames handed over, as the window saw them, as a share of real time (D10:
-// "air at 4% of real time"; at or past it, "air in real time"). The wall
+// frames handed over, as the window saw them, as real_time_share() says it
+// ("air at 4% of real time"; at or past it, "air in real time"). The wall
 // clock is the caller's (the sandbox's steady_clock), never the run's.
 class AirSpeed {
   public:
@@ -556,9 +568,7 @@ class AirSpeed {
         const double sim = samples_.back().t_s - samples_.front().t_s;
         const double wall = samples_.back().wall_s - samples_.front().wall_s;
         if (samples_.size() < 2 || !(wall > 0.0) || !(sim > 0.0)) return "the air is starting";
-        const double ratio = sim / wall;
-        if (ratio >= 1.0) return "air in real time";
-        return std::format("air at {:.2g}% of real time", ratio * 100.0);  // D10: Detailed is far from it
+        return "air " + real_time_share(sim / wall);
     }
 
   private:

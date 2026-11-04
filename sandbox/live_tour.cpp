@@ -1429,11 +1429,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
                                         : std::format("{} frames in {} s of wall time, {:.1f} fps, on {}", frame->frames,
                                                       fmt(wall_s), static_cast<float>(frame->frames) / wall_s, on));
         if (frame && wall_s > 0.0f) {
-            t.sink().set_card(std::format("Run air, {}: {}, {:.2g}% of real time",
-                                          editor::air_level_name(w().panels().air_level),
+            t.sink().set_card(std::format("Run air, {}: {}, {}", editor::air_level_name(w().panels().air_level),
                                           frame->run_label.find("solids: ") != std::string::npos ? "the body in the air"
                                                                                               : "discs only",
-                                          frame->t_s / wall_s * 100.0));
+                                          editor::real_time_share(frame->t_s / wall_s)));
         }
         then(5);
         t.snapshot("editor_airflow");

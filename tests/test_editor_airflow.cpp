@@ -328,6 +328,12 @@ TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
     fast.frame(1, 0.5, 1.0);
     fast.frame(2, 1.5, 2.0);
     EXPECT_EQ(fast.line(), "air in real time");
+    // Rendering's review of 65ce8c16: {:.2g} prints 100 as "1e+02", so from
+    // 10% the share is whole percent, floored (99.6% is not 100%).
+    EXPECT_EQ(ed::real_time_share(0.04), "at 4% of real time");
+    EXPECT_EQ(ed::real_time_share(0.375), "at 37% of real time");
+    EXPECT_EQ(ed::real_time_share(0.996), "at 99% of real time");
+    EXPECT_EQ(ed::real_time_share(1.5), "in real time");
 }
 
 // The band (§9) and its floor (the lead's rulings, 2026-10-27, and Run air
