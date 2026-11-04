@@ -103,8 +103,8 @@ struct AirDrone {
 // 2026-10-26); a grid that is not a cube (the case's box is one length);
 // rotors with no propulsion chain (LiveRun::start() refuses them; said here
 // so the inspector shows it before Run air); or what analysis::resolve()
-// refuses, its first issue verbatim. Its step is Physics' for the cell
-// (analysis::live_step_s()).
+// refuses, its first issue verbatim. Its step is the levels' for the cell
+// (analysis::live_level_step_s(), L13: the drone in 1 ms ticks).
 namespace detail {
 // The case for `region`'s drone flying `flown` on the cubic grid `g`.
 [[nodiscard]] inline Result<analysis::ResolvedCase> air_resolved(const scene::SceneDesc& s,
@@ -138,7 +138,7 @@ namespace detail {
     c.rotors.assign(flown.rotors.size(), analysis::RotorSetup{});
     c.grid.box = static_cast<float>(g.nx) * g.dx;
     c.grid.spacing = g.dx;
-    c.time.step = analysis::live_step_s(c, flown, g.dx);
+    c.time.step = analysis::live_level_step_s(c, flown, g.dx);
     auto resolved = analysis::resolve(c, flown, analysis::ThinWalls::drawn_by_the_live_run);
     if (!resolved) {
         const analysis::CaseIssue& first = resolved.error().front();
@@ -232,6 +232,10 @@ struct AirCases {
     bool loses_parts = false;
 };
 
+// Real time's grids (L17, Rendering's frontier, 2026-11-03): cells a side.
+inline constexpr uint32_t kAirRealTimeGpuCells = 48;
+inline constexpr uint32_t kAirRealTimeCpuCells = 16;
+
 // What the fallback's backend adds when it flies without the body.
 inline constexpr std::string_view kAirBodyNeedsTheGpu = "; discs only, the body needs the GPU";
 
@@ -259,11 +263,15 @@ namespace detail {
 }
 }  // namespace detail
 
-// The cases for `region` at `level`, refused as air_case() refuses. The
-// discs' grid is the region's box in at most kLiveBoxCells cells a side (R/3
-// for a region Run air's rule made); a region that is already that coarse is
-// its own. At real_time the body's case is the discs' (D10: Rendering's
-// real-time levels redefine it here).
+// The cases for `region` at `level` (D10, the levels as L17 defines them;
+// the lead, 2026-11-03), refused as air_case() refuses, each over the
+// region's box (so the box drawn is the air's), a region already coarser
+// than a grid its own. Detailed: the body's case on the device, the
+// region's grid with the parts in; the CPU's discs only in at most
+// kLiveBoxCells cells a side (R/3 for a region Run air's rule made; L4).
+// Real time: discs only, on the device in at most kAirRealTimeGpuCells a
+// side (R/dx 4.5 for the Phantom; about 150% of real time, Rendering), on
+// the CPU in at most kAirRealTimeCpuCells (about 65%).
 [[nodiscard]] inline Result<AirCases> air_cases(const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
                                                 AirLevel level = AirLevel::detailed) {
     const Result<vehicles::ModelType> model = air_model(s, region);
@@ -271,14 +279,21 @@ namespace detail {
     vehicles::ModelType bare = *model;
     bare.parts.clear();
     const physics::airflow::GridShape& g = region.cells;
-    const uint32_t n = std::min(g.nx, analysis::kLiveBoxCells);
-    const float dx = n == g.nx ? g.dx : static_cast<float>(g.nx) * g.dx / static_cast<float>(n);
-    Result<analysis::ResolvedCase> discs = detail::air_resolved(s, region, physics::airflow::GridShape{n, n, n, dx}, bare);
-    if (!discs) return std::unexpected(discs.error());
+    const auto discs_on = [&](uint32_t most) -> Result<AirCase> {  // the bare model over the region's box
+        const uint32_t n = std::min(g.nx, most);
+        const float dx = n == g.nx ? g.dx : static_cast<float>(g.nx) * g.dx / static_cast<float>(n);
+        Result<analysis::ResolvedCase> r = detail::air_resolved(s, region, physics::airflow::GridShape{n, n, n, dx}, bare);
+        if (!r) return std::unexpected(r.error());
+        return AirCase{std::move(*r), bare};
+    };
     AirCases out;
-    out.discs = AirCase{std::move(*discs), std::move(bare)};
+    Result<AirCase> discs = discs_on(level == AirLevel::real_time ? kAirRealTimeCpuCells : analysis::kLiveBoxCells);
+    if (!discs) return std::unexpected(discs.error());
+    out.discs = std::move(*discs);
     if (level == AirLevel::real_time) {
-        out.body = out.discs;
+        Result<AirCase> device = discs_on(kAirRealTimeGpuCells);
+        if (!device) return std::unexpected(device.error());
+        out.body = std::move(*device);
         return out;
     }
     Result<analysis::ResolvedCase> body = detail::air_resolved(s, region, g, *model);
@@ -365,7 +380,7 @@ class AirflowRun {
         const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
-                           std::move(program)));
+                           std::move(program), level));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -377,6 +392,7 @@ class AirflowRun {
 
     // Where the run's fluid steps: "GPU", or "CPU: " and why (its starter's).
     [[nodiscard]] const std::string& backend() const noexcept { return backend_; }
+    [[nodiscard]] AirLevel level() const noexcept { return level_; }  // the level it flies (D10)
 
     // The last frame handed over; none before the first publish.
     [[nodiscard]] std::shared_ptr<const AirFrame> latest() const {
@@ -400,8 +416,9 @@ class AirflowRun {
 
   private:
     AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top,
-               std::optional<analysis::ControlProgram> program)
-        : keep_(std::move(started.keep)),
+               std::optional<analysis::ControlProgram> program, AirLevel level)
+        : level_(level),
+          keep_(std::move(started.keep)),
           run_(std::move(started.run)),
           backend_(std::move(started.backend)),
           vehicle_(std::move(vehicle)),
@@ -483,6 +500,7 @@ class AirflowRun {
         latest_ = std::move(frame);
     }
 
+    AirLevel level_;
     std::shared_ptr<void> keep_;  // the starter's: outlives run_
     analysis::LiveRun run_;       // the worker's alone once it starts
     std::string backend_;

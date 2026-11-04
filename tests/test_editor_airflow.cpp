@@ -462,10 +462,10 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*cases);
     ASSERT_TRUE(started.has_value()) << started.error().context;
     EXPECT_EQ(started->backend, "CPU: told so; discs only, the body needs the GPU");
-    EXPECT_EQ(started->run.run_label(), "actuator disc \xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
+    EXPECT_EQ(started->run.run_label(), "actuator disc \xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 4 ms");
     const std::string band = ed::air_band("air at 1/43 speed", started->run.run_label(), started->backend);
     EXPECT_EQ(band, "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU: told so; discs only, the body needs the GPU "
-                    "\xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
+                    "\xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 4 ms");
     EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 CPU");
 
     s.airflow.back().cells = spade::physics::airflow::GridShape{20, 20, 20, 0.039f};
@@ -478,22 +478,22 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     ASSERT_TRUE(plain.has_value()) << plain.error().context;
     EXPECT_EQ(plain->backend, "CPU: told so");
 
-    // Physics' step for the body's cell: the Crazyflie's 1.75 mm takes
-    // 1.75 mm over twice its hover wake, under the 1 ms cap.
+    // The levels' step for the body's cell (L13): the Crazyflie's 1.75 mm
+    // takes twice 1.75 mm over its wake speed, under 1 ms, in one drone tick.
     const spade::scene::SceneDesc small = placed("crazyflie_class.model.yaml");
     ASSERT_FALSE(small.airflow.empty());
     const Result<ed::AirCases> fine = ed::air_cases(small, small.airflow.back());
     ASSERT_TRUE(fine.has_value()) << fine.error().context;
     ASSERT_TRUE(fine->body.resolved.spec.time.step.has_value());
     EXPECT_EQ(*fine->body.resolved.spec.time.step,
-              an::live_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
+              an::live_level_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
     EXPECT_LT(*fine->body.resolved.spec.time.step, 0.001f);
 }
 
 // D10 (Cameron's direction via the lead, 2026-11-03): the session's physics
 // level picks what Run air resolves. Detailed, the default, is the body's
-// case; Real time is the discs' on both the device and the CPU, so its band
-// says nothing of the body. The inspector's line follows the level, resolved
+// case; Real time is discs only (L17): 48^3 on the device, 16^3 on the
+// CPU, over the region's box, so its band says nothing of the body. The inspector's line follows the level, resolved
 // again when it changes.
 TEST(EditorAirflow, TheRealTimeLevelFliesTheDiscsAndTheLineFollowsTheLevel) {
     auto d = ed::make_scene_document(support::sample_scene(), {});
@@ -508,7 +508,8 @@ TEST(EditorAirflow, TheRealTimeLevelFliesTheDiscsAndTheLineFollowsTheLevel) {
     EXPECT_EQ(ed::EditorPanels{}.air_level, ed::AirLevel::detailed) << "Detailed is the session's default";
     const Result<ed::AirCases> fast = ed::air_cases(s, region, ed::AirLevel::real_time);
     ASSERT_TRUE(fast.has_value()) << fast.error().context;
-    EXPECT_EQ(ed::grid_line(fast->body.resolved), "32\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_EQ(ed::grid_line(fast->body.resolved), "48\xc2\xb3, dx 26 mm, R/dx 5") << "the device's";
+    EXPECT_EQ(ed::grid_line(fast->discs.resolved), "16\xc2\xb3, dx 78 mm, R/dx 2") << "the CPU's";
     EXPECT_TRUE(fast->body.model.parts.empty());
     EXPECT_FALSE(fast->loses_parts);
     Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*fast);
@@ -517,7 +518,7 @@ TEST(EditorAirflow, TheRealTimeLevelFliesTheDiscsAndTheLineFollowsTheLevel) {
 
     ed::AirLineCache cache;
     EXPECT_EQ(ed::air_line(cache, 1, 1, s, region).text, "104\xc2\xb3, dx 12 mm, R/dx 10");
-    EXPECT_EQ(ed::air_line(cache, 1, 1, s, region, ed::AirLevel::real_time).text, "32\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_EQ(ed::air_line(cache, 1, 1, s, region, ed::AirLevel::real_time).text, "48\xc2\xb3, dx 26 mm, R/dx 5");
     EXPECT_EQ(cache.resolves, 2u);
     EXPECT_EQ(ed::air_line(cache, 1, 1, s, region, ed::AirLevel::real_time).resolves, 2u) << "the same level: kept";
 }

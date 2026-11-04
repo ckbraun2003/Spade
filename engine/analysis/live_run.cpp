@@ -42,6 +42,7 @@ namespace {
 namespace af = physics::airflow;
 
 constexpr uint64_t kNsPerSecond = 1'000'000'000;
+constexpr uint64_t kDroneTickNs = 1'000'000;  // kLiveDroneStepS, in ns
 constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
 
 [[nodiscard]] double seconds(uint64_t ns) { return static_cast<double>(ns) / static_cast<double>(kNsPerSecond); }
@@ -292,6 +293,7 @@ struct LiveRun::Impl {
     glm::quat q_bd{1.0f, 0.0f, 0.0f, 0.0f};  // the model's design -> principal, normalized
     BodyState held{};                        // the body row at the hold
     uint64_t h_ns = 0;
+    uint32_t drone_substeps = 1;  // drone ticks a step (L13)
     float yaw = 0.0f;  // the held attitude, degrees
     float pitch = 0.0f;
     float roll = 0.0f;
@@ -538,7 +540,12 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     instance.world = std::move(*world);
     WorldSetDesc set;
     set.worlds.push_back(std::move(instance));
-    Result<Simulation> sim = Simulation::create(set, impl->h_ns, 1);
+    // L13 (the lead, 2026-11-03): a step past kLiveDroneStepS is flown in
+    // drone ticks of at most it, so the levels' longer fluid step keeps the
+    // drone's dynamics at 1 ms; at or under it, one tick, as before.
+    impl->drone_substeps = static_cast<uint32_t>(
+        std::max<uint64_t>(1, (impl->h_ns + kDroneTickNs - 1) / kDroneTickNs));
+    Result<Simulation> sim = Simulation::create(set, impl->h_ns, impl->drone_substeps);
     if (!sim) return std::unexpected(sim.error());
     impl->sim = std::make_unique<Simulation>(std::move(*sim));
     const Result<ModelTypeId> id = impl->sim->register_model(model);
@@ -720,6 +727,7 @@ Result<LiveFrame> LiveRun::advance_frame(const Controls& controls, FlowVolume& o
 const LiveState& LiveRun::state() const noexcept { return impl_->state; }
 
 double LiveRun::step_s() const noexcept { return seconds(impl_->h_ns); }
+uint32_t LiveRun::drone_substeps() const noexcept { return impl_->drone_substeps; }
 
 std::span<const vehicles::RotorRow> LiveRun::rotor_rows() const noexcept { return impl_->rows; }
 
@@ -796,7 +804,9 @@ Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
     return LiveGrid{n, static_cast<float>(dx_mm) / 1000.0f};
 }
 
-float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
+namespace {
+// 2 v_h + |wind|: the wake's speed live_step_s() and live_level_step_s() divide by.
+[[nodiscard]] float wake_speed(const AnalysisCase& c, const vehicles::ModelType& model) {
     float v_h = 0.0f;  // the largest hover induced speed over the rotors: the smallest disc's, the fastest wake
     if (!model.rotors.empty()) {
         const float thrust = model.body.mass * -Environment{}.gravity.y / static_cast<float>(model.rotors.size());
@@ -806,8 +816,22 @@ float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float
         }
     }
     const float wind = c.flight.kind == FlightKind::hover ? 0.0f : std::abs(c.flight.speed);
-    const float wake = 2.0f * v_h + wind;
+    return 2.0f * v_h + wind;
+}
+}  // namespace
+
+float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
+    const float wake = wake_speed(c, model);
     return wake > 0.0f ? std::min(kLiveStepCapS, dx / wake) : kLiveStepCapS;
+}
+
+float live_level_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
+    const float wake = wake_speed(c, model);
+    const float h = wake > 0.0f ? std::min(kLiveLevelStepCapS, 2.0f * dx / wake) : kLiveLevelStepCapS;
+    if (h < kLiveDroneStepS) return h;
+    // Whole drone ticks of kLiveDroneStepS: Simulation's substep is dt / substeps in whole ns.
+    const auto ticks = static_cast<uint32_t>(h / kLiveDroneStepS * (1.0f + 1e-6f));
+    return static_cast<float>(ticks) * kLiveDroneStepS;
 }
 
 std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any_left) {

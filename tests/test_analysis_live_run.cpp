@@ -763,6 +763,29 @@ TEST(AnalysisLiveRun, RunAirsGridIsP1sCellRule) {
     EXPECT_NE(none.error().context.find("no rotors"), std::string::npos) << none.error().context;
 }
 
+// The levels' step (L13 and L17; the lead, 2026-11-03): a CFL of at most 2
+// under a 4 ms cap, floored past 1 ms to whole drone ticks of 1 ms, which
+// the run flies as substeps. The Phantom's body at 12 mm steps 2 ms (2.24 ms
+// floored), its real-time discs at 26 mm the cap, and at 4 mm 0.748 ms in
+// one tick; a run at 2 ms flies 2 drone ticks a step, one at 1 ms one.
+TEST(AnalysisLiveRun, TheLevelsStepIsCfl2UnderTheCapInWholeDroneTicks) {
+    const spade::vehicles::ModelType m = phantom();
+    an::AnalysisCase c;
+    EXPECT_EQ(an::live_level_step_s(c, m, 0.012f), 0.002f);
+    EXPECT_EQ(an::live_level_step_s(c, m, 0.026f), an::kLiveLevelStepCapS);
+    EXPECT_NEAR(an::live_level_step_s(c, m, 0.004f), 0.7480e-3f, 0.0005e-3f);
+    EXPECT_EQ(an::live_level_step_s(c, rotorless(), 0.012f), an::kLiveLevelStepCapS);
+
+    an::AnalysisCase t = tiny_case(rotorless());
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 4u) << "4 ms in ticks of 1 ms";
+    t.time.step = 0.002f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 2u);
+    t.time.step = 0.001f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 1u);
+    t.time.step = 0.0007f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 1u);
+}
+
 // The floor to the millimetre is exact (the lead's review, 2026-11-03): in
 // float32, R/3 times 1000 falls a hair under a whole millimetre for 132 of
 // the whole-mm thirds from 3 mm to 1 m (R 36 mm gave 11 mm), so the rule

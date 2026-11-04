@@ -147,6 +147,15 @@ inline constexpr float kLiveStepCapS = 0.001f;
 
 [[nodiscard]] float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx);
 
+// Run air's levels' step (L13 and L17; the lead, 2026-11-03): h = min(
+// kLiveLevelStepCapS, 2 dx / (2 v_h + |wind|)), a CFL of at most 2, its wake
+// speed live_step_s()'s; past kLiveDroneStepS it is floored to a whole number
+// of drone ticks of kLiveDroneStepS, which LiveRun flies as substeps
+// (drone_substeps()), so the drone's dynamics keep their 1 ms.
+inline constexpr float kLiveLevelStepCapS = 0.004f;
+inline constexpr float kLiveDroneStepS = 0.001f;
+[[nodiscard]] float live_level_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx);
+
 // The run label's segment for the parts drawn only at the base cell `dx` (m),
 // "" for none. Grouped by reason, the groups in the order their first part
 // was left out and each group's parts in the model's order, consecutive
@@ -268,6 +277,8 @@ class LiveRun {
 
     [[nodiscard]] const LiveState& state() const noexcept;
     [[nodiscard]] double step_s() const noexcept;  // h
+    // The drone ticks each step flies: ceil(h / kLiveDroneStepS), at least 1 (L13).
+    [[nodiscard]] uint32_t drone_substeps() const noexcept;
 
     // The held body row (its centre of mass and principal axes), as Core's
     // posed_parts() takes it: what a host draws the solid drone from, with
