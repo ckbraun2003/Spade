@@ -67,8 +67,9 @@ struct PilotPanel {
 // 2026-11-03), the session's choice in the inspector's Airflow section:
 // what the air resolves. detailed: the drone's body as a solid at Run air's
 // cell (analysis::live_grid()), on the device; not real time, so the band
-// says how far from it. real_time: actuator discs alone on R/3's grid over
-// the same box. editor_airflow.hpp's air_cases() says what each flies, so a
+// says how far from it. real_time: actuator discs alone over the same box,
+// 48^3 on the device and 16^3 on the CPU (L17). editor_airflow.hpp's
+// air_cases() says what each flies, so a
 // level can be redefined there without touching the panels.
 enum class AirLevel : uint8_t { detailed, real_time };
 inline constexpr AirLevel kAirLevels[] = {AirLevel::detailed, AirLevel::real_time};
