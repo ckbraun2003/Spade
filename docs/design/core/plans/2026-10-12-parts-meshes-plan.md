@@ -1006,13 +1006,13 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
 [[nodiscard]] Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path);
 ```
 
-- [ ] **Step 1: Write the failing tests.** Three:
+- [x] **Step 1: Write the failing tests.** Three (four as built: `MeshImport.MalformedThreeMfIsRefusedByElement` too):
   - `MeshImport.ThreeMfReadsItsDeclaredUnit`: a millimetre cube comes back in metres.
   - `MeshImport.ThreeMfComponentsAndBuildItemsAreBaked`.
   - `MeshImport.ARequiredThreeMfExtensionIsUnavailable`.
-- [ ] **Step 2:** Build. The reader returns `unavailable` ("not built yet"). Expected: all three fail on behaviour. Commit: `test(core): 3MF must read its declared unit, its components and its build, and refuse a required extension by name (CORE-6)`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): the 3MF reader -- declared units, components and build items baked (CORE-6)`.
+- [x] **Step 2:** Build. The reader returns `unavailable` ("not built yet"). Expected: all three fail on behaviour. Commit: `test(core): 3MF must read its declared unit, its components and its build, and refuse a required extension by name (CORE-6)`.
+- [x] **Step 3: Implement.**
+- [x] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): the 3MF reader -- declared units, components and build items baked (CORE-6)`.
 - [ ] **Step 5: The task gate.** Expected: Task B7's total + 3. This leg is fresh (`-NoSeed`), because the dependency set changed.
 
 **Done when:** every format `CORE-6` names reads into validated meshes, or B8 is deferred by the lead with nothing else affected.

@@ -17,12 +17,14 @@ Spade uses the components below. All but one are fetched by CMake at configure t
 | Vulkan-Headers | `vulkan-sdk-1.4.357.0` | Apache-2.0 OR MIT (per file; the `vulkan/` headers Spade includes carry both) | <https://github.com/KhronosGroup/Vulkan-Headers> | the Vulkan backend (`spade_compute`); tests |
 | volk | `vulkan-sdk-1.4.357.0` | MIT | <https://github.com/zeux/volk> | the Vulkan loader, compiled into `spade_compute` |
 | Slang | `v2026.14.1` prebuilt release (Windows and Linux archives, pinned by SHA-256 in `vendor/CMakeLists.txt`) | Apache-2.0 WITH LLVM-exception. The archive carries further licences for bundled parts in its `LICENSES/` folder | <https://github.com/shader-slang/slang> | build-time only: `slangc` compiles the kernels to SPIR-V, which is embedded in `spade_compute`. No Slang binary is linked or installed |
+| miniz | `3.1.2` release archive (`miniz-3.1.2.zip`, the one-file amalgamation, pinned by SHA-256 in `vendor/CMakeLists.txt`) | MIT | <https://github.com/richgel999/miniz> | the 3MF reader's ZIP, compiled into `spade_mesh_import`; tests (their 3MF fixtures) |
+| pugixml | `v1.16` | MIT | <https://github.com/zeux/pugixml> | the 3MF reader's XML, compiled into `spade_mesh_import` |
 | Inter | `4.1` (`Inter-Regular.ttf`, `Inter-SemiBold.ttf`, unchanged from the release's `extras/ttf/`) | SIL Open Font License 1.1, copyright 2016 The Inter Project Authors. The licence is `assets/fonts/OFL.txt`, which stays beside the font files wherever they are copied | <https://github.com/rsms/inter> | the sandbox and editor UI font (vendored by Interface's UI-1) |
 
 ## Notes
 
 - **What ends up in Spade's installed libraries:**
-  - volk's source is compiled into `spade_compute`, which is installed.
+  - volk's source is compiled into `spade_compute`, and miniz's and pugixml's into `spade_mesh_import`; both are installed.
   - Header code is compiled into Spade's own objects: GLM, nlohmann/json, Vulkan-Headers and yaml-cpp's headers, and glad's header for the GL types (`spade_render_gl`, which links no loader).
   - A binary distribution of Spade must therefore carry those licence notices.
   - GLFW, Dear ImGui and Inter are in the sandbox, which is built but not installed. GoogleTest, Google Benchmark and the glad loader are used by tests and benchmarks only.

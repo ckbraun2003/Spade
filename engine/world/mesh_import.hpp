@@ -221,15 +221,18 @@
 //       that does not parse (naming the byte); a root that is not a core
 //       <model>; a required extension's prefix the root does not declare; an
 //       unknown unit; an object without a positive id, with an id used
-//       twice, or with neither or both of a mesh and components; a missing
-//       or malformed number; a vertex index past its object's vertices; a
-//       component or item naming no object defined where it may; a
+//       twice, with a type not in the list above, or with neither or both of
+//       a mesh and components; a missing or malformed number; a vertex index
+//       past its object's vertices; a component naming no object defined
+//       above it, or one not of type model; an item naming no object; a
 //       transform not of twelve numbers; a build with no item of type model;
 //       and every make_mesh() refusal.
-//     capacity_exceeded -- a model part of more than kMax3mfModelBytes
-//       uncompressed, refused before it is extracted; an item of more than
-//       kMaxMeshTriangles triangles, or more than 2^32 - 1 vertices before
-//       welding; running out of memory.
+//     capacity_exceeded -- a part (the relationships or the model) of more
+//       than kMax3mfModelBytes uncompressed, refused before it is extracted;
+//       an object of more than kMaxMeshTriangles triangles; an item of more than
+//       kMaxMeshTriangles triangles or component visits, or more than
+//       2^32 - 1 vertices before welding (counted from the objects, before
+//       any is taken); running out of memory.
 //     io_error -- a file that cannot be opened or read.
 //     internal -- any other exception, caught.
 // ---------------------------------------------------------------------------
@@ -254,7 +257,7 @@ namespace spade {
 // shape, is a fraction of a degree.
 inline constexpr double kObjPlanarTolerance = 1e-3;
 
-// The most bytes a 3MF's model part may hold uncompressed (1 GiB), checked
+// The most bytes a part of a 3MF may hold uncompressed (1 GiB), checked
 // before it is extracted, so a small archive cannot ask for unbounded memory.
 inline constexpr uint64_t kMax3mfModelBytes = uint64_t{1} << 30;
 
