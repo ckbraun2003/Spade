@@ -46,7 +46,7 @@ L5's verdicts hold only at this configuration. L6 claims L5's accuracy only wher
 
 **The band** = m_p (F5) + the tap term + the compressibility term:
 - **The tap term:** Table 17 prints x/c to 0.01, so a tap's position is ±0.005 c. Its term is that times the table's own slope between the neighbouring taps, at the station's worst tap.
-- **m_p:** the largest disagreement with Table 17 that F5's Navier–Stokes solution shows aft of x/c 0.05, at that station, read from F5's figures (open item 3).
+- **m_p:** F5's gap, read in-figure: the vertical C_p gap between F5's solid (captured-wake) curve and the plotted marker, at the marker's plotted x, for taps at x/c ≥ 0.05. Reading in the figure cancels the scan's 0.37° rotation and the markers' plotting offset (0.005 to 0.012 x/c left of Table 17's). It is the larger of the two readings, rounded up to 0.01 (the lead's rule, L21b). Values in "F5, read" below.
 
 | r/R | Tap term | Compressibility, u_run 0.254 / 0.25 / 0.20 / 0.15 / 0.10 |
 |---|---|---|
@@ -65,7 +65,7 @@ The taps at x/c < 0.05 (the leading-edge peak) are printed beside it, report onl
 
 | Measure | Tolerance | Built from |
 |---|---|---|
-| \|C_L,ours,taps / C_L,T17,taps − 1\| at each station | ≤ m_L + the station's Prandtl–Glauert fraction at u_run | m_L: F5's largest sectional-lift disagreement with the same data, read from its figures. The compressibility fraction is the table's percentage above (0.1 to 8.0%) |
+| \|C_L,ours,taps − C_L,T17,taps\| at each station | ≤ m_L + the station's Prandtl–Glauert fraction at u_run × C_L,T17,taps | m_L: F5's sectional-lift disagreement with the same data, in C_L, from its fig. 6 ("F5, read" below). The compressibility fraction is the table's percentage above (0.1 to 8.0%) |
 | Our full-surface integral over the printed C_L | report only | It mixes our error with the 7.5% spread |
 | Our tap integral over the printed C_L | report only | The same, for the record |
 
@@ -105,8 +105,23 @@ If F5 doesn't give a measure (for example, no sectional C_L), that measure's row
 
 - **The source:** NTRS 19910005815, NASA TM-102862: Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", European Rotorcraft Forum, September 1990. The title and authors are confirmed from the NTRS record, and they match the note.
 - **The files:** the PDF (SHA-256 2495c4d64d4ef2ca61f987cea4a1e98b68b37b55b6e329dbe0c43fb1d7dfa0d9) and NTRS's text (SHA-256 24a625b1877036ed198072133865f73f310f855964b08b5dfea7729dd177a451). Kept in the main checkout's `.agents/refs/srinivasan1990/`, with its PROVENANCE. F5b was not needed.
-- **m_p, from fig. 2 (p. 15),** at M_tip 0.44, θ 8°, Re 1.92·10⁶: the five stations. This is Test/Docs' primary reading, pixel-assisted on the figure's own ticks (0.0042 C_p a pixel, ±0.01), and the lead does the second. It is the largest gap between F5's solid (captured-wake) curve and Table 17 aft of x/c 0.05: **0.060** at r/R 0.50, **0.074** at 0.68, **0.077** at 0.80, **0.11** at 0.89 and **0.046** at 0.96.
-- **m_L, from fig. 6 (p. 19):** the bound circulation against r/R. Table 17's circulation is (r/R) C_L / 12: 0.0098, 0.0160, 0.0192, 0.0233 and 0.0215. F5's lines cross near the stations, so which one is the M_tip 0.44 fine grid is left to the lead's reading before m_L is set.
+- **m_p, from fig. 2 (p. 15),** at M_tip 0.44, θ 8°, Re 1.92·10⁶, read in-figure by the rule above. The larger of the two readings is taken, rounded up to 0.01: Test/Docs' pixel-assisted reading, and the lead's from its own 400 dpi render (L21b).
+
+  | r/R | Test/Docs | The lead | Where | m_p |
+  |---|---|---|---|---|
+  | 0.50 | 0.060 (upper x/c 0.12) | 0.058 (lower 0.20; upper 0.12 is 0.046) | | **0.06** |
+  | 0.68 | 0.074 (lower x/c 0.07) | 0.079 (lower 0.07) | | **0.08** |
+  | 0.80 | 0.077 (upper 0.30) | 0.065 (upper 0.30) | the solid is the continuous line above the markers | **0.08** |
+  | 0.89 | 0.11 (upper 0.06) | 0.137 (upper 0.06) | the curve reads 0.858 under the marker's 1.005, where it slopes about 2.5 a unit | **0.14** |
+  | 0.96 | 0.046 (upper 0.07) | 0.079 (upper 0.07) | the solid passes under the marker, about 0.834 against 0.913. Test/Docs' 0.046 read the dashed line | **0.08** |
+
+  Test/Docs' 0.68 entry was first labelled lower x/c 0.79. The tap is lower 0.07; at 0.79 the marker sits only 0.02 to 0.03 under the curve.
+- **m_L, from fig. 6 (p. 19):** the bound circulation Γ/ΩR² against r/R. The legend's glyphs decide which line is which: the fine grid at M_tip 0.44 is long dash plus dot, the lowest line, flat at 0.011 from r/R 0.2 and passing through the asterisk at 0.68.
+  - **The lead's reading** (L21b, rotation-corrected): 0.0119 (±0.0005, where three lines cross), 0.0150, 0.0166, 0.0179 and 0.0204 (±0.0003).
+  - **Table 17's**, (r/R) C_L / 12: 0.0098, 0.0160, 0.0192, 0.0233 and 0.0215.
+  - **So** ΔC_L = 12 ΔΓ/(r/R) = +0.050, −0.018, −0.039, −0.073 and −0.014, which gives **m_L = 0.05, 0.02, 0.04, 0.08 and 0.02** in C_L, from r/R 0.50 to 0.96.
+  - F5's own text agrees: "fair agreement ... except in the inboard part", and the tip region is "not very good".
+- **A caveat on the tip terms:** F5 computed a bevelled tip, and the experiment's tip was square. So m_p and m_L at r/R 0.89 and 0.96 carry a geometry difference as well as F5's method error. That makes them generous: a square-tip solution need not be that far off.
 - **m_T:** F5 prints no C_T. So, by the rule above, C_T's row is report only until a source gives one.
 
 ## Fetches
@@ -119,6 +134,6 @@ If F5 doesn't give a measure (for example, no sectional C_L), that measure's row
 
 1. **The wall model at L5:** L3's, or none? At 32 cells per chord the layer is under a cell, so L3's matching height lies outside it. Either way the record says so.
 2. **The surface-pressure rule:** how C_p is read at a tap from the fluid nodes near an unresolved surface, for example extrapolated along the normal from two nodes. Name it before the first run. Its error is part of the method term.
-3. **m from F5:** the rule is fixed above (F5's largest disagreement at each measure, aft of x/c 0.05). The values are read when F5 is, before the first run.
+3. **m from F5:** done (L21b). m_p and m_L are in "F5, read" above, read in-figure by Test/Docs and the lead. C_T is report only, since F5 prints none.
 4. **The vortex's locator:** the λ₂ minimum in the age's half-plane, or another. Name it, and the record prints it.
 5. **The outer faces and the box,** for a large still chamber ("special ducting designed to eliminate room recirculation", section 2). Name them, since they set the wake's start-up and the measures' settling.
