@@ -347,7 +347,7 @@ install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp
 
 # ------------------------------------------------------------------------------
 # spade_mesh_import: the CAD mesh readers (CORE-6; the parts and meshes plan,
-# Tasks B6 and B7) -- glTF, binary STL and OBJ. Import only: each reader ends
+# Tasks B6 to B8) -- glTF, binary STL, OBJ and 3MF. Import only: each reader ends
 # in make_mesh(). A target of its own so the library the step links gains no parser: spade_sim
 # and everything under it never link it (MeshImport.TheStepNeverLinksTheReaders
 # pins that). Installed and exported, because Kat hosts the builder and links
@@ -358,12 +358,34 @@ install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp
 # parser's, PRIVATE and $<BUILD_LOCAL_INTERFACE:...>, as spade_render links it
 # (the nlohmann note there): no nlohmann type crosses mesh_import.hpp, and it
 # is header-only, so no consumer needs it on a link line.
+#
+# miniz and pugixml (3MF's ZIP and XML; L15) are compiled INTO this archive,
+# as volk.c is into spade_compute (the volk note there): spade_threemf_deps is
+# an OBJECT library of their sources, without spade_warnings (vendored code is
+# not held to Spade's -Werror), whose objects join this target's own. An
+# installed consumer then resolves their symbols from libspade_mesh_import
+# itself, and neither is in any export set. Their headers reach only this
+# target's sources, and the tests', BUILD_INTERFACE.
 # ------------------------------------------------------------------------------
+FetchContent_GetProperties(miniz SOURCE_DIR _spade_miniz_dir)
+FetchContent_GetProperties(pugixml SOURCE_DIR _spade_pugixml_dir)
+add_library(spade_threemf_deps OBJECT
+    "${_spade_miniz_dir}/miniz.c"
+    "${_spade_pugixml_dir}/src/pugixml.cpp"
+)
+target_include_directories(spade_threemf_deps PRIVATE "${_spade_miniz_dir}" "${_spade_pugixml_dir}/src")
+set(SPADE_THREEMF_INCLUDE_DIRS "${_spade_miniz_dir}" "${_spade_pugixml_dir}/src" CACHE INTERNAL
+    "miniz's and pugixml's headers (3MF, L15): spade_mesh_import's sources and the tests only")
+unset(_spade_miniz_dir)
+unset(_spade_pugixml_dir)
+
 add_library(spade_mesh_import STATIC
     world/mesh_import/gltf.cpp
     world/mesh_import/obj.cpp
     world/mesh_import/stl.cpp
+    world/mesh_import/threemf.cpp
     world/mesh_import/weld.cpp
+    $<TARGET_OBJECTS:spade_threemf_deps>
 )
 add_library(spade::mesh_import ALIAS spade_mesh_import)
 set_target_properties(spade_mesh_import PROPERTIES EXPORT_NAME mesh_import)
@@ -371,6 +393,7 @@ target_include_directories(spade_mesh_import PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:include>
 )
+target_include_directories(spade_mesh_import SYSTEM PRIVATE ${SPADE_THREEMF_INCLUDE_DIRS})
 target_link_libraries(spade_mesh_import
     PUBLIC spade::world
     PRIVATE

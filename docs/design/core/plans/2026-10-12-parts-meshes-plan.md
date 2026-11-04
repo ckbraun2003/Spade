@@ -986,11 +986,11 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
 - [x] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): binary STL and OBJ readers, units declared by the caller (CORE-6)`.
 - [x] **Step 5: The task gate.** Expected: Task B6's total + 6.
 
-**Done:** merged `2aafac1` (branch head `75bbaa3`). Eight tests, not six, and `CoreUtf8.WellFormedTextOnly` for the new `core/utf8.hpp`; the rulings (o over g, polygons and other elements refused by line) are in `mesh_import.hpp`. A face of more than three vertices is refused here; B7b fans the convex planar ones.
+**Done:** merged `2aafac1` (branch head `75bbaa3`). Eight tests, not six, and `CoreUtf8.WellFormedTextOnly` for the new `core/utf8.hpp`; the rulings (o over g, polygons and other elements refused by line) are in `mesh_import.hpp`. B7 refused a face of more than three vertices; B7b (merged `464c9366`) fans the planar, strictly convex ones and refuses the rest by line.
 
 **Done when:** STL and OBJ exports become validated meshes in the units their author names.
 
-### Task B8: 3MF (needs the lead's yes on two dependencies; open question 5)
+### Task B8: 3MF (miniz and pugixml approved by the lead, L15, 2026-11-03; open question 5)
 
 **Files:**
 - Create: `engine/world/mesh_import/threemf.cpp`.
@@ -1006,13 +1006,13 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
 [[nodiscard]] Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path);
 ```
 
-- [ ] **Step 1: Write the failing tests.** Three:
+- [x] **Step 1: Write the failing tests.** Three (four as built: `MeshImport.MalformedThreeMfIsRefusedByElement` too):
   - `MeshImport.ThreeMfReadsItsDeclaredUnit`: a millimetre cube comes back in metres.
   - `MeshImport.ThreeMfComponentsAndBuildItemsAreBaked`.
   - `MeshImport.ARequiredThreeMfExtensionIsUnavailable`.
-- [ ] **Step 2:** Build. The reader returns `unavailable` ("not built yet"). Expected: all three fail on behaviour. Commit: `test(core): 3MF must read its declared unit, its components and its build, and refuse a required extension by name (CORE-6)`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): the 3MF reader -- declared units, components and build items baked (CORE-6)`.
+- [x] **Step 2:** Build. The reader returns `unavailable` ("not built yet"). Expected: all three fail on behaviour. Commit: `test(core): 3MF must read its declared unit, its components and its build, and refuse a required extension by name (CORE-6)`.
+- [x] **Step 3: Implement.**
+- [x] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): the 3MF reader -- declared units, components and build items baked (CORE-6)`.
 - [ ] **Step 5: The task gate.** Expected: Task B7's total + 3. This leg is fresh (`-NoSeed`), because the dependency set changed.
 
 **Done when:** every format `CORE-6` names reads into validated meshes, or B8 is deferred by the lead with nothing else affected.
