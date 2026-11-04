@@ -1387,7 +1387,7 @@ TEST(MeshImport, ThreeMfReadsItsDeclaredUnit) {
     prefixed.replace(prefixed.find("<model xmlns="), 13, "<model xmlns:c=");
     for (const std::string tag : {"resources", "object", "mesh", "vertices", "vertex", "triangles", "triangle",
                                   "build", "item", "model"}) {
-        for (const std::string form : {"<" + tag + " ", "<" + tag + ">", "<" + tag + "/", "</" + tag + ">"}) {
+        for (const std::string& form : {"<" + tag + " ", "<" + tag + ">", "<" + tag + "/", "</" + tag + ">"}) {
             const std::size_t skip = form[1] == '/' ? 2 : 1;
             for (std::size_t at = prefixed.find(form); at != std::string::npos;
                  at = prefixed.find(form, at + form.size() + 2)) {
