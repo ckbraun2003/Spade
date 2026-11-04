@@ -163,15 +163,22 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 
 ## L3b. C5's turbulent flat plate, wall-modelled
 
-**Reference.** Spec §11.2's C5 turbulent case, C_f within 10%. Two things differ from the spec, for the lead and Physics:
-- **C_f is compared at the station's Re_θ, not its Re_x.** The spec's White's correlation, `C_f ≈ 0.455/ln²(0.06 Re_x)`, needs x from the plate's leading edge. A turbulent inflow has only a virtual origin, and placing it is an error of its own. Against Re_θ, measured at the station from the mean profile, there is none.
-  - **The proposed reference:** the Coles–Fernholz form with Nagib, Chauhan & Monkewitz's constants (2007, Phil. Trans. R. Soc. A 365): `C_f = 2 [ln(Re_θ)/0.384 + 4.127]⁻²`, read from the source before the first run (fetch F2).
-  - **White's value** at each station is printed beside it, at the virtual origin Physics names, report only (open item 6).
+**Reference.** Spec §11.2's C5 turbulent case: White's correlation, `C_f ≈ 0.455/ln²(0.06 Re_x)`, as the spec gives it, with C_f within 10%.
+- **Where the form comes from.** White's *Viscous Fluid Flow* is a book, so no fetch reaches it. The form is the spec's, not read here from its source.
+- **Its x is measured from a virtual origin.** A turbulent inflow has no leading edge, so x = x_station − x₀, with x₀ named by Physics before the first run and printed in the record (open item 6). Its placement is a term of the band: d ln C_f/d ln Re_x = −2/ln(0.06 Re_x), about −0.17 here, so an x₀ off by δx moves C_f by 0.17 δx/x.
+- **Comparing at Re_θ (Coles–Fernholz) would remove x₀, and waits.** No open source read so far states its constants with their scatter (F2, below). Until one does, it is neither checked nor printed.
+
+Two things differ from the spec, for the lead and Physics:
 - **The range is narrowed to what fits the cap.** Re_x 10⁶ to 10⁷ at 16 cells across δ would be about 650 M cells; the cap is about 38 M at 112 B a cell. The proposal, sized for Physics to set:
   - the measured region Re_x ≈ 2·10⁶ to 4·10⁶ (Re_θ ≈ 4000 to 6900);
   - 16 cells across δ at its start;
   - about 950 × 100 × 64 cells, 6 M.
   Re_x 10⁷ waits for L4's nests (open item 5).
+- **The claim is narrowed to what a correlation can carry.** A pass says C_f is within 10% of White's correlation. It does not say the wall model is within 10% of the true C_f, because the correlations' own uncertainty at these Re_θ is not small, and none has been read from a source with its scatter. The lead's figures, not read here (L19c):
+  - other fits put the Coles–Fernholz C at 3.7 to 3.94, against 4.127;
+  - the Melbourne floating-element data (doi:10.1007/s00348-016-2168-y) give κ 0.38 and C 3.7 within 3% for Re_θ > 15 000;
+  - at Re_θ ≈ 5000 that is a 3 to 4% spread in C_f.
+  So a C5 pass supports the wall model to about 14% of the measured C_f, not 10%, and its record says so.
 
 **Configuration, fixed now except where Physics names it:**
 - **The flow:** U∞ at u_lat 0.1 (Ma 0.173); WALE on at C_w 0.5; the span periodic, at least πδ wide; the top face zero-gradient.
@@ -181,8 +188,8 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 
 | Measure | Tolerance | Built from |
 |---|---|---|
-| \|C_f / C_f,CF(Re_θ) − 1\| at each of 5 stations, C_f from the mean modelled wall stress | ≤ 0.10 | Spec §11.2's band, kept. The terms bounded here: the time-and-span average's sampling error, under 1% by the window; the Mach term, Ma²/2 = 1.5% (isothermal: the density's variation across the layer); and the correlation's own scatter about the data, read from the source with F2. The rest is the wall model's and the grid's error, which is what C5 exists to measure. So, as C0b's 10% is, this is the literature's band, not one built term by term |
-| White's C_f(Re_x) at each station, at the named virtual origin | report only | Open item 6 |
+| \|C_f / C_f,White(Re_x) − 1\| at each of 5 stations, C_f from the mean modelled wall stress, x from the named x₀ | ≤ 0.10 | Spec §11.2's band, kept. The terms bounded here: the time-and-span average's sampling error, under 1% by the window; the Mach term, Ma²/2 = 1.5% (isothermal: the density's variation across the layer); and x₀'s placement, 0.17 δx/x. The rest is the wall model's and the grid's error, which is what C5 exists to measure. So, as C0b's 10% is, this is the literature's band, not one built term by term. The correlation's own uncertainty is outside it (above) |
+| The station's Re_θ, from the mean profile | report only | So the result can be set against a Re_θ correlation once one is read |
 | The mean u⁺ against the log law at each station; the matching height in y⁺ and cells per δ | report only | Spec §11.2 sets no turbulent profile band |
 | C_f against 2 dθ/dx (von Kármán's momentum integral) between stations | report only | A check that the modelled stress and the layer's growth agree |
 
@@ -197,7 +204,7 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 | L2a | `s1-sphere.md` | `S1 sphere in a uniform stream, R/dx 6, Bouzidi, LBM` (one per size and wall) | max \|C_p − C_p,pot\| at n₁; the side forces; the drag, report only; the change to n₂, report only; at R/dx 12, the order check |
 | L2b | `s2-couette.md` | `S2 circular Couette, R1/dx 16, Bouzidi, LBM` | the profile; the couple; at 32, the order check |
 | L2c | `l2-rotating-plate.md` (new) | `L2 rotating plate, oblate spheroid c/a 0.5, a/dx 16, Bouzidi, LBM` | the mean couple; the symmetry measure; the spread, report only; at 16, the order check; the walls' cost, report only |
-| L3b | `c5-flat-plate.md` (new) | `C5 turbulent flat plate, wall-modelled, Re_theta 4000-6900, LBM` | C_f at the 5 stations; then the report-only lines |
+| L3b | `c5-flat-plate.md` (new) | `C5 turbulent flat plate, wall-modelled, Re_x 2e6-4e6, LBM` | C_f at the 5 stations; then the report-only lines |
 
 L2d and L3a are unit tests and leave no record.
 
@@ -208,7 +215,7 @@ L2d and L3a are unit tests and leave no record.
 
 ## Reference data and fetches
 
-Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple and the Coles–Fernholz form are closed forms that the tests evaluate in double. Two sources are read before the first run, so each formula's provenance is checked from the paper, not from memory (the lead's fetches, L19):
+Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple and White's correlation are closed forms that the tests evaluate in double. Two sources are read before the first run, so each formula's provenance is checked from the paper, not from memory (the lead's fetches, L19):
 - **F1, read.** Jeffery, G. B. (1922), "The motion of ellipsoidal particles immersed in a viscous fluid", Proc. R. Soc. Lond. A 102, 161–179, doi:10.1098/rspa.1922.0078: the couple's formula (L2c).
   - **The copy:** the Royal Society's public-domain deposit on the Internet Archive, item `philtrans09717112`. The publisher's own PDF answered a bot challenge, and that was not worked around.
   - **The files:** `09717112.pdf` (SHA-256 0b2ba9464ce926aa9c8083d88d495d3e8a49dbd7270655589bd9b8bed364a3c3) and its page scans, `09717112_jp2.zip` (SHA-256 2fdc0f0357f104d40d0fb0cb37a3f13f1aaa16bee0b3f4c1d9a9be2862bcdc56). Each SHA-1 matches the item's own listing. Kept out of the repo, in the main checkout's `.agents/refs/jeffery1922/`.
@@ -216,9 +223,10 @@ Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple
 - **F2, not read: closed access.** Nagib, H. M., Chauhan, K. A. & Monkewitz, P. A. (2007), "Approach to an asymptotic state for zero pressure gradient turbulent boundary layers", Phil. Trans. R. Soc. A 365, 755–770, doi:10.1098/rsta.2006.1948: the Coles–Fernholz constants and their scatter about the data (L3b). OpenAlex lists no open copy, and the publisher's page answered a bot challenge. The lead then approved two open sources from the same group (L19b), and neither could be reached:
   - Monkewitz, Chauhan & Nagib (2007), Phys. Fluids 19, 115101, for κ and C: AIP's open copy answered the same bot challenge, which was not worked around. EPFL's record (179698) holds a licence file and no text.
   - Chauhan, Monkewitz & Nagib (2009), Fluid Dyn. Res. 41, 021404, for the scatter: EPFL's record (159338) holds a licence file and no text.
-  - **So the constants 0.384 and 4.127 are not yet read from a source.** L3b's reference stays proposed until one is read.
-
-If the lead keeps White's correlation as C5's measure (open item 6), its source, White's *Viscous Fluid Flow*, is a book. A fetch can't reach it, and the spec's form would need a second reading instead.
+  - **The lead then approved two arXiv papers (L19c),** each read once from arxiv.org and kept in the main checkout's `.agents/refs/`. Neither states the constants with their scatter:
+    - Yakhot, V., "Skin friction in simple wall-bounded shear flows in large Reynolds number limit", arXiv:0909.4387v3 (SHA-256 e4f41c3de752e2049edf093a26437dec498071b2b26bfeed3cef9ab55b807722). It cites Nagib et al. (2007) and Fernholz & Finley (1996, Prog. Aerosp. Sci. 32) for the Coles–Fernholz relation. It writes the relation only as C_f ∝ 1/ln² Re_δ, with no κ, no C and no scatter.
+    - Xia, Z., Zhang, P. & Yang, X. I. A., "On skin friction in wall-bounded turbulence", arXiv:2007.14619v1 (SHA-256 d4a5e36b839525a31a1c04025dbd1fc6fa007cb76017b0d80c0a5d3a4c831210). It uses the log law, not Coles–Fernholz. Its one figure on the constants' effect is Crook's (2002, CTR Annu. Res. Briefs): a change of about 0.5 in the log law's slope 1/κ gives a 12% difference in u_τ.
+  - **So L3b takes the spec's White's correlation, and Coles–Fernholz waits** (the lead's rule, L19c).
 
 ## Open, for Physics before the first run
 
@@ -227,6 +235,6 @@ If the lead keeps White's correlation as C5's measure (open item 6), its source,
 3. **The plate's reference** is Jeffery's exact couple on a spheroid (a, a, a/2), not a fine grid. A thinner plate, c/a 0.25, would put its rim radius at one cell at a 16. Its Bouzidi term would then be 0.081, and its band about 0.12.
 4. **The moving wall's momentum exchange and refill rule:** name both before L2c's first run. Each record's `config:` line prints them.
 5. **C5's domain and inflow:** the method, the 10 δ_in recovery length, and the sizes above, about 6 M cells for Re_x 2·10⁶ to 4·10⁶. The spec's Re_x 10⁷ waits for L4.
-6. **C5's C_f against Re_θ (Coles–Fernholz), not Re_x (White):** a change to spec §11.2, which is Physics' spec, for the lead to rule on. If Re_x stays, Physics names the virtual origin before the first run.
+6. **C5's virtual origin x₀:** Physics names how x₀ is placed before the first run, and the record prints it. Comparing at Re_θ (Coles–Fernholz) would remove x₀, and waits for a source that states its constants with their scatter.
 7. **Spalding's constants and the Newton count:** name κ and B (Spalding's own are 0.4 and 5.5), the start and the count, before L3a.
 8. **No case in L2 checks a viscous force against published data:** L2a reads the pressure early, and the plate is Stokes flow. C2 (spec §11.2: Dennis & Chang 1970, the steady cylinder at Re 20 and 40, C_d and L/D within 5%) would. Consider it for L2 or before L5. Its data would then need a fetch.
