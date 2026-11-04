@@ -475,6 +475,7 @@ void armed_frame(an::LiveRun& run, spade::FlowVolume& v) {
             case an::DrawnReason::leaks: why = "leaks"; break;
             case an::DrawnReason::exposed: why = "exposed"; break;
             case an::DrawnReason::sibling: why = "sibling"; break;
+            case an::DrawnReason::contained: why = "contained"; break;
         }
         out.push_back(d.name + "#" + std::to_string(d.part) + " " + why + (d.inside.empty() ? "" : " in " + d.inside) +
                       (d.of.empty() ? "" : " of " + d.of));
@@ -697,6 +698,44 @@ TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
         const spade::Result<void> s = run->step(an::Controls{true, 0.5f, 0, 0, 0});
         ASSERT_TRUE(s.has_value()) << s.error().context;
     }
+}
+
+// L13 (2) (Physics' ruling (a); the lead, 2026-11-03): a part left out of
+// the air takes every part whose 8 posed box corners all lie inside it (its
+// SDF < 0 at each), named "inside '<it>', with it"; lattice-free, and not by
+// the centre. A porous shell left out takes the box wholly inside it; a box
+// straddling its surface, its centre inside, stays in the air.
+TEST(AnalysisLiveRun, APartLeftOutTakesThePartsWhollyInsideIt) {
+    Powered p = powered();
+    spade::vehicles::PartDesc shell = part("shell", spade::SdfPrim::sphere, glm::vec3(0.2f), 0.4f, glm::vec3(0.0f));
+    shell.surface = spade::vehicles::PartSurface{spade::vehicles::PartSurface::Kind::porous, 1.0e6f, 0.0f};
+    p.model.parts = {shell,
+                     part("core", spade::SdfPrim::box, glm::vec3(0.05f), 0.1f, glm::vec3(0.0f)),
+                     part("stub", spade::SdfPrim::box, glm::vec3(0.05f), 0.1f, glm::vec3(0.0f, -0.18f, 0.0f))};
+    an::LiveRun run = started(solid_case(p.model), p);
+    EXPECT_EQ(fates(run), (std::vector<std::string>{"shell#0 porous", "core#1 contained in shell"}));
+    EXPECT_TRUE(run.solids().any) << "the stub, its centre inside the shell but two corners out, stays";
+    EXPECT_NE(run.run_label().find("drawn only at 40 mm: shell (porous); core (inside 'shell', with it)"),
+              std::string::npos)
+        << run.run_label();
+}
+
+// At 16 mm the Phantom's body leaks (Physics, 2026-11-03), and the battery
+// and the ESC, wholly inside its shell (8 of 8 corners; each arm 2 of 8),
+// go with it: no solid is left, so the run is discs only.
+TEST(AnalysisLiveRun, ThePhantomAt16mmLeavesOutItsBodyAndThePartsInsideIt) {
+    const spade::vehicles::ModelType m = phantom();
+    spade::Result<an::LiveRun> run = phantom_run(m, 40, 0.016f);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    std::printf("[ l13 ] the Phantom at 16 mm on 40^3: %s\n", run->run_label().c_str());
+    for (const std::string& f : fates(*run)) std::printf("[ l13 ]   %s\n", f.c_str());
+    EXPECT_FALSE(run->solids().any);
+    const std::vector<std::string> f = fates(*run);
+    EXPECT_NE(std::find(f.begin(), f.end(), "body#0 leaks"), f.end());
+    EXPECT_NE(std::find(f.begin(), f.end(), "battery#10 contained in body"), f.end());
+    EXPECT_NE(run->run_label().find(" \xc2\xb7 discs only: every part drawn only at 16 mm: "), std::string::npos)
+        << run->run_label();
+    EXPECT_NE(run->run_label().find("battery (inside 'body', with it)"), std::string::npos) << run->run_label();
 }
 
 // At Run air's cell today, 39 mm on 32^3, every Phantom part is too thin

@@ -64,6 +64,7 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
         case DrawnReason::leaks: return "leaks";
         case DrawnReason::exposed: return "inside '" + d.inside + "', exposed";
         case DrawnReason::sibling: return "its siblings with it";  // after its refused part's words
+        case DrawnReason::contained: return "inside '" + d.inside + "', with it";
     }
     return {};
 }

@@ -103,13 +103,14 @@ enum class DrawnReason : uint8_t {
     leaks,    // the measured safeguard: it leaks at this cell
     exposed,  // the measured safeguard: inside another part, exposed near its surface
     sibling,  // L8: an indexed sibling of a part the safeguard refused, left out with it
+    contained,  // L13: wholly inside a part left out (its 8 posed box corners), left out with it
 };
 
 struct DrawnPart {
     std::string name;
     uint32_t part = 0;  // its index in the model's parts
     DrawnReason why = DrawnReason::marked;
-    std::string inside;  // exposed only: the part it lies inside
+    std::string inside;  // exposed and contained only: the part it lies inside
     std::string of;      // sibling only: the part the safeguard refused
 };
 
