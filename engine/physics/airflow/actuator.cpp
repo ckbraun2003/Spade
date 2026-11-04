@@ -1,6 +1,7 @@
 #include "physics/airflow/actuator.hpp"
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <format>
 #include <numbers>
@@ -235,6 +236,99 @@ void spread_actuator(const ActuatorDisc& d, const GridShape& s, float rho, float
                      std::span<float> dv, std::span<float> dw) noexcept {
     const spade::math::ScopedFlushSubnormals flush;
     spread_flushed(d, s, rho, h, du, dv, dw);
+}
+
+namespace {
+
+[[nodiscard]] bool same_bits(float a, float b) noexcept { return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b); }
+
+[[nodiscard]] bool same_bits(glm::vec3 a, glm::vec3 b) noexcept {
+    return same_bits(a.x, b.x) && same_bits(a.y, b.y) && same_bits(a.z, b.z);
+}
+
+[[nodiscard]] bool key_holds(const DiscWeights& w, const ActuatorDisc& d, const GridShape& s, bool swirl) noexcept {
+    return w.valid && same_bits(w.centre, d.centre) && same_bits(w.axis, d.axis) && same_bits(w.radius, d.radius) &&
+           w.shape.nx == s.nx && w.shape.ny == s.ny && w.shape.nz == s.nz && same_bits(w.shape.dx, s.dx) &&
+           w.swirl == swirl;
+}
+
+// spread_flushed()'s sums, every component's, kept with their samples.
+void build_weights(DiscWeights& w, const ActuatorDisc& d, const GridShape& s, const DiscSpread& spread) noexcept {
+    const std::array<glm::vec3, kDiscPoints>& pts = spread.points;
+    const std::array<glm::vec3, kDiscPoints>& tangent = spread.tangent;
+    const float inv_dx = 1.0f / s.dx;
+    const float reach = spread.reach;
+    const bool swirl = spread.swirl;
+    const uint32_t count = spread.count;
+    for (uint32_t c = 0; c < 3; ++c) {
+        const auto cl = static_cast<glm::length_t>(c);
+        w.index[c].clear();
+        w.sum[c].clear();
+        w.swirl_sum[c].clear();
+        for_each_sample(s, c, [&](std::size_t idx, glm::vec3 x) {
+            if (std::fabs(x.x - d.centre.x) > reach || std::fabs(x.y - d.centre.y) > reach ||
+                std::fabs(x.z - d.centre.z) > reach) {
+                return;
+            }
+            float sum = 0.0f;
+            float swirl_sum = 0.0f;
+            for (uint32_t i = 0; i < count; ++i) {
+                const glm::vec3 f = (x - pts[i]) * inv_dx;
+                if (std::isfinite(f.x) && std::fabs(f.x) >= 2.0f) continue;
+                if (std::isfinite(f.y) && std::fabs(f.y) >= 2.0f) continue;
+                if (std::isfinite(f.z) && std::fabs(f.z) >= 2.0f) continue;
+                const float wt = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
+                sum += wt;
+                if (swirl) swirl_sum += tangent[i][cl] * wt;
+            }
+            w.index[c].push_back(idx);
+            w.sum[c].push_back(sum);
+            w.swirl_sum[c].push_back(swirl_sum);
+        });
+    }
+    w.valid = true;
+    w.centre = d.centre;
+    w.axis = d.axis;
+    w.radius = d.radius;
+    w.shape = s;
+    w.swirl = swirl;
+}
+
+SPADE_NOINLINE void spread_cached(std::span<const ActuatorDisc> discs, const GridShape& s, float rho, float h,
+                                  std::span<float> du, std::span<float> dv, std::span<float> dw,
+                                  SpreadCache& cache) noexcept {
+    if (cache.discs.size() < discs.size()) cache.discs.resize(discs.size());
+    const std::span<float> out[3] = {du, dv, dw};
+    for (std::size_t n = 0; n < discs.size(); ++n) {
+        const ActuatorDisc& d = discs[n];
+        const DiscSpread spread = disc_spread(d, s, rho, h);
+        DiscWeights& w = cache.discs[n];
+        if (!key_holds(w, d, s, spread.swirl)) build_weights(w, d, s, spread);
+        const float scale = spread.scale;
+        const bool swirl = spread.swirl;
+        const float swirl_scale = spread.swirl_scale;
+        for (uint32_t c = 0; c < 3; ++c) {
+            const auto cl = static_cast<glm::length_t>(c);
+            const float axis_c = d.axis[cl];
+            if (axis_c == 0.0f && !swirl) continue;
+            const std::vector<std::size_t>& index = w.index[c];
+            const std::vector<float>& sums = w.sum[c];
+            const std::vector<float>& swirls = w.swirl_sum[c];
+            for (std::size_t q = 0; q < index.size(); ++q) {
+                const float sum = sums[q];
+                const float swirl_sum = swirls[q];
+                out[c][index[q]] += swirl ? scale * axis_c * sum + swirl_scale * swirl_sum : scale * axis_c * sum;
+            }
+        }
+    }
+}
+
+}  // namespace
+
+void spread_actuators(std::span<const ActuatorDisc> discs, const GridShape& shape, float rho, float h,
+                      std::span<float> du, std::span<float> dv, std::span<float> dw, SpreadCache& cache) noexcept {
+    const spade::math::ScopedFlushSubnormals flush;
+    spread_cached(discs, shape, rho, h, du, dv, dw, cache);
 }
 
 }  // namespace spade::physics::airflow

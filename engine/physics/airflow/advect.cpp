@@ -160,7 +160,8 @@ AdvectScratch make_advect_scratch(const GridShape& shape) {
     return s;
 }
 
-void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s) noexcept {
+void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s,
+                     WorkerPool* pool) noexcept {
     const float half_h = 0.5f * h;
     const Velocity vel = velocity_sampler(in, bc);
     const auto back_trace = [&](glm::vec3 x) {
@@ -173,26 +174,47 @@ void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float 
     };
     const std::vector<float>* src[3] = {&in.u, &in.v, &in.w};
     std::vector<float>* dst[3] = {&out.u, &out.v, &out.w};
+    // Each stage's samples one k plane an item, u's planes, then v's, then w's:
+    // an item writes its own plane's samples and reads only `in` (stage 1) or
+    // stage 1's whole output (stage 2), so the bits hold at any thread count.
+    const uint32_t planes[3] = {sample_planes(in.shape, 0), sample_planes(in.shape, 1), sample_planes(in.shape, 2)};
+    const uint32_t items = planes[0] + planes[1] + planes[2];
+    const auto plane_of = [&](uint32_t item, uint32_t& c) {
+        c = 0;
+        while (item >= planes[c]) item -= planes[c++];
+        return item;
+    };
     // 1. The forward semi-Lagrangian estimate and its stencil's range.
-    for (uint32_t c = 0; c < 3; ++c) {
+    const auto forward = [&](uint32_t item) {
+        uint32_t c = 0;
+        const uint32_t k = plane_of(item, c);
         const float* field = src[c]->data();
-        for_each_sample(in.shape, c, [&](std::size_t idx, glm::vec3 x) {
+        for_each_sample_in(in.shape, c, k, k + 1u, [&](std::size_t idx, glm::vec3 x) {
             const Sample f = sample<true>(vel.geo, c, field, back_trace(x));
             s.hat[c][idx] = f.value;
             s.lo[c][idx] = f.lo;
             s.hi[c][idx] = f.hi;
         });
-    }
+    };
     // 2. The backward estimate from the forward one, and the clamped correction.
-    for (uint32_t c = 0; c < 3; ++c) {
+    const auto correct = [&](uint32_t item) {
+        uint32_t c = 0;
+        const uint32_t k = plane_of(item, c);
         const float* hat = s.hat[c].data();
-        for_each_sample(in.shape, c, [&](std::size_t idx, glm::vec3 x) {
+        for_each_sample_in(in.shape, c, k, k + 1u, [&](std::size_t idx, glm::vec3 x) {
             const float back = sample<false>(vel.geo, c, hat, forward_trace(x)).value;
             float v = s.hat[c][idx] + 0.5f * ((*src[c])[idx] - back);
             v = v < s.lo[c][idx] ? s.lo[c][idx] : (v > s.hi[c][idx] ? s.hi[c][idx] : v);
             (*dst[c])[idx] = v;
         });
+    };
+    if (pool != nullptr) {
+        pool->run(items, forward);
+        pool->run(items, correct);
+        return;
     }
+    for (uint32_t item = 0; item < items; ++item) forward(item);
+    for (uint32_t item = 0; item < items; ++item) correct(item);
 }
 
 }  // namespace spade::physics::airflow

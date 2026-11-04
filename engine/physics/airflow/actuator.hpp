@@ -1,9 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -103,5 +105,37 @@ struct DiscSpread {
 // fluid_step() flushes them (fluid_step.hpp).
 void spread_actuator(const ActuatorDisc& disc, const GridShape& shape, float rho, float h, std::span<float> du,
                      std::span<float> dv, std::span<float> dw) noexcept;
+
+// THE SPREAD'S WEIGHTS, KEPT (L18; Physics' rules, 2026-11-03). A sample's
+// weight sums over a disc's points -- sum and swirl_sum in spread_actuator() --
+// depend only on the disc's centre, axis and radius, the grid, and whether it
+// swirls (its tangents are 0 without): not on thrust or torque, which enter
+// only through scale and swirl_scale. So a disc whose key is unchanged since
+// the last step takes its kept sums, every sample in its reach box (a +0 sum
+// too: its += still turns a -0 increment into +0), each component's whether or
+// not it is skipped this step, in the order spread_actuator() visits them.
+// Its increments are spread_actuator()'s to the bit. A changed key rebuilds.
+struct DiscWeights {
+    bool valid = false;
+    glm::vec3 centre{0.0f};
+    glm::vec3 axis{0.0f};
+    float radius = 0.0f;
+    GridShape shape{};
+    bool swirl = false;
+    std::array<std::vector<std::size_t>, 3> index;
+    std::array<std::vector<float>, 3> sum;
+    std::array<std::vector<float>, 3> swirl_sum;
+};
+
+// One entry a disc, by its index in the step's list.
+struct SpreadCache {
+    std::vector<DiscWeights> discs;
+};
+
+// Adds one step's increments for checked discs, in their order, each as
+// spread_actuator() adds it (the bits are the same), from `cache` when its key
+// holds; subnormals flushed as fluid_step() flushes them.
+void spread_actuators(std::span<const ActuatorDisc> discs, const GridShape& shape, float rho, float h,
+                      std::span<float> du, std::span<float> dv, std::span<float> dw, SpreadCache& cache) noexcept;
 
 }  // namespace spade::physics::airflow
