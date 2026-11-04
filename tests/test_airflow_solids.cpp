@@ -74,8 +74,10 @@ TEST(AirflowSolids, TheClassifierSortsWallsSheetsAndWires) {
 }
 
 // A sphere of radius 4 cells centred on a cell corner: every sampled face takes
-// the ramp's aperture clamp(0.5 + phi / dx), mirror-symmetric on all three
-// axes, and the faces far from it stay open.
+// the ramp's aperture clamp(0.5 + phi / dx), closed under kApertureFloor (L13),
+// mirror-symmetric on all three axes, and the faces far from it stay open. The
+// sphere puts some ramps under the floor, so the floor is exercised. Mutation:
+// the floor at the tie's 1e-4 again (those faces open at their ramp).
 TEST(AirflowSolids, ASphereGivesTheRampsApertureAndIsMirrorSymmetric) {
     const GridShape shape{16, 16, 16, 1.0f};
     Scene scene;
@@ -84,17 +86,21 @@ TEST(AirflowSolids, ASphereGivesTheRampsApertureAndIsMirrorSymmetric) {
     const SolidField f = built(shape, scene);
     EXPECT_TRUE(f.any);
     uint32_t closed_faces = 0;
+    uint32_t floored = 0;  // ramps in (0, kApertureFloor)
     for (uint32_t c = 0; c < 3; ++c) {
         for_each_sample(shape, c, [&](std::size_t idx, glm::vec3 x) {
             const glm::vec3 d = x - glm::vec3(8.0f);
             const float phi = std::sqrt(glm::dot(d, d)) - 4.0f;
-            const float expected = std::min(std::max(0.5f + phi, 0.0f), 1.0f);
+            const float ramp = 0.5f + phi;
+            const float expected = ramp < kApertureFloor ? 0.0f : std::min(ramp, 1.0f);
             EXPECT_EQ(f.theta[c][idx], expected) << c << " " << idx;
             if (f.theta[c][idx] == 0.0f) ++closed_faces;
+            if (ramp > 0.0f && ramp < kApertureFloor) ++floored;
             EXPECT_EQ(f.wall[c][idx], 0.0f);
         });
     }
     EXPECT_GT(closed_faces, 0u);
+    EXPECT_GT(floored, 0u) << "the sphere must put some ramp under the floor";
     for (uint32_t k = 0; k < 16; ++k) {
         for (uint32_t j = 0; j < 16; ++j) {
             for (uint32_t i = 0; i <= 16; ++i) {

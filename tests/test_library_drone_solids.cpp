@@ -191,14 +191,15 @@ constexpr std::array<Enclosed, 5> kDrones{{
      {"body: leaks at an edge (1 runs, open area 0.383 dx^2, 0.03% of its largest face)",
       "motor[0]: leaks at an edge (1 runs, open area 0.065 dx^2, 0.13% of its largest face)",
       "motor[1]: leaks at an edge (1 runs, open area 0.140 dx^2, 0.29% of its largest face)",
-      "motor[2]: leaks at an edge (2 runs, open area 0.005 dx^2, 0.01% of its largest face)",
-      "motor[3]: leaks at an edge (1 runs, open area 0.025 dx^2, 0.05% of its largest face)", "esc: covered by 'body'",
-      "battery: covered by 'body'"}},
+      // L13 (2026-11-03): motor[2]'s and motor[3]'s sliver leaks (0.005 and 0.025 dx^2) are closed by the
+      // aperture floor.
+      "esc: covered by 'body'", "battery: covered by 'body'"}},
     {"fpv_5inch",
      "esc",
      true,
+     // L13 (2026-11-03): 817 of 880 closed and 63 open before the aperture floor.
      "airflow solids: part 'esc' leaks: it closes no face of its own at dx = 4.0 mm and is exposed where it is not "
-     "covered ('body', 'arm[0]', 'arm[1]', 'arm[2]' and 'arm[3]' close 817 of the 880 faces it would block; 63 stay "
+     "covered ('body', 'arm[0]', 'arm[1]', 'arm[2]' and 'arm[3]' close 819 of the 880 faces it would block; 61 stay "
      "open); declare min_feature or refine dx",
      {}},
     {"basic_quad_6inch", "esc", false, "", {"esc: covered by 'body'"}},

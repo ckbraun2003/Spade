@@ -12,7 +12,10 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
+#include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -20,10 +23,16 @@
 
 #include "airflow_record.hpp"
 #include "airflow_solid_shapes.hpp"
+#include "analysis/case.hpp"
+#include "analysis/controls.hpp"
+#include "analysis/live_run.hpp"
+#include "core/flow_volume.hpp"
 #include "reference_airframe.hpp"
+#include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/multigrid.hpp"
 #include "physics/airflow/wall_load.hpp"
+#include "scene/model_file.hpp"
 #include "state/layout.hpp"
 #include "vehicles/airflow_solids.hpp"
 #include "vehicles/airframe_compile.hpp"
@@ -1595,6 +1604,102 @@ TEST(AirflowSolidsStepRecord, EachRecordBlockReadsAsAValidationRecord) {
 
     check(planar_couette_block(5.6e-8, true, 6.5e-2, true), {V::within, V::within});
     check(planar_couette_block(3.0e-4, false, 2.0e-6, false), {V::miss, V::miss});
+}
+
+// The live run's own CPU fluid, kept where a test can read its scratch: the
+// fluid steps as LiveRun's CPU path does (each disc spread, then fluid_step()).
+struct KeptFluid final : an::LiveFluid {
+    MacGrid g;
+    DomainBc bc;
+    FluidConfig cfg;
+    FluidScratch s;
+    std::vector<FluidHealth> health;
+    spade::Result<FluidHealth> step(std::span<const ActuatorDisc> discs) override {
+        for (const ActuatorDisc& d : discs) spread_actuator(d, g.shape, cfg.rho, cfg.h, s.du, s.dv, s.dw);
+        health.push_back(fluid_step(g, bc, cfg, s));
+        return health.back();
+    }
+    spade::Result<void> publish(const PublishInput&, spade::FlowVolume&) override { return {}; }
+    spade::Result<void> read(MacGrid& out) const override {
+        out = g;
+        return {};
+    }
+};
+
+// L13 (the lead, 2026-11-03): the Phantom on Run air at 10 mm on 125^3, an odd
+// n that sets the drone's centre on a cell centre. Before the aperture floor,
+// 12 cells at the body's vertical edges hung on two faces 0.0037 open, and the
+// solids' CG took 31-32 iterations to 7-8e-5 every step (Rendering's measure,
+// Physics' diagnosis). Pinned: no open face below kApertureFloor, no fluid cell
+// whose open faces sum below it, and every step at the CG's floor of 8,
+// ending under the loose mark of 2e-5. Mutation: the floor at the tie's 1e-4.
+// Debug: runs in release (125^3 on the CPU).
+TEST(AirflowSolidsStep, ThePhantomAt10mmOn125CubedStepsAtTheCgsFloor) {
+    if (debug_build()) GTEST_SKIP() << "debug: runs in release (125^3 on the CPU)";
+    auto file = spade::scene::load_model_file(std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" /
+                                              "phantom3_class.model.yaml");
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    const spade::vehicles::ModelType& m = file->model;
+    constexpr uint32_t kN = 125;
+    constexpr float kDx = 0.010f;
+    an::AnalysisCase c;
+    c.model = an::pin_model("phantom3_class.model.yaml", m);
+    c.power = an::Power{.idle = 0.05f, .state_of_charge = 1.0f};
+    c.rotors.assign(m.rotors.size(), an::RotorSetup{});
+    c.grid.box = static_cast<float>(kN) * kDx;
+    c.grid.spacing = kDx;
+    c.time.duration = 1.0f;
+    c.time.step = 0.002f;
+    const auto resolved = an::resolve(c, m, an::ThinWalls::drawn_by_the_live_run);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().front().message;
+    KeptFluid* kept = nullptr;
+    const an::LiveFluidMaker maker = [&kept](const an::LiveFluidStart& st)
+        -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+        auto f = std::make_unique<KeptFluid>();
+        f->g = st.grid;
+        f->bc = st.domain;
+        f->cfg = st.config;
+        auto s = make_fluid_scratch(f->g, f->bc, f->cfg);
+        if (!s) return std::unexpected(s.error());
+        f->s = std::move(*s);
+        if (st.solids != nullptr) {
+            if (auto a = attach_solid_field(f->s, f->g, f->bc, *st.solids); !a) return std::unexpected(a.error());
+        }
+        kept = f.get();
+        return std::unique_ptr<an::LiveFluid>(std::move(f));
+    };
+    spade::Result<an::LiveRun> run = an::LiveRun::start(*resolved, m, maker);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    ASSERT_NE(kept, nullptr);
+    ASSERT_TRUE(kept->s.solids.any) << run->run_label();
+    const GridShape& sh = kept->g.shape;
+    const SolidField& f = kept->s.solids;
+    uint32_t slivers = 0;
+    for (uint32_t comp = 0; comp < 3; ++comp) {
+        for (const float t : f.theta[comp]) slivers += (t > 0.0f && t < kApertureFloor) ? 1u : 0u;
+    }
+    EXPECT_EQ(slivers, 0u) << "open faces under the floor";
+    uint32_t near_sealed = 0;
+    for (uint32_t k = 0; k < sh.nz; ++k) {
+        for (uint32_t j = 0; j < sh.ny; ++j) {
+            for (uint32_t i = 0; i < sh.nx; ++i) {
+                const float sum = f.theta[0][u_index(sh, i, j, k)] + f.theta[0][u_index(sh, i + 1u, j, k)] +
+                                  f.theta[1][v_index(sh, i, j, k)] + f.theta[1][v_index(sh, i, j + 1u, k)] +
+                                  f.theta[2][w_index(sh, i, j, k)] + f.theta[2][w_index(sh, i, j, k + 1u)];
+                if (sum > 0.0f && sum < kApertureFloor) ++near_sealed;
+            }
+        }
+    }
+    EXPECT_EQ(near_sealed, 0u) << "fluid cells hung on less than the floor";
+    for (uint32_t step = 0; step < 3; ++step) {
+        const spade::Result<void> s = run->step(an::Controls{true, 0.5f, 0, 0, 0});
+        ASSERT_TRUE(s.has_value()) << s.error().context;
+        const FluidHealth& h = kept->health.back();
+        std::printf("[ L13 ] the Phantom at 10 mm on 125^3, step %u: CG %u, max|r|/max|b| %.3e\n", step + 1,
+                    h.pressure_iterations, static_cast<double>(h.pressure_residual));
+        EXPECT_EQ(h.pressure_iterations, kSolidsCgIterations) << "step " << step + 1;
+        EXPECT_LT(h.pressure_residual, 2.0e-5f) << "step " << step + 1;
+    }
 }
 
 }  // namespace
