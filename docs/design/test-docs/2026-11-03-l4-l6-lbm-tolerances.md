@@ -102,20 +102,9 @@ Lattice units are as in L1's note. Bands are built as in L2–L3's note: term by
 - **CPU = GPU to the bit** on every L4 case (the plan's rule).
 - **The cost:** ns a cell-step per level, and the interfaces' share of the step, on the GPU. Report only (the plan: "the cost, measured").
 
-## L5. Caradonna–Tung (P9's record): pointed to, and not yet banded
+## L5. Caradonna–Tung: its own note
 
-**The data** are P9's:
-- `tests/data/airflow/caradonna1981_rotor.hpp`: Table 17's five stations, their C_L, the condition and figure 9's tip vortex path;
-- its row in `tests/data/airflow/README.md`;
-- the reading's record `2026-11-03-p9-caradonna-review.md`.
-
-**Its bands are not fixed anywhere yet.** P9's plan (`2026-11-03-p9-rotor-data-plan.md`, "What P9 delivers") sets **no tolerance**: "D3's checks fix those before D3's first run". The data file's README row says the same. P5's L5 names "their bands" without giving them. So L5 needs a note of its own before its first run (open item 5). It would cover:
-- C_p at the five stations against Table 17;
-- C_L against the printed values;
-- the tip vortex's descent and contraction against figure 9's digitized path, within its ±4° and ±0.01;
-- C_T against the two printed values.
-
-Its compressibility caveat comes from L1's map: at u_lat 0.254 its tip Mach is the flow's own; below that, P9's 10% caveat.
+L5's bands are in `2026-11-03-l5-caradonna-tung-tolerances.md` (the lead's L20). P9 deferred them to D3 (`2026-11-03-p9-rotor-data-plan.md`, "No tolerance"), and D3 never ran, so that note fixes them before L5's first run. It also fixes **L5's configuration conditions**, which L6 cites below. The data are P9's (`tests/data/airflow/caradonna1981_rotor.hpp`, the reading's record `2026-11-03-p9-caradonna-review.md`).
 
 ## L6. The drone's rotors, blade-resolved
 
@@ -126,7 +115,7 @@ Its compressibility caveat comes from L1's map: at u_lat 0.254 its tip Mach is t
 
 So L6 is a demonstration with stated consistency checks, not a validation. Its record says so, and every thrust comparison is report only.
 
-**When L6 may carry L5's accuracy.** L5's validated errors transfer to L6 only at L5's configuration: at least 32 cells across the chord, the same wall rule, the same u_lat rule (L1's map) and the same nest levels. The record states whether L6 met each, and quotes L5's achieved errors beside its own numbers. A run below any of them says, in its `config:` line, that L5's validation does not cover it.
+**When L6 may carry L5's accuracy.** L5's validated errors transfer to L6 only at L5's configuration: the conditions table in L5's note (at least 32 cells across the chord, its wall rule and wall model, the u_lat rule min(0.254, u_held/1.4), its levels, WALE at C_w 0.5). The record states whether L6 met each, and quotes L5's achieved errors beside its own numbers. A run below any of them says, in its `config:` line, that L5's validation does not cover it.
 
 **Configuration.** As the plan:
 - rotor-attached parts from the builder;
@@ -141,7 +130,7 @@ So L6 is a demonstration with stated consistency checks, not a validation. Its r
 | Each rotor's mean thrust and torque from the blade loads, over C_T and C_P from UIUC's static table at the run's rpm | report only | Why not banded: the airfoil is assumed. For a prop whose table is scaled (the Phantom-class's APC 10x5 at 9.4 in, derived) the ratio says so. With a thickness floor, the floor is named |
 | The same over the rigid-body path's k_T ω², the thrust the drone flies with | report only | How the resolved tier differs from the flight model |
 | The four rotors' mean thrusts, each against their mean | within 10% | C8q's symmetry band (`tests/data/airflow/README.md`, C8q), carried: a symmetric quad at hover, each rotor's difference set by its neighbours and the body |
-| The mean downwash 2R below each hub against momentum theory from that rotor's resolved thrust; the slipstream radius at z = −2R against Landgrebe's 0.78 | report only | A real rotor's slipstream isn't uniform, and Landgrebe's figure is for helicopter rotors. Spec §11.2 compares 0.78 "only in the blade-resolved case" and sets no band. A band needs Landgrebe's data read (fetch F4, below) |
+| The mean downwash 2R below each hub against momentum theory from that rotor's resolved thrust; the slipstream radius at z = −2R against Landgrebe's 0.78 | report only | A real rotor's slipstream isn't uniform, and Landgrebe's figure is for helicopter rotors. Spec §11.2 compares 0.78 "only in the blade-resolved case" and sets no band. Landgrebe's value comes from helicopter rotors, so it doesn't earn a band on small props: the lead declined F4 (L20) |
 | The thrust against the momentum budget through a control surface in the nest | report only | Closes to the nests' leak, as L4d's. Banded with it |
 | CPU = GPU to the bit | exact | The plan's rule |
 
@@ -164,7 +153,7 @@ The shape is `01-verification.md`'s. Each opening line ends with `LBM`, and `tol
 ## Fetches
 
 - **None for L4.** Every reference is exact or C8's existing one. Lagrava et al. (2012) is the method, Physics' to read.
-- **F4, for L6's contraction, only if the lead wants it banded.** Landgrebe, A. J. (1971), "An analytical and experimental investigation of helicopter rotor hover performance and wake geometry characteristics", USAAMRDL Technical Report 71-24 (the number from memory, to be confirmed when it is found), the report behind the 1972 J. Am. Helicopter Soc. paper. It would be read from DTIC, if it is public there. Until it is read, the contraction is report only.
+- **F4 (Landgrebe's report), declined by the lead (L20).** L6's contraction stays report only.
 - **UIUC's measurement uncertainty** would matter only if an L6 thrust row were banded. None is.
 
 ## Open, for Physics before the first run
@@ -173,5 +162,5 @@ The shape is `01-verification.md`'s. Each opening line ends with `LBM`, and `tol
 2. **f_neq at the coupled faces.** Rebuilt from the NS field's strain, or equilibrium only? L4b's band assumes the first.
 3. **A hub-fixed nest that moves.** If L4 moves nests with a hub, L4a's second row applies. If nests only sit still, drop it.
 4. **The disc in the nest by Guo's forcing,** with the NS tier's points and kernel, so both tiers receive the same source (spec §1.3). Confirm.
-5. **L5's bands** (above): not fixed by P9 or P5. Test/Docs can write them in this shape, if the lead asks.
+5. **L5's bands:** now in their own note (above), which has its own open items.
 6. **L6's references:** the props' airfoils are unknown, so L6's thrust is report only. A prop with a published section, or one measured for the purpose, would be needed to validate it.
