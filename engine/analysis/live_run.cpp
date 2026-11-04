@@ -690,7 +690,12 @@ Result<void> LiveRun::step(const Controls& controls) {
         // L6: an unconverged pressure is announced (run_line()), never refused.
         r.solids.pressure_residual = health.pressure_residual;
         r.solids.pressure_iterations = health.pressure_iterations;
-        if (health.unconverged) ++r.solids.unconverged_steps;
+        if (health.unconverged) {
+            ++r.solids.unconverged_steps;
+        } else if (health.pressure_residual > kLiveLooseResidual) {  // L13: counted beside, not among, them
+            ++r.solids.loose_steps;
+            r.solids.loose_max_residual = std::max(r.solids.loose_max_residual, health.pressure_residual);
+        }
         if (health.stalled) ++r.solids.stalled_steps;
         if (health.capped) ++r.solids.capped_steps;
     }
@@ -879,18 +884,38 @@ std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any
     return out;
 }
 
+namespace {
+// `v` in scientific notation with `decimals` decimals and its exponent
+// unpadded, as L13's label writes it: "8.5e-5", "2e-6".
+[[nodiscard]] std::string short_e(float v, int decimals) {
+    std::string out = std::format("{:.{}e}", v, decimals);
+    const std::size_t e = out.find('e');
+    if (e == std::string::npos || e + 2 >= out.size()) return out;
+    std::size_t digit = e + 2;  // past the exponent's sign
+    while (digit + 1 < out.size() && out[digit] == '0') out.erase(digit, 1);
+    return out;
+}
+}  // namespace
+
 std::string solids_health_line(const LiveSolids& s, uint32_t cap) {
-    if (s.unconverged_steps == 0) return {};
-    std::string out =
-        std::format("pressure unconverged on {} step{}", s.unconverged_steps, s.unconverged_steps == 1 ? "" : "s");
-    std::string why;
-    if (s.stalled_steps > 0) why = std::format("{} stalled at fp32's floor", s.stalled_steps);
-    if (s.capped_steps > 0) {
-        why += std::format("{}{} at the CG's cap of {} iteration{}", why.empty() ? "" : ", ", s.capped_steps, cap,
-                           cap == 1 ? "" : "s");
+    std::string out;
+    if (s.unconverged_steps > 0) {
+        out = std::format("pressure unconverged on {} step{}", s.unconverged_steps, s.unconverged_steps == 1 ? "" : "s");
+        std::string why;
+        if (s.stalled_steps > 0) why = std::format("{} stalled at fp32's floor", s.stalled_steps);
+        if (s.capped_steps > 0) {
+            why += std::format("{}{} at the CG's cap of {} iteration{}", why.empty() ? "" : ", ", s.capped_steps, cap,
+                               cap == 1 ? "" : "s");
+        }
+        if (!why.empty()) out += ": " + why;
+        out += std::format(" (last max|r|/max|b| {:.1e})", s.pressure_residual);
     }
-    if (!why.empty()) out += ": " + why;
-    out += std::format(" (last max|r|/max|b| {:.1e})", s.pressure_residual);
+    if (s.loose_steps > 0) {  // L13: past ten times a healthy solve, short of announced
+        if (!out.empty()) out += "; ";
+        out += std::format("pressure loose on {} step{} (max|r|/max|b| up to {}; a healthy solve ends near {})",
+                           s.loose_steps, s.loose_steps == 1 ? "" : "s", short_e(s.loose_max_residual, 1),
+                           short_e(kLiveHealthyResidual, 0));
+    }
     return out;
 }
 

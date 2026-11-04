@@ -202,12 +202,15 @@ struct LiveSolids {
     float loose_max_residual = 0.0f;  // the largest residual of those; 0 when none
 };
 
-// What a run says of its solids' pressure, "" when no step was unconverged:
-// how many steps were, how many of them stalled at fp32's floor and how many
-// stopped at the CG's cap of `cap` iterations, naming only what occurred
-// (P2d; the lead, 2026-10-22), then the last residual. For example "pressure
-// unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64
-// iterations (last max|r|/max|b| 2.0e-03)".
+// What a run says of its solids' pressure, "" when no step was unconverged
+// or loose: how many steps were unconverged, how many of them stalled at
+// fp32's floor and how many stopped at the CG's cap of `cap` iterations,
+// naming only what occurred (P2d; the lead, 2026-10-22), then the last
+// residual; then, after "; ", how many were loose and the largest they
+// reached (L13). For example "pressure unconverged on 5 steps: 2 stalled at
+// fp32's floor, 3 at the CG's cap of 64 iterations (last max|r|/max|b|
+// 2.0e-03)" and "pressure loose on 12 steps (max|r|/max|b| up to 8.5e-5; a
+// healthy solve ends near 2e-6)".
 [[nodiscard]] std::string solids_health_line(const LiveSolids& solids, uint32_t cap);
 
 struct LiveFrame {
