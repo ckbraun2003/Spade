@@ -537,7 +537,8 @@ class EditorWorkspace {
 
     // Run air (INT-15, D1): the selected drone's follow region, else the
     // scene's first, on its worker; the drone held and flown by the Pilot
-    // section, the rest of the scene not simulated. Refused, naming why.
+    // section, the rest of the scene not simulated, at the session's level
+    // (D10: the Airflow section's Physics). Refused, naming why.
     void run_air() {
         if (air_) return;
         if (run_) {
@@ -556,7 +557,7 @@ class EditorWorkspace {
             panels_.status = "Run air: no drone here has an airflow region; select a drone and Add airflow region";
             return;
         }
-        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region, std::nullopt, {}, air_starter_);
+        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region, std::nullopt, {}, air_starter_, panels_.air_level);
         if (!started) {
             panels_.status = started.error().context;
             return;

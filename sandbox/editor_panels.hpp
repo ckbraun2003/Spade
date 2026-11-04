@@ -63,11 +63,27 @@ struct PilotPanel {
     std::string why_not;            // why nothing is piloted, when nothing is
 };
 
+// Run air's physics level (D10, Cameron's direction via the lead,
+// 2026-11-03), the session's choice in the inspector's Airflow section:
+// what the air resolves. detailed: the drone's body as a solid at Run air's
+// cell (analysis::live_grid()), on the device; not real time, so the band
+// says how far from it. real_time: actuator discs alone on R/3's grid over
+// the same box. editor_airflow.hpp's air_cases() says what each flies, so a
+// level can be redefined there without touching the panels.
+enum class AirLevel : uint8_t { detailed, real_time };
+inline constexpr AirLevel kAirLevels[] = {AirLevel::detailed, AirLevel::real_time};
+
+[[nodiscard]] inline const char* air_level_name(AirLevel level) {
+    return level == AirLevel::detailed ? "Detailed" : "Real time";
+}
+
 // The inspector's airflow-region line (INT-15) as last resolved, and the
-// scene state it was resolved for (editor_airflow.hpp's air_line()).
+// scene state and level it was resolved for (editor_airflow.hpp's
+// air_line()).
 struct AirLineCache {
     uint64_t opened = ~uint64_t{0};
     uint64_t serial = 0;
+    AirLevel level = AirLevel::detailed;
     std::string region;
     std::string text;
     bool refused = false;
@@ -87,6 +103,8 @@ struct EditorPanels {
     // before Save and File would leave the bar; the session fills it.
     std::string air_band;
     AirLineCache air_line;  // kept by the panels between frames
+    // ---- Written by the panels, read by the workspace at Run air.
+    AirLevel air_level = AirLevel::detailed;
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
     std::string grid_cell;                    // its Grid cell row (grid_cell_line()): a Run's sized cell, and why

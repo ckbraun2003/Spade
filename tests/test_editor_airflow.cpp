@@ -311,22 +311,23 @@ TEST(EditorAirflow, TheInspectorsLineResolvesOncePerSceneState) {
 }
 
 // The band's speed (§9): simulated time over wall time across the last few
-// frames handed over, "air at 1/30 speed"; a frame seen again counts once.
+// frames handed over, as a share of real time (D10): "air at 3.3% of real
+// time"; a frame seen again counts once.
 TEST(EditorAirflow, TheSpeedIsSimulatedTimeOverWallTime) {
     ed::AirSpeed speed;
     EXPECT_EQ(speed.line(), "waiting for the air's first frame");
     speed.frame(1, 1.0 / 30.0, 10.0);
     EXPECT_EQ(speed.line(), "the air is starting");
     speed.frame(2, 2.0 / 30.0, 11.0);
-    EXPECT_EQ(speed.line(), "air at 1/30 speed");
+    EXPECT_EQ(speed.line(), "air at 3.3% of real time");
     speed.frame(2, 2.0 / 30.0, 11.4);  // the same frame, read again by the next displayed frame
-    EXPECT_EQ(speed.line(), "air at 1/30 speed");
+    EXPECT_EQ(speed.line(), "air at 3.3% of real time");
     speed.frame(3, 3.0 / 30.0, 11.6);
-    EXPECT_EQ(speed.line(), "air at 1/24 speed");
+    EXPECT_EQ(speed.line(), "air at 4.2% of real time");
     ed::AirSpeed fast;
     fast.frame(1, 0.5, 1.0);
     fast.frame(2, 1.5, 2.0);
-    EXPECT_EQ(fast.line(), "air at full speed");
+    EXPECT_EQ(fast.line(), "air in real time");
 }
 
 // The band (§9) and its floor (the lead's rulings, 2026-10-27, and Run air
@@ -487,6 +488,38 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     EXPECT_EQ(*fine->body.resolved.spec.time.step,
               an::live_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
     EXPECT_LT(*fine->body.resolved.spec.time.step, 0.001f);
+}
+
+// D10 (Cameron's direction via the lead, 2026-11-03): the session's physics
+// level picks what Run air resolves. Detailed, the default, is the body's
+// case; Real time is the discs' on both the device and the CPU, so its band
+// says nothing of the body. The inspector's line follows the level, resolved
+// again when it changes.
+TEST(EditorAirflow, TheRealTimeLevelFliesTheDiscsAndTheLineFollowsTheLevel) {
+    auto d = ed::make_scene_document(support::sample_scene(), {});
+    ed::AddModelFile add;
+    add.file = (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / "phantom3_class.model.yaml")
+                   .generic_string();
+    add.vehicle.name = "phantom";
+    ASSERT_TRUE(ed::apply(d, add).has_value());
+    ASSERT_TRUE(ed::apply(d, ed::AddAirflowRegion{"phantom"}).has_value());
+    const spade::scene::SceneDesc s = d.desc();
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    EXPECT_EQ(ed::EditorPanels{}.air_level, ed::AirLevel::detailed) << "Detailed is the session's default";
+    const Result<ed::AirCases> fast = ed::air_cases(s, region, ed::AirLevel::real_time);
+    ASSERT_TRUE(fast.has_value()) << fast.error().context;
+    EXPECT_EQ(ed::grid_line(fast->body.resolved), "32\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_TRUE(fast->body.model.parts.empty());
+    EXPECT_FALSE(fast->loses_parts);
+    Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*fast);
+    ASSERT_TRUE(started.has_value()) << started.error().context;
+    EXPECT_EQ(started->backend, "CPU: told so");
+
+    ed::AirLineCache cache;
+    EXPECT_EQ(ed::air_line(cache, 1, 1, s, region).text, "104\xc2\xb3, dx 12 mm, R/dx 10");
+    EXPECT_EQ(ed::air_line(cache, 1, 1, s, region, ed::AirLevel::real_time).text, "32\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_EQ(cache.resolves, 2u);
+    EXPECT_EQ(ed::air_line(cache, 1, 1, s, region, ed::AirLevel::real_time).resolves, 2u) << "the same level: kept";
 }
 
 // Run air's guard (the lead, 2026-10-27): a published frame whose fastest

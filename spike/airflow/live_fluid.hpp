@@ -127,7 +127,7 @@ struct CpuCase {
                                                       const vehicles::ModelType& model,
                                                       compute::VulkanContext* ctx,
                                                       uint32_t workgroup_size = 64,
-                                                      [[maybe_unused]] CpuCase cpu = {}) {  // RED: unused
+                                                      CpuCase cpu = {}) {
     std::string because = "no Vulkan device";
     if (ctx != nullptr) {
         std::optional<Error> refused;
@@ -142,7 +142,9 @@ struct CpuCase {
         if (!refused) return std::unexpected(on_gpu.error());
         because = refused->context;
     }
-    Result<analysis::LiveRun> on_cpu = analysis::LiveRun::start(resolved, model);
+    const bool given = cpu.resolved != nullptr && cpu.model != nullptr;
+    Result<analysis::LiveRun> on_cpu =
+        given ? analysis::LiveRun::start(*cpu.resolved, *cpu.model) : analysis::LiveRun::start(resolved, model);
     if (!on_cpu) return std::unexpected(on_cpu.error());
     return LiveRunOn{std::move(*on_cpu), std::move(because)};
 }
