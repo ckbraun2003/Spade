@@ -120,11 +120,15 @@ struct DrawnPart {
 // the model's largest rotor radius), the box Run air has had; its cell is
 // min(R/3, F/4) to the millimetre below, F the largest declared min_feature
 // among the parts the air can take (rigid walls not marked drawn only), so 4
-// cells span the body; and n = ceil(box/dx) cells a side, at most
-// kLiveMaxCells, past which the cell is box / kLiveMaxCells. Refused: a model
-// without rotors, or whose largest radius is under 3 mm.
+// cells span the body; and n = ceil(box/dx) cells a side rounded up to a
+// multiple of kLiveCellMultiple, the cell kept and the box grown with it (L12:
+// an odd n puts the drone's centre on a cell centre, which stalls the
+// pressure's CG), at most kLiveMaxCells, past which the cell is box /
+// kLiveMaxCells. Refused: a model without rotors, or whose largest radius is
+// under 3 mm.
 inline constexpr uint32_t kLiveBoxCells = 32;
-inline constexpr uint32_t kLiveMaxCells = 128;  // until Rendering's numbers at 104^3 and 125^3 set it
+inline constexpr uint32_t kLiveCellMultiple = 8;
+inline constexpr uint32_t kLiveMaxCells = 128;  // the lead's cap (L12, 2026-11-03)
 
 struct LiveGrid {
     uint32_t n = 0;   // cells a side

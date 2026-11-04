@@ -783,10 +783,17 @@ Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
     const uint32_t box_mm = kLiveBoxCells * r3_mm;
     uint32_t dx_mm = r3_mm;
     if (feature > 0.0f) dx_mm = std::min(dx_mm, static_cast<uint32_t>(micrometres(feature) / 4000u));
-    if (dx_mm == 0 || (box_mm + dx_mm - 1) / dx_mm > kLiveMaxCells) {
+    // L12 (the lead, 2026-11-03): n rounded up to a multiple of 8, the cell
+    // kept and the box grown with it. An odd n puts the drone's centre on a
+    // cell centre, and the Phantom's 10 mm mask then stalls the pressure's CG
+    // at 7-8e-5 (Rendering, measured); every even n converged.
+    const uint32_t n = dx_mm == 0 ? kLiveMaxCells + 1
+                                  : ((box_mm + dx_mm - 1) / dx_mm + kLiveCellMultiple - 1) / kLiveCellMultiple *
+                                        kLiveCellMultiple;
+    if (n > kLiveMaxCells) {
         return LiveGrid{kLiveMaxCells, static_cast<float>(box_mm) / static_cast<float>(kLiveMaxCells) / 1000.0f};
     }
-    return LiveGrid{(box_mm + dx_mm - 1) / dx_mm, static_cast<float>(dx_mm) / 1000.0f};
+    return LiveGrid{n, static_cast<float>(dx_mm) / 1000.0f};
 }
 
 float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
