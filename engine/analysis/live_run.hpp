@@ -176,6 +176,17 @@ struct LiveState {
     uint32_t propulsion_flags = 0;   // the last command's propulsion_flags: limits, announced
 };
 
+// A healthy live solids solve ends near this max|r| / max|b|: the Phantom's
+// steps at the CG's floor of 8 since L13's aperture floor (Physics,
+// 2026-11-03).
+inline constexpr float kLiveHealthyResidual = 2.0e-6f;
+// A live step whose pressure ends past this, but not past kResidualAnnounce,
+// is loose (L13; the lead, 2026-11-03): ten times a healthy solve, as
+// kResidualAnnounce is ten times the warm residual its count leaves. It is
+// counted and said (solids_health_line()), never refused; the CG's stopping
+// rule is unchanged.
+inline constexpr float kLiveLooseResidual = 10.0f * kLiveHealthyResidual;
+
 // What a run's solids are (LiveRun::solids()).
 struct LiveSolids {
     bool any = false;                 // the model's rigid parts, but the drawn-only, are in the grid
@@ -187,6 +198,8 @@ struct LiveSolids {
     uint64_t unconverged_steps = 0;   // steps whose residual was past 1e-4, since start
     uint64_t stalled_steps = 0;       // of those, the CG stalled at fp32's floor (P2d)
     uint64_t capped_steps = 0;        // of those, the CG reached its cap: the two sum to unconverged_steps
+    uint64_t loose_steps = 0;         // steps past kLiveLooseResidual but not unconverged (L13), since start
+    float loose_max_residual = 0.0f;  // the largest residual of those; 0 when none
 };
 
 // What a run says of its solids' pressure, "" when no step was unconverged:

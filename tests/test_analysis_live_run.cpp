@@ -24,6 +24,7 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
+#include "physics/airflow/pcg.hpp"
 #include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/design_frame.hpp"
@@ -969,6 +970,61 @@ TEST(AnalysisLiveRun, TheSolidsHealthLineSaysWhyThePressureWasUnconverged) {
     EXPECT_EQ(an::solids_health_line(s, 64),
               "pressure unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64 iterations "
               "(last max|r|/max|b| 2.0e-03)");
+}
+
+// L13 (1) (the lead, from Physics' diagnosis, 2026-11-03): a step whose
+// pressure ends past kLiveLooseResidual, ten times a healthy solve's 2e-6,
+// but not past kResidualAnnounce is loose, counted beside the unconverged
+// and said after them, with the largest it reached and what a healthy solve
+// ends near. The CG's stopping rule is unchanged.
+TEST(AnalysisLiveRun, TheSolidsHealthLineSaysHowLooseThePressureWas) {
+    EXPECT_EQ(an::kLiveLooseResidual, 10.0f * an::kLiveHealthyResidual);
+    EXPECT_LT(an::kLiveLooseResidual, spade::physics::airflow::kResidualAnnounce);
+    an::LiveSolids s;
+    s.loose_steps = 12;
+    s.loose_max_residual = 8.5e-5f;
+    EXPECT_EQ(an::solids_health_line(s, 64),
+              "pressure loose on 12 steps (max|r|/max|b| up to 8.5e-5; a healthy solve ends near 2e-6)");
+    s.loose_steps = 1;
+    s.loose_max_residual = 3.0e-5f;
+    EXPECT_EQ(an::solids_health_line(s, 64),
+              "pressure loose on 1 step (max|r|/max|b| up to 3.0e-5; a healthy solve ends near 2e-6)");
+    s.pressure_residual = 2.0e-3f;
+    s.unconverged_steps = 3;
+    s.stalled_steps = 3;
+    EXPECT_EQ(an::solids_health_line(s, 64),
+              "pressure unconverged on 3 steps: 3 stalled at fp32's floor (last max|r|/max|b| 2.0e-03); pressure loose "
+              "on 1 step (max|r|/max|b| up to 3.0e-5; a healthy solve ends near 2e-6)");
+}
+
+// A run counts each loose step once, beside (not among) the unconverged:
+// the ball body's solves held to k iterations end loose for some k under the
+// CG's floor of 8, and every count stays within the steps flown.
+TEST(AnalysisLiveRun, ALooseSolveIsCountedBesideTheUnconverged) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    bool any_loose = false;
+    for (uint32_t k = 1; k <= 8; ++k) {
+        an::LiveRun run = started(solid_case(p.model), p);
+        ASSERT_TRUE(run.solids().any);
+        run.set_test_solids_max_iterations(k);
+        spade::FlowVolume v;
+        armed_frame(run, v);
+        if (::testing::Test::HasFatalFailure()) return;
+        const an::LiveSolids& s = run.solids();
+        std::printf("k %u: steps %llu, loose %llu (max %.2e), unconverged %llu, last %.2e\n", k,
+                    static_cast<unsigned long long>(run.state().steps), static_cast<unsigned long long>(s.loose_steps),
+                    s.loose_max_residual, static_cast<unsigned long long>(s.unconverged_steps), s.pressure_residual);
+        EXPECT_LE(s.loose_steps + s.unconverged_steps, run.state().steps) << "k " << k;
+        if (s.loose_steps == 0) {
+            EXPECT_EQ(s.loose_max_residual, 0.0f) << "k " << k;
+            continue;
+        }
+        any_loose = true;
+        EXPECT_GT(s.loose_max_residual, an::kLiveLooseResidual) << "k " << k;
+        EXPECT_LE(s.loose_max_residual, spade::physics::airflow::kResidualAnnounce) << "k " << k;
+        EXPECT_NE(run.pressure_line().find("pressure loose on "), std::string::npos) << run.pressure_line();
+    }
+    EXPECT_TRUE(any_loose) << "some k under the floor leaves the ball's solve loose";
 }
 
 // A test-only limit of 1 iteration caps the ball body's solves (at the CG's
