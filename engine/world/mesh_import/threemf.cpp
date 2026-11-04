@@ -512,7 +512,7 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
         const MeshInput input = detail::weld_exact(positions, indices, *unit);
         auto built = make_mesh(input, file + ": object '" + o.name + "'");
         if (!built) return std::unexpected(built.error());
-        out.push_back(MeshObject{o.name, std::move(*built)});
+        out.push_back(MeshObject{o.name, std::move(*built), *unit});
     }
     if (out.empty()) return in_part(fail(Code::invalid_argument, "no build item of type model"));
     return out;

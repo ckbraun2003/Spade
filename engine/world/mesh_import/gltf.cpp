@@ -668,7 +668,7 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
     const MeshInput input = detail::weld_exact(positions, indices, MeshUnit::metre);
     auto built = make_mesh(input, file_ + ": " + prefix);
     if (!built) return std::unexpected(built.error());
-    return MeshObject{std::move(name), std::move(*built)};
+    return MeshObject{std::move(name), std::move(*built), MeshUnit::metre};
 }
 
 Result<Reader::Accessor> Reader::describe(uint64_t index, const std::string& role_where, bool position) const {
