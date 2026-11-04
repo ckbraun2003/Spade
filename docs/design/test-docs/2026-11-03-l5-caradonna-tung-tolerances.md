@@ -101,6 +101,14 @@ If F5 doesn't give a measure (for example, no sectional C_L), that measure's row
 - **`tolerance:`** lines give each band's number with its m from F5, citing `test-docs/2026-11-03-l5-caradonna-tung-tolerances.md, fixed before the first run`.
 - It runs opt-in, offline, on the GPU (the plan's "a few revolutions, offline").
 
+## F5, read (L21)
+
+- **The source:** NTRS 19910005815, NASA TM-102862: Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", European Rotorcraft Forum, September 1990. The title and authors are confirmed from the NTRS record, and they match the note.
+- **The files:** the PDF (SHA-256 2495c4d64d4ef2ca61f987cea4a1e98b68b37b55b6e329dbe0c43fb1d7dfa0d9) and NTRS's text (SHA-256 24a625b1877036ed198072133865f73f310f855964b08b5dfea7729dd177a451). Kept in the main checkout's `.agents/refs/srinivasan1990/`, with its PROVENANCE. F5b was not needed.
+- **m_p, from fig. 2 (p. 15),** at M_tip 0.44, θ 8°, Re 1.92·10⁶: the five stations. This is Test/Docs' primary reading, pixel-assisted on the figure's own ticks (0.0042 C_p a pixel, ±0.01), and the lead does the second. It is the largest gap between F5's solid (captured-wake) curve and Table 17 aft of x/c 0.05: **0.060** at r/R 0.50, **0.074** at 0.68, **0.077** at 0.80, **0.11** at 0.89 and **0.046** at 0.96.
+- **m_L, from fig. 6 (p. 19):** the bound circulation against r/R. Table 17's circulation is (r/R) C_L / 12: 0.0098, 0.0160, 0.0192, 0.0233 and 0.0215. F5's lines cross near the stations, so which one is the M_tip 0.44 fine grid is left to the lead's reading before m_L is set.
+- **m_T:** F5 prints no C_T. So, by the rule above, C_T's row is report only until a source gives one.
+
 ## Fetches
 
 - **F5.** Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", NTRS 19910005815 (a NASA conference paper, its PDF listed as available, a US Government work). The authors and year are from memory, to be confirmed when it is read. It is for m_p, m_L and m_T: its Navier–Stokes solution against Caradonna & Tung's Table 17 and C_T at θ_c 8°.
