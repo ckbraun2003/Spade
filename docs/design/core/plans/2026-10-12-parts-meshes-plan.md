@@ -1030,7 +1030,7 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
   - Rendering: open question 4.
   - Interface: import in the editor; the consumer smoke, if it links `spade_mesh_import`.
 - **Tell the lead,** for `../../consumers.md`, the drafted lines below.
-- [ ] Commit: `docs(core): comments follow triangle meshes (CORE-6, Part B)`.
+- [x] Commit: `docs(core): comments follow triangle meshes (CORE-6, Part B)`. Done on `core/meshes-prose` (docs only: the code comments already describe each reader, written with it), 2026-11-03.
 
 **`consumers.md` (drafted, Part B):**
 - "**Triangle meshes** (`CORE-6`). The installed `world/mesh.hpp` adds `TriangleMesh`, built only by `make_mesh()`, which takes declared units and refuses any mesh that is not a closed, oriented, manifold, non-self-intersecting solid. It also adds `mesh_sample()` (exact distance, signed by pseudonormals), and `world/mesh_mass.hpp` adds `mesh_mass_properties()`. A part may hold a mesh instead of an `SdfProgram` (`PartDesc::mesh`), and the compile can take a part's inertia from its mesh (`mass_from_geometry`). Meshes are not folded into `model_identity` yet."
