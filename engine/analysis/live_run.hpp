@@ -120,11 +120,15 @@ struct DrawnPart {
 // the model's largest rotor radius), the box Run air has had; its cell is
 // min(R/3, F/4) to the millimetre below, F the largest declared min_feature
 // among the parts the air can take (rigid walls not marked drawn only), so 4
-// cells span the body; and n = ceil(box/dx) cells a side, at most
-// kLiveMaxCells, past which the cell is box / kLiveMaxCells. Refused: a model
-// without rotors, or whose largest radius is under 3 mm.
+// cells span the body; and n = ceil(box/dx) cells a side rounded up to a
+// multiple of kLiveCellMultiple, the cell kept and the box grown with it (L12:
+// an odd n puts the drone's centre on a cell centre, which stalls the
+// pressure's CG), at most kLiveMaxCells, past which the cell is box /
+// kLiveMaxCells. Refused: a model without rotors, or whose largest radius is
+// under 3 mm.
 inline constexpr uint32_t kLiveBoxCells = 32;
-inline constexpr uint32_t kLiveMaxCells = 128;  // until Rendering's numbers at 104^3 and 125^3 set it
+inline constexpr uint32_t kLiveCellMultiple = 8;
+inline constexpr uint32_t kLiveMaxCells = 128;  // the lead's cap (L12, 2026-11-03)
 
 struct LiveGrid {
     uint32_t n = 0;   // cells a side
@@ -142,6 +146,15 @@ struct LiveGrid {
 inline constexpr float kLiveStepCapS = 0.001f;
 
 [[nodiscard]] float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx);
+
+// Run air's levels' step (L13 and L17; the lead, 2026-11-03): h = min(
+// kLiveLevelStepCapS, 2 dx / (2 v_h + |wind|)), a CFL of at most 2, its wake
+// speed live_step_s()'s; past kLiveDroneStepS it is floored to a whole number
+// of drone ticks of kLiveDroneStepS, which LiveRun flies as substeps
+// (drone_substeps()), so the drone's dynamics keep their 1 ms.
+inline constexpr float kLiveLevelStepCapS = 0.004f;
+inline constexpr float kLiveDroneStepS = 0.001f;
+[[nodiscard]] float live_level_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx);
 
 // The run label's segment for the parts drawn only at the base cell `dx` (m),
 // "" for none. Grouped by reason, the groups in the order their first part
@@ -264,6 +277,8 @@ class LiveRun {
 
     [[nodiscard]] const LiveState& state() const noexcept;
     [[nodiscard]] double step_s() const noexcept;  // h
+    // The drone ticks each step flies: ceil(h / kLiveDroneStepS), at least 1 (L13).
+    [[nodiscard]] uint32_t drone_substeps() const noexcept;
 
     // The held body row (its centre of mass and principal axes), as Core's
     // posed_parts() takes it: what a host draws the solid drone from, with

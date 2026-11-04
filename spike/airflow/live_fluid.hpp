@@ -110,13 +110,24 @@ struct LiveRunOn {
     std::string cpu_because;  // "" on the GPU; else why it isn't: no device, or the device's refusal verbatim
 };
 
+// The case start_live_run() starts on the CPU when the device can't take
+// its own; both null, the same case. The editor's Run air gives its discs
+// case (Interface's item 1, granted by the lead 2026-11-03): a grid that
+// resolves the body takes the CPU seconds a step.
+struct CpuCase {
+    const analysis::ResolvedCase* resolved = nullptr;
+    const vehicles::ModelType* model = nullptr;
+};
+
 // LiveRun::start() with gpu_live_fluid(*ctx), started again without it when
 // the device refuses (or `ctx` is null: "no Vulkan device"), the refusal
-// kept. A refusal of the case itself is start()'s, as without a device.
+// kept, on `cpu`'s case when it gives one. A refusal of the case itself
+// is start()'s, as without a device.
 [[nodiscard]] inline Result<LiveRunOn> start_live_run(const analysis::ResolvedCase& resolved,
                                                       const vehicles::ModelType& model,
                                                       compute::VulkanContext* ctx,
-                                                      uint32_t workgroup_size = 64) {
+                                                      uint32_t workgroup_size = 64,
+                                                      CpuCase cpu = {}) {
     std::string because = "no Vulkan device";
     if (ctx != nullptr) {
         std::optional<Error> refused;
@@ -131,7 +142,9 @@ struct LiveRunOn {
         if (!refused) return std::unexpected(on_gpu.error());
         because = refused->context;
     }
-    Result<analysis::LiveRun> on_cpu = analysis::LiveRun::start(resolved, model);
+    const bool given = cpu.resolved != nullptr && cpu.model != nullptr;
+    Result<analysis::LiveRun> on_cpu =
+        given ? analysis::LiveRun::start(*cpu.resolved, *cpu.model) : analysis::LiveRun::start(resolved, model);
     if (!on_cpu) return std::unexpected(on_cpu.error());
     return LiveRunOn{std::move(*on_cpu), std::move(because)};
 }

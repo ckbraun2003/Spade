@@ -4,9 +4,10 @@
 // (sandbox/editor_air_gpu.hpp) runs on the device and says so, the CPU's run
 // to the bit on the device of record; a device's refusal runs on the CPU,
 // naming it verbatim; a frame past ten times the top speed, finite and in
-// binary16's range, is stopped by the bound at its frame; and the placed
-// Phantom's air, discs only, on the device: its published halves after two
-// frames are the CPU's to the bit.
+// binary16's range, is stopped by the bound at its frame; the placed
+// Phantom's air with its body on the device, the CPU's to the bit; and with
+// no device or a refusal, the discs case on the CPU, saying the body needs
+// the GPU.
 // GpuEditorAirflow* on the device.
 
 #include <gtest/gtest.h>
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -52,8 +54,9 @@ using spade::compute::VulkanContext;
 constexpr an::Controls kHalf{true, 0.5f, 0.0f, 0.0f, 0.0f};
 
 // The library drone `file` placed at (1, 2, 3) as `name`, with its region:
-// the editor's own 32^3 at R/3 to the millimetre below.
-[[nodiscard]] spade::scene::SceneDesc with_library_drone(const char* file, const char* name) {
+// the editor's own cell (Run air's rule), or `cells` when given.
+[[nodiscard]] spade::scene::SceneDesc with_library_drone(const char* file, const char* name,
+                                                         std::optional<af::GridShape> cells = std::nullopt) {
     auto d = ed::make_scene_document(support::sample_scene(), {});
     ed::AddModelFile add;
     add.file = (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / file).generic_string();
@@ -63,12 +66,15 @@ constexpr an::Controls kHalf{true, 0.5f, 0.0f, 0.0f, 0.0f};
     EXPECT_TRUE(added.has_value()) << (added ? "" : added.error().context);
     const Result<void> region = ed::apply(d, ed::AddAirflowRegion{name});
     EXPECT_TRUE(region.has_value()) << (region ? "" : region.error().context);
-    return d.desc();
+    spade::scene::SceneDesc s = d.desc();
+    if (cells && !s.airflow.empty()) s.airflow.back().cells = *cells;
+    return s;
 }
 
-// The reference quad's: 32^3 at 25 mm.
+// The reference quad at its cell before item 1, 32^3 at 25 mm: every part
+// is drawn only there, so the run is discs only, the CPU's case to the bit.
 [[nodiscard]] spade::scene::SceneDesc with_reference_quad() {
-    return with_library_drone("reference_quad.model.yaml", "ref");
+    return with_library_drone("reference_quad.model.yaml", "ref", af::GridShape{32, 32, 32, 0.025f});
 }
 
 [[nodiscard]] std::shared_ptr<VulkanContext> make_context() {
@@ -88,16 +94,16 @@ constexpr an::Controls kHalf{true, 0.5f, 0.0f, 0.0f, 0.0f};
     return run.latest();
 }
 
-// `frame` against a one-thread LiveRun of the same case and program on the
-// CPU, as Run air ran before slice 3: the same steps, time and halves, to
-// the bit.
+// `frame` against a one-thread LiveRun on the CPU of the region's case
+// `which` (the body's, the device's; or the discs', the CPU's fallback) and
+// the same program: the same steps, time and halves, to the bit.
 void expect_cpus_frame(const spade::scene::SceneDesc& s, const spade::scene::SceneAirflowRegion& region,
-                       const an::ControlProgram& program, const ed::AirFrame& frame) {
-    const Result<an::ResolvedCase> resolved = ed::air_case(s, region);
-    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
-    const Result<spade::vehicles::ModelType> model = ed::air_model(s, region);
-    ASSERT_TRUE(model.has_value()) << model.error().context;
-    Result<an::LiveRun> one = an::LiveRun::start(*resolved, *model);
+                       const an::ControlProgram& program, const ed::AirFrame& frame,
+                       ed::AirCase ed::AirCases::*which = &ed::AirCases::body) {
+    const Result<ed::AirCases> cases = ed::air_cases(s, region);
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    const ed::AirCase& flown = (*cases).*which;
+    Result<an::LiveRun> one = an::LiveRun::start(flown.resolved, flown.model);
     ASSERT_TRUE(one.has_value()) << one.error().context;
     spade::FlowVolume v;
     while (one->state().frames < frame.frames) {
@@ -105,6 +111,7 @@ void expect_cpus_frame(const spade::scene::SceneDesc& s, const spade::scene::Sce
         ASSERT_TRUE(one->advance_frame(c, v).has_value());
     }
     EXPECT_EQ(frame.steps, one->state().steps);
+    EXPECT_EQ(frame.run_label, one->run_label());
     EXPECT_TRUE(frame.volume.v == v.v) << "the velocities differ from the CPU's";
     EXPECT_TRUE(frame.volume.s == v.s) << "the scalars differ from the CPU's";
 }
@@ -155,44 +162,79 @@ TEST(GpuEditorAirflow, RunAirOnTheDeviceSaysSoAndIsTheCpusRunToTheBit) {
 }
 
 // The library's Phantom placed with its region (Test/Docs' gap 4; the lead,
-// 2026-11-03), as editor.airflow runs it: on the device the run says "GPU",
-// and its steps and published halves after two frames are the CPU's to the
-// bit, at the region's own 32^3 and 39 mm (R/3). Discs only (the lead's
-// ruling): its mesh parts are drawn, not in the air (air_model()), until
-// solids enter on the GPU's finer grid.
+// 2026-11-03), its body in the air (item 1): at Run air's 12 mm on 48^3
+// (0.576 m, its 0.49 m span inside; the region's own 104^3 is Rendering's
+// measure), on the device the run says "GPU", its label names the body in
+// the air and what is drawn only, and its steps, label and published halves
+// after a frame are a one-thread CPU run of the same body case's, to the bit.
 TEST(GpuEditorAirflow, ThePlacedPhantomsAirOnTheDeviceIsTheCpusToTheBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    const spade::scene::SceneDesc s = with_library_drone("phantom3_class.model.yaml", "phantom");
+    const spade::scene::SceneDesc s =
+        with_library_drone("phantom3_class.model.yaml", "phantom", af::GridShape{48, 48, 48, 0.012f});
     ASSERT_EQ(s.airflow.size(), 1u);
     const spade::scene::SceneAirflowRegion& region = s.airflow.back();
-    EXPECT_EQ(region.cells.nx, 32u);
-    EXPECT_FLOAT_EQ(region.cells.dx, 0.039f);
-    const auto placed = std::find_if(s.models.begin(), s.models.end(),
-                                     [](const spade::vehicles::ModelType& m) { return m.name == "phantom3_class"; });
-    ASSERT_NE(placed, s.models.end());
-    EXPECT_FALSE(placed->parts.empty()) << "the placed Phantom has its meshed body and props";
     const Result<spade::vehicles::ModelType> flown = ed::air_model(s, region);
     ASSERT_TRUE(flown.has_value()) << flown.error().context;
-    EXPECT_TRUE(flown->parts.empty()) << "discs only: no part is in the air";
+    EXPECT_FALSE(flown->parts.empty()) << "the body's case keeps the meshed body and props";
     EXPECT_EQ(flown->rotors.size(), 4u);
 
     const an::ControlProgram program{{{0.0f, kHalf}}};
     Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, region, program, {}, ed::gpu_air_starter());
     ASSERT_TRUE(run.has_value()) << run.error().context;
     EXPECT_EQ((*run)->backend(), "GPU");
-    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 2);
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 1);
     (*run)->stop();
     ASSERT_NE(frame, nullptr);
     ASSERT_TRUE(frame->error.empty()) << frame->error;
-    ASSERT_GE(frame->frames, 2u);
-    EXPECT_TRUE(frame->run_label.starts_with("actuator disc")) << frame->run_label;
+    ASSERT_GE(frame->frames, 1u);
+    EXPECT_NE(frame->run_label.find("solids: 1 parts, 1 walls, 0 sheets"), std::string::npos) << frame->run_label;
+    EXPECT_NE(frame->run_label.find("drawn only at 12 mm: "), std::string::npos) << frame->run_label;
     expect_cpus_frame(s, region, program, *frame);
+}
+
+// With no device, start_live_run() starts the CPU case it is given, and
+// says why: the editor's discs case for a body the CPU can't fly live.
+TEST(GpuEditorAirflow, WithNoDeviceStartLiveRunStartsTheCpuCaseItIsGiven) {
+    const spade::scene::SceneDesc s = with_library_drone("phantom3_class.model.yaml", "phantom");
+    ASSERT_FALSE(s.airflow.empty());
+    const Result<ed::AirCases> cases = ed::air_cases(s, s.airflow.back());
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    ASSERT_NE(ed::grid_line(cases->body.resolved), ed::grid_line(cases->discs.resolved));
+    const Result<ag::LiveRunOn> on = ag::start_live_run(cases->body.resolved, cases->body.model, nullptr, 64,
+                                                        ag::CpuCase{&cases->discs.resolved, &cases->discs.model});
+    ASSERT_TRUE(on.has_value()) << on.error().context;
+    EXPECT_EQ(on->cpu_because, "no Vulkan device");
+    Result<an::LiveRun> discs = an::LiveRun::start(cases->discs.resolved, cases->discs.model);
+    ASSERT_TRUE(discs.has_value()) << discs.error().context;
+    EXPECT_EQ(on->run.run_label(), discs->run_label());
+}
+
+// A device that refuses the body's case: the run is the discs case on the
+// CPU, and its backend names the refusal and that the body needs the GPU.
+TEST(GpuEditorAirflow, ADevicesRefusalOfTheBodyFliesItsDiscsOnTheCpuAndSaysSo) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::scene::SceneDesc s =
+        with_library_drone("phantom3_class.model.yaml", "phantom", af::GridShape{48, 48, 48, 0.012f});
+    ASSERT_FALSE(s.airflow.empty());
+    const Result<ed::AirCases> cases = ed::air_cases(s, s.airflow.back());
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    ASSERT_TRUE(cases->loses_parts);
+    constexpr uint32_t kNoVariant = 7;
+    Result<ed::AirStart> started = ed::gpu_air_starter(kNoVariant)(*cases);
+    ASSERT_TRUE(started.has_value()) << started.error().context;
+    EXPECT_TRUE(started->backend.starts_with("CPU: ")) << started->backend;
+    EXPECT_TRUE(started->backend.ends_with("; discs only, the body needs the GPU")) << started->backend;
+    Result<an::LiveRun> discs = an::LiveRun::start(cases->discs.resolved, cases->discs.model);
+    ASSERT_TRUE(discs.has_value()) << discs.error().context;
+    EXPECT_EQ(started->run.run_label(), discs->run_label());
 }
 
 // A device that refuses the case (here a workgroup size with no kernel
 // variant; after Rendering's NaN-preserve fix, a device without the
-// feature): the run is on the CPU, today's run to the bit, and its backend is
-// "CPU: " and the refusal verbatim, as start_live_run() kept it.
+// feature): the run is on the CPU, its discs case to the bit (at 25 mm every
+// reference-quad part is drawn only, so the backend says nothing of the
+// body), and its backend is "CPU: " and the refusal verbatim, as
+// start_live_run() kept it.
 TEST(GpuEditorAirflow, ADevicesRefusalRunsOnTheCpuNamingIt) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const spade::scene::SceneDesc s = with_reference_quad();
@@ -219,7 +261,7 @@ TEST(GpuEditorAirflow, ADevicesRefusalRunsOnTheCpuNamingIt) {
     ASSERT_NE(frame, nullptr);
     ASSERT_TRUE(frame->error.empty()) << frame->error;
     ASSERT_GE(frame->frames, 1u);
-    expect_cpus_frame(s, region, program, *frame);
+    expect_cpus_frame(s, region, program, *frame, &ed::AirCases::discs);
 }
 
 // The bound (the lead, 2026-10-27): a device run's frame with a cell past ten
@@ -234,8 +276,9 @@ TEST(GpuEditorAirflow, AFlowPastTheBoundStopsTheAirAtItsFrame) {
     ASSERT_FALSE(s.airflow.empty());
     const std::shared_ptr<VulkanContext> ctx = make_context();
     ASSERT_NE(ctx, nullptr);
-    const ed::AirStarter fast = [ctx](const an::ResolvedCase& r,
-                                      const spade::vehicles::ModelType& m) -> Result<ed::AirStart> {
+    const ed::AirStarter fast = [ctx](const ed::AirCases& cases) -> Result<ed::AirStart> {
+        const an::ResolvedCase& r = cases.body.resolved;
+        const spade::vehicles::ModelType& m = cases.body.model;
         const an::LiveFluidMaker gpu = ag::gpu_live_fluid(*ctx);
         const an::LiveFluidMaker maker =
             [&gpu](const an::LiveFluidStart& start) -> Result<std::unique_ptr<an::LiveFluid>> {

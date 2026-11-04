@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <format>
 #include <optional>
 #include <string>
 #include <vector>
@@ -356,4 +358,27 @@ TEST(EditorSceneEdits, AnAirflowRegionEditIsRefusedNamingWhy) {
     for (auto& m : s.models) m.rotors.clear();
     auto bare = doc_of(s);
     refused(bare, ed::AddAirflowRegion{"hover_quad_0"}, "has no rotors");
+}
+
+// Item 1 (the lead's rulings, 2026-11-03): a region's cell is Run air's
+// rule, analysis::live_grid(): R/3 to the whole millimetre, finer to a
+// quarter of the largest part the air can take, the box 32 R/3 cells wide,
+// at most 128 cells across. The Phantom's body takes 104^3 at 12 mm; the
+// Crazyflie reaches the cap. (The reference quad's and the Iris+'s wait on
+// the lead's ruling on rounding n to a multiple of 8.)
+TEST(EditorSceneEdits, AnAirflowRegionsCellIsRunAirsRule) {
+    const auto region_of = [](const char* file) -> std::string {
+        auto d = doc_of(support::sample_scene());
+        ed::AddModelFile add;
+        add.file = (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / file).generic_string();
+        add.vehicle.name = "drone";
+        const Result<void> added = ed::apply(d, add);
+        if (!added) return "placed: " + added.error().context;
+        const Result<void> region = ed::apply(d, ed::AddAirflowRegion{"drone"});
+        if (!region) return "region: " + region.error().context;
+        const spade::physics::airflow::GridShape g = d.desc().airflow.back().cells;
+        return std::format("{}x{}x{} at {:g} mm", g.nx, g.ny, g.nz, g.dx * 1000.0f);
+    };
+    EXPECT_EQ(region_of("phantom3_class.model.yaml"), "104x104x104 at 12 mm");
+    EXPECT_EQ(region_of("crazyflie_class.model.yaml"), "128x128x128 at 1.75 mm");
 }

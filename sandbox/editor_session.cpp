@@ -356,7 +356,9 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             air_speed_.frame(air_frame_->frames, air_frame_->t_s,
                              std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
         }
-        w.panels().air_band = editor::air_band(air_speed_.line(), air_frame_ ? air_frame_->run_label : std::string{},
+        // L17: the band states the run's level and its share of real time.
+        const std::string speed = std::string(editor::air_level_name(w.air()->level())) + ": " + air_speed_.line();
+        w.panels().air_band = editor::air_band(speed, air_frame_ ? air_frame_->run_label : std::string{},
                                                w.air()->backend());
     }
     // Run air's default view (§5): the vortex cores (once there are any) and

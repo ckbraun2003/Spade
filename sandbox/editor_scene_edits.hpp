@@ -34,6 +34,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "analysis/case.hpp"
+#include "analysis/live_run.hpp"
 #include "editor_document.hpp"
 #include "editor_import.hpp"
 #include "editor_model_params.hpp"
@@ -135,18 +136,15 @@ struct SetImportedPart {
 };
 
 // The editor's airflow run (INT-15, T1): a one-way follow region around a
-// drone, named <vehicle>_air, with the plan's §4 defaults (kAirCells^3
-// cubic cells, dx its largest rotor's radius over 3 floored to the
-// millimetre, analysis::Fluid's air, as the tour's live run flies it: the
-// case refuses scene v5's inviscid 0); one region per drone (M2).
+// drone, named <vehicle>_air: its cells Run air's rule for the drone
+// (analysis::live_grid(): the body resolved, R/3's box), analysis::Fluid's
+// air (the case refuses scene v5's inviscid 0); one region per drone (M2).
 struct AddAirflowRegion {
     std::string vehicle;
 };
 struct RemoveAirflowRegion {
     std::string name;
 };
-
-inline constexpr uint32_t kAirCells = 32;  // §4: the live grid the tour flies
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
@@ -289,7 +287,8 @@ inline Result<bool> change(scene::SceneDesc& s, const AddAirflowRegion& e) {
         }
     }
     float radius = 0.0f;
-    if (const vehicles::ModelType* m = find_named(s.models, v->model)) {
+    const vehicles::ModelType* m = find_named(s.models, v->model);
+    if (m != nullptr) {
         for (const vehicles::RotorDesc& rotor : m->rotors) radius = std::max(radius, rotor.radius);
     }
     if (!(radius > 0.0f)) {
@@ -297,13 +296,18 @@ inline Result<bool> change(scene::SceneDesc& s, const AddAirflowRegion& e) {
                                                                  "': its model '" + v->model +
                                                                  "' has no rotors, so there is no air to drive"});
     }
+    const Result<analysis::LiveGrid> grid = analysis::live_grid(*m);
+    if (!grid) {
+        return std::unexpected(Error{grid.error().code, "add an airflow region around '" + e.vehicle + "': " +
+                                                            grid.error().context});
+    }
     scene::SceneAirflowRegion r;
     r.name = lowest_free(e.vehicle + "_air", [&](std::string_view n) {
         return std::any_of(s.airflow.begin(), s.airflow.end(), [&](const auto& x) { return x.name == n; });
     });
     r.kind = scene::AirflowKind::follow;
     r.follows = e.vehicle;
-    r.cells = physics::airflow::GridShape{kAirCells, kAirCells, kAirCells, std::floor(radius / 3.0f * 1000.0f) / 1000.0f};
+    r.cells = physics::airflow::GridShape{grid->n, grid->n, grid->n, grid->dx};
     r.density = analysis::Fluid{}.density;
     r.kinematic_viscosity = analysis::Fluid{}.kinematic_viscosity;
     r.coupling = scene::AirflowCoupling::one_way;

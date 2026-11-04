@@ -43,11 +43,14 @@
 #include "core/fp16.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_panels.hpp"
+#include "physics/airflow/solids.hpp"
 #include "scene/scene_file.hpp"
+#include "state/layout.hpp"
+#include "vehicles/airflow_solids.hpp"
+#include "vehicles/part_pose.hpp"
 
 namespace spade::sandbox::editor {
 
-inline constexpr float kAirStepS = 0.001f;        // §4: airflow_live's step (P-2)
 inline constexpr float kAirIdleDuty = 0.05f;      // §4: airflow_live's, until the chain pin (INT-11)
 inline constexpr float kAirStateOfCharge = 1.0f;  // §4
 
@@ -84,18 +87,13 @@ struct AirDrone {
 
 }  // namespace detail
 
-// The model Run air flies for `region`: its drone's, with the parts out of
-// the air (drawn, not solid), as the tour's chapter flies its drone
-// (airflow_live.hpp): discs only until solids enter the air with the GPU's
-// finer grid (the lead's ruling). Physics' P-1, thin parts drawn only and
-// thick ones solid, replaces this.
+// The model Run air flies for `region`: its drone's, parts and all. The live
+// run draws what the cell can't hold and names why (P-1, item 1).
 [[nodiscard]] inline Result<vehicles::ModelType> air_model(const scene::SceneDesc& s,
                                                            const scene::SceneAirflowRegion& region) {
     const Result<detail::AirDrone> drone = detail::air_drone(s, region);
     if (!drone) return std::unexpected(drone.error());
-    vehicles::ModelType m = *drone->model;
-    m.parts.clear();
-    return m;
+    return *drone->model;
 }
 
 // The case Run air runs for `region`: its drone, held at the box's centre,
@@ -105,9 +103,19 @@ struct AirDrone {
 // 2026-10-26); a grid that is not a cube (the case's box is one length);
 // rotors with no propulsion chain (LiveRun::start() refuses them; said here
 // so the inspector shows it before Run air); or what analysis::resolve()
-// refuses, its first issue verbatim.
-[[nodiscard]] inline Result<analysis::ResolvedCase> air_case(const scene::SceneDesc& s,
-                                                             const scene::SceneAirflowRegion& region) {
+// refuses, its first issue verbatim. Its step is the level's for the cell
+// (L22, the lead, 2026-11-03): Detailed, the accuracy level, keeps L6's
+// analysis::live_step_s() (CFL at most 1, at most 1 ms: advection's
+// back-trace doesn't see solids, so a longer trace could cross a thin part);
+// Real time takes analysis::live_level_step_s() (L13: CFL 2, the drone in
+// 1 ms ticks).
+namespace detail {
+// The case for `region`'s drone flying `flown` on the cubic grid `g`, at
+// `level`'s step.
+[[nodiscard]] inline Result<analysis::ResolvedCase> air_resolved(const scene::SceneDesc& s,
+                                                                 const scene::SceneAirflowRegion& region,
+                                                                 const physics::airflow::GridShape& g,
+                                                                 const vehicles::ModelType& flown, AirLevel level) {
     const auto refused = [&](const std::string& why) { return std::unexpected(detail::air_refusal(region, why)); };
     const Result<detail::AirDrone> drone = detail::air_drone(s, region);
     if (!drone) return std::unexpected(drone.error());
@@ -119,7 +127,6 @@ struct AirDrone {
                        "' is turned. Run air needs the drone unrotated: the air's box can't turn with it. Set its "
                        "rotation to zero to run it.");
     }
-    const physics::airflow::GridShape& g = region.cells;
     if (g.nx != g.ny || g.ny != g.nz) {
         return refused(std::format("it is {}x{}x{} cells, and Run air's box is a cube, so the three must match", g.nx,
                                    g.ny, g.nz));
@@ -127,24 +134,31 @@ struct AirDrone {
     if (!m->rotors.empty() && !m->propulsion) {
         return refused("its drone's model '" + m->name + "' has no propulsion chain, so its rotors can't turn");
     }
-    // The case is the flown model's (air_model(): parts out of the air), pinned
-    // and resolved as LiveRun::start() will take it.
-    const Result<vehicles::ModelType> flown = air_model(s, region);
-    if (!flown) return std::unexpected(flown.error());
+    // The case is the flown model's, pinned and resolved as LiveRun::start()
+    // will take it: a part too thin for the cell is the live run's to draw.
     analysis::AnalysisCase c;
-    c.model = analysis::pin_model(v->model, *flown);
+    c.model = analysis::pin_model(v->model, flown);
     c.power = analysis::Power{.idle = kAirIdleDuty, .state_of_charge = kAirStateOfCharge};
     c.fluid = analysis::Fluid{.density = region.density, .kinematic_viscosity = region.kinematic_viscosity};
-    c.rotors.assign(flown->rotors.size(), analysis::RotorSetup{});
+    c.rotors.assign(flown.rotors.size(), analysis::RotorSetup{});
     c.grid.box = static_cast<float>(g.nx) * g.dx;
     c.grid.spacing = g.dx;
-    c.time.step = kAirStepS;
-    auto resolved = analysis::resolve(c, *flown);
+    c.time.step = level == AirLevel::real_time ? analysis::live_level_step_s(c, flown, g.dx)
+                                               : analysis::live_step_s(c, flown, g.dx);
+    auto resolved = analysis::resolve(c, flown, analysis::ThinWalls::drawn_by_the_live_run);
     if (!resolved) {
         const analysis::CaseIssue& first = resolved.error().front();
         return refused(first.field + ": " + first.message);
     }
     return std::move(*resolved);
+}
+}  // namespace detail
+
+[[nodiscard]] inline Result<analysis::ResolvedCase> air_case(const scene::SceneDesc& s,
+                                                             const scene::SceneAirflowRegion& region) {
+    const Result<vehicles::ModelType> flown = air_model(s, region);
+    if (!flown) return std::unexpected(flown.error());
+    return detail::air_resolved(s, region, region.cells, *flown, AirLevel::detailed);
 }
 
 // A resolved case's grid as LiveRun's label gives it: "32³, dx 25 mm, R/dx 3".
@@ -203,17 +217,111 @@ struct AirStart {
     std::string backend;
     std::shared_ptr<void> keep;
 };
-using AirStarter = std::function<Result<AirStart>(const analysis::ResolvedCase&, const vehicles::ModelType&)>;
 
-// LiveRun::start() on the CPU, Run air's run before slice 3 to the bit, its
-// backend "CPU: " and `why`. The editor's window gives Run air the GPU's
-// starter (editor_air_gpu.hpp); given none, Run air takes this one.
+// A case Run air can fly: the resolved case and the model LiveRun flies.
+struct AirCase {
+    analysis::ResolvedCase resolved;
+    vehicles::ModelType model;
+};
+
+// The cases Run air may fly for a region (item 1; the lead's rulings,
+// 2026-11-03): `body`, the region's grid with the drone's parts (the live
+// run draws what the cell can't hold, naming it: P-1), for the device; and
+// `discs`, the CPU's fallback, discs only on R/3's grid over the same box,
+// since a resolving grid takes the CPU seconds a step. `loses_parts`: a part
+// the region's cell could hold (a rigid wall not marked drawn only, declaring
+// 2 cells or more) is in the body's case, so the fallback says it flies
+// without it.
+struct AirCases {
+    AirCase body;
+    AirCase discs;
+    bool loses_parts = false;
+};
+
+// Real time's grids (L17, Rendering's frontier, 2026-11-03): cells a side.
+inline constexpr uint32_t kAirRealTimeGpuCells = 48;
+inline constexpr uint32_t kAirRealTimeCpuCells = 16;
+
+// What the fallback's backend adds when it flies without the body.
+inline constexpr std::string_view kAirBodyNeedsTheGpu = "; discs only, the body needs the GPU";
+
+namespace detail {
+// Whether a cell of `dx` holds one of `model`'s parts: a rigid part not
+// marked drawn only, not porous, that the classifier takes as a wall at dx,
+// as LiveRun's first stage keeps it (the measured safeguard may still leave
+// it out). The classifier reads a part's own frame, so the pose is the rest.
+[[nodiscard]] inline bool holds_a_part(const vehicles::ModelType& model, float dx) {
+    if (model.parts.empty()) return false;
+    const std::vector<float> still(model.rotors.size(), 0.0f);
+    BodyState rest{};
+    rest.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);  // value-initialized, it is the zero quaternion
+    Result<vehicles::PosedParts> posed =
+        vehicles::posed_parts(model, rest, still, still, vehicles::PartFilter::rigid_only);
+    if (!posed) return false;
+    const vehicles::AirflowSolids solids(model, std::move(*posed), glm::vec3(0.0f));
+    const Result<std::vector<physics::airflow::SolidPart>> parts = solids.parts();
+    if (!parts) return false;
+    return std::any_of(parts->begin(), parts->end(), [dx](const physics::airflow::SolidPart& p) {
+        if (p.porous) return false;
+        const Result<physics::airflow::SolidClass> k = physics::airflow::classify_part(p, dx);
+        return k.has_value() && k->role == physics::airflow::SolidRole::wall;
+    });
+}
+}  // namespace detail
+
+// The cases for `region` at `level` (D10, the levels as L17 defines them;
+// the lead, 2026-11-03), refused as air_case() refuses, each over the
+// region's box (so the box drawn is the air's), a region already coarser
+// than a grid its own. Detailed: the body's case on the device, the
+// region's grid with the parts in; the CPU's discs only in at most
+// kLiveBoxCells cells a side (R/3 for a region Run air's rule made; L4).
+// Real time: discs only, on the device in at most kAirRealTimeGpuCells a
+// side (R/dx 4.5 for the Phantom; about 150% of real time, Rendering), on
+// the CPU in at most kAirRealTimeCpuCells (about 65%).
+[[nodiscard]] inline Result<AirCases> air_cases(const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
+                                                AirLevel level = AirLevel::detailed) {
+    const Result<vehicles::ModelType> model = air_model(s, region);
+    if (!model) return std::unexpected(model.error());
+    vehicles::ModelType bare = *model;
+    bare.parts.clear();
+    const physics::airflow::GridShape& g = region.cells;
+    const auto discs_on = [&](uint32_t most) -> Result<AirCase> {  // the bare model over the region's box
+        const uint32_t n = std::min(g.nx, most);
+        const float dx = n == g.nx ? g.dx : static_cast<float>(g.nx) * g.dx / static_cast<float>(n);
+        Result<analysis::ResolvedCase> r =
+            detail::air_resolved(s, region, physics::airflow::GridShape{n, n, n, dx}, bare, level);
+        if (!r) return std::unexpected(r.error());
+        return AirCase{std::move(*r), bare};
+    };
+    AirCases out;
+    Result<AirCase> discs = discs_on(level == AirLevel::real_time ? kAirRealTimeCpuCells : analysis::kLiveBoxCells);
+    if (!discs) return std::unexpected(discs.error());
+    out.discs = std::move(*discs);
+    if (level == AirLevel::real_time) {
+        Result<AirCase> device = discs_on(kAirRealTimeGpuCells);
+        if (!device) return std::unexpected(device.error());
+        out.body = std::move(*device);
+        return out;
+    }
+    Result<analysis::ResolvedCase> body = detail::air_resolved(s, region, g, *model, level);
+    if (!body) return std::unexpected(body.error());
+    out.body = AirCase{std::move(*body), *model};
+    out.loses_parts = detail::holds_a_part(*model, g.dx);
+    return out;
+}
+
+using AirStarter = std::function<Result<AirStart>(const AirCases&)>;
+
+// LiveRun::start() on the CPU with the discs' case, its backend "CPU: " and
+// `why`, and kAirBodyNeedsTheGpu when it loses parts. The editor's window
+// gives Run air the GPU's starter (editor_air_gpu.hpp); given none, Run air
+// takes this one.
 [[nodiscard]] inline AirStarter cpu_air_starter(std::string why = "no Vulkan device") {
-    return [why = std::move(why)](const analysis::ResolvedCase& resolved,
-                                  const vehicles::ModelType& model) -> Result<AirStart> {
-        Result<analysis::LiveRun> run = analysis::LiveRun::start(resolved, model);
+    return [why = std::move(why)](const AirCases& cases) -> Result<AirStart> {
+        Result<analysis::LiveRun> run = analysis::LiveRun::start(cases.discs.resolved, cases.discs.model);
         if (!run) return std::unexpected(run.error());
-        return AirStart{std::move(*run), "CPU: " + why, nullptr};
+        return AirStart{std::move(*run), "CPU: " + why + (cases.loses_parts ? std::string(kAirBodyNeedsTheGpu) : ""),
+                        nullptr};
     };
 }
 
@@ -263,25 +371,23 @@ class AirflowRun {
     // worker. With a program, each frame's controls are the program's at
     // the frame's start (the tour: deterministic); without one, the last
     // set_controls() (the Pilot section; unarmed until set). The run is the
-    // starter's: on the CPU unless given another. Refused before any thread
-    // exists, as air_case() and the starter refuse.
+    // starter's: on the CPU unless given another, of air_cases() at `level`.
+    // Refused before any thread exists, as air_case() and the starter refuse.
     [[nodiscard]] static Result<std::unique_ptr<AirflowRun>> start(
         const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
         std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {},
-        const AirStarter& starter = cpu_air_starter()) {
+        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed) {
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
-        const Result<analysis::ResolvedCase> resolved = air_case(s, region);
-        if (!resolved) return std::unexpected(resolved.error());
-        const Result<vehicles::ModelType> model = air_model(s, region);
-        if (!model) return std::unexpected(model.error());
-        Result<AirStart> started = starter(*resolved, *model);
+        const Result<AirCases> cases = air_cases(s, region, level);
+        if (!cases) return std::unexpected(cases.error());
+        Result<AirStart> started = starter(*cases);
         if (!started) return std::unexpected(detail::air_refusal(region, started.error().context));
         if (prepare) prepare(started->run);
-        const float top = airflow::speed_top(*model, region.density, 9.80665f);
+        const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
-                           std::move(program)));
+                           std::move(program), level));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -293,6 +399,7 @@ class AirflowRun {
 
     // Where the run's fluid steps: "GPU", or "CPU: " and why (its starter's).
     [[nodiscard]] const std::string& backend() const noexcept { return backend_; }
+    [[nodiscard]] AirLevel level() const noexcept { return level_; }  // the level it flies (D10)
 
     // The last frame handed over; none before the first publish.
     [[nodiscard]] std::shared_ptr<const AirFrame> latest() const {
@@ -316,8 +423,9 @@ class AirflowRun {
 
   private:
     AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top,
-               std::optional<analysis::ControlProgram> program)
-        : keep_(std::move(started.keep)),
+               std::optional<analysis::ControlProgram> program, AirLevel level)
+        : level_(level),
+          keep_(std::move(started.keep)),
           run_(std::move(started.run)),
           backend_(std::move(started.backend)),
           vehicle_(std::move(vehicle)),
@@ -399,6 +507,7 @@ class AirflowRun {
         latest_ = std::move(frame);
     }
 
+    AirLevel level_;
     std::shared_ptr<void> keep_;  // the starter's: outlives run_
     analysis::LiveRun run_;       // the worker's alone once it starts
     std::string backend_;
@@ -413,15 +522,22 @@ class AirflowRun {
     std::jthread worker_;                     // last: joined first
 };
 
-// The inspector's line for `region` through `cache`, resolved again only
-// when the scene's state (`opened`, `serial`) or the region's name changes:
-// air_case() hashes and validates the model (the lead, 2026-10-26).
+// The inspector's line for `region` at `level` through `cache`, resolved
+// again only when the scene's state (`opened`, `serial`), the region's name
+// or the level changes: air_case() hashes and validates the model (the lead,
+// 2026-10-26). At real_time it is the discs' grid.
 inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64_t serial, const scene::SceneDesc& s,
-                                    const scene::SceneAirflowRegion& region) {
-    if (cache.opened == opened && cache.serial == serial && cache.region == region.name) return cache;
-    const Result<analysis::ResolvedCase> r = air_case(s, region);
+                                    const scene::SceneAirflowRegion& region, AirLevel level = AirLevel::detailed) {
+    if (cache.opened == opened && cache.serial == serial && cache.region == region.name && cache.level == level) {
+        return cache;
+    }
+    const Result<analysis::ResolvedCase> r =
+        level == AirLevel::detailed
+            ? air_case(s, region)
+            : air_cases(s, region, level).transform([](AirCases c) { return std::move(c.body.resolved); });
     cache.opened = opened;
     cache.serial = serial;
+    cache.level = level;
     cache.region = region.name;
     cache.text = r ? grid_line(*r) : r.error().context;
     cache.refused = !r;
@@ -429,8 +545,21 @@ inline const AirLineCache& air_line(AirLineCache& cache, uint64_t opened, uint64
     return cache;
 }
 
+// A share of real time as the band and the tour's card say it (D10; the
+// lead, after Rendering's review of 65ce8c16): "at 4.2% of real time" under
+// 10%, "at 37% of real time" from 10% up (whole percent, floored, so 99.6%
+// is not "100%"; {:.2g} would print 100 as "1e+02"), "in real time" at or
+// past it.
+[[nodiscard]] inline std::string real_time_share(double ratio) {
+    if (ratio >= 1.0) return "in real time";
+    const double percent = ratio * 100.0;
+    if (percent < 10.0) return std::format("at {:.2g}% of real time", percent);
+    return std::format("at {}% of real time", static_cast<int>(percent));
+}
+
 // The band's speed (§9): simulated time over wall time across the last few
-// frames handed over, as the window saw them ("air at 1/30 speed"). The wall
+// frames handed over, as the window saw them, as real_time_share() says it
+// ("air at 4% of real time"; at or past it, "air in real time"). The wall
 // clock is the caller's (the sandbox's steady_clock), never the run's.
 class AirSpeed {
   public:
@@ -446,9 +575,7 @@ class AirSpeed {
         const double sim = samples_.back().t_s - samples_.front().t_s;
         const double wall = samples_.back().wall_s - samples_.front().wall_s;
         if (samples_.size() < 2 || !(wall > 0.0) || !(sim > 0.0)) return "the air is starting";
-        const double ratio = sim / wall;
-        if (ratio >= 1.0) return "air at full speed";
-        return std::format("air at 1/{:.0f} speed", 1.0 / ratio);
+        return "air " + real_time_share(sim / wall);
     }
 
   private:

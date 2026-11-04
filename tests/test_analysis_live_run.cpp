@@ -725,23 +725,33 @@ TEST(AnalysisLiveRun, ThePhantomAt39mmIsDiscsOnlyToTheBitAsItsDiscsAlone) {
 }
 
 // P-1's cell rule (the lead's rulings, 2026-11-03): Run air's box as before,
-// 32 cells of R/3 to the mm, at min(R/3, F/4) to the mm, n = ceil(box/dx) at
-// most 128. Every library drone with rigid parts moves (the reference quad's
-// 32^3 at 25 mm to 100^3 at 8 mm); the Crazyflie meets the cap, at box/128.
-// A drone without parts in the air keeps R/3 on 32^3.
+// 32 cells of R/3 to the mm, at min(R/3, F/4) to the mm, n = ceil(box/dx)
+// rounded up to a multiple of 8 (L12: an odd n puts the drone's centre on a
+// cell centre, and the Phantom's 10 mm mask then stalls the CG; the cell is
+// kept and the box grows), at most 128. Every library drone with rigid parts
+// moves (the reference quad's 32^3 at 25 mm to 104^3 at 8 mm); past 128 the
+// cell is box/128, as the Crazyflie's and the Phantom's at 9 mm. A drone
+// without parts in the air keeps R/3 on 32^3.
 TEST(AnalysisLiveRun, RunAirsGridIsP1sCellRule) {
     const auto grid = [](const spade::vehicles::ModelType& m) {
         const spade::Result<an::LiveGrid> g = an::live_grid(m);
         EXPECT_TRUE(g.has_value()) << m.name << ": " << (g ? "" : g.error().context);
         return g ? std::format("{}^3 at {:g} mm", g->n, g->dx * 1000.0f) : std::string("refused");
     };
+    const auto at_feature = [](float f) {  // the Phantom with its widest wall at most `f`: F/4 is f/4
+        spade::vehicles::ModelType m = phantom();
+        for (spade::vehicles::PartDesc& p : m.parts) p.min_feature = std::min(p.min_feature, f);
+        return m;
+    };
     EXPECT_EQ(grid(phantom()), "104^3 at 12 mm");
-    EXPECT_EQ(grid(library_drone("iris_plus_class.model.yaml")), "107^3 at 12 mm");
-    EXPECT_EQ(grid(library_drone("reference_quad.model.yaml")), "100^3 at 8 mm");
-    EXPECT_EQ(grid(library_drone("basic_quad_6inch.model.yaml")), "100^3 at 8 mm");
-    EXPECT_EQ(grid(library_drone("basic_quad_competition.model.yaml")), "100^3 at 8 mm");
+    EXPECT_EQ(grid(library_drone("iris_plus_class.model.yaml")), "112^3 at 12 mm") << "107 rounded up";
+    EXPECT_EQ(grid(library_drone("reference_quad.model.yaml")), "104^3 at 8 mm") << "100 rounded up";
+    EXPECT_EQ(grid(library_drone("basic_quad_6inch.model.yaml")), "104^3 at 8 mm");
+    EXPECT_EQ(grid(library_drone("basic_quad_competition.model.yaml")), "104^3 at 8 mm");
     EXPECT_EQ(grid(library_drone("fpv_5inch.model.yaml")), "96^3 at 7 mm");
     EXPECT_EQ(grid(library_drone("crazyflie_class.model.yaml")), "128^3 at 1.75 mm");
+    EXPECT_EQ(grid(at_feature(0.040f)), "128^3 at 10 mm") << "125 rounded up, the box 1.28 m";
+    EXPECT_EQ(grid(at_feature(0.036f)), "128^3 at 9.75 mm") << "139 cells of 9 mm: the cap, at box/128";
     spade::vehicles::ModelType bare = phantom();
     bare.parts.clear();
     EXPECT_EQ(grid(bare), "32^3 at 39 mm");
@@ -751,6 +761,29 @@ TEST(AnalysisLiveRun, RunAirsGridIsP1sCellRule) {
     const spade::Result<an::LiveGrid> none = an::live_grid(rotorless());
     ASSERT_FALSE(none.has_value());
     EXPECT_NE(none.error().context.find("no rotors"), std::string::npos) << none.error().context;
+}
+
+// The levels' step (L13 and L17; the lead, 2026-11-03): a CFL of at most 2
+// under a 4 ms cap, floored past 1 ms to whole drone ticks of 1 ms, which
+// the run flies as substeps. The Phantom's body at 12 mm steps 2 ms (2.24 ms
+// floored), its real-time discs at 26 mm the cap, and at 4 mm 0.748 ms in
+// one tick; a run at 2 ms flies 2 drone ticks a step, one at 1 ms one.
+TEST(AnalysisLiveRun, TheLevelsStepIsCfl2UnderTheCapInWholeDroneTicks) {
+    const spade::vehicles::ModelType m = phantom();
+    an::AnalysisCase c;
+    EXPECT_EQ(an::live_level_step_s(c, m, 0.012f), 0.002f);
+    EXPECT_EQ(an::live_level_step_s(c, m, 0.026f), an::kLiveLevelStepCapS);
+    EXPECT_NEAR(an::live_level_step_s(c, m, 0.004f), 0.7480e-3f, 0.0005e-3f);
+    EXPECT_EQ(an::live_level_step_s(c, rotorless(), 0.012f), an::kLiveLevelStepCapS);
+
+    an::AnalysisCase t = tiny_case(rotorless());
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 4u) << "4 ms in ticks of 1 ms";
+    t.time.step = 0.002f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 2u);
+    t.time.step = 0.001f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 1u);
+    t.time.step = 0.0007f;
+    EXPECT_EQ(started(t, rotorless()).drone_substeps(), 1u);
 }
 
 // The floor to the millimetre is exact (the lead's review, 2026-11-03): in

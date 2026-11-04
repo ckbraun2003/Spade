@@ -1380,8 +1380,11 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // it and given an airflow region, the Pilot section arming it. The
     // worker's frames reach the view, which draws the streamlines and, once
     // there are any, the vortex cores around the drone (§5's default view).
-    // At 32^3 a frame of air takes about a second of wall time: the step
-    // waits for kAirFrames of them (a minute at most). Stopped and undone after.
+    // At the session's level, Detailed by default (D10): the Phantom's body
+    // in the air on 104^3 at 12 mm, a frame about 0.8 s of wall time on the
+    // GPU (Rendering, 2026-11-03). The step waits for kAirFrames of them (a
+    // minute at most); its card names the level and its share of real time
+    // over the snapshot. Stopped and undone after.
     t.step("editor", "airflow", [&] {
         if (!open()) return;
         constexpr uint64_t kAirFrames = 12;  // 0.4 s of air
@@ -1425,9 +1428,16 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 : !frame->error.empty() ? frame->error
                                         : std::format("{} frames in {} s of wall time, {:.1f} fps, on {}", frame->frames,
                                                       fmt(wall_s), static_cast<float>(frame->frames) / wall_s, on));
+        if (frame && wall_s > 0.0f) {
+            t.sink().set_card(std::format("Run air, {}: {}, {}", editor::air_level_name(w().panels().air_level),
+                                          frame->run_label.find("solids: ") != std::string::npos ? "the body in the air"
+                                                                                              : "discs only",
+                                          editor::real_time_share(frame->t_s / wall_s)));
+        }
         then(5);
         t.snapshot("editor_airflow");
         then(20);  // the snapshot is the next frame drawn: the air still running
+        t.sink().set_card({});
         command(editor::Command::stop);
         session->camera() = before;
         command(editor::Command::undo);  // the region

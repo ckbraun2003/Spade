@@ -419,7 +419,8 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
         ui::end_properties();
     }
     // The editor's airflow run (INT-15, T1): the drone's follow region, its
-    // resolved grid or the refusal, and Add or Remove.
+    // resolved grid at the session's physics level or the refusal, and Add
+    // or Remove.
     if (ui::section("Airflow", true)) {
         const scene::SceneAirflowRegion* region = nullptr;
         for (const scene::SceneAirflowRegion& r : p.scene->airflow) {
@@ -429,7 +430,18 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             if (ImGui::Button("Add airflow region")) p.pending.push_back(ed::AddAirflowRegion{v.name});
         } else {
             ImGui::TextUnformatted(region->name.c_str());
-            const ed::AirLineCache& line = ed::air_line(p.air_line, p.scene_opened, p.scene_serial, *p.scene, *region);
+            // D10: the session's physics level, what Run air resolves; not
+            // while the air runs.
+            ImGui::BeginDisabled(p.air);
+            if (ImGui::BeginCombo("Physics", ed::air_level_name(p.air_level))) {
+                for (const ed::AirLevel level : ed::kAirLevels) {
+                    if (ImGui::Selectable(ed::air_level_name(level), level == p.air_level)) p.air_level = level;
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::EndDisabled();
+            const ed::AirLineCache& line =
+                ed::air_line(p.air_line, p.scene_opened, p.scene_serial, *p.scene, *region, p.air_level);
             if (line.refused) {
                 ui::status_text(line.text);
             } else {

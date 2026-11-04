@@ -5,8 +5,10 @@
 //
 // gpu_air_starter() makes one Vulkan context, at the first Run air, and
 // keeps it for every run after. Each run starts through airflow_gpu::
-// start_live_run(): on the device when it takes the case, else on the CPU,
-// the device's refusal verbatim in the run's backend ("CPU: " and why). A
+// start_live_run(): the body's case on the device when it takes it, else
+// the discs' case on the CPU (item 1: a grid that resolves the body takes the
+// CPU seconds a step), the device's refusal verbatim in the run's backend
+// ("CPU: " and why, and that the body needs the GPU when it loses one). A
 // context that can't be made is the why ("no Vulkan device: " and its
 // error). Each run holds the context, so it outlives the run.
 //
@@ -37,8 +39,7 @@ namespace spade::sandbox::editor {
         std::string why;  // why there is none, once tried
     };
     auto device = std::make_shared<Device>();
-    return [device, workgroup_size](const analysis::ResolvedCase& resolved,
-                                    const vehicles::ModelType& model) -> Result<AirStart> {
+    return [device, workgroup_size](const AirCases& cases) -> Result<AirStart> {
         if (!device->tried) {
             device->tried = true;
             Result<std::unique_ptr<compute::VulkanContext>> made =
@@ -50,11 +51,13 @@ namespace spade::sandbox::editor {
             }
         }
         Result<airflow_gpu::LiveRunOn> on =
-            airflow_gpu::start_live_run(resolved, model, device->ctx.get(), workgroup_size);
+            airflow_gpu::start_live_run(cases.body.resolved, cases.body.model, device->ctx.get(), workgroup_size,
+                                        airflow_gpu::CpuCase{&cases.discs.resolved, &cases.discs.model});
         if (!on) return std::unexpected(on.error());
         std::string backend = on->cpu_because.empty() ? std::string("GPU")
                               : device->ctx            ? "CPU: " + on->cpu_because
                                                        : "CPU: " + device->why;
+        if (!on->cpu_because.empty() && cases.loses_parts) backend += kAirBodyNeedsTheGpu;
         return AirStart{std::move(on->run), std::move(backend), device->ctx};
     };
 }
