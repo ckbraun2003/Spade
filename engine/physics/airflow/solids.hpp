@@ -23,7 +23,8 @@
 // Per velocity sample (u, v, w arrays, MacGrid's indexing):
 //   theta  the face's open fraction. A wall part: clamp(0.5 + phi / dx, 0, 1)
 //          (Batty, Bertails & Bridson 2007), closed (0) wherever 0.5 + phi / dx
-//          is at most 1e-4 (THE TIE, below). A sheet: 0 where its mid-surface
+//          is under kApertureFloor, 0.05 (L13; it holds THE TIE's 1e-4,
+//          below). A sheet: 0 where its mid-surface
 //          crosses the segment between the face's two cell centres, half-open
 //          (-dx/2, dx/2] along the face's axis, so a sheet on a cell-centre
 //          plane closes exactly one face; otherwise 1.
@@ -83,6 +84,14 @@ inline constexpr uint32_t kNoWallLinks = std::numeric_limits<uint32_t>::max();
 // wall a hair from a sample would make 1 / f, and the stencil's diagonal,
 // unbounded.
 inline constexpr float kMinCrossing = 0.01f;
+
+// THE APERTURE FLOOR (L13, the lead, 2026-11-03). A wall part's face whose
+// ramp leaves less than this open is closed. A face a sliver open joins a cell
+// to the air with a pressure coupling of theta: on the Phantom at 10 mm with an
+// odd n, 12 cells at the body's edges hung on two faces 0.0037 open, and the
+// solids' CG took 24-32 iterations to 7-8e-5 instead of its floor of 8 to
+// 2e-6. Closing under 5% moves the wall at most 0.05 dx at such a face.
+inline constexpr float kApertureFloor = 0.05f;
 
 // What the geometry reports at a point of the grid's frame (metres).
 struct SolidQuery {

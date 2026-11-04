@@ -16,7 +16,8 @@ namespace {
 // ulps, either sign, and a gradient along the rounding, as often sideways as
 // out (Core's documented contract). So each threshold holds within kTraceHit
 // dx, the trace's own "on the surface", on the solid's side: a face within it
-// of dx/2 inside is closed (the ramp at or below kTraceHit); a cell centre
+// of dx/2 inside is closed (the ramp at or below kTraceHit; since L13 the
+// aperture floor, kApertureFloor, closes every ramp under 0.05); a cell centre
 // within it of the surface is not outside, so no run ends on a surface; a
 // face within it of dx/2 outside is one a part would block.
 constexpr float kTraceHit = 1.0e-4f;  // times dx
@@ -155,8 +156,9 @@ void open_everything(SolidField& f) {
                     f.wall[c][idx] = q.velocity[static_cast<glm::length_t>(c)];
                     if (cl.role == SolidRole::wall) {
                         f.phi[c][idx] = q.distance;
-                        const float ramp = 0.5f + q.distance * inv_dx;  // closed within kTraceHit (the tie)
-                        f.theta[c][idx] = ramp <= kTraceHit ? 0.0f : std::min(ramp, 1.0f);
+                        // Closed under the aperture floor (L13), which holds the tie's kTraceHit too.
+                        const float ramp = 0.5f + q.distance * inv_dx;
+                        f.theta[c][idx] = ramp < kApertureFloor ? 0.0f : std::min(ramp, 1.0f);
                     } else {
                         const float d_mid = sheet_mid_distance(sample, q.part, q, x, s.dx);
                         f.phi[c][idx] = d_mid;
