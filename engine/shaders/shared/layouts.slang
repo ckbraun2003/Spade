@@ -156,7 +156,11 @@ struct BodyState {
     float3 vel;               // world-frame linear velocity, m/s
     float  mass;              // kg (the row-2 slot the pad would occupy)
     float3 omega_body;        // body-frame angular velocity, rad/s
-    float  _p1;               // std430 pad
+    // The body's contact set (L10; state/layout.hpp): its model's ModelTypeId
+    // when the model has a set in the contact_sets table (bindings.slang,
+    // binding 28), 0 (the sphere) otherwise. Former std430 pad `_p1`: a
+    // RENAME of existing storage, like proxy_radius.
+    uint   contact_set;
     float3 inv_inertia_diag;  // body-frame 1/I diagonal, 1/(kg m^2)
     uint   flags;             // per-body predicate bits (none assigned yet)
     float3 force_acc;         // world-frame accumulated force, N

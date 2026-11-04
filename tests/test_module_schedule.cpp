@@ -16,6 +16,7 @@
 
 #include "compute/backend.hpp"
 #include "core/rng.hpp"
+#include "physics/contact_sets.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -2995,19 +2996,26 @@ TEST(ModuleVehicleRows, AHookSeesItsModelsPlaceInTheRegistry) {
     EXPECT_EQ(row.table_mass, table[row.index]) << "the hook found the model's entry";
 }
 
-// THE IDENTITY RULE (sim/module.hpp's ConfigTableDecl): snapshot v3's
-// model-registry identity covers a table only if every ModelType field its build
-// reads is folded into model_identity(). The standard set builds no table and
-// has no vehicle hook, and stage 4 adds no ModelType field, so no identity
-// moves: ModelSnapshot.* and ModelIdentity.* stand as they were.
-TEST(StandardModules, DeclareNoTablesAndNoVehicleHooks) {
+// THE IDENTITY RULE (sim/module.hpp's ConfigTableDecl): the registry identity
+// folds every non-empty table (L10/L11). The standard set's one table is
+// static_contact.contact_sets (physics/contact_sets.hpp), and it has no vehicle
+// hook. A table is not spelt in the schedule's identity and L11 bumped no
+// version, so kStandardIdentity stands as it was.
+TEST(StandardModules, DeclareOnlyTheContactSetsTableAndNoVehicleHooks) {
     for (const ModuleDesc& m : spade::modules::standard_modules()) {
-        EXPECT_TRUE(m.tables.empty()) << m.name;
+        if (m.name == "static_contact") {
+            ASSERT_EQ(m.tables.size(), 1u);
+            EXPECT_EQ(m.tables[0].name, spade::physics::kContactSetsTable);
+        } else {
+            EXPECT_TRUE(m.tables.empty()) << m.name;
+        }
         EXPECT_EQ(m.vehicle_rows, nullptr) << m.name;
     }
     const auto s = compile_schedule(spade::modules::standard_modules());
     ASSERT_TRUE(s.has_value()) << s.error().context;
-    EXPECT_TRUE(s->tables.empty());
+    ASSERT_EQ(s->tables.size(), 1u);
+    EXPECT_EQ(s->tables[0].module, "static_contact");
+    EXPECT_EQ(s->tables[0].name, spade::physics::kContactSetsTable);
     EXPECT_TRUE(s->vehicle_rows.empty());
     EXPECT_EQ(s->identity, kStandardIdentity);
 }

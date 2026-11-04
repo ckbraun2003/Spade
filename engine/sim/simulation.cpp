@@ -425,6 +425,17 @@ std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedul
     return out;
 }
 
+// The bound tables the GPU mirror makes buffers from (L10), CPU-only ones left
+// out: an entry's index is its device table index.
+std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule) {
+    std::vector<compute::TableShape> out;
+    for (const modules::CompiledTable& t : schedule.tables) {
+        if (t.binding == compute::kNoBinding) continue;
+        out.push_back(compute::TableShape{.name = t.module + "." + t.name, .capacity = t.capacity, .binding = t.binding});
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // create
 // ---------------------------------------------------------------------------
@@ -1364,6 +1375,11 @@ Result<std::vector<compute::GridEntryRow>> Simulation::vulkan_grid_entries() con
         return std::unexpected(read.error());
     }
     return rows;
+}
+
+Result<std::vector<float>> Simulation::vulkan_config_table(std::string_view name) const {
+    return std::unexpected(Error{Code::unavailable, "vulkan_config_table('" + std::string(name) +
+                                                        "'): not built yet (L10 RED)"});
 }
 
 Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {

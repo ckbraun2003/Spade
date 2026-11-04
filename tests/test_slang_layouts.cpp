@@ -209,6 +209,11 @@ const RegistryEntry kExpectedRegistry[] = {
     // same reason: the contact kernels write it and integrate reads and zeroes
     // it inside one substep; never uploaded, never read back.
     {"contact_dv", gen::kBinding_contact_dv},
+    // L10: static_contact's contact-set table (physics/contact_sets.hpp), a
+    // CONFIGURATION table with a device copy: uploaded at create and after
+    // every register_model(), read by the step, read back only by the
+    // vulkan_config_table() diagnostic. Fixed at its declared capacity (L11).
+    {"contact_sets", gen::kBinding_contact_sets},
 };
 
 // How many entries of kExpectedRegistry are DERIVED (not part of the
@@ -216,7 +221,7 @@ const RegistryEntry kExpectedRegistry[] = {
 // spelled as a literal in the count assertion below, so the assertion reads as
 // the sentence it is meant to be: the BOUND arrays + five siblings + the
 // derived buffers, and nothing else.
-constexpr std::size_t kDerivedBufferCount = 12;
+constexpr std::size_t kDerivedBufferCount = 13;
 
 }  // namespace
 
@@ -287,7 +292,7 @@ TEST(SlangLayouts, BindingRegistryCoversEveryRegisteredArray) {
 }
 
 // The registry holds the eleven bound arrays, the five bound siblings, and the
-// twelve derived buffers -- and NOTHING else. kBindingCount_state is generated from
+// thirteen derived buffers -- and NOTHING else. kBindingCount_state is generated from
 // the reflection record, so a binding added to bindings.slang without a
 // corresponding decision recorded here moves this number and fails.
 TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {

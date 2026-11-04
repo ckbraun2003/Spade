@@ -717,8 +717,11 @@ TEST_F(GpuStateMirrorTest, DescriptorSetBindsEveryRegistryBinding) {
     shape.h = 0.001f;
     shape.arrays = walk_shapes(standard_schedule(), shape);
     // The standard set's declared scratch (integrate's contact_dv, binding 27,
-    // PHY-7) is bound from its declaration, as Simulation hands it over.
+    // PHY-7) is bound from its declaration, as Simulation hands it over; so is
+    // its bound configuration table (static_contact's contact_sets, binding
+    // 28, L10).
     shape.scratch = spade::scratch_shapes(standard_schedule(), shape);
+    shape.tables = spade::table_shapes(standard_schedule());
 
     Result<std::unique_ptr<VulkanBackend>> backend =
         VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());

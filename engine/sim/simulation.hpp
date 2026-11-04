@@ -541,6 +541,14 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 [[nodiscard]] std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
                                                                 const compute::StepShape& shape);
 
+// Every BOUND configuration table's shape for the GPU mirror (L10;
+// sim/module.hpp's ConfigTableDecl), in the order schedule.tables lists them:
+// "<module>.<table>", its capacity in floats and its binding. A CPU-only table
+// (kNoBinding) is left out, so an entry's index is the device table's index
+// VulkanBackend::upload_table() and read_table() take. create() hands the list
+// to the Vulkan backend as StepShape::tables.
+[[nodiscard]] std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule);
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------
@@ -740,6 +748,17 @@ public:
     // checking.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<std::vector<compute::GridEntryRow>> vulkan_grid_entries() const;
+
+    // ---------------------------------------------------------------------
+    // A configuration table's DEVICE copy (L10; sim/module.hpp's
+    // ConfigTableDecl): all `capacity` floats of the buffer a bound table has
+    // on the device, read back -- the table's floats, then the zeros the
+    // upload pads it with. Same diagnostic posture as vulkan_grid_entries():
+    // one device->host copy, never on the step path, and `unavailable` on the
+    // cpu path. not_found, naming the table, if no module in this set declares
+    // it; invalid_argument if it is CPU-only (no binding).
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<std::vector<float>> vulkan_config_table(std::string_view name) const;
 
     // ---------------------------------------------------------------------
     // S6 Task 10: per-pass GPU timing for the most recently completed step()
