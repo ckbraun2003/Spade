@@ -97,6 +97,7 @@ add_executable(spade_tests
     test_vehicles_airflow_solids.cpp
     test_airflow_validation.cpp
     test_airflow_caradonna_data.cpp
+    test_airflow_tgv_data.cpp
     test_gpu_airflow_d1_acceptance.cpp
     test_dryden.cpp
     test_rotor.cpp
