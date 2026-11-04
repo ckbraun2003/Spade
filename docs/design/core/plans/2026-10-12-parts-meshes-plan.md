@@ -986,11 +986,11 @@ TEST(MeshImport, GltfNodeTransformsAreBakedInMetres) {
 - [x] **Step 4:** Build. Run `-Filter "MeshImport*"`. Commit: `feat(core): binary STL and OBJ readers, units declared by the caller (CORE-6)`.
 - [x] **Step 5: The task gate.** Expected: Task B6's total + 6.
 
-**Done:** merged `2aafac1` (branch head `75bbaa3`). Eight tests, not six, and `CoreUtf8.WellFormedTextOnly` for the new `core/utf8.hpp`; the rulings (o over g, polygons and other elements refused by line) are in `mesh_import.hpp`. A face of more than three vertices is refused here; B7b fans the convex planar ones.
+**Done:** merged `2aafac1` (branch head `75bbaa3`). Eight tests, not six, and `CoreUtf8.WellFormedTextOnly` for the new `core/utf8.hpp`; the rulings (o over g, polygons and other elements refused by line) are in `mesh_import.hpp`. B7 refused a face of more than three vertices; B7b (merged `464c9366`) fans the planar, strictly convex ones and refuses the rest by line.
 
 **Done when:** STL and OBJ exports become validated meshes in the units their author names.
 
-### Task B8: 3MF (needs the lead's yes on two dependencies; open question 5)
+### Task B8: 3MF (miniz and pugixml approved by the lead, L15, 2026-11-03; open question 5)
 
 **Files:**
 - Create: `engine/world/mesh_import/threemf.cpp`.
