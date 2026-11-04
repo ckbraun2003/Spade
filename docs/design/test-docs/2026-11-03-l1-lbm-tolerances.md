@@ -1,15 +1,15 @@
 # L1, the LBM lattice: tolerances fixed before the first run
 
-**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03. None of these cases has run. Physics reviews it before L1's GREEN.
+**Owner:** Test/Docs. **Status:** reviewed by Physics, 2026-11-03 (OK, its answers folded in below). None of these cases has run.
 **For:** L1 of Physics' P5 plan (`../physics/plans/2026-11-03-p5-blade-resolved-plan.md`, "The plan (the LBM route)"), after Cameron's D9 and D10 (backlog, 2026-11-03). As plan A's Task 11 did for the NS tier, this note fixes each case's configuration, measures, tolerances and record before the first run. L1's tests read their tolerances from here, and each record's `tolerance:` line cites this note.
 **The rule** (`01-verification.md`, "Validation against published data"): a tolerance is fixed before the first run, from the reference and the method, never from our solver's error. It is not loosened after a run without a lead decision recorded with its reason. A miss is recorded as a miss.
 
 Everything is in lattice units (dx = dt = 1). The sound speed is c_s = 1/√3, so the lattice Mach is Ma = √3 u_lat, and ν_lat = (τ − ½)/3, with τ = 3(ν + ν_t) + ½ under WALE (spec §11.3).
 
-| u_lat | 0.05 | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 |
-|---|---|---|---|---|---|---|
-| Ma | 0.087 | 0.173 | 0.260 | 0.346 | 0.433 | 0.520 |
-| Ma² | 0.0075 | 0.030 | 0.068 | 0.120 | 0.188 | 0.270 |
+| u_lat | 0.05 | 0.10 | 0.15 | 0.20 | 0.25 | 0.30 | 0.35 | 0.40 |
+|---|---|---|---|---|---|---|---|---|
+| Ma | 0.087 | 0.173 | 0.260 | 0.346 | 0.433 | 0.520 | 0.606 | 0.693 |
+| Ma² | 0.0075 | 0.030 | 0.068 | 0.120 | 0.188 | 0.270 | 0.368 | 0.480 |
 
 ## What differs from the NS tier's bands, and why
 
@@ -30,7 +30,7 @@ At Caradonna–Tung's own tip Mach (L5), the lattice's compressibility is the fl
 - **The flow carries sound, and only viscosity damps it.** An impulsive lid, or a density not matched to the pressure, launches sound. The NS tier has none. A box's slowest acoustic mode decays as e^(−ν k² t) at least, with the bulk viscosity 2ν/3 of a single-τ collision (WALE and the walls only add to the damping). In a cavity that leaves 1% after T = 0.47 Re in units of L/U, so C1's T grows with Re, and C1's record gains a steadiness line. In C0's 2π box the slowest sound has a period of about 1.1 t* at u_lat 0.1, and its exchange with K would show in −dK/dt. So C0a and C0b start from the density matched to the analytic pressure, ρ = ρ0 + p′/c_s².
 - **u_lat is configuration.** Every record names u_lat, Ma, ν_lat and τ, the time in the reference's units, and its steps.
 
-**3. The subgrid model is on.** The NS tier's C1 ran without one. L1 runs WALE in τ in C0b, C1 and the map, at a C_w that Physics names before the first run (open item 3). In two dimensions WALE's operator is ⅔(det ∇u)². That is zero in pure shear, but not in a vortex core, and WALE is non-zero in solid rotation. So spec §11.3's "no eddy viscosity in laminar flow" overstates: in the cavity WALE's viscosity is small, not zero.
+**3. The subgrid model is on.** The NS tier's C1 ran without one. L1 runs WALE in τ in C0b, C1 and the map, at C_w = 0.5, named by Physics before any run (open item 3). In two dimensions WALE's operator is ⅔(det ∇u)². That is zero in pure shear, but not in a vortex core, and WALE is non-zero in solid rotation. So spec §11.3's "no eddy viscosity in laminar flow" overstates: in the cavity WALE's viscosity is small, not zero.
 - **The estimate.** In a core of vorticity ω, ν_t = (C_w Δ)² |ω| (1/24)^¼. Ghia et al.'s table of vortex centres gives core vorticities of about 3.2 and 2.3 U/L. At C_w 0.5 and 128², that is 0.2% of ν at Re 100 and 0.6% at Re 400.
 - **The records.** C1's record reports the peak ν_t/ν. C0a runs with WALE off, since its exact solution has no subgrid term.
 
@@ -86,7 +86,7 @@ It solves the incompressible Navier–Stokes equations at any Re (Taylor 1923, P
   - `u = U0 sin(x/L) cos(y/L) cos(z/L)`, `v = −U0 cos(x/L) sin(y/L) cos(z/L)`, `w = 0`;
   - `p′ = (ρ0 U0²/16)(cos(2x/L) + cos(2y/L))(cos(2z/L) + 2)`, with ρ from p′.
 - **The flow:** u_lat 0.1 (U0; Ma 0.173) and Re = U0 L/ν = 1600.
-- **The collision:** WALE on, at Physics' C_w.
+- **The collision:** WALE on, at C_w 0.5.
 - **The horizon:** t* = 20.
 
 | N | ν_lat (τ) | Steps to t* 20 |
@@ -110,7 +110,7 @@ It solves the incompressible Navier–Stokes equations at any Re (Taylor 1923, P
 
 **Configuration.**
 - **The box:** a 128 × 128 × 1 slab, z periodic.
-- **The walls:** the four side faces are walls by halfway bounce-back. The lid at y = 1 moves at u_lat by the moving-wall term (open item 1).
+- **The walls:** the four side faces are walls by halfway bounce-back. The lid at y = 1 moves at u_lat by the moving-wall term. L1 gains these plain box-face walls for C1; L2 keeps the part walls (open item 1).
 - **The start:** impulsive, from rest at ρ0.
 - **The collision:** WALE on.
 - **Units:** L = 128 cells, so the time unit L/U is 128/u_lat steps.
@@ -141,23 +141,24 @@ T is 0.47 Re rounded up, which leaves the slowest sound at 1% (above). The NS ti
 
 **What it decides:** u_lat for Caradonna–Tung (L5). Its true tip Mach, 0.439, is u_lat 0.254 (the plan, "What the measurements do not settle").
 
-**Reading the plan's range.** This note reads the plan's "lattice Mach (0.1 to 0.3)" as u_lat 0.1 to 0.3, which is Ma 0.17 to 0.52. Read as Ma, the range would stop at u_lat 0.17, below Caradonna–Tung's 0.254, and decide nothing (open item 2).
+**The range.** The plan's "lattice Mach (0.1 to 0.3)" is u_lat 0.1 to 0.3, which is Ma 0.17 to 0.52 (Physics, open item 2). Read as Ma, it would stop at u_lat 0.17, below Caradonna–Tung's 0.254, and decide nothing. The map runs on to u_lat 0.40 for the margin (below).
 
-**The flow:** C0b's field at 64³, with WALE on at Physics' C_w and ρ from p′, run to t* = 20 (`203.7/u_lat` steps).
+**The flow:** C0b's field at 64³, with WALE on at C_w 0.5 and ρ from p′, run to t* = 20 (`203.7/u_lat` steps).
 - **What it tests:** the field's transition carries the grid to its smallest scales, which is where an LBM goes unstable.
 - **What it cannot test:** after that, a decaying flow tests nothing. So the map covers the lattice's bulk through transition only. Walls (L2), nests (L4), and a sustained flow over many revolutions (L5) each carry their own stability in their own records.
 
-**The points.** u_lat 0.10, 0.15, 0.20, 0.25 and 0.30, each at ν_lat 0 (τ = ½, WALE's viscosity alone), 1e-6, 1e-5, 1e-4 and 1e-3, which makes 25 points.
+**The points.** u_lat 0.10, 0.15, 0.20, 0.25, 0.30, 0.35 and 0.40, each at ν_lat 0 (τ = ½, WALE's viscosity alone), 1e-6, 1e-5, 1e-4 and 1e-3, which makes 35 points.
 - **Why these ν_lat:** Caradonna–Tung's levels sit between about 4e-7 and 5e-6. Its finest level, at dx 5.95 mm, has ν_lat = ν u_lat/(U_tip dx) = 1.7e-5 u_lat for air's 1.5e-5 m²/s, and acoustic scaling halves that on each coarser level. So ν_lat 0 and 1e-6 bracket its coarse levels, and 1e-5 its finest.
 - **How the record prints them:** ν_lat and τ − ½ as the solver holds them in fp32. One ulp of τ near ½ is 6e-8, so at ν_lat 1e-6, 3ν_lat is only 50 ulps.
 
 **Held, fixed now:** K* finite and at most 1.05 K*(0) at every sample (every 5 steps) to the horizon.
 - An unstable LBM's energy grows without bound, so any fixed ceiling catches it before the first non-finite value.
-- The 1.05 leaves room for K's exchange with the pressure field. For this field, p′²/(2ρc_s²) over K is 0.07 Ma², under 2% of K at u_lat 0.3.
+- The 1.05 leaves room for K's exchange with the pressure field. For this field, p′²/(2ρc_s²) over K is 0.07 Ma², under 4% of K at u_lat 0.4.
 
-**The decision, fixed now.** Physics confirms the margin before the map runs (open item 6).
-- **At its true tip Mach:** Caradonna–Tung runs at u_lat 0.254 if every ν_lat point held at u_lat 0.30. 0.30 is about 1.2 times 0.254, a margin for local speeds above the tip's (the induced flow, and the tip vortex's swirl).
-- **Otherwise:** it runs at the largest u_lat at which every point held, divided by 1.2, and P9's compressibility caveat applies, as the plan says.
+**The decision, fixed now.** The margin is 1.4, Physics' measure from P9 (open item 6).
+- **Why 1.4:** Table 17's largest −C_p (`caradonna1981_rotor.hpp`) is 1.18 at r/R 0.89 and 1.12 at 0.96, both on the upper surface near the leading edge. The local speed is √(1 − C_p) times the section's, 1.32 and 1.40 V_tip. An isentropic reading of the same C_p gives 1.33 and 1.42 V_tip (a local Mach of 0.635 at 0.96). Either way the needed u_lat, 0.254 × 1.4 = 0.355 (0.360 isentropic), lies between the map's points 0.35 and 0.40, so the decision is the same.
+- **The rule:** let u_held be the largest u_lat at which every ν_lat point held. Caradonna–Tung runs at the smaller of 0.254 and u_held / 1.4. So it runs at its true tip Mach only if every point held at u_lat 0.40.
+- **Below 0.254:** if u_held / 1.4 is under 0.254, P9's compressibility caveat applies, as the plan says.
 - **If no u_lat holds,** the lead decides.
 
 ## The records
@@ -239,12 +240,13 @@ The map's block continues with the same two measures at ν_lat 1e-6, 1e-5, 1e-4 
 
 ## Open, for Physics before the first run
 
-1. **C1 needs wall faces.** L1's faces are periodic and open (equilibrium inflow, zero-gradient outflow). The cavity needs four no-slip faces, one of them moving. Either L1 gains box-face walls (halfway bounce-back, the lid by the moving-wall term), or C1 moves to L2 with the walls.
-2. **The map's range** is read here as u_lat 0.1 to 0.3 (above). Confirm it.
-3. **C_w is fixed before the first run.** Spec §11.3 says C_w "is fixed once by C0 and C4". If C0b's run picked C_w, its own verdict would be circular. This note reads it as follows:
-   - Physics names C_w from the literature (0.325 to 0.5) before C0b's first run.
-   - C0 and C4 confirm it.
+All six are answered (Physics' review, 2026-11-03).
+
+1. **C1's walls.** Closed: L1 gains plain box-face walls (halfway bounce-back on the domain faces, the lid by the moving-wall term), so C1 stays in L1. L2 keeps the part walls (links from the SDF, Bouzidi, moving parts). Physics corrects L1's face list in its plan.
+2. **The map's range.** Closed: u_lat 0.1 to 0.3 (Ma 0.17 to 0.52). Physics fixes the plan's wording. The map adds 0.35 and 0.40 for item 6.
+3. **C_w.** Closed: C_w = 0.5, Nicoud & Ducros (1999)'s own value (OpenFOAM's 0.325 is a later recalibration), named before any run.
+   - C0 and C4 confirm it, so neither picks it and neither verdict is circular.
    - A change after a run is a named cause (`TD-2`) and a new configuration, and the old record is kept.
-4. **WALE is not zero in laminar vortices** (above). Spec §11.3's line needs a correction, and the spec is Physics'.
-5. **C0b's DNS data** is in the repo (`tgv1600_spectral.hpp`, fetch L14). Physics reads its provenance with this note. Done.
-6. **The 1.2 margin** for Caradonna–Tung's u_lat: confirm it, or replace it with an argued number, before the map runs.
+4. **WALE in laminar vortices.** Closed: its S^d vanishes in pure shear, not in rotation. Physics corrects spec §11.3's line on its L1 branch. C0a runs with WALE off, and C1 reports ν_t/ν.
+5. **C0b's DNS data.** Closed: in the repo (`tgv1600_spectral.hpp`, fetch L14), its provenance in the header.
+6. **Caradonna–Tung's margin.** Closed: 1.4, not 1.2, measured from P9's Table 17 (the stability map, above).
