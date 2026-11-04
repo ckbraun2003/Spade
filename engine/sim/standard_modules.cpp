@@ -212,9 +212,19 @@ constexpr QuantityAccess kContactAccess[] = {{"body.pose", Access::write},
                                              {"integrate.contact_dv", Access::accumulate}};
 static_assert(kContactAccess[physics::kContactPassContactDvAccess].quantity == "integrate.contact_dv",
               "the contact passes read the contact scratch at physics::kContactPassContactDvAccess");
+// static_contact.resolve reads its own contact sets besides (L9/L10, the
+// lead's grant 2026-11-03): kContactAccess, then the table, read-only, at the
+// index physics/contact_sets.hpp names. dynamic keeps kContactAccess.
+constexpr QuantityAccess kStaticContactAccess[] = {{"body.pose", Access::write},
+                                                   {"integrate.contact_dv", Access::accumulate},
+                                                   {"static_contact.contact_sets", Access::read}};
+static_assert(kStaticContactAccess[physics::kContactPassContactDvAccess].quantity == "integrate.contact_dv",
+              "static_contact.resolve reads the contact scratch at physics::kContactPassContactDvAccess");
+static_assert(kStaticContactAccess[physics::kStaticContactSetsAccess].quantity == "static_contact.contact_sets",
+              "static_contact.resolve reads its table at physics::kStaticContactSetsAccess");
 constexpr PassDecl kStaticPasses[] = {{.name = "resolve",
                                        .phase = Phase::constraints,
-                                       .access = kContactAccess,
+                                       .access = kStaticContactAccess,
                                        .cpu = &physics::pass_collision_static,
                                        .gpu = compute::GpuRecipe::collision_static}};
 
