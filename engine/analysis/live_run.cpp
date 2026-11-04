@@ -46,6 +46,64 @@ constexpr float kRadPerDeg = std::numbers::pi_v<float> / 180.0f;
 
 [[nodiscard]] double seconds(uint64_t ns) { return static_cast<double>(ns) / static_cast<double>(kNsPerSecond); }
 
+// A part whose declared feature and box are finite and non-negative: the
+// classifier's refusal of one is a wire (P-1), of any other a malformed part.
+[[nodiscard]] bool well_sized(const af::SolidPart& p) {
+    const auto ok = [](float v) { return v >= 0.0f && std::isfinite(v); };
+    return ok(p.min_feature) && ok(p.extent.x) && ok(p.extent.y) && ok(p.extent.z);
+}
+
+// drawn_only_line()'s words for why.
+[[nodiscard]] std::string drawn_words(const DrawnPart& d) {
+    switch (d.why) {
+        case DrawnReason::marked: return "marked drawn only";
+        case DrawnReason::thin: return "thinner than 2 cells";
+        case DrawnReason::wire: return "a wire";
+        case DrawnReason::porous: return "porous";
+        case DrawnReason::leaks: return "leaks";
+        case DrawnReason::exposed: return "inside '" + d.inside + "', exposed";
+        case DrawnReason::sibling: return "its siblings with it";  // after its refused part's words
+    }
+    return {};
+}
+
+// "arm[3]" as ("arm", 3); nullopt for a name without a trailing [digits].
+[[nodiscard]] std::optional<std::pair<std::string_view, uint32_t>> indexed_name(std::string_view name) {
+    const std::size_t open = name.rfind('[');
+    if (open == std::string_view::npos || open == 0 || name.back() != ']' || open + 2 >= name.size() ||
+        name.size() - open > 8) {
+        return std::nullopt;
+    }
+    uint32_t k = 0;
+    for (std::size_t i = open + 1; i + 1 < name.size(); ++i) {
+        if (name[i] < '0' || name[i] > '9') return std::nullopt;
+        k = 10u * k + static_cast<uint32_t>(name[i] - '0');
+    }
+    return std::pair{name.substr(0, open), k};
+}
+
+// One reason's parts, in the model's order, consecutive indexed names joined:
+// "arm[0-3], esc".
+[[nodiscard]] std::string joined_names(std::vector<const DrawnPart*> group) {
+    std::sort(group.begin(), group.end(), [](const DrawnPart* a, const DrawnPart* b) { return a->part < b->part; });
+    std::string out;
+    for (std::size_t i = 0; i < group.size();) {
+        const auto first = indexed_name(group[i]->name);
+        std::size_t j = i;
+        while (first && j + 1 < group.size()) {
+            const auto at = indexed_name(group[j]->name);
+            const auto next = indexed_name(group[j + 1]->name);
+            if (!next || next->first != first->first || next->second != at->second + 1) break;
+            ++j;
+        }
+        if (!out.empty()) out += ", ";
+        out += j > i ? std::format("{}[{}-{}]", first->first, first->second, indexed_name(group[j]->name)->second)
+                     : group[i]->name;
+        i = j + 1;
+    }
+    return out;
+}
+
 // A rotation of `deg` about a unit axis, through sin32 and cos32, not libm (TD-3).
 [[nodiscard]] glm::quat about(float deg, const glm::vec3& axis) {
     const float half = 0.5f * deg * kRadPerDeg;
@@ -359,40 +417,101 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
-    // The parts the air sees: every posed part but those marked drawn only
-    // (N15, vehicles/airflow_solids.hpp). They say whether the run has
-    // solids, so a model of drawn-only parts flies as one without them: plan
-    // A at the case's n_v. A local: its sampler borrows it and impl->model,
-    // and set_solids() is done with both on return.
-    const vehicles::AirflowSolids solids(impl->model, std::move(*posed), impl->grid_origin);
-    impl->solids.drawn_only = solids.drawn_only();
-    Result<std::vector<af::SolidPart>> parts = solids.parts();
-    if (!parts) {
-        return std::unexpected(Error{parts.error().code, "the model's parts as solids: " + parts.error().context});
-    }
-    // An imported part the grid can't resolve is refused by name, as any part
-    // is, with the other way out (N15, Physics' ruling): the classifier's
-    // refusal, ahead of set_solids()'s, which would give the same words.
-    for (const af::SolidPart& sp : *parts) {
-        const bool imported = std::any_of(impl->model.parts.begin(), impl->model.parts.end(), [&](const auto& d) {
-            return d.name == sp.name && d.role == kImportedPartRole;
-        });
-        if (!imported) continue;
-        if (Result<af::SolidClass> k = af::classify_part(sp, g.dx); !k) {
-            return std::unexpected(Error{k.error().code, "the model's parts as solids: " + k.error().context +
-                                                             ", or mark part '" + sp.name + "' visual-only"});
+    // The parts the air takes (P-1; the header's A PART THE GRID CAN'T HOLD).
+    // `air` is the model with each part left out marked drawn only, the mark
+    // vehicles::AirflowSolids leaves out of its parts and its sampler. Each
+    // AirflowSolids is a local: its sampler borrows it and `air`, and
+    // set_solids() is done with both on return.
+    vehicles::ModelType air = impl->model;
+    const auto declared = [&](const std::string& name) {
+        uint32_t k = 0;
+        while (k < impl->model.parts.size() && impl->model.parts[k].name != name) ++k;
+        return k;  // a part's name is unique in its model
+    };
+    const auto leave_out = [&](const std::string& name, DrawnReason why, std::string inside, std::string of = {}) {
+        const uint32_t k = declared(name);
+        air.parts[k].role = std::string(vehicles::kDrawnOnlyRole);
+        impl->solids.drawn_only.push_back(DrawnPart{name, k, why, std::move(inside), std::move(of)});
+    };
+    const auto refused = [](const Error& e) {
+        return std::unexpected(Error{e.code, "the model's parts as solids: " + e.context});
+    };
+    // 1. The user's marks, then what the classifier finds at the base cell:
+    // a sheet, a wire, a porous part. A part of malformed size is refused.
+    std::vector<std::pair<std::string, DrawnReason>> classed_out;
+    {
+        const vehicles::AirflowSolids marked(air, *posed, impl->grid_origin);
+        for (const std::string& name : marked.drawn_only()) {
+            impl->solids.drawn_only.push_back(DrawnPart{name, declared(name), DrawnReason::marked, {}, {}});
+        }
+        const Result<std::vector<af::SolidPart>> all = marked.parts();
+        if (!all) return refused(all.error());
+        for (const af::SolidPart& sp : *all) {
+            if (sp.porous) {
+                classed_out.emplace_back(sp.name, DrawnReason::porous);
+                continue;
+            }
+            const Result<af::SolidClass> k = af::classify_part(sp, g.dx);
+            if (!k) {
+                if (!well_sized(sp)) return refused(k.error());
+                classed_out.emplace_back(sp.name, DrawnReason::wire);
+            } else if (k->role == af::SolidRole::sheet) {
+                classed_out.emplace_back(sp.name, DrawnReason::thin);
+            }
         }
     }
-    const bool with_solids = !parts->empty();
-    if (with_solids) impl->fluid.n_v = af::kSolidsCgIterations;
-    Result<af::FluidScratch> scratch = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
-    if (!scratch) return std::unexpected(scratch.error());
-    impl->scratch = std::move(*scratch);
-    if (with_solids) {
-        if (Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
-            !set) {
-            return std::unexpected(Error{set.error().code, "the model's parts as solids: " + set.error().context});
+    for (auto& [name, why] : classed_out) leave_out(name, why, {});
+    // 2. The rest built; a part the measured safeguard refuses (it leaks, or
+    // is exposed inside another) left out and the build redone, until one is
+    // accepted or no part is left. With none, the run is discs only: plan A
+    // at the case's n_v, its scratch made afresh, so its bits are the bare
+    // model's. Any other refusal refuses the run.
+    const uint32_t case_n_v = impl->fluid.n_v;
+    const auto make_scratch = [&]() -> Result<void> {
+        Result<af::FluidScratch> s = af::make_fluid_scratch(impl->grid, resolved.domain, impl->fluid);
+        if (!s) return std::unexpected(s.error());
+        impl->scratch = std::move(*s);
+        return {};
+    };
+    bool built = false;
+    for (bool first = true; !built; first = false) {
+        const vehicles::AirflowSolids solids(air, *posed, impl->grid_origin);
+        const Result<std::vector<af::SolidPart>> parts = solids.parts();
+        if (!parts) return refused(parts.error());
+        if (parts->empty()) break;
+        if (first) {
+            impl->fluid.n_v = af::kSolidsCgIterations;
+            if (Result<void> s = make_scratch(); !s) return std::unexpected(s.error());
         }
+        const Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
+        if (set) {
+            built = true;
+            break;
+        }
+        const af::SolidRefusal why = impl->scratch.solids.refused;
+        if (why.part >= parts->size()) return refused(set.error());
+        const bool exposed = why.reason == af::SolidRefusalReason::exposed;
+        const std::string refused_name = (*parts)[why.part].name;
+        leave_out(refused_name, exposed ? DrawnReason::exposed : DrawnReason::leaks,
+                  exposed && why.inside < parts->size() ? (*parts)[why.inside].name : std::string{});
+        // L8 (the lead, 2026-11-03): its indexed siblings still in the air go
+        // with it. The safeguard measures where a part falls on the lattice,
+        // and mirrored parts fall differently by fp32's rounding, so three of
+        // four motors would give the held drone a moment its geometry hasn't.
+        if (const auto stem = indexed_name(refused_name)) {
+            for (const af::SolidPart& sp : *parts) {
+                const auto other = indexed_name(sp.name);
+                if (sp.name != refused_name && other && other->first == stem->first) {
+                    leave_out(sp.name, DrawnReason::sibling, {}, refused_name);
+                }
+            }
+        }
+    }
+    if (!built) {
+        impl->fluid.n_v = case_n_v;
+        if (Result<void> s = make_scratch(); !s) return std::unexpected(s.error());
+    }
+    if (built) {
         impl->solids.any = impl->scratch.solids.any;
         impl->solids.run_line = impl->scratch.solids.run_line;
         const std::vector<uint8_t>& mask = impl->scratch.regions.solid;
@@ -623,16 +742,108 @@ std::string LiveRun::run_label() const {
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
     out += std::format(", dx {:g} mm", g.dx * 1000.0f);
     if (!rotors.empty()) out += std::format(", R/dx {:.0f}", rotors.front().cells_across_radius);
+    out += std::format(", h {:.3g} ms", seconds(r.h_ns) * 1000.0);  // the step (Physics' rule for Run air)
     std::vector<float> radii;  // each rotor's disc, spread on the base grid
     for (const ResolvedRotor& x : rotors) radii.push_back(x.radius);
     if (const std::string note = af::disc_spacing_note(radii, g.dx); !note.empty()) out += " \xc2\xb7 " + note;
     if (r.solids.any) out += " \xc2\xb7 " + r.solids.run_line;
-    if (const std::vector<std::string>& drawn = r.solids.drawn_only; !drawn.empty()) {
-        out += std::format(" \xc2\xb7 {} part{} drawn only: ", drawn.size(), drawn.size() == 1 ? "" : "s");
-        for (std::size_t i = 0; i < drawn.size(); ++i) out += (i == 0 ? "'" : ", '") + drawn[i] + "'";
-    }
+    if (!r.solids.drawn_only.empty()) out += " \xc2\xb7 " + drawn_only_line(r.solids.drawn_only, g.dx, r.solids.any);
     if (const std::string limits = announced_limits(r.state.propulsion_flags); !limits.empty()) {
         out += " \xc2\xb7 " + limits;
+    }
+    return out;
+}
+
+Result<LiveGrid> live_grid(const vehicles::ModelType& model) {
+    float radius = 0.0f;
+    for (const vehicles::RotorDesc& r : model.rotors) radius = std::max(radius, r.radius);
+    if (model.rotors.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "Run air's grid: '" + model.name +
+                                                                 "' has no rotors, so there is no air to drive"});
+    }
+    // In whole millimetres, so the box and n are exact: R/3, and F/4 (F the
+    // largest declared min_feature of the parts the air can take), each from
+    // whole micrometres rounded, so a whole millimetre stays one (float32's
+    // R/3 * 1000 falls under one for R 36 mm: the lead's review, 2026-11-03).
+    const auto micrometres = [](float m) { return static_cast<uint64_t>(std::floor(double(m) * 1.0e6 + 0.5)); };
+    const uint32_t r3_mm = static_cast<uint32_t>(micrometres(radius) / 3000u);
+    if (r3_mm == 0) {
+        return std::unexpected(Error{Code::invalid_argument, "Run air's grid: '" + model.name +
+                                                                 "' has rotors under 3 mm in radius, finer than its "
+                                                                 "cell rule reaches"});
+    }
+    float feature = 0.0f;
+    for (const vehicles::PartDesc& p : model.parts) {
+        if (p.attach != vehicles::PartAttach::body || p.role == vehicles::kDrawnOnlyRole ||
+            p.surface.kind != vehicles::PartSurface::Kind::wall) {
+            continue;
+        }
+        feature = std::max(feature, p.min_feature);
+    }
+    const uint32_t box_mm = kLiveBoxCells * r3_mm;
+    uint32_t dx_mm = r3_mm;
+    if (feature > 0.0f) dx_mm = std::min(dx_mm, static_cast<uint32_t>(micrometres(feature) / 4000u));
+    if (dx_mm == 0 || (box_mm + dx_mm - 1) / dx_mm > kLiveMaxCells) {
+        return LiveGrid{kLiveMaxCells, static_cast<float>(box_mm) / static_cast<float>(kLiveMaxCells) / 1000.0f};
+    }
+    return LiveGrid{(box_mm + dx_mm - 1) / dx_mm, static_cast<float>(dx_mm) / 1000.0f};
+}
+
+float live_step_s(const AnalysisCase& c, const vehicles::ModelType& model, float dx) {
+    float v_h = 0.0f;  // the largest hover induced speed over the rotors: the smallest disc's, the fastest wake
+    if (!model.rotors.empty()) {
+        const float thrust = model.body.mass * -Environment{}.gravity.y / static_cast<float>(model.rotors.size());
+        for (const vehicles::RotorDesc& r : model.rotors) {
+            const float area = std::numbers::pi_v<float> * r.radius * r.radius;
+            v_h = std::max(v_h, std::sqrt(thrust / (2.0f * c.fluid.density * area)));
+        }
+    }
+    const float wind = c.flight.kind == FlightKind::hover ? 0.0f : std::abs(c.flight.speed);
+    const float wake = 2.0f * v_h + wind;
+    return wake > 0.0f ? std::min(kLiveStepCapS, dx / wake) : kLiveStepCapS;
+}
+
+std::string drawn_only_line(std::span<const DrawnPart> drawn, float dx, bool any_left) {
+    if (drawn.empty()) return {};
+    // By reason, in the order first left out; a part the safeguard refused
+    // and the siblings it took (L8) are one group, keyed by the refused part.
+    const auto took_siblings = [&](const DrawnPart& d) {
+        return std::any_of(drawn.begin(), drawn.end(),
+                           [&](const DrawnPart& s) { return s.why == DrawnReason::sibling && s.of == d.name; });
+    };
+    const auto owner = [&](const DrawnPart& d) -> std::string {
+        if (d.why == DrawnReason::sibling) return d.of;
+        return took_siblings(d) ? d.name : std::string{};
+    };
+    std::vector<std::vector<const DrawnPart*>> groups;
+    for (const DrawnPart& d : drawn) {
+        const std::string mine = owner(d);
+        const auto same = [&](const std::vector<const DrawnPart*>& g) {
+            const DrawnPart& f = *g.front();
+            const std::string theirs = owner(f);
+            return mine.empty() ? theirs.empty() && f.why == d.why && f.inside == d.inside : theirs == mine;
+        };
+        if (const auto g = std::find_if(groups.begin(), groups.end(), same); g != groups.end()) {
+            g->push_back(&d);
+        } else {
+            groups.push_back({&d});
+        }
+    }
+    std::string out = any_left ? "" : "discs only: every part ";
+    out += std::format("drawn only at {:g} mm: ", dx * 1000.0f);
+    for (std::size_t i = 0; i < groups.size(); ++i) {
+        if (i != 0) out += "; ";
+        const DrawnPart& first = *groups[i].front();
+        const std::string led = owner(first);
+        std::string words = drawn_words(first);
+        if (!led.empty()) {
+            const auto refused = std::find_if(drawn.begin(), drawn.end(), [&](const DrawnPart& d) {
+                return d.name == led && d.why != DrawnReason::sibling;
+            });
+            words = led + " " + (refused != drawn.end() ? drawn_words(*refused) : std::string("refused")) +
+                    "; its siblings with it";
+        }
+        out += joined_names(groups[i]) + " (" + words + ")";
     }
     return out;
 }

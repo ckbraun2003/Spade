@@ -246,7 +246,8 @@ Result<void> validate_case(const AnalysisCase& c) {
     return std::unexpected(Error{Code::invalid_argument, issues.front().field + ": " + issues.front().message});
 }
 
-std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c, const vehicles::ModelType& model) {
+std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& c, const vehicles::ModelType& model,
+                                                            ThinWalls thin) {
     Issues out;
     for (CaseIssue& i : case_issues(c)) out.add(std::move(i.field), std::move(i.message));
     if (Result<void> ok = model.validate(); !ok) out.add("model", ok.error().context);
@@ -358,8 +359,9 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
         r.rotors.push_back(rr);
     }
 
-    // Each wall part, at the finest cell: refused, never made porous (P2).
-    for (std::size_t k = 0; k < model.parts.size(); ++k) {
+    // Each wall part, at the finest cell: refused, never made porous (P2);
+    // unless the live run answers for it, drawing it and naming why (P-1).
+    for (std::size_t k = 0; thin == ThinWalls::refused && k < model.parts.size(); ++k) {
         const vehicles::PartDesc& p = model.parts[k];
         if (p.surface.kind != vehicles::PartSurface::Kind::wall) continue;
         if (p.min_feature < kWallCells * r.finest_spacing) {

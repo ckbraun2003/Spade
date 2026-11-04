@@ -8,9 +8,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
+#include <format>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -21,6 +24,7 @@
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
+#include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/design_frame.hpp"
 #include "state/layout.hpp"
@@ -432,6 +436,51 @@ void armed_frame(an::LiveRun& run, spade::FlowVolume& v) {
     return c;
 }
 
+// A part of one primitive, `size` its params (a sphere's radius, a box's
+// half extents), at `pos` in the design frame, declaring `feature`.
+[[nodiscard]] spade::vehicles::PartDesc part(const char* name, spade::SdfPrim prim, glm::vec3 size, float feature,
+                                             glm::vec3 pos) {
+    spade::vehicles::PartDesc d;
+    d.name = name;
+    d.shape.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode n{};
+    n.kind = static_cast<uint32_t>(prim);
+    n.op = static_cast<uint32_t>(spade::SdfOp::none);
+    n.params = glm::vec4(size, 0.0f);
+    d.shape.nodes = {n};
+    d.min_feature = feature;
+    d.mount_pos = pos;
+    return d;
+}
+
+// The case resolved as a live run's is (P-1): its thin walls left to the run.
+[[nodiscard]] an::ResolvedCase live_resolved(const an::AnalysisCase& c, const spade::vehicles::ModelType& m) {
+    const auto r = an::resolve(c, m, an::ThinWalls::drawn_by_the_live_run);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().front().field + ": " + r.error().front().message);
+    return r ? *r : an::ResolvedCase{};
+}
+
+// Each part the run drew only, as "name#index why[ in inside]", in the order
+// it left them out.
+[[nodiscard]] std::vector<std::string> fates(const an::LiveRun& run) {
+    std::vector<std::string> out;
+    for (const an::DrawnPart& d : run.solids().drawn_only) {
+        const char* why = "?";
+        switch (d.why) {
+            case an::DrawnReason::marked: why = "marked"; break;
+            case an::DrawnReason::thin: why = "thin"; break;
+            case an::DrawnReason::wire: why = "wire"; break;
+            case an::DrawnReason::porous: why = "porous"; break;
+            case an::DrawnReason::leaks: why = "leaks"; break;
+            case an::DrawnReason::exposed: why = "exposed"; break;
+            case an::DrawnReason::sibling: why = "sibling"; break;
+        }
+        out.push_back(d.name + "#" + std::to_string(d.part) + " " + why + (d.inside.empty() ? "" : " in " + d.inside) +
+                      (d.of.empty() ? "" : " of " + d.of));
+    }
+    return out;
+}
+
 }  // namespace
 
 // A 20 cm ball body (5 cells across) is in the air: the run says what
@@ -471,15 +520,284 @@ TEST(AnalysisLiveRun, ItsPartsAreSolidsInTheAir) {
 }
 
 // A part thinner than it declares passes the case (resolve() reads the
-// declaration) and is refused by set_solids(), naming the part, before a
-// step.
-TEST(AnalysisLiveRun, APartThinnerThanItDeclaresIsRefusedByName) {
+// declaration), and the classifier finds it a wire at 40 mm (10 mm across
+// every way): the live run draws it, names it, and flies discs only, to the
+// bit as the quad without it (P-1; it was refused before). A restored run
+// names it too.
+TEST(AnalysisLiveRun, APartThinnerThanItDeclaresIsDrawnOnlyNamedAndRestored) {
     const Powered p = with_ball_body(0.005f, 0.1f);
-    const spade::Result<an::LiveRun> run =
-        an::LiveRun::start(resolved(an::test::with_power(solid_case(p.model), p), p.model), p.model);
-    ASSERT_FALSE(run.has_value());
-    EXPECT_NE(run.error().context.find("'body'"), std::string::npos) << run.error().context;
-    EXPECT_NE(run.error().context.find("the model's parts as solids"), std::string::npos) << run.error().context;
+    const an::AnalysisCase c = an::test::with_power(solid_case(p.model), p);
+    an::LiveRun run = started(c, p);
+    EXPECT_FALSE(run.solids().any);
+    EXPECT_EQ(fates(run), std::vector<std::string>{"body#0 wire"});
+    const Powered bare = powered();
+    an::LiveRun plain = started(solid_case(bare.model), bare);
+    EXPECT_EQ(run.run_label(), plain.run_label() + " \xc2\xb7 discs only: every part drawn only at 40 mm: body (a wire)");
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    armed_frame(run, a);
+    armed_frame(plain, b);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(a.v, b.v) << "plan A at the case's n_v, as with no parts";
+    EXPECT_EQ(a.s, b.s);
+
+    const spade::test::TempDir dir("live_wire");
+    const fs::path file = dir.path() / "run.livesave";
+    ASSERT_TRUE(run.save(file).has_value());
+    spade::Result<an::LiveRun> back = an::LiveRun::restore(file, resolved(c, p.model), p.model);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    EXPECT_EQ(back->run_label(), run.run_label());
+    EXPECT_EQ(fates(*back), fates(run));
+}
+
+// The classifier's and the safeguard's parts at 40 mm, beside a 20 cm ball
+// body that stays in the air: a 2 cm plate is a sheet (thinner than 2
+// cells), a porous ball waits for the porous task, and a bead 2 cells across
+// on a cell corner, alone, leaks. Each is drawn only, the classifier's in the
+// model's order and then the safeguard's, and the label says why.
+TEST(AnalysisLiveRun, WhatTheCellCantHoldIsDrawnOnlyAndTheLabelSaysWhy) {
+    using spade::SdfPrim;
+    spade::vehicles::ModelType m = rotorless();
+    m.parts.push_back(part("body", SdfPrim::sphere, {0.1f, 0, 0}, 0.2f, {0, 0, 0}));
+    m.parts.push_back(part("plate", SdfPrim::box, {0.1f, 0.01f, 0.1f}, 0.02f, {0, -0.28f, 0}));
+    spade::vehicles::PartDesc filter = part("filter", SdfPrim::sphere, {0.05f, 0, 0}, 0.1f, {-0.24f, 0, 0});
+    filter.surface = spade::vehicles::PartSurface{spade::vehicles::PartSurface::Kind::porous, 1.0e6f, 0.0f};
+    m.parts.push_back(filter);
+    m.parts.push_back(part("bead", SdfPrim::sphere, {0.04f, 0, 0}, 0.08f, {0.2f, 0, 0}));
+    const an::AnalysisCase c = solid_case(m);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(live_resolved(c, m), m);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_TRUE(run->solids().any) << "the body is in the air";
+    EXPECT_GT(run->solids().solid_cells, 0u);
+    EXPECT_EQ(fates(*run), (std::vector<std::string>{"plate#1 thin", "filter#2 porous", "bead#3 leaks"}));
+    EXPECT_NE(run->run_label().find(
+                  " \xc2\xb7 drawn only at 40 mm: plate (thinner than 2 cells); filter (porous); bead (leaks)"),
+              std::string::npos)
+        << run->run_label();
+    spade::Result<an::LiveRun> again = an::LiveRun::start(live_resolved(c, m), m);
+    ASSERT_TRUE(again.has_value()) << again.error().context;
+    EXPECT_EQ(again->run_label(), run->run_label()) << "the same case leaves out the same parts";
+    EXPECT_EQ(again->solids().solid_cells, run->solids().solid_cells);
+}
+
+// A bead on the face of a 48 cm box body, half inside it, is exposed within
+// a cell of its surface (Physics' safeguard): drawn only, naming the body.
+TEST(AnalysisLiveRun, APartExposedInsideAnotherIsDrawnOnlyNamingIt) {
+    using spade::SdfPrim;
+    spade::vehicles::ModelType m = rotorless();
+    m.parts.push_back(part("body", SdfPrim::box, {0.24f, 0.24f, 0.24f}, 0.48f, {0, 0, 0}));
+    m.parts.push_back(part("bead", SdfPrim::sphere, {0.04f, 0, 0}, 0.08f, {0.24f, 0, 0}));
+    spade::Result<an::LiveRun> run = an::LiveRun::start(live_resolved(solid_case(m), m), m);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_TRUE(run->solids().any);
+    EXPECT_EQ(fates(*run), std::vector<std::string>{"bead#1 exposed in body"});
+    EXPECT_NE(run->run_label().find(" \xc2\xb7 drawn only at 40 mm: bead (inside 'body', exposed)"), std::string::npos)
+        << run->run_label();
+}
+
+// The label's words (P-1's example, the lead's ruling, 2026-11-03).
+TEST(AnalysisLiveRun, TheDrawnOnlyLineGroupsByReasonAndJoinsIndexedNames) {
+    using an::DrawnPart;
+    using an::DrawnReason;
+    EXPECT_EQ(an::drawn_only_line({}, 0.012f, true), "");
+    const std::vector<DrawnPart> phantom{
+        {"arm[0]", 1, DrawnReason::thin, {}, {}},     {"arm[1]", 2, DrawnReason::thin, {}, {}},
+        {"arm[2]", 3, DrawnReason::thin, {}, {}},     {"arm[3]", 4, DrawnReason::thin, {}, {}},
+        {"esc", 9, DrawnReason::thin, {}, {}},        {"battery", 10, DrawnReason::exposed, "body", {}},
+        {"motor[3]", 8, DrawnReason::leaks, {}, {}},  {"motor[1]", 6, DrawnReason::leaks, {}, {}},
+    };
+    EXPECT_EQ(an::drawn_only_line(phantom, 0.012f, true),
+              "drawn only at 12 mm: arm[0-3], esc (thinner than 2 cells); battery (inside 'body', exposed); "
+              "motor[1], motor[3] (leaks)");
+    const std::vector<DrawnPart> others{
+        {"antenna", 5, DrawnReason::marked, {}, {}}, {"bolt", 2, DrawnReason::wire, {}, {}},
+        {"skid[0]", 3, DrawnReason::thin, {}, {}},   {"skid[1]", 4, DrawnReason::thin, {}, {}},
+        {"filter", 6, DrawnReason::porous, {}, {}},  {"cell[1]", 8, DrawnReason::exposed, "pack", {}},
+        {"cell[2]", 9, DrawnReason::exposed, "shell", {}}, {"lid[a]", 10, DrawnReason::leaks, {}, {}},
+        {"lid[b]", 11, DrawnReason::leaks, {}, {}},
+    };
+    EXPECT_EQ(an::drawn_only_line(others, 0.00175f, true),
+              "drawn only at 1.75 mm: antenna (marked drawn only); bolt (a wire); skid[0-1] (thinner than 2 cells); "
+              "filter (porous); cell[1] (inside 'pack', exposed); cell[2] (inside 'shell', exposed); lid[a], lid[b] "
+              "(leaks)");
+    // L8: a part the safeguard refused and the indexed siblings it took with it.
+    const std::vector<DrawnPart> siblings{
+        {"motor[3]", 8, DrawnReason::leaks, {}, {}},         {"motor[0]", 5, DrawnReason::sibling, {}, "motor[3]"},
+        {"motor[1]", 6, DrawnReason::sibling, {}, "motor[3]"}, {"motor[2]", 7, DrawnReason::sibling, {}, "motor[3]"},
+        {"cell[2]", 12, DrawnReason::exposed, "pack", {}},   {"cell[1]", 11, DrawnReason::sibling, {}, "cell[2]"},
+        {"battery", 10, DrawnReason::exposed, "body", {}},
+    };
+    EXPECT_EQ(an::drawn_only_line(siblings, 0.012f, true),
+              "drawn only at 12 mm: motor[0-3] (motor[3] leaks; its siblings with it); cell[1-2] (cell[2] inside "
+              "'pack', exposed; its siblings with it); battery (inside 'body', exposed)");
+    const std::vector<DrawnPart> all{{"body", 0, DrawnReason::thin, {}, {}}, {"arm[0]", 1, DrawnReason::wire, {}, {}}};
+    EXPECT_EQ(an::drawn_only_line(all, 0.039f, false),
+              "discs only: every part drawn only at 39 mm: body (thinner than 2 cells); arm[0] (a wire)");
+}
+
+namespace {
+
+// The library's Phantom 3-class quad, as Run air will fly it: its parts
+// kept, on a cube of `n` cells of `dx` held at the box's centre, at the tour's
+// power (5 % idle, a full pack), its thin walls left to the live run.
+[[nodiscard]] spade::Result<an::LiveRun> phantom_run(const spade::vehicles::ModelType& m, uint32_t n, float dx) {
+    an::AnalysisCase c;
+    c.model = an::pin_model("phantom3_class.model.yaml", m);
+    c.power = an::Power{.idle = 0.05f, .state_of_charge = 1.0f};
+    c.rotors.assign(m.rotors.size(), an::RotorSetup{});
+    c.grid.box = static_cast<float>(n) * dx;
+    c.grid.spacing = dx;
+    c.time.duration = 1.0f;
+    c.time.step = 0.002f;
+    return an::LiveRun::start(live_resolved(c, m), m);
+}
+
+[[nodiscard]] spade::vehicles::ModelType library_drone(const char* file) {
+    auto f = spade::scene::load_model_file(fs::path(SPADE_ASSETS_DIR) / "library" / "drones" / file);
+    EXPECT_TRUE(f.has_value()) << file << ": " << (f ? "" : f.error().context);
+    return f ? f->model : spade::vehicles::ModelType{};
+}
+
+[[nodiscard]] spade::vehicles::ModelType phantom() { return library_drone("phantom3_class.model.yaml"); }
+
+}  // namespace
+
+// At P-1's cell for it, 12 mm, on 48^3 (0.576 m, its 0.49 m span inside;
+// held at a cell corner, as on 104^3): the body alone is in the air.
+// Measured 2026-11-03, as Physics' note has it: the arms are wires and the
+// ESC a sheet; motor[3] leaks where the grid falls on it (the mirrored
+// motors fall differently by fp32's rounding), and takes its siblings with
+// it (L8: three of four would give the held drone a moment its geometry
+// hasn't); the battery, inside the shell, is exposed. Each is named, the
+// classifier's first. The same case leaves out the same parts, and it steps.
+TEST(AnalysisLiveRun, ThePhantomAt12mmKeepsItsBodyInTheAirAndNamesWhatItDraws) {
+    const spade::vehicles::ModelType m = phantom();
+    spade::Result<an::LiveRun> run = phantom_run(m, 48, 0.012f);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_TRUE(run->solids().any);
+    EXPECT_NE(run->solids().run_line.find("solids: 1 parts, 1 walls, 0 sheets"), std::string::npos)
+        << run->solids().run_line;
+    EXPECT_EQ(fates(*run),
+              (std::vector<std::string>{"arm[0]#1 wire", "arm[1]#2 wire", "arm[2]#3 wire", "arm[3]#4 wire", "esc#9 thin",
+                                        "motor[3]#8 leaks", "motor[0]#5 sibling of motor[3]",
+                                        "motor[1]#6 sibling of motor[3]", "motor[2]#7 sibling of motor[3]",
+                                        "battery#10 exposed in body"}));
+    EXPECT_NE(run->run_label().find(" \xc2\xb7 drawn only at 12 mm: arm[0-3] (a wire); esc (thinner than 2 cells); "
+                                    "motor[0-3] (motor[3] leaks; its siblings with it); battery (inside 'body', "
+                                    "exposed)"),
+              std::string::npos)
+        << run->run_label();
+    std::printf("[ p-1 ] the Phantom at 12 mm on 48^3: %s (%u solid cells)\n", run->run_label().c_str(),
+                run->solids().solid_cells);
+    spade::Result<an::LiveRun> again = phantom_run(m, 48, 0.012f);
+    ASSERT_TRUE(again.has_value()) << again.error().context;
+    EXPECT_EQ(again->run_label(), run->run_label());
+    for (int i = 0; i < 2; ++i) {
+        const spade::Result<void> s = run->step(an::Controls{true, 0.5f, 0, 0, 0});
+        ASSERT_TRUE(s.has_value()) << s.error().context;
+    }
+}
+
+// At Run air's cell today, 39 mm on 32^3, every Phantom part is too thin
+// for the grid (P-1: no solid in the air for any library drone; the body a
+// sheet, the rest wires): discs only, said so, and to the bit the run of the
+// Phantom with its parts cleared.
+TEST(AnalysisLiveRun, ThePhantomAt39mmIsDiscsOnlyToTheBitAsItsDiscsAlone) {
+    const spade::vehicles::ModelType m = phantom();
+    spade::vehicles::ModelType discs = m;
+    discs.parts.clear();
+    spade::Result<an::LiveRun> run = phantom_run(m, 32, 0.039f);
+    spade::Result<an::LiveRun> plain = phantom_run(discs, 32, 0.039f);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    EXPECT_FALSE(run->solids().any);
+    EXPECT_EQ(run->run_label(), plain->run_label() +
+                                    " \xc2\xb7 discs only: every part drawn only at 39 mm: body (thinner than 2 "
+                                    "cells); arm[0-3], motor[0-3], esc, battery (a wire)");
+    std::printf("[ p-1 ] the Phantom at 39 mm on 32^3: %s\n", run->run_label().c_str());
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    armed_frame(*run, a);
+    armed_frame(*plain, b);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(a.v, b.v);
+    EXPECT_EQ(a.s, b.s);
+}
+
+// P-1's cell rule (the lead's rulings, 2026-11-03): Run air's box as before,
+// 32 cells of R/3 to the mm, at min(R/3, F/4) to the mm, n = ceil(box/dx) at
+// most 128. Every library drone with rigid parts moves (the reference quad's
+// 32^3 at 25 mm to 100^3 at 8 mm); the Crazyflie meets the cap, at box/128.
+// A drone without parts in the air keeps R/3 on 32^3.
+TEST(AnalysisLiveRun, RunAirsGridIsP1sCellRule) {
+    const auto grid = [](const spade::vehicles::ModelType& m) {
+        const spade::Result<an::LiveGrid> g = an::live_grid(m);
+        EXPECT_TRUE(g.has_value()) << m.name << ": " << (g ? "" : g.error().context);
+        return g ? std::format("{}^3 at {:g} mm", g->n, g->dx * 1000.0f) : std::string("refused");
+    };
+    EXPECT_EQ(grid(phantom()), "104^3 at 12 mm");
+    EXPECT_EQ(grid(library_drone("iris_plus_class.model.yaml")), "107^3 at 12 mm");
+    EXPECT_EQ(grid(library_drone("reference_quad.model.yaml")), "100^3 at 8 mm");
+    EXPECT_EQ(grid(library_drone("basic_quad_6inch.model.yaml")), "100^3 at 8 mm");
+    EXPECT_EQ(grid(library_drone("basic_quad_competition.model.yaml")), "100^3 at 8 mm");
+    EXPECT_EQ(grid(library_drone("fpv_5inch.model.yaml")), "96^3 at 7 mm");
+    EXPECT_EQ(grid(library_drone("crazyflie_class.model.yaml")), "128^3 at 1.75 mm");
+    spade::vehicles::ModelType bare = phantom();
+    bare.parts.clear();
+    EXPECT_EQ(grid(bare), "32^3 at 39 mm");
+    spade::vehicles::ModelType marked = phantom();
+    for (spade::vehicles::PartDesc& p : marked.parts) p.role = std::string(spade::vehicles::kDrawnOnlyRole);
+    EXPECT_EQ(grid(marked), "32^3 at 39 mm") << "drawn-only parts never enter the air";
+    const spade::Result<an::LiveGrid> none = an::live_grid(rotorless());
+    ASSERT_FALSE(none.has_value());
+    EXPECT_NE(none.error().context.find("no rotors"), std::string::npos) << none.error().context;
+}
+
+// The floor to the millimetre is exact (the lead's review, 2026-11-03): in
+// float32, R/3 times 1000 falls a hair under a whole millimetre for 132 of
+// the whole-mm thirds from 3 mm to 1 m (R 36 mm gave 11 mm), so the rule
+// rounds to whole micrometres first, in integers.
+TEST(AnalysisLiveRun, RunAirsCellFloorsAWholeMillimetreExactly) {
+    const auto grid = [](float radius, float feature) {
+        spade::vehicles::ModelType m = phantom();
+        for (spade::vehicles::RotorDesc& r : m.rotors) r.radius = radius;
+        if (feature > 0.0f) {
+            for (spade::vehicles::PartDesc& p : m.parts) p.min_feature = std::min(p.min_feature, feature);
+        } else {
+            m.parts.clear();
+        }
+        const spade::Result<an::LiveGrid> g = an::live_grid(m);
+        EXPECT_TRUE(g.has_value()) << (g ? "" : g.error().context);
+        return g ? std::format("{}^3 at {:g} mm", g->n, g->dx * 1000.0f) : std::string("refused");
+    };
+    EXPECT_EQ(grid(0.036f, 0.0f), "32^3 at 12 mm");
+    EXPECT_EQ(grid(0.072f, 0.0f), "32^3 at 24 mm");
+    EXPECT_EQ(grid(0.144f, 0.0f), "32^3 at 48 mm");
+    EXPECT_EQ(grid(0.144f, 0.048f), "128^3 at 12 mm") << "F/4 on a whole millimetre, in 32 cells of 48 mm";
+}
+
+// Physics' step rule (the lead's ruling, 2026-11-03): CFL at most 1 on the
+// wake's 2 v_h, capped at 1 ms. The Phantom (1.28 kg, R 119.4 mm, v_h 5.35
+// m/s in the case's air) keeps 1 ms at 12 mm and takes 0.935 ms at 10 mm; a
+// 5 m/s wind shortens it; the run's label names the step.
+TEST(AnalysisLiveRun, RunAirsStepIsPhysicsRuleAndTheLabelNamesIt) {
+    const spade::vehicles::ModelType m = phantom();
+    an::AnalysisCase c;
+    EXPECT_EQ(an::live_step_s(c, m, 0.012f), 0.001f);
+    EXPECT_NEAR(an::live_step_s(c, m, 0.010f), 0.9350e-3f, 0.0005e-3f);
+    EXPECT_NEAR(an::live_step_s(c, m, 0.008f), 0.7480e-3f, 0.0005e-3f);
+    EXPECT_NEAR(an::live_step_s(c, m, 0.007f), 0.6545e-3f, 0.0005e-3f);
+    an::AnalysisCase windy = c;
+    windy.flight.kind = an::FlightKind::hover_in_wind;
+    windy.flight.speed = 5.0f;
+    EXPECT_NEAR(an::live_step_s(windy, m, 0.012f), 0.7646e-3f, 0.0005e-3f);
+    EXPECT_EQ(an::live_step_s(c, rotorless(), 0.012f), an::kLiveStepCapS);
+
+    an::AnalysisCase t = tiny_case(rotorless());
+    EXPECT_NE(started(t, rotorless()).run_label().find("dx 100 mm, h 4 ms"), std::string::npos);
+    t.time.step = an::live_step_s(c, m, 0.010f);
+    const std::string label = started(t, rotorless()).run_label();
+    EXPECT_NE(label.find("dx 100 mm, h 0.935 ms"), std::string::npos) << label;
 }
 
 // A restored run rebuilds its solids at the hover and gives the frame an
@@ -510,13 +828,13 @@ TEST(AnalysisLiveRun, ARestoredRunKeepsItsSolids) {
 
 // ===========================================================================
 // N15, DRAWN-ONLY AND IMPORTED PARTS (Physics' ruling and condition,
-// 2026-10-22). A part marked vehicles::kDrawnOnlyRole is drawn, not a solid:
-// the run leaves it out of the air and names it in its label, whether or not
-// any solid is left. Whether the run has solids is decided by the parts the
-// adapter keeps, so a model whose parts are all drawn only flies to the bit as
-// the same model without them (plan A at the case's n_v). An imported solid
-// (kImportedPartRole) the grid can't resolve still refuses the run by name,
-// and the refusal says how else to fly it.
+// 2026-10-22; amended for the live run by P-1, the lead, 2026-11-03). A part
+// marked vehicles::kDrawnOnlyRole is drawn, not a solid: the run leaves it out
+// of the air and names it in its label, whether or not any solid is left.
+// Whether the run has solids is decided by the parts left in, so a model whose
+// parts are all drawn only flies to the bit as the same model without them
+// (plan A at the case's n_v). An imported solid (kImportedPartRole) the grid
+// can't resolve is drawn only and named, as an authored one is.
 // ===========================================================================
 
 TEST(AnalysisLiveRun, ADrawnOnlyPartIsLeftOutOfTheAirAndNamedInTheRunLine) {
@@ -529,8 +847,9 @@ TEST(AnalysisLiveRun, ADrawnOnlyPartIsLeftOutOfTheAirAndNamedInTheRunLine) {
     const an::AnalysisCase c = solid_case(p.model);
     an::LiveRun run = started(c, p);
     EXPECT_TRUE(run.solids().any);
-    EXPECT_EQ(run.solids().drawn_only, std::vector<std::string>{"antenna"});
-    EXPECT_NE(run.run_label().find("1 part drawn only: 'antenna'"), std::string::npos) << run.run_label();
+    EXPECT_EQ(fates(run), std::vector<std::string>{"antenna#1 marked"});
+    EXPECT_NE(run.run_label().find(" \xc2\xb7 drawn only at 40 mm: antenna (marked drawn only)"), std::string::npos)
+        << run.run_label();
 
     spade::FlowVolume v;
     armed_frame(run, v);
@@ -552,7 +871,8 @@ TEST(AnalysisLiveRun, AModelWhoseOnlyPartsAreDrawnOnlyFliesToTheBitAsOneWithoutT
     an::LiveRun plain = started(solid_case(bare.model), bare);
     EXPECT_FALSE(run.solids().any);
     EXPECT_EQ(run.solids().solid_cells, 0u);
-    EXPECT_EQ(run.run_label(), plain.run_label() + " \xc2\xb7 1 part drawn only: 'body'");
+    EXPECT_EQ(run.run_label(),
+              plain.run_label() + " \xc2\xb7 discs only: every part drawn only at 40 mm: body (marked drawn only)");
     spade::FlowVolume a;
     spade::FlowVolume b;
     for (int i = 0; i < 2; ++i) {
@@ -574,27 +894,23 @@ TEST(AnalysisLiveRun, TwoDrawnOnlyPartsAreNamedInTheirOrder) {
     second.mount_pos = glm::vec3(0.0f, -0.2f, 0.0f);
     p.model.parts.push_back(second);
     an::LiveRun run = started(solid_case(p.model), p);
-    EXPECT_NE(run.run_label().find("2 parts drawn only: 'body', 'skid'"), std::string::npos) << run.run_label();
+    EXPECT_NE(
+        run.run_label().find(" \xc2\xb7 discs only: every part drawn only at 40 mm: body, skid (marked drawn only)"),
+        std::string::npos)
+        << run.run_label();
 }
 
-// The classifier's refusal, unchanged for an authored part, gains the other
-// way out for an imported one.
-TEST(AnalysisLiveRun, AnImportedPartTooThinForTheGridIsRefusedByNameWithTheRemedy) {
+// An imported part the grid can't resolve is drawn only and named as an
+// authored one is (P-1; it was refused, with the remedy of marking it).
+TEST(AnalysisLiveRun, AnImportedPartTooThinForTheGridIsDrawnOnlyAsAnAuthoredOneIs) {
     Powered p = with_ball_body(0.005f, 0.1f);
     p.model.parts.front().role = std::string(an::kImportedPartRole);
-    const spade::Result<an::LiveRun> run =
-        an::LiveRun::start(resolved(an::test::with_power(solid_case(p.model), p), p.model), p.model);
-    ASSERT_FALSE(run.has_value());
-    EXPECT_NE(run.error().context.find("the model's parts as solids"), std::string::npos) << run.error().context;
-    EXPECT_NE(run.error().context.find("'body'"), std::string::npos) << run.error().context;
-    EXPECT_NE(run.error().context.find(", or mark part 'body' visual-only"), std::string::npos)
-        << run.error().context;
-
+    an::LiveRun run = started(solid_case(p.model), p);
     const Powered authored = with_ball_body(0.005f, 0.1f);
-    const spade::Result<an::LiveRun> plain = an::LiveRun::start(
-        resolved(an::test::with_power(solid_case(authored.model), authored), authored.model), authored.model);
-    ASSERT_FALSE(plain.has_value());
-    EXPECT_EQ(plain.error().context.find("visual-only"), std::string::npos) << plain.error().context;
+    an::LiveRun plain = started(solid_case(authored.model), authored);
+    EXPECT_EQ(fates(run), std::vector<std::string>{"body#0 wire"});
+    EXPECT_EQ(run.run_label(), plain.run_label());
+    EXPECT_EQ(run.run_label().find("visual-only"), std::string::npos) << run.run_label();
 }
 
 // P2d (Physics, merged a4ec57f): an unconverged solids step is exactly one
