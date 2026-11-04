@@ -67,7 +67,7 @@ static_assert(alignof(glm::quat) == 4, "glm::quat must be 4-byte aligned; the _p
 //   row 0  pos                | proxy_radius
 //   row 1  orient (quat)
 //   row 2  vel                | mass
-//   row 3  omega_body         | _p1
+//   row 3  omega_body         | contact_set
 //   row 4  inv_inertia_diag   | flags
 //   row 5  force_acc          | _p2
 //   row 6  torque_acc         | _p3
@@ -122,7 +122,16 @@ struct alignas(kStd430StructAlignment) BodyState {
     glm::vec3 vel;               // world-frame linear velocity, m/s
     float mass;                  // kg (the row-2 slot the pad would occupy)
     glm::vec3 omega_body;        // body-frame angular velocity, rad/s
-    float _p1;                   // std430 pad
+    // The body's contact set (L10): its model's ModelTypeId when that model
+    // has a set in physics/contact_sets.hpp's table, 0 (the SPHERE: today's
+    // proxy contact) otherwise. Former std430 pad `_p1`, the second pad
+    // consumed after proxy_radius, by the same rule: a RENAME of storage, so
+    // sizeof and every offsetof below are unchanged. ArenaSet zero-fills a slot
+    // and init_body writes field by field, so the pad was 0 in every slot and
+    // every blob before L10, and 0 still means the sphere. Only
+    // Simulation::spawn(world, ModelTypeId, VehicleSpawn) writes a non-zero
+    // value, so a plain body's slot and a part-less model's are unchanged.
+    uint32_t contact_set;
     glm::vec3 inv_inertia_diag;  // body-frame 1/I diagonal, 1/(kg m^2)
     uint32_t flags;              // per-body predicate bits (none assigned yet)
     glm::vec3 force_acc;         // world-frame accumulated force, N
@@ -145,7 +154,7 @@ static_assert(offsetof(BodyState, orient) == 16);
 static_assert(offsetof(BodyState, vel) == 32);
 static_assert(offsetof(BodyState, mass) == 44);
 static_assert(offsetof(BodyState, omega_body) == 48);
-static_assert(offsetof(BodyState, _p1) == 60);
+static_assert(offsetof(BodyState, contact_set) == 60);
 static_assert(offsetof(BodyState, inv_inertia_diag) == 64);
 static_assert(offsetof(BodyState, flags) == 76);
 static_assert(offsetof(BodyState, force_acc) == 80);
@@ -171,7 +180,7 @@ static_assert(offsetof(BodyState, specific_force) % 16 == 0);
 // so BodyState has none by construction.
 static_assert(sizeof(BodyState::pos) + sizeof(BodyState::proxy_radius) + sizeof(BodyState::orient) +
                   sizeof(BodyState::vel) + sizeof(BodyState::mass) + sizeof(BodyState::omega_body) +
-                  sizeof(BodyState::_p1) + sizeof(BodyState::inv_inertia_diag) + sizeof(BodyState::flags) +
+                  sizeof(BodyState::contact_set) + sizeof(BodyState::inv_inertia_diag) + sizeof(BodyState::flags) +
                   sizeof(BodyState::force_acc) + sizeof(BodyState::_p2) + sizeof(BodyState::torque_acc) +
                   sizeof(BodyState::_p3) + sizeof(BodyState::specific_force) + sizeof(BodyState::_p4) ==
               sizeof(BodyState),

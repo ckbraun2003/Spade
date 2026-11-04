@@ -6,6 +6,7 @@
 
 #include "physics/forces.hpp"
 #include "physics/contact_dv.hpp"
+#include "physics/contact_sets.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -16,7 +17,7 @@
 #include "world/medium.hpp"
 
 #if __has_include("bindings.gen.hpp")
-#include "bindings.gen.hpp"  // the contact scratch's binding (Vulkan builds only)
+#include "bindings.gen.hpp"  // the contact scratch's and contact sets' bindings (Vulkan builds only)
 #endif
 
 namespace spade::modules {
@@ -216,6 +217,22 @@ constexpr PassDecl kStaticPasses[] = {{.name = "resolve",
                                        .access = kContactAccess,
                                        .cpu = &physics::pass_collision_static,
                                        .gpu = compute::GpuRecipe::collision_static}};
+
+// static_contact.contact_sets (L9/L10; physics/contact_sets.hpp): the parts'
+// contact points, one range row per model and then the points, rebuilt by
+// register_model(). Bound at 28 with a fixed capacity (L11); without
+// bindings.gen.hpp no backend could bind it, so it is CPU-only there, and its
+// capacity holds on both backends alike.
+#if __has_include("bindings.gen.hpp")
+constexpr uint32_t kContactSetsBinding = compute::gen::kBinding_contact_sets;
+#else
+constexpr uint32_t kContactSetsBinding = kNoBinding;
+#endif
+constexpr ConfigTableDecl kStaticTables[] = {
+    {.name = physics::kContactSetsTable,
+     .build = &physics::build_contact_sets,
+     .binding = kContactSetsBinding,
+     .capacity = physics::kContactSetsCapacityRows * physics::kContactSetRowFloats}};
 // Both contact passes correct pos and vel: dynamic runs on static's result.
 constexpr std::string_view kDynamicAfter[] = {"static_contact.resolve"};
 constexpr PassDecl kDynamicPasses[] = {{.name = "resolve",
@@ -264,7 +281,7 @@ ModuleSet standard_modules() {
         {.name = "rotor", .passes = kRotorPasses, .state = kRotorArrays, .legacy_walk = true},
         {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays, .streams = kGnssStreams},
         {.name = "behaviors", .passes = kBehaviorPasses},
-        {.name = "static_contact", .passes = kStaticPasses},
+        {.name = "static_contact", .passes = kStaticPasses, .tables = kStaticTables},
         {.name = "dynamic_contact", .passes = kDynamicPasses},
         {.name = "integrate", .passes = kIntegratePasses, .scratch = kIntegrateScratch},
         {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields},

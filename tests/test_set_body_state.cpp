@@ -870,7 +870,7 @@ struct FieldRuling {
 const FieldRuling kBodyFields[] = {
     SBS_FIELD(pos, written),        SBS_FIELD(proxy_radius, kept), SBS_FIELD(orient, written),
     SBS_FIELD(vel, written),        SBS_FIELD(mass, kept),         SBS_FIELD(omega_body, written),
-    SBS_FIELD(_p1, pad),            SBS_FIELD(inv_inertia_diag, kept), SBS_FIELD(flags, kept),
+    SBS_FIELD(contact_set, kept),   SBS_FIELD(inv_inertia_diag, kept), SBS_FIELD(flags, kept),
     SBS_FIELD(force_acc, kept),     SBS_FIELD(_p2, pad),           SBS_FIELD(torque_acc, kept),
     SBS_FIELD(_p3, pad),            SBS_FIELD(specific_force, cleared), SBS_FIELD(_p4, pad),
 };

@@ -362,6 +362,33 @@ Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& s
                                          .byte_size = *bytes,
                                          .binding = scratch.binding});
     }
+    // THE BOUND CONFIGURATION TABLES (L10), after every scratch and by the same
+    // rules: a float buffer at the table's capacity, its binding checked
+    // against the range and against everything already held.
+    for (const TableShape& table : shape.tables) {
+        if (table.binding == kNoBinding) continue;
+        const std::string where = "StateMirror::create: table '" + table.name + "'";
+        if (table.binding >= binding_count) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         where + ": binding " + std::to_string(table.binding) +
+                                             " is outside the generated range [0, " + std::to_string(binding_count) +
+                                             ")"});
+        }
+        if (const auto taken = std::ranges::find(held, table.binding, &std::pair<uint32_t, std::string>::first);
+            taken != held.end()) {
+            return std::unexpected(Error{Code::invalid_argument, where + ": binding " +
+                                                                     std::to_string(table.binding) +
+                                                                     " is already bound to " + taken->second});
+        }
+        Result<VkDeviceSize> bytes = buffer_bytes(table.name, static_cast<uint32_t>(sizeof(float)), table.capacity);
+        if (!bytes) return std::unexpected(bytes.error());
+        held.emplace_back(table.binding, "table '" + table.name + "'");
+        out.push_back(DerivedBufferShape{.name = table.name,
+                                         .elem_size = static_cast<uint32_t>(sizeof(float)),
+                                         .count = table.capacity,
+                                         .byte_size = *bytes,
+                                         .binding = table.binding});
+    }
     return out;
 }
 
@@ -501,8 +528,16 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     if (derived->size() < hand_listed.size()) {
         return std::unexpected(Error{Code::internal, "StateMirror::create: the derived table lost a hand-listed row"});
     }
-    // Sized once, before any buffer is made, so no Entry moves after.
-    self->scratch_entries_.resize(derived->size() - hand_listed.size());
+    // Sized once, before any buffer is made, so no Entry moves after. The
+    // derived rows are the hand-listed ones, the bound scratch, then the bound
+    // tables (derived_buffer_shapes()' order).
+    const auto table_count = static_cast<std::size_t>(
+        std::ranges::count_if(shape.tables, [](const TableShape& t) { return t.binding != kNoBinding; }));
+    if (derived->size() < hand_listed.size() + table_count) {
+        return std::unexpected(Error{Code::internal, "StateMirror::create: the derived table lost a table row"});
+    }
+    self->scratch_entries_.resize(derived->size() - hand_listed.size() - table_count);
+    self->table_entries_.resize(table_count);
 
     // Builds one derived entry's device+staging pair from its row. A lambda
     // rather than a copy of the twenty lines dryden_params used to spell inline
@@ -531,7 +566,10 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
 
     for (std::size_t i = 0; i < derived->size(); ++i) {
         const DerivedBufferShape& row = (*derived)[i];
-        Entry& e = i < hand_listed.size() ? *hand_listed[i] : self->scratch_entries_[i - hand_listed.size()];
+        const std::size_t scratch_end = hand_listed.size() + self->scratch_entries_.size();
+        Entry& e = i < hand_listed.size() ? *hand_listed[i]
+                   : i < scratch_end      ? self->scratch_entries_[i - hand_listed.size()]
+                                          : self->table_entries_[i - scratch_end];
         if (&e != &self->step_params_) {
             if (Result<void> made = make_derived(e, row); !made) return std::unexpected(made.error());
             continue;
@@ -996,6 +1034,51 @@ Result<void> StateMirror::upload_grid_params(std::span<const std::byte> params_b
     return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
 }
 
+Result<void> StateMirror::upload_table(uint32_t index, std::span<const std::byte> bytes) {
+    if (index >= table_entries_.size()) {
+        return std::unexpected(Error{Code::invalid_argument, "StateMirror::upload_table: table " +
+                                                                 std::to_string(index) + " of " +
+                                                                 std::to_string(table_entries_.size())});
+    }
+    Entry& e = table_entries_[index];
+    const auto size = static_cast<std::size_t>(e.byte_size);
+    if (bytes.size() > size) {
+        return std::unexpected(Error{Code::invalid_argument, "StateMirror::upload_table: table '" + e.name +
+                                                                 "' holds " + std::to_string(size) + " bytes, got " +
+                                                                 std::to_string(bytes.size())});
+    }
+    // The floats, then zeros to the capacity, so the device holds exactly the
+    // host's table and nothing an earlier, longer one left behind.
+    if (!bytes.empty()) std::memcpy(e.staging_mapped, bytes.data(), bytes.size());
+    if (size > bytes.size()) {
+        std::memset(static_cast<std::byte*>(e.staging_mapped) + bytes.size(), 0, size - bytes.size());
+    }
+    std::vector<Entry*> targets{&e};
+    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+}
+
+Result<void> StateMirror::read_table(uint32_t index, std::span<std::byte> out_bytes) {
+    if (index >= table_entries_.size()) {
+        return std::unexpected(Error{Code::invalid_argument, "StateMirror::read_table: table " +
+                                                                 std::to_string(index) + " of " +
+                                                                 std::to_string(table_entries_.size())});
+    }
+    Entry& e = table_entries_[index];
+    if (out_bytes.size() != static_cast<std::size_t>(e.byte_size)) {
+        return std::unexpected(Error{Code::invalid_argument, "StateMirror::read_table: table '" + e.name +
+                                                                 "' is " + std::to_string(e.byte_size) +
+                                                                 " bytes, got a span of " +
+                                                                 std::to_string(out_bytes.size())});
+    }
+    std::vector<Entry*> targets{&e};
+    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+        !copied) {
+        return copied;
+    }
+    if (!out_bytes.empty()) std::memcpy(out_bytes.data(), e.staging_mapped, out_bytes.size());
+    return {};
+}
+
 Result<void> StateMirror::read_step_witness(std::span<std::byte> out_bytes) {
     const std::size_t expected = static_cast<std::size_t>(step_witness_.byte_size);
     if (out_bytes.size() != expected) {
@@ -1088,6 +1171,7 @@ void StateMirror::destroy() noexcept {
 
     for_each_derived([this](Entry& e) { destroy_entry(device_, e); });
     scratch_entries_.clear();
+    table_entries_.clear();
     for (Entry& e : entries_) destroy_entry(device_, e);
     entries_.clear();
 

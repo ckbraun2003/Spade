@@ -541,6 +541,14 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 [[nodiscard]] std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedule& schedule,
                                                                 const compute::StepShape& shape);
 
+// Every BOUND configuration table's shape for the GPU mirror (L10;
+// sim/module.hpp's ConfigTableDecl), in the order schedule.tables lists them:
+// "<module>.<table>", its capacity in floats and its binding. A CPU-only table
+// (kNoBinding) is left out, so an entry's index is the device table's index
+// VulkanBackend::upload_table() and read_table() take. create() hands the list
+// to the Vulkan backend as StepShape::tables.
+[[nodiscard]] std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule);
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------
@@ -740,6 +748,17 @@ public:
     // checking.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<std::vector<compute::GridEntryRow>> vulkan_grid_entries() const;
+
+    // ---------------------------------------------------------------------
+    // A configuration table's DEVICE copy (L10; sim/module.hpp's
+    // ConfigTableDecl): all `capacity` floats of the buffer a bound table has
+    // on the device, read back -- the table's floats, then the zeros the
+    // upload pads it with. Same diagnostic posture as vulkan_grid_entries():
+    // one device->host copy, never on the step path, and `unavailable` on the
+    // cpu path. not_found, naming the table, if no module in this set declares
+    // it; invalid_argument if it is CPU-only (no binding).
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<std::vector<float>> vulkan_config_table(std::string_view name) const;
 
     // ---------------------------------------------------------------------
     // S6 Task 10: per-pass GPU timing for the most recently completed step()
@@ -1041,7 +1060,12 @@ public:
     //     it does not rebuild the SDF programs or the material records. A
     //     replay into a fresh Simulation must register the same models, in the
     //     same order, to obtain the same ids -- one more item on
-    //     Simulation::restore()'s "what this does not restore" list.
+    //     Simulation::restore()'s "what this does not restore" list. A blob
+    //     carries the registry's IDENTITY (snapshot v3): the models' fold
+    //     (vehicles::model_registry_identity) while every configuration table
+    //     is empty, else that fold and every table's contents (L10/L11), and
+    //     restore() refuses another -- except an old blob, taken before L10,
+    //     whose every body holds contact_set 0 (the sphere it replays as).
     //   * THERE IS NO UNREGISTER. Models are append-only, so an id can never
     //     name a different model than it did when it was issued, which is what
     //     lets ModelTypeId be a bare one-based index with no generation.
@@ -1052,10 +1076,19 @@ public:
     //     registration order -- the only place a table changes, so no step
     //     ever allocates for one. A table is configuration too: a replay that
     //     registers the same models in the same order builds the same tables.
+    //     ALL OR NOTHING (L10): the tables are built into a copy, checked,
+    //     uploaded to the device (a bound table, ConfigTableDecl::binding) and
+    //     only then committed, so a refusal leaves the registry, every table
+    //     and the device as they were.
+    //   * A MODEL WITH A CONTACT SET (physics/contact_sets.hpp) gives the
+    //     bodies spawn() makes of it its id in BodyState::contact_set; any
+    //     other gives 0, the sphere.
     //
     // Codes: invalid_argument (the model does not validate -- reported
     // verbatim from ModelType::validate()), capacity_exceeded (2^32-1 models,
-    // which is not a thing that happens).
+    // which is not a thing that happens; or a table that would pass its
+    // declared capacity, naming it -- L11), internal (the contact sets' build
+    // broke their row layout, naming the table).
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<ModelTypeId> register_model(vehicles::ModelType model);
 
@@ -1731,6 +1764,11 @@ private:
         // Simulation::spawn(world, ModelTypeId, VehicleSpawn) sets it, from
         // the model's own ModelType::proxy_radius.
         float body_proxy_radius = 0.0f;
+        // init_body: the BodyState::contact_set to write (L10), by the same
+        // rule: 0 (the sphere) for every plain spawn(), and the model's id
+        // when Simulation::spawn(world, ModelTypeId, VehicleSpawn) finds its
+        // model a non-empty contact set (contact_set_of()).
+        uint32_t body_contact_set = 0;
         // init_row: the array (its index in schedule_.arrays) and the module's
         // spawn record, by value -- its first spawn_size bytes.
         uint32_t array = modules::kNoArray;
@@ -1832,8 +1870,9 @@ private:
     //                               registry is configuration, held in a
     //                               plain vector outside the walk, and so
     //                               are the configuration tables it
-    //                               rebuilds, which have no device copy
-    //                               until stage 6 (sim/module.hpp).
+    //                               rebuilds. A bound table's device copy
+    //                               (L10) it uploads itself, so it owes no
+    //                               mark (GpuContactSets pins the upload).
     //
     // A future public method that writes an arena outside step() belongs in
     // that list and owes this call; tests/test_gpu_parity.cpp's
@@ -1907,9 +1946,23 @@ private:
     // schedule_.arrays, or invalid_argument naming `module` and the array.
     [[nodiscard]] Result<uint32_t> check_row_request(std::string_view module, const modules::VehicleRows& vehicle,
                                                      const modules::RowInitRequest& request) const;
-    // Every configuration table, rebuilt from models_ in registration order
-    // (sim/module.hpp's ConfigTableDecl). create() and register_model() only.
-    void rebuild_config_tables();
+    // Every configuration table, built from models_ in registration order
+    // (sim/module.hpp's ConfigTableDecl) into `out` -- one vector per
+    // schedule_.tables entry -- then checked: each against its capacity
+    // (capacity_exceeded), and the contact sets against their row layout
+    // (internal: a build that breaks it). create() and register_model() only;
+    // `out` is the caller's to commit or discard, so a refusal changes nothing.
+    [[nodiscard]] Result<void> build_config_tables(std::vector<std::vector<float>>& out) const;
+    // Every bound table in `tables` to its device buffer (L10): no-op on the
+    // cpu backend.
+    [[nodiscard]] Result<void> upload_config_tables(const std::vector<std::vector<float>>& tables);
+    // The snapshot's registry identity (L10/L11): the models' fold
+    // (vehicles::model_registry_identity) while every table is empty, else
+    // that fold and every table's contents -- see restore().
+    [[nodiscard]] uint64_t registry_identity() const;
+    // What spawn() writes into BodyState::contact_set for a body of `model`:
+    // its id when the contact sets give it a non-empty range, else 0.
+    [[nodiscard]] uint32_t contact_set_of(ModelTypeId model) const noexcept;
     // The table index (schedule_.arrays) of a module array's arena id;
     // modules::kNoArray if it is not a module array.
     [[nodiscard]] uint32_t table_index(ArrayIndex array) const noexcept;
@@ -1937,8 +1990,17 @@ private:
     // function of models_, built at create() and rebuilt by register_model(),
     // and by nothing else.
     // CONFIGURATION, like models_: not registered, so not walked, digested or
-    // snapshotted.
+    // snapshotted -- but folded into the snapshot's registry identity while
+    // any is non-empty (L10/L11; registry_identity()).
     std::vector<std::vector<float>> config_tables_;
+    // static_contact's contact-set table's index in schedule_.tables
+    // (physics/contact_sets.hpp), or kNoContactTable when the set declares
+    // none; found once, at create().
+    static constexpr std::size_t kNoContactTable = static_cast<std::size_t>(-1);
+    std::size_t contact_table_ = kNoContactTable;
+    // The schedule_.tables index of each BOUND table, in device-table order
+    // (table_shapes()' order): device table i is config_tables_[bound_tables_[i]].
+    std::vector<std::size_t> bound_tables_;
 
     // THE DECLARED SCRATCH (module-API stage 4, Task 7b; sim/module.hpp's
     // ScratchDecl), parallel to schedule_.scratch: one allocation per scratch

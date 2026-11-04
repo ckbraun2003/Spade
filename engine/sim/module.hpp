@@ -298,22 +298,29 @@ struct StreamDecl {
 // namespace: unique among every array and table in the set, with no '.', and
 // never a core array's name.
 //
-// THE IDENTITY RULE. A table is a pure function of the registered models (and
-// its build function, whose changes ride the module's version, like a pass's).
-// So snapshot v3's model-registry identity covers it -- a blob restores only
-// into a Simulation whose registry spells the same identity, and so builds the
-// same tables -- ONLY IF EVERY ModelType FIELD A BUILD READS IS FOLDED INTO
-// vehicles::model_identity() (vehicles/model_identity.hpp). A build that reads
-// a field the identity does not fold (visual_ref, or a field added to
-// ModelType without joining the fold) would let two registries with one
-// identity hold different tables, and restore() would accept a blob under the
-// wrong ones. Every new build function, and every new ModelType field, is
-// reviewed against that list. (The standard set declares no table.)
+// THE IDENTITY RULE (L10/L11). A table is a pure function of the registered
+// models and its build function, and the snapshot's registry identity FOLDS
+// EVERY NON-EMPTY TABLE'S CONTENTS beside the models (Simulation::restore()
+// spells the fold). So a blob restores only into a Simulation that builds the
+// same tables, to the bit, whatever ModelType fields a build reads -- parts
+// included, which vehicles::model_identity() does not fold (CORE-7). A
+// registry whose tables are all empty keeps vehicles::model_registry_identity()
+// unchanged, so its blobs are master's. A build's changes still ride the
+// module's version, like a pass's (but see the exception at compile_schedule's
+// IDENTITY note).
 //
-// The GPU has no copy yet: a table's device mirror waits for stage 6's fixed
-// bindings. Until then only the CPU reads one. A developer's pass has no GPU
-// kernel, so Vulkan refuses its set by name (stage 2's rule), and no built-in
-// kernel or pass function reads a table.
+// THE DEVICE COPY (L10). A table that names a `binding` (a gen::kBinding_*
+// constant, bindings.slang) gets a device buffer of `capacity` floats, made
+// and bound at create(), and uploaded there and after every register_model()
+// (the floats, then zeros to the capacity). Its size is fixed because the
+// step's command buffer is recorded once and its descriptor set written once.
+// register_model() refuses a model whose registration would take ANY table
+// past a non-zero capacity, on both backends (capacity_exceeded, naming the
+// table), and leaves the registry and every table as they were; a bound table
+// needs a non-zero capacity (compile_schedule refuses one without). A table
+// with kNoBinding is CPU-only. A developer's pass has no GPU kernel, so Vulkan
+// refuses its set by name (stage 2's rule); the standard set's one table,
+// static_contact.contact_sets (physics/contact_sets.hpp), is bound at 28.
 //
 // `build` receives the registered models in registration order and an EMPTY
 // `out`, and appends the table's floats.
@@ -322,6 +329,8 @@ using ConfigBuildFn = void (*)(std::span<const vehicles::ModelType> models, std:
 struct ConfigTableDecl {
     std::string_view name;          // shares the array namespace: unique in the set, no '.', not a core array
     ConfigBuildFn build = nullptr;  // the table from every registered model, in registration order
+    uint32_t binding = compute::kNoBinding;  // a gen::kBinding_* constant (bindings.slang), or kNoBinding: CPU-only
+    uint32_t capacity = 0;                   // the most floats it may hold; 0: unbounded (CPU-only tables only)
 };
 
 // THE VEHICLE-SPAWN HOOK (stage 4, Task 7). spawn(world, model, where) calls
@@ -516,6 +525,8 @@ struct CompiledTable {
     std::string module;
     std::string name;
     ConfigBuildFn build = nullptr;
+    uint32_t binding = kNoBinding;  // as declared: a device buffer at this binding, or CPU-only
+    uint32_t capacity = 0;          // as declared: the most floats it may hold, 0 for unbounded
 };
 
 // One module's vehicle-spawn hook.
@@ -616,6 +627,18 @@ struct CompiledSchedule {
 // and a changed row, tag, build or hook rides the module's version. Edges,
 // optional reads and bindings are not spelt either: what they decide is the
 // compiled order, which is.
+//
+// THE EXCEPTION (L11, contact_sets): a change that leaves every existing
+// blob's replay byte-identical, and that the registry identity covers, need
+// not ride the version. static_contact gained its contact_sets table and its
+// pass a contact-set loop with no version bump: every blob taken before them
+// holds BodyState::contact_set 0, which replays the sphere byte for byte, and
+// a blob taken under a non-empty table carries that table in its registry
+// identity, so an older build refuses it there. A bump would refuse every old
+// blob for nothing. tests/test_contact_sets.cpp's old-blob replay pins it.
+//
+// Refused at compile, beside the rest: a table that names a binding but no
+// capacity (its device buffer is sized once, at create()).
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().

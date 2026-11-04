@@ -137,6 +137,7 @@ add_executable(spade_tests
     test_part_pose.cpp
     test_part_cull.cpp
     test_quadrotor_look.cpp
+    test_contact_sets.cpp
     test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_m1b_bar.cpp
@@ -285,6 +286,8 @@ add_executable(spade_tests
 # Vulkan step records the compiled schedule's passes. It includes
 # compute/vulkan/context.hpp for vulkan_available(), so it lives here rather
 # than in test_module_schedule.cpp, which builds with SPADE_VULKAN off too.
+# test_gpu_contact_sets.cpp (L10): static_contact's contact-set table on the
+# device, binding 28, against the host's table, GpuContactSets* on the device.
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
@@ -324,6 +327,7 @@ if(SPADE_VULKAN)
         test_gpu_parity.cpp
         test_gpu_invariance.cpp
         test_gpu_module_schedule.cpp
+        test_gpu_contact_sets.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_airflow_projection.cpp

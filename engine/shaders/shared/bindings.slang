@@ -344,6 +344,17 @@ import layouts;
 // in no snapshot or digest. Binding 27 because 26 was the last in use.
 [[vk::binding(27, 0)]] RWStructuredBuffer<float4> contact_dv;
 
+// The contact sets (L9/L10; physics/contact_sets.hpp): static_contact's
+// configuration table, float4 rows -- one range row {first, count, 0, 0} per
+// registered model, then the body-frame points {x, y, z, 0}. A body reads its
+// range row at BodyState::contact_set - 1 (0 is the sphere). CONFIGURATION,
+// like contact_params: uploaded at create and after every register_model(),
+// read by the step, never read back on the step path (the
+// vulkan_config_table() diagnostic reads it), in no snapshot or digest. Its
+// size is the table's declared capacity, fixed at create (L11). Binding 28
+// because 27 was the last in use.
+[[vk::binding(28, 0)]] StructuredBuffer<float4> contact_sets;
+
 // ---------------------------------------------------------------------------
 // E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound
 // because a kernel now reads it.

@@ -100,6 +100,14 @@ Result<void> VulkanBackend::upload_grid_params(std::span<const std::byte>, uint3
         Error{Code::unavailable, "VulkanBackend::upload_grid_params: unreachable (SPADE_VULKAN=OFF)"});
 }
 
+Result<void> VulkanBackend::upload_table(uint32_t, std::span<const std::byte>) {
+    return std::unexpected(Error{Code::unavailable, "VulkanBackend::upload_table: unreachable (SPADE_VULKAN=OFF)"});
+}
+
+Result<void> VulkanBackend::read_table(uint32_t, std::span<std::byte>) {
+    return std::unexpected(Error{Code::unavailable, "VulkanBackend::read_table: unreachable (SPADE_VULKAN=OFF)"});
+}
+
 Result<void> VulkanBackend::read_step_witness(std::span<std::byte>) {
     return std::unexpected(
         Error{Code::unavailable, "VulkanBackend::read_step_witness: unreachable (SPADE_VULKAN=OFF)"});

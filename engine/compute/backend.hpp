@@ -260,6 +260,19 @@ struct ScratchShape {
     uint32_t binding = kNoBinding;    // a bindings.slang binding, or kNoBinding: no device buffer
 };
 
+// A BOUND CONFIGURATION TABLE is shape too (L10; sim/module.hpp's
+// ConfigTableDecl): `tables` holds one TableShape per table that names a
+// binding, in the schedule's order. The state mirror makes a derived buffer
+// of `capacity` floats for each -- zero-filled at create() and bound at
+// `binding` -- that VulkanBackend::upload_table() fills (the floats, then
+// zeros to the capacity) and read_table() reads back. Its index in `tables`
+// is the one those two take.
+struct TableShape {
+    std::string name{};     // "<module>.<table>", for the mirror's messages
+    uint32_t capacity = 0;  // floats: the buffer's size, fixed at create()
+    uint32_t binding = kNoBinding;
+};
+
 struct StepShape {
     uint32_t world_count = 0;
     uint32_t body_capacity = 0;
@@ -272,6 +285,7 @@ struct StepShape {
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
     std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
     std::vector<ScratchShape> scratch{};    // every declared scratch, in the schedule's order (Task 7b)
+    std::vector<TableShape> tables{};       // every bound configuration table, in the schedule's order (L10)
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

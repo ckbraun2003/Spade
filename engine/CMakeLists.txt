@@ -821,11 +821,17 @@ install(DIRECTORY physics/ DESTINATION include/physics FILES_MATCHING PATTERN "*
 # nothing sweeps testing/ by accident; adding a header there ships nothing.
 # A consumer of the installed package has no business with any of it.
 #
+# ALSO COMPILED HERE: physics/contact_sets.cpp (L10) -- static_contact's
+# contact-set table build. It derives the sets from a model's parts
+# (vehicles/part_pose.hpp), and spade_vehicles already links spade_physics, so
+# in spade_physics it would close a cycle; spade_sim links both.
+#
 # $<BUILD_LOCAL_INTERFACE:...> on the warnings link, not plain PRIVATE -- see the
 # long note on spade_core's warnings link above.
 # ------------------------------------------------------------------------------
 add_library(spade_sim STATIC
     physics/schedule.cpp
+    physics/contact_sets.cpp
     sim/module_schedule.cpp
     sim/standard_modules.cpp
     sim/builtin_state.cpp

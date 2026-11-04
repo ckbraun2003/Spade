@@ -402,7 +402,14 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 return std::unexpected(
                     invalid(where + ": no build function, so register_model() could not build it"));
             }
-            out.push_back(CompiledTable{std::string(mod.name), std::string(t.name), t.build});
+            // L10: a bound table's device buffer is made once, at create(), at
+            // its capacity; with none there is nothing to size it from.
+            if (t.binding != kNoBinding && t.capacity == 0) {
+                return std::unexpected(invalid(where + ": names binding " + std::to_string(t.binding) +
+                                               " but no capacity; a bound table's device buffer is sized once, "
+                                               "at create(), from its capacity"));
+            }
+            out.push_back(CompiledTable{std::string(mod.name), std::string(t.name), t.build, t.binding, t.capacity});
         }
     }
     return out;
