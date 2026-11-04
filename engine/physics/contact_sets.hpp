@@ -1,10 +1,16 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
 
+#include <glm/glm.hpp>
+
+#include "physics/contacts.hpp"
+#include "state/layout.hpp"
 #include "vehicles/model_type.hpp"
 
 // ---------------------------------------------------------------------------
@@ -54,8 +60,8 @@ namespace spade::physics {
 // The table's name in the module set: "static_contact.contact_sets".
 inline constexpr std::string_view kContactSetsTable = "contact_sets";
 
-// Floats per row: a float4, for the range rows and the point rows alike.
-inline constexpr uint32_t kContactSetRowFloats = 4;
+// Floats per row, kContactSetRowFloats (physics/contacts.hpp, which the pass
+// reads it from): a float4, for the range rows and the point rows alike.
 
 // The table's capacity, in rows (L11). Fixed, because the device buffer is
 // sized once at create(): the step's command buffer is recorded once and its
@@ -65,9 +71,24 @@ inline constexpr uint32_t kContactSetRowFloats = 4;
 // Phantom (11 parts and 4 rotors, 121 rows each).
 inline constexpr uint32_t kContactSetsCapacityRows = 16384;
 
+// static_contact.resolve's index of the table in its access list
+// (sim/standard_modules.cpp's kStaticContactAccess, which pins it).
+inline constexpr std::size_t kStaticContactSetsAccess = 2;
+
 // The table from every registered model, in registration order (a
 // ConfigBuildFn: `out` arrives empty and the build appends the table's
-// floats). Physics' derivation; until it lands the body appends nothing.
+// floats): contact_points() of each, laid out as above.
 void build_contact_sets(std::span<const vehicles::ModelType> models, std::vector<float>& out);
+
+// One model's contact points (L9), body frame, in the table's point order;
+// empty for a model without a body-attached part, which keeps the sphere. A
+// part whose part_bounds() is refused gives no corners.
+[[nodiscard]] std::vector<glm::vec3> contact_points(const vehicles::ModelType& model);
+
+// The lowest world y over the model's contact points at `body`, each placed by
+// contact_point_world() (physics/contacts.hpp), the pass's own expression, so
+// the editor's rest_height() and the contact agree to the bit (L9's one source
+// for rest); nullopt for a model without a set.
+[[nodiscard]] std::optional<float> lowest_contact_point(const vehicles::ModelType& model, const BodyState& body);
 
 }  // namespace spade::physics

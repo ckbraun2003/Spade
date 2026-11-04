@@ -3,6 +3,7 @@
 #include "objects/behavior.hpp"  // BehaviorRegistry's complete definition --
                                   // schedule.hpp only forward-declares it, and
                                   // this is the one TU that calls run_slot().
+#include "physics/contact_sets.hpp"  // kStaticContactSetsAccess
 #include "physics/integrator.hpp"
 #include "physics/sampled_medium.hpp"
 
@@ -91,8 +92,11 @@ void pass_sensor_gnss(const SubstepContext& ctx) noexcept {
 void pass_collision_static(const SubstepContext& ctx) noexcept {
     for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
         const WorldSubstepView& view = ctx.worlds[w];
+        // L9/L10: the contact sets, one table every world shares (read-only).
         resolve_static_contacts(view.bodies, *view.sdf, view.contacts, ctx.h,
-                                world_rows<ContactDvRow>(ctx.state[kContactPassContactDvAccess], static_cast<uint32_t>(w)));
+                                world_rows<ContactDvRow>(ctx.state[kContactPassContactDvAccess],
+                                                         static_cast<uint32_t>(w)),
+                                table_rows<float>(ctx.state[kStaticContactSetsAccess]));
     }
 }
 

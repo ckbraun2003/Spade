@@ -7,9 +7,39 @@
 
 namespace spade::physics {
 
+namespace {
+
+// L9: the set's point that penetrates most -- each point placed by
+// contact_point_world() and sampled, the smallest distance winning by STRICT
+// `<` from SdfSample's kSdfEmptyDistance, so the first point in the table's
+// order wins a tie and a NaN never wins -- or `found` false when the body's
+// lane names no range of points in `table` (the body then takes the sphere).
+[[nodiscard]] SdfSample deepest_point(const BodyState& body, const SdfProgram& world_sdf,
+                                      std::span<const float> table, bool& found) noexcept {
+    SdfSample deepest{};
+    found = false;
+    if (body.contact_set == 0u) return deepest;
+    const std::size_t range = (std::size_t{body.contact_set} - 1u) * kContactSetRowFloats;
+    if (range + kContactSetRowFloats > table.size()) return deepest;
+    // Exact-integer floats below 2^24 (the layout's), so the casts are exact.
+    const auto first = static_cast<std::size_t>(table[range]);
+    const auto count = static_cast<std::size_t>(table[range + 1u]);
+    if (count == 0u || (first + count) * kContactSetRowFloats > table.size()) return deepest;
+    found = true;
+    for (std::size_t k = 0; k < count; ++k) {
+        const std::size_t at = (first + k) * kContactSetRowFloats;
+        const glm::vec3 local(table[at], table[at + 1u], table[at + 2u]);
+        const SdfSample s = spade::sample(world_sdf, contact_point_world(body, local));
+        if (s.distance < deepest.distance) deepest = s;
+    }
+    return deepest;
+}
+
+}  // namespace
+
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
                              const ContactParams& params, [[maybe_unused]] float h,
-                             std::span<ContactDvRow> contact_dv) noexcept {
+                             std::span<ContactDvRow> contact_dv, std::span<const float> contact_sets) noexcept {
     // Hoisted once: per-world, not per-body, so the per-body op sequence below
     // is exactly what a GPU thread executes after reading its world's param
     // row. (`h` is unused by the pinned model -- see contacts.hpp.) `radius`
@@ -35,11 +65,20 @@ void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& worl
         // contacts.hpp's effective_proxy_radius(). A GPU thread performs the
         // same single select after reading its body's row and its world's
         // param row; nothing here diverges by thread.
-        const float radius = effective_proxy_radius(body, params.proxy_radius);
+        float radius = effective_proxy_radius(body, params.proxy_radius);
 
-        // One walk of the program yields both the distance and the gradient
+        // L9: a body with a contact set rests on its most penetrated point,
+        // which takes the sphere's response below at radius 0 (contacts.hpp's
+        // A BODY WITH A CONTACT SET). Otherwise one walk of the program at the
+        // body's position yields both the distance and the gradient
         // (world/sdf.hpp); sample().distance is bit-identical to eval().
-        const SdfSample s = spade::sample(world_sdf, body.pos);
+        bool from_set = false;
+        SdfSample s = deepest_point(body, world_sdf, contact_sets, from_set);
+        if (from_set) {
+            radius = 0.0f;
+        } else {
+            s = spade::sample(world_sdf, body.pos);
+        }
 
         // Contact test. STRICT `<`: a body exactly tangent to the surface
         // (phi == radius, depth == 0) is not in contact, so a body resting

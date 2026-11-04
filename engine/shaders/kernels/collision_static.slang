@@ -87,6 +87,9 @@ import mirrors;
 
 static const uint kInvalidWorld = 0xFFFFFFFFu;
 static const uint kBodyFlagActive = 1u;
+// physics::kContactSetsCapacityRows (physics/contact_sets.hpp): the contact_sets
+// buffer's rows, fixed at create() (L11).
+static const uint kContactSetsCapacityRows = 16384u;
 
 [shader("compute")]
 // LOCAL SIZE COMES FROM THE BUILD, NOT FROM THIS LINE (S6 Task 9b).
@@ -126,13 +129,45 @@ void collision_static(uint3 tid : SV_DispatchThreadID) {
     // note. mirrors.slang's effective_proxy_radius() is the ONE definition both
     // contact kernels call, mirroring physics::effective_proxy_radius()
     // (physics/contacts.hpp) character-for-character.
-    const float radius = effective_proxy_radius(bodies[slot].proxy_radius, material.proxy_radius);
+    float radius = effective_proxy_radius(bodies[slot].proxy_radius, material.proxy_radius);
 
     const float3 pos = bodies[slot].pos;
 
-    // contacts.cpp:32 -- ONE walk of the program yields both the distance and
-    // the gradient, which is what makes the two provably consistent.
-    const SdfSample s = sdf_sample(world, pos);
+    // L9: a body with a contact set rests on its most penetrated point, at
+    // radius 0 -- contacts.cpp's deepest_point(), op for op: the lane names the
+    // range row contact_set - 1 of contact_sets (binding 28), each point is
+    // pos + glm_quat_rotate(orient, p) (contact_point_world()), and the
+    // smallest distance wins by STRICT `<` from kSdfEmptyDistance (FLT_MAX), so
+    // the first point wins a tie and a NaN never wins. A lane naming no range of
+    // points takes the sphere, as on the CPU (the buffer holds the table and
+    // then zeros to its capacity, so a range past the table reads count 0).
+    // Otherwise contacts.cpp's one walk at the body's position yields both the
+    // distance and the gradient.
+    SdfSample s;
+    s.distance = 3.40282347e+38f;
+    s.gradient = float3(0.0f, 0.0f, 0.0f);
+    bool from_set = false;
+    const uint lane = bodies[slot].contact_set;
+    if (lane != 0u && lane - 1u < kContactSetsCapacityRows) {
+        const float4 range = contact_sets[lane - 1u];
+        const uint first = uint(range.x);
+        const uint count = uint(range.y);
+        if (count != 0u && first <= kContactSetsCapacityRows && count <= kContactSetsCapacityRows - first) {
+            from_set = true;
+            const float4 orient = bodies[slot].orient;
+            for (uint k = 0u; k < count; ++k) {
+                const float4 row = contact_sets[first + k];
+                const SdfSample at = sdf_sample(world, pos + glm_quat_rotate(orient, row.xyz));
+                if (at.distance < s.distance) {
+                    s = at;
+                }
+            }
+            radius = 0.0f;
+        }
+    }
+    if (!from_set) {
+        s = sdf_sample(world, pos);
+    }
 
     // contacts.cpp:36-47 -- STRICT `<`, spelled `!(a < b)` so a NaN distance
     // FAILS to be a contact and is skipped rather than falling through into a

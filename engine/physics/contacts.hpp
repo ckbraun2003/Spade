@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <type_traits>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "physics/contact_dv.hpp"
 #include "state/layout.hpp"
@@ -93,6 +97,20 @@
 //     the cheap fix if a world ever needs one.
 //
 // Body-vs-body contact is dynamic_contact.resolve (physics/grid.*), not this file.
+//
+// ---------------------------------------------------------------------------
+// A BODY WITH A CONTACT SET (L9, Physics' part-contact note; Core's table,
+// L10/L11). A body whose BodyState::contact_set is non-zero rests on its own
+// points, not on the sphere: the set's points (physics/contact_sets.hpp, each
+// placed by contact_point_world()) are each sampled against the world SDF, the
+// most penetrated wins (the smallest distance, STRICT `<`, so the first point
+// in the table's order wins a tie), and that point takes the sphere's response
+// above at radius 0 -- the same three steps in the same op order, its depth
+// 0 - distance, its normal the field's gradient there, and the correction moves
+// `pos`. Still one contact per body per substep (limitation 3) and still
+// linear only (limitation 1: no torque, so a drone landing on one leg does not
+// tip). A body whose lane is 0, or whose range row is outside the table or
+// names no points, takes the sphere byte for byte.
 // ---------------------------------------------------------------------------
 
 namespace spade::physics {
@@ -279,6 +297,17 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
     return effective_proxy_radius(body.proxy_radius, world_default);
 }
 
+// The contact sets' table (physics/contact_sets.hpp's layout): floats per row,
+// a float4 for the range rows and the point rows alike.
+inline constexpr uint32_t kContactSetRowFloats = 4;
+
+// A contact point's world position at `body`: the one expression the pass and
+// physics::lowest_contact_point() share, so the editor's placement and the
+// contact agree to the bit. The GPU mirror spells the same (glm_quat_rotate).
+[[nodiscard]] inline glm::vec3 contact_point_world(const BodyState& body, glm::vec3 local) noexcept {
+    return body.pos + body.orient * local;
+}
+
 // ---------------------------------------------------------------------------
 // Resolves every ACTIVE body in `bodies` against the static world SDF.
 //
@@ -326,8 +355,12 @@ static_assert(sizeof(ContactParams::restitution_e) + sizeof(ContactParams::frict
 // `contact_dv` (PHY-7): each contact's velocity change, the state's own
 // (vel after the impulse and friction, minus vel before), added to the
 // body's slot of the contact scratch (physics/schedule.hpp). Empty: none kept.
+//
+// `contact_sets` (L9/L10): static_contact.contact_sets, every world's one
+// table. Empty: every body takes the sphere (a part-less registry's table).
 void resolve_static_contacts(std::span<BodyState> bodies, const SdfProgram& world_sdf,
                              const ContactParams& params, float h,
-                             std::span<ContactDvRow> contact_dv = {}) noexcept;
+                             std::span<ContactDvRow> contact_dv = {},
+                             std::span<const float> contact_sets = {}) noexcept;
 
 }  // namespace spade::physics
