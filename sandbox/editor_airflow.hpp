@@ -103,14 +103,19 @@ struct AirDrone {
 // 2026-10-26); a grid that is not a cube (the case's box is one length);
 // rotors with no propulsion chain (LiveRun::start() refuses them; said here
 // so the inspector shows it before Run air); or what analysis::resolve()
-// refuses, its first issue verbatim. Its step is the levels' for the cell
-// (analysis::live_level_step_s(), L13: the drone in 1 ms ticks).
+// refuses, its first issue verbatim. Its step is the level's for the cell
+// (L22, the lead, 2026-11-03): Detailed, the accuracy level, keeps L6's
+// analysis::live_step_s() (CFL at most 1, at most 1 ms: advection's
+// back-trace doesn't see solids, so a longer trace could cross a thin part);
+// Real time takes analysis::live_level_step_s() (L13: CFL 2, the drone in
+// 1 ms ticks).
 namespace detail {
-// The case for `region`'s drone flying `flown` on the cubic grid `g`.
+// The case for `region`'s drone flying `flown` on the cubic grid `g`, at
+// `level`'s step.
 [[nodiscard]] inline Result<analysis::ResolvedCase> air_resolved(const scene::SceneDesc& s,
                                                                  const scene::SceneAirflowRegion& region,
                                                                  const physics::airflow::GridShape& g,
-                                                                 const vehicles::ModelType& flown) {
+                                                                 const vehicles::ModelType& flown, AirLevel level) {
     const auto refused = [&](const std::string& why) { return std::unexpected(detail::air_refusal(region, why)); };
     const Result<detail::AirDrone> drone = detail::air_drone(s, region);
     if (!drone) return std::unexpected(drone.error());
@@ -138,7 +143,8 @@ namespace detail {
     c.rotors.assign(flown.rotors.size(), analysis::RotorSetup{});
     c.grid.box = static_cast<float>(g.nx) * g.dx;
     c.grid.spacing = g.dx;
-    c.time.step = analysis::live_level_step_s(c, flown, g.dx);
+    c.time.step = level == AirLevel::real_time ? analysis::live_level_step_s(c, flown, g.dx)
+                                               : analysis::live_step_s(c, flown, g.dx);
     auto resolved = analysis::resolve(c, flown, analysis::ThinWalls::drawn_by_the_live_run);
     if (!resolved) {
         const analysis::CaseIssue& first = resolved.error().front();
@@ -152,7 +158,7 @@ namespace detail {
                                                              const scene::SceneAirflowRegion& region) {
     const Result<vehicles::ModelType> flown = air_model(s, region);
     if (!flown) return std::unexpected(flown.error());
-    return detail::air_resolved(s, region, region.cells, *flown);
+    return detail::air_resolved(s, region, region.cells, *flown, AirLevel::detailed);
 }
 
 // A resolved case's grid as LiveRun's label gives it: "32³, dx 25 mm, R/dx 3".
@@ -282,7 +288,8 @@ namespace detail {
     const auto discs_on = [&](uint32_t most) -> Result<AirCase> {  // the bare model over the region's box
         const uint32_t n = std::min(g.nx, most);
         const float dx = n == g.nx ? g.dx : static_cast<float>(g.nx) * g.dx / static_cast<float>(n);
-        Result<analysis::ResolvedCase> r = detail::air_resolved(s, region, physics::airflow::GridShape{n, n, n, dx}, bare);
+        Result<analysis::ResolvedCase> r =
+            detail::air_resolved(s, region, physics::airflow::GridShape{n, n, n, dx}, bare, level);
         if (!r) return std::unexpected(r.error());
         return AirCase{std::move(*r), bare};
     };
@@ -296,7 +303,7 @@ namespace detail {
         out.body = std::move(*device);
         return out;
     }
-    Result<analysis::ResolvedCase> body = detail::air_resolved(s, region, g, *model);
+    Result<analysis::ResolvedCase> body = detail::air_resolved(s, region, g, *model, level);
     if (!body) return std::unexpected(body.error());
     out.body = AirCase{std::move(*body), *model};
     out.loses_parts = detail::holds_a_part(*model, g.dx);

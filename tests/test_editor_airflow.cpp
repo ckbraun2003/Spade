@@ -468,10 +468,10 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*cases);
     ASSERT_TRUE(started.has_value()) << started.error().context;
     EXPECT_EQ(started->backend, "CPU: told so; discs only, the body needs the GPU");
-    EXPECT_EQ(started->run.run_label(), "actuator disc \xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 4 ms");
+    EXPECT_EQ(started->run.run_label(), "actuator disc \xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
     const std::string band = ed::air_band("air at 1/43 speed", started->run.run_label(), started->backend);
     EXPECT_EQ(band, "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU: told so; discs only, the body needs the GPU "
-                    "\xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 4 ms");
+                    "\xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
     EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 CPU");
 
     s.airflow.back().cells = spade::physics::airflow::GridShape{20, 20, 20, 0.039f};
@@ -484,15 +484,15 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     ASSERT_TRUE(plain.has_value()) << plain.error().context;
     EXPECT_EQ(plain->backend, "CPU: told so");
 
-    // The levels' step for the body's cell (L13): the Crazyflie's 1.75 mm
-    // takes twice 1.75 mm over its wake speed, under 1 ms, in one drone tick.
+    // Detailed's step for the body's cell is L6's (L22): the Crazyflie's
+    // 1.75 mm over its wake speed, under 1 ms.
     const spade::scene::SceneDesc small = placed("crazyflie_class.model.yaml");
     ASSERT_FALSE(small.airflow.empty());
     const Result<ed::AirCases> fine = ed::air_cases(small, small.airflow.back());
     ASSERT_TRUE(fine.has_value()) << fine.error().context;
     ASSERT_TRUE(fine->body.resolved.spec.time.step.has_value());
     EXPECT_EQ(*fine->body.resolved.spec.time.step,
-              an::live_level_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
+              an::live_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
     EXPECT_LT(*fine->body.resolved.spec.time.step, 0.001f);
 }
 
@@ -518,6 +518,14 @@ TEST(EditorAirflow, TheRealTimeLevelFliesTheDiscsAndTheLineFollowsTheLevel) {
     EXPECT_EQ(ed::grid_line(fast->discs.resolved), "16\xc2\xb3, dx 78 mm, R/dx 2") << "the CPU's";
     EXPECT_TRUE(fast->body.model.parts.empty());
     EXPECT_FALSE(fast->loses_parts);
+    // Only Real time steps at L13's CFL 2 (L22): the Phantom's 26 mm takes
+    // the 4 ms cap, where Detailed's body at 12 mm keeps L6's 1 ms.
+    ASSERT_TRUE(fast->body.resolved.spec.time.step.has_value());
+    EXPECT_EQ(*fast->body.resolved.spec.time.step, an::kLiveLevelStepCapS);
+    const Result<ed::AirCases> detailed = ed::air_cases(s, region);
+    ASSERT_TRUE(detailed.has_value()) << detailed.error().context;
+    ASSERT_TRUE(detailed->body.resolved.spec.time.step.has_value());
+    EXPECT_EQ(*detailed->body.resolved.spec.time.step, 0.001f);
     Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*fast);
     ASSERT_TRUE(started.has_value()) << started.error().context;
     EXPECT_EQ(started->backend, "CPU: told so");
