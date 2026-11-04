@@ -37,8 +37,9 @@ namespace spade::sandbox::editor {
         std::string why;  // why there is none, once tried
     };
     auto device = std::make_shared<Device>();
-    return [device, workgroup_size](const analysis::ResolvedCase& resolved,
-                                    const vehicles::ModelType& model) -> Result<AirStart> {
+    return [device, workgroup_size](const AirCases& cases) -> Result<AirStart> {
+        const analysis::ResolvedCase& resolved = cases.body.resolved;  // RED: the body's case on both
+        const vehicles::ModelType& model = cases.body.model;
         if (!device->tried) {
             device->tried = true;
             Result<std::unique_ptr<compute::VulkanContext>> made =

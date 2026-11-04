@@ -68,16 +68,18 @@ namespace {
 
 // The region's case resolves as LiveRun will run it, and the line says so as
 // LiveRun's label does: "32³, dx 25 mm, R/dx 3". The reference quad, since
-// the hover scene's quad has no propulsion chain (refused since T2).
+// the hover scene's quad has no propulsion chain (refused since T2), at its
+// region's own grid (Run air's rule since item 1).
 TEST(EditorAirflow, ARegionsLineIsItsResolvedGrid) {
     const spade::scene::SceneDesc s = with_reference_quad(false);
     ASSERT_EQ(s.airflow.size(), 1u);
+    const spade::physics::airflow::GridShape& g = s.airflow[0].cells;
     const Result<spade::analysis::ResolvedCase> resolved = ed::air_case(s, s.airflow[0]);
     ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
-    EXPECT_EQ(resolved->base.nx, 32u);
-    EXPECT_FLOAT_EQ(resolved->base.dx, s.airflow[0].cells.dx);
+    EXPECT_EQ(resolved->base.nx, g.nx);
+    EXPECT_FLOAT_EQ(resolved->base.dx, g.dx);
     const std::string line = ed::region_line(s, s.airflow[0]);
-    EXPECT_TRUE(line.starts_with(std::format("32\xc2\xb3, dx {:g} mm, R/dx ", s.airflow[0].cells.dx * 1000.0f))) << line;
+    EXPECT_TRUE(line.starts_with(std::format("{}\xc2\xb3, dx {:g} mm, R/dx ", g.nx, g.dx * 1000.0f))) << line;
 }
 
 // A drone placed turned is refused before a step (the lead, 2026-10-26):
@@ -151,16 +153,14 @@ void nan_into_du(void*, std::span<float> du, std::span<float>, std::span<float>)
     std::fill(du.begin(), du.end(), std::numeric_limits<float>::quiet_NaN());
 }
 
-// `frame` against a one-thread LiveRun of the same case and program, started
-// as Run air started it before Run air on the GPU (LiveRun::start() on the
-// CPU): the same steps, time and halves, to the bit.
+// `frame` against a one-thread LiveRun of the case the CPU's starter flies
+// (air_cases()'s discs) and the same program, LiveRun::start() on the CPU:
+// the same steps, time and halves, to the bit.
 void expect_one_threads_frame(const spade::scene::SceneDesc& s, const spade::scene::SceneAirflowRegion& region,
                               const an::ControlProgram& program, const ed::AirFrame& frame) {
-    const Result<an::ResolvedCase> resolved = ed::air_case(s, region);
-    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
-    const Result<spade::vehicles::ModelType> model = ed::air_model(s, region);
-    ASSERT_TRUE(model.has_value()) << model.error().context;
-    Result<an::LiveRun> one = an::LiveRun::start(*resolved, *model);
+    const Result<ed::AirCases> cases = ed::air_cases(s, region);
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    Result<an::LiveRun> one = an::LiveRun::start(cases->discs.resolved, cases->discs.model);
     ASSERT_TRUE(one.has_value()) << one.error().context;
     spade::FlowVolume v;
     while (one->state().frames < frame.frames) {
@@ -191,11 +191,9 @@ TEST(EditorAirflow, AProgramsRunOnTheWorkerIsBitIdenticalToOneThread) {
     ASSERT_TRUE(frame->error.empty()) << frame->error;
     ASSERT_GE(frame->frames, 2u);
 
-    const Result<an::ResolvedCase> resolved = ed::air_case(s, region);
-    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
-    const Result<spade::vehicles::ModelType> model = ed::air_model(s, region);
-    ASSERT_TRUE(model.has_value()) << model.error().context;
-    Result<an::LiveRun> one = an::LiveRun::start(*resolved, *model);
+    const Result<ed::AirCases> cases = ed::air_cases(s, region);
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    Result<an::LiveRun> one = an::LiveRun::start(cases->discs.resolved, cases->discs.model);
     ASSERT_TRUE(one.has_value()) << one.error().context;
     spade::FlowVolume v;
     while (one->state().frames < frame->frames) {
@@ -363,11 +361,11 @@ TEST(EditorAirflow, TheBandShedsTheRunsKindFirstAndItsFloorIsItsSpeedAndBackend)
 }
 
 // The library's Phantom (the lead, 2026-10-27), which editor.airflow runs
-// since L7c1 gave it props (mesh parts): its air starts, its chain resolves
-// and a frame is handed over with no error at its own dx (R/3, to the
-// millimetre below), on 20^3 so the debug suite stays cheap, its span
-// inside. Run air is actuator discs (the lead's ruling): its parts are not
-// the air's solids.
+// since L7c1 gave it props (mesh parts): its region is Run air's cell for
+// its body (104^3 at 12 mm), and its air starts, its chain resolves and a
+// frame is handed over with no error at R/3 (39 mm), on 20^3 so the debug
+// suite stays cheap, its span inside. At 39 mm every part is drawn only,
+// so on the CPU it is discs only and says nothing of the body.
 TEST(EditorAirflow, ThePlacedPhantomsAirStartsAndPublishes) {
     auto d = ed::make_scene_document(support::sample_scene(), {});
     ed::AddModelFile add;
@@ -389,10 +387,12 @@ TEST(EditorAirflow, ThePlacedPhantomsAirStartsAndPublishes) {
         }
     }
     ASSERT_GT(radius, 0.0f);
-    EXPECT_FLOAT_EQ(s.airflow[0].cells.dx, std::floor(radius / 3.0f * 1000.0f) / 1000.0f);
-    s.airflow[0].cells = spade::physics::airflow::GridShape{20, 20, 20, s.airflow[0].cells.dx};
+    EXPECT_EQ(s.airflow[0].cells.nx, 104u);
+    EXPECT_FLOAT_EQ(s.airflow[0].cells.dx, 0.012f);
+    s.airflow[0].cells = spade::physics::airflow::GridShape{20, 20, 20, std::floor(radius / 3.0f * 1000.0f) / 1000.0f};
     Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, s.airflow[0]);
     ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ((*run)->backend(), "CPU: no Vulkan device");
     const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 1);
     ASSERT_NE(frame, nullptr) << "no frame in 50 s";
     EXPECT_TRUE(frame->error.empty()) << frame->error;
@@ -401,9 +401,9 @@ TEST(EditorAirflow, ThePlacedPhantomsAirStartsAndPublishes) {
 }
 
 // The CPU fallback (Run air on the GPU, slice 3; the lead, 2026-10-27): a run
-// its starter puts on the CPU is today's run to the bit, and says why it
-// isn't on the GPU. The starter Run air takes when given none is that one,
-// with no device.
+// its starter puts on the CPU is a one-thread run of its discs case to the
+// bit, and says why it isn't on the GPU. The starter Run air takes when
+// given none is that one, with no device.
 TEST(EditorAirflow, TheCpuFallbackIsTodaysRunToTheBitAndSaysWhy) {
     const spade::scene::SceneDesc s = with_reference_quad();
     ASSERT_FALSE(s.airflow.empty());
@@ -423,6 +423,70 @@ TEST(EditorAirflow, TheCpuFallbackIsTodaysRunToTheBitAndSaysWhy) {
     Result<std::unique_ptr<ed::AirflowRun>> plain = ed::AirflowRun::start(s, region, program);
     ASSERT_TRUE(plain.has_value()) << plain.error().context;
     EXPECT_EQ((*plain)->backend(), "CPU: no Vulkan device");
+}
+
+// The cases Run air flies (item 1; the lead's rulings, 2026-11-03): the
+// body's, the region's grid with the drone's parts and Physics' step for
+// its cell; and the CPU's fallback, discs only on R/3's grid over the same
+// box (32 cells at 39 mm for the Phantom's 104^3 at 12 mm), since a grid
+// that resolves the body takes the CPU seconds a step. The fallback's band
+// says the body needs the GPU, its floor "... CPU" as ever. At a cell that
+// holds no part (20^3 at 39 mm) both are the region's grid, and the band
+// says nothing of the body.
+TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
+    const auto placed = [](const char* file) {
+        auto d = ed::make_scene_document(support::sample_scene(), {});
+        ed::AddModelFile add;
+        add.file = (std::filesystem::path(SPADE_ASSETS_DIR) / "library" / "drones" / file).generic_string();
+        add.vehicle.name = "drone";
+        const Result<void> added = ed::apply(d, add);
+        EXPECT_TRUE(added.has_value()) << (added ? "" : added.error().context);
+        const Result<void> region = ed::apply(d, ed::AddAirflowRegion{"drone"});
+        EXPECT_TRUE(region.has_value()) << (region ? "" : region.error().context);
+        return d.desc();
+    };
+    const auto grid = [](const ed::AirCase& c) { return ed::grid_line(c.resolved); };
+    spade::scene::SceneDesc s = placed("phantom3_class.model.yaml");
+    ASSERT_FALSE(s.airflow.empty());
+    const Result<ed::AirCases> cases = ed::air_cases(s, s.airflow.back());
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    EXPECT_EQ(grid(cases->body), "104\xc2\xb3, dx 12 mm, R/dx 10");
+    EXPECT_FALSE(cases->body.model.parts.empty()) << "the body's case keeps the drone's parts";
+    EXPECT_EQ(grid(cases->discs), "32\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_TRUE(cases->discs.model.parts.empty()) << "the fallback is discs only";
+    const auto box = [](const ed::AirCase& c) { return static_cast<float>(c.resolved.base.nx) * c.resolved.base.dx; };
+    EXPECT_NEAR(box(cases->discs), box(cases->body), 1e-6f) << "over the same box";
+    EXPECT_TRUE(cases->loses_parts) << "the body is a part a 12 mm cell holds";
+
+    Result<ed::AirStart> started = ed::cpu_air_starter("told so")(*cases);
+    ASSERT_TRUE(started.has_value()) << started.error().context;
+    EXPECT_EQ(started->backend, "CPU: told so; discs only, the body needs the GPU");
+    EXPECT_EQ(started->run.run_label(), "actuator disc \xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
+    const std::string band = ed::air_band("air at 1/43 speed", started->run.run_label(), started->backend);
+    EXPECT_EQ(band, "air at 1/43 speed \xc2\xb7 actuator disc \xc2\xb7 CPU: told so; discs only, the body needs the GPU "
+                    "\xc2\xb7 32\xc2\xb3, dx 39 mm, R/dx 3, h 1 ms");
+    EXPECT_EQ(ed::band_floor(band), "air at 1/43 speed \xc2\xb7 CPU");
+
+    s.airflow.back().cells = spade::physics::airflow::GridShape{20, 20, 20, 0.039f};
+    const Result<ed::AirCases> coarse = ed::air_cases(s, s.airflow.back());
+    ASSERT_TRUE(coarse.has_value()) << coarse.error().context;
+    EXPECT_EQ(grid(coarse->body), "20\xc2\xb3, dx 39 mm, R/dx 3");
+    EXPECT_EQ(grid(coarse->discs), grid(coarse->body));
+    EXPECT_FALSE(coarse->loses_parts) << "at 39 mm every part is drawn only";
+    Result<ed::AirStart> plain = ed::cpu_air_starter("told so")(*coarse);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    EXPECT_EQ(plain->backend, "CPU: told so");
+
+    // Physics' step for the body's cell: the Crazyflie's 1.75 mm takes
+    // 1.75 mm over twice its hover wake, under the 1 ms cap.
+    const spade::scene::SceneDesc small = placed("crazyflie_class.model.yaml");
+    ASSERT_FALSE(small.airflow.empty());
+    const Result<ed::AirCases> fine = ed::air_cases(small, small.airflow.back());
+    ASSERT_TRUE(fine.has_value()) << fine.error().context;
+    ASSERT_TRUE(fine->body.resolved.spec.time.step.has_value());
+    EXPECT_EQ(*fine->body.resolved.spec.time.step,
+              an::live_step_s(fine->body.resolved.spec, fine->body.model, fine->body.resolved.base.dx));
+    EXPECT_LT(*fine->body.resolved.spec.time.step, 0.001f);
 }
 
 // Run air's guard (the lead, 2026-10-27): a published frame whose fastest

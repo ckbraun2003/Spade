@@ -715,9 +715,9 @@ TEST(EditorWorkspaceAir, RunAirStartsThroughTheEditorsStarter) {
     EXPECT_EQ(w->air()->backend(), "CPU: no Vulkan device");
     command(*w, Command::stop);
     int calls = 0;
-    w->set_air_starter([&calls](const spade::analysis::ResolvedCase& r, const spade::vehicles::ModelType& m) {
+    w->set_air_starter([&calls](const ed::AirCases& cases) {
         ++calls;
-        return ed::cpu_air_starter("told so")(r, m);
+        return ed::cpu_air_starter("told so")(cases);
     });
     command(*w, Command::run_air);
     ASSERT_NE(w->air(), nullptr) << w->panels().status;

@@ -203,17 +203,54 @@ struct AirStart {
     std::string backend;
     std::shared_ptr<void> keep;
 };
-using AirStarter = std::function<Result<AirStart>(const analysis::ResolvedCase&, const vehicles::ModelType&)>;
 
-// LiveRun::start() on the CPU, Run air's run before slice 3 to the bit, its
-// backend "CPU: " and `why`. The editor's window gives Run air the GPU's
-// starter (editor_air_gpu.hpp); given none, Run air takes this one.
+// A case Run air can fly: the resolved case and the model LiveRun flies.
+struct AirCase {
+    analysis::ResolvedCase resolved;
+    vehicles::ModelType model;
+};
+
+// The cases Run air may fly for a region (item 1; the lead's rulings,
+// 2026-11-03): `body`, the region's grid with the drone's parts (the live
+// run draws what the cell can't hold, naming it: P-1), for the device; and
+// `discs`, the CPU's fallback, discs only on R/3's grid over the same box,
+// since a resolving grid takes the CPU seconds a step. `loses_parts`: a part
+// the region's cell could hold (a rigid wall not marked drawn only, declaring
+// 2 cells or more) is in the body's case, so the fallback says it flies
+// without it.
+struct AirCases {
+    AirCase body;
+    AirCase discs;
+    bool loses_parts = false;
+};
+
+// What the fallback's backend adds when it flies without the body.
+inline constexpr std::string_view kAirBodyNeedsTheGpu = "; discs only, the body needs the GPU";
+
+// The cases for `region`, refused as air_case() refuses.
+[[nodiscard]] inline Result<AirCases> air_cases(const scene::SceneDesc& s, const scene::SceneAirflowRegion& region) {
+    Result<analysis::ResolvedCase> resolved = air_case(s, region);  // RED: both today's discs-only case
+    if (!resolved) return std::unexpected(resolved.error());
+    Result<vehicles::ModelType> model = air_model(s, region);
+    if (!model) return std::unexpected(model.error());
+    AirCases out;
+    out.body = AirCase{*resolved, *model};
+    out.discs = AirCase{std::move(*resolved), std::move(*model)};
+    return out;
+}
+
+using AirStarter = std::function<Result<AirStart>(const AirCases&)>;
+
+// LiveRun::start() on the CPU with the discs' case, its backend "CPU: " and
+// `why`, and kAirBodyNeedsTheGpu when it loses parts. The editor's window
+// gives Run air the GPU's starter (editor_air_gpu.hpp); given none, Run air
+// takes this one.
 [[nodiscard]] inline AirStarter cpu_air_starter(std::string why = "no Vulkan device") {
-    return [why = std::move(why)](const analysis::ResolvedCase& resolved,
-                                  const vehicles::ModelType& model) -> Result<AirStart> {
-        Result<analysis::LiveRun> run = analysis::LiveRun::start(resolved, model);
+    return [why = std::move(why)](const AirCases& cases) -> Result<AirStart> {
+        Result<analysis::LiveRun> run = analysis::LiveRun::start(cases.discs.resolved, cases.discs.model);
         if (!run) return std::unexpected(run.error());
-        return AirStart{std::move(*run), "CPU: " + why, nullptr};
+        return AirStart{std::move(*run), "CPU: " + why + (cases.loses_parts ? std::string(kAirBodyNeedsTheGpu) : ""),
+                        nullptr};
     };
 }
 
@@ -271,14 +308,12 @@ class AirflowRun {
         const AirStarter& starter = cpu_air_starter()) {
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
-        const Result<analysis::ResolvedCase> resolved = air_case(s, region);
-        if (!resolved) return std::unexpected(resolved.error());
-        const Result<vehicles::ModelType> model = air_model(s, region);
-        if (!model) return std::unexpected(model.error());
-        Result<AirStart> started = starter(*resolved, *model);
+        const Result<AirCases> cases = air_cases(s, region);
+        if (!cases) return std::unexpected(cases.error());
+        Result<AirStart> started = starter(*cases);
         if (!started) return std::unexpected(detail::air_refusal(region, started.error().context));
         if (prepare) prepare(started->run);
-        const float top = airflow::speed_top(*model, region.density, 9.80665f);
+        const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
                            std::move(program)));
