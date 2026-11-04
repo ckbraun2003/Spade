@@ -373,3 +373,43 @@ endif()
 set(SPADE_SLANGC "${_spade_slangc}" CACHE INTERNAL
     "The pinned slangc (slang v2026.14.1 prebuilt) that compiles engine/shaders/**")
 unset(_spade_slangc)
+
+# ------------------------------------------------------------------------------
+# miniz and pugixml (both MIT): the 3MF reader's ZIP and XML (the parts and
+# meshes plan, Task B8; the lead's L15, 2026-11-03). For spade_mesh_import
+# only. Neither is built by its own CMakeLists.txt: each is POPULATED here and
+# nothing more, and engine/CMakeLists.txt compiles their sources into
+# spade_mesh_import's own archive, through an object library without
+# spade_warnings, the way volk.c goes into spade_compute (see the volk note
+# there): the installed library then carries their code, so an installed
+# consumer links nothing extra, and no miniz or pugixml target is exported.
+# No miniz or pugixml type crosses world/mesh_import.hpp.
+#
+# miniz 3.1.2 (2026-07-01) is fetched as its RELEASE ARCHIVE, pinned by
+# SHA-256 (computed locally from the release asset, as for slang below): the
+# archive holds the one-file amalgamation (miniz.c, miniz.h), which needs no
+# generated export header, unlike the repository's split sources.
+# Release: https://github.com/richgel999/miniz/releases/tag/3.1.2
+#
+# pugixml v1.16 (2026-06-15, commit c8033ce9d039e7f9d134877c363397b3cfe20816)
+# is fetched at its tag; its src/ holds pugixml.cpp and its two headers.
+# Release: https://github.com/zeux/pugixml/releases/tag/v1.16
+#
+# SOURCE_SUBDIR names a directory neither holds, so FetchContent_MakeAvailable
+# populates each source tree without calling add_subdirectory (as the slang
+# archive, which has no CMakeLists.txt, is populated below).
+# ------------------------------------------------------------------------------
+FetchContent_Declare(
+    miniz
+    URL           https://github.com/richgel999/miniz/releases/download/3.1.2/miniz-3.1.2.zip
+    URL_HASH      SHA256=f0446d863f9c19926ad9483c523fdc42e42b8d4a6a431d27e09d49c79a140d9a
+    SOURCE_SUBDIR spade-populate-only
+)
+FetchContent_Declare(
+    pugixml
+    GIT_REPOSITORY https://github.com/zeux/pugixml.git
+    GIT_TAG        v1.16
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  spade-populate-only
+)
+FetchContent_MakeAvailable(miniz pugixml)

@@ -2,12 +2,13 @@
 
 // ---------------------------------------------------------------------------
 // world/mesh_import.hpp -- reading CAD exports into validated meshes (CORE-6;
-// the parts and meshes plan, Part B, Tasks B6 and B7). Import only: these readers
+// the parts and meshes plan, Part B, Tasks B6 to B8). Import only: these readers
 // are how geometry gets in. Every object ends in make_mesh(), so a returned
 // mesh meets world/mesh.hpp's precondition, and nothing here repairs one.
 //
 // A SEPARATE TARGET. The readers are spade::mesh_import (STATIC; links
-// spade::world, and nlohmann_json privately), so the library the step links
+// spade::world; nlohmann_json privately, and miniz's and pugixml's code is
+// compiled into it), so the library the step links
 // gains no parser: spade::sim and everything under it never link this
 // target (pinned by MeshImport.TheStepNeverLinksTheReaders). The header sits
 // in world/ beside mesh.hpp; a consumer that includes it links
@@ -171,9 +172,70 @@
 //
 // For both, running out of memory is capacity_exceeded, and any other
 // exception is internal: none crosses this API.
+//
+// 3MF (read_3mf; Task B8, the 3MF core specification). The file carries its
+// unit, so none is declared.
+//   THE PACKAGE: a ZIP archive (read with miniz), read whole into memory. Its
+//     _rels/.rels names the model part, by the relationship whose Type is
+//     http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel; that part
+//     is XML (read with pugixml). Part names match without regard to case,
+//     as OPC's do. Thumbnails, textures, content types and every other part
+//     are not read.
+//   THE MODEL: its root is <model> in the core namespace
+//     (http://schemas.microsoft.com/3dmanufacturing/core/2015/02), unprefixed
+//     or under a prefix the root declares; elements of other namespaces are
+//     not read, and neither are metadata, materials or colour properties.
+//   UNITS: the model's `unit` (micron, millimeter, centimeter, inch, foot or
+//     meter; millimeter when absent) is each object's MeshUnit, so it scales
+//     once, in make_mesh().
+//   WHAT IS READ: <resources>' objects, each of which holds a <mesh>
+//     (<vertices> of <vertex x y z>, <triangles> of <triangle v1 v2 v3>,
+//     counter-clockwise seen from outside) or <components> (<component
+//     objectid [transform]>, naming an object defined above it, so a cycle
+//     cannot be written); then <build>'s items (<item objectid [transform]>)
+//     in file order, each one object: its object's meshes, every component
+//     taken down the tree, joined in that order. An object's `type` is model
+//     when absent. An item whose object's type is not model (support,
+//     solidsupport, surface, other) is not geometry of the part and is not
+//     read; a component that names one is refused. Objects are named by
+//     their `name`, else "object <id>".
+//   TRANSFORMS: a transform is twelve numbers m00 m01 m02 m10 m11 m12 m20 m21
+//     m22 m30 m31 m32, a point (x, y, z) going to x m0j + y m1j + z m2j +
+//     m3j; absent, the identity. Each component's is applied before its
+//     parent's and then the item's, composed in double and applied to each
+//     position in double (+ - * / only). A negative determinant reverses the
+//     winding, so a mirrored part stays outward.
+//   WELDING, NOT REPAIRED: as for glTF, after the transforms, across the
+//     whole item; make_mesh()'s refusals are prefixed "<file>: object
+//     '<name>'".
+//   NUMBERS: std::from_chars (no locale), one leading '+' allowed; a vertex
+//     coordinate or transform entry that is not finite is refused.
+//   REFUSALS, each "<file>: " then the element (the part, then "object <id>:
+//     vertex N", "triangle N", "component N", or "build item N"); the first is
+//     returned.
+//     unavailable -- any `requiredextensions` entry (production, beam
+//       lattice, slice and every other: this build reads none), named by its
+//       prefix and namespace.
+//     invalid_argument -- not a ZIP archive, or a part that cannot be
+//       extracted; no model relationship, or no part where it points; XML
+//       that does not parse (naming the byte); a root that is not a core
+//       <model>; a required extension's prefix the root does not declare; an
+//       unknown unit; an object without a positive id, with an id used
+//       twice, or with neither or both of a mesh and components; a missing
+//       or malformed number; a vertex index past its object's vertices; a
+//       component or item naming no object defined where it may; a
+//       transform not of twelve numbers; a build with no item of type model;
+//       and every make_mesh() refusal.
+//     capacity_exceeded -- a model part of more than kMax3mfModelBytes
+//       uncompressed, refused before it is extracted; an item of more than
+//       kMaxMeshTriangles triangles, or more than 2^32 - 1 vertices before
+//       welding; running out of memory.
+//     io_error -- a file that cannot be opened or read.
+//     internal -- any other exception, caught.
 // ---------------------------------------------------------------------------
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <span>
@@ -191,6 +253,10 @@ namespace spade {
 // metres, and the fold a fan makes in a face that passes, whatever its
 // shape, is a fraction of a degree.
 inline constexpr double kObjPlanarTolerance = 1e-3;
+
+// The most bytes a 3MF's model part may hold uncompressed (1 GiB), checked
+// before it is extracted, so a small archive cannot ask for unbounded memory.
+inline constexpr uint64_t kMax3mfModelBytes = uint64_t{1} << 30;
 
 // One imported object: its name (UTF-8) and its validated mesh, in metres.
 struct MeshObject {
@@ -211,5 +277,8 @@ struct MeshObject {
 
 // Reads an OBJ file whose lengths are in `unit`.
 [[nodiscard]] Result<std::vector<MeshObject>> read_obj(const std::filesystem::path& path, MeshUnit unit);
+
+// Reads a 3MF file: one object per build item of type model, in metres.
+[[nodiscard]] Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path);
 
 }  // namespace spade

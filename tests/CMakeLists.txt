@@ -567,6 +567,10 @@ target_link_libraries(spade_tests PRIVATE
     # The CAD mesh readers (CORE-6, Task B6): test_mesh_import.cpp.
     spade::mesh_import
 )
+# miniz's header (3MF, Task B8; L15): test_mesh_import.cpp zips its 3MF
+# fixtures with it. Its code is in libspade_mesh_import (engine/CMakeLists.txt's
+# spade_threemf_deps), which the line above links.
+target_include_directories(spade_tests SYSTEM PRIVATE ${SPADE_THREEMF_INCLUDE_DIRS})
 
 # spade::compute + volk + Vulkan::Headers (S6 Task 1): same
 # not-a-packaging-change posture as yaml-cpp above -- spade_tests is an

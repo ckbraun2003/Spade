@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <miniz.h>
 #include <nlohmann/json.hpp>
 
 #include "core/error.hpp"
@@ -1254,4 +1256,323 @@ TEST(MeshImport, ObjPolygonsThatAreNotStrictlyConvexAreUnavailable) {
         EXPECT_TRUE(contains(objects.error().context, cases[i].needle)) << objects.error().context;
         EXPECT_TRUE(contains(objects.error().context, "(triangulate on export)")) << objects.error().context;
     }
+}
+
+// ---------------------------------------------------------------------------
+// 3MF (Task B8). Each fixture is the unit cube again, written here as a 3MF
+// model part and zipped with miniz (deflated, so the reader inflates it).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::string_view kCoreNs = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
+constexpr std::string_view kProductionNs = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
+constexpr std::string_view kMaterialNs = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02";
+
+// The package's relationships, naming the model part as most exporters do:
+// an absolute name whose case differs from the archive entry's.
+std::string rels(std::string_view target = "/3D/3DModel.model") {
+    return std::string(R"(<?xml version="1.0" encoding="UTF-8"?>)") +
+           R"(<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">)" +
+           R"(<Relationship Id="rel0" Target=")" + std::string(target) +
+           R"(" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>)";
+}
+
+std::string number(double v) {
+    char buf[32];
+    const auto r = std::to_chars(buf, buf + sizeof buf, v);
+    return std::string(buf, r.ptr);
+}
+
+// The unit cube scaled by `scale`, as a <mesh>, with its first `triangles`.
+std::string cube_mesh(double scale = 1.0, std::size_t triangles = 12) {
+    std::string s = "<mesh><vertices>";
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::vec3 c = corner(v);
+        s += "<vertex x=\"" + number(c.x * scale) + "\" y=\"" + number(c.y * scale) + "\" z=\"" +
+             number(c.z * scale) + "\"/>";
+    }
+    s += "</vertices><triangles>";
+    for (std::size_t t = 0; t < triangles; ++t) {
+        s += "<triangle v1=\"" + std::to_string(kCubeTriangles[t][0]) + "\" v2=\"" +
+             std::to_string(kCubeTriangles[t][1]) + "\" v3=\"" + std::to_string(kCubeTriangles[t][2]) + "\"/>";
+    }
+    return s + "</triangles></mesh>";
+}
+
+// A model part: `root` holds the root element's attributes after the core
+// namespace (its unit among them, or not).
+std::string model(std::string_view resources, std::string_view build, std::string_view root = R"(unit="meter")") {
+    return std::string(R"(<?xml version="1.0" encoding="UTF-8"?>)") + "<model xmlns=\"" + std::string(kCoreNs) +
+           "\" " + std::string(root) + "><resources>" + std::string(resources) + "</resources><build>" +
+           std::string(build) + "</build></model>";
+}
+
+std::string cube_model(std::string_view root = R"(unit="meter")", double scale = 1.0) {
+    return model("<object id=\"1\" type=\"model\">" + cube_mesh(scale) + "</object>", R"(<item objectid="1"/>)",
+                 root);
+}
+
+// A ZIP archive of `parts` (name, bytes), deflated, in that order.
+std::vector<std::byte> zip_of(std::initializer_list<std::pair<std::string_view, std::string_view>> parts) {
+    mz_zip_archive zip{};
+    std::vector<std::byte> out;
+    if (!mz_zip_writer_init_heap(&zip, 0, 0)) {
+        ADD_FAILURE() << "mz_zip_writer_init_heap";
+        return out;
+    }
+    for (const auto& [name, data] : parts) {
+        const std::string n(name);
+        if (!mz_zip_writer_add_mem(&zip, n.c_str(), data.data(), data.size(), MZ_DEFAULT_LEVEL)) {
+            ADD_FAILURE() << "mz_zip_writer_add_mem " << n;
+        }
+    }
+    void* buf = nullptr;
+    std::size_t size = 0;
+    if (mz_zip_writer_finalize_heap_archive(&zip, &buf, &size)) {
+        out.resize(size);
+        std::memcpy(out.data(), buf, size);
+    } else {
+        ADD_FAILURE() << "mz_zip_writer_finalize_heap_archive";
+    }
+    mz_free(buf);
+    mz_zip_writer_end(&zip);
+    return out;
+}
+
+std::vector<std::byte> package(std::string_view model_part, std::string_view relationships = {}) {
+    const std::string r = relationships.empty() ? rels() : std::string(relationships);
+    return zip_of({{"[Content_Types].xml", "<Types/>"}, {"_rels/.rels", r}, {"3D/3dmodel.model", model_part}});
+}
+
+spade::Result<std::vector<MeshObject>> read_3mf_bytes(const spade::test::TempDir& dir, const std::string& name,
+                                                      std::span<const std::byte> bytes) {
+    write_file(dir.path() / name, bytes);
+    return spade::read_3mf(dir.path() / name);
+}
+
+}  // namespace
+
+TEST(MeshImport, ThreeMfReadsItsDeclaredUnit) {
+    // A cube of side 10 in each unit comes back as 10 units, in metres; a
+    // model with no unit is in millimetres. The root may put the core
+    // namespace under a prefix.
+    const spade::test::TempDir dir("mesh-import-3mf-unit");
+    const struct {
+        std::string root;
+        double metres;
+    } cases[] = {
+        {R"(unit="micron")", 1e-6},     {R"(unit="millimeter")", 1e-3}, {"", 1e-3},
+        {R"(unit="centimeter")", 1e-2}, {R"(unit="inch")", 0.0254},     {R"(unit="foot")", 0.3048},
+        {R"(unit="meter" xml:lang="en-US")", 1.0},
+    };
+    for (std::size_t i = 0; i < std::size(cases); ++i) {
+        const auto objects =
+            read_3mf_bytes(dir, "unit" + std::to_string(i) + ".3mf", package(cube_model(cases[i].root, 10.0)));
+        ASSERT_TRUE(objects.has_value()) << cases[i].root << ": " << objects.error().context;
+        ASSERT_EQ(objects->size(), 1u) << cases[i].root;
+        const MeshObject& o = (*objects)[0];
+        EXPECT_EQ(o.name, "object 1") << cases[i].root;
+        EXPECT_EQ(o.mesh->positions().size(), 8u) << cases[i].root;
+        const float side = static_cast<float>(10.0 * cases[i].metres);
+        for (uint32_t v = 0; v < 8; ++v) {
+            EXPECT_TRUE(has_vertex(*o.mesh, corner(v) * side, side * 1e-6f)) << cases[i].root << " corner " << v;
+        }
+        const double volume = 1000.0 * cases[i].metres * cases[i].metres * cases[i].metres;
+        EXPECT_NEAR(signed_volume(*o.mesh), volume, volume * 1e-6) << cases[i].root;
+    }
+
+    // The same model with every core element under the prefix c.
+    std::string prefixed = cube_model(R"(unit="millimeter")", 10.0);
+    prefixed.replace(prefixed.find("<model xmlns="), 13, "<model xmlns:c=");
+    for (const std::string tag : {"resources", "object", "mesh", "vertices", "vertex", "triangles", "triangle",
+                                  "build", "item", "model"}) {
+        for (const std::string form : {"<" + tag + " ", "<" + tag + ">", "<" + tag + "/", "</" + tag + ">"}) {
+            const std::size_t skip = form[1] == '/' ? 2 : 1;
+            for (std::size_t at = prefixed.find(form); at != std::string::npos;
+                 at = prefixed.find(form, at + form.size() + 2)) {
+                prefixed.insert(at + skip, "c:");
+            }
+        }
+    }
+    const auto under_prefix = read_3mf_bytes(dir, "prefixed.3mf", package(prefixed));
+    ASSERT_TRUE(under_prefix.has_value()) << prefixed << "\n" << under_prefix.error().context;
+    ASSERT_EQ(under_prefix->size(), 1u);
+    EXPECT_TRUE(has_vertex(*(*under_prefix)[0].mesh, glm::vec3(0.01f), 1e-9f));
+
+    const auto unknown = read_3mf_bytes(dir, "furlong.3mf", package(cube_model(R"(unit="furlong")")));
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_EQ(unknown.error().code, Code::invalid_argument) << unknown.error().context;
+    EXPECT_TRUE(contains(unknown.error().context, "furlong")) << unknown.error().context;
+}
+
+TEST(MeshImport, ThreeMfComponentsAndBuildItemsAreBaked) {
+    // "pair" holds the cube twice: as it is, and scaled 2 then moved (3, 0, 0)
+    // by its component's transform; its build item then moves it (0, 0, 5).
+    // The component's transform comes first, so (1, 1, 1) of the second
+    // lands at (5, 2, 7). The plain cube's item mirrors it in x and moves it
+    // (10, 0, 0), and the reader reverses the winding so it stays outward. A
+    // support's item is not read, and objects are named by `name`, else by id.
+    const std::string resources =
+        R"(<object id="1" type="model">)" + cube_mesh() + "</object>" +
+        R"(<object id="2" name="pair"><components><component objectid="1"/>)" +
+        R"(<component objectid="1" transform="2 0 0 0 2 0 0 0 2 3 0 0"/></components></object>)" +
+        R"(<object id="3" type="support" name="prop">)" + cube_mesh() + "</object>";
+    const std::string build = R"(<item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 +5"/>)"
+                              R"(<item objectid="3"/>)"
+                              R"(<item objectid="1" transform="-1 0 0 0 1 0 0 0 1 10 0 0"/>)";
+    const spade::test::TempDir dir("mesh-import-3mf-build");
+    const auto objects = read_3mf_bytes(dir, "build.3mf", package(model(resources, build)));
+    ASSERT_TRUE(objects.has_value()) << objects.error().context;
+    ASSERT_EQ(objects->size(), 2u);
+
+    const MeshObject& pair = (*objects)[0];
+    EXPECT_EQ(pair.name, "pair");
+    EXPECT_EQ(pair.mesh->positions().size(), 16u);
+    EXPECT_EQ(pair.mesh->triangle_count(), 24u);
+    EXPECT_TRUE(has_vertex(*pair.mesh, glm::vec3(0.0f, 0.0f, 5.0f), 0.0f));
+    EXPECT_TRUE(has_vertex(*pair.mesh, glm::vec3(1.0f, 1.0f, 6.0f), 0.0f));
+    EXPECT_TRUE(has_vertex(*pair.mesh, glm::vec3(3.0f, 0.0f, 5.0f), 0.0f));
+    EXPECT_TRUE(has_vertex(*pair.mesh, glm::vec3(5.0f, 2.0f, 7.0f), 0.0f));
+    EXPECT_FALSE(has_vertex(*pair.mesh, glm::vec3(5.0f, 2.0f, 12.0f), 0.0f)) << "the item's transform came first";
+    EXPECT_NEAR(signed_volume(*pair.mesh), 9.0, 1e-12);
+
+    const MeshObject& mirrored = (*objects)[1];
+    EXPECT_EQ(mirrored.name, "object 1");
+    EXPECT_EQ(mirrored.mesh->positions().size(), 8u);
+    EXPECT_TRUE(has_vertex(*mirrored.mesh, glm::vec3(9.0f, 1.0f, 1.0f), 0.0f));
+    EXPECT_TRUE(has_vertex(*mirrored.mesh, glm::vec3(10.0f, 0.0f, 0.0f), 0.0f));
+    EXPECT_FALSE(has_vertex(*mirrored.mesh, glm::vec3(11.0f, 0.0f, 0.0f), 0.0f));
+    EXPECT_NEAR(signed_volume(*mirrored.mesh), 1.0, 1e-12);
+}
+
+TEST(MeshImport, ARequiredThreeMfExtensionIsUnavailable) {
+    // Any required extension is refused by its prefix and namespace, the
+    // first listed first; a recommended one is not. A prefix the root does
+    // not declare is a malformed document.
+    const spade::test::TempDir dir("mesh-import-3mf-ext");
+    const std::string ns =
+        " xmlns:p=\"" + std::string(kProductionNs) + "\" xmlns:m=\"" + std::string(kMaterialNs) + "\"";
+    const struct {
+        std::string root;
+        std::string needle;
+    } refused[] = {
+        {R"(unit="meter" requiredextensions="p")" + ns, "'p' (" + std::string(kProductionNs) + ")"},
+        {R"(unit="meter" requiredextensions="  m   p ")" + ns, "'m' (" + std::string(kMaterialNs) + ")"},
+    };
+    for (std::size_t i = 0; i < std::size(refused); ++i) {
+        const auto objects =
+            read_3mf_bytes(dir, "required" + std::to_string(i) + ".3mf", package(cube_model(refused[i].root)));
+        ASSERT_FALSE(objects.has_value()) << refused[i].root;
+        EXPECT_EQ(objects.error().code, Code::unavailable) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, refused[i].needle)) << objects.error().context;
+    }
+
+    const auto recommended =
+        read_3mf_bytes(dir, "recommended.3mf", package(cube_model(R"(unit="meter" recommendedextensions="p")" + ns)));
+    ASSERT_TRUE(recommended.has_value()) << recommended.error().context;
+    EXPECT_EQ(recommended->size(), 1u);
+
+    const auto undeclared =
+        read_3mf_bytes(dir, "undeclared.3mf", package(cube_model(R"(unit="meter" requiredextensions="q")" + ns)));
+    ASSERT_FALSE(undeclared.has_value());
+    EXPECT_EQ(undeclared.error().code, Code::invalid_argument) << undeclared.error().context;
+    EXPECT_TRUE(contains(undeclared.error().context, "'q'")) << undeclared.error().context;
+}
+
+TEST(MeshImport, MalformedThreeMfIsRefusedByElement) {
+    const spade::test::TempDir dir("mesh-import-3mf-bad");
+    const std::string cube = R"(<object id="1">)" + cube_mesh() + "</object>";
+    const std::string item = R"(<item objectid="1"/>)";
+    std::string far_vertex = cube_mesh();
+    far_vertex.replace(far_vertex.find(R"(v3="1")"), 6, R"(v3="8")");
+    std::string huge = cube_mesh();
+    huge.replace(huge.find(R"(x="0")"), 5, R"(x="1e999")");
+    std::string word = cube_mesh();
+    word.replace(word.find(R"(y="0")"), 5, R"(y="zero")");
+    const std::string no_model_rel = R"(<Relationships><Relationship Target="/x" Type="other"/></Relationships>)";
+    const std::string support_part =
+        R"(<object id="1" type="support">)" + cube_mesh() +
+        R"(</object><object id="2"><components><component objectid="1"/></components></object>)";
+    const struct {
+        std::string what;
+        std::vector<std::byte> bytes;
+        Code code;
+        std::string needle;
+    } cases[] = {
+        {"not a zip", bytes_of("solid nonsense"), Code::invalid_argument, "not a ZIP archive"},
+        {"no rels", zip_of({{"3D/3dmodel.model", cube_model()}}), Code::invalid_argument, "_rels/.rels"},
+        {"no model rel", zip_of({{"_rels/.rels", no_model_rel}, {"3D/3dmodel.model", cube_model()}}),
+         Code::invalid_argument, "no relationship of type"},
+        {"no model part", package(cube_model(), rels("/3D/elsewhere.model")), Code::invalid_argument,
+         "3D/elsewhere.model"},
+        {"not xml", package("<model unit='meter'><resources>"), Code::invalid_argument, "not XML"},
+        {"not a model", package("<thing xmlns=\"" + std::string(kCoreNs) + "\"/>"), Code::invalid_argument,
+         "core <model>"},
+        {"no core namespace", package(R"(<model unit="meter"><resources/><build/></model>)"),
+         Code::invalid_argument, "core <model>"},
+        {"no id", package(model("<object>" + cube_mesh() + "</object>", item)), Code::invalid_argument,
+         "object 0 of the resources"},
+        {"twice", package(model(cube + cube, item)), Code::invalid_argument, "object 1: its id is used twice"},
+        {"empty object", package(model(R"(<object id="1"/>)", item)), Code::invalid_argument,
+         "object 1: neither a mesh nor components"},
+        {"index past", package(model(R"(<object id="1">)" + far_vertex + "</object>", item)),
+         Code::invalid_argument, "object 1: triangle 0: v3 8 is past its 8 vertices"},
+        {"not finite", package(model(R"(<object id="1">)" + huge + "</object>", item)), Code::invalid_argument,
+         "object 1: vertex 0: x"},
+        {"not a number", package(model(R"(<object id="1">)" + word + "</object>", item)), Code::invalid_argument,
+         "object 1: vertex 0: y"},
+        {"forward component",
+         package(model(R"(<object id="2"><components><component objectid="1"/></components></object>)" + cube,
+                       R"(<item objectid="2"/>)")),
+         Code::invalid_argument, "object 2: component 0: objectid 1 names no object defined above it"},
+        {"support component", package(model(support_part, R"(<item objectid="2"/>)")), Code::invalid_argument,
+         "object 2: component 0: objectid 1 is of type support"},
+        {"no such item", package(model(cube, R"(<item objectid="7"/>)")), Code::invalid_argument,
+         "build item 0: objectid 7 names no object"},
+        {"short transform", package(model(cube, R"(<item objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0"/>)")),
+         Code::invalid_argument, "build item 0: transform"},
+        {"no item", package(model(cube, "")), Code::invalid_argument, "no build item of type model"},
+        {"open", package(model(R"(<object id="1" name="lid">)" + cube_mesh(1.0, 11) + "</object>", item)),
+         Code::invalid_argument, "object 'lid': "},
+    };
+    for (std::size_t i = 0; i < std::size(cases); ++i) {
+        const std::string name = "bad" + std::to_string(i) + ".3mf";
+        const auto objects = read_3mf_bytes(dir, name, cases[i].bytes);
+        ASSERT_FALSE(objects.has_value()) << cases[i].what;
+        EXPECT_EQ(objects.error().code, cases[i].code) << cases[i].what << ": " << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, name + ": ")) << objects.error().context;
+        EXPECT_TRUE(contains(objects.error().context, cases[i].needle))
+            << cases[i].what << ": " << objects.error().context;
+    }
+
+    // A model part that says it is past kMax3mfModelBytes uncompressed is
+    // refused from the archive's directory, before it is extracted: the
+    // central directory's uncompressed size (offset 24 of its entry) is
+    // rewritten for the model part.
+    std::vector<std::byte> big = package(cube_model());
+    const std::string_view entry = "3D/3dmodel.model";
+    bool patched = false;
+    for (std::size_t at = 0; at + 46 + entry.size() <= big.size(); ++at) {
+        const bool header = std::to_integer<uint32_t>(big[at]) == 0x50 &&
+                            std::to_integer<uint32_t>(big[at + 1]) == 0x4B &&
+                            std::to_integer<uint32_t>(big[at + 2]) == 0x01 &&
+                            std::to_integer<uint32_t>(big[at + 3]) == 0x02;
+        if (header && std::memcmp(big.data() + at + 46, entry.data(), entry.size()) == 0) {
+            const auto claimed = static_cast<uint32_t>(spade::kMax3mfModelBytes + 1);
+            for (std::size_t k = 0; k < 4; ++k) {
+                big[at + 24 + k] = static_cast<std::byte>((claimed >> (8 * k)) & 0xFFu);
+            }
+            patched = true;
+        }
+    }
+    ASSERT_TRUE(patched);
+    const auto too_big = read_3mf_bytes(dir, "big.3mf", big);
+    ASSERT_FALSE(too_big.has_value());
+    EXPECT_EQ(too_big.error().code, Code::capacity_exceeded) << too_big.error().context;
+    EXPECT_TRUE(contains(too_big.error().context, "3D/3dmodel.model")) << too_big.error().context;
+
+    const auto missing = spade::read_3mf(dir.path() / "missing.3mf");
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error().code, Code::io_error) << missing.error().context;
 }
