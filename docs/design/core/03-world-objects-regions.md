@@ -38,4 +38,4 @@ Physics owns the providers: constant, analytic or procedural (Dryden), and solve
 
 ## Templates
 
-A template is a ready-made assembly of objects, components and parameters, such as a quadrotor or a car. It is built only on the public API and is never linked into the core (`L7`). Today's `ModelType`/`Quadrotor` layer (`engine D4`) is the first template in all but name. Physics owns its parts, and Interface owns the template catalogue.
+A template is a ready-made assembly of objects, components and parameters, such as a quadrotor or a car. It is built only on the public API and is never linked into the core (`L7`). Today's `ModelType`/`Quadrotor` layer (`engine D4`) is the first template in all but name. Physics owns its parts, and Interface owns the template catalogue. A model's solid geometry is a list of parts (`ModelType::parts`, `CORE-7`), each an exact `SdfProgram` or a triangle mesh imported from CAD (`CORE-6`: glTF, binary STL, OBJ and 3MF through `spade_mesh_import`, and STEP through an offline converter, not yet built).

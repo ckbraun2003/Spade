@@ -4,6 +4,15 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Mesh import: glTF, binary STL, OBJ and 3MF (2026-10-13 to 2026-11-03)
+
+The parts and meshes plan's Tasks B6 to B8 (`docs/design/core/plans/2026-10-12-parts-meshes-plan.md`; `CORE-6`, import only).
+
+- **A new installed target, `spade::mesh_import`** (`world/mesh_import.hpp`). Its readers return named `MeshObject`s, each built by `make_mesh()`, in metres; nothing is repaired, and what a reader does not read is `unavailable`, by name. The library the step links gains no parser: `spade::sim` never links it (`MeshImport.TheStepNeverLinksTheReaders`).
+- **glTF 2.0** (`read_gltf()`, `read_gltf_bytes()`): `.gltf` with base64 or external buffers, and `.glb`. Each mesh node of the default scene is an object, its node transforms composed in double; seams are welded exactly. Draco, meshopt, quantisation, sparse accessors, morph targets, skins and instancing are `unavailable`.
+- **Binary STL and OBJ** (`read_stl()`, `read_obj()`) take a declared `MeshUnit`, since neither file carries one. ASCII STL is `unavailable` ("export binary STL"). OBJ reads `v` and `f` with negative indices, names objects by `o` (or by `g` in a file without `o`), and fans a face of more than three corners when it is planar (within `kObjPlanarTolerance` of its width) and strictly convex; any other polygon is `unavailable`, naming its line and corner.
+- **3MF** (`read_3mf()`): the model part's unit, components and build items baked in double (a mirror keeps the winding outward), any required extension `unavailable` by prefix and namespace, and every part's size checked before it is extracted. miniz 3.1.2 and pugixml v1.16 (MIT) are compiled into `spade_mesh_import`, so an installed consumer links nothing extra (`THIRD_PARTY_NOTICES.md`); a host that links its own copy of either statically may see duplicate symbols.
+
 ### Mass from a mesh part's geometry (2026-10-13)
 
 The mass-from-mesh plan (`docs/design/core/plans/2026-10-13-mass-from-mesh-plan.md`), joint with Physics, which owns the airframe compile and reviewed it.
