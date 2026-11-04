@@ -391,8 +391,9 @@ unset(_spade_slangc)
 # generated export header, unlike the repository's split sources.
 # Release: https://github.com/richgel999/miniz/releases/tag/3.1.2
 #
-# pugixml v1.16 (2026-06-15, commit c8033ce9d039e7f9d134877c363397b3cfe20816)
-# is fetched at its tag; its src/ holds pugixml.cpp and its two headers.
+# pugixml v1.16 (2026-06-15) is fetched at that tag's commit, not the movable
+# tag (a full clone: a shallow one cannot fetch a bare commit); its src/ holds
+# pugixml.cpp and its two headers.
 # Release: https://github.com/zeux/pugixml/releases/tag/v1.16
 #
 # SOURCE_SUBDIR names a directory neither holds, so FetchContent_MakeAvailable
@@ -408,8 +409,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     pugixml
     GIT_REPOSITORY https://github.com/zeux/pugixml.git
-    GIT_TAG        v1.16
-    GIT_SHALLOW    TRUE
+    GIT_TAG        c8033ce9d039e7f9d134877c363397b3cfe20816  # v1.16
     SOURCE_SUBDIR  spade-populate-only
 )
 FetchContent_MakeAvailable(miniz pugixml)
