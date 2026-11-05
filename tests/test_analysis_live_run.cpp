@@ -720,6 +720,20 @@ TEST(AnalysisLiveRun, APartLeftOutTakesThePartsWhollyInsideIt) {
         << run.run_label();
 }
 
+// A part the user marked drawn only takes nothing: the mark is the user's
+// modelling choice, and what lies inside it stays in the air (Physics' review
+// of L13 (2); the sweep runs for what the classifier or the safeguard leaves
+// out, not for a mark).
+TEST(AnalysisLiveRun, AMarkedDrawnOnlyPartTakesNothingInsideIt) {
+    Powered p = powered();
+    spade::vehicles::PartDesc shell = part("shell", spade::SdfPrim::sphere, glm::vec3(0.2f), 0.4f, glm::vec3(0.0f));
+    shell.role = std::string(spade::vehicles::kDrawnOnlyRole);
+    p.model.parts = {shell, part("core", spade::SdfPrim::box, glm::vec3(0.05f), 0.1f, glm::vec3(0.0f))};
+    an::LiveRun run = started(solid_case(p.model), p);
+    EXPECT_EQ(fates(run), (std::vector<std::string>{"shell#0 marked"}));
+    EXPECT_TRUE(run.solids().any) << "the core inside the marked shell stays in the air";
+}
+
 // At 16 mm the Phantom's body leaks (Physics, 2026-11-03), and the battery
 // and the ESC, wholly inside its shell (8 of 8 corners; each arm 2 of 8),
 // go with it: no solid is left, so the run is discs only.

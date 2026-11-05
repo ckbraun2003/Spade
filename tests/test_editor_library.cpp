@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <variant>
 #include <string>
 #include <vector>
@@ -26,7 +27,9 @@
 #include "../sandbox/editor_library.hpp"
 #include "../sandbox/editor_panels.hpp"
 #include "../sandbox/text_fit.hpp"
+#include "../sandbox/vehicle_draw.hpp"  // body_at()
 #include "editor_test_support.hpp"
+#include "physics/contact_sets.hpp"
 #include "scene/library.hpp"
 #include "scene/part_file.hpp"
 #include "scene/model_file.hpp"
@@ -257,37 +260,6 @@ namespace vh = spade::vehicles;
     return item_named(load.items, name);
 }
 
-// The lowest point of `m`'s posed parts, its DESIGN frame at the origin and
-// level (a scene's start pose places the design frame; the body is
-// to_body_state() of it, as the sim spawns it) and its rotors still: each
-// part's box (part_bounds()) through its posed frame, as Test/Docs' placed-at
-// measures it.
-[[nodiscard]] float lowest_part_point(const vh::ModelType& m) {
-    const spade::FrameState b =
-        spade::to_body_state(spade::FrameState{glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), glm::vec3(0.0f),
-                                               glm::vec3(0.0f)},
-                             glm::normalize(m.design_to_principal), m.com_offset);
-    spade::BodyState body{};
-    body.pos = b.pos;
-    body.orient = b.orient;
-    const std::vector<float> still(m.rotors.size(), 0.0f);
-    const Result<vh::PosedParts> posed = vh::posed_parts(m, body, still, still, vh::PartFilter::all);
-    EXPECT_TRUE(posed.has_value()) << (posed ? "" : posed.error().context);
-    float low = std::numeric_limits<float>::infinity();
-    if (!posed) return low;
-    for (const vh::PosedPart& p : posed->parts) {
-        const Result<spade::Aabb> box = vh::part_bounds(m.parts[p.part]);
-        EXPECT_TRUE(box.has_value()) << (box ? "" : box.error().context);
-        if (!box) continue;
-        for (uint32_t c = 0; c < 8; ++c) {
-            const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
-                                   (c & 4u) != 0 ? box->max.z : box->min.z);
-            low = std::min(low, (p.origin + p.orient * corner).y);
-        }
-    }
-    return low;
-}
-
 }  // namespace
 
 TEST(EditorLibraryFiles, TheDefaultLibraryIsListedInItsIndexsOrder) {
@@ -452,18 +424,40 @@ TEST(EditorLibraryFiles, LoadFromFileReadsAModelOrAnObjectByItsExtension) {
     EXPECT_NE(other.error().context.find(".object.yaml"), std::string::npos) << other.error().context;
 }
 
-// placed-at's rest (Test/Docs' expected red): the reference quad's battery
-// hangs below the built-in drone's 25 mm, so a drone rests on its own lowest
-// posed part, not on kDroneBodyHalf.
-TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsOwnLowestPart) {
+// placed-at's rest (Test/Docs' expected red; Physics' L9, the lead,
+// 2026-11-04): a drone rests on its contact points, the ones the contact pass
+// rests it on, so the editor places it where the sim holds it. rest_height()
+// is the lowest of them at the design frame's origin, level and still,
+// physics::lowest_contact_point(), whichever library drone (the reference
+// quad's battery hangs below the built-in drone's 25 mm), and a rotor hung 1 m
+// below the body puts its rim points below every part's box, which the posed
+// boxes alone would miss.
+TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsContactPoints) {
+    const auto lowest = [](const vh::ModelType& m) {
+        const spade::BodyState body =
+            spade::sandbox::body_at(m, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        return spade::physics::lowest_contact_point(m, body);
+    };
+    int drones = 0;
+    for (const ed::LibraryItem& item : ed::load_library_items(library_index()).items) {
+        if (item.kind != ed::LibraryItem::Kind::model || !item.model || item.model->parts.empty()) continue;
+        const std::optional<float> low = lowest(*item.model);
+        ASSERT_TRUE(low.has_value()) << item.name << ": a model with a body-attached part has a contact set";
+        EXPECT_EQ(ed::rest_height(item), -*low) << item.name;
+        ++drones;
+    }
+    EXPECT_GT(drones, 0);
+
     const ed::LibraryItem quad = library_item("Reference quad (test fixture)");
     ASSERT_TRUE(quad.model.has_value());
-    ASSERT_FALSE(quad.model->parts.empty());
-    const float low = lowest_part_point(*quad.model);
-    ASSERT_TRUE(std::isfinite(low));
-    EXPECT_NEAR(ed::rest_height(quad), -low, 1e-6f);
+    ASSERT_FALSE(quad.model->rotors.empty());
+    ed::LibraryItem hung = quad;
+    hung.model->rotors.front().local_pos.y -= 1.0f;
+    const std::optional<float> low = lowest(*hung.model);
+    ASSERT_TRUE(low.has_value());
+    EXPECT_EQ(ed::rest_height(hung), -*low);
+    EXPECT_GT(ed::rest_height(hung), ed::rest_height(quad) + 0.5f) << "the hung rotor's rim is the lowest point";
 }
-
 // The rest is the design frame's: a centre of mass 50 mm higher in the design
 // frame carries the parts 50 mm higher, so the design origin rests 50 mm
 // lower.
