@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -17,6 +18,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
+#include "contact_set_fakes.hpp"
 #include "physics/lock.hpp"
 #include "set_body_state_support.hpp"
 #include "sim/module.hpp"
@@ -463,4 +465,133 @@ TEST(TranslationLock, UnlockReleasesFromTheAnchorAtRest) {
     const BodyState b = row_of(twin_sim, twin);
     EXPECT_EQ(bits(a.pos), bits(b.pos)) << "free fall from the anchor with vel 0";
     EXPECT_EQ(bits(a.vel), bits(b.vel));
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: the held-quad golden (CPU reference). ADDED, never regenerated.
+//
+// WHAT IT COVERS: a quadrotor of a mass that is not a power of two, held on all three axes at its spawn position,
+// flying a collective-and-attitude script (four rotor-command changes and a body-torque pulse, so its attitude moves
+// and its rotors spin up and down) for 450 steps of 2 ms at 2 substeps. Under the lock the body's position is bitwise
+// its anchor and its velocity +0.0f at every step, whatever the rotors do; the final state digest (the whole registry
+// walk, testing/replay.hpp's state_digest) is the golden. A mid-run snapshot at tick 225, restored into a fresh lock
+// set, finishes on the same digest.
+//
+// THE DIGEST ACROSS COMPILERS. It is a literal, pinned from the MSVC run (both presets, twice). The corpus goldens hold
+// under gcc too (TD-1), and the two MSVC presets do not show that: THE HELD-QUAD DIGEST IS CHECKED UNDER GCC BY THE
+// BATCH GATE'S -NoSeed LEG, AND BY NOTHING EARLIER. A mismatch there stops the merge and goes to the lead; it is never
+// re-pinned to gcc's number.
+// ---------------------------------------------------------------------------
+namespace {
+
+// PINNED AT THE SLOT (stage 6 Task 3): 0 until the first run prints it; the failure message carries the number.
+constexpr uint64_t kHeldQuadDigest = 0;
+constexpr int kHeldQuadSteps = 450;
+constexpr uint64_t kQuadDt = 2'000'000;
+
+struct HeldQuad {
+    Simulation sim;
+    spade::VehicleRef ref;
+    glm::vec3 anchor;
+};
+
+// A fresh lock set with the quad's model registered; the quad is spawned and held only when `spawn` is true (a restore
+// target registers the model and spawns nothing).
+[[nodiscard]] HeldQuad held_quad(uint32_t substeps, bool spawn = true) {
+    Simulation sim = Simulation::create(contact_set_fakes::world(false), kQuadDt, substeps, {}, standard_plus_lock())
+                         .value();
+    const spade::ModelTypeId model = sim.register_model(contact_set_fakes::quad_of_mass(1.37f)).value();
+    spade::VehicleRef ref{};
+    glm::vec3 anchor(0.0f);
+    if (spawn) {
+        spade::VehicleSpawn where;
+        where.pos = glm::vec3(0.0f, 5.0f, 0.0f);
+        where.rotor_omega = 550.0f;
+        ref = sim.spawn(0, model, where).value();
+        EXPECT_TRUE(sim.flush_structural().has_value());
+        anchor = row_of(sim, ref.body).pos;
+        EXPECT_TRUE(sim.lock_translation(ref.body, kLockAllAxes).has_value());
+    }
+    return HeldQuad{std::move(sim), ref, anchor};
+}
+
+// The script, applied before step `t` (0-based): a collective-and-attitude sequence the lock must be indifferent to.
+void fly(Simulation& sim, const spade::VehicleRef& ref, int t) {
+    static constexpr std::array<std::array<float, 4>, 4> kCommands = {{{550.0f, 550.0f, 550.0f, 550.0f},
+                                                                       {640.0f, 640.0f, 640.0f, 640.0f},
+                                                                       {620.0f, 560.0f, 620.0f, 560.0f},
+                                                                       {500.0f, 600.0f, 500.0f, 600.0f}}};
+    if (t % 100 == 0) {
+        EXPECT_TRUE(sim.set_rotor_commands(ref, kCommands[(t / 100) % 4]).has_value());
+    }
+    if (t >= 150 && t < 170) {
+        EXPECT_TRUE(sim.apply_wrench(ref.body, glm::vec3(0.0f), glm::vec3(0.05f, 0.02f, 0.03f)).has_value());
+    }
+}
+
+[[nodiscard]] std::string hex64(uint64_t v) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "0x%016llx", static_cast<unsigned long long>(v));
+    return text;
+}
+
+}  // namespace
+
+TEST(TranslationLockGolden, TheHeldQuadHoldsItsAnchorAndMatchesTheGolden) {
+    HeldQuad q = held_quad(2);
+    const glm::quat start = row_of(q.sim, q.ref.body).orient;
+    for (int t = 0; t < kHeldQuadSteps; ++t) {
+        fly(q.sim, q.ref, t);
+        ASSERT_TRUE(q.sim.step(1).has_value());
+        const BodyState b = row_of(q.sim, q.ref.body);
+        ASSERT_EQ(bits(b.pos), bits(q.anchor)) << "step " << t;
+        ASSERT_EQ(bits(b.vel), bits(glm::vec3(0.0f))) << "step " << t;
+    }
+    const glm::quat end = row_of(q.sim, q.ref.body).orient;
+    EXPECT_NE(std::memcmp(&start, &end, sizeof(start)), 0)
+        << "the script rotated the quad: rotation is free under the lock";
+    const uint64_t digest = spade::testing::state_digest(q.sim);
+    EXPECT_EQ(digest, kHeldQuadDigest) << "pin kHeldQuadDigest = " << hex64(digest);
+}
+
+// A PIN, green at red once Task 2 lands: the IMU reads +1 g up from the held quad, whatever its rotors do. One
+// substep per step, so the orientation the specific force is taken from is the one before the step.
+TEST(TranslationLockGolden, TheHeldQuadsSpecificForceIsMinusRTgEveryStep) {
+    HeldQuad q = held_quad(1);
+    const glm::vec3 gravity(0.0f, -9.80665f, 0.0f);  // spade::Environment's default
+    for (int t = 0; t < kHeldQuadSteps; ++t) {
+        fly(q.sim, q.ref, t);
+        const glm::quat before = row_of(q.sim, q.ref.body).orient;
+        ASSERT_TRUE(q.sim.step(1).has_value());
+        const glm::vec3 expected = glm::conjugate(before) * (-gravity);
+        ASSERT_EQ(bits(row_of(q.sim, q.ref.body).specific_force), bits(expected)) << "step " << t;
+    }
+}
+
+TEST(TranslationLockGolden, AMidRunSnapshotFinishesOnTheUninterruptedDigest) {
+    HeldQuad whole = held_quad(2);
+    for (int t = 0; t < kHeldQuadSteps; ++t) {
+        fly(whole.sim, whole.ref, t);
+        ASSERT_TRUE(whole.sim.step(1).has_value());
+    }
+    const uint64_t uninterrupted = spade::testing::state_digest(whole.sim);
+
+    HeldQuad first = held_quad(2);
+    for (int t = 0; t < 225; ++t) {
+        fly(first.sim, first.ref, t);
+        ASSERT_TRUE(first.sim.step(1).has_value());
+    }
+    const auto blob = first.sim.snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+
+    HeldQuad resumed = held_quad(2, /*spawn=*/false);
+    ASSERT_TRUE(resumed.sim.restore(*blob).has_value());
+    // The vehicle's ref is re-derived from the restored state, as the quad_hover scenario's script does.
+    const auto ref = resumed.sim.vehicle_ref_at(0, 0);
+    ASSERT_TRUE(ref.has_value()) << ref.error().context;
+    for (int t = 225; t < kHeldQuadSteps; ++t) {
+        fly(resumed.sim, *ref, t);
+        ASSERT_TRUE(resumed.sim.step(1).has_value());
+    }
+    EXPECT_EQ(spade::testing::state_digest(resumed.sim), uninterrupted);
 }
