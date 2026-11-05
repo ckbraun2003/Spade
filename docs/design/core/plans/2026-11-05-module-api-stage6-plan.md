@@ -37,7 +37,7 @@
 3. **Integrate's module version does not move.** For a set without `lock` the pass is bit-identical, so the standard identity stays. A set with `lock` has its own identity, because the lock module's name and version are spelt in it (`L2`): a blob never restores across a lock choice, as for a role choice. *Alternative:* bump `integrate`'s version. It moves `0x3303cfc86821f502` and every saved blob, which is a frozen identity, so it would go to Cameron. Not recommended. (Open question 2.)
 4. **The select, per locked axis `a`, after today's arithmetic.** Step 2: `felt[a] = −gravity[a]` (free axes keep `force_acc / m` plus the contact response), then `specific_force = conj(orient) * felt` as today. Step 3: `vel[a] = 0.0f` after the velocity update. Step 5: `pos[a] = anchor[a]` after the position update. Contact's position correction on a locked axis is therefore overwritten, so the anchor holds bitwise.
 5. **The contact limit (spec §9) stays and is pinned.** The contact solve treats a locked body as free, with its finite mass, and the lock then discards that body's response. A test asserts today's behaviour for a body that hits a held one, so the limit is pinned, not discovered. Infinite mass in the solve is later work, with joints.
-6. **`set_body_state` on a locked body is refused (`L6`), not silently overridden.** Integrate would snap the pose back on the next substep, so a re-pose along a held axis would be skipped. The call refuses with `invalid_argument` naming the body and its axes: unlock first. The census in `simulation.hpp` classifies `lock_rows` as KEPT. (Open question 5.)
+6. **`set_body_state` on a locked body is refused (`L6`), not silently overridden.** Integrate would snap the pose back on the next substep, so a re-pose along a held axis would be skipped. The call refuses with `invalid_argument` naming the body and its axes: "locked on axes ...; unlock() applies at the next boundary, so flush after it, then re-pose". **A PENDING lock change is refused too** (the lead's addition 1): the anchor is taken at `lock_translation`'s call and `RowInit` cannot see `BodyState`, so a `set_body_state` before the flush would be followed by the boundary writing the OLD anchor, and Integrate would snap the body back. So `set_body_state` also refuses a body that has a `lock_rows` `init_row` in the queue, whether a lock or an unlock: "a lock change is pending on this body; flush first (it applies at the next boundary)". The check scans `queue_` for an `init_row` op whose array is `lock_rows` and whose `body_slot` is the body's. The census in `simulation.hpp` classifies `lock_rows` as KEPT. (Open question 5.)
 7. **The optional binding is a table, not a special case.** `compute/optional_bindings.hpp`: `{name, switch bit, dummy bytes}`, one row today (`"lock_rows"`, `kSwitchLockRows = 1u`, 16 bytes). `Simulation::create()` sets `StepShape::switches` from it (a bit for every named array the schedule holds). The mirror finds the name's binding in its existing `binding_for` table, and binds a zeroed dummy where the set holds no such array. An unbound binding that is **not** in the table still fails the census (`DescriptorSetBindsEveryRegistryBinding`), so a forgotten standard binding is still caught.
 8. **A grade for the lock.** CPU `reference`, Vulkan `banded`, with `pos` and `vel` bit-exact. It is Physics' table (`04-verification.md`, PHY-2), so Task 5 hands Physics the row to confirm (joint, as stage 5 Task 4 was).
 9. **No kernel, switch or binding other than the lock's.** Stage 7's rows come with stage 7.
@@ -72,6 +72,7 @@ Failure modes the spec implies that no single task's tests would otherwise exerc
 5. **A snapshot between the lock call and the next flush:** `snapshot()` already refuses a non-empty queue; restore of a locked state resumes holding. Task 1.
 6. **The GPU with the lock module present but nothing locked** (all rows zero): bit-equal to the same set with the switch off. Task 5.
 7. **A Vulkan set without the lock module:** the dummy buffer is bound and the debug leg's validation layer is silent. Task 4.
+8. **A pending lock and `set_body_state`:** `lock_translation` then `set_body_state` before the flush, and `unlock` then `set_body_state` before the flush, are both refused, with the messages above, and write nothing. The flush after a refused call still applies the lock or the unlock. Task 1.
 
 ## Task 1: The lock module, its rows and the typed calls
 
@@ -128,7 +129,7 @@ TEST(TranslationLock, ALockWritesItsRowAtTheNextBoundaryAndUnlockClearsIt) {
 }
 ```
 
-  More tests, each named for its failure: `ARefusalNamesTheCallAndWritesNothing` (axes 0, axes 8, a stale ref, a spawned-not-flushed ref); `ADespawnFreesTheRowAndARespawnIsFree` (Review Focus 2); `TheStandardSetStillRefusesTheCallsAndKeepsItsIdentity` (identity `0x3303cfc86821f502`, walk 22); `ASetWithLockHasItsOwnIdentityAndWalk` (identity differs, `lock_rows` is in the walk); `ALockedStateSurvivesASnapshotAndRestore` (snapshot after a flush, restore into a fresh lock set, same digest after N more steps; Task 2 adds the hold); `RestoreIntoASetWithoutLockIsRefused` (identity message, as for a role choice); `SetBodyStateRefusesALockedBody` (decision 6) and `SetBodyStateOnAnUnlockedBodyInALockSetIsUnchanged`. `SetBodyState.CensusClassifiesEveryPerBodyArrayAndTheSetHonoursIt` covers the standard set only, so one census case for a lock set is added (`lock_rows` classified KEPT), beside the `simulation.hpp` census line.
+  More tests, each named for its failure: `ARefusalNamesTheCallAndWritesNothing` (axes 0, axes 8, a stale ref, a spawned-not-flushed ref); `ADespawnFreesTheRowAndARespawnIsFree` (Review Focus 2); `TheStandardSetStillRefusesTheCallsAndKeepsItsIdentity` (identity `0x3303cfc86821f502`, walk 22); `ASetWithLockHasItsOwnIdentityAndWalk` (identity differs, `lock_rows` is in the walk); `ALockedStateSurvivesASnapshotAndRestore` (snapshot after a flush, restore into a fresh lock set, same digest after N more steps; Task 2 adds the hold); `RestoreIntoASetWithoutLockIsRefused` (identity message, as for a role choice); `SetBodyStateRefusesALockedBody` (decision 6; the message says the unlock applies at the next boundary), `SetBodyStateRefusesWhileALockIsPending` (`lock_translation`, then `set_body_state` before the flush: refused, the body's row unchanged, and the flush then holds the ORIGINAL anchor) and `SetBodyStateRefusesWhileAnUnlockIsPending` (a locked, flushed body; `unlock`, then `set_body_state` before the flush: refused with the pending message) and `SetBodyStateOnAnUnlockedBodyInALockSetIsUnchanged`. `SetBodyState.CensusClassifiesEveryPerBodyArrayAndTheSetHonoursIt` covers the standard set only, so one census case for a lock set is added (`lock_rows` classified KEPT), beside the `simulation.hpp` census line.
 
 - [ ] **Step 2: Run, confirm each fails for its stated reason** (`ctest -R TranslationLock|SetBodyState`). Keep the failing output.
 - [ ] **Step 3: Implement** `lock.hpp`, `lock_module()`, the two calls and the `set_body_state` refusal.
@@ -199,7 +200,8 @@ A held quadrotor (the existing quad model and its trim helper, as `quad_hover`'s
 - a mid-run snapshot at tick 225 restored into a fresh lock set lands on the same digest (the `quad_hover` test's pattern).
 
 - [ ] **Step 1: Write the test with `kHeldQuadDigest = 0` and the header comment** (what it covers, and that it is added, never regenerated). Red: the digest differs; the bitwise asserts already pass after Task 2, so this task's red is the digest alone, which is the nature of a new golden.
-- [ ] **Step 2: Run, read the printed digest, check it twice** (two runs, both presets); pin it. Commit once the number is stable on both presets, with the run counts in the message.
+- [ ] **Step 2: Run, read the printed digest, check it twice** (two runs, both MSVC presets); pin it. Commit once the number is stable on both presets, with the run counts in the message.
+- **The digest across compilers.** The corpus goldens hold under gcc too (`TD-1`); the two MSVC presets do not show that. **The held-quad digest is checked by the batch gate's `-NoSeed` leg (gcc-13), and by nothing earlier.** The READY says so in those words. A mismatch there stops the merge and goes to the lead; it is never re-pinned to gcc's number. (The test uses no libm and no wall-clock, and the unlocked path is bit-identical, so a mismatch would be a real finding about the lock path, not a number to chase.)
 - [ ] **Step 3: Commit.**
 
 ## Task 4: The fixed binding and the recipe switch (plumbing; no kernel semantic change)
@@ -229,7 +231,7 @@ TEST(OptionalBindings, EveryOptionalNameHasAMirrorBinding)  // the table and bin
   Plus `GpuStateMirrorTest.DescriptorSetBindsEveryRegistryBinding` (existing) must still pass with 30 and still fail for a standard binding that is not in the table.
 - [ ] **Step 2: Run; confirm failure on behaviour** (bound count 29 ≠ 30, `switches` always 0).
 - [ ] **Step 3: Implement** the table, the shape field, the recorder's push constant, the mirror's dummy and `binding_for` entry.
-- [ ] **Step 4: Focused green:** `OptionalBindings|GpuStateMirror|BindingsAirflow|GpuModuleSchedule|SlangLayouts|LayoutCheck`, then the whole `-L gpu` tier (every kernel is rebuilt against a 30-binding set). **Measure that the standard set's device state is unchanged:** `GpuInvariance*` and `GpuParity*` unchanged, and one same-device digest of the standard set's state after N Vulkan steps before and after this task (printed by a one-off, not committed), bit-equal.
+- [ ] **Step 4: Focused green:** `OptionalBindings|GpuStateMirror|BindingsAirflow|GpuModuleSchedule|SlangLayouts|LayoutCheck`, then the whole `-L gpu` tier (every kernel is rebuilt against a 30-binding set). **Measure that the standard set's device state is unchanged:** `GpuInvariance*` and `GpuParity*` unchanged, and one same-device digest of the standard set's state after N Vulkan steps before and after this task (printed by a one-off, not committed), bit-equal. **READY prints both numbers** (before and after, on the same device), not only "equal".
 - [ ] **Step 5: gcc-check** the changed `.cpp` and headers (the Vulkan files compile in the leg build; `bindings.gen.hpp` exists there). **Commit** red, then green.
 
 ## Task 5: Integrate honours the lock on Vulkan; the lock's grade
@@ -280,14 +282,18 @@ Nothing here changes a law or a frozen identity, so nothing goes to Cameron, **u
 `.cpp` (`--compile`): `engine/physics/integrator.cpp`, `engine/physics/schedule.cpp`, `engine/sim/standard_modules.cpp`, `engine/sim/simulation.cpp`, `engine/compute/vulkan/step_recorder.cpp`, `engine/compute/vulkan/state_mirror.cpp`, `tests/test_translation_lock.cpp`, `tests/test_gpu_state_mirror.cpp`, `tests/test_bindings_airflow.cpp`.
 Headers (plain): `engine/physics/lock.hpp`, `integrator.hpp`, `engine/compute/optional_bindings.hpp`, `engine/compute/backend.hpp`, `engine/compute/vulkan/step_recorder.hpp`, `engine/sim/simulation.hpp`, `engine/sim/standard_modules.hpp`.
 
-## Open questions for the lead
+## Rulings (the lead, 2026-11-05)
 
-1. **The held-quad golden: test-local or a corpus scenario?** *Recommendation:* test-local, a literal digest in `test_translation_lock.cpp` (Task 3). The corpus schema v1 has no module-set key and no lock input, so a scenario would extend the format (an additive key and a Test/Docs loader change, and the `expected` list at `test_determinism.cpp:985`). YAGNI until a second held scenario exists.
-2. **Integrate's version.** *Recommendation:* no bump (decision 3). A bump moves the standard identity, a frozen identity, and goes to Cameron.
-3. **Physics' files.** `integrator.cpp` and `integrate.slang` get guarded insertions, and the lock's grade row is Physics' table. *Recommendation:* Core edits, Physics reviews the diff, as stage 5 Task 4.
-4. **`lock_translation` as a front over `attach_row`** (queued, applied at the next boundary), against a direct write like `set_body_state`. *Recommendation:* `attach_row`; it is the spec's "queued", needs no new op, and `snapshot()` already refuses a pending queue.
-5. **`set_body_state` on a locked body: refuse** (decision 6) against keep-and-snap. *Recommendation:* refuse (`L6`); about fifteen lines and two tests.
-6. **A set that holds `lock` but not `integrate`** can hold nothing, silently. No check is added (YAGNI): the standard set always has Integrate. Say if you want one.
+The plan was approved at `da43ca01` with all six questions answered as recommended, and two additions, now in decision 6, Review Focus 8, Task 1 and Task 3:
+1. **The held-quad golden is test-local** (a literal digest in `test_translation_lock.cpp`), not a corpus scenario.
+2. **No version bump.** Optional reads are not in the identity and a lock set gets its own identity by the module's name, so nothing reaches Cameron.
+3. **Physics reviews** the guarded insertions in `integrator.cpp` and `integrate.slang` and confirms the lock's grade row.
+4. **The calls are fronts over `attach_row`.**
+5. **`set_body_state` on a locked body is refused**, and (addition 1) so is one with a lock change pending in the queue.
+6. **No lock-without-integrate check** (YAGNI).
+- **Addition 2:** the held-quad digest is checked across compilers by the batch gate's `-NoSeed` leg; a mismatch goes to the lead and is never re-pinned.
+- **Task 4's one-off before/after device digest** of the standard set is printed, both numbers, in READY.
+- **The lead's note:** a grep of `sandbox/` found no `set_body_state` caller, so the drone box is not affected by the refusal.
 
 ## Notes for later stages
 
