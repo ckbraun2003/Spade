@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -277,4 +278,189 @@ TEST(TranslationLock, SetBodyStateOnAnUnlockedBodyInALockSetIsUnchanged) {
     Simulation sim = make_sim(standard_plus_lock());
     const BodyRef ref = spawn_flushed(sim);
     EXPECT_TRUE(set_to(sim, ref).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Task 2: Integrate honours the lock on the CPU
+// ---------------------------------------------------------------------------
+namespace {
+
+[[nodiscard]] Simulation make_sim_substeps(const spade::modules::ModuleSet& set, uint32_t substeps) {
+    const Result<spade::WorldSetDesc> world = floor_world_set(4);
+    EXPECT_TRUE(world.has_value()) << world.error().context;
+    return Simulation::create(*world, kDt, substeps, {}, set).value();
+}
+
+[[nodiscard]] spade::BodySpawn moving_body(glm::vec3 pos, glm::vec3 vel) {
+    spade::BodySpawn body = bare_body(pos);  // mass 0.8: not a power of two
+    body.vel = vel;
+    return body;
+}
+
+[[nodiscard]] BodyRef spawn_body(Simulation& sim, const spade::BodySpawn& body) {
+    const BodyRef ref = sim.spawn(0, body).value();
+    EXPECT_TRUE(sim.flush_structural().has_value());
+    return ref;
+}
+
+const glm::vec3 kPlusZero(0.0f);
+
+}  // namespace
+
+TEST(TranslationLock, AFullLockHoldsPositionAndVelocityBitwise) {
+    Simulation sim = make_sim(standard_plus_lock());
+    const glm::vec3 anchor(0.0f, 3.0f, 0.0f);
+    const BodyRef ref = spawn_body(sim, moving_body(anchor, glm::vec3(0.5f, -1.0f, 0.25f)));
+    ASSERT_TRUE(sim.lock_translation(ref, kLockAllAxes).has_value());
+    for (int s = 0; s < 200; ++s) {
+        ASSERT_TRUE(sim.step(1).has_value());
+        const BodyState b = row_of(sim, ref);
+        ASSERT_EQ(bits(b.pos), bits(anchor)) << "step " << s;
+        ASSERT_EQ(bits(b.vel), bits(kPlusZero)) << "step " << s << ": +0.0f on every axis";
+    }
+}
+
+TEST(TranslationLock, AHeldBodysImuReadsMinusRTgFromAnyMass) {
+    // One substep per step, so the orientation the specific force is taken from is the one before the step.
+    Simulation sim = make_sim_substeps(standard_plus_lock(), 1);
+    spade::BodySpawn spawn = bare_body(glm::vec3(0.0f, 3.0f, 0.0f));
+    spawn.orient = glm::normalize(glm::quat(0.9f, 0.1f, 0.3f, -0.2f));  // not axis-aligned
+    const BodyRef ref = spawn_body(sim, spawn);
+    ASSERT_TRUE(sim.lock_translation(ref, kLockAllAxes).has_value());
+    const glm::vec3 gravity(0.0f, -9.80665f, 0.0f);  // the floor world's
+    for (int s = 0; s < 5; ++s) {
+        const glm::quat before = row_of(sim, ref).orient;
+        ASSERT_TRUE(sim.step(1).has_value());
+        const glm::vec3 expected = glm::conjugate(before) * (-gravity);
+        EXPECT_EQ(bits(row_of(sim, ref).specific_force), bits(expected)) << "step " << s;
+    }
+}
+
+TEST(TranslationLock, TheYFreeRailClimbsLikeAFreeBodyAndHoldsXAndZ) {
+    Simulation sim = make_sim(standard_plus_lock());
+    const glm::vec3 a0(0.0f, 2.0f, 0.0f);
+    const glm::vec3 b0(5.0f, 2.0f, 0.0f);
+    const BodyRef railed = spawn_body(sim, moving_body(a0, glm::vec3(0.4f, 0.1f, -0.3f)));
+    const BodyRef free_twin = spawn_body(sim, moving_body(b0, glm::vec3(0.4f, 0.1f, -0.3f)));
+    ASSERT_TRUE(sim.lock_translation(railed, kLockAxisX | kLockAxisZ).has_value());
+    for (int s = 0; s < 100; ++s) {
+        for (const BodyRef r : {railed, free_twin}) {
+            ASSERT_TRUE(sim.apply_wrench(r, glm::vec3(0.0f, 12.0f, 0.0f), glm::vec3(0.0f)).has_value());
+        }
+        ASSERT_TRUE(sim.step(1).has_value());
+        const BodyState a = row_of(sim, railed);
+        const BodyState b = row_of(sim, free_twin);
+        ASSERT_EQ(a.pos.y, b.pos.y) << "the free axis is today's arithmetic, step " << s;
+        ASSERT_EQ(a.vel.y, b.vel.y) << "step " << s;
+        ASSERT_EQ(a.pos.x, a0.x) << "step " << s;
+        ASSERT_EQ(a.pos.z, a0.z) << "step " << s;
+        ASSERT_EQ(bits(glm::vec3(a.vel.x, 0.0f, a.vel.z)), bits(kPlusZero)) << "step " << s;
+    }
+    EXPECT_GT(row_of(sim, railed).pos.y, a0.y) << "the rail climbed: a 12 N lift on 0.8 kg beats gravity";
+}
+
+// A PIN, green at red: rotation is the same arithmetic as a free body's, so it holds before and after the lock.
+TEST(TranslationLock, RotationStaysFree) {
+    Simulation sim = make_sim(standard_plus_lock());
+    spade::BodySpawn spin = moving_body(glm::vec3(0.0f, 2.0f, 0.0f), glm::vec3(0.0f));
+    spin.omega_body = glm::vec3(0.3f, -0.2f, 0.5f);
+    const BodyRef held = spawn_body(sim, spin);
+    spin.pos = glm::vec3(5.0f, 2.0f, 0.0f);
+    const BodyRef free_twin = spawn_body(sim, spin);
+    ASSERT_TRUE(sim.lock_translation(held, kLockAllAxes).has_value());
+    for (int s = 0; s < 100; ++s) {
+        for (const BodyRef r : {held, free_twin}) {
+            ASSERT_TRUE(sim.apply_wrench(r, glm::vec3(0.0f), glm::vec3(0.02f, 0.01f, -0.015f)).has_value());
+        }
+        ASSERT_TRUE(sim.step(1).has_value());
+        const BodyState a = row_of(sim, held);
+        const BodyState b = row_of(sim, free_twin);
+        ASSERT_EQ(bits(a.omega_body), bits(b.omega_body)) << "step " << s;
+        ASSERT_EQ(std::memcmp(&a.orient, &b.orient, sizeof(a.orient)), 0) << "step " << s;
+    }
+    EXPECT_NE(row_of(sim, held).omega_body, glm::vec3(0.3f, -0.2f, 0.5f)) << "the torque did rotate it";
+}
+
+// THE LIMIT (plan decision 5, spec section 9): the contact solve treats a locked body as free, with its finite mass,
+// and the lock then discards that body's response. A free body that hits a held one gets neither a wall's response
+// nor a free body's: it gets the response it would get from an UNLOCKED body, which is what is pinned here. The free
+// body starts overlapping the other, so contact acts in the first substep, when the two runs' states are identical.
+TEST(TranslationLock, ContactAgainstALockedBodyIsTodaysBehavior) {
+    struct Run {
+        BodyState held;
+        BodyState hitter;
+    };
+    const auto run = [](bool locked) {
+        Simulation sim = make_sim_substeps(standard_plus_lock(), 1);
+        const BodyRef held = spawn_body(sim, moving_body(glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(0.0f)));
+        const BodyRef hitter = spawn_body(sim, moving_body(glm::vec3(0.0f, 1.15f, 0.0f), glm::vec3(0.0f, -2.0f, 0.0f)));
+        if (locked) {
+            EXPECT_TRUE(sim.lock_translation(held, kLockAllAxes).has_value());
+        }
+        EXPECT_TRUE(sim.step(1).has_value());
+        return Run{row_of(sim, held), row_of(sim, hitter)};
+    };
+    const Run locked = run(true);
+    const Run unlocked = run(false);
+    EXPECT_NE(bits(unlocked.held.vel), bits(kPlusZero)) << "contact acted on the free body: the premise of this test";
+    EXPECT_EQ(bits(locked.held.pos), bits(glm::vec3(0.0f, 1.0f, 0.0f))) << "the lock discarded the held body's response";
+    EXPECT_EQ(bits(locked.held.vel), bits(kPlusZero));
+    EXPECT_EQ(bits(locked.hitter.vel), bits(unlocked.hitter.vel)) << "the solve does not know about the lock";
+    EXPECT_EQ(bits(locked.hitter.pos), bits(unlocked.hitter.pos));
+}
+
+TEST(TranslationLock, AHeldBodyOnTheGroundIsOverwrittenOnItsLockedAxes) {
+    Simulation sim = make_sim(standard_plus_lock());
+    const glm::vec3 anchor(0.0f, 0.05f, 0.0f);  // inside the floor's proxy radius: static contact pushes it up
+    const BodyRef ref = spawn_body(sim, moving_body(anchor, glm::vec3(0.0f)));
+    ASSERT_TRUE(sim.lock_translation(ref, kLockAllAxes).has_value());
+    for (int s = 0; s < 50; ++s) {
+        ASSERT_TRUE(sim.step(1).has_value());
+        const BodyState b = row_of(sim, ref);
+        ASSERT_EQ(bits(b.pos), bits(anchor)) << "contact's correction never survives a substep, step " << s;
+        ASSERT_EQ(bits(b.vel), bits(kPlusZero)) << "step " << s;
+    }
+}
+
+// A PIN, green at red. A body that never had a lock, in a set that holds the module, computes today's bits: its rows are those of the same
+// run in the standard set. (The walk differs by lock_rows, so the comparison is body row by body row.)
+TEST(TranslationLock, AnUnlockedBodyInALockSetIsBitIdenticalToTheStandardSet) {
+    const auto run = [](const spade::modules::ModuleSet& set) {
+        Simulation sim = make_sim(set);
+        const BodyRef a = spawn_body(sim, moving_body(glm::vec3(0.0f, 0.3f, 0.0f), glm::vec3(0.4f, -2.0f, 0.1f)));
+        const BodyRef b = spawn_body(sim, moving_body(glm::vec3(0.5f, 0.12f, 0.0f), glm::vec3(0.0f, -1.0f, 0.0f)));
+        std::vector<BodyState> rows;
+        for (int s = 0; s < 150; ++s) {
+            EXPECT_TRUE(sim.apply_wrench(a, glm::vec3(0.3f, 1.0f, -0.2f), glm::vec3(0.01f, 0.0f, 0.02f)).has_value());
+            EXPECT_TRUE(sim.step(1).has_value());
+            rows.push_back(row_of(sim, a));
+            rows.push_back(row_of(sim, b));
+        }
+        return rows;
+    };
+    const std::vector<BodyState> standard = run(spade::modules::standard_modules());
+    const std::vector<BodyState> with_lock = run(standard_plus_lock());
+    ASSERT_EQ(standard.size(), with_lock.size());
+    for (std::size_t i = 0; i < standard.size(); ++i) {
+        ASSERT_EQ(std::memcmp(&standard[i], &with_lock[i], sizeof(BodyState)), 0) << "row " << i;
+    }
+}
+
+TEST(TranslationLock, UnlockReleasesFromTheAnchorAtRest) {
+    Simulation held_sim = make_sim(standard_plus_lock());
+    const glm::vec3 anchor(0.0f, 3.0f, 0.0f);
+    const BodyRef held = spawn_body(held_sim, moving_body(anchor, glm::vec3(0.5f, -1.0f, 0.25f)));
+    ASSERT_TRUE(held_sim.lock_translation(held, kLockAllAxes).has_value());
+    ASSERT_TRUE(held_sim.step(10).has_value());
+    ASSERT_TRUE(held_sim.unlock(held).has_value());
+    ASSERT_TRUE(held_sim.step(5).has_value());  // the first step's flush writes the free row
+
+    Simulation twin_sim = make_sim(standard_plus_lock());
+    const BodyRef twin = spawn_body(twin_sim, moving_body(anchor, glm::vec3(0.0f)));
+    ASSERT_TRUE(twin_sim.step(5).has_value());
+
+    const BodyState a = row_of(held_sim, held);
+    const BodyState b = row_of(twin_sim, twin);
+    EXPECT_EQ(bits(a.pos), bits(b.pos)) << "free fall from the anchor with vel 0";
+    EXPECT_EQ(bits(a.vel), bits(b.vel));
 }

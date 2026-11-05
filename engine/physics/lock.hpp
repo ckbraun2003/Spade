@@ -12,6 +12,7 @@
 // physics/integrator.hpp can read a row without the module API.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -34,6 +35,11 @@ struct LockRow {
 };
 static_assert(sizeof(LockRow) == 16, "a LockRow is a 16-byte std430 row on the device (layouts.slang)");
 static_assert(std::is_trivially_copyable_v<LockRow> && std::is_trivially_destructible_v<LockRow>);
+
+// WHERE INTEGRATE REACHES THE ROWS: the lock's optional read is the SIXTH access of Integrate's list
+// (sim/standard_modules.cpp's kIntegrateAccess, which static_asserts the name there), after the contact scratch at 3
+// and the gravity field at 4. A set without the lock module binds an absent view there, which reads as empty.
+inline constexpr std::size_t kIntegratePassLockAccess = 5;
 
 // The attach_row record Simulation::lock_translation() and unlock() hand the
 // array's init: the anchor is taken at the CALL (the init cannot see a

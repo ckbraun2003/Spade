@@ -4,6 +4,7 @@
 #include <span>
 
 #include "physics/contact_dv.hpp"
+#include "physics/lock.hpp"
 #include "state/layout.hpp"
 
 // ---------------------------------------------------------------------------
@@ -117,8 +118,15 @@ inline constexpr uint32_t active = 1u << 0;
 //
 // `contact_dv`: the contact scratch (physics/schedule.hpp), read into the
 // specific force and zeroed for every slot; see step 2.
+//
+// `locks`: the translation lock's rows (physics/lock.hpp), indexed like `bodies`,
+// or empty when the set holds no lock module. A body whose row holds axes is
+// computed exactly as above and then SELECTED per held axis: the specific force
+// reads -gravity on it (step 2), the velocity is 0 (step 3), the position is the
+// anchor (step 5). A body with no axes, and every body when `locks` is empty,
+// takes today's path untouched.
 void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
-                      std::span<ContactDvRow> contact_dv = {}) noexcept;
+                      std::span<ContactDvRow> contact_dv = {}, std::span<const LockRow> locks = {}) noexcept;
 
 // The same step with gravity read from a world's params: a forwarder, kept so
 // callers holding a WorldParams row need not unpack it. The schedule's

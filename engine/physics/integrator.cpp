@@ -8,7 +8,7 @@
 namespace spade::physics {
 
 void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
-                      std::span<ContactDvRow> contact_dv) noexcept {
+                      std::span<ContactDvRow> contact_dv, std::span<const LockRow> /* locks: RED, ignored */) noexcept {
     // `gravity` is per-world, not per-body: the caller reads it once (the
     // schedule's Integrate pass, from the gravity field), which keeps the
     // per-body op sequence below identical to what a GPU thread executes (it

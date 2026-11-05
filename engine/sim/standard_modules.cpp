@@ -258,9 +258,15 @@ constexpr QuantityAccess kIntegrateAccess[] = {{"body.pose", Access::write},
                                                {"body.wrench", Access::write},
                                                {"body.specific_force", Access::write},
                                                {"integrate.contact_dv", Access::write},
-                                               {"field.gravity", Access::read}};
+                                               {"field.gravity", Access::read},
+                                               // The translation lock's rows (stage 6): an optional read, so a set
+                                               // without the lock module binds an absent view and Integrate computes
+                                               // today's bits. Optional reads are not spelt into the identity.
+                                               {.quantity = "lock.lock_rows", .access = Access::read, .optional = true}};
 static_assert(kIntegrateAccess[physics::kIntegratePassContactDvAccess].quantity == "integrate.contact_dv",
               "integrate reads the contact scratch at physics::kIntegratePassContactDvAccess");
+static_assert(kIntegrateAccess[physics::kIntegratePassLockAccess].quantity == "lock.lock_rows",
+              "integrate reads the lock's rows at physics::kIntegratePassLockAccess");
 // The contact scratch's declaration: per body, 16-byte rows on both sides,
 // at binding 27 on the GPU. bindings.gen.hpp exists only in a SPADE_VULKAN
 // build; without it no backend could bind the scratch, so it is CPU-only there.
