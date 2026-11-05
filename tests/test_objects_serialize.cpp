@@ -51,9 +51,10 @@ TEST(ObjectGraphSerialize, RoundTripsObjectsAndComponents) {
     EXPECT_EQ(restored->component<MeshComponent>(id), nullptr);
 }
 
-// Every component type at once, so a type whose fields this file forgets to
-// write cannot hide behind the four the other cases happen to exercise.
-TEST(ObjectGraphSerialize, RoundTripsEveryComponentType) {
+// Every constructible component type at once (fluid is reserved, stage 5 Task 7), so a
+// type whose fields this file forgets to write cannot hide behind the four the other
+// cases happen to exercise.
+TEST(ObjectGraphSerialize, RoundTripsEveryConstructibleType) {
     ObjectGraph g;
     const auto id = g.create("everything");
     g.attach<TransformComponent>(id, TransformComponent{});
@@ -67,8 +68,6 @@ TEST(ObjectGraphSerialize, RoundTripsEveryComponentType) {
                                       .fov_degrees = 42.0f, .near_plane = 0.5f,
                                       .far_plane = 900.0f, .active = false});
     g.attach<BehaviorComponent>(id, BehaviorComponent{.behavior_index = 23});
-    g.attach<FluidComponent>(
-        id, FluidComponent{.rest_density = 998.0f, .stiffness = 3.0f, .viscosity = 0.25f});
 
     const auto restored = from_json(dumped(g));
     ASSERT_TRUE(restored.has_value());
@@ -94,8 +93,19 @@ TEST(ObjectGraphSerialize, RoundTripsEveryComponentType) {
     EXPECT_FLOAT_EQ(restored->component<CameraComponent>(r)->far_plane, 900.0f);
     ASSERT_NE(restored->component<BehaviorComponent>(r), nullptr);
     EXPECT_EQ(restored->component<BehaviorComponent>(r)->behavior_index, 23u);
-    ASSERT_NE(restored->component<FluidComponent>(r), nullptr);
-    EXPECT_FLOAT_EQ(restored->component<FluidComponent>(r)->viscosity, 0.25f);
+}
+
+// Stage 5, Task 7: a saved graph holding the reserved fluid type no longer loads, and says why.
+// This is the object JSON that the round-trip test wrote for fluid before the task.
+TEST(ComponentAvailability, TheLoaderRefusesAReservedTypeByName) {
+    const auto refused = from_json(R"({"objects":[{
+        "name":"pond","parent":-1,"position":[0,0,0],"orientation":[1,0,0,0],
+        "scale":[1,1,1],"components":{"fluid":{"rest_density":998.0,"stiffness":3.0,"viscosity":0.25}}}]})");
+    ASSERT_FALSE(refused.has_value()) << "fluid is reserved";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("pond"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("fluid"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("SPH, PHY-4"), std::string::npos) << refused.error().context;
 }
 
 TEST(ObjectGraphSerialize, RejectsAnUnknownComponentName) {

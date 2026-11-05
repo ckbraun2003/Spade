@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include <glm/glm.hpp>
@@ -127,6 +128,44 @@ template <class T>
 [[nodiscard]] constexpr ComponentTypeId component_type_id() noexcept {
     return ComponentTraits<T>::id;
 }
+
+// AVAILABILITY (module API stage 5, Task 7; spec section 3): which of the ten types can
+// be built. A type no module defines is RESERVED: its id and its name are frozen (SL5), but
+// ObjectGraph::attach<T> does not compile for it and the loader refuses it with `unavailable`,
+// naming the reason. Static for now (the graph is not in stepping, spec section 11); per module
+// set it becomes when objects join stepping. One table, in id order, is the only site that
+// holds a type's name, its availability and its reason.
+enum class ComponentAvailability : uint8_t { available = 0, reserved = 1 };
+
+struct ComponentTypeInfo {
+    ComponentTypeId id;
+    std::string_view name;  // the serialization key
+    ComponentAvailability availability;
+    std::string_view reason;  // reserved only: why, and what will provide it
+};
+
+inline constexpr ComponentTypeInfo kComponentTypes[kComponentTypeCount] = {
+    {ComponentTypeId::transform, "transform", ComponentAvailability::available, ""},
+    {ComponentTypeId::body, "body", ComponentAvailability::available, ""},
+    {ComponentTypeId::mesh, "mesh", ComponentAvailability::available, ""},
+    {ComponentTypeId::material, "material", ComponentAvailability::available, ""},
+    {ComponentTypeId::collider, "collider", ComponentAvailability::available, ""},
+    {ComponentTypeId::sensor, "sensor", ComponentAvailability::available, ""},
+    {ComponentTypeId::force_element, "force_element", ComponentAvailability::available, ""},
+    {ComponentTypeId::camera, "camera", ComponentAvailability::available, ""},
+    {ComponentTypeId::behavior, "behavior", ComponentAvailability::available, ""},
+    {ComponentTypeId::fluid, "fluid", ComponentAvailability::reserved, "SPH, PHY-4"},
+};
+
+// RED stub: every type reads as available until the table is consulted.
+template <class T>
+[[nodiscard]] consteval bool component_available() noexcept {
+    return true;
+}
+
+// Every type, in id order: what every enumerator (the loader, the editor's menu) reads.
+// RED stub.
+[[nodiscard]] std::span<const ComponentTypeInfo> component_types() noexcept;
 
 [[nodiscard]] std::string_view component_type_name(ComponentTypeId id) noexcept;
 [[nodiscard]] std::optional<ComponentTypeId> component_type_id_from_name(

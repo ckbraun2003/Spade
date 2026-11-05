@@ -36,6 +36,8 @@ static_assert(kNames.size() == kComponentTypeCount);
 
 }  // namespace
 
+std::span<const ComponentTypeInfo> component_types() noexcept { return {}; }  // RED stub
+
 std::string_view component_type_name(ComponentTypeId id) noexcept {
     const auto i = static_cast<uint32_t>(id);
     return i < kComponentTypeCount ? kNames[i] : std::string_view{};

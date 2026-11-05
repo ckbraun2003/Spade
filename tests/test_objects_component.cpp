@@ -11,6 +11,8 @@
 #include <gtest/gtest.h>
 
 #include <iterator>
+#include <span>
+#include <string_view>
 
 #include "objects/component.hpp"
 #include "objects/graph.hpp"
@@ -129,10 +131,10 @@ TEST(ComponentAttach, MaskBitIsTheTypeId) {
     const auto id = g.create("drone");
     g.attach<TransformComponent>(id, TransformComponent{});   // id 0 -> bit 0
     g.attach<MeshComponent>(id, MeshComponent{});             // id 2 -> bit 2
-    g.attach<FluidComponent>(id, FluidComponent{});           // id 9 -> bit 9
-    EXPECT_EQ(g.component_mask(id), (1u << 0) | (1u << 2) | (1u << 9));
+    g.attach<BehaviorComponent>(id, BehaviorComponent{});     // id 8 -> bit 8
+    EXPECT_EQ(g.component_mask(id), (1u << 0) | (1u << 2) | (1u << 8));
     ASSERT_TRUE(g.detach<MeshComponent>(id));
-    EXPECT_EQ(g.component_mask(id), (1u << 0) | (1u << 9));
+    EXPECT_EQ(g.component_mask(id), (1u << 0) | (1u << 8));
 }
 
 // Two objects sharing a component TYPE must not share its VALUE: the stores
@@ -152,4 +154,41 @@ TEST(ComponentAttach, StoresAreIndexedPerObjectNotShared) {
     ASSERT_TRUE(g.detach<MeshComponent>(a));
     ASSERT_NE(g.component<MeshComponent>(b), nullptr);
     EXPECT_EQ(g.component<MeshComponent>(b)->draw_item, 2u);
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 7: availability sits beside the type table. fluid
+// is reserved (SPH, PHY-4); the other nine can be built.
+// ---------------------------------------------------------------------------
+
+// The names are spelt here, not read from the table (TD-4): SL5's frozen order.
+constexpr std::string_view kFrozenNames[] = {"transform", "body",          "mesh",   "material", "collider",
+                                             "sensor",    "force_element", "camera", "behavior", "fluid"};
+
+TEST(ComponentAvailability, EveryTypeIsListedInIdOrderWithItsAvailability) {
+    const std::span<const ComponentTypeInfo> types = component_types();
+    ASSERT_EQ(types.size(), std::size(kFrozenNames));
+    for (uint32_t i = 0; i < types.size(); ++i) {
+        EXPECT_EQ(static_cast<uint32_t>(types[i].id), i);
+        EXPECT_EQ(types[i].name, kFrozenNames[i]);
+        EXPECT_EQ(component_type_name(types[i].id), kFrozenNames[i]) << "the name lookup reads the same table";
+        const bool fluid = types[i].id == ComponentTypeId::fluid;
+        EXPECT_EQ(types[i].availability, fluid ? ComponentAvailability::reserved : ComponentAvailability::available)
+            << types[i].name;
+        EXPECT_EQ(types[i].reason, fluid ? "SPH, PHY-4" : "") << types[i].name;
+    }
+}
+
+TEST(ComponentAvailability, OnlyTheReservedTypeIsUnconstructible) {
+    // component_available<T>() is consteval, so the run-time check is over constants.
+    constexpr bool available[] = {
+        component_available<TransformComponent>(),    component_available<BodyComponent>(),
+        component_available<MeshComponent>(),         component_available<MaterialComponent>(),
+        component_available<ColliderComponent>(),     component_available<SensorComponent>(),
+        component_available<ForceElementComponent>(), component_available<CameraComponent>(),
+        component_available<BehaviorComponent>(),     component_available<FluidComponent>(),
+    };
+    for (std::size_t i = 0; i < std::size(available); ++i) {
+        EXPECT_EQ(available[i], i != static_cast<std::size_t>(ComponentTypeId::fluid)) << kFrozenNames[i];
+    }
 }
