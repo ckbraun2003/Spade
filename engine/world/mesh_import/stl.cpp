@@ -119,7 +119,7 @@ constexpr uint64_t kFacetsPerBlock = 4096;
     auto built = make_mesh(input, file + ": object '" + name + "'");
     if (!built) return std::unexpected(built.error());
     std::vector<MeshObject> out;
-    out.push_back(MeshObject{std::move(name), std::move(*built)});
+    out.push_back(MeshObject{std::move(name), std::move(*built), unit});
     return out;
 }
 

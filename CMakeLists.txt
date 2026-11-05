@@ -134,6 +134,10 @@ add_subdirectory(engine)
 # engine/, so it may read the clock (M1B).
 add_subdirectory(tools/analysis_runner)
 
+# The build-tree tools: spade_mesh_pack, a mesh file to .spmesh sidecars (CORE-6
+# D, Task S1; not installed, L23 5).
+add_subdirectory(tools/mesh_pack)
+
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.
 if(SPADE_BUILD_SANDBOX)

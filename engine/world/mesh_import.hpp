@@ -261,10 +261,13 @@ inline constexpr double kObjPlanarTolerance = 1e-3;
 // before it is extracted, so a small archive cannot ask for unbounded memory.
 inline constexpr uint64_t kMax3mfModelBytes = uint64_t{1} << 30;
 
-// One imported object: its name (UTF-8) and its validated mesh, in metres.
+// One imported object: its name (UTF-8), its validated mesh, in metres, and
+// the unit its source declared (metre for glTF, the caller's for STL and OBJ,
+// the model's for 3MF), which a sidecar's provenance records (CORE-6 D).
 struct MeshObject {
     std::string name;
     std::shared_ptr<const TriangleMesh> mesh;
+    MeshUnit unit = MeshUnit::unspecified;
 };
 
 // Reads a .gltf or .glb file. External buffers resolve against its directory.

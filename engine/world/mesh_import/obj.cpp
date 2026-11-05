@@ -452,7 +452,7 @@ Result<std::vector<MeshObject>> Reader::objects() const {
         const MeshInput input = detail::weld_exact(positions, indices, unit_);
         auto built = make_mesh(input, file_ + ": object '" + name + "'");
         if (!built) return std::unexpected(built.error());
-        out.push_back(MeshObject{name, std::move(*built)});
+        out.push_back(MeshObject{name, std::move(*built), unit_});
     }
     return out;
 }

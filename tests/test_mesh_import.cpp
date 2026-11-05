@@ -1576,3 +1576,33 @@ TEST(MeshImport, MalformedThreeMfIsRefusedByElement) {
     ASSERT_FALSE(missing.has_value());
     EXPECT_EQ(missing.error().code, Code::io_error) << missing.error().context;
 }
+
+TEST(MeshImport, EachObjectCarriesTheUnitItsSourceDeclared) {
+    // glTF is metres by its specification; STL and OBJ are the caller's; a
+    // 3MF is its model's (millimetres when it names none). A sidecar's
+    // provenance records it (CORE-6 D).
+    const spade::test::TempDir dir("mesh-import-unit-carried");
+    const auto gltf = read_text(one_cube(Json::object()).text());
+    ASSERT_TRUE(gltf.has_value()) << gltf.error().context;
+    EXPECT_EQ((*gltf)[0].unit, MeshUnit::metre);
+
+    write_file(dir.path() / "cube.stl", stl_bytes());
+    const auto stl = spade::read_stl(dir.path() / "cube.stl", MeshUnit::foot);
+    ASSERT_TRUE(stl.has_value()) << stl.error().context;
+    EXPECT_EQ((*stl)[0].unit, MeshUnit::foot);
+
+    const auto obj = read_obj_text(dir, "cube.obj", "o cube\n" + obj_corners() + obj_faces(0, 12, 0));
+    ASSERT_TRUE(obj.has_value()) << obj.error().context;
+    EXPECT_EQ((*obj)[0].unit, MeshUnit::metre);
+    write_file(dir.path() / "cube_mm.obj", bytes_of("o cube\n" + obj_corners() + obj_faces(0, 12, 0)));
+    const auto obj_mm = spade::read_obj(dir.path() / "cube_mm.obj", MeshUnit::millimetre);
+    ASSERT_TRUE(obj_mm.has_value()) << obj_mm.error().context;
+    EXPECT_EQ((*obj_mm)[0].unit, MeshUnit::millimetre);
+
+    for (const auto& [root, unit] : {std::pair<std::string, MeshUnit>{R"(unit="centimeter")", MeshUnit::centimetre},
+                                     std::pair<std::string, MeshUnit>{"", MeshUnit::millimetre}}) {
+        const auto mf = read_3mf_bytes(dir, "unit.3mf", package(cube_model(root)));
+        ASSERT_TRUE(mf.has_value()) << mf.error().context;
+        EXPECT_EQ((*mf)[0].unit, unit) << root;
+    }
+}
