@@ -4,6 +4,16 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API stage 6: the translation lock and the fixed-binding pattern (2026-11-05)
+
+The stage 6 plan (`docs/design/core/plans/2026-11-05-module-api-stage6-plan.md`). The standard identity (`0x3303cfc86821f502`), the schema hash, snapshot format v3, every corpus golden and every GPU parity band are unchanged, and no module version moved.
+
+- **`modules::lock_module()`** (`sim/module.hpp`, `sim/standard_modules.cpp`): a built-in module that is **not** in the standard set. One per-body array, `lock_rows` (`physics::LockRow`, `physics/lock.hpp`: a world anchor and an axes bitmask `kLockAxisX/Y/Z`, zero free), no pass, CPU `reference` and Vulkan `banded`. A set that holds it has its own identity.
+- **Integrate's optional sixth read** (`lock.lock_rows`): after today's arithmetic, per held axis, specific force `-gravity`, velocity `+0.0` and position `anchor`; no axes, or no lock module, is today's path bit for bit. `integrate_bodies()` takes a trailing defaulted `locks` span.
+- **`Simulation::lock_translation(ref, axes)` and `unlock(ref)`**, fronts over `attach_row`, applied at the next step boundary with the anchor taken at the call; `unavailable` in a set without the module. **`set_body_state` refuses** a locked body and a body with a lock change pending, naming the call that applies it.
+- **Internal (consumers need no change):** `PassParams` is 48 bytes (`uint switches` appended), `StepShape::switches`, `compute/optional_bindings.hpp`, binding 29 (`lock_rows`) in set 0 and `kBindingCount_state` 30. A set without the lock binds a zeroed buffer there and the switch is clear, so its device state is unchanged.
+- **Tests:** `TranslationLock*`, `TranslationLockGolden*` (the held quad's digest, test-local), `OptionalBindings*`, `GpuTranslationLock*`.
+
 ### Module API stage 5: grades, roles and component availability (2026-11-05)
 
 The stage 5 plan's Tasks 2 to 8 (`docs/design/core/plans/2026-10-05-module-api-stage5-plan.md`; Task 1 merged `ba46d44`). No golden moved, the standard identity (`0x3303cfc86821f502`), the schema hash and snapshot format v3 are unchanged, and no module version moved.

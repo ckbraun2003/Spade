@@ -55,6 +55,16 @@ When the scheduler lands, today's ten-pass array becomes built-in modules placed
 | SensorSynthesis | Sensors | IMU then GNSS. Their order is not a numeric contract, because they share no output |
 | Publish | Publish | Becomes the frame-state copy point for rendering (`L5`) |
 
+## Modules outside the standard set: the translation lock
+
+A built-in module need not be in the standard set. **`lock_module()`** (stage 6) is the first. A set that adds it owns one per-body array, `lock_rows` (`physics::LockRow`: an anchor and a bitmask of world axes, x = 1, y = 2, z = 4, zero meaning free), and no pass. Integrate reads it as an **optional** read: it is declared in Integrate's access list but not spelt in the identity, so the standard set's identity does not move and a set with the lock has its own, from the module's name.
+
+- **What it does.** After today's arithmetic Integrate selects, per held axis, the specific force `-gravity` (an accelerometer on a stand at rest reads +1 g up, from any mass), the velocity `+0.0`, and the position `anchor`. A body with no axes, and every body in a set without the module, takes today's path bit for bit. Rotation stays free.
+- **The calls.** `Simulation::lock_translation(ref, axes)` and `unlock(ref)` are fronts over `attach_row`: queued, applied at the next step boundary. The anchor is the body's position at the call. Both are `unavailable` in a set without the module. `set_body_state` refuses a locked body, and a body with a lock change pending.
+- **Contact.** The contact solve treats a locked body as free and the lock then discards its response on the held axes; this is pinned by a test. A locked body as infinite mass is joints' work.
+- **Grade.** CPU `reference`, Vulkan `banded`; the position and velocity are written, not integrated, so they are bit-exact across backends.
+- **On the GPU,** the kernel reads `lock_rows` at a **fixed binding** (set 0, binding 29) behind a bit of `PassParams::switches`. When the set has no lock module the mirror binds a zeroed one-row buffer there and the bit is clear (`compute/optional_bindings.hpp`). This is the pattern for every later optional module's kernel read.
+
 ## Behaviors
 
 A behavior is a small module with a single pass and no registered state. It declares a stable name, its phase position (kinematic or force), what it reads and writes, and a CPU implementation (`SL6`).

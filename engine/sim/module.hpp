@@ -9,7 +9,10 @@
 // within a substep. Stage 5: a grade per backend (core/grade.hpp) and the role a
 // module fills (kRoles), both declarations checked at compile_schedule() and
 // create() and spelt into no identity; component availability sits beside the
-// component type table (objects/component.hpp).
+// component type table (objects/component.hpp). Stage 6: a built-in module that
+// is not in the standard set (lock_module(), the translation lock), the optional
+// read it adds to Integrate, and the fixed binding and recipe switch that let a
+// kernel read an optional module's array (compute/optional_bindings.hpp).
 #pragma once
 
 #include <algorithm>
