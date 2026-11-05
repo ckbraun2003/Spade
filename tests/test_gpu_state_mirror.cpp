@@ -1065,3 +1065,54 @@ TEST(StateMirrorScratch, AScratchBindingIsRefusedByName) {
                                    {"dv_b", "'dv'"}))
         << "another scratch's binding";
 }
+
+// ===========================================================================
+// Module API stage 6, Task 4: the fixed binding of an optional module
+// (compute/optional_bindings.hpp). `lock_rows` is binding 29 of set 0: bound to the module's array when the set holds
+// the lock module, to a zeroed one-row buffer when it does not, so the descriptor set is complete in both.
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] const spade::modules::CompiledSchedule& lock_set_schedule() {
+    static const spade::modules::CompiledSchedule schedule = [] {
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back(spade::modules::lock_module());
+        return *spade::modules::compile_schedule(set);
+    }();
+    return schedule;
+}
+
+[[nodiscard]] Result<std::unique_ptr<VulkanBackend>> backend_for(const spade::modules::CompiledSchedule& schedule) {
+    StepShape shape{};
+    shape.world_count = 2;
+    shape.body_capacity = 8;
+    shape.element_capacity = 4;
+    shape.sensor_capacity = 2;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+    shape.arrays = walk_shapes(schedule, shape);
+    shape.scratch = spade::scratch_shapes(schedule, shape);
+    shape.tables = spade::table_shapes(schedule);
+    shape.switches = spade::optional_switches(schedule);
+    return VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, spade::modules::gpu_passes(schedule));
+}
+
+}  // namespace
+
+TEST_F(GpuStateMirrorTest, ASetWithoutTheLockModuleBindsAnEmptyBufferAtItsBinding) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    EXPECT_EQ(gen::kBindingCount_state, 30u) << "29 standard bindings and lock_rows";
+    auto backend = backend_for(standard_schedule());
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    EXPECT_EQ((*backend)->bound_binding_count(), gen::kBindingCount_state)
+        << "binding " << gen::kBinding_lock_rows << " holds the dummy, so the set is complete without the module";
+}
+
+TEST_F(GpuStateMirrorTest, ALockSetBindsItsRealArrayAtTheSameBinding) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto backend = backend_for(lock_set_schedule());
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    EXPECT_EQ((*backend)->bound_binding_count(), gen::kBindingCount_state)
+        << "the walk entry lock_rows is bound at binding " << gen::kBinding_lock_rows << ", no dummy beside it";
+}

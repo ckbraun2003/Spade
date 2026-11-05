@@ -464,6 +464,9 @@ std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedul
 
 // The bound tables the GPU mirror makes buffers from (L10), CPU-only ones left
 // out: an entry's index is its device table index.
+// RED stub (stage 6, Task 4): no switch is ever set until the optional bindings are built.
+uint32_t optional_switches(const modules::CompiledSchedule&) noexcept { return 0u; }
+
 std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule) {
     std::vector<compute::TableShape> out;
     for (const modules::CompiledTable& t : schedule.tables) {

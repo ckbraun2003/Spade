@@ -247,6 +247,20 @@ struct GridParams {
 };
 
 // ---------------------------------------------------------------------------
+// LockRow -- one translation-lock row (physics/lock.hpp; module API stage 6),
+// at the body's own global slot: the world position its held axes are pinned
+// to and which axes are held (bit 0, 1, 2 = world x, y, z; 0 == free). One
+// 16-byte row; alignas(16) on the C++ side for the std430 vector alignment.
+// Read by integrate.slang behind PassParams::switches' lock bit.
+// ---------------------------------------------------------------------------
+// @cpp-type   spade::physics::LockRow
+// @cpp-header physics/lock.hpp
+struct LockRow {
+    float3 anchor;  // world position the held axes are pinned to, m
+    uint   axes;    // kLockAxis* bits; 0 == free
+};
+
+// ---------------------------------------------------------------------------
 // RotorRow -- one rotor element (vehicles/rotor.hpp). Five 16-byte rows.
 // `omega`/`omega_cmd` are STATE (shaft speed and its command), which is why a
 // rotor row rides every snapshot rather than being rebuilt from a descriptor.
@@ -701,4 +715,10 @@ struct PassParams {
     uint  grid_segment_slots;  // body slots mapped into one segment
     uint  sort_k;              // bitonic stage: the block size being merged
     uint  sort_j;              // bitonic stage: the compare-exchange distance
+
+    // -- the recipe switches (module API stage 6) ----------------------------
+    uint  switches;            // compute/optional_bindings.hpp's kSwitch* bits: which optional bindings
+                               // hold a real array this run (bit 0: lock_rows). A kernel tests its bit
+                               // before it reads an optional binding, so a set without the module
+                               // computes today's bits and never indexes the one-row dummy.
 };

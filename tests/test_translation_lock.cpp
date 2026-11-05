@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdio>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
+#include "compute/optional_bindings.hpp"
 #include "contact_set_fakes.hpp"
 #include "physics/lock.hpp"
 #include "set_body_state_support.hpp"
@@ -594,4 +596,29 @@ TEST(TranslationLockGolden, AMidRunSnapshotFinishesOnTheUninterruptedDigest) {
         ASSERT_TRUE(resumed.sim.step(1).has_value());
     }
     EXPECT_EQ(spade::testing::state_digest(resumed.sim), uninterrupted);
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: the fixed binding's switch (CPU side; the mirror's half is in test_gpu_state_mirror.cpp)
+// ---------------------------------------------------------------------------
+
+TEST(OptionalBindings, ASetHasTheLockSwitchOnlyWhenItHoldsTheLockArray) {
+    const auto standard = spade::modules::compile_schedule(spade::modules::standard_modules());
+    const auto with_lock = spade::modules::compile_schedule(standard_plus_lock());
+    ASSERT_TRUE(standard.has_value() && with_lock.has_value());
+    EXPECT_EQ(spade::optional_switches(*standard), 0u) << "the standard set computes today's bits: no switch";
+    EXPECT_EQ(spade::optional_switches(*with_lock), spade::compute::kSwitchLockRows);
+}
+
+// A PIN, green at red: the table's own shape. Every row names an array, owns exactly one switch bit, and no two share
+// one; the dummy is at least a word.
+TEST(OptionalBindings, EveryRowOwnsOneSwitchBitAndAnArrayName) {
+    uint32_t seen = 0;
+    for (const spade::compute::OptionalBinding& row : spade::compute::kOptionalBindings) {
+        EXPECT_FALSE(row.name.empty());
+        EXPECT_EQ(std::popcount(row.switch_bit), 1) << row.name;
+        EXPECT_EQ(seen & row.switch_bit, 0u) << row.name << " shares a switch bit";
+        seen |= row.switch_bit;
+        EXPECT_GE(row.dummy_bytes, 4u) << row.name;
+    }
 }

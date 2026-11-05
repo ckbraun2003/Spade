@@ -549,6 +549,11 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 // to the Vulkan backend as StepShape::tables.
 [[nodiscard]] std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule);
 
+// The PassParams::switches bits of a compiled schedule (module API stage 6): for each row of
+// compute/optional_bindings.hpp's kOptionalBindings, its bit when the schedule holds that array. The standard set is 0.
+// Simulation::create() hands it to the backend in StepShape::switches.
+[[nodiscard]] uint32_t optional_switches(const modules::CompiledSchedule& schedule) noexcept;
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------

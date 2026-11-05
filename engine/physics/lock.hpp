@@ -29,7 +29,7 @@ inline constexpr uint32_t kLockAllAxes = kLockAxisX | kLockAxisY | kLockAxisZ;
 // One row, at the body's own slot. A ZERO ROW IS FREE (axes == 0), so a fresh
 // or despawned body is unlocked with no init, and the despawn cascade's
 // zero-fill is the unlock.
-struct LockRow {
+struct alignas(16) LockRow {  // alignas(16): std430 aligns a struct holding a vector to 16 (layouts.slang's LockRow)
     glm::vec3 anchor{0.0f};  // world position the held axes are pinned to, m
     uint32_t axes = 0;       // kLockAxis* bits; 0 is free
 };

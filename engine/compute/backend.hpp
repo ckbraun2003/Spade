@@ -286,6 +286,10 @@ struct StepShape {
     std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
     std::vector<ScratchShape> scratch{};    // every declared scratch, in the schedule's order (Task 7b)
     std::vector<TableShape> tables{};       // every bound configuration table, in the schedule's order (L10)
+    // The optional bindings (compute/optional_bindings.hpp) whose module's array this set holds, as PassParams::switches
+    // bits: the recorder bakes them into every dispatch, and the mirror binds a zeroed buffer at each optional binding
+    // whose array the walk does not carry (module API stage 6).
+    uint32_t switches = 0;
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

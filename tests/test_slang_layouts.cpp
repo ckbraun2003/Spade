@@ -214,6 +214,9 @@ const RegistryEntry kExpectedRegistry[] = {
     // every register_model(), read by the step, read back only by the
     // vulkan_config_table() diagnostic. Fixed at its declared capacity (L11).
     {"contact_sets", gen::kBinding_contact_sets},
+    // Module API stage 6: the translation lock's rows, the first OPTIONAL binding (compute/optional_bindings.hpp):
+    // bound to the module's array when the set holds it, to a zeroed one-row buffer when not.
+    {"lock_rows", gen::kBinding_lock_rows},
 };
 
 // How many entries of kExpectedRegistry are DERIVED (not part of the
@@ -273,7 +276,9 @@ TEST(SlangLayouts, GeneratedHeaderChecksEveryMirroredStruct) {
     // TWENTY-THREE WITH THE FIELD SAMPLE ROW (module-API stage 3):
     // FieldSampleRow, mirroring physics::FieldSampleRow (physics/field_row.hpp),
     // alignas(16) on the C++ side for GatherBodyRow's reason above.
-    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{23});
+    // TWENTY-FOUR WITH THE LOCK ROW (module API stage 6): LockRow, mirroring physics::LockRow (physics/lock.hpp),
+    // alignas(16) on the C++ side for the same reason.
+    EXPECT_EQ(gen::kMirroredStructCount, std::size_t{24});
     EXPECT_EQ(spade::compute::layout_check_mirrored_struct_count(), gen::kMirroredStructCount);
 }
 
@@ -299,8 +304,9 @@ TEST(SlangLayouts, BindingRegistryHasNoUnlistedEntries) {
     EXPECT_EQ(std::size_t{gen::kBindingCount_state}, std::size(kExpectedRegistry));
     // FIVE bound siblings now, not four: sensor_gnss.slang dispatches over the
     // GNSS slot space, so gnss_sensors.slot_to_world joins on section B's rule.
+    // ... plus one optional binding (lock_rows, stage 6): neither a standard registered array nor a derived buffer.
     EXPECT_EQ(std::size_t{gen::kBindingCount_state},
-              kRegisteredArrayCount - std::size(kUnboundArrays) + 5u + kDerivedBufferCount);
+              kRegisteredArrayCount - std::size(kUnboundArrays) + 5u + kDerivedBufferCount + 1u);
 }
 
 // AN EXEMPTION NOTHING CHECKS IS NOT AN EXEMPTION, IT IS A CLAIM. kUnboundArrays

@@ -147,6 +147,7 @@ struct PassParams {
     uint32_t grid_segment_slots = 0;
     uint32_t sort_k = 0;
     uint32_t sort_j = 0;
+    uint32_t switches = 0;  // compute/optional_bindings.hpp's kSwitch* bits (module API stage 6)
 };
 
 // ---------------------------------------------------------------------------
