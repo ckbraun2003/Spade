@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "compute/backend.hpp"
@@ -3695,7 +3697,7 @@ TEST(ModuleGrades, ASetsGradeIsItsWeakestModuleInSetOrder) {
     ASSERT_TRUE(s.has_value()) << s.error().context;
     const spade::modules::SetGrade cpu = spade::modules::set_grade(*s, spade::compute::BackendKind::cpu);
     EXPECT_EQ(cpu.grade, Grade::best_effort);
-    EXPECT_EQ(cpu.module, "drag") << "undeclared until Task 4: the first module at the lowest grade";
+    EXPECT_EQ(cpu.module, "rough") << "the built-ins are reference (Task 4), so rough is the first at the lowest grade";
     const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
     EXPECT_EQ(gpu.grade, Grade::absent);
     EXPECT_EQ(gpu.module, "rougher");
@@ -3755,4 +3757,44 @@ TEST(ModuleGrades, GradesLeaveTheIdentityAlone) {
     EXPECT_EQ(spade::grade_name(Grade::banded), "banded");
     EXPECT_EQ(spade::grade_name(Grade::reference), "reference");
     EXPECT_EQ(spade::grade_name(static_cast<Grade>(7)), "");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 4: the built-ins declare their grades (joint with
+// Physics, who reviews the commit).
+// ---------------------------------------------------------------------------
+
+// Transcribed from docs/design/physics/04-verification.md, "Grades" (PHY-2), not
+// read off the declarations (TD-4). Integrator, static contact, dynamic contact
+// (Gauss-Seidel), drag, rotor, dryden, imu and gnss are each CPU reference and
+// Vulkan banded ("banded via CORE-3" declares plain banded). environment is
+// Physics' row of 2026-11-05 (fff9e74b): reference on the CPU, banded on Vulkan
+// with a zero band. behaviors is Core's (SL6): reference and banded.
+TEST(StandardModules, DeclareTheGradesPhysicsSigned) {
+    const std::map<std::string, std::pair<Grade, Grade>> expected = {
+        {"drag", {Grade::reference, Grade::banded}},           {"dryden", {Grade::reference, Grade::banded}},
+        {"imu", {Grade::reference, Grade::banded}},            {"rotor", {Grade::reference, Grade::banded}},
+        {"gnss", {Grade::reference, Grade::banded}},           {"behaviors", {Grade::reference, Grade::banded}},
+        {"static_contact", {Grade::reference, Grade::banded}}, {"dynamic_contact", {Grade::reference, Grade::banded}},
+        {"integrate", {Grade::reference, Grade::banded}},      {"environment", {Grade::reference, Grade::banded}}};
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->modules.size(), expected.size());
+    for (const spade::modules::CompiledModule& m : s->modules) {
+        const auto it = expected.find(m.name);
+        ASSERT_NE(it, expected.end()) << m.name;
+        EXPECT_EQ(m.grade.cpu, it->second.first) << m.name;
+        EXPECT_EQ(m.grade.vulkan, it->second.second) << m.name;
+    }
+}
+
+TEST(StandardModules, AreReferenceOnTheCpuAndBandedOnVulkan) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const spade::modules::SetGrade cpu = spade::modules::set_grade(*s, spade::compute::BackendKind::cpu);
+    EXPECT_EQ(cpu.grade, Grade::reference);
+    EXPECT_EQ(cpu.module, "drag") << "the first module in set order, all at the lowest grade";
+    const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
+    EXPECT_EQ(gpu.grade, Grade::banded);
+    EXPECT_EQ(gpu.module, "drag");
 }
