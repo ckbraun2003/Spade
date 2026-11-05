@@ -22,7 +22,10 @@
 #include <string>
 #include <vector>
 
+#include "../sandbox/editor_library.hpp"
+#include "../sandbox/editor_pick.hpp"
 #include "../sandbox/editor_run.hpp"
+#include "../sandbox/end_goal_checks.hpp"
 #include "../sandbox/editor_scene_edits.hpp"
 #include "../sandbox/editor_world_edits.hpp"
 #include "editor_test_support.hpp"
@@ -36,6 +39,7 @@ namespace {
 
 namespace ed = spade::sandbox::editor;
 namespace support = spade::sandbox::editor::test;
+namespace eg = spade::sandbox::end_goal;
 using spade::Result;
 using Element = spade::vehicles::ModelIssue::Element;
 
@@ -300,6 +304,38 @@ TEST(EditorRun, ARunSizesItsCellForItsLargestDroneNamingIt) {
     EXPECT_EQ(run->grid_cell(), 2.0f * proxy);
     EXPECT_EQ(run->cell_sized_for(), "phantom");
     EXPECT_TRUE(run->state_of("phantom").has_value());
+}
+
+// Item (3) (L9; the lead, 2026-11-04): the Phantom placed as the editor
+// places it, its origin rest_height() above the ground under the pick, rests
+// still in Run now its rest is physics::lowest_contact_point(), the contact
+// pass's own points: over 1.0 s disarmed (240 ticks at 240 Hz) it moves 10 mm
+// at most and does not tilt (Physics measured 1.05 mm and 0; Test/Docs'
+// placed-at, kStillMove and kStillTilt).
+TEST(EditorRun, ThePlacedPhantomRestsStillOnItsContactSet) {
+    const Result<ed::LibraryItem> item = ed::item_from_file(std::filesystem::path(SPADE_ASSETS_DIR) / "library" /
+                                                            "drones" / "phantom3_class.model.yaml");
+    ASSERT_TRUE(item.has_value()) << item.error().context;
+    const spade::WorldDesc world = support::sample_world();
+    const Result<spade::scene::ComposedScene> ground = ed::compose_together(support::sample_scene(), world);
+    ASSERT_TRUE(ground.has_value()) << ground.error().context;
+    const glm::vec3 above(-4.0f, 5.0f, 4.0f);
+    const std::optional<float> down = ed::detail::march(ground->world.sdf, above, glm::vec3(0.0f, -1.0f, 0.0f));
+    ASSERT_TRUE(down.has_value()) << "no ground under the pick";
+    const glm::vec3 at(above.x, above.y - *down + ed::rest_height(*item), above.z);
+    const spade::scene::SceneDesc s = with_library_drone(support::sample_scene(), "phantom3_class", "phantom", at);
+    Result<ed::EditorRun> run = ed::EditorRun::start(s, world, ed::records_for(support::hover_scene()));
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    for (int t = 0; t < 240; ++t) ASSERT_TRUE(run->step(1).has_value()) << "tick " << t;
+    const std::optional<spade::FrameState> now = run->state_of("phantom");
+    ASSERT_TRUE(now.has_value());
+    const float moved = glm::length(now->pos - at);
+    const float tilt = eg::tilt_of(now->orient);
+    std::printf("[ rest ] the placed Phantom after 1.0 s of Run: moved %.3f mm, tilted %.6f degrees\n",
+                static_cast<double>(moved * 1000.0f), static_cast<double>(tilt * 57.29578f));
+    EXPECT_LE(moved, eg::kStillMove);
+    EXPECT_LE(tilt, eg::kStillTilt);
+    EXPECT_LT(tilt, 1.0e-4f) << "level: it rests on its own points, not the sphere";
 }
 
 // The props spin (L7c2, Core's posing rule): each vehicle's blade azimuths

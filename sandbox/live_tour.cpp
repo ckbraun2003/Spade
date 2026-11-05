@@ -123,15 +123,11 @@ constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "edi
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
 // airflow/not-available went when the chapter went live on the library's
-// reference quad (N4).
-// - editor.add_drone/placed-at (the lead, 2026-10-22): its stillness half.
-//   The rest half is the step's hard "rests" check.
-const std::vector<KnownOpen> kKnownOpen = {
-    {"editor.add_drone/placed-at",
-     "ground contact is the model's one proxy sphere (its rotor reach: the Phantom's 0.296 m, the reference "
-     "quad's 0.150 m before 2026-10-27); resting on the lowest posed part buries it, so Run lifts the drone. "
-     "Physics owns the fix: contact against the posed parts."},
-};
+// reference quad (N4). editor.add_drone/placed-at went when the contact pass
+// did (L9, 3ed1a95a; the lead, 2026-11-04): a drone rests on its own contact
+// points, so Run no longer lifts it, and the editor places it on the same
+// points (rest_height()).
+const std::vector<KnownOpen> kKnownOpen = {};
 
 [[nodiscard]] std::string fmt(float v) {
     char text[32];
@@ -1288,7 +1284,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
             editor::detail::march(w().composed().world.sdf, above, glm::vec3(0.0f, -1.0f, 0.0f));
         p.rest_gap = down ? low - (above.y - *down) : std::numeric_limits<float>::quiet_NaN();
         // placed-at's rest half, a hard check by its own limits: where asked,
-        // resting on its own lowest part. Its stillness half is known-open.
+        // resting on its own contact points. Its stillness half is the check below.
         const float dx = std::abs(p.position.x - p.pick.x);
         const float dz = std::abs(p.position.z - p.pick.z);
         s.check(dx <= end_goal::kPlaceXZ && dz <= end_goal::kPlaceXZ && p.rest_gap >= end_goal::kRestLo &&
@@ -1676,7 +1672,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // was simulated for (full throttle climbs past it); Up, held, tilts the
     // nose toward the keys' 30 degrees down. Judged by armed, climbs and
     // follows-attitude on the run's own frames, so none depends on the spawn
-    // height (Run's pop: editor.add_drone/placed-at). follows-attitude counts
+    // height (the placed drone rests on its contact points). follows-attitude counts
     // from the press, the setpoint's 0.5 s ramp included; the headless twin
     // is FlightController.TheToursStagingFromThePilotsKeysPassesArmedClimbsAndFollows.
     t.step("editor", "fly", [&] {
@@ -1744,7 +1740,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         FrameInput up_arrow;
         up_arrow.attitude_pitch = -1.0f;  // Up: the nose down
 
-        if (!fly(per_second * 3 / 2, none)) return;  // disarmed: Run's pop, then at rest
+        if (!fly(per_second * 3 / 2, none)) return;  // disarmed, at rest
         const double arm_s = now_s();
         if (!fly(1, space) || !fly(per_second, none)) return;
 
