@@ -498,14 +498,17 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
 
 // L13 (4) (the lead, 2026-11-04; Physics' wake-cost measurement): each level
 // states its cost in a sentence under the inspector's Physics combo, against
-// the careful step. Real time's wake is within 1% and its pressure is
-// unconverged on most steps (plan A); Detailed's wake is within 4%.
+// the same run at CFL 0.5 (the lead's review, 2026-11-04: the reference is
+// named so a reader can check it). Real time's wake is within 1% and its
+// pressure is unconverged on most steps (plan A); Detailed's wake is within 4%
+// and the load on the body within about 40%.
 TEST(EditorAirflow, EachLevelStatesItsCostInOneSentence) {
     EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::real_time),
-                 "Discs only: the wake is within 1% of the careful step's, and the pressure is unconverged on most "
-                 "steps.");
+                 "Discs only: the wake is within 1% of the same run at CFL 0.5, and the pressure is unconverged on "
+                 "most steps.");
     EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::detailed),
-                 "The body in the air: the wake is within 4% of the careful step's.");
+                 "The body in the air: the wake is within 4% of the same run at CFL 0.5, and the load on the body "
+                 "within about 40%.");
 }
 
 // D10 (Cameron's direction via the lead, 2026-11-03): the session's physics
