@@ -1,6 +1,6 @@
 # L4 to L6, the LBM's nests, coupling and resolved rotors: tolerances fixed before the first run
 
-**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03. None of these cases has run. Physics reviews it with L2 and L3's note.
+**Owner:** Test/Docs. **Status:** reviewed by Physics, 2026-11-04 (`.agents/physics-band-stack-review.md`), with its fixes and answers folded in (the lead's L26). None of these cases has run.
 **For:** L4 (nests and the one-way coupling), L5 (Caradonna–Tung) and L6 (the drone's rotors, blade-resolved) of Physics' P5 plan (`../physics/plans/2026-11-03-p5-blade-resolved-plan.md`), in the shape of L1's and L2–L3's notes (`2026-11-03-l1-lbm-tolerances.md`, `2026-11-03-l2-l3-lbm-tolerances.md`).
 **The rule** (`01-verification.md`, "Validation against published data"): a tolerance is fixed before the first run, from the reference and the method, never from our solver's error. It is not loosened after a run without a lead decision recorded with its reason. A miss is recorded as a miss.
 
@@ -21,7 +21,7 @@ Lattice units are as in L1's note. Bands are built as in L2–L3's note: term by
 - **What the nest takes:** its outermost faces take the NS velocity, interpolated in space and in time between NS steps. The nest's density is its own.
 - **Where the mismatch can be exact:** where both tiers hold the same exact solution (uniform flow, planar Couette), the nest must equal the NS field to rounding. There the coupling's mismatch is a band.
 - **Where it can't:** in a wake, the tiers differ in physics (the LBM is viscous and weakly compressible; C8's NS run is inviscid), so the mismatch is reported, not banded.
-- **f_neq at the coupled faces:** the coupled faces need an f_neq. If they set equilibrium only, the boundary's stress is wrong and a shear slips by O(dx). The Couette band assumes f_neq is rebuilt from the NS field's strain (open item 2).
+- **f_neq at the coupled faces:** the coupled faces need an f_neq. If they set equilibrium only, the boundary's stress is wrong and a shear slips by O(dx). The Couette band assumes f_neq is rebuilt from the NS field's strain, and Physics confirmed it (2026-11-04): f_neq,i = −(w_i ρ0 τ / c_s²) Q_i : S at the nest level's τ. Equilibrium only is the second control.
 
 ## L4a. Uniform flow through a nest, coupled to the NS grid
 
@@ -32,7 +32,7 @@ Lattice units are as in L1's note. Bands are built as in L2–L3's note: term by
 - **The LBM nest:** level 0 is a 16³ box at the NS's dx, coupled one way. Level 1 is a 2:1 box of 8³ coarse cells (16³ nodes) at its centre.
 - **The flow:** u_lat 0.05 on level 0 (the levels share u_lat under acoustic scaling), ν_lat 1e-3 on level 0, WALE on at C_w 0.5.
 - **The run:** long enough for the flow to cross level 0 twice: 2 × 16/0.05 = 640 level-0 steps.
-- **If Physics' L4 moves a hub-fixed nest,** the same run with the nest moving at a constant W through the field is the second row. The field must stay U.
+- **Nests sit still** (Physics, 2026-11-04): the drone is held, and a moving nest waits for a request that flies through air. So L4a has one row.
 
 | Measure | Tolerance | Built from |
 |---|---|---|
@@ -85,7 +85,7 @@ Lattice units are as in L1's note. Bands are built as in L2–L3's note: term by
   - Level 0 at the NS's 1 cm, 30 × 40 × 30 cells, from 1R above the disc to 3R below it, ±1.5R across.
   - Level 1 at 5 mm (R/dx 20), 48 × 60 × 48 nodes, from 0.5R above to 2.5R below, ±1.2R across.
 - **The flow:** u_lat 0.05 at 8 m/s, C8's far-wake scale, on both levels. That makes level 0's step 62.5 µs, so 20 level-0 steps per NS step: 15 360 level-0 and 30 720 level-1 steps. ν_lat from air's 1.5e-5 m²/s: 9.4e-6 on level 0. WALE on at C_w 0.5.
-- **The disc:** both tiers receive it (spec §1.3). The nest gets the same 5 × 32 points and Peskin kernel by Guo's forcing, so its injected momentum is J to rounding, a unit check.
+- **The disc:** both tiers receive it (spec §1.3). The nest gets the same disc (thrust, torque, centre, axis, the Peskin kernel, Guo's forcing), with its points by the density rule at its own dx: 10 × 64 at R/dx 20, not the NS tier's 5 × 32 (Physics' F2). At 5 × 32 the rings would be 4 cells apart (3.7 on the outer arc), wider than the kernel's 4-cell support, and the spread would be dotted. The injected momentum is J to rounding, a unit check that holds for any point set, since the kernel is a partition of unity.
 - **The measure's window:** C8's own, steps 385 to 768 in NS steps.
 
 | Measure | Tolerance | Built from |
@@ -93,7 +93,7 @@ Lattice units are as in L1's note. Bands are built as in L2–L3's note: term by
 | The mean downwash over level 1's nodes within 0.5R of the axis, 2R below, over C8's window | within 10% of 7.5777 m/s | C8's band (plan A Task 11, spec §11.2), unchanged. The Mach term, Ma² = 0.0075, and the interface terms of L4c are each under a tenth of it |
 | The same, minus the NS-only run's 7.8893 m/s | report only | The tiers' difference, not a reference |
 | The coupling's mismatch: the rms of \|u_nest − u_NS\| / v_h over level 0's first interior layer | report only | The tiers differ in physics there (viscous against inviscid, weakly compressible against incompressible), so no exact solution bounds it. L4a and L4b band it where one does |
-| The nest's momentum budget: the disc's J against the momentum flux through level 0's boundary plus the change inside, over the window | report only | It closes to the interfaces' leak. Its band follows once Physics names the interpolation orders (open item 1), by L4c's method |
+| The nest's momentum budget: the disc's J against the momentum flux through level 0's boundary plus the change inside, over the window | report only | It closes to the interfaces' leak. The orders are named (open item 1 below: p ≥ 2), so its band is Test/Docs', by L4c's method, before L4d's first run |
 | The disc's injected momentum per step in the nest against J | relative 1e-6 | Peskin's kernel is a partition of unity per axis (spec §3.1), so it is exact up to rounding |
 
 ## L4e. Exact checks and cost
@@ -156,11 +156,11 @@ The shape is `01-verification.md`'s. Each opening line ends with `LBM`, and `tol
 - **F4 (Landgrebe's report), declined by the lead (L20).** L6's contraction stays report only.
 - **UIUC's measurement uncertainty** would matter only if an L6 thrust row were banded. None is.
 
-## Open, for Physics before the first run
+## Physics' answers to the items left open (2026-11-04)
 
-1. **The interface's interpolation orders,** in space and in time, coarse to fine and fine to coarse. L4c's bounds take p = 2. Name the orders, and L4d's and L6's momentum budgets get bands by the same method.
-2. **f_neq at the coupled faces.** Rebuilt from the NS field's strain, or equilibrium only? L4b's band assumes the first.
-3. **A hub-fixed nest that moves.** If L4 moves nests with a hub, L4a's second row applies. If nests only sit still, drop it.
-4. **The disc in the nest by Guo's forcing,** with the NS tier's points and kernel, so both tiers receive the same source (spec §1.3). Confirm.
-5. **L5's bands:** now in their own note (above), which has its own open items.
-6. **L6's references:** the props' airfoils are unknown, so L6's thrust is report only. A prop with a published section, or one measured for the purpose, would be needed to validate it.
+1. **The interface's interpolation orders:** closed. Coarse to fine, cubic in space (4-point Lagrange on ρ, u and f_neq) and quadratic in time (three coarse levels). Fine to coarse, restriction by injection of the rescaled populations. That is p ≥ 2, so L4c's bounds (which take p = 2) stand with margin. Physics confirms the orders against Lagrava et al. when L4 starts. If L4 builds a conservative (volumetric) interface instead, the bands only gain room. L4d's and L6's momentum-budget bands are built from these orders by L4c's method, by Test/Docs, before each case's first run.
+2. **f_neq at the coupled faces:** closed. Rebuilt from the NS strain (above).
+3. **A hub-fixed nest that moves:** closed. None; L4a's second row is dropped.
+4. **The disc in the nest by Guo's forcing:** closed. Confirmed, with F2's point count (L4d above).
+5. **L5's bands:** in their own note, which has its own answers.
+6. **L6's references:** closed. Agreed: the props' airfoils are unknown, so L6's thrust stays report only.

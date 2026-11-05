@@ -1,6 +1,6 @@
 # L2 and L3, the LBM's walls and wall model: tolerances fixed before the first run
 
-**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03. None of these cases has run. Physics reviews it before L2's GREEN.
+**Owner:** Test/Docs. **Status:** reviewed by Physics, 2026-11-04 (`.agents/physics-band-stack-review.md`), with its fixes and answers folded in (the lead's L26). None of these cases has run.
 **For:** L2 (walls) and L3 (the wall model) of Physics' P5 plan (`../physics/plans/2026-11-03-p5-blade-resolved-plan.md`, "The plan (the LBM route)"), in the shape of L1's note (`2026-11-03-l1-lbm-tolerances.md`). This note fixes each case's configuration, measures, tolerances and record before the first run. L2's and L3's tests read their tolerances from here, and each record's `tolerance:` line cites this note.
 **The rule** (`01-verification.md`, "Validation against published data"): a tolerance is fixed before the first run, from the reference and the method, never from our solver's error. It is not loosened after a run without a lead decision recorded with its reason. A miss is recorded as a miss.
 
@@ -19,12 +19,12 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 **2. The loads in fp32.** Each cut link's momentum exchange carries about 2 w_i ρ0 c_i of the rest state, the ambient pressure ρ0 c_s².
 - **In exact arithmetic it cancels.** Along every lattice line, each entry into the solid is matched by an exit, in the opposite direction with the same weight. So the rest state's sum over a closed body is zero, line by line.
 - **In fp32 it does not.** The sum's rounding scales with the rest state's partial sums, not with the load. The rest state over the dynamic pressure is c_s²/(½u²) = 2/(3u_lat²): 1070 at L2a's u_lat 0.025, and 67 at u_lat 0.1. A random-walk estimate puts L2a's side forces at about 0.01 of ½ρU²πR², and the plate's couple at about a quarter of itself.
-- **So every band below assumes the rest state comes off each link before the sum.** Either f is stored as f − w_i ρ0, or each link's exchange subtracts 2 w_i ρ0 c_i. Both are exact, since the rest state cancels line by line. L5's blade loads need the same (open item 1).
+- **So every band below assumes the rest state comes off each link before the sum.** Physics' ruling (2026-11-04): **shifted storage**, f′ = f − w_i ρ0 with ρ0 = 1, for L1's CPU reference and its GPU twin. It is exact algebra: Σf′ is ρ − ρ0, Σc f′ is the momentum, the equilibrium is w_i[ρ′ + ρ(u·c/c_s² + …)], streaming is unchanged, and both bounce-backs keep their coefficient sums at 1, so the shift passes through them (Bouzidi's interpolation and the moving-wall term included). The exchange then needs no subtraction, since the shift removes 2 w_i ρ0 c_i from every link. L1's bands were built for unshifted storage and only gain room. L5's blade loads use the same. Each record's `config:` line prints `rest state: shifted storage, f' = f - w_i rho0`.
 
 **3. Moving walls.** A moving wall adds the moving-wall term to each link, and a node the wall uncovers is refilled.
 - **The refill's error is bounded by its gross rate.** For the rotating plate (L2c), the angular momentum carried by the nodes uncovered each step is 0.035 Re of the couple (by quadrature over the spheroid's trailing surface, at ρ0 and the wall's velocity). A refill rule that got every node wholly wrong would move the mean couple by at most that.
 - **S2's Couette (L2b) turns a curved part without changing its links**, since a cylinder looks the same at every angle. So it checks the moving-wall term with no refill, and the plate then adds the refill alone.
-- **The momentum exchange's moving-wall form,** for example Wen et al.'s Galilean-invariant one (2014, J. Comput. Phys. 266), and the refill rule are Physics' to name. Each record's `config:` line names both (open item 4).
+- **The momentum exchange's moving-wall form,** for example Wen et al.'s Galilean-invariant one (2014, J. Comput. Phys. 266), and the refill rule are named by Physics (2026-11-04). The exchange is Wen, Zhang, Li & Fang's Galilean-invariant form (the link velocity relative to the wall, c_i − u_w). The refill is Lallemand & Luo's equilibrium refill (2003, J. Comput. Phys. 184: ρ from the fluid neighbours, u the wall's velocity at the node). Each record's `config:` line prints both, and Physics confirms each against its paper when the case is built.
 
 **4. Sound from the start.** A wall that appears in a moving fluid, or a field that doesn't match the wall, launches sound of pressure ρ0 c_s u_n, where u_n is the mismatched normal velocity. In C_p that is 2 u_n/(Ma U): at Ma 0.043, a staircase's normal flux of a tenth of U gives a pulse of C_p ≈ 5. The NS tier's projection removes it in one step. The LBM radiates it at c_s, so:
 - L2a starts from the matched potential flow, not from a uniform stream.
@@ -64,6 +64,8 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 | max(\|F_y\|, \|F_z\|) / (½ρU²πR²), at n₁ | ≤ 0.002 | ≤ 0.002 | ≤ 0.002 | ≤ 0.002 |
 | The drag \|F_x\| / (½ρU²πR²), at n₁ | report only | report only | report only | report only |
 | The first measure's change from n₁ to n₂ | report only | report only | report only | report only |
+| The surface C_p by L5's rule (below): max \|C_p,s − (1 − (9/4) sin²ϑ)\| over the same 52 points, at n₁ | report only | report only | report only | report only |
+| C_p at the stagnation sample (ϑ = 180°) and at one shoulder sample (ϑ = 90°, first meridian), every 2 steps from step 0 to n₂ | report only (series) | report only (series) | report only (series) | report only (series) |
 | Order check, samples fixed at r = 4R/3 | | e(12) ≤ 0.7 e(6) | | report only |
 
 **What the C_p band is built from** (potential flow's ∂C_p/∂R at the samples peaks at 1.53/R at R/dx 6 and 2.48/R at 12):
@@ -77,6 +79,10 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 - **The side forces:** no source. The configuration is mirror-symmetric in y and z, so only the summation's rounding of the dynamic part is left, with the rest state off (above), under 10⁻³.
 - **The drag** at n₁ is an impulsive, viscous start, which has no closed form. It is printed, not checked.
 - **The order check** is halfway's. At r = 4R/3 its wall term halves with dx, and e(12) ≈ 0.5 e(6) by the terms above. 0.7 is an observed order of at least 0.5, as the solids note's. Bouzidi's is report only, since its shrinking terms are the size of its floors (the boundary layer, the Mach term and the box).
+- **The surface C_p, report only (Physics' F3).** L5 reads the pressure at a tap on the blade's surface by extrapolation: along the SDF normal at the surface point, trilinear ρ at 2 dx and 3 dx out, then p_s = 3 p(2 dx) − 2 p(3 dx) (the extrapolation amplifies noise about 3.6 times, which L5's mean over the last revolution and both blades takes out). F5's m_p does not contain that reading error, since F5 reads the wall directly. So L2a measures it on a known field: the same rule at the 52 surface points, against the exact surface C_p = 1 − (9/4) sin²ϑ, at R/dx 6 and 12.
+  - **Why a sphere bounds the blade's:** at R/dx 6 the sphere's radius of curvature is 6 cells, at or under the blade's from x/c 0.05 (about 8 cells at c = 32 cells; about 43 by x/c 0.2). So the larger of the two sizes' errors bounds the reading term for every banded tap.
+  - **Where it goes:** L5's C_p band gains this term (m_s, in L5's note), fixed by Test/Docs from L2a's record before L5's first run. The record says it is a proxy bound: the sphere has no suction peak.
+- **The start's sound, report only (Physics' F4).** The matched potential flow still leaves a staircase mismatch (a C_p pulse of about 5 at R/dx 6, above). The reading at n₁ is after the front has passed the samples, but the tail is not bounded here. So the record carries the C_p time series at the two samples named in the table, every 2 steps from step 0 to n₂. n₁ and the bands stand. If n₁ misses, the series shows whether the start was sound, and the lead decides on that evidence, not on a loosened band.
 
 ## L2b. S2's Couette, in the LBM (added)
 
@@ -150,7 +156,16 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 - **A moving part's links and q at a pose equal a static part's built at that pose, bit for bit.** This is the "rebuilt from the posed SDF each step" rule, checked directly.
 - **CPU = GPU to the bit**, with the loads summed in `reduce.hpp`'s order (the plan's rule).
 
-## L3a. The u_τ solve
+## L2e. The steady cylinder at Re 20 and 40 (added; after L2c has passed; opt-in)
+
+**Why:** Physics' answer to open item 8. It is the only viscous force in L2 or L3 checked against published data: L2a reads the pressure early, the plate is Stokes flow, and L2b's Couette is exact, not measured.
+
+**Reference.** The reference values: Dennis and Chang 1970, fetched when L2c passes (the lead rules that fetch then; none is made now). Spec §11.2's C2: C_d and the wake's L/D at Re 20 and 40, each within 5%.
+
+**Configuration (Physics):** a quasi-2D slab one node thick, z periodic; the cylinder at Re = UD/ν of 20 and 40; WALE off (laminar); Bouzidi on the cylinder, shifted storage as above; the GPU, opt-in (`SPADE_AIRFLOW_VALIDATION=1`), in release.
+
+**The band:** the spec's 5%, with the domain as a named term. The far field of a cylinder at Re 20 decays slowly, so a finite box changes C_d. Test/Docs sizes the box when the reference values are read, as the term that Physics asked for: if the domain term would take more than 2% of C_d (two of the five points) at an affordable box, the box grows first. The record prints the box and the term. The other terms follow L2b's method (the wall's dx/2 or Bouzidi's 3dx²/(8r_c), the Mach term at u_lat, the fp32 rounding). **None of them is fixed here**, since the reference's own scatter and its Re are not read; they are fixed before L2e's first run.
+
 
 **Reference.** Spalding's law (1961, J. Appl. Mech. 28): `y⁺ = u⁺ + e^(−κB) [e^(κu⁺) − 1 − κu⁺ − (κu⁺)²/2 − (κu⁺)³/6]`. Given the velocity u at the matching height y and ν, its root u_τ (with u⁺ = u/u_τ and y⁺ = y u_τ/ν) is found in double by bisection to 10⁻¹⁵. The law is the model, so its constants κ and B are configuration, named by Physics before the first run (open item 7).
 
@@ -165,33 +180,47 @@ As the solids note's were (`2026-10-13-solids-tolerances.md`): every reference h
 
 **Reference.** Spec §11.2's C5 turbulent case: White's correlation, `C_f ≈ 0.455/ln²(0.06 Re_x)`, as the spec gives it, with C_f within 10%.
 - **Where the form comes from.** White's *Viscous Fluid Flow* is a book, so no fetch reaches it. The form is the spec's, not read here from its source.
-- **Its x is measured from a virtual origin.** A turbulent inflow has no leading edge, so x = x_station − x₀, with x₀ named by Physics before the first run and printed in the record (open item 6). Its placement is a term of the band: d ln C_f/d ln Re_x = −2/ln(0.06 Re_x), about −0.17 here, so an x₀ off by δx moves C_f by 0.17 δx/x.
+- **Its x is measured from a virtual origin.** A turbulent inflow has no leading edge, so x = x_station − x₀, with x₀ placed once, from configuration (Physics, 2026-11-04): the inflow plane's Re_x is the one at which White's C_f equals the C_f of the configured initial profile (the wall model's own Spalding law at the configured Re_θ,in, κ 0.4 and B 5.5), solved in double. The record prints x₀, Re_x,in and that C_f. This cancels the gap between the model's log-law constants and those behind White's fit at the inflow, so the five stations test how C_f falls with Re_x, and the absolute level is the momentum balance's (below). Its placement is a term of the band: d ln C_f/d ln Re_x = −2/ln(0.06 Re_x), about −0.17 here, so an x₀ off by δx moves C_f by 0.17 δx/x.
 - **Comparing at Re_θ (Coles–Fernholz) would remove x₀, and waits.** No open source read so far states its constants with their scatter (F2, below). Until one does, it is neither checked nor printed.
 
 Two things differ from the spec, for the lead and Physics:
 - **The range is narrowed to what fits the cap.** Re_x 10⁶ to 10⁷ at 16 cells across δ would be about 650 M cells; the cap is about 38 M at 112 B a cell. The proposal, sized for Physics to set:
   - the measured region Re_x ≈ 2·10⁶ to 4·10⁶ (Re_θ ≈ 4000 to 6900);
   - 16 cells across δ at its start;
-  - about 950 × 100 × 64 cells, 6 M.
+  - about 950 × 100 × 96 cells, 9.1 M. The span is 96, not 64 (Physics' F1): it must be at least πδ, and δ grows as x⁰·⁸, from 16 cells at Re_x 2·10⁶ to about 28 at 4·10⁶, so πδ is about 88.
   Re_x 10⁷ waits for L4's nests (open item 5).
 - **The claim is narrowed to what a correlation can carry.** A pass says C_f is within 10% of White's correlation. It does not say the wall model is within 10% of the true C_f, because the correlations' own uncertainty at these Re_θ is not small, and none has been read from a source with its scatter. The lead's figures, not read here (L19c):
   - other fits put the Coles–Fernholz C at 3.7 to 3.94, against 4.127;
   - the Melbourne floating-element data (doi:10.1007/s00348-016-2168-y) give κ 0.38 and C 3.7 within 3% for Re_θ > 15 000;
   - at Re_θ ≈ 5000 that is a 3 to 4% spread in C_f.
-  So a C5 pass supports the wall model to about 14% of the measured C_f, not 10%, and its record says so.
+  So a C5 pass supports the wall model to about 14% of the measured C_f, not 10%, and its record says so. With x₀ fixed at the inflow, the stations test the fall of C_f with Re_x. The momentum balance below checks the level, and carries no correlation's scatter.
 
-**Configuration, fixed now except where Physics names it:**
-- **The flow:** U∞ at u_lat 0.1 (Ma 0.173); WALE on at C_w 0.5; the span periodic, at least πδ wide; the top face zero-gradient.
+**Configuration, fixed (Physics' names are in):**
+- **The flow:** U∞ at u_lat 0.1 (Ma 0.173); WALE on at C_w 0.5; the span periodic and 96 cells wide (πδ is about 88 cells at Re_x 4·10⁶); the top face zero-gradient.
 - **The wall model:** matched 3 cells off the wall (spec §11.3: a fixed 2 to 3), with Malaspinas & Sagaut's slip velocity (2014, J. Comput. Phys. 275). Matching at the first cell carries the log-layer mismatch (Kawai & Larsson 2012, Phys. Fluids 24), which is why the spec moves it off.
-- **The inflow:** turbulent, by Physics' method (for example Lund, Wu & Squires' recycling, 1998, J. Comput. Phys. 140). Nothing is measured within 10 δ_in of it, or within 2δ of the outlet.
+- **The inflow:** turbulent, by recycling and rescaling (Lund, Wu & Squires 1998, J. Comput. Phys. 140), with a 10 δ_in recovery length (Physics, 2026-11-04). Nothing is measured within 10 δ_in of it, or within 2δ of the outlet.
 - **The averaging:** over the span and over time, for at least 10 flow-throughs after 2 discarded.
+- **Spalding's constants:** κ 0.4 and B 5.5, Spalding's own and not tuned. The start and the Newton count are fixed in L3a's code and pinned by its 61-point test (the smallest count with a factor 3 of margin on the 1e-5); the record prints them.
 
 | Measure | Tolerance | Built from |
 |---|---|---|
 | \|C_f / C_f,White(Re_x) − 1\| at each of 5 stations, C_f from the mean modelled wall stress, x from the named x₀ | ≤ 0.10 | Spec §11.2's band, kept. The terms bounded here: the time-and-span average's sampling error, under 1% by the window; the Mach term, Ma²/2 = 1.5% (isothermal: the density's variation across the layer); and x₀'s placement, 0.17 δx/x. The rest is the wall model's and the grid's error, which is what C5 exists to measure. So, as C0b's 10% is, this is the literature's band, not one built term by term. The correlation's own uncertainty is outside it (above) |
 | The station's Re_θ, from the mean profile | report only | So the result can be set against a Re_θ correlation once one is read |
 | The mean u⁺ against the log law at each station; the matching height in y⁺ and cells per δ | report only | Spec §11.2 sets no turbulent profile band |
-| C_f against 2 dθ/dx (von Kármán's momentum integral) between stations | report only | A check that the modelled stress and the layer's growth agree |
+| The momentum balance, stations 1 to 5: the mean modelled wall stress over [x₁, x₅] (trapezoid over the five stations) against the balance's, \|τ̄_w,model / τ̄_w,balance − 1\| | ≤ 0.05 | Physics' A1, banded by the lead (L26). The balance is an identity, so its reference is the run's own conservation law, not a correlation: the one C5 number without White's 14%. Terms below |
+| C_f against 2 dθ/dx (von Kármán's momentum integral) between adjacent stations | report only | A check that the modelled stress and the layer's growth agree |
+
+**The momentum balance's band (A1).**
+- **The balance:** a control volume from the wall to a node row at 1.5 δ(x₅), from station 1 to station 5, the span periodic. All its terms are read from the run's mean fields: the momentum flux through the two ends, the mean pressure on the ends and the top face, the resolved Reynolds and subgrid stresses on the ends, and the top face's flux, read at its node row, so no velocity is interpolated there. Where the pressure gradient is zero it reduces to ∫τ_w dx = ρU²(θ₅ − θ₁), and the balance keeps the pressure and top-face terms.
+- **Why stations 1 and 5 only:** θ grows 2^0.8 = 1.74 times from Re_x 2·10⁶ to 4·10⁶, so θ₅ − θ₁ is about 0.69 θ₁. Between adjacent stations the difference is about a sixth of that and a 1% error in θ is amplified past 8%, so the adjacent pairs are report only.
+- **The terms:**
+  - **Sampling,** 2.8%: θ₁ and θ₅ at 1% each, the bound C_f's window carries, in quadrature over the difference: 1% × √(1 + 1.69²) / 0.69.
+  - **Compressibility,** 1.5%: Ma²/2 at u_lat 0.1, the density's variation across the layer (isothermal).
+  - **The profile's quadrature,** 0.2%: θ by the trapezoid rule over the nodes, from the wall, on a Spalding-plus-wake reference profile (Π 0.55, Re_τ 1500 at 16 cells across δ and 2400 at 28) comes out 2.7% and 1.5% low, and those nearly cancel in θ₅ − θ₁ (+0.14%). The unit test recomputes this from the formula at the run's own cells per δ and prints it. The first node's velocity is the wall model's, so this is the reference profile's term, not the run's.
+  - **The trapezoid over five stations** of the modelled stress, under 0.1% (C_f's curvature over a uniform Re_x spacing).
+  - **Top face,** none: it lies on a node row, so there is nothing to interpolate.
+  The sum is 4.6%, rounded up to 0.05.
+- **If the sampling term is missed:** the record prints θ's block-mean spread. If it exceeds 1%, the run is judged unsettled and runs longer. The band is not widened.
 
 ## The records
 
@@ -201,10 +230,11 @@ Two things differ from the spec, for the lead and Physics:
 
 | Record | File | Opening line | Measures, in order |
 |---|---|---|---|
-| L2a | `s1-sphere.md` | `S1 sphere in a uniform stream, R/dx 6, Bouzidi, LBM` (one per size and wall) | max \|C_p − C_p,pot\| at n₁; the side forces; the drag, report only; the change to n₂, report only; at R/dx 12, the order check |
+| L2a | `s1-sphere.md` | `S1 sphere in a uniform stream, R/dx 6, Bouzidi, LBM` (one per size and wall) | max \|C_p − C_p,pot\| at n₁; the side forces; the drag, report only; the change to n₂, report only; the surface C_p, report only; the C_p series at two samples, report only; at R/dx 12, the order check |
 | L2b | `s2-couette.md` | `S2 circular Couette, R1/dx 16, Bouzidi, LBM` | the profile; the couple; at 32, the order check |
 | L2c | `l2-rotating-plate.md` (new) | `L2 rotating plate, oblate spheroid c/a 0.5, a/dx 16, Bouzidi, LBM` | the mean couple; the symmetry measure; the spread, report only; at 16, the order check; the walls' cost, report only |
-| L3b | `c5-flat-plate.md` (new) | `C5 turbulent flat plate, wall-modelled, Re_x 2e6-4e6, LBM` | C_f at the 5 stations; then the report-only lines |
+| L2e | `c2-cylinder.md` (new, after L2c) | `C2 steady cylinder, Re 20, quasi-2D slab, Bouzidi, LBM` (one per Re) | C_d; L/D; the domain term. Bands fixed when its reference is read |
+| L3b | `c5-flat-plate.md` (new) | `C5 turbulent flat plate, wall-modelled, Re_x 2e6-4e6, LBM` | C_f at the 5 stations; the momentum balance; then the report-only lines |
 
 L2d and L3a are unit tests and leave no record.
 
@@ -228,13 +258,15 @@ Nothing in L2 or L3 needs a data file: potential flow, Couette, Jeffery's couple
     - Xia, Z., Zhang, P. & Yang, X. I. A., "On skin friction in wall-bounded turbulence", arXiv:2007.14619v1 (SHA-256 d4a5e36b839525a31a1c04025dbd1fc6fa007cb76017b0d80c0a5d3a4c831210). It uses the log law, not Coles–Fernholz. Its one figure on the constants' effect is Crook's (2002, CTR Annu. Res. Briefs): a change of about 0.5 in the log law's slope 1/κ gives a 12% difference in u_τ.
   - **So L3b takes the spec's White's correlation, and Coles–Fernholz waits** (the lead's rule, L19c).
 
-## Open, for Physics before the first run
+## Physics' answers to the items left open (2026-11-04)
 
-1. **The loads' rest state** (section 2 above). The bands assume each link's rest state comes off before the sum, by shifted storage or by subtraction. Without that, fp32 rounding is about the size of L2a's side-force band and a quarter of the plate's couple, and the same holds for L5's blade loads.
-2. **S2's Couette is added** as L2b, to split the plate's moving-wall term from its refill. Confirm, or drop it.
-3. **The plate's reference** is Jeffery's exact couple on a spheroid (a, a, a/2), not a fine grid. A thinner plate, c/a 0.25, would put its rim radius at one cell at a 16. Its Bouzidi term would then be 0.081, and its band about 0.12.
-4. **The moving wall's momentum exchange and refill rule:** name both before L2c's first run. Each record's `config:` line prints them.
-5. **C5's domain and inflow:** the method, the 10 δ_in recovery length, and the sizes above, about 6 M cells for Re_x 2·10⁶ to 4·10⁶. The spec's Re_x 10⁷ waits for L4.
-6. **C5's virtual origin x₀:** Physics names how x₀ is placed before the first run, and the record prints it. Comparing at Re_θ (Coles–Fernholz) would remove x₀, and waits for a source that states its constants with their scatter.
-7. **Spalding's constants and the Newton count:** name κ and B (Spalding's own are 0.4 and 5.5), the start and the count, before L3a.
-8. **No case in L2 checks a viscous force against published data:** L2a reads the pressure early, and the plate is Stokes flow. C2 (spec §11.2: Dennis & Chang 1970, the steady cylinder at Re 20 and 40, C_d and L/D within 5%) would. Consider it for L2 or before L5. Its data would then need a fetch.
+1. **The loads' rest state:** closed. Shifted storage, f′ = f − w_i ρ0 (section 2 above).
+2. **S2's Couette (L2b):** closed. Keep.
+3. **The plate's reference:** closed. Keep c/a 0.5 (rim 4 cells at a = 16). A thinner c/a 0.25 plate can follow later, report only.
+4. **The moving wall's exchange and refill:** closed. Wen et al. 2014's Galilean-invariant exchange and Lallemand & Luo 2003's equilibrium refill (section 3 above).
+5. **C5's domain and inflow:** closed. Recycling and rescaling (Lund, Wu & Squires), 10 δ_in recovery, span 96 (Physics' F1).
+6. **C5's virtual origin x₀:** closed. Set once from the configured initial profile's C_f at the inflow (L3b above).
+7. **Spalding's constants and the Newton count:** closed. κ 0.4, B 5.5; the start and count are fixed in L3a's code and printed.
+8. **A viscous force against published data:** closed. L2e, after L2c passes. The fetch of Dennis & Chang is the lead's to rule then.
+
+**Still open, Test/Docs':** L2e's bands and box, fixed when its reference values are read. L5's m_s, fixed from L2a's record before L5's first run (L5's note).

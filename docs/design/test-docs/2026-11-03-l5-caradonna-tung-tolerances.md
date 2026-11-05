@@ -1,6 +1,6 @@
 # L5, Caradonna–Tung blade-resolved: tolerances fixed before the first run
 
-**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03 (the lead's L20). None of it has run. Physics reviews it with L2 to L6.
+**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03 (the lead's L20). None of it has run. Physics reviewed it with L2 to L6 on 2026-11-04 (`.agents/physics-band-stack-review.md`), and its fixes are folded in (the lead's L26).
 **For:** L5 of Physics' P5 plan (`../physics/plans/2026-11-03-p5-blade-resolved-plan.md`): one rotor resolved, Caradonna & Tung's model rotor at θ_c 8°, 1250 rpm, M_tip 0.439. P9 deferred these bands to D3 (`2026-11-03-p9-rotor-data-plan.md`, "No tolerance"), and D3 never ran, so they are fixed here.
 **The rule** (`01-verification.md`): a tolerance is fixed before the first run, from the reference and the method, never from our solver's error. A miss is recorded as a miss.
 
@@ -28,10 +28,10 @@ L5's verdicts hold only at this configuration. L6 claims L5's accuracy only wher
 | Condition | L5's value | Where it is fixed |
 |---|---|---|
 | Cells across the chord, innermost level | ≥ 32 (dx 5.95 mm at c 0.1905 m) | The P5 plan |
-| The wall rule | Bouzidi, moving, with the moving-wall term and the refill rule Physics names for L2c. Each link's rest state comes off before the sum | L2–L3's note: L2c, and section 2 |
-| The wall model | Physics names it: L3's (Spalding, matched 3 cells off), or none. The record states which, and the matching height in y⁺ | L3; open item 1 |
+| The wall rule | Bouzidi, moving: Wen et al. 2014's Galilean-invariant exchange and Lallemand & Luo 2003's equilibrium refill, as L2c. Shifted storage, f′ = f − w_i ρ0, so no rest state is subtracted | L2–L3's note: L2c, and section 2 |
+| The wall model | None (Physics, 2026-11-04). The layer, 3.9 mm, is 0.65 cell, so L3's 3-cell matching height lies outside it. Plain moving Bouzidi with WALE. The record prints δ/dx and the first node's y⁺ | L3; open item 1 |
 | u_lat at the tip | min(0.254, u_held/1.4) from L1's stability map | L1's note, the decision rule |
-| Nest levels | 3 levels, 2:1 by acoustic scaling, the innermost a slab 2.2R × 2.2R × 0.3R about the disc (the plan's cost table); the outer faces as Physics names them for a large still chamber | The P5 plan; L4's note |
+| Nest levels | 3 levels, 2:1 by acoustic scaling, the innermost a slab 2.2R × 2.2R × 0.3R about the disc (the plan's cost table); the outer faces a pressure outlet (ρ = ρ0, zero normal gradient of velocity, non-reflecting) on every face of the outermost level, with a sponge (viscosity ramped over 16 outer cells) inside each; the box sizes follow the plan's cost table and are printed, and the record shows the peak |u| in the face layer and the thrust's change over the last two revolutions, so a recirculating box shows | The P5 plan; L4's note |
 | The subgrid model | WALE at C_w 0.5 | L1's note, open item 3 |
 | The run | At least 5 revolutions from rest; every measure is the mean over the last revolution and both blades | Fixed here |
 | The path | GPU, bit-equal to the CPU reference | The plan's rule |
@@ -42,11 +42,12 @@ L5's verdicts hold only at this configuration. L6 claims L5's accuracy only wher
 
 ### C_p at the five stations
 
-**The measure:** at each station, the largest |C_p − C_p,T17| over the taps with x/c ≥ 0.05, on both surfaces. C_p is read on the surface at the tap's x/c, by the surface-pressure rule Physics names (open item 2). The pressure is normalised by the section's ½ρ(Ωr)², as Table 17's is.
+**The measure:** at each station, the largest |C_p − C_p,T17| over the taps with x/c ≥ 0.05, on both surfaces. C_p is read on the surface at the tap's x/c, by the surface-pressure rule (Physics, 2026-11-04): along the SDF normal at the tap's surface point, trilinear ρ at 2 dx and 3 dx out (2 dx is the nearest whose stencil is wholly fluid), extrapolated linearly to the wall, p_s = 3 p(2 dx) − 2 p(3 dx). It amplifies noise about 3.6 times, which the mean over the last revolution and both blades takes out. The pressure is normalised by the section's ½ρ(Ωr)², as Table 17's is.
 
-**The band** = m_p (F5) + the tap term + the compressibility term:
+**The band** = m_p (F5) + the tap term + the compressibility term + m_s:
 - **The tap term:** Table 17 prints x/c to 0.01, so a tap's position is ±0.005 c. Its term is that times the table's own slope between the neighbouring taps, at the station's worst tap.
 - **m_p:** F5's gap, read in-figure: the vertical C_p gap between F5's solid (captured-wake) curve and the plotted marker, at the marker's plotted x, for taps at x/c ≥ 0.05. Reading in the figure cancels the scan's 0.37° rotation and the markers' plotting offset (0.005 to 0.012 x/c left of Table 17's). It is the larger of the two readings, rounded up to 0.01 (the lead's rule, L21b). Values in "F5, read" below.
+- **m_s, the surface-pressure reading error (Physics' F3).** m_p is F5's method error against the data, and F5 reads the pressure at the wall. Our rule reads it from nodes 2 and 3 cells out, which is an independent term. m_s is the larger of L2a's report-only surface C_p errors at R/dx 6 and 12 (Bouzidi), a bound for every banded tap because the sphere's radius of curvature at R/dx 6 is at or under the blade's from x/c 0.05. Test/Docs fixes it from L2a's record **before L5's first run**, and L5 does not run before then. It is a proxy bound: the sphere has no suction peak, and the record says so.
 
 | r/R | Tap term | Compressibility, u_run 0.254 / 0.25 / 0.20 / 0.15 / 0.10 |
 |---|---|---|
@@ -65,15 +66,15 @@ The taps at x/c < 0.05 (the leading-edge peak) are printed beside it, report onl
 
 | Measure | Tolerance | Built from |
 |---|---|---|
-| \|C_L,ours,taps − C_L,T17,taps\| at each station | ≤ m_L + the station's Prandtl–Glauert fraction at u_run × C_L,T17,taps | m_L: F5's sectional-lift disagreement with the same data, in C_L, from its fig. 6 ("F5, read" below). The compressibility fraction is the table's percentage above (0.1 to 8.0%) |
+| \|C_L,ours,taps − C_L,T17,taps\| at each station | ≤ m_L + 2 m_s + the station's Prandtl–Glauert fraction at u_run × C_L,T17,taps | 2 m_s: the surface reading's bound on each surface, since the lift takes both. m_L: F5's sectional-lift disagreement with the same data, in C_L, from its fig. 6 ("F5, read" below). The compressibility fraction is the table's percentage above (0.1 to 8.0%) |
 | Our full-surface integral over the printed C_L | report only | It mixes our error with the 7.5% spread |
 | Our tap integral over the printed C_L | report only | The same, for the record |
 
 ### Figure 9's tip vortex path
 
-**The measure:** the tip vortex's descent z/R and radius r/R at each digitized age. The core is located by the λ₂ minimum in the half-plane at that age behind the blade (open item 4), and the result is the mean over both blades' vortices and the last revolution.
+**The measure:** the tip vortex's descent z/R and radius r/R at each digitized age. The core is located by the λ₂ minimum in the half-plane at that age behind the blade, on the field phase-locked to the blade and averaged over the last revolution, with a parabolic fit over the 3 × 3 nodes around the minimum (Physics, 2026-11-04); the record prints the level the core sits in, and the result is the mean over both blades' vortices and the last revolution.
 
-**The band** is the data's ±0.01, plus the age's ±4° times the path's own slope, plus the detection's half a cell. The half cell is taken at the level the core sits in, at most the second: 2 × 5.95 mm / 2R → 0.0052. Below u_run 0.254, a compressibility term adds to the descent: the descent scales with √C_T, so half the C_T term below times z.
+**The band** is the data's ±0.01, plus the age's ±4° times the path's own slope, plus the detection's half a cell. The half cell is taken at the level the core sits in, at most the second: 2 × 5.95 mm / 2R → 0.0052. It holds if the second level reaches at least 0.25R below the disc plane. Physics checked: the 295° core (z/R 0.212) is 41 cells down, in the second level, and the 50° and 162° cores (1 and 16 cells down) are in the innermost. Below u_run 0.254, a compressibility term adds to the descent: the descent scales with √C_T, so half the C_T term below times z.
 
 | Measure | Points | Tolerance at u_run 0.254 | Built from |
 |---|---|---|---|
@@ -126,14 +127,16 @@ If F5 doesn't give a measure (for example, no sectional C_L), that measure's row
 
 ## Fetches
 
-- **F5.** Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", NTRS 19910005815 (a NASA conference paper, its PDF listed as available, a US Government work). The authors and year are from memory, to be confirmed when it is read. It is for m_p, m_L and m_T: its Navier–Stokes solution against Caradonna & Tung's Table 17 and C_T at θ_c 8°.
+- **F5.** Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", NTRS 19910005815 (a NASA conference paper, its PDF listed as available, a US Government work). Confirmed from the NTRS record: NASA TM-102862, European Rotorcraft Forum, September 1990. Read once, and F5b was not needed ("F5, read" below). It was for m_p, m_L and m_T: its Navier–Stokes solution against Caradonna & Tung's Table 17 and C_T at θ_c 8°.
   - If it doesn't plot this case's stations, its NTRS neighbour 19850018358 (Caradonna & Tung's own "Finite-difference computations of rotor loads", NASA TM) is the second choice.
   - Read once, kept in `.agents/refs/`. Figures are read by eye, so the lead does the second reading.
 
-## Open, for Physics before the first run
+## Physics' answers to the items left open (2026-11-04)
 
-1. **The wall model at L5:** L3's, or none? At 32 cells per chord the layer is under a cell, so L3's matching height lies outside it. Either way the record says so.
-2. **The surface-pressure rule:** how C_p is read at a tap from the fluid nodes near an unresolved surface, for example extrapolated along the normal from two nodes. Name it before the first run. Its error is part of the method term.
+1. **The wall model at L5:** closed. None (the configuration table above); L6 does the same on the blades.
+2. **The surface-pressure rule:** closed. Linear extrapolation from 2 dx and 3 dx out (C_p, above). Its error enters the band as m_s (F3).
 3. **m from F5:** done (L21b). m_p and m_L are in "F5, read" above, read in-figure by Test/Docs and the lead. C_T is report only, since F5 prints none.
-4. **The vortex's locator:** the λ₂ minimum in the age's half-plane, or another. Name it, and the record prints it.
-5. **The outer faces and the box,** for a large still chamber ("special ducting designed to eliminate room recirculation", section 2). Name them, since they set the wake's start-up and the measures' settling.
+4. **The vortex's locator:** closed. The λ₂ minimum with a 3 × 3 parabolic fit (figure 9, above).
+5. **The outer faces and the box:** closed. A pressure outlet with a sponge (the configuration table above).
+
+**Still open, Test/Docs':** m_s, from L2a's record before L5's first run.

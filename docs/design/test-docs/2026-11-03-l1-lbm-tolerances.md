@@ -147,8 +147,13 @@ T is 0.47 Re rounded up, which leaves the slowest sound at 1% (above). The NS ti
 - **What it tests:** the field's transition carries the grid to its smallest scales, which is where an LBM goes unstable.
 - **What it cannot test:** after that, a decaying flow tests nothing. So the map covers the lattice's bulk through transition only. Walls (L2), nests (L4), and a sustained flow over many revolutions (L5) each carry their own stability in their own records.
 
-**The points.** u_lat 0.10, 0.15, 0.20, 0.25, 0.30, 0.35 and 0.40, each at ν_lat 0 (τ = ½, WALE's viscosity alone), 1e-6, 1e-5, 1e-4 and 1e-3, which makes 35 points.
+**The points.** u_lat 0.10, 0.15, 0.20, 0.25, 0.30, 0.35 and 0.40, each at ν_lat 0 (τ = ½, WALE's viscosity alone), 1e-6, 1e-5, 1e-4 and 1e-3, which makes 35 points. Four required rows follow (below), so the map is 39 points.
 - **Why these ν_lat:** Caradonna–Tung's levels sit between about 4e-7 and 5e-6. Its finest level, at dx 5.95 mm, has ν_lat = ν u_lat/(U_tip dx) = 1.7e-5 u_lat for air's 1.5e-5 m²/s, and acoustic scaling halves that on each coarser level. So ν_lat 0 and 1e-6 bracket its coarse levels, and 1e-5 its finest.
+- **Required rows: the cases' own points** (Physics' review of the L2–L6 bands, A2, 2026-11-04; the lead's L26). Each is a point the later cases run at, and the collision operator the map picks must hold at all four with WALE on:
+  - L2a: u_lat 0.025 at ν_lat 1.5e-4 and 3e-4 (τ − ½ = 4.5e-4 and 9e-4);
+  - L4d: u_lat 0.05 at ν_lat 9.4e-6 (τ − ½ = 2.8e-5);
+  - L5: u_lat 0.254 at ν_lat about 4.2e-6 (τ − ½ = 1.3e-5, from Re_c 1.95·10⁶ and 32 cells to the chord).
+  These are far past what plain BGK holds. The map runs them with WALE on as it runs the others. L2a itself runs with WALE off (L2–L3's note), and WALE's viscosity only adds, so a row that holds with it bounds a case that runs without it.
 - **How the record prints them:** ν_lat and τ − ½ as the solver holds them in fp32. One ulp of τ near ½ is 6e-8, so at ν_lat 1e-6, 3ν_lat is only 50 ulps.
 
 **Held, fixed now:** K* finite and at most 1.05 K*(0) at every sample (every 5 steps) to the horizon.
@@ -182,7 +187,7 @@ T is 0.47 Re rounded up, which leaves the slowest sound at 1% (above). The NS ti
 | C0a | `c0-taylor-green.md` | `C0 Taylor-Green, the 2D mode's exact decay, 64x64x1, u_lat 0.05, LBM` (one per N and per series point) | `\|nu_eff / nu - 1\|` with its tolerance. At N 64, the order check `e(64) / e(32)`, tolerance `<= 0.5`, or report only when e(32) is under a tenth of its band. In the series, `nu_eff / nu - 1` signed and the coefficient, both report only |
 | C0b | `c0-taylor-green.md` | `C0 Taylor-Green vortex, Re 1600, 128^3, LBM` (and 64^3) | The peak `epsilon*`; its `t*`; then `epsilon*` at `t*` 1 to 19, report only, each `reference:` line giving the DNS's value |
 | C1 | `c1-cavity.md` | `C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM` (four, one per row) | max `\|u - u_Ghia\|`; max `\|v - v_Ghia\|`; the steadiness; the peak `nu_t / nu`, report only |
-| The map | `l1-stability-map.md` (new) | `L1 stability map, 64^3 Taylor-Green, u_lat 0.25 (Ma 0.433), LBM` (one per u_lat) | For each ν_lat in order: the steps held, of the horizon; K* over K*(0) at the last sample held. Both report only |
+| The map | `l1-stability-map.md` (new) | `L1 stability map, 64^3 Taylor-Green, u_lat 0.25 (Ma 0.433), LBM` (one per u_lat: the seven above and 0.025, 0.05 and 0.254 for the required rows) | For each ν_lat in order: the steps held, of the horizon; K* over K*(0) at the last sample held. Both report only |
 
 **Two parser rules shape the lines** (`engine/analysis/validation.cpp`):
 - A measure's value must start with a number, with a unit after it if any. Readers split at the last ` = `.
