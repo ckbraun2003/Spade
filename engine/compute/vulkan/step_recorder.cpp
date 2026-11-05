@@ -521,6 +521,7 @@ Result<void> StepRecorder::record() {
     base.grid_entry_count = grid_.entry_count;
     base.grid_segment = grid_.segment;
     base.grid_segment_slots = grid_.segment_slots;
+    base.switches = shape_.switches;  // module API stage 6: which optional bindings hold a real array
 
     const auto emit = [&](uint32_t pipeline, const PassParams& params, uint32_t groups) {
         ChainCommand c{.is_dispatch = true, .pipeline = pipeline, .groups = {groups, 1u, 1u}};

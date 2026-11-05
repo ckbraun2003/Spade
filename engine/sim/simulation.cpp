@@ -15,6 +15,7 @@
 
 #include <glm/geometric.hpp>
 
+#include "compute/optional_bindings.hpp"
 #include "compute/sdf_program.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/backend.hpp"
@@ -464,8 +465,15 @@ std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedul
 
 // The bound tables the GPU mirror makes buffers from (L10), CPU-only ones left
 // out: an entry's index is its device table index.
-// RED stub (stage 6, Task 4): no switch is ever set until the optional bindings are built.
-uint32_t optional_switches(const modules::CompiledSchedule&) noexcept { return 0u; }
+uint32_t optional_switches(const modules::CompiledSchedule& schedule) noexcept {
+    uint32_t bits = 0u;
+    for (const compute::OptionalBinding& optional : compute::kOptionalBindings) {
+        const bool held = std::ranges::any_of(
+            schedule.arrays, [&optional](const modules::CompiledArray& array) { return array.name == optional.name; });
+        if (held) bits |= optional.switch_bit;
+    }
+    return bits;
+}
 
 std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule) {
     std::vector<compute::TableShape> out;
@@ -954,6 +962,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         shape.scratch = scratch_shapes(sim.schedule_, shape);
         // The bound configuration tables (L10): a buffer each, at its capacity.
         shape.tables = table_shapes(sim.schedule_);
+        // The optional bindings this set holds (module API stage 6): the recorder bakes the bits into every
+        // dispatch, and the mirror binds a zeroed buffer at each one whose array the walk above does not carry.
+        shape.switches = optional_switches(sim.schedule_);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams

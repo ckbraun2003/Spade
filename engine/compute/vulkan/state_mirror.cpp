@@ -12,6 +12,7 @@
 #include "bindings.gen.hpp"
 
 #include "compute/grid_entry.hpp"
+#include "compute/optional_bindings.hpp"
 #include "compute/sdf_program.hpp"
 #include "compute/step_params.hpp"
 #include "physics/contacts.hpp"
@@ -225,6 +226,9 @@ static_assert(sizeof(VkDeviceSize) >= 8 && sizeof(std::size_t) >= 8,
         {"gnss_sensors", gen::kBinding_gnss_sensors},
         {"gnss_ring", gen::kBinding_gnss_ring},
         {"gnss_sensors.slot_to_world", gen::kBinding_gnss_sensors_slot_to_world},
+        // The translation lock's rows (module API stage 6), the first OPTIONAL binding: bound to the walk entry when
+        // the set holds the lock module, and to a zeroed buffer (below) when it does not.
+        {"lock_rows", gen::kBinding_lock_rows},
     };
     for (const auto& [candidate, binding] : kTable) {
         if (name == candidate) {
@@ -361,6 +365,34 @@ Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& s
                                          .count = count,
                                          .byte_size = *bytes,
                                          .binding = scratch.binding});
+    }
+    // THE FIXED BINDINGS OF ABSENT OPTIONAL MODULES (module API stage 6; compute/optional_bindings.hpp). An optional
+    // binding whose array the walk does not carry gets a zeroed buffer of the table's `dummy_bytes`, so the descriptor
+    // set is complete and the recorder's switch keeps the kernel from reading it. It rides with the scratch (it is
+    // zero-filled at create, never uploaded, never read back), before the tables.
+    for (const OptionalBinding& optional : kOptionalBindings) {
+        const bool held_by_walk = std::ranges::any_of(
+            shape.arrays, [&optional](const StateArrayShape& array) { return array.name == optional.name; });
+        if (held_by_walk) continue;
+        const std::string name(optional.name);
+        const std::string where = "StateMirror::create: optional binding '" + name + "'";
+        uint32_t binding = 0;
+        if (!binding_for(name, binding)) {
+            return std::unexpected(Error{Code::internal, where + " has no entry in binding_for()"});
+        }
+        if (const auto taken = std::ranges::find(held, binding, &std::pair<uint32_t, std::string>::first);
+            taken != held.end()) {
+            return std::unexpected(Error{Code::invalid_argument, where + ": binding " + std::to_string(binding) +
+                                                                     " is already bound to " + taken->second});
+        }
+        Result<VkDeviceSize> bytes = buffer_bytes(name, optional.dummy_bytes, 1);
+        if (!bytes) return std::unexpected(bytes.error());
+        held.emplace_back(binding, "optional binding '" + name + "' (absent)");
+        out.push_back(DerivedBufferShape{.name = name + " (absent)",
+                                         .elem_size = optional.dummy_bytes,
+                                         .count = 1,
+                                         .byte_size = *bytes,
+                                         .binding = binding});
     }
     // THE BOUND CONFIGURATION TABLES (L10), after every scratch and by the same
     // rules: a float buffer at the table's capacity, its binding checked
