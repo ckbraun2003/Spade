@@ -6,8 +6,10 @@
 // GPU kernel that matches its CPU function, and the fields a module provides.
 // Stage 4: the arrays a module owns (its state), the rows it attaches to
 // bodies, the seeded streams those rows hold, and the scratch its passes share
-// within a substep. Grades and roles join the
-// descriptor in later stages.
+// within a substep. Stage 5: a grade per backend (core/grade.hpp) and the role a
+// module fills (kRoles), both declarations checked at compile_schedule() and
+// create() and spelt into no identity; component availability sits beside the
+// component type table (objects/component.hpp).
 #pragma once
 
 #include <algorithm>

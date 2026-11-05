@@ -612,6 +612,7 @@ TEST(ComponentAvailability, EveryTypeIsListedInIdOrderWithItsAvailability) {
    - Sharing removes the failure mode at no cost, and both presets test it.
    - If you prefer the refusal, Task 1 keeps `world_count` 1 and adds a Debug `assert`, and the two edited pins stay as they are.
 2. **Read-only views: const by type, or also an assert?** *Recommendation:* const by type alone (Task 2). The read path then holds no mutable pointer, and the cost is nil. A pass that asks a read view for mutable rows gets none, which its own output test shows. A silent unordered write is what nothing would catch.
+   - **Ruling (the lead, 2026-11-05):** const by type, and the request is also a fault. Task 1 landed with a sticky `ViewFault` and the step poison, and its rule is "a misuse is a fault, never a silent empty span", which post-dates the silent-empty answer above. So a non-const `world_rows<T>` or `all_rows<T>` on a view with no `writable` pointer (a read, or any table) records `ViewMisuse::read_view` and reads empty, and `step()` refuses at its end, naming the module, the pass and the view, then poisons. The correct path is unchanged. Task 2's first test pins the refusal instead of the count.
 3. **What grade does an undeclared module get?** *Recommendation:* `best-effort` on both backends. The alternatives:
    - require a declaration: every test-local module in `test_module_schedule.cpp` (dozens) is edited;
    - derive Vulkan `absent` from missing recipes: a second site for stage 2's per-pass refusal (`TD-9`).

@@ -4,6 +4,18 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### Module API stage 5: grades, roles and component availability (2026-11-05)
+
+The stage 5 plan's Tasks 2 to 8 (`docs/design/core/plans/2026-10-05-module-api-stage5-plan.md`; Task 1 merged `ba46d44`). No golden moved, the standard identity (`0x3303cfc86821f502`), the schema hash and snapshot format v3 are unchanged, and no module version moved.
+
+- **`core/grade.hpp`** (new, dependency-free): `Grade` (`absent`, `best_effort`, `banded`, `reference`, ordered) and `grade_name()`.
+- **`GradeDecl`** and **`ModuleDesc::grade`**: a grade per backend, best-effort on both when undeclared. `compile_schedule` refuses an unknown grade, a Vulkan `reference` and a Vulkan `banded` without a CPU `reference`, naming the module. **`CompiledSchedule::modules`** (name, version, grade, role, in set order) and **`modules::set_grade()`** (the lowest grade on a backend and the first module at it).
+- **`Simulation::create(…, minimum_grade)`**, a trailing defaulted parameter (`Grade::best_effort`), so every call site compiles unchanged. A module `absent` on the backend, and the first module below the minimum, are refused with `unavailable`, naming it, after the Vulkan refusals and before the world set is validated or a device touched. `Grade::absent`, or a value outside the enum, as the minimum is `invalid_argument`. **`Simulation::grade()`**: the set's grade, best-effort naming `behaviors` while a non-empty registry is attached; `step()` refuses an attached registry under a minimum above best-effort.
+- **The ten built-ins declare PHY-2's table**: CPU `reference`, Vulkan `banded` (Physics reviewed; `behaviors` is Core's, `SL6`).
+- **Roles**: `RoleDecl`, `kRoles` (`dynamic_contact`, required), `ModuleDesc::role`, `CompiledSchedule::roles` and `modules::check_required_roles()`, which `create()` calls. A role not in the table or filled twice is refused at compile, naming the role and both modules; a required role left empty is refused at `create()`. `dynamic_contact` declares it.
+- **Read-only views**: `StateView::data` is `const std::byte*`, and the new `StateView::writable` is set only for a declared write or accumulation of an array or a scratch, never for a table (`CompiledBinding::writable`). `world_rows<T>` and `all_rows<T>` with a non-const `T` on a view without it record the new `ViewMisuse::read_view`, read empty, and refuse the step at its end naming the module, the pass and the view, then poison, as Task 1's other misuses do. A developer pass that wrote through a declared read now writes nothing and refuses the step.
+- **Component availability**: `ComponentAvailability`, `ComponentTypeInfo`, `kComponentTypes` and `component_types()` (`objects/component.hpp`); the names table in `graph.cpp` is gone. `fluid` is reserved (SPH, `PHY-4`): `ObjectGraph::attach<T>` has a `static_assert(component_available<T>())`, and `from_json` refuses a saved `fluid` component with `unavailable`, naming the object, the type and the reason. The writer's `fluid` branch is gone; no saved graph in the repo held one.
+
 ### The STEP converter: `spade_mesh_pack` and `step_convert.py` (2026-11-04)
 
 The STEP converter plan's Tasks S1 and S2 (`docs/design/core/plans/2026-11-03-step-converter-plan.md`; `CORE-6` D, the lead's L23 and L24). Offline tools; the engine loads neither.
