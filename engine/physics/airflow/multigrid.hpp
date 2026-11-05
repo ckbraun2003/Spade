@@ -91,7 +91,9 @@ void restrict_residual(const PoissonLevel& fine, PoissonLevel& coarse) noexcept;
 void prolong_add(const PoissonLevel& coarse, PoissonLevel& fine) noexcept;
 
 // One V(2,2) cycle on levels[0]: its p is the initial guess, its b is set.
-void v_cycle(Multigrid& mg) noexcept;
+// With a pool, each level's smoothing and residual go to its threads when
+// the level is big enough (kThreadedLevelCells); the bits are the same.
+void v_cycle(Multigrid& mg, WorkerPool* pool = nullptr) noexcept;
 
 // The coarsest level's sweeps each way in the symmetric cycle.
 inline constexpr uint32_t kCoarsestSymSweeps = 16;

@@ -9,6 +9,7 @@
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/worker_pool.hpp"
 
 // ---------------------------------------------------------------------------
 // PUBLISH: the render volume (spec §5; Task 8b, the lead 2026-10-12). Fills
@@ -59,7 +60,12 @@ struct PublishCounts {
 // Refused (invalid_argument): a solid mask, a grid array or a non-empty
 // aperture array whose size does not match the grid's shape. `out`'s storage is reused when its size fits.
 // With subnormals flushed as fluid_step() flushes them (fluid_step.hpp).
-[[nodiscard]] Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out);
+// With a pool (L18 slice 2) the k planes are shared across its threads: each cell's
+// halves are its own, and the header is merged from the planes' tallies in plane
+// order, so everything published is the same at any thread count (the generation
+// aside, which names each publish).
+[[nodiscard]] Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out,
+                                                          WorkerPool* pool = nullptr);
 
 // THE HEADER FROM THE HALVES (plan B, B6; the lead, 2026-10-26): what
 // publish_render_volume() puts in the header, from the halves alone, by the

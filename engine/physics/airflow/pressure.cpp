@@ -157,52 +157,74 @@ void smooth_one_cell(PoissonLevel& L, uint32_t i, uint32_t j, uint32_t k) noexce
     L.p[c] = (st.sum - L.b[c]) / st.diag;
 }
 
-void smooth_red_black(PoissonLevel& L, uint32_t sweeps, bool black_first) noexcept {
+namespace {
+
+// One k plane of one colour pass: the cells of the colour in each row, in
+// ascending i, as the serial sweep visits them.
+void smooth_plane(PoissonLevel& L, uint32_t k, uint32_t colour, bool fast) noexcept {
     const std::size_t sy = L.nx;
     const std::size_t sz = std::size_t{L.nx} * L.ny;
     float* p = L.p.data();
     const float* b = L.b.data();
-    const bool fast = L.w[0].empty();  // face weights take the general stencil
-    for (uint32_t sweep = 0; sweep < sweeps; ++sweep) {
-        for (uint32_t step = 0; step < 2; ++step) {
-            const uint32_t colour = black_first ? 1u - step : step;
-            for (uint32_t k = 0; k < L.nz; ++k) {
-                for (uint32_t j = 0; j < L.ny; ++j) {
-                    // The cells of this colour in the row, in ascending i, as before.
-                    const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
-                    for (uint32_t i = (j + k + colour) & 1u; i < L.nx; i += 2u) {
-                        if (fast && row_inside && inside(i, L.nx)) {
-                            const std::size_t c = at(L, i, j, k);
-                            p[c] = (interior_sum(p, c, sy, sz) - b[c]) / kInteriorDiag;
-                        } else {
-                            smooth_one_cell(L, i, j, k);
-                        }
-                    }
-                }
+    for (uint32_t j = 0; j < L.ny; ++j) {
+        const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
+        for (uint32_t i = (j + k + colour) & 1u; i < L.nx; i += 2u) {
+            if (fast && row_inside && inside(i, L.nx)) {
+                const std::size_t c = at(L, i, j, k);
+                p[c] = (interior_sum(p, c, sy, sz) - b[c]) / kInteriorDiag;
+            } else {
+                smooth_one_cell(L, i, j, k);
             }
         }
     }
 }
 
-void residual(PoissonLevel& L) noexcept {
+void residual_plane(PoissonLevel& L, uint32_t k, bool fast) noexcept {
     const std::size_t sy = L.nx;
     const std::size_t sz = std::size_t{L.nx} * L.ny;
     const float* p = L.p.data();
-    const bool fast = L.w[0].empty();
-    for (uint32_t k = 0; k < L.nz; ++k) {
-        for (uint32_t j = 0; j < L.ny; ++j) {
-            const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
-            for (uint32_t i = 0; i < L.nx; ++i) {
-                const std::size_t c = at(L, i, j, k);
-                if (fast && row_inside && inside(i, L.nx)) {
-                    L.r[c] = L.b[c] - (interior_sum(p, c, sy, sz) - kInteriorDiag * p[c]);
-                    continue;
-                }
-                const Stencil st = any_stencil(L, L.p.data(), i, j, k);
-                L.r[c] = L.b[c] - (st.sum - st.diag * L.p[c]);
+    for (uint32_t j = 0; j < L.ny; ++j) {
+        const bool row_inside = inside(j, L.ny) && inside(k, L.nz);
+        for (uint32_t i = 0; i < L.nx; ++i) {
+            const std::size_t c = at(L, i, j, k);
+            if (fast && row_inside && inside(i, L.nx)) {
+                L.r[c] = L.b[c] - (interior_sum(p, c, sy, sz) - kInteriorDiag * p[c]);
+                continue;
+            }
+            const Stencil st = any_stencil(L, L.p.data(), i, j, k);
+            L.r[c] = L.b[c] - (st.sum - st.diag * L.p[c]);
+        }
+    }
+}
+
+[[nodiscard]] bool on_threads(const PoissonLevel& L, const WorkerPool* pool) noexcept {
+    return pool != nullptr && pool->threads() > 1u && L.nz > 1u && L.p.size() >= kThreadedLevelCells;
+}
+
+}  // namespace
+
+void smooth_red_black(PoissonLevel& L, uint32_t sweeps, bool black_first, WorkerPool* pool) noexcept {
+    const bool fast = L.w[0].empty();  // face weights take the general stencil
+    const bool threaded = on_threads(L, pool);
+    for (uint32_t sweep = 0; sweep < sweeps; ++sweep) {
+        for (uint32_t step = 0; step < 2; ++step) {
+            const uint32_t colour = black_first ? 1u - step : step;
+            if (threaded) {
+                pool->run(L.nz, [&](uint32_t k) { smooth_plane(L, k, colour, fast); });
+            } else {
+                for (uint32_t k = 0; k < L.nz; ++k) smooth_plane(L, k, colour, fast);
             }
         }
     }
+}
+
+void residual(PoissonLevel& L, WorkerPool* pool) noexcept {
+    const bool fast = L.w[0].empty();
+    if (on_threads(L, pool)) {
+        pool->run(L.nz, [&](uint32_t k) { residual_plane(L, k, fast); });
+        return;
+    }
+    for (uint32_t k = 0; k < L.nz; ++k) residual_plane(L, k, fast);
 }
 
 void apply_operator(const PoissonLevel& L, std::span<const float> x, std::span<float> out) noexcept {

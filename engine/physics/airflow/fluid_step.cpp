@@ -137,6 +137,7 @@ uint64_t fluid_bytes(const GridShape& s, const DomainBc& bc) noexcept {
                             + 3u * multigrid_cells(s.nx, s.ny, s.nz, periodic_axes(bc))  // every level's p, b, r
                             + cells                               // the divergence
                             + std::max({uf, vf, wf})              // the viscous right side
+                            + uf + vf                             // u's and v's, on the pool (rhs_uv)
                             + faces                               // du, dv and dw
                             // plan A's weights on the levels past the halving rule
                             + multigrid_plan_a_weight_faces(s.nx, s.ny, s.nz, periodic_axes(bc));
@@ -293,7 +294,7 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
     }
     const ProjectionReport rep =
         project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr,
-                cfg.cg_cap);
+                cfg.cg_cap, s.pool.get());
     s.health = scan(g);
     if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;

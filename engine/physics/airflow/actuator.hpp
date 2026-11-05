@@ -130,7 +130,16 @@ struct DiscWeights {
 // One entry a disc, by its index in the step's list.
 struct SpreadCache {
     std::vector<DiscWeights> discs;
+    // The bytes the kept weights hold now (their capacity: build_weights() trims it).
+    [[nodiscard]] uint64_t bytes() const noexcept;
 };
+
+// The most a disc of `radius` on `shape` keeps (16 bytes a sample: its index, sum
+// and swirl sum, in each component): every sample within radius + 2 dx of its
+// centre along each axis, at most the component's own. It grows as 1/dx^3, about
+// 12 MB at 4 mm and 770 MB at 1 mm, so a case's byte cap counts it, a disc a rotor
+// (analysis::resolve()); a test pins that no cache a step builds is larger.
+[[nodiscard]] uint64_t spread_cache_bytes(const GridShape& shape, float radius) noexcept;
 
 // Adds one step's increments for checked discs, in their order, each as
 // spread_actuator() adds it (the bits are the same), from `cache` when its key

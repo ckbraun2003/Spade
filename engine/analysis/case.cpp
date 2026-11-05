@@ -302,6 +302,10 @@ std::expected<ResolvedCase, std::vector<CaseIssue>> resolve(const AnalysisCase& 
     r.base = physics::airflow::GridShape{cells, cells, cells, spacing};
     r.domain = drone_box_domain(r.spec.flight);
     r.base_bytes = physics::airflow::fluid_bytes(r.base, r.domain);
+    // The CPU step keeps each rotor's disc weights (spread_actuators()); they grow as 1/dx^3.
+    for (const vehicles::RotorDesc& rotor : model.rotors) {
+        r.base_bytes += physics::airflow::spread_cache_bytes(r.base, rotor.radius);
+    }
     if (r.base_bytes > physics::airflow::kGridByteCap) {
         const double scale =
             std::cbrt(static_cast<double>(physics::airflow::kGridByteCap) / static_cast<double>(r.base_bytes));

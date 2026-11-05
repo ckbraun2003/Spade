@@ -69,20 +69,20 @@ struct Taps {
     return any;
 }
 
-void cycle(Multigrid& mg, std::size_t l) noexcept {
+void cycle(Multigrid& mg, std::size_t l, WorkerPool* pool) noexcept {
     PoissonLevel& f = mg.levels[l];
     if (l + 1u == mg.levels.size()) {
-        smooth_red_black(f, kCoarsestSweeps);
+        smooth_red_black(f, kCoarsestSweeps, false, pool);
         return;
     }
-    smooth_red_black(f, kPreSweeps);
-    residual(f);
+    smooth_red_black(f, kPreSweeps, false, pool);
+    residual(f, pool);
     PoissonLevel& c = mg.levels[l + 1u];
     restrict_residual(f, c);
     std::fill(c.p.begin(), c.p.end(), 0.0f);
-    cycle(mg, l + 1u);
+    cycle(mg, l + 1u, pool);
     prolong_add(c, f);
-    smooth_red_black(f, kPostSweeps);
+    smooth_red_black(f, kPostSweeps, false, pool);
 }
 
 }  // namespace
@@ -278,8 +278,8 @@ void prolong_add(const PoissonLevel& c, PoissonLevel& f) noexcept {
     }
 }
 
-void v_cycle(Multigrid& mg) noexcept {
-    if (!mg.levels.empty()) cycle(mg, 0);
+void v_cycle(Multigrid& mg, WorkerPool* pool) noexcept {
+    if (!mg.levels.empty()) cycle(mg, 0, pool);
 }
 
 namespace {

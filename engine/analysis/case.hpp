@@ -217,7 +217,8 @@ struct ResolvedCase {
     float finest_spacing = 0.0f;         // spacing / 2^nests, around the drone
     physics::airflow::GridShape base{};  // the base grid
     physics::airflow::DomainBc domain{};  // the drone box's faces: open, the wind as ambient, the floor a wall
-    uint64_t base_bytes = 0;             // physics::airflow::fluid_bytes(base); the nests' come with R1
+    // physics::airflow::fluid_bytes(base) and the rotors' spread_cache_bytes(); the nests' come with R1
+    uint64_t base_bytes = 0;
     std::vector<ResolvedRotor> rotors;
 };
 

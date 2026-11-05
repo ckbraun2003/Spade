@@ -175,7 +175,8 @@ ProjectionScratch make_projection_scratch(const GridShape& shape, const DomainBc
 }
 
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
-                         const SolidField* solids, FluidRegions* regions, uint32_t cg_cap) noexcept {
+                         const SolidField* solids, FluidRegions* regions, uint32_t cg_cap,
+                         WorkerPool* pool) noexcept {
     if (solids != nullptr && solids->any) {
         // Solids without their regions cannot be projected: the grid is left
         // as it is and the residual is infinite, which a step announces (L6),
@@ -196,7 +197,7 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
     if (closed) remove_mean(f.b, sh.nx, sh.ny, sh.nz);
     std::copy(g.p.begin(), g.p.end(), f.p.begin());
     for (uint32_t n = 0; n < n_v; ++n) {
-        v_cycle(s.mg);
+        v_cycle(s.mg, pool);
         if (closed) remove_mean(f.p, sh.nx, sh.ny, sh.nz);
     }
     std::copy(f.p.begin(), f.p.end(), g.p.begin());
@@ -204,7 +205,7 @@ ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uin
     // 2026-10-21): max|r| / max|b| after the cycles. Reported, never iterated
     // on; the pressure is already final. std::max passes over a NaN, so a NaN
     // pressure reports 0 here: fluid_step()'s scan() is what finds one.
-    residual(f);
+    residual(f, pool);
     float r_max = 0.0f;
     float b_max = 0.0f;
     for (std::size_t c = 0; c < f.r.size(); ++c) {
