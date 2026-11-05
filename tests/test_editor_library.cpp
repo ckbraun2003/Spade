@@ -458,6 +458,7 @@ TEST(EditorLibraryFiles, ALibraryDroneRestsOnItsContactPoints) {
     EXPECT_EQ(ed::rest_height(hung), -*low);
     EXPECT_GT(ed::rest_height(hung), ed::rest_height(quad) + 0.5f) << "the hung rotor's rim is the lowest point";
 }
+
 // The rest is the design frame's: a centre of mass 50 mm higher in the design
 // frame carries the parts 50 mm higher, so the design origin rests 50 mm
 // lower.

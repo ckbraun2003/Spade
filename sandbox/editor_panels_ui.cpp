@@ -440,6 +440,9 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
                 ImGui::EndCombo();
             }
             ImGui::EndDisabled();
+            ImGui::PushTextWrapPos(0.0f);  // the level's cost, a sentence (L13 (4))
+            ImGui::TextDisabled("%s", ed::air_level_cost(p.air_level));
+            ImGui::PopTextWrapPos();
             const ed::AirLineCache& line =
                 ed::air_line(p.air_line, p.scene_opened, p.scene_serial, *p.scene, *region, p.air_level);
             if (line.refused) {

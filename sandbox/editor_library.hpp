@@ -494,6 +494,9 @@ namespace detail {
         if (!item.model) return kDroneBodyHalf.y;
         const BodyState body = body_at(*item.model, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
         const std::optional<float> low = physics::lowest_contact_point(*item.model, body);
+        // No contact set (no body-attached part): the sim rests the model on its
+        // proxy sphere, the world's contact parameters' radius (effective_proxy_radius()),
+        // which an item has no world to read; no library drone is without one.
         return low ? -*low : kDroneBodyHalf.y;
     }
     if (!item.asset) return 0.0f;
