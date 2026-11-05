@@ -334,7 +334,9 @@ void expect_noise_publish_same(const GridShape& s, bool periodic_x) {
     EXPECT_GT(serial.volume.header.no_data, 0u) << "the case must publish some no data";
     EXPECT_GT(serial.volume.header.extrapolated_cells, 0u) << "and some first-layer solid cells";
     Pools pools;
-    for (const auto& [name, pool] : pools.all()) expect_same_published(serial, publish_noise(s, periodic_x, pool), name);
+    for (const auto& [name, pool] : pools.all()) {
+        expect_same_published(serial, publish_noise(s, periodic_x, pool), name);
+    }
 }
 
 }  // namespace
