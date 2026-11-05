@@ -454,6 +454,15 @@ struct GradeDecl {
     Grade vulkan = Grade::best_effort;
 };
 
+// A SLOT a module may fill (stage 5, Task 6; spec section 7). `required`: exactly
+// one module fills it; otherwise at most one. The names live here, in one core
+// table, so a misspelt role is refused as a misspelt quantity is.
+struct RoleDecl {
+    std::string_view name;
+    bool required = false;
+};
+inline constexpr RoleDecl kRoles[] = {{.name = "dynamic_contact", .required = true}};
+
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
@@ -466,6 +475,7 @@ struct ModuleDesc {
     VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
     std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
     GradeDecl grade{};                            // what it claims per backend (stage 5, Task 3)
+    std::string_view role{};                      // a kRoles name this module fills; empty fills none (Task 6)
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -560,6 +570,13 @@ struct CompiledModule {
     std::string name;
     uint32_t version = 1;
     GradeDecl grade{};
+    std::string role{};  // the kRoles name it fills, or empty (Task 6)
+};
+
+// One filled role (Task 6): the role and the module that fills it.
+struct CompiledRole {
+    std::string role;
+    std::string module;
 };
 
 struct CompiledSchedule {
@@ -592,7 +609,15 @@ struct CompiledSchedule {
     // Every module in set order (stage 5, Task 3), with its grade. Not part of
     // the identity: a grade is a claim, not a computation.
     std::vector<CompiledModule> modules{};
+    // The filled roles, one per role, in kRoles order (Task 6). Not part of the
+    // identity: the filler's name already is.
+    std::vector<CompiledRole> roles{};
 };
+
+// create()'s check that every required role has its filler (Task 6): invalid_argument,
+// naming the role. compile_schedule does not run it, so a set may be compiled alone
+// without its roles.
+[[nodiscard]] Result<void> check_required_roles(const CompiledSchedule& schedule);
 
 // A set's grade on one backend: its lowest module grade, and the first module
 // in set order at it (L3).

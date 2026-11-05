@@ -861,6 +861,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     return out;
 }
 
+Result<void> check_required_roles(const CompiledSchedule&) { return {}; }  // RED stub
+
 SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend) {
     SetGrade out;  // reference, naming no module, for a set with no modules
     bool first = true;

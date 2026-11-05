@@ -3909,3 +3909,102 @@ TEST(ModuleGrades, AnAttachedBehaviorRegistryIsBestEffort) {
     free_run->set_behaviors(&registry);
     EXPECT_TRUE(free_run->step(1).has_value()) << "with no minimum, the same simulation steps";
 }
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 6: roles. dynamic_contact is a slot exactly one
+// module fills. The role is not spelt into the identity: the filler's name
+// already is, so another role choice is a different module set (L2).
+// ---------------------------------------------------------------------------
+namespace {
+
+// "contact_alt": a second filler of dynamic_contact. It runs Gauss-Seidel's CPU function with no
+// recipe, so it is CPU-only, which is all a role test needs. Its accesses are dynamic_contact's own,
+// in the order physics::kContactPassContactDvAccess names, because the function reads its scratch at
+// that index.
+constexpr QuantityAccess kAltAccess[] = {{"body.pose", Access::write}, {"integrate.contact_dv", Access::accumulate}};
+constexpr std::string_view kAltAfter[] = {"static_contact.resolve"};
+constexpr PassDecl kAltPasses[] = {{.name = "resolve",
+                                    .phase = Phase::constraints,
+                                    .access = kAltAccess,
+                                    .after = kAltAfter,
+                                    .cpu = &spade::physics::pass_collision_dynamic}};
+[[nodiscard]] ModuleDesc contact_alt() {
+    return {.name = "contact_alt", .passes = kAltPasses, .role = "dynamic_contact"};
+}
+// The standard set with the filler replaced in place, so set order holds.
+[[nodiscard]] spade::modules::ModuleSet standard_with_contact_alt() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) {
+        if (m.name == "dynamic_contact") m = contact_alt();
+    }
+    return set;
+}
+
+}  // namespace
+
+TEST(ModuleRoles, ARoleFilledTwiceOrNotAtAllIsRefused) {
+    spade::modules::ModuleSet twice = spade::modules::standard_modules();
+    twice.push_back(contact_alt());
+    const auto both = compile_schedule(twice);
+    ASSERT_FALSE(both.has_value());
+    EXPECT_EQ(both.error().code, spade::Code::invalid_argument);
+    for (const char* name : {"dynamic_contact", "contact_alt"}) {
+        EXPECT_NE(both.error().context.find(name), std::string::npos) << name << " in: " << both.error().context;
+    }
+
+    spade::modules::ModuleSet none = spade::modules::standard_modules();
+    std::erase_if(none, [](const ModuleDesc& m) { return m.name == "dynamic_contact"; });
+    ASSERT_TRUE(compile_schedule(none).has_value()) << "a schedule may be compiled without its roles";
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, none);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(sim.error().context.find("role 'dynamic_contact'"), std::string::npos) << sim.error().context;
+}
+
+TEST(ModuleRoles, ARoleIsOneOfTheKnownRoles) {
+    const auto s = standard_plus({.name = "typo", .role = "dynamic_contct"});
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("'typo'"), std::string::npos) << s.error().context;
+    EXPECT_NE(s.error().context.find("dynamic_contct"), std::string::npos) << s.error().context;
+}
+
+TEST(ModuleRoles, AnAlternativeFillsTheRoleAndSteps) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_with_contact_alt());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->step(3).has_value());
+    const auto& roles = sim->schedule().roles;
+    ASSERT_EQ(roles.size(), 1u);
+    EXPECT_EQ(roles[0].role, "dynamic_contact");
+    EXPECT_EQ(roles[0].module, "contact_alt");
+}
+
+TEST(ModuleRoles, AnotherRoleChoiceChangesTheIdentity) {
+    // Green at red: a pin of the Decisions argument. The role's filler is a module, and the identity spells every
+    // module's name, so a role choice is already covered with no new bytes.
+    const auto s = compile_schedule(standard_with_contact_alt());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_NE(s->identity, kStandardIdentity);
+}
+
+TEST(ModuleSnapshot, RestoreUnderAnotherRoleChoiceIsRefused) {
+    // Green at red (spec section 13, L2): a pin. The refusal is restore's identity message, as for another module set.
+    auto source = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    auto target = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_with_contact_alt());
+    ASSERT_TRUE(source.has_value() && target.has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    const auto restored = target->restore(*blob);
+    ASSERT_FALSE(restored.has_value());
+    EXPECT_EQ(restored.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(restored.error().context.find("module set"), std::string::npos) << restored.error().context;
+}
+
+TEST(StandardModules, FillTheDynamicContactRole) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->roles.size(), 1u);
+    EXPECT_EQ(s->roles[0].role, "dynamic_contact");
+    EXPECT_EQ(s->roles[0].module, "dynamic_contact");
+    EXPECT_EQ(s->identity, kStandardIdentity) << "a role is a declaration, not a computation";
+}
