@@ -43,7 +43,10 @@
 // exposed inside another) is left out too, with its indexed siblings (L8:
 // motor[3] takes motor[0-2]; the lead, 2026-11-03), and the build is redone
 // without them, one refusal at a time, until a build is accepted or none is
-// left (discs only). The label names each part left out and why (drawn_only_line()).
+// left (discs only). Each part left out, but a marked one, takes the parts
+// wholly inside it, its SDF < 0 at their 8 posed box corners (L13: the
+// Phantom's body takes its battery). The label names each part left out and
+// why (drawn_only_line()).
 // What else refuses a part still refuses the run: a non-finite sampler, a
 // part outside the grid, a part's own malformed size. The case resolves with
 // ThinWalls::drawn_by_the_live_run, so resolve() leaves thin walls to it.
@@ -103,13 +106,14 @@ enum class DrawnReason : uint8_t {
     leaks,    // the measured safeguard: it leaks at this cell
     exposed,  // the measured safeguard: inside another part, exposed near its surface
     sibling,  // L8: an indexed sibling of a part the safeguard refused, left out with it
+    contained,  // L13: wholly inside a part left out (its 8 posed box corners), left out with it
 };
 
 struct DrawnPart {
     std::string name;
     uint32_t part = 0;  // its index in the model's parts
     DrawnReason why = DrawnReason::marked;
-    std::string inside;  // exposed only: the part it lies inside
+    std::string inside;  // exposed and contained only: the part it lies inside
     std::string of;      // sibling only: the part the safeguard refused
 };
 
@@ -176,6 +180,17 @@ struct LiveState {
     uint32_t propulsion_flags = 0;   // the last command's propulsion_flags: limits, announced
 };
 
+// A healthy live solids solve ends near this max|r| / max|b|: the Phantom's
+// steps at the CG's floor of 8 since L13's aperture floor (Physics,
+// 2026-11-03).
+inline constexpr float kLiveHealthyResidual = 2.0e-6f;
+// A live step whose pressure ends past this, but not past kResidualAnnounce,
+// is loose (L13; the lead, 2026-11-03): ten times a healthy solve, as
+// kResidualAnnounce is ten times the warm residual its count leaves. It is
+// counted and said (solids_health_line()), never refused; the CG's stopping
+// rule is unchanged.
+inline constexpr float kLiveLooseResidual = 10.0f * kLiveHealthyResidual;
+
 // What a run's solids are (LiveRun::solids()).
 struct LiveSolids {
     bool any = false;                 // the model's rigid parts, but the drawn-only, are in the grid
@@ -187,14 +202,19 @@ struct LiveSolids {
     uint64_t unconverged_steps = 0;   // steps whose residual was past 1e-4, since start
     uint64_t stalled_steps = 0;       // of those, the CG stalled at fp32's floor (P2d)
     uint64_t capped_steps = 0;        // of those, the CG reached its cap: the two sum to unconverged_steps
+    uint64_t loose_steps = 0;         // steps past kLiveLooseResidual but not unconverged (L13), since start
+    float loose_max_residual = 0.0f;  // the largest residual of those; 0 when none
 };
 
-// What a run says of its solids' pressure, "" when no step was unconverged:
-// how many steps were, how many of them stalled at fp32's floor and how many
-// stopped at the CG's cap of `cap` iterations, naming only what occurred
-// (P2d; the lead, 2026-10-22), then the last residual. For example "pressure
-// unconverged on 5 steps: 2 stalled at fp32's floor, 3 at the CG's cap of 64
-// iterations (last max|r|/max|b| 2.0e-03)".
+// What a run says of its solids' pressure, "" when no step was unconverged
+// or loose: how many steps were unconverged, how many of them stalled at
+// fp32's floor and how many stopped at the CG's cap of `cap` iterations,
+// naming only what occurred (P2d; the lead, 2026-10-22), then the last
+// residual; then, after "; ", how many were loose and the largest they
+// reached (L13). For example "pressure unconverged on 5 steps: 2 stalled at
+// fp32's floor, 3 at the CG's cap of 64 iterations (last max|r|/max|b|
+// 2.0e-03)" and "pressure loose on 12 steps (max|r|/max|b| up to 8.5e-5; a
+// healthy solve ends near 2e-6)".
 [[nodiscard]] std::string solids_health_line(const LiveSolids& solids, uint32_t cap);
 
 struct LiveFrame {
