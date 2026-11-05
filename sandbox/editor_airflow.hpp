@@ -277,10 +277,10 @@ namespace detail {
 // kLiveBoxCells cells a side (R/3 for a region Run air's rule made; L4).
 // Real time: discs only, on the device in at most kAirRealTimeGpuCells a
 // side (R/dx 4.5 for the Phantom; about 150% of real time, Rendering), on
-// the CPU in at most kAirRealTimeCpuCells (about twice real time on the
-// default 8 threads: 194-198% for the Phantom and the reference quad after
-// L18's slice 1, Rendering; it depends on the machine's free cores, and 24
-// cells run at about 75%).
+// the CPU in at most kAirRealTimeCpuCells (about twice real time or more on
+// the default 8 threads: 194-198% after L18's slice 1, about 230% after
+// slice 2 on a lightly loaded box, Rendering; it depends on the machine's
+// free cores; 24 cells run at 71-97% on 8 threads, under L25's 110% bar, L29).
 [[nodiscard]] inline Result<AirCases> air_cases(const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
                                                 AirLevel level = AirLevel::detailed) {
     const Result<vehicles::ModelType> model = air_model(s, region);
