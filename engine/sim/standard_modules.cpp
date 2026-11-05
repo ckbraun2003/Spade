@@ -7,6 +7,7 @@
 #include "physics/forces.hpp"
 #include "physics/contact_dv.hpp"
 #include "physics/contact_sets.hpp"
+#include "core/validate.hpp"
 #include "physics/lock.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
@@ -292,13 +293,33 @@ constexpr GradeDecl kPhy2Grade{.cpu = Grade::reference, .vulkan = Grade::banded}
 // CORE-1 refuses an attached registry on Vulkan).
 constexpr GradeDecl kBehaviorsGrade{.cpu = Grade::reference, .vulkan = Grade::banded};
 
-// THE LOCK MODULE'S ROWS (stage 6, Task 1). RED stub: the init writes nothing yet.
-void lock_rows_init(const RowInit&) noexcept {}
+// THE LOCK MODULE'S ROWS (stage 6, Task 1). One per_body row at the body's own slot, written at the step boundary
+// by attach_row's queued init from the record Simulation::lock_translation() / unlock() hand it: the anchor taken at
+// the call (a RowInit cannot see a BodyState) and the held axes, 0 for an unlock. Field-wise, so the row's bytes are
+// exactly what a zero row plus these fields would be.
+void lock_rows_init(const RowInit& init) noexcept {
+    physics::LockRow& row = row_as<physics::LockRow>(init.row);
+    const physics::LockSpawn spawn = spawn_as<physics::LockSpawn>(init.spawn);
+    row.anchor = glm::vec3(spawn.anchor[0], spawn.anchor[1], spawn.anchor[2]);
+    row.axes = spawn.axes;
+}
+[[nodiscard]] Result<void> lock_rows_validate(std::span<const std::byte> spawn) {
+    const physics::LockSpawn record = spawn_as<physics::LockSpawn>(spawn);
+    if (!finite(record.anchor[0]) || !finite(record.anchor[1]) || !finite(record.anchor[2])) {
+        return std::unexpected(Error{Code::invalid_argument, "the lock's anchor must be finite"});
+    }
+    if (record.axes > physics::kLockAllAxes) {
+        return std::unexpected(
+            Error{Code::invalid_argument, "the lock's axes must be a mask of x (1), y (2) and z (4)"});
+    }
+    return {};
+}
 constexpr ArrayDecl kLockArrays[] = {{.name = "lock_rows",
                                       .elem_size = row_size<physics::LockRow>(),
                                       .extent = Extent::per_body,
                                       .spawn_size = sizeof(physics::LockSpawn),
-                                      .init = &lock_rows_init}};
+                                      .init = &lock_rows_init,
+                                      .validate = &lock_rows_validate}};
 
 }  // namespace
 
