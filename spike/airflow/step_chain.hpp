@@ -36,10 +36,12 @@
 // region that can't balance (check_regions()) is the fault every step()
 // returns, as the CPU's step returns it, without stepping.
 //
-// HEALTH. Without solids, not yet the CPU's: step() returns FluidHealth{}
-// with pressure_iterations = n_v, as plan A's report has it; plan A's
-// residual after its cycles is not on the device, so pressure_residual is 0.
-// With solids, the CG's report from the device's health word:
+// HEALTH. Without solids, plan A's: the chain measures project()'s residual
+// after the last cycle (level 0's residual, then the max-norm of it and of b
+// by airflow_plan_a_measure, then their quotient by airflow_pcg_scalars' op
+// 2), step() reads it and returns pressure_residual, pressure_iterations = n_v
+// and unconverged (above kPlanAResidualAnnounce) as fluid_step() forms them,
+// bit for bit: a max is exact and order-free. (0fcb99f9) With solids, the CG's report from the device's health word:
 // pressure_residual, pressure_iterations, unconverged, capped and stalled, as
 // fluid_step() forms them; and a non-finite flow faults the step
 // (non_finite, naming the pressure but no sample) when the CG's r . z isn't

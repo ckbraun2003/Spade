@@ -69,6 +69,7 @@
 #include "airflow_pack_f16.spv.gen.hpp"
 #include "airflow_pcg_apply.spv.gen.hpp"
 #include "airflow_pcg_measure.spv.gen.hpp"
+#include "airflow_plan_a_measure.spv.gen.hpp"
 #include "airflow_pcg_scalars.spv.gen.hpp"
 #include "airflow_pcg_update.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
@@ -1562,6 +1563,10 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_actuator_gather, false},
                               // B7's step (Rendering): one add a face.
                               {gen::kSpvVariants_airflow_add_increments, false, Estimates::none},
+                              // 0fcb99f9 (Rendering): plan A's residual max-norm, the select-fold of
+                              // airflow_pcg_measure's over level 0's r and b; no division, and no float arithmetic (compares
+                              // and abs only: integer_only is the scan's "nothing to contract").
+                              {gen::kSpvVariants_airflow_plan_a_measure, true, Estimates::none},
                               // B5's solids projection (Physics): only the quotients divide.
                               {gen::kSpvVariants_airflow_tile_dot, false, Estimates::none},
                               {gen::kSpvVariants_airflow_pcg_measure, false, Estimates::none},

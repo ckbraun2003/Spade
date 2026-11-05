@@ -92,6 +92,11 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather NAN_PRE
 # (tests/test_gpu_airflow_step.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_add_increments NAN_PRESERVE)
 
+# 0fcb99f9: plan A's residual on the device, project()'s max|r| / max|b| after its cycles
+# (tests/test_gpu_airflow_step.cpp). It imports airflow_pcg.slang, which -depfile tracks;
+# the quotient is airflow_pcg_scalars' op 2.
+spade_slang_kernel_variants(spade_airflow_runner airflow_plan_a_measure NAN_PRESERVE)
+
 # B5's solids projection (Physics; tests/test_gpu_airflow_solids.cpp): the
 # CG's dots (pass 0; airflow_tile_sum ends them), its max-norm and its
 # quotients (div32_ftz), the aperture divergence and gradient, and the

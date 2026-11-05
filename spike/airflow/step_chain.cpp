@@ -24,6 +24,7 @@
 #include "airflow_pcg_measure.spv.gen.hpp"
 #include "airflow_pcg_scalars.spv.gen.hpp"
 #include "airflow_pcg_update.spv.gen.hpp"
+#include "airflow_plan_a_measure.spv.gen.hpp"
 #include "airflow_publish_fields.spv.gen.hpp"
 #include "airflow_region_mean.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
@@ -70,10 +71,12 @@ enum Pipeline : uint32_t {
     kRemoveMean,
     kPublishFields,
     kPackF16,
+    // Plan A's health (0fcb99f9): the residual's max-norm and the quotient (B5's op 2).
+    kPlanAMeasure,
+    kPcgScalars,
     // With solids only (B5's): the runner without them makes none of these.
     kTileDot,
     kPcgMeasure,
-    kPcgScalars,
     kPcgApply,
     kRegionMean,
     kRestrictFull,
@@ -103,7 +106,7 @@ constexpr ProjectionSolidsPipelines kProjectionSolids{
     .solid_gradient = kSolidGradient};
 
 // The kernels in Pipeline's order: the step's and the publish's, then B5's.
-constexpr std::array<const compute::SpirvVariantSet*, kPackF16 + 1> kStepKernels = {
+constexpr std::array<const compute::SpirvVariantSet*, kPcgScalars + 1> kStepKernels = {
     &gen::kSpvVariants_airflow_velocity_bc,     &gen::kSpvVariants_airflow_advection,
     &gen::kSpvVariants_airflow_actuator_gather, &gen::kSpvVariants_airflow_add_increments,
     &gen::kSpvVariants_airflow_viscous,         &gen::kSpvVariants_airflow_divergence,
@@ -111,10 +114,11 @@ constexpr std::array<const compute::SpirvVariantSet*, kPackF16 + 1> kStepKernels
     &gen::kSpvVariants_airflow_mg_restrict,     &gen::kSpvVariants_airflow_mg_prolong,
     &gen::kSpvVariants_airflow_gradient_subtract, &gen::kSpvVariants_airflow_tile_sum,
     &gen::kSpvVariants_airflow_remove_mean,     &gen::kSpvVariants_airflow_publish_fields,
-    &gen::kSpvVariants_airflow_pack_f16};
-constexpr std::array<const compute::SpirvVariantSet*, kWallLoad - kPackF16> kSolidsKernels = {
+    &gen::kSpvVariants_airflow_pack_f16,        &gen::kSpvVariants_airflow_plan_a_measure,
+    &gen::kSpvVariants_airflow_pcg_scalars};
+constexpr std::array<const compute::SpirvVariantSet*, kWallLoad - kPcgScalars> kSolidsKernels = {
     &gen::kSpvVariants_airflow_tile_dot,         &gen::kSpvVariants_airflow_pcg_measure,
-    &gen::kSpvVariants_airflow_pcg_scalars,      &gen::kSpvVariants_airflow_pcg_apply,
+    &gen::kSpvVariants_airflow_pcg_apply,
     &gen::kSpvVariants_airflow_region_mean,      &gen::kSpvVariants_airflow_mg_restrict_full,
     &gen::kSpvVariants_airflow_pcg_update,       &gen::kSpvVariants_airflow_solid_divergence,
     &gen::kSpvVariants_airflow_solid_gradient,   &gen::kSpvVariants_airflow_solid_velocities,
@@ -319,9 +323,9 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     set(gen::kBinding_airflow_residual, cells, BufferKind::device_only);
     set(gen::kBinding_airflow_multigrid, self->layout_.multigrid_floats, BufferKind::device_only);
     set(gen::kBinding_airflow_mg_weights, self->layout_.weights.size(), BufferKind::resident);
-    set(gen::kBinding_airflow_scalars, kScalarSlots, BufferKind::device_only);
+    set(gen::kBinding_airflow_scalars, kScalarSlots, BufferKind::staged);  // plan A's health is read from it
     set(gen::kBinding_airflow_discs, uint64_t{kMaxDiscs} * kDiscStride, BufferKind::resident);
-    set(gen::kBinding_airflow_partials, tile_sum_tiles(s), BufferKind::device_only);
+    set(gen::kBinding_airflow_partials, 2u * uint64_t{tile_sum_tiles(s)}, BufferKind::device_only);  // r_max, b_max a tile
     set(gen::kBinding_airflow_publish_v, 2u * cells, BufferKind::staged);
     set(gen::kBinding_airflow_publish_s, 2u * cells, BufferKind::staged);
     std::vector<const compute::SpirvVariantSet*> kernels(kStepKernels.begin(), kStepKernels.end());
@@ -338,7 +342,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         set(gen::kBinding_airflow_pcg, uint64_t{kPcgVectors} * cells, BufferKind::device_only);
         set(gen::kBinding_airflow_scalars, kScalarSlots, BufferKind::staged);
         set(gen::kBinding_airflow_partials,
-            std::max({uint64_t{tile_sum_tiles(s)}, solve_partials_floats(s, upload->regions),
+            std::max({2u * uint64_t{tile_sum_tiles(s)}, solve_partials_floats(s, upload->regions),
                       uint64_t{kWallLoadTerms} * tile_sum_tiles(s)}),
             BufferKind::device_only);
         set(gen::kBinding_airflow_wall_load, kWallLoadFloats, BufferKind::staged);
@@ -414,8 +418,14 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     }
     // With solids the projection is project_with_solids()' own chains (step()).
     if (!solids_) {
+        // project()'s health: the residual at level 0 after the last cycle, its max-norm against b's, and
+        // their quotient (slot kSlotResidual), measured before the gradient as the CPU measures it.
+        std::vector<ChainCommand> measure;
+        measure.push_back(dispatch(kResidual, 0u, 0u, static_cast<uint32_t>(uint64_t{s.nx} * s.ny * s.nz), 0u, wg));
+        append_measure(measure, s, SolidsPipelines{.measure = kPlanAMeasure}, wg, af::kReduceBlockTiles);
+        measure.push_back(scalars_dispatch(SolidsPipelines{.scalars = kPcgScalars}, ScalarsOp::residual));
         const std::vector<ChainCommand> projection =
-            projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg);
+            projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg, measure);
         chain.insert(chain.end(), projection.begin(), projection.end());
     }
     auto id = runner_->record(chain);
@@ -446,7 +456,21 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
     auto id = step_chain_for(static_cast<uint32_t>(discs.size()));
     if (!id) return std::unexpected(id.error());
     if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
-    if (!solids_) return af::FluidHealth{.pressure_iterations = cfg_.n_v};
+    if (!solids_) {
+        // Plan A's report as the CPU forms it (fluid_step.cpp): the residual after the cycles, announced
+        // above its own mark. The step has finished (submit waits), so the read adds no stall, only the
+        // copy. No scan on the device: a non-finite step is found at the publish (LiveRun).
+        std::array<float, kScalarSlots> scalars{};
+        if (Result<void> ok =
+                runner_->read(gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(scalars)));
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+        af::FluidHealth h{.pressure_iterations = cfg_.n_v};
+        h.pressure_residual = scalars[kSlotResidual];
+        h.unconverged = h.pressure_residual > af::kPlanAResidualAnnounce;
+        return h;
+    }
     Result<GpuProjectionReport> projected = project_with_solids(*runner_, projection_, cfg_.n_v, cfg_.cg_cap);
     if (!projected) return std::unexpected(projected.error());
     // fluid_step()'s health from the CG's report, with solids.
