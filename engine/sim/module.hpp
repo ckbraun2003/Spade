@@ -23,6 +23,7 @@
 
 #include "compute/backend.hpp"
 #include "core/error.hpp"
+#include "core/grade.hpp"
 #include "physics/field_row.hpp"
 #include "state/layout.hpp"         // kStd430StructAlignment, WorldParams
 #include "vehicles/model_type.hpp"  // complete: a span of an incomplete type breaks MSVC (physics/schedule.hpp)
@@ -445,6 +446,14 @@ template <class Spawn>
     return out;
 }
 
+// What a module claims about its implementation on each backend (stage 5,
+// Task 3; core/grade.hpp). Undeclared is best-effort on both: the weakest grade
+// that runs, so a module never claims more than it has shown.
+struct GradeDecl {
+    Grade cpu = Grade::best_effort;
+    Grade vulkan = Grade::best_effort;
+};
+
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
@@ -456,6 +465,7 @@ struct ModuleDesc {
     std::span<const ConfigTableDecl> tables{};    // the configuration tables this module builds
     VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
     std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
+    GradeDecl grade{};                            // what it claims per backend (stage 5, Task 3)
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -545,6 +555,13 @@ struct CompiledScratch {
     uint32_t binding = kNoBinding;      // kNoBinding: CPU-only
 };
 
+// One module as compiled (stage 5, Task 3): name, version and grade, in set order.
+struct CompiledModule {
+    std::string name;
+    uint32_t version = 1;
+    GradeDecl grade{};
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -572,7 +589,18 @@ struct CompiledSchedule {
     // (Task 7b). Not part of the identity: a scratch is not state, and a
     // changed row rides the module's version, like a changed array's.
     std::vector<CompiledScratch> scratch{};
+    // Every module in set order (stage 5, Task 3), with its grade. Not part of
+    // the identity: a grade is a claim, not a computation.
+    std::vector<CompiledModule> modules{};
 };
+
+// A set's grade on one backend: its lowest module grade, and the first module
+// in set order at it (L3).
+struct SetGrade {
+    Grade grade = Grade::reference;
+    std::string module{};
+};
+[[nodiscard]] SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend);
 
 // Orders every pass of `modules`:
 //   1. phases in Phase order;

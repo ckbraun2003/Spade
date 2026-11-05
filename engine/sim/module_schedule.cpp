@@ -836,6 +836,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     return out;
 }
 
+SetGrade set_grade(const CompiledSchedule&, compute::BackendKind) { return {}; }  // RED stub
+
 std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     std::vector<compute::GpuPass> out;
     out.reserve(schedule.passes.size());

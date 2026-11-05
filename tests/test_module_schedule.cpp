@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "compute/backend.hpp"
+#include "core/grade.hpp"
 #include "core/rng.hpp"
 #include "physics/contact_sets.hpp"
 #include "physics/schedule.hpp"
@@ -3669,4 +3670,89 @@ TEST(ModuleSchedule, ABindingRecordsWhetherItsAccessWrites) {
     ASSERT_EQ(look->state.size(), 1u);
     EXPECT_EQ(look->state[0].kind, BindingKind::absent);
     EXPECT_FALSE(look->state[0].writable) << "an optional read of an absent module";
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 3: a module declares a grade per backend, and
+// compile_schedule checks the declaration's shape (L3, L4). Grades are claims,
+// never spelt into the identity.
+// ---------------------------------------------------------------------------
+using spade::Grade;
+
+TEST(ModuleGrades, AVulkanReferenceIsRefusedAtRegistration) {
+    const auto s = standard_plus(
+        {.name = "golden_gpu", .grade = {.cpu = Grade::reference, .vulkan = Grade::reference}});
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("golden_gpu"), std::string::npos);
+}
+
+TEST(ModuleGrades, ASetsGradeIsItsWeakestModuleInSetOrder) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    set.push_back({.name = "rougher", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::absent}});
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const spade::modules::SetGrade cpu = spade::modules::set_grade(*s, spade::compute::BackendKind::cpu);
+    EXPECT_EQ(cpu.grade, Grade::best_effort);
+    EXPECT_EQ(cpu.module, "drag") << "undeclared until Task 4: the first module at the lowest grade";
+    const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
+    EXPECT_EQ(gpu.grade, Grade::absent);
+    EXPECT_EQ(gpu.module, "rougher");
+}
+
+TEST(ModuleGrades, VulkanBandedNeedsACpuReference) {
+    for (const Grade cpu : {Grade::banded, Grade::best_effort, Grade::absent}) {
+        const auto s = standard_plus({.name = "banded_alone", .grade = {.cpu = cpu, .vulkan = Grade::banded}});
+        ASSERT_FALSE(s.has_value()) << "cpu " << spade::grade_name(cpu);
+        EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(s.error().context.find("banded_alone"), std::string::npos) << s.error().context;
+    }
+    const auto banded = standard_plus({.name = "both", .grade = {.cpu = Grade::reference, .vulkan = Grade::banded}});
+    EXPECT_TRUE(banded.has_value()) << "a CPU reference to band against";
+    const auto gpu_only = standard_plus(
+        {.name = "gpu_only", .grade = {.cpu = Grade::absent, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(gpu_only.has_value()) << "a GPU-only module (airflow's Q10): CPU absent, Vulkan best-effort";
+}
+
+TEST(ModuleGrades, AnUnknownGradeIsRefused) {
+    const Grade nonsense = static_cast<Grade>(7);
+    const auto on_cpu = standard_plus({.name = "odd_cpu", .grade = {.cpu = nonsense, .vulkan = Grade::best_effort}});
+    ASSERT_FALSE(on_cpu.has_value());
+    EXPECT_EQ(on_cpu.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(on_cpu.error().context.find("odd_cpu"), std::string::npos);
+    const auto on_vulkan = standard_plus({.name = "odd_gpu", .grade = {.cpu = Grade::reference, .vulkan = nonsense}});
+    ASSERT_FALSE(on_vulkan.has_value());
+    EXPECT_EQ(on_vulkan.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(on_vulkan.error().context.find("odd_gpu"), std::string::npos);
+}
+
+TEST(ModuleGrades, AnUndeclaredModuleIsBestEffortOnBothBackends) {
+    const auto s = standard_plus({.name = "plain", .version = 3});
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_FALSE(s->modules.empty());
+    const spade::modules::CompiledModule& last = s->modules.back();
+    EXPECT_EQ(last.name, "plain");
+    EXPECT_EQ(last.version, 3u);
+    EXPECT_EQ(last.grade.cpu, Grade::best_effort);
+    EXPECT_EQ(last.grade.vulkan, Grade::best_effort);
+    const spade::modules::ModuleSet standard = spade::modules::standard_modules();
+    ASSERT_EQ(s->modules.size(), standard.size() + 1) << "every module, in set order";
+    for (std::size_t i = 0; i < standard.size(); ++i) {
+        EXPECT_EQ(s->modules[i].name, standard[i].name) << i;
+        EXPECT_EQ(s->modules[i].version, standard[i].version) << i;
+    }
+}
+
+TEST(ModuleGrades, GradesLeaveTheIdentityAlone) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) m.grade = {.cpu = Grade::reference, .vulkan = Grade::banded};
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(s->identity, kStandardIdentity) << "master's value: a grade is a claim, not a computation";
+    EXPECT_EQ(spade::grade_name(Grade::absent), "absent");
+    EXPECT_EQ(spade::grade_name(Grade::best_effort), "best-effort");
+    EXPECT_EQ(spade::grade_name(Grade::banded), "banded");
+    EXPECT_EQ(spade::grade_name(Grade::reference), "reference");
+    EXPECT_EQ(spade::grade_name(static_cast<Grade>(7)), "");
 }
