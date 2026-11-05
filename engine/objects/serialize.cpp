@@ -132,11 +132,6 @@ void write_components(const ObjectGraph& g, ObjectId id, json& out) {
     if (const auto* c = g.component<BehaviorComponent>(id)) {
         out[std::string(key_of<BehaviorComponent>())] = {{"behavior_index", c->behavior_index}};
     }
-    if (const auto* c = g.component<FluidComponent>(id)) {
-        out[std::string(key_of<FluidComponent>())] = {{"rest_density", c->rest_density},
-                                                      {"stiffness", c->stiffness},
-                                                      {"viscosity", c->viscosity}};
-    }
 }
 
 // Dispatch on the REGISTERED id rather than on the string, so an added
@@ -210,17 +205,8 @@ void write_components(const ObjectGraph& g, ObjectId id, json& out) {
             g.attach<BehaviorComponent>(id, BehaviorComponent{.behavior_index = *b});
             return {};
         }
-        case ComponentTypeId::fluid: {
-            const Result<float> d = float_field(body, "rest_density", where);
-            if (!d) return std::unexpected(d.error());
-            const Result<float> k = float_field(body, "stiffness", where);
-            if (!k) return std::unexpected(k.error());
-            const Result<float> v = float_field(body, "viscosity", where);
-            if (!v) return std::unexpected(v.error());
-            g.attach<FluidComponent>(
-                id, FluidComponent{.rest_density = *d, .stiffness = *k, .viscosity = *v});
-            return {};
-        }
+        case ComponentTypeId::fluid:  // reserved (kComponentTypes): the caller refuses it before this switch
+            return std::unexpected(Error{Code::unavailable, where + ".fluid: a reserved component type"});
     }
     return std::unexpected(bad(where + ": unhandled component type"));
 }
@@ -332,6 +318,15 @@ Result<ObjectGraph> from_json(std::string_view text) {
             if (!type) {
                 return std::unexpected(
                     bad(what + ".components: unknown component name '" + key + "'"));
+            }
+            // A reserved type cannot be built (stage 5, Task 7): refused, naming the object, the type
+            // and why, not skipped (L6).
+            const ComponentTypeInfo& info = kComponentTypes[static_cast<uint32_t>(*type)];
+            if (info.availability == ComponentAvailability::reserved) {
+                return std::unexpected(Error{Code::unavailable, what + " ('" + (*name)->get<std::string>() + "').components: the '" +
+                                                                    std::string(info.name) +
+                                                                    "' component is reserved (" +
+                                                                    std::string(info.reason) + ") and cannot be loaded"});
             }
             if (Result<void> r = read_component(graph, id, *type, body, what + ".components"); !r) {
                 return std::unexpected(r.error());

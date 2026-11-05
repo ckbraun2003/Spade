@@ -6,8 +6,8 @@
 // builds under some ABIs, and carries no ordering. A saved graph stores these
 // numbers, so all three properties are load-bearing.
 //
-// APPENDING a type is legal: add an enumerator at the end, add a name row at
-// the end of kNames in graph.cpp, bump kComponentTypeCount. RENUMBERING an
+// APPENDING a type is legal: add an enumerator at the end, add a row at the end of
+// kComponentTypes below (name, availability, reason), bump kComponentTypeCount. RENUMBERING an
 // existing one is not -- it silently reinterprets every scene ever saved. The
 // ordering below is frozen, and test_objects_component.cpp pins it.
 //
@@ -89,9 +89,10 @@ struct BehaviorComponent {
 };
 
 struct FluidComponent {
-    // Populated by Plan B (SL8). Declared here so the type id is RESERVED and
-    // frozen now -- discovering it later would mean renumbering the enum,
-    // which is the one edit this design forbids.
+    // RESERVED (stage 5, Task 7; kComponentTypes): SPH, PHY-4, will define it. Declared here so
+    // the type id is frozen now -- discovering it later would mean renumbering the enum, which
+    // is the one edit this design forbids. Nothing can attach one: ObjectGraph::attach<T> does
+    // not compile for a reserved type and the loader refuses it with `unavailable`.
     float rest_density = 1000.0f;
     float stiffness = 0.0f;
     float viscosity = 0.0f;
@@ -157,14 +158,15 @@ inline constexpr ComponentTypeInfo kComponentTypes[kComponentTypeCount] = {
     {ComponentTypeId::fluid, "fluid", ComponentAvailability::reserved, "SPH, PHY-4"},
 };
 
-// RED stub: every type reads as available until the table is consulted.
+// Whether a type can be built: ObjectGraph::attach<T> static_asserts it, so a reserved type
+// does not compile into an attach.
 template <class T>
 [[nodiscard]] consteval bool component_available() noexcept {
-    return true;
+    return kComponentTypes[static_cast<uint32_t>(ComponentTraits<T>::id)].availability ==
+           ComponentAvailability::available;
 }
 
 // Every type, in id order: what every enumerator (the loader, the editor's menu) reads.
-// RED stub.
 [[nodiscard]] std::span<const ComponentTypeInfo> component_types() noexcept;
 
 [[nodiscard]] std::string_view component_type_name(ComponentTypeId id) noexcept;
