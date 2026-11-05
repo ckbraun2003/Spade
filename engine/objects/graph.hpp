@@ -113,10 +113,12 @@ class ObjectGraph {
     // dead object.
     template <class T>
     bool attach(ObjectId id, T value) {
+        static_assert(component_available<T>(),
+                      "this component type is reserved (kComponentTypes): no module defines it yet");
         if (!alive(id)) return false;
         auto& store = storage<T>();
-        // Stores grow lazily: a graph that never attaches a FluidComponent
-        // never allocates the fluid store at all. Sizing to slots_ here is
+        // Stores grow lazily: a graph that never attaches a component of a type
+        // never allocates that type's store at all. Sizing to slots_ here is
         // safe for every later read because id.index < slots_.size() held at
         // this point and slots_ never shrinks.
         if (store.size() < slots_.size()) store.resize(slots_.size());

@@ -47,7 +47,11 @@ namespace {
 // scratch's with no rows: the view has zero rows, so nothing ever reads or
 // writes these bytes. They exist so that the view's data is not null, which
 // would read as an absent module.
-alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
+alignas(float) const std::byte g_no_table_rows[sizeof(float)]{};
+// The same for a scratch with no rows that a pass declared a write of: its view
+// needs a non-null writable pointer too, or the pass's own (empty) request for
+// mutable rows would read as a misuse.
+alignas(float) std::byte g_no_scratch_rows[sizeof(float)]{};
 
 // The refusal for a misused view (state/state_view.hpp; stage 5, Task 1): the
 // module and pass the view was bound for, the array, table or scratch it views,
@@ -98,6 +102,10 @@ alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
         case ViewMisuse::table:
             detail = "was read with all_rows; a configuration table is one set of rows every world shares, read "
                      "with table_rows or world_rows";
+            break;
+        case ViewMisuse::read_view:
+            detail = "was asked for mutable rows, but the pass declared it as a read, or it is a configuration table; "
+                     "a read view yields only const rows (world_rows<const T>)";
             break;
         case ViewMisuse::none:
             detail = "was misused";
@@ -371,6 +379,32 @@ struct ExtentRows {
     return scratch.extent == modules::Extent::per_body ? body_capacity : 1u;
 }
 
+// The set's grades against the backend it will run on (stage 5, Task 5), before
+// any device is touched: a module absent on the backend is refused, then the
+// first module below the requested minimum, each by name. Two refusals, one rule
+// (L3, L6): nothing is skipped, and a set never runs below what was asked.
+[[nodiscard]] Result<void> check_grades(const modules::CompiledSchedule& schedule, compute::BackendKind kind,
+                                        Grade minimum) {
+    const bool vulkan = kind == compute::BackendKind::vulkan;
+    const std::string backend = vulkan ? "vulkan" : "cpu";
+    const auto grade_of = [vulkan](const modules::CompiledModule& m) { return vulkan ? m.grade.vulkan : m.grade.cpu; };
+    for (const modules::CompiledModule& m : schedule.modules) {
+        if (grade_of(m) == Grade::absent) {
+            return std::unexpected(Error{Code::unavailable, "module set: module '" + m.name + "' is absent on the " +
+                                                                backend + " backend (it declares no implementation there)"});
+        }
+    }
+    for (const modules::CompiledModule& m : schedule.modules) {
+        if (grade_of(m) < minimum) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "module set: module '" + m.name + "' is " + std::string(grade_name(grade_of(m))) +
+                                             " on the " + backend + " backend, below the requested minimum of " +
+                                             std::string(grade_name(minimum))});
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 // The walk create() registers, as data for the GPU mirror. walk_order() is the
@@ -463,9 +497,14 @@ Simulation::Simulation(Simulation&&) = default;
 Simulation& Simulation::operator=(Simulation&&) = default;
 
 Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, uint32_t substeps,
-                                      const compute::BackendDesc& backend, const modules::ModuleSet& module_set) {
+                                      const compute::BackendDesc& backend, const modules::ModuleSet& module_set,
+                                      Grade minimum_grade) {
     if (dt_ns == 0) {
         return std::unexpected(invalid("Simulation::create: dt_ns must be > 0"));
+    }
+    if (minimum_grade < Grade::best_effort || grade_name(minimum_grade).empty()) {
+        // absent is always refused on its backend, so it asks for nothing (and a value outside the enum is no grade)
+        return std::unexpected(invalid("Simulation::create: minimum_grade must be best-effort, banded or reference"));
     }
     if (substeps == 0) {
         return std::unexpected(invalid("Simulation::create: substeps must be > 0"));
@@ -481,6 +520,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
     if (!compiled) return std::unexpected(compiled.error());
     if (Result<void> builtins = check_builtin_arrays(*compiled); !builtins) return std::unexpected(builtins.error());
+    if (Result<void> roles = modules::check_required_roles(*compiled); !roles) return std::unexpected(roles.error());
     if (backend.kind == compute::BackendKind::vulkan) {
         // A pass with no GPU kernel would be missing from the GPU chain: the
         // GPU would run a different experiment from the CPU (L6). Refuse it by
@@ -517,6 +557,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         }
     }
 
+    // GRADES (stage 5, Task 5), after the Vulkan refusals above so their tests keep
+    // their messages, and before the world set is validated or a backend made.
+    if (Result<void> graded = check_grades(*compiled, backend.kind, minimum_grade); !graded) {
+        return std::unexpected(graded.error());
+    }
+
     const Result<WorldSetLayout> layout = validate_world_set(desc);
     if (!layout) {
         return std::unexpected(layout.error());
@@ -551,6 +597,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
 
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);
     sim.schedule_ = std::move(*compiled);
+    sim.minimum_grade_ = minimum_grade;
 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
@@ -1274,6 +1321,11 @@ Result<void> Simulation::rebuild_views() {
     // registered yet -- still reads as present(), since its module is in the
     // set: its view points at g_no_table_rows and has no rows.
     //
+    // Every present view holds `data`, const. Only a declared write or
+    // accumulation of an array or a scratch also holds `writable` (stage 5,
+    // Task 2); a read and every table leave it null, so a pass that declared a
+    // read cannot get mutable rows through its view (state/state_view.hpp).
+    //
     // Every view, absent ones included, carries its index here as its id and
     // points at view_fault_, where an accessor records a misuse for step() to
     // refuse (state/state_view.hpp).
@@ -1285,7 +1337,7 @@ Result<void> Simulation::rebuild_views() {
             view = StateView{.id = view_id, .fault = view_fault_.get()};
             if (bindings[k].kind == modules::BindingKind::table) {
                 std::vector<float>& table = config_tables_[bindings[k].index];
-                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<std::byte*>(table.data());
+                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<const std::byte*>(table.data());
                 view.elem_size = static_cast<uint32_t>(sizeof(float));
                 view.world_count = layout_.world_count;
                 view.capacity_per_world = static_cast<uint32_t>(table.size());
@@ -1298,6 +1350,7 @@ Result<void> Simulation::rebuild_views() {
             if (bindings[k].kind == modules::BindingKind::scratch) {
                 const ScratchRows& rows = scratch_rows_[bindings[k].index];
                 view.data = rows.bytes ? rows.bytes.get() : g_no_table_rows;
+                if (bindings[k].writable) view.writable = rows.bytes ? rows.bytes.get() : g_no_scratch_rows;
                 view.elem_size = schedule_.scratch[bindings[k].index].elem_size;
                 view.world_count = layout_.world_count;
                 view.capacity_per_world = rows.capacity_per_world;
@@ -1310,6 +1363,7 @@ Result<void> Simulation::rebuild_views() {
             const Result<WorldRange> world0 = arenas_.range(id, 0);  // its count is the per-world capacity
             if (!world0) return std::unexpected(world0.error());
             view.data = bytes->data();
+            if (bindings[k].writable) view.writable = bytes->data();
             view.elem_size = schedule_.arrays[bindings[k].index].elem_size;
             view.world_count = layout_.world_count;
             view.capacity_per_world = world0->count;
@@ -1385,6 +1439,17 @@ Result<void> Simulation::step(uint64_t n) {
         }
         tick_ = Tick{tick_.value + n};
         return {};
+    }
+
+    // Beside CORE-1's refusal above (stage 5, Task 5): attached behaviors are
+    // best-effort, so a simulation that asked for more refuses to step them rather
+    // than run ungraded code under a stronger claim (L3). Nothing moves, so it does
+    // not poison; detaching the registry lets the same Simulation step.
+    if (minimum_grade_ > Grade::best_effort && behaviors_ != nullptr && behaviors_->size() > 0) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "step: the attached behaviors are best-effort (developer code with no declared "
+                                     "grade), below the minimum of " + std::string(grade_name(minimum_grade_)) +
+                                         " this simulation was created with; detach them to step"});
     }
 
     Result<std::span<BodyState>> all_bodies = arenas_.array(bodies_id_);
@@ -1545,6 +1610,13 @@ Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
                                      "vulkan_recorded_chain: this Simulation runs on the cpu backend"});
     }
     return vulkan_backend_->recorded_chain();
+}
+
+modules::SetGrade Simulation::grade() const {
+    // A behavior is developer code with no declared grade (SL6): while a non-empty
+    // registry is attached the simulation is best-effort, whatever the set is.
+    if (behaviors_ != nullptr && behaviors_->size() > 0) return {Grade::best_effort, "behaviors"};
+    return modules::set_grade(schedule_, vulkan_backend_ ? compute::BackendKind::vulkan : compute::BackendKind::cpu);
 }
 
 Result<compute::DeviceReport> Simulation::vulkan_device_report() const {

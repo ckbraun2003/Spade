@@ -17,9 +17,18 @@
 // and `shared`, and world_rows returns the whole table for every world in the
 // set, so a pass that reads its table inside its world loop reads the same rows
 // in every world. table_rows reads it with no world. A table is read-only by
-// declaration (compile_schedule refuses a write or accumulate; the view's bytes
-// are not const). A declared scratch (Task 7b) is viewed exactly like an array,
-// over rows the Simulation allocated beside the arenas rather than in them.
+// declaration (compile_schedule refuses a write or accumulate) and by type: it
+// never holds a writable pointer. A declared scratch (Task 7b) is viewed
+// exactly like an array, over rows the Simulation allocated beside the arenas
+// rather than in them.
+//
+// A READ CANNOT WRITE (stage 5, Task 2). A view holds `data`, a const pointer,
+// for every declared access, and `writable` only for a declared write or
+// accumulation of an array or a scratch; a read and every table leave it null.
+// world_rows<const T> and all_rows<const T> read through `data`; the same with a
+// non-const T need `writable`, so a pass that declared a read cannot hand
+// itself rows the hazard graph never ordered it to change. Asking a view
+// without one for mutable rows is a misuse (below), not a silent empty span.
 //
 // ABSENT is a view with no data. A core quantity, a field, a stateless
 // module's token and an optional read of a module the set does not contain all
@@ -29,7 +38,8 @@
 //
 // A MISUSE IS A FAULT, NEVER A SILENT EMPTY SPAN (L6): a row type whose size is
 // not the view's elem_size, a world outside the set, table_rows on a view that
-// is not a table, or all_rows on a table. The accessor records the misuse in
+// is not a table, all_rows on a table, or mutable rows asked of a view that is
+// not writable. The accessor records the misuse in
 // the ViewFault its view points at, and returns an empty span: a pass is
 // noexcept and must be able to keep calling the accessors, so nothing is
 // thrown. The record is STICKY: the first misuse stays, and no later call,
@@ -59,6 +69,7 @@ enum class ViewMisuse : uint8_t {
     world = 2,      // a world outside the set
     not_table = 3,  // table_rows on a view that is not a configuration table
     table = 4,      // all_rows on a configuration table
+    read_view = 5,  // mutable rows asked of a view the pass declared as a read, or of a table
 };
 
 // The first misuse of any view that points here, kept until Simulation::step()
@@ -71,7 +82,8 @@ struct ViewFault {
 };
 
 struct StateView {
-    std::byte* data = nullptr;        // null when absent
+    const std::byte* data = nullptr;  // null when absent; every access reads through it
+    std::byte* writable = nullptr;    // data, for a declared write or accumulation; null for a read and every table
     uint32_t elem_size = 0;           // bytes per row
     uint32_t world_count = 0;         // the set's worlds, a table's included
     uint32_t capacity_per_world = 0;  // rows per world; world w owns rows [w * capacity, (w + 1) * capacity)
@@ -95,7 +107,7 @@ inline void record_misuse(const StateView& v, ViewMisuse misuse, std::size_t row
 // size, or a world outside the set, records a fault and reads as empty.
 template <class T>
 [[nodiscard]] std::span<T> world_rows(const StateView& v, uint32_t world) noexcept {
-    static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
+    static_assert(std::is_trivially_copyable_v<std::remove_const_t<T>>, "a row is raw arena bytes");
     if (v.data == nullptr) return {};
     if (sizeof(T) != v.elem_size) [[unlikely]] {
         view_detail::record_misuse(v, ViewMisuse::row_type, sizeof(T), world);
@@ -106,7 +118,15 @@ template <class T>
         return {};
     }
     const std::size_t first = v.shared ? 0 : static_cast<std::size_t>(world) * v.capacity_per_world;
-    return std::span<T>(reinterpret_cast<T*>(v.data + first * v.elem_size), v.capacity_per_world);
+    if constexpr (std::is_const_v<T>) {
+        return std::span<T>(reinterpret_cast<T*>(v.data + first * v.elem_size), v.capacity_per_world);
+    } else {
+        if (v.writable == nullptr) [[unlikely]] {
+            view_detail::record_misuse(v, ViewMisuse::read_view, sizeof(T), world);
+            return {};
+        }
+        return std::span<T>(reinterpret_cast<T*>(v.writable + first * v.elem_size), v.capacity_per_world);
+    }
 }
 
 // A configuration table's rows, read with no world. Empty for an absent view.
@@ -114,7 +134,7 @@ template <class T>
 // and reads as empty.
 template <class T>
 [[nodiscard]] std::span<const T> table_rows(const StateView& v) noexcept {
-    static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
+    static_assert(std::is_trivially_copyable_v<std::remove_const_t<T>>, "a row is raw arena bytes");
     if (v.data == nullptr) return {};
     if (!v.shared) [[unlikely]] {
         view_detail::record_misuse(v, ViewMisuse::not_table, sizeof(T), 0);
@@ -133,7 +153,7 @@ template <class T>
 // another size, records a fault and reads as empty.
 template <class T>
 [[nodiscard]] std::span<T> all_rows(const StateView& v) noexcept {
-    static_assert(std::is_trivially_copyable_v<T>, "a row is raw arena bytes");
+    static_assert(std::is_trivially_copyable_v<std::remove_const_t<T>>, "a row is raw arena bytes");
     if (v.data == nullptr) return {};
     if (v.shared) [[unlikely]] {
         view_detail::record_misuse(v, ViewMisuse::table, sizeof(T), 0);
@@ -143,7 +163,16 @@ template <class T>
         view_detail::record_misuse(v, ViewMisuse::row_type, sizeof(T), 0);
         return {};
     }
-    return std::span<T>(reinterpret_cast<T*>(v.data), static_cast<std::size_t>(v.world_count) * v.capacity_per_world);
+    const std::size_t count = static_cast<std::size_t>(v.world_count) * v.capacity_per_world;
+    if constexpr (std::is_const_v<T>) {
+        return std::span<T>(reinterpret_cast<T*>(v.data), count);
+    } else {
+        if (v.writable == nullptr) [[unlikely]] {
+            view_detail::record_misuse(v, ViewMisuse::read_view, sizeof(T), 0);
+            return {};
+        }
+        return std::span<T>(reinterpret_cast<T*>(v.writable), count);
+    }
 }
 
 }  // namespace spade

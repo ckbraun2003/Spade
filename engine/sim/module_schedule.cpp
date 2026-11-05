@@ -135,6 +135,48 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return {};
 }
 
+// A module's grade declaration (stage 5, Task 3): each value is one of the four,
+// a Vulkan `reference` is refused (L4: the GPU is never a golden source), and a
+// Vulkan `banded` needs a CPU `reference` to band against (L4; spec section 15).
+// A CPU `absent` is legal here: create() refuses it on the CPU.
+[[nodiscard]] Result<void> check_grade_shape(const ModuleDesc& mod) {
+    const std::string who = "module '" + std::string(mod.name) + "'";
+    if (grade_name(mod.grade.cpu).empty() || grade_name(mod.grade.vulkan).empty()) {
+        return std::unexpected(invalid(who + ": a grade must be absent, best-effort, banded or reference"));
+    }
+    if (mod.grade.vulkan == Grade::reference) {
+        return std::unexpected(invalid(who + ": a Vulkan grade of reference is refused (L4: the GPU is never a "
+                                             "golden source); declare banded beside a CPU reference"));
+    }
+    if (mod.grade.vulkan == Grade::banded && mod.grade.cpu != Grade::reference) {
+        return std::unexpected(invalid(who + ": a Vulkan grade of banded needs a CPU grade of reference to band "
+                                             "against (L4), not " + std::string(grade_name(mod.grade.cpu))));
+    }
+    return {};
+}
+
+// A module's role (stage 5, Task 6): one of kRoles, and not filled by an earlier module too.
+[[nodiscard]] Result<void> check_role(std::span<const ModuleDesc> modules, std::size_t m) {
+    const ModuleDesc& mod = modules[m];
+    if (mod.role.empty()) return {};
+    const bool known = std::any_of(std::begin(kRoles), std::end(kRoles),
+                                   [&mod](const RoleDecl& r) { return r.name == mod.role; });
+    if (!known) {
+        std::string names;
+        for (const RoleDecl& r : kRoles) names += (names.empty() ? "" : ", ") + std::string(r.name);
+        return std::unexpected(invalid("module '" + std::string(mod.name) + "': role '" + std::string(mod.role) +
+                                       "' is not a known role (" + names + ")"));
+    }
+    for (std::size_t k = 0; k < m; ++k) {
+        if (modules[k].role == mod.role) {
+            return std::unexpected(invalid("role '" + std::string(mod.role) + "' is filled by module '" +
+                                           std::string(modules[k].name) + "' and module '" + std::string(mod.name) +
+                                           "'; a role has one filler"));
+        }
+    }
+    return {};
+}
+
 // An access that binds nothing and orders nothing: an optional read of a
 // module the set does not hold.
 [[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
@@ -147,6 +189,8 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 // "<module>.<array>" quantity names, the table a "<module>.<table>" one does,
 // or the scratch a "<module>.<scratch>" one does, whichever module owns it; or
 // nothing. Core quantities are checked first, as known_quantity() checks them.
+// An array or a scratch is `writable` when the access writes or accumulates it
+// (stage 5, Task 2); a table never is.
 // Arrays, tables and scratch share one namespace (compile_tables,
 // compile_scratch), so at most one of the three loops can match.
 [[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays,
@@ -160,7 +204,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     }
     for (std::size_t i = 0; i < arrays.size(); ++i) {
         if (arrays[i].module == owner && arrays[i].name == name) {
-            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i)};
+            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i), qa.access != Access::read};
         }
     }
     for (std::size_t i = 0; i < tables.size(); ++i) {
@@ -170,7 +214,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     }
     for (std::size_t i = 0; i < scratch.size(); ++i) {
         if (scratch[i].module == owner && scratch[i].name == name) {
-            return CompiledBinding{BindingKind::scratch, static_cast<uint32_t>(i)};
+            return CompiledBinding{BindingKind::scratch, static_cast<uint32_t>(i), qa.access != Access::read};
         }
     }
     return {};
@@ -570,6 +614,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 return std::unexpected(invalid("module '" + std::string(mod.name) + "' appears twice in the set"));
             }
         }
+        // GRADES (stage 5, Task 3): the shape of the declaration, checked once, here.
+        if (Result<void> ok = check_grade_shape(mod); !ok) return std::unexpected(ok.error());
+        // ROLES (Task 6), here and so before the pass graph is built: two fillers of dynamic_contact are
+        // also two writers of body.pose with no edge, and a later check would refuse them as a hazard.
+        if (Result<void> ok = check_role(modules, m); !ok) return std::unexpected(ok.error());
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
@@ -818,6 +867,14 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_byte(h, static_cast<uint8_t>(p.phase));
     }
     out.identity = h;
+    for (const ModuleDesc& mod : modules) {
+        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role)});
+    }
+    for (const RoleDecl& role : kRoles) {  // kRoles order; check_role allowed at most one filler
+        const auto filler = std::find_if(modules.begin(), modules.end(),
+                                         [&role](const ModuleDesc& mod) { return mod.role == role.name; });
+        if (filler != modules.end()) out.roles.push_back(CompiledRole{std::string(role.name), std::string(filler->name)});
+    }
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
@@ -829,6 +886,33 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     for (const ModuleDesc& mod : modules) {
         if (mod.vehicle_rows != nullptr) {
             out.vehicle_rows.push_back(CompiledVehicleRows{std::string(mod.name), mod.vehicle_rows});
+        }
+    }
+    return out;
+}
+
+Result<void> check_required_roles(const CompiledSchedule& schedule) {
+    for (const RoleDecl& role : kRoles) {
+        if (!role.required) continue;
+        const bool filled = std::any_of(schedule.roles.begin(), schedule.roles.end(),
+                                        [&role](const CompiledRole& r) { return r.role == role.name; });
+        if (!filled) {
+            return std::unexpected(invalid("module set: role '" + std::string(role.name) +
+                                           "' is required and no module fills it"));
+        }
+    }
+    return {};
+}
+
+SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend) {
+    SetGrade out;  // reference, naming no module, for a set with no modules
+    bool first = true;
+    for (const CompiledModule& m : schedule.modules) {
+        const Grade g = backend == compute::BackendKind::vulkan ? m.grade.vulkan : m.grade.cpu;
+        if (first || g < out.grade) {  // strictly lower: the first module at the lowest grade is named
+            out.grade = g;
+            out.module = m.name;
+            first = false;
         }
     }
     return out;

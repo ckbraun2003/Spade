@@ -77,7 +77,6 @@ using spade::objects::BehaviorComponent;
 using spade::objects::BodyComponent;
 using spade::objects::CameraComponent;
 using spade::objects::ColliderComponent;
-using spade::objects::FluidComponent;
 using spade::objects::ForceElementComponent;
 using spade::objects::MaterialComponent;
 using spade::objects::MeshComponent;
@@ -140,9 +139,8 @@ template <class T>
     return loaded;
 }
 
-// Every component type, so that if ANY of them perturbs anything the
-// comparison catches it -- including the two whose payloads Plan B and Task 8
-// have yet to fill in.
+// Every constructible component type (fluid is reserved, stage 5 Task 7), so that if ANY
+// of them perturbs anything the comparison catches it.
 void attach_a_full_complement(ObjectGraph& g, ObjectId id, uint32_t i) {
     g.attach<TransformComponent>(id, TransformComponent{});
     g.attach<BodyComponent>(id, BodyComponent{.world_index = 0, .body_slot = i});
@@ -153,7 +151,6 @@ void attach_a_full_complement(ObjectGraph& g, ObjectId id, uint32_t i) {
     g.attach<ForceElementComponent>(id, ForceElementComponent{.element_slot = i});
     g.attach<CameraComponent>(id, CameraComponent{});
     g.attach<BehaviorComponent>(id, BehaviorComponent{.behavior_index = i});
-    g.attach<FluidComponent>(id, FluidComponent{});
 }
 
 // Allocation churn with recycling, so the free list and slot reuse are

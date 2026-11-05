@@ -6,8 +6,10 @@
 // GPU kernel that matches its CPU function, and the fields a module provides.
 // Stage 4: the arrays a module owns (its state), the rows it attaches to
 // bodies, the seeded streams those rows hold, and the scratch its passes share
-// within a substep. Grades and roles join the
-// descriptor in later stages.
+// within a substep. Stage 5: a grade per backend (core/grade.hpp) and the role a
+// module fills (kRoles), both declarations checked at compile_schedule() and
+// create() and spelt into no identity; component availability sits beside the
+// component type table (objects/component.hpp).
 #pragma once
 
 #include <algorithm>
@@ -23,6 +25,7 @@
 
 #include "compute/backend.hpp"
 #include "core/error.hpp"
+#include "core/grade.hpp"
 #include "physics/field_row.hpp"
 #include "state/layout.hpp"         // kStd430StructAlignment, WorldParams
 #include "vehicles/model_type.hpp"  // complete: a span of an incomplete type breaks MSVC (physics/schedule.hpp)
@@ -445,6 +448,23 @@ template <class Spawn>
     return out;
 }
 
+// What a module claims about its implementation on each backend (stage 5,
+// Task 3; core/grade.hpp). Undeclared is best-effort on both: the weakest grade
+// that runs, so a module never claims more than it has shown.
+struct GradeDecl {
+    Grade cpu = Grade::best_effort;
+    Grade vulkan = Grade::best_effort;
+};
+
+// A SLOT a module may fill (stage 5, Task 6; spec section 7). `required`: exactly
+// one module fills it; otherwise at most one. The names live here, in one core
+// table, so a misspelt role is refused as a misspelt quantity is.
+struct RoleDecl {
+    std::string_view name;
+    bool required = false;
+};
+inline constexpr RoleDecl kRoles[] = {{.name = "dynamic_contact", .required = true}};
+
 struct ModuleDesc {
     std::string_view name;  // no '.'; not "field", which names the field quantities
     uint32_t version = 1;
@@ -456,6 +476,8 @@ struct ModuleDesc {
     std::span<const ConfigTableDecl> tables{};    // the configuration tables this module builds
     VehicleRowsFn vehicle_rows = nullptr;         // the rows this module initializes when a vehicle spawns
     std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
+    GradeDecl grade{};                            // what it claims per backend (stage 5, Task 3)
+    std::string_view role{};                      // a kRoles name this module fills; empty fills none (Task 6)
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
@@ -475,6 +497,7 @@ enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2, scratch = 3
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
     uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays, ::tables or ::scratch, by kind
+    bool writable = false;      // the access writes or accumulates an array or a scratch; never a table
 };
 
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set
@@ -544,6 +567,20 @@ struct CompiledScratch {
     uint32_t binding = kNoBinding;      // kNoBinding: CPU-only
 };
 
+// One module as compiled (stage 5, Task 3): name, version and grade, in set order.
+struct CompiledModule {
+    std::string name;
+    uint32_t version = 1;
+    GradeDecl grade{};
+    std::string role{};  // the kRoles name it fills, or empty (Task 6)
+};
+
+// One filled role (Task 6): the role and the module that fills it.
+struct CompiledRole {
+    std::string role;
+    std::string module;
+};
+
 struct CompiledSchedule {
     std::vector<CompiledPass> passes;
     uint64_t identity = 0;  // FNV-1a 64 over the set and the compiled order; see compile_schedule()
@@ -571,7 +608,26 @@ struct CompiledSchedule {
     // (Task 7b). Not part of the identity: a scratch is not state, and a
     // changed row rides the module's version, like a changed array's.
     std::vector<CompiledScratch> scratch{};
+    // Every module in set order (stage 5, Task 3), with its grade. Not part of
+    // the identity: a grade is a claim, not a computation.
+    std::vector<CompiledModule> modules{};
+    // The filled roles, one per role, in kRoles order (Task 6). Not part of the
+    // identity: the filler's name already is.
+    std::vector<CompiledRole> roles{};
 };
+
+// create()'s check that every required role has its filler (Task 6): invalid_argument,
+// naming the role. compile_schedule does not run it, so a set may be compiled alone
+// without its roles.
+[[nodiscard]] Result<void> check_required_roles(const CompiledSchedule& schedule);
+
+// A set's grade on one backend: its lowest module grade, and the first module
+// in set order at it (L3).
+struct SetGrade {
+    Grade grade = Grade::reference;
+    std::string module{};
+};
+[[nodiscard]] SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend);
 
 // Orders every pass of `modules`:
 //   1. phases in Phase order;
@@ -638,7 +694,11 @@ struct CompiledSchedule {
 // blob for nothing. tests/test_contact_sets.cpp's old-blob replay pins it.
 //
 // Refused at compile, beside the rest: a table that names a binding but no
-// capacity (its device buffer is sized once, at create()).
+// capacity (its device buffer is sized once, at create()); a grade outside the
+// four, a Vulkan `reference` (L4), and a Vulkan `banded` without a CPU
+// `reference` (L4), each naming the module. Grades are claims, not
+// computations: they are not spelt into the identity, and CompiledSchedule::
+// modules carries them in set order.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().

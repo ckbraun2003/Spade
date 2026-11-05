@@ -2,7 +2,8 @@
 //
 // Task 1 created this as a placeholder so the STATIC target had a translation
 // unit. Task 2 gave it the component-name table; Task 3 adds ObjectGraph's
-// lifecycle.
+// lifecycle. Stage 5 Task 7 moved the names into component.hpp's kComponentTypes, beside each
+// type's availability.
 
 #include "objects/graph.hpp"
 
@@ -12,38 +13,23 @@
 #include <array>
 
 namespace spade::objects {
-namespace {
+std::span<const ComponentTypeInfo> component_types() noexcept {
+    return std::span<const ComponentTypeInfo>(kComponentTypes);
+}
 
-// Indexed BY ComponentTypeId, so this array's order IS the enum's order. The
-// static_assert below pins their sizes together, which makes appending a type
-// without a name a compile error instead of an empty string that only surfaces
-// in a saved file.
-//
-// WHAT IT CANNOT CATCH, measured rather than assumed. Task 2's mutation run
-// swapped the `body` and `mesh` ENUMERATORS and rebuilt: this table is indexed
-// by id and both sides of a name<->id round-trip read the same row, so
-// EveryIdInRangeHasANonEmptyNameThatRoundTrips still PASSED. Only the three
-// cases that tie a concrete TYPE to its id caught it --
-// IsMonotonicFromZeroAndDense, EveryTypeHasADistinctId and
-// NameRoundTripsForSerialization all went red. A round-trip through this table
-// proves the table is self-consistent, never that it agrees with the enum.
-constexpr std::array<std::string_view, kComponentTypeCount> kNames{
-    "transform", "body",          "mesh",   "material", "collider",
-    "sensor",    "force_element", "camera", "behavior", "fluid",
-};
-
-static_assert(kNames.size() == kComponentTypeCount);
-
-}  // namespace
-
+// The names live in kComponentTypes (component.hpp), indexed BY ComponentTypeId and spelt beside each
+// type's availability: one table, one site. A table that drifted out of step with the enum would hand
+// back the wrong name for every type after the drift point, silently and only visibly in a saved file;
+// the three cases of test_objects_component.cpp that tie a concrete TYPE to its id catch an enumerator
+// swap, because a round-trip through this table proves only that the table is self-consistent.
 std::string_view component_type_name(ComponentTypeId id) noexcept {
     const auto i = static_cast<uint32_t>(id);
-    return i < kComponentTypeCount ? kNames[i] : std::string_view{};
+    return i < kComponentTypeCount ? kComponentTypes[i].name : std::string_view{};
 }
 
 std::optional<ComponentTypeId> component_type_id_from_name(std::string_view name) noexcept {
-    for (uint32_t i = 0; i < kComponentTypeCount; ++i) {
-        if (kNames[i] == name) return static_cast<ComponentTypeId>(i);
+    for (const ComponentTypeInfo& info : kComponentTypes) {
+        if (info.name == name) return info.id;
     }
     return std::nullopt;
 }

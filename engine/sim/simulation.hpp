@@ -622,10 +622,28 @@ public:
     // gnss_sensors, naming the module, the array and the tag. A Vulkan set in
     // which a pass declares a CPU-only scratch is refused with unavailable,
     // naming the pass and the scratch.
+    //
+    // `minimum_grade` (stage 5, Task 5; core/grade.hpp) is the weakest grade the
+    // caller will run: best_effort, banded or reference (absent is always refused
+    // on its backend, so it asks for nothing: invalid_argument). A module the set
+    // holds that is `absent` on this backend is refused with unavailable, naming
+    // it and the backend, whatever the minimum; then the first module, in set
+    // order, graded below the minimum is refused with unavailable, naming it and
+    // its grade. Both come after the Vulkan refusals above and before the world set
+    // is validated or any device is touched, so they run without a GPU. A Vulkan
+    // set can never meet a `reference` minimum (a Vulkan reference is refused at
+    // registration, L4). While a behavior registry is attached, step() under a
+    // minimum above best_effort refuses with unavailable and steps nothing
+    // (grade() reports best_effort, naming "behaviors").
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
-                                                   const modules::ModuleSet& module_set = modules::standard_modules());
+                                                   const modules::ModuleSet& module_set = modules::standard_modules(),
+                                                   Grade minimum_grade = Grade::best_effort);
+
+    // The set's grade on this simulation's backend: the lowest module grade and
+    // the first module at it (stage 5, Task 5).
+    [[nodiscard]] modules::SetGrade grade() const;
 
     // The compiled module schedule this simulation steps with.
     [[nodiscard]] const modules::CompiledSchedule& schedule() const noexcept { return schedule_; }
@@ -2047,6 +2065,7 @@ private:
     float h_ = 0.0f;
 
     const objects::BehaviorRegistry* behaviors_ = nullptr;  // borrowed; see set_behaviors()
+    Grade minimum_grade_ = Grade::best_effort;                // create()'s minimum (stage 5, Task 5)
     modules::CompiledSchedule schedule_;                       // compiled once, in create()
 
     std::vector<StructuralOp> queue_;

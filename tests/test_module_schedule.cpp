@@ -9,13 +9,18 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "compute/backend.hpp"
+#include "core/grade.hpp"
 #include "core/rng.hpp"
+#include "objects/behavior.hpp"
+#include "objects/behaviors/kinematic_mover.hpp"
 #include "physics/contact_sets.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
@@ -2713,6 +2718,7 @@ enum class Misuse : uint8_t {
     all_rows_row_type,  // all_rows with the wrong row type
     all_rows_table,     // all_rows on a table
     twice,              // world, then row_type: the first one sticks
+    table_mutable,      // world_rows with a non-const row type on a table, which is never writable (Task 2)
 };
 Misuse g_misuse = Misuse::none;
 struct ViewMarkRow {
@@ -2735,6 +2741,7 @@ void misuse_pass(const spade::physics::SubstepContext& ctx) noexcept {
         case Misuse::table_row_type: (void)spade::table_rows<double>(weights); break;
         case Misuse::all_rows_row_type: (void)spade::all_rows<uint64_t>(marks); break;
         case Misuse::all_rows_table: (void)spade::all_rows<float>(weights); break;
+        case Misuse::table_mutable: (void)spade::world_rows<float>(weights, 0); break;
         case Misuse::twice:
             (void)spade::world_rows<ViewMarkRow>(marks, 2);
             (void)spade::world_rows<uint64_t>(marks, 0);
@@ -2860,6 +2867,7 @@ TEST(ModuleViews, AMisusedViewRefusesTheStepAtItsEndNamingTheModulePassAndView) 
         {.misuse = Misuse::table_row_type, .view = "table 'misuser.weights'", .detail = "row type of 8 bytes"},
         {.misuse = Misuse::all_rows_row_type, .view = "array 'misuser.marks'", .detail = "row type of 8 bytes"},
         {.misuse = Misuse::all_rows_table, .view = "table 'misuser.weights'", .detail = "all_rows"},
+        {.misuse = Misuse::table_mutable, .view = "table 'misuser.weights'", .detail = "mutable rows"},
         {.misuse = Misuse::twice,
          .view = "array 'misuser.marks'",
          .detail = "world 2",
@@ -3512,4 +3520,491 @@ TEST(ModuleScratch, ItsMirrorShapeIsItsDeclaration) {
         spade::scratch_shapes(*compile_schedule(spade::modules::standard_modules()), capacities_of(*sim));
     ASSERT_EQ(standard.size(), 1u) << "the standard set declares one: integrate's contact_dv (PHY-7)";
     EXPECT_EQ(standard[0].name, "contact_dv");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 2: a declared read cannot write through its view.
+// A view holds a const pointer for every access and a writable one only for a
+// write or an accumulation; a table never has one. A mutable row type asked of
+// a view without it is a misuse like the others (state/state_view.hpp): a
+// fault, never a silent empty span, so step() refuses at its end, naming the
+// module, the pass and the view, and poisons the Simulation.
+// ---------------------------------------------------------------------------
+namespace {
+
+// "peeker" declares a READ of tally's counts. While g_peek_pokes is set it asks
+// for mutable rows through it and tries to add 100.
+bool g_peek_pokes = true;
+spade::StateView g_peek_view{};  // peeker.peek's ctx.state[0] at its last run
+void peek_and_poke_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 1) return;
+    g_peek_view = ctx.state[0];
+    if (!g_peek_pokes) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        for (TallyRow& row : spade::world_rows<TallyRow>(ctx.state[0], w)) row.count += 100u;
+    }
+}
+constexpr QuantityAccess kPeekAccess[] = {{"tally.tally_counts", Access::read}};
+constexpr PassDecl kPeekPasses[] = {
+    {.name = "peek", .phase = Phase::forces, .access = kPeekAccess, .cpu = &peek_and_poke_pass}};
+
+// "viewdv": one per_body scratch, a pass that WRITES it and a later pass that
+// READS it; each keeps the view it was handed.
+spade::StateView g_dv_write_view{};
+spade::StateView g_dv_read_view{};
+void dv_write_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() == 1) g_dv_write_view = ctx.state[0];
+}
+void dv_read_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() == 1) g_dv_read_view = ctx.state[0];
+}
+constexpr ScratchDecl kViewDvScratch[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+constexpr QuantityAccess kDvPutAccess[] = {{"viewdv.dv", Access::write}};
+constexpr QuantityAccess kDvGetAccess[] = {{"viewdv.dv", Access::read}};
+constexpr PassDecl kViewDvPasses[] = {
+    {.name = "put", .phase = Phase::forces, .access = kDvPutAccess, .cpu = &dv_write_pass},
+    {.name = "get", .phase = Phase::sensors, .access = kDvGetAccess, .cpu = &dv_read_pass}};
+
+// The standard set with tally, a peeker of tally's counts, massed (a table and a
+// pass that reads it), a reader of massed's table and viewdv.
+[[nodiscard]] spade::modules::ModuleSet standard_with_views() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    set.push_back({.name = "peeker", .passes = kPeekPasses});
+    set.push_back(massed_module());
+    set.push_back({.name = "reader", .passes = kLookPasses});
+    set.push_back({.name = "viewdv", .passes = kViewDvPasses, .scratch = kViewDvScratch});
+    return set;
+}
+
+// The view as a pass holds it, with nowhere to record a misuse: a call that
+// would fault answers empty and records nothing.
+[[nodiscard]] spade::StateView detached(spade::StateView v) {
+    v.fault = nullptr;
+    return v;
+}
+
+}  // namespace
+
+TEST(ModuleViews, APassThatDeclaredAReadCannotWriteThroughItsView) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    set.push_back({.name = "peeker", .passes = kPeekPasses});
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    g_peek_pokes = true;
+    const spade::Result<void> refused = sim->step(3);
+    EXPECT_TRUE(refused_naming(refused, "module 'peeker'"));
+    EXPECT_TRUE(refused_naming(refused, "pass 'peek'"));
+    EXPECT_TRUE(refused_naming(refused, "array 'tally.tally_counts'"));
+    EXPECT_TRUE(refused_naming(refused, "mutable rows"));
+    EXPECT_EQ(sim->tick().value, 1u) << "the first step ran to its end and refused";
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ((*sim->module_rows<TallyRow>("tally_counts", w))[0].count, 2u)
+            << "world " << w << ": tally's own two substeps only; the peeker wrote nothing";
+    }
+    g_peek_pokes = false;
+    EXPECT_TRUE(refused_naming(sim->step(1), "step: state invalid since tick 0: ")) << "poisoned like any misuse";
+}
+
+TEST(ModuleViews, AReadViewYieldsOnlyConstRows) {
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, standard_with_views());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.5f)).has_value());
+    g_peek_pokes = false;
+    g_peek_view = g_tally_view = g_masses_view = g_dv_read_view = g_dv_write_view = {};
+    ASSERT_TRUE(sim->step(1).has_value());
+
+    // Reads: an array, a scratch and a table hold no mutable pointer; const rows come, mutable ones do not.
+    ASSERT_TRUE(g_peek_view.present());
+    EXPECT_EQ(g_peek_view.writable, nullptr) << "an array read";
+    EXPECT_FALSE(spade::world_rows<const TallyRow>(g_peek_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<TallyRow>(detached(g_peek_view), 0).empty());
+    EXPECT_TRUE(spade::all_rows<TallyRow>(detached(g_peek_view)).empty());
+
+    ASSERT_TRUE(g_dv_read_view.present());
+    EXPECT_EQ(g_dv_read_view.writable, nullptr) << "a scratch read";
+    EXPECT_FALSE(spade::world_rows<const DvRow>(g_dv_read_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<DvRow>(detached(g_dv_read_view), 0).empty());
+
+    ASSERT_TRUE(g_masses_view.present());
+    EXPECT_EQ(g_masses_view.writable, nullptr) << "a table is never writable";
+    EXPECT_FALSE(spade::world_rows<const float>(g_masses_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<float>(detached(g_masses_view), 0).empty());
+
+    // Writes: both pointers, to the same rows.
+    for (const spade::StateView* v : {&g_tally_view, &g_dv_write_view}) {
+        ASSERT_TRUE(v->present());
+        EXPECT_EQ(v->writable, v->data) << "a write holds the pointer";
+    }
+    const std::span<TallyRow> mutable_rows = spade::world_rows<TallyRow>(detached(g_tally_view), 1);
+    ASSERT_FALSE(mutable_rows.empty());
+    EXPECT_EQ(mutable_rows.data(), spade::world_rows<const TallyRow>(g_tally_view, 1).data());
+    const std::span<DvRow> dv_rows = spade::world_rows<DvRow>(detached(g_dv_write_view), 0);
+    ASSERT_FALSE(dv_rows.empty());
+    EXPECT_EQ(dv_rows.data(), spade::world_rows<const DvRow>(g_dv_write_view, 0).data());
+    ASSERT_TRUE(sim->step(1).has_value()) << "correct reads and writes record no fault";
+}
+
+TEST(ModuleSchedule, ABindingRecordsWhetherItsAccessWrites) {
+    const auto compiled = compile_schedule(standard_with_views());
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    const auto writable = [&](std::string_view module, std::string_view pass, std::size_t k) {
+        const spade::modules::CompiledPass* p = compiled_pass(*compiled, module, pass);
+        EXPECT_NE(p, nullptr) << module << "." << pass;
+        EXPECT_LT(k, p ? p->state.size() : 0u) << module << "." << pass;
+        return p != nullptr && k < p->state.size() && p->state[k].writable;
+    };
+    EXPECT_TRUE(writable("tally", "count", 0)) << "an array write";
+    EXPECT_FALSE(writable("peeker", "peek", 0)) << "an array read";
+    EXPECT_TRUE(writable("viewdv", "put", 0)) << "a scratch write";
+    EXPECT_FALSE(writable("viewdv", "get", 0)) << "a scratch read";
+    EXPECT_TRUE(writable("static_contact", "resolve", 1)) << "a scratch accumulation";
+    EXPECT_FALSE(writable("static_contact", "resolve", 2)) << "a table read";
+    EXPECT_FALSE(writable("massed", "copy", 0)) << "a table read";
+    EXPECT_TRUE(writable("massed", "copy", 1)) << "an array write";
+    EXPECT_FALSE(writable("static_contact", "resolve", 0)) << "a core quantity binds nothing";
+
+    spade::modules::ModuleSet alone = spade::modules::standard_modules();
+    alone.push_back({.name = "reader", .passes = kLookPasses});  // massed is not in the set
+    const auto absent = compile_schedule(alone);
+    ASSERT_TRUE(absent.has_value()) << absent.error().context;
+    const spade::modules::CompiledPass* look = compiled_pass(*absent, "reader", "look");
+    ASSERT_NE(look, nullptr);
+    ASSERT_EQ(look->state.size(), 1u);
+    EXPECT_EQ(look->state[0].kind, BindingKind::absent);
+    EXPECT_FALSE(look->state[0].writable) << "an optional read of an absent module";
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 3: a module declares a grade per backend, and
+// compile_schedule checks the declaration's shape (L3, L4). Grades are claims,
+// never spelt into the identity.
+// ---------------------------------------------------------------------------
+using spade::Grade;
+
+TEST(ModuleGrades, AVulkanReferenceIsRefusedAtRegistration) {
+    const auto s = standard_plus(
+        {.name = "golden_gpu", .grade = {.cpu = Grade::reference, .vulkan = Grade::reference}});
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("golden_gpu"), std::string::npos);
+}
+
+TEST(ModuleGrades, ASetsGradeIsItsWeakestModuleInSetOrder) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    set.push_back({.name = "rougher", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::absent}});
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const spade::modules::SetGrade cpu = spade::modules::set_grade(*s, spade::compute::BackendKind::cpu);
+    EXPECT_EQ(cpu.grade, Grade::best_effort);
+    EXPECT_EQ(cpu.module, "rough") << "the built-ins are reference (Task 4), so rough is the first at the lowest grade";
+    const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
+    EXPECT_EQ(gpu.grade, Grade::absent);
+    EXPECT_EQ(gpu.module, "rougher");
+}
+
+TEST(ModuleGrades, VulkanBandedNeedsACpuReference) {
+    for (const Grade cpu : {Grade::banded, Grade::best_effort, Grade::absent}) {
+        const auto s = standard_plus({.name = "banded_alone", .grade = {.cpu = cpu, .vulkan = Grade::banded}});
+        ASSERT_FALSE(s.has_value()) << "cpu " << spade::grade_name(cpu);
+        EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(s.error().context.find("banded_alone"), std::string::npos) << s.error().context;
+    }
+    const auto banded = standard_plus({.name = "both", .grade = {.cpu = Grade::reference, .vulkan = Grade::banded}});
+    EXPECT_TRUE(banded.has_value()) << "a CPU reference to band against";
+    const auto gpu_only = standard_plus(
+        {.name = "gpu_only", .grade = {.cpu = Grade::absent, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(gpu_only.has_value()) << "a GPU-only module (airflow's Q10): CPU absent, Vulkan best-effort";
+}
+
+TEST(ModuleGrades, AnUnknownGradeIsRefused) {
+    const Grade nonsense = static_cast<Grade>(7);
+    const auto on_cpu = standard_plus({.name = "odd_cpu", .grade = {.cpu = nonsense, .vulkan = Grade::best_effort}});
+    ASSERT_FALSE(on_cpu.has_value());
+    EXPECT_EQ(on_cpu.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(on_cpu.error().context.find("odd_cpu"), std::string::npos);
+    const auto on_vulkan = standard_plus({.name = "odd_gpu", .grade = {.cpu = Grade::reference, .vulkan = nonsense}});
+    ASSERT_FALSE(on_vulkan.has_value());
+    EXPECT_EQ(on_vulkan.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(on_vulkan.error().context.find("odd_gpu"), std::string::npos);
+}
+
+TEST(ModuleGrades, AnUndeclaredModuleIsBestEffortOnBothBackends) {
+    const auto s = standard_plus({.name = "plain", .version = 3});
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_FALSE(s->modules.empty());
+    const spade::modules::CompiledModule& last = s->modules.back();
+    EXPECT_EQ(last.name, "plain");
+    EXPECT_EQ(last.version, 3u);
+    EXPECT_EQ(last.grade.cpu, Grade::best_effort);
+    EXPECT_EQ(last.grade.vulkan, Grade::best_effort);
+    const spade::modules::ModuleSet standard = spade::modules::standard_modules();
+    ASSERT_EQ(s->modules.size(), standard.size() + 1) << "every module, in set order";
+    for (std::size_t i = 0; i < standard.size(); ++i) {
+        EXPECT_EQ(s->modules[i].name, standard[i].name) << i;
+        EXPECT_EQ(s->modules[i].version, standard[i].version) << i;
+    }
+}
+
+TEST(ModuleGrades, GradesLeaveTheIdentityAlone) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) m.grade = {.cpu = Grade::reference, .vulkan = Grade::banded};
+    const auto s = compile_schedule(set);
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_EQ(s->identity, kStandardIdentity) << "master's value: a grade is a claim, not a computation";
+    EXPECT_EQ(spade::grade_name(Grade::absent), "absent");
+    EXPECT_EQ(spade::grade_name(Grade::best_effort), "best-effort");
+    EXPECT_EQ(spade::grade_name(Grade::banded), "banded");
+    EXPECT_EQ(spade::grade_name(Grade::reference), "reference");
+    EXPECT_EQ(spade::grade_name(static_cast<Grade>(7)), "");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 4: the built-ins declare their grades (joint with
+// Physics, who reviews the commit).
+// ---------------------------------------------------------------------------
+
+// Transcribed from docs/design/physics/04-verification.md, "Grades" (PHY-2), not
+// read off the declarations (TD-4). Integrator, static contact, dynamic contact
+// (Gauss-Seidel), drag, rotor, dryden, imu and gnss are each CPU reference and
+// Vulkan banded ("banded via CORE-3" declares plain banded). environment is
+// Physics' row of 2026-11-05 (fff9e74b): reference on the CPU, banded on Vulkan
+// with a zero band. behaviors is Core's (SL6): reference and banded.
+TEST(StandardModules, DeclareTheGradesPhysicsSigned) {
+    const std::map<std::string, std::pair<Grade, Grade>> expected = {
+        {"drag", {Grade::reference, Grade::banded}},           {"dryden", {Grade::reference, Grade::banded}},
+        {"imu", {Grade::reference, Grade::banded}},            {"rotor", {Grade::reference, Grade::banded}},
+        {"gnss", {Grade::reference, Grade::banded}},           {"behaviors", {Grade::reference, Grade::banded}},
+        {"static_contact", {Grade::reference, Grade::banded}}, {"dynamic_contact", {Grade::reference, Grade::banded}},
+        {"integrate", {Grade::reference, Grade::banded}},      {"environment", {Grade::reference, Grade::banded}}};
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->modules.size(), expected.size());
+    for (const spade::modules::CompiledModule& m : s->modules) {
+        const auto it = expected.find(m.name);
+        ASSERT_NE(it, expected.end()) << m.name;
+        EXPECT_EQ(m.grade.cpu, it->second.first) << m.name;
+        EXPECT_EQ(m.grade.vulkan, it->second.second) << m.name;
+    }
+}
+
+TEST(StandardModules, AreReferenceOnTheCpuAndBandedOnVulkan) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    const spade::modules::SetGrade cpu = spade::modules::set_grade(*s, spade::compute::BackendKind::cpu);
+    EXPECT_EQ(cpu.grade, Grade::reference);
+    EXPECT_EQ(cpu.module, "drag") << "the first module in set order, all at the lowest grade";
+    const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
+    EXPECT_EQ(gpu.grade, Grade::banded);
+    EXPECT_EQ(gpu.module, "drag");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 5: create() checks the set's grades against its
+// backend and a requested minimum, naming the module, before any device is
+// touched (so these run in the Docker leg too).
+// ---------------------------------------------------------------------------
+
+TEST(ModuleGrades, ASetBelowTheMinimumIsRefusedNamingTheModule) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    const auto refused = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set, Grade::reference);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("'rough'"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("best-effort"), std::string::npos) << refused.error().context;
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set, Grade::best_effort).has_value());
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set).has_value()) << "no minimum";
+}
+
+TEST(ModuleGrades, NoVulkanSetMeetsAReferenceMinimum) {
+    // Refused before any device is touched, so this runs in the Docker leg too.
+    const auto s = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                             {.kind = spade::compute::BackendKind::vulkan},
+                                             spade::modules::standard_modules(), Grade::reference);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::unavailable);
+    EXPECT_NE(s.error().context.find("'drag'"), std::string::npos)
+        << "the first module, in set order, below reference: " << s.error().context;
+}
+
+TEST(ModuleGrades, AnAbsentModuleIsRefusedOnItsBackendByName) {
+    spade::modules::ModuleSet vulkan_ghost = spade::modules::standard_modules();
+    vulkan_ghost.push_back({.name = "ghost", .grade = {.cpu = Grade::reference, .vulkan = Grade::absent}});
+    const auto on_vulkan = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                                     {.kind = spade::compute::BackendKind::vulkan}, vulkan_ghost);
+    ASSERT_FALSE(on_vulkan.has_value()) << "no minimum is needed to refuse an absent module";
+    EXPECT_EQ(on_vulkan.error().code, spade::Code::unavailable);
+    EXPECT_NE(on_vulkan.error().context.find("'ghost'"), std::string::npos) << on_vulkan.error().context;
+    EXPECT_NE(on_vulkan.error().context.find("vulkan"), std::string::npos) << on_vulkan.error().context;
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, vulkan_ghost).has_value())
+        << "absent on Vulkan only: the CPU runs it";
+
+    spade::modules::ModuleSet cpu_ghost = spade::modules::standard_modules();
+    cpu_ghost.push_back({.name = "cpu_ghost", .grade = {.cpu = Grade::absent, .vulkan = Grade::best_effort}});
+    const auto on_cpu = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, cpu_ghost);
+    ASSERT_FALSE(on_cpu.has_value());
+    EXPECT_EQ(on_cpu.error().code, spade::Code::unavailable);
+    EXPECT_NE(on_cpu.error().context.find("'cpu_ghost'"), std::string::npos) << on_cpu.error().context;
+    EXPECT_NE(on_cpu.error().context.find("cpu"), std::string::npos) << on_cpu.error().context;
+}
+
+TEST(ModuleGrades, WithNoMinimumEveryGradeButAbsentIsAccepted) {
+    // On the CPU. Accepting a set on Vulkan needs a device; GpuModuleSchedule* already creates standard
+    // Vulkan sets with no minimum, so no new gpu test is needed.
+    spade::modules::ModuleSet rough = spade::modules::standard_modules();
+    rough.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, rough).has_value());
+    spade::modules::ModuleSet banded = spade::modules::standard_modules();
+    banded.push_back({.name = "banded_cpu", .grade = {.cpu = Grade::banded, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, banded).has_value());
+}
+
+TEST(ModuleGrades, AMinimumBelowBestEffortIsInvalid) {
+    const auto s = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, spade::modules::standard_modules(),
+                                             Grade::absent);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument) << "absent is always refused, so it asks for nothing";
+}
+
+TEST(ModuleGrades, ASimulationReportsItsGradeAndWeakestModule) {
+    auto standard = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(standard.has_value()) << standard.error().context;
+    EXPECT_EQ(standard->grade().grade, Grade::reference);
+
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    auto rough = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(rough.has_value()) << rough.error().context;
+    EXPECT_EQ(rough->grade().grade, Grade::best_effort);
+    EXPECT_EQ(rough->grade().module, "rough");
+}
+
+TEST(ModuleGrades, AnAttachedBehaviorRegistryIsBestEffort) {
+    const spade::objects::KinematicMoverParams params{};
+    spade::objects::BehaviorRegistry registry;
+    ASSERT_TRUE(registry.register_behavior(spade::objects::kinematic_mover_desc(params)));
+
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, spade::modules::standard_modules(),
+                                         Grade::banded);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    EXPECT_EQ(sim->grade().grade, Grade::reference) << "nothing attached";
+    sim->set_behaviors(&registry);
+    EXPECT_EQ(sim->grade().grade, Grade::best_effort) << "a behavior is developer code with no declared grade";
+    EXPECT_EQ(sim->grade().module, "behaviors");
+    const spade::Result<void> refused = sim->step(1);
+    ASSERT_FALSE(refused.has_value()) << "a minimum of banded refuses best-effort behaviors";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("behaviors"), std::string::npos) << refused.error().context;
+    EXPECT_EQ(sim->tick().value, 0u) << "stepped nothing";
+    EXPECT_TRUE(sim->step(0).has_value()) << "step(0) runs no behaviors";
+    sim->set_behaviors(nullptr);
+    EXPECT_EQ(sim->grade().grade, Grade::reference) << "detached";
+    EXPECT_TRUE(sim->step(1).has_value());
+
+    auto free_run = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(free_run.has_value()) << free_run.error().context;
+    free_run->set_behaviors(&registry);
+    EXPECT_TRUE(free_run->step(1).has_value()) << "with no minimum, the same simulation steps";
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 6: roles. dynamic_contact is a slot exactly one
+// module fills. The role is not spelt into the identity: the filler's name
+// already is, so another role choice is a different module set (L2).
+// ---------------------------------------------------------------------------
+namespace {
+
+// "contact_alt": a second filler of dynamic_contact. It runs Gauss-Seidel's CPU function with no
+// recipe, so it is CPU-only, which is all a role test needs. Its accesses are dynamic_contact's own,
+// in the order physics::kContactPassContactDvAccess names, because the function reads its scratch at
+// that index.
+constexpr QuantityAccess kAltAccess[] = {{"body.pose", Access::write}, {"integrate.contact_dv", Access::accumulate}};
+constexpr std::string_view kAltAfter[] = {"static_contact.resolve"};
+constexpr PassDecl kAltPasses[] = {{.name = "resolve",
+                                    .phase = Phase::constraints,
+                                    .access = kAltAccess,
+                                    .after = kAltAfter,
+                                    .cpu = &spade::physics::pass_collision_dynamic}};
+[[nodiscard]] ModuleDesc contact_alt() {
+    return {.name = "contact_alt", .passes = kAltPasses, .role = "dynamic_contact"};
+}
+// The standard set with the filler replaced in place, so set order holds.
+[[nodiscard]] spade::modules::ModuleSet standard_with_contact_alt() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    for (ModuleDesc& m : set) {
+        if (m.name == "dynamic_contact") m = contact_alt();
+    }
+    return set;
+}
+
+}  // namespace
+
+TEST(ModuleRoles, ARoleFilledTwiceOrNotAtAllIsRefused) {
+    spade::modules::ModuleSet twice = spade::modules::standard_modules();
+    twice.push_back(contact_alt());
+    const auto both = compile_schedule(twice);
+    ASSERT_FALSE(both.has_value());
+    EXPECT_EQ(both.error().code, spade::Code::invalid_argument);
+    for (const char* name : {"dynamic_contact", "contact_alt"}) {
+        EXPECT_NE(both.error().context.find(name), std::string::npos) << name << " in: " << both.error().context;
+    }
+
+    spade::modules::ModuleSet none = spade::modules::standard_modules();
+    std::erase_if(none, [](const ModuleDesc& m) { return m.name == "dynamic_contact"; });
+    ASSERT_TRUE(compile_schedule(none).has_value()) << "a schedule may be compiled without its roles";
+    const auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, none);
+    ASSERT_FALSE(sim.has_value());
+    EXPECT_EQ(sim.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(sim.error().context.find("role 'dynamic_contact'"), std::string::npos) << sim.error().context;
+}
+
+TEST(ModuleRoles, ARoleIsOneOfTheKnownRoles) {
+    const auto s = standard_plus({.name = "typo", .role = "dynamic_contct"});
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(s.error().context.find("'typo'"), std::string::npos) << s.error().context;
+    EXPECT_NE(s.error().context.find("dynamic_contct"), std::string::npos) << s.error().context;
+}
+
+TEST(ModuleRoles, AnAlternativeFillsTheRoleAndSteps) {
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_with_contact_alt());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->step(3).has_value());
+    const auto& roles = sim->schedule().roles;
+    ASSERT_EQ(roles.size(), 1u);
+    EXPECT_EQ(roles[0].role, "dynamic_contact");
+    EXPECT_EQ(roles[0].module, "contact_alt");
+}
+
+TEST(ModuleRoles, AnotherRoleChoiceChangesTheIdentity) {
+    // Green at red: a pin of the Decisions argument. The role's filler is a module, and the identity spells every
+    // module's name, so a role choice is already covered with no new bytes.
+    const auto s = compile_schedule(standard_with_contact_alt());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    EXPECT_NE(s->identity, kStandardIdentity);
+}
+
+TEST(ModuleSnapshot, RestoreUnderAnotherRoleChoiceIsRefused) {
+    // Green at red (spec section 13, L2): a pin. The refusal is restore's identity message, as for another module set.
+    auto source = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    auto target = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, standard_with_contact_alt());
+    ASSERT_TRUE(source.has_value() && target.has_value());
+    const auto blob = source->snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    const auto restored = target->restore(*blob);
+    ASSERT_FALSE(restored.has_value());
+    EXPECT_EQ(restored.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(restored.error().context.find("module set"), std::string::npos) << restored.error().context;
+}
+
+TEST(StandardModules, FillTheDynamicContactRole) {
+    const auto s = compile_schedule(spade::modules::standard_modules());
+    ASSERT_TRUE(s.has_value()) << s.error().context;
+    ASSERT_EQ(s->roles.size(), 1u);
+    EXPECT_EQ(s->roles[0].role, "dynamic_contact");
+    EXPECT_EQ(s->roles[0].module, "dynamic_contact");
+    EXPECT_EQ(s->identity, kStandardIdentity) << "a role is a declaration, not a computation";
 }

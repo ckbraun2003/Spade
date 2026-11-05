@@ -276,6 +276,21 @@ constexpr PassDecl kIntegratePasses[] = {
     {.name = "integrate", .phase = Phase::integrate, .access = kIntegrateAccess, .cpu = &physics::pass_integrate,
      .gpu = compute::GpuRecipe::integrate}};
 
+// THE GRADES (stage 5, Task 4), from docs/design/physics/04-verification.md,
+// "Grades" (PHY-2), row by row: integrator, static contact, dynamic contact
+// (Gauss-Seidel, the row of the required dynamic_contact role), drag (T0), rotor
+// element, dryden, imu and gnss are each CPU reference and Vulkan banded ("banded
+// via CORE-3" declares plain banded), and environment is Physics' row of
+// 2026-11-05: reference on the CPU (every golden runs it), banded on Vulkan with a
+// zero band (its kernel copies gravity and density, no arithmetic). Physics owns
+// the table; tests/test_module_schedule.cpp transcribes it, so a change here
+// without a change there fails.
+constexpr GradeDecl kPhy2Grade{.cpu = Grade::reference, .vulkan = Grade::banded};
+// behaviors is Core's, not Physics' (SL6): the CPU slot passes are the reference,
+// and the Vulkan ones are banded against them (an empty slot computes nothing;
+// CORE-1 refuses an attached registry on Vulkan).
+constexpr GradeDecl kBehaviorsGrade{.cpu = Grade::reference, .vulkan = Grade::banded};
+
 }  // namespace
 
 ModuleSet standard_modules() {
@@ -284,17 +299,18 @@ ModuleSet standard_modules() {
     // and rotor carry the legacy marker, so their arrays register before
     // replay_config, in this order; gnss registers after it.
     return {
-        {.name = "drag", .passes = kDragPasses, .state = kDragArrays, .legacy_walk = true},
+        {.name = "drag", .passes = kDragPasses, .state = kDragArrays, .legacy_walk = true, .grade = kPhy2Grade},
         {.name = "dryden", .passes = kDrydenPasses, .fields = kDrydenFields, .state = kDrydenArrays,
-         .legacy_walk = true, .streams = kDrydenStreams},
-        {.name = "imu", .passes = kImuPasses, .state = kImuArrays, .legacy_walk = true, .streams = kImuStreams},
-        {.name = "rotor", .passes = kRotorPasses, .state = kRotorArrays, .legacy_walk = true},
-        {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays, .streams = kGnssStreams},
-        {.name = "behaviors", .passes = kBehaviorPasses},
-        {.name = "static_contact", .passes = kStaticPasses, .tables = kStaticTables},
-        {.name = "dynamic_contact", .passes = kDynamicPasses},
-        {.name = "integrate", .passes = kIntegratePasses, .scratch = kIntegrateScratch},
-        {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields},
+         .legacy_walk = true, .streams = kDrydenStreams, .grade = kPhy2Grade},
+        {.name = "imu", .passes = kImuPasses, .state = kImuArrays, .legacy_walk = true, .streams = kImuStreams,
+         .grade = kPhy2Grade},
+        {.name = "rotor", .passes = kRotorPasses, .state = kRotorArrays, .legacy_walk = true, .grade = kPhy2Grade},
+        {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays, .streams = kGnssStreams, .grade = kPhy2Grade},
+        {.name = "behaviors", .passes = kBehaviorPasses, .grade = kBehaviorsGrade},
+        {.name = "static_contact", .passes = kStaticPasses, .tables = kStaticTables, .grade = kPhy2Grade},
+        {.name = "dynamic_contact", .passes = kDynamicPasses, .grade = kPhy2Grade, .role = "dynamic_contact"},
+        {.name = "integrate", .passes = kIntegratePasses, .scratch = kIntegrateScratch, .grade = kPhy2Grade},
+        {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields, .grade = kPhy2Grade},
     };
 }
 

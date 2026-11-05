@@ -6,8 +6,8 @@
 // builds under some ABIs, and carries no ordering. A saved graph stores these
 // numbers, so all three properties are load-bearing.
 //
-// APPENDING a type is legal: add an enumerator at the end, add a name row at
-// the end of kNames in graph.cpp, bump kComponentTypeCount. RENUMBERING an
+// APPENDING a type is legal: add an enumerator at the end, add a row at the end of
+// kComponentTypes below (name, availability, reason), bump kComponentTypeCount. RENUMBERING an
 // existing one is not -- it silently reinterprets every scene ever saved. The
 // ordering below is frozen, and test_objects_component.cpp pins it.
 //
@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include <glm/glm.hpp>
@@ -88,9 +89,10 @@ struct BehaviorComponent {
 };
 
 struct FluidComponent {
-    // Populated by Plan B (SL8). Declared here so the type id is RESERVED and
-    // frozen now -- discovering it later would mean renumbering the enum,
-    // which is the one edit this design forbids.
+    // RESERVED (stage 5, Task 7; kComponentTypes): SPH, PHY-4, will define it. Declared here so
+    // the type id is frozen now -- discovering it later would mean renumbering the enum, which
+    // is the one edit this design forbids. Nothing can attach one: ObjectGraph::attach<T> does
+    // not compile for a reserved type and the loader refuses it with `unavailable`.
     float rest_density = 1000.0f;
     float stiffness = 0.0f;
     float viscosity = 0.0f;
@@ -127,6 +129,45 @@ template <class T>
 [[nodiscard]] constexpr ComponentTypeId component_type_id() noexcept {
     return ComponentTraits<T>::id;
 }
+
+// AVAILABILITY (module API stage 5, Task 7; spec section 3): which of the ten types can
+// be built. A type no module defines is RESERVED: its id and its name are frozen (SL5), but
+// ObjectGraph::attach<T> does not compile for it and the loader refuses it with `unavailable`,
+// naming the reason. Static for now (the graph is not in stepping, spec section 11); per module
+// set it becomes when objects join stepping. One table, in id order, is the only site that
+// holds a type's name, its availability and its reason.
+enum class ComponentAvailability : uint8_t { available = 0, reserved = 1 };
+
+struct ComponentTypeInfo {
+    ComponentTypeId id;
+    std::string_view name;  // the serialization key
+    ComponentAvailability availability;
+    std::string_view reason;  // reserved only: why, and what will provide it
+};
+
+inline constexpr ComponentTypeInfo kComponentTypes[kComponentTypeCount] = {
+    {ComponentTypeId::transform, "transform", ComponentAvailability::available, ""},
+    {ComponentTypeId::body, "body", ComponentAvailability::available, ""},
+    {ComponentTypeId::mesh, "mesh", ComponentAvailability::available, ""},
+    {ComponentTypeId::material, "material", ComponentAvailability::available, ""},
+    {ComponentTypeId::collider, "collider", ComponentAvailability::available, ""},
+    {ComponentTypeId::sensor, "sensor", ComponentAvailability::available, ""},
+    {ComponentTypeId::force_element, "force_element", ComponentAvailability::available, ""},
+    {ComponentTypeId::camera, "camera", ComponentAvailability::available, ""},
+    {ComponentTypeId::behavior, "behavior", ComponentAvailability::available, ""},
+    {ComponentTypeId::fluid, "fluid", ComponentAvailability::reserved, "SPH, PHY-4"},
+};
+
+// Whether a type can be built: ObjectGraph::attach<T> static_asserts it, so a reserved type
+// does not compile into an attach.
+template <class T>
+[[nodiscard]] consteval bool component_available() noexcept {
+    return kComponentTypes[static_cast<uint32_t>(ComponentTraits<T>::id)].availability ==
+           ComponentAvailability::available;
+}
+
+// Every type, in id order: what every enumerator (the loader, the editor's menu) reads.
+[[nodiscard]] std::span<const ComponentTypeInfo> component_types() noexcept;
 
 [[nodiscard]] std::string_view component_type_name(ComponentTypeId id) noexcept;
 [[nodiscard]] std::optional<ComponentTypeId> component_type_id_from_name(
