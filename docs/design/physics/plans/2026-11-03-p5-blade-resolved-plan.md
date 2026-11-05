@@ -86,9 +86,9 @@ A recorded run of a few revolutions is therefore minutes in LBM and tens of minu
 Every task builds a CPU reference first and a GPU twin equal to it to the bit on the device of record. Each passes mutations named in its tests and the gcc check, and lands as a branch for the lead's review. The determinism rules are the airflow tier's: fixed-order reductions, NaN preservation, NoContraction, no libm transcendental, and `core/fp32_math` for any trigonometry.
 
 - **L1. The lattice.**
-  - D3Q27 with the recursive-regularized collision to third order and WALE in τ, fp32, one copy streamed in place (esoteric pull), with periodic and open faces: equilibrium inflow, zero-gradient outflow.
+  - D3Q27 with the recursive-regularized collision to third order and WALE in τ, fp32, one copy streamed in place (esoteric pull), the populations stored shifted by their weights (f - w_i rho0, so the rest state never enters a sum or a load), with periodic and open faces (equilibrium inflow, zero-gradient outflow) and plain box-face walls (halfway bounce-back; the lid by the moving-wall term). L2 keeps the part walls.
   - Validated on C0 (Taylor–Green, its dissipation on record) and C1 (the cavity at Re 100 and 400 against Ghia), as plan A was.
-  - The stability map in lattice Mach (0.1 to 0.3) at τ near 0.5, measured, which decides u_lat for Caradonna–Tung.
+  - The stability map in u_lat, 0.1 to 0.40 (lattice Mach 0.17 to 0.69), at τ near 0.5, measured, with the later cases' own (u_lat, ν_lat) points as required rows; it decides u_lat for Caradonna–Tung.
 - **L2. Walls.**
   - Halfway bounce-back from a part's SDF, then interpolated (Bouzidi, the wall's distance from φ), then moving, with the wall-momentum term. Every link's wall is rebuilt from the posed SDF each step inside the part's box.
   - The blade loads by momentum exchange, summed in `reduce.hpp`'s order.
