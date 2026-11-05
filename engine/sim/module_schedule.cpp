@@ -137,6 +137,26 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 
 // An access that binds nothing and orders nothing: an optional read of a
 // module the set does not hold.
+// A module's grade declaration (stage 5, Task 3): each value is one of the four,
+// a Vulkan `reference` is refused (L4: the GPU is never a golden source), and a
+// Vulkan `banded` needs a CPU `reference` to band against (L4; spec section 15).
+// A CPU `absent` is legal here: create() refuses it on the CPU.
+[[nodiscard]] Result<void> check_grade_shape(const ModuleDesc& mod) {
+    const std::string who = "module '" + std::string(mod.name) + "'";
+    if (grade_name(mod.grade.cpu).empty() || grade_name(mod.grade.vulkan).empty()) {
+        return std::unexpected(invalid(who + ": a grade must be absent, best-effort, banded or reference"));
+    }
+    if (mod.grade.vulkan == Grade::reference) {
+        return std::unexpected(invalid(who + ": a Vulkan grade of reference is refused (L4: the GPU is never a "
+                                             "golden source); declare banded beside a CPU reference"));
+    }
+    if (mod.grade.vulkan == Grade::banded && mod.grade.cpu != Grade::reference) {
+        return std::unexpected(invalid(who + ": a Vulkan grade of banded needs a CPU grade of reference to band "
+                                             "against (L4), not " + std::string(grade_name(mod.grade.cpu))));
+    }
+    return {};
+}
+
 [[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
     std::string_view owner;
     std::string_view name;
@@ -572,6 +592,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                 return std::unexpected(invalid("module '" + std::string(mod.name) + "' appears twice in the set"));
             }
         }
+        // GRADES (stage 5, Task 3): the shape of the declaration, checked once, here.
+        if (Result<void> ok = check_grade_shape(mod); !ok) return std::unexpected(ok.error());
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
@@ -820,6 +842,9 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_byte(h, static_cast<uint8_t>(p.phase));
     }
     out.identity = h;
+    for (const ModuleDesc& mod : modules) {
+        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade});
+    }
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
@@ -836,7 +861,19 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     return out;
 }
 
-SetGrade set_grade(const CompiledSchedule&, compute::BackendKind) { return {}; }  // RED stub
+SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend) {
+    SetGrade out;  // reference, naming no module, for a set with no modules
+    bool first = true;
+    for (const CompiledModule& m : schedule.modules) {
+        const Grade g = backend == compute::BackendKind::vulkan ? m.grade.vulkan : m.grade.cpu;
+        if (first || g < out.grade) {  // strictly lower: the first module at the lowest grade is named
+            out.grade = g;
+            out.module = m.name;
+            first = false;
+        }
+    }
+    return out;
+}
 
 std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     std::vector<compute::GpuPass> out;

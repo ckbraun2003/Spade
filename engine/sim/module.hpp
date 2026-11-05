@@ -667,7 +667,11 @@ struct SetGrade {
 // blob for nothing. tests/test_contact_sets.cpp's old-blob replay pins it.
 //
 // Refused at compile, beside the rest: a table that names a binding but no
-// capacity (its device buffer is sized once, at create()).
+// capacity (its device buffer is sized once, at create()); a grade outside the
+// four, a Vulkan `reference` (L4), and a Vulkan `banded` without a CPU
+// `reference` (L4), each naming the module. Grades are claims, not
+// computations: they are not spelt into the identity, and CompiledSchedule::
+// modules carries them in set order.
 [[nodiscard]] Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules);
 
 // Today's engine as modules. The default module set of Simulation::create().
