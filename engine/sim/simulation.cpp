@@ -379,6 +379,32 @@ struct ExtentRows {
     return scratch.extent == modules::Extent::per_body ? body_capacity : 1u;
 }
 
+// The set's grades against the backend it will run on (stage 5, Task 5), before
+// any device is touched: a module absent on the backend is refused, then the
+// first module below the requested minimum, each by name. Two refusals, one rule
+// (L3, L6): nothing is skipped, and a set never runs below what was asked.
+[[nodiscard]] Result<void> check_grades(const modules::CompiledSchedule& schedule, compute::BackendKind kind,
+                                        Grade minimum) {
+    const bool vulkan = kind == compute::BackendKind::vulkan;
+    const std::string backend = vulkan ? "vulkan" : "cpu";
+    const auto grade_of = [vulkan](const modules::CompiledModule& m) { return vulkan ? m.grade.vulkan : m.grade.cpu; };
+    for (const modules::CompiledModule& m : schedule.modules) {
+        if (grade_of(m) == Grade::absent) {
+            return std::unexpected(Error{Code::unavailable, "module set: module '" + m.name + "' is absent on the " +
+                                                                backend + " backend (it declares no implementation there)"});
+        }
+    }
+    for (const modules::CompiledModule& m : schedule.modules) {
+        if (grade_of(m) < minimum) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "module set: module '" + m.name + "' is " + std::string(grade_name(grade_of(m))) +
+                                             " on the " + backend + " backend, below the requested minimum of " +
+                                             std::string(grade_name(minimum))});
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 // The walk create() registers, as data for the GPU mirror. walk_order() is the
@@ -476,6 +502,10 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     if (dt_ns == 0) {
         return std::unexpected(invalid("Simulation::create: dt_ns must be > 0"));
     }
+    if (minimum_grade < Grade::best_effort || grade_name(minimum_grade).empty()) {
+        // absent is always refused on its backend, so it asks for nothing (and a value outside the enum is no grade)
+        return std::unexpected(invalid("Simulation::create: minimum_grade must be best-effort, banded or reference"));
+    }
     if (substeps == 0) {
         return std::unexpected(invalid("Simulation::create: substeps must be > 0"));
     }
@@ -524,6 +554,12 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
                 }
             }
         }
+    }
+
+    // GRADES (stage 5, Task 5), after the Vulkan refusals above so their tests keep
+    // their messages, and before the world set is validated or a backend made.
+    if (Result<void> graded = check_grades(*compiled, backend.kind, minimum_grade); !graded) {
+        return std::unexpected(graded.error());
     }
 
     const Result<WorldSetLayout> layout = validate_world_set(desc);
@@ -1404,6 +1440,17 @@ Result<void> Simulation::step(uint64_t n) {
         return {};
     }
 
+    // Beside CORE-1's refusal above (stage 5, Task 5): attached behaviors are
+    // best-effort, so a simulation that asked for more refuses to step them rather
+    // than run ungraded code under a stronger claim (L3). Nothing moves, so it does
+    // not poison; detaching the registry lets the same Simulation step.
+    if (minimum_grade_ > Grade::best_effort && behaviors_ != nullptr && behaviors_->size() > 0) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "step: the attached behaviors are best-effort (developer code with no declared "
+                                     "grade), below the minimum of " + std::string(grade_name(minimum_grade_)) +
+                                         " this simulation was created with; detach them to step"});
+    }
+
     Result<std::span<BodyState>> all_bodies = arenas_.array(bodies_id_);
     if (!all_bodies) return std::unexpected(all_bodies.error());
     Result<std::span<const uint32_t>> all_map = arenas_.slot_to_world(bodies_id_);
@@ -1564,7 +1611,12 @@ Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
     return vulkan_backend_->recorded_chain();
 }
 
-modules::SetGrade Simulation::grade() const { return {}; }  // RED stub
+modules::SetGrade Simulation::grade() const {
+    // A behavior is developer code with no declared grade (SL6): while a non-empty
+    // registry is attached the simulation is best-effort, whatever the set is.
+    if (behaviors_ != nullptr && behaviors_->size() > 0) return {Grade::best_effort, "behaviors"};
+    return modules::set_grade(schedule_, vulkan_backend_ ? compute::BackendKind::vulkan : compute::BackendKind::cpu);
+}
 
 Result<compute::DeviceReport> Simulation::vulkan_device_report() const {
     if (!vulkan_backend_) {

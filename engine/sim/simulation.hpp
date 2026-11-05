@@ -622,6 +622,19 @@ public:
     // gnss_sensors, naming the module, the array and the tag. A Vulkan set in
     // which a pass declares a CPU-only scratch is refused with unavailable,
     // naming the pass and the scratch.
+    //
+    // `minimum_grade` (stage 5, Task 5; core/grade.hpp) is the weakest grade the
+    // caller will run: best_effort, banded or reference (absent is always refused
+    // on its backend, so it asks for nothing: invalid_argument). A module the set
+    // holds that is `absent` on this backend is refused with unavailable, naming
+    // it and the backend, whatever the minimum; then the first module, in set
+    // order, graded below the minimum is refused with unavailable, naming it and
+    // its grade. Both come after the Vulkan refusals above and before the world set
+    // is validated or any device is touched, so they run without a GPU. A Vulkan
+    // set can never meet a `reference` minimum (a Vulkan reference is refused at
+    // registration, L4). While a behavior registry is attached, step() under a
+    // minimum above best_effort refuses with unavailable and steps nothing
+    // (grade() reports best_effort, naming "behaviors").
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
