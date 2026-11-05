@@ -475,6 +475,7 @@ enum class BindingKind : uint8_t { absent = 0, array = 1, table = 2, scratch = 3
 struct CompiledBinding {
     BindingKind kind = BindingKind::absent;
     uint32_t index = kNoArray;  // its index in CompiledSchedule::arrays, ::tables or ::scratch, by kind
+    bool writable = false;      // the access writes or accumulates an array or a scratch; never a table
 };
 
 // Owned names: a Simulation keeps its CompiledSchedule for life, and the set

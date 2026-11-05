@@ -59,6 +59,7 @@ enum class ViewMisuse : uint8_t {
     world = 2,      // a world outside the set
     not_table = 3,  // table_rows on a view that is not a configuration table
     table = 4,      // all_rows on a configuration table
+    read_view = 5,  // mutable rows asked of a view the pass declared as a read, or of a table
 };
 
 // The first misuse of any view that points here, kept until Simulation::step()
@@ -72,6 +73,7 @@ struct ViewFault {
 
 struct StateView {
     std::byte* data = nullptr;        // null when absent
+    std::byte* writable = nullptr;    // data, for a declared write or accumulation; null for a read and every table
     uint32_t elem_size = 0;           // bytes per row
     uint32_t world_count = 0;         // the set's worlds, a table's included
     uint32_t capacity_per_world = 0;  // rows per world; world w owns rows [w * capacity, (w + 1) * capacity)

@@ -99,6 +99,10 @@ alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
             detail = "was read with all_rows; a configuration table is one set of rows every world shares, read "
                      "with table_rows or world_rows";
             break;
+        case ViewMisuse::read_view:
+            detail = "was asked for mutable rows, but the pass declared it as a read, or it is a configuration table; "
+                     "a read view yields only const rows (world_rows<const T>)";
+            break;
         case ViewMisuse::none:
             detail = "was misused";
             break;

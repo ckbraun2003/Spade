@@ -2713,6 +2713,7 @@ enum class Misuse : uint8_t {
     all_rows_row_type,  // all_rows with the wrong row type
     all_rows_table,     // all_rows on a table
     twice,              // world, then row_type: the first one sticks
+    table_mutable,      // world_rows with a non-const row type on a table, which is never writable (Task 2)
 };
 Misuse g_misuse = Misuse::none;
 struct ViewMarkRow {
@@ -2735,6 +2736,7 @@ void misuse_pass(const spade::physics::SubstepContext& ctx) noexcept {
         case Misuse::table_row_type: (void)spade::table_rows<double>(weights); break;
         case Misuse::all_rows_row_type: (void)spade::all_rows<uint64_t>(marks); break;
         case Misuse::all_rows_table: (void)spade::all_rows<float>(weights); break;
+        case Misuse::table_mutable: (void)spade::world_rows<float>(weights, 0); break;
         case Misuse::twice:
             (void)spade::world_rows<ViewMarkRow>(marks, 2);
             (void)spade::world_rows<uint64_t>(marks, 0);
@@ -2860,6 +2862,7 @@ TEST(ModuleViews, AMisusedViewRefusesTheStepAtItsEndNamingTheModulePassAndView) 
         {.misuse = Misuse::table_row_type, .view = "table 'misuser.weights'", .detail = "row type of 8 bytes"},
         {.misuse = Misuse::all_rows_row_type, .view = "array 'misuser.marks'", .detail = "row type of 8 bytes"},
         {.misuse = Misuse::all_rows_table, .view = "table 'misuser.weights'", .detail = "all_rows"},
+        {.misuse = Misuse::table_mutable, .view = "table 'misuser.weights'", .detail = "mutable rows"},
         {.misuse = Misuse::twice,
          .view = "array 'misuser.marks'",
          .detail = "world 2",
@@ -3512,4 +3515,158 @@ TEST(ModuleScratch, ItsMirrorShapeIsItsDeclaration) {
         spade::scratch_shapes(*compile_schedule(spade::modules::standard_modules()), capacities_of(*sim));
     ASSERT_EQ(standard.size(), 1u) << "the standard set declares one: integrate's contact_dv (PHY-7)";
     EXPECT_EQ(standard[0].name, "contact_dv");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 2: a declared read cannot write through its view.
+// A view holds a const pointer for every access and a writable one only for a
+// write or an accumulation; a table never has one. A mutable row type asked of
+// a view without it is a misuse like the others (state/state_view.hpp): a
+// fault, never a silent empty span, so step() refuses at its end, naming the
+// module, the pass and the view, and poisons the Simulation.
+// ---------------------------------------------------------------------------
+namespace {
+
+// "peeker" declares a READ of tally's counts. While g_peek_pokes is set it asks
+// for mutable rows through it and tries to add 100.
+bool g_peek_pokes = true;
+spade::StateView g_peek_view{};  // peeker.peek's ctx.state[0] at its last run
+void peek_and_poke_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 1) return;
+    g_peek_view = ctx.state[0];
+    if (!g_peek_pokes) return;
+    for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
+        for (TallyRow& row : spade::world_rows<TallyRow>(ctx.state[0], w)) row.count += 100u;
+    }
+}
+constexpr QuantityAccess kPeekAccess[] = {{"tally.tally_counts", Access::read}};
+constexpr PassDecl kPeekPasses[] = {
+    {.name = "peek", .phase = Phase::forces, .access = kPeekAccess, .cpu = &peek_and_poke_pass}};
+
+// "viewdv": one per_body scratch, a pass that WRITES it and a later pass that
+// READS it; each keeps the view it was handed.
+spade::StateView g_dv_write_view{};
+spade::StateView g_dv_read_view{};
+void dv_write_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() == 1) g_dv_write_view = ctx.state[0];
+}
+void dv_read_pass(const spade::physics::SubstepContext& ctx) noexcept {
+    if (ctx.state.size() == 1) g_dv_read_view = ctx.state[0];
+}
+constexpr ScratchDecl kViewDvScratch[] = {{.name = "dv", .elem_size = kDvSize, .extent = Extent::per_body}};
+constexpr QuantityAccess kDvPutAccess[] = {{"viewdv.dv", Access::write}};
+constexpr QuantityAccess kDvGetAccess[] = {{"viewdv.dv", Access::read}};
+constexpr PassDecl kViewDvPasses[] = {
+    {.name = "put", .phase = Phase::forces, .access = kDvPutAccess, .cpu = &dv_write_pass},
+    {.name = "get", .phase = Phase::sensors, .access = kDvGetAccess, .cpu = &dv_read_pass}};
+
+// The standard set with tally, a peeker of tally's counts, massed (a table and a
+// pass that reads it), a reader of massed's table and viewdv.
+[[nodiscard]] spade::modules::ModuleSet standard_with_views() {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    set.push_back({.name = "peeker", .passes = kPeekPasses});
+    set.push_back(massed_module());
+    set.push_back({.name = "reader", .passes = kLookPasses});
+    set.push_back({.name = "viewdv", .passes = kViewDvPasses, .scratch = kViewDvScratch});
+    return set;
+}
+
+// The view as a pass holds it, with nowhere to record a misuse: a call that
+// would fault answers empty and records nothing.
+[[nodiscard]] spade::StateView detached(spade::StateView v) {
+    v.fault = nullptr;
+    return v;
+}
+
+}  // namespace
+
+TEST(ModuleViews, APassThatDeclaredAReadCannotWriteThroughItsView) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(tally_module());
+    set.push_back({.name = "peeker", .passes = kPeekPasses});
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    g_peek_pokes = true;
+    const spade::Result<void> refused = sim->step(3);
+    EXPECT_TRUE(refused_naming(refused, "module 'peeker'"));
+    EXPECT_TRUE(refused_naming(refused, "pass 'peek'"));
+    EXPECT_TRUE(refused_naming(refused, "array 'tally.tally_counts'"));
+    EXPECT_TRUE(refused_naming(refused, "mutable rows"));
+    EXPECT_EQ(sim->tick().value, 1u) << "the first step ran to its end and refused";
+    for (uint32_t w = 0; w < 2; ++w) {
+        EXPECT_EQ((*sim->module_rows<TallyRow>("tally_counts", w))[0].count, 2u)
+            << "world " << w << ": tally's own two substeps only; the peeker wrote nothing";
+    }
+    g_peek_pokes = false;
+    EXPECT_TRUE(refused_naming(sim->step(1), "step: state invalid since tick 0: ")) << "poisoned like any misuse";
+}
+
+TEST(ModuleViews, AReadViewYieldsOnlyConstRows) {
+    auto sim = spade::Simulation::create(two_world_set(), 2'000'000, 2, {}, standard_with_views());
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    ASSERT_TRUE(sim->register_model(quad_of_mass(1.5f)).has_value());
+    g_peek_pokes = false;
+    g_peek_view = g_tally_view = g_masses_view = g_dv_read_view = g_dv_write_view = {};
+    ASSERT_TRUE(sim->step(1).has_value());
+
+    // Reads: an array, a scratch and a table hold no mutable pointer; const rows come, mutable ones do not.
+    ASSERT_TRUE(g_peek_view.present());
+    EXPECT_EQ(g_peek_view.writable, nullptr) << "an array read";
+    EXPECT_FALSE(spade::world_rows<const TallyRow>(g_peek_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<TallyRow>(detached(g_peek_view), 0).empty());
+    EXPECT_TRUE(spade::all_rows<TallyRow>(detached(g_peek_view)).empty());
+
+    ASSERT_TRUE(g_dv_read_view.present());
+    EXPECT_EQ(g_dv_read_view.writable, nullptr) << "a scratch read";
+    EXPECT_FALSE(spade::world_rows<const DvRow>(g_dv_read_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<DvRow>(detached(g_dv_read_view), 0).empty());
+
+    ASSERT_TRUE(g_masses_view.present());
+    EXPECT_EQ(g_masses_view.writable, nullptr) << "a table is never writable";
+    EXPECT_FALSE(spade::world_rows<const float>(g_masses_view, 0).empty());
+    EXPECT_TRUE(spade::world_rows<float>(detached(g_masses_view), 0).empty());
+
+    // Writes: both pointers, to the same rows.
+    for (const spade::StateView* v : {&g_tally_view, &g_dv_write_view}) {
+        ASSERT_TRUE(v->present());
+        EXPECT_EQ(v->writable, v->data) << "a write holds the pointer";
+    }
+    const std::span<TallyRow> mutable_rows = spade::world_rows<TallyRow>(detached(g_tally_view), 1);
+    ASSERT_FALSE(mutable_rows.empty());
+    EXPECT_EQ(mutable_rows.data(), spade::world_rows<const TallyRow>(g_tally_view, 1).data());
+    const std::span<DvRow> dv_rows = spade::world_rows<DvRow>(detached(g_dv_write_view), 0);
+    ASSERT_FALSE(dv_rows.empty());
+    EXPECT_EQ(dv_rows.data(), spade::world_rows<const DvRow>(g_dv_write_view, 0).data());
+    ASSERT_TRUE(sim->step(1).has_value()) << "correct reads and writes record no fault";
+}
+
+TEST(ModuleSchedule, ABindingRecordsWhetherItsAccessWrites) {
+    const auto compiled = compile_schedule(standard_with_views());
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    const auto writable = [&](std::string_view module, std::string_view pass, std::size_t k) {
+        const spade::modules::CompiledPass* p = compiled_pass(*compiled, module, pass);
+        EXPECT_NE(p, nullptr) << module << "." << pass;
+        EXPECT_LT(k, p ? p->state.size() : 0u) << module << "." << pass;
+        return p != nullptr && k < p->state.size() && p->state[k].writable;
+    };
+    EXPECT_TRUE(writable("tally", "count", 0)) << "an array write";
+    EXPECT_FALSE(writable("peeker", "peek", 0)) << "an array read";
+    EXPECT_TRUE(writable("viewdv", "put", 0)) << "a scratch write";
+    EXPECT_FALSE(writable("viewdv", "get", 0)) << "a scratch read";
+    EXPECT_TRUE(writable("static_contact", "resolve", 1)) << "a scratch accumulation";
+    EXPECT_FALSE(writable("static_contact", "resolve", 2)) << "a table read";
+    EXPECT_FALSE(writable("massed", "copy", 0)) << "a table read";
+    EXPECT_TRUE(writable("massed", "copy", 1)) << "an array write";
+    EXPECT_FALSE(writable("static_contact", "resolve", 0)) << "a core quantity binds nothing";
+
+    spade::modules::ModuleSet alone = spade::modules::standard_modules();
+    alone.push_back({.name = "reader", .passes = kLookPasses});  // massed is not in the set
+    const auto absent = compile_schedule(alone);
+    ASSERT_TRUE(absent.has_value()) << absent.error().context;
+    const spade::modules::CompiledPass* look = compiled_pass(*absent, "reader", "look");
+    ASSERT_NE(look, nullptr);
+    ASSERT_EQ(look->state.size(), 1u);
+    EXPECT_EQ(look->state[0].kind, BindingKind::absent);
+    EXPECT_FALSE(look->state[0].writable) << "an optional read of an absent module";
 }
