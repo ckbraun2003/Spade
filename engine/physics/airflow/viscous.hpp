@@ -1,10 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/solids.hpp"
+#include "physics/airflow/worker_pool.hpp"
 
 // ---------------------------------------------------------------------------
 // VISCOSITY (spec §11.3, item 1): implicit (backward Euler) diffusion of every
@@ -25,5 +27,14 @@ namespace spade::physics::airflow {
 // plan A, bit for bit.
 void diffuse(MacGrid& g, const DomainBc& bc, float nu, float h, uint32_t sweeps, std::vector<float>& rhs,
              const SolidField* solids = nullptr) noexcept;
+
+// The same solve on a pool's threads (L18): u, v and w in lockstep, each with
+// its own right side (u's and v's in `rhs_uv`, w's in `rhs`), each colour pass
+// split by k plane, a barrier per colour (no sample reads one of its own
+// colour: make_grid() takes only even periodic axes). The bits are the
+// serial solve's at any thread count; a null pool, or one thread, is the
+// serial solve.
+void diffuse(MacGrid& g, const DomainBc& bc, float nu, float h, uint32_t sweeps, std::vector<float>& rhs,
+             std::array<std::vector<float>, 2>& rhs_uv, const SolidField* solids, WorkerPool* pool) noexcept;
 
 }  // namespace spade::physics::airflow

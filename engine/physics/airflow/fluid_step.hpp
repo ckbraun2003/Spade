@@ -3,17 +3,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "core/error.hpp"
+#include "physics/airflow/actuator.hpp"
 #include "physics/airflow/advect.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/projection.hpp"
 #include "physics/airflow/regions.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/viscous.hpp"
+#include "physics/airflow/worker_pool.hpp"
 
 // ---------------------------------------------------------------------------
 // ONE FLUID STEP of the real-time tier (spec §1.5): conditions, advection,
@@ -35,6 +38,9 @@ struct FluidConfig {
     uint32_t cg_cap = kSolidsCgCap;  // with solids, the CG's cap: past n_v it runs on to kResidualAnnounce
     uint32_t visc_sweeps = 8;  // red-black sweeps per viscous solve
     SolidInterior interior = SolidInterior::rigid;  // what closed samples hold (solids.hpp)
+    // The CPU step's threads (L18): the same bits at any count; 1 is the serial
+    // step. make_fluid_scratch() makes the pool; 0 is taken as 1.
+    uint32_t threads = default_fluid_threads();
 };
 
 enum class FluidFault : uint8_t {
@@ -91,7 +97,19 @@ struct FluidScratch {
     FluidHealth health;             // sticky: once faulted, every later step refuses
     SolidField solids;              // set_solids(); empty: plan A's paths
     FluidRegions regions;
+    // The CPU step's threads (L18), FluidConfig::threads of them; shared by
+    // copies of the scratch, one step at a time. Null: the serial step.
+    std::shared_ptr<WorkerPool> pool;
+    std::array<std::vector<float>, 2> rhs_uv;  // u's and v's viscous right sides on the pool (w's in rhs)
+    SpreadCache spread;                        // spread_actuators()' kept weights, a disc each
 };
+
+// The step's discs into the scratch's increments, as spread_actuator() adds
+// them disc by disc, from the scratch's kept weights (actuator.hpp; L18).
+inline void spread_actuators(std::span<const ActuatorDisc> discs, const GridShape& shape, float rho, float h,
+                             FluidScratch& s) noexcept {
+    spread_actuators(discs, shape, rho, h, s.du, s.dv, s.dw, s.spread);
+}
 
 // The bytes of a grid and of the scratch its step needs, in 64 bits (the
 // multigrid's depth follows the domain's periodic axes), for a shape

@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/worker_pool.hpp"
 
 // ---------------------------------------------------------------------------
 // ADVECTION (spec §1.5, step 4): semi-Lagrangian, an RK2 backtrace, and the
@@ -36,7 +37,10 @@ struct AdvectScratch {
 
 [[nodiscard]] AdvectScratch make_advect_scratch(const GridShape& shape);
 
-// Writes every face of `out` (shaped like `in`); reads only `in`.
-void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s) noexcept;
+// Writes every face of `out` (shaped like `in`); reads only `in`. With a
+// pool, each stage's samples are split by k plane across its threads, a
+// barrier between the stages: the same bits at any thread count (L18).
+void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s,
+                     WorkerPool* pool = nullptr) noexcept;
 
 }  // namespace spade::physics::airflow

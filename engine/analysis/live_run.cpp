@@ -670,9 +670,7 @@ Result<void> LiveRun::step(const Controls& controls) {
         }
         health = *on_device;
     } else {
-        for (const af::ActuatorDisc& d : r.discs) {
-            af::spread_actuator(d, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch.du, r.scratch.dv, r.scratch.dw);
-        }
+        af::spread_actuators(r.discs, r.resolved.base, r.fluid.rho, r.fluid.h, r.scratch);
         if (r.test_nudge != nullptr) r.test_nudge(r.test_nudge_context, r.scratch.du, r.scratch.dv, r.scratch.dw);
         af::FluidConfig fluid = r.fluid;
         if (r.test_max_iterations != 0 && r.solids.any) {

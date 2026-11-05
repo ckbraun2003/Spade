@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -63,19 +64,24 @@ struct MacGrid {
     return i + std::size_t{g.nx} * (j + std::size_t{g.ny} * k);
 }
 
-// Every sample of velocity component `component` (0 u, 1 v, 2 w), in array
-// order (k outermost, i innermost), with its position: on its own axis at
-// index * dx, on the other two at (index + 1/2) dx.
+// The k planes a component's samples span (k outermost in its array).
+[[nodiscard]] inline uint32_t sample_planes(const GridShape& s, uint32_t component) noexcept {
+    return component == 2 ? s.nz + 1u : s.nz;
+}
+
+// Every sample of velocity component `component` (0 u, 1 v, 2 w) in its k
+// planes [k_begin, k_end), in array order (k outermost, i innermost), with its
+// index and position: on its own axis at index * dx, on the other two at
+// (index + 1/2) dx. The CPU step's threads take planes (worker_pool.hpp).
 template <class F>
-void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
+void for_each_sample_in(const GridShape& s, uint32_t component, uint32_t k_begin, uint32_t k_end, F&& f) {
     const uint32_t cx = component == 0 ? s.nx + 1u : s.nx;
     const uint32_t cy = component == 1 ? s.ny + 1u : s.ny;
-    const uint32_t cz = component == 2 ? s.nz + 1u : s.nz;
     const float ox = component == 0 ? 0.0f : 0.5f;
     const float oy = component == 1 ? 0.0f : 0.5f;
     const float oz = component == 2 ? 0.0f : 0.5f;
-    std::size_t idx = 0;
-    for (uint32_t k = 0; k < cz; ++k) {
+    std::size_t idx = std::size_t{cx} * cy * k_begin;
+    for (uint32_t k = k_begin; k < k_end; ++k) {
         for (uint32_t j = 0; j < cy; ++j) {
             for (uint32_t i = 0; i < cx; ++i, ++idx) {
                 f(idx, glm::vec3((static_cast<float>(i) + ox) * s.dx, (static_cast<float>(j) + oy) * s.dx,
@@ -83,6 +89,12 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
             }
         }
     }
+}
+
+// Every sample of the component, every plane.
+template <class F>
+void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
+    for_each_sample_in(s, component, 0u, sample_planes(s, component), std::forward<F>(f));
 }
 
 // Per axis, whether the domain wraps there (make_grid refuses an unpaired

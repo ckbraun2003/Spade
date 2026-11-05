@@ -1,9 +1,9 @@
 // ---------------------------------------------------------------------------
 // test_gpu_live_fluid.cpp -- spike/airflow/live_fluid.hpp, LiveRun's fluid on
 // B7's GpuFluid (Rendering's design note, docs/design/rendering/plans/
-// 2026-10-27-run-air-on-gpu.md, slice 2), on the editor's Run air grid: the
-// powered reference quad held in still air, 32^3 at 25 mm, stepped every
-// 1 ms, its parts out of the air (Interface's air_case()).
+// 2026-10-27-run-air-on-gpu.md, slice 2), on the grid Run air flew before
+// D10's levels: the powered reference quad held in still air, 32^3 at 25 mm
+// (R/3), stepped every 1 ms, discs only, its parts out of the air.
 //
 //   GpuLiveFluid  60 steps of a changing program, the rotors' discs changing
 //                 every step, the CPU's run to the bit on the device of
@@ -83,8 +83,8 @@ using spade::compute::VulkanContext;
     return std::move(*result);
 }
 
-// The editor's Run air case for the powered reference quad: 32^3 at 25 mm
-// (a 0.8 m box), h 1 ms, still air.
+// The powered reference quad on Run air's grid before D10's levels: 32^3 at
+// 25 mm (a 0.8 m box), h 1 ms, still air.
 [[nodiscard]] an::ResolvedCase editor_case(const Powered& p) {
     an::AnalysisCase c;
     c.model = an::pin_model("quad.model.yaml", p.model);

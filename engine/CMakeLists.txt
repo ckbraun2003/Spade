@@ -768,6 +768,7 @@ add_library(spade_physics STATIC
     physics/airflow/wall_load.cpp
     physics/airflow/grid_io.cpp
     physics/airflow/solids.cpp
+    physics/airflow/worker_pool.cpp
 )
 add_library(spade::physics ALIAS spade_physics)
 set_target_properties(spade_physics PROPERTIES EXPORT_NAME physics)

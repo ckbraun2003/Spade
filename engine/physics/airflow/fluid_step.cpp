@@ -206,6 +206,11 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     s.du.assign(g.u.size(), 0.0f);
     s.dv.assign(g.v.size(), 0.0f);
     s.dw.assign(g.w.size(), 0.0f);
+    if (cfg.threads > 1u) {
+        s.pool = std::make_shared<WorkerPool>(cfg.threads);
+        s.rhs_uv[0].assign(g.u.size(), 0.0f);
+        s.rhs_uv[1].assign(g.v.size(), 0.0f);
+    }
     return s;
 }
 
@@ -270,7 +275,7 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
     }
     apply_velocity_boundaries(g, bc);
     if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
-    advect_velocity(g, s.next, bc, cfg.h, s.advect);
+    advect_velocity(g, s.next, bc, cfg.h, s.advect, s.pool.get());
     g.u.swap(s.next.u);
     g.v.swap(s.next.v);
     g.w.swap(s.next.w);
@@ -280,7 +285,7 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
     apply_velocity_boundaries(g, bc);
     if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
     if (cfg.nu > 0.0f) {
-        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, solid ? &s.solids : nullptr);
+        diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, s.rhs_uv, solid ? &s.solids : nullptr, s.pool.get());
         apply_velocity_boundaries(g, bc);
         // A domain face a solid covers keeps the solid's velocity, not the
         // boundary's (P2 Task 11, the final review's finding 3).
