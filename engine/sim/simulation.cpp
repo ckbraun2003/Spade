@@ -47,7 +47,11 @@ namespace {
 // scratch's with no rows: the view has zero rows, so nothing ever reads or
 // writes these bytes. They exist so that the view's data is not null, which
 // would read as an absent module.
-alignas(float) std::byte g_no_table_rows[sizeof(float)]{};
+alignas(float) const std::byte g_no_table_rows[sizeof(float)]{};
+// The same for a scratch with no rows that a pass declared a write of: its view
+// needs a non-null writable pointer too, or the pass's own (empty) request for
+// mutable rows would read as a misuse.
+alignas(float) std::byte g_no_scratch_rows[sizeof(float)]{};
 
 // The refusal for a misused view (state/state_view.hpp; stage 5, Task 1): the
 // module and pass the view was bound for, the array, table or scratch it views,
@@ -1278,6 +1282,11 @@ Result<void> Simulation::rebuild_views() {
     // registered yet -- still reads as present(), since its module is in the
     // set: its view points at g_no_table_rows and has no rows.
     //
+    // Every present view holds `data`, const. Only a declared write or
+    // accumulation of an array or a scratch also holds `writable` (stage 5,
+    // Task 2); a read and every table leave it null, so a pass that declared a
+    // read cannot get mutable rows through its view (state/state_view.hpp).
+    //
     // Every view, absent ones included, carries its index here as its id and
     // points at view_fault_, where an accessor records a misuse for step() to
     // refuse (state/state_view.hpp).
@@ -1289,7 +1298,7 @@ Result<void> Simulation::rebuild_views() {
             view = StateView{.id = view_id, .fault = view_fault_.get()};
             if (bindings[k].kind == modules::BindingKind::table) {
                 std::vector<float>& table = config_tables_[bindings[k].index];
-                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<std::byte*>(table.data());
+                view.data = table.empty() ? g_no_table_rows : reinterpret_cast<const std::byte*>(table.data());
                 view.elem_size = static_cast<uint32_t>(sizeof(float));
                 view.world_count = layout_.world_count;
                 view.capacity_per_world = static_cast<uint32_t>(table.size());
@@ -1302,6 +1311,7 @@ Result<void> Simulation::rebuild_views() {
             if (bindings[k].kind == modules::BindingKind::scratch) {
                 const ScratchRows& rows = scratch_rows_[bindings[k].index];
                 view.data = rows.bytes ? rows.bytes.get() : g_no_table_rows;
+                if (bindings[k].writable) view.writable = rows.bytes ? rows.bytes.get() : g_no_scratch_rows;
                 view.elem_size = schedule_.scratch[bindings[k].index].elem_size;
                 view.world_count = layout_.world_count;
                 view.capacity_per_world = rows.capacity_per_world;
@@ -1314,6 +1324,7 @@ Result<void> Simulation::rebuild_views() {
             const Result<WorldRange> world0 = arenas_.range(id, 0);  // its count is the per-world capacity
             if (!world0) return std::unexpected(world0.error());
             view.data = bytes->data();
+            if (bindings[k].writable) view.writable = bytes->data();
             view.elem_size = schedule_.arrays[bindings[k].index].elem_size;
             view.world_count = layout_.world_count;
             view.capacity_per_world = world0->count;

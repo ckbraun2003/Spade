@@ -147,6 +147,8 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 // "<module>.<array>" quantity names, the table a "<module>.<table>" one does,
 // or the scratch a "<module>.<scratch>" one does, whichever module owns it; or
 // nothing. Core quantities are checked first, as known_quantity() checks them.
+// An array or a scratch is `writable` when the access writes or accumulates it
+// (stage 5, Task 2); a table never is.
 // Arrays, tables and scratch share one namespace (compile_tables,
 // compile_scratch), so at most one of the three loops can match.
 [[nodiscard]] CompiledBinding binding_of(const QuantityAccess& qa, const std::vector<CompiledArray>& arrays,
@@ -160,7 +162,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     }
     for (std::size_t i = 0; i < arrays.size(); ++i) {
         if (arrays[i].module == owner && arrays[i].name == name) {
-            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i)};
+            return CompiledBinding{BindingKind::array, static_cast<uint32_t>(i), qa.access != Access::read};
         }
     }
     for (std::size_t i = 0; i < tables.size(); ++i) {
@@ -170,7 +172,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     }
     for (std::size_t i = 0; i < scratch.size(); ++i) {
         if (scratch[i].module == owner && scratch[i].name == name) {
-            return CompiledBinding{BindingKind::scratch, static_cast<uint32_t>(i)};
+            return CompiledBinding{BindingKind::scratch, static_cast<uint32_t>(i), qa.access != Access::read};
         }
     }
     return {};
