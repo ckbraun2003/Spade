@@ -298,6 +298,8 @@ add_executable(spade_tests
 # device, binding 28, against the host's table, GpuContactSets* on the device.
 # test_gpu_contact_pass.cpp (L9): collision_static.slang's set path, the
 # Phantom at rest on the device against the CPU, GpuContactPass*.
+# test_gpu_translation_lock.cpp (module API stage 6): the translation lock's select in integrate.slang against the
+# CPU's, GpuTranslationLock*: pos and vel bit-exact under a lock.
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
@@ -339,6 +341,7 @@ if(SPADE_VULKAN)
         test_gpu_module_schedule.cpp
         test_gpu_contact_sets.cpp
         test_gpu_contact_pass.cpp
+        test_gpu_translation_lock.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_airflow_projection.cpp

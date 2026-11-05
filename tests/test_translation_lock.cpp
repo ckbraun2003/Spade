@@ -6,6 +6,7 @@
 // Task 5: the same on Vulkan (GPU cases skip when no device is admitted).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -621,4 +622,21 @@ TEST(OptionalBindings, EveryRowOwnsOneSwitchBitAndAnArrayName) {
         seen |= row.switch_bit;
         EXPECT_GE(row.dummy_bytes, 4u) << row.name;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 5: the lock's grade (host side; the device half is test_gpu_translation_lock.cpp)
+// ---------------------------------------------------------------------------
+
+// A PIN, green at red: the lock declares CPU reference and Vulkan banded (plan decision 8; Physics' PHY-2 table is
+// confirmed in the same task), and a set holding it keeps the standard set's grades.
+TEST(TranslationLock, ALockSetsGradeIsReferenceOnTheCpuAndBandedOnVulkan) {
+    const auto schedule = spade::modules::compile_schedule(standard_plus_lock());
+    ASSERT_TRUE(schedule.has_value()) << schedule.error().context;
+    const auto lock = std::ranges::find(schedule->modules, "lock", &spade::modules::CompiledModule::name);
+    ASSERT_NE(lock, schedule->modules.end());
+    EXPECT_EQ(lock->grade.cpu, spade::Grade::reference);
+    EXPECT_EQ(lock->grade.vulkan, spade::Grade::banded);
+    EXPECT_EQ(spade::modules::set_grade(*schedule, spade::compute::BackendKind::cpu).grade, spade::Grade::reference);
+    EXPECT_EQ(spade::modules::set_grade(*schedule, spade::compute::BackendKind::vulkan).grade, spade::Grade::banded);
 }
