@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -303,4 +304,49 @@ TEST(MeshPack, FileNamesAreSafeAndUniqueWithoutRegardToCase) {
     std::size_t files = 0;
     for ([[maybe_unused]] const auto& entry : fs::directory_iterator(out)) ++files;
     EXPECT_EQ(files, std::size(names));
+}
+
+TEST(MeshPack, NamesThatDifferOnlyInUnicodeCaseNeverShareAFile) {
+    // NTFS folds Unicode case ("a-umlaut" and "A-umlaut" are one name there),
+    // which an ASCII-only fold cannot see: the second object would replace the
+    // first. The write finds the target already there as a file written this
+    // run, and bumps the suffix. On a case-sensitive file system the two names
+    // are distinct from the start. Either way: two objects, two files.
+    const spade::test::TempDir dir("mesh-pack-unicode-case");
+    const fs::path in = dir.path() / "names.3mf";
+    const std::string lower = "Geh\xC3\xA4" "use";  // Gehaeuse, a with umlaut
+    const std::string upper = "GEH\xC3\x84" "USE";  // GEHAEUSE, A with umlaut
+    write_file(in, three_mf({cube_object(1, lower), cube_object(2, upper, 1.0, 3.0)}, R"(unit="meter")"));
+    const fs::path out = dir.path() / "out";
+    const auto run = pack({in, "--out", out});
+    ASSERT_EQ(run.exit_code, 0) << run.err;
+    std::size_t files = 0;
+    std::vector<fs::path> written;
+    for (const auto& entry : fs::directory_iterator(out)) {
+        ++files;
+        written.push_back(entry.path());
+    }
+    EXPECT_EQ(files, 2u) << run.out;
+    std::vector<uint64_t> hashes;
+    for (const fs::path& path : written) {
+        const auto loaded = spade::load_mesh_file(path);
+        ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+        hashes.push_back(loaded->mesh->content_hash());
+    }
+    ASSERT_EQ(hashes.size(), 2u);
+    EXPECT_NE(hashes[0], hashes[1]) << "the second object replaced the first";
+}
+
+TEST(MeshPack, ANegativeZeroToleranceIsRecordedAsPositiveZero) {
+    const spade::test::TempDir dir("mesh-pack-negzero");
+    const fs::path in = dir.path() / "cube.3mf";
+    write_file(in, three_mf({cube_object(1, "hub")}));
+    for (const char* const text : {"-0mm", "-0.0m", "0mm"}) {
+        const auto run = pack({in, "--out", dir.path() / "out", "--tolerance", text});
+        ASSERT_EQ(run.exit_code, 0) << text << ": " << run.err;
+        const auto loaded = spade::load_mesh_file(dir.path() / "out" / "hub.spmesh");
+        ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+        EXPECT_EQ(loaded->provenance.tolerance, 0.0) << text;
+        EXPECT_FALSE(std::signbit(loaded->provenance.tolerance)) << text << " recorded -0.0";
+    }
 }

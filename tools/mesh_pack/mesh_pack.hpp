@@ -33,8 +33,12 @@
 // replaced by '_' and trailing dots and spaces dropped; empty becomes
 // "object", and a Windows device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9,
 // with or without an extension) gets a leading '_'. Two objects whose names
-// match without regard to case get "-2", "-3", ... in order, so a
-// case-insensitive file system never folds two into one.
+// match without regard to ASCII case get "-2", "-3", ... in order. A file
+// system may fold more than ASCII case (NTFS folds Unicode case), so at write
+// time a target that already holds a sidecar written this run, by the file
+// system's own identity (fs::equivalent), also gets the next free suffix.
+// Two objects therefore never share a file. A file left by an earlier run, or
+// by anything else, is replaced whole, as the sidecar writer says.
 //
 // EXIT CODES: 0 written; 2 a usage error (nothing read); 3 the reader's
 // unavailable (a feature this build does not read, named); 4 any other

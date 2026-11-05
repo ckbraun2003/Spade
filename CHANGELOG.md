@@ -4,6 +4,16 @@ Changes to the v2 engine (`engine/`) and its tooling. v1 (`src/ include/ example
 
 ## Unreleased
 
+### The STEP converter: `spade_mesh_pack` and `step_convert.py` (2026-11-04)
+
+The STEP converter plan's Tasks S1 and S2 (`docs/design/core/plans/2026-11-03-step-converter-plan.md`; `CORE-6` D, the lead's L23 and L24). Offline tools; the engine loads neither.
+
+- **`spade_mesh_pack`** (`tools/mesh_pack/`, a build-tree tool, not installed; S1 merged `63cf0f47`): a `.gltf`, `.glb`, `.stl`, `.obj` or `.3mf` to one `.spmesh` per object, with `MeshProvenance{source, unit, tolerance}`. Every mesh passes the reader and `make_mesh()` before a sidecar exists. `--unit` is for STL and OBJ, `--tolerance` takes a length with its unit (`0.1mm`), exit codes 0 / 2 usage / 3 unavailable / 4 refused / 1 I/O. Two objects never share a file: names fold ASCII case, and at write time a target that is the same file as one written this run (by the file system's own rule, so NTFS's Unicode case too) takes the next free `-2`, `-3`. A `-0` tolerance is recorded as `+0`.
+- **`MeshObject::unit`**: each reader now says the unit its source declared (glTF metre, STL and OBJ the caller's, 3MF its model's), which the sidecar's provenance records.
+- **`tools/step_convert/step_convert.py`** (S2): a STEP file to a sidecar per solid, through OpenCASCADE 7.9.3 from the hash-pinned `cadquery-ocp` wheels (`requirements.txt`), run as its own process (LGPL; never linked or shipped). It keeps the part names, the assembly's placements and the file's length unit, tessellates each solid at the required `--deflection` (a length with a unit, no default; single-threaded, so a run repeats), writes a 3MF and packs it. Nodes of neighbouring faces are one vertex when within a millionth of the deflection. OpenCASCADE's own B-rep volume is printed beside the mesh's, and a difference above 1% is flagged (exit 5). Nothing is repaired; a solid `make_mesh()` refuses is named (exit 4). The README has the install, the options and the exit codes.
+- **Tests** label `step` only, never `spade` (TD-16): both gates leave them out, and they run with `ctest -L step` on the development box on any branch touching `tools/step_convert/` or `tools/mesh_pack/`. Without OCP a case that needs it skips (exit 77); the fixtures in `tests/golden/step/` (a 10 mm cube, a cylinder with a through hole, a two-solid assembly with a quarter turn) are plain-text Part 21 from `gen_fixtures.py`, written without a CAD kernel.
+- **Nothing moved** in the engine: no identity, no golden and no module changed.
+
 ### Mesh import: glTF, binary STL, OBJ and 3MF (2026-10-13 to 2026-11-03)
 
 The parts and meshes plan's Tasks B6 to B8 (`docs/design/core/plans/2026-10-12-parts-meshes-plan.md`; `CORE-6`, import only).
