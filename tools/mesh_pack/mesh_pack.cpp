@@ -6,6 +6,7 @@
 // then the directory, and each sidecar in the reader's order.
 #include "mesh_pack.hpp"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -99,6 +100,7 @@ enum class Format { gltf, stl, obj, threemf };
     const auto [ptr, ec] = std::from_chars(first, last, value);
     if (split == 0 || ec != std::errc{} || ptr != last) return std::unexpected(quoted + " is not a number and a unit");
     if (!std::isfinite(value) || value < 0.0) return std::unexpected(quoted + " is not finite and >= 0");
+    if (value == 0.0) return 0.0;  // "-0mm" is zero, recorded as +0 and not as -0.0
     return value * mesh_unit_scale(*unit);
 }
 
@@ -214,14 +216,28 @@ enum class Format { gltf, stl, obj, threemf };
     }
     Outcome done;
     const std::string named_source = source ? *source : file;
+    std::vector<fs::path> written;  // the sidecars this run made, for the file system's own case rule
     for (std::size_t i = 0; i < objects->size(); ++i) {
         const MeshObject& o = (*objects)[i];
-        const fs::path target = *out / from_utf8(names[i] + ".spmesh");
+        // The names above fold ASCII case. The file system may fold more (NTFS folds Unicode case), so a
+        // target that already holds a sidecar written this run is the same file as that one however it is
+        // spelt: the suffix is bumped until it is not (fs::equivalent asks the file system itself).
+        fs::path target = *out / from_utf8(names[i] + ".spmesh");
+        for (int k = 2; std::any_of(written.begin(), written.end(),
+                                    [&target](const fs::path& w) {
+                                        std::error_code same_ec;
+                                        return fs::exists(target, same_ec) && fs::equivalent(target, w, same_ec) &&
+                                               !same_ec;
+                                    });
+             ++k) {
+            target = *out / from_utf8(names[i] + "-" + std::to_string(k) + ".spmesh");
+        }
         const MeshProvenance provenance{named_source + ": " + o.name, o.unit, tolerance};
         if (const Result<void> saved = save_mesh_file(target, *o.mesh, provenance); !saved) {
             return refused(exit_for(saved.error().code), saved.error().context + " (" + std::to_string(i) + " of " +
                                                              std::to_string(objects->size()) + " written)");
         }
+        written.push_back(target);
         done.out += o.name + " -> " + path_text(target) + "\n";
     }
     done.out += "wrote " + std::to_string(objects->size()) + " mesh" + (objects->size() == 1 ? "" : "es") + " to " +
