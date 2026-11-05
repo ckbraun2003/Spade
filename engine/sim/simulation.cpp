@@ -2788,6 +2788,14 @@ Result<void> Simulation::set_body_state(BodyRef ref, glm::vec3 pos, glm::quat or
     return {};
 }
 
+// RED stubs (stage 6, Task 1): the calls refuse until the lock is built.
+Result<void> Simulation::lock_translation(BodyRef, uint32_t) {
+    return std::unexpected(Error{Code::unavailable, "lock_translation: not built yet"});
+}
+Result<void> Simulation::unlock(BodyRef) {
+    return std::unexpected(Error{Code::unavailable, "unlock: not built yet"});
+}
+
 // ---------------------------------------------------------------------------
 // snapshot / restore
 // ---------------------------------------------------------------------------

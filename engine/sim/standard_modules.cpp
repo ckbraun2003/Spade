@@ -7,6 +7,7 @@
 #include "physics/forces.hpp"
 #include "physics/contact_dv.hpp"
 #include "physics/contact_sets.hpp"
+#include "physics/lock.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -291,7 +292,19 @@ constexpr GradeDecl kPhy2Grade{.cpu = Grade::reference, .vulkan = Grade::banded}
 // CORE-1 refuses an attached registry on Vulkan).
 constexpr GradeDecl kBehaviorsGrade{.cpu = Grade::reference, .vulkan = Grade::banded};
 
+// THE LOCK MODULE'S ROWS (stage 6, Task 1). RED stub: the init writes nothing yet.
+void lock_rows_init(const RowInit&) noexcept {}
+constexpr ArrayDecl kLockArrays[] = {{.name = "lock_rows",
+                                      .elem_size = row_size<physics::LockRow>(),
+                                      .extent = Extent::per_body,
+                                      .spawn_size = sizeof(physics::LockSpawn),
+                                      .init = &lock_rows_init}};
+
 }  // namespace
+
+ModuleDesc lock_module() {
+    return {.name = "lock", .state = kLockArrays, .grade = kPhy2Grade};
+}
 
 ModuleSet standard_modules() {
     // Set order is today's registration order for the modules that own state,
