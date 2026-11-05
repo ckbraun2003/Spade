@@ -625,7 +625,12 @@ public:
     [[nodiscard]] static Result<Simulation> create(const WorldSetDesc& desc, uint64_t dt_ns,
                                                    uint32_t substeps,
                                                    const compute::BackendDesc& backend = {},
-                                                   const modules::ModuleSet& module_set = modules::standard_modules());
+                                                   const modules::ModuleSet& module_set = modules::standard_modules(),
+                                                   Grade minimum_grade = Grade::best_effort);
+
+    // The set's grade on this simulation's backend: the lowest module grade and
+    // the first module at it (stage 5, Task 5).
+    [[nodiscard]] modules::SetGrade grade() const;
 
     // The compiled module schedule this simulation steps with.
     [[nodiscard]] const modules::CompiledSchedule& schedule() const noexcept { return schedule_; }
@@ -2047,6 +2052,7 @@ private:
     float h_ = 0.0f;
 
     const objects::BehaviorRegistry* behaviors_ = nullptr;  // borrowed; see set_behaviors()
+    Grade minimum_grade_ = Grade::best_effort;                // create()'s minimum (stage 5, Task 5)
     modules::CompiledSchedule schedule_;                       // compiled once, in create()
 
     std::vector<StructuralOp> queue_;

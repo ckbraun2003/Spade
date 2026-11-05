@@ -19,6 +19,8 @@
 #include "compute/backend.hpp"
 #include "core/grade.hpp"
 #include "core/rng.hpp"
+#include "objects/behavior.hpp"
+#include "objects/behaviors/kinematic_mover.hpp"
 #include "physics/contact_sets.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
@@ -3797,4 +3799,113 @@ TEST(StandardModules, AreReferenceOnTheCpuAndBandedOnVulkan) {
     const spade::modules::SetGrade gpu = spade::modules::set_grade(*s, spade::compute::BackendKind::vulkan);
     EXPECT_EQ(gpu.grade, Grade::banded);
     EXPECT_EQ(gpu.module, "drag");
+}
+
+// ---------------------------------------------------------------------------
+// Module API stage 5, Task 5: create() checks the set's grades against its
+// backend and a requested minimum, naming the module, before any device is
+// touched (so these run in the Docker leg too).
+// ---------------------------------------------------------------------------
+
+TEST(ModuleGrades, ASetBelowTheMinimumIsRefusedNamingTheModule) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    const auto refused = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set, Grade::reference);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("'rough'"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("best-effort"), std::string::npos) << refused.error().context;
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set, Grade::best_effort).has_value());
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set).has_value()) << "no minimum";
+}
+
+TEST(ModuleGrades, NoVulkanSetMeetsAReferenceMinimum) {
+    // Refused before any device is touched, so this runs in the Docker leg too.
+    const auto s = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                             {.kind = spade::compute::BackendKind::vulkan},
+                                             spade::modules::standard_modules(), Grade::reference);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::unavailable);
+    EXPECT_NE(s.error().context.find("'drag'"), std::string::npos)
+        << "the first module, in set order, below reference: " << s.error().context;
+}
+
+TEST(ModuleGrades, AnAbsentModuleIsRefusedOnItsBackendByName) {
+    spade::modules::ModuleSet vulkan_ghost = spade::modules::standard_modules();
+    vulkan_ghost.push_back({.name = "ghost", .grade = {.cpu = Grade::reference, .vulkan = Grade::absent}});
+    const auto on_vulkan = spade::Simulation::create(one_body_world(), 2'000'000, 2,
+                                                     {.kind = spade::compute::BackendKind::vulkan}, vulkan_ghost);
+    ASSERT_FALSE(on_vulkan.has_value()) << "no minimum is needed to refuse an absent module";
+    EXPECT_EQ(on_vulkan.error().code, spade::Code::unavailable);
+    EXPECT_NE(on_vulkan.error().context.find("'ghost'"), std::string::npos) << on_vulkan.error().context;
+    EXPECT_NE(on_vulkan.error().context.find("vulkan"), std::string::npos) << on_vulkan.error().context;
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, vulkan_ghost).has_value())
+        << "absent on Vulkan only: the CPU runs it";
+
+    spade::modules::ModuleSet cpu_ghost = spade::modules::standard_modules();
+    cpu_ghost.push_back({.name = "cpu_ghost", .grade = {.cpu = Grade::absent, .vulkan = Grade::best_effort}});
+    const auto on_cpu = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, cpu_ghost);
+    ASSERT_FALSE(on_cpu.has_value());
+    EXPECT_EQ(on_cpu.error().code, spade::Code::unavailable);
+    EXPECT_NE(on_cpu.error().context.find("'cpu_ghost'"), std::string::npos) << on_cpu.error().context;
+    EXPECT_NE(on_cpu.error().context.find("cpu"), std::string::npos) << on_cpu.error().context;
+}
+
+TEST(ModuleGrades, WithNoMinimumEveryGradeButAbsentIsAccepted) {
+    // On the CPU. Accepting a set on Vulkan needs a device; GpuModuleSchedule* already creates standard
+    // Vulkan sets with no minimum, so no new gpu test is needed.
+    spade::modules::ModuleSet rough = spade::modules::standard_modules();
+    rough.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, rough).has_value());
+    spade::modules::ModuleSet banded = spade::modules::standard_modules();
+    banded.push_back({.name = "banded_cpu", .grade = {.cpu = Grade::banded, .vulkan = Grade::best_effort}});
+    EXPECT_TRUE(spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, banded).has_value());
+}
+
+TEST(ModuleGrades, AMinimumBelowBestEffortIsInvalid) {
+    const auto s = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, spade::modules::standard_modules(),
+                                             Grade::absent);
+    ASSERT_FALSE(s.has_value());
+    EXPECT_EQ(s.error().code, spade::Code::invalid_argument) << "absent is always refused, so it asks for nothing";
+}
+
+TEST(ModuleGrades, ASimulationReportsItsGradeAndWeakestModule) {
+    auto standard = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(standard.has_value()) << standard.error().context;
+    EXPECT_EQ(standard->grade().grade, Grade::reference);
+
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back({.name = "rough", .grade = {.cpu = Grade::best_effort, .vulkan = Grade::best_effort}});
+    auto rough = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, set);
+    ASSERT_TRUE(rough.has_value()) << rough.error().context;
+    EXPECT_EQ(rough->grade().grade, Grade::best_effort);
+    EXPECT_EQ(rough->grade().module, "rough");
+}
+
+TEST(ModuleGrades, AnAttachedBehaviorRegistryIsBestEffort) {
+    const spade::objects::KinematicMoverParams params{};
+    spade::objects::BehaviorRegistry registry;
+    ASSERT_TRUE(registry.register_behavior(spade::objects::kinematic_mover_desc(params)));
+
+    auto sim = spade::Simulation::create(one_body_world(), 2'000'000, 2, {}, spade::modules::standard_modules(),
+                                         Grade::banded);
+    ASSERT_TRUE(sim.has_value()) << sim.error().context;
+    EXPECT_EQ(sim->grade().grade, Grade::reference) << "nothing attached";
+    sim->set_behaviors(&registry);
+    EXPECT_EQ(sim->grade().grade, Grade::best_effort) << "a behavior is developer code with no declared grade";
+    EXPECT_EQ(sim->grade().module, "behaviors");
+    const spade::Result<void> refused = sim->step(1);
+    ASSERT_FALSE(refused.has_value()) << "a minimum of banded refuses best-effort behaviors";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("behaviors"), std::string::npos) << refused.error().context;
+    EXPECT_EQ(sim->tick().value, 0u) << "stepped nothing";
+    EXPECT_TRUE(sim->step(0).has_value()) << "step(0) runs no behaviors";
+    sim->set_behaviors(nullptr);
+    EXPECT_EQ(sim->grade().grade, Grade::reference) << "detached";
+    EXPECT_TRUE(sim->step(1).has_value());
+
+    auto free_run = spade::Simulation::create(one_body_world(), 2'000'000, 2);
+    ASSERT_TRUE(free_run.has_value()) << free_run.error().context;
+    free_run->set_behaviors(&registry);
+    EXPECT_TRUE(free_run->step(1).has_value()) << "with no minimum, the same simulation steps";
 }

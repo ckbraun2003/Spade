@@ -471,7 +471,8 @@ Simulation::Simulation(Simulation&&) = default;
 Simulation& Simulation::operator=(Simulation&&) = default;
 
 Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, uint32_t substeps,
-                                      const compute::BackendDesc& backend, const modules::ModuleSet& module_set) {
+                                      const compute::BackendDesc& backend, const modules::ModuleSet& module_set,
+                                      Grade minimum_grade) {
     if (dt_ns == 0) {
         return std::unexpected(invalid("Simulation::create: dt_ns must be > 0"));
     }
@@ -559,6 +560,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
 
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);
     sim.schedule_ = std::move(*compiled);
+    sim.minimum_grade_ = minimum_grade;
 
     // -----------------------------------------------------------------------
     // REGISTRATION ORDER IS THE WALK ORDER IS THE SCHEMA. schema_hash() folds
@@ -1561,6 +1563,8 @@ Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
     }
     return vulkan_backend_->recorded_chain();
 }
+
+modules::SetGrade Simulation::grade() const { return {}; }  // RED stub
 
 Result<compute::DeviceReport> Simulation::vulkan_device_report() const {
     if (!vulkan_backend_) {
