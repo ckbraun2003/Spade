@@ -80,3 +80,7 @@ tasks/
 .superpowers/
 docs/superpowers/
 design-specs/
+
+# Python byte-code (the STEP converter's script and tests)
+__pycache__/
+*.pyc

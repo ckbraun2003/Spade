@@ -64,7 +64,8 @@ The mesh itself is in metres. Nothing about the tessellation is golden: a differ
 
 Solid instances are meshed one by one in their own frame and placed by the assembly's transforms. **Names:** an
 instance is named after the assembly's occurrence, else the part (a part of several solids adds `_1`, `_2`, ...). When
-names are already unique nothing changes. When several instances carry the same name (a motor placed four times, the
+names are already unique nothing changes. (An occurrence with an empty name but an id is named by its id, `1`, `2`,
+... : OpenCASCADE does that, and the tool keeps the name it is given.) When several instances carry the same name (a motor placed four times, the
 exporter leaving the occurrences unnamed) each gets `_1`, `_2`, ... in the order the assembly lists them, so they come
 out as `Motor_1` .. `Motor_4`, and `--solid Motor_3` picks one (the bare `Motor` is then a usage error: it names
 four things). If a suffixed name lands on another instance's real name (`Motor_2` already exists), the tool

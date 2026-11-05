@@ -33,7 +33,7 @@ set(_step_cases
 
 foreach(_case IN LISTS _step_cases)
     add_test(NAME StepConvert.${_case}
-             COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test_step_convert.py
+             COMMAND ${Python3_EXECUTABLE} -B -I ${CMAKE_CURRENT_SOURCE_DIR}/test_step_convert.py
                      $<TARGET_FILE:spade_mesh_pack> ${PROJECT_SOURCE_DIR}/tests/golden/step ${_case})
     set_tests_properties(StepConvert.${_case} PROPERTIES
         LABELS "step"

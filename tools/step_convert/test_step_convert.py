@@ -32,7 +32,7 @@ PACK = FIXTURES = ""
 
 
 def have_ocp():
-    return subprocess.run([PYTHON, "-I", "-c", "import OCP"], capture_output=True).returncode == 0
+    return subprocess.run([PYTHON, "-B", "-I", "-c", "import OCP"], capture_output=True).returncode == 0
 
 
 def read_spmesh(path):
@@ -124,7 +124,7 @@ def occt_vertex_counts(step_path, deflection_mm, angle=0.5):
 
 class StepConvert(unittest.TestCase):
     def convert(self, fixture, out, *options, expect=0):
-        run = subprocess.run([PYTHON, "-I", CONVERT, os.path.join(FIXTURES, fixture), "--out", out, "--pack", PACK,
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, os.path.join(FIXTURES, fixture), "--out", out, "--pack", PACK,
                               *options], capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(run.returncode, expect, f"stdout:\n{run.stdout}\nstderr:\n{run.stderr}")
         return run
@@ -143,7 +143,7 @@ class StepConvert(unittest.TestCase):
             self.assertEqual(os.listdir(out), [], "a usage error reads and writes nothing")
 
     def test_the_packer_must_be_found(self):
-        run = subprocess.run([PYTHON, "-I", CONVERT, os.path.join(FIXTURES, "cube_10mm.step"), "--out", "x",
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, os.path.join(FIXTURES, "cube_10mm.step"), "--out", "x",
                               "--deflection", "0.1mm", "--pack", os.path.join(HERE, "no_such_packer")],
                              capture_output=True, text=True)
         self.assertEqual(run.returncode, 2, run.stderr)
@@ -236,7 +236,7 @@ class StepConvert(unittest.TestCase):
             with open(clash, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text)
             out = os.path.join(work, "out")
-            run = subprocess.run([PYTHON, "-I", CONVERT, clash, "--out", out, "--deflection", "0.1mm", "--pack", PACK],
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, clash, "--out", out, "--deflection", "0.1mm", "--pack", PACK],
                                  capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(run.returncode, 3, run.stderr)
             self.assertIn("'Motor_2' and 'Motor'", run.stderr)
@@ -254,7 +254,7 @@ class StepConvert(unittest.TestCase):
                                            ("rotated_pair.step", 0.05, ["Block", "Pin"])):
             with self.subTest(fixture=fixture, deflection=deflection), tempfile.TemporaryDirectory() as out:
                 self.convert(fixture, out, "--deflection", f"{deflection}mm")
-                run = subprocess.run([PYTHON, "-I", os.path.join(HERE, "test_step_convert.py"), "--occt-vertex-counts",
+                run = subprocess.run([PYTHON, "-B", "-I", os.path.join(HERE, "test_step_convert.py"), "--occt-vertex-counts",
                                       os.path.join(FIXTURES, fixture), str(deflection)],
                                      capture_output=True, text=True, encoding="utf-8")
                 self.assertEqual(run.returncode, 0, run.stderr)
@@ -277,7 +277,7 @@ class StepConvert(unittest.TestCase):
             with open(centi, "w", encoding="utf-8", newline="\n") as f:
                 f.write(text.replace("SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT(.CENTI.,.METRE.)"))
             out = os.path.join(work, "out")
-            run = subprocess.run([PYTHON, "-I", CONVERT, centi, "--out", out, "--deflection", "0.5mm", "--pack", PACK],
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, centi, "--out", out, "--deflection", "0.5mm", "--pack", PACK],
                                  capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(run.returncode, 0, run.stderr)
             positions, triangles, unit, tolerance, _ = self.sidecar(out, "Cube")
@@ -298,7 +298,7 @@ class StepConvert(unittest.TestCase):
             bad = os.path.join(work, "not_a_step.step")
             with open(bad, "w", encoding="utf-8") as f:
                 f.write("this is not a STEP file\n")
-            run = subprocess.run([PYTHON, "-I", CONVERT, bad, "--out", os.path.join(work, "out"), "--deflection",
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, bad, "--out", os.path.join(work, "out"), "--deflection",
                                   "0.1mm", "--pack", PACK], capture_output=True, text=True, encoding="utf-8")
             self.assertEqual(run.returncode, 3, run.stderr)
             self.assertIn("not_a_step.step", run.stderr)
