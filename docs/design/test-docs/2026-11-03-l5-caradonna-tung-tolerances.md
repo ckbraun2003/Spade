@@ -1,0 +1,142 @@
+# L5, Caradonna–Tung blade-resolved: tolerances fixed before the first run
+
+**Owner:** Test/Docs. **Status:** draft for the lead and Physics, 2026-11-03 (the lead's L20). None of it has run. Physics reviewed it with L2 to L6 on 2026-11-04 (`.agents/physics-band-stack-review.md`), and its fixes are folded in (the lead's L26).
+**For:** L5 of Physics' P5 plan (`../physics/plans/2026-11-03-p5-blade-resolved-plan.md`): one rotor resolved, Caradonna & Tung's model rotor at θ_c 8°, 1250 rpm, M_tip 0.439. P9 deferred these bands to D3 (`2026-11-03-p9-rotor-data-plan.md`, "No tolerance"), and D3 never ran, so they are fixed here.
+**The rule** (`01-verification.md`): a tolerance is fixed before the first run, from the reference and the method, never from our solver's error. A miss is recorded as a miss.
+
+**The data** are P9's, and nothing here changes them:
+- `tests/data/airflow/caradonna1981_rotor.hpp`: Table 17's five stations with their C_L; the two printed C_T, 0.00459 (figure 4) and 0.00460 (figure 6); figure 9's tip vortex path, ±4° and ±0.01;
+- its README row;
+- the reading's record, `2026-11-03-p9-caradonna-review.md`, with the lead's reading (L7).
+
+The terms below that come from the data were computed from the header's own numbers (Test/Docs, 2026-11-03).
+
+## What can and can't be built term by term
+
+**Built from the data and the measurement:** the tap positions' reading, the integration's spread, figure 9's symbols, compressibility below the true Mach, and the vortex's detection on the grid. Each is computed below.
+
+**Not built term by term: the method's own error at 32 cells across the chord.**
+- **The leading edge isn't resolved.** NACA 0012's leading-edge radius is 1.59% of the chord, half a cell. Bouzidi's curvature term there is 3dx²/(8 r_c) ≈ 0.75 dx, as large as halfway's (L2–L3's note, section 1).
+- **The boundary layer is thinner than a cell.** At chord Re 1 to 2·10⁶, the turbulent layer at the trailing edge is about 0.37 c Re^(−1/5) ≈ 3.9 mm, under the innermost dx of 5.95 mm. So a wall model can't be matched in its log layer: L3's matching height, 3 cells, is outside the layer.
+- **So the method term comes from the literature,** as C0b's 10% does: what an established Navier–Stokes method achieves on this case. Fetch F5 (below) supplies it. The rule is fixed now, and the value is read from F5 before the first run.
+- **Taps at x/c < 0.05 are report only,** since the peak sits on an unresolved leading edge.
+
+## The configuration conditions (L6 cites these)
+
+L5's verdicts hold only at this configuration. L6 claims L5's accuracy only where it meets all of them, and its record says which it meets.
+
+| Condition | L5's value | Where it is fixed |
+|---|---|---|
+| Cells across the chord, innermost level | ≥ 32 (dx 5.95 mm at c 0.1905 m) | The P5 plan |
+| The wall rule | Bouzidi, moving: Wen et al. 2014's Galilean-invariant exchange and Lallemand & Luo 2003's equilibrium refill, as L2c. Shifted storage, f′ = f − w_i ρ0, so no rest state is subtracted | L2–L3's note: L2c, and section 2 |
+| The wall model | None (Physics, 2026-11-04). The layer, 3.9 mm, is 0.65 cell, so L3's 3-cell matching height lies outside it. Plain moving Bouzidi with WALE. The record prints δ/dx and the first node's y⁺ | L3; open item 1 |
+| u_lat at the tip | min(0.254, u_held/1.4) from L1's stability map | L1's note, the decision rule |
+| Nest levels | 3 levels, 2:1 by acoustic scaling, the innermost a slab 2.2R × 2.2R × 0.3R about the disc (the plan's cost table); the outer faces a pressure outlet (ρ = ρ0, zero normal gradient of velocity, non-reflecting) on every face of the outermost level, with a sponge (viscosity ramped over 16 outer cells) inside each; the box sizes follow the plan's cost table and are printed, and the record shows the peak |u| in the face layer and the thrust's change over the last two revolutions, so a recirculating box shows | The P5 plan; L4's note |
+| The subgrid model | WALE at C_w 0.5 | L1's note, open item 3 |
+| The run | At least 5 revolutions from rest; every measure is the mean over the last revolution and both blades | Fixed here |
+| The path | GPU, bit-equal to the CPU reference | The plan's rule |
+
+## The measures and their bands
+
+`u_run` is the run's tip u_lat, and M_run = √3 u_run. At u_run = 0.254 the compressibility terms are the isothermal lattice's against air's adiabatic, which come to at most 4·10⁻⁴ in C_p. Below it, they are Prandtl–Glauert's at each station, `|C_p| (1 − √(1 − M_r²)/√(1 − M_run,r²))` (P9's caveat, as a band term). The table gives them at u_run 0.25, 0.20, 0.15 and 0.10.
+
+### C_p at the five stations
+
+**The measure:** at each station, the largest |C_p − C_p,T17| over the taps with x/c ≥ 0.05, on both surfaces. C_p is read on the surface at the tap's x/c, by the surface-pressure rule (Physics, 2026-11-04): along the SDF normal at the tap's surface point, trilinear ρ at 2 dx and 3 dx out (2 dx is the nearest whose stencil is wholly fluid), extrapolated linearly to the wall, p_s = 3 p(2 dx) − 2 p(3 dx). It amplifies noise about 3.6 times, which the mean over the last revolution and both blades takes out. The pressure is normalised by the section's ½ρ(Ωr)², as Table 17's is.
+
+**The band** = m_p (F5) + the tap term + the compressibility term + m_s:
+- **The tap term:** Table 17 prints x/c to 0.01, so a tap's position is ±0.005 c. Its term is that times the table's own slope between the neighbouring taps, at the station's worst tap.
+- **m_p:** F5's gap, read in-figure: the vertical C_p gap between F5's solid (captured-wake) curve and the plotted marker, at the marker's plotted x, for taps at x/c ≥ 0.05. Reading in the figure cancels the scan's 0.37° rotation and the markers' plotting offset (0.005 to 0.012 x/c left of Table 17's). It is the larger of the two readings, rounded up to 0.01 (the lead's rule, L21b). Values in "F5, read" below.
+- **m_s, the surface-pressure reading error (Physics' F3).** m_p is F5's method error against the data, and F5 reads the pressure at the wall. Our rule reads it from nodes 2 and 3 cells out, which is an independent term. m_s is the larger of L2a's report-only surface C_p errors at R/dx 6 and 12 (Bouzidi), a bound for every banded tap because the sphere's radius of curvature at R/dx 6 is at or under the blade's from x/c 0.05. Test/Docs fixes it from L2a's record **before L5's first run**, and L5 does not run before then. It is a proxy bound: the sphere has no suction peak, and the record says so.
+
+| r/R | Tap term | Compressibility, u_run 0.254 / 0.25 / 0.20 / 0.15 / 0.10 |
+|---|---|---|
+| 0.50 | 0.0073 | 0.0004 / 0.0005 / 0.0063 / 0.011 / 0.014 |
+| 0.68 | 0.030 | 0.0004 / 0.0012 / 0.016 / 0.027 / 0.034 |
+| 0.80 | 0.024 | 0.0004 / 0.0017 / 0.023 / 0.038 / 0.048 |
+| 0.89 | 0.018 | 0.0004 / 0.0024 / 0.033 / 0.054 / 0.069 |
+| 0.96 | 0.036 | 0.0004 / 0.0026 / 0.035 / 0.058 / 0.073 |
+
+The taps at x/c < 0.05 (the leading-edge peak) are printed beside it, report only.
+
+### C_L at the five stations, net of the data's own spread
+
+**The measure, like for like:** our C_p sampled at Table 17's taps, integrated by the same trapezoid rule as `AirflowCaradonnaData.ThePressuresIntegrateNearEachStationsLift`. The reference is Table 17's own pressures integrated the same way, not the printed C_L.
+- **Why:** the table's integral sits 0.925 to 1.055 of its printed C_L, because the report's scheme isn't printed. Comparing integral with integral takes that 7.5% out, which is the lead's "net of the spread".
+
+| Measure | Tolerance | Built from |
+|---|---|---|
+| \|C_L,ours,taps − C_L,T17,taps\| at each station | ≤ m_L + 2 m_s + the station's Prandtl–Glauert fraction at u_run × C_L,T17,taps | 2 m_s: the surface reading's bound on each surface, since the lift takes both. m_L: F5's sectional-lift disagreement with the same data, in C_L, from its fig. 6 ("F5, read" below). The compressibility fraction is the table's percentage above (0.1 to 8.0%) |
+| Our full-surface integral over the printed C_L | report only | It mixes our error with the 7.5% spread |
+| Our tap integral over the printed C_L | report only | The same, for the record |
+
+### Figure 9's tip vortex path
+
+**The measure:** the tip vortex's descent z/R and radius r/R at each digitized age. The core is located by the λ₂ minimum in the half-plane at that age behind the blade, on the field phase-locked to the blade and averaged over the last revolution, with a parabolic fit over the 3 × 3 nodes around the minimum (Physics, 2026-11-04); the record prints the level the core sits in, and the result is the mean over both blades' vortices and the last revolution.
+
+**The band** is the data's ±0.01, plus the age's ±4° times the path's own slope, plus the detection's half a cell. The half cell is taken at the level the core sits in, at most the second: 2 × 5.95 mm / 2R → 0.0052. It holds if the second level reaches at least 0.25R below the disc plane. Physics checked: the 295° core (z/R 0.212) is 41 cells down, in the second level, and the 50° and 162° cores (1 and 16 cells down) are in the innermost. Below u_run 0.254, a compressibility term adds to the descent: the descent scales with √C_T, so half the C_T term below times z.
+
+| Measure | Points | Tolerance at u_run 0.254 | Built from |
+|---|---|---|---|
+| \|z/R − z_fig\| | 50°, 162°, 295° | ≤ 0.020 | 0.01 + the slope's 0.0039 (162° to 295°: 0.00098/°) + 0.0052. Below 0.254, add 0.5 × the C_T term × z_fig: 0.0036 at 295° and u_run 0.10 |
+| \|r/R − r_fig\| | 49°, 90°, 162°, 293°, 372° | ≤ 0.018 | 0.01 + the slope's 0.0022 (49° to 90°: 0.00056/°) + 0.0052 |
+
+### C_T against the two printed values
+
+**The measure:** the thrust from the blade loads over ρ π R² (ΩR)², the mean over the last revolution. Its distance outside the interval [0.00459, 0.00460] is taken relative to the nearer end.
+
+| Measure | Tolerance | Built from |
+|---|---|---|
+| \|C_T / C_T,ref − 1\|, outside [0.00459, 0.00460] | ≤ m_T + the C_T compressibility term | m_T: F5's C_T disagreement with the same run, if F5 prints it. The compressibility term, by blade-element momentum with Prandtl–Glauert's lift slope: 0.12% at u_run 0.25, 1.6% at 0.20, 2.7% at 0.15, 3.4% at 0.10, and 0 at 0.254. It is smaller than the sections' because the inflow adapts |
+| The chord's caveat: C_T's sensitivity to the chord | report only, 0.59% per 1% of chord | The chord is R/6 from the printed aspect ratio, as the literature reads it. If the aspect ratio counts the span from a root cut-out, the chord is larger by that fraction, which isn't printed. So the effect is printed, not bounded |
+| The Reynolds number's caveat: cells across the trailing edge's layer; the wall model's matching height in y⁺ | report only | The layer is under a cell (above). The record shows how far the wall treatment is from resolving it, since the case validates the method, not the skin friction |
+| The loads' change between the last two revolutions | report only | Hover's start-up: the record shows how settled the mean is |
+
+If F5 doesn't give a measure (for example, no sectional C_L), that measure's row is report only until a source does.
+
+## The record
+
+`tests/data/airflow/records/l5-caradonna-tung.md` (new). Its opening line is `L5 Caradonna-Tung hover, theta_c 8 deg, 1250 rpm, u_run <u>, <cells> cells per chord, LBM`.
+- **`config:`** names every condition in the table above, as run.
+- **The measures, in order:** C_p at the five stations, then their leading-edge taps (report only); C_L like for like at the five, then the two report-only integrals; z/R at the three ages and r/R at the five; C_T; then the caveats' lines.
+- **`tolerance:`** lines give each band's number with its m from F5, citing `test-docs/2026-11-03-l5-caradonna-tung-tolerances.md, fixed before the first run`.
+- It runs opt-in, offline, on the GPU (the plan's "a few revolutions, offline").
+
+## F5, read (L21)
+
+- **The source:** NTRS 19910005815, NASA TM-102862: Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", European Rotorcraft Forum, September 1990. The title and authors are confirmed from the NTRS record, and they match the note.
+- **The files:** the PDF (SHA-256 2495c4d64d4ef2ca61f987cea4a1e98b68b37b55b6e329dbe0c43fb1d7dfa0d9) and NTRS's text (SHA-256 24a625b1877036ed198072133865f73f310f855964b08b5dfea7729dd177a451). Kept in the main checkout's `.agents/refs/srinivasan1990/`, with its PROVENANCE. F5b was not needed.
+- **m_p, from fig. 2 (p. 15),** at M_tip 0.44, θ 8°, Re 1.92·10⁶, read in-figure by the rule above. The larger of the two readings is taken, rounded up to 0.01: Test/Docs' pixel-assisted reading, and the lead's from its own 400 dpi render (L21b).
+
+  | r/R | Test/Docs | The lead | Where | m_p |
+  |---|---|---|---|---|
+  | 0.50 | 0.060 (upper x/c 0.12) | 0.058 (lower 0.20; upper 0.12 is 0.046) | | **0.06** |
+  | 0.68 | 0.074 (lower x/c 0.07) | 0.079 (lower 0.07) | | **0.08** |
+  | 0.80 | 0.077 (upper 0.30) | 0.065 (upper 0.30) | the solid is the continuous line above the markers | **0.08** |
+  | 0.89 | 0.11 (upper 0.06) | 0.137 (upper 0.06) | the curve reads 0.858 under the marker's 1.005, where it slopes about 2.5 a unit | **0.14** |
+  | 0.96 | 0.046 (upper 0.07) | 0.079 (upper 0.07) | the solid passes under the marker, about 0.834 against 0.913. Test/Docs' 0.046 read the dashed line | **0.08** |
+
+  Test/Docs' 0.68 entry was first labelled lower x/c 0.79. The tap is lower 0.07; at 0.79 the marker sits only 0.02 to 0.03 under the curve.
+- **m_L, from fig. 6 (p. 19):** the bound circulation Γ/ΩR² against r/R. The legend's glyphs decide which line is which: the fine grid at M_tip 0.44 is long dash plus dot, the lowest line, flat at 0.011 from r/R 0.2 and passing through the asterisk at 0.68.
+  - **The lead's reading** (L21b, rotation-corrected): 0.0119 (±0.0005, where three lines cross), 0.0150, 0.0166, 0.0179 and 0.0204 (±0.0003).
+  - **Table 17's**, (r/R) C_L / 12: 0.0098, 0.0160, 0.0192, 0.0233 and 0.0215.
+  - **So** ΔC_L = 12 ΔΓ/(r/R) = +0.050, −0.018, −0.039, −0.073 and −0.014, which gives **m_L = 0.05, 0.02, 0.04, 0.08 and 0.02** in C_L, from r/R 0.50 to 0.96.
+  - F5's own text agrees: "fair agreement ... except in the inboard part", and the tip region is "not very good".
+- **A caveat on the tip terms:** F5 computed a bevelled tip, and the experiment's tip was square. So m_p and m_L at r/R 0.89 and 0.96 carry a geometry difference as well as F5's method error. That makes them generous: a square-tip solution need not be that far off.
+- **m_T:** F5 prints no C_T. So, by the rule above, C_T's row is report only until a source gives one.
+
+## Fetches
+
+- **F5.** Srinivasan, G. R., Baeder, J. D., Obayashi, S. & McCroskey, W. J., "Flowfield of a lifting hovering rotor: a Navier–Stokes simulation", NTRS 19910005815 (a NASA conference paper, its PDF listed as available, a US Government work). Confirmed from the NTRS record: NASA TM-102862, European Rotorcraft Forum, September 1990. Read once, and F5b was not needed ("F5, read" below). It was for m_p, m_L and m_T: its Navier–Stokes solution against Caradonna & Tung's Table 17 and C_T at θ_c 8°.
+  - If it doesn't plot this case's stations, its NTRS neighbour 19850018358 (Caradonna & Tung's own "Finite-difference computations of rotor loads", NASA TM) is the second choice.
+  - Read once, kept in `.agents/refs/`. Figures are read by eye, so the lead does the second reading.
+
+## Physics' answers to the items left open (2026-11-04)
+
+1. **The wall model at L5:** closed. None (the configuration table above); L6 does the same on the blades.
+2. **The surface-pressure rule:** closed. Linear extrapolation from 2 dx and 3 dx out (C_p, above). Its error enters the band as m_s (F3).
+3. **m from F5:** done (L21b). m_p and m_L are in "F5, read" above, read in-figure by Test/Docs and the lead. C_T is report only, since F5 prints none.
+4. **The vortex's locator:** closed. The λ₂ minimum with a 3 × 3 parabolic fit (figure 9, above).
+5. **The outer faces and the box:** closed. A pressure outlet with a sponge (the configuration table above).
+
+**Still open, Test/Docs':** m_s, from L2a's record before L5's first run.
