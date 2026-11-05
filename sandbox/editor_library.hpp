@@ -53,6 +53,7 @@
 #include "drone_view.hpp"
 #include "editor_document.hpp"
 #include "editor_scene_edits.hpp"
+#include "physics/contact_sets.hpp"
 #include "png_reader.hpp"
 #include "scene/library.hpp"
 #include "scene/model_file.hpp"
@@ -370,31 +371,6 @@ namespace detail {
     return item;
 }
 
-// The lowest point of `model`'s parts, its DESIGN frame at the origin, level
-// and still: each part's box (part_bounds()) through its posed frame. A
-// scene's start pose places the design frame, and the body is body_at() of
-// it (to_body_state(), as the sim spawns it and the session draws it). None
-// when no part can be posed and bounded.
-[[nodiscard]] inline std::optional<float> lowest_part_point(const vehicles::ModelType& model) {
-    const BodyState body = body_at(model, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-    const std::vector<float> still(model.rotors.size(), 0.0f);
-    const Result<vehicles::PosedParts> posed =
-        vehicles::posed_parts(model, body, still, still, vehicles::PartFilter::all);
-    if (!posed) return std::nullopt;
-    std::optional<float> low;
-    for (const vehicles::PosedPart& p : posed->parts) {
-        const Result<Aabb> box = vehicles::part_bounds(model.parts[p.part]);
-        if (!box) continue;
-        for (uint32_t c = 0; c < 8; ++c) {
-            const glm::vec3 corner((c & 1u) != 0 ? box->max.x : box->min.x, (c & 2u) != 0 ? box->max.y : box->min.y,
-                                   (c & 4u) != 0 ? box->max.z : box->min.z);
-            const float y = (p.origin + p.orient * corner).y;
-            low = low ? std::min(*low, y) : y;
-        }
-    }
-    return low;
-}
-
 }  // namespace detail
 
 // Every entry of the index at `index`, loaded (load_library_model(),
@@ -506,14 +482,18 @@ namespace detail {
 }
 
 // How far above the ground an item's origin sits when it rests there
-// (Test/Docs' placed-at): a drone on its own lowest posed part, or on the
-// built-in drone's body when it has no parts; an asset on its collider's box
-// (sdf_bounds()), an import (N15) on its mesh's lowest vertex, or at its
-// origin when neither can be found.
+// (Test/Docs' placed-at): a drone on its contact points, the ones the contact
+// pass rests it on (physics::lowest_contact_point() at its design frame's
+// origin, level and still: L9, so the editor places it where the sim holds
+// it; the body is body_at() of the design frame, as the sim spawns it and the
+// session draws it), or on the built-in drone's body when it has none; an
+// asset on its collider's box (sdf_bounds()), an import (N15) on its mesh's
+// lowest vertex, or at its origin when neither can be found.
 [[nodiscard]] inline float rest_height(const LibraryItem& item) {
     if (item.kind == LibraryItem::Kind::model) {
-        if (!item.model || item.model->parts.empty()) return kDroneBodyHalf.y;
-        const std::optional<float> low = detail::lowest_part_point(*item.model);
+        if (!item.model) return kDroneBodyHalf.y;
+        const BodyState body = body_at(*item.model, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        const std::optional<float> low = physics::lowest_contact_point(*item.model, body);
         return low ? -*low : kDroneBodyHalf.y;
     }
     if (!item.asset) return 0.0f;
