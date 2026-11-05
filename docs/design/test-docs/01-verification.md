@@ -5,7 +5,7 @@
 ## The suite
 
 - **One executable, one ctest case per test.** `spade_tests` (GoogleTest) is registered by `gtest_discover_tests` in `tests/CMakeLists.txt`, so every `TEST()` is its own ctest case: filterable, timed and counted. Run it through `scripts\test.ps1`, never directly (`TD-7`).
-- **Labels** (`TD-10`). Every test carries `spade`, and a test in a `Gpu*` suite also gets `gpu` (`tests/AppendSpadeLabels.cmake`). Select or exclude with `ctest -L gpu` / `-LE gpu`.
+- **Labels** (`TD-10`). Every test carries `spade`, and a test in a `Gpu*` suite also gets `gpu` (`tests/AppendSpadeLabels.cmake`). Select or exclude with `ctest -L gpu` / `-LE gpu`. The STEP converter's tests carry `step` and not `spade` (`TD-16`), so the gates do not select them; run them with `ctest -L step`.
 - **Timeouts.** 60 s per test. Overrides are per test and carry their reason beside them: the opt-in full `exp` sweep (900 s), the shower-pile chaos control (180 s), `Gpu*` (180 s).
 - **Layout.** One `test_<subject>.cpp` per concern. Test support lives in `engine/testing/` (`replay.hpp`, `scenario_file.hpp`, `parity.hpp`, `spirv_scan.hpp`): header-only, compiled into the tests, never installed.
 - **Device-gated tests** follow `TD-6` and `TD-13`. On the development box they run as part of the gate, and a skip there is named and does not count toward green. On a machine without a device they skip, and the Docker leg excludes them with `-LE gpu` (`TD-11`).
