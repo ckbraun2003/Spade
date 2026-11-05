@@ -14,6 +14,7 @@ The sidecars are read here by hand, from the layout in engine/world/mesh_file.hp
 already ran make_mesh() on every mesh before it wrote one, so a sidecar existing proves closed, manifold and oriented.
 There are no bit goldens: the tessellation is OpenCASCADE's, and a golden would tie these tests to its version.
 """
+import json
 import math
 import os
 import struct
@@ -21,8 +22,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections import Counter
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE =os.path.dirname(os.path.abspath(__file__))
 CONVERT = os.path.join(HERE, "step_convert.py")
 PYTHON = os.environ.get("SPADE_STEP_PYTHON") or sys.executable
 UNIT_MILLIMETRE, UNIT_CENTIMETRE = 2, 3
@@ -63,6 +65,61 @@ def volume(positions, triangles):
 
 def bounds(positions):
     return [(min(p[i] for p in positions), max(p[i] for p in positions)) for i in range(3)]
+
+
+def occt_vertex_counts(step_path, deflection_mm, angle=0.5):
+    """{solid name: the number of distinct nodes OpenCASCADE's own SHARED-EDGE discretisation gives}, for a STEP in mm.
+
+    Derived from topology, independently of step_convert.py's position weld: the distinct topological vertices, plus
+    for each edge the nodes strictly inside its polygon (every face on the edge must agree on how many), plus for each
+    face the nodes of its triangulation that no edge polygon of that face holds. A weld that misses a seam would
+    leave the mesh with more vertices than this."""
+    sys.path.insert(0, HERE)
+    import step_convert as sc
+    from OCP.BRep import BRep_Tool
+    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
+    from OCP.TopExp import TopExp, TopExp_Explorer
+    from OCP.TopLoc import TopLoc_Location
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
+
+    counts = {}
+    for name, solid, _ in sc.read_solids(step_path, "mm", set()):
+        sc.tessellate(solid, deflection_mm, angle, name)  # meshes `solid` in place, as the converter does
+        vertices = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(solid, TopAbs_VERTEX, vertices)
+        edge_faces = TopTools_IndexedDataMapOfShapeListOfShape()
+        TopExp.MapShapesAndAncestors_s(solid, TopAbs_EDGE, TopAbs_FACE, edge_faces)
+        total = vertices.Extent()
+        for i in range(1, edge_faces.Extent() + 1):
+            edge = TopoDS.Edge_s(edge_faces.FindKey(i))
+            if BRep_Tool.Degenerated_s(edge):
+                continue
+            nodes_seen = set()
+            for face in edge_faces.FindFromIndex(i):
+                location = TopLoc_Location()
+                triangulation = BRep_Tool.Triangulation_s(TopoDS.Face_s(face), location)
+                nodes_seen.add(BRep_Tool.PolygonOnTriangulation_s(edge, triangulation, location).NbNodes())
+            if len(nodes_seen) != 1:
+                raise AssertionError(f"{name}: the faces of an edge disagree on its discretisation {nodes_seen}")
+            total += nodes_seen.pop() - 2
+        faces = TopTools_IndexedMapOfShape()
+        TopExp.MapShapes_s(solid, TopAbs_FACE, faces)
+        for i in range(1, faces.Extent() + 1):
+            face = TopoDS.Face_s(faces.FindKey(i))
+            location = TopLoc_Location()
+            triangulation = BRep_Tool.Triangulation_s(face, location)
+            on_edges = set()
+            edges = TopExp_Explorer(face, TopAbs_EDGE)  # a seam shows twice, once per side
+            while edges.More():
+                edge = TopoDS.Edge_s(edges.Current())
+                if not BRep_Tool.Degenerated_s(edge):
+                    nodes = BRep_Tool.PolygonOnTriangulation_s(edge, triangulation, location).Nodes()
+                    on_edges.update(nodes.Value(k) for k in range(nodes.Lower(), nodes.Upper() + 1))
+                edges.Next()
+            total += triangulation.NbNodes() - len(on_edges)
+        counts[name] = total
+    return counts
 
 
 class StepConvert(unittest.TestCase):
@@ -140,6 +197,32 @@ class StepConvert(unittest.TestCase):
                 self.assertAlmostEqual(low, want_low, delta=1e-8)
                 self.assertAlmostEqual(high, want_high, delta=1e-8)
 
+    def test_the_position_weld_is_watertight_and_matches_occts_shared_edge_count(self):
+        # Every faces' nodes on a shared edge must come out as ONE vertex. Two things pin it, on faces of every kind the
+        # fixtures have (planar, cylindrical with a seam, closed circles): each directed edge of the sidecar appears
+        # once and its reverse once (so every edge is shared by exactly two triangles, oppositely wound); and the
+        # vertex count is the one OpenCASCADE's own shared-edge discretisation gives (occt_vertex_counts), so a seam
+        # the weld missed would show as extra vertices. (A mesh with an open edge could not be a sidecar at all:
+        # make_mesh() refuses it, so a missed seam is a refusal, exit 4, never a silent hole.)
+        for fixture, deflection, names in (("cube_10mm.step", 0.05, ["Cube"]), ("holed_cylinder.step", 0.02, ["Ring"]),
+                                           ("holed_cylinder.step", 0.1, ["Ring"]),
+                                           ("rotated_pair.step", 0.05, ["Block", "Pin"])):
+            with self.subTest(fixture=fixture, deflection=deflection), tempfile.TemporaryDirectory() as out:
+                self.convert(fixture, out, "--deflection", f"{deflection}mm")
+                run = subprocess.run([PYTHON, "-I", os.path.join(HERE, "test_step_convert.py"), "--occt-vertex-counts",
+                                      os.path.join(FIXTURES, fixture), str(deflection)],
+                                     capture_output=True, text=True, encoding="utf-8")
+                self.assertEqual(run.returncode, 0, run.stderr)
+                expected = json.loads(run.stdout)
+                for name in names:
+                    positions, triangles, *_ = self.sidecar(out, name)
+                    directed = Counter()
+                    for a, b, c in triangles:
+                        directed.update([(a, b), (b, c), (c, a)])
+                    self.assertTrue(all(n == 1 for n in directed.values()), f"{name}: a directed edge is used twice")
+                    self.assertTrue(all(directed.get((b, a)) == 1 for a, b in directed), f"{name}: an edge is open")
+                    self.assertEqual(len(positions), expected[name], f"{name}: the weld left seams unmerged")
+
     def test_the_files_own_unit_is_kept(self):
         with open(os.path.join(FIXTURES, "cube_10mm.step"), encoding="utf-8") as f:
             text = f.read()
@@ -189,6 +272,9 @@ NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_pac
 
 def main():
     global PACK, FIXTURES
+    if len(sys.argv) == 4 and sys.argv[1] == "--occt-vertex-counts":  # a helper the weld test runs under the OCP python
+        sys.stdout.write(json.dumps(occt_vertex_counts(sys.argv[2], float(sys.argv[3]))))
+        return 0
     if len(sys.argv) != 4:
         sys.stderr.write(__doc__)
         return 2

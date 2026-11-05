@@ -64,7 +64,9 @@ The mesh itself is in metres. Nothing about the tessellation is golden: a differ
 
 Solid instances are meshed one by one in their own frame and placed by the assembly's transforms; a part used twice
 gives two sidecars (`Pin`, `Pin-2`). Triangles that collapse where nodes of neighbouring faces meet are dropped, and
-those nodes are one vertex when they are within a millionth of the deflection of each other.
+those nodes are one vertex when they are within a millionth of the deflection of each other (compared in double: 1e-7 mm
+at 0.1 mm). OpenCASCADE gives bit-equal nodes along a shared edge, so the weld is for rounding; a seam it ever missed would
+leave an open edge, which `make_mesh()` refuses (exit 4) rather than writing a mesh with a hole.
 
 ## Tests
 

@@ -30,7 +30,11 @@ refused by make_mesh() (the packer's message); 5 written, but the cross-check fl
 NODES ARE STITCHED BY POSITION. BRepMesh triangulates face by face, and the nodes it puts on a shared edge need not be
 bit-equal between the two faces; Spade's weld is exact. Nodes within 1e-6 of the deflection of one another (and the
 deflection is at least a thousand times that: a node is never merged with a neighbour that is really apart) are one
-vertex, and a triangle that collapses is dropped.
+vertex, and a triangle that collapses is dropped. The nodes are compared in double, as OpenCASCADE returns them, not
+in float. On the fixtures OpenCASCADE's nodes on a shared edge are bit-equal (the merge distance is 0), and the
+packer's reader welds bit-equal positions anyway; the tolerance is for rounding (a face's location applied to its
+nodes). A pair it misses is a seam left open, which make_mesh() refuses (exit 4, the solid named): never a silent hole.
+test_step_convert.py pins this against OpenCASCADE's own shared-edge node count.
 """
 import argparse
 import importlib.metadata
@@ -215,10 +219,9 @@ def transform_of(location):
     return [rows[r][c] for r in range(3) for c in range(3)] + [t.Value(r + 1, 4) for r in range(3)]
 
 
-def read_parts(path, unit, deflection, angle, wanted):
-    """The solid instances of the STEP, each meshed and measured. `deflection` is in the file's unit."""
-    from OCP.BRepGProp import BRepGProp
-    from OCP.GProp import GProp_GProps
+def read_solids(path, unit, wanted):
+    """[(name, solid, location)] for every solid instance of the STEP: the solid in its own frame, and where the
+    assembly puts it. `wanted`, if not empty, names the ones to keep."""
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
     from OCP.STEPCAFControl import STEPCAFControl_Reader
@@ -248,7 +251,7 @@ def read_parts(path, unit, deflection, angle, wanted):
     shapes = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
     roots = TDF_LabelSequence()
     shapes.GetFreeShapes(roots)
-    parts = []
+    found = []
 
     def leaf(label, location, instance_name):
         shape = XCAFDoc_ShapeTool.GetShape_s(label)
@@ -264,10 +267,7 @@ def read_parts(path, unit, deflection, angle, wanted):
             name = label_name if len(solids) == 1 else f"{label_name}_{k + 1}"
             if wanted and name not in wanted:
                 continue
-            vertices, triangles = tessellate(solid, deflection, angle, name)
-            props = GProp_GProps()
-            BRepGProp.VolumeProperties_s(solid, props)
-            parts.append(Part(name, vertices, triangles, transform_of(location), props.Mass()))
+            found.append((name, solid, location))
 
     def walk(label, location, instance_name):
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
@@ -288,9 +288,23 @@ def read_parts(path, unit, deflection, angle, wanted):
 
     for i in range(1, roots.Length() + 1):
         walk(roots.Value(i), TopLoc_Location(), name_of(roots.Value(i)))
-    if not parts:
+    if not found:
         named = f" named {sorted(wanted)}" if wanted else ""
         raise Refusal(2 if wanted else 3, f"{base}: no solid to convert{named}")
+    return found
+
+
+def read_parts(path, unit, deflection, angle, wanted):
+    """The solid instances of the STEP, each meshed and measured. `deflection` is in the file's unit."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+
+    parts = []
+    for name, solid, location in read_solids(path, unit, wanted):
+        vertices, triangles = tessellate(solid, deflection, angle, name)
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solid, props)
+        parts.append(Part(name, vertices, triangles, transform_of(location), props.Mass()))
     return parts
 
 
