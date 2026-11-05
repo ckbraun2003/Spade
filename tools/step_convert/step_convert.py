@@ -219,6 +219,29 @@ def transform_of(location):
     return [rows[r][c] for r in range(3) for c in range(3)] + [t.Value(r + 1, 4) for r in range(3)]
 
 
+def unique_names(base, found):
+    """`found` with every name that more than one entry carries (a part placed several times, whose instances the
+    exporter did not name apart) suffixed `_1`, `_2`, ... in walk order: the rule a part of several solids already
+    follows. Names that are already unique are untouched. If a suffixed name lands on another entry's name the
+    result would not be unique, and nothing is guessed: the two are named in a refusal."""
+    count = {}
+    for name, _, _ in found:
+        count[name] = count.get(name, 0) + 1
+    seen, owner, out = {}, {}, []
+    for name, solid, location in found:
+        if count[name] > 1:
+            seen[name] = seen.get(name, 0) + 1
+            new = f"{name}_{seen[name]}"
+        else:
+            new = name
+        if new in owner:
+            raise Refusal(3, f"{base}: the names '{owner[new]}' and '{name}' both come out as '{new}' (a name used "
+                             "more than once is suffixed _1, _2, ...); rename one in the CAD")
+        owner[new] = name
+        out.append((new, solid, location))
+    return out
+
+
 def read_solids(path, unit, wanted):
     """[(name, solid, location)] for every solid instance of the STEP: the solid in its own frame, and where the
     assembly puts it. `wanted`, if not empty, names the ones to keep."""
@@ -264,10 +287,7 @@ def read_solids(path, unit, wanted):
         if not solids:
             raise Refusal(3, f"{label_name}: no solid (shells, surfaces and wires are not read)")
         for k, solid in enumerate(solids):
-            name = label_name if len(solids) == 1 else f"{label_name}_{k + 1}"
-            if wanted and name not in wanted:
-                continue
-            found.append((name, solid, location))
+            found.append((label_name if len(solids) == 1 else f"{label_name}_{k + 1}", solid, location))
 
     def walk(label, location, instance_name):
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
@@ -288,6 +308,9 @@ def read_solids(path, unit, wanted):
 
     for i in range(1, roots.Length() + 1):
         walk(roots.Value(i), TopLoc_Location(), name_of(roots.Value(i)))
+    found = unique_names(base, found)
+    if wanted:
+        found = [f for f in found if f[0] in wanted]
     if not found:
         named = f" named {sorted(wanted)}" if wanted else ""
         raise Refusal(2 if wanted else 3, f"{base}: no solid to convert{named}")

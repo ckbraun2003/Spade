@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Writes the three STEP fixtures of tools/step_convert's tests, as plain-text ISO 10303-21 (Part 21).
+"""Writes the four STEP fixtures of tools/step_convert's tests, as plain-text ISO 10303-21 (Part 21).
 
 NO CAD KERNEL MADE THESE FILES. Every entity is written by hand-coded rules below (the AP214 product structure,
 the planar and cylindrical B-rep faces, the assembly placement), so a test that converts them with OpenCASCADE
@@ -12,6 +12,8 @@ Run `python gen_fixtures.py` to rewrite the .step files beside this script; the 
   rotated_pair.step     an assembly "Pair" of "Block" (20 x 10 x 5 mm at the origin) and "Pin" (a 5 mm cube placed
                         at (30, 0, 0) with its x axis along +y: a quarter turn about z), through
                         NEXT_ASSEMBLY_USAGE_OCCURRENCE and an ITEM_DEFINED_TRANSFORMATION.
+  quad_motors.step      an assembly "Rig" of one "Motor" (10 x 6 x 4 mm) placed four times, the occurrences' names
+                        empty: a drone's STEP, where the instances carry no names of their own.
 
 All lengths are millimetres (SI_UNIT(.MILLI.,.METRE.)).
 """
@@ -224,6 +226,33 @@ def pair(path):
     return render(path, "a block and a pin placed by a quarter turn about z", p)
 
 
+def quad(path):
+    p = P21()
+    app = application(p)
+    ctx = context(p)
+    motor_def, motor_rep, motor_axis = part(p, app, ctx, "Motor",
+                                            lambda n: box(p, n, (0.0, 0.0, 0.0), (10.0, 6.0, 4.0)))
+    rig_def = product(p, app, "Rig")
+    # One Motor (10 x 6 x 4 mm at its own origin) placed four times, as a drone's STEP places a motor, and every
+    # occurrence left unnamed. A point (a, b, c) of the motor goes to:
+    #   1  (a, b, c)            2  (a + 50, b, c)       3  (-b, a + 40, c)  (x axis +y)   4  (50 - a, 40 - b, c)  (x axis -x)
+    placements = [p.axis((0.0, 0.0, 0.0)),
+                  p.axis((50.0, 0.0, 0.0)),
+                  p.axis((0.0, 40.0, 0.0), (0, 0, 1), (0, 1, 0)),
+                  p.axis((50.0, 40.0, 0.0), (0, 0, 1), (-1, 0, 0))]
+    asm_origin = p.axis((0.0, 0.0, 0.0))
+    asm_rep = p.add("SHAPE_REPRESENTATION('',(#%d,%s),#%d)" % (asm_origin, ",".join("#%d" % a for a in placements), ctx))
+    shape_of(p, rig_def, asm_rep)
+    for k, placed in enumerate(placements):
+        nauo = p.add("NEXT_ASSEMBLY_USAGE_OCCURRENCE('','','',#%d,#%d,$)" % (rig_def, motor_def))
+        usage = p.add("PRODUCT_DEFINITION_SHAPE('','',#%d)" % nauo)
+        itd = p.add("ITEM_DEFINED_TRANSFORMATION('','',#%d,#%d)" % (motor_axis, placed))
+        rel = p.add("(REPRESENTATION_RELATIONSHIP('','',#%d,#%d)REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#%d)"
+                    "SHAPE_REPRESENTATION_RELATIONSHIP())" % (motor_rep, asm_rep, itd))
+        p.add("CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#%d,#%d)" % (rel, usage))
+    return render(path, "one motor placed four times, the occurrences unnamed", p)
+
+
 def render(path, what, p):
     text = HEADER % {"what": what, "file": os.path.basename(path)}
     text += "".join("#%d=%s;\n" % (i + 1, line) for i, line in enumerate(p.lines))
@@ -239,7 +268,8 @@ def main():
     single(os.path.join(here, "holed_cylinder.step"), "a cylinder with a through hole", "Ring",
            lambda p, n: build_ring(p, n, 10.0, 4.0, 20.0))
     pair(os.path.join(here, "rotated_pair.step"))
-    print("wrote 3 fixtures to", here)
+    quad(os.path.join(here, "quad_motors.step"))
+    print("wrote 4 fixtures to", here)
 
 
 if __name__ == "__main__":

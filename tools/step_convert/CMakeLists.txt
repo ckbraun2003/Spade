@@ -23,6 +23,8 @@ set(_step_cases
     test_a_cube_is_closed_exact_and_carries_its_provenance
     test_a_cylinder_with_a_hole_is_genus_one_and_within_the_deflection_bound
     test_an_assembly_is_placed_by_its_transforms
+    test_a_part_placed_several_times_is_named_apart_in_walk_order
+    test_a_suffixed_name_that_meets_a_real_name_is_refused_naming_both
     test_the_position_weld_is_watertight_and_matches_occts_shared_edge_count
     test_the_files_own_unit_is_kept
     test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written

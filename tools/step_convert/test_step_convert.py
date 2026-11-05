@@ -197,6 +197,51 @@ class StepConvert(unittest.TestCase):
                 self.assertAlmostEqual(low, want_low, delta=1e-8)
                 self.assertAlmostEqual(high, want_high, delta=1e-8)
 
+    def test_a_part_placed_several_times_is_named_apart_in_walk_order(self):
+        # One Motor placed four times, the occurrences carrying no names of their own (a drone's STEP): the four
+        # instances would all be "Motor", so each gets _1.._4 in walk order, and --solid can pick one.
+        with tempfile.TemporaryDirectory() as out:
+            self.convert("quad_motors.step", out, "--deflection", "0.05mm")
+            self.assertEqual(sorted(os.listdir(out)), [f"Motor_{k}.spmesh" for k in (1, 2, 3, 4)])
+            # A point (a, b, c) of the motor (10 x 6 x 4 mm) goes to: 1 itself; 2 (a + 50, b, c); 3 (-b, a + 40, c);
+            # 4 (50 - a, 40 - b, c).
+            want = {1: ((0, 10), (0, 6), (0, 4)), 2: ((50, 60), (0, 6), (0, 4)), 3: ((-6, 0), (40, 50), (0, 4)),
+                    4: ((40, 50), (34, 40), (0, 4))}
+            for k, box in want.items():
+                positions, triangles, _, _, source = self.sidecar(out, f"Motor_{k}")
+                self.assertTrue(source.endswith(f": Motor_{k}"), source)
+                self.assertAlmostEqual(volume(positions, triangles), 240e-9, delta=1e-13)
+                for (low, high), (want_low, want_high) in zip(bounds(positions), box):
+                    self.assertAlmostEqual(low, want_low * 1e-3, delta=1e-8)
+                    self.assertAlmostEqual(high, want_high * 1e-3, delta=1e-8)
+        with tempfile.TemporaryDirectory() as out:
+            self.convert("quad_motors.step", out, "--deflection", "0.05mm", "--solid", "Motor_3")
+            self.assertEqual(os.listdir(out), ["Motor_3.spmesh"])
+            self.assertAlmostEqual(bounds(self.sidecar(out, "Motor_3")[0])[1][1], 0.05, delta=1e-8)
+        with tempfile.TemporaryDirectory() as out:  # the bare name no longer exists: it names four things
+            run = self.convert("quad_motors.step", out, "--deflection", "0.05mm", "--solid", "Motor", expect=2)
+            self.assertIn("Motor", run.stderr)
+
+    def test_a_suffixed_name_that_meets_a_real_name_is_refused_naming_both(self):
+        # Occurrences Motor, Motor_2, Motor, Motor: the three Motors would be Motor_1, Motor_2, Motor_3, and the real
+        # Motor_2 is already there. Nothing is guessed.
+        with open(os.path.join(FIXTURES, "quad_motors.step"), encoding="utf-8") as f:
+            text = f.read()
+        marker = "NEXT_ASSEMBLY_USAGE_OCCURRENCE('','','',"
+        first = text.index(marker) + len(marker)
+        second = text.index(marker, first)
+        text = text[:second] + "NEXT_ASSEMBLY_USAGE_OCCURRENCE('','Motor_2',''," + text[second + len(marker):]
+        with tempfile.TemporaryDirectory() as work:
+            clash = os.path.join(work, "clash.step")
+            with open(clash, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+            out = os.path.join(work, "out")
+            run = subprocess.run([PYTHON, "-I", CONVERT, clash, "--out", out, "--deflection", "0.1mm", "--pack", PACK],
+                                 capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 3, run.stderr)
+            self.assertIn("'Motor_2' and 'Motor'", run.stderr)
+            self.assertFalse(os.path.exists(out), "a refusal writes nothing")
+
     def test_the_position_weld_is_watertight_and_matches_occts_shared_edge_count(self):
         # Every faces' nodes on a shared edge must come out as ONE vertex. Two things pin it, on faces of every kind the
         # fixtures have (planar, cylindrical with a seam, closed circles): each directed edge of the sidecar appears

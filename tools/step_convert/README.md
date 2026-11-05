@@ -62,8 +62,13 @@ The mesh itself is in metres. Nothing about the tessellation is golden: a differ
 | 4 | `make_mesh()` refused a solid (open, non-manifold, self-intersecting, ...); the packer names it and says why. Change the deflection or fix the CAD |
 | 5 | written, but the cross-check flagged a solid |
 
-Solid instances are meshed one by one in their own frame and placed by the assembly's transforms; a part used twice
-gives two sidecars (`Pin`, `Pin-2`). Triangles that collapse where nodes of neighbouring faces meet are dropped, and
+Solid instances are meshed one by one in their own frame and placed by the assembly's transforms. **Names:** an
+instance is named after the assembly's occurrence, else the part (a part of several solids adds `_1`, `_2`, ...). When
+names are already unique nothing changes. When several instances carry the same name (a motor placed four times, the
+exporter leaving the occurrences unnamed) each gets `_1`, `_2`, ... in the order the assembly lists them, so they come
+out as `Motor_1` .. `Motor_4`, and `--solid Motor_3` picks one (the bare `Motor` is then a usage error: it names
+four things). If a suffixed name lands on another instance's real name (`Motor_2` already exists), the tool
+refuses (exit 3) naming both and writes nothing; it never guesses. Triangles that collapse where nodes of neighbouring faces meet are dropped, and
 those nodes are one vertex when they are within a millionth of the deflection of each other (compared in double: 1e-7 mm
 at 0.1 mm). OpenCASCADE gives bit-equal nodes along a shared edge, so the weld is for rounding; a seam it ever missed would
 leave an open edge, which `make_mesh()` refuses (exit 4) rather than writing a mesh with a hole.
