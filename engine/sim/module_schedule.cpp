@@ -135,8 +135,6 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return {};
 }
 
-// An access that binds nothing and orders nothing: an optional read of a
-// module the set does not hold.
 // A module's grade declaration (stage 5, Task 3): each value is one of the four,
 // a Vulkan `reference` is refused (L4: the GPU is never a golden source), and a
 // Vulkan `banded` needs a CPU `reference` to band against (L4; spec section 15).
@@ -179,6 +177,8 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return {};
 }
 
+// An access that binds nothing and orders nothing: an optional read of a
+// module the set does not hold.
 [[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
     std::string_view owner;
     std::string_view name;
