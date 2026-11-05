@@ -165,6 +165,20 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
     const float3 gravity = field_samples[world].gravity;
     const float h = pass_params.h;
 
+    // THE TRANSLATION LOCK (module API stage 6; physics/lock.hpp; integrator.cpp's
+    // guarded blocks, the same three places). The row is read only when the
+    // recorder says this run's set holds the lock module (PassParams::switches
+    // bit 0, compute/optional_bindings.hpp's kSwitchLockRows); otherwise
+    // lock_rows is the one-row dummy and `axes` stays 0, so every body takes
+    // today's path untouched, bit for bit. A body with no axes does too.
+    uint lock_axes = 0u;
+    float3 lock_anchor = float3(0.0f, 0.0f, 0.0f);
+    if ((pass_params.switches & 1u) != 0u) {
+        const LockRow lock_row = lock_rows[slot];
+        lock_axes = lock_row.axes & 7u;
+        lock_anchor = lock_row.anchor;
+    }
+
     const float3 force_acc = bodies[slot].force_acc;
     const float3 torque_acc = bodies[slot].torque_acc;
     const float4 orient = bodies[slot].orient;
@@ -187,12 +201,24 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
     if (contact.x != 0.0f || contact.y != 0.0f || contact.z != 0.0f) {
         felt = accel_ext + float3(contact.x / h, contact.y / h, contact.z / h);
     }
+    // A held axis reads -gravity: the stand is at rest in the field (integrator.cpp).
+    if (lock_axes != 0u) {
+        if ((lock_axes & 1u) != 0u) felt.x = -gravity.x;
+        if ((lock_axes & 2u) != 0u) felt.y = -gravity.y;
+        if ((lock_axes & 4u) != 0u) felt.z = -gravity.z;
+    }
     bodies[slot].specific_force = glm_quat_rotate(glm_quat_conjugate(orient), felt);
 
     // 3. Linear velocity. Gravity enters the dynamics HERE and only here --
     //    there is no gravity pass on either backend (integrator.cpp:78-81;
     //    Schedule.GravityIsAppliedExactlyOnce pins it).
-    const float3 vel = bodies[slot].vel + (accel_ext + gravity) * h;
+    float3 vel = bodies[slot].vel + (accel_ext + gravity) * h;
+    // The lock: a held axis has no velocity, assigned +0.0, never a product that could be -0.0.
+    if (lock_axes != 0u) {
+        if ((lock_axes & 1u) != 0u) vel.x = 0.0f;
+        if ((lock_axes & 2u) != 0u) vel.y = 0.0f;
+        if ((lock_axes & 4u) != 0u) vel.z = 0.0f;
+    }
     bodies[slot].vel = vel;
 
     // 4a. The layout stores INVERSE principal moments; recover I_body for the
@@ -227,7 +253,14 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
 
     // 5. Position, from the UPDATED velocity -- the whole of "symplectic"
     //    (integrator.cpp:127-131).
-    bodies[slot].pos = bodies[slot].pos + vel * h;
+    float3 pos = bodies[slot].pos + vel * h;
+    // The lock: a held axis is the anchor, whatever contact's position correction or the step above did to it.
+    if (lock_axes != 0u) {
+        if ((lock_axes & 1u) != 0u) pos.x = lock_anchor.x;
+        if ((lock_axes & 2u) != 0u) pos.y = lock_anchor.y;
+        if ((lock_axes & 4u) != 0u) pos.z = lock_anchor.z;
+    }
+    bodies[slot].pos = pos;
 
     // 6. Orientation, from the UPDATED angular velocity (integrator.cpp:133-138).
     bodies[slot].orient = integrate_orientation(orient, omega_new, h);
