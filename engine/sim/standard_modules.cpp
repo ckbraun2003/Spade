@@ -308,7 +308,7 @@ ModuleSet standard_modules() {
         {.name = "gnss", .passes = kGnssPasses, .state = kGnssArrays, .streams = kGnssStreams, .grade = kPhy2Grade},
         {.name = "behaviors", .passes = kBehaviorPasses, .grade = kBehaviorsGrade},
         {.name = "static_contact", .passes = kStaticPasses, .tables = kStaticTables, .grade = kPhy2Grade},
-        {.name = "dynamic_contact", .passes = kDynamicPasses, .grade = kPhy2Grade},
+        {.name = "dynamic_contact", .passes = kDynamicPasses, .grade = kPhy2Grade, .role = "dynamic_contact"},
         {.name = "integrate", .passes = kIntegratePasses, .scratch = kIntegrateScratch, .grade = kPhy2Grade},
         {.name = "environment", .passes = kEnvironmentPasses, .fields = kEnvironmentFields, .grade = kPhy2Grade},
     };

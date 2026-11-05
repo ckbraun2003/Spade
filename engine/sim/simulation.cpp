@@ -520,6 +520,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     Result<modules::CompiledSchedule> compiled = modules::compile_schedule(module_set);
     if (!compiled) return std::unexpected(compiled.error());
     if (Result<void> builtins = check_builtin_arrays(*compiled); !builtins) return std::unexpected(builtins.error());
+    if (Result<void> roles = modules::check_required_roles(*compiled); !roles) return std::unexpected(roles.error());
     if (backend.kind == compute::BackendKind::vulkan) {
         // A pass with no GPU kernel would be missing from the GPU chain: the
         // GPU would run a different experiment from the CPU (L6). Refuse it by

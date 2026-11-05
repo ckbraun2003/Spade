@@ -157,6 +157,28 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return {};
 }
 
+// A module's role (stage 5, Task 6): one of kRoles, and not filled by an earlier module too.
+[[nodiscard]] Result<void> check_role(std::span<const ModuleDesc> modules, std::size_t m) {
+    const ModuleDesc& mod = modules[m];
+    if (mod.role.empty()) return {};
+    const bool known = std::any_of(std::begin(kRoles), std::end(kRoles),
+                                   [&mod](const RoleDecl& r) { return r.name == mod.role; });
+    if (!known) {
+        std::string names;
+        for (const RoleDecl& r : kRoles) names += (names.empty() ? "" : ", ") + std::string(r.name);
+        return std::unexpected(invalid("module '" + std::string(mod.name) + "': role '" + std::string(mod.role) +
+                                       "' is not a known role (" + names + ")"));
+    }
+    for (std::size_t k = 0; k < m; ++k) {
+        if (modules[k].role == mod.role) {
+            return std::unexpected(invalid("role '" + std::string(mod.role) + "' is filled by module '" +
+                                           std::string(modules[k].name) + "' and module '" + std::string(mod.name) +
+                                           "'; a role has one filler"));
+        }
+    }
+    return {};
+}
+
 [[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
     std::string_view owner;
     std::string_view name;
@@ -594,6 +616,9 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         }
         // GRADES (stage 5, Task 3): the shape of the declaration, checked once, here.
         if (Result<void> ok = check_grade_shape(mod); !ok) return std::unexpected(ok.error());
+        // ROLES (Task 6), here and so before the pass graph is built: two fillers of dynamic_contact are
+        // also two writers of body.pose with no edge, and a later check would refuse them as a hazard.
+        if (Result<void> ok = check_role(modules, m); !ok) return std::unexpected(ok.error());
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
@@ -843,7 +868,12 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     }
     out.identity = h;
     for (const ModuleDesc& mod : modules) {
-        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade});
+        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role)});
+    }
+    for (const RoleDecl& role : kRoles) {  // kRoles order; check_role allowed at most one filler
+        const auto filler = std::find_if(modules.begin(), modules.end(),
+                                         [&role](const ModuleDesc& mod) { return mod.role == role.name; });
+        if (filler != modules.end()) out.roles.push_back(CompiledRole{std::string(role.name), std::string(filler->name)});
     }
     out.fields = std::move(fields);
     out.field_stride = field_stride;
@@ -861,7 +891,18 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     return out;
 }
 
-Result<void> check_required_roles(const CompiledSchedule&) { return {}; }  // RED stub
+Result<void> check_required_roles(const CompiledSchedule& schedule) {
+    for (const RoleDecl& role : kRoles) {
+        if (!role.required) continue;
+        const bool filled = std::any_of(schedule.roles.begin(), schedule.roles.end(),
+                                        [&role](const CompiledRole& r) { return r.role == role.name; });
+        if (!filled) {
+            return std::unexpected(invalid("module set: role '" + std::string(role.name) +
+                                           "' is required and no module fills it"));
+        }
+    }
+    return {};
+}
 
 SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backend) {
     SetGrade out;  // reference, naming no module, for a set with no modules
