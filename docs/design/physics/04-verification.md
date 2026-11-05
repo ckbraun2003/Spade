@@ -31,6 +31,7 @@
 | Integrator | reference | banded | `ballistic` golden; `parity::ballistic` |
 | Static contact | reference | banded | `bounce` golden; `parity::bounce` |
 | Dynamic contact, Gauss-Seidel | reference | banded | `shower` golden; `parity::shower`, `contact_pair` |
+| Environment (gravity and density into the field samples) | reference: every golden runs it, since the integrator reads gravity from the sample row | banded, and the band is zero: the kernel copies each world's `WorldParams` gravity and air density with no arithmetic (`field_environment.slang`), so the row matches the CPU's bit for bit | every golden; `parity::ballistic` (gravity reaches the integrator through the row) |
 | Drag (T0) | reference | banded | `quad_hover` golden; `parity::drag_componentwise` |
 | Rotor element | reference | banded | `quad_hover` golden; `parity::quad_hover` |
 | Dryden gust | reference | banded via `CORE-3` | `quad_hover` (moderate); `parity::medium` |
