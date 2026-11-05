@@ -66,9 +66,11 @@ struct ProjectionReport {
 // Solids without their regions: the grid untouched and the residual infinite.
 // With solids, n_v is the CG's floor and cg_cap its cap (solve_pcg_to(), to
 // kResidualAnnounce).
+// A pool (L18 slice 2) shares plan A's V-cycles and final residual across its
+// threads, the same bits at any count; the solids' CG is not threaded.
 ProjectionReport project(MacGrid& g, const DomainBc& bc, float rho, float h, uint32_t n_v, ProjectionScratch& s,
                          const SolidField* solids = nullptr, FluidRegions* regions = nullptr,
-                         uint32_t cg_cap = kSolidsCgCap) noexcept;
+                         uint32_t cg_cap = kSolidsCgCap, WorkerPool* pool = nullptr) noexcept;
 
 // The solids' projection's first and last stages, as project() runs them
 // with solids, so the GPU twins (plan B's B5: airflow_solid_divergence and

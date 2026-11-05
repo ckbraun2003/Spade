@@ -300,7 +300,12 @@ TEST(AnalysisCaseResolve, FillsTheDefaultsAndSaysSo) {
     EXPECT_NEAR(*resolved->spec.grid.spacing, *resolved->spec.grid.box / static_cast<float>(an::kDefaultCellsAcross),
                 1e-7f);
     EXPECT_EQ(resolved->base.nx, an::kDefaultCellsAcross);
-    EXPECT_EQ(resolved->base_bytes, spade::physics::airflow::fluid_bytes(resolved->base, resolved->domain));
+    uint64_t spread_cache = 0;  // the CPU step's kept disc weights, a disc a rotor
+    for (const auto& rotor : m.rotors) {
+        spread_cache += spade::physics::airflow::spread_cache_bytes(resolved->base, rotor.radius);
+    }
+    EXPECT_EQ(resolved->base_bytes,
+              spade::physics::airflow::fluid_bytes(resolved->base, resolved->domain) + spread_cache);
     EXPECT_EQ(resolved->finest_spacing, *resolved->spec.grid.spacing);
     // The hash names the run: the resolved case's own text.
     EXPECT_EQ(resolved->hash, spade::rng::fnv1a64(an::case_to_yaml(resolved->spec).value_or("")));

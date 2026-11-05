@@ -768,7 +768,7 @@ Result<LiveFrame> LiveRun::advance_frame(const Controls& controls, FlowVolume& o
         if (const Result<void> published = r.device->publish(r.publish, out); !published) {
             return std::unexpected(published.error());
         }
-    } else if (const Result<af::PublishCounts> published = af::publish_render_volume(r.grid, r.publish, out);
+    } else if (const Result<af::PublishCounts> published = af::publish_render_volume(r.grid, r.publish, out, r.scratch.pool.get());
                !published) {
         return std::unexpected(published.error());
     }

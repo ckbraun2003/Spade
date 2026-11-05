@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <string>
+#include <vector>
 
 #include "core/detail/flush_subnormals.hpp"
 #include "core/fp16.hpp"
@@ -136,44 +137,73 @@ SPADE_AIRFLOW_HOT uint32_t fluid_neighbours(const GridShape& s, const std::array
     return fluid;
 }
 
-// The header's range and no-data count, one packed half at a time in cell
-// order: the rule publish_render_volume() and flow_header_from_halves()
-// share (TD-9). A kNoDataBits half is counted and left out of the range; a
+// The header's range and no-data count: the rule publish_render_volume() and
+// flow_header_from_halves() share (TD-9), kept as a tally so a stretch of cells
+// can be tallied apart and merged in cell order (the threaded publish, L18
+// slice 2). A kNoDataBits half is counted and left out of the range; a
 // channel's first valid half opens its range and a later one widens it only
 // past `<` or `>`, so a tie of -0 and +0 keeps the first; a channel with no
 // valid half keeps 0 and 0.
-class HeaderRange {
+class RangeTally {
 public:
-    explicit HeaderRange(FlowVolumeHeader& h) noexcept : h_(h) {
-        h_.channel_min = {};
-        h_.channel_max = {};
-        h_.no_data = 0;
-    }
-
     SPADE_AIRFLOW_HOT void add(uint32_t c, uint16_t bits) noexcept {
         if (bits == fp16::kNoDataBits) {
-            ++h_.no_data;
+            ++no_data_;
             return;
         }
         const float stored = fp16::to_f32(bits);
         if (!seen_[c]) {
-            h_.channel_min[c] = stored;
-            h_.channel_max[c] = stored;
+            min_[c] = stored;
+            max_[c] = stored;
             seen_[c] = true;
         } else {
-            h_.channel_min[c] = stored < h_.channel_min[c] ? stored : h_.channel_min[c];
-            h_.channel_max[c] = stored > h_.channel_max[c] ? stored : h_.channel_max[c];
+            min_[c] = stored < min_[c] ? stored : min_[c];
+            max_[c] = stored > max_[c] ? stored : max_[c];
         }
     }
 
+    // The tally of the cells that follow this one's, merged as add() would
+    // have taken them in order: a channel `later` saw opens this one's range if
+    // this saw none, else widens it by the same strict `<` and `>`, so a tie
+    // keeps the earlier stretch's value. Equal to one tally over both stretches.
+    void merge(const RangeTally& later) noexcept {
+        no_data_ += later.no_data_;
+        for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
+            if (!later.seen_[c]) continue;
+            if (!seen_[c]) {
+                min_[c] = later.min_[c];
+                max_[c] = later.max_[c];
+                seen_[c] = true;
+            } else {
+                min_[c] = later.min_[c] < min_[c] ? later.min_[c] : min_[c];
+                max_[c] = later.max_[c] > max_[c] ? later.max_[c] : max_[c];
+            }
+        }
+    }
+
+    void store(FlowVolumeHeader& h) const noexcept {
+        h.channel_min = min_;
+        h.channel_max = max_;
+        h.no_data = no_data_;
+    }
+
 private:
-    FlowVolumeHeader& h_;
+    std::array<float, kFlowChannelCount> min_{};
+    std::array<float, kFlowChannelCount> max_{};
     std::array<bool, kFlowChannelCount> seen_{};
+    uint32_t no_data_ = 0;
+};
+
+// One k plane's share of the header: its range and its first-layer count.
+struct PlaneTally {
+    RangeTally range;
+    uint32_t extrapolated = 0;
 };
 
 // publish_render_volume()'s body, run under its wrapper's scope (the wrapper
 // rule, core/detail/flush_subnormals.hpp); Core's lambda2_hat() runs inside it.
-SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
+SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const PublishInput& in, FlowVolume& out,
+                                                     WorkerPool* pool) {
     out.generation = 0;  // unnamed until it is whole: a refusal may leave it part-written
     const GridShape& s = g.shape;
     const std::size_t cells = std::size_t{s.nx} * s.ny * s.nz;
@@ -210,15 +240,15 @@ SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const Pub
     h.nz = s.nz;
     out.v.assign(cells * kFlowHalvesPerCell, 0);
     out.s.assign(cells * kFlowHalvesPerCell, 0);
-    HeaderRange range{h};
-    PublishCounts counts;
-
-    const auto write = [&](std::size_t cell, uint32_t c, uint16_t bits) {
-        (c < kFlowHalvesPerCell ? out.v : out.s)[cell * kFlowHalvesPerCell + (c % kFlowHalvesPerCell)] = bits;
-        range.add(c, bits);
-    };
-
-    for (uint32_t k = 0; k < s.nz; ++k) {
+    // One k plane: each cell writes its own halves and tallies into the plane's
+    // own tally, so the planes share nothing and any thread can take any plane.
+    std::vector<PlaneTally> planes(s.nz);
+    const auto publish_plane = [&](uint32_t k) {
+        PlaneTally& tally = planes[k];
+        const auto write = [&](std::size_t cell, uint32_t c, uint16_t bits) {
+            (c < kFlowHalvesPerCell ? out.v : out.s)[cell * kFlowHalvesPerCell + (c % kFlowHalvesPerCell)] = bits;
+            tally.range.add(c, bits);
+        };
         for (uint32_t j = 0; j < s.ny; ++j) {
             for (uint32_t i = 0; i < s.nx; ++i) {
                 const std::size_t cell = flow_cell_index(h, i, j, k);
@@ -239,12 +269,26 @@ SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const Pub
                     }
                     const float inv = 1.0f / static_cast<float>(fluid);
                     for (uint32_t c = 0; c < kFlowChannelCount; ++c) ch[c] = sum[c] * inv;
-                    ++counts.extrapolated;
+                    ++tally.extrapolated;
                 }
                 for (uint32_t c = 0; c < kFlowChannelCount; ++c) write(cell, c, fp16::from_f32(ch[c]).bits);
             }
         }
+    };
+    if (pool != nullptr && pool->threads() > 1u && s.nz > 1u) {
+        pool->run(s.nz, publish_plane);
+    } else {
+        for (uint32_t k = 0; k < s.nz; ++k) publish_plane(k);
     }
+    // The planes merged in plane order, the order the cells were visited in
+    // when one thread took them all: the header is the same at any count.
+    RangeTally range;
+    PublishCounts counts;
+    for (const PlaneTally& tally : planes) {
+        range.merge(tally.range);
+        counts.extrapolated += tally.extrapolated;
+    }
+    range.store(h);
     h.extrapolated_cells = counts.extrapolated;
     out.generation = next_flow_generation();  // a new content, for a reader's cache
     return counts;
@@ -255,9 +299,10 @@ SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const Pub
 // Subnormals flushed as fluid_step() flushes them (spec section 4.5 as amended
 // 2026-10-22; the GPU's twin is B6's publish_fields). An f16 texel cannot
 // show the flush; B6's fp32 comparison can.
-Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out) {
+Result<PublishCounts> publish_render_volume(const MacGrid& g, const PublishInput& in, FlowVolume& out,
+                                            WorkerPool* pool) {
     const spade::math::ScopedFlushSubnormals flush;
-    return publish_flushed(g, in, out);
+    return publish_flushed(g, in, out, pool);
 }
 
 Result<void> flow_header_from_halves(FlowVolume& volume) {
@@ -269,12 +314,13 @@ Result<void> flow_header_from_halves(FlowVolume& volume) {
                                                                  std::to_string(volume.s.size()) + ", not " +
                                                                  std::to_string(halves) + " each"});
     }
-    HeaderRange range{volume.header};
+    RangeTally range;
     for (std::size_t at = 0; at < halves; at += kFlowHalvesPerCell) {
         for (uint32_t c = 0; c < kFlowChannelCount; ++c) {
             range.add(c, (c < kFlowHalvesPerCell ? volume.v : volume.s)[at + c % kFlowHalvesPerCell]);
         }
     }
+    range.store(volume.header);
     return {};
 }
 

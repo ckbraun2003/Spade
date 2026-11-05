@@ -1,5 +1,6 @@
 #include "physics/airflow/actuator.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -285,6 +286,9 @@ void build_weights(DiscWeights& w, const ActuatorDisc& d, const GridShape& s, co
             w.sum[c].push_back(sum);
             w.swirl_sum[c].push_back(swirl_sum);
         });
+        w.index[c].shrink_to_fit();  // the push_backs' slack would be bytes the byte cap doesn't count
+        w.sum[c].shrink_to_fit();
+        w.swirl_sum[c].shrink_to_fit();
     }
     w.valid = true;
     w.centre = d.centre;
@@ -324,6 +328,34 @@ SPADE_NOINLINE void spread_cached(std::span<const ActuatorDisc> discs, const Gri
 }
 
 }  // namespace
+
+uint64_t SpreadCache::bytes() const noexcept {
+    uint64_t total = 0;
+    for (const DiscWeights& w : discs) {
+        for (uint32_t c = 0; c < 3; ++c) {
+            total += w.index[c].capacity() * sizeof(std::size_t) +
+                     (w.sum[c].capacity() + w.swirl_sum[c].capacity()) * sizeof(float);
+        }
+    }
+    return total;
+}
+
+uint64_t spread_cache_bytes(const GridShape& s, float radius) noexcept {
+    // Along an axis the samples within reach = radius + 2 dx of the centre number at most
+    // floor(2 reach / dx) + 1; 2 (ceil(reach / dx) + 1) + 1 covers float rounding. A NaN
+    // radius, or an infinite one, takes the cap on the span, which the face counts then bound.
+    const double dx = static_cast<double>(s.dx);
+    const double span = std::min(1.0e9, 2.0 * (std::ceil((static_cast<double>(radius) + 2.0 * dx) / dx) + 1.0) + 1.0);
+    const auto along = [span](uint64_t samples) { return std::min(samples, static_cast<uint64_t>(span)); };
+    const uint64_t n[3] = {s.nx, s.ny, s.nz};
+    uint64_t samples = 0;
+    for (uint32_t c = 0; c < 3; ++c) {
+        uint64_t box = 1;
+        for (uint32_t a = 0; a < 3; ++a) box *= along(a == c ? n[a] + 1u : n[a]);
+        samples += box;
+    }
+    return samples * (sizeof(std::size_t) + 2u * sizeof(float));
+}
 
 void spread_actuators(std::span<const ActuatorDisc> discs, const GridShape& shape, float rho, float h,
                       std::span<float> du, std::span<float> dv, std::span<float> dw, SpreadCache& cache) noexcept {

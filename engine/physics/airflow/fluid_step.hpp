@@ -39,7 +39,8 @@ struct FluidConfig {
     uint32_t visc_sweeps = 8;  // red-black sweeps per viscous solve
     SolidInterior interior = SolidInterior::rigid;  // what closed samples hold (solids.hpp)
     // The CPU step's threads (L18): the same bits at any count; 1 is the serial
-    // step. make_fluid_scratch() makes the pool; 0 is taken as 1.
+    // step; 0 is taken as 1. The count is read once, at make_fluid_scratch(), which
+    // makes the pool: setting it afterwards does nothing.
     uint32_t threads = default_fluid_threads();
 };
 
@@ -111,7 +112,8 @@ inline void spread_actuators(std::span<const ActuatorDisc> discs, const GridShap
     spread_actuators(discs, shape, rho, h, s.du, s.dv, s.dw, s.spread);
 }
 
-// The bytes of a grid and of the scratch its step needs, in 64 bits (the
+// The bytes of a grid and of the scratch its step needs (the viscous right sides
+// of u and v on the pool counted whether or not there is one), in 64 bits (the
 // multigrid's depth follows the domain's periodic axes), for a shape
 // check_shape() takes: past its cell cap the products can wrap.
 // check_grid() asks check_shape() first.

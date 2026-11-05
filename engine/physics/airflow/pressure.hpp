@@ -7,6 +7,7 @@
 
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "physics/airflow/worker_pool.hpp"
 
 // ---------------------------------------------------------------------------
 // THE PRESSURE EQUATION (spec §1.5, "Project"), on one grid level, scaled by
@@ -44,15 +45,26 @@ void divergence(const MacGrid& g, std::span<float> out) noexcept;
 void smooth_one_cell(PoissonLevel& level, uint32_t i, uint32_t j, uint32_t k) noexcept;
 
 
+// The cells a level needs before its smoothing and residual go to a pool's
+// threads (L18 slice 2): below it a barrier costs more than the planes it
+// shares out. Only speed: the bits are the serial pass's either way.
+inline constexpr std::size_t kThreadedLevelCells = 8192;
+
 // `sweeps` red-black sweeps: every cell with (i + j + k) even, then every odd
 // one; black_first runs the odd colour first (the symmetric cycle's
-// post-smoothing, Task 4).
-void smooth_red_black(PoissonLevel& level, uint32_t sweeps, bool black_first = false) noexcept;
+// post-smoothing, Task 4). With a pool, and a level of kThreadedLevelCells or
+// more, each colour pass is split by k plane across its threads, a barrier
+// between the colours: a cell of one colour reads only the other colour (a
+// wrap joins cell 0 and cell n - 1 of an even n, and an axis of one cell
+// has none), so the bits are the same at any thread count.
+void smooth_red_black(PoissonLevel& level, uint32_t sweeps, bool black_first = false,
+                      WorkerPool* pool = nullptr) noexcept;
 
 // out = sum - diag x, the level's operator applied to `x` (both sized like p).
 void apply_operator(const PoissonLevel& level, std::span<const float> x, std::span<float> out) noexcept;
 
-// level.r = b - (sum - diag p) for every cell.
-void residual(PoissonLevel& level) noexcept;
+// level.r = b - (sum - diag p) for every cell; with a pool, split by k plane
+// as smooth_red_black() splits its passes (each cell reads p and writes r).
+void residual(PoissonLevel& level, WorkerPool* pool = nullptr) noexcept;
 
 }  // namespace spade::physics::airflow
