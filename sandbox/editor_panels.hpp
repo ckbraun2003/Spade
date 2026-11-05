@@ -78,6 +78,11 @@ inline constexpr AirLevel kAirLevels[] = {AirLevel::detailed, AirLevel::real_tim
     return level == AirLevel::detailed ? "Detailed" : "Real time";
 }
 
+// What a level costs in accuracy, one sentence, under the inspector's Physics
+// combo (L13 (4); the lead, 2026-11-04, from Physics' wake-cost measurement,
+// .agents/physics-wake-cost.md "For the labels"). No numbers beyond Physics'.
+[[nodiscard]] inline const char* air_level_cost(AirLevel) { return ""; }
+
 // The inspector's airflow-region line (INT-15) as last resolved, and the
 // scene state and level it was resolved for (editor_airflow.hpp's
 // air_line()).

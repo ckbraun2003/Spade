@@ -496,6 +496,18 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
     EXPECT_LT(*fine->body.resolved.spec.time.step, 0.001f);
 }
 
+// L13 (4) (the lead, 2026-11-04; Physics' wake-cost measurement): each level
+// states its cost in a sentence under the inspector's Physics combo, against
+// the careful step. Real time's wake is within 1% and its pressure is
+// unconverged on most steps (plan A); Detailed's wake is within 4%.
+TEST(EditorAirflow, EachLevelStatesItsCostInOneSentence) {
+    EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::real_time),
+                 "Discs only: the wake is within 1% of the careful step's, and the pressure is unconverged on most "
+                 "steps.");
+    EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::detailed),
+                 "The body in the air: the wake is within 4% of the careful step's.");
+}
+
 // D10 (Cameron's direction via the lead, 2026-11-03): the session's physics
 // level picks what Run air resolves. Detailed, the default, is the body's
 // case; Real time is discs only (L17): 48^3 on the device, 16^3 on the
