@@ -189,7 +189,7 @@ TEST(TranslationLock, ASetWithLockHasItsOwnIdentityAndWalk) {
         has_rows = has_rows || std::string(a.name) == "lock_rows";
     });
     EXPECT_TRUE(has_rows);
-    EXPECT_EQ(arrays, 23u) << "the standard walk and lock_rows (a per_body array has no map)";
+    EXPECT_EQ(arrays, 24u) << "the standard 22 and lock_rows with its slot_to_world map (every array has one)";
 }
 
 TEST(TranslationLock, ALockedStateSurvivesASnapshotAndRestore) {
@@ -351,7 +351,7 @@ TEST(TranslationLock, TheYFreeRailClimbsLikeAFreeBodyAndHoldsXAndZ) {
     ASSERT_TRUE(sim.lock_translation(railed, kLockAxisX | kLockAxisZ).has_value());
     for (int s = 0; s < 100; ++s) {
         for (const BodyRef r : {railed, free_twin}) {
-            ASSERT_TRUE(sim.apply_wrench(r, glm::vec3(0.0f, 12.0f, 0.0f), glm::vec3(0.0f)).has_value());
+            ASSERT_TRUE(sim.apply_wrench(r, glm::vec3(0.0f, 30.0f, 0.0f), glm::vec3(0.0f)).has_value());
         }
         ASSERT_TRUE(sim.step(1).has_value());
         const BodyState a = row_of(sim, railed);
@@ -362,7 +362,7 @@ TEST(TranslationLock, TheYFreeRailClimbsLikeAFreeBodyAndHoldsXAndZ) {
         ASSERT_EQ(a.pos.z, a0.z) << "step " << s;
         ASSERT_EQ(bits(glm::vec3(a.vel.x, 0.0f, a.vel.z)), bits(kPlusZero)) << "step " << s;
     }
-    EXPECT_GT(row_of(sim, railed).pos.y, a0.y) << "the rail climbed: a 12 N lift on 0.8 kg beats gravity";
+    EXPECT_GT(row_of(sim, railed).pos.y, a0.y) << "the rail climbed: a 30 N lift on 0.8 kg beats gravity over a two-substep step (the wrench acts in the first substep only)";
 }
 
 // A PIN, green at red: rotation is the same arithmetic as a free body's, so it holds before and after the lock.
@@ -488,8 +488,8 @@ TEST(TranslationLock, UnlockReleasesFromTheAnchorAtRest) {
 // ---------------------------------------------------------------------------
 namespace {
 
-// PINNED AT THE SLOT (stage 6 Task 3): 0 until the first run prints it; the failure message carries the number.
-constexpr uint64_t kHeldQuadDigest = 0;
+// PINNED at the stage 6 slot from the MSVC release build; confirmed on a second run and in the debug preset. Never re-pinned to another compiler's number.
+constexpr uint64_t kHeldQuadDigest = 0x09ad5ceda2474643ull;
 constexpr int kHeldQuadSteps = 450;
 constexpr uint64_t kQuadDt = 2'000'000;
 
