@@ -128,6 +128,15 @@ TEST(SandboxDrone, TheAttitudeReadoutInvertsTheTarget) {
     }
 }
 
+// The stand is held by the engine's translation lock (Core's stage 6), not by
+// behaviors: nothing is registered on the Simulation, so the same stand can run
+// on the Vulkan step, which refuses a non-empty registry.
+TEST(SandboxDrone, TheStandIsHeldByTheEnginesLockNotByBehaviors) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value()) << drone.error().context;
+    EXPECT_EQ(drone->sim().behaviors(), nullptr);
+}
+
 TEST(SandboxDrone, ThePinHoldsPositionBitwiseWhileTheAttitudeMoves) {
     auto drone = DroneSim::create(DronePhysicsOptions{});
     ASSERT_TRUE(drone.has_value()) << drone.error().context;
