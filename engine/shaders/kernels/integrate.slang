@@ -174,9 +174,8 @@ void integrate(uint3 tid : SV_DispatchThreadID) {
     uint lock_axes = 0u;
     float3 lock_anchor = float3(0.0f, 0.0f, 0.0f);
     if ((pass_params.switches & 1u) != 0u) {
-        const LockRow lock_row = lock_rows[slot];
-        lock_axes = lock_row.axes & 7u;
-        lock_anchor = lock_row.anchor;
+        lock_axes = lock_rows[slot].axes & 7u;
+        lock_anchor = lock_rows[slot].anchor;
     }
 
     const float3 force_acc = bodies[slot].force_acc;
