@@ -499,13 +499,16 @@ TEST(EditorAirflow, TheCpuFallbackFliesDiscsOnR3sGridOverTheSameBoxAndSaysSo) {
 // L13 (4) (the lead, 2026-11-04; Physics' wake-cost measurement): each level
 // states its cost in a sentence under the inspector's Physics combo, against
 // the same run at CFL 0.5 (the lead's review, 2026-11-04: the reference is
-// named so a reader can check it). Real time's wake is within 1% and its
-// pressure is unconverged on most steps (plan A); Detailed's wake is within 4%
-// and the load on the body within about 40%.
+// named so a reader can check it). Real time's wake is within a few percent (the
+// Phantom's 1%; the reference quad's own window noise is 2-4%) and its pressure
+// solve is loose on nearly every step, which moves neither the thrust nor the
+// wake past noise (L32: the run line's word "loose", kLiveLooseResidual;
+// "unconverged" is for past 7.1e-2); Detailed's wake is within 4% and the load
+// on the body within about 40%.
 TEST(EditorAirflow, EachLevelStatesItsCostInOneSentence) {
     EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::real_time),
-                 "Discs only: the wake is within 1% of the same run at CFL 0.5, and the pressure is unconverged on "
-                 "most steps.");
+                 "Discs only: the wake is within a few percent of the same run at CFL 0.5, and the pressure is loose "
+                 "on nearly every step, moving neither the thrust nor the wake past noise.");
     EXPECT_STREQ(ed::air_level_cost(ed::AirLevel::detailed),
                  "The body in the air: the wake is within 4% of the same run at CFL 0.5, and the load on the body "
                  "within about 40%.");

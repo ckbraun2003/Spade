@@ -81,13 +81,15 @@ inline constexpr AirLevel kAirLevels[] = {AirLevel::detailed, AirLevel::real_tim
 // What a level costs in accuracy, one sentence, under the inspector's Physics
 // combo (L13 (4); the lead, 2026-11-04, from Physics' wake-cost measurement,
 // .agents/physics-wake-cost.md "For the labels"), each against the same run
-// at CFL 0.5 so a reader can check it. No numbers beyond Physics'.
+// at CFL 0.5 so a reader can check it. No numbers beyond Physics'. Real time
+// says "loose", the run line's word for a pressure past kLiveLooseResidual
+// ("unconverged" is for past 7.1e-2; L32).
 [[nodiscard]] inline const char* air_level_cost(AirLevel level) {
     return level == AirLevel::detailed
                ? "The body in the air: the wake is within 4% of the same run at CFL 0.5, and the load on the body "
                  "within about 40%."
-               : "Discs only: the wake is within 1% of the same run at CFL 0.5, and the pressure is unconverged on "
-                 "most steps.";
+               : "Discs only: the wake is within a few percent of the same run at CFL 0.5, and the pressure is loose "
+                 "on nearly every step, moving neither the thrust nor the wake past noise.";
 }
 
 // The inspector's airflow-region line (INT-15) as last resolved, and the
