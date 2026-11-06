@@ -18,6 +18,7 @@
 #include "render/target.hpp"
 
 #include "../sandbox/drone_view.hpp"
+#include "scoped_no_vulkan.hpp"
 
 using namespace spade::sandbox;
 
@@ -101,10 +102,11 @@ TEST(SandboxDronePanel, TurbulenceAppliesAndTheDefaultsCalmTheAirAgain) {
                                                            << ", wind " << drone->options().wind_speed_mps << " m/s";
 }
 
-TEST(SandboxDronePanel, SelectingVulkanIsRefusedVisiblyAndTheStandStaysOnCpu) {
+TEST(SandboxDronePanel, SelectingVulkanWithNoDeviceIsRefusedVisiblyAndTheStandStaysOnCpu) {
     auto drone = DroneSim::create(DronePhysicsOptions{});
     ASSERT_TRUE(drone.has_value());
     ASSERT_TRUE(drone->step_fixed(20).has_value());
+    const spade::testing::ScopedNoVulkan no_device;
     DronePanelModel panel;
     panel.edited = drone->options();
     panel.edited.vulkan = true;

@@ -497,6 +497,11 @@ if(SPADE_BUILD_SANDBOX)
         test_sandbox_airflow_live.cpp
     )
     target_include_directories(spade_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../sandbox)
+    # The drone stand on the Vulkan backend (GpuSandboxDrone*: the lock's bits and the banded rest); the tests
+    # skip with a reason on a box with no device.
+    if(SPADE_VULKAN)
+        target_sources(spade_tests PRIVATE test_gpu_sandbox_drone.cpp)
+    endif()
 endif()
 
 # Run air on the GPU (Rendering's design note, slice 3): the editor's

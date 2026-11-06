@@ -12,6 +12,7 @@
 
 #include "../sandbox/drone_sim.hpp"
 #include "../sandbox/drone_view.hpp"  // nudge_attitude: the R key
+#include "scoped_no_vulkan.hpp"
 
 using namespace spade::sandbox;
 
@@ -207,7 +208,9 @@ TEST(SandboxDrone, TiltBeyondTheLimitIsClamped) {
               0.035f);
 }
 
-TEST(SandboxDrone, VulkanIsRefusedWithAReason) {
+// The Vulkan stand is built when there is a device (tests/test_gpu_sandbox_drone.cpp); with none, the refusal says why.
+TEST(SandboxDrone, VulkanWithNoDeviceIsRefusedWithAReason) {
+    const spade::testing::ScopedNoVulkan no_device;
     DronePhysicsOptions o;
     o.vulkan = true;
     auto drone = DroneSim::create(o);
@@ -216,12 +219,13 @@ TEST(SandboxDrone, VulkanIsRefusedWithAReason) {
     EXPECT_FALSE(drone.error().context.empty());
 }
 
-// Selecting Vulkan on a running stand must leave the CPU simulation in place,
-// still pinned -- never a silently unpinned step.
-TEST(SandboxDrone, AVulkanRebuildIsRefusedAndKeepsTheCpuStand) {
+// Selecting Vulkan on a running stand with no device must leave the CPU simulation in place,
+// still held -- never a silently unheld step.
+TEST(SandboxDrone, AVulkanRebuildWithNoDeviceIsRefusedAndKeepsTheCpuStand) {
     auto drone = DroneSim::create(DronePhysicsOptions{});
     ASSERT_TRUE(drone.has_value());
     ASSERT_TRUE(drone->step_fixed(10).has_value());
+    const spade::testing::ScopedNoVulkan no_device;
     DronePhysicsOptions o;
     o.vulkan = true;
     const auto r = drone->apply_options(o);
