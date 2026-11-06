@@ -134,6 +134,10 @@ public:
 
     [[nodiscard]] const physics::airflow::GridShape& shape() const noexcept { return shape_; }
 
+    // The fence waits the runner has made (ChainRunner::waits()): a step without solids, with its discs
+    // already on the device, makes one, the plan A health word coming from the chain's own readback.
+    [[nodiscard]] uint64_t waits() const noexcept { return runner_ ? runner_->waits() : 0; }
+
 private:
     GpuFluid() = default;
     [[nodiscard]] Result<uint32_t> step_chain_for(uint32_t disc_count);

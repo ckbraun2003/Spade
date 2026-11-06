@@ -143,6 +143,21 @@ struct RunnerDesc {
     uint32_t push_bytes = 0;                                     // one push range, every kernel; a multiple of 4
     uint32_t workgroup_size = 64;                                // the variant every kernel is built from
     uint32_t binding_base = 0;                                   // section F starts at binding 0
+    // The bytes of the staging buffer reserved for readbacks recorded into chains (ChainReadback), in total: each
+    // chain's readbacks are carved from it at record(), in order, each 16-byte aligned. It follows the staging
+    // buffer's own bytes in the one staging allocation, counts in runner_budget_bytes at create(), and is refused
+    // there by that name. 0 (the default): no readback may be recorded, and every present caller is unchanged.
+    uint64_t readback_bytes = 0;
+};
+
+// One readback of a chain: after the chain's last dispatch, bytes [src_offset, src_offset + bytes) of buffer
+// `buffer` are copied into the chain's own part of the readback region, so the host reads them from
+// ChainRunner::readback() after the wait submit() already makes, with no second submit. Any buffer read() accepts
+// (resident or staged; device_only is refused); src_offset and bytes are non-zero multiples of 4.
+struct ChainReadback {
+    uint32_t buffer = 0;
+    uint64_t src_offset = 0;
+    uint64_t bytes = 0;
 };
 
 // The VRAM a runner leaves for everything else on the device, the GL
@@ -227,7 +242,30 @@ public:
     // Refuses, before anything is allocated: a pipeline index out of range
     // (invalid_argument), groups over maxComputeWorkGroupCount on an axis
     // (capacity_exceeded).
-    [[nodiscard]] Result<uint32_t> record(std::span<const compute::ChainCommand> chain);
+    //
+    // READBACKS (0fcb99f9). After the last dispatch the command buffer records one barrier (shader
+    // write -> transfer read), one copy per readback into the chain's part of the readback region, and one
+    // barrier (transfer write -> host read). They are not in recorded_counts(): its barriers stay
+    // dispatch_chain's own (dispatches - 1). They run after the last mark, so a chain that ends on a mark
+    // does not time its readback. The region is carved here, in order, each readback's destination 16-byte
+    // aligned, so two chains' readbacks never alias. Refused as invalid_argument: a buffer index out of
+    // range, a device_only buffer, 0 bytes, an offset or size that is not a multiple of 4, a range past the
+    // buffer; as capacity_exceeded naming readback_bytes (the asked, the remaining): more than the region
+    // has left. A refused record() carves nothing and leaves no chain.
+    [[nodiscard]] Result<uint32_t> record(std::span<const compute::ChainCommand> chain,
+                                          std::span<const ChainReadback> readbacks = {});
+
+    // The bytes of readback `index` of chain `chain`, in the staging memory: valid after the chain's
+    // submit() has returned and until that chain's NEXT submit (or the runner's destruction), not until
+    // any other chain's submit. The runner is single-threaded (A5): do not submit the chain while holding
+    // the span. Staging memory is host-coherent, so it needs no invalidate. Empty for an unknown chain or
+    // index, or a chain not yet submitted. After a FAILED submit of a chain that once succeeded, the span
+    // still holds the last successful submit's bytes: check submit()'s result first.
+    [[nodiscard]] std::span<const std::byte> readback(uint32_t chain, uint32_t index) const noexcept;
+
+    // The fence waits this runner has made: one for each upload(), read() and submit. A step that reads
+    // its result through a readback makes one.
+    [[nodiscard]] uint64_t waits() const noexcept { return waits_; }
 
     // Submits chain `chain` n times, waiting for each.
     [[nodiscard]] Result<void> submit(uint32_t chain, uint64_t n);
@@ -246,7 +284,8 @@ public:
     [[nodiscard]] uint32_t chain_count() const noexcept { return static_cast<uint32_t>(chains_.size()); }
 
     // Whether the staging buffer's memory is host-cached (the first of
-    // kStagingMemoryPreferences). False when no buffer crosses to the host.
+    // kStagingMemoryPreferences). False when there is no staging buffer: no buffer crosses to the
+    // host and no readback_bytes.
     [[nodiscard]] bool staging_cached() const noexcept { return staging_cached_; }
 
 private:
@@ -265,12 +304,18 @@ private:
         uint64_t allocated = 0;  // the allocation's size, for runner_memory_stats()
     };
 
+    struct ReadbackRegion {
+        uint64_t offset = 0;  // in the staging buffer
+        uint64_t bytes = 0;
+    };
+
     struct Chain {
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         std::unique_ptr<compute::PassTimestamps> timestamps;  // null when the chain has no marks
         compute::ChainCounts counts{};
         uint32_t marks = 0;
         uint64_t submits = 0;
+        std::vector<ReadbackRegion> readbacks;  // carved at record()
     };
 
     VkDevice device_ = VK_NULL_HANDLE;
@@ -289,6 +334,10 @@ private:
     uint64_t staging_bytes_ = 0;
     void* staging_mapped_ = nullptr;
     bool staging_cached_ = false;
+    uint64_t readback_base_ = 0;   // the readback region's offset in the staging buffer, 16-byte aligned
+    uint64_t readback_bytes_ = 0;  // its size (RunnerDesc::readback_bytes)
+    uint64_t readback_used_ = 0;   // carved so far, by record()
+    mutable uint64_t waits_ = 0;   // the fence waits made
 
     VkDescriptorSetLayout empty_set_layout_ = VK_NULL_HANDLE;  // set 0: no bindings
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;        // set 1: the buffers

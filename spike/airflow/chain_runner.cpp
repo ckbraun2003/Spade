@@ -235,10 +235,15 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     }
     // runner_budget_bytes(), from one reading of the budget, so the cap the
     // message gives is the cap the total was held to.
-    const uint64_t total = saturating_add(device_bytes, staging_bytes);
+    // The staging buffer: the transfers' bytes, then (16-aligned) the readback region.
+    const uint64_t readback_base = (staging_bytes + 15u) & ~uint64_t{15};
+    const uint64_t staging_total =
+        desc.readback_bytes > 0 ? saturating_add(readback_base, desc.readback_bytes) : staging_bytes;
+    const uint64_t total = saturating_add(device_bytes, staging_total);
     if (Result<void> ok = compute::check_vram("runner_budget_bytes: a runner of " + std::to_string(count) +
                                                   " buffers (device " + std::to_string(device_bytes) +
-                                                  " + staging " + std::to_string(staging_bytes) + " bytes)",
+                                                  " + staging " + std::to_string(staging_bytes) + " + readback " +
+                                                  std::to_string(desc.readback_bytes) + " bytes)",
                                               total, ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load(),
                                               device);
         !ok) {
@@ -273,10 +278,12 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
         }
     }
 
-    if (staging_bytes > 0) {
+    if (staging_total > 0) {
         self->staging_bytes_ = staging_bytes;
+        self->readback_base_ = readback_base;
+        self->readback_bytes_ = desc.readback_bytes;
         VkMemoryPropertyFlags flags = 0;
-        if (Result<void> r = make_buffer(self->device_, self->physical_device_, staging_bytes,
+        if (Result<void> r = make_buffer(self->device_, self->physical_device_, staging_total,
                                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                          kStagingMemoryPreferences, self->staging_, self->staging_memory_,
                                          self->staging_allocated_, flags);
@@ -508,6 +515,7 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
         in_flight_ = true;
         return std::unexpected(map_vk_error(wait, std::string("vkWaitForFences (") + op + ")"));
     }
+    ++waits_;
     return {};
 }
 
@@ -515,7 +523,8 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
 // record / submit / durations
 // ---------------------------------------------------------------------------
 
-Result<uint32_t> ChainRunner::record(std::span<const compute::ChainCommand> chain) {
+Result<uint32_t> ChainRunner::record(std::span<const compute::ChainCommand> chain,
+                                     std::span<const ChainReadback> readbacks) {
     // ---- Every refusal, before the command buffer exists. ----------------
     uint32_t marks = 0;
     for (std::size_t i = 0; i < chain.size(); ++i) {
@@ -533,6 +542,44 @@ Result<uint32_t> ChainRunner::record(std::span<const compute::ChainCommand> chai
             !ok) {
             return refuse(ok.error());
         }
+    }
+
+    // The readbacks, every refusal before the command buffer exists. The region is carved only once the chain
+    // is recorded, so a refusal takes nothing from it.
+    std::vector<ReadbackRegion> regions;
+    uint64_t carved = 0;
+    for (std::size_t i = 0; i < readbacks.size(); ++i) {
+        const ChainReadback& rb = readbacks[i];
+        const std::string at = "readback " + std::to_string(i) + ": ";
+        if (rb.buffer >= buffers_.size()) {
+            return refuse(Code::invalid_argument, at + "buffer index " + std::to_string(rb.buffer) +
+                                                      " is out of range (the runner has " +
+                                                      std::to_string(buffers_.size()) + ")");
+        }
+        const Buffer& b = buffers_[rb.buffer];
+        if (b.kind == BufferKind::device_only) {
+            return refuse(Code::invalid_argument, at + "buffer '" + b.name +
+                                                      "' is device_only, which never crosses to the host; tag it "
+                                                      "resident or staged");
+        }
+        if (rb.bytes == 0) return refuse(Code::invalid_argument, at + "0 bytes");
+        if (rb.src_offset % 4 != 0 || rb.bytes % 4 != 0) {
+            return refuse(Code::invalid_argument, at + "offset " + std::to_string(rb.src_offset) + " and " +
+                                                      std::to_string(rb.bytes) + " bytes must be multiples of 4");
+        }
+        if (rb.src_offset > b.bytes || rb.bytes > b.bytes - rb.src_offset) {
+            return refuse(Code::invalid_argument, at + std::to_string(rb.bytes) + " bytes from offset " +
+                                                      std::to_string(rb.src_offset) + " of buffer '" + b.name +
+                                                      "', which holds " + std::to_string(b.bytes));
+        }
+        regions.push_back(ReadbackRegion{readback_base_ + readback_used_ + carved, rb.bytes});
+        carved = saturating_add(carved, (rb.bytes + 15u) & ~uint64_t{15});
+    }
+    if (carved > readback_bytes_ - readback_used_) {
+        return refuse(Code::capacity_exceeded,
+                      "readback_bytes: the chain's readbacks ask " + std::to_string(carved) +
+                          " bytes (each 16-byte aligned) and " + std::to_string(readback_bytes_ - readback_used_) +
+                          " of the " + std::to_string(readback_bytes_) + " reserved remain");
     }
 
     Chain made;
@@ -585,9 +632,35 @@ Result<uint32_t> ChainRunner::record(std::span<const compute::ChainCommand> chai
             ++next_mark;
         });
 
+    if (!regions.empty()) {
+        // The chain's writes, visible to the copies; then the copies' writes, to the host's read of the
+        // mapping. Staging memory is coherent: the fence wait and this barrier are the whole path.
+        VkMemoryBarrier to_copy{};
+        to_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        to_copy.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(made.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1,
+                             &to_copy, 0, nullptr, 0, nullptr);
+        for (std::size_t i = 0; i < readbacks.size(); ++i) {
+            VkBufferCopy region{};
+            region.srcOffset = readbacks[i].src_offset;
+            region.dstOffset = regions[i].offset;
+            region.size = readbacks[i].bytes;
+            vkCmdCopyBuffer(made.cmd, buffers_[readbacks[i].buffer].buffer, staging_, 1, &region);
+        }
+        VkMemoryBarrier to_host{};
+        to_host.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        to_host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(made.cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host,
+                             0, nullptr, 0, nullptr);
+    }
+
     if (VkResult r = vkEndCommandBuffer(made.cmd); r != VK_SUCCESS) {
         return fail(r, "vkEndCommandBuffer (chain)");
     }
+    readback_used_ += carved;
+    made.readbacks = std::move(regions);
     chains_.push_back(std::move(made));
     return static_cast<uint32_t>(chains_.size() - 1);
 }
@@ -604,6 +677,14 @@ Result<void> ChainRunner::submit(uint32_t chain, uint64_t n) {
         ++c.submits;
     }
     return {};
+}
+
+std::span<const std::byte> ChainRunner::readback(uint32_t chain, uint32_t index) const noexcept {
+    if (chain >= chains_.size() || staging_mapped_ == nullptr) return {};
+    const Chain& c = chains_[chain];
+    if (index >= c.readbacks.size() || c.submits == 0) return {};
+    const ReadbackRegion& r = c.readbacks[index];
+    return {static_cast<const std::byte*>(staging_mapped_) + r.offset, static_cast<std::size_t>(r.bytes)};
 }
 
 Result<std::vector<uint64_t>> ChainRunner::durations_ns(uint32_t chain) const {

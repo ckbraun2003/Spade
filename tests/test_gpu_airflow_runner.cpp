@@ -504,8 +504,8 @@ TEST(GpuAirflowRunner, ReadbacksAreRefusedByNameAndCarvedInOrderAligned) {
     };
     refused({{.buffer = kParams, .src_offset = 0, .bytes = 4}}, Code::invalid_argument, "device_only");
     refused({{.buffer = 99, .src_offset = 0, .bytes = 4}}, Code::invalid_argument, "out of range");
-    refused({{.buffer = kV, .src_offset = 2, .bytes = 4}}, Code::invalid_argument, "multiple of 4");
-    refused({{.buffer = kV, .src_offset = 0, .bytes = 6}}, Code::invalid_argument, "multiple of 4");
+    refused({{.buffer = kV, .src_offset = 2, .bytes = 4}}, Code::invalid_argument, "multiples of 4");
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 6}}, Code::invalid_argument, "multiples of 4");
     refused({{.buffer = kV, .src_offset = 0, .bytes = 0}}, Code::invalid_argument, "0 bytes");
     refused({{.buffer = kV, .src_offset = kCount * 4ull - 4, .bytes = 8}}, Code::invalid_argument, "airflow_v");
     refused({{.buffer = kV, .src_offset = 0, .bytes = 128}}, Code::capacity_exceeded, "readback_bytes");

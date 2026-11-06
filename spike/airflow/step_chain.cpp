@@ -5,6 +5,7 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
 #include <span>
 #include <string>
 #include <utility>
@@ -349,10 +350,14 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         kernels.insert(kernels.end(), kSolidsKernels.begin(), kSolidsKernels.end());
     }
 
+    // Plan A's health word is read from each step chain's own readback of airflow_scalars: one 16-aligned
+    // region a chain, one chain for each disc count.
+    constexpr uint64_t kHealthRegion = (uint64_t{kScalarSlots} * sizeof(float) + 15u) & ~uint64_t{15};
     auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = buffers,
                                                       .kernels = kernels,
                                                       .push_bytes = sizeof(ProjectionPush),
-                                                      .workgroup_size = workgroup_size});
+                                                      .workgroup_size = workgroup_size,
+                                                      .readback_bytes = with_solids ? 0u : (kMaxDiscs + 1u) * kHealthRegion});
     if (!runner) return std::unexpected(runner.error());
     self->runner_ = std::move(*runner);
     ChainRunner& r = *self->runner_;
@@ -428,7 +433,12 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
             projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg, measure);
         chain.insert(chain.end(), projection.begin(), projection.end());
     }
-    auto id = runner_->record(chain);
+    // Without solids the chain ends with a readback of the scalars (plan A's health word); with solids the CG
+    // loop reads them by read().
+    const ChainReadback health_word{.buffer = gen::kBinding_airflow_scalars,
+                                    .src_offset = 0,
+                                    .bytes = uint64_t{kScalarSlots} * sizeof(float)};
+    auto id = solids_ ? runner_->record(chain) : runner_->record(chain, std::span(&health_word, 1));
     if (!id) return std::unexpected(id.error());
     step_chains_[disc_count] = *id;
     return *id;
@@ -458,14 +468,16 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
     if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
     if (!solids_) {
         // Plan A's report as the CPU forms it (fluid_step.cpp): the residual after the cycles, announced
-        // above its own mark. The step has finished (submit waits), so the read adds no stall, only the
-        // copy. No scan on the device: a non-finite step is found at the publish (LiveRun).
+        // above its own mark. The chain copied the scalars into its readback region before its fence
+        // signalled, so this reads host memory only: the step makes one wait. No scan on the device: a
+        // non-finite step is found at the publish (LiveRun).
         std::array<float, kScalarSlots> scalars{};
-        if (Result<void> ok =
-                runner_->read(gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(scalars)));
-            !ok) {
-            return std::unexpected(ok.error());
+        const std::span<const std::byte> word = runner_->readback(*id, 0);
+        if (word.size() != sizeof(scalars)) {
+            return std::unexpected(Error{Code::internal, "GpuFluid: the step chain's readback of airflow_scalars "
+                                                         "is " + std::to_string(word.size()) + " bytes"});
         }
+        std::memcpy(scalars.data(), word.data(), sizeof(scalars));
         af::FluidHealth h{.pressure_iterations = cfg_.n_v};
         h.pressure_residual = scalars[kSlotResidual];
         h.unconverged = h.pressure_residual > af::kPlanAResidualAnnounce;
