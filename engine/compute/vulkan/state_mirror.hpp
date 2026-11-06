@@ -65,10 +65,12 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <volk.h>
 
+#include "compute/admit.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
@@ -112,6 +114,17 @@ struct DerivedBufferShape {
 [[nodiscard]] Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& shape,
                                                                             uint32_t binding_count);
 
+// What a created shape asks of the device, as admit() takes it (stage 7 Task A1): the one pipeline layout of set 0's
+// bindings, every walk entry and every derived buffer with its bytes, and the push block. The kernels and dispatches
+// are the recorder's to add (it alone knows the grid widths); admit() is called on the whole before the first
+// vkCreate*. RED STUB: an empty AdmitShape.
+[[nodiscard]] Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t workgroup_size);
+
+// The number of device-memory allocations (vkAllocateMemory) the mirror has made in this process (stage 7 Task A3: the
+// ledger memory_report() is built on). A refusal before allocation leaves it unchanged, which is how a test sees that
+// create() refused BEFORE it allocated. RED STUB: always 0.
+[[nodiscard]] uint64_t mirror_allocation_count() noexcept;
+
 class StateMirror {
 public:
     [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(VulkanContext& ctx,
@@ -135,6 +148,12 @@ public:
     // How many bindings create() wrote into the descriptor set. A diagnostic:
     // it should equal the generated registry's gen::kBindingCount_state.
     [[nodiscard]] uint32_t bound_binding_count() const noexcept { return bound_binding_count_; }
+
+    // Whether the named buffer (a walk entry, a scratch, a table or a hand-listed derived buffer) has a host-visible
+    // staging twin, and the sum of the staging buffers' bytes (stage 7 Task A2). Diagnostics for tests: a buffer the
+    // host never writes or reads has none. False for a name the mirror does not hold.
+    [[nodiscard]] bool has_staging(std::string_view name);
+    [[nodiscard]] uint64_t host_visible_bytes();
 
     // The reverse of upload(): device buffers -> `arenas`. Same shape check,
     // same failure taxonomy. On any failure, no destination byte for the

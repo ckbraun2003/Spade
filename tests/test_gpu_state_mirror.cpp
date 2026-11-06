@@ -1130,3 +1130,80 @@ TEST_F(GpuStateMirrorTest, ALockSetBindsItsRealArrayAtTheSameBinding) {
     EXPECT_EQ((*backend)->bound_binding_count(), gen::kBindingCount_state)
         << "the walk entry lock_rows is bound at binding " << gen::kBinding_lock_rows << ", no dummy beside it";
 }
+
+// ===========================================================================
+// MODULE API STAGE 7, TASK A1: admit() -- what a created shape asks of the device, and create() refusing by name.
+// (docs/design/core/plans/2026-11-06-module-api-stage7-plan.md; the pure checks are in test_admit.cpp.)
+// ===========================================================================
+
+// Host-only: the standard shape's AdmitShape is one pipeline layout of set 0's thirty bindings, and the push block.
+TEST(StateMirrorAdmit, TheStandardShapeHoldsOneLayoutOfThirtyBindingsAndThePushBlock) {
+    const StepShape shape = scratch_test_shape();
+    const auto admit = spade::compute::admit_shape_for(shape, 64);
+    ASSERT_TRUE(admit.has_value()) << admit.error().context;
+    ASSERT_EQ(admit->layouts.size(), 1u);
+    EXPECT_EQ(admit->layouts[0].name, "state");
+    EXPECT_EQ(admit->layouts[0].bindings_per_set, (std::vector<uint32_t>{spade::compute::gen::kBindingCount_state}));
+    EXPECT_EQ(admit->push_bytes, spade::compute::gen::kPushConstantSize);
+}
+
+// Host-only: every walk entry and every derived buffer is in the list, with the bytes the mirror will allocate.
+TEST(StateMirrorAdmit, EveryWalkEntryAndEveryDerivedBufferIsInTheBufferListWithItsBytes) {
+    StepShape shape = scratch_test_shape();
+    shape.scratch = spade::scratch_shapes(standard_schedule(), shape);
+    const auto admit = spade::compute::admit_shape_for(shape, 64);
+    ASSERT_TRUE(admit.has_value()) << admit.error().context;
+    const auto derived = spade::compute::derived_buffer_shapes(shape, spade::compute::gen::kBindingCount_state);
+    ASSERT_TRUE(derived.has_value()) << derived.error().context;
+    ASSERT_EQ(admit->buffers.size(), shape.arrays.size() + derived->size());
+    std::size_t at = 0;
+    for (const auto& array : shape.arrays) {
+        EXPECT_EQ(admit->buffers[at].name, array.name);
+        EXPECT_EQ(admit->buffers[at].bytes, uint64_t{shape.world_count} * array.capacity_per_world * array.elem_size)
+            << array.name;
+        ++at;
+    }
+    for (const auto& d : *derived) {
+        EXPECT_EQ(admit->buffers[at].name, d.name);
+        EXPECT_EQ(admit->buffers[at].bytes, d.byte_size) << d.name;
+        ++at;
+    }
+}
+
+// PIN, green at red: a real device records its limits (CORE-5) and admits the standard shape. The limits are printed so
+// the batch's READY can list the devices of record's values.
+TEST_F(GpuStateMirrorTest, CreateRecordsTheDeviceLimitsAndAdmitsTheStandardShape) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const StepShape shape = scratch_test_shape();
+    const auto backend = VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    const spade::compute::DeviceLimits& l = (*backend)->device_report().limits;
+    EXPECT_GT(l.max_storage_buffer_range, 0u);
+    EXPECT_GE(l.max_per_stage_storage_buffers, 1u);
+    std::cout << "[GpuStateMirror] limits: maxStorageBufferRange=" << l.max_storage_buffer_range
+              << " maxMemoryAllocationSize=" << l.max_memory_allocation_size
+              << " maxPerStageDescriptorStorageBuffers=" << l.max_per_stage_storage_buffers
+              << " maxDescriptorSetStorageBuffers=" << l.max_set_storage_buffers
+              << " maxPushConstantsSize=" << l.max_push_constants_size << std::endl;
+}
+
+// RED: today a shape whose bodies buffer is hundreds of GB reaches vkAllocateMemory and fails with the allocator's
+// message. admit() refuses it by name first -- the buffer, the limit by its Vulkan name -- before create() returns. (That
+// nothing was allocated is asserted in test_memory_report.cpp, where the allocation ledger exists.)
+TEST_F(GpuStateMirrorTest, AnAbsurdShapeIsRefusedByNameBeforeCreateReturns) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    StepShape shape{};
+    shape.world_count = 1;
+    shape.body_capacity = 0xFFFFFFFFu;
+    shape.element_capacity = 1;
+    shape.sensor_capacity = 1;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+    shape.arrays = walk_shapes(standard_schedule(), shape);
+    const Result<std::unique_ptr<VulkanBackend>> backend =
+        VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, standard_gpu_passes());
+    ASSERT_FALSE(backend.has_value());
+    EXPECT_EQ(backend.error().code, spade::Code::capacity_exceeded) << backend.error().context;
+    EXPECT_NE(backend.error().context.find("buffer '"), std::string::npos) << backend.error().context;
+    EXPECT_NE(backend.error().context.find("maxStorageBufferRange"), std::string::npos) << backend.error().context;
+}

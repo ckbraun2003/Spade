@@ -1642,6 +1642,8 @@ Result<compute::DeviceReport> Simulation::vulkan_device_report() const {
     return vulkan_backend_->device_report();
 }
 
+compute::MemoryReport Simulation::memory_report() const { return compute::MemoryReport{}; }  // RED STUB (stage 7 A3)
+
 Result<void> Simulation::flush_structural() {
     if (queue_.empty()) {
         return {};

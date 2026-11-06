@@ -305,6 +305,9 @@ add_executable(spade_tests
 # Phantom at rest on the device against the CPU, GpuContactPass*.
 # test_gpu_translation_lock.cpp (module API stage 6): the translation lock's select in integrate.slang against the
 # CPU's, GpuTranslationLock*: pos and vel bit-exact under a lock.
+# test_admit.cpp, test_gpu_mirror_staging.cpp and test_memory_report.cpp (module API stage 7, batch A): admit()'s
+# device-limit checks with synthetic limits, the scratch and derived buffers that lose their staging twins, and
+# memory_report() with the VRAM cap and the allocation ledger.
 # test_gpu_denorm_probe.cpp (banded-parity plan T6): the device's own fp32
 # denormal behaviour per op class, printed in every gate log and asserted only
 # on its harness rules. It began as M1 in the measurement build.
@@ -347,6 +350,9 @@ if(SPADE_VULKAN)
         test_gpu_contact_sets.cpp
         test_gpu_contact_pass.cpp
         test_gpu_translation_lock.cpp
+        test_admit.cpp
+        test_gpu_mirror_staging.cpp
+        test_memory_report.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_airflow_projection.cpp

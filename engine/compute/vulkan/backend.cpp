@@ -163,6 +163,8 @@ RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->rec
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
 
+MemoryReport VulkanBackend::memory_report() const { return MemoryReport{}; }  // RED STUB (stage 7 Task A3)
+
 uint32_t VulkanBackend::bound_binding_count() const noexcept { return impl_->mirror->bound_binding_count(); }
 
 }  // namespace spade::compute

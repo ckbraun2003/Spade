@@ -1222,4 +1222,36 @@ void StateMirror::destroy() noexcept {
 
 StateMirror::~StateMirror() { destroy(); }
 
+uint64_t mirror_allocation_count() noexcept { return 0; }  // RED STUB (stage 7 Task A3)
+
+Result<AdmitShape> admit_shape_for(const StepShape& /*shape*/, uint32_t /*workgroup_size*/) {
+    return AdmitShape{};  // RED STUB (stage 7 Task A1)
+}
+
+bool StateMirror::has_staging(std::string_view name) {
+    for (const Entry& e : entries_) {
+        if (e.name == name) return e.staging_buffer != VK_NULL_HANDLE;
+    }
+    bool found = false;
+    bool staged = false;
+    for_each_derived([&](Entry& e) {
+        if (!found && e.name == name) {
+            found = true;
+            staged = e.staging_buffer != VK_NULL_HANDLE;
+        }
+    });
+    return found && staged;
+}
+
+uint64_t StateMirror::host_visible_bytes() {
+    uint64_t total = 0;
+    for (const Entry& e : entries_) {
+        if (e.staging_buffer != VK_NULL_HANDLE) total += e.byte_size;
+    }
+    for_each_derived([&](Entry& e) {
+        if (e.staging_buffer != VK_NULL_HANDLE) total += e.byte_size;
+    });
+    return total;
+}
+
 }  // namespace spade::compute
