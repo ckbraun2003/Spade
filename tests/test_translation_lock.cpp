@@ -673,7 +673,6 @@ TEST(TranslationLock, ALevelHeldBodyReadsPlusGExactlyAtTwoSubsteps) {
 }
 
 TEST(TranslationLock, ASpinningHeldBodyReadsGWithinOneSubstepOfRotationAtTwoSubsteps) {
-    constexpr uint32_t kSubsteps = 2;
     Simulation sim = make_sim_substeps(standard_plus_lock(), kSubsteps);
     spade::BodySpawn spawn = bare_body(glm::vec3(0.0f, 3.0f, 0.0f));
     spawn.orient = glm::normalize(glm::quat(0.9f, 0.1f, 0.3f, -0.2f));

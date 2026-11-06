@@ -187,15 +187,15 @@ TEST(GpuTranslationLock, ALevelHeldBodyReadsPlusGAtTwoSubstepsOnTheDevice) {
 
 TEST(GpuTranslationLock, ASpinningHeldBodyReadsGWithinOneSubstepOfRotationOnTheDevice) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    constexpr uint32_t kSubsteps = 2;
-    Simulation gpu = make(lock_set(), kSubsteps, true);
+    constexpr uint32_t kStandSubsteps = 2;
+    Simulation gpu = make(lock_set(), kStandSubsteps, true);
     BodySpawn spawn_body = bare_body(glm::vec3(0.0f, 3.0f, 0.0f));
     spawn_body.orient = glm::normalize(glm::quat(0.9f, 0.1f, 0.3f, -0.2f));
     spawn_body.omega_body = glm::vec3(0.3f, -0.2f, 0.5f);
     const BodyRef ref = spawn(gpu, spawn_body);
     ASSERT_TRUE(gpu.lock_translation(ref, kLockAllAxes).has_value());
     const glm::vec3 gravity(0.0f, -9.80665f, 0.0f);
-    const float h_sub = static_cast<float>(kDt) * 1e-9f / static_cast<float>(kSubsteps);
+    const float h_sub = static_cast<float>(kDt) * 1e-9f / static_cast<float>(kStandSubsteps);
     for (int s = 0; s < 20; ++s) {
         const BodyState start = row_of(gpu, ref);
         ASSERT_TRUE(gpu.step(1).has_value());
