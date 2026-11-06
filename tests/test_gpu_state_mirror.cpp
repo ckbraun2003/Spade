@@ -1012,8 +1012,11 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
                                  .binding = kScratchBinding}};
     const auto fits = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
     ASSERT_TRUE(fits.has_value()) << fits.error().context;
-    EXPECT_EQ(fits->back().count, (uint64_t{1} << 32) - (uint64_t{1} << 16));
-    EXPECT_EQ(fits->back().byte_size, ((uint64_t{1} << 32) - (uint64_t{1} << 16)) * 16u) << "past 2^32 bytes";
+    // huge_dv is the one scratch, after the eleven; lock_rows' dummy (stage 6) follows it, so it is not back().
+    const DerivedBufferShape& huge = (*fits)[std::size(kHandListed)];
+    EXPECT_EQ(huge.name, "huge_dv");
+    EXPECT_EQ(huge.count, (uint64_t{1} << 32) - (uint64_t{1} << 16));
+    EXPECT_EQ(huge.byte_size, ((uint64_t{1} << 32) - (uint64_t{1} << 16)) * 16u) << "past 2^32 bytes";
     wide.scratch[0].capacity_per_world = 1u << 16;
     const auto wraps = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
     ASSERT_FALSE(wraps.has_value()) << "2^32 rows would wrap a uint32 slot index";
