@@ -17,7 +17,12 @@
 // that is not spinning reads (0, +g, 0) exactly.
 //
 // The lock holds the translation on both backends, so no behavior is
-// registered here (a Vulkan step refuses a non-empty registry).
+// registered here (a Vulkan step refuses a non-empty registry), and the
+// Vulkan backend is offered. Grades (L34): the lock is CPU `reference` and
+// Vulkan `banded`, with pos and vel bit-exact on both; everything else on the
+// device, the attitude and the IMU included, agrees with the CPU within the
+// banded band, not bitwise. A box with no Vulkan device is refused with the
+// engine's reason (Code::unavailable), and a running stand stays as it is.
 //
 // WHY A HEADER WITH NO DISPLAY IN IT: SL15b -- the window is a dumb shell, and
 // everything here is asserted by tests/test_sandbox_drone.cpp with no window.
@@ -190,11 +195,6 @@ class DroneSim {
     static constexpr float kMaxOmegaOverHover = 2.5f;
 
     [[nodiscard]] static Result<DroneSim> create(const DronePhysicsOptions& opts, const DroneCarry& carry = {}) {
-        if (opts.vulkan) {
-            return std::unexpected(Error{Code::unavailable,
-                                         "the drone stand's Vulkan backend is not wired yet; staying on CPU"});
-        }
-
         DroneSim d;
         d.opts_ = opts;
         d.params_ = drone_stand_params();
@@ -223,8 +223,14 @@ class DroneSim {
 
         modules::ModuleSet module_set = modules::standard_modules();
         module_set.push_back(modules::lock_module());
-        auto sim = Simulation::create(set, kDtNs, kSubsteps, {}, module_set);
-        if (!sim) return std::unexpected(sim.error());
+        compute::BackendDesc backend;
+        if (opts.vulkan) backend.kind = compute::BackendKind::vulkan;
+        auto sim = Simulation::create(set, kDtNs, kSubsteps, backend, module_set);
+        if (!sim) {
+            Error e = sim.error();
+            if (opts.vulkan && e.code == Code::unavailable) e.context = "Vulkan: " + e.context + "; staying on CPU";
+            return std::unexpected(std::move(e));
+        }
         d.sim_ = std::make_unique<Simulation>(std::move(*sim));
 
         auto model = vehicles::make_quadrotor(d.params_);
@@ -304,7 +310,7 @@ class DroneSim {
     }
 
     // Rebuild for new options, carrying attitude, body rates and rotor speed.
-    // On failure (e.g. the Vulkan refusal) the current simulation stays.
+    // On failure (e.g. Vulkan with no device) the current simulation stays.
     [[nodiscard]] Result<void> apply_options(const DronePhysicsOptions& o) {
         auto body = sim_->body(vehicle_.body);
         if (!body) return std::unexpected(body.error());
