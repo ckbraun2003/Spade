@@ -21,7 +21,8 @@ TEST(BindingsAirflow, TheStateSetIsUnchanged) {
     // Bindings 0..27 of set 0, as before set 1 existed, and 28, the contact
     // sets (L10); the mirror's census
     // (GpuStateMirrorTest.DescriptorSetBindsEveryRegistryBinding) binds them.
-    EXPECT_EQ(gen::kBindingCount_state, 29u);
+    // ... and 29, the translation lock's rows (module API stage 6), the first optional binding.
+    EXPECT_EQ(gen::kBindingCount_state, 30u);
 }
 
 TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {

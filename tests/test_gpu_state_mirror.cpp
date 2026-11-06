@@ -975,8 +975,8 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
 
     const auto derived = spade::compute::derived_buffer_shapes(shape, kScratchBinding + 1);
     ASSERT_TRUE(derived.has_value()) << derived.error().context;
-    ASSERT_EQ(derived->size(), std::size(kHandListed) + 2)
-        << "the eleven, then the two bound scratches (contact_dv, world_dv)";
+    ASSERT_EQ(derived->size(), std::size(kHandListed) + 3)
+        << "the eleven, the two bound scratches (contact_dv, world_dv), then the absent optional binding's dummy";
     for (std::size_t i = 0; i < std::size(kHandListed); ++i) {
         EXPECT_EQ((*derived)[i].name, kHandListed[i].name) << i;
         EXPECT_EQ((*derived)[i].binding, kHandListed[i].binding) << kHandListed[i].name;
@@ -992,6 +992,14 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
     EXPECT_EQ(world.binding, kScratchBinding);
     EXPECT_EQ(world.count, 2u) << "per_world: one row per world";
     EXPECT_EQ(world.byte_size, 64u);
+    // Module API stage 6: this shape's walk is empty, so it holds no lock_rows array, and the mirror binds the
+    // optional binding's zeroed dummy there (compute/optional_bindings.hpp), after the scratches and before the tables.
+    const DerivedBufferShape& absent = (*derived)[std::size(kHandListed) + 2];
+    EXPECT_EQ(absent.name, "lock_rows (absent)");
+    EXPECT_EQ(absent.binding, gen::kBinding_lock_rows);
+    EXPECT_EQ(absent.elem_size, 16u) << "one LockRow";
+    EXPECT_EQ(absent.count, 1u);
+    EXPECT_EQ(absent.byte_size, 16u);
 
     // Sized in 64 bits: 2^16 worlds of 2^16 - 1 rows fit a uint32 count but not
     // a uint32 byte size; 2^16 rows do not fit the count, and are refused by
@@ -1004,8 +1012,11 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
                                  .binding = kScratchBinding}};
     const auto fits = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
     ASSERT_TRUE(fits.has_value()) << fits.error().context;
-    EXPECT_EQ(fits->back().count, (uint64_t{1} << 32) - (uint64_t{1} << 16));
-    EXPECT_EQ(fits->back().byte_size, ((uint64_t{1} << 32) - (uint64_t{1} << 16)) * 16u) << "past 2^32 bytes";
+    // huge_dv is the one scratch, after the eleven; lock_rows' dummy (stage 6) follows it, so it is not back().
+    const DerivedBufferShape& huge = (*fits)[std::size(kHandListed)];
+    EXPECT_EQ(huge.name, "huge_dv");
+    EXPECT_EQ(huge.count, (uint64_t{1} << 32) - (uint64_t{1} << 16));
+    EXPECT_EQ(huge.byte_size, ((uint64_t{1} << 32) - (uint64_t{1} << 16)) * 16u) << "past 2^32 bytes";
     wide.scratch[0].capacity_per_world = 1u << 16;
     const auto wraps = spade::compute::derived_buffer_shapes(wide, kScratchBinding + 1);
     ASSERT_FALSE(wraps.has_value()) << "2^32 rows would wrap a uint32 slot index";
@@ -1013,17 +1024,20 @@ TEST(StateMirrorScratch, ABoundScratchIsADerivedBufferWithItsBindingAndA64BitSiz
     EXPECT_NE(wraps.error().context.find("'huge_dv'"), std::string::npos) << wraps.error().context;
 
     // Today's range: the standard set's shape is the eleven and its one
-    // declared scratch, contact_dv, at binding 27 (PHY-7).
+    // declared scratch, contact_dv, at binding 27 (PHY-7), then lock_rows' dummy.
     StepShape plain = scratch_test_shape();
     plain.scratch = spade::scratch_shapes(standard_schedule(), plain);
     const auto standard = spade::compute::derived_buffer_shapes(plain, gen::kBindingCount_state);
     ASSERT_TRUE(standard.has_value()) << standard.error().context;
-    ASSERT_EQ(standard->size(), std::size(kHandListed) + 1);
-    EXPECT_EQ(standard->back().name, "contact_dv");
-    EXPECT_EQ(standard->back().binding, gen::kBinding_contact_dv);
-    EXPECT_EQ(standard->back().elem_size, 16u);
-    EXPECT_EQ(standard->back().count, 16u) << "2 worlds x 8 body slots";
-    EXPECT_EQ(standard->back().byte_size, 256u);
+    ASSERT_EQ(standard->size(), std::size(kHandListed) + 2) << "and lock_rows' dummy (stage 6)";
+    const DerivedBufferShape& contact = (*standard)[std::size(kHandListed)];
+    EXPECT_EQ(contact.name, "contact_dv");
+    EXPECT_EQ(contact.binding, gen::kBinding_contact_dv);
+    EXPECT_EQ(contact.elem_size, 16u);
+    EXPECT_EQ(contact.count, 16u) << "2 worlds x 8 body slots";
+    EXPECT_EQ(contact.byte_size, 256u);
+    EXPECT_EQ(standard->back().name, "lock_rows (absent)");
+    EXPECT_EQ(standard->back().binding, gen::kBinding_lock_rows);
 }
 
 TEST(StateMirrorScratch, AScratchBindingIsRefusedByName) {
@@ -1064,4 +1078,55 @@ TEST(StateMirrorScratch, AScratchBindingIsRefusedByName) {
     EXPECT_TRUE(refused_naming_all(with({at("dv", kScratchBinding), at("dv_b", kScratchBinding)}, kScratchBinding + 1),
                                    {"dv_b", "'dv'"}))
         << "another scratch's binding";
+}
+
+// ===========================================================================
+// Module API stage 6, Task 4: the fixed binding of an optional module
+// (compute/optional_bindings.hpp). `lock_rows` is binding 29 of set 0: bound to the module's array when the set holds
+// the lock module, to a zeroed one-row buffer when it does not, so the descriptor set is complete in both.
+// ===========================================================================
+
+namespace {
+
+[[nodiscard]] const spade::modules::CompiledSchedule& lock_set_schedule() {
+    static const spade::modules::CompiledSchedule schedule = [] {
+        spade::modules::ModuleSet set = spade::modules::standard_modules();
+        set.push_back(spade::modules::lock_module());
+        return *spade::modules::compile_schedule(set);
+    }();
+    return schedule;
+}
+
+[[nodiscard]] Result<std::unique_ptr<VulkanBackend>> backend_for(const spade::modules::CompiledSchedule& schedule) {
+    StepShape shape{};
+    shape.world_count = 2;
+    shape.body_capacity = 8;
+    shape.element_capacity = 4;
+    shape.sensor_capacity = 2;
+    shape.substeps = 1;
+    shape.h = 0.001f;
+    shape.arrays = walk_shapes(schedule, shape);
+    shape.scratch = spade::scratch_shapes(schedule, shape);
+    shape.tables = spade::table_shapes(schedule);
+    shape.switches = spade::optional_switches(schedule);
+    return VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, shape, spade::modules::gpu_passes(schedule));
+}
+
+}  // namespace
+
+TEST_F(GpuStateMirrorTest, ASetWithoutTheLockModuleBindsAnEmptyBufferAtItsBinding) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    EXPECT_EQ(gen::kBindingCount_state, 30u) << "29 standard bindings and lock_rows";
+    auto backend = backend_for(standard_schedule());
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    EXPECT_EQ((*backend)->bound_binding_count(), gen::kBindingCount_state)
+        << "binding " << gen::kBinding_lock_rows << " holds the dummy, so the set is complete without the module";
+}
+
+TEST_F(GpuStateMirrorTest, ALockSetBindsItsRealArrayAtTheSameBinding) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto backend = backend_for(lock_set_schedule());
+    ASSERT_TRUE(backend.has_value()) << backend.error().context;
+    EXPECT_EQ((*backend)->bound_binding_count(), gen::kBindingCount_state)
+        << "the walk entry lock_rows is bound at binding " << gen::kBinding_lock_rows << ", no dummy beside it";
 }

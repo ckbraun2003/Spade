@@ -439,7 +439,7 @@ An outline, not a plan. Each task is test-first, both presets, the gcc check, th
 | T15 | Prose: comments, Core's docs, `CHANGELOG.md`, `consumers.md` lines (snapshot overloads, new calls, `state_digest`'s signature) | 0.5 | All |
 
 - **Size:** about 20 task units. **Effort:** about 2.5 to 4 working days of Core time *(estimate)*. Core's 2026-10-05 estimate was about 8 tasks and 1 to 1.5 days; moving solids (T11, T12), the grid kernels (T10), the GPU Publish writer (T13) and the cost query (T14) are the growth.
-- **Before it:** the rest of stage 5 (Tasks 2–8, about a day *(estimate)*) and stage 6 (its plan and code, about 1 to 1.5 days *(estimate)*).
+- **Before it:** stage 5 (merged `37ca30bf`) and stage 6 (the lock and the fixed-binding pattern, `core/module-api-stage6`; its plan is `2026-11-05-module-api-stage6-plan.md`). Stage 6 gives T8 its recipe switch, T11 its optional-module binding pattern and T12 its per-rotor row's switch.
 - **What can start early:** T1, T2, T3 and T14 need neither stage 5 nor stage 6 (answers doc: "the limit refusals and the budget check stand alone"). Pulling them in beside stage 6 shortens the path by about a day.
 - **Outside Core, on the path:** the per-part note's code (`ModelType` parts, and `parts_identity`) before T11; Physics' `ψ` pass and load formulas before T12 ends; Physics' CPU volume writer before T13; the runner's note (§9) before plan B's code.
 - **The longer pole is still the solver** and now the moving-wall numerics (Physics), not Core's stage.

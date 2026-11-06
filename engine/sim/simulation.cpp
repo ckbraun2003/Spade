@@ -15,6 +15,7 @@
 
 #include <glm/geometric.hpp>
 
+#include "compute/optional_bindings.hpp"
 #include "compute/sdf_program.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/backend.hpp"
@@ -23,6 +24,7 @@
 #include "objects/behavior.hpp"
 #include "physics/contact_sets.hpp"
 #include "physics/integrator.hpp"
+#include "physics/lock.hpp"
 #include "sim/builtin_state.hpp"
 #include "vehicles/model_identity.hpp"
 #include "world/medium.hpp"
@@ -463,6 +465,16 @@ std::vector<compute::ScratchShape> scratch_shapes(const modules::CompiledSchedul
 
 // The bound tables the GPU mirror makes buffers from (L10), CPU-only ones left
 // out: an entry's index is its device table index.
+uint32_t optional_switches(const modules::CompiledSchedule& schedule) noexcept {
+    uint32_t bits = 0u;
+    for (const compute::OptionalBinding& optional : compute::kOptionalBindings) {
+        const bool held = std::ranges::any_of(
+            schedule.arrays, [&optional](const modules::CompiledArray& array) { return array.name == optional.name; });
+        if (held) bits |= optional.switch_bit;
+    }
+    return bits;
+}
+
 std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule) {
     std::vector<compute::TableShape> out;
     for (const modules::CompiledTable& t : schedule.tables) {
@@ -950,6 +962,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         shape.scratch = scratch_shapes(sim.schedule_, shape);
         // The bound configuration tables (L10): a buffer each, at its capacity.
         shape.tables = table_shapes(sim.schedule_);
+        // The optional bindings this set holds (module API stage 6): the recorder bakes the bits into every
+        // dispatch, and the mirror binds a zeroed buffer at each one whose array the walk above does not carry.
+        shape.switches = optional_switches(sim.schedule_);
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -2761,6 +2776,33 @@ Result<void> Simulation::set_body_state(BodyRef ref, glm::vec3 pos, glm::quat or
         return std::unexpected(missing("set_body_state: body is spawned but not yet flushed "
                                        "(call step() or flush_structural() first)"));
     }
+    // THE LOCK (module API stage 6, plan decision 6). Integrate holds a locked body's axes at the anchor, so a
+    // re-pose along one would be skipped, never honoured: refused, not skipped (L6). A lock or unlock still QUEUED is
+    // refused too: the anchor was taken at the lock call and the row init cannot see a BodyState, so a set before the
+    // boundary would be followed by the old anchor, and the body snapped back.
+    if (const uint32_t array = lock_array(); array != modules::kNoArray) {
+        const auto pending = std::ranges::find_if(queue_, [&](const StructuralOp& op) {
+            return op.kind == OpKind::init_row && op.array == array && op.body_slot == ref.slot;
+        });
+        if (pending != queue_.end()) {
+            return std::unexpected(invalid("set_body_state: a lock change is pending on this body; flush first "
+                                           "(it applies at the next boundary)"));
+        }
+        Result<std::span<std::byte>> rows = arenas_.bytes(module_array_ids_[array]);
+        if (!rows) return std::unexpected(rows.error());
+        physics::LockRow row{};
+        std::memcpy(&row, rows->data() + std::size_t{ref.slot} * sizeof(physics::LockRow), sizeof(row));
+        if (row.axes != 0u) {
+            std::string held;
+            for (const auto& [bit, name] : {std::pair{physics::kLockAxisX, "x"}, std::pair{physics::kLockAxisY, "y"},
+                                            std::pair{physics::kLockAxisZ, "z"}}) {
+                if ((row.axes & bit) != 0u) held += (held.empty() ? "" : " ") + std::string(name);
+            }
+            return std::unexpected(invalid("set_body_state: body is locked on axes " + held +
+                                           "; Integrate would snap the pose back. unlock() applies at the next "
+                                           "boundary, so flush after it, then re-pose"));
+        }
+    }
     // spawn()'s predicate and threshold, the one shared function (TD-9), at
     // this body's EFFECTIVE radius: the world's for a bare body, the model's
     // own for a vehicle that overrides it -- what spawn tested it against.
@@ -2787,6 +2829,65 @@ Result<void> Simulation::set_body_state(BodyRef ref, glm::vec3 pos, glm::quat or
     mark_vulkan_dirty();
     return {};
 }
+
+// ---------------------------------------------------------------------------
+// the translation lock's typed calls (module API stage 6; sim/module.hpp's lock_module())
+// ---------------------------------------------------------------------------
+
+uint32_t Simulation::lock_array() const noexcept {
+    for (uint32_t i = 0; i < schedule_.arrays.size(); ++i) {
+        if (schedule_.arrays[i].module == "lock" && schedule_.arrays[i].name == "lock_rows") return i;
+    }
+    return modules::kNoArray;
+}
+
+// The one sequence both calls run, every refusal before the first write: unavailable without the module (L6: a world
+// that asks for a lock and cannot provide one is never left silently unlocked), the poison, the axes, the ref, a body
+// not yet flushed (its position is not final and a queued row init would not reach it, set_body_state's rule). Then
+// the typed record through the one door, attach_row: the anchor is the body's position NOW (a RowInit cannot see a
+// BodyState), and the row is written at the next boundary.
+Result<void> Simulation::lock_front(BodyRef ref, uint32_t axes, bool lock, std::string_view what) {
+    const std::string prefix = std::string(what) + ": ";
+    const uint32_t array = lock_array();
+    if (array == modules::kNoArray) {
+        return std::unexpected(Error{Code::unavailable,
+                                     prefix + "this module set holds no 'lock' module, so it cannot hold a body "
+                                              "(add modules::lock_module() to the set)"});
+    }
+    if (!poisoned_.empty()) {
+        return std::unexpected(invalid(poisoned_));
+    }
+    if (lock && (axes == 0u || axes > physics::kLockAllAxes)) {
+        return std::unexpected(invalid(prefix + "axes must be a mask of x (1), y (2) and z (4), 1 to 7, not " +
+                                       std::to_string(axes)));
+    }
+    if (Result<void> valid = validate_ref(ref); !valid) {
+        return std::unexpected(Error{valid.error().code, prefix + valid.error().context});
+    }
+    Result<std::span<BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    const BodyState& b = (*bodies)[ref.slot];
+    if ((b.flags & physics::body_flags::active) == 0u) {
+        return std::unexpected(missing(prefix + "body is spawned but not yet flushed "
+                                                "(call step() or flush_structural() first)"));
+    }
+    physics::LockSpawn record{};
+    if (lock) {
+        record.anchor[0] = b.pos.x;
+        record.anchor[1] = b.pos.y;
+        record.anchor[2] = b.pos.z;
+        record.axes = axes;
+    }
+    const Result<RowRef> row = attach_row_impl(ref, array, std::as_bytes(std::span(&record, 1)), what);
+    if (!row) return std::unexpected(row.error());
+    return {};
+}
+
+Result<void> Simulation::lock_translation(BodyRef ref, uint32_t axes) {
+    return lock_front(ref, axes, true, "lock_translation");
+}
+
+Result<void> Simulation::unlock(BodyRef ref) { return lock_front(ref, 0u, false, "unlock"); }
 
 // ---------------------------------------------------------------------------
 // snapshot / restore

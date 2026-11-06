@@ -34,6 +34,7 @@
 #include "sensors/imu.hpp"
 #include "set_body_state_support.hpp"
 #include "sim/design_frame.hpp"
+#include "physics/lock.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
@@ -925,18 +926,22 @@ struct CensusGaps {
     return out;
 }
 
-[[nodiscard]] CensusGaps census_gaps(const Simulation& sim) {
+// `extra`: the rows of an optional module the set holds (stage 6: the lock's), classified beside the standard ones.
+[[nodiscard]] CensusGaps census_gaps(const Simulation& sim, std::span<const ArrayRuling> extra = {}) {
     CensusGaps gaps;
     const std::vector<std::string> per_body = per_body_arrays(sim, gaps.unknown);
+    const auto listed = [&](std::string_view name) {
+        return std::ranges::find(kPerBodyCensus, name, &ArrayRuling::array) != std::ranges::end(kPerBodyCensus) ||
+               std::ranges::find(extra, name, &ArrayRuling::array) != extra.end();
+    };
     for (const std::string& name : per_body) {
-        if (std::ranges::find(kPerBodyCensus, std::string_view(name), &ArrayRuling::array) ==
-            std::ranges::end(kPerBodyCensus)) {
-            gaps.unlisted.push_back(name);
-        }
+        if (!listed(name)) gaps.unlisted.push_back(name);
     }
-    for (const ArrayRuling& row : kPerBodyCensus) {
+    const auto check_stale = [&](const ArrayRuling& row) {
         if (std::ranges::find(per_body, row.array) == per_body.end()) gaps.stale.emplace_back(row.array);
-    }
+    };
+    std::ranges::for_each(kPerBodyCensus, check_stale);
+    std::ranges::for_each(extra, check_stale);
     std::vector<std::string> scratch;
     for (const spade::modules::CompiledScratch& s : sim.schedule().scratch) {
         if (s.extent == spade::modules::Extent::per_body) scratch.push_back(s.name);
@@ -1076,6 +1081,44 @@ TEST(SetBodyState, CensusNamesAnUnlistedPerBodyArray) {
     EXPECT_TRUE(gaps.stale.empty());
     EXPECT_EQ(gaps.unlisted_scratch, (std::vector<std::string>{"probe_scratch"}));
     EXPECT_TRUE(gaps.stale_scratch.empty());
+}
+
+// THE CENSUS FOR A SET WITH THE LOCK MODULE (module API stage 6; the lead's review of the plan). `lock_rows` is a
+// per_body array of an optional module: it is KEPT, because the setter writes the body row and nothing the module
+// owns. An unlocked body's row is zero, so the byte comparison alone would pass over a setter that zeroed the whole
+// array; the bystander is therefore LOCKED, and its non-zero row must survive the set of another body.
+TEST(SetBodyState, CensusClassifiesALockSetsLockRowsAsKept) {
+    spade::modules::ModuleSet set = spade::modules::standard_modules();
+    set.push_back(spade::modules::lock_module());
+    const Result<WorldSetDesc> desc = floor_world_set(4);
+    ASSERT_TRUE(desc.has_value()) << desc.error().context;
+    Result<Simulation> made = Simulation::create(*desc, kDt, kSubsteps, {}, set);
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    Simulation& sim = *made;
+
+    // Without the lock's row the census flags it by name, as it does any unclassified per-body array.
+    EXPECT_EQ(census_gaps(sim).unlisted, (std::vector<std::string>{"lock_rows"}));
+    const std::array<ArrayRuling, 1> lock_census{{{"lock_rows", Ruling::kept}}};
+    const CensusGaps gaps = census_gaps(sim, lock_census);
+    EXPECT_TRUE(gaps.unknown.empty());
+    EXPECT_TRUE(gaps.unlisted.empty());
+    EXPECT_TRUE(gaps.stale.empty());
+
+    const Result<BodyRef> free_body = sim.spawn(0, bare_body(glm::vec3(0.0f, 2.0f, 0.0f)));
+    const Result<BodyRef> held = sim.spawn(0, bare_body(glm::vec3(2.0f, 3.0f, 0.0f)));
+    ASSERT_TRUE(free_body.has_value() && held.has_value());
+    ASSERT_TRUE(sim.flush_structural().has_value());
+    ASSERT_TRUE(sim.lock_translation(*held, spade::physics::kLockAllAxes).has_value());
+    ASSERT_TRUE(sim.step(1).has_value());  // the lock row is written at the boundary
+
+    const ArrayBytes before = array_bytes(sim);
+    const std::vector<std::byte>& rows = before.at("lock_rows");
+    EXPECT_TRUE(std::ranges::any_of(rows, [](std::byte b) { return b != std::byte{0}; }))
+        << "the held body's row must be non-zero, or this check is vacuous";
+    const Result<void> placed = set_to(sim, *free_body, far_pose());
+    ASSERT_TRUE(placed.has_value()) << placed.error().context;
+    const ArrayBytes after = array_bytes(sim);
+    EXPECT_TRUE(after.at("lock_rows") == rows) << "lock_rows is KEPT: the setter must not touch it";
 }
 
 // ===========================================================================

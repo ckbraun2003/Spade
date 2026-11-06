@@ -5,6 +5,7 @@
                                   // this is the one TU that calls run_slot().
 #include "physics/contact_sets.hpp"  // kStaticContactSetsAccess
 #include "physics/integrator.hpp"
+#include "physics/lock.hpp"
 #include "physics/sampled_medium.hpp"
 
 // ---------------------------------------------------------------------------
@@ -126,7 +127,8 @@ void pass_integrate(const SubstepContext& ctx) noexcept {
         const glm::vec3 gravity(view.fields[kFieldGravityOffset + 0], view.fields[kFieldGravityOffset + 1],
                                 view.fields[kFieldGravityOffset + 2]);
         integrate_bodies(view.bodies, gravity, ctx.h,
-                         world_rows<ContactDvRow>(ctx.state[kIntegratePassContactDvAccess], static_cast<uint32_t>(w)));
+                         world_rows<ContactDvRow>(ctx.state[kIntegratePassContactDvAccess], static_cast<uint32_t>(w)),
+                         world_rows<const LockRow>(ctx.state[kIntegratePassLockAccess], static_cast<uint32_t>(w)));
     }
 }
 

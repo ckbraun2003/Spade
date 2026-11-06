@@ -356,6 +356,23 @@ import layouts;
 [[vk::binding(28, 0)]] StructuredBuffer<float4> contact_sets;
 
 // ---------------------------------------------------------------------------
+// G. THE FIXED BINDINGS OF OPTIONAL MODULES (module API stage 6;
+// compute/optional_bindings.hpp). A binding here belongs to a module that is
+// NOT in the standard set. It is bound in every Simulation: to the module's
+// array when the set holds it, and to a zeroed one-row buffer when it does not,
+// in which case the recorder clears the matching bit of PassParams::switches
+// and the kernel never reads it. The census (DescriptorSetBindsEveryRegistryBinding)
+// still catches a forgotten standard binding: only a name in the optional table
+// is bound to a dummy.
+//
+// lock_rows -- the translation lock's rows (physics/lock.hpp), one LockRow per
+// global body slot, read by integrate.slang when switches bit 0 is set. Binding
+// 29 because 28 was the last in use. Read-only: only the host's attach_row init
+// writes it, at a step boundary.
+// ---------------------------------------------------------------------------
+[[vk::binding(29, 0)]] StructuredBuffer<LockRow> lock_rows;
+
+// ---------------------------------------------------------------------------
 // E. THE SECOND SENSOR KIND (bindings 23..25) -- registered state, bound
 // because a kernel now reads it.
 //

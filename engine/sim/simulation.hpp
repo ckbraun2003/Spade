@@ -549,6 +549,11 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 // to the Vulkan backend as StepShape::tables.
 [[nodiscard]] std::vector<compute::TableShape> table_shapes(const modules::CompiledSchedule& schedule);
 
+// The PassParams::switches bits of a compiled schedule (module API stage 6): for each row of
+// compute/optional_bindings.hpp's kOptionalBindings, its bit when the schedule holds that array. The standard set is 0.
+// Simulation::create() hands it to the backend in StepShape::switches.
+[[nodiscard]] uint32_t optional_switches(const modules::CompiledSchedule& schedule) noexcept;
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------
@@ -1286,6 +1291,20 @@ public:
     [[nodiscard]] Result<void> set_body_state(BodyRef ref, glm::vec3 pos, glm::quat orient, glm::vec3 vel,
                                               glm::vec3 omega_body);
 
+    // lock_translation / unlock -- hold a body's translation on the chosen world axes at the position it has NOW
+    // (module API stage 6; spec section 9; sim/module.hpp's lock_module()). `axes` is a mask of physics::kLockAxisX,
+    // Y and Z, 1 to 7. The anchor is taken at this call; the lock row is written at the next step boundary, by
+    // attach_row's queued init, and Integrate then holds pos at the anchor, vel at 0 and the specific force at -g on
+    // those axes, bitwise, on both backends. Rotation stays free. unlock() queues the free row. Refusals, each
+    // before any write:
+    //   unavailable       the set holds no `lock` module (L6: never left silently unlocked);
+    //   invalid_argument  the Simulation is poisoned, or `axes` is outside 1..7;
+    //   not_found         a dead, stale or foreign ref, and a body spawned but not yet flushed.
+    // set_body_state() refuses a body that is locked, and one whose lock or unlock is still queued, until the
+    // boundary: Integrate would snap the pose back (decision 6 of the stage 6 plan).
+    [[nodiscard]] Result<void> lock_translation(BodyRef ref, uint32_t axes);
+    [[nodiscard]] Result<void> unlock(BodyRef ref);
+
     // --- snapshot / restore -----------------------------------------------
 
     // ---------------------------------------------------------------------
@@ -1916,6 +1935,12 @@ private:
     //   gnss_ring         KEPT.
     //   integrate.contact_dv (per-body SCRATCH)  nothing to clear: zero at
     //                     every boundary by integrate's own invariant.
+    //   lock_rows         (the lock module, when the set holds it) KEPT, and a
+    //                     locked body is not re-posed at all: set_body_state()
+    //                     REFUSES a body that is locked, or whose lock or
+    //                     unlock is queued, because Integrate would snap the
+    //                     pose back (module API stage 6). A free body's row is
+    //                     zero and stays so.
     //
     // There is no contact manifold, warm start, sleep counter or CCD state
     // (physics/contacts.hpp), so nothing else holds history today. A NEW
@@ -1987,6 +2012,11 @@ private:
 
     [[nodiscard]] Result<uint32_t> checked_world(uint32_t world_index) const;
     [[nodiscard]] Result<void> validate_ref(BodyRef ref) const;
+
+    // The lock module's array (stage 6): its index in schedule_.arrays, or modules::kNoArray when the set holds no
+    // `lock` module. lock_translation() and unlock() are fronts over attach_row_impl for it.
+    [[nodiscard]] uint32_t lock_array() const noexcept;
+    [[nodiscard]] Result<void> lock_front(BodyRef ref, uint32_t axes, bool lock, std::string_view what);
     [[nodiscard]] Result<void> validate_imu_ref(ImuSensorRef ref) const;
     [[nodiscard]] Result<void> validate_gnss_ref(GnssSensorRef ref) const;
 

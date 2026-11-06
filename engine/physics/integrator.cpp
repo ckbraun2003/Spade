@@ -8,7 +8,7 @@
 namespace spade::physics {
 
 void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
-                      std::span<ContactDvRow> contact_dv) noexcept {
+                      std::span<ContactDvRow> contact_dv, std::span<const LockRow> locks) noexcept {
     // `gravity` is per-world, not per-body: the caller reads it once (the
     // schedule's Integrate pass, from the gravity field), which keeps the
     // per-body op sequence below identical to what a GPU thread executes (it
@@ -101,12 +101,30 @@ void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
         if (contact != glm::vec3(0.0f)) {
             felt = accel_ext + contact / h;
         }
+        //    THE TRANSLATION LOCK (module API stage 6; spec section 9; physics/lock.hpp). A body whose row holds axes
+        //    is computed exactly as everywhere else in this function and then SELECTED per held axis, here and at
+        //    steps 3 and 5; a body with no axes, and every body when the set holds no lock module (`locks` empty),
+        //    takes today's path untouched, bit for bit. A held axis reads -gravity: the stand is at rest in a
+        //    gravitational field, so an accelerometer on it reads +1 g up whatever the rotors do, and `-g` involves no
+        //    cancellation, so it holds from any mass (the old behavior pair's force overwrite needed a power of two).
+        const uint32_t axes = i < locks.size() ? (locks[i].axes & kLockAllAxes) : 0u;
+        if (axes != 0u) {
+            for (int a = 0; a < 3; ++a) {
+                if ((axes & (1u << a)) != 0u) felt[a] = -gravity[a];
+            }
+        }
         body.specific_force = glm::conjugate(body.orient) * felt;
 
         // 3. Linear velocity, from the total acceleration. Gravity enters the
         //    dynamics here and only here (see integrator.hpp on the Gravity
         //    pass not double-applying it).
         body.vel += (accel_ext + gravity) * h;
+        //    The lock: a held axis has no velocity. Assigned +0.0f, never a product that could be -0.0f.
+        if (axes != 0u) {
+            for (int a = 0; a < 3; ++a) {
+                if ((axes & (1u << a)) != 0u) body.vel[a] = 0.0f;
+            }
+        }
 
         // 4. Angular velocity, from Euler's rigid-body equation in the body
         //    frame:  I_body * dOmega/dt = tau_body - omega x (I_body*omega).
@@ -157,6 +175,13 @@ void integrate_bodies(std::span<BodyState> bodies, glm::vec3 gravity, float h,
         //    pump energy on the translational DOF the way explicit Euler
         //    (which would use the pre-update vel) does.
         body.pos += body.vel * h;
+        //    The lock: a held axis is the anchor, whatever contact's position correction (which runs before this
+        //    pass) or the step above did to it, so the anchor holds bitwise.
+        if (axes != 0u) {
+            for (int a = 0; a < 3; ++a) {
+                if ((axes & (1u << a)) != 0u) body.pos[a] = locks[i].anchor[a];
+            }
+        }
 
         // 6. Orientation, from the UPDATED angular velocity -- the rotational
         //    counterpart of step 5's velocity-then-position ordering.

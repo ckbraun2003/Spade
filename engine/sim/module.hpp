@@ -9,7 +9,10 @@
 // within a substep. Stage 5: a grade per backend (core/grade.hpp) and the role a
 // module fills (kRoles), both declarations checked at compile_schedule() and
 // create() and spelt into no identity; component availability sits beside the
-// component type table (objects/component.hpp).
+// component type table (objects/component.hpp). Stage 6: a built-in module that
+// is not in the standard set (lock_module(), the translation lock), the optional
+// read it adds to Integrate, and the fixed binding and recipe switch that let a
+// kernel read an optional module's array (compute/optional_bindings.hpp).
 #pragma once
 
 #include <algorithm>
@@ -703,6 +706,12 @@ struct SetGrade {
 
 // Today's engine as modules. The default module set of Simulation::create().
 [[nodiscard]] ModuleSet standard_modules();
+
+// The translation lock (stage 6; spec section 9): a built-in module that is NOT in the standard set. It owns one
+// per_body array, `lock_rows` (physics/lock.hpp), and no pass: Integrate reads the rows as an optional read and holds
+// a locked body's chosen axes at its anchor. Simulation::lock_translation() and unlock() are its typed calls, and
+// are refused with `unavailable` in a set that does not hold it. CPU reference, Vulkan banded.
+[[nodiscard]] ModuleDesc lock_module();
 
 // The CPU function a GPU recipe stands for; nullptr for `none`. A pass that
 // names a recipe must carry exactly this function (compile_schedule refuses
