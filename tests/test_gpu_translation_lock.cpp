@@ -167,3 +167,42 @@ TEST(GpuTranslationLock, AHeldBodysSpecificForceIsMinusRTgOnTheDevice) {
         EXPECT_LT(glm::length(got - expected), 1e-5f * 9.80665f) << "step " << s;
     }
 }
+
+// The sandbox drone box runs two substeps. A level stand reads (0, +g, 0) there (Interface's
+// TheStandMountedImuReadsPlusG, 1e-4, on both backends); a spinning held body reads g in norm and lags the step-start
+// orientation by at most one substep of rotation (test_translation_lock.cpp has the CPU half and the argument).
+TEST(GpuTranslationLock, ALevelHeldBodyReadsPlusGAtTwoSubstepsOnTheDevice) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    Simulation gpu = make(lock_set(), 2, true);
+    const BodyRef ref = spawn(gpu, bare_body(glm::vec3(0.0f, 3.0f, 0.0f)));
+    ASSERT_TRUE(gpu.lock_translation(ref, kLockAllAxes).has_value());
+    for (int s = 0; s < 10; ++s) {
+        ASSERT_TRUE(gpu.step(1).has_value());
+        const glm::vec3 f = row_of(gpu, ref).specific_force;
+        EXPECT_NEAR(f.x, 0.0f, 1e-4f) << "step " << s;
+        EXPECT_NEAR(f.y, 9.80665f, 1e-4f) << "step " << s;
+        EXPECT_NEAR(f.z, 0.0f, 1e-4f) << "step " << s;
+    }
+}
+
+TEST(GpuTranslationLock, ASpinningHeldBodyReadsGWithinOneSubstepOfRotationOnTheDevice) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    constexpr uint32_t kSubsteps = 2;
+    Simulation gpu = make(lock_set(), kSubsteps, true);
+    BodySpawn spawn_body = bare_body(glm::vec3(0.0f, 3.0f, 0.0f));
+    spawn_body.orient = glm::normalize(glm::quat(0.9f, 0.1f, 0.3f, -0.2f));
+    spawn_body.omega_body = glm::vec3(0.3f, -0.2f, 0.5f);
+    const BodyRef ref = spawn(gpu, spawn_body);
+    ASSERT_TRUE(gpu.lock_translation(ref, kLockAllAxes).has_value());
+    const glm::vec3 gravity(0.0f, -9.80665f, 0.0f);
+    const float h_sub = static_cast<float>(kDt) * 1e-9f / static_cast<float>(kSubsteps);
+    for (int s = 0; s < 20; ++s) {
+        const BodyState start = row_of(gpu, ref);
+        ASSERT_TRUE(gpu.step(1).has_value());
+        const glm::vec3 f = row_of(gpu, ref).specific_force;
+        EXPECT_NEAR(glm::length(f), 9.80665f, 1e-4f) << "step " << s;
+        const glm::vec3 at_start = glm::conjugate(start.orient) * (-gravity);
+        const float angle = std::atan2(glm::length(glm::cross(f, at_start)), glm::dot(f, at_start));
+        EXPECT_LE(angle, glm::length(start.omega_body) * h_sub * 1.1f + 2e-5f) << "step " << s;
+    }
+}

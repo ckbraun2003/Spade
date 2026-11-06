@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <bit>
 #include <cstddef>
 #include <cstdio>
@@ -639,4 +640,55 @@ TEST(TranslationLock, ALockSetsGradeIsReferenceOnTheCpuAndBandedOnVulkan) {
     EXPECT_EQ(lock->grade.vulkan, spade::Grade::banded);
     EXPECT_EQ(spade::modules::set_grade(*schedule, spade::compute::BackendKind::cpu).grade, spade::Grade::reference);
     EXPECT_EQ(spade::modules::set_grade(*schedule, spade::compute::BackendKind::vulkan).grade, spade::Grade::banded);
+}
+
+// ---------------------------------------------------------------------------
+// The held body's IMU at TWO substeps (the sandbox drone box runs kSubsteps = 2; the lead's review of the plan).
+//
+// WHAT HOLDS. integrate writes the specific force once per SUBSTEP, from that substep's pre-update orientation, and
+// the IMU samples the last one. At two substeps that is conj(q after substep 1) * (-g): a unit-quaternion rotation of
+// -g, so its NORM is g (to fp32 rounding) at any substep count, and its DIRECTION is the one-substep-old orientation's
+// -- it lags the step-start orientation by the rotation of ONE substep, not the whole step. At 1 substep the lag is
+// zero and the reading is bit-equal to conj(q at step start) * (-g) (the test above).
+// WHAT IT MEANS FOR A STAND. A level stand (identity orientation, no spin) reads (0, +g, 0) at any substep count,
+// exactly: nothing rotates, so there is nothing to lag. That is the premise of the sandbox's
+// TheStandMountedImuReadsPlusG (1e-4).
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] float angle_between(const glm::vec3& a, const glm::vec3& b) {
+    return std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b));
+}
+
+TEST(TranslationLock, ALevelHeldBodyReadsPlusGExactlyAtTwoSubsteps) {
+    Simulation sim = make_sim_substeps(standard_plus_lock(), 2);
+    const BodyRef ref = spawn_body(sim, bare_body(glm::vec3(0.0f, 3.0f, 0.0f)));  // identity orientation, no spin
+    ASSERT_TRUE(sim.lock_translation(ref, kLockAllAxes).has_value());
+    for (int s = 0; s < 10; ++s) {
+        ASSERT_TRUE(sim.step(1).has_value());
+        const glm::vec3 f = row_of(sim, ref).specific_force;
+        EXPECT_EQ(f.x, 0.0f) << "step " << s;
+        EXPECT_EQ(f.y, 9.80665f) << "step " << s;
+        EXPECT_EQ(f.z, 0.0f) << "step " << s;
+    }
+}
+
+TEST(TranslationLock, ASpinningHeldBodyReadsGWithinOneSubstepOfRotationAtTwoSubsteps) {
+    constexpr uint32_t kSubsteps = 2;
+    Simulation sim = make_sim_substeps(standard_plus_lock(), kSubsteps);
+    spade::BodySpawn spawn = bare_body(glm::vec3(0.0f, 3.0f, 0.0f));
+    spawn.orient = glm::normalize(glm::quat(0.9f, 0.1f, 0.3f, -0.2f));
+    spawn.omega_body = glm::vec3(0.3f, -0.2f, 0.5f);
+    const BodyRef ref = spawn_body(sim, spawn);
+    ASSERT_TRUE(sim.lock_translation(ref, kLockAllAxes).has_value());
+    const glm::vec3 gravity(0.0f, -9.80665f, 0.0f);
+    const float h_sub = static_cast<float>(kDt) * 1e-9f / static_cast<float>(kSubsteps);
+    for (int s = 0; s < 20; ++s) {
+        const BodyState start = row_of(sim, ref);
+        ASSERT_TRUE(sim.step(1).has_value());
+        const glm::vec3 f = row_of(sim, ref).specific_force;
+        EXPECT_NEAR(glm::length(f), 9.80665f, 2e-5f) << "the norm is g at any substep count, step " << s;
+        const glm::vec3 at_start = glm::conjugate(start.orient) * (-gravity);
+        // One substep of rotation, with a margin for omega changing under the gyroscopic term.
+        EXPECT_LE(angle_between(f, at_start), glm::length(start.omega_body) * h_sub * 1.1f + 1e-5f) << "step " << s;
+    }
 }
