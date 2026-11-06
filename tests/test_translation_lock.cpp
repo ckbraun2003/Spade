@@ -648,8 +648,10 @@ TEST(TranslationLock, ALockSetsGradeIsReferenceOnTheCpuAndBandedOnVulkan) {
 // WHAT HOLDS. integrate writes the specific force once per SUBSTEP, from that substep's pre-update orientation, and
 // the IMU samples the last one. At two substeps that is conj(q after substep 1) * (-g): a unit-quaternion rotation of
 // -g, so its NORM is g (to fp32 rounding) at any substep count, and its DIRECTION is the one-substep-old orientation's
-// -- it lags the step-start orientation by the rotation of ONE substep, not the whole step. At 1 substep the lag is
-// zero and the reading is bit-equal to conj(q at step start) * (-g) (the test above).
+// -- it is the orientation one substep before the step's end, so it lags the step-END orientation by the rotation of
+// ONE substep, not the whole step. At 1 substep that orientation is the step-start one and the reading is bit-equal to
+// conj(q at step start) * (-g) (the test above). At 2 substeps it is also exactly one substep from the step-start
+// orientation, which is what the spinning test below measures against.
 // WHAT IT MEANS FOR A STAND. A level stand (identity orientation, no spin) reads (0, +g, 0) at any substep count,
 // exactly: nothing rotates, so there is nothing to lag. That is the premise of the sandbox's
 // TheStandMountedImuReadsPlusG (1e-4).

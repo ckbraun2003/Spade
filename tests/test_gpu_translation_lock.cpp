@@ -169,8 +169,9 @@ TEST(GpuTranslationLock, AHeldBodysSpecificForceIsMinusRTgOnTheDevice) {
 }
 
 // The sandbox drone box runs two substeps. A level stand reads (0, +g, 0) there (Interface's
-// TheStandMountedImuReadsPlusG, 1e-4, on both backends); a spinning held body reads g in norm and lags the step-start
-// orientation by at most one substep of rotation (test_translation_lock.cpp has the CPU half and the argument).
+// TheStandMountedImuReadsPlusG, 1e-4, on both backends); a spinning held body reads g in norm and lags the step-end
+// orientation by one substep of rotation (at 2 substeps that is also one substep from the step-start orientation, which
+// the test measures against; test_translation_lock.cpp has the CPU half and the argument).
 TEST(GpuTranslationLock, ALevelHeldBodyReadsPlusGAtTwoSubstepsOnTheDevice) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     Simulation gpu = make(lock_set(), 2, true);
