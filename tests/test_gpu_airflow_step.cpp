@@ -457,6 +457,28 @@ TEST(GpuAirflowStep, OddSizedOpenBoxMatchesFluidStepBitForBit) { expect_bit_equa
 
 TEST(GpuAirflowStep, PeriodicChannelMatchesFluidStepBitForBit) { expect_bit_equal(periodic_channel()); }
 
+// The step makes ONE fence wait (0fcb99f9): the plan A health word comes from the chain's own readback, not a second
+// submit. The first step also uploads the discs' records (its own waits); the second, with the same discs, is one.
+TEST(GpuAirflowStep, AStepWithoutSolidsMakesOneFenceWait) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Case c = open_box();
+    const af::MacGrid start = noisy(c, 0x57E9ull, 1.0f);
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    ASSERT_TRUE((*gpu)->step(c.discs).has_value());
+    for (int step = 0; step < 3; ++step) {
+        const uint64_t before = (*gpu)->waits();
+        const auto h = (*gpu)->step(c.discs);
+        ASSERT_TRUE(h.has_value()) << h.error().context;
+        EXPECT_EQ((*gpu)->waits() - before, 1u) << "step " << step + 2;
+        EXPECT_GT(h->pressure_residual, 0.0f);
+    }
+}
+
 // Plan A's health (0fcb99f9) at every cycle count a run may set: the open, odd, periodic and closed (remove_mean)
 // domains, residual and announce equal to the CPU's bit for bit. run_both() compares them every step.
 TEST(GpuAirflowStep, PlanAHealthMatchesFluidStepAtEveryVCycleCount) {

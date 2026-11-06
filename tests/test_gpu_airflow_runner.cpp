@@ -109,6 +109,7 @@ namespace {
 
 using spade::Code;
 using spade::airflow_gpu::BufferKind;
+using spade::airflow_gpu::ChainReadback;
 using spade::airflow_gpu::ChainRunner;
 using spade::airflow_gpu::kAirflowSetBuffers;
 using spade::airflow_gpu::RunnerBuffer;
@@ -367,6 +368,189 @@ TEST(GpuAirflowRunner, RecordOnceSubmitFiveTimesAddsFive) {
     std::printf("[GpuAirflowRunner] record once, submit 5: %u floats, wrong=%zu (x[1]: %g -> %g)\n", kCount, wrong,
                 static_cast<double>(x[1]), static_cast<double>(back[1]));
     EXPECT_EQ(wrong, std::size_t{0});
+}
+
+// ===========================================================================
+// Readbacks recorded into a chain (0fcb99f9): a named buffer region copied into the staging buffer's reserved
+// readback region at the chain's end, read after the wait submit() already makes.
+// ===========================================================================
+
+// One submit, one fence wait, and the bytes are the ones read() brings, which costs the second wait.
+TEST(GpuAirflowRunner, AChainsReadbackIsOneWaitAndTheBytesReadReturns) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    constexpr uint32_t kCount = 100'003;
+    std::vector<float> x(kCount);
+    for (uint32_t i = 0; i < kCount; ++i) x[i] = static_cast<float>(i % 1000u);
+
+    std::vector<RunnerBuffer> buffers = airflow_set(kV);
+    buffers[kV] = {"airflow_v", kCount * 4ull, BufferKind::staged};
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_add_one};
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize,
+                                                       .readback_bytes = 4096});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    ASSERT_TRUE((*runner)->upload(kV, bytes_of(x)).has_value());
+
+    constexpr uint64_t kOffset = 16;  // floats 4 .. 259
+    constexpr uint64_t kBytes = 1024;
+    const ChainReadback readbacks[] = {{.buffer = kV, .src_offset = kOffset, .bytes = kBytes}};
+    const ChainCommand chain[] = {dispatch(0, count_push(kCount), {groups_for(kCount, kWorkgroupSize), 1, 1})};
+    auto id = (*runner)->record(chain, readbacks);
+    ASSERT_TRUE(id.has_value()) << id.error().context;
+    EXPECT_EQ((*runner)->recorded_counts(*id).dispatches, 1u);
+    EXPECT_EQ((*runner)->recorded_counts(*id).barriers, 0u) << "the readback's barriers are not dispatch_chain's";
+    EXPECT_TRUE((*runner)->readback(*id, 0).empty()) << "nothing to read before the first submit";
+
+    const uint64_t before = (*runner)->waits();
+    ASSERT_TRUE((*runner)->submit(*id, 1).has_value());
+    EXPECT_EQ((*runner)->waits() - before, 1u) << "one submit, one wait";
+    const std::span<const std::byte> got = (*runner)->readback(*id, 0);
+    ASSERT_EQ(got.size(), std::size_t{kBytes});
+    EXPECT_EQ((*runner)->waits() - before, 1u) << "reading the region waits for nothing";
+
+    std::vector<float> all(kCount, 0.0f);
+    ASSERT_TRUE((*runner)->read(kV, writable_bytes_of(all)).has_value());
+    EXPECT_EQ((*runner)->waits() - before, 2u) << "read() is the second wait";
+    EXPECT_EQ(std::memcmp(got.data(), all.data() + kOffset / 4, kBytes), 0) << "the same bytes as read()";
+    std::size_t wrong = 0;
+    for (uint64_t i = 0; i < kBytes / 4; ++i) {
+        float f = 0.0f;
+        std::memcpy(&f, got.data() + 4 * i, 4);
+        wrong += bits(f) != bits(x[kOffset / 4 + i] + 1.0f) ? 1u : 0u;
+    }
+    EXPECT_EQ(wrong, std::size_t{0}) << "the region holds the chain's result, not the upload";
+    EXPECT_EQ((*runner)->recorded_counts(*id).dispatches, 1u);
+}
+
+// Two chains with readbacks of the same buffer, recorded A then B and submitted B then A: each readback() has its own
+// chain's bytes, the region carved per chain at record(), so neither submit overwrites the other's.
+TEST(GpuAirflowRunner, TwoChainsReadbacksKeepTheirOwnBytesWhateverTheSubmitOrder) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    constexpr uint32_t kCount = 4096;
+    constexpr uint64_t kBytes = kCount * 4ull;
+    std::vector<float> u(kCount);
+    for (uint32_t i = 0; i < kCount; ++i) u[i] = static_cast<float>(i % 256u);
+    const std::vector<float> sentinel(kCount, -1000.0f);
+
+    const std::vector<RunnerBuffer> buffers = copy_buffers(kBytes);
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy, &gen::kSpvVariants_airflow_add_one};
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize,
+                                                       .readback_bytes = 2 * kBytes});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    ASSERT_TRUE((*runner)->upload(kU, bytes_of(u)).has_value());
+    ASSERT_TRUE((*runner)->upload(kV, bytes_of(sentinel)).has_value());
+
+    const ChainReadback readback_v[] = {{.buffer = kV, .src_offset = 0, .bytes = kBytes}};
+    const ChainCommand copy_chain[] = {dispatch(0, count_push(kCount), {groups_for(kCount, kWorkgroupSize), 1, 1})};
+    const ChainCommand add_chain[] = {dispatch(1, count_push(kCount), {groups_for(kCount, kWorkgroupSize), 1, 1})};
+    auto a = (*runner)->record(copy_chain, readback_v);
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    auto b = (*runner)->record(add_chain, readback_v);
+    ASSERT_TRUE(b.has_value()) << b.error().context;
+
+    ASSERT_TRUE((*runner)->submit(*b, 1).has_value());  // v = -1000 + 1
+    ASSERT_TRUE((*runner)->submit(*a, 1).has_value());  // v = u
+
+    const std::span<const std::byte> from_a = (*runner)->readback(*a, 0);
+    const std::span<const std::byte> from_b = (*runner)->readback(*b, 0);
+    ASSERT_EQ(from_a.size(), std::size_t{kBytes});
+    ASSERT_EQ(from_b.size(), std::size_t{kBytes});
+    EXPECT_NE(from_a.data(), from_b.data()) << "two chains' readbacks share an offset";
+    std::size_t wrong_a = 0;
+    std::size_t wrong_b = 0;
+    for (uint32_t i = 0; i < kCount; ++i) {
+        float fa = 0.0f;
+        float fb = 0.0f;
+        std::memcpy(&fa, from_a.data() + 4ull * i, 4);
+        std::memcpy(&fb, from_b.data() + 4ull * i, 4);
+        wrong_a += bits(fa) != bits(u[i]) ? 1u : 0u;
+        wrong_b += bits(fb) != bits(-999.0f) ? 1u : 0u;
+    }
+    EXPECT_EQ(wrong_a, std::size_t{0}) << "chain A (copy) keeps u";
+    EXPECT_EQ(wrong_b, std::size_t{0}) << "chain B (add one) keeps -999, though A ran after it";
+}
+
+// Every refusal is by name, before the command buffer exists: nothing recorded, nothing carved. The region is carved
+// in order, each readback 16-byte aligned, and a chain that does not fit is refused naming readback_bytes.
+TEST(GpuAirflowRunner, ReadbacksAreRefusedByNameAndCarvedInOrderAligned) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+
+    constexpr uint32_t kCount = 1024;
+    std::vector<RunnerBuffer> buffers = copy_buffers(kCount * 4ull);
+    buffers[kParams].kind = BufferKind::device_only;
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_add_one};
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels,
+                                                       .push_bytes = kPushBytes, .workgroup_size = kWorkgroupSize,
+                                                       .readback_bytes = 64});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    const ChainCommand chain[] = {dispatch(0, count_push(kCount), {groups_for(kCount, kWorkgroupSize), 1, 1})};
+
+    const auto refused = [&](std::vector<ChainReadback> readbacks, Code code, const std::string& named) {
+        const uint32_t chains = (*runner)->chain_count();
+        auto id = (*runner)->record(chain, readbacks);
+        ASSERT_FALSE(id.has_value()) << named;
+        EXPECT_EQ(id.error().code, code) << id.error().context;
+        EXPECT_TRUE(contains(id.error().context, named)) << id.error().context << " lacks '" << named << "'";
+        EXPECT_EQ((*runner)->chain_count(), chains) << "a refused record() leaves no chain";
+    };
+    refused({{.buffer = kParams, .src_offset = 0, .bytes = 4}}, Code::invalid_argument, "device_only");
+    refused({{.buffer = 99, .src_offset = 0, .bytes = 4}}, Code::invalid_argument, "out of range");
+    refused({{.buffer = kV, .src_offset = 2, .bytes = 4}}, Code::invalid_argument, "multiple of 4");
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 6}}, Code::invalid_argument, "multiple of 4");
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 0}}, Code::invalid_argument, "0 bytes");
+    refused({{.buffer = kV, .src_offset = kCount * 4ull - 4, .bytes = 8}}, Code::invalid_argument, "airflow_v");
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 128}}, Code::capacity_exceeded, "readback_bytes");
+
+    // None of the refusals carved anything: the whole 64 bytes are left. Two readbacks of 4 and 8 bytes take 16 each.
+    auto two = (*runner)->record(chain, std::vector<ChainReadback>{{.buffer = kV, .src_offset = 0, .bytes = 4},
+                                                                   {.buffer = kV, .src_offset = 16, .bytes = 8}});
+    ASSERT_TRUE(two.has_value()) << two.error().context;
+    ASSERT_TRUE((*runner)->submit(*two, 1).has_value());
+    const std::span<const std::byte> first = (*runner)->readback(*two, 0);
+    const std::span<const std::byte> second = (*runner)->readback(*two, 1);
+    EXPECT_EQ(first.size(), std::size_t{4});
+    EXPECT_EQ(second.size(), std::size_t{8});
+    EXPECT_EQ(static_cast<std::size_t>(second.data() - first.data()), std::size_t{16}) << "each destination 16-aligned";
+    EXPECT_TRUE((*runner)->readback(*two, 2).empty());
+    EXPECT_TRUE((*runner)->readback(999, 0).empty());
+
+    // 32 bytes remain: 36 bytes (48 aligned) do not fit, 32 do, then nothing does.
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 36}}, Code::capacity_exceeded, "readback_bytes");
+    auto rest = (*runner)->record(chain, std::vector<ChainReadback>{{.buffer = kV, .src_offset = 0, .bytes = 32}});
+    ASSERT_TRUE(rest.has_value()) << rest.error().context;
+    refused({{.buffer = kV, .src_offset = 0, .bytes = 4}}, Code::capacity_exceeded, "readback_bytes");
+
+    // A chain with no readbacks takes nothing, whatever is left.
+    EXPECT_TRUE((*runner)->record(chain).has_value());
+}
+
+// The readback region is part of the runner's total: past the budget it is refused at create(), by name, before
+// anything is allocated.
+TEST(GpuAirflowRunner, ReadbackBytesCountInTheBudgetAndAreRefusedAtCreate) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const std::vector<RunnerBuffer> buffers = copy_buffers(4096);
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_add_one};
+    const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
+    auto refused = ChainRunner::create(
+        *ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes,
+                         .workgroup_size = kWorkgroupSize,
+                         .readback_bytes = spade::airflow_gpu::runner_budget_bytes(*ctx) + 1});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, Code::capacity_exceeded);
+    EXPECT_TRUE(contains(refused.error().context, "runner_budget_bytes")) << refused.error().context;
+    EXPECT_TRUE(contains(refused.error().context, "readback")) << refused.error().context;
+    EXPECT_EQ(spade::airflow_gpu::runner_memory_stats().allocations, before.allocations);
 }
 
 // One buffer of maxStorageBufferRange + 4 bytes: refused by that limit's name,
