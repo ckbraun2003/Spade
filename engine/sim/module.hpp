@@ -633,6 +633,10 @@ struct CompiledModule {
     // not outlive the set. Empty: none.
     std::vector<std::byte> config{};
     uint32_t config_binding = compute::kNoBinding;
+    // The rebuild hook (stage 7, Task C3), as declared: one binding per rebuild_access entry, in declaration order.
+    std::vector<CompiledBinding> rebuild_state{};
+    PassFn rebuild_cpu = nullptr;
+    const compute::RecipeDesc* rebuild_gpu = nullptr;
 };
 
 // One filled role (Task 6): the role and the module that fills it.

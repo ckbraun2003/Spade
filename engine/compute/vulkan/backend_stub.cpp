@@ -41,6 +41,9 @@
 // EVERY MEMBER backend.cpp DEFINES MUST BE DEFINED HERE TOO (device_report() was missed once, ae58a66d, and memory_report() once
 // more, stage 7 batch A): tests/test_backend_stub_parity.cpp scans both files and fails the next miss on any build.
 // memory_report() answers an empty report -- no device and no buffers, which is what a create() that never succeeds means.
+// Stage 7 batch C added upload_resident(), readback_resident(), submit_rebuild(), transfer_bytes(), descriptor_set_count(),
+// on_demand_count() and read_config_image(): the Result ones answer unavailable like every other, the counts answer zero (a
+// build with no device has moved no bytes, built no set and submitted no recording).
 //
 // EVERY OTHER METHOD IS UNREACHABLE AT RUNTIME (create() always fails
 // before any VulkanBackend is ever constructed) but still needs a
@@ -73,10 +76,35 @@ VulkanBackend::VulkanBackend(VulkanBackend&&) noexcept = default;
 VulkanBackend& VulkanBackend::operator=(VulkanBackend&&) noexcept = default;
 
 Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc&, const StepShape&,
-                                                             std::span<const GpuPass>) {
+                                                             std::span<const GpuPass>, std::span<const GpuPass>) {
     return std::unexpected(
         Error{Code::unavailable,
               "the vulkan compute backend was not compiled into this build (SPADE_VULKAN=OFF)"});
+}
+
+Result<void> VulkanBackend::upload_resident(const ArenaSet&) {
+    return std::unexpected(
+        Error{Code::unavailable, "VulkanBackend::upload_resident: unreachable (SPADE_VULKAN=OFF)"});
+}
+
+Result<void> VulkanBackend::readback_resident(ArenaSet&) {
+    return std::unexpected(
+        Error{Code::unavailable, "VulkanBackend::readback_resident: unreachable (SPADE_VULKAN=OFF)"});
+}
+
+Result<void> VulkanBackend::submit_rebuild() {
+    return std::unexpected(Error{Code::unavailable, "VulkanBackend::submit_rebuild: unreachable (SPADE_VULKAN=OFF)"});
+}
+
+TransferBytes VulkanBackend::transfer_bytes() const noexcept { return {}; }
+
+uint32_t VulkanBackend::descriptor_set_count() const noexcept { return 0; }
+
+uint64_t VulkanBackend::on_demand_count() const noexcept { return 0; }
+
+Result<std::vector<std::byte>> VulkanBackend::read_config_image() const {
+    return std::unexpected(
+        Error{Code::unavailable, "VulkanBackend::read_config_image: unreachable (SPADE_VULKAN=OFF)"});
 }
 
 Result<void> VulkanBackend::upload(const ArenaSet&) {

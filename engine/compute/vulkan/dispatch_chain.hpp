@@ -58,9 +58,19 @@ using ChainMark = std::function<void(VkCommandBuffer, uint32_t, uint32_t)>;
 // PRECONDITION: push_offset + push_size <= kMaxChainPushBytes, since each push
 // is read from a command's kMaxChainPushBytes block (asserted; a caller with a
 // run-time push size refuses a larger one by name first).
+//
+// `set_binds` (module API stage 7, Task C2), when not empty, is indexed like `pipelines`: a pipeline whose entry has a
+// non-null `layout` was made with that pipeline layout, and each dispatch of it binds `set` at set index `set_index` and
+// pushes through that layout, before dispatching. An empty span (every other caller) changes nothing.
+struct PipelineSetBinding {
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    uint32_t set_index = 1;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+};
+
 ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, std::span<const VkPipeline> pipelines,
                                   std::span<const ChainCommand> commands, uint32_t push_offset, uint32_t push_size,
-                                  const ChainMark& mark);
+                                  const ChainMark& mark, std::span<const PipelineSetBinding> set_binds = {});
 
 // SPIR-V's SignedZeroInfNanPreserve execution mode (SPV_KHR_float_controls;
 // Khronos SPIRV-Headers' unified1/spirv.hpp). The airflow kernels declare it at

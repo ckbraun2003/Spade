@@ -278,6 +278,11 @@ struct StateArrayShape {
     std::string name{};
     uint32_t elem_size = 0;
     uint32_t capacity_per_world = 0;
+    // A DEVICE-RESIDENT array (module API stage 7, Task C2; sim/module.hpp's Residency::device): its device buffer is made
+    // device-only (zero-filled at create(), no staging twin) and filled by VulkanBackend::upload_resident(), and neither the
+    // step's upload() nor its readback() touches it. One shared staging buffer, sized to the largest resident array, serves
+    // upload_resident() and readback_resident().
+    bool resident = false;
 };
 
 // A DECLARED SCRATCH is shape too (module-API stage 4, Task 7b; sim/module.hpp's
@@ -326,6 +331,11 @@ struct StepShape {
     // bits: the recorder bakes them into every dispatch, and the mirror binds a zeroed buffer at each optional binding
     // whose array the walk does not carry (module API stage 6).
     uint32_t switches = 0;
+    // The one module configuration image bound at `config_binding` (module API stage 7, Task C1): the very bytes ModuleDesc::
+    // config hashes into the schedule identity, uploaded to a device buffer at create() and read-only to the kernels (set 1,
+    // gen::kBinding_airflow_config). Empty, with kNoBinding, is none; one without the other is refused at create().
+    std::vector<std::byte> config_image{};
+    uint32_t config_binding = kNoBinding;
 };
 
 // A built-in kernel the step recorder knows how to dispatch: a module pass

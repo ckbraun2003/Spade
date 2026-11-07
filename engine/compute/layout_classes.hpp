@@ -8,6 +8,7 @@
 // the descriptors, and admit() counts it, all from this one answer.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -49,6 +50,16 @@ inline constexpr uint32_t kSet1BindingSlots = 48;
     AdmitLayout layout{.name = std::string(kernel), .bindings_per_set = {gen::kBindingCount_state}};
     if (!set1_bindings.empty()) layout.bindings_per_set.push_back(static_cast<uint32_t>(set1_bindings.size()));
     return layout;
+}
+
+// A kernel's set-1 subset as the ONE key of its descriptor set layout: sorted, and so independent of the order the recipe
+// names the bindings in. Vulkan requires a descriptor set to be allocated from a layout identically defined to the one the
+// pipeline layout names, so the mirror builds one set-1 layout per distinct key and the recorder looks a kernel's up by it
+// (module API stage 7, Task C2). Duplicates are kernel_layout()'s to refuse, by name, before this is called.
+[[nodiscard]] inline std::vector<uint32_t> normalized_set1_subset(std::span<const uint32_t> set1_bindings) {
+    std::vector<uint32_t> key(set1_bindings.begin(), set1_bindings.end());
+    std::sort(key.begin(), key.end());
+    return key;
 }
 
 }  // namespace spade::compute

@@ -754,6 +754,9 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> sync_resident();
     [[nodiscard]] bool resident_current() const noexcept;
+    // `unavailable` naming the first stale device-resident array and sync_resident(), for a reader (`what`) that cannot sync;
+    // ok when none is stale. testing::checked_state_digest() is built on it.
+    [[nodiscard]] Result<void> check_resident_current(std::string_view what) const;
     [[nodiscard]] Result<void> write_module_rows(std::string_view array, uint32_t world_index, std::span<const std::byte> bytes);
 
     // ---------------------------------------------------------------------
@@ -1100,9 +1103,20 @@ public:
     [[nodiscard]] Result<std::span<const T>> module_rows(std::string_view array, uint32_t world_index) const {
         const Result<ArrayIndex> index = module_array(array);
         if (!index) return std::unexpected(index.error());
+        // A device-resident array whose host copy is stale (stage 7, Task C2): a const reader cannot sync, so it refuses.
+        if (Result<void> current = check_array_current(array, "module_rows"); !current) {
+            return std::unexpected(current.error());
+        }
         const Result<ArrayId<T>> typed = arenas_.typed<T>(*index);
         if (!typed) return std::unexpected(typed.error());
         return arenas_.world_slice(*typed, world_index);
+    }
+
+    // The same, non-const: a stale device-resident array is synced first (stage 7, Task C2).
+    template <class T>
+    [[nodiscard]] Result<std::span<const T>> module_rows(std::string_view array, uint32_t world_index) {
+        if (Result<void> synced = sync_resident(); !synced) return std::unexpected(synced.error());
+        return static_cast<const Simulation&>(*this).module_rows<T>(array, world_index);
     }
 
     // A configuration table by its declared name (sim/module.hpp's
@@ -1571,6 +1585,12 @@ public:
     // The whole state, for snapshots, digests and tests. Const protects the
     // arena DESCRIPTORS, not the bytes (state/registry.hpp).
     [[nodiscard]] const ArenaSet& arenas() const noexcept { return arenas_; }
+    // The non-const form syncs the device-resident arrays first (stage 7, Task C2). It returns a reference, so it cannot report a
+    // failed sync: resident_current() says whether the sync happened. The const form is the host's view as it stands.
+    [[nodiscard]] const ArenaSet& arenas() noexcept {
+        (void)sync_resident();
+        return arenas_;
+    }
     // RED STUB (stage 7 Task C2, lead ruling 1): returns the arenas without checking.
     [[nodiscard]] Result<std::reference_wrapper<const ArenaSet>> checked_arenas() const { return std::cref(arenas_); }
 
@@ -2153,6 +2173,20 @@ private:
     // SubstepContext::state, so a step allocates nothing.
     std::vector<StateView> pass_views_;
     std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
+    // The rebuild hooks' views (stage 7, Task C3) follow the passes' in pass_views_: hook h's are
+    // [hook_view_begin_[h], hook_view_begin_[h + 1]), for the module hook_modules_[h] of schedule_.modules.
+    std::vector<uint32_t> hook_modules_;
+    std::vector<uint32_t> hook_view_begin_;  // hook_modules_.size() + 1 entries
+
+    // DEVICE-RESIDENT ARRAYS (stage 7, Task C2): who holds the current bytes. `in_sync` both; `device_newer` after a Vulkan
+    // step (the host copy is stale); `host_newer` after a host write or a restore (the device copy is stale, uploaded before
+    // the next step). Always `in_sync` on the cpu backend and for a set with no resident array (has_resident_ false).
+    enum class ResidentState : uint8_t { in_sync, host_newer, device_newer };
+    ResidentState resident_state_ = ResidentState::in_sync;
+    bool has_resident_ = false;
+    [[nodiscard]] Result<void> check_array_current(std::string_view array, std::string_view what) const;
+    [[nodiscard]] Result<void> upload_to_device();  // the full upload if dirty, and the resident arrays if host_newer
+    [[nodiscard]] Result<void> run_rebuilds();      // the modules' rebuild hooks, in set order (Task C3)
     // Where every one of those views records a misuse (state/state_view.hpp;
     // stage 5, Task 1): a view's StateView::id is its index in pass_views_.
     // step() refuses a recorded fault at the end of the step, clears it, and

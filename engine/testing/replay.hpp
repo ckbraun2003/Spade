@@ -145,9 +145,18 @@ template <class T>
 // With device-resident arrays (stage 7, Task C2): the non-const form syncs them first, so the digest folds current bytes (D1 = A:
 // a resident array is part of the digest after a sync); the checked const form refuses `unavailable` naming the array and
 // sync_resident() when one is stale, instead of folding stale bytes. A set with none, which is every set today, digests as it
-// always did through either. RED STUBS: both fold what is on the host.
-[[nodiscard]] inline uint64_t state_digest(Simulation& sim) noexcept { return state_digest(static_cast<const Simulation&>(sim)); }
-[[nodiscard]] inline Result<uint64_t> checked_state_digest(const Simulation& sim) noexcept { return state_digest(sim); }
+// always did through either. The non-const form is noexcept and cannot report a failed sync (the device lost): it then folds the
+// host bytes as they stand, and resident_current() says so.
+[[nodiscard]] inline uint64_t state_digest(Simulation& sim) noexcept {
+    (void)sim.sync_resident();
+    return state_digest(static_cast<const Simulation&>(sim));
+}
+[[nodiscard]] inline Result<uint64_t> checked_state_digest(const Simulation& sim) noexcept {
+    if (Result<void> current = sim.check_resident_current("state_digest"); !current) {
+        return std::unexpected(current.error());
+    }
+    return state_digest(sim);
+}
 
 [[nodiscard]] inline uint64_t state_digest(const Simulation& sim) noexcept {
     uint64_t seed = kFnv1a64Offset;
