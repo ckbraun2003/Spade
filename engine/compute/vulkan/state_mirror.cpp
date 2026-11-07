@@ -576,7 +576,10 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // per buffer: S6 Task 6 took the derived-buffer count from one to seven,
     // and hand-unrolled copies of the same sequence are exactly the kind of
     // transcription a reviewer cannot check.
-    const auto make_derived = [&](Entry& e, const DerivedBufferShape& row) -> Result<void> {
+    // `staged` false is a DEVICE-ONLY buffer (stage 7 Task A2, design 7.3): nothing on the host writes or reads it, so it
+    // has no host-visible twin. That is the declared scratch (never uploaded or read back), body_snapshot (the kernels'
+    // own copy) and the dummy bound for an absent optional binding (zero-filled once, below).
+    const auto make_derived = [&](Entry& e, const DerivedBufferShape& row, bool staged) -> Result<void> {
         e.name = row.name;
         e.elem_size = row.elem_size;
         e.world_count = static_cast<uint32_t>(row.count);  // element COUNT for the non-per-world buffers
@@ -591,6 +594,7 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
             !made) {
             return made;
         }
+        if (!staged) return {};
         return create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
                              e.staging_buffer, e.staging_memory, e.staging_mapped);
@@ -603,7 +607,8 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
                    : i < scratch_end      ? self->scratch_entries_[i - hand_listed.size()]
                                           : self->table_entries_[i - scratch_end];
         if (&e != &self->step_params_) {
-            if (Result<void> made = make_derived(e, row); !made) return std::unexpected(made.error());
+            const bool device_only = (i >= hand_listed.size() && i < scratch_end) || &e == &self->body_snapshot_;
+            if (Result<void> made = make_derived(e, row, !device_only); !made) return std::unexpected(made.error());
             continue;
         }
         // -------------------------------------------------------------------
@@ -679,15 +684,19 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     // -----------------------------------------------------------------------
     {
         // Every derived buffer with a device half; step_params_ has none.
+        // A staged buffer is zeroed through its twin; a device-only one has none, so vkCmdFillBuffer zeroes it (same
+        // submit, same fence).
         std::vector<Entry*> derived_buffers;
-        self->for_each_derived([&derived_buffers](Entry& e) {
-            if (e.device_buffer != VK_NULL_HANDLE) derived_buffers.push_back(&e);
+        std::vector<Entry*> device_only;
+        self->for_each_derived([&](Entry& e) {
+            if (e.device_buffer == VK_NULL_HANDLE) return;
+            (e.staging_buffer != VK_NULL_HANDLE ? derived_buffers : device_only).push_back(&e);
         });
         for (Entry* e : derived_buffers) {
             if (e->byte_size > 0) std::memset(e->staging_mapped, 0, static_cast<std::size_t>(e->byte_size));
         }
         if (Result<void> zeroed = run_copy_batch(self->device_, self->cmd_, self->queue_, self->fence_,
-                                                  /*to_device=*/true, derived_buffers);
+                                                  /*to_device=*/true, derived_buffers, &device_only);
             !zeroed) {
             return std::unexpected(zeroed.error());
         }
@@ -813,12 +822,19 @@ const StateMirror::Entry* StateMirror::find(const std::string& name) const noexc
 // subsequent host-side memcpy (readback) or the caller's claim that upload()
 // completed is never racing the GPU.
 Result<void> StateMirror::run_copy_batch(VkDevice device, VkCommandBuffer cmd, VkQueue queue, VkFence fence,
-                                          bool to_device, const std::vector<Entry*>& targets) {
+                                          bool to_device, const std::vector<Entry*>& targets,
+                                          const std::vector<Entry*>* zero_fill) {
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (VkResult r = vkBeginCommandBuffer(cmd, &begin); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkBeginCommandBuffer (StateMirror copy batch)"));
+    }
+
+    if (zero_fill != nullptr) {
+        for (const Entry* e : *zero_fill) {
+            if (e->byte_size > 0) vkCmdFillBuffer(cmd, e->device_buffer, 0, e->byte_size, 0u);
+        }
     }
 
     for (const Entry* e : targets) {

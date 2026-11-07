@@ -291,9 +291,11 @@ private:
     // (not a free function in state_mirror.cpp's anonymous namespace) purely
     // because it takes `Entry*` -- a private nested type free functions
     // outside this class cannot name.
+    // `zero_fill`, when given, lists device-only entries the same submit zeroes with vkCmdFillBuffer (stage 7 A2).
     [[nodiscard]] static Result<void> run_copy_batch(VkDevice device, VkCommandBuffer cmd, VkQueue queue,
                                                         VkFence fence, bool to_device,
-                                                        const std::vector<Entry*>& targets);
+                                                        const std::vector<Entry*>& targets,
+                                                        const std::vector<Entry*>* zero_fill = nullptr);
 
     // Unmaps/destroys/frees one Entry's buffers+memory; safe on a
     // partially-constructed or already-destroyed Entry (every handle it
