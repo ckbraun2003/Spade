@@ -163,6 +163,7 @@ TEST(Admit, TheLayoutIsRefusedBeforeTheBuffer) {
     l.max_storage_buffer_range = 16;
     AdmitShape s = standard_like();  // 30 bindings and a 1 MiB buffer: both over
     const spade::Result<void> r = spade::compute::admit(s, l, kDevice);
+    ASSERT_FALSE(r.has_value()) << "admitted";
     expect_refused(r, {"'state'", "maxPerStageDescriptorStorageBuffers"});
     EXPECT_EQ(r.error().context.find("maxStorageBufferRange"), std::string::npos) << r.error().context;
 }

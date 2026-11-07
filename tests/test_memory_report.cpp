@@ -155,7 +155,8 @@ TEST(GpuMemoryReport, ACapBelowTheTotalRefusesCreateNamingTheLargestBuffer) {
         << "the refusal names the largest buffer '" << largest->name << "': " << capped.error().context;
 }
 
-// The result-neutral knob: a generous cap and no cap give the same digest after the same steps (engine A7).
+// The result-neutral knob: a generous cap and no cap give the same digest after the same steps (engine A7). A PIN: green
+// at red (the cap is ignored there), and it must stay green when the cap starts to act.
 TEST(GpuMemoryReport, ACapChangesNoResult) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     uint64_t digests[2] = {0, 0};
