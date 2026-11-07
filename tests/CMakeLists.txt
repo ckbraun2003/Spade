@@ -364,6 +364,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_step.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
+        test_gpu_lbm.cpp
     )
 endif()
 
@@ -616,6 +617,8 @@ if(SPADE_VULKAN)
         Vulkan::Headers
         # Plan B's chain runner and its kernels' generated headers (B1).
         spade_airflow_runner
+        # The LBM tier's GPU twin (L1): its buffer list and kernels.
+        spade_lbm_chain
     )
     # Build-ORDER edge onto the D9 generators (S6 Task 3). The generated
     # headers' include DIRECTORY already arrives with spade::compute's PUBLIC

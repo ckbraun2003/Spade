@@ -472,3 +472,24 @@ import layouts;
 [[vk::binding(25, 1)]] RWStructuredBuffer<uint>  airflow_publish_v;
 [[vk::binding(26, 1)]] RWStructuredBuffer<uint>  airflow_publish_s;
 [[vk::binding(27, 1)]] RWStructuredBuffer<float> airflow_wall_load;
+
+// THE LBM TIER'S BINDINGS (L1, the GPU twin; docs/design/physics/plans/
+// 2026-11-06-l1-gpu-twin-plan.md). Set 1 bindings 40 to 47 are the LBM's, named
+// lbm_*, append-only like the rest. 28 to 33 are module API stage 7's named
+// appendices (airflow_points, airflow_parts, airflow_posed, airflow_vehicle,
+// airflow_rotor_model, airflow_config, in that order, Physics-confirmed) and 34
+// to 39 are spare (the lead's answer, 2026-11-05), so the numbers below skip them
+// on purpose and the generated kBindingCount_airflow counts DECLARED bindings,
+// not the highest index; nothing keys on the highest index. Declared now: the
+// populations and the macroscopic velocity. Reserved, not declared: lbm_flags (42,
+// L2's solid flags) and 43 to 47.
+//
+// Both are read-write storage words the LBM kernels view as plain arrays:
+//   lbm_f  27 x N floats, direction-major, shifted (f' = f - w), ONE copy (the
+//          esoteric rule needs no second); N <= maxStorageBufferRange / 108
+//   lbm_u  3 x N floats, the velocity pass's output (component-major)
+// The LBM kernels use a pipeline layout of an empty set 0 and a set-1 subset of
+// these (bindings 40 and 41, or 40 alone for a kernel that reads one), per the
+// per-kernel subset layouts of stage 7's design (decision 1).
+[[vk::binding(40, 1)]] RWStructuredBuffer<float> lbm_f;
+[[vk::binding(41, 1)]] RWStructuredBuffer<float> lbm_u;

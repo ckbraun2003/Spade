@@ -120,8 +120,12 @@ inline constexpr std::array<AirflowSetBuffer, 28> kAirflowSetBuffers{{
     {"airflow_wall_load", compute::gen::kBinding_airflow_wall_load, BufferKind::staged},
 }};
 
-static_assert(kAirflowSetBuffers.size() == compute::gen::kBindingCount_airflow,
-              "kAirflowSetBuffers lists every binding of bindings.slang section F");
+// Section F's bindings 0..27 are the airflow kernels'; 28..33 are module API
+// stage 7's named appendices, 34..39 spare, and 40..47 the LBM tier's (spike/lbm), which have their own lists.
+// So the count of DECLARED bindings (kBindingCount_airflow) is no longer this
+// list's size, and the list is pinned to its own last entry instead.
+static_assert(kAirflowSetBuffers.size() == compute::gen::kBinding_airflow_wall_load + 1,
+              "kAirflowSetBuffers lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load");
 static_assert(
     [] {
         for (uint32_t i = 0; i < kAirflowSetBuffers.size(); ++i) {
