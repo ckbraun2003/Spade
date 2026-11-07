@@ -41,6 +41,7 @@
 #include "analysis/live_run.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "editor_flight_readout.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_panels.hpp"
 #include "physics/airflow/solids.hpp"
@@ -199,6 +200,7 @@ struct AirFrame {
     std::vector<end_goal::RotorProbe> probes;
     std::string run_label;
     std::string pressure_line;
+    FlightReadout flight;  // the Flight section's numbers (editor_flight_readout.hpp)
     float speed_top = 1.0f;  // the colour scale's top: twice the hover's induced speed (airflow::speed_top())
     std::string error;  // "" while the air runs; else why it stopped, in the last frame
 };

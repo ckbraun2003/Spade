@@ -211,6 +211,35 @@ TEST(EditorAirflow, AProgramsRunOnTheWorkerIsBitIdenticalToOneThread) {
     EXPECT_FALSE(frame->run_label.empty());
 }
 
+// Run air's flight readout rides on every frame (editor_flight_readout.hpp): the reference quad held at the showcase
+// trim's hover throttle in calm air has no relative wind, four rotors turning, and their static k_T w^2 thrust
+// summing to the weight within the trim's own tolerance (5%: the trim aims the chain's thrust, and the readout is the
+// model's static curve; the READY reports the figure).
+TEST(EditorAirflow, TheFrameCarriesTheFlightReadoutAndHoverThrustHoldsTheWeight) {
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    const Result<ed::AirCases> cases = ed::air_cases(s, region);
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    const Result<an::ShowcaseTrim> trim = an::showcase_trim(cases->discs.resolved.spec, cases->discs.model);
+    ASSERT_TRUE(trim.has_value()) << trim.error().context;
+    const an::ControlProgram program{{{0.0f, an::Controls{true, trim->hover, 0.0f, 0.0f, 0.0f}}}};
+    Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, region, program);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, 5);
+    (*run)->stop();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->error.empty()) << frame->error;
+
+    const ed::FlightReadout& f = frame->flight;
+    ASSERT_EQ(f.rotors.size(), cases->discs.model.rotors.size());
+    EXPECT_FALSE(f.flow) << "calm air: no relative wind";
+    EXPECT_EQ(f.airspeed_mps, 0.0f);
+    for (const ed::RotorReadout& r : f.rotors) EXPECT_GT(r.rpm, 0.0f);
+    EXPECT_GT(f.weight_n, 0.0f);
+    EXPECT_NEAR(f.thrust_n, f.weight_n, 0.05f * f.weight_n) << "thrust " << f.thrust_n << " N, weight " << f.weight_n << " N";
+}
+
 // Stop (§9): stop() joins the worker, nothing is handed over after it, and
 // a second stop() is harmless.
 TEST(EditorAirflow, StopJoinsAndNothingIsHandedOverAfter) {
