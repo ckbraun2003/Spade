@@ -20,19 +20,25 @@
 
 namespace spade::compute {
 
+// Set 1's binding space: numbers 0..47 (28 in use, six new for the fluid module, six spare, eight reserved for the LBM twin).
+// The declared count (gen::kBindingCount_airflow) is NOT the bound -- the numbers are sparse -- so an undeclared number inside
+// the space is refused later, when the pipeline layout is made.
+inline constexpr uint32_t kSet1BindingSlots = 48;
+
 // The layout of `kernel` with the set-1 bindings it names (numbers from bindings.slang section F, each below
-// gen::kBindingCount_airflow and named once). An empty list is the plain state layout: one set of
+// kSet1BindingSlots and named once). An empty list is the plain state layout: one set of
 // gen::kBindingCount_state bindings. A binding out of range or named twice is invalid_argument naming the kernel and the
 // binding.
 [[nodiscard]] inline Result<AdmitLayout> kernel_layout(std::string_view kernel,
                                                       std::span<const uint32_t> set1_bindings) {
-    std::vector<bool> named(gen::kBindingCount_airflow, false);
+    std::vector<bool> named(kSet1BindingSlots, false);
     for (const uint32_t b : set1_bindings) {
-        if (b >= gen::kBindingCount_airflow) {
+        if (b >= kSet1BindingSlots) {
             return std::unexpected(Error{Code::invalid_argument,
                                          "kernel '" + std::string(kernel) + "': set-1 binding " + std::to_string(b) +
-                                             " is not declared (bindings.slang section F has " +
-                                             std::to_string(gen::kBindingCount_airflow) + ")"});
+                                             " is past set 1's " + std::to_string(kSet1BindingSlots) +
+                                             " binding slots (bindings.slang section F, 0-" +
+                                             std::to_string(kSet1BindingSlots - 1u) + ")"});
         }
         if (named[b]) {
             return std::unexpected(Error{Code::invalid_argument, "kernel '" + std::string(kernel) + "': set-1 binding " +

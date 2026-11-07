@@ -69,7 +69,7 @@ struct Fixture {
     const spade::Result<spade::WorldSetDesc> world = floor_world_set(2);
     EXPECT_TRUE(world.has_value()) << world.error().context;
     spade::Result<spade::Simulation> sim =
-        spade::Simulation::create(*world, 1'000'000, substeps, spade::compute::BackendDesc{}, f.set);
+        spade::Simulation::create(*world, 1'200'000, substeps, spade::compute::BackendDesc{}, f.set);
     EXPECT_TRUE(sim.has_value()) << sim.error().context;
     return std::move(*sim);
 }

@@ -151,8 +151,11 @@ TEST(LayoutClasses, ABindingOutOfRangeOrNamedTwiceIsRefusedNamingTheKernel) {
     EXPECT_NE(dup.error().context.find("airflow_step"), std::string::npos) << dup.error().context;
     EXPECT_NE(dup.error().context.find('4'), std::string::npos) << dup.error().context;
 
-    const std::array<uint32_t, 1> past = {spade::compute::gen::kBindingCount_airflow};
+    // Set 1's binding space is 0..47 (the plan: 28 in use plus six new, six spare, eight for the LBM twin); the declared
+    // count (kBindingCount_airflow) is not the bound, the numbers are sparse.
+    const std::array<uint32_t, 1> past = {spade::compute::kSet1BindingSlots};
     const auto out = kernel_layout("airflow_step", past);
     ASSERT_FALSE(out.has_value());
-    EXPECT_NE(out.error().context.find("28"), std::string::npos) << out.error().context;
+    EXPECT_NE(out.error().context.find("airflow_step"), std::string::npos) << out.error().context;
+    EXPECT_NE(out.error().context.find("48"), std::string::npos) << out.error().context;
 }

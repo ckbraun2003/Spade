@@ -74,10 +74,11 @@ TEST(GpuRecordedChain, OnlyTheRecipesTheScheduleNamesAreBuilt) {
     EXPECT_EQ(*with_probe.vulkan_pipeline_count(), 13u);
 
     // A set without the gnss module never names sensor_gnss: its pipeline is not built.
+    // (The module keeps its array, which the engine's own calls need; it just has no pass.)
     spade::modules::ModuleSet no_gnss = spade::modules::standard_modules();
     const auto gnss = std::ranges::find_if(no_gnss, [](const spade::modules::ModuleDesc& m) { return m.name == "gnss"; });
     ASSERT_NE(gnss, no_gnss.end());
-    no_gnss.erase(gnss);
+    gnss->passes = {};
     Simulation without = make(no_gnss);
     ASSERT_TRUE(without.vulkan_pipeline_count().has_value());
     EXPECT_EQ(*without.vulkan_pipeline_count(), 11u);
