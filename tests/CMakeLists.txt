@@ -637,6 +637,9 @@ if(SPADE_VULKAN)
     # that they have been WRITTEN before test_slang_layouts.cpp compiles. See
     # cmake/SpadeSlang.cmake's spade_slang_attach_generated() for why it is
     # stated rather than inferred.
+    # SpadeSlang.cmake's paths and tool directories are variables of the directory that includes it (engine/ does), so this
+    # directory includes it too, as spike/airflow does: without it the generator's embed script path is empty.
+    include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
     # The tests' own kernels (tests/kernels/), built for the tests and never reached by the engine (stage 7 Task B1):
     # dispatch_3d_id is the 3D dispatch's witness. Registered before the attach below so its generator is ordered too.
     spade_slang_kernel_variants(spade_tests dispatch_3d_id SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
