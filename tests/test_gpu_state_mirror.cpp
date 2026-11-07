@@ -1187,16 +1187,17 @@ TEST_F(GpuStateMirrorTest, CreateRecordsTheDeviceLimitsAndAdmitsTheStandardShape
               << " maxPushConstantsSize=" << l.max_push_constants_size << std::endl;
 }
 
-// RED: today a shape whose bodies buffer is hundreds of GB reaches vkAllocateMemory and fails with the allocator's
-// message. admit() refuses it by name first -- the buffer, the limit by its Vulkan name -- before create() returns. (That
-// nothing was allocated is asserted in test_memory_report.cpp, where the allocation ledger exists.)
+// A shape whose sensor rows are hundreds of GB used to reach vkAllocateMemory and fail with the allocator's message.
+// admit() refuses it by name first -- the buffer, the limit by its Vulkan name -- before create() returns. (That
+// nothing was allocated is asserted in test_memory_report.cpp, where the allocation ledger exists. The body-capacity
+// shape is refused earlier still, by the grid ceiling: also there.)
 TEST_F(GpuStateMirrorTest, AnAbsurdShapeIsRefusedByNameBeforeCreateReturns) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     StepShape shape{};
     shape.world_count = 1;
-    shape.body_capacity = 0xFFFFFFFFu;
+    shape.body_capacity = 1;
     shape.element_capacity = 1;
-    shape.sensor_capacity = 1;
+    shape.sensor_capacity = 0xFFFFFFFFu;
     shape.substeps = 1;
     shape.h = 0.001f;
     shape.arrays = walk_shapes(standard_schedule(), shape);

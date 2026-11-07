@@ -171,31 +171,52 @@ TEST(GpuMemoryReport, ACapChangesNoResult) {
     EXPECT_EQ(digests[0], digests[1]);
 }
 
-// The ledger counts the mirror's allocations, and a refusal happens before the first one (Review Focus 1; the lead's
-// note on Task A1: this assertion lives here, where the ledger exists). A valid create counts more than zero; an
-// over-limit create leaves the count where it was.
-TEST(GpuMemoryReport, ARefusalHappensBeforeAnyAllocation) {
-    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+namespace {
+
+// Creates the backend for a shape with the given capacities and returns the refusal, after checking the ledger did not
+// move: a refusal happens before the first allocation (Review Focus 1; the lead's note on Task A1: this assertion lives
+// here, where the ledger exists).
+[[nodiscard]] spade::Error refused_without_allocating(uint32_t body_capacity, uint32_t sensor_capacity) {
     Simulation sim = make(BackendDesc{.kind = BackendKind::vulkan});
     const uint64_t before = spade::compute::mirror_allocation_count();
-    ASSERT_GT(before, 0u) << "a created mirror has allocated; the ledger must count it";
+    EXPECT_GT(before, 0u) << "a created mirror has allocated; the ledger must count it";
 
     StepShape absurd{};
     absurd.world_count = 1;
-    absurd.body_capacity = 0xFFFFFFFFu;  // the bodies buffer alone is hundreds of GB: over every device's range
+    absurd.body_capacity = body_capacity;
     absurd.element_capacity = 1;
-    absurd.sensor_capacity = 1;
+    absurd.sensor_capacity = sensor_capacity;
     absurd.substeps = 1;
     absurd.h = 0.001f;
     const spade::modules::CompiledSchedule schedule = *spade::modules::compile_schedule(spade::modules::standard_modules());
     auto arrays = spade::state_array_shapes(schedule, absurd);
-    ASSERT_TRUE(arrays.has_value()) << arrays.error().context;
+    EXPECT_TRUE(arrays.has_value()) << arrays.error().context;
+    if (!arrays) return arrays.error();
     absurd.arrays = std::move(*arrays);
     const auto passes = spade::modules::gpu_passes(schedule);
     const Result<std::unique_ptr<spade::compute::VulkanBackend>> backend =
         spade::compute::VulkanBackend::create(BackendDesc{.kind = BackendKind::vulkan}, absurd, passes);
-    ASSERT_FALSE(backend.has_value());
-    EXPECT_EQ(backend.error().code, spade::Code::capacity_exceeded) << backend.error().context;
-    EXPECT_NE(backend.error().context.find("maxStorageBufferRange"), std::string::npos) << backend.error().context;
+    EXPECT_FALSE(backend.has_value());
     EXPECT_EQ(spade::compute::mirror_allocation_count(), before) << "the refusal came after an allocation";
+    if (backend) return spade::Error{spade::Code::internal, "created"};
+    return backend.error();
+}
+
+}  // namespace
+
+// The ledger counts the mirror's allocations. A valid create counts more than zero; an over-limit create leaves the
+// count where it was. Sensor rows hundreds of GB wide reach the device's range check, named.
+TEST(GpuMemoryReport, ARefusalHappensBeforeAnyAllocation) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::Error refused = refused_without_allocating(1, 0xFFFFFFFFu);
+    EXPECT_EQ(refused.code, spade::Code::capacity_exceeded) << refused.context;
+    EXPECT_NE(refused.context.find("maxStorageBufferRange"), std::string::npos) << refused.context;
+}
+
+// The other refusal that was found: a body_capacity of 0xFFFFFFFF never reaches the device's limits, because the
+// CollisionDynamic key array would pass kMaxGridEntries -- refused by that name, before any allocation.
+TEST(GpuMemoryReport, ABodyShapePastTheGridCeilingIsRefusedByNameBeforeAnyAllocation) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::Error refused = refused_without_allocating(0xFFFFFFFFu, 1);
+    EXPECT_NE(refused.context.find("kMaxGridEntries"), std::string::npos) << refused.context;
 }
