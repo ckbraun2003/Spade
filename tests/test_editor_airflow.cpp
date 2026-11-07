@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <limits>
@@ -209,6 +210,63 @@ TEST(EditorAirflow, AProgramsRunOnTheWorkerIsBitIdenticalToOneThread) {
     EXPECT_NEAR(shift.y, 2.0f, 1e-6f);
     EXPECT_NEAR(shift.z, 3.0f, 1e-6f);
     EXPECT_FALSE(frame->run_label.empty());
+}
+
+// Run air's flight readout rides on every frame (editor_flight_readout.hpp): the reference quad held at the showcase
+// trim's hover throttle in calm air has no relative wind, four rotors turning, and their static k_T w^2 thrust
+// summing to the weight within 5% once the rotors have spun up.
+//
+// WHEN "ONCE SPUN UP" IS. The program arms the drone at t = 0 with the rotors at rest, so thrust follows omega^2 up
+// a first-order lag. The lag's time constant is the vehicle's own: the compiled airframe's hover fit,
+// steady_state_time_constant() in vehicles/airframe_compile.cpp, carried on each RotorDesc as `tau`. The binding check
+// is the first frame at or after 6 tau (about 0.25% of omega and 0.5% of thrust left), with the 5% unchanged. The
+// first run of this test looked at frame 5 (t about 0.167 s) and read thrust 3.2876 N against a weight of 5.1583 N,
+// -36%: the rotors were still spinning up. Earlier in the run, the frame at about 5 is only REPORTED, beside what a
+// first-order lag from rest predicts with that tau, (1 - e^(-t/tau))^2, so the explanation is checked, not assumed.
+TEST(EditorAirflow, TheFrameCarriesTheFlightReadoutAndHoverThrustHoldsTheWeight) {
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    const Result<ed::AirCases> cases = ed::air_cases(s, region);
+    ASSERT_TRUE(cases.has_value()) << cases.error().context;
+    const Result<an::ShowcaseTrim> trim = an::showcase_trim(cases->discs.resolved.spec, cases->discs.model);
+    ASSERT_TRUE(trim.has_value()) << trim.error().context;
+    const an::ControlProgram program{{{0.0f, an::Controls{true, trim->hover, 0.0f, 0.0f, 0.0f}}}};
+    Result<std::unique_ptr<ed::AirflowRun>> run = ed::AirflowRun::start(s, region, program);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const float tau = cases->discs.model.rotors.front().tau;
+    ASSERT_GT(tau, 0.0f);
+    const std::shared_ptr<const ed::AirFrame> early = wait_for_frames(**run, 5);
+    ASSERT_NE(early, nullptr);
+    ASSERT_TRUE(early->error.empty()) << early->error;
+    const auto settled_frames = static_cast<uint64_t>(std::ceil(6.0f * tau * 30.0f));  // 30 frames a simulated second
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**run, std::max(settled_frames, early->frames));
+    (*run)->stop();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->error.empty()) << frame->error;
+    ASSERT_GE(frame->t_s, 6.0 * static_cast<double>(tau) - 1e-6) << "the frame is not 6 tau in";
+
+    // Report only: the early frame's omega against the settled one's, and its thrust against the weight, beside the
+    // first-order lag's prediction from rest with the airframe's tau.
+    {
+        const double lag = 1.0 - std::exp(-early->t_s / static_cast<double>(tau));
+        const double omega_ratio = static_cast<double>(early->flight.rotors.front().rpm) /
+                                   static_cast<double>(frame->flight.rotors.front().rpm);
+        std::printf("[ spin-up ] tau %.4f s (the airframe's hover fit); frame %llu at t %.3f s: omega / settled %.4f "
+                    "(a first-order lag predicts %.4f); thrust / weight %.4f (predicts %.4f); settled frame %llu at "
+                    "t %.3f s\n",
+                    static_cast<double>(tau), static_cast<unsigned long long>(early->frames), early->t_s, omega_ratio, lag,
+                    static_cast<double>(early->flight.thrust_n / early->flight.weight_n), lag * lag,
+                    static_cast<unsigned long long>(frame->frames), frame->t_s);
+    }
+
+    const ed::FlightReadout& f = frame->flight;
+    ASSERT_EQ(f.rotors.size(), cases->discs.model.rotors.size());
+    EXPECT_FALSE(f.flow) << "calm air: no relative wind";
+    EXPECT_EQ(f.airspeed_mps, 0.0f);
+    for (const ed::RotorReadout& r : f.rotors) EXPECT_GT(r.rpm, 0.0f);
+    EXPECT_GT(f.weight_n, 0.0f);
+    EXPECT_NEAR(f.thrust_n, f.weight_n, 0.05f * f.weight_n) << "thrust " << f.thrust_n << " N, weight " << f.weight_n << " N";
 }
 
 // Stop (§9): stop() joins the worker, nothing is handed over after it, and

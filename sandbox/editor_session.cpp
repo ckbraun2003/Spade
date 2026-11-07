@@ -348,6 +348,8 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     // volume already where the drone is placed; the band's speed by the
     // sandbox's clock, never the run's.
     air_frame_ = w.air() != nullptr ? w.air()->latest() : nullptr;
+    w.panels().flight = w.air() != nullptr && air_frame_ ? editor::flight_rows(air_frame_->flight)
+                                                         : std::vector<editor::FlightRow>{};
     if (w.air() == nullptr) {
         air_speed_ = editor::AirSpeed{};
         w.panels().air_band.clear();
