@@ -144,7 +144,8 @@ constexpr uint32_t kFieldRhs = 1;
 
 std::vector<compute::ChainCommand> projection_chain(const MgLayout& layout, const af::GridShape& shape,
                                                     const std::array<af::FaceKind, 6>& kinds, uint32_t n_v,
-                                                    const ProjectionPipelines& p, uint32_t workgroup_size) {
+                                                    const ProjectionPipelines& p, uint32_t workgroup_size,
+                                                    std::span<const compute::ChainCommand> measure) {
     const bool closed =
         std::none_of(kinds.begin(), kinds.end(), [](af::FaceKind k) { return k == af::FaceKind::pressure_outlet; });
     std::vector<compute::ChainCommand> out;
@@ -155,6 +156,7 @@ std::vector<compute::ChainCommand> projection_chain(const MgLayout& layout, cons
         append_v_cycle(out, layout, p, 0, workgroup_size);
         if (closed) append_remove_mean(out, shape, p, kFieldPressure, workgroup_size);
     }
+    out.insert(out.end(), measure.begin(), measure.end());
     const uint32_t faces[3] = {(shape.nx + 1u) * shape.ny * shape.nz, shape.nx * (shape.ny + 1u) * shape.nz,
                                shape.nx * shape.ny * (shape.nz + 1u)};
     for (uint32_t c = 0; c < 3; ++c) {

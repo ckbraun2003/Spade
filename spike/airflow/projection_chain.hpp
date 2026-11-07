@@ -124,9 +124,11 @@ void append_v_cycle(std::vector<compute::ChainCommand>& out, const MgLayout& lay
 // project()'s chain without solids: the divergence, n_v V(2,2) cycles from
 // airflow_pressure's p, the gradient subtracted from u, v and w; on a closed
 // domain, b's mean removed before the cycles and p's after each one.
+// `measure`, when given, runs after the last cycle and before the gradient, as
+// project() measures its residual there (the step's health, 0fcb99f9).
 [[nodiscard]] std::vector<compute::ChainCommand> projection_chain(
     const MgLayout& layout, const physics::airflow::GridShape& shape,
     const std::array<physics::airflow::FaceKind, 6>& kinds, uint32_t n_v, const ProjectionPipelines& p,
-    uint32_t workgroup_size);
+    uint32_t workgroup_size, std::span<const compute::ChainCommand> measure = {});
 
 }  // namespace spade::airflow_gpu

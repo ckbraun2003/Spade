@@ -41,7 +41,7 @@ public:
 ```
 
 - **Buffers.**
-  - Every buffer is device-local and lives as long as the runner. One host-visible staging buffer, the largest of any upload or read, is reused.
+  - Every buffer is device-local and lives as long as the runner. One host-visible staging buffer, the largest of any upload or read, is reused, followed in the same allocation by a reserved readback region (`RunnerDesc::readback_bytes`, 0fcb99f9): a chain may record readbacks at `record()`, named buffer regions copied into its own part of that region at the chain's end and read through `readback()` after the wait `submit()` already makes. Each chain's part is carved at `record()`, in order, each readback 16-byte aligned, so chains never alias; the trailing barriers are not in `ChainCounts`; the copies run after the last mark.
   - **Each buffer is tagged with its kind** (Core's stage 7 design §9): device-only, resident or staged, the same three kinds the mirror gets. So the list maps one-to-one onto stage 7's `ScratchShape` and resident arrays.
   - **Bindings:** the kernels bind at the fixed indices of an **airflow block that Core reserves now in `bindings.slang`**, so plan C's module binds the same kernels unchanged. The runner builds its own descriptor set layout with those binding numbers. It is not the state set, so no `StepShape` or mirror is touched (G1).
   - A fluid step is one recorded chain, resubmitted. Publish is a second chain.

@@ -345,8 +345,8 @@ struct CpuFluid {
     return differing(a.x, b.x) + differing(a.y, b.y) + differing(a.z, b.z);
 }
 
-// With solids, the health fields fluid_step() fills from the CG's report:
-// how many of the five differ.
+// The health fields fluid_step() fills from the projection's report (the CG's with solids, plan A's
+// residual without, 0fcb99f9): how many of the five differ.
 [[nodiscard]] std::size_t health_differing(const af::FluidHealth& cpu, const af::FluidHealth& gpu) {
     return differing(cpu.pressure_residual, gpu.pressure_residual) +
            (cpu.pressure_iterations != gpu.pressure_iterations ? 1u : 0u) +
@@ -384,7 +384,14 @@ struct CpuFluid {
         }
         EXPECT_EQ(g->fault, af::FluidFault::none);
         if (!solids) {
+            // Plan A's report (0fcb99f9): the device's residual after its cycles is the CPU's, bit for
+            // bit, and the CPU's is not zero, so a device that says 0 is wrong.
             EXPECT_EQ(g->pressure_iterations, c.cfg.n_v);
+            EXPECT_GT(h.pressure_residual, 0.0f) << c.name << " step " << step + 1;
+            const std::size_t dh = health_differing(h, *g);
+            std::printf("[ step    ] %-28s   plan A residual %.6g (CPU %.6g); %zu of 5 health values differ\n", "",
+                        static_cast<double>(g->pressure_residual), static_cast<double>(h.pressure_residual), dh);
+            total += dh;
         }
         if (const auto ok = (*gpu)->read(read); !ok) {
             ADD_FAILURE() << ok.error().context;
@@ -449,6 +456,48 @@ TEST(GpuAirflowStep, OpenBoxWithDiscsMatchesFluidStepBitForBit) { expect_bit_equ
 TEST(GpuAirflowStep, OddSizedOpenBoxMatchesFluidStepBitForBit) { expect_bit_equal(odd_open_box()); }
 
 TEST(GpuAirflowStep, PeriodicChannelMatchesFluidStepBitForBit) { expect_bit_equal(periodic_channel()); }
+
+// The step makes ONE fence wait (0fcb99f9): the plan A health word comes from the chain's own readback, not a second
+// submit. The first step also uploads the discs' records (its own waits); the second, with the same discs, is one.
+TEST(GpuAirflowStep, AStepWithoutSolidsMakesOneFenceWait) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Case c = open_box();
+    const af::MacGrid start = noisy(c, 0x57E9ull, 1.0f);
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    ASSERT_TRUE((*gpu)->step(c.discs).has_value());
+    for (int step = 0; step < 3; ++step) {
+        const uint64_t before = (*gpu)->waits();
+        const auto h = (*gpu)->step(c.discs);
+        ASSERT_TRUE(h.has_value()) << h.error().context;
+        EXPECT_EQ((*gpu)->waits() - before, 1u) << "step " << step + 2;
+        EXPECT_GT(h->pressure_residual, 0.0f);
+    }
+}
+
+// Plan A's health (0fcb99f9) at every cycle count a run may set: the open, odd, periodic and closed (remove_mean)
+// domains, residual and announce equal to the CPU's bit for bit. run_both() compares them every step.
+TEST(GpuAirflowStep, PlanAHealthMatchesFluidStepAtEveryVCycleCount) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    for (const Case& base : {open_box(), odd_open_box(), periodic_channel(), lid_box()}) {
+        for (uint32_t n_v = 1; n_v <= 4; ++n_v) {
+            Case c = base;
+            c.cfg.n_v = n_v;
+            const auto d = run_both(*ctx, c, 64u);
+            ASSERT_TRUE(d.has_value()) << c.name << " n_v " << n_v;
+            if (bit_equal) {
+                EXPECT_EQ(*d, 0u) << c.name << " n_v " << n_v;
+            }
+        }
+    }
+}
 
 TEST(GpuAirflowStep, ClosedLidBoxMatchesFluidStepBitForBit) { expect_bit_equal(lid_box()); }
 
