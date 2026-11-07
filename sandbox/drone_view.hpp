@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -181,6 +182,42 @@ inline bool apply_panel_edits(DroneSim& drone, DronePanelModel& panel) {
     }
     panel.status.clear();
     return true;
+}
+
+// What the live smoke's drone_box/backend step asks of a backend switch. Display-free, so a test asks it too.
+struct BackendSwitch {
+    bool rebuilt = false;          // the stand was rebuilt for the new backend
+    std::string status;            // the panel's status after: empty unless the switch was refused
+    bool vulkan = false;           // the backend the stand runs on now
+    float attitude_shift_rad = 0;  // the attitude across the rebuild
+    bool rates_carried = false;    // omega_body across the rebuild, bit for bit
+};
+
+// Sets the panel's backend to `vulkan` and applies the edit now (the debounce is lifted: the step is the user letting
+// go of the control).
+[[nodiscard]] inline BackendSwitch switch_backend(DroneSim& drone, DronePanelModel& panel, bool vulkan) {
+    const DroneReadouts before = drone.readouts();
+    panel.status.clear();
+    panel.edited.vulkan = vulkan;
+    panel.ui_item_active = false;
+    BackendSwitch sw;
+    sw.rebuilt = apply_panel_edits(drone, panel);
+    const DroneReadouts after = drone.readouts();
+    sw.status = panel.status;
+    sw.vulkan = drone.options().vulkan;
+    // atan2 of the vector part, not acos(w): acos turns one ulp of w into ~5e-4 rad near w = 1.
+    const glm::quat e = glm::conjugate(before.orientation) * after.orientation;
+    sw.attitude_shift_rad = 2.0f * std::atan2(glm::length(glm::vec3(e.x, e.y, e.z)), std::fabs(e.w));
+    sw.rates_carried = before.omega_body == after.omega_body;
+    return sw;
+}
+
+// The stand's body is at its anchor, the origin, and still: pos and vel bitwise +0.0f (the lock's select).
+[[nodiscard]] inline bool stand_held(const DroneSim& drone) {
+    const auto body = drone.sim().body(drone.vehicle().body);
+    if (!body) return false;
+    const glm::vec3 zero(0.0f);
+    return std::memcmp(&(*body)->pos, &zero, sizeof(zero)) == 0 && std::memcmp(&(*body)->vel, &zero, sizeof(zero)) == 0;
 }
 
 }  // namespace spade::sandbox

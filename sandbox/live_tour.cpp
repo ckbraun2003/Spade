@@ -95,7 +95,8 @@ struct StepName {
 constexpr std::array kSteps = {
     StepName{"drone_box", "open"},       StepName{"drone_box", "orbit"},
     StepName{"drone_box", "attitude"},   StepName{"drone_box", "level"},
-    StepName{"drone_box", "throttle"},   StepName{"drone_box", "hud"},
+    StepName{"drone_box", "throttle"},   StepName{"drone_box", "backend"},
+    StepName{"drone_box", "hud"},
     StepName{"airflow", "live"},
     StepName{"editor", "open"},          StepName{"editor", "picker"},
     StepName{"editor", "select"},        StepName{"editor", "place"},
@@ -559,6 +560,33 @@ void drone_box(Tour& t, DroneSession& d) {
                 "mean rotor speed " + fmt(omega0) + " -> " + fmt(omega1) + " rad/s");
         d.panel().edited.throttle = 1.0f;
         t.pump(60, idle, draw);
+    });
+
+    // The stand on Vulkan beside the live GL window and back (Core's translation lock, L34): the panel's rebuild
+    // carries the attitude, and the lock holds pos and vel bitwise. The tour edits the panel's value directly, as the
+    // throttle step does, so it does not wait for the Advanced section's backend combo. On a box with no Vulkan
+    // device the refusal is the check, and a card says why; the stand stays on the CPU and the tour goes on.
+    t.step("drone_box", "backend", [&] {
+        for (const bool vulkan : {true, false}) {
+            const std::string name = vulkan ? "vulkan" : "cpu";
+            const BackendSwitch sw = switch_backend(d.drone(), d.panel(), vulkan);
+            if (vulkan && !sw.rebuilt) {
+                s.check(!sw.status.empty() && !sw.vulkan, "vulkan-refused-with-reason", sw.status);
+                t.sink().set_card("Drone stand, Vulkan\n" + wrap_card_line(sw.status, 70));
+                t.pump(kChapterCardFrames, idle, draw);
+                t.sink().set_card({});
+                return;
+            }
+            s.check(sw.rebuilt && sw.status.empty() && sw.vulkan == vulkan, "switched-to-" + name,
+                    "rebuilt " + std::string(sw.rebuilt ? "yes" : "no") + ", panel status '" + sw.status + "'");
+            s.check(sw.attitude_shift_rad <= 1e-6f && sw.rates_carried, "attitude-carried-to-" + name,
+                    "shift " + std::format("{:.2e}", sw.attitude_shift_rad) + " rad, rates " +
+                        (sw.rates_carried ? "bitwise equal" : "changed"));
+            t.pump(60, idle, draw);
+            s.check(d.drone().readouts().tick > 0u, "stepping-on-" + name,
+                    "tick " + std::to_string(d.drone().readouts().tick));
+            s.check(stand_held(d.drone()), "held-on-" + name, "pos and vel bitwise zero");
+        }
     });
 
     // F1's own path: poll() calls toggle_help() on the key's press. The checks
