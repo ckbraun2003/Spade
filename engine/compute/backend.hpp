@@ -185,6 +185,13 @@ struct MemoryRecord {
     bool device_local = false;  // the chosen type is DEVICE_LOCAL
 };
 
+// Bytes the Vulkan path has moved across the host/device boundary since create(): whole-arena uploads, the per-step readback and
+// the resident-array syncs (module API stage 7, Task C2). A diagnostic, like upload_count().
+struct TransferBytes {
+    uint64_t uploaded = 0;
+    uint64_t read_back = 0;
+};
+
 struct MemoryReport {
     std::vector<MemoryRecord> buffers{};
     uint64_t device_bytes = 0;      // the device records' total

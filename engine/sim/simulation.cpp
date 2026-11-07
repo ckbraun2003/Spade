@@ -1634,6 +1634,15 @@ Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains()
 // RED STUBS (stage 7 Task C1).
 std::vector<modules::ConfigurationEntry> Simulation::configuration_report() const { return {}; }
 
+// RED STUBS (stage 7 Task C2).
+Result<compute::TransferBytes> Simulation::vulkan_transfer_bytes() const { return compute::TransferBytes{}; }
+Result<uint32_t> Simulation::vulkan_descriptor_set_count() const { return 1u; }
+Result<void> Simulation::sync_resident() { return {}; }
+bool Simulation::resident_current() const noexcept { return true; }
+Result<void> Simulation::write_module_rows(std::string_view, uint32_t, std::span<const std::byte>) { return {}; }
+Result<SnapshotBlob> Simulation::snapshot() { return static_cast<const Simulation&>(*this).snapshot(); }
+
+// RED STUB (stage 7 Task C1; the device half arrives with the set-1 mirror, Task C2).
 Result<std::vector<std::byte>> Simulation::vulkan_config_image() const { return std::vector<std::byte>{}; }
 
 Result<uint32_t> Simulation::vulkan_pipeline_count() const {

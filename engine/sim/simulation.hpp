@@ -731,6 +731,26 @@ public:
     // members are: this class body only forward-declares the type.
     [[nodiscard]] uint64_t vulkan_upload_count() const noexcept;
 
+    // Bytes moved across the host/device boundary since create(), and how many descriptor sets the mirror built (1: set 0
+    // only; 2 with a set-1 user): `unavailable` on the cpu backend. Diagnostics (stage 7, Task C2).
+    [[nodiscard]] Result<compute::TransferBytes> vulkan_transfer_bytes() const;
+    [[nodiscard]] Result<uint32_t> vulkan_descriptor_set_count() const;
+
+    // ---------------------------------------------------------------------
+    // Device-resident arrays (stage 7, Task C2). An array declared Residency::device lives on the device between steps, so
+    // the host copy can be STALE after a Vulkan step. Every host read path either syncs first or refuses by name; none
+    // returns stale bytes silently:
+    //   - the NON-CONST snapshot(), module_rows<T>() and arenas() sync (a device read per stale array, once);
+    //   - the CONST ones refuse `unavailable` naming the array and sync_resident() (module_rows, snapshot), or, for arenas()
+    //     which returns a reference, are the CPU/host-only view (see arenas()' note);
+    //   - testing::state_digest(Simulation&) syncs; testing::checked_state_digest(const Simulation&) refuses.
+    // sync_resident() brings every stale array current; resident_current() says whether none is. A host WRITE of a resident
+    // array (write_module_rows) syncs first, writes, then marks the array for upload before the next step.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<void> sync_resident();
+    [[nodiscard]] bool resident_current() const noexcept;
+    [[nodiscard]] Result<void> write_module_rows(std::string_view array, uint32_t world_index, std::span<const std::byte> bytes);
+
     // ---------------------------------------------------------------------
     // S6 Task 6: the StepWitness the Integrate kernel published on its most
     // recent dispatch -- the tick it READ out of the per-step buffer and the
@@ -1338,6 +1358,7 @@ public:
     // exist, so a restore always restores state from before the fault.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<SnapshotBlob> snapshot() const;
+    [[nodiscard]] Result<SnapshotBlob> snapshot();  // syncs the resident arrays first (stage 7, Task C2)
 
     // ---------------------------------------------------------------------
     // restore -- overwrite all state from a blob, and reset the clock to it.

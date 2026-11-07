@@ -186,6 +186,12 @@ using RowInitFn = void (*)(const RowInit&) noexcept;
 // prefix: the caller adds "add_imu_sensor: " or "attach_row: ".
 using RowValidateFn = Result<void> (*)(std::span<const std::byte> spawn);
 
+// Where an array's rows live between steps (module API stage 7, Task C2). `host` (the default) is every array today: the
+// step uploads it and reads it back. `device` keeps the rows on the device across steps: the step neither uploads nor reads
+// them back, and a host read syncs them first (Simulation::sync_resident()). On the cpu backend a device array is an ordinary
+// host array. Only a per_world array may be `device`, of a module that claims a CPU `reference` (the CPU run is its meaning).
+enum class Residency : uint8_t { host, device };
+
 struct ArrayDecl {
     std::string_view name;     // the registered name: unique in the set, no '.', not in kCoreArrays
     uint32_t elem_size = 0;    // attached_row_size<T>() for per_element and per_sensor; row_size<T>() otherwise
@@ -198,6 +204,7 @@ struct ArrayDecl {
     uint32_t spawn_size = 0;          // bytes of the spawn record, <= kMaxSpawnBytes
     RowInitFn init = nullptr;         // writes the row at the step boundary
     RowValidateFn validate = nullptr; // checks a record when it is offered, before anything is reserved
+    Residency residency = Residency::host;  // stage 7, Task C2
 };
 
 // The row inside RowInit::row, typed. Row is the array's own row type, so
@@ -572,6 +579,7 @@ struct CompiledArray {
     uint32_t spawn_size = 0;    // attached arrays only, as declared
     RowInitFn init = nullptr;
     RowValidateFn validate = nullptr;
+    Residency residency = Residency::host;  // as declared (stage 7, Task C2)
 };
 
 // One declared stream of the compiled table.
