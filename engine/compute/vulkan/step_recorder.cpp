@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "bindings.gen.hpp"
+#include "compute/admit.hpp"
 #include "collision_dynamic.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
 #include "field_dryden.spv.gen.hpp"
@@ -106,90 +107,7 @@ namespace {
 }
 
 // ---------------------------------------------------------------------------
-// Can this device actually run a local size of `workgroup_size` (S6 Task 9b)?
-//
-// CHECKED IN CODE RATHER THAN LEFT TO THE DRIVER, for exactly the reason
-// context.cpp checks its one capability clause (CORE-5) there:
-// exceeding maxComputeWorkGroupInvocations or maxComputeWorkGroupSize[0] is a
-// Vulkan VALID-USAGE violation, i.e. undefined behaviour, NOT a guaranteed
-// VK_ERROR_* from vkCreateComputePipelines -- and this project enables
-// validation layers only in Debug and only if present. Both limits have a
-// guaranteed minimum of 128 in every Vulkan implementation, so
-// kSupportedWorkgroupSizes cannot exceed them on a conformant device; this
-// check is what turns "cannot" into a named error instead of a trust
-// assumption.
-[[nodiscard]] bool device_supports_local_size(VkPhysicalDevice physical_device, uint32_t workgroup_size,
-                                              uint32_t& out_max_invocations, uint32_t& out_max_size_x) {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(physical_device, &properties);
-    out_max_invocations = properties.limits.maxComputeWorkGroupInvocations;
-    out_max_size_x = properties.limits.maxComputeWorkGroupSize[0];
-    return workgroup_size <= out_max_invocations && workgroup_size <= out_max_size_x;
-}
-
-// ---------------------------------------------------------------------------
-// And can it dispatch that many GROUPS (S6 Task 9b review, minor M2)?
-//
-// THIS IS THE LIMIT THAT ACTUALLY SCALES WITH THIS TASK. The two limits above
-// bound the local size, which this change moves between 32 and 128 -- both far
-// inside every implementation's guaranteed minimum, so neither can realistically
-// fire. maxComputeWorkGroupCount[0] bounds the OTHER side of the same division:
-// group count is ceil(extent / local size), so HALVING the workgroup size
-// DOUBLES it. A shape that dispatched N groups at the old fixed 64 dispatches 2N
-// at 32.
-//
-// The guaranteed minimum is 65535 while compute/grid_entry.hpp's kMaxGridEntries
-// ceiling is 2^26, so a large shape can exceed this -- which was ALREADY true at
-// 64 and is a pre-existing exposure this task WIDENS BY 2x rather than
-// introduces. Stated that way deliberately: the honest description is not "new
-// hazard" but "existing hazard, one factor of two closer, and now checked".
-//
-// compute/vulkan/probe_runner.cpp:174 already had the house pattern for exactly
-// this check on its own single dispatch; this is the same check for the recorded
-// chain's four grids, and it belongs beside the local-size gate because the two
-// are the two halves of one division.
-//
-// A HOST-SIDE TEST FOR THE REJECTING BRANCH, ASSESSED AND DEFERRED (S6
-// hygiene; T9b review M2-followup). This function is a two-line query-then-
-// compare, and in isolation would be trivial to test: read the box's OWN
-// real maxComputeWorkGroupCount[0] once, then call this with group_count ==
-// (that value + 1) to force `false` deterministically, on any device,
-// without needing to actually construct a StepRecorder shape that reaches
-// the limit. That is NOT constructible today without a code change, though,
-// for one reason: this function is TU-private (the anonymous namespace
-// opened above), so no test outside this file can call it directly, and the
-// smallest-diff bar for a hygiene pass does not cover exporting a new
-// internal-only entry point (this file has no precedent for one -- grepped).
-// The alternative -- reaching this branch through StepRecorder::create()'s
-// public API with a genuinely oversized shape -- is very likely UNREACHABLE
-// on real hardware: kMaxGridEntries (2^26, compute/grid_entry.hpp) divided
-// by the smallest supported workgroup_size (32) is the largest group_count
-// this engine can ever ask for, ~2.1M, and Vulkan's GUARANTEED MINIMUM for
-// maxComputeWorkGroupCount[0] is only 65535 (so this branch is not dead by
-// the spec) but any real GPU driver, including this box's Iris, is expected
-// to report far more (commonly UINT32_MAX-class) -- meaning a shape big
-// enough to trip it through the public API would also very likely first
-// trip kMaxGridEntries's own, unrelated ceiling. Flagged here rather than
-// guessed at with an untested assumption about this box's actual reported
-// limit.
-//
-// T11 FINAL TRIAGE (whole-plan review W7c): RESOLVED to (b) -- this analysis
-// is ACCEPTED ON THE RECORD as the reason no test exists for the rejecting
-// branch. No test-visibility seam was added. The two things that would have
-// justified (a) instead -- a real path to constructing the rejecting branch
-// through StepRecorder::create()'s public API, or a precedent elsewhere in
-// this file for exporting a TU-private helper for tests -- are both absent
-// (grepped, per the paragraph above), and this comment's own arithmetic
-// already IS the artifact a reviewer would want from a test: it shows the
-// branch is reachable per the Vulkan spec's guaranteed minimum but not
-// through any shape this engine can actually construct.
-[[nodiscard]] bool device_supports_group_count(VkPhysicalDevice physical_device, uint32_t group_count,
-                                               uint32_t& out_max_group_count) {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(physical_device, &properties);
-    out_max_group_count = properties.limits.maxComputeWorkGroupCount[0];
-    return group_count <= out_max_group_count;
-}
+// The device-limit checks of a created recorder (local size, group counts) are compute::admit()'s (stage 7 Task A1).
 
 // log2 of a power of two, for the bitonic stage count. `segment` comes from
 // grid_domain_of() and is a power of two >= 1 by construction.
@@ -249,18 +167,6 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
                                          supported_workgroup_sizes_text()});
     }
 
-    uint32_t max_invocations = 0;
-    uint32_t max_size_x = 0;
-    if (!device_supports_local_size(ctx.physical_device(), workgroup_size, max_invocations, max_size_x)) {
-        return std::unexpected(Error{
-            Code::unavailable,
-            "physical device '" + std::string(ctx.device_name()) + "' cannot run a local size of " +
-                std::to_string(workgroup_size) + " (maxComputeWorkGroupInvocations=" +
-                std::to_string(max_invocations) + ", maxComputeWorkGroupSize[0]=" +
-                std::to_string(max_size_x) +
-                "). Requesting one anyway would be a Vulkan valid-usage violation, not a reported error."});
-    }
-
     auto self = std::unique_ptr<StepRecorder>(new StepRecorder());
     self->device_ = ctx.device();
     self->queue_ = ctx.compute_queue();
@@ -303,23 +209,26 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     }
     self->timestamps_ = std::move(*timestamps);
 
-    // All FOUR grids against maxComputeWorkGroupCount[0] -- checked here, after
-    // every one is known, because the recording below emits dispatches on all of
-    // them and vkCmdDispatch does not report an over-limit group count, it is
-    // simply invalid usage. The widest one is the only one that can fail, so it
-    // is the only one that needs naming.
-    const uint32_t widest_grid = std::max({self->dispatch_groups_x_, self->grid_groups_x_,
-                                           self->world_groups_x_, self->sensor_groups_x_});
-    uint32_t max_group_count = 0;
-    if (!device_supports_group_count(ctx.physical_device(), widest_grid, max_group_count)) {
-        return std::unexpected(Error{
-            Code::capacity_exceeded,
-            "StepRecorder::create: this shape needs " + std::to_string(widest_grid) +
-                " workgroups at local size " + std::to_string(workgroup_size) + ", but device '" +
-                std::string(ctx.device_name()) + "' allows at most " + std::to_string(max_group_count) +
-                " (maxComputeWorkGroupCount[0]). Note that group count is ceil(extent / local size), so a "
-                "SMALLER workgroup_size needs MORE groups for the same shape -- 64 or 128 may fit where "
-                "32 does not."});
+    // The kernels' local size and ALL FOUR grids against the device's limits, by name, through compute::admit() (stage 7
+    // Task A1). Checked here, after every grid is known, because the recording below emits dispatches on all of them and
+    // vkCmdDispatch does not report an over-limit group count, it is simply invalid usage; a local size past
+    // maxComputeWorkGroupInvocations or maxComputeWorkGroupSize is the same. The widest grid is the only one that can
+    // fail, and the refusal names which.
+    {
+        AdmitShape asked;
+        asked.kernels.push_back(AdmitKernel{.name = "workgroup_size " + std::to_string(workgroup_size),
+                                            .local = {workgroup_size, 1, 1}});
+        asked.dispatches = {AdmitDispatch{.pass = "bodies", .groups = {self->dispatch_groups_x_, 1, 1}},
+                            AdmitDispatch{.pass = "grid", .groups = {self->grid_groups_x_, 1, 1}},
+                            AdmitDispatch{.pass = "worlds", .groups = {self->world_groups_x_, 1, 1}},
+                            AdmitDispatch{.pass = "sensors", .groups = {self->sensor_groups_x_, 1, 1}}};
+        if (Result<void> ok = admit(asked, ctx.device_report().limits, ctx.device_name()); !ok) {
+            Error e = ok.error();
+            e.context = "StepRecorder::create: " + e.context +
+                        ". Note that group count is ceil(extent / local size), so a SMALLER workgroup_size needs MORE "
+                        "groups for the same shape -- 64 or 128 may fit where 32 does not.";
+            return std::unexpected(std::move(e));
+        }
     }
 
     // The pipeline LAYOUT first: all four pipelines share it (see the class

@@ -54,9 +54,34 @@ struct AdmitShape {
     uint32_t push_bytes = 0;
 };
 
-// RED STUB (stage 7 Task A1): admits everything. The checks arrive with the GREEN commit.
-[[nodiscard]] inline Result<void> admit(const AdmitShape& /*shape*/, const DeviceLimits& /*limits*/,
-                                        std::string_view /*device*/) {
+// The first thing in `shape` that `limits` cannot hold, or success. Every refusal is B0's check (device_limits.hpp),
+// prefixed with what asked where a layout is concerned: its name and the bindings of each set, so the count is
+// readable as a sum ("pipeline layout 'state+points' (set 0: 30, set 1: 3): a layout of 33 storage buffers, over ...").
+[[nodiscard]] inline Result<void> admit(const AdmitShape& shape, const DeviceLimits& limits, std::string_view device) {
+    for (const AdmitLayout& layout : shape.layouts) {
+        uint64_t total = 0;
+        std::string sets;
+        for (std::size_t set = 0; set < layout.bindings_per_set.size(); ++set) {
+            total += layout.bindings_per_set[set];
+            sets += (set == 0 ? "" : ", ") + std::string("set ") + std::to_string(set) + ": " +
+                    std::to_string(layout.bindings_per_set[set]);
+        }
+        const uint32_t count = total > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(total);
+        if (Result<void> ok = check_storage_buffers(count, limits, device); !ok) {
+            return std::unexpected(Error{ok.error().code, "pipeline layout '" + layout.name + "' (" + sets + "): " +
+                                                              ok.error().context});
+        }
+    }
+    if (Result<void> ok = check_push(shape.push_bytes, limits, device); !ok) return ok;
+    for (const AdmitKernel& kernel : shape.kernels) {
+        if (Result<void> ok = check_workgroup(kernel.name, kernel.local, limits, device); !ok) return ok;
+    }
+    for (const AdmitBuffer& buffer : shape.buffers) {
+        if (Result<void> ok = check_buffer(buffer.name, buffer.bytes, limits, device); !ok) return ok;
+    }
+    for (const AdmitDispatch& dispatch : shape.dispatches) {
+        if (Result<void> ok = check_groups(dispatch.pass, dispatch.groups, limits, device); !ok) return ok;
+    }
     return {};
 }
 

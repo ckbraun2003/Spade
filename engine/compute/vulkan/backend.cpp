@@ -72,6 +72,17 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     Result<std::unique_ptr<VulkanContext>> ctx = VulkanContext::create(desc);
     if (!ctx) return std::unexpected(ctx.error());
 
+    // Every device limit a created shape meets, BEFORE the first buffer is made (stage 7 Task A1; CORE-5, L6): the
+    // pipeline layout's binding count, the push block and every buffer, named. The recorder adds the kernels' local
+    // sizes and the dispatches' group counts to the same function once it knows the grid widths.
+    {
+        Result<AdmitShape> asked = admit_shape_for(shape, desc.workgroup_size);
+        if (!asked) return std::unexpected(asked.error());
+        if (Result<void> ok = admit(*asked, (*ctx)->device_report().limits, (*ctx)->device_name()); !ok) {
+            return std::unexpected(ok.error());
+        }
+    }
+
     Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape);
     if (!mirror) return std::unexpected(mirror.error());
 

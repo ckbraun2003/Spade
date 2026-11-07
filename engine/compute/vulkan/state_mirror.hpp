@@ -117,7 +117,8 @@ struct DerivedBufferShape {
 // What a created shape asks of the device, as admit() takes it (stage 7 Task A1): the one pipeline layout of set 0's
 // bindings, every walk entry and every derived buffer with its bytes, and the push block. The kernels and dispatches
 // are the recorder's to add (it alone knows the grid widths); admit() is called on the whole before the first
-// vkCreate*. RED STUB: an empty AdmitShape.
+// vkCreate*. The errors are the ones create() would have returned for the same shape (a count past a uint32 slot
+// index, a bad scratch binding), so nothing is refused here that create() accepted before.
 [[nodiscard]] Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t workgroup_size);
 
 // The number of device-memory allocations (vkAllocateMemory) the mirror has made in this process (stage 7 Task A3: the

@@ -1224,8 +1224,24 @@ StateMirror::~StateMirror() { destroy(); }
 
 uint64_t mirror_allocation_count() noexcept { return 0; }  // RED STUB (stage 7 Task A3)
 
-Result<AdmitShape> admit_shape_for(const StepShape& /*shape*/, uint32_t /*workgroup_size*/) {
-    return AdmitShape{};  // RED STUB (stage 7 Task A1)
+Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/) {
+    AdmitShape out;
+    // Set 0 is the only set the mirror builds; module kernels' set-1 subsets are the layout classes' to add (batch B).
+    out.layouts.push_back(AdmitLayout{.name = "state", .bindings_per_set = {gen::kBindingCount_state}});
+    out.push_bytes = gen::kPushConstantSize;
+    // Every walk entry first, as create() makes them, then the derived buffers (derived_buffer_shapes' order).
+    for (const StateArrayShape& array : shape.arrays) {
+        Result<VkDeviceSize> bytes =
+            buffer_bytes(array.name, array.elem_size, uint64_t{shape.world_count} * uint64_t{array.capacity_per_world});
+        if (!bytes) return std::unexpected(bytes.error());
+        out.buffers.push_back(AdmitBuffer{.name = array.name, .bytes = *bytes});
+    }
+    Result<std::vector<DerivedBufferShape>> derived = derived_buffer_shapes(shape, gen::kBindingCount_state);
+    if (!derived) return std::unexpected(derived.error());
+    for (const DerivedBufferShape& d : *derived) {
+        out.buffers.push_back(AdmitBuffer{.name = d.name, .bytes = d.byte_size});
+    }
+    return out;
 }
 
 bool StateMirror::has_staging(std::string_view name) {
