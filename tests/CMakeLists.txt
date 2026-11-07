@@ -142,6 +142,10 @@ add_executable(spade_tests
     test_quadrotor_look.cpp
     test_contact_sets.cpp
     test_contact_pass.cpp
+    test_lbm_lattice.cpp
+    test_lbm_collision.cpp
+    test_lbm_flow.cpp
+    test_lbm_cases.cpp
     test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_m1b_bar.cpp
