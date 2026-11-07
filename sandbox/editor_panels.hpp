@@ -18,6 +18,7 @@
 
 #include "analysis/case.hpp"  // Controls
 #include "builtin_records.hpp"
+#include "editor_flight_readout.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_library.hpp"
 #include "editor_scene_edits.hpp"
@@ -117,6 +118,9 @@ struct EditorPanels {
     // command bar shows in place of the tick, elided at the label's end
     // before Save and File would leave the bar; the session fills it.
     std::string air_band;
+    // While Run air runs: the Flight section's rows (flight_rows()), filled from the run's latest frame; empty
+    // otherwise.
+    std::vector<FlightRow> flight;
     AirLineCache air_line;  // kept by the panels between frames
     // ---- Written by the panels, read by the workspace at Run air.
     AirLevel air_level = AirLevel::detailed;

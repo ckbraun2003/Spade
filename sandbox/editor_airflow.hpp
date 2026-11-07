@@ -392,7 +392,7 @@ class AirflowRun {
         const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
-                           std::move(program), level));
+                           cases->body.resolved.domain.ambient, std::move(program), level));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -427,7 +427,7 @@ class AirflowRun {
     }
 
   private:
-    AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top,
+    AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top, glm::vec3 ambient,
                std::optional<analysis::ControlProgram> program, AirLevel level)
         : level_(level),
           keep_(std::move(started.keep)),
@@ -436,6 +436,7 @@ class AirflowRun {
           vehicle_(std::move(vehicle)),
           at_(at),
           speed_top_(speed_top),
+          ambient_(ambient),
           program_(std::move(program)) {}
 
     void work(const std::stop_token& stop) noexcept {
@@ -499,6 +500,17 @@ class AirflowRun {
         frame->run_label = run_.run_label();
         frame->speed_top = speed_top_;
         frame->pressure_line = run_.pressure_line();
+        // The readout: the held attitude and rates (design axes), the rotors' speeds and k_T, and the case's air.
+        std::vector<float> thrust_coeff;
+        for (const vehicles::RotorRow& row : run_.rotor_rows()) thrust_coeff.push_back(row.thrust_coeff);
+        FlightInput flight;
+        flight.orient = run_.state().attitude;
+        flight.omega_body = run_.state().omega_body;
+        flight.ambient = ambient_;
+        flight.mass = run_.body().mass;
+        flight.rotor_omega = frame->rotor_omega;
+        flight.thrust_coeff = thrust_coeff;
+        frame->flight = flight_readout(flight);
         std::shared_ptr<const AirFrame> done = std::move(frame);
         const std::lock_guard<std::mutex> lock(mutex_);
         latest_ = std::move(done);
@@ -519,6 +531,7 @@ class AirflowRun {
     std::string vehicle_;  // the region's drone
     glm::vec3 at_;
     float speed_top_;
+    glm::vec3 ambient_;  // the case's air velocity past the drone, world axes
     std::optional<analysis::ControlProgram> program_;
     FlowVolume scratch_;  // advance_frame()'s, the worker's
     mutable std::mutex mutex_;

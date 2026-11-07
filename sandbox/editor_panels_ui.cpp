@@ -708,6 +708,21 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
+// While Run air runs: the airspeed, the angles the air meets the drone at, each rotor's static thrust against the
+// weight, and the attitude and rates (editor_flight_readout.hpp). The labels say what each number is, and the note
+// names what is not shown.
+void flight_section(const ed::EditorPanels& p) {
+    if (p.flight.empty() || !ui::section("Flight", true)) return;
+    if (ui::begin_properties("flight")) {
+        for (const ed::FlightRow& row : p.flight) ui::value_row(row.label.c_str(), "%s", row.value.c_str());
+        ui::end_properties();
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", ed::kFlightNotShown);
+    ImGui::PopTextWrapPos();
+    ui::gap();
+}
+
 // Graded rows (INT-14): each cited field's or input's path, cut from the left
 // so its end shows, then its grade, an assumed one in the warning colour,
 // then its value, a fractional one to 4 significant figures, elided at its
@@ -794,6 +809,7 @@ void inspector(ed::EditorPanels& p) {
         return;
     }
     pilot_section(p);
+    flight_section(p);
     switch (p.selection.kind) {
         case ed::Selection::Kind::none:
             if (p.inspected && *p.inspected < p.library.size()) {

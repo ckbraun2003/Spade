@@ -1452,6 +1452,15 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 : !frame->error.empty() ? frame->error
                                         : std::format("{} frames in {} s of wall time, {:.1f} fps, on {}", frame->frames,
                                                       fmt(wall_s), static_cast<float>(frame->frames) / wall_s, on));
+        // The Flight section (the readout approved 2026-11-07): the rotors turn, their static thrust is on the
+        // frame, and the panel holds its rows.
+        s.check(frame && !frame->flight.rotors.empty() && frame->flight.thrust_n > 0.0f,
+                "flight-readout",
+                !frame ? "no frame handed over"
+                       : std::format("{} rotors, {:.2f} N of {:.2f} N weight", frame->flight.rotors.size(),
+                                     frame->flight.thrust_n, frame->flight.weight_n));
+        s.check(!w().panels().flight.empty(), "flight-section",
+                std::format("{} rows in the panel", w().panels().flight.size()));
         if (frame && wall_s > 0.0f) {
             t.sink().set_card(std::format("Run air, {}: {}, {}", editor::air_level_name(w().panels().air_level),
                                           frame->run_label.find("solids: ") != std::string::npos ? "the body in the air"
