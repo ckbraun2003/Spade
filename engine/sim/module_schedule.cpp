@@ -956,7 +956,7 @@ SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backen
 std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     std::vector<compute::GpuPass> out;
     out.reserve(schedule.passes.size());
-    for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu, p.recipe});
+    for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu, p.recipe, p.every_steps});
     return out;
 }
 

@@ -67,12 +67,15 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include <volk.h>
 
 #include "compute/backend.hpp"
+#include "compute/device_limits.hpp"
 #include "compute/grid_entry.hpp"
+#include "compute/recipe.hpp"
 #include "compute/pass_params.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/step_params.hpp"
@@ -219,36 +222,9 @@ namespace spade::compute {
 // ---------------------------------------------------------------------------
 class StepRecorder {
 public:
-    // Every kernel this class dispatches. record()'s recipe switch is the one
-    // place a recipe maps onto these; nothing outside step_recorder.cpp has any
-    // business with these values.
-    //
-    // kPipelineStub IS GONE (S6 Task 8): nothing binds a placeholder, and the
-    // two behavior recipes record no dispatch at all. See this header's
-    // recipe table.
-    enum PipelineSlot : uint32_t {
-        kPipelineDrag = 0,       // forces_drag
-        kPipelineCollision = 1,  // collision_static
-        kPipelineIntegrate = 2,  // integrate
-        // S6 Task 7's three: the CollisionDynamic slot is a CHAIN, so it needs
-        // three pipelines rather than one. Kept in this enum (rather than a
-        // second one) because they share the same layout, the same descriptor
-        // set and the same push-constant range as every other kernel here.
-        kPipelineGridBuild = 3,        // grid_build
-        kPipelineGridSort = 4,         // grid_sort
-        kPipelineCollisionDynamic = 5, // collision_dynamic
-        // S6 Task 8's three, completing the schedule.
-        kPipelineMedium = 6,     // medium_update
-        kPipelineRotors = 7,     // rotors
-        kPipelineSensorImu = 8,  // sensor_imu
-        // The GPU-sensor leg's one addition, for gnss.synthesize. Appended
-        // rather than inserted so no existing enumerator moves.
-        kPipelineSensorGnss = 9, // sensor_gnss
-        // Module-API stage 3: the two field providers.
-        kPipelineFieldEnvironment = 10,  // field_environment
-        kPipelineFieldDryden = 11,       // field_dryden
-        kPipelineCount = 12,
-    };
+    // THE PIPELINE SLOTS ARE GONE (stage 7 Task B1). A pass's recipe (compute/recipe.hpp) names its own kernels; the recorder
+    // builds one pipeline per distinct kernel the schedule's recipes name, in the order they first appear, and no others
+    // (pipeline_count()). The standard set names the same twelve it always built.
 
     // NO RunParams ARGUMENT AS OF S6 TASK 6b: PassParams no longer carries
     // ContactParams/GridParams (its own doc comment above has the ruling), so
@@ -333,7 +309,15 @@ public:
     [[nodiscard]] Result<PassDurationsNs> pass_durations_ns() const;
 
     // What record() put into the command buffer (compute/backend.hpp).
-    [[nodiscard]] RecordedChain recorded_chain() const noexcept { return chain_; }
+    [[nodiscard]] RecordedChain recorded_chain() const noexcept { return recordings_.front().chain; }
+
+    // Every recording, in recording order (stage 7 Task B2), and the number of pipelines built (Task B1).
+    [[nodiscard]] std::vector<RecordedChain> recorded_chains() const {
+        std::vector<RecordedChain> out;
+        for (const Recording& r : recordings_) out.push_back(r.chain);
+        return out;
+    }
+    [[nodiscard]] uint32_t pipeline_count() const noexcept { return static_cast<uint32_t>(kernels_.size()); }
 
 private:
     StepRecorder() = default;
@@ -352,7 +336,7 @@ private:
     // life -- a multi-dispatch pass with barriers between its stages is still
     // a recording, and every stage's (k, j) is shape data baked into its own
     // push constant.
-    [[nodiscard]] Result<void> record();
+    [[nodiscard]] Result<void> record(uint32_t recording);
 
     // How many bitonic stages the recorded chain carries for one
     // CollisionDynamic pass: log2(segment) * (log2(segment) + 1) / 2, i.e. the
@@ -381,20 +365,17 @@ private:
     VkQueue queue_ = VK_NULL_HANDLE;         // non-owning
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkCommandPool pool_ = VK_NULL_HANDLE;
-    VkCommandBuffer cmd_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;   // non-owning; StateMirror owns the pool/set
 
-    // Index order is PipelineSlot's, which record()'s recipe switch maps a
-    // pass onto.
-    VkShaderModule shaders_[kPipelineCount] = {};
-    VkPipeline pipelines_[kPipelineCount] = {};
+    // One compute pipeline per distinct kernel the schedule's recipes name (stage 7 Task B1), deduplicated by variant set.
+    struct Kernel {
+        const SpirvVariantSet* variants = nullptr;
+        VkShaderModule shader = VK_NULL_HANDLE;
+        VkPipeline pipeline = VK_NULL_HANDLE;
+    };
+    std::vector<Kernel> kernels_;
 
-    // StepParams (S6 Task 5 review round 1, C2): host-visible, persistently
-    // mapped, written fresh before every submit. The BUFFER is now owned by
-    // StateMirror (which is what makes it bindable -- see that class's
-    // step_params_mapped() note); this is a non-owning pointer to its
-    // mapping, and this class remains the only writer.
     void* step_params_mapped_ = nullptr;
 
     StepShape shape_{};
@@ -424,16 +405,28 @@ private:
     // would either miss sensors or run threads with no row to own.
     uint32_t sensor_groups_x_ = 0;  // ceil(world_count * sensor_capacity / workgroup_size_)
 
-    // S6 Task 10: per-pass GPU timing, never null after a successful create()
-    // (a device that cannot time compute work still gets a valid, merely
-    // !supported() object -- see PassTimestamps's own class comment).
-    std::unique_ptr<PassTimestamps> timestamps_;
-
     // The GPU chain record() walks every substep (create()'s `passes`).
     std::vector<GpuPass> passes_;
+    std::vector<const RecipeDesc*> pass_recipes_;      // per pass: its recipe (a module's own, or a built-in)
+    std::vector<std::vector<uint32_t>> pass_kernels_;  // per pass: its recipe's kernel i -> kernels_ index
 
-    // Counted by record(), never written anywhere else.
-    RecordedChain chain_{};
+    // THE RECORDINGS (stage 7 Task B2). One command buffer per recording, each with its own timing pool (never null after a
+    // successful create(); a device that cannot time compute work still gets a valid, merely !supported() object). Recording
+    // 0 holds every pass (a pass with every_steps > 1 only in substep 0); recording 1 exists only with a cadence and holds
+    // the passes that run every step. submit() picks by the tick alone, so a restore lands on the same cadence.
+    struct Recording {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        std::unique_ptr<PassTimestamps> timestamps;
+        std::vector<uint32_t> passes;  // indices into passes_, in schedule order
+        RecordedChain chain{};         // counted by record(), never written anywhere else
+    };
+    std::vector<Recording> recordings_;
+    uint32_t cadence_ = 1;  // the one every_steps above 1 in the set, or 1
+    uint32_t last_recording_ = 0;
+    uint64_t last_tick_ = 0;
+
+    DeviceLimits limits_{};
+    std::string device_name_;
 };
 
 }  // namespace spade::compute

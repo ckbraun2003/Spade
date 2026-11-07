@@ -353,6 +353,8 @@ struct GpuPass {
     GpuRecipe recipe = GpuRecipe::none;
     // A module's own recipe (stage 7 Task B1): when set, the recorder uses it and `recipe` is none.
     const RecipeDesc* custom = nullptr;
+    // PassDecl::every_steps (stage 7 Task B2): 1 is every substep of every step; j > 1 is substep 0 of every j-th step.
+    uint32_t every_steps = 1;
 };
 
 // ---------------------------------------------------------------------------
@@ -398,7 +400,7 @@ struct PassDurationsNs {
     std::vector<PassDuration> passes{};  // schedule order; empty when !supported
     // Which recording ran in the step these durations are of, and that step's tick (stage 7 Task B2): a pass the recording
     // does not hold has no entry, so a fluid pass reading about 0 after a step it did not run in is never mistaken for a
-    // measurement. RED STUB: always recording 0, tick 0, every pass listed.
+    // measurement.
     uint32_t recording = 0;
     uint64_t tick = 0;
 

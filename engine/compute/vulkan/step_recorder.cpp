@@ -10,18 +10,7 @@
 
 #include "bindings.gen.hpp"
 #include "compute/admit.hpp"
-#include "collision_dynamic.spv.gen.hpp"
-#include "collision_static.spv.gen.hpp"
-#include "field_dryden.spv.gen.hpp"
-#include "field_environment.spv.gen.hpp"
-#include "forces_drag.spv.gen.hpp"
-#include "grid_build.spv.gen.hpp"
-#include "grid_sort.spv.gen.hpp"
-#include "integrate.spv.gen.hpp"
-#include "medium_update.spv.gen.hpp"
-#include "rotors.spv.gen.hpp"
-#include "sensor_gnss.spv.gen.hpp"
-#include "sensor_imu.spv.gen.hpp"
+#include "compute/layout_classes.hpp"
 
 namespace spade::compute {
 
@@ -132,7 +121,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     // different experiment from the CPU, silently (L6). Refused before any
     // resource is built.
     for (const GpuPass& pass : passes) {
-        if (pass.recipe == GpuRecipe::none) {
+        if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
             return std::unexpected(Error{Code::invalid_argument, "StepRecorder::create: pass '" + pass.name +
                                                                      "' has no GPU kernel (GpuRecipe::none)"});
         }
@@ -194,20 +183,71 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     self->world_groups_x_ = groups_for(shape.world_count, workgroup_size);
     self->sensor_groups_x_ = sensor_groups_for(shape, workgroup_size);
 
-    // S6 Task 10: per-pass GPU timing, created unconditionally (see this
-    // class's header comment on pass_durations_ns()). PassTimestamps::create()
-    // itself never fails on a capability gap -- only a genuine Vulkan failure
-    // allocating the (tiny) query pool on a device that DOES claim support
-    // propagates here, exactly like every other resource this factory builds.
-    std::vector<std::string> pass_names;
-    pass_names.reserve(self->passes_.size());
-    for (const GpuPass& pass : self->passes_) pass_names.push_back(pass.name);
-    Result<std::unique_ptr<PassTimestamps>> timestamps =
-        PassTimestamps::create(ctx, shape.substeps, std::move(pass_names));
-    if (!timestamps) {
-        return std::unexpected(timestamps.error());
+    self->limits_ = ctx.device_report().limits;
+    self->device_name_ = std::string(ctx.device_name());
+
+    // THE RECIPES (stage 7 Task B1): each pass's own, or its built-in's. The kernels are deduplicated by variant set, in the
+    // order they first appear, so the standard set builds the twelve it always did and a set that never names a recipe builds
+    // none of its kernels. A kernel naming set-1 bindings needs a set-1 layout the mirror does not build yet.
+    AdmitShape asked;
+    for (const GpuPass& pass : self->passes_) {
+        const RecipeDesc* desc = pass.custom != nullptr ? pass.custom : builtin_recipe(pass.recipe);
+        if (desc == nullptr || desc->record == nullptr) {
+            return std::unexpected(Error{Code::internal, "StepRecorder::create: pass '" + pass.name + "' has no recipe"});
+        }
+        self->pass_recipes_.push_back(desc);
+        std::vector<uint32_t> slots;
+        for (const RecipeKernel& k : desc->kernels) {
+            if (k.variants == nullptr) {
+                return std::unexpected(Error{Code::invalid_argument, "StepRecorder::create: recipe '" +
+                                                                         std::string(desc->name) + "' (pass '" + pass.name +
+                                                                         "') names a kernel with no compiled variants"});
+            }
+            Result<AdmitLayout> layout = kernel_layout(k.variants->name, k.set1_bindings);
+            if (!layout) return std::unexpected(layout.error());
+            if (!k.set1_bindings.empty()) {
+                return std::unexpected(Error{Code::unavailable,
+                                             "StepRecorder::create: kernel '" + std::string(k.variants->name) +
+                                                 "' of recipe '" + std::string(desc->name) + "' (pass '" + pass.name +
+                                                 "') names set-1 bindings, and the mirror builds no set 1 yet"});
+            }
+            asked.layouts.push_back(std::move(*layout));
+            std::size_t at = 0;
+            while (at < self->kernels_.size() && self->kernels_[at].variants != k.variants) ++at;
+            if (at == self->kernels_.size()) self->kernels_.push_back(Kernel{.variants = k.variants});
+            slots.push_back(static_cast<uint32_t>(at));
+        }
+        self->pass_kernels_.push_back(std::move(slots));
+        if (pass.every_steps > 1) {
+            if (self->cadence_ != 1 && self->cadence_ != pass.every_steps) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "StepRecorder::create: pass '" + pass.name + "' runs every " +
+                                                 std::to_string(pass.every_steps) + " steps, another every " +
+                                                 std::to_string(self->cadence_) + "; the set has one cadence"});
+            }
+            self->cadence_ = pass.every_steps;
+        }
     }
-    self->timestamps_ = std::move(*timestamps);
+
+    // THE RECORDINGS (stage 7 Task B2): recording 0 holds every pass; recording 1, only with a cadence, the passes that run
+    // every step. Each has its own timing pool, named for the passes it holds.
+    const uint32_t recording_count = self->cadence_ > 1 ? 2u : 1u;
+    self->recordings_.resize(recording_count);
+    for (uint32_t r = 0; r < recording_count; ++r) {
+        Recording& rec = self->recordings_[r];
+        std::vector<std::string> pass_names;
+        for (uint32_t i = 0; i < self->passes_.size(); ++i) {
+            if (r == 1 && self->passes_[i].every_steps > 1) continue;
+            rec.passes.push_back(i);
+            pass_names.push_back(self->passes_[i].name);
+        }
+        // S6 Task 10: per-pass GPU timing, created unconditionally. PassTimestamps::create() never fails on a capability
+        // gap, only on a genuine Vulkan failure.
+        Result<std::unique_ptr<PassTimestamps>> timestamps =
+            PassTimestamps::create(ctx, shape.substeps, std::move(pass_names));
+        if (!timestamps) return std::unexpected(timestamps.error());
+        rec.timestamps = std::move(*timestamps);
+    }
 
     // The kernels' local size and ALL FOUR grids against the device's limits, by name, through compute::admit() (stage 7
     // Task A1). Checked here, after every grid is known, because the recording below emits dispatches on all of them and
@@ -215,7 +255,6 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     // maxComputeWorkGroupInvocations or maxComputeWorkGroupSize is the same. The widest grid is the only one that can
     // fail, and the refusal names which.
     {
-        AdmitShape asked;
         asked.kernels.push_back(AdmitKernel{.name = "workgroup_size " + std::to_string(workgroup_size),
                                             .local = {workgroup_size, 1, 1}});
         asked.dispatches = {AdmitDispatch{.pass = "bodies", .groups = {self->dispatch_groups_x_, 1, 1}},
@@ -249,37 +288,10 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
         return std::unexpected(map_vk_error(r, "vkCreatePipelineLayout"));
     }
 
-    // ONE VARIANT SET PER PIPELINE SLOT (S6 Task 9b). Each entry names the
-    // kernel's whole compiled family -- all three local sizes -- and
-    // make_pipeline() picks the one matching workgroup_size_. Written as a table
-    // rather than as nine near-identical if-statements because the previous
-    // shape had every call site repeating the same four-line error dance, and
-    // because the slot->kernel correspondence is the fact worth being able to
-    // read in one place (record()'s recipe switch maps passes onto these).
-    const struct {
-        PipelineSlot slot;
-        const SpirvVariantSet& variants;
-    } kPipelineSources[] = {
-        {kPipelineDrag, gen::kSpvVariants_forces_drag},
-        {kPipelineCollision, gen::kSpvVariants_collision_static},
-        {kPipelineIntegrate, gen::kSpvVariants_integrate},
-        {kPipelineGridBuild, gen::kSpvVariants_grid_build},
-        {kPipelineGridSort, gen::kSpvVariants_grid_sort},
-        {kPipelineCollisionDynamic, gen::kSpvVariants_collision_dynamic},
-        // S6 Task 8's three, completing the schedule.
-        {kPipelineMedium, gen::kSpvVariants_medium_update},
-        {kPipelineRotors, gen::kSpvVariants_rotors},
-        {kPipelineSensorImu, gen::kSpvVariants_sensor_imu},
-        {kPipelineSensorGnss, gen::kSpvVariants_sensor_gnss},
-        {kPipelineFieldEnvironment, gen::kSpvVariants_field_environment},
-        {kPipelineFieldDryden, gen::kSpvVariants_field_dryden},
-    };
-    static_assert(std::size(kPipelineSources) == kPipelineCount,
-                  "every PipelineSlot needs exactly one kernel variant set");
-
-    for (const auto& source : kPipelineSources) {
-        if (Result<void> made = self->make_pipeline(source.variants, ctx.device_report(),
-                                                     self->shaders_[source.slot], self->pipelines_[source.slot]);
+    // One pipeline per distinct kernel (stage 7 Task B1); make_pipeline() picks the variant matching workgroup_size_.
+    for (Kernel& kernel : self->kernels_) {
+        if (Result<void> made =
+                self->make_pipeline(*kernel.variants, ctx.device_report(), kernel.shader, kernel.pipeline);
             !made) {
             return std::unexpected(made.error());
         }
@@ -305,9 +317,13 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmd_info.commandPool = self->pool_;
     cmd_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmd_info.commandBufferCount = 1;
-    if (VkResult r = vkAllocateCommandBuffers(self->device_, &cmd_info, &self->cmd_); r != VK_SUCCESS) {
-        return std::unexpected(map_vk_error(r, "vkAllocateCommandBuffers (StepRecorder)"));
+    cmd_info.commandBufferCount = recording_count;
+    {
+        std::vector<VkCommandBuffer> cmds(recording_count, VK_NULL_HANDLE);
+        if (VkResult r = vkAllocateCommandBuffers(self->device_, &cmd_info, cmds.data()); r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkAllocateCommandBuffers (StepRecorder)"));
+        }
+        for (uint32_t r = 0; r < recording_count; ++r) self->recordings_[r].cmd = cmds[r];
     }
 
     VkFenceCreateInfo fence_info{};
@@ -317,8 +333,8 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     }
 
     // Records the fixed dispatch chain ONCE -- see record()'s own comment.
-    if (Result<void> recorded = self->record(); !recorded) {
-        return std::unexpected(recorded.error());
+    for (uint32_t r = 0; r < recording_count; ++r) {
+        if (Result<void> recorded = self->record(r); !recorded) return std::unexpected(recorded.error());
     }
 
     return self;
@@ -354,209 +370,116 @@ uint32_t StepRecorder::sort_stage_count() const noexcept {
 // record -- ONCE, from create(). Never called again.
 // ---------------------------------------------------------------------------
 
-Result<void> StepRecorder::record() {
+Result<void> StepRecorder::record(uint32_t recording) {
+    Recording& rec = recordings_[recording];
+    VkCommandBuffer cmd = rec.cmd;
+
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    // NOT ONE_TIME_SUBMIT: that flag tells the driver this buffer will be
-    // submitted exactly once and then reset/freed, which is not true --
-    // submit() below resubmits this SAME recording arbitrarily many times
-    // without ever resetting it (S6 Task 5 review round 1, C1 fix).
-    if (VkResult r = vkBeginCommandBuffer(cmd_, &begin); r != VK_SUCCESS) {
+    // NOT ONE_TIME_SUBMIT: submit() resubmits this SAME recording arbitrarily many times without ever resetting it.
+    if (VkResult r = vkBeginCommandBuffer(cmd, &begin); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkBeginCommandBuffer (StepRecorder record)"));
     }
 
-    // The descriptor set is bound ONCE for the whole chain: every pipeline
-    // shares one layout, so a pipeline bind does not invalidate it.
-    vkCmdBindDescriptorSets(cmd_, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &set_, 0, nullptr);
+    // The descriptor set is bound ONCE for the whole chain: every pipeline shares one layout.
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &set_, 0, nullptr);
 
-    // S6 Task 10: reset every per-pass timing query slot ONCE, before the
-    // first dispatch -- a no-op when timestamps_ is unsupported on this
-    // device (PassTimestamps::record_reset()'s own doc comment).
-    timestamps_->record_reset(cmd_);
+    // S6 Task 10: reset every per-pass timing query slot ONCE, before the first dispatch (a no-op when unsupported).
+    rec.timestamps->record_reset(cmd);
 
-    // The per-substep chain, `shape_.substeps` times, walking the schedule's
-    // GPU passes (passes_) in order. Each pass records what its recipe names
-    // (step_recorder.hpp's recipe table); the two behavior recipes record
-    // nothing at all.
+    // The per-substep chain, `shape_.substeps` times, walking this recording's passes in schedule order. Each pass records
+    // what its recipe's function appends (compute/recipe.hpp; the built-ins are compute/vulkan/builtin_recipes.cpp, the old
+    // switch moved unchanged). THE CADENCE (stage 7 Task B2): a pass with every_steps > 1 is in recording 0 only, and only
+    // in substep 0 -- the same rule as sim/cadence.hpp's due() at a tick that is a multiple of the cadence. Its timing marks
+    // are still recorded in the other substeps, bracketing nothing, so the marks per substep stay the pass count.
     //
-    // A memory barrier after every dispatch except the very last one of the
-    // WHOLE recorded chain: that covers the inter-pass hazard within one
-    // substep (including rotors->drag, which write the same two accumulators,
-    // in that order), the inter-STAGE hazard inside the sort chain, and the
-    // inter-substep hazard between one substep's last dispatch and the next
-    // substep's first -- uniformly, rather than special-casing any of them.
+    // A memory barrier after every dispatch except the very last one of the WHOLE recorded chain (CORE-2), read off the
+    // list of what was emitted (dispatch_chain.hpp).
     //
-    // EVERY PassParams FIELD HERE IS SHAPE OR DISPATCH DATA, NOT STEP DATA
-    // (what makes recording this once, rather than per-step, correct):
-    // world_count .. sensor_capacity/h and the three grid_* lanes come from
-    // `shape_`/`grid_`, fixed for this object's life; `substep` cycles
-    // 0..substeps-1 IDENTICALLY on every step (it is a property of WHICH
-    // DISPATCH this is within the fixed chain, not of which step is executing);
-    // and sort_k/sort_j are likewise a property of which STAGE a dispatch is.
-    // The one thing that genuinely varies per submit, the tick, does not travel
-    // through a push constant at all (compute/step_params.hpp). PassParams
-    // carried `contact`/`grid` from `run_` through S6 Task 6; Task 6b's
-    // PassParams decision tree removed both fields (no kernel ever read them)
-    // along with `run_` itself -- see step_recorder.hpp's PassParams doc
-    // comment for the ruling, and note that S6 Task 7's five new lanes are on
-    // the right side of it (shape/dispatch, never material).
-    //
-    // BUILT AS A LIST, THEN RECORDED. The walk below appends each dispatch and
-    // each timestamp mark to `commands` in order; the loop after it records
-    // them, with a barrier after every dispatch except the last one in the
-    // list. "Which dispatch is last" is therefore read off what was actually
-    // emitted. Until 2026-10-01 it came from a hand tally of dispatches per
-    // substep that went stale when SensorSynthesis became a two-kernel chain,
-    // and the last `substeps` barriers of every recording were silently
-    // dropped. A pass's timestamp mark follows its last dispatch's barrier, as
-    // it always has.
-    // The list's entries are dispatch_chain.hpp's ChainCommand: a dispatch
-    // (its PipelineSlot, its PassParams' bytes, its group count) or a mark
-    // (which substep, which boundary of it).
+    // EVERY PassParams FIELD HERE IS SHAPE OR DISPATCH DATA, NOT STEP DATA, which is what makes recording once correct:
+    // `substep` cycles 0..substeps-1 identically on every step, the sort lanes name which stage a dispatch is, and the one
+    // thing that varies per submit, the tick, does not travel through a push constant at all (compute/step_params.hpp).
     static_assert(sizeof(PassParams) <= kMaxChainPushBytes, "PassParams must fit a chain command's push block");
-    // The memcpy below copies sizeof(PassParams) bytes and the chain pushes
-    // gen::kPushConstantSize of them: the two must agree, and fit the block.
     static_assert(sizeof(PassParams) == gen::kPushConstantSize, "PassParams must be exactly the push range");
     static_assert(gen::kPushConstantOffset + gen::kPushConstantSize <= kMaxChainPushBytes,
                   "the push range must fit a chain command's push block");
     std::vector<ChainCommand> commands;
 
-    PassParams base{};
-    base.world_count = shape_.world_count;
-    base.body_capacity = shape_.body_capacity;
-    base.element_capacity = shape_.element_capacity;
-    base.sensor_capacity = shape_.sensor_capacity;
-    base.h = shape_.h;
-    base.grid_entry_count = grid_.entry_count;
-    base.grid_segment = grid_.segment;
-    base.grid_segment_slots = grid_.segment_slots;
-    base.switches = shape_.switches;  // module API stage 6: which optional bindings hold a real array
+    RecipeContext context;
+    context.base.world_count = shape_.world_count;
+    context.base.body_capacity = shape_.body_capacity;
+    context.base.element_capacity = shape_.element_capacity;
+    context.base.sensor_capacity = shape_.sensor_capacity;
+    context.base.h = shape_.h;
+    context.base.grid_entry_count = grid_.entry_count;
+    context.base.grid_segment = grid_.segment;
+    context.base.grid_segment_slots = grid_.segment_slots;
+    context.base.switches = shape_.switches;  // module API stage 6: which optional bindings hold a real array
+    context.workgroup_size = workgroup_size_;
+    context.bodies_groups = dispatch_groups_x_;
+    context.grid_groups = grid_groups_x_;
+    context.worlds_groups = world_groups_x_;
+    context.sensors_groups = sensor_groups_x_;
 
-    const auto emit = [&](uint32_t pipeline, const PassParams& params, uint32_t groups) {
-        ChainCommand c{.is_dispatch = true, .pipeline = pipeline, .groups = {groups, 1u, 1u}};
-        std::memcpy(c.push.data(), &params, sizeof(PassParams));
-        commands.push_back(c);
-    };
-    const auto mark = [&](uint32_t substep, uint32_t boundary) {
-        commands.push_back(ChainCommand{.mark_a = substep, .mark_b = boundary});
-    };
-
-    // The pass names as the walk below visits them, once (substep 0), for
-    // recorded_chain(). Taken from the walk rather than copied from passes_,
-    // so a test of the recorded order checks what was recorded.
-    std::vector<std::string> walked;
-    walked.reserve(passes_.size());
+    std::vector<std::string> walked;  // the pass names as the walk visits them, once, for recorded_chain()
+    walked.reserve(rec.passes.size());
+    AdmitShape emitted;               // every emitted dispatch, against the device's group-count limits
 
     for (uint32_t s = 0; s < shape_.substeps; ++s) {
-        // S6 Task 10: "start of this substep" mark -- boundary 0 of this
-        // substep's block. A no-op when timestamps_ is unsupported.
-        mark(s, 0);
+        // S6 Task 10: "start of this substep" mark -- boundary 0 of this substep's block.
+        commands.push_back(ChainCommand{.mark_a = s, .mark_b = 0});
 
-        for (uint32_t i = 0; i < passes_.size(); ++i) {
-            PassParams params = base;
-            params.substep = s;
-
-            switch (passes_[i].recipe) {
-                case GpuRecipe::none:
-                    // create() refused it; unreachable.
-                    return std::unexpected(Error{Code::internal, "StepRecorder::record: pass '" +
-                                                                     passes_[i].name + "' has no GPU kernel"});
-                case GpuRecipe::behaviors_kinematic:
-                case GpuRecipe::behaviors_force:
-                    // Nothing is recorded -- not a stub dispatch, not a
-                    // barrier, not a pipeline bind (CORE-1; see the header's
-                    // recipe table).
-                    break;
-                case GpuRecipe::medium_update:
-                    emit(kPipelineMedium, params, world_groups_x_);
-                    break;
-                case GpuRecipe::rotors:
-                    emit(kPipelineRotors, params, dispatch_groups_x_);
-                    break;
-                case GpuRecipe::drag:
-                    emit(kPipelineDrag, params, dispatch_groups_x_);
-                    break;
-                case GpuRecipe::collision_static:
-                    emit(kPipelineCollision, params, dispatch_groups_x_);
-                    break;
-                case GpuRecipe::collision_dynamic:
-                    // -------------------------------------------------------
-                    // physics/grid.cpp's five-stage shape, as three kernels:
-                    //
-                    //   1. grid_build          one thread per key-array entry
-                    //   2. grid_sort  x stages one thread per entry, one
-                    //                          dispatch per (k, j) stage of
-                    //                          the bitonic network
-                    //   3. collision_dynamic   one thread per WORLD (the sweep
-                    //                          is sequential within a world --
-                    //                          that kernel's header has the
-                    //                          parity argument)
-                    //
-                    // RECORDED ONCE, like everything else in this function.
-                    // The stage loop below is a HOST-side unroll of
-                    // grid_sort.slang's textbook double loop, so the network
-                    // is baked into the command buffer and nothing about it is
-                    // decided per submit.
-                    //
-                    // A DEGENERATE SHAPE RECORDS THE SAME CHAIN WITH EMPTY
-                    // GRIDS rather than a different chain: a world set with no
-                    // worlds (or no body capacity) yields grid_groups_x_ == 0 /
-                    // world_groups_x_ == 0, and vkCmdDispatch with a zero
-                    // group count is legal and executes nothing. Recording it
-                    // anyway keeps the recorded shape a pure function of
-                    // `shape_` and the pass list.
-                    // -------------------------------------------------------
-                    emit(kPipelineGridBuild, params, grid_groups_x_);
-                    for (uint32_t k = 2; k <= grid_.segment; k <<= 1) {
-                        for (uint32_t j = k >> 1; j > 0; j >>= 1) {
-                            PassParams stage = params;
-                            stage.sort_k = k;
-                            stage.sort_j = j;
-                            emit(kPipelineGridSort, stage, grid_groups_x_);
-                        }
+        for (uint32_t li = 0; li < rec.passes.size(); ++li) {
+            const uint32_t i = rec.passes[li];
+            const GpuPass& pass = passes_[i];
+            const bool recorded_now = pass.every_steps <= 1 || s == 0;
+            if (recorded_now) {
+                context.base.substep = s;
+                RecipeEmitter emitter;
+                pass_recipes_[i]->record(emitter, context);
+                for (const EmittedDispatch& d : emitter.dispatches()) {
+                    if (d.kernel >= pass_kernels_[i].size()) {
+                        return std::unexpected(Error{Code::internal, "StepRecorder::record: recipe '" +
+                                                                         std::string(pass_recipes_[i]->name) +
+                                                                         "' dispatched kernel " + std::to_string(d.kernel) +
+                                                                         " of " + std::to_string(pass_kernels_[i].size())});
                     }
-                    emit(kPipelineCollisionDynamic, params, world_groups_x_);
-                    break;
-                case GpuRecipe::integrate:
-                    emit(kPipelineIntegrate, params, dispatch_groups_x_);
-                    break;
-                case GpuRecipe::sensor_imu:
-                    emit(kPipelineSensorImu, params, sensor_groups_x_);
-                    break;
-                case GpuRecipe::sensor_gnss:
-                    emit(kPipelineSensorGnss, params, sensor_groups_x_);
-                    break;
-                case GpuRecipe::environment_sample:
-                    emit(kPipelineFieldEnvironment, params, world_groups_x_);
-                    break;
-                case GpuRecipe::dryden_sample:
-                    emit(kPipelineFieldDryden, params, world_groups_x_);
-                    break;
+                    ChainCommand c{.is_dispatch = true, .pipeline = pass_kernels_[i][d.kernel], .groups = d.groups};
+                    std::memcpy(c.push.data(), &d.params, sizeof(PassParams));
+                    commands.push_back(c);
+                    emitted.dispatches.push_back(AdmitDispatch{.pass = pass.name, .groups = d.groups});
+                }
             }
-
-            // S6 Task 10: "pass i just finished" mark -- boundary i + 1 of this
-            // substep's block, common to every recipe (including the two that
-            // record nothing, whose mark brackets zero intervening commands and
-            // so reads back as a measured ~0 ns rather than an unmeasured
-            // one). A no-op when unsupported.
-            mark(s, i + 1);
-            if (s == 0) walked.push_back(passes_[i].name);
+            // S6 Task 10: "pass li just finished" mark -- boundary li + 1, common to every recipe (including the two that
+            // record nothing, which then read back as a measured ~0 ns rather than an unmeasured one).
+            commands.push_back(ChainCommand{.mark_a = s, .mark_b = li + 1});
+            if (s == 0) walked.push_back(pass.name);
         }
     }
 
-    // Record the list (dispatch_chain.hpp: the last dispatch is found from
-    // the list itself, and the barrier follows every dispatch but that one).
-    chain_ = RecordedChain{.sort_stages = sort_stage_count()};
-    chain_.passes = std::move(walked);
-    const ChainCounts counts = record_dispatch_chain(
-        cmd_, pipeline_layout_, pipelines_, commands, gen::kPushConstantOffset, gen::kPushConstantSize,
-        [this](VkCommandBuffer cmd, uint32_t substep, uint32_t boundary) {
-            timestamps_->record_mark(cmd, substep, boundary);
-        });
-    chain_.dispatches = counts.dispatches;
-    chain_.barriers = counts.barriers;
+    // The group counts of what was actually emitted, by pass and axis (stage 7 Task A1/B1): a module's own recipe computes
+    // its own groups, and a count past the device's limit is invalid usage, not a reported error.
+    if (Result<void> ok = admit(emitted, limits_, device_name_); !ok) {
+        Error e = ok.error();
+        e.context = "StepRecorder::record: " + e.context;
+        return std::unexpected(std::move(e));
+    }
 
-    if (VkResult r = vkEndCommandBuffer(cmd_); r != VK_SUCCESS) {
+    std::vector<VkPipeline> pipelines;
+    pipelines.reserve(kernels_.size());
+    for (const Kernel& kernel : kernels_) pipelines.push_back(kernel.pipeline);
+
+    rec.chain = RecordedChain{.sort_stages = sort_stage_count()};
+    rec.chain.passes = std::move(walked);
+    const ChainCounts counts = record_dispatch_chain(
+        cmd, pipeline_layout_, pipelines, commands, gen::kPushConstantOffset, gen::kPushConstantSize,
+        [&rec](VkCommandBuffer c, uint32_t substep, uint32_t boundary) {
+            rec.timestamps->record_mark(c, substep, boundary);
+        });
+    rec.chain.dispatches = counts.dispatches;
+    rec.chain.barriers = counts.barriers;
+
+    if (VkResult r = vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkEndCommandBuffer (StepRecorder record)"));
     }
     return {};
@@ -584,10 +507,17 @@ Result<void> StepRecorder::submit(uint64_t n, uint64_t first_tick) {
             return std::unexpected(map_vk_error(r, "vkResetFences (StepRecorder)"));
         }
 
+        // THE RECORDING IS A FUNCTION OF THE TICK ALONE (stage 7 Task B2): the one holding every pass on a step whose tick is
+        // a multiple of the cadence, the other on the rest -- so a restore lands on the same cadence.
+        const uint64_t tick = first_tick + step_i;
+        const uint32_t which = cadence_ > 1 && tick % cadence_ != 0 ? 1u : 0u;
+        last_recording_ = which;
+        last_tick_ = tick;
+
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &cmd_;
+        submit_info.pCommandBuffers = &recordings_[which].cmd;
         if (VkResult r = vkQueueSubmit(queue_, 1, &submit_info, fence_); r != VK_SUCCESS) {
             return std::unexpected(map_vk_error(r, "vkQueueSubmit (StepRecorder)"));
         }
@@ -619,7 +549,14 @@ uint64_t StepRecorder::last_written_tick() const noexcept {
 // S6 Task 10: forwards straight to PassTimestamps -- see that class's
 // read_durations_ns() for what "most recently completed submit" means and
 // why it is safe to call any time after submit() has returned.
-Result<PassDurationsNs> StepRecorder::pass_durations_ns() const { return timestamps_->read_durations_ns(); }
+Result<PassDurationsNs> StepRecorder::pass_durations_ns() const {
+    Result<PassDurationsNs> d = recordings_[last_recording_].timestamps->read_durations_ns();
+    if (d) {
+        d->recording = last_recording_;  // which recording ran in the most recently completed submit, and its tick
+        d->tick = last_tick_;
+    }
+    return d;
+}
 
 // ---------------------------------------------------------------------------
 // teardown
@@ -639,20 +576,15 @@ void StepRecorder::destroy() noexcept {
         fence_ = VK_NULL_HANDLE;
     }
     if (pool_ != VK_NULL_HANDLE) {
-        vkDestroyCommandPool(device_, pool_, nullptr);  // frees cmd_ implicitly
+        vkDestroyCommandPool(device_, pool_, nullptr);  // frees the recordings' command buffers implicitly
         pool_ = VK_NULL_HANDLE;
-        cmd_ = VK_NULL_HANDLE;
     }
-    for (uint32_t i = 0; i < kPipelineCount; ++i) {
-        if (pipelines_[i] != VK_NULL_HANDLE) {
-            vkDestroyPipeline(device_, pipelines_[i], nullptr);
-            pipelines_[i] = VK_NULL_HANDLE;
-        }
-        if (shaders_[i] != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(device_, shaders_[i], nullptr);
-            shaders_[i] = VK_NULL_HANDLE;
-        }
+    recordings_.clear();  // the timing pools
+    for (Kernel& kernel : kernels_) {
+        if (kernel.pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device_, kernel.pipeline, nullptr);
+        if (kernel.shader != VK_NULL_HANDLE) vkDestroyShaderModule(device_, kernel.shader, nullptr);
     }
+    kernels_.clear();
     if (pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
         pipeline_layout_ = VK_NULL_HANDLE;

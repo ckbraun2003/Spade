@@ -11,7 +11,6 @@
 // Vulkan-free: the recording functions run on the host, append plain data, and are unit-tested without a device. The
 // recorder turns the appended dispatches into ChainCommands (compute/vulkan/dispatch_chain.hpp) and barriers.
 //
-// RED STUBS (stage 7 Task B1): builtin_recipe() answers nullptr. The twelve descs arrive with the GREEN commit.
 #pragma once
 
 #include <array>
@@ -73,9 +72,7 @@ struct RecipeDesc {
 
 // The desc of a built-in recipe; nullptr for GpuRecipe::none. behaviors_kinematic and behaviors_force have a desc with no
 // kernels whose record function appends nothing (CORE-1: nothing is recorded, not a stub dispatch).
-// (The pointer is volatile only so the RED stub is opaque to the optimizer: a visibly-null return makes gcc reject the tests
-// that dereference it. It goes with the stub.)
-inline const RecipeDesc* volatile g_red_stub_no_desc = nullptr;
-[[nodiscard]] inline const RecipeDesc* builtin_recipe(GpuRecipe /*recipe*/) noexcept { return g_red_stub_no_desc; }
+// Defined in compute/vulkan/builtin_recipes.cpp, where the generated kernel headers are.
+[[nodiscard]] const RecipeDesc* builtin_recipe(GpuRecipe recipe) noexcept;
 
 }  // namespace spade::compute
