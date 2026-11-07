@@ -90,14 +90,23 @@ struct FlightRow {
 };
 
 // What the panel shows, in order, and the sentence that names what it does not.
+// "{:.1f}" without the sign of a zero: a held drone's yaw is a hair under 0, and "-0.0" reads as a fault. `plus` puts
+// a + on a value at or above zero.
+[[nodiscard]] inline std::string tenths(float v, bool plus = false) {
+    std::string s = std::format("{:.1f}", v);
+    if (s == "-0.0") s = "0.0";
+    if (plus && s.front() != '-') s.insert(s.begin(), '+');
+    return s;
+}
+
 [[nodiscard]] inline std::vector<FlightRow> flight_rows(const FlightReadout& r) {
     constexpr const char* kDeg = "\xC2\xB0";
     constexpr const char* kAgainst = " (against the case's flow)";
     std::vector<FlightRow> rows;
     rows.push_back({"Airspeed", std::format("{:.1f} m/s", r.airspeed_mps)});
     if (r.flow) {
-        rows.push_back({std::string("Angle of attack") + kAgainst, std::format("{:+.1f}{}", r.aoa_deg, kDeg)});
-        rows.push_back({std::string("Sideslip") + kAgainst, std::format("{:+.1f}{}", r.sideslip_deg, kDeg)});
+        rows.push_back({std::string("Angle of attack") + kAgainst, tenths(r.aoa_deg, true) + kDeg});
+        rows.push_back({std::string("Sideslip") + kAgainst, tenths(r.sideslip_deg, true) + kDeg});
     } else {
         rows.push_back({"Angle of attack", "none: no relative wind"});
         rows.push_back({"Sideslip", "none: no relative wind"});
@@ -107,15 +116,18 @@ struct FlightRow {
                         std::format("{:.0f} rpm, {:.2f} N", r.rotors[i].rpm, r.rotors[i].thrust_n)});
     }
     rows.push_back({"Thrust, the model's static curve (k_T w^2)",
-                    std::format("{:.2f} N of {:.2f} N weight", r.thrust_n, r.weight_n)});
-    rows.push_back({"Attitude", std::format("yaw {:.1f}{}, pitch {:.1f}{}, roll {:.1f}{}", r.yaw_deg, kDeg,
-                                            r.pitch_deg, kDeg, r.roll_deg, kDeg)});
-    rows.push_back({"Rates", std::format("x {:.1f}, y {:.1f}, z {:.1f} {}/s", r.rates_deg_s.x, r.rates_deg_s.y,
-                                         r.rates_deg_s.z, kDeg)});
+                    std::format("{:.2f} of {:.2f} N weight", r.thrust_n, r.weight_n)});
+    rows.push_back({std::string("Yaw, pitch, roll (") + kDeg + ")",
+                    tenths(r.yaw_deg) + ", " + tenths(r.pitch_deg) + ", " + tenths(r.roll_deg)});
+    rows.push_back({std::string("Rates x, y, z (") + kDeg + "/s)",
+                    tenths(r.rates_deg_s.x) + ", " + tenths(r.rates_deg_s.y) + ", " + tenths(r.rates_deg_s.z)});
     return rows;
 }
 
+// The note under the rows, wrapped: what the numbers are, and what is not shown.
 inline constexpr const char* kFlightNotShown =
-    "Not shown: the aero loads on the body, which wait on Core's stage 7 (held-load rows).";
+    "Thrust is the model's static curve (k_T w^2), not what the air's state gives the rotor; the angles are against "
+    "the case's flow direction, not measured in the solved flow. Not shown: the aero loads on the body, which wait on "
+    "Core's stage 7 (held-load rows).";
 
 }  // namespace spade::sandbox::editor
