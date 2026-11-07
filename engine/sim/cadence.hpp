@@ -9,9 +9,11 @@
 
 namespace spade::modules {
 
-// RED STUB (stage 7 Task B2): due everywhere. The rule arrives with the GREEN commit.
-[[nodiscard]] constexpr bool due(uint64_t /*tick*/, uint32_t /*substep*/, uint32_t /*every_steps*/) noexcept {
-    return true;
+// Whether a pass with `every_steps` runs at (tick, substep). every_steps 0 is never due (compile_schedule refuses it).
+[[nodiscard]] constexpr bool due(uint64_t tick, uint32_t substep, uint32_t every_steps) noexcept {
+    if (every_steps == 0) return false;
+    if (every_steps == 1) return true;
+    return substep == 0 && tick % every_steps == 0;
 }
 
 }  // namespace spade::modules

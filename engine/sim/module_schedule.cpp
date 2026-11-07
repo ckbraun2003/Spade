@@ -7,6 +7,7 @@
 #include <tuple>
 #include <utility>
 
+#include "compute/recipe.hpp"
 #include "core/rng.hpp"
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
@@ -601,6 +602,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         }
     }
 
+    // THE CADENCE (stage 7 Task B2): the passes with every_steps > 1 share one j, because a second j would need a third
+    // recording. The first such pass names it; a pass with another value is refused naming both.
+    uint32_t cadence = 0;
+    std::string cadence_pass;
+
     for (std::size_t m = 0; m < modules.size(); ++m) {
         const ModuleDesc& mod = modules[m];
         if (mod.name.empty() || mod.name.find('.') != std::string_view::npos) {
@@ -633,6 +639,29 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             if (p.gpu != compute::GpuRecipe::none && p.cpu != builtin_cpu_for(p.gpu)) {
                 return std::unexpected(
                     invalid("pass '" + full + "' names a built-in GPU kernel but carries another CPU function"));
+            }
+            if (p.every_steps == 0) {
+                return std::unexpected(invalid(full + ": every_steps is 0; 1 runs the pass every step, j > 1 every j-th"));
+            }
+            if (p.every_steps > 1) {
+                if (cadence == 0) {
+                    cadence = p.every_steps;
+                    cadence_pass = full;
+                } else if (cadence != p.every_steps) {
+                    return std::unexpected(invalid("every_steps: pass '" + cadence_pass + "' runs every " +
+                                                   std::to_string(cadence) + " steps and pass '" + full + "' every " +
+                                                   std::to_string(p.every_steps) +
+                                                   "; a set has one cadence (a second would need a third recording)"));
+                }
+            }
+            if (p.recipe != nullptr) {
+                if (p.gpu != compute::GpuRecipe::none) {
+                    return std::unexpected(invalid("pass '" + full + "' names a built-in GPU kernel and its own recipe; one only"));
+                }
+                if (p.recipe->record == nullptr) {
+                    return std::unexpected(invalid("pass '" + full + "': its recipe '" + std::string(p.recipe->name) +
+                                                   "' has no recording function"));
+                }
             }
             if (by_name.contains(full)) {
                 return std::unexpected(invalid(full + ": declared twice"));
@@ -847,7 +876,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             bindings.push_back(binding_of(qa, *arrays, *tables, *scratch));
         }
         out.passes.push_back(CompiledPass{std::string(modules[nd.module].name), std::string(nd.pass->name),
-                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings)});
+                                          nd.pass->phase, nd.pass->cpu, nd.pass->gpu, std::move(bindings),
+                                          nd.pass->every_steps, nd.pass->recipe});
     }
 
     // The recipe is not folded: it is bound to the CPU function (checked above),
@@ -865,6 +895,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_str(h, p.pass);
         h = fold_byte(h, 0);
         h = fold_byte(h, static_cast<uint8_t>(p.phase));
+        // A cadence is a different schedule; a set that never uses one folds nothing, and keeps the identity it had.
+        if (p.every_steps != 1) {
+            h = fold_byte(h, 'e');
+            h = fold_u32_le(h, p.every_steps);
+        }
     }
     out.identity = h;
     for (const ModuleDesc& mod : modules) {
@@ -921,7 +956,7 @@ SetGrade set_grade(const CompiledSchedule& schedule, compute::BackendKind backen
 std::vector<compute::GpuPass> gpu_passes(const CompiledSchedule& schedule) {
     std::vector<compute::GpuPass> out;
     out.reserve(schedule.passes.size());
-    for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu});
+    for (const CompiledPass& p : schedule.passes) out.push_back({p.module + "." + p.pass, p.gpu, p.recipe});
     return out;
 }
 
