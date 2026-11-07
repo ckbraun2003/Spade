@@ -29,13 +29,12 @@
 
 ## Next for Interface
 
-In the backlog's order (`../backlog.md`, "Suggested order"):
+In the backlog's order (`../backlog.md`, "Suggested order"). The Vulkan lift (the drone box on Core's translation lock, merged `f682f208`) and the editor's first cut are done; what is left:
 
-1. **The airflow work** (the user's ruling, 2026-10-05): Physics leads the joint spec. Interface's part is an airspeed and forces HUD (each vehicle's airspeed, angle of attack, aero forces and moments), the airflow views in the sandbox, and an airflow main function in the live smoke. Waiting for Physics' spec.
-2. **Lift the drone box's Vulkan refusal** once Core's translation lock lands on both backends.
-3. **The editor** (`INT-3`): the design (`plans/2026-10-05-editor-design.md`) follows Cameron's D1–D4 and Q1–Q2 and waits on his approval; then its plan.
-   - Needs for Core, through the lead: library files for one model or asset; a review of the SDF edit helper; world file v3 for the physics records; per-rotor spawn speeds.
-4. **When world file v3 lands** (Core, module-API §11): delete `sandbox/builtin_records.hpp` and its test, and move the built-in scenes' physics records into their world files (the lead's ruling, 2026-10-05).
+1. **The airflow HUD for Run air** (the user's ruling, 2026-10-05). Built: the flow views (vortex cores, streamlines, speed slice), the run line, the command bar's band, the pressure line and the physics level's cost sentence. Not built: each vehicle's airspeed, angle of attack and per-rotor thrust in the editor's Run air (the drone box's HUD shows static thrust per rotor today), and the aero loads on the body, for which the engine has no API yet (Physics' measurement of the Detailed level's load is a test harness, not `LiveRun`). The first two read the case's air (the run holds the drone, so its airspeed is the case's flight speed) with `LiveRun::body()`'s attitude and `rotor_rows()`, and need nothing from Physics.
+2. **The offline level (D10's LBM tier, L27)**: the button and its plan (L37, with `u_ref` as one term: tip speed plus `Flight::speed`) are held until L2/L5, because L1's rung R0 has no moving walls and every real blade-resolved drone would be refused.
+3. **The editor's remaining items** are the "still to build" list in its row above (the add-component menu among them).
+4. **When world file v3 lands** (Core, module-API §11; `kWorldFileVersion` is 2 today): delete `sandbox/builtin_records.hpp` and its test, and move the built-in scenes' physics records into their world files (the lead's ruling, 2026-10-05).
 
 ## Open items — needs a user decision
 
@@ -50,6 +49,5 @@ In the backlog's order (`../backlog.md`, "Suggested order"):
 |---|---|
 | **No versioning policy** (`SL2a`) | `0.2.0` has a changelog but no stated rule for when the version moves |
 | **A GL-OFF window still asks for GL 4.3** | `gl_target_sink.cpp` requests a 4.3 core context because `GlRenderer` needs SSBOs. A `SPADE_RENDER_GL=OFF` sandbox (`71c9b2e`) has no `GlRenderer`, and its window needs only what ImGui's GL3 backend needs. On a GL 3.3-only machine that window still refuses. Follow-up: request 4.3 only when `SPADE_SANDBOX_HAS_GPU` |
-| **Vulkan in the drone sim box is refused** | By design until the engine has a translation lock on both backends (`../backlog.md`); behaviors are CPU-only today. Lift the refusal when it lands |
 | **The GPU path does not draw raymarch mode** | Since Rendering's overlays (`9f76e23`) and shadows (`9b15a50`), GL honours every default `RenderOptions` field; `GlRenderer::unhonoured()` names only a raymarch `mode` request. Rendering's to close. The sandbox names any gap on its HUD while GL is the path ("GL does not draw: ...", `afdbdf5`); with the defaults the line is empty |
 | **The superseded record said plan C was unexecuted** | `superseded/2026-09-consolidation/06-sandbox-and-v1.md` and its `07-status.md` describe plan C as written and unexecuted and say no `spade_sandbox` target exists; C0–C2 and the builder had landed. Those files are frozen; this table is the correction |
