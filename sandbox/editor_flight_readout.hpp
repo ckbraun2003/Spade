@@ -12,12 +12,17 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <algorithm>
+#include <cmath>
+#include <format>
 #include <span>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+
+#include "drone_sim.hpp"  // attitude_from_quat: the readouts' yaw, pitch and roll; vehicles::kStandardGravity
 
 namespace spade::editor {
 
@@ -49,7 +54,35 @@ struct FlightReadout {
     glm::vec3 rates_deg_s{0.0f};
 };
 
-[[nodiscard]] inline FlightReadout flight_readout(const FlightInput&) { return {}; }
+[[nodiscard]] inline FlightReadout flight_readout(const FlightInput& in) {
+    constexpr float kRadToDeg = 57.29577951f;
+    constexpr float kRadPerSToRpm = 9.54929659f;  // 60 / 2 pi
+    FlightReadout r;
+    // The vehicle moves through the air at -ambient; in the drone's axes (x the nose, y up, z the right):
+    // AoA = atan2(-v_y, v_x), + when the air meets the underside; sideslip = asin(v_z / V), + from the right.
+    const float airspeed = glm::length(in.ambient);
+    r.airspeed_mps = airspeed;
+    r.flow = airspeed > 0.0f;
+    if (r.flow) {
+        const glm::vec3 v = glm::conjugate(in.orient) * (-in.ambient);
+        r.aoa_deg = std::atan2(-v.y, v.x) * kRadToDeg;
+        r.sideslip_deg = std::asin(std::clamp(v.z / airspeed, -1.0f, 1.0f)) * kRadToDeg;
+    }
+    for (std::size_t i = 0; i < in.rotor_omega.size(); ++i) {
+        RotorReadout rr;
+        rr.rpm = in.rotor_omega[i] * kRadPerSToRpm;
+        if (i < in.thrust_coeff.size()) rr.thrust_n = in.thrust_coeff[i] * in.rotor_omega[i] * in.rotor_omega[i];
+        r.thrust_n += rr.thrust_n;
+        r.rotors.push_back(rr);
+    }
+    r.weight_n = in.mass * vehicles::kStandardGravity;
+    const sandbox::AttitudeTarget a = sandbox::attitude_from_quat(in.orient);
+    r.yaw_deg = a.yaw * kRadToDeg;
+    r.pitch_deg = a.pitch * kRadToDeg;
+    r.roll_deg = a.roll * kRadToDeg;
+    r.rates_deg_s = in.omega_body * kRadToDeg;
+    return r;
+}
 
 struct FlightRow {
     std::string label;
@@ -57,7 +90,32 @@ struct FlightRow {
 };
 
 // What the panel shows, in order, and the sentence that names what it does not.
-[[nodiscard]] inline std::vector<FlightRow> flight_rows(const FlightReadout&) { return {}; }
-inline constexpr const char* kFlightNotShown = "";
+[[nodiscard]] inline std::vector<FlightRow> flight_rows(const FlightReadout& r) {
+    constexpr const char* kDeg = "\xC2\xB0";
+    constexpr const char* kAgainst = " (against the case's flow)";
+    std::vector<FlightRow> rows;
+    rows.push_back({"Airspeed", std::format("{:.1f} m/s", r.airspeed_mps)});
+    if (r.flow) {
+        rows.push_back({std::string("Angle of attack") + kAgainst, std::format("{:+.1f}{}", r.aoa_deg, kDeg)});
+        rows.push_back({std::string("Sideslip") + kAgainst, std::format("{:+.1f}{}", r.sideslip_deg, kDeg)});
+    } else {
+        rows.push_back({"Angle of attack", "none: no relative wind"});
+        rows.push_back({"Sideslip", "none: no relative wind"});
+    }
+    for (std::size_t i = 0; i < r.rotors.size(); ++i) {
+        rows.push_back({std::format("Rotor {}, static curve", i + 1),
+                        std::format("{:.0f} rpm, {:.2f} N", r.rotors[i].rpm, r.rotors[i].thrust_n)});
+    }
+    rows.push_back({"Thrust, the model's static curve (k_T w^2)",
+                    std::format("{:.2f} N of {:.2f} N weight", r.thrust_n, r.weight_n)});
+    rows.push_back({"Attitude", std::format("yaw {:.1f}{}, pitch {:.1f}{}, roll {:.1f}{}", r.yaw_deg, kDeg,
+                                            r.pitch_deg, kDeg, r.roll_deg, kDeg)});
+    rows.push_back({"Rates", std::format("x {:.1f}, y {:.1f}, z {:.1f} {}/s", r.rates_deg_s.x, r.rates_deg_s.y,
+                                         r.rates_deg_s.z, kDeg)});
+    return rows;
+}
+
+inline constexpr const char* kFlightNotShown =
+    "Not shown: the aero loads on the body, which wait on Core's stage 7 (held-load rows).";
 
 }  // namespace spade::editor
