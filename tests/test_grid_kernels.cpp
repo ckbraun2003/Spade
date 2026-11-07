@@ -193,3 +193,50 @@ TEST(GridPoints, WrongSizesAreRefusedNamingThem) {
     std::vector<float> wide(2, 0.0f);
     EXPECT_FALSE(grid_points(field, d, 1, GridFrame{}, p, wide).has_value()) << "out the wrong size";
 }
+
+// Physics' review (2026-11-07): NaN and each infinity are separate cases, and a FINITE coordinate whose (p - origin)
+// overflows to infinity is not a number either. The clamp must not drop any of them (a min/max fold would turn a NaN into a
+// border value).
+TEST(GridPoints, EachNonFiniteCaseAnswersNaNOnItsOwn) {
+    const GridDims d{2, 2, 2};
+    const std::vector<float> field(8, 1.0f);
+    const float inf = std::numeric_limits<float>::infinity();
+    const float big = std::numeric_limits<float>::max();
+    struct Case {
+        const char* what;
+        std::array<float, 3> p;
+        GridFrame frame;
+    };
+    const Case cases[] = {
+        {"NaN", {std::numeric_limits<float>::quiet_NaN(), 0.5f, 0.5f}, GridFrame{}},
+        {"+inf", {inf, 0.5f, 0.5f}, GridFrame{}},
+        {"-inf", {0.5f, -inf, 0.5f}, GridFrame{}},
+        {"p - origin overflows", {big, 0.5f, 0.5f}, GridFrame{.origin = {-big, 0.0f, 0.0f}, .inv_cell = 1.0f}},
+        {"a NaN inverse cell", {0.5f, 0.5f, 0.5f}, GridFrame{.origin = {0, 0, 0}, .inv_cell = std::numeric_limits<float>::quiet_NaN()}},
+    };
+    for (const Case& c : cases) {
+        std::vector<float> out(1, 0.0f);
+        ASSERT_TRUE(grid_points(field, d, 1, c.frame, c.p, out).has_value()) << c.what;
+        EXPECT_TRUE(std::isnan(out[0])) << c.what;
+    }
+}
+
+// n = 1 and n = 2, and a point exactly at the last centre: it reads the last cell, not a blend with its neighbour.
+TEST(GridPoints, TheLastCentreIsTheLastCellAndTwoCellsBlendBetweenTheirCentres) {
+    {
+        const GridDims d{3, 1, 1};
+        const std::vector<float> field = {1.0f, 2.0f, 4.0f};
+        std::vector<float> out(1, 0.0f);
+        const std::vector<float> last = {2.5f, 0.5f, 0.5f};  // cell 2's centre
+        ASSERT_TRUE(grid_points(field, d, 1, GridFrame{}, last, out).has_value());
+        EXPECT_EQ(std::bit_cast<uint32_t>(out[0]), std::bit_cast<uint32_t>(4.0f));
+    }
+    {
+        const GridDims d{2, 1, 1};
+        const std::vector<float> field = {10.0f, 20.0f};
+        std::vector<float> out(1, 0.0f);
+        const std::vector<float> mid = {1.0f, 0.5f, 0.5f};  // halfway between the two centres
+        ASSERT_TRUE(grid_points(field, d, 1, GridFrame{}, mid, out).has_value());
+        EXPECT_EQ(out[0], 15.0f);
+    }
+}
