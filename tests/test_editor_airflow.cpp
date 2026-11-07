@@ -261,6 +261,10 @@ TEST(EditorAirflow, TheFrameCarriesTheFlightReadoutAndHoverThrustHoldsTheWeight)
     }
 
     const ed::FlightReadout& f = frame->flight;
+    // The figure the 5% is judged on, so a pass can be compared later.
+    std::printf("[ settled ] frame %llu at t %.3f s: thrust / weight %.4f (the check is within 0.05 of 1)\n",
+                static_cast<unsigned long long>(frame->frames), frame->t_s,
+                static_cast<double>(f.thrust_n) / static_cast<double>(f.weight_n));
     ASSERT_EQ(f.rotors.size(), cases->discs.model.rotors.size());
     EXPECT_FALSE(f.flow) << "calm air: no relative wind";
     EXPECT_EQ(f.airspeed_mps, 0.0f);
