@@ -38,6 +38,10 @@
 // stop -- so this file reports the identical code a caller already has to
 // handle for the ON-but-no-device case, rather than inventing a second one.
 //
+// EVERY MEMBER backend.cpp DEFINES MUST BE DEFINED HERE TOO (device_report() was missed once, ae58a66d, and memory_report() once
+// more, stage 7 batch A): tests/test_backend_stub_parity.cpp scans both files and fails the next miss on any build.
+// memory_report() answers an empty report -- no device and no buffers, which is what a create() that never succeeds means.
+//
 // EVERY OTHER METHOD IS UNREACHABLE AT RUNTIME (create() always fails
 // before any VulkanBackend is ever constructed) but still needs a
 // DEFINITION here: simulation.cpp's compiled text calls all of them
@@ -160,6 +164,9 @@ const DeviceReport& VulkanBackend::device_report() const noexcept {
     static const DeviceReport kNone{};
     return kNone;
 }
+
+// Never reached either: no device, no buffers.
+MemoryReport VulkanBackend::memory_report() const { return {}; }
 
 uint32_t VulkanBackend::bound_binding_count() const noexcept { return 0; }
 
