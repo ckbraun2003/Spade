@@ -79,3 +79,25 @@ Order: (1) this design reviewed; (2) the lattice core and the periodic stream (n
 - **D2. WALE's neighbours.** Options: (W2, recommended) two kernels a step with one u array, 124 B a cell and about 50% more population reads, no lag, simplest to verify; (W1) one fused kernel reading the previous step's u from a ping-pong pair, 136 B a cell (3.9 GiB for the Caradonna-Tung nest, too near the cap) and a one-step lag in nu_t; (W3) Smagorinsky from Pi_neq alone, 112 B and no neighbour reads, but WALE is the decided model and C_w is recorded. I recommend W2; a fused kernel is an optimisation for later.
 - **D3. D3Q27 only.**
 - **D4. Grants:** entries in `engine/CMakeLists.txt` for the new sources now; the `kSpirvModules` row when the twin starts.
+
+## 8. The map's result: the rung, the coverage table, and the max-|u| rule
+
+**The rung (L33):** R0, RR3 + WALE (C_w 0.5), no fallback. The records are `tests/data/airflow/records/l1-stability-map.md` (41 points on the CPU reference, MSVC, release; every point report only).
+
+**What the map showed** (64^3 periodic Taylor-Green field to t* 20, nu_lat 0 to 1e-3; held = K* finite and at most 1.05 K*(0) at every 5th step):
+- u_lat 0.10, 0.15, 0.20, 0.25: every nu_lat held to the horizon, at nu_lat 0 included (WALE's nu_t alone carries tau).
+- u_lat 0.275 (Ma 0.476): held in full at all five nu_lat (0 and 1e-5 in b4, 1e-6, 1e-4 and 1e-3 in b5, L33b), so u_held is 0.275.
+- u_lat 0.30: nu_lat 0, 1e-6, 1e-5 break at step 320 of 679, 1e-4 at 350, 1e-3 holds. u_lat 0.35: 235 of 582 (nu_lat 0, 1e-6, 1e-5), 245 (1e-4), 1e-3 holds. u_lat 0.40: 170 to 180 of 509 for nu_lat up to 1e-4, 280 at 1e-3. The breaks fall at t* 6.7 to 9.4, the transition's peak, and nu_lat 0 and 1e-6 break at the same step, so what sets the edge is u_lat, not tau - 1/2.
+- The four required rows (A2) held in full: L2a (0.025; 1.5e-4) and (0.025; 3e-4), L4d (0.05; 9.4e-6), L5 (0.254; 4.2e-6).
+
+**The coverage table** (what the lattice is stated to hold, and no more):
+
+| Rung | Max u_lat stated | Edge row recorded | Highest u_lat held (the check below) | Min tau - 1/2 tested | Tested on |
+|---|---|---|---|---|---|
+| R0 | 0.275 (Ma 0.476), any nu_lat down to 0 | 0.254 (Ma 0.440; L5's nominal), nu_lat 4.2e-6, held | 0.275 (all five nu_lat) | 0 (tau = 1/2, WALE's nu_t alone), at u_lat up to 0.275 | 64^3 periodic, one field, t* 20, no walls |
+
+It does not cover walls, nests or a sustained flow (L2, L4, L5 each carry their own stability in their own records), nor any u_lat between 0.275 and 0.30 (the first break is at 0.30).
+
+**L5's u_lat (L33b).** It comes from the tolerances note's rule, fixed before the run (`test-docs/2026-11-03-l1-lbm-tolerances.md`, "The stability map", "The decision"): L5 runs at the smaller of 0.254 and u_held / 1.4, with the margin 1.4 from P9's Table 17 (local speeds 1.32 to 1.40 V_tip), and P9's compressibility caveat applies below 0.254. Here u_held is 0.275 (every nu_lat held there), so **L5 runs at u_lat 0.196 (Ma_lat 0.340)**, and the caveat applies. Had the three further nu_lat at 0.275 broken, u_held would be 0.25 and L5 would run at 0.179. At 0.254 the fluid by the blade would run at about 0.34 to 0.36, past the break at 0.30. The tolerances note is Test/Docs' and stays as it is.
+
+**The max-|u| guard (L33), added for every case, not a replacement for the rule.** Every case's record compares the health line's max lattice |u| with the map's highest held u_lat, 0.275. A case that reaches past it lowers its u_lat, which means more steps, and runs again before its result counts. The check is on the run's own max |u|, not on the nominal u_lat: it matters most for L5, whose blade surface moves at the tip u_lat, so the fluid next to the surface can exceed the nominal value.
