@@ -24,7 +24,7 @@
 
 #include "drone_sim.hpp"  // attitude_from_quat: the readouts' yaw, pitch and roll; vehicles::kStandardGravity
 
-namespace spade::editor {
+namespace spade::sandbox::editor {
 
 struct FlightInput {
     glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};  // design axes -> world
@@ -76,7 +76,7 @@ struct FlightReadout {
         r.rotors.push_back(rr);
     }
     r.weight_n = in.mass * vehicles::kStandardGravity;
-    const sandbox::AttitudeTarget a = sandbox::attitude_from_quat(in.orient);
+    const AttitudeTarget a = attitude_from_quat(in.orient);
     r.yaw_deg = a.yaw * kRadToDeg;
     r.pitch_deg = a.pitch * kRadToDeg;
     r.roll_deg = a.roll * kRadToDeg;
@@ -118,4 +118,4 @@ struct FlightRow {
 inline constexpr const char* kFlightNotShown =
     "Not shown: the aero loads on the body, which wait on Core's stage 7 (held-load rows).";
 
-}  // namespace spade::editor
+}  // namespace spade::sandbox::editor

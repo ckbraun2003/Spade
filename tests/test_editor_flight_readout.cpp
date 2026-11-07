@@ -13,7 +13,7 @@
 
 #include "../sandbox/editor_flight_readout.hpp"
 
-using namespace spade::editor;
+using namespace spade::sandbox::editor;
 
 namespace {
 
