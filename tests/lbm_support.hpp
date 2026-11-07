@@ -11,6 +11,7 @@
 // switch state, so two runs compare in one word.
 #pragma once
 
+#include <bit>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -64,6 +65,16 @@ inline void case_step(LbmFlow& fl) {
 inline FlowSums case_sums(LbmFlow& fl) {
     return case_gradual() ? spade::physics::lbm::flow_sums(fl, case_pool())
                           : spade::physics::lbm::flow_sums_flushed(fl, case_pool());
+}
+
+// Two diagnostics are the same bits: each double by its bit pattern (so -0 differs from 0, and a NaN equals its own
+// bits), `finite` by value. Never memcmp the struct: FlowSums ends in a bool after five doubles, so its padding
+// bytes are never written and a byte compare reads whatever the stack held (gcc-13 -NoSeed failed on it, MSVC
+// happened to match).
+inline bool same_sums(const FlowSums& a, const FlowSums& b) {
+    const auto same = [](double x, double y) { return std::bit_cast<uint64_t>(x) == std::bit_cast<uint64_t>(y); };
+    return same(a.kinetic, b.kinetic) && same(a.mass_m1, b.mass_m1) && same(a.momentum[0], b.momentum[0]) &&
+           same(a.momentum[1], b.momentum[1]) && same(a.momentum[2], b.momentum[2]) && a.finite == b.finite;
 }
 
 // FNV-1a over the populations' bits and the step count: the run's final state in one word, to compare two runs.
