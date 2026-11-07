@@ -28,9 +28,11 @@ using namespace spade::sandbox;
 
 namespace {
 
+// atan2 of the vector part, not acos(w): acos has a noise floor near w = 1 (one ulp of w reads as ~5e-4 rad), which would
+// bury a band of 1e-4.
 [[nodiscard]] float angle_between(const glm::quat& a, const glm::quat& b) {
     const glm::quat err = glm::conjugate(a) * b;
-    return 2.0f * std::acos(std::min(1.0f, std::fabs(err.w)));
+    return 2.0f * std::atan2(glm::length(glm::vec3(err.x, err.y, err.z)), std::fabs(err.w));
 }
 
 [[nodiscard]] std::array<uint32_t, 3> bits(const glm::vec3& v) {
