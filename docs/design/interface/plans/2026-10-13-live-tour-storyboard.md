@@ -36,6 +36,7 @@ The scene mains were the strangler viewer's successors: worth keeping as physics
 | drone_box.attitude | Pitch, roll, yaw on the keys | pitch-, roll-, yaw-follows |
 | drone_box.level | R: back to level | target-levels, drone-levels |
 | drone_box.throttle | Throttle up and back: the rotors spin faster | rotors-speed-up |
+| drone_box.backend | The stand switched to Vulkan and back from the panel (Core's translation lock, L34); a box with no device shows a card with the refusal | switched-to-vulkan, attitude-carried-to-vulkan, stepping-on-vulkan, held-on-vulkan, then the same four for cpu; or vulkan-refused-with-reason |
 | drone_box.hud | F1 hides, then shows the HUD | hidden, shown |
 
 Arm/disarm and the floor are Cameron's premise. The sandbox's DroneSim has neither: they come with LiveRun's held drone (Core's throttle and arm command, the case's floor). When chapter 2 is live, the drone box moves onto LiveRun's drone, and these steps gain arm and disarm.
