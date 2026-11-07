@@ -252,35 +252,8 @@ TEST(LbmMap, OnePointOfTheStabilityMap) {
 
 namespace airflow = spade::physics::airflow;
 
-// A field with structure for the split to break: 12 x 10 x 7 (7 z-planes of 10 rows is 70 rows, 18 chunks with a
-// short last one of 2 rows), Taylor-Green velocity with a pressure, WALE on, optionally a box whose y faces are
-// walls with the high one a moving lid.
-LbmFlow thread_field(bool lid) {
-    constexpr uint32_t nx = 12;
-    constexpr uint32_t ny = 10;
-    constexpr uint32_t nz = 7;
-    LbmFlow fl = make_flow(nx, ny, nz, 0.004f, 0.5f);
-    if (lid) {
-        fl.walls.periodic[1] = false;
-        fl.walls.wall_u[1][1] = {0.08f, 0.0f, 0.0f};
-    }
-    const double u0 = 0.1;
-    for (uint32_t z = 0; z < nz; ++z) {
-        for (uint32_t y = 0; y < ny; ++y) {
-            for (uint32_t x = 0; x < nx; ++x) {
-                const double X = kTwoPi * x / nx;
-                const double Y = kTwoPi * y / ny;
-                const double Z = kTwoPi * z / nz;
-                const double p = u0 * u0 / 16.0 * (std::cos(2 * X) + std::cos(2 * Y)) * (std::cos(2 * Z) + 2.0);
-                set_node_equilibrium(fl, x, y, z, static_cast<float>(1.0 + 3.0 * p),
-                                     static_cast<float>(u0 * std::sin(X) * std::cos(Y) * std::cos(Z)),
-                                     static_cast<float>(-u0 * std::cos(X) * std::sin(Y) * std::cos(Z)),
-                                     static_cast<float>(0.3 * u0 * std::sin(Z)));
-            }
-        }
-    }
-    return fl;
-}
+// The field the split is tested on (tests/lbm_support.hpp's box_field: shared with the GPU twin's bit tests).
+LbmFlow thread_field(bool lid) { return spade::testing::lbm_support::box_field(lid); }
 
 bool same_bits(const std::vector<float>& a, const std::vector<float>& b) {
     return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
