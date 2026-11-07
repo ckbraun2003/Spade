@@ -81,6 +81,24 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
         if (Result<void> ok = admit(*asked, (*ctx)->device_report().limits, (*ctx)->device_name()); !ok) {
             return std::unexpected(ok.error());
         }
+        // The VRAM budget (design 7.4, D6): the buffers the mirror is about to make against min(the airflow cap, the
+        // device's budget less a reserve, BackendDesc::vram_cap_bytes). Refused by name before any allocation.
+        uint64_t total = 0;
+        const AdmitBuffer* largest = nullptr;
+        for (const AdmitBuffer& b : asked->buffers) {
+            total += b.bytes;
+            if (largest == nullptr || b.bytes > largest->bytes) largest = &b;
+        }
+        if (largest != nullptr) {
+            const std::string what = "StateMirror::create: its " + std::to_string(asked->buffers.size()) +
+                                     " buffers, the largest '" + largest->name + "' (" +
+                                     std::to_string(largest->bytes) + " bytes),";
+            if (Result<void> ok = check_vram(what, total, (*ctx)->memory_budget(), kMirrorVramReserve, 0,
+                                             (*ctx)->device_name(), desc.vram_cap_bytes);
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+        }
     }
 
     Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape);
@@ -174,7 +192,7 @@ RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->rec
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
 
-MemoryReport VulkanBackend::memory_report() const { return MemoryReport{}; }  // RED STUB (stage 7 Task A3)
+MemoryReport VulkanBackend::memory_report() const { return impl_->mirror->memory_report(); }
 
 uint32_t VulkanBackend::bound_binding_count() const noexcept { return impl_->mirror->bound_binding_count(); }
 

@@ -1,6 +1,7 @@
 #include "compute/vulkan/state_mirror.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -80,9 +81,15 @@ namespace {
 // returning -- the caller's own destroy() only has to handle buffers it
 // successfully finished creating, matching every other RAII owner in this
 // tree (VulkanContext::destroy()'s "idempotent, safe on partial state" note).
+//
+// THE ALLOCATION LEDGER (stage 7 Task A3): every successful vkAllocateMemory is counted in g_mirror_allocations, and the
+// memory type chosen is written to `out_type`, so memory_report() can say which type and heap each buffer got.
+std::atomic<uint64_t> g_mirror_allocations{0};
+
 [[nodiscard]] Result<void> create_buffer(VkDevice device, VkPhysicalDevice phys, VkDeviceSize size,
                                           VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_props, bool map,
-                                          VkBuffer& out_buffer, VkDeviceMemory& out_memory, void*& out_mapped) {
+                                          VkBuffer& out_buffer, VkDeviceMemory& out_memory, void*& out_mapped,
+                                          uint32_t* out_type = nullptr) {
     out_buffer = VK_NULL_HANDLE;
     out_memory = VK_NULL_HANDLE;
     out_mapped = nullptr;
@@ -130,6 +137,8 @@ namespace {
         out_memory = VK_NULL_HANDLE;
         return std::unexpected(map_vk_error(r, "vkAllocateMemory"));
     }
+    g_mirror_allocations.fetch_add(1, std::memory_order_relaxed);
+    if (out_type != nullptr) *out_type = *type;
 
     r = vkBindBufferMemory(device, out_buffer, out_memory, 0);
     if (r != VK_SUCCESS) {
@@ -522,14 +531,14 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         void* unused_device_mapped = nullptr;  // create_buffer(map=false) always writes null here; never read
         if (Result<void> made = create_buffer(self->device_, self->physical_device_, e.byte_size, kDeviceUsage,
                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, e.device_buffer,
-                                               e.device_memory, unused_device_mapped);
+                                               e.device_memory, unused_device_mapped, &e.device_type);
             !made) {
             return std::unexpected(made.error());
         }
         if (Result<void> made =
                 create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
-                              e.staging_buffer, e.staging_memory, e.staging_mapped);
+                              e.staging_buffer, e.staging_memory, e.staging_mapped, &e.staging_type);
             !made) {
             return std::unexpected(made.error());
         }
@@ -590,14 +599,14 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         void* unused_device_mapped = nullptr;
         if (Result<void> made = create_buffer(self->device_, self->physical_device_, e.byte_size, kDeviceUsage,
                                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, e.device_buffer,
-                                               e.device_memory, unused_device_mapped);
+                                               e.device_memory, unused_device_mapped, &e.device_type);
             !made) {
             return made;
         }
         if (!staged) return {};
         return create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
-                             e.staging_buffer, e.staging_memory, e.staging_mapped);
+                             e.staging_buffer, e.staging_memory, e.staging_mapped, &e.staging_type);
     };
 
     for (std::size_t i = 0; i < derived->size(); ++i) {
@@ -629,7 +638,7 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         if (Result<void> made = create_buffer(
                 self->device_, self->physical_device_, e.byte_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true, e.staging_buffer,
-                e.staging_memory, e.staging_mapped);
+                e.staging_memory, e.staging_mapped, &e.staging_type);
             !made) {
             return std::unexpected(made.error());
         }
@@ -1238,7 +1247,41 @@ void StateMirror::destroy() noexcept {
 
 StateMirror::~StateMirror() { destroy(); }
 
-uint64_t mirror_allocation_count() noexcept { return 0; }  // RED STUB (stage 7 Task A3)
+uint64_t mirror_allocation_count() noexcept { return g_mirror_allocations.load(std::memory_order_relaxed); }
+
+MemoryReport StateMirror::memory_report() {
+    MemoryReport report;
+    VkPhysicalDeviceMemoryProperties props{};
+    vkGetPhysicalDeviceMemoryProperties(physical_device_, &props);
+    const auto add = [&](const Entry& e, MemoryKind kind) {
+        const auto record = [&](bool staging, uint32_t type) {
+            MemoryRecord r;
+            r.name = e.name;
+            r.kind = kind;
+            r.staging = staging;
+            r.bytes = e.byte_size;
+            r.memory_type = type;
+            if (type < props.memoryTypeCount) {
+                r.heap = props.memoryTypes[type].heapIndex;
+                r.device_local = (props.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+            }
+            (staging ? report.staging_bytes : report.device_bytes) += r.bytes;
+            report.buffers.push_back(std::move(r));
+        };
+        if (e.device_buffer != VK_NULL_HANDLE) record(false, e.device_type);
+        if (e.staging_buffer != VK_NULL_HANDLE) record(true, e.staging_type);
+    };
+    for (const Entry& e : entries_) {
+        add(e, MemoryKind::walk);
+        report.host_arena_bytes += e.byte_size;
+    }
+    for (Entry* e : derived_entries()) add(*e, MemoryKind::derived);
+    for (const Entry& e : scratch_entries_) {
+        add(e, e.name.ends_with(" (absent)") ? MemoryKind::dummy : MemoryKind::scratch);
+    }
+    for (const Entry& e : table_entries_) add(e, MemoryKind::table);
+    return report;
+}
 
 Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/) {
     AdmitShape out;

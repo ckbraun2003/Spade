@@ -813,7 +813,7 @@ public:
     [[nodiscard]] Result<compute::DeviceReport> vulkan_device_report() const;
 
     // Every buffer the run created and the host arena's bytes (module API stage 7, Task A3; compute/backend.hpp's
-    // MemoryReport). A CPU run lists no device buffers. RED STUB: an empty report.
+    // MemoryReport). A CPU run lists no device buffers.
     [[nodiscard]] compute::MemoryReport memory_report() const;
 
     // ---------------------------------------------------------------------

@@ -123,7 +123,7 @@ struct DerivedBufferShape {
 
 // The number of device-memory allocations (vkAllocateMemory) the mirror has made in this process (stage 7 Task A3: the
 // ledger memory_report() is built on). A refusal before allocation leaves it unchanged, which is how a test sees that
-// create() refused BEFORE it allocated. RED STUB: always 0.
+// create() refused BEFORE it allocated.
 [[nodiscard]] uint64_t mirror_allocation_count() noexcept;
 
 class StateMirror {
@@ -154,6 +154,10 @@ public:
     // staging twin, and the sum of the staging buffers' bytes (stage 7 Task A2). Diagnostics for tests: a buffer the
     // host never writes or reads has none. False for a name the mirror does not hold.
     [[nodiscard]] bool has_staging(std::string_view name);
+
+    // Every buffer this mirror created (the device buffer and its staging twin, when it has one, are two records) with
+    // its kind, bytes, memory type and heap, and the walk's host rows' bytes (stage 7 Task A3). A diagnostic.
+    [[nodiscard]] MemoryReport memory_report();
     [[nodiscard]] uint64_t host_visible_bytes();
 
     // The reverse of upload(): device buffers -> `arenas`. Same shape check,
@@ -278,6 +282,8 @@ private:
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VkDeviceMemory staging_memory = VK_NULL_HANDLE;
         void* staging_mapped = nullptr;
+        uint32_t device_type = 0;  // the memory type index the allocator chose (Task A3's report)
+        uint32_t staging_type = 0;
         uint32_t binding = 0;
         bool has_binding = false;
     };
