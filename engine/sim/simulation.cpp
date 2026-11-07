@@ -1184,30 +1184,68 @@ uint64_t Simulation::registry_identity() const {
     const uint64_t models = vehicles::model_registry_identity(models_);
     bool any = false;
     for (const std::vector<float>& t : config_tables_) any = any || !t.empty();
-    if (!any) return models;
-    uint64_t h = rng::kFnv1aOffsetBasis;
-    const auto byte = [&h](uint8_t b) {
-        h ^= b;
-        h *= rng::kFnv1aPrime;
-    };
-    const auto u32 = [&byte](uint32_t v) {
-        for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
-    };
-    const auto text = [&byte](std::string_view s) {
-        for (const char c : s) byte(static_cast<uint8_t>(c));
-        byte(0);
-    };
-    byte(0xFE);
-    for (const char c : std::string_view("config_tables")) byte(static_cast<uint8_t>(c));
-    for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(models >> (8 * i)));
-    u32(static_cast<uint32_t>(config_tables_.size()));
-    for (std::size_t i = 0; i < config_tables_.size(); ++i) {
-        text(schedule_.tables[i].module);
-        text(schedule_.tables[i].name);
-        u32(static_cast<uint32_t>(config_tables_[i].size()));
-        for (const float f : config_tables_[i]) u32(std::bit_cast<uint32_t>(f));
+    uint64_t result = models;
+    if (any) {
+        uint64_t h = rng::kFnv1aOffsetBasis;
+        const auto byte = [&h](uint8_t b) {
+            h ^= b;
+            h *= rng::kFnv1aPrime;
+        };
+        const auto u32 = [&byte](uint32_t v) {
+            for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+        };
+        const auto text = [&byte](std::string_view s) {
+            for (const char c : s) byte(static_cast<uint8_t>(c));
+            byte(0);
+        };
+        byte(0xFE);
+        for (const char c : std::string_view("config_tables")) byte(static_cast<uint8_t>(c));
+        for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(models >> (8 * i)));
+        u32(static_cast<uint32_t>(config_tables_.size()));
+        for (std::size_t i = 0; i < config_tables_.size(); ++i) {
+            text(schedule_.tables[i].module);
+            text(schedule_.tables[i].name);
+            u32(static_cast<uint32_t>(config_tables_[i].size()));
+            for (const float f : config_tables_[i]) u32(std::bit_cast<uint32_t>(f));
+        }
+        result = h;
     }
-    return h;
+
+    // THE PARTS TAIL (stage 7, Task C1; L35 question 1). Only a schedule that declares a part table (a configuration table named
+    // modules::kPartTableName) folds the models' parts, and only the models that have some: FNV-1a 64 over 0xFD, the ASCII bytes
+    // "parts", the identity so far as 8 bytes little-endian, the count of models with parts (u32), then per such model, in
+    // registration order, its registration index (u32) and vehicles::parts_identity() as 8 bytes little-endian. A set without
+    // a part table, which is every set today, and a registry with no parts anywhere, keep the value they have.
+    const bool part_table = std::any_of(schedule_.tables.begin(), schedule_.tables.end(),
+                                        [](const modules::CompiledTable& t) { return t.name == modules::kPartTableName; });
+    if (part_table) {
+        uint32_t with_parts = 0;
+        for (const vehicles::ModelType& m : models_) with_parts += m.parts.empty() ? 0u : 1u;
+        if (with_parts != 0) {
+            uint64_t h = rng::kFnv1aOffsetBasis;
+            const auto byte = [&h](uint8_t b) {
+                h ^= b;
+                h *= rng::kFnv1aPrime;
+            };
+            const auto u32 = [&byte](uint32_t v) {
+                for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+            };
+            const auto u64 = [&byte](uint64_t v) {
+                for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+            };
+            byte(0xFD);
+            for (const char c : std::string_view("parts")) byte(static_cast<uint8_t>(c));
+            u64(result);
+            u32(with_parts);
+            for (std::size_t i = 0; i < models_.size(); ++i) {
+                if (models_[i].parts.empty()) continue;
+                u32(static_cast<uint32_t>(i));
+                u64(vehicles::parts_identity(models_[i]));
+            }
+            result = h;
+        }
+    }
+    return result;
 }
 
 uint32_t Simulation::contact_set_of(ModelTypeId model) const noexcept {
@@ -1631,8 +1669,25 @@ Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains()
     return vulkan_backend_->recorded_chains();
 }
 
-// RED STUBS (stage 7 Task C1).
-std::vector<modules::ConfigurationEntry> Simulation::configuration_report() const { return {}; }
+// Each module's configuration image as the schedule folded it (stage 7, Task C1). schedule_.modules is in set order and the
+// images are the ModuleDescs' own, kept by schedule_.config_images (compile_schedule copies them, the spans may not outlive
+// the set).
+std::vector<modules::ConfigurationEntry> Simulation::configuration_report() const {
+    std::vector<modules::ConfigurationEntry> out;
+    out.reserve(schedule_.modules.size());
+    for (const modules::CompiledModule& m : schedule_.modules) {
+        uint64_t h = rng::kFnv1aOffsetBasis;
+        for (const std::byte b : m.config) {
+            h ^= static_cast<uint8_t>(b);
+            h *= rng::kFnv1aPrime;
+        }
+        out.push_back(modules::ConfigurationEntry{.module = m.name,
+                                                  .version = m.version,
+                                                  .bytes = static_cast<uint32_t>(m.config.size()),
+                                                  .hash = h});
+    }
+    return out;
+}
 
 // RED STUBS (stage 7 Task C2).
 Result<compute::TransferBytes> Simulation::vulkan_transfer_bytes() const { return compute::TransferBytes{}; }

@@ -629,6 +629,10 @@ struct CompiledModule {
     uint32_t version = 1;
     GradeDecl grade{};
     std::string role{};  // the kRoles name it fills, or empty (Task 6)
+    // The configuration image, copied (stage 7, Task C1): the ModuleDesc's span points into the caller's storage, which need
+    // not outlive the set. Empty: none.
+    std::vector<std::byte> config{};
+    uint32_t config_binding = compute::kNoBinding;
 };
 
 // One filled role (Task 6): the role and the module that fills it.

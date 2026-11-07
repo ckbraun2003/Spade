@@ -7,6 +7,7 @@
 #include <tuple>
 #include <utility>
 
+#include "bindings.gen.hpp"
 #include "compute/recipe.hpp"
 #include "core/rng.hpp"
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
@@ -173,6 +174,29 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
             return std::unexpected(invalid("role '" + std::string(mod.role) + "' is filled by module '" +
                                            std::string(modules[k].name) + "' and module '" + std::string(mod.name) +
                                            "'; a role has one filler"));
+        }
+    }
+    return {};
+}
+
+// A module's configuration image (stage 7, Task C1): the one binding it may name is the config buffer, it needs an image to
+// upload there, and no earlier module names it too.
+[[nodiscard]] Result<void> check_config(std::span<const ModuleDesc> modules, std::size_t m) {
+    const ModuleDesc& mod = modules[m];
+    if (mod.config_binding == compute::kNoBinding) return {};
+    if (mod.config_binding != compute::gen::kBinding_airflow_config) {
+        return std::unexpected(invalid("module '" + std::string(mod.name) + "': config_binding " +
+                                       std::to_string(mod.config_binding) + " is not the config buffer (set-1 binding " +
+                                       std::to_string(compute::gen::kBinding_airflow_config) + ")"));
+    }
+    if (mod.config.empty()) {
+        return std::unexpected(invalid("module '" + std::string(mod.name) +
+                                       "': config_binding names the config buffer but the module has no configuration image"));
+    }
+    for (std::size_t k = 0; k < m; ++k) {
+        if (modules[k].config_binding == mod.config_binding) {
+            return std::unexpected(invalid("modules '" + std::string(modules[k].name) + "' and '" + std::string(mod.name) +
+                                           "' both bind the config buffer; it holds one module's image"));
         }
     }
     return {};
@@ -625,6 +649,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         // ROLES (Task 6), here and so before the pass graph is built: two fillers of dynamic_contact are
         // also two writers of body.pose with no edge, and a later check would refuse them as a hazard.
         if (Result<void> ok = check_role(modules, m); !ok) return std::unexpected(ok.error());
+        if (Result<void> ok = check_config(modules, m); !ok) return std::unexpected(ok.error());
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
@@ -887,6 +912,13 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_str(h, m.name);
         h = fold_byte(h, 0);
         h = fold_u32_le(h, m.version);
+        // A configuration image is a different schedule (stage 7, Task C1): 0x02, its length, its bytes. A module with none
+        // folds nothing, and keeps the identity it had.
+        if (!m.config.empty()) {
+            h = fold_byte(h, 0x02);
+            h = fold_u32_le(h, static_cast<uint32_t>(m.config.size()));
+            for (const std::byte b : m.config) h = fold_byte(h, static_cast<uint8_t>(b));
+        }
     }
     h = fold_byte(h, 1);
     for (const CompiledPass& p : out.passes) {
@@ -903,7 +935,8 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     }
     out.identity = h;
     for (const ModuleDesc& mod : modules) {
-        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role)});
+        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role),
+                                             std::vector<std::byte>(mod.config.begin(), mod.config.end()), mod.config_binding});
     }
     for (const RoleDecl& role : kRoles) {  // kRoles order; check_role allowed at most one filler
         const auto filler = std::find_if(modules.begin(), modules.end(),
