@@ -501,6 +501,15 @@ struct ModuleDesc {
     // default) folds nothing, so a set without one keeps the identity it has. Not state: it is not in the walk or the digest.
     std::span<const std::byte> config{};
     uint32_t config_binding = compute::kNoBinding;  // gen::kBinding_airflow_config, or kNoBinding: the image is hashed only
+    // THE REBUILD HOOK (stage 7, Task C3). Buffers DERIVED from the module's configuration and its rows (a region table, a
+    // grid's coefficients) are not state, so a snapshot does not carry them and a restore must rebuild them. create() and
+    // restore() run each module's hook, in set order, before the next step: `rebuild_cpu` on the cpu backend (and on Vulkan
+    // for a module with no `rebuild_gpu`, followed by an upload), `rebuild_gpu` on Vulkan as an ON-DEMAND recording submitted
+    // once, never per step. `rebuild_access` is the hook's declared access, bound as a pass's is: the function sees one
+    // StateView per entry in SubstepContext::state. A module with none (every module today) is unchanged.
+    std::span<const QuantityAccess> rebuild_access{};
+    PassFn rebuild_cpu = nullptr;
+    const compute::RecipeDesc* rebuild_gpu = nullptr;
 };
 
 using ModuleSet = std::vector<ModuleDesc>;

@@ -1637,6 +1637,7 @@ std::vector<modules::ConfigurationEntry> Simulation::configuration_report() cons
 // RED STUBS (stage 7 Task C2).
 Result<compute::TransferBytes> Simulation::vulkan_transfer_bytes() const { return compute::TransferBytes{}; }
 Result<uint32_t> Simulation::vulkan_descriptor_set_count() const { return 1u; }
+Result<uint64_t> Simulation::vulkan_on_demand_count() const { return uint64_t{0}; }
 Result<void> Simulation::sync_resident() { return {}; }
 bool Simulation::resident_current() const noexcept { return true; }
 Result<void> Simulation::write_module_rows(std::string_view, uint32_t, std::span<const std::byte>) { return {}; }

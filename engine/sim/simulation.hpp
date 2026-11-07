@@ -736,6 +736,10 @@ public:
     [[nodiscard]] Result<compute::TransferBytes> vulkan_transfer_bytes() const;
     [[nodiscard]] Result<uint32_t> vulkan_descriptor_set_count() const;
 
+    // How many on-demand recordings (the rebuild hooks', stage 7 Task C3) the Vulkan path has submitted since create():
+    // `unavailable` on the cpu backend.
+    [[nodiscard]] Result<uint64_t> vulkan_on_demand_count() const;
+
     // ---------------------------------------------------------------------
     // Device-resident arrays (stage 7, Task C2). An array declared Residency::device lives on the device between steps, so
     // the host copy can be STALE after a Vulkan step. Every host read path either syncs first or refuses by name; none
