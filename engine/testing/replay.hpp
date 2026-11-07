@@ -152,12 +152,14 @@ template <class T>
     return state_digest(static_cast<const Simulation&>(sim));
 }
 [[nodiscard]] inline Result<uint64_t> checked_state_digest(const Simulation& sim) noexcept {
-    if (Result<void> current = sim.check_resident_current("state_digest"); !current) {
-        return std::unexpected(current.error());
+    if (Result<std::reference_wrapper<const ArenaSet>> arenas = sim.checked_arenas(); !arenas) {
+        return std::unexpected(arenas.error());
     }
     return state_digest(sim);
 }
 
+// The two const folds below read sim.arenas() unchecked: they return a bare uint64_t (106 call sites) and cannot refuse. A set with a
+// device-resident array reaches them only through state_digest(Simulation&) (syncs) or checked_state_digest() (refuses first).
 [[nodiscard]] inline uint64_t state_digest(const Simulation& sim) noexcept {
     uint64_t seed = kFnv1a64Offset;
     seed = detail::fold_value(seed, sim.tick().value);

@@ -1584,6 +1584,9 @@ public:
 
     // The whole state, for snapshots, digests and tests. Const protects the
     // arena DESCRIPTORS, not the bytes (state/registry.hpp).
+    // HAZARD (stage 7, Task C2): this const form returns the host's bytes as they stand, so on a Vulkan set with a device-resident
+    // array it hands out STALE bytes after a step, silently. Use it only where no array is resident; a const reader that might
+    // see one calls checked_arenas(), which refuses by name. The non-const arenas() syncs.
     [[nodiscard]] const ArenaSet& arenas() const noexcept { return arenas_; }
     // The non-const form syncs the device-resident arrays first (stage 7, Task C2). It returns a reference, so it cannot report a
     // failed sync: resident_current() says whether the sync happened. The const form is the host's view as it stands.
@@ -1591,8 +1594,12 @@ public:
         (void)sync_resident();
         return arenas_;
     }
-    // RED STUB (stage 7 Task C2, lead ruling 1): returns the arenas without checking.
-    [[nodiscard]] Result<std::reference_wrapper<const ArenaSet>> checked_arenas() const { return std::cref(arenas_); }
+    // The checked door for a const reader (stage 7, Task C2): the arenas, or `unavailable` naming the stale device-resident
+    // array and sync_resident() when the host copy is stale. The same shape as testing::checked_state_digest().
+    [[nodiscard]] Result<std::reference_wrapper<const ArenaSet>> checked_arenas() const {
+        if (Result<void> current = check_resident_current("arenas"); !current) return std::unexpected(current.error());
+        return std::cref(arenas_);
+    }
 
     // Handy typed accessors for the two arrays a caller is likely to read back.
     [[nodiscard]] Result<std::span<const BodyState>> world_bodies(uint32_t world_index) const;
