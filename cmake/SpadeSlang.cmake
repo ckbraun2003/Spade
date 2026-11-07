@@ -185,6 +185,12 @@ set(SPADE_SLANG_PROFILE "glsl_450")
 # policy gate.
 set(SPADE_SLANG_WORKGROUP_SIZES 32 64 128)
 
+# The 3D local shape each workgroup size maps to (module API stage 7, Task B1; compute/dispatch_shape.hpp's local_shape()
+# is the same table, and tests/test_dispatch_shape.cpp pins it): "<size>:<x>:<y>:<z>". Every variant compile gets
+# -DSPADE_WG_X/Y/Z beside -DSPADE_WG. A 1D kernel never reads them, so its SPIR-V does not move a byte
+# (tests/test_spirv_pin.cpp); a grid kernel spells [numthreads(SPADE_WG_X, SPADE_WG_Y, SPADE_WG_Z)].
+set(SPADE_SLANG_LOCAL_SHAPES "32:4:4:2" "64:4:4:4" "128:8:4:4")
+
 # ------------------------------------------------------------------------------
 # spade_slang_generated_layouts(<target>)
 #
@@ -395,16 +401,21 @@ endfunction()
 # ------------------------------------------------------------------------------
 function(spade_slang_kernel_variants target name)
     set(_gen_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/spade_slang")
-    set(_src "${SPADE_SLANG_KERNELS_DIR}/${name}.slang")
     set(_hpp "${_gen_dir}/${name}.spv.gen.hpp")
 
-    if(NOT EXISTS "${_src}")
-        message(FATAL_ERROR "spade_slang_kernel_variants: no such kernel source: ${_src}")
-    endif()
-
-    cmake_parse_arguments(PARSE_ARGV 2 _arg "NAN_PRESERVE" "" "")
+    # SOURCE_DIR (stage 7 Task B1): where the kernel's .slang lives when it is not an engine kernel -- the tests' own
+    # kernels (tests/kernels/), which are built for the tests and never reach the engine.
+    cmake_parse_arguments(PARSE_ARGV 2 _arg "NAN_PRESERVE" "SOURCE_DIR" "")
     if(_arg_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "spade_slang_kernel_variants(${name}): unknown arguments ${_arg_UNPARSED_ARGUMENTS}")
+    endif()
+    if(_arg_SOURCE_DIR)
+        set(_src "${_arg_SOURCE_DIR}/${name}.slang")
+    else()
+        set(_src "${SPADE_SLANG_KERNELS_DIR}/${name}.slang")
+    endif()
+    if(NOT EXISTS "${_src}")
+        message(FATAL_ERROR "spade_slang_kernel_variants: no such kernel source: ${_src}")
     endif()
 
     set(_spv_outputs "")
@@ -418,6 +429,19 @@ function(spade_slang_kernel_variants target name)
     foreach(_wg IN LISTS SPADE_SLANG_WORKGROUP_SIZES)
         set(_spv "${_gen_dir}/${name}.wg${_wg}.spv")
         set(_dep "${_gen_dir}/${name}.wg${_wg}.spv.d")
+
+        set(_shape_x 0)
+        set(_shape_y 0)
+        set(_shape_z 0)
+        foreach(_shape IN LISTS SPADE_SLANG_LOCAL_SHAPES)
+            string(REPLACE ":" ";" _shape_parts "${_shape}")
+            list(GET _shape_parts 0 _shape_size)
+            if(_shape_size EQUAL _wg)
+                list(GET _shape_parts 1 _shape_x)
+                list(GET _shape_parts 2 _shape_y)
+                list(GET _shape_parts 3 _shape_z)
+            endif()
+        endforeach()
 
         # Identical to spade_slang_kernel()'s compile in every respect except
         # the -D: same profile, same -fp-mode precise, the same absence of any
@@ -433,6 +457,9 @@ function(spade_slang_kernel_variants target name)
                     -profile ${SPADE_SLANG_PROFILE}
                     -fp-mode precise
                     -DSPADE_WG=${_wg}
+                    -DSPADE_WG_X=${_shape_x}
+                    -DSPADE_WG_Y=${_shape_y}
+                    -DSPADE_WG_Z=${_shape_z}
                     -I "${SPADE_SLANG_SHARED_DIR}"
                     -I "${SPADE_SLANG_SHADERS_DIR}"
                     -o "${_spv}"

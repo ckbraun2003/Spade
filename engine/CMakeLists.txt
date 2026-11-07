@@ -1546,6 +1546,7 @@ target_sources(spade_compute PRIVATE
     compute/vulkan/state_mirror.cpp
     compute/vulkan/dispatch_chain.cpp
     compute/vulkan/step_recorder.cpp
+    compute/vulkan/builtin_recipes.cpp
     compute/vulkan/backend.cpp
     compute/vulkan/timestamps.cpp
 )

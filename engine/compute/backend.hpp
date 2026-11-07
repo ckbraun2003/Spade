@@ -346,9 +346,15 @@ enum class GpuRecipe : uint8_t {
 
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its
 // recipe. sim/ derives the list from the compiled schedule; compute/ records it.
+struct RecipeDesc;  // compute/recipe.hpp
+
 struct GpuPass {
     std::string name{};
     GpuRecipe recipe = GpuRecipe::none;
+    // A module's own recipe (stage 7 Task B1): when set, the recorder uses it and `recipe` is none.
+    const RecipeDesc* custom = nullptr;
+    // PassDecl::every_steps (stage 7 Task B2): 1 is every substep of every step; j > 1 is substep 0 of every j-th step.
+    uint32_t every_steps = 1;
 };
 
 // ---------------------------------------------------------------------------
@@ -392,6 +398,11 @@ struct PassDuration {
 struct PassDurationsNs {
     bool supported = false;
     std::vector<PassDuration> passes{};  // schedule order; empty when !supported
+    // Which recording ran in the step these durations are of, and that step's tick (stage 7 Task B2): a pass the recording
+    // does not hold has no entry, so a fluid pass reading about 0 after a step it did not run in is never mistaken for a
+    // measurement.
+    uint32_t recording = 0;
+    uint64_t tick = 0;
 
     [[nodiscard]] std::optional<double> find(std::string_view pass) const noexcept {
         for (const PassDuration& p : passes) {

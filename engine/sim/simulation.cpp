@@ -26,6 +26,7 @@
 #include "physics/integrator.hpp"
 #include "physics/lock.hpp"
 #include "sim/builtin_state.hpp"
+#include "sim/cadence.hpp"
 #include "vehicles/model_identity.hpp"
 #include "world/medium.hpp"
 #include "world/sdf.hpp"
@@ -539,7 +540,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // name. (A recipe can only be named with its own CPU function --
         // compile_schedule checked that.)
         for (const modules::CompiledPass& pass : compiled->passes) {
-            if (pass.gpu == compute::GpuRecipe::none) {
+            if (pass.gpu == compute::GpuRecipe::none && pass.recipe == nullptr) {
                 return std::unexpected(Error{Code::unavailable, "module set: pass '" + pass.module + "." +
                                                                     pass.pass +
                                                                     "' has no GPU kernel; it runs only on the CPU"});
@@ -1507,7 +1508,10 @@ Result<void> Simulation::step(uint64_t n) {
         // pass sees its own declared state, and only that (Task 6).
         const std::span<const StateView> pass_views(pass_views_);
         for (uint32_t s = 0; s < substeps_; ++s) {
+            ctx.substep = s;
             for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
+                // The cadence (stage 7 Task B2): a pass with every_steps > 1 runs in substep 0 of every j-th step.
+                if (!modules::due(ctx.tick.value, s, schedule_.passes[p].every_steps)) continue;
                 ctx.state = pass_views.subspan(pass_view_begin_[p], pass_view_begin_[p + 1] - pass_view_begin_[p]);
                 schedule_.passes[p].cpu(ctx);
             }
@@ -1617,6 +1621,21 @@ Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {
                                      "vulkan_pass_durations_ns: this Simulation runs on the cpu backend"});
     }
     return vulkan_backend_->read_pass_durations_ns();
+}
+
+Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_recorded_chains: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->recorded_chains();
+}
+
+Result<uint32_t> Simulation::vulkan_pipeline_count() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_pipeline_count: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->pipeline_count();
 }
 
 Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {

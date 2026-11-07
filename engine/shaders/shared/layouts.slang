@@ -687,7 +687,7 @@ struct StepWitness {
 // single record.
 // ---------------------------------------------------------------------------
 // @cpp-type   spade::compute::PassParams
-// @cpp-header compute/vulkan/step_recorder.hpp
+// @cpp-header compute/pass_params.hpp
 struct PassParams {
     uint  world_count;       // worlds in this dispatch
     uint  body_capacity;     // per-world slots in the bodies partition
@@ -721,4 +721,12 @@ struct PassParams {
                                // hold a real array this run (bit 0: lock_rows). A kernel tests its bit
                                // before it reads an optional binding, so a set without the module
                                // computes today's bits and never indexes the one-row dummy.
+
+    // -- generic lanes a module's recipe fills (module API stage 7, Task B2) -
+    uint  level;               // a multigrid level
+    uint  colour;              // the colour of a coloured sweep
+    uint  sweep;               // the sweep's number
+    uint  fluid_substep;       // the module's own sub-step within a step
+                               // Four lanes, 48 -> 64 bytes. The standard recipes leave them 0 and no standard kernel
+                               // reads them; the push block stays inside the 128-byte guaranteed minimum.
 };

@@ -237,6 +237,10 @@ struct SubstepContext {
     // SampleIndex, which is what it is for.
     Tick tick{};
 
+    // The substep being executed, 0 .. substeps-1 (stage 7 Task B2). Every pass of a substep sees the same value; a pass
+    // with PassDecl::every_steps > 1 runs only in substep 0, so it never needs to test it.
+    uint32_t substep = 0;
+
     // The RUNNING PASS's declared state (module-API stage 4, Task 6): state[i]
     // views what the pass's i-th declared access names (sim/module.hpp's
     // CompiledBinding) -- a module array, which may be another module's; a

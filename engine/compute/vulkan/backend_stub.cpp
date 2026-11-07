@@ -158,6 +158,10 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return {}; }
 
+std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return {}; }
+
+uint32_t VulkanBackend::pipeline_count() const noexcept { return 0; }
+
 // Never reached: create() refuses on a build without Vulkan, so no VulkanBackend
 // exists to ask. An empty report keeps the symbol defined.
 const DeviceReport& VulkanBackend::device_report() const noexcept {

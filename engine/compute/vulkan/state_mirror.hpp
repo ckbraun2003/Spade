@@ -155,6 +155,10 @@ public:
     // host never writes or reads has none. False for a name the mirror does not hold.
     [[nodiscard]] bool has_staging(std::string_view name);
 
+    // How many descriptor sets the mirror built: 1 (set 0, the state set), plus set 1 only when the schedule has a set-1
+    // user (stage 7 Task B1; Review Focus 2). Nothing builds set 1 yet, so this is 1 for every set.
+    [[nodiscard]] uint32_t descriptor_set_count() const noexcept { return 1; }
+
     // Every buffer this mirror created (the device buffer and its staging twin, when it has one, are two records) with
     // its kind, bytes, memory type and heap, and the walk's host rows' bytes (stage 7 Task A3). A diagnostic.
     [[nodiscard]] MemoryReport memory_report();

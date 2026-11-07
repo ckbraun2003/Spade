@@ -63,7 +63,7 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     // same reason: it is wrong on every machine. (StepRecorder::create() keeps
     // the closer guard.)
     for (const GpuPass& pass : passes) {
-        if (pass.recipe == GpuRecipe::none) {
+        if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
             return std::unexpected(Error{Code::invalid_argument, "VulkanBackend::create: pass '" + pass.name +
                                                                      "' has no GPU kernel (GpuRecipe::none)"});
         }
@@ -189,6 +189,10 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 }
 
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->recorder->recorded_chain(); }
+
+std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return impl_->recorder->recorded_chains(); }
+
+uint32_t VulkanBackend::pipeline_count() const noexcept { return impl_->recorder->pipeline_count(); }
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
 

@@ -187,7 +187,7 @@
 //    CollisionDynamic since Task 7; grid_params was staged at Task 6b and is
 //    read by grid_build.slang.
 //
-// D. ONE PUSH-CONSTANT BLOCK: PassParams (24 bytes as of S6 Task 6b, inside
+// D. ONE PUSH-CONSTANT BLOCK: PassParams (64 bytes as of stage 7 Task B2; 24 at S6 Task 6b, inside
 //    the 128-byte guaranteed minimum), carrying only the per-dispatch
 //    scalars. It carried ContactParams/GridParams by value through Task 6;
 //    Task 6b's PassParams decision tree removed both fields (layouts.slang's

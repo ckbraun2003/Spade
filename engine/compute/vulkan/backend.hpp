@@ -249,6 +249,13 @@ public:
     // StepRecorder::recorded_chain(). A diagnostic for tests.
     [[nodiscard]] RecordedChain recorded_chain() const noexcept;
 
+    // Every recording the recorder holds, in recording order: index 0 is the step every pass is due in, index 1 (only with
+    // a cadence, PassDecl::every_steps > 1) the step the slow passes are not (stage 7 Task B2).
+    [[nodiscard]] std::vector<RecordedChain> recorded_chains() const;
+
+    // How many compute pipelines the recorder built: only the kernels of the recipes the schedule names (stage 7 Task B1).
+    [[nodiscard]] uint32_t pipeline_count() const noexcept;
+
     // The device, driver and float controls this backend runs on -- forwards to
     // VulkanContext::device_report() (CORE-5, L6).
     [[nodiscard]] const DeviceReport& device_report() const noexcept;
