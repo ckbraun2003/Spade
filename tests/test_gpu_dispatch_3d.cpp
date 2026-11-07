@@ -119,7 +119,7 @@ struct Visited {
 
 }  // namespace
 
-TEST(Dispatch3D, AKernelSeesEveryGlobalIdOnce) {
+TEST(GpuDispatch3D, AKernelSeesEveryGlobalIdOnce) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
@@ -154,7 +154,7 @@ TEST(Dispatch3D, AKernelSeesEveryGlobalIdOnce) {
 }
 
 // The A7 invariance sweep over a grid kernel: the per-cell result is the same bits at every workgroup size.
-TEST(Dispatch3D, TheThreeWorkgroupSizesAreBitIdentical) {
+TEST(GpuDispatch3D, TheThreeWorkgroupSizesAreBitIdentical) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;

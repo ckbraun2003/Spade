@@ -161,7 +161,7 @@ struct SplitMix64 {
 
 }  // namespace
 
-TEST(GridShift, TheDeviceMatchesTheCpuTwinBitForBitAtEverySize) {
+TEST(GpuGridShift, TheDeviceMatchesTheCpuTwinBitForBitAtEverySize) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
@@ -187,7 +187,7 @@ TEST(GridShift, TheDeviceMatchesTheCpuTwinBitForBitAtEverySize) {
     }
 }
 
-TEST(GridPoints, TheDeviceMatchesTheCpuTwinWithinTheBandAndTheSizesAreBitIdentical) {
+TEST(GpuGridPoints, TheDeviceMatchesTheCpuTwinWithinTheBandAndTheSizesAreBitIdentical) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;

@@ -50,7 +50,7 @@ const std::vector<std::string> kStandardGpuOrder = {
 // A PIN, green at red and it must stay green when the twelve built-ins become RecipeDescs: the standard chain's dispatch
 // count, order and barriers, and one recording, and today's twelve pipelines. (The dispatch count is the existing
 // GpuStateMirror test's formula: eleven dispatches per substep outside the bitonic network, plus its stages.)
-TEST(RecordedChain, TheStandardChainIsUnchanged) {
+TEST(GpuRecordedChain, TheStandardChainIsUnchanged) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     Simulation sim = make(spade::modules::standard_modules());
     const auto chains = sim.vulkan_recorded_chains();
@@ -65,7 +65,7 @@ TEST(RecordedChain, TheStandardChainIsUnchanged) {
     EXPECT_EQ(*pipelines, 12u);
 }
 
-TEST(RecordedChain, OnlyTheRecipesTheScheduleNamesAreBuilt) {
+TEST(GpuRecordedChain, OnlyTheRecipesTheScheduleNamesAreBuilt) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     // A module's own recipe brings one pipeline more.
     const ProbeModule probe;
@@ -84,7 +84,7 @@ TEST(RecordedChain, OnlyTheRecipesTheScheduleNamesAreBuilt) {
 }
 
 // A module's recipe is recorded where the schedule puts its pass, once per substep, with the barriers CORE-2 asks for.
-TEST(RecordedChain, AModulesOwnRecipeIsRecordedWhereTheSchedulePutsIt) {
+TEST(GpuRecordedChain, AModulesOwnRecipeIsRecordedWhereTheSchedulePutsIt) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     Simulation standard = make(spade::modules::standard_modules());
     const ProbeModule probe;

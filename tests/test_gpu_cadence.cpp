@@ -48,7 +48,7 @@ constexpr uint32_t kJ = 2;
 }  // namespace
 
 // A PIN, green at red: a set that never uses a cadence has one recording and today's dispatch count.
-TEST(Cadence, TheStandardSetHasOneRecordingAndTheSameDispatchCount) {
+TEST(GpuCadence, TheStandardSetHasOneRecordingAndTheSameDispatchCount) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     Simulation sim = make(spade::modules::standard_modules());
     const auto chains = sim.vulkan_recorded_chains();
