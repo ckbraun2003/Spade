@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -283,7 +284,15 @@ TEST(AnalysisValidation, TheV1RecordsRead) {
             EXPECT_NE(rec.sha, "81a87da");
             if (lbm) {
                 // The LBM tier's C0a and C0b 128^3 carry bands (the Mach series and C0b 64^3 are report only).
-                if (rec.measures.at(0).tolerance.has_value()) c0_lbm_banded.push_back(rec.identity);
+                // Any measure counts, so a stray band on 64^3 or the series shows; 128^3's t* (measure 1) is banded too.
+                if (std::any_of(rec.measures.begin(), rec.measures.end(),
+                                [](const an::ValidationMeasure& m) { return m.tolerance.has_value(); })) {
+                    c0_lbm_banded.push_back(rec.identity);
+                }
+                if (rec.identity == "C0 Taylor-Green vortex, Re 1600, 128^3, LBM") {
+                    ASSERT_GE(rec.measures.size(), 2U);
+                    EXPECT_TRUE(rec.measures.at(1).tolerance.has_value()) << rec.measures.at(1).quantity;
+                }
             } else {
                 for (const an::ValidationMeasure& m : rec.measures) {
                     EXPECT_EQ(m.verdict, an::Verdict::report_only) << m.quantity;
