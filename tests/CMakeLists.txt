@@ -354,6 +354,7 @@ if(SPADE_VULKAN)
         test_admit.cpp
         test_gpu_mirror_staging.cpp
         test_memory_report.cpp
+        test_cadence.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_airflow_projection.cpp

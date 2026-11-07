@@ -97,6 +97,9 @@ struct PassDecl {
     // The built-in kernel that does what `cpu` does, on the GPU; `none` runs
     // only on the CPU, and Vulkan refuses the set at create().
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
+    // How often the pass runs (stage 7 Task B2; sim/cadence.hpp's due()): 1 is every substep of every step, as always;
+    // j > 1 is substep 0 of every j-th step. A set's passes with every_steps > 1 share one j (compile_schedule).
+    uint32_t every_steps = 1;
 };
 
 // A FIELD is a value a provider writes once per world per substep, in the
@@ -512,6 +515,7 @@ struct CompiledPass {
     PassFn cpu = nullptr;
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
     std::vector<CompiledBinding> state{};  // one per declared access, in declaration order
+    uint32_t every_steps = 1;              // PassDecl::every_steps, as declared
 };
 
 // One field of the compiled registry: where its `count` floats sit in a world's
