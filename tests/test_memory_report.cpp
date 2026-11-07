@@ -208,7 +208,7 @@ namespace {
 // count where it was. Sensor rows hundreds of GB wide reach the device's range check, named.
 TEST(GpuMemoryReport, ARefusalHappensBeforeAnyAllocation) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    const spade::Error refused = refused_without_allocating(1, 0xFFFFFFFFu);
+    const spade::Error refused = refused_without_allocating(1, 0x3FFFFFFu);  // imu_ring: 64 deep, ~150 GB
     EXPECT_EQ(refused.code, spade::Code::capacity_exceeded) << refused.context;
     EXPECT_NE(refused.context.find("maxStorageBufferRange"), std::string::npos) << refused.context;
 }

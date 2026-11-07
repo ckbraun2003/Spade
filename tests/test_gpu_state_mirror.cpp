@@ -1197,7 +1197,7 @@ TEST_F(GpuStateMirrorTest, AnAbsurdShapeIsRefusedByNameBeforeCreateReturns) {
     shape.world_count = 1;
     shape.body_capacity = 1;
     shape.element_capacity = 1;
-    shape.sensor_capacity = 0xFFFFFFFFu;
+    shape.sensor_capacity = 0x3FFFFFFu;  // x kRingDepth 64 just fits a per-world row count: imu_ring alone is ~150 GB
     shape.substeps = 1;
     shape.h = 0.001f;
     shape.arrays = walk_shapes(standard_schedule(), shape);
