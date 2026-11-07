@@ -65,10 +65,12 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <volk.h>
 
+#include "compute/admit.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
 #include "core/error.hpp"
@@ -112,6 +114,18 @@ struct DerivedBufferShape {
 [[nodiscard]] Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& shape,
                                                                             uint32_t binding_count);
 
+// What a created shape asks of the device, as admit() takes it (stage 7 Task A1): the one pipeline layout of set 0's
+// bindings, every walk entry and every derived buffer with its bytes, and the push block. The kernels and dispatches
+// are the recorder's to add (it alone knows the grid widths); admit() is called on the whole before the first
+// vkCreate*. The errors are the ones create() would have returned for the same shape (a count past a uint32 slot
+// index, a bad scratch binding), so nothing is refused here that create() accepted before.
+[[nodiscard]] Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t workgroup_size);
+
+// The number of device-memory allocations (vkAllocateMemory) the mirror has made in this process (stage 7 Task A3: the
+// ledger memory_report() is built on). A refusal before allocation leaves it unchanged, which is how a test sees that
+// create() refused BEFORE it allocated.
+[[nodiscard]] uint64_t mirror_allocation_count() noexcept;
+
 class StateMirror {
 public:
     [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(VulkanContext& ctx,
@@ -135,6 +149,16 @@ public:
     // How many bindings create() wrote into the descriptor set. A diagnostic:
     // it should equal the generated registry's gen::kBindingCount_state.
     [[nodiscard]] uint32_t bound_binding_count() const noexcept { return bound_binding_count_; }
+
+    // Whether the named buffer (a walk entry, a scratch, a table or a hand-listed derived buffer) has a host-visible
+    // staging twin, and the sum of the staging buffers' bytes (stage 7 Task A2). Diagnostics for tests: a buffer the
+    // host never writes or reads has none. False for a name the mirror does not hold.
+    [[nodiscard]] bool has_staging(std::string_view name);
+
+    // Every buffer this mirror created (the device buffer and its staging twin, when it has one, are two records) with
+    // its kind, bytes, memory type and heap, and the walk's host rows' bytes (stage 7 Task A3). A diagnostic.
+    [[nodiscard]] MemoryReport memory_report();
+    [[nodiscard]] uint64_t host_visible_bytes();
 
     // The reverse of upload(): device buffers -> `arenas`. Same shape check,
     // same failure taxonomy. On any failure, no destination byte for the
@@ -258,6 +282,8 @@ private:
         VkBuffer staging_buffer = VK_NULL_HANDLE;
         VkDeviceMemory staging_memory = VK_NULL_HANDLE;
         void* staging_mapped = nullptr;
+        uint32_t device_type = 0;  // the memory type index the allocator chose (Task A3's report)
+        uint32_t staging_type = 0;
         uint32_t binding = 0;
         bool has_binding = false;
     };
@@ -271,9 +297,11 @@ private:
     // (not a free function in state_mirror.cpp's anonymous namespace) purely
     // because it takes `Entry*` -- a private nested type free functions
     // outside this class cannot name.
+    // `zero_fill`, when given, lists device-only entries the same submit zeroes with vkCmdFillBuffer (stage 7 A2).
     [[nodiscard]] static Result<void> run_copy_batch(VkDevice device, VkCommandBuffer cmd, VkQueue queue,
                                                         VkFence fence, bool to_device,
-                                                        const std::vector<Entry*>& targets);
+                                                        const std::vector<Entry*>& targets,
+                                                        const std::vector<Entry*>* zero_fill = nullptr);
 
     // Unmaps/destroys/frees one Entry's buffers+memory; safe on a
     // partially-constructed or already-destroyed Entry (every handle it

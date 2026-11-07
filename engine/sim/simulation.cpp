@@ -1642,6 +1642,15 @@ Result<compute::DeviceReport> Simulation::vulkan_device_report() const {
     return vulkan_backend_->device_report();
 }
 
+compute::MemoryReport Simulation::memory_report() const {
+    compute::MemoryReport report = vulkan_backend_ ? vulkan_backend_->memory_report() : compute::MemoryReport{};
+    // The host rows of the registered walk, whichever backend runs.
+    report.host_arena_bytes = 0;
+    arenas_.registry().for_each_array(
+        [&report](const RegisteredArray& array) { report.host_arena_bytes += array.byte_size(); });
+    return report;
+}
+
 Result<void> Simulation::flush_structural() {
     if (queue_.empty()) {
         return {};

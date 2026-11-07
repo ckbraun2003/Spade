@@ -253,6 +253,9 @@ public:
     // VulkanContext::device_report() (CORE-5, L6).
     [[nodiscard]] const DeviceReport& device_report() const noexcept;
 
+    // Every buffer this backend created, with its kind, bytes, memory type and heap (stage 7 Task A3).
+    [[nodiscard]] MemoryReport memory_report() const;
+
     // How many bindings the state mirror wrote into the descriptor set --
     // forwards to StateMirror::bound_binding_count(). A diagnostic for tests.
     [[nodiscard]] uint32_t bound_binding_count() const noexcept;

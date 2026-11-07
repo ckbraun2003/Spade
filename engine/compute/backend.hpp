@@ -168,6 +168,30 @@ struct DeviceReport {
     DeviceLimits limits{};
 };
 
+// ---------------------------------------------------------------------------
+// MemoryReport (module API stage 7, Task A3; design 7.4, spec Q10): "announced" means this query, not a log line.
+// One record per buffer the backend created -- the device buffer and its staging twin, if it has one, are two records --
+// with the memory type and heap the allocator chose, and the host arena's bytes. A CPU run reports the arena only.
+// ---------------------------------------------------------------------------
+enum class MemoryKind : uint8_t { walk = 0, scratch = 1, table = 2, derived = 3, dummy = 4 };
+
+struct MemoryRecord {
+    std::string name{};
+    MemoryKind kind = MemoryKind::walk;
+    bool staging = false;  // the host-visible twin; false: the device buffer
+    uint64_t bytes = 0;
+    uint32_t memory_type = 0;
+    uint32_t heap = 0;
+    bool device_local = false;  // the chosen type is DEVICE_LOCAL
+};
+
+struct MemoryReport {
+    std::vector<MemoryRecord> buffers{};
+    uint64_t device_bytes = 0;      // the device records' total
+    uint64_t staging_bytes = 0;     // the staging records' total
+    uint64_t host_arena_bytes = 0;  // the registered walk's rows on the host
+};
+
 // One line for logs, gate output and front ends, e.g. "NVIDIA GeForce RTX 3060
 // Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no
 // mode requested, device default (preserve supported: no, flush-to-zero
@@ -196,6 +220,11 @@ struct BackendDesc {
     BackendKind kind = BackendKind::cpu;
     uint32_t workgroup_size = 64;
     uint32_t device_index = 0;
+    // Module API stage 7 (Task A3): a ceiling on the VRAM this run may create, in bytes. 0 (the default) is the device's
+    // own budget (compute/device_limits.hpp's vram_cap()); a non-zero value can only LOWER what create() admits. It
+    // changes no result, only whether create() refuses, so it is a result-neutral knob (engine A7) with its invariance
+    // test (MemoryReport.ACapChangesNoResult).
+    uint64_t vram_cap_bytes = 0;
 };
 
 // ---------------------------------------------------------------------------

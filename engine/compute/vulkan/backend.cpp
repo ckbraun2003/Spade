@@ -72,6 +72,35 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     Result<std::unique_ptr<VulkanContext>> ctx = VulkanContext::create(desc);
     if (!ctx) return std::unexpected(ctx.error());
 
+    // Every device limit a created shape meets, BEFORE the first buffer is made (stage 7 Task A1; CORE-5, L6): the
+    // pipeline layout's binding count, the push block and every buffer, named. The recorder adds the kernels' local
+    // sizes and the dispatches' group counts to the same function once it knows the grid widths.
+    {
+        Result<AdmitShape> asked = admit_shape_for(shape, desc.workgroup_size);
+        if (!asked) return std::unexpected(asked.error());
+        if (Result<void> ok = admit(*asked, (*ctx)->device_report().limits, (*ctx)->device_name()); !ok) {
+            return std::unexpected(ok.error());
+        }
+        // The VRAM budget (design 7.4, D6): the buffers the mirror is about to make against min(the airflow cap, the
+        // device's budget less a reserve, BackendDesc::vram_cap_bytes). Refused by name before any allocation.
+        uint64_t total = 0;
+        const AdmitBuffer* largest = nullptr;
+        for (const AdmitBuffer& b : asked->buffers) {
+            total += b.bytes;
+            if (largest == nullptr || b.bytes > largest->bytes) largest = &b;
+        }
+        if (largest != nullptr) {
+            const std::string what = "StateMirror::create: its " + std::to_string(asked->buffers.size()) +
+                                     " buffers, the largest '" + largest->name + "' (" +
+                                     std::to_string(largest->bytes) + " bytes),";
+            if (Result<void> ok = check_vram(what, total, (*ctx)->memory_budget(), kMirrorVramReserve, 0,
+                                             (*ctx)->device_name(), desc.vram_cap_bytes);
+                !ok) {
+                return std::unexpected(ok.error());
+            }
+        }
+    }
+
     Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape);
     if (!mirror) return std::unexpected(mirror.error());
 
@@ -162,6 +191,8 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->recorder->recorded_chain(); }
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
+
+MemoryReport VulkanBackend::memory_report() const { return impl_->mirror->memory_report(); }
 
 uint32_t VulkanBackend::bound_binding_count() const noexcept { return impl_->mirror->bound_binding_count(); }
 

@@ -153,23 +153,34 @@ struct MemoryBudget {
 // kGridByteCap, which the CPU checks against; a test pins the two together).
 inline constexpr uint64_t kAirflowVramCap = uint64_t{4} << 30;
 
+// What the engine leaves free for everyone else when it checks its own buffers against the budget (stage 7 Task A3).
+inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
+
 // What a caller may allocate: min(kAirflowVramCap, budget - usage - reserve),
 // never below 0. With half_heap the usage is `own_allocated`, what the caller
 // says it has allocated itself (it cannot see anyone else's); with ext the
 // heap's usage already counts it.
-[[nodiscard]] inline uint64_t vram_cap(const MemoryBudget& budget, uint64_t reserve, uint64_t own_allocated) {
+//
+// `user_cap` (BackendDesc::vram_cap_bytes, stage 7 Task A3), when non-zero, can only LOWER the result.
+[[nodiscard]] inline uint64_t vram_cap(const MemoryBudget& budget, uint64_t reserve, uint64_t own_allocated,
+                                       uint64_t user_cap = 0) {
     const uint64_t used = budget.source == MemoryBudget::Source::ext ? budget.usage : own_allocated;
-    if (budget.budget <= used || budget.budget - used <= reserve) return 0;
-    const uint64_t free = budget.budget - used - reserve;
-    return free < kAirflowVramCap ? free : kAirflowVramCap;
+    uint64_t cap = 0;
+    if (budget.budget > used && budget.budget - used > reserve) {
+        const uint64_t free = budget.budget - used - reserve;
+        cap = free < kAirflowVramCap ? free : kAirflowVramCap;
+    }
+    return (user_cap != 0 && user_cap < cap) ? user_cap : cap;
 }
 
 // `requested` bytes against vram_cap(), refused by name before any allocation:
 // what asked, its bytes, the cap and how it was reached, and the device.
 [[nodiscard]] inline Result<void> check_vram(std::string_view what, uint64_t requested, const MemoryBudget& budget,
-                                             uint64_t reserve, uint64_t own_allocated, std::string_view device) {
-    const uint64_t cap = vram_cap(budget, reserve, own_allocated);
+                                             uint64_t reserve, uint64_t own_allocated, std::string_view device,
+                                             uint64_t user_cap = 0) {
+    const uint64_t cap = vram_cap(budget, reserve, own_allocated, user_cap);
     if (requested <= cap) return {};
+    const uint64_t device_cap = vram_cap(budget, reserve, own_allocated);
     const bool ext = budget.source == MemoryBudget::Source::ext;
     const uint64_t used = ext ? budget.usage : own_allocated;
     return std::unexpected(Error{
@@ -181,7 +192,10 @@ inline constexpr uint64_t kAirflowVramCap = uint64_t{4} << 30;
             (ext ? std::string("VK_EXT_memory_budget")
                  : "half the device-local heap (no VK_EXT_memory_budget; the usage is what the caller allocated " +
                        std::to_string(own_allocated) + " itself)") +
-            ", on device '" + std::string(device) + "'"});
+            ", on device '" + std::string(device) + "'" +
+            (cap < device_cap ? "; lowered from " + std::to_string(device_cap) +
+                                    " by BackendDesc::vram_cap_bytes (" + std::to_string(user_cap) + ")"
+                              : std::string())});
 }
 
 }  // namespace spade::compute
