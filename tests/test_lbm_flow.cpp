@@ -300,7 +300,7 @@ void expect_pool_matches_serial(bool lid, airflow::WorkerPool& pool, const char*
     const FlowSums a = flow_sums(serial);
     const FlowSums b = flow_sums(split, &pool);
     EXPECT_TRUE(same_bits(split.u, serial.u)) << what << ": u";
-    EXPECT_EQ(std::memcmp(&a, &b, sizeof(FlowSums)), 0) << what << ": diagnostics";
+    EXPECT_TRUE(spade::testing::lbm_support::same_sums(a, b)) << what << ": diagnostics";
     EXPECT_EQ(split.grid.step, serial.grid.step);
 }
 
