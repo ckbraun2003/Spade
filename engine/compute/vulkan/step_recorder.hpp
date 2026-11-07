@@ -73,6 +73,7 @@
 
 #include "compute/backend.hpp"
 #include "compute/grid_entry.hpp"
+#include "compute/pass_params.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/context.hpp"
@@ -135,20 +136,8 @@ namespace spade::compute {
 // NEITHER GROUP IS A PHYSICS PARAMETER: cell_size still comes from
 // `grid_params[world]` and the material from `contact_params[world]`, per
 // world, per the checkpoint-1 ruling above.
-struct PassParams {
-    uint32_t world_count = 0;
-    uint32_t body_capacity = 0;
-    uint32_t element_capacity = 0;
-    uint32_t sensor_capacity = 0;
-    float h = 0.0f;
-    uint32_t substep = 0;
-    uint32_t grid_entry_count = 0;
-    uint32_t grid_segment = 0;
-    uint32_t grid_segment_slots = 0;
-    uint32_t sort_k = 0;
-    uint32_t sort_j = 0;
-    uint32_t switches = 0;  // compute/optional_bindings.hpp's kSwitch* bits (module API stage 6)
-};
+// PassParams MOVED to compute/pass_params.hpp (stage 7 Task B1), unchanged: the recording functions of compute/recipe.hpp
+// are Vulkan-free and append dispatches that carry it. This header's notes above are its history.
 
 // ---------------------------------------------------------------------------
 // StepParams MOVED to compute/step_params.hpp (S6 Task 6), and the reason is

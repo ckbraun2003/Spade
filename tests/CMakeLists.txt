@@ -357,6 +357,7 @@ if(SPADE_VULKAN)
         test_cadence.cpp
         test_grid_kernels.cpp
         test_dispatch_shape.cpp
+        test_recipes.cpp
         test_spirv_pin.cpp
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp

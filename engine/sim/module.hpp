@@ -100,6 +100,8 @@ struct PassDecl {
     // How often the pass runs (stage 7 Task B2; sim/cadence.hpp's due()): 1 is every substep of every step, as always;
     // j > 1 is substep 0 of every j-th step. A set's passes with every_steps > 1 share one j (compile_schedule).
     uint32_t every_steps = 1;
+    // The module's own GPU recording (stage 7 Task B1; compute/recipe.hpp). A pass names a built-in `gpu` OR its own `recipe`.
+    const compute::RecipeDesc* recipe = nullptr;
 };
 
 // A FIELD is a value a provider writes once per world per substep, in the
@@ -516,6 +518,7 @@ struct CompiledPass {
     compute::GpuRecipe gpu = compute::GpuRecipe::none;
     std::vector<CompiledBinding> state{};  // one per declared access, in declaration order
     uint32_t every_steps = 1;              // PassDecl::every_steps, as declared
+    const compute::RecipeDesc* recipe = nullptr;  // PassDecl::recipe, as declared
 };
 
 // One field of the compiled registry: where its `count` floats sit in a world's

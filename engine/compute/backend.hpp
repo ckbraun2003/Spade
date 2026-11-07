@@ -346,9 +346,13 @@ enum class GpuRecipe : uint8_t {
 
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its
 // recipe. sim/ derives the list from the compiled schedule; compute/ records it.
+struct RecipeDesc;  // compute/recipe.hpp
+
 struct GpuPass {
     std::string name{};
     GpuRecipe recipe = GpuRecipe::none;
+    // A module's own recipe (stage 7 Task B1): when set, the recorder uses it and `recipe` is none.
+    const RecipeDesc* custom = nullptr;
 };
 
 // ---------------------------------------------------------------------------
