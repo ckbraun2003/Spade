@@ -258,27 +258,37 @@ TEST(AnalysisValidation, AFolderIsReadFileByFileInNameOrder) {
 
 // The V1 records themselves (tests/data/airflow/records/), whatever runs are
 // appended later: every record reads, C1's three configurations are there,
-// C0 is report-only throughout, and Re 400's note is kept.
+// the NS tier's C0 is report-only throughout, the LBM tier's C0 and C1 records
+// (identities with ", LBM"; docs/design/test-docs/2026-11-03-l1-lbm-tolerances.md)
+// carry the bands that note fixes, and Re 400's note is kept.
 TEST(AnalysisValidation, TheV1RecordsRead) {
     const spade::Result<std::vector<an::ValidationRecord>> r =
         an::validation_report(fs::path(SPADE_TESTS_DIR) / "data" / "airflow" / "records");
     ASSERT_TRUE(r.has_value()) << r.error().context;
     std::vector<std::string> c1;
+    std::vector<std::string> c1_lbm;
+    std::vector<std::string> c0_lbm_banded;
     bool c0 = false;
     bool c8 = false;
     for (const an::ValidationRecord& rec : *r) {
         EXPECT_FALSE(rec.commit.empty());
         EXPECT_FALSE(rec.date.empty());
         ASSERT_FALSE(rec.measures.empty()) << rec.identity;
-        if (rec.source == "c1-cavity.md") c1.push_back(rec.identity);
+        const bool lbm = rec.identity.find(", LBM") != std::string::npos;
+        if (rec.source == "c1-cavity.md") (lbm ? c1_lbm : c1).push_back(rec.identity);
         if (rec.source == "c0-taylor-green.md") {
             c0 = true;
             // Its file holds the same opening line twice: the first block
             // (81a87da) is never the newest, whatever is appended later.
             EXPECT_NE(rec.sha, "81a87da");
-            for (const an::ValidationMeasure& m : rec.measures) {
-                EXPECT_EQ(m.verdict, an::Verdict::report_only) << m.quantity;
-                EXPECT_FALSE(m.tolerance.has_value()) << m.quantity;
+            if (lbm) {
+                // The LBM tier's C0a and C0b 128^3 carry bands (the Mach series and C0b 64^3 are report only).
+                if (rec.measures.at(0).tolerance.has_value()) c0_lbm_banded.push_back(rec.identity);
+            } else {
+                for (const an::ValidationMeasure& m : rec.measures) {
+                    EXPECT_EQ(m.verdict, an::Verdict::report_only) << m.quantity;
+                    EXPECT_FALSE(m.tolerance.has_value()) << m.quantity;
+                }
             }
         }
         // C8's own record, the CPU's: its first measure a speed. The file's
@@ -294,7 +304,8 @@ TEST(AnalysisValidation, TheV1RecordsRead) {
                 EXPECT_FALSE(m.tolerance->origin.empty()) << m.quantity;
             }
         }
-        if (rec.identity == "C1 lid-driven cavity, Re 400, 128x128") {
+        if (rec.identity == "C1 lid-driven cavity, Re 400, 128x128" ||
+            rec.identity.rfind("C1 lid-driven cavity, Re 400, 128x128, u_lat", 0) == 0) {
             EXPECT_NE(rec.measures.at(1).quantity.find("point 117 left out"), std::string::npos)
                 << rec.measures.at(1).quantity;
         }
@@ -303,4 +314,17 @@ TEST(AnalysisValidation, TheV1RecordsRead) {
     EXPECT_TRUE(c8);
     EXPECT_EQ(c1, (std::vector<std::string>{"C1 lid-driven cavity, Re 100, 32x32", "C1 lid-driven cavity, Re 100, 128x128",
                                             "C1 lid-driven cavity, Re 400, 128x128"}));
+    // The LBM tier's four rows (Re 100 and 400 at u_lat 0.1 and 0.05), and the gradual-underflow run of Re 100 at 0.1
+    // beside its scoped record (its own identity, so the reader keeps both).
+    EXPECT_EQ(c1_lbm,
+              (std::vector<std::string>{
+                  "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM, gradual underflow (the flush scope off)",
+                  "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM",
+                  "C1 lid-driven cavity, Re 400, 128x128, u_lat 0.1, LBM",
+                  "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.05, LBM",
+                  "C1 lid-driven cavity, Re 400, 128x128, u_lat 0.05, LBM"}));
+    EXPECT_EQ(c0_lbm_banded,
+              (std::vector<std::string>{"C0 Taylor-Green, the 2D mode's exact decay, 32x32x1, u_lat 0.1, LBM",
+                                        "C0 Taylor-Green, the 2D mode's exact decay, 64x64x1, u_lat 0.05, LBM",
+                                        "C0 Taylor-Green vortex, Re 1600, 128^3, LBM"}));
 }
