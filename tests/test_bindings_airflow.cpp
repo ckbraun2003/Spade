@@ -75,7 +75,7 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
           gen::kBinding_airflow_scalars,      gen::kBinding_airflow_discs,       gen::kBinding_airflow_partials,
           gen::kBinding_airflow_health,       gen::kBinding_airflow_publish_v,   gen::kBinding_airflow_publish_s,
           gen::kBinding_airflow_wall_load}},
-        {"stage 7", 28, 39, 0, {}},
+        {"stage 7", 28, 39, 1, {gen::kBinding_airflow_config}},
         {"lbm", 40, 47, 2, {gen::kBinding_lbm_f, gen::kBinding_lbm_u}},
     };
     uint32_t total = 0;

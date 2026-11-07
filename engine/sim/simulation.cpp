@@ -1631,6 +1631,11 @@ Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains()
     return vulkan_backend_->recorded_chains();
 }
 
+// RED STUBS (stage 7 Task C1).
+std::vector<modules::ConfigurationEntry> Simulation::configuration_report() const { return {}; }
+
+Result<std::vector<std::byte>> Simulation::vulkan_config_image() const { return std::vector<std::byte>{}; }
+
 Result<uint32_t> Simulation::vulkan_pipeline_count() const {
     if (!vulkan_backend_) {
         return std::unexpected(Error{Code::unavailable, "vulkan_pipeline_count: this Simulation runs on the cpu backend"});

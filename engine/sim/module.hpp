@@ -486,9 +486,38 @@ struct ModuleDesc {
     std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
     GradeDecl grade{};                            // what it claims per backend (stage 5, Task 3)
     std::string_view role{};                      // a kRoles name this module fills; empty fills none (Task 6)
+    // THE CONFIGURATION IMAGE (module API stage 7, Task C1). The module's canonical configuration as bytes (config_image()
+    // makes one from a padding-free trivially copyable struct): the grid, the cadence, the rotor-model choice. It is
+    // HASHED INTO THE SCHEDULE IDENTITY (compile_schedule spells it after the module's version: 0x02, its length as a u32,
+    // its bytes), so a blob restores only under the same configuration, and it is the very bytes the kernels read: when
+    // `config_binding` names gen::kBinding_airflow_config the mirror uploads this image there at create(). Empty (the
+    // default) folds nothing, so a set without one keeps the identity it has. Not state: it is not in the walk or the digest.
+    std::span<const std::byte> config{};
+    uint32_t config_binding = compute::kNoBinding;  // gen::kBinding_airflow_config, or kNoBinding: the image is hashed only
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
+
+// The canonical image of a configuration struct: its object bytes. The type must have no padding (every byte a value
+// byte), so two equal configurations are equal images on every platform; a type with padding does not compile.
+template <class T>
+    requires(std::is_trivially_copyable_v<T> && std::has_unique_object_representations_v<T>)
+[[nodiscard]] std::span<const std::byte> config_image(const T& value) noexcept {
+    return std::as_bytes(std::span<const T, 1>(&value, 1));
+}
+
+// A part table is a configuration table of this name ("<module>.parts"). A schedule that declares one folds each registered
+// model's parts_identity() into the registry identity (Task C1; Simulation::registry_identity()); a schedule that does not,
+// which is every set today, keeps the identity it has.
+inline constexpr std::string_view kPartTableName = "parts";
+
+// One module's configuration as Simulation::configuration_report() lists it.
+struct ConfigurationEntry {
+    std::string module;
+    uint32_t version = 1;
+    uint32_t bytes = 0;  // the image's length; 0: the module has none
+    uint64_t hash = 0;   // FNV-1a 64 over the image bytes (core/rng.hpp's constants); the empty image's basis when bytes == 0
+};
 
 inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 

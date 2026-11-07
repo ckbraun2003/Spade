@@ -809,6 +809,14 @@ public:
     [[nodiscard]] Result<std::vector<compute::RecordedChain>> vulkan_recorded_chains() const;
     [[nodiscard]] Result<uint32_t> vulkan_pipeline_count() const;
 
+    // Each module's name, version and configuration hash, in set order (stage 7 Task C1): what a front end prints beside the
+    // schedule identity, which folds the same images.
+    [[nodiscard]] std::vector<modules::ConfigurationEntry> configuration_report() const;
+
+    // The configuration image as the device holds it (the bytes at gen::kBinding_airflow_config), read back: a diagnostic,
+    // `unavailable` on the cpu backend or when no module binds one (Task C1).
+    [[nodiscard]] Result<std::vector<std::byte>> vulkan_config_image() const;
+
     // Which device and driver this Vulkan run uses, and its fp32 denormal
     // controls (compute/backend.hpp's DeviceReport; compute::describe() gives
     // one line). CORE-5: every Vulkan 1.1 device is admitted, its kernels

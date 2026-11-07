@@ -133,6 +133,8 @@ add_executable(spade_tests
     test_translation_lock.cpp
     test_sim_medium.cpp
     test_module_schedule.cpp
+    test_module_config.cpp
+    test_parts_fold.cpp
     test_design_frame.cpp
     test_model_registry.cpp
     test_model_parts.cpp
@@ -364,6 +366,7 @@ if(SPADE_VULKAN)
         test_gpu_dispatch_3d.cpp
         test_gpu_recipes.cpp
         test_gpu_cadence.cpp
+        test_gpu_module_config.cpp
         test_gpu_grid_kernels.cpp
         test_gpu_airflow_projection.cpp
         test_gpu_airflow_advection.cpp
