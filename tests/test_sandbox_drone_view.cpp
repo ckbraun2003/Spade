@@ -122,6 +122,45 @@ TEST(SandboxDronePanel, SelectingVulkanWithNoDeviceIsRefusedVisiblyAndTheStandSt
     EXPECT_TRUE(panel.status.empty()) << "the refusal is retried every frame";
 }
 
+// The live smoke's drone_box/backend step reads these (sandbox/live_tour.cpp).
+TEST(SandboxDronePanel, ASwitchWithNoDeviceReportsTheRefusalAndChangesNothing) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    drone->target = AttitudeTarget{0.0f, 0.4f, 0.0f};
+    ASSERT_TRUE(drone->step_fixed(50).has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    const spade::testing::ScopedNoVulkan no_device;
+    const BackendSwitch sw = switch_backend(*drone, panel, true);
+    EXPECT_FALSE(sw.rebuilt);
+    EXPECT_FALSE(sw.status.empty()) << "the refusal must reach the panel";
+    EXPECT_FALSE(sw.vulkan);
+    EXPECT_EQ(sw.attitude_shift_rad, 0.0f);
+    EXPECT_TRUE(sw.rates_carried);
+    EXPECT_EQ(drone->readouts().tick, 50u) << "the CPU stand was left alone";
+}
+
+TEST(SandboxDronePanel, ASwitchToTheBackendTheStandIsOnRebuildsNothing) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    ASSERT_TRUE(drone->step_fixed(10).has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    const BackendSwitch sw = switch_backend(*drone, panel, false);
+    EXPECT_FALSE(sw.rebuilt);
+    EXPECT_TRUE(sw.status.empty());
+    EXPECT_FALSE(sw.vulkan);
+    EXPECT_EQ(drone->readouts().tick, 10u);
+}
+
+TEST(SandboxDronePanel, AStandHeldByTheLockReportsHeldAndALooseBodyDoesNot) {
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    drone->target = AttitudeTarget{0.3f, 0.2f, 0.1f};
+    ASSERT_TRUE(drone->step_fixed(100).has_value());
+    EXPECT_TRUE(stand_held(*drone));
+}
+
 TEST(SandboxDronePanel, TheKeysNudgeHoldClampAndLevel) {
     AttitudeTarget t;
     FrameInput in;

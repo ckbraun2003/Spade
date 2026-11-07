@@ -22,6 +22,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "../sandbox/drone_sim.hpp"
+#include "../sandbox/drone_view.hpp"  // switch_backend, stand_held: what the live smoke's drone_box/backend asks
 #include "gpu_skip.hpp"
 
 using namespace spade::sandbox;
@@ -144,4 +145,26 @@ TEST(GpuSandboxDrone, ACpuToVulkanRebuildCarriesTheAttitudeAndLocksAgain) {
     const auto* back = *drone->sim().body(drone->vehicle().body);
     EXPECT_EQ(bits(back->pos), bits(glm::vec3(0.0f)));
     EXPECT_EQ(bits(back->vel), bits(glm::vec3(0.0f)));
+}
+// The live smoke's drone_box/backend step: the panel's switch to Vulkan and back, mid-manoeuvre. The shift across each
+// rebuild is the carry (the spawn renormalizes the quaternion, hence 1e-6 rad), and the stand is held after stepping.
+TEST(GpuSandboxDrone, ThePanelSwitchToVulkanAndBackCarriesTheAttitudeAndStaysHeld) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto drone = DroneSim::create(DronePhysicsOptions{});
+    ASSERT_TRUE(drone.has_value());
+    drone->target = AttitudeTarget{0.0f, 0.4f, 0.0f};
+    ASSERT_TRUE(drone->step_fixed(100).has_value());
+    DronePanelModel panel;
+    panel.edited = drone->options();
+    for (const bool vulkan : {true, false}) {
+        const BackendSwitch sw = switch_backend(*drone, panel, vulkan);
+        EXPECT_TRUE(sw.rebuilt) << "to " << (vulkan ? "Vulkan" : "CPU");
+        EXPECT_TRUE(sw.status.empty()) << sw.status;
+        EXPECT_EQ(sw.vulkan, vulkan);
+        EXPECT_LE(sw.attitude_shift_rad, 1e-6f);
+        EXPECT_TRUE(sw.rates_carried);
+        ASSERT_TRUE(drone->step_fixed(50).has_value());
+        EXPECT_TRUE(stand_held(*drone));
+        EXPECT_GT(drone->readouts().tick, 0u);
+    }
 }

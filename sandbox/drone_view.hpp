@@ -183,4 +183,20 @@ inline bool apply_panel_edits(DroneSim& drone, DronePanelModel& panel) {
     return true;
 }
 
+// What the live smoke's drone_box/backend step asks of a backend switch. Display-free, so a test asks it too.
+struct BackendSwitch {
+    bool rebuilt = false;          // the stand was rebuilt for the new backend
+    std::string status;            // the panel's status after: empty unless the switch was refused
+    bool vulkan = false;           // the backend the stand runs on now
+    float attitude_shift_rad = 0;  // the attitude across the rebuild
+    bool rates_carried = false;    // omega_body across the rebuild, bit for bit
+};
+
+// Sets the panel's backend to `vulkan` and applies the edit now (the debounce is lifted: the step is the user letting
+// go of the control).
+[[nodiscard]] inline BackendSwitch switch_backend(DroneSim&, DronePanelModel&, bool) { return {}; }
+
+// The stand's body is at its anchor and still: pos and vel bitwise +0.0f.
+[[nodiscard]] inline bool stand_held(const DroneSim&) { return false; }
+
 }  // namespace spade::sandbox
