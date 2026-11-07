@@ -26,3 +26,8 @@ include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
 # T1: the lattice tables written out for the bit comparison with
 # engine/physics/lbm/lattice.hpp (tests/test_gpu_lbm.cpp).
 spade_slang_kernel_variants(spade_lbm_chain lbm_lattice_dump NAN_PRESERVE)
+
+# T2 and T3 (and T4's walls): the LBM step's two passes, lbm_flow.hpp's velocity_row and collide_row
+# (tests/test_gpu_lbm.cpp compares whole arrays with memcmp to the CPU's step).
+spade_slang_kernel_variants(spade_lbm_chain lbm_macro NAN_PRESERVE)
+spade_slang_kernel_variants(spade_lbm_chain lbm_collide_stream NAN_PRESERVE)
