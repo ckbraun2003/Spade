@@ -168,9 +168,10 @@ inline void nudge_attitude(AttitudeTarget& t, const FrameInput& in, float dt_sec
 // Applies the panel's physics edits, DEBOUNCED: nothing happens while a widget
 // is active (a dragged slider would otherwise rebuild the Simulation every
 // frame), and nothing happens when the edits match what is running. A refused
-// rebuild -- Vulkan today -- keeps the running simulation, puts the reason in
-// `status`, and snaps the widgets back to what is actually running so the
-// refusal is not retried every frame. Returns true when it rebuilt.
+// rebuild -- Vulkan on a box with no device -- keeps the running simulation,
+// puts the reason in `status`, and snaps the widgets back to what is actually
+// running so the refusal is not retried every frame. Returns true when it
+// rebuilt.
 inline bool apply_panel_edits(DroneSim& drone, DronePanelModel& panel) {
     if (panel.ui_item_active || panel.edited == drone.options()) return false;
     if (auto r = drone.apply_options(panel.edited); !r) {

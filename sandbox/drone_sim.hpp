@@ -2,19 +2,27 @@
 // flown in attitude only, through the engine's own rotor model.
 //
 // WHAT THE STAND IS. The drone never translates; the air moves around it, like
-// a model in a wind tunnel. Two CPU behaviors hold it there without any engine
-// change:
-//   * kinematic slot: pos = 0 and vel = 0;
-//   * force slot (after ForceElements): force_acc = -mass * gravity, leaving
-//     torque_acc alone. Integrate then adds exactly +gravity back, so with a
-//     power-of-two mass the net linear acceleration is bitwise 0 and so is vel.
+// a model in a wind tunnel. The engine's translation lock holds it there
+// (Core's module API stage 6, L34): the set carries lock_module(), and
+// Simulation::lock_translation(body, kLockAllAxes) is called once, after the
+// spawn's flush, so the anchor is the spawn point (the origin; every rebuild
+// respawns at the origin and locks again). Integrate then keeps pos at the
+// anchor and vel at 0, bitwise, with the specific force at -g on each held
+// axis; rotation stays free.
 // The rotor thrust, drag and every moment are computed by the engine as for a
 // free vehicle; only the resulting translation is thrown away. Side effect:
-// the IMU reads +g, as a stand-mounted sensor does.
+// the IMU reads +g, as a stand-mounted sensor does. At 2 substeps its direction
+// is the orientation one substep before the step's END (it lags the step-end
+// orientation by one substep of rotation); its norm is g, and a level stand
+// that is not spinning reads (0, +g, 0) exactly.
 //
-// BEHAVIORS DO NOT RUN ON VULKAN TODAY, so selecting Vulkan here is refused
-// with a reason rather than stepped unpinned. That lifts when the engine has a
-// translation lock on both backends.
+// The lock holds the translation on both backends, so no behavior is
+// registered here (a Vulkan step refuses a non-empty registry), and the
+// Vulkan backend is offered. Grades (L34): the lock is CPU `reference` and
+// Vulkan `banded`, with pos and vel bit-exact on both; everything else on the
+// device, the attitude and the IMU included, agrees with the CPU within the
+// banded band, not bitwise. A box with no Vulkan device is refused with the
+// engine's reason (Code::unavailable), and a running stand stays as it is.
 //
 // WHY A HEADER WITH NO DISPLAY IN IT: SL15b -- the window is a dumb shell, and
 // everything here is asserted by tests/test_sandbox_drone.cpp with no window.
@@ -37,7 +45,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
-#include "objects/behavior.hpp"
+#include "physics/lock.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/rings.hpp"
 #include "sim/simulation.hpp"
@@ -92,8 +100,8 @@ struct DroneReadouts {
     uint64_t tick = 0;
 };
 
-// The stand's airframe. mass is 1 kg on purpose: a power of two keeps the
-// pin's (-m g) / m == -g exact, which is what makes vel bitwise 0.
+// The stand's airframe. The mass is 1 kg; the lock selects the held values, so
+// it no longer needs to be a power of two.
 [[nodiscard]] inline vehicles::QuadrotorParams drone_stand_params() {
     vehicles::QuadrotorParams p;
     p.name = "sandbox_quad";
@@ -178,33 +186,6 @@ struct DroneReadouts {
     return {rp[0] - my, rp[1] + my, rp[2] - my, rp[3] + my};
 }
 
-namespace detail {
-
-struct PinParams {
-    uint32_t world = 0;
-    uint32_t body_slot = 0;  // world-local slot
-};
-
-inline void pin_kinematic(const physics::SubstepContext& ctx, const void* p) noexcept {
-    const auto& pin = *static_cast<const PinParams*>(p);
-    if (pin.world >= ctx.worlds.size()) return;
-    const auto& w = ctx.worlds[pin.world];
-    if (pin.body_slot >= w.bodies.size()) return;
-    w.bodies[pin.body_slot].pos = glm::vec3(0.0f);
-    w.bodies[pin.body_slot].vel = glm::vec3(0.0f);
-}
-
-inline void pin_force(const physics::SubstepContext& ctx, const void* p) noexcept {
-    const auto& pin = *static_cast<const PinParams*>(p);
-    if (pin.world >= ctx.worlds.size()) return;
-    const auto& w = ctx.worlds[pin.world];
-    if (pin.body_slot >= w.bodies.size() || w.params == nullptr) return;
-    BodyState& b = w.bodies[pin.body_slot];
-    b.force_acc = -b.mass * w.params->gravity;  // Integrate adds +gravity back: net linear accel exactly 0
-}
-
-}  // namespace detail
-
 class DroneSim {
   public:
     static constexpr uint64_t kDtNs = 2'000'000;
@@ -214,12 +195,6 @@ class DroneSim {
     static constexpr float kMaxOmegaOverHover = 2.5f;
 
     [[nodiscard]] static Result<DroneSim> create(const DronePhysicsOptions& opts, const DroneCarry& carry = {}) {
-        if (opts.vulkan) {
-            return std::unexpected(Error{Code::unavailable,
-                                         "the drone stand holds the drone with CPU behaviors, which the Vulkan "
-                                         "step cannot run yet; staying on CPU"});
-        }
-
         DroneSim d;
         d.opts_ = opts;
         d.params_ = drone_stand_params();
@@ -246,8 +221,16 @@ class DroneSim {
         WorldSetDesc set;
         set.worlds.push_back(std::move(inst));
 
-        auto sim = Simulation::create(set, kDtNs, kSubsteps);
-        if (!sim) return std::unexpected(sim.error());
+        modules::ModuleSet module_set = modules::standard_modules();
+        module_set.push_back(modules::lock_module());
+        compute::BackendDesc backend;
+        if (opts.vulkan) backend.kind = compute::BackendKind::vulkan;
+        auto sim = Simulation::create(set, kDtNs, kSubsteps, backend, module_set);
+        if (!sim) {
+            Error e = sim.error();
+            if (opts.vulkan && e.code == Code::unavailable) e.context = "Vulkan: " + e.context + "; staying on CPU";
+            return std::unexpected(std::move(e));
+        }
         d.sim_ = std::make_unique<Simulation>(std::move(*sim));
 
         auto model = vehicles::make_quadrotor(d.params_);
@@ -268,22 +251,12 @@ class DroneSim {
         d.vehicle_ = *vehicle;
         if (auto f = d.sim_->flush_structural(); !f) return std::unexpected(f.error());
 
-        // One world, so the vehicle's slot is its world-local slot.
-        d.pin_ = std::make_unique<detail::PinParams>(detail::PinParams{0u, d.vehicle_.body.slot});
-        d.registry_ = std::make_unique<objects::BehaviorRegistry>();
-        objects::BehaviorDesc kin;
-        kin.name = "drone_stand_pin_kinematic";
-        kin.slot = objects::BehaviorSlot::kinematic;
-        kin.execute_cpu = &detail::pin_kinematic;
-        kin.user_data = d.pin_.get();
-        if (auto r = d.registry_->register_behavior(kin); !r) return std::unexpected(r.error());
-        objects::BehaviorDesc force;
-        force.name = "drone_stand_pin_force";
-        force.slot = objects::BehaviorSlot::force;
-        force.execute_cpu = &detail::pin_force;
-        force.user_data = d.pin_.get();
-        if (auto r = d.registry_->register_behavior(force); !r) return std::unexpected(r.error());
-        d.sim_->set_behaviors(d.registry_.get());
+        // Hold the translation where the spawn put it (the origin). The lock row is written at the
+        // next step boundary; lock_translation() refuses a body spawned and not flushed, hence the
+        // flush above.
+        if (auto l = d.sim_->lock_translation(d.vehicle_.body, physics::kLockAllAxes); !l) {
+            return std::unexpected(l.error());
+        }
 
         return Result<DroneSim>(std::move(d));
     }
@@ -337,7 +310,7 @@ class DroneSim {
     }
 
     // Rebuild for new options, carrying attitude, body rates and rotor speed.
-    // On failure (e.g. the Vulkan refusal) the current simulation stays.
+    // On failure (e.g. Vulkan with no device) the current simulation stays.
     [[nodiscard]] Result<void> apply_options(const DronePhysicsOptions& o) {
         auto body = sim_->body(vehicle_.body);
         if (!body) return std::unexpected(body.error());
@@ -394,11 +367,7 @@ class DroneSim {
   private:
     DroneSim() = default;
 
-    // Heap-held so the addresses the registry and the Simulation borrow
-    // (user_data -> pin_, behaviors_ -> registry_) survive a move of DroneSim.
     std::unique_ptr<Simulation> sim_;
-    std::unique_ptr<objects::BehaviorRegistry> registry_;
-    std::unique_ptr<detail::PinParams> pin_;
     VehicleRef vehicle_{};
     vehicles::QuadrotorParams params_{};
     DronePhysicsOptions opts_{};
