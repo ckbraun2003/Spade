@@ -140,6 +140,35 @@ TEST(EditorFlightReadout, TheLabelsSayWhatTheNumbersAre) {
     EXPECT_TRUE(contains(rows, "against the case's flow")) << rows;
     EXPECT_TRUE(contains(rows, "static curve")) << rows;
     EXPECT_TRUE(contains(rows, "weight")) << rows;
+    // The row labels are elided in the panel's label column, so the wrapped note under them says it whole.
+    EXPECT_TRUE(contains(kFlightNotShown, "static curve")) << kFlightNotShown;
+    EXPECT_TRUE(contains(kFlightNotShown, "case's flow direction")) << kFlightNotShown;
     EXPECT_TRUE(contains(kFlightNotShown, "aero loads on the body"));
     EXPECT_TRUE(contains(kFlightNotShown, "stage 7"));
+}
+
+// A held-level drone's yaw is a hair under zero from rounding: the panel shows 0.0, never -0.0 (the snapshot read
+// "yaw -0.0"), and a flow at no angle reads +0.0.
+TEST(EditorFlightReadout, ANegativeZeroNeverShows) {
+    FlightInput in = level_in(glm::vec3(-10.0f, 0.0f, 0.0f));
+    in.orient = glm::angleAxis(-1.0e-8f, glm::vec3(0.0f, 1.0f, 0.0f));
+    in.omega_body = glm::vec3(-1.0e-9f, 0.0f, 0.0f);
+    const std::string rows = row_text(flight_rows(flight_readout(in)));
+    EXPECT_FALSE(contains(rows, "-0.0")) << rows;
+}
+
+// The panel's value column is about 26 characters wide (the editor_airflow snapshot clipped the old Attitude value
+// at "yaw -0.0\xC2\xB0, pitch 0.0\xC2\xB0, roll"): every value fits it, at the largest figures the rows show.
+TEST(EditorFlightReadout, EveryValueFitsTheValueColumn) {
+    const std::array<float, 2> omega{1300.0f, 1300.0f};
+    const std::array<float, 2> kt{1.2e-5f, 1.2e-5f};
+    FlightInput in = level_in(glm::vec3(-30.0f, 0.0f, 20.0f));
+    in.orient = glm::angleAxis(2.5f, glm::normalize(glm::vec3(0.3f, 0.5f, 0.2f)));
+    in.omega_body = glm::vec3(-6.0f, 5.0f, -4.0f);
+    in.mass = 12.0f;
+    in.rotor_omega = omega;
+    in.thrust_coeff = kt;
+    for (const FlightRow& r : flight_rows(flight_readout(in))) {
+        EXPECT_LE(r.value.size(), 26u) << r.label << ": '" << r.value << "'";
+    }
 }
