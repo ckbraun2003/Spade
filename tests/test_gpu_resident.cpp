@@ -118,6 +118,24 @@ TEST(GpuResident, AConstSnapshotOfAStaleArrayRefusesNamingTheArrayAndSyncResiden
     EXPECT_TRUE(view.snapshot().has_value());
 }
 
+// The checked door for a const reader that needs the arenas (lead ruling 1): a stale resident array is refused by name.
+TEST(GpuResident, CheckedArenasConstRefusesADeviceNewerArrayByName) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    const Simulation& view = sim;
+    EXPECT_TRUE(view.checked_arenas().has_value()) << "nothing is stale before the first step";
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_FALSE(sim.resident_current());
+    const auto refused = view.checked_arenas();
+    ASSERT_FALSE(refused.has_value()) << "a device_newer array must not be handed out as host bytes";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("airflow_u"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("sync_resident"), std::string::npos) << refused.error().context;
+    ASSERT_TRUE(sim.sync_resident().has_value());
+    EXPECT_TRUE(view.checked_arenas().has_value());
+}
+
 // Review Focus 4: every host path -- snapshot, module_rows, arenas, the digest -- syncs or refuses.
 TEST(GpuResident, ModuleRowsAndArenasAndDigestSyncOrRefuse) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -1570,6 +1571,8 @@ public:
     // The whole state, for snapshots, digests and tests. Const protects the
     // arena DESCRIPTORS, not the bytes (state/registry.hpp).
     [[nodiscard]] const ArenaSet& arenas() const noexcept { return arenas_; }
+    // RED STUB (stage 7 Task C2, lead ruling 1): returns the arenas without checking.
+    [[nodiscard]] Result<std::reference_wrapper<const ArenaSet>> checked_arenas() const { return std::cref(arenas_); }
 
     // Handy typed accessors for the two arrays a caller is likely to read back.
     [[nodiscard]] Result<std::span<const BodyState>> world_bodies(uint32_t world_index) const;
