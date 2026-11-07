@@ -362,6 +362,9 @@ if(SPADE_VULKAN)
         test_gpu_device_limits.cpp
         test_gpu_airflow_runner.cpp
         test_gpu_dispatch_3d.cpp
+        test_gpu_recipes.cpp
+        test_gpu_cadence.cpp
+        test_gpu_grid_kernels.cpp
         test_gpu_airflow_projection.cpp
         test_gpu_airflow_advection.cpp
         test_gpu_airflow_publish.cpp
@@ -637,6 +640,7 @@ if(SPADE_VULKAN)
     # The tests' own kernels (tests/kernels/), built for the tests and never reached by the engine (stage 7 Task B1):
     # dispatch_3d_id is the 3D dispatch's witness. Registered before the attach below so its generator is ordered too.
     spade_slang_kernel_variants(spade_tests dispatch_3d_id SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
+    spade_slang_kernel_variants(spade_tests recipe_probe SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     target_include_directories(spade_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/spade_slang")
     spade_slang_attach_generated(spade_tests)
 endif()

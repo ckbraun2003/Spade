@@ -1619,6 +1619,21 @@ Result<compute::PassDurationsNs> Simulation::vulkan_pass_durations_ns() const {
     return vulkan_backend_->read_pass_durations_ns();
 }
 
+Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "vulkan_recorded_chains: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->recorded_chains();
+}
+
+Result<uint32_t> Simulation::vulkan_pipeline_count() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_pipeline_count: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->pipeline_count();
+}
+
 Result<compute::RecordedChain> Simulation::vulkan_recorded_chain() const {
     if (!vulkan_backend_) {
         return std::unexpected(Error{Code::unavailable,

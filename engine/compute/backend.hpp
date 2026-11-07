@@ -396,6 +396,11 @@ struct PassDuration {
 struct PassDurationsNs {
     bool supported = false;
     std::vector<PassDuration> passes{};  // schedule order; empty when !supported
+    // Which recording ran in the step these durations are of, and that step's tick (stage 7 Task B2): a pass the recording
+    // does not hold has no entry, so a fluid pass reading about 0 after a step it did not run in is never mistaken for a
+    // measurement. RED STUB: always recording 0, tick 0, every pass listed.
+    uint32_t recording = 0;
+    uint64_t tick = 0;
 
     [[nodiscard]] std::optional<double> find(std::string_view pass) const noexcept {
         for (const PassDuration& p : passes) {

@@ -804,6 +804,11 @@ public:
     // compiled schedule's.
     [[nodiscard]] Result<compute::RecordedChain> vulkan_recorded_chain() const;
 
+    // Every recording (compute::VulkanBackend::recorded_chains()), and how many pipelines were built
+    // (VulkanBackend::pipeline_count()): `unavailable` on the cpu backend. Diagnostics (stage 7 Tasks B1, B2).
+    [[nodiscard]] Result<std::vector<compute::RecordedChain>> vulkan_recorded_chains() const;
+    [[nodiscard]] Result<uint32_t> vulkan_pipeline_count() const;
+
     // Which device and driver this Vulkan run uses, and its fp32 denormal
     // controls (compute/backend.hpp's DeviceReport; compute::describe() gives
     // one line). CORE-5: every Vulkan 1.1 device is admitted, its kernels

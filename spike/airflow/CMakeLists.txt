@@ -51,6 +51,11 @@ include("${PROJECT_SOURCE_DIR}/cmake/SpadeSlang.cmake")
 # tests/test_gpu_airflow_runner.cpp scans these three modules itself.
 spade_slang_kernel_variants(spade_airflow_runner airflow_copy NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_add_one NAN_PRESERVE)
+# Core's domain-neutral grid kernels (module API stage 7, Task B3; engine/world/grid_kernels.hpp is their CPU twin):
+# the integer-shift copy and the trilinear point interpolation. Registered here with the runner's kernels until the airflow
+# module is their first engine user; tests/test_gpu_grid_kernels.cpp runs them through the ChainRunner.
+spade_slang_kernel_variants(spade_airflow_runner grid_shift NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner grid_points NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_tile_sum NAN_PRESERVE)
 # B5.0b's test-only probe: airflow_tile_sum's last pass with loads issued
 # ahead, and a two-level order, measured by an opt-in test; no chain uses it.

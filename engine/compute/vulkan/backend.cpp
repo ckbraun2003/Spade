@@ -190,6 +190,10 @@ Result<PassDurationsNs> VulkanBackend::read_pass_durations_ns() const {
 
 RecordedChain VulkanBackend::recorded_chain() const noexcept { return impl_->recorder->recorded_chain(); }
 
+std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return {impl_->recorder->recorded_chain()}; }
+
+uint32_t VulkanBackend::pipeline_count() const noexcept { return 12; }  // RED STUB (stage 7 Task B1)
+
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
 
 MemoryReport VulkanBackend::memory_report() const { return impl_->mirror->memory_report(); }
