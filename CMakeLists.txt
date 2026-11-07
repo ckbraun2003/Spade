@@ -150,6 +150,8 @@ endif()
 # and order their compile after its kernel generators.
 if(SPADE_VULKAN)
     add_subdirectory(spike/airflow)
+    # The LBM tier's GPU twin (spike/lbm): after spike/airflow, whose runner it links.
+    add_subdirectory(spike/lbm)
 endif()
 
 enable_testing()
