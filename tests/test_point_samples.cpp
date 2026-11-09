@@ -1,8 +1,8 @@
 // test_point_samples.cpp -- point samples, the host half (module API stage 7, Task D1; the stage 7 plan, batch D).
 //
 // A module with a position-dependent field declares the points it is sampled at (ModuleDesc::points). The set then gets the
-// internal per-world array `field.points` (one PointRow per point: bodies, then force elements x k, then sensors, then the
-// host's rows) appended after the registry walk, and the positions pass `field.positions` after behaviors.kinematic.
+// internal per-world array `points.points` (one PointRow per point: bodies, then force elements x k, then sensors, then the
+// host's rows) appended after the registry walk, and the positions pass `points.positions` after behaviors.kinematic.
 // Pins, green at red and green for good: a set with no such module has neither, and keeps its identity, its walk and its
 // pass list. The device half is test_gpu_point_samples.cpp.
 #include <gtest/gtest.h>
@@ -53,15 +53,21 @@ void provide(const spade::physics::SubstepContext& ctx) noexcept {
 }
 
 constexpr spade::modules::FieldDecl kSwirl[] = {{.name = "swirl", .kind = spade::modules::FieldKind::scalar, .unit = "1"}};
-constexpr QuantityAccess kProvideAccess[] = {{"field.swirl", Access::write}, {"field.points", Access::write}};
-constexpr std::string_view kAfterPositions[] = {"field.positions"};
+constexpr QuantityAccess kProvideAccess[] = {{"field.swirl", Access::write}, {"points.points", Access::write}};
+constexpr std::string_view kAfterPositions[] = {"points.positions"};
 constexpr PassDecl kProvidePasses[] = {{.name = "sample", .phase = Phase::fields, .access = kProvideAccess,
                                         .after = kAfterPositions, .cpu = &provide}};
+// A provider that declares no write of points.points: what a module with position_dependent == false looks like (the array
+// does not exist for it to name), and what the missing-writer refusal is tested with.
+constexpr QuantityAccess kNoPointsAccess[] = {{"field.swirl", Access::write}};
+constexpr PassDecl kNoPointsPasses[] = {{.name = "sample", .phase = Phase::fields, .access = kNoPointsAccess, .cpu = &provide}};
 
-[[nodiscard]] spade::modules::ModuleSet with_points(bool position_dependent = true) {
+[[nodiscard]] spade::modules::ModuleSet with_points(bool position_dependent = true, bool writes_points = true, uint32_t k = kK) {
     spade::modules::ModuleSet set = spade::modules::standard_modules();
-    set.push_back(ModuleDesc{.name = "gusts", .passes = kProvidePasses, .fields = kSwirl,
-                             .points = PointsDecl{.k = kK, .host_requests = kHostRows, .position_dependent = position_dependent}});
+    set.push_back(ModuleDesc{.name = "gusts", .passes = writes_points ? std::span<const PassDecl>(kProvidePasses)
+                                                                       : std::span<const PassDecl>(kNoPointsPasses),
+                             .fields = kSwirl,
+                             .points = PointsDecl{.k = k, .host_requests = kHostRows, .position_dependent = position_dependent}});
     return set;
 }
 
@@ -93,12 +99,12 @@ TEST(PointSamples, AStandardSetAllocatesNothingNew) {
     EXPECT_FALSE(sim.module_array("points").has_value()) << "no points array in a standard set";
 }
 
-// PIN. No standard pass is added or renamed, so the identity holds: the chain has no `field.*` pass.
+// PIN. No standard pass is added or renamed, so the identity holds: the chain has no `points.*` pass.
 TEST(PointSamples, TheStandardChainIsUnchanged) {
     const auto s = compile_schedule(spade::modules::standard_modules());
     ASSERT_TRUE(s.has_value()) << s.error().context;
     const std::vector<std::string> order = names(*s);
-    EXPECT_FALSE(std::ranges::any_of(order, [](const std::string& n) { return n.starts_with("field."); }));
+    EXPECT_FALSE(std::ranges::any_of(order, [](const std::string& n) { return n.starts_with("points."); }));
     EXPECT_NE(std::ranges::find(order, "behaviors.kinematic"), order.end());
 }
 
@@ -111,7 +117,7 @@ TEST(PointSamples, APositionDependentProviderGetsThePositionsPassAndTheArrayAfte
     EXPECT_EQ(s->points.module, "gusts");
     const std::vector<std::string> order = names(*s);
     const auto kinematic = std::ranges::find(order, "behaviors.kinematic");
-    const auto positions = std::ranges::find(order, "field.positions");
+    const auto positions = std::ranges::find(order, "points.positions");
     const auto sample = std::ranges::find(order, "gusts.sample");
     ASSERT_NE(positions, order.end()) << "compile_schedule injects the positions pass";
     ASSERT_NE(kinematic, order.end());
@@ -122,16 +128,38 @@ TEST(PointSamples, APositionDependentProviderGetsThePositionsPassAndTheArrayAfte
     EXPECT_EQ(s->arrays.back().name, "points") << "appended after the walk";
     EXPECT_EQ(s->arrays.back().elem_size, sizeof(PointRow));
     EXPECT_NE(s->identity, 0x3303cfc86821f502ULL);
+    // The reader is drag.forces: it runs after both writers and its view of the array is bound.
+    const auto drag = std::ranges::find(order, "drag.forces");
+    ASSERT_NE(drag, order.end());
+    EXPECT_LT(sample, drag);
+    const auto& pass = s->passes[static_cast<std::size_t>(drag - order.begin())];
+    ASSERT_FALSE(pass.state.empty());
+    EXPECT_EQ(pass.state.back().kind, spade::modules::BindingKind::array) << "drag.forces binds points.points";
+    EXPECT_EQ(s->arrays[pass.state.back().index].name, "points");
+}
+
+// THE GUARD (lead's ruling L43): an unfilled row must never be read as a real point at the origin. The positions pass writes
+// body rows only, so a set with element rows (k > 0) needs a pass of another module that declares a write of points.points;
+// without one compile_schedule refuses, naming the array and the missing writer.
+TEST(PointSamples, ElementRowsWithNoWriterAreRefusedNamingTheArrayAndTheMissingWriter) {
+    const auto refused = compile_schedule(with_points(true, false, kK));
+    ASSERT_FALSE(refused.has_value()) << "k > 0, and no pass declares a write of points.points";
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("points.points"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("write"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("gusts"), std::string::npos) << "names the declaring module: " << refused.error().context;
+    // k == 0: no element rows, so the body rows (the positions pass's) are all Core sizes, and nothing is refused.
+    EXPECT_TRUE(compile_schedule(with_points(true, false, 0)).has_value());
 }
 
 // The declaration without a position-dependent provider adds nothing: no array, no pass.
 TEST(PointSamples, APointsDeclarationThatIsNotPositionDependentAddsNothing) {
-    const auto s = compile_schedule(with_points(false));
+    const auto s = compile_schedule(with_points(false, false));
     ASSERT_TRUE(s.has_value()) << s.error().context;
     EXPECT_FALSE(s->points.present);
     EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.name == "points"; }));
     const std::vector<std::string> order = names(*s);
-    EXPECT_EQ(std::ranges::find(order, "field.positions"), order.end());
+    EXPECT_EQ(std::ranges::find(order, "points.positions"), order.end());
 }
 
 TEST(PointSamples, TwoModulesDeclaringPointsAreRefusedNamingBoth) {

@@ -125,9 +125,9 @@ struct FieldDecl {
 
 // POINT SAMPLES (module API stage 7, Task D1; the stage 7 plan, batch D). A module whose field depends on WHERE it is read
 // (a gust field, a wake, an SPH neighbourhood) declares the points it is sampled at. A set with a position-dependent provider
-// gets one internal per-world array `field.points`, appended after the registry walk: one PointRow per point, in this order
+// gets one internal per-world array `points.points`, appended after the registry walk: one PointRow per point, in this order
 // per world -- every body slot, then every force-element slot times `k`, then every sensor slot, then `host_requests` rows
-// the host fills. compile_schedule injects the positions pass (`field.positions`, after behaviors.kinematic, before any
+// the host fills. compile_schedule injects the positions pass (`points.positions`, after behaviors.kinematic, before any
 // provider) that writes `pos`; the provider writes `wind` and `density`; drag.forces reads them. A set with no
 // position-dependent provider registers nothing and its schedule is the standard one.
 struct PointsDecl {
@@ -144,7 +144,7 @@ struct PointRow {
 };
 static_assert(sizeof(PointRow) == 32 && std::is_trivially_copyable_v<PointRow>);
 inline constexpr uint32_t kPointRowWords = 8;
-inline constexpr std::string_view kPointsModule = "field";  // the module name the internal array and pass sit under
+inline constexpr std::string_view kPointsModule = "points";  // the internal module compile_schedule injects: pass "positions", array "points"
 inline constexpr std::string_view kPointsArray = "points";
 inline constexpr std::string_view kPositionsPass = "positions";
 
