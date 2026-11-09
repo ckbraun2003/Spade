@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -445,8 +446,13 @@ struct WordDiff {
         ADD_FAILURE() << up.error().context;
         return false;
     }
+    const auto push = lbm_push_of(start);
+    if (!push.has_value()) {
+        ADD_FAILURE() << push.error().context;
+        return false;
+    }
     const std::vector<ChainCommand> chain =
-        lbm_step_chain(lbm_push_of(start), start.grid.step, steps, kWorkgroupSize, macro_only);
+        lbm_step_chain(*push, start.grid.step, steps, kWorkgroupSize, macro_only);
     auto id = (*runner)->record(chain);
     if (!id.has_value()) {
         ADD_FAILURE() << id.error().context;
@@ -471,7 +477,7 @@ struct WordDiff {
 
 // The reference: n scoped CPU steps (the flush scope, as the device flushes).
 void cpu_steps(LbmFlow& fl, uint32_t n) {
-    for (uint32_t t = 0; t < n; ++t) spade::physics::lbm::step_flow_flushed(fl);
+    for (uint32_t t = 0; t < n; ++t) support::step_ok_flushed(fl);
 }
 
 // The device's n steps from `start` against the CPU's, f and u, and the words that differ.
@@ -484,6 +490,7 @@ void expect_steps_match(VulkanContext& ctx, const LbmFlow& start, uint32_t n, co
     // (see ABlownUpFieldIsNaNOnBothSidesWithTheSamePattern).
     EXPECT_TRUE(std::all_of(cpu.grid.f.begin(), cpu.grid.f.end(), [](float v) { return std::isfinite(v); }))
         << what << ": " << n << " step(s): the CPU field is not finite, pick a calmer field";
+    support::expect_mass_steady(cpu, what.c_str());  // a field that gained or lost mass is not a physical case
     const WordDiff df = diff_words(dev.f, cpu.grid.f);
     const WordDiff du = diff_words(dev.u, cpu.u);
     EXPECT_EQ(df.count, std::size_t{0}) << what << ": " << n << " step(s), f differs in " << df.count
@@ -496,20 +503,7 @@ void expect_steps_match(VulkanContext& ctx, const LbmFlow& start, uint32_t n, co
                 cpu.grid.f.size(), du.count, cpu.u.size());
 }
 
-// The box of LbmThreads with every face a wall and a different moving velocity on each: nodes whose links cross one,
-// two or three walls (the wall mean's 1 / crossed for crossed = 1, 2 and 3).
-[[nodiscard]] LbmFlow six_wall_field(float speed = 0.002f) {
-    LbmFlow fl = support::box_field(true);
-    for (uint32_t a = 0; a < 3; ++a) fl.walls.periodic[a] = false;
-    for (uint32_t a = 0; a < 3; ++a) {
-        for (uint32_t side = 0; side < 2; ++side) {
-            for (uint32_t k = 0; k < 3; ++k) {
-                fl.walls.wall_u[a][side][k] = speed * static_cast<float>(1 + a * 6 + side * 3 + k) - 5.0f * speed;
-            }
-        }
-    }
-    return fl;
-}
+using support::six_wall_field;
 
 // A uniform fluid at rest, or drifting at u0 along x.
 [[nodiscard]] LbmFlow uniform_field(float u0) {
@@ -602,20 +596,22 @@ TEST(GpuLbmStep, TheWalledBoxesAreTheCpusBitForBit) {
     for (const uint32_t n : {1u, 2u, 7u, 64u}) expect_steps_match(**ctx, six_wall_field(), n, "six-wall box");
 }
 
-// A field that blows up: the box of the walls at ten times the speed, stepped until NaN is everywhere. TD-14's bit
-// equality holds for numbers; a NaN's PAYLOAD is the hardware's own (an invalid operation gives x86 the default
-// 0xffc00000 and this device 0x7fffffff), so the contract here is the NaN pattern: the same words are NaN on both
-// sides and every other word is the same bits. The count of words whose NaN payload differs is printed, as the
-// measured fact the claim excludes.
+// A field that blows up: the periodic Taylor-Green box with one population set to infinity, so the first collision
+// computes inf - inf (an invalid operation) and the NaNs spread to every node within a few steps. TD-14's bit equality holds for numbers; a
+// NaN's PAYLOAD is the hardware's own (an invalid operation gives x86 the default 0xffc00000 and this device
+// 0x7fffffff), so the contract here is the NaN pattern: the same words are NaN on both sides and every other word
+// is the same bits. The count of words whose NaN payload differs is printed, as the measured fact the claim excludes.
 TEST(GpuLbmStep, ABlownUpFieldIsNaNOnBothSidesAtTheSameWords) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
-    const LbmFlow start = six_wall_field(0.01f);
+    LbmFlow start = support::box_field(false);
+    start.grid.f[0] = std::numeric_limits<float>::infinity();
+    constexpr uint32_t kSteps = 64;
     LbmFlow cpu = start;
-    cpu_steps(cpu, 64);
+    cpu_steps(cpu, kSteps);
     DeviceState dev;
-    ASSERT_TRUE(run_steps(**ctx, start, 64, false, dev));
+    ASSERT_TRUE(run_steps(**ctx, start, kSteps, false, dev));
     std::size_t nan_cpu = 0;
     std::size_t pattern_wrong = 0;
     std::size_t payload_differs = 0;
@@ -634,8 +630,8 @@ TEST(GpuLbmStep, ABlownUpFieldIsNaNOnBothSidesAtTheSameWords) {
             }
         }
     }
-    std::printf("[GpuLbmStep] blown-up field, 64 steps: NaN words (CPU) %zu, pattern wrong=%zu, payload differs %zu\n",
-                nan_cpu, pattern_wrong, payload_differs);
+    std::printf("[GpuLbmStep] blown-up field, %u steps: NaN words (CPU) %zu, pattern wrong=%zu, payload differs %zu\n",
+                kSteps, nan_cpu, pattern_wrong, payload_differs);
     EXPECT_GT(nan_cpu, std::size_t{0}) << "the field did not blow up: pick a more violent one";
     EXPECT_EQ(pattern_wrong, std::size_t{0});
 }

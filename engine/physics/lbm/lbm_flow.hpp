@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/detail/flush_subnormals.hpp"
+#include "core/error.hpp"
 #include "physics/airflow/worker_pool.hpp"
 #include "physics/lbm/lattice.hpp"
 #include "physics/lbm/lbm_collide.hpp"
@@ -234,11 +235,55 @@ inline void collide_row(LbmFlow& fl, uint32_t r, bool odd) {
     }
 }
 
-inline void step_flow(LbmFlow& fl, WorkerPool* pool = nullptr) {
+// The step without the wall check: for the tests of the arithmetic itself and of the check. A caller that wants a
+// valid box calls step_flow(), which refuses an invalid one first.
+inline void step_flow_unchecked(LbmFlow& fl, WorkerPool* pool = nullptr) {
     compute_velocity(fl, pool);  // the pool's return is the barrier: every u is written before any node collides
     const bool odd = fl.grid.odd();
     for_rows(fl.grid, pool, [&](uint32_t r) { collide_row(fl, r, odd); });
     ++fl.grid.step;
+}
+
+// A halfway bounce-back wall may move ALONG itself and not into or out of the box. The moving-wall term
+// 6 w_i (c_i . u_w) of a wall with a component along its own normal puts mass through the wall every step
+// (measured: a closed box with such walls lost 9.4e-3 of its mean density a step and went non-finite at step 28), so
+// the box would fill or drain instead of flowing. Only walls (non-periodic axes) are checked; a velocity inlet or
+// outlet is a boundary of another kind, not a bounce-back wall. Refused by name: the wall, the component and why. No
+// float work beyond comparisons.
+[[nodiscard]] inline Result<void> check_walls(const BoxWalls& w) {
+    static constexpr const char* kAxis[3] = {"x", "y", "z"};
+    static constexpr const char* kSide[2] = {"low", "high"};
+    for (std::size_t a = 0; a < 3; ++a) {
+        if (w.periodic[a]) continue;
+        for (std::size_t side = 0; side < 2; ++side) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                const float v = w.wall_u[a][side][k];
+                // NaN fails the compare; infinity is not finite either.
+                if (!(v > -1.0e30f && v < 1.0e30f)) {
+                    return std::unexpected(Error{Code::invalid_argument,
+                                                 std::string("LBM wall: the ") + kAxis[a] + "-" + kSide[side] +
+                                                     " wall's velocity component " + kAxis[k] + " is not finite"});
+                }
+                if (k == a && v != 0.0f) {
+                    return std::unexpected(Error{
+                        Code::invalid_argument,
+                        std::string("LBM wall: the ") + kAxis[a] + "-" + kSide[side] + " wall has velocity component " +
+                            kAxis[k] + " = " + std::to_string(v) + " along its own normal; a halfway bounce-back wall "
+                            "moving into or out of the box is a mass source or sink (the box fills or drains), so only "
+                            "velocities along the wall are allowed (a velocity inlet or outlet is a different "
+                            "boundary)"});
+                }
+            }
+        }
+    }
+    return {};
+}
+
+// One step, after the wall check: refused (invalid_argument) with the box untouched if a wall moves along its normal.
+[[nodiscard]] inline Result<void> step_flow(LbmFlow& fl, WorkerPool* pool = nullptr) {
+    if (Result<void> ok = check_walls(fl.walls); !ok) return ok;
+    step_flow_unchecked(fl, pool);
+    return {};
 }
 
 // Diagnostics, summed in double in cell order: K = mean of |u|^2 / 2, and the mean density and momentum.
@@ -279,12 +324,14 @@ struct FlowSums {
 }
 
 // The wrappers: the scope, then one call to a body that holds every float op of the step.
-SPADE_NOINLINE inline void step_flow_body(LbmFlow& fl, WorkerPool* pool) { step_flow(fl, pool); }
+SPADE_NOINLINE inline void step_flow_body(LbmFlow& fl, WorkerPool* pool) { step_flow_unchecked(fl, pool); }
 SPADE_NOINLINE inline FlowSums flow_sums_body(LbmFlow& fl, WorkerPool* pool) { return flow_sums(fl, pool); }
 
-inline void step_flow_flushed(LbmFlow& fl, WorkerPool* pool = nullptr) {
+[[nodiscard]] inline Result<void> step_flow_flushed(LbmFlow& fl, WorkerPool* pool = nullptr) {
+    if (Result<void> ok = check_walls(fl.walls); !ok) return ok;
     const spade::math::ScopedFlushSubnormals scope;
     step_flow_body(fl, pool);
+    return {};
 }
 
 [[nodiscard]] inline FlowSums flow_sums_flushed(LbmFlow& fl, WorkerPool* pool = nullptr) {

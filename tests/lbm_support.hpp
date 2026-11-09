@@ -11,6 +11,8 @@
 // switch state, so two runs compare in one word.
 #pragma once
 
+#include <gtest/gtest.h>
+
 #include <bit>
 #include <cmath>
 #include <numbers>
@@ -56,11 +58,23 @@ inline bool case_gradual() {
 
 inline WorkerPool* case_pool();
 
+// One step of a flow under test: a refusal (an invalid wall) is a test failure, named. `pool` splits the step.
+inline void step_ok(LbmFlow& fl, WorkerPool* pool = nullptr) {
+    const spade::Result<void> r = spade::physics::lbm::step_flow(fl, pool);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().context);
+}
+
+// The same under the flush scope (the reference the device is compared to).
+inline void step_ok_flushed(LbmFlow& fl, WorkerPool* pool = nullptr) {
+    const spade::Result<void> r = spade::physics::lbm::step_flow_flushed(fl, pool);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().context);
+}
+
 inline void case_step(LbmFlow& fl) {
     if (case_gradual()) {
-        spade::physics::lbm::step_flow(fl, case_pool());
+        step_ok(fl, case_pool());
     } else {
-        spade::physics::lbm::step_flow_flushed(fl, case_pool());
+        step_ok_flushed(fl, case_pool());
     }
 }
 
@@ -74,7 +88,7 @@ inline constexpr double kBoxTwoPi = 2.0 * std::numbers::pi;
 // A field with structure for the split to break: 12 x 10 x 7 (7 z-planes of 10 rows is 70 rows, 18 chunks with a
 // short last one of 2 rows), Taylor-Green velocity with a pressure, WALE on, optionally a box whose y faces are
 // walls with the high one a moving lid.
-inline LbmFlow box_field(bool lid) {
+inline LbmFlow box_field(bool lid, double u0 = 0.1) {
     constexpr uint32_t nx = 12;
     constexpr uint32_t ny = 10;
     constexpr uint32_t nz = 7;
@@ -83,7 +97,6 @@ inline LbmFlow box_field(bool lid) {
         fl.walls.periodic[1] = false;
         fl.walls.wall_u[1][1] = {0.08f, 0.0f, 0.0f};
     }
-    const double u0 = 0.1;
     for (uint32_t z = 0; z < nz; ++z) {
         for (uint32_t y = 0; y < ny; ++y) {
             for (uint32_t x = 0; x < nx; ++x) {
@@ -99,6 +112,35 @@ inline LbmFlow box_field(bool lid) {
         }
     }
     return fl;
+}
+
+// The box of box_field() with every face a wall and a different moving velocity on each, ALONG the wall only (a
+// component along its own normal is a mass source; check_walls refuses it): nodes whose links cross one, two or three
+// walls (the wall mean's 1 / crossed for crossed = 1, 2 and 3).
+inline LbmFlow six_wall_field(float speed = 0.002f) {
+    LbmFlow fl = box_field(true);
+    for (uint32_t a = 0; a < 3; ++a) fl.walls.periodic[a] = false;
+    for (uint32_t a = 0; a < 3; ++a) {
+        for (uint32_t side = 0; side < 2; ++side) {
+            for (uint32_t k = 0; k < 3; ++k) {
+                fl.walls.wall_u[a][side][k] =
+                    k == a ? 0.0f : speed * static_cast<float>(1 + a * 6 + side * 3 + k) - 5.0f * speed;
+            }
+        }
+    }
+    return fl;
+}
+
+// A closed box keeps its mass. Measured on the tangential boxes (lid box and six-wall box, 400 steps): |mean(rho - 1)|
+// is at most 9.1e-9 (fp32 round-off of 840 nodes' populations summed in double). The bound is 1e-6, over 100 times
+// that, and 4 orders under the 9.4e-3 a step an invalid wall velocity (a normal component) drains.
+inline constexpr double kMassBound = 1.0e-6;
+
+inline void expect_mass_steady(LbmFlow fl, const char* what) {
+    const FlowSums s = spade::physics::lbm::flow_sums_flushed(fl);
+    EXPECT_TRUE(s.finite) << what << ": the field is not finite";
+    EXPECT_LT(std::abs(s.mass_m1), kMassBound) << what << ": mean(rho - 1) = " << s.mass_m1
+                                               << " (a box with a mass source)";
 }
 
 // Two diagnostics are the same bits: each double by its bit pattern (so -0 differs from 0, and a NaN equals its own

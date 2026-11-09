@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -56,7 +57,7 @@ TEST(LbmFlow, AQuietBoxStaysQuietExactly) {
             for (uint32_t x = 0; x < 8; ++x) set_node_equilibrium(fl, x, y, z, 1.0f, 0.0f, 0.0f, 0.0f);
         }
     }
-    for (int t = 0; t < 20; ++t) step_flow(fl);
+    for (int t = 0; t < 20; ++t) spade::testing::lbm_support::step_ok(fl);
     for (const float v : fl.grid.f) EXPECT_EQ(v, 0.0f);
 }
 
@@ -85,7 +86,7 @@ double shear_decay_rate(float u0, float nu, float cw, int steps, uint32_t n = 32
         return std::hypot(s, c) * 2.0 / n;
     };
     const double a0 = amplitude();
-    for (int t = 0; t < steps; ++t) step_flow(fl);
+    for (int t = 0; t < steps; ++t) spade::testing::lbm_support::step_ok(fl);
     return -std::log(amplitude() / a0) / steps;
 }
 
@@ -132,7 +133,7 @@ TEST(LbmFlow, TheTaylorGreenStartConservesMassAndMomentum) {
         }
     }
     const FlowSums before = flow_sums(fl);
-    for (int t = 0; t < 60; ++t) step_flow(fl);
+    for (int t = 0; t < 60; ++t) spade::testing::lbm_support::step_ok(fl);
     const FlowSums after = flow_sums(fl);
     EXPECT_TRUE(after.finite);
     EXPECT_NEAR(after.mass_m1, before.mass_m1, 1.0e-7);
@@ -159,7 +160,7 @@ TEST(LbmWalls, AClosedBoxConservesMassAndLosesEnergy) {
         }
     }
     const FlowSums before = flow_sums(fl);
-    for (int t = 0; t < 200; ++t) step_flow(fl);
+    for (int t = 0; t < 200; ++t) spade::testing::lbm_support::step_ok(fl);
     const FlowSums after = flow_sums(fl);
     EXPECT_TRUE(after.finite);
     EXPECT_NEAR(after.mass_m1, before.mass_m1, 5.0e-7);
@@ -180,7 +181,7 @@ TEST(LbmWalls, CouetteFlowBetweenAStillFloorAndAMovingLidIsLinear) {
             for (uint32_t x = 0; x < 4; ++x) set_node_equilibrium(fl, x, y, z, 1.0f, 0.0f, 0.0f, 0.0f);
         }
     }
-    for (int t = 0; t < 4000; ++t) step_flow(fl);
+    for (int t = 0; t < 4000; ++t) spade::testing::lbm_support::step_ok(fl);
     compute_velocity(fl);
     for (uint32_t y = 0; y < n; ++y) {
         const double want = static_cast<double>(lid) * (y + 0.5) / n;
@@ -265,8 +266,8 @@ void expect_pool_matches_serial(bool lid, airflow::WorkerPool& pool, const char*
     LbmFlow split = thread_field(lid);
     const std::vector<float> start = serial.grid.f;
     for (int t = 0; t < 12; ++t) {
-        step_flow(serial);
-        step_flow(split, &pool);
+        spade::testing::lbm_support::step_ok(serial);
+        spade::testing::lbm_support::step_ok(split, &pool);
     }
     EXPECT_FALSE(same_bits(serial.grid.f, start)) << "the field moved, so the comparison means something";
     EXPECT_TRUE(same_bits(split.grid.f, serial.grid.f)) << what << ": populations";
@@ -314,13 +315,13 @@ LbmFlow subnormal_field(bool lid) {
 TEST(LbmFlush, AFieldOfSubnormalPopulationsIsAQuietFieldUnderTheScopeAndNotWithout) {
     for (const bool lid : {false, true}) {
         LbmFlow gradual = subnormal_field(lid);
-        step_flow(gradual);
+        spade::testing::lbm_support::step_ok(gradual);
         bool moved = false;
         for (const float v : gradual.grid.f) moved = moved || v != 0.0f;
         EXPECT_TRUE(moved) << "the unscoped step keeps subnormals, so this test can tell the scope from its absence";
 
         LbmFlow flushed = subnormal_field(lid);
-        for (int t = 0; t < 3; ++t) step_flow_flushed(flushed);
+        for (int t = 0; t < 3; ++t) spade::testing::lbm_support::step_ok_flushed(flushed);
         for (const float v : flushed.grid.f) EXPECT_EQ(v, 0.0f);
         const FlowSums sums = flow_sums_flushed(flushed);
         EXPECT_EQ(sums.kinetic, 0.0);
@@ -334,13 +335,98 @@ TEST(LbmFlush, TheSplitStepFlushesOnEveryThreadAndTheCallersWordComesBack) {
     for (airflow::WorkerPool* pool : {&four, &reversed}) {
         LbmFlow fl = subnormal_field(false);
         const unsigned int before = _mm_getcsr();
-        step_flow_flushed(fl, pool);
-        step_flow_flushed(fl, pool);
+        spade::testing::lbm_support::step_ok_flushed(fl, pool);
+        spade::testing::lbm_support::step_ok_flushed(fl, pool);
         EXPECT_EQ(_mm_getcsr(), before) << "the scope restores the caller's MXCSR whole";
         for (const float v : fl.grid.f) {
             EXPECT_EQ(v, 0.0f) << "a worker that ran without the caller's flush leaves subnormals";
         }
     }
+}
+
+// ---- LbmWalls: a halfway bounce-back wall moves along itself, never into or out of the box ----------------
+
+TEST(LbmWalls, ANormalVelocityComponentIsRefusedByNameOnEveryWall) {
+    namespace support = spade::testing::lbm_support;
+    const char* const axis[3] = {"x", "y", "z"};
+    const char* const side[2] = {"low", "high"};
+    for (std::size_t a = 0; a < 3; ++a) {
+        for (std::size_t sd = 0; sd < 2; ++sd) {
+            LbmFlow fl = support::box_field(false);
+            fl.walls.periodic[a] = false;
+            fl.walls.wall_u[a][sd][a] = 0.05f;
+            const std::vector<float> before = fl.grid.f;
+            for (const bool flushed : {false, true}) {
+                const spade::Result<void> r = flushed ? step_flow_flushed(fl) : step_flow(fl);
+                ASSERT_FALSE(r.has_value()) << axis[a] << "-" << side[sd] << (flushed ? " (flushed)" : "");
+                EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+                const std::string& why = r.error().context;
+                EXPECT_NE(why.find(std::string(axis[a]) + "-" + side[sd] + " wall"), std::string::npos) << why;
+                EXPECT_NE(why.find(std::string("component ") + axis[a]), std::string::npos) << why;
+                EXPECT_NE(why.find("along its own normal"), std::string::npos) << why;
+                EXPECT_NE(why.find("mass source or sink"), std::string::npos) << why;
+                EXPECT_EQ(fl.grid.step, uint64_t{0}) << "a refused step takes no step";
+                EXPECT_TRUE(fl.grid.f == before) << "a refused step touches nothing";
+            }
+        }
+    }
+}
+
+TEST(LbmWalls, AWallThatMovesAlongItselfIsAccepted) {
+    namespace support = spade::testing::lbm_support;
+    LbmFlow lid = support::box_field(true);  // the high-y face moves along x
+    EXPECT_TRUE(step_flow(lid).has_value());
+    LbmFlow six = support::six_wall_field(0.01f);  // a different tangential vector on each face
+    EXPECT_TRUE(step_flow_flushed(six).has_value());
+    EXPECT_TRUE(check_walls(six.walls).has_value());
+}
+
+TEST(LbmWalls, ANormalComponentOnAPeriodicAxisIsNotAWall) {
+    LbmFlow fl = spade::testing::lbm_support::box_field(false);  // all periodic: wall_u is never read
+    fl.walls.wall_u[0][0][0] = 0.5f;
+    fl.walls.wall_u[1][1][1] = 0.5f;
+    EXPECT_TRUE(step_flow(fl).has_value());
+}
+
+TEST(LbmWalls, ANonFiniteWallVelocityIsRefused) {
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(),
+                            -std::numeric_limits<float>::infinity()}) {
+        LbmFlow fl = spade::testing::lbm_support::box_field(true);
+        fl.walls.wall_u[1][1][0] = bad;  // the lid's tangential component
+        const spade::Result<void> r = step_flow(fl);
+        ASSERT_FALSE(r.has_value());
+        EXPECT_NE(r.error().context.find("is not finite"), std::string::npos) << r.error().context;
+    }
+}
+
+TEST(LbmWalls, AClosedBoxKeepsItsMass) {
+    namespace support = spade::testing::lbm_support;
+    for (const char* what : {"lid box", "six-wall box"}) {
+        LbmFlow fl = std::string(what) == "lid box" ? support::box_field(true) : support::six_wall_field(0.01f);
+        for (int t = 1; t <= 400; ++t) {
+            support::step_ok_flushed(fl);
+            if (t % 100 == 0) support::expect_mass_steady(fl, what);
+        }
+    }
+}
+
+// Why the bound exists: the box this file used to test with had a normal component on every wall, and its mean
+// density fell by 9.4e-3 a step to NaN at step 28. Stepped unchecked it still does, and the mass bound sees it at once.
+TEST(LbmWalls, TheMassBoundCatchesTheBoxWithNormalWallVelocities) {
+    namespace support = spade::testing::lbm_support;
+    LbmFlow fl = support::box_field(true);
+    for (std::size_t a = 0; a < 3; ++a) {
+        fl.walls.periodic[a] = false;
+        for (std::size_t sd = 0; sd < 2; ++sd) {
+            for (std::size_t k = 0; k < 3; ++k) {
+                fl.walls.wall_u[a][sd][k] = 0.01f * static_cast<float>(1 + a * 6 + sd * 3 + k) - 0.05f;
+            }
+        }
+    }
+    EXPECT_FALSE(check_walls(fl.walls).has_value());
+    for (int t = 0; t < 10; ++t) step_flow_unchecked(fl);
+    const FlowSums s = flow_sums(fl);
+    EXPECT_GT(std::abs(s.mass_m1), 1.0e3 * support::kMassBound) << s.mass_m1;
 }
 
 }  // namespace

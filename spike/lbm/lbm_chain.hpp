@@ -75,9 +75,12 @@ static_assert(offsetof(LbmPush, nu) == 16 && offsetof(LbmPush, periodic_mask) ==
 inline constexpr uint32_t kLbmMacroPipeline = 0;
 inline constexpr uint32_t kLbmCollidePipeline = 1;
 
-// The push block of a CPU flow: its grid, parity (the step counter's low bit), nu and cw, which axes are periodic and
-// the walls' velocities, flattened as lbm_params.slang says: wall_u[(axis * 2 + side) * 3 + component].
-[[nodiscard]] inline LbmPush lbm_push_of(const physics::lbm::LbmFlow& fl) {
+// The push block of a CPU flow (refused, naming the wall, if a wall moves along its own normal): its grid, parity
+// (the step counter's low bit), nu and cw, which axes are periodic and the walls' velocities, flattened as
+// lbm_params.slang says: wall_u[(axis * 2 + side) * 3 + component].
+[[nodiscard]] inline Result<LbmPush> lbm_push_of(const physics::lbm::LbmFlow& fl) {
+    // The device refuses what the CPU step refuses: the same check, so the two cannot disagree on a valid box.
+    if (Result<void> ok = physics::lbm::check_walls(fl.walls); !ok) return std::unexpected(ok.error());
     LbmPush p;
     p.nx = fl.grid.nx;
     p.ny = fl.grid.ny;
