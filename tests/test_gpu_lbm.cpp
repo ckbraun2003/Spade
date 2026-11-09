@@ -17,11 +17,13 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <limits>
 #include <memory>
 #include <span>
@@ -597,10 +599,11 @@ TEST(GpuLbmStep, TheWalledBoxesAreTheCpusBitForBit) {
 }
 
 // A field that blows up: the periodic Taylor-Green box with one population set to infinity, so the first collision
-// computes inf - inf (an invalid operation) and the NaNs spread to every node within a few steps. TD-14's bit equality holds for numbers; a
-// NaN's PAYLOAD is the hardware's own (an invalid operation gives x86 the default 0xffc00000 and this device
-// 0x7fffffff), so the contract here is the NaN pattern: the same words are NaN on both sides and every other word
-// is the same bits. The count of words whose NaN payload differs is printed, as the measured fact the claim excludes.
+// computes inf - inf (an invalid operation) and the NaNs spread to every node within a few steps. TD-14's bit
+// equality holds for numbers; a NaN's PAYLOAD is the hardware's own (an invalid operation gives x86 the default
+// 0xffc00000 and this device 0x7fffffff), so the contract here is the NaN pattern: the same words are NaN on both
+// sides and every other word is the same bits. The count of words whose NaN payload differs is printed, as the
+// measured fact the claim excludes.
 TEST(GpuLbmStep, ABlownUpFieldIsNaNOnBothSidesAtTheSameWords) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
@@ -653,3 +656,187 @@ TEST(GpuLbmFlush, SubnormalsFlushAsTheScopeDoes) {
         for (const uint32_t n : {1u, 2u, 3u}) expect_steps_match(**ctx, tiny_field(scale), n, what);
     }
 }
+
+namespace {
+
+// ===========================================================================
+// GpuLbmCase: the validation cases on the device, in lock step with the CPU reference (T5)
+// ===========================================================================
+
+// One run on the device: the buffers and the recorded chains stay between samples. A chain is recorded once per
+// (parity of the first step, steps) pair, so a run of equal intervals records at most two.
+class DeviceRun {
+  public:
+    [[nodiscard]] static std::unique_ptr<DeviceRun> create(VulkanContext& ctx, const LbmFlow& start) {
+        auto run = std::unique_ptr<DeviceRun>(new DeviceRun());
+        run->buffers_ = {
+            {"lbm_f", start.grid.f.size() * 4ull, spade::airflow_gpu::BufferKind::staged},
+            {"lbm_u", start.u.size() * 4ull, spade::airflow_gpu::BufferKind::staged},
+        };
+        run->kernels_ = {&gen::kSpvVariants_lbm_macro, &gen::kSpvVariants_lbm_collide_stream};
+        auto runner = ChainRunner::create(ctx, RunnerDesc{.buffers = run->buffers_,
+                                                          .kernels = run->kernels_,
+                                                          .push_bytes = sizeof(LbmPush),
+                                                          .workgroup_size = kWorkgroupSize,
+                                                          .binding_base = kLbmBindingBase});
+        if (!runner.has_value()) {
+            ADD_FAILURE() << runner.error().context;
+            return nullptr;
+        }
+        run->runner_ = std::move(*runner);
+        const auto push = lbm_push_of(start);
+        if (!push.has_value()) {
+            ADD_FAILURE() << push.error().context;
+            return nullptr;
+        }
+        run->push_ = *push;
+        run->step_ = start.grid.step;
+        if (auto up = run->runner_->upload(0, std::as_bytes(std::span<const float>(start.grid.f))); !up) {
+            ADD_FAILURE() << up.error().context;
+            return nullptr;
+        }
+        if (auto up = run->runner_->upload(1, std::as_bytes(std::span<const float>(start.u))); !up) {
+            ADD_FAILURE() << up.error().context;
+            return nullptr;
+        }
+        return run;
+    }
+
+    [[nodiscard]] bool advance(uint32_t steps) {
+        const std::pair<uint32_t, uint32_t> key{static_cast<uint32_t>(step_ & 1u), steps};
+        auto it = chains_.find(key);
+        if (it == chains_.end()) {
+            const std::vector<ChainCommand> chain = lbm_step_chain(push_, step_, steps, kWorkgroupSize, false);
+            auto id = runner_->record(chain);
+            if (!id.has_value()) {
+                ADD_FAILURE() << id.error().context;
+                return false;
+            }
+            it = chains_.emplace(key, *id).first;
+        }
+        if (auto s = runner_->submit(it->second, 1); !s) {
+            ADD_FAILURE() << s.error().context;
+            return false;
+        }
+        step_ += steps;
+        return true;
+    }
+
+    [[nodiscard]] bool download_f(std::vector<float>& f) const {
+        if (auto r = runner_->read(0, std::as_writable_bytes(std::span<float>(f))); !r) {
+            ADD_FAILURE() << r.error().context;
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] uint64_t step() const { return step_; }
+
+  private:
+    DeviceRun() = default;
+    std::vector<RunnerBuffer> buffers_;
+    std::vector<const spade::compute::SpirvVariantSet*> kernels_;
+    std::unique_ptr<ChainRunner> runner_;
+    LbmPush push_{};
+    uint64_t step_ = 0;
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> chains_;
+};
+
+// Steps the CPU reference and the device `steps` steps in lock step, every `every` steps comparing the populations
+// word for word (the CPU field finite at each sample: TD-14's bit equality is for numbers, not NaN payloads), and
+// prints one record line. Stops at the first difference, naming the step and the word.
+struct LockStep {
+    int samples = 0;
+    int first_bad_step = -1;
+    std::size_t bad_words = 0;
+    double max_kinetic_ratio = 1.0;  // the stability map's measure: the CPU field's kinetic energy over its first
+};
+
+[[nodiscard]] LockStep lock_step(VulkanContext& ctx, LbmFlow cpu, int steps, int every, const char* what) {
+    LockStep out;
+    auto dev = DeviceRun::create(ctx, cpu);
+    if (!dev) return out;
+    std::vector<float> f(cpu.grid.f.size(), 0.0f);
+    const double k0 = support::case_sums(cpu).kinetic;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int t = 0; t < steps;) {
+        const int k = std::min(every, steps - t);  // the last interval is the remainder
+        for (int i = 0; i < k; ++i) support::case_step(cpu);
+        t += k;
+        if (!dev->advance(static_cast<uint32_t>(k)) || !dev->download_f(f)) return out;
+        ++out.samples;
+        const bool finite = std::all_of(cpu.grid.f.begin(), cpu.grid.f.end(), [](float v) { return std::isfinite(v); });
+        if (!finite) {
+            ADD_FAILURE() << what << ": the CPU field is not finite at step " << t
+                          << " (the comparison is for numbers)";
+            out.first_bad_step = t;
+            return out;
+        }
+        if (k0 > 0.0) out.max_kinetic_ratio = std::max(out.max_kinetic_ratio, support::case_sums(cpu).kinetic / k0);
+        const WordDiff d = diff_words(f, cpu.grid.f);
+        if (d.count != 0) {
+            out.first_bad_step = t;
+            out.bad_words = d.count;
+            ADD_FAILURE() << what << ": f differs in " << d.count << " words at step " << t << ", first at word "
+                          << d.first << ": device 0x" << std::hex << bits(f[d.first]) << ", CPU 0x"
+                          << bits(cpu.grid.f[d.first]);
+            return out;
+        }
+    }
+    const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::printf("[GpuLbmCase] %s: %d steps, f compared at %d samples (every %d steps), wrong words %zu; "
+                "the CPU field finite at every sample, kinetic energy at most %.4f of its first; "
+                "CPU %u thread(s) with the device in lock step %.1f s\n",
+                what, steps, out.samples, every, out.bad_words, out.max_kinetic_ratio, support::case_threads(),
+                secs);
+    support::print_digest("GPUCASE", cpu);
+    return out;
+}
+
+// SPADE_LBM_VALIDATION=1 SPADE_LBM_GPU_CASE=c0b:<N> | c1:<Re>:<u_lat> | map:<u_lat>:<nu_lat>  (the map point at 64^3).
+TEST(GpuLbmCase, OneCaseInLockStepWithTheCpu) {
+    const char* spec = support::env_text("SPADE_LBM_GPU_CASE");
+    if (support::env_text("SPADE_LBM_VALIDATION") == nullptr || spec == nullptr) {
+        GTEST_SKIP() << "set SPADE_LBM_VALIDATION=1 and SPADE_LBM_GPU_CASE=c0b:<N> | c1:<Re>:<u_lat> | "
+                        "map:<u_lat>:<nu_lat>";
+    }
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = VulkanContext::create(spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
+    ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
+    const std::string s = spec;
+    const auto field = [&s](std::size_t index) {
+        std::size_t at = 0;
+        for (std::size_t k = 0; k < index; ++k) at = s.find(':', at) + 1;
+        return std::strtod(s.c_str() + at, nullptr);
+    };
+    std::printf("[GpuLbmCase] device: %s\n", spade::compute::describe((*ctx)->device_report()).c_str());
+    LockStep r;
+    if (s.rfind("c0b:", 0) == 0) {
+        const uint32_t n = static_cast<uint32_t>(field(1));
+        const double u_lat = 0.1;
+        const double l_lat = n / support::kTwoPi;
+        const int steps = static_cast<int>(std::lround(20.0 * l_lat / u_lat));
+        const int every = static_cast<int>(std::floor(0.05 * l_lat / u_lat));
+        r = lock_step(**ctx, support::c0b_field(n), steps, every, s.c_str());
+    } else if (s.rfind("c1:", 0) == 0) {
+        const int re = static_cast<int>(field(1));
+        const double u_lat = field(2);
+        const int per_lu = static_cast<int>(std::lround(128.0 / u_lat));
+        const int steps = (re == 100 ? 50 : 190) * per_lu;
+        const int every = static_cast<int>(std::lround(0.05 * 128.0 / u_lat));
+        r = lock_step(**ctx, support::c1_field(re, u_lat), steps - steps % every, every, s.c_str());
+    } else if (s.rfind("map:", 0) == 0) {
+        const double u_lat = field(1);
+        const double nu = field(2);
+        const double l_lat = 64 / support::kTwoPi;
+        const int steps = static_cast<int>(std::lround(20.0 * l_lat / u_lat));
+        r = lock_step(**ctx, support::taylor_green_field(64, u_lat, nu), steps, 5, s.c_str());
+    } else {
+        FAIL() << "unknown case " << s;
+    }
+    EXPECT_EQ(r.bad_words, std::size_t{0});
+    EXPECT_EQ(r.first_bad_step, -1);
+    EXPECT_GT(r.samples, 0);
+}
+
+}  // namespace

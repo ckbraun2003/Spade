@@ -203,20 +203,7 @@ TEST(LbmMap, OnePointOfTheStabilityMap) {
     constexpr uint32_t n = 64;
     const double l_lat = n / kTwoPi;
     const int horizon = static_cast<int>(std::lround(20.0 * l_lat / u_lat));
-    LbmFlow fl = make_flow(n, n, n, static_cast<float>(nu_lat), 0.5f);
-    for (uint32_t z = 0; z < n; ++z) {
-        for (uint32_t y = 0; y < n; ++y) {
-            for (uint32_t x = 0; x < n; ++x) {
-                const double X = kTwoPi * x / n;
-                const double Y = kTwoPi * y / n;
-                const double Z = kTwoPi * z / n;
-                const double p = u_lat * u_lat / 16.0 * (std::cos(2 * X) + std::cos(2 * Y)) * (std::cos(2 * Z) + 2.0);
-                set_node_equilibrium(fl, x, y, z, static_cast<float>(1.0 + 3.0 * p),
-                                     static_cast<float>(u_lat * std::sin(X) * std::cos(Y) * std::cos(Z)),
-                                     static_cast<float>(-u_lat * std::cos(X) * std::sin(Y) * std::cos(Z)), 0.0f);
-            }
-        }
-    }
+    LbmFlow fl = spade::testing::lbm_support::taylor_green_field(n, u_lat, nu_lat);
     namespace support = spade::testing::lbm_support;
     const double k0 = support::case_sums(fl).kinetic;
     int held = 0;
