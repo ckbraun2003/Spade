@@ -1049,8 +1049,16 @@ TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
 // texels along its long axis). Their lit faces must not shadow themselves on
 // either path -- compared at their own depth, they did in bands on both --
 // and GL's shadows must land where the CPU's do.
+//
+// Two runs (rendering/soft-shadows, RND-10). The HARD run is filter 0, the single texel, which is exactly the frame
+// this test pinned before shadows went soft: its numbers are unchanged. The SOFT run is the default, a filter one
+// texel wide, whose penumbra spreads a real shadow's edge by up to the filter's reach, so "a red pixel changes when
+// shadows turn on" is no longer the test of acne (the gate shades its own reveals: the lintel's shadow on the left
+// reveal's top, the right post's on the bottom reveal's end, slivers that fell between pixel centres at filter 0).
+// Soft acne is a red pixel changed FARTHER than the filter's reach from every red pixel a hard 4096-texel reference
+// shadows -- a pixel that is not beside any real shadow edge.
 TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
-    // Measured 2026-11-03 on rendering/shadow-acne, 160x120, on an NVIDIA
+    // HARD run. Measured 2026-11-03 on rendering/shadow-acne, 160x120, on an NVIDIA
     // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 3 of 2896 red pixels
     // shadowed on each path -- the hole's +x-facing inner wall at its top
     // corner, which the hole's top truly shades -- where comparing each
@@ -1061,6 +1069,21 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
     constexpr size_t kBandRedShadowed = 3;
     constexpr size_t kBandMisses = 0;
     constexpr int kBandInterior = 0;
+    // SOFT run. A "miss" is a shadowed pixel (one a frame changes when shadows turn on) on one path with no shadowed
+    // pixel within 1 px of it on the other. A penumbra pixel's sun term is scaled by a fractional weight, formed in
+    // float on the CPU and in the driver's on GL, so a pixel darkened by a fraction of one level can round to a change
+    // on one path and to none on the other, an isolated shadowed pixel with no partner: one such miss is the rounding
+    // floor of fractional weights, and for the same reason an interior pixel can differ by one level. Measured
+    // 2026-11-09, same device: 1 level, 0 CPU misses, 1 GL miss. At filter 0 the weights are 0 or 1 and need none.
+    constexpr size_t kSoftBandMisses = 1;
+    constexpr int kSoftBandInterior = 1;
+    // Soft acne: a red pixel changed by MORE than that one-level rounding floor, farther than the filter's whole reach
+    // from any pixel the hard reference shadows (a pixel GL darkens by one level and the CPU not at all, as measured at
+    // (92,44), is that floor, not a shadow). The reach is 1.5
+    // texels -- the point's own texel's centre is within 0.5 of it, a tap up to a texel beyond -- computed below in
+    // pixels from the map's texel (~0.15 m, so 1.5 texels = 0.23 m) and this view's scale (the gate's face fills about
+    // 31 px a metre at 160 px wide), which is 7 px. Not tuned to the measurement.
+    constexpr size_t kBandSoftAcne = 0;
 
     spade::WorldBuilder b = csg_builder();
     b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.55f, 0.5f, 0.45f, 1.0f}});
@@ -1083,33 +1106,43 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
     Camera camera;  // in front of the gate's lit face, the box to its right
     camera.position = glm::vec3(0.6f, 1.3f, 3.2f);
     camera.orientation = glm::angleAxis(glm::radians(-12.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    RenderOptions on = comparable_options();
+    RenderOptions on = comparable_options();  // soft: the default filter
     on.shadows = true;
+    RenderOptions hard = on;
+    hard.shadow_filter_texels = 0.0f;
     const RenderOptions off = comparable_options();
     const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, on);
+    const std::vector<uint8_t> cpu_hard = cpu_rgba(scene, camera, hard);
     const std::vector<uint8_t> cpu_off = cpu_rgba(scene, camera, off);
     const std::vector<uint8_t> gl_on = draw_and_read(scene, on, camera);
+    const std::vector<uint8_t> gl_hard = draw_and_read(scene, hard, camera);
     const std::vector<uint8_t> gl_off = draw_and_read(scene, off, camera);
     ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    ASSERT_EQ(gl_hard.size(), kPixels * 4u);
     ASSERT_EQ(gl_off.size(), kPixels * 4u);
 
     // The gate's and the box's pixels are those red well over green with
     // shadows off; a shadowed one changes when they turn on.
-    const auto gate_shadowed = [](const std::vector<uint8_t>& with, const std::vector<uint8_t>& without,
-                                  size_t& gate) {
+    const auto is_red = [](const std::vector<uint8_t>& frame, size_t p) {
+        return static_cast<int>(frame[p * 4u]) > static_cast<int>(frame[p * 4u + 1u]) + 50;
+    };
+    const auto gate_shadowed = [&](const std::vector<uint8_t>& with, const std::vector<uint8_t>& without,
+                                   size_t& gate) {
         size_t shadowed = 0;
         for (size_t p = 0; p < kPixels; ++p) {
-            if (static_cast<int>(without[p * 4u]) <= static_cast<int>(without[p * 4u + 1u]) + 50) continue;
+            if (!is_red(without, p)) continue;
             ++gate;
             shadowed += same_pixel(with, without, p) ? 0u : 1u;
         }
         return shadowed;
     };
+
+    // --- the hard run: today's frame, today's numbers --------------------------------------------------------------
     size_t cpu_gate = 0, gl_gate = 0;
-    const size_t cpu_acne = gate_shadowed(cpu_on, cpu_off, cpu_gate);
-    const size_t gl_acne = gate_shadowed(gl_on, gl_off, gl_gate);
-    const ShadowMatch m = match_shadows(cpu_on, cpu_off, gl_on, gl_off);
-    std::printf("[ acne    ] gate and box, VQ1-wide map: red pixels shadowed CPU %zu of %zu, GL %zu of %zu; "
+    const size_t cpu_acne = gate_shadowed(cpu_hard, cpu_off, cpu_gate);
+    const size_t gl_acne = gate_shadowed(gl_hard, gl_off, gl_gate);
+    const ShadowMatch m = match_shadows(cpu_hard, cpu_off, gl_hard, gl_off);
+    std::printf("[ acne    ] gate and box, VQ1-wide map, filter 0: red pixels shadowed CPU %zu of %zu, GL %zu of %zu; "
                 "shadowed CPU %zu GL %zu, misses %zu and %zu, interior %zu up to %d levels\n",
                 cpu_acne, cpu_gate, gl_acne, gl_gate, m.cpu_shadowed, m.gl_shadowed, m.cpu_misses, m.gl_misses,
                 m.interior, m.max_interior);
@@ -1124,6 +1157,77 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
                                          << " CPU shadow pixels have no GL shadow within 1 px";
     EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of " << m.gl_shadowed
                                         << " GL shadow pixels have no CPU shadow within 1 px";
+
+    // --- the soft run: no red pixel changed beside no real shadow --------------------------------------------------
+    RenderScene reference = scene;  // a 4096-texel map, a hard lookup: the shadow to within a few millimetres
+    auto fine = spade::render::build_static_shadow_map(reference, 4096);
+    ASSERT_TRUE(fine.has_value()) << fine.error().context;
+    reference.static_shadow = std::move(*fine);
+    const std::vector<uint8_t> truth = cpu_rgba(reference, camera, hard);
+    std::vector<std::pair<int, int>> truth_pixels;  // (x, y) of each red pixel the reference shadows
+    for (size_t p = 0; p < kPixels; ++p) {
+        if (is_red(cpu_off, p) && !same_pixel(truth, cpu_off, p)) {
+            truth_pixels.emplace_back(static_cast<int>(p % kWidth), static_cast<int>(p / kWidth));
+        }
+    }
+    ASSERT_GT(truth_pixels.size(), 0u) << "the gate's own shadow edges must show in the reference";
+    const float texel_m = spade::render::shadow_texel_metres(*scene.static_shadow);
+    const float face_distance_m = camera.position.z - 0.05f;  // to the gate's lit face
+    const float px_per_m = static_cast<float>(kWidth) /
+                           (2.0f * face_distance_m * std::tan(camera.fov_y_radians * 0.5f) *
+                            (static_cast<float>(kWidth) / static_cast<float>(kHeight)));
+    const int reach_px = static_cast<int>(std::lround(1.5f * texel_m * px_per_m));
+    const auto soft_acne = [&](const std::vector<uint8_t>& with, int& worst_x, int& worst_y, int& worst_dist,
+                               int& worst_levels) {
+        size_t far = 0;
+        worst_dist = 0;
+        worst_levels = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            if (!is_red(cpu_off, p) || same_pixel(with, cpu_off, p)) continue;
+            int levels = 0;
+            for (size_t c = 0; c < 3u; ++c) {
+                levels = std::max(levels, std::abs(static_cast<int>(with[p * 4u + c]) - static_cast<int>(cpu_off[p * 4u + c])));
+            }
+            if (levels <= kSoftBandInterior) continue;  // within the rounding floor of fractional weights (above)
+            const int x = static_cast<int>(p % kWidth), y = static_cast<int>(p / kWidth);
+            int nearest = std::numeric_limits<int>::max();
+            for (const auto& [tx, ty] : truth_pixels) nearest = std::min(nearest, std::max(std::abs(tx - x), std::abs(ty - y)));
+            if (nearest > reach_px) ++far;
+            if (nearest > worst_dist) {
+                worst_dist = nearest;
+                worst_x = x;
+                worst_y = y;
+                worst_levels = levels;
+            }
+        }
+        return far;
+    };
+    int cx = -1, cy = -1, cd = 0, cl = 0, gx = -1, gy = -1, gd = 0, gl_levels = 0;
+    const size_t cpu_far = soft_acne(cpu_on, cx, cy, cd, cl);
+    const size_t gl_far = soft_acne(gl_on, gx, gy, gd, gl_levels);
+    size_t soft_cpu_gate = 0, soft_gl_gate = 0;
+    const size_t soft_cpu = gate_shadowed(cpu_on, cpu_off, soft_cpu_gate);
+    const size_t soft_gl = gate_shadowed(gl_on, gl_off, soft_gl_gate);
+    const ShadowMatch ms = match_shadows(cpu_on, cpu_off, gl_on, gl_off);
+    std::printf("[ acne    ] gate and box, VQ1-wide map, filter 1: red pixels changed CPU %zu GL %zu, of which farther than "
+                "%d px (1.5 texels of %.3f m at %.1f px/m) from the reference shadow: CPU %zu (worst %d px at %d,%d, "
+                "%d levels), GL %zu (worst %d px at %d,%d, %d levels); shadowed CPU %zu GL %zu, misses %zu and %zu, "
+                "interior %zu up to %d levels\n",
+                soft_cpu, soft_gl, reach_px, texel_m, px_per_m, cpu_far, cd, cx, cy, cl, gl_far, gd, gx, gy, gl_levels, ms.cpu_shadowed,
+                ms.gl_shadowed, ms.cpu_misses, ms.gl_misses, ms.interior, ms.max_interior);
+    EXPECT_LE(cpu_far, kBandSoftAcne) << cpu_far << " red pixels changed on the CPU farther than " << reach_px
+                                      << " px from any pixel the reference shadows (worst: " << cd << " px, at x=" << cx
+                                      << " y=" << cy << ", rows bottom-up)";
+    EXPECT_LE(gl_far, kBandSoftAcne) << gl_far << " red pixels changed on GL farther than " << reach_px
+                                     << " px from any pixel the reference shadows (worst: " << gd << " px, at x=" << gx
+                                     << " y=" << gy << ", rows bottom-up), on " << renderer_->renderer_name();
+    EXPECT_LE(ms.max_interior, kSoftBandInterior) << "inside the soft shadow (" << ms.interior
+                                                  << " pixels) GL differs from the CPU by up to " << ms.max_interior
+                                                  << " levels";
+    EXPECT_LE(ms.cpu_misses, kSoftBandMisses) << ms.cpu_misses << " of " << ms.cpu_shadowed
+                                              << " CPU soft-shadow pixels have no GL shadow within 1 px";
+    EXPECT_LE(ms.gl_misses, kSoftBandMisses) << ms.gl_misses << " of " << ms.gl_shadowed
+                                             << " GL soft-shadow pixels have no CPU shadow within 1 px";
 }
 
 // The ground alone, in a world as long as VQ1 but laid out along the sun's
