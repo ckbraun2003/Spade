@@ -180,6 +180,13 @@ template <class T>
 // The tick is folded (two runs of the same world at different ticks are
 // different), the world INDEX is not (that is the whole point).
 // ---------------------------------------------------------------------------
+[[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept;
+[[nodiscard]] inline uint64_t world_digest(Simulation& sim, uint32_t world) noexcept {
+    return world_digest(static_cast<const Simulation&>(sim), world);
+}
+[[nodiscard]] inline Result<uint64_t> checked_world_digest(const Simulation& sim, uint32_t world) noexcept {
+    return world_digest(sim, world);
+}
 [[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept {
     uint64_t seed = kFnv1a64Offset;
     seed = detail::fold_value(seed, sim.tick().value);

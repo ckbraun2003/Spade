@@ -170,6 +170,42 @@ TEST(GpuResident, ModuleRowsAndArenasAndDigestSyncOrRefuse) {
     EXPECT_TRUE(sim.resident_current());
 }
 
+// THE REPLAY CARRY (C2's carried item; the audit of every const caller of state_digest, world_digest and arenas()): a world's digest
+// and a replay of a set with a device-resident array sync or refuse, never fold stale bytes. The non-const world_digest syncs, the
+// checked const form refuses by name, and a snapshot taken mid-run restores into a second simulation that resumes to the very
+// digests of the first (the resident grid and every other array).
+TEST(GpuResident, AReplayOfASetWithAResidentArraySyncsOrRefuses) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation a = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(a.step(2).has_value());
+    ASSERT_FALSE(a.resident_current());
+    const Simulation& view = a;
+
+    const auto refused = spade::testing::checked_world_digest(view, 0);
+    ASSERT_FALSE(refused.has_value()) << "the checked world digest refuses a stale resident array";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("airflow_u"), std::string::npos) << refused.error().context;
+
+    const uint64_t synced = spade::testing::world_digest(a, 0);  // the non-const form syncs
+    EXPECT_TRUE(a.resident_current());
+    const auto checked = spade::testing::checked_world_digest(view, 0);
+    ASSERT_TRUE(checked.has_value()) << checked.error().context;
+    EXPECT_EQ(*checked, synced);
+
+    // The replay: a blob of the running set restores into a second simulation, and both resume to the same digests.
+    const auto blob = a.snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    Simulation b = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(b.restore(*blob).has_value());
+    ASSERT_TRUE(a.step(2).has_value());
+    ASSERT_TRUE(b.step(2).has_value());
+    for (uint32_t w = 0; w < kWorlds; ++w) {
+        EXPECT_EQ(spade::testing::world_digest(a, w), spade::testing::world_digest(b, w)) << "world " << w;
+    }
+    EXPECT_EQ(spade::testing::state_digest(a), spade::testing::state_digest(b));
+}
+
 TEST(GpuResident, StagingIsOneBufferSizedToTheLargestRow) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const ResidentModule m(Residency::device, &kRecipe);

@@ -63,6 +63,26 @@ TEST(Resident, ADeviceArrayIsAnOrdinaryHostArrayOnTheCpu) {
     EXPECT_EQ(spade::testing::state_digest(c), spade::testing::state_digest(a));
 }
 
+// PIN, green at red: on the cpu backend nothing is ever stale, so the world digest through every form -- the const one, the
+// non-const one that syncs, the checked one that refuses -- is one number, and the device-declared run equals the host-declared.
+TEST(Resident, TheWorldDigestOnTheCpuIsOneNumberThroughEveryForm) {
+    const ResidentModule device(Residency::device);
+    const ResidentModule host(Residency::host);
+    spade::Simulation a = make(device.set);
+    spade::Simulation b = make(host.set);
+    ASSERT_TRUE(a.step(3).has_value());
+    ASSERT_TRUE(b.step(3).has_value());
+    const spade::Simulation& view = a;
+    for (uint32_t w = 0; w < 1; ++w) {
+        const uint64_t plain = spade::testing::world_digest(view, w);
+        const auto checked = spade::testing::checked_world_digest(view, w);
+        ASSERT_TRUE(checked.has_value()) << checked.error().context;
+        EXPECT_EQ(*checked, plain);
+        EXPECT_EQ(spade::testing::world_digest(a, w), plain);
+        EXPECT_EQ(spade::testing::world_digest(b, w), plain) << "residency is not part of the state";
+    }
+}
+
 TEST(Resident, OnlyPerWorldMayBeDevice) {
     static const ArrayDecl per_body[] = {{.name = "grid", .elem_size = 16, .extent = Extent::per_body,
                                            .spawn_size = 4, .init = [](const spade::modules::RowInit&) noexcept {},
