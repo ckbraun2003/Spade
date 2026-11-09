@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <span>
@@ -1049,8 +1050,16 @@ TEST_F(GpuGlRenderer, CsgMatchesTheCpuWithinItsBand) {
 // texels along its long axis). Their lit faces must not shadow themselves on
 // either path -- compared at their own depth, they did in bands on both --
 // and GL's shadows must land where the CPU's do.
+//
+// Two runs (rendering/soft-shadows, RND-10). The HARD run is filter 0, the single texel, which is exactly the frame
+// this test pinned before shadows went soft: its numbers are unchanged. The SOFT run is the default, a filter one
+// texel wide, whose penumbra spreads a real shadow's edge by up to the filter's reach, so "a red pixel changes when
+// shadows turn on" is no longer the test of acne (the gate shades its own reveals: the lintel's shadow on the left
+// reveal's top, the right post's on the bottom reveal's end, slivers that fell between pixel centres at filter 0).
+// Soft acne is a red pixel changed FARTHER than the filter's reach from every red pixel a hard 4096-texel reference
+// shadows -- a pixel that is not beside any real shadow edge.
 TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
-    // Measured 2026-11-03 on rendering/shadow-acne, 160x120, on an NVIDIA
+    // HARD run. Measured 2026-11-03 on rendering/shadow-acne, 160x120, on an NVIDIA
     // GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 3 of 2896 red pixels
     // shadowed on each path -- the hole's +x-facing inner wall at its top
     // corner, which the hole's top truly shades -- where comparing each
@@ -1061,6 +1070,21 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
     constexpr size_t kBandRedShadowed = 3;
     constexpr size_t kBandMisses = 0;
     constexpr int kBandInterior = 0;
+    // SOFT run. A "miss" is a shadowed pixel (one a frame changes when shadows turn on) on one path with no shadowed
+    // pixel within 1 px of it on the other. A penumbra pixel's sun term is scaled by a fractional weight, formed in
+    // float on the CPU and in the driver's on GL, so a pixel darkened by a fraction of one level can round to a change
+    // on one path and to none on the other, an isolated shadowed pixel with no partner: one such miss is the rounding
+    // floor of fractional weights, and for the same reason an interior pixel can differ by one level. Measured
+    // 2026-11-09, same device: 1 level, 0 CPU misses, 1 GL miss. At filter 0 the weights are 0 or 1 and need none.
+    constexpr size_t kSoftBandMisses = 1;
+    constexpr int kSoftBandInterior = 1;
+    // Soft acne: a red pixel changed by MORE than that one-level rounding floor, farther than the filter's whole reach
+    // from any pixel the hard reference shadows (a pixel GL darkens by one level and the CPU not at all, as measured at
+    // (92,44), is that floor, not a shadow). The reach is 1.5
+    // texels -- the point's own texel's centre is within 0.5 of it, a tap up to a texel beyond -- computed below in
+    // pixels from the map's texel (~0.15 m, so 1.5 texels = 0.23 m) and this view's scale (the gate's face fills about
+    // 31 px a metre at 160 px wide), which is 7 px. Not tuned to the measurement.
+    constexpr size_t kBandSoftAcne = 0;
 
     spade::WorldBuilder b = csg_builder();
     b.material(spade::MaterialDesc{.name = "ground", .base_color = {0.55f, 0.5f, 0.45f, 1.0f}});
@@ -1083,33 +1107,43 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
     Camera camera;  // in front of the gate's lit face, the box to its right
     camera.position = glm::vec3(0.6f, 1.3f, 3.2f);
     camera.orientation = glm::angleAxis(glm::radians(-12.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    RenderOptions on = comparable_options();
+    RenderOptions on = comparable_options();  // soft: the default filter
     on.shadows = true;
+    RenderOptions hard = on;
+    hard.shadow_filter_texels = 0.0f;
     const RenderOptions off = comparable_options();
     const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, on);
+    const std::vector<uint8_t> cpu_hard = cpu_rgba(scene, camera, hard);
     const std::vector<uint8_t> cpu_off = cpu_rgba(scene, camera, off);
     const std::vector<uint8_t> gl_on = draw_and_read(scene, on, camera);
+    const std::vector<uint8_t> gl_hard = draw_and_read(scene, hard, camera);
     const std::vector<uint8_t> gl_off = draw_and_read(scene, off, camera);
     ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    ASSERT_EQ(gl_hard.size(), kPixels * 4u);
     ASSERT_EQ(gl_off.size(), kPixels * 4u);
 
     // The gate's and the box's pixels are those red well over green with
     // shadows off; a shadowed one changes when they turn on.
-    const auto gate_shadowed = [](const std::vector<uint8_t>& with, const std::vector<uint8_t>& without,
-                                  size_t& gate) {
+    const auto is_red = [](const std::vector<uint8_t>& frame, size_t p) {
+        return static_cast<int>(frame[p * 4u]) > static_cast<int>(frame[p * 4u + 1u]) + 50;
+    };
+    const auto gate_shadowed = [&](const std::vector<uint8_t>& with, const std::vector<uint8_t>& without,
+                                   size_t& gate) {
         size_t shadowed = 0;
         for (size_t p = 0; p < kPixels; ++p) {
-            if (static_cast<int>(without[p * 4u]) <= static_cast<int>(without[p * 4u + 1u]) + 50) continue;
+            if (!is_red(without, p)) continue;
             ++gate;
             shadowed += same_pixel(with, without, p) ? 0u : 1u;
         }
         return shadowed;
     };
+
+    // --- the hard run: today's frame, today's numbers --------------------------------------------------------------
     size_t cpu_gate = 0, gl_gate = 0;
-    const size_t cpu_acne = gate_shadowed(cpu_on, cpu_off, cpu_gate);
-    const size_t gl_acne = gate_shadowed(gl_on, gl_off, gl_gate);
-    const ShadowMatch m = match_shadows(cpu_on, cpu_off, gl_on, gl_off);
-    std::printf("[ acne    ] gate and box, VQ1-wide map: red pixels shadowed CPU %zu of %zu, GL %zu of %zu; "
+    const size_t cpu_acne = gate_shadowed(cpu_hard, cpu_off, cpu_gate);
+    const size_t gl_acne = gate_shadowed(gl_hard, gl_off, gl_gate);
+    const ShadowMatch m = match_shadows(cpu_hard, cpu_off, gl_hard, gl_off);
+    std::printf("[ acne    ] gate and box, VQ1-wide map, filter 0: red pixels shadowed CPU %zu of %zu, GL %zu of %zu; "
                 "shadowed CPU %zu GL %zu, misses %zu and %zu, interior %zu up to %d levels\n",
                 cpu_acne, cpu_gate, gl_acne, gl_gate, m.cpu_shadowed, m.gl_shadowed, m.cpu_misses, m.gl_misses,
                 m.interior, m.max_interior);
@@ -1124,6 +1158,77 @@ TEST_F(GpuGlRenderer, AGateInAWorldAsWideAsVq1DoesNotShadowItselfOnEitherPath) {
                                          << " CPU shadow pixels have no GL shadow within 1 px";
     EXPECT_LE(m.gl_misses, kBandMisses) << m.gl_misses << " of " << m.gl_shadowed
                                         << " GL shadow pixels have no CPU shadow within 1 px";
+
+    // --- the soft run: no red pixel changed beside no real shadow --------------------------------------------------
+    RenderScene reference = scene;  // a 4096-texel map, a hard lookup: the shadow to within a few millimetres
+    auto fine = spade::render::build_static_shadow_map(reference, 4096);
+    ASSERT_TRUE(fine.has_value()) << fine.error().context;
+    reference.static_shadow = std::move(*fine);
+    const std::vector<uint8_t> truth = cpu_rgba(reference, camera, hard);
+    std::vector<std::pair<int, int>> truth_pixels;  // (x, y) of each red pixel the reference shadows
+    for (size_t p = 0; p < kPixels; ++p) {
+        if (is_red(cpu_off, p) && !same_pixel(truth, cpu_off, p)) {
+            truth_pixels.emplace_back(static_cast<int>(p % kWidth), static_cast<int>(p / kWidth));
+        }
+    }
+    ASSERT_GT(truth_pixels.size(), 0u) << "the gate's own shadow edges must show in the reference";
+    const float texel_m = spade::render::shadow_texel_metres(*scene.static_shadow);
+    const float face_distance_m = camera.position.z - 0.05f;  // to the gate's lit face
+    const float px_per_m = static_cast<float>(kWidth) /
+                           (2.0f * face_distance_m * std::tan(camera.fov_y_radians * 0.5f) *
+                            (static_cast<float>(kWidth) / static_cast<float>(kHeight)));
+    const int reach_px = static_cast<int>(std::lround(1.5f * texel_m * px_per_m));
+    const auto soft_acne = [&](const std::vector<uint8_t>& with, int& worst_x, int& worst_y, int& worst_dist,
+                               int& worst_levels) {
+        size_t far = 0;
+        worst_dist = 0;
+        worst_levels = 0;
+        for (size_t p = 0; p < kPixels; ++p) {
+            if (!is_red(cpu_off, p) || same_pixel(with, cpu_off, p)) continue;
+            int levels = 0;
+            for (size_t c = 0; c < 3u; ++c) {
+                levels = std::max(levels, std::abs(static_cast<int>(with[p * 4u + c]) - static_cast<int>(cpu_off[p * 4u + c])));
+            }
+            if (levels <= kSoftBandInterior) continue;  // within the rounding floor of fractional weights (above)
+            const int x = static_cast<int>(p % kWidth), y = static_cast<int>(p / kWidth);
+            int nearest = std::numeric_limits<int>::max();
+            for (const auto& [tx, ty] : truth_pixels) nearest = std::min(nearest, std::max(std::abs(tx - x), std::abs(ty - y)));
+            if (nearest > reach_px) ++far;
+            if (nearest > worst_dist) {
+                worst_dist = nearest;
+                worst_x = x;
+                worst_y = y;
+                worst_levels = levels;
+            }
+        }
+        return far;
+    };
+    int cx = -1, cy = -1, cd = 0, cl = 0, gx = -1, gy = -1, gd = 0, gl_levels = 0;
+    const size_t cpu_far = soft_acne(cpu_on, cx, cy, cd, cl);
+    const size_t gl_far = soft_acne(gl_on, gx, gy, gd, gl_levels);
+    size_t soft_cpu_gate = 0, soft_gl_gate = 0;
+    const size_t soft_cpu = gate_shadowed(cpu_on, cpu_off, soft_cpu_gate);
+    const size_t soft_gl = gate_shadowed(gl_on, gl_off, soft_gl_gate);
+    const ShadowMatch ms = match_shadows(cpu_on, cpu_off, gl_on, gl_off);
+    std::printf("[ acne    ] gate and box, VQ1-wide map, filter 1: red pixels changed CPU %zu GL %zu, of which farther than "
+                "%d px (1.5 texels of %.3f m at %.1f px/m) from the reference shadow: CPU %zu (worst %d px at %d,%d, "
+                "%d levels), GL %zu (worst %d px at %d,%d, %d levels); shadowed CPU %zu GL %zu, misses %zu and %zu, "
+                "interior %zu up to %d levels\n",
+                soft_cpu, soft_gl, reach_px, texel_m, px_per_m, cpu_far, cd, cx, cy, cl, gl_far, gd, gx, gy, gl_levels, ms.cpu_shadowed,
+                ms.gl_shadowed, ms.cpu_misses, ms.gl_misses, ms.interior, ms.max_interior);
+    EXPECT_LE(cpu_far, kBandSoftAcne) << cpu_far << " red pixels changed on the CPU farther than " << reach_px
+                                      << " px from any pixel the reference shadows (worst: " << cd << " px, at x=" << cx
+                                      << " y=" << cy << ", rows bottom-up)";
+    EXPECT_LE(gl_far, kBandSoftAcne) << gl_far << " red pixels changed on GL farther than " << reach_px
+                                     << " px from any pixel the reference shadows (worst: " << gd << " px, at x=" << gx
+                                     << " y=" << gy << ", rows bottom-up), on " << renderer_->renderer_name();
+    EXPECT_LE(ms.max_interior, kSoftBandInterior) << "inside the soft shadow (" << ms.interior
+                                                  << " pixels) GL differs from the CPU by up to " << ms.max_interior
+                                                  << " levels";
+    EXPECT_LE(ms.cpu_misses, kSoftBandMisses) << ms.cpu_misses << " of " << ms.cpu_shadowed
+                                              << " CPU soft-shadow pixels have no GL shadow within 1 px";
+    EXPECT_LE(ms.gl_misses, kSoftBandMisses) << ms.gl_misses << " of " << ms.gl_shadowed
+                                             << " GL soft-shadow pixels have no CPU shadow within 1 px";
 }
 
 // The ground alone, in a world as long as VQ1 but laid out along the sun's
@@ -3669,5 +3774,238 @@ TEST_F(GpuGlRenderer, AirflowPosterCoresMatchTheCpu) {
     EXPECT_NEAR(editor.gl, editor.cpu, kPosterCoreLuminance * editor.cpu) << device;
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// The shadow cost and picture record (rendering/soft-shadows, the lead's one table for Cameron). DISABLED_: a
+// measuring tool, run on purpose with --gtest_also_run_disabled_tests --gtest_filter=*ShadowRecord*, not a check.
+// It times GlRenderer's frame (draw plus glFinish) at 1920x1080 over the four shadow scenes of bench_render.cpp's
+// BM_RenderShadows, at four option sets, and writes raw RGBA frames (GL's and the CPU's) of the bench scenes and of a
+// mesh drone over a ~170 m world to $SPADE_SHADOW_RECORD_DIR when that is set.
+// ---------------------------------------------------------------------------
+
+struct RecordOption {
+    const char* name;
+    float filter;
+    uint32_t focus;
+};
+constexpr RecordOption kRecordOptions[4] = {
+    {"A_today", 0.0f, 0u}, {"B_defaults", 1.0f, 1024u}, {"C_focus512", 1.0f, 512u}, {"D_filter0.5", 0.5f, 1024u}};
+
+[[nodiscard]] MeshData record_mesh(spade::SdfPrim kind, glm::vec4 params, const spade::render::Aabb& bounds) {
+    auto made = spade::render::tessellate_primitive(kind, params, bounds, spade::render::kTessellationDefaults);
+    if (!made) {
+        ADD_FAILURE() << made.error().context;
+        return MeshData{};
+    }
+    return std::move(*made);
+}
+
+[[nodiscard]] glm::mat4 record_at(glm::vec3 t, glm::mat4 rotate = glm::mat4(1.0f)) {
+    return glm::translate(glm::mat4(1.0f), t) * rotate;
+}
+
+// A 172 m world: bounds as VQ1's, the ground mesh over them (it casts, so ~15 cm texels), the analytic ground, a
+// static map. variant: 0 none, 1 a 2 m static box, 2 a 0.5 m dynamic box, 3 both (bench_render.cpp's scenes).
+[[nodiscard]] RenderScene record_world(int variant) {
+    const spade::render::Aabb world{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    const spade::render::Aabb small{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    RenderScene scene;
+    scene.bounds = world;
+    scene.materials = {Material{.base_color = glm::vec4(0.55f, 0.5f, 0.45f, 1.0f)},
+                       Material{.base_color = glm::vec4(0.75f, 0.3f, 0.25f, 1.0f)}};
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f), world));  // 0
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(1.0f, 1.0f, 1.0f, 0.0f), small));    // 1
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(0.25f, 0.25f, 0.25f, 0.0f), small)); // 2
+    scene.ground_planes = {GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    if (variant == 1 || variant == 3) {
+        scene.statics.push_back(DrawItem{.mesh_index = 1, .local_to_world = record_at({0.0f, 1.0f, 0.0f}), .material_override = 1});
+    }
+    if (variant == 2 || variant == 3) {
+        scene.dynamics.push_back(DrawItem{.mesh_index = 2, .local_to_world = record_at({1.5f, 1.0f, 1.0f}), .material_override = 1});
+    }
+    auto map = spade::render::build_static_shadow_map(scene);
+    if (!map) {
+        ADD_FAILURE() << map.error().context;
+        return scene;
+    }
+    scene.static_shadow = std::move(*map);
+    return scene;
+}
+
+// The same world with a mesh drone 1.2 m over the ground: a body, four arms, four motors, four rotor discs, a camera
+// pod and four feet, every part its own dynamic draw item of the tessellated primitives, ~30 cm across.
+[[nodiscard]] RenderScene record_drone_world() {
+    RenderScene scene = record_world(0);
+    const spade::render::Aabb small{.min = glm::vec3(-1.0f), .max = glm::vec3(1.0f)};
+    scene.materials.push_back(Material{.base_color = glm::vec4(0.12f, 0.12f, 0.14f, 1.0f)});  // 2: body, motors, rotors
+    scene.materials.push_back(Material{.base_color = glm::vec4(0.8f, 0.8f, 0.82f, 1.0f)});    // 3: arms, feet
+    const auto box = [&](glm::vec3 half) {
+        scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(half, 0.0f), small));
+        return static_cast<uint32_t>(scene.meshes.size() - 1u);
+    };
+    const auto cylinder = [&](float radius, float half_height) {
+        scene.meshes.push_back(record_mesh(spade::SdfPrim::cylinder, glm::vec4(radius, half_height, 0.0f, 0.0f), small));
+        return static_cast<uint32_t>(scene.meshes.size() - 1u);
+    };
+    const glm::vec3 at(0.0f, 1.2f, 0.0f);
+    const auto part = [&](uint32_t mesh, glm::vec3 offset, uint32_t material) {
+        scene.dynamics.push_back(DrawItem{.mesh_index = mesh, .local_to_world = record_at(at + offset), .material_override = material});
+    };
+    const uint32_t body = box({0.06f, 0.02f, 0.06f});
+    const uint32_t arm_x = box({0.14f, 0.008f, 0.012f});
+    const uint32_t arm_z = box({0.012f, 0.008f, 0.14f});
+    const uint32_t motor = cylinder(0.02f, 0.015f);
+    const uint32_t rotor = cylinder(0.09f, 0.002f);
+    const uint32_t pod = box({0.02f, 0.015f, 0.02f});
+    const uint32_t foot = box({0.01f, 0.03f, 0.01f});
+    part(body, {0.0f, 0.0f, 0.0f}, 2);
+    part(arm_x, {0.0f, 0.0f, 0.0f}, 3);
+    part(arm_z, {0.0f, 0.0f, 0.0f}, 3);
+    for (const glm::vec3 m : {glm::vec3(0.14f, 0.02f, 0.0f), glm::vec3(-0.14f, 0.02f, 0.0f), glm::vec3(0.0f, 0.02f, 0.14f), glm::vec3(0.0f, 0.02f, -0.14f)}) {
+        part(motor, m, 2);
+        part(rotor, m + glm::vec3(0.0f, 0.03f, 0.0f), 2);
+    }
+    part(pod, {0.0f, -0.0f, 0.075f}, 2);
+    for (const glm::vec3 f : {glm::vec3(0.05f, -0.05f, 0.05f), glm::vec3(-0.05f, -0.05f, 0.05f), glm::vec3(0.05f, -0.05f, -0.05f), glm::vec3(-0.05f, -0.05f, -0.05f)}) {
+        part(foot, f, 3);
+    }
+    return scene;
+}
+
+[[nodiscard]] Camera record_camera(glm::vec3 from, glm::vec3 to) {
+    Camera camera;
+    camera.position = from;
+    camera.orientation = glm::quatLookAt(glm::normalize(to - from), glm::vec3(0.0f, 1.0f, 0.0f));
+    return camera;
+}
+
+// raster_cpu's 1080p frame in GL's layout (RGBA8, bottom row first).
+[[nodiscard]] std::vector<uint8_t> record_cpu_frame(const RenderScene& scene, const Camera& camera,
+                                                    const RenderOptions& options, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> bgrx(static_cast<size_t>(w) * h * 4u);
+    RenderTarget target{.pixels = std::span<uint8_t>(bgrx), .width = w, .height = h, .stride = w * 4u};
+    if (auto drew = spade::render::render(scene, camera, options, target); !drew) {
+        ADD_FAILURE() << drew.error().context;
+        return {};
+    }
+    std::vector<uint8_t> rgba(bgrx.size());
+    for (size_t y = 0; y < h; ++y) {
+        for (size_t x = 0; x < w; ++x) {
+            const size_t src = (y * w + x) * 4u;
+            const size_t dst = ((h - 1u - y) * w + x) * 4u;
+            rgba[dst] = bgrx[src + 2u];
+            rgba[dst + 1u] = bgrx[src + 1u];
+            rgba[dst + 2u] = bgrx[src];
+            rgba[dst + 3u] = 255u;
+        }
+    }
+    return rgba;
+}
+
+TEST_F(GpuGlRenderer, DISABLED_ShadowRecord) {
+    constexpr uint32_t kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* record_dir_env = std::getenv("SPADE_SHADOW_RECORD_DIR");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    const std::string record_dir = record_dir_env != nullptr ? record_dir_env : "";
+    const auto write_frame = [&](const std::string& name, const std::vector<uint8_t>& rgba) {
+        if (record_dir.empty() || rgba.empty()) return;
+        std::ofstream(record_dir + "/" + name + ".rgba", std::ios::binary)
+            .write(reinterpret_cast<const char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()));
+    };
+    const auto options_for = [](const RecordOption& o) {
+        RenderOptions options = comparable_options();
+        options.shadows = true;
+        options.shadow_filter_texels = o.filter;
+        options.dynamic_shadow_size = o.focus;
+        return options;
+    };
+    const auto gl_frame = [&](const RenderScene& scene, const Camera& camera, const RenderOptions& options) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (auto drew = renderer_->draw(scene, camera, options, kW, kH); !drew) {
+            ADD_FAILURE() << drew.error().context;
+            return std::vector<uint8_t>{};
+        }
+        std::vector<uint8_t> rgba(static_cast<size_t>(kW) * kH * 4u);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        return rgba;
+    };
+
+    // --- GL frame times: draw + glFinish, the median of 25 after 5 warm-ups -------------------------------------------
+    static const char* const kScene[4] = {"no_edges", "static_box", "dynamic_box", "both"};
+    const Camera bench_camera = record_camera({5.0f, 2.5f, 7.0f}, {0.0f, 0.8f, 0.0f});
+    const Camera close_camera = record_camera({2.6f, 1.0f, 2.8f}, {1.0f, 0.0f, 0.3f});
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ shadow record ] GL frame times, 1920x1080, draw + glFinish, median of 25, on %s\n", device.c_str());
+    for (int variant = 0; variant < 4; ++variant) {
+        const RenderScene scene = record_world(variant);
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        for (const RecordOption& o : kRecordOptions) {
+            const RenderOptions options = options_for(o);
+            std::vector<double> ms;
+            for (int i = 0; i < 30; ++i) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                const auto t0 = std::chrono::steady_clock::now();
+                ASSERT_TRUE(renderer_->draw(scene, bench_camera, options, kW, kH).has_value());
+                glFinish();
+                const auto t1 = std::chrono::steady_clock::now();
+                if (i >= 5) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            std::printf("[ shadow record ] GL %-12s %-12s %7.3f ms (min %7.3f, max %7.3f)\n", kScene[variant], o.name,
+                        ms[ms.size() / 2], ms.front(), ms.back());
+        }
+    }
+
+    // --- frames: the bench scenes' shadow edges (GL), and the mesh drone (GL and CPU) -----------------------------------
+    for (const int variant : {1, 2}) {
+        const RenderScene scene = record_world(variant);
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        for (const RecordOption& o : kRecordOptions) {
+            write_frame(std::string("scene") + kScene[variant] + "_wide_gl_" + o.name, gl_frame(scene, bench_camera, options_for(o)));
+            write_frame(std::string("scene") + kScene[variant] + "_close_gl_" + o.name, gl_frame(scene, close_camera, options_for(o)));
+        }
+    }
+    {
+        const RenderScene scene = record_drone_world();
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        const Camera drone_camera = record_camera({0.9f, 1.15f, 1.1f}, {-0.1f, 0.55f, 0.05f});
+        const Camera top_camera = record_camera({0.25f, 1.9f, 0.55f}, {0.0f, 0.9f, 0.0f});
+        for (const RecordOption& o : kRecordOptions) {
+            const RenderOptions options = options_for(o);
+            write_frame(std::string("drone_gl_") + o.name, gl_frame(scene, drone_camera, options));
+            write_frame(std::string("drone_cpu_") + o.name, record_cpu_frame(scene, drone_camera, options, kW, kH));
+            write_frame(std::string("dronetop_gl_") + o.name, gl_frame(scene, top_camera, options));
+            write_frame(std::string("dronetop_cpu_") + o.name, record_cpu_frame(scene, top_camera, options, kW, kH));
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
 
 }  // namespace

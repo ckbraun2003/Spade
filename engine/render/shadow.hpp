@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -93,6 +94,51 @@ struct ShadowMap {
     std::vector<float> depth;
     uint32_t size = 1024;
     glm::mat4 light_view_proj{1.0f};
+    // What sample_shadow() takes off the receiver's depth before comparing: kShadowDepthBias for the world-fitted
+    // map, kFocusShadowDepthBias for a focus map, whose texels are millimetres, not decimetres.
+    float depth_bias = kShadowDepthBias;
+};
+
+// A focus map's depth bias: its texels are about a thousand times finer, so a tenth of a texel-slope's worth is left
+// for a marched surface against its cruder shadow mesh and for rounding, and a caster's own parts still shadow each
+// other (0.05 m would erase a 30 cm drone's). Tuned against a mesh drone render (rendering/soft-shadows).
+inline constexpr float kFocusShadowDepthBias = 0.005f;
+
+// The size of one texel of `map` in metres: the larger of its two axes' (the coarser, the one a shadow edge is
+// limited by).
+[[nodiscard]] float shadow_texel_metres(const ShadowMap& map);
+
+// The extra bias, in metres, a filter tap away from the point's own texel carries on `map` (a texel's metres):
+// a tap there may read a neighbouring face of the same body. sample_shadow() applies it; GL's port is given it.
+[[nodiscard]] float shadow_tap_slack(const ShadowMap& map);
+
+// The map the DYNAMIC casters get of their own. The sun is orthographic, so a receiver anywhere is shadowed by a
+// dynamic body exactly when its light-space (x, y) falls inside that body's light-space footprint: this map is
+// fitted to the union of the dynamic items' footprints (padded by what a filter of `filter_texels` reads) and
+// holds nothing else. Its texels are the footprint over `size`, millimetres for a drone however large the world.
+// Unlike the static map it is fitted to the bodies, not scene.bounds, so a body past the world's bounds still casts
+// (ruling L42, closing M6); statics stay as SR-17 says. Rebuilt every frame by render(); `scene.statics` is never
+// read. Returns nullopt when there is nothing to cast, or when the bodies are so spread out that this map's texels
+// would be no finer than `statics`' (then the caller folds the dynamics into a copy of the static map, as before,
+// and the result is never worse than that).
+// `scratch`, when given, lends its capacity to the map's depth buffer (render() reclaims it after the frame).
+// fit_focus_shadow_map() is the same map's frame without its depth: `size`, `light_view_proj` and `depth_bias`, with
+// `depth` left empty and nothing rasterised, and the same answer for "no map". GL fits its focus map with it and
+// draws the casters itself, so the two paths share one fit.
+[[nodiscard]] std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size,
+                                                            float filter_texels, const ShadowMap& statics);
+[[nodiscard]] std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size,
+                                                              float filter_texels, const ShadowMap& statics,
+                                                              std::vector<float>* scratch = nullptr);
+
+// What one pixel's sun term is tested against: the world-fitted map and, when the dynamic casters have a map of
+// their own, that one. The occluders are independent, so a point is lit by the product of the two.
+struct ShadowSet {
+    const ShadowMap* statics = nullptr;  // the world-fitted map, or the folded copy of it (dynamics folded in)
+    const ShadowMap* focus = nullptr;    // the dynamic casters' own map, or null
+    float filter_texels = 0.0f;          // RenderOptions::shadow_filter_texels
+
+    [[nodiscard]] float sample(const glm::vec3& world_pos, const glm::vec3& normal) const;
 };
 
 // Builds a shadow map fitted to `scene.bounds`, rasterising `scene.statics`
@@ -132,8 +178,12 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // Returns 1.0f (unoccluded) when `world_pos` falls outside the map's own
 // ortho footprint (ruling SR-17: unshadowed past scene.bounds, by design) or
 // when no caster was ever rasterised at that texel; 0.0f when a closer-to-
-// the-sun occluder was found there. Never a value in between -- a single
-// texel sample, no filtering.
+// the-sun occluder was found there. With `filter_texels` 0, never a value in
+// between: a single texel sample, no filtering. With a width above 0 it is the
+// area-weighted box of that many texels about the point (bilinear at 1): each
+// texel the box overlaps is tested on its own, against ITS OWN receiver plane
+// (below), and weighted by its overlap, the taps visited rows first in a fixed
+// order. A fraction in [0, 1]; away from an edge it is exactly 0 or 1.
 //
 // RECEIVER PLANE (Kat's sawtooth, 2026-10-28): the occluder a texel holds is
 // the casters' depth at the texel's CENTRE. This point's surface -- the plane
@@ -172,6 +222,13 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // have to be rebuilt every frame the moment any dynamic left the box) --
 // that trade is intentionally left for CK-② to weigh against real frames,
 // not decided unilaterally in a fix round.
-[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal);
+[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                  float filter_texels = 0.0f);
+
+// sample_shadow() without the filtered lookup's early-out ("no tap is nearer than the point": lit, without the plane
+// arithmetic). The early-out is exact, so this returns the same float bit for bit; it exists so a test can hold it to
+// that (tests/test_render_shadow_soft.cpp), and costs what the lookup cost before the early-out.
+[[nodiscard]] float sample_shadow_without_early_out(const ShadowMap& map, const glm::vec3& world_pos,
+                                                    const glm::vec3& normal, float filter_texels);
 
 }  // namespace spade::render

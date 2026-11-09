@@ -335,6 +335,123 @@ void BM_RenderGroundPlane(benchmark::State& state) {
     run_fill(state, ground_plane_scene(), c.width, c.height);
 }
 
+// SHADOW COST (rendering/soft-shadows, the lead's measure-first rule, 2026-11-09): one 1920x1080 frame of a 172 m world's
+// tessellated ground with the sun's shadows ON, in four scenes and four option sets, so the cost of filtering and of the
+// dynamic casters' own map reads against today's (filter 0, no focus map = the old single-texel, folded behaviour).
+//   scene 0: ground, a static map holding no caster at all: no shadow edge anywhere in the frame;
+//   scene 1: ground and a 2 m static box in view: a big shadow with its edge across the frame;
+//   scene 2: ground and a 0.5 m dynamic box in view: the drone's case;
+//   scene 3: ground, the static box and the dynamic box.
+//   options 0: filter 0, dynamic_shadow_size 0 (today's); 1: the defaults (filter 1, focus 1024); 4: filter 0, focus 1024;
+//   5: filter 1, focus 512; 6: filter 0.5, focus 1024 (the two cheaper settings the table prices);
+//   the cost splits as: the filter taps = 3 - 0, the focus map (its build and its second lookup) = 4 - 0, and its build alone
+//   is BM_FocusShadowBuild;
+//   2: filter 2, focus 1024; 3: filter 1, no focus map (folded).
+[[nodiscard]] spade::render::MeshData bench_box(float h) {
+    spade::render::MeshData mesh;
+    struct Face {
+        glm::vec3 n;
+        glm::vec3 c[4];
+    };
+    const Face faces[6] = {
+        {{1, 0, 0}, {{h, -h, -h}, {h, h, -h}, {h, h, h}, {h, -h, h}}},
+        {{-1, 0, 0}, {{-h, -h, h}, {-h, h, h}, {-h, h, -h}, {-h, -h, -h}}},
+        {{0, 1, 0}, {{-h, h, h}, {h, h, h}, {h, h, -h}, {-h, h, -h}}},
+        {{0, -1, 0}, {{-h, -h, -h}, {h, -h, -h}, {h, -h, h}, {-h, -h, h}}},
+        {{0, 0, 1}, {{h, -h, h}, {h, h, h}, {-h, h, h}, {-h, -h, h}}},
+        {{0, 0, -1}, {{-h, -h, -h}, {-h, h, -h}, {h, h, -h}, {h, -h, -h}}},
+    };
+    for (const Face& f : faces) {
+        const auto base = static_cast<uint32_t>(mesh.positions.size());
+        for (const glm::vec3& c : f.c) {
+            mesh.positions.push_back(c);
+            mesh.normals.push_back(f.n);
+        }
+        mesh.indices.insert(mesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
+    }
+    return mesh;
+}
+
+[[nodiscard]] RenderScene shadow_scene(int variant) {
+    RenderScene scene = empty_scene();
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    spade::render::MeshData ground;
+    for (const glm::vec3& c : {glm::vec3(-2000.0f, 0.0f, 2000.0f), glm::vec3(2000.0f, 0.0f, 2000.0f),
+                               glm::vec3(2000.0f, 0.0f, -2000.0f), glm::vec3(-2000.0f, 0.0f, -2000.0f)}) {
+        ground.positions.push_back(c);
+        ground.normals.push_back(glm::vec3(0.0f, 1.0f, 0.0f));
+    }
+    ground.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(std::move(ground));       // 0
+    scene.meshes.push_back(bench_box(1.0f));         // 1: the 2 m static box
+    scene.meshes.push_back(bench_box(0.25f));        // 2: the 0.5 m dynamic box
+    scene.statics.push_back(spade::render::DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f),
+                                                    .material_override = spade::render::kNoMaterial});
+    const auto at = [](glm::vec3 t) {
+        glm::mat4 m(1.0f);
+        m[3] = glm::vec4(t, 1.0f);
+        return m;
+    };
+    if (variant == 1 || variant == 3) {
+        scene.statics.push_back(spade::render::DrawItem{.mesh_index = 1, .local_to_world = at(glm::vec3(0.0f, 1.0f, 0.0f)),
+                                                        .material_override = spade::render::kNoMaterial});
+    }
+    if (variant == 2 || variant == 3) {
+        scene.dynamics.push_back(spade::render::DrawItem{.mesh_index = 2, .local_to_world = at(glm::vec3(1.5f, 1.0f, 1.0f)),
+                                                         .material_override = spade::render::kNoMaterial});
+    }
+    auto map = spade::render::build_static_shadow_map(scene);
+    if (map) scene.static_shadow = std::move(*map);
+    return scene;
+}
+
+// The dynamic casters' map alone, as render() builds it each frame (a reused scratch, size 1024, filter 1).
+void BM_FocusShadowBuild(benchmark::State& state) {
+    const RenderScene scene = shadow_scene(static_cast<int>(state.range(0)));
+    std::vector<float> scratch;
+    state.SetLabel("focus_map_1024_filter1");
+    for (auto _ : state) {
+        auto map = spade::render::build_focus_shadow_map(scene, 1024u, 1.0f, *scene.static_shadow, &scratch);
+        if (!map) {
+            state.SkipWithError("no focus map");
+            return;
+        }
+        benchmark::DoNotOptimize(map->depth.data());
+        scratch = std::move(map->depth);
+    }
+}
+
+void BM_RenderShadows(benchmark::State& state) {
+    const RenderScene scene = shadow_scene(static_cast<int>(state.range(0)));
+    constexpr float kFilter[7] = {0.0f, 1.0f, 2.0f, 1.0f, 0.0f, 1.0f, 0.5f};
+    constexpr uint32_t kFocus[7] = {0u, 1024u, 1024u, 0u, 1024u, 512u, 1024u};
+    const auto o = static_cast<size_t>(state.range(1));
+    RenderOptions options = bench_options();
+    options.shadows = true;
+    options.shadow_filter_texels = kFilter[o];
+    options.dynamic_shadow_size = kFocus[o];
+    Camera camera;
+    camera.position = glm::vec3(5.0f, 2.5f, 7.0f);
+    camera.orientation = glm::quatLookAt(glm::normalize(glm::vec3(0.0f, 0.8f, 0.0f) - camera.position), glm::vec3(0.0f, 1.0f, 0.0f));
+    std::vector<uint8_t> storage;
+    RenderTarget target = make_target(storage, 1920, 1080);
+    std::vector<float> shadow_scratch;
+    static const char* const kScene[4] = {"no_edges", "static_box", "dynamic_box", "both"};
+    static const char* const kOptions[7] = {"filter0_nofocus_today", "filter1_focus1024_defaults", "filter2_focus1024",
+                                            "filter1_nofocus", "filter0_focus1024", "filter1_focus512",
+                                            "filter0.5_focus1024"};
+    state.SetLabel(std::string(kScene[state.range(0)]) + "__" + kOptions[o] + "__1920x1080");
+    for (auto _ : state) {
+        const auto result = spade::render::render(scene, camera, options, target, &shadow_scratch);
+        if (!result) {
+            state.SkipWithError("render() failed");
+            return;
+        }
+        benchmark::DoNotOptimize(target.pixels.data());
+        benchmark::ClobberMemory();
+    }
+}
+
 // n independent targets per iteration -- see this file's header for why this
 // is a LOWER BOUND on multi-slot cost, not multi-slot cost.
 void BM_RenderSlots(benchmark::State& state) {
@@ -526,6 +643,8 @@ void BM_CsgFrame(benchmark::State& state) {
 BENCHMARK(BM_RenderBackgroundFill)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderGroundPlane)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderSlots)->DenseRange(1, 4, 1)->UseRealTime();
+BENCHMARK(BM_RenderShadows)->ArgsProduct({{0, 1, 2, 3}, {0, 1, 2, 3, 4, 5, 6}})->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_FocusShadowBuild)->Arg(2)->Arg(3)->Unit(benchmark::kMicrosecond)->UseRealTime();
 BENCHMARK(BM_CsgMeshShell)->Arg(169)->Arg(80)->Arg(50)->Unit(benchmark::kMillisecond)->Iterations(3)->UseRealTime();
 BENCHMARK(BM_CsgFrame)->ArgsProduct({{0, 1, 2, 3}, {0, 1}, {0, 1}})->Unit(benchmark::kMillisecond)->UseRealTime();
 

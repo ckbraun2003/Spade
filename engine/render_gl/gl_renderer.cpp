@@ -233,40 +233,105 @@ uniform vec3 uSkyHorizon;
 uniform float uHorizonStrength;  // 0 outside shaded mode, as raster_cpu passes it
 uniform float uHorizonOnset;
 
-// The sun's shadow map: the CPU's static map, or this frame's copy with the
-// dynamic casters added. Unit 0. uShadowEnabled is 0 unless shaded mode asks
+// The sun's shadow maps. Unit 0: the CPU's static map (or, for a frame whose
+// dynamic casters have no map of their own, this frame's copy with them added).
+// Unit 8: the dynamic casters' own map, fitted to them and drawn each frame
+// (rendering/soft-shadows, RND-10). uShadowEnabled is 0 unless shaded mode asks
 // for shadows and the scene has a map, as raster_cpu decides.
 layout(binding = 0) uniform sampler2D uShadowMap;
+layout(binding = 8) uniform sampler2D uFocusMap;
 uniform uint uShadowEnabled;
 uniform mat4 uLightViewProj;
 uniform uint uShadowSize;
 uniform float uNoOccluder;    // shadow.hpp's kNoOccluder
 uniform float uShadowBias;    // shadow.hpp's kShadowDepthBias
+uniform float uFilterTexels;  // RenderOptions::shadow_filter_texels; 0 is the single texel
+uniform float uStaticSlack;   // shadow.hpp's shadow_tap_slack() of the static map, metres
+uniform uint uFocusEnabled;
+uniform mat4 uFocusViewProj;
+uniform uint uFocusSize;
+uniform float uFocusBias;     // shadow.hpp's kFocusShadowDepthBias
+uniform float uFocusSlack;
 
-// sample_shadow(): one texel, unfiltered. Lit outside the map's footprint
-// (SR-17 clause 6) and where no caster landed. 1 lit, 0 shadowed. `n` is the
-// receiver's unit normal, either sign: its plane, carried to the texel's
-// centre, may lift it toward the sun, never sink it, as shadow.cpp's
-// sample_shadow() does.
-float sample_shadow(vec3 world, vec3 n) {
-    if (uShadowEnabled == 0u) return 1.0;
-    vec4 p = uLightViewProj * vec4(world, 1.0);
+// One map's share of sample_shadow(), the GLSL port of shadow.cpp's: lit outside
+// the map's footprint (SR-17 clause 6) and where no caster landed. 1 lit, 0
+// shadowed. `n` is the receiver's unit normal, either sign: its plane, carried
+// to a texel's centre, may lift it toward the sun, never sink it. With a filter,
+// the area-weighted box `uFilterTexels` wide about the point, each texel with its
+// own plane, rows first in increasing order; a tap away from the point's own
+// texel carries `slack` more bias (a neighbouring face, at a convex edge); and
+// where no texel under the box is nearer than the point, lit without the planes.
+float lookup_shadow_map(sampler2D tex, mat4 vp, uint size_u, float bias, float slack, vec3 world, vec3 n) {
+    vec4 p = vp * vec4(world, 1.0);
     if (p.x < -1.0 || p.x > 1.0 || p.y < -1.0 || p.y > 1.0) return 1.0;
-    float size_f = float(uShadowSize);
-    int last = int(uShadowSize) - 1;
+    float size_f = float(size_u);
+    int last = int(size_u) - 1;
     int tx = clamp(int((p.x * 0.5 + 0.5) * size_f), 0, last);
     int ty = clamp(int((p.y * 0.5 + 0.5) * size_f), 0, last);
-    float occluder = texelFetch(uShadowMap, ivec2(tx, ty), 0).r;
-    if (occluder == uNoOccluder) return 1.0;
-    vec3 row0 = vec3(uLightViewProj[0][0], uLightViewProj[1][0], uLightViewProj[2][0]);
-    vec3 row1 = vec3(uLightViewProj[0][1], uLightViewProj[1][1], uLightViewProj[2][1]);
-    vec3 row2 = vec3(uLightViewProj[0][2], uLightViewProj[1][2], uLightViewProj[2][2]);
+    vec3 row0 = vec3(vp[0][0], vp[1][0], vp[2][0]);
+    vec3 row1 = vec3(vp[0][1], vp[1][1], vp[2][1]);
+    vec3 row2 = vec3(vp[0][2], vp[1][2], vp[2][2]);
+    if (!(uFilterTexels > 0.0)) {
+        float occluder = texelFetch(tex, ivec2(tx, ty), 0).r;
+        if (occluder == uNoOccluder) return 1.0;
+        float facing = dot(n, row2);
+        if (abs(facing) < 0.05) facing = facing < 0.0 ? -0.05 : 0.05;
+        float dx = (float(tx) + 0.5) / size_f * 2.0 - 1.0 - p.x;
+        float dy = (float(ty) + 0.5) / size_f * 2.0 - 1.0 - p.y;
+        float along = dx * dot(n, row0) / dot(row0, row0) + dy * dot(n, row1) / dot(row1, row1);
+        return (max(p.z, p.z - along / facing) < occluder - bias) ? 0.0 : 1.0;
+    }
+    float half_w = 0.5 * uFilterTexels;
+    float vx = (p.x * 0.5 + 0.5) * size_f;
+    float vy = (p.y * 0.5 + 0.5) * size_f;
+    int x0 = int(floor(vx - half_w)), x1 = int(floor(vx + half_w));
+    int y0 = int(floor(vy - half_w)), y1 = int(floor(vy + half_w));
+    float nearest = uNoOccluder;
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            nearest = max(nearest, texelFetch(tex, ivec2(clamp(x, 0, last), clamp(y, 0, last)), 0).r);
+        }
+    }
+    if (nearest - bias <= p.z) return 1.0;
     float facing = dot(n, row2);
     if (abs(facing) < 0.05) facing = facing < 0.0 ? -0.05 : 0.05;
-    float dx = (float(tx) + 0.5) / size_f * 2.0 - 1.0 - p.x;
-    float dy = (float(ty) + 0.5) / size_f * 2.0 - 1.0 - p.y;
-    float along = dx * dot(n, row0) / dot(row0, row0) + dy * dot(n, row1) / dot(row1, row1);
-    return (max(p.z, p.z - along / facing) < occluder - uShadowBias) ? 0.0 : 1.0;
+    float lit_sum = 0.0;
+    float weight_sum = 0.0;
+    for (int y = y0; y <= y1; ++y) {
+        float wy = min(float(y + 1), vy + half_w) - max(float(y), vy - half_w);
+        if (!(wy > 0.0)) continue;
+        int cy = clamp(y, 0, last);
+        for (int x = x0; x <= x1; ++x) {
+            float wx = min(float(x + 1), vx + half_w) - max(float(x), vx - half_w);
+            if (!(wx > 0.0)) continue;
+            int cx = clamp(x, 0, last);
+            float w = wx * wy;
+            float occluder = texelFetch(tex, ivec2(cx, cy), 0).r;
+            float lit = 1.0;
+            if (occluder != uNoOccluder) {
+                float dx = (float(cx) + 0.5) / size_f * 2.0 - 1.0 - p.x;
+                float dy = (float(cy) + 0.5) / size_f * 2.0 - 1.0 - p.y;
+                float along = dx * dot(n, row0) / dot(row0, row0) + dy * dot(n, row1) / dot(row1, row1);
+                float depth = max(p.z, p.z - along / facing);
+                float b = bias + ((cx == tx && cy == ty) ? 0.0 : slack);
+                lit = (depth < occluder - b) ? 0.0 : 1.0;
+            }
+            lit_sum += w * lit;
+            weight_sum += w;
+        }
+    }
+    return weight_sum > 0.0 ? lit_sum / weight_sum : 1.0;
+}
+
+// ShadowSet::sample(): lit by the product of the world's map and, when the
+// dynamic casters have a map of their own, that one.
+float sample_shadow(vec3 world, vec3 n) {
+    if (uShadowEnabled == 0u) return 1.0;
+    float lit = lookup_shadow_map(uShadowMap, uLightViewProj, uShadowSize, uShadowBias, uStaticSlack, world, n);
+    if (uFocusEnabled != 0u && lit > 0.0) {
+        lit *= lookup_shadow_map(uFocusMap, uFocusViewProj, uFocusSize, uFocusBias, uFocusSlack, world, n);
+    }
+    return lit;
 }
 
 vec3 sky_gradient_color(vec3 ray) {
@@ -1770,6 +1835,12 @@ struct GlRenderer::Impl {
     GLuint shadow_static_tex = 0;
     GLuint shadow_work_tex = 0;
     GLuint shadow_fbo = 0;
+    // The dynamic casters' own map (RND-10): an R32F texture of options.dynamic_shadow_size texels a side, drawn
+    // each frame through `focus_fbo` and read on unit 8.
+    GLuint focus_tex = 0;
+    GLuint focus_fbo = 0;
+    uint32_t focus_size = 0;
+    float shadow_slack = 0.0f;  // shadow_tap_slack() of the static map
 
     // Surface colouring's volume (V and S, raw halves) on units 1 and 2, and
     // its colour table on unit 3. The march reads the same two textures.
@@ -1935,6 +2006,8 @@ struct GlRenderer::Impl {
     // kCommonSrc's shadow lookup, once per program that includes it.
     struct ShadowUniforms {
         GLint enabled = -1, light_view_proj = -1, size = -1, no_occluder = -1, bias = -1;
+        GLint filter_texels = -1, static_slack = -1;
+        GLint focus_enabled = -1, focus_view_proj = -1, focus_size = -1, focus_bias = -1, focus_slack = -1;
     } mesh_shadow, bg_shadow, csg_shadow;
 
     // kSensorSrc's, in the mesh, CSG and background programs (N13).
@@ -2022,6 +2095,8 @@ struct GlRenderer::Impl {
             if (m.vao != 0) gl.DeleteVertexArrays(1, &m.vao);
         }
         if (shadow_fbo != 0) gl.DeleteFramebuffers(1, &shadow_fbo);
+        if (focus_fbo != 0) gl.DeleteFramebuffers(1, &focus_fbo);
+        if (focus_tex != 0) gl.DeleteTextures(1, &focus_tex);
         if (shadow_work_tex != 0) gl.DeleteTextures(1, &shadow_work_tex);
         if (shadow_static_tex != 0) gl.DeleteTextures(1, &shadow_static_tex);
         if (flow_colour_tex != 0) gl.DeleteTextures(1, &flow_colour_tex);
@@ -2293,6 +2368,13 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
         u.size = gl.GetUniformLocation(program, "uShadowSize");
         u.no_occluder = gl.GetUniformLocation(program, "uNoOccluder");
         u.bias = gl.GetUniformLocation(program, "uShadowBias");
+        u.filter_texels = gl.GetUniformLocation(program, "uFilterTexels");
+        u.static_slack = gl.GetUniformLocation(program, "uStaticSlack");
+        u.focus_enabled = gl.GetUniformLocation(program, "uFocusEnabled");
+        u.focus_view_proj = gl.GetUniformLocation(program, "uFocusViewProj");
+        u.focus_size = gl.GetUniformLocation(program, "uFocusSize");
+        u.focus_bias = gl.GetUniformLocation(program, "uFocusBias");
+        u.focus_slack = gl.GetUniformLocation(program, "uFocusSlack");
     };
     shadow_uniforms(impl->program, impl->mesh_shadow);
     shadow_uniforms(impl->background_program, impl->bg_shadow);
@@ -2359,6 +2441,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     gl.GenTextures(1, &impl->shadow_static_tex);
     gl.GenTextures(1, &impl->shadow_work_tex);
     gl.GenFramebuffers(1, &impl->shadow_fbo);
+    gl.GenTextures(1, &impl->focus_tex);
+    gl.GenFramebuffers(1, &impl->focus_fbo);
     // The working shadow map stays attached to `shadow_fbo`; upload_scene()
     // only resizes it. Whether the driver renders to R32F is asked here,
     // once, so upload_scene() can refuse before it changes anything.
@@ -2615,6 +2699,7 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
         gl.BindTexture(GL_TEXTURE_2D, 0);
         s.shadow_size = map.size;
         s.shadow_light_view_proj = map.light_view_proj;
+        s.shadow_slack = render::shadow_tap_slack(map);
     }
 
     return {};
@@ -2905,14 +2990,43 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     for (size_t i = 0; i < mesh_count; ++i) {
         dynamic_instances += s.batch_count[i] - s.batch_static[i];
     }
+    // The dynamic casters' own map (rendering/soft-shadows, RND-10), fitted exactly as raster_cpu fits it, or none
+    // (dynamic_shadow_size 0, or bodies so spread out it would be no finer than the world's): then they are folded
+    // into a copy of the static map, as before.
+    std::optional<render::ShadowMap> focus;
+    if (shadows && dynamic_instances > 0u && options.dynamic_shadow_size > 0u && scene.static_shadow.has_value()) {
+        focus = render::fit_focus_shadow_map(scene, options.dynamic_shadow_size, options.shadow_filter_texels,
+                                             *scene.static_shadow);
+    }
+    glm::mat4 caster_view_proj = s.shadow_light_view_proj;
     if (shadows && dynamic_instances > 0u) {
         GLint prev_draw = 0, prev_read = 0;
         gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
         gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prev_read);
-        const auto size = static_cast<GLsizei>(s.shadow_size);
-        gl.CopyImageSubData(s.shadow_static_tex, GL_TEXTURE_2D, 0, 0, 0, 0, s.shadow_work_tex, GL_TEXTURE_2D, 0, 0, 0,
-                            0, size, size, 1);
-        gl.BindFramebuffer(GL_FRAMEBUFFER, s.shadow_fbo);
+        GLsizei size = static_cast<GLsizei>(s.shadow_size);
+        if (focus) {
+            size = static_cast<GLsizei>(options.dynamic_shadow_size);
+            if (s.focus_size != options.dynamic_shadow_size) {
+                gl.BindTexture(GL_TEXTURE_2D, s.focus_tex);
+                gl.TexImage2D(GL_TEXTURE_2D, 0, GL_R32F, size, size, 0, GL_RED, GL_FLOAT, nullptr);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                gl.BindTexture(GL_TEXTURE_2D, 0);
+                gl.BindFramebuffer(GL_FRAMEBUFFER, s.focus_fbo);
+                gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.focus_tex, 0);
+                s.focus_size = options.dynamic_shadow_size;
+            }
+            gl.BindFramebuffer(GL_FRAMEBUFFER, s.focus_fbo);
+            const GLfloat no_occluder = render::kNoOccluder;
+            gl.ClearBufferfv(GL_COLOR, 0, &no_occluder);
+            caster_view_proj = focus->light_view_proj;
+        } else {
+            gl.CopyImageSubData(s.shadow_static_tex, GL_TEXTURE_2D, 0, 0, 0, 0, s.shadow_work_tex, GL_TEXTURE_2D, 0, 0,
+                                0, 0, size, size, 1);
+            gl.BindFramebuffer(GL_FRAMEBUFFER, s.shadow_fbo);
+        }
         gl.Viewport(0, 0, size, size);
         gl.Disable(GL_DEPTH_TEST);
         gl.DepthMask(GL_FALSE);
@@ -2922,7 +3036,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.BlendEquation(GL_MAX);
         gl.Enable(GL_DEPTH_CLAMP);
         gl.UseProgram(s.caster_program);
-        gl.UniformMatrix4fv(s.caster.light_view_proj, 1, GL_FALSE, glm::value_ptr(s.shadow_light_view_proj));
+        gl.UniformMatrix4fv(s.caster.light_view_proj, 1, GL_FALSE, glm::value_ptr(caster_view_proj));
         for (size_t i = 0; i < mesh_count; ++i) {
             const uint32_t dynamic = s.batch_count[i] - s.batch_static[i];
             if (dynamic == 0u || s.meshes[i].index_count == 0u) continue;
@@ -2937,10 +3051,13 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Disable(GL_BLEND);
         gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(prev_draw));
         gl.BindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prev_read));
-        shadow_tex = s.shadow_work_tex;
+        shadow_tex = focus ? s.shadow_static_tex : s.shadow_work_tex;
     }
     gl.ActiveTexture(GL_TEXTURE0);
     gl.BindTexture(GL_TEXTURE_2D, shadows ? shadow_tex : 0u);
+    gl.ActiveTexture(GL_TEXTURE8);
+    gl.BindTexture(GL_TEXTURE_2D, focus ? s.focus_tex : 0u);
+    gl.ActiveTexture(GL_TEXTURE0);
     // Surface colouring (airflow plan step 7b): the volume's halves as they
     // are, and the colour maps' table. Integer and unmipmapped textures need
     // NEAREST to be complete; the shader reads them by texelFetch.
@@ -2997,6 +3114,15 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1ui(u.size, s.shadow_size);
         gl.Uniform1f(u.no_occluder, render::kNoOccluder);
         gl.Uniform1f(u.bias, render::kShadowDepthBias);
+        gl.Uniform1f(u.filter_texels, options.shadow_filter_texels);
+        gl.Uniform1f(u.static_slack, s.shadow_slack);
+        gl.Uniform1ui(u.focus_enabled, focus ? 1u : 0u);
+        if (focus) {
+            gl.UniformMatrix4fv(u.focus_view_proj, 1, GL_FALSE, glm::value_ptr(focus->light_view_proj));
+            gl.Uniform1ui(u.focus_size, options.dynamic_shadow_size);
+            gl.Uniform1f(u.focus_bias, focus->depth_bias);
+            gl.Uniform1f(u.focus_slack, render::shadow_tap_slack(*focus));
+        }
     };
 
     gl.Viewport(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height));

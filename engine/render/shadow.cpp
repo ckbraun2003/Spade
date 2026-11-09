@@ -215,6 +215,9 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
 // surface takes almost no sun term anyway.
 constexpr float kMinFacing = 0.05f;
 
+// How much more bias (in texels' metres) a filter tap away from the point's own texel carries; see sample_shadow().
+constexpr float kTapSlackTexels = 1.0f;
+
 // sample_shadow()'s receiver plane: the light-space depth, at texel (tx, ty)'s
 // centre, of the plane through the point whose light-space position is `p`,
 // with unit normal `normal`. light_view_proj's rows are sx * right, sy * up
@@ -222,23 +225,43 @@ constexpr float kMinFacing = 0.05f;
 // along right (up), and along the plane the depth moves -(n . right) /
 // (n . forward) per metre right and -(n . up) / (n . forward) per metre up.
 // Either sign of `normal` gives the same plane.
-[[nodiscard]] float receiver_depth_at_texel_centre(const ShadowMap& map, const glm::vec4& p, const glm::vec3& normal,
-                                                   int tx, int ty) {
-    const glm::mat4& m = map.light_view_proj;
-    const glm::vec3 row0(m[0][0], m[1][0], m[2][0]);
-    const glm::vec3 row1(m[0][1], m[1][1], m[2][1]);
-    const glm::vec3 row2(m[0][2], m[1][2], m[2][2]);
-    float facing = glm::dot(normal, row2);
-    if (std::fabs(facing) < kMinFacing) {
-        facing = facing < 0.0f ? -kMinFacing : kMinFacing;
+// The scalars of that plane, which depend on the point's normal and the map but not on the texel: formed once per
+// sample, so each tap of a filter costs two multiplies. The expression per tap is the one this file always had.
+struct ReceiverPlane {
+    float n_row0 = 0.0f, row0_row0 = 1.0f;  // n . row0, row0 . row0
+    float n_row1 = 0.0f, row1_row1 = 1.0f;
+    float facing = 1.0f;
+    float size_f = 1.0f;
+
+    [[nodiscard]] static ReceiverPlane of(const ShadowMap& map, const glm::vec3& normal) {
+        const glm::mat4& m = map.light_view_proj;
+        const glm::vec3 row0(m[0][0], m[1][0], m[2][0]);
+        const glm::vec3 row1(m[0][1], m[1][1], m[2][1]);
+        const glm::vec3 row2(m[0][2], m[1][2], m[2][2]);
+        ReceiverPlane r;
+        r.facing = glm::dot(normal, row2);
+        if (std::fabs(r.facing) < kMinFacing) {
+            r.facing = r.facing < 0.0f ? -kMinFacing : kMinFacing;
+        }
+        r.n_row0 = glm::dot(normal, row0);
+        r.row0_row0 = glm::dot(row0, row0);
+        r.n_row1 = glm::dot(normal, row1);
+        r.row1_row1 = glm::dot(row1, row1);
+        r.size_f = static_cast<float>(map.size);
+        return r;
     }
-    const float size_f = static_cast<float>(map.size);
-    const float dx = (static_cast<float>(tx) + 0.5f) / size_f * 2.0f - 1.0f - p.x;
-    const float dy = (static_cast<float>(ty) + 0.5f) / size_f * 2.0f - 1.0f - p.y;
-    const float along =
-        dx * glm::dot(normal, row0) / glm::dot(row0, row0) + dy * glm::dot(normal, row1) / glm::dot(row1, row1);
-    return p.z - along / facing;
-}
+
+    [[nodiscard]] float depth_at_texel_centre(const glm::vec4& p, int tx, int ty) const {
+        const float dx = (static_cast<float>(tx) + 0.5f) / size_f * 2.0f - 1.0f - p.x;
+        const float dy = (static_cast<float>(ty) + 0.5f) / size_f * 2.0f - 1.0f - p.y;
+        const float along = dx * n_row0 / row0_row0 + dy * n_row1 / row1_row1;
+        return p.z - along / facing;
+    }
+};
+
+// The padding a focus map keeps clear around its bodies' footprint, in texels a side: what a filter of this width
+// reads past the edge, and two more.
+[[nodiscard]] float focus_pad_texels(float filter_texels) { return std::ceil(std::max(filter_texels, 0.0f)) + 2.0f; }
 
 }  // namespace
 
@@ -283,12 +306,134 @@ Result<ShadowMap> build_static_shadow_map(const RenderScene& scene, uint32_t siz
     return map;
 }
 
-float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal) {
+float shadow_texel_metres(const ShadowMap& map) {
+    const glm::mat4& m = map.light_view_proj;
+    const float per_metre = std::min(glm::length(glm::vec3(m[0][0], m[1][0], m[2][0])),
+                                     glm::length(glm::vec3(m[0][1], m[1][1], m[2][1])));
+    return map.size == 0 || per_metre <= 0.0f ? 0.0f : 2.0f / (per_metre * static_cast<float>(map.size));
+}
+
+std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
+                                              const ShadowMap& statics) {
+    if (size == 0 || scene.dynamics.empty()) {
+        return std::nullopt;
+    }
+    const float pad = focus_pad_texels(filter_texels);
+    if (static_cast<float>(size) <= 2.0f * pad) {
+        return std::nullopt;
+    }
+    const LightBasis basis = build_light_basis(scene.lighting.sun_direction);
+    // The dynamic items' light-space bounds, over every vertex of every mesh they draw, in the items' fixed order.
+    float rmin = 0.0f, rmax = 0.0f, umin = 0.0f, umax = 0.0f, zmin = 0.0f, zmax = 0.0f;
+    bool any = false;
+    for (const DrawItem& item : scene.dynamics) {
+        if (item.mesh_index >= scene.meshes.size()) {
+            continue;
+        }
+        for (const glm::vec3& local : scene.meshes[item.mesh_index].positions) {
+            const glm::vec3 w(item.local_to_world * glm::vec4(local, 1.0f));
+            const float r = glm::dot(w, basis.right), u = glm::dot(w, basis.up), z = glm::dot(w, basis.forward);
+            if (!any) {
+                rmin = rmax = r;
+                umin = umax = u;
+                zmin = zmax = z;
+                any = true;
+            } else {
+                rmin = std::min(rmin, r);
+                rmax = std::max(rmax, r);
+                umin = std::min(umin, u);
+                umax = std::max(umax, u);
+                zmin = std::min(zmin, z);
+                zmax = std::max(zmax, z);
+            }
+        }
+    }
+    if (!any) {
+        return std::nullopt;
+    }
+    // One texel size for both axes: the larger footprint side over the texels left inside the padding.
+    const float size_f = static_cast<float>(size);
+    const float side = std::max({rmax - rmin, umax - umin, kMinLightExtent});
+    const float extent = side * size_f / (size_f - 2.0f * pad);
+    ShadowMap map;
+    map.size = size;
+    map.depth_bias = kFocusShadowDepthBias;
+    const float s = 2.0f / extent;
+    const float rc = 0.5f * (rmin + rmax), uc = 0.5f * (umin + umax);
+    glm::mat4 m(1.0f);
+    m[0][0] = s * basis.right.x;
+    m[1][0] = s * basis.right.y;
+    m[2][0] = s * basis.right.z;
+    m[3][0] = -s * rc;
+    m[0][1] = s * basis.up.x;
+    m[1][1] = s * basis.up.y;
+    m[2][1] = s * basis.up.z;
+    m[3][1] = -s * uc;
+    m[0][2] = basis.forward.x;
+    m[1][2] = basis.forward.y;
+    m[2][2] = basis.forward.z;
+    m[3][2] = -0.5f * (zmin + zmax);
+    map.light_view_proj = m;
+    // Never worse than folding: a map no finer than the world's gives nothing the folded copy does not.
+    if (shadow_texel_metres(map) >= shadow_texel_metres(statics)) {
+        return std::nullopt;
+    }
+    return map;
+}
+
+std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
+                                                const ShadowMap& statics, std::vector<float>* scratch) {
+    std::optional<ShadowMap> fitted = fit_focus_shadow_map(scene, size, filter_texels, statics);
+    if (!fitted) {
+        return std::nullopt;
+    }
+    ShadowMap& map = *fitted;
+    if (scratch != nullptr) {
+        map.depth = std::move(*scratch);
+    }
+    map.depth.assign(static_cast<size_t>(size) * size, kNoOccluder);
+    rasterize_shadow_casters(scene.meshes, scene.dynamics, map);
+    return fitted;
+}
+
+float shadow_tap_slack(const ShadowMap& map) { return kTapSlackTexels * shadow_texel_metres(map); }
+
+float ShadowSet::sample(const glm::vec3& world_pos, const glm::vec3& normal) const {
+    float lit = statics == nullptr ? 1.0f : sample_shadow(*statics, world_pos, normal, filter_texels);
+    if (focus != nullptr && lit > 0.0f) {
+        lit *= sample_shadow(*focus, world_pos, normal, filter_texels);
+    }
+    return lit;
+}
+
+// Whether `world` is certainly outside the map's [-1, 1] footprint in light-space x or y, from the matrix's first two
+// rows alone (no z, no w: half the multiplies of the full product) and a margin that dwarfs the rounding of either
+// way of forming the sum (each of the four terms and three additions is good to a few 1e-8 of the sum of the terms'
+// magnitudes; the margin is 1e-5 of it). Only a point beyond the footprint by more than that margin is rejected, so
+// every point the full product would put outside gets the full product's answer (lit), and every other goes on to it.
+[[nodiscard]] static bool surely_outside_footprint(const glm::mat4& m, const glm::vec3& w) {
+    for (int row = 0; row < 2; ++row) {
+        const float a = m[0][row] * w.x, b = m[1][row] * w.y, c = m[2][row] * w.z, d = m[3][row];
+        const float margin = 1.0e-5f * (std::fabs(a) + std::fabs(b) + std::fabs(c) + std::fabs(d));
+        const float v = (a + b) + (c + d);
+        if (v < -1.0f - margin || v > 1.0f + margin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// sample_shadow() with the early-outs switchable, so a test can hold them to the full computation.
+static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                float filter_texels, bool allow_skip) {
     if (map.size == 0 || map.depth.empty()) {
         return 1.0f;
     }
     // kShadowDepthBias (shadow.hpp) says what the bias still covers; GL's
     // lookup uses the same value and the same receiver plane.
+    if (allow_skip && surely_outside_footprint(map.light_view_proj, world_pos)) {
+        return 1.0f;  // far outside the footprint: the answer the product below would give, without it.
+    }
     const glm::vec4 p = map.light_view_proj * glm::vec4(world_pos, 1.0f);
     if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) {
         return 1.0f;  // SR-17: outside the shadow frustum's own footprint -- unshadowed, by design.
@@ -300,13 +445,77 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
     const int ty = std::clamp(static_cast<int>((p.y * 0.5f + 0.5f) * size_f), 0, size_i - 1);
     const size_t idx = static_cast<size_t>(ty) * map.size + static_cast<size_t>(tx);
 
-    const float occluder = map.depth[idx];
-    if (occluder == kNoOccluder) {
-        return 1.0f;  // no caster ever covered this texel.
+    if (!(filter_texels > 0.0f)) {
+        const ReceiverPlane plane = ReceiverPlane::of(map, normal);
+        const float occluder = map.depth[idx];
+        if (occluder == kNoOccluder) {
+            return 1.0f;  // no caster ever covered this texel.
+        }
+        // The receiver's plane may lift it toward the sun, never sink it (shadow.hpp).
+        const float depth = std::max(p.z, plane.depth_at_texel_centre(p, tx, ty));
+        return (depth < occluder - map.depth_bias) ? 0.0f : 1.0f;
     }
-    // The receiver's plane may lift it toward the sun, never sink it (shadow.hpp).
-    const float depth = std::max(p.z, receiver_depth_at_texel_centre(map, p, normal, tx, ty));
-    return (depth < occluder - kShadowDepthBias) ? 0.0f : 1.0f;
+
+    // The area-weighted box `filter_texels` wide about the point, in texel coordinates; each texel it overlaps is
+    // tested with its own receiver plane and weighted by its overlap (so a width of 1 is bilinear). Rows first, in
+    // increasing order: the sum is the same on every run. A map's edge repeats its last texel.
+    const float half = 0.5f * filter_texels;
+    const float vx = (p.x * 0.5f + 0.5f) * size_f, vy = (p.y * 0.5f + 0.5f) * size_f;
+    const int x0 = static_cast<int>(std::floor(vx - half)), x1 = static_cast<int>(std::floor(vx + half));
+    const int y0 = static_cast<int>(std::floor(vy - half)), y1 = static_cast<int>(std::floor(vy + half));
+    // Nothing under the box nearer than the point: lit, without the plane arithmetic (most pixels). A tap shadows only
+    // when depth < occluder - bias, and depth is never below the point's own p.z, so a box whose nearest stored depth
+    // (kNoOccluder, the lowest float, for an empty texel) is within the bias of p.z cannot shadow it: the same answer
+    // the loop below gives, with fewer operations. The slack only ever adds bias, so it cannot change this either.
+    if (allow_skip) {
+        float nearest = kNoOccluder;
+        for (int y = y0; y <= y1; ++y) {
+            const size_t row = static_cast<size_t>(std::clamp(y, 0, size_i - 1)) * map.size;
+            for (int x = x0; x <= x1; ++x) {
+                nearest = std::max(nearest, map.depth[row + static_cast<size_t>(std::clamp(x, 0, size_i - 1))]);
+            }
+        }
+        if (nearest - map.depth_bias <= p.z) {
+            return 1.0f;
+        }
+    }
+    const ReceiverPlane plane = ReceiverPlane::of(map, normal);
+    // A tap away from the point's own texel reads a texel that may belong to a neighbouring face of the same body (a
+    // convex edge): that face can lie nearer the sun than this receiver's plane by up to a texel's run times its own
+    // slope, which the plane cannot know. Those taps carry that much more bias (a texel's metres, a neighbour's slope of 1), so the filter
+    // widens a shadow's edge without shadowing a lit face beside an edge; the point's own texel keeps the bias alone.
+    const float tap_slack = shadow_tap_slack(map);
+    float lit_sum = 0.0f, weight_sum = 0.0f;
+    for (int y = y0; y <= y1; ++y) {
+        const float wy = std::min(static_cast<float>(y + 1), vy + half) - std::max(static_cast<float>(y), vy - half);
+        if (!(wy > 0.0f)) continue;
+        const int cy = std::clamp(y, 0, size_i - 1);
+        for (int x = x0; x <= x1; ++x) {
+            const float wx = std::min(static_cast<float>(x + 1), vx + half) - std::max(static_cast<float>(x), vx - half);
+            if (!(wx > 0.0f)) continue;
+            const int cx = std::clamp(x, 0, size_i - 1);
+            const float w = wx * wy;
+            const float occluder = map.depth[static_cast<size_t>(cy) * map.size + static_cast<size_t>(cx)];
+            float lit = 1.0f;
+            if (occluder != kNoOccluder) {
+                const float depth = std::max(p.z, plane.depth_at_texel_centre(p, cx, cy));
+                const float bias = map.depth_bias + ((cx == tx && cy == ty) ? 0.0f : tap_slack);
+                lit = (depth < occluder - bias) ? 0.0f : 1.0f;
+            }
+            lit_sum += w * lit;
+            weight_sum += w;
+        }
+    }
+    return weight_sum > 0.0f ? lit_sum / weight_sum : 1.0f;
+}
+
+float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal, float filter_texels) {
+    return sample_shadow_impl(map, world_pos, normal, filter_texels, true);
+}
+
+float sample_shadow_without_early_out(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                      float filter_texels) {
+    return sample_shadow_impl(map, world_pos, normal, filter_texels, false);
 }
 
 }  // namespace spade::render
