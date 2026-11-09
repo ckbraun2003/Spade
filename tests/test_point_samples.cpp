@@ -1,7 +1,7 @@
 // test_point_samples.cpp -- point samples, the host half (module API stage 7, Task D1; the stage 7 plan, batch D).
 //
 // A module with a position-dependent field declares the points it is sampled at (ModuleDesc::points). The set then gets the
-// internal per-world array `points.points` (one PointRow per point: bodies, then force elements x k, then sensors, then the
+// internal per-world array `points.airflow_points` (one PointRow per point: bodies, then force elements x k, then sensors, then the
 // host's rows) appended after the registry walk, and the positions pass `points.positions` after behaviors.kinematic.
 // Pins, green at red and green for good: a set with no such module has neither, and keeps its identity, its walk and its
 // pass list. The device half is test_gpu_point_samples.cpp.
@@ -57,11 +57,11 @@ void provide(const spade::physics::SubstepContext& ctx) noexcept {
 }
 
 constexpr spade::modules::FieldDecl kSwirl[] = {{.name = "swirl", .kind = spade::modules::FieldKind::scalar, .unit = "1"}};
-constexpr QuantityAccess kProvideAccess[] = {{"field.swirl", Access::write}, {"points.points", Access::write}};
+constexpr QuantityAccess kProvideAccess[] = {{"field.swirl", Access::write}, {"points.airflow_points", Access::write}};
 constexpr std::string_view kAfterPositions[] = {"points.positions"};
 constexpr PassDecl kProvidePasses[] = {{.name = "sample", .phase = Phase::fields, .access = kProvideAccess,
                                         .after = kAfterPositions, .cpu = &provide}};
-// A provider that declares no write of points.points: what a module with position_dependent == false looks like (the array
+// A provider that declares no write of points.airflow_points: what a module with position_dependent == false looks like (the array
 // does not exist for it to name), and what the missing-writer refusal is tested with.
 constexpr QuantityAccess kNoPointsAccess[] = {{"field.swirl", Access::write}};
 constexpr PassDecl kNoPointsPasses[] = {{.name = "sample", .phase = Phase::fields, .access = kNoPointsAccess, .cpu = &provide}};
@@ -98,9 +98,9 @@ TEST(PointSamples, AStandardSetAllocatesNothingNew) {
     EXPECT_FALSE(s->points.present);
     EXPECT_EQ(s->identity, 0x3303cfc86821f502ULL);
     EXPECT_EQ(spade::modules::walk_order(*s).size(), 11u);
-    EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.name == "points"; }));
+    EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.name == "airflow_points"; }));
     spade::Simulation sim = make(spade::modules::standard_modules());
-    EXPECT_FALSE(sim.module_array("points").has_value()) << "no points array in a standard set";
+    EXPECT_FALSE(sim.module_array("airflow_points").has_value()) << "no points array in a standard set";
 }
 
 // PIN. No standard pass is added or renamed, so the identity holds: the chain has no `points.*` pass.
@@ -129,7 +129,7 @@ TEST(PointSamples, APositionDependentProviderGetsThePositionsPassAndTheArrayAfte
     EXPECT_LT(kinematic, positions);
     EXPECT_LT(positions, sample);
     ASSERT_FALSE(s->arrays.empty());
-    EXPECT_EQ(s->arrays.back().name, "points") << "appended after the walk";
+    EXPECT_EQ(s->arrays.back().name, "airflow_points") << "appended after the walk";
     EXPECT_EQ(s->arrays.back().elem_size, sizeof(PointRow));
     EXPECT_NE(s->identity, 0x3303cfc86821f502ULL);
     // The reader is drag.forces: it runs after both writers and its view of the array is bound.
@@ -138,18 +138,18 @@ TEST(PointSamples, APositionDependentProviderGetsThePositionsPassAndTheArrayAfte
     EXPECT_LT(sample, drag);
     const auto& pass = s->passes[static_cast<std::size_t>(drag - order.begin())];
     ASSERT_FALSE(pass.state.empty());
-    EXPECT_EQ(pass.state.back().kind, spade::modules::BindingKind::array) << "drag.forces binds points.points";
-    EXPECT_EQ(s->arrays[pass.state.back().index].name, "points");
+    EXPECT_EQ(pass.state.back().kind, spade::modules::BindingKind::array) << "drag.forces binds points.airflow_points";
+    EXPECT_EQ(s->arrays[pass.state.back().index].name, "airflow_points");
 }
 
 // THE GUARD (lead's ruling L43): an unfilled row must never be read as a real point at the origin. The positions pass writes
-// body rows only, so a set with element rows (k > 0) needs a pass of another module that declares a write of points.points;
+// body rows only, so a set with element rows (k > 0) needs a pass of another module that declares a write of points.airflow_points;
 // without one compile_schedule refuses, naming the array and the missing writer.
 TEST(PointSamples, ElementRowsWithNoWriterAreRefusedNamingTheArrayAndTheMissingWriter) {
     const auto refused = compile_schedule(with_points(true, false, kK));
-    ASSERT_FALSE(refused.has_value()) << "k > 0, and no pass declares a write of points.points";
+    ASSERT_FALSE(refused.has_value()) << "k > 0, and no pass declares a write of points.airflow_points";
     EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
-    EXPECT_NE(refused.error().context.find("points.points"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("points.airflow_points"), std::string::npos) << refused.error().context;
     EXPECT_NE(refused.error().context.find("write"), std::string::npos) << refused.error().context;
     EXPECT_NE(refused.error().context.find("gusts"), std::string::npos) << "names the declaring module: " << refused.error().context;
     // k == 0: no element rows, so the body rows (the positions pass's) are all Core sizes, and nothing is refused.
@@ -161,7 +161,7 @@ TEST(PointSamples, APointsDeclarationThatIsNotPositionDependentAddsNothing) {
     const auto s = compile_schedule(with_points(false, false));
     ASSERT_TRUE(s.has_value()) << s.error().context;
     EXPECT_FALSE(s->points.present);
-    EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.name == "points"; }));
+    EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.name == "airflow_points"; }));
     const std::vector<std::string> order = names(*s);
     EXPECT_EQ(std::ranges::find(order, "points.positions"), order.end());
 }
@@ -189,7 +189,7 @@ TEST(PointSamples, APositionDependentProviderSeesEachPointsPosition) {
     const auto second = sim.spawn(0, spade::test::bare_body(glm::vec3(-4.0f, 5.0f, 6.0f)));
     ASSERT_TRUE(first.has_value() && second.has_value());
     ASSERT_TRUE(sim.step(1).has_value());
-    const auto rows = sim.module_rows<PointRow>("points", 0);
+    const auto rows = sim.module_rows<PointRow>("airflow_points", 0);
     ASSERT_TRUE(rows.has_value()) << rows.error().context;
     ASSERT_EQ(rows->size(), kRowsPerWorld) << "per world: bodies + elements x k + sensors + host rows";
     const spade::BodyState a = spade::test::row_of(sim, *first);
@@ -213,14 +213,14 @@ TEST(PointSamples, APositionDependentProviderSeesEachPointsPosition) {
 }
 
 // THE GUARD, the sensor half (L43): the world's sensor rows are sized at create(), so the refusal is there. A set with no pass
-// that declares a write of points.points, in a world with sensor slots, is refused naming the array.
+// that declares a write of points.airflow_points, in a world with sensor slots, is refused naming the array.
 TEST(PointSamples, SensorRowsWithNoWriterAreRefusedAtCreateNamingTheArray) {
     const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(kBodies);  // two sensor slots
     ASSERT_TRUE(world.has_value()) << world.error().context;
     const auto refused = spade::Simulation::create(*world, 1'000'000, 2, spade::compute::BackendDesc{}, with_points(true, false, 0));
-    ASSERT_FALSE(refused.has_value()) << "sensor rows, k == 0, and no writer of points.points";
+    ASSERT_FALSE(refused.has_value()) << "sensor rows, k == 0, and no writer of points.airflow_points";
     EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
-    EXPECT_NE(refused.error().context.find("points.points"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("points.airflow_points"), std::string::npos) << refused.error().context;
     EXPECT_NE(refused.error().context.find("sensor"), std::string::npos) << refused.error().context;
 }
 
@@ -230,7 +230,7 @@ TEST(PointSamples, HostRequestRowsAreTheHostsAndThePositionsPassLeavesThemAlone)
     const spade::modules::ModuleSet set = with_points();
     spade::Simulation sim = make(set);
     // write_module_rows takes a whole world's rows: read them, change the host's, write them back.
-    const auto current = sim.module_rows<PointRow>("points", 0);
+    const auto current = sim.module_rows<PointRow>("airflow_points", 0);
     ASSERT_TRUE(current.has_value()) << current.error().context;
     ASSERT_EQ(current->size(), kRowsPerWorld);
     std::vector<PointRow> all(current->begin(), current->end());
@@ -239,9 +239,9 @@ TEST(PointSamples, HostRequestRowsAreTheHostsAndThePositionsPassLeavesThemAlone)
         all[i].pos[1] = 8.0f;
         all[i].pos[2] = 9.0f;
     }
-    ASSERT_TRUE(sim.write_module_rows("points", 0, std::as_bytes(std::span<const PointRow>(all))).has_value());
+    ASSERT_TRUE(sim.write_module_rows("airflow_points", 0, std::as_bytes(std::span<const PointRow>(all))).has_value());
     ASSERT_TRUE(sim.step(1).has_value());
-    const auto rows = sim.module_rows<PointRow>("points", 0);
+    const auto rows = sim.module_rows<PointRow>("airflow_points", 0);
     ASSERT_TRUE(rows.has_value()) << rows.error().context;
     ASSERT_EQ(rows->size(), kRowsPerWorld);
     const PointRow& r = (*rows)[kRowsPerWorld - kHostRows];

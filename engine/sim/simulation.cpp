@@ -658,11 +658,11 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     }
 
     // THE POINTS GUARD, the sensor half (stage 7 D1, L43): sensor rows are sized here, and Core's positions pass writes body
-    // rows only, so a set with sensor slots and no writer of points.points would read them as points at the origin.
+    // rows only, so a set with sensor slots and no writer of points.airflow_points would read them as points at the origin.
     if (compiled->points.present && layout->sensor_capacity > 0 && !compiled->points.writer) {
         return std::unexpected(invalid("Simulation::create: module '" + compiled->points.module + "' declares point samples and the set has " +
                                        std::to_string(layout->sensor_capacity) +
-                                       " sensor slots a world, but no pass declares a write of points.points: the sensor rows "
+                                       " sensor slots a world, but no pass declares a write of points.airflow_points: the sensor rows "
                                        "would be read unfilled"));
     }
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);

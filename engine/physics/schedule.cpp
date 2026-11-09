@@ -63,7 +63,7 @@ void pass_rotor_forces(const SubstepContext& ctx) noexcept {
 }
 
 void pass_drag(const SubstepContext& ctx) noexcept {
-    // THE POINTS READER (stage 7 D1): with the optional points.points access bound (the set has a position-dependent
+    // THE POINTS READER (stage 7 D1): with the optional points.airflow_points access bound (the set has a position-dependent
     // provider), the medium at a body is its point row; otherwise the world's stored sample, as ever.
     const bool points = ctx.state.size() > kDragPassPointsAccess && ctx.state[kDragPassPointsAccess].present();
     for (std::size_t i = 0; i < ctx.worlds.size(); ++i) {

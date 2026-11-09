@@ -1074,26 +1074,26 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
 
     const PointsDecl& decl = *declarer->points;
     // THE GUARD (lead's ruling L43): the positions pass writes body rows only, so an unfilled element row would be read as a
-    // real point at the origin. With element rows (k > 0) some pass of another module must declare a write of points.points;
+    // real point at the origin. With element rows (k > 0) some pass of another module must declare a write of points.airflow_points;
     // the ordering machinery then puts it before the first reader (drag.forces). Sensor rows are checked at create(), where
     // their count is known.
     bool written = false;
     for (const ModuleDesc& mod : modules) {
         for (const PassDecl& p : mod.passes) {
             for (const QuantityAccess& qa : p.access) {
-                if (qa.quantity == "points.points" && qa.access != Access::read) written = true;
+                if (qa.quantity == "points.airflow_points" && qa.access != Access::read) written = true;
             }
         }
     }
     if (decl.k > 0) {
         if (!written) {
             return std::unexpected(invalid("module '" + std::string(declarer->name) + "' declares " + std::to_string(decl.k) +
-                                           " points per force element, but no pass declares a write of points.points: the "
+                                           " points per force element, but no pass declares a write of points.airflow_points: the "
                                            "positions pass writes body rows only, so the element rows would be read unfilled"));
         }
     }
 
-    static constexpr QuantityAccess kPositionsAccess[] = {{"body.pose", Access::read}, {"points.points", Access::write}};
+    static constexpr QuantityAccess kPositionsAccess[] = {{"body.pose", Access::read}, {"points.airflow_points", Access::write}};
     static constexpr std::string_view kAfterKinematic[] = {"behaviors.kinematic"};
     static constexpr PassDecl kPositionsAfter[] = {{.name = "positions", .phase = Phase::fields, .access = kPositionsAccess,
                                                     .after = kAfterKinematic, .cpu = &physics::pass_points_positions}};

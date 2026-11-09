@@ -142,14 +142,14 @@ struct FieldDecl {
 
 // POINT SAMPLES (module API stage 7, Task D1; the stage 7 plan, batch D). A module whose field depends on WHERE it is read
 // (a gust field, a wake, an SPH neighbourhood) declares the points it is sampled at. A set with a position-dependent provider
-// gets one internal per-world array `points.points`, appended after the registry walk: one PointRow per point, in this order
+// gets one internal per-world array `points.airflow_points`, appended after the registry walk: one PointRow per point, in this order
 // per world -- every body slot, then every force-element slot times `k`, then every sensor slot, then `host_requests` rows
 // the host fills. compile_schedule injects the positions pass (`points.positions`, after behaviors.kinematic, before any
 // provider) that writes `pos`; the provider writes `wind` and `density`; drag.forces reads them. A set with no
 // position-dependent provider registers nothing and its schedule is the standard one.
 struct PointsDecl {
     uint32_t k = 0;              // sample points per force-element slot (0: none)
-    uint32_t host_requests = 0;  // rows the host may fill (Simulation::module_rows<PointRow>("points", w))
+    uint32_t host_requests = 0;  // rows the host may fill (Simulation::module_rows<PointRow>("airflow_points", w))
     bool position_dependent = false;
 };
 // One point's row (physics/field_row.hpp). std430 layout, 8 words: the set-1 `airflow_points` binding (bindings.slang) is an
@@ -157,8 +157,10 @@ struct PointsDecl {
 using PointRow = physics::PointRow;
 static_assert(sizeof(PointRow) == 32 && std::is_trivially_copyable_v<PointRow>);
 inline constexpr uint32_t kPointRowWords = 8;
-inline constexpr std::string_view kPointsModule = "points";  // the internal module compile_schedule injects: pass "positions", array "points"
-inline constexpr std::string_view kPointsArray = "points";
+inline constexpr std::string_view kPointsModule = "points";  // the internal module compile_schedule injects: pass "positions", array "airflow_points"
+// Named for the set-1 binding it fills: names are the contract (compute/set_one_bindings.hpp), so the mirror binds it at
+// gen::kBinding_airflow_points.
+inline constexpr std::string_view kPointsArray = "airflow_points";
 inline constexpr std::string_view kPositionsPass = "positions";
 
 // The built-in fields sit at fixed places at the front of every world's sample
@@ -633,7 +635,7 @@ struct CompiledPoints {
     uint32_t k = 0;
     uint32_t host_requests = 0;
     std::string module{};  // the declaring module
-    bool writer = false;   // a pass of a module other than the injected one declares a write of points.points (L43)
+    bool writer = false;   // a pass of a module other than the injected one declares a write of points.airflow_points (L43)
 };
 
 // One module array of the compiled table.

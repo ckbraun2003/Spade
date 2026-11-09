@@ -169,7 +169,7 @@ constexpr QuantityAccess kDragAccess[] = {{"body.pose", Access::read},
                                           {"field.wind", Access::read},
                                           // The point rows (stage 7 D1): present only in a set with a position-dependent
                                           // provider (the injected module `points`); absent, it orders and binds nothing.
-                                          {"points.points", Access::read, true}};
+                                          {"points.airflow_points", Access::read, true}};
 constexpr std::string_view kDragAfter[] = {"rotor.forces"};
 constexpr PassDecl kDragPasses[] = {{.name = "forces",
                                      .phase = Phase::forces,
