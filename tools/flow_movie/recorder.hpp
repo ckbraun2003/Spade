@@ -127,6 +127,15 @@ class WebClip {
 [[nodiscard]] spade::Result<void> concatenate(const Encoder& encoder, const std::vector<std::filesystem::path>& clips,
                                               const std::filesystem::path& out);
 
+// What ffprobe reads of a delivered file: its first video stream, and whether it has audio.
+struct VideoInfo {
+    uint32_t width = 0, height = 0, frames = 0;
+    std::string codec, pix_fmt;
+    bool has_audio = false;
+};
+// Probes `file` (a video or a PNG) with ffprobe, found beside `ffmpeg`, counting its frames by decoding them.
+[[nodiscard]] spade::Result<VideoInfo> probe_video(const std::string& ffmpeg, const std::filesystem::path& file);
+
 // One frame (RGBA8, top row first) as a PNG, for looking at a shot.
 [[nodiscard]] spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rgba,
                                          const std::filesystem::path& path);

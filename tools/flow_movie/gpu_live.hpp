@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 #include "cache.hpp"
@@ -35,6 +36,16 @@
 #include "live_case.hpp"
 
 namespace flow_movie {
+
+// The device for a LiveRun film WITH its parts in the flow (the website masters, the lead 2026-11-08): the
+// maker LiveRun::start() takes (spike/airflow/live_fluid.hpp's gpu_live_fluid(): GpuFluid with the run's solids,
+// each published frame scanned for non-finite values) and the Vulkan context it runs on, which must outlive
+// the run. Refused as the device's creation is, with Code::unavailable where there is none.
+struct DeviceFluid {
+    std::shared_ptr<void> context;
+    spade::analysis::LiveFluidMaker maker;
+};
+[[nodiscard]] spade::Result<DeviceFluid> open_device_fluid();
 
 // Simulates `frames` frames of `lc` into `cache`, marked `mark`; `stem`
 // names the film in its errors and progress lines. Refused, before the device

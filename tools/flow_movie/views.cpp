@@ -6,6 +6,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "web_masters.hpp"
+
 namespace flow_movie {
 
 namespace render = spade::render;
@@ -16,6 +18,12 @@ render::RenderScene dark_scene(const spade::FlowVolume& volume) {
     scene.lighting.sky_horizon = glm::vec3(0.075f, 0.08f, 0.095f);
     const glm::vec3 lo = volume.header.origin;
     scene.bounds = render::Aabb{.min = lo, .max = lo + volume_size(volume)};
+    return scene;
+}
+
+render::RenderScene black_scene(const spade::FlowVolume& volume) {
+    render::RenderScene scene = dark_scene(volume);
+    web::blacken(scene);
     return scene;
 }
 

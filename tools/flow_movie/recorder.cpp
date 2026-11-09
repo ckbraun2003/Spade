@@ -417,6 +417,40 @@ spade::Result<fs::path> WebClip::finish() {
     return out_;
 }
 
+spade::Result<VideoInfo> probe_video(const std::string& ffmpeg, const fs::path& file) {
+    std::string probe = ffmpeg;
+    const std::size_t at = probe.rfind("ffmpeg");
+    if (at == std::string::npos) return refuse(Code::unavailable, "no ffprobe beside \"" + ffmpeg + "\"");
+    probe.replace(at, 6u, "ffprobe");
+    const std::string common = in_quotes(probe) + " -v error ";
+    const auto [video_ok, video] = run_capture(common + "-select_streams v:0 -count_frames -show_entries "
+                                                        "stream=codec_name,width,height,pix_fmt,nb_read_frames "
+                                                        "-of default=noprint_wrappers=1 " + in_quotes(file.string()));
+    if (!video_ok) return refuse(Code::io_error, "ffprobe could not read " + file.string());
+    VideoInfo info;
+    std::size_t line_start = 0;
+    while (line_start < video.size()) {
+        std::size_t line_end = video.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = video.size();
+        std::string line = video.substr(line_start, line_end - line_start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        const std::size_t eq = line.find('=');
+        if (eq != std::string::npos) {
+            const std::string key = line.substr(0, eq), value = line.substr(eq + 1u);
+            if (key == "codec_name") info.codec = value;
+            if (key == "pix_fmt") info.pix_fmt = value;
+            if (key == "width") info.width = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+            if (key == "height") info.height = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+            if (key == "nb_read_frames") info.frames = static_cast<uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
+        }
+        line_start = line_end + 1u;
+    }
+    const auto [audio_ok, audio] = run_capture(common + "-select_streams a -show_entries stream=codec_type "
+                                                        "-of default=noprint_wrappers=1 " + in_quotes(file.string()));
+    info.has_audio = audio_ok && audio.find("codec_type") != std::string::npos;
+    return info;
+}
+
 spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rgba, const fs::path& path) {
     const std::string command = in_quotes(encoder.ffmpeg) + " -hide_banner -loglevel error -y -f rawvideo -pix_fmt rgba -s " +
                                 std::to_string(encoder.width) + "x" + std::to_string(encoder.height) +
