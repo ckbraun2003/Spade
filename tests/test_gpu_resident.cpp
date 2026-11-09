@@ -193,6 +193,8 @@ TEST(GpuResident, TheDigestFoldsTheResidentArrayAfterASync) {
     Simulation ref = make(cpu, BackendKind::cpu);
     ASSERT_TRUE(vk.step(3).has_value());
     ASSERT_TRUE(ref.step(3).has_value());
+    // Compared by grid, not by whole-set digest: the CPU and the device advance the dryden gust filter within CORE-3's band
+    // (bands::medium::kFilterState, held over 200 to 900 steps by GpuParity), so the raw bytes of that array differ past a few steps.
     EXPECT_TRUE(spade::test::grids_equal(vk, ref, kWorlds)) << "the grid is exact in fp32 on both backends";
     // D1 = A: the digest folds the resident array after a sync. The non-const digest syncs; the checked const one then agrees.
     const uint64_t synced = spade::testing::state_digest(vk);
