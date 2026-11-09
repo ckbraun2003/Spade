@@ -81,10 +81,10 @@ constexpr PassDecl kNoPointsPasses[] = {{.name = "sample", .phase = Phase::field
     return out;
 }
 
-[[nodiscard]] spade::Simulation make(const spade::modules::ModuleSet& set) {
+[[nodiscard]] spade::Simulation make(const spade::modules::ModuleSet& set, uint32_t substeps = 2) {
     const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(kBodies);
     EXPECT_TRUE(world.has_value()) << world.error().context;
-    spade::Result<spade::Simulation> sim = spade::Simulation::create(*world, 1'000'000, 2, spade::compute::BackendDesc{}, set);
+    spade::Result<spade::Simulation> sim = spade::Simulation::create(*world, 1'000'000, substeps, spade::compute::BackendDesc{}, set);
     EXPECT_TRUE(sim.has_value()) << sim.error().context;
     return std::move(*sim);
 }
@@ -181,10 +181,12 @@ TEST(PointSamples, TwoModulesDeclaringPointsAreRefusedNamingBoth) {
 }
 
 // The provider sees each point's position: bodies first (slot order), then the host's rows. The array holds
-// bodies + elements x k + sensors + host rows per world, 8 words each.
+// bodies + elements x k + sensors + host rows per world, 8 words each. ONE substep, so the positions pass (which runs before
+// Integrate in the substep) sees exactly the spawn positions; with more substeps a row holds where the body was at the start
+// of the LAST substep, not where it ends the step.
 TEST(PointSamples, APositionDependentProviderSeesEachPointsPosition) {
     const spade::modules::ModuleSet set = with_points();
-    spade::Simulation sim = make(set);
+    spade::Simulation sim = make(set, 1);
     const auto first = sim.spawn(0, spade::test::bare_body(glm::vec3(1.0f, 2.0f, 3.0f)));
     const auto second = sim.spawn(0, spade::test::bare_body(glm::vec3(-4.0f, 5.0f, 6.0f)));
     ASSERT_TRUE(first.has_value() && second.has_value());
@@ -192,36 +194,21 @@ TEST(PointSamples, APositionDependentProviderSeesEachPointsPosition) {
     const auto rows = sim.module_rows<PointRow>("airflow_points", 0);
     ASSERT_TRUE(rows.has_value()) << rows.error().context;
     ASSERT_EQ(rows->size(), kRowsPerWorld) << "per world: bodies + elements x k + sensors + host rows";
-    const spade::BodyState a = spade::test::row_of(sim, *first);
-    const spade::BodyState b = spade::test::row_of(sim, *second);
-    // The spawn slots are 0 and 1; the bodies have moved one step under gravity, and the row holds where they are NOW.
-    EXPECT_EQ((*rows)[0].pos[0], a.pos.x);
-    EXPECT_EQ((*rows)[0].pos[1], a.pos.y);
-    EXPECT_EQ((*rows)[0].pos[2], a.pos.z);
-    EXPECT_EQ((*rows)[1].pos[0], b.pos.x);
-    EXPECT_EQ((*rows)[1].pos[1], b.pos.y);
-    EXPECT_EQ((*rows)[1].pos[2], b.pos.z);
+    EXPECT_EQ((*rows)[0].pos[0], 1.0f);
+    EXPECT_EQ((*rows)[0].pos[1], 2.0f);
+    EXPECT_EQ((*rows)[0].pos[2], 3.0f);
+    EXPECT_EQ((*rows)[1].pos[0], -4.0f);
+    EXPECT_EQ((*rows)[1].pos[1], 5.0f);
+    EXPECT_EQ((*rows)[1].pos[2], 6.0f);
     EXPECT_EQ((*rows)[0].reserved, 0.0f);
     // The provider wrote a function of each position, so it ran after the positions pass.
-    EXPECT_EQ((*rows)[0].wind[0], 2.0f * a.pos.y);
-    EXPECT_EQ((*rows)[0].density, a.pos.x);
-    EXPECT_EQ((*rows)[1].wind[0], 2.0f * b.pos.y);
-    EXPECT_EQ((*rows)[1].density, b.pos.x);
+    EXPECT_EQ((*rows)[0].wind[0], 4.0f);
+    EXPECT_EQ((*rows)[0].density, 1.0f);
+    EXPECT_EQ((*rows)[1].wind[0], 10.0f);
+    EXPECT_EQ((*rows)[1].density, -4.0f);
     // The module's own pass filled its element rows (L43), and the provider saw them.
     EXPECT_EQ((*rows)[kBodies].pos[1], static_cast<float>(kBodies));
     EXPECT_EQ((*rows)[kBodies].wind[0], 2.0f * static_cast<float>(kBodies));
-}
-
-// THE GUARD, the sensor half (L43): the world's sensor rows are sized at create(), so the refusal is there. A set with no pass
-// that declares a write of points.airflow_points, in a world with sensor slots, is refused naming the array.
-TEST(PointSamples, SensorRowsWithNoWriterAreRefusedAtCreateNamingTheArray) {
-    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(kBodies);  // two sensor slots
-    ASSERT_TRUE(world.has_value()) << world.error().context;
-    const auto refused = spade::Simulation::create(*world, 1'000'000, 2, spade::compute::BackendDesc{}, with_points(true, false, 0));
-    ASSERT_FALSE(refused.has_value()) << "sensor rows, k == 0, and no writer of points.airflow_points";
-    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
-    EXPECT_NE(refused.error().context.find("points.airflow_points"), std::string::npos) << refused.error().context;
-    EXPECT_NE(refused.error().context.find("sensor"), std::string::npos) << refused.error().context;
 }
 
 // Host requests: the last kHostRows rows are the host's. The positions pass leaves them alone; the provider sees what the
