@@ -6,7 +6,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -205,6 +207,48 @@ TEST(GpuResident, AReplayOfASetWithAResidentArraySyncsOrRefuses) {
     }
     EXPECT_EQ(spade::testing::state_digest(a), spade::testing::state_digest(b));
 }
+
+// REVIEW FOCUS 4, the last host path: the two CONST digest folds cannot refuse (they return a bare uint64_t), so on a set whose
+// resident array is stale they must STOP, loudly, naming the array and pointing at sync_resident() -- never fold stale bytes
+// silently. (abort() under GoogleTest ends in _exit(3) on Windows, SIGABRT elsewhere: tests/test_fatal_report.cpp.)
+#if defined(_WIN32)
+#define SPADE_STOPPED ::testing::ExitedWithCode(3)
+#else
+#define SPADE_STOPPED ::testing::KilledBySignal(SIGABRT)
+#endif
+
+TEST(GpuResidentDeathTest, AConstStateDigestOfAStaleArrayStopsLoudlyNamingIt) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_FALSE(sim.resident_current());
+    const Simulation& view = sim;
+    EXPECT_EXIT({ (void)spade::testing::state_digest(view); std::exit(0); }, SPADE_STOPPED, "airflow_u.*sync_resident");
+}
+
+TEST(GpuResidentDeathTest, AConstWorldDigestOfAStaleArrayStopsLoudlyNamingIt) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_FALSE(sim.resident_current());
+    const Simulation& view = sim;
+    EXPECT_EXIT({ (void)spade::testing::world_digest(view, 0); std::exit(0); }, SPADE_STOPPED, "airflow_u.*sync_resident");
+}
+
+// And once the array is current the const folds answer as ever.
+TEST(GpuResident, TheConstDigestsAnswerOnceTheResidentArrayIsCurrent) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_TRUE(sim.sync_resident().has_value());
+    const Simulation& view = sim;
+    EXPECT_EQ(spade::testing::state_digest(view), spade::testing::state_digest(sim));
+    EXPECT_EQ(spade::testing::world_digest(view, 1), spade::testing::world_digest(sim, 1));
+}
+#undef SPADE_STOPPED
 
 TEST(GpuResident, StagingIsOneBufferSizedToTheLargestRow) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
