@@ -108,6 +108,10 @@ inline constexpr float kFocusShadowDepthBias = 0.005f;
 // limited by).
 [[nodiscard]] float shadow_texel_metres(const ShadowMap& map);
 
+// The extra bias, in metres, a filter tap away from the point's own texel carries on `map` (half a texel's metres):
+// a tap there may read a neighbouring face of the same body. sample_shadow() applies it; GL's port is given it.
+[[nodiscard]] float shadow_tap_slack(const ShadowMap& map);
+
 // The map the DYNAMIC casters get of their own. The sun is orthographic, so a receiver anywhere is shadowed by a
 // dynamic body exactly when its light-space (x, y) falls inside that body's light-space footprint: this map is
 // fitted to the union of the dynamic items' footprints (padded by what a filter of `filter_texels` reads) and
@@ -118,6 +122,11 @@ inline constexpr float kFocusShadowDepthBias = 0.005f;
 // would be no finer than `statics`' (then the caller folds the dynamics into a copy of the static map, as before,
 // and the result is never worse than that).
 // `scratch`, when given, lends its capacity to the map's depth buffer (render() reclaims it after the frame).
+// fit_focus_shadow_map() is the same map's frame without its depth: `size`, `light_view_proj` and `depth_bias`, with
+// `depth` left empty and nothing rasterised, and the same answer for "no map". GL fits its focus map with it and
+// draws the casters itself, so the two paths share one fit.
+[[nodiscard]] std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size,
+                                                            float filter_texels, const ShadowMap& statics);
 [[nodiscard]] std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size,
                                                               float filter_texels, const ShadowMap& statics,
                                                               std::vector<float>* scratch = nullptr);

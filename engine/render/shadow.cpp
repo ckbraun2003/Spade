@@ -313,8 +313,8 @@ float shadow_texel_metres(const ShadowMap& map) {
     return map.size == 0 || per_metre <= 0.0f ? 0.0f : 2.0f / (per_metre * static_cast<float>(map.size));
 }
 
-std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
-                                                const ShadowMap& statics, std::vector<float>* scratch) {
+std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
+                                              const ShadowMap& statics) {
     if (size == 0 || scene.dynamics.empty()) {
         return std::nullopt;
     }
@@ -378,13 +378,25 @@ std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32
     if (shadow_texel_metres(map) >= shadow_texel_metres(statics)) {
         return std::nullopt;
     }
+    return map;
+}
+
+std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
+                                                const ShadowMap& statics, std::vector<float>* scratch) {
+    std::optional<ShadowMap> fitted = fit_focus_shadow_map(scene, size, filter_texels, statics);
+    if (!fitted) {
+        return std::nullopt;
+    }
+    ShadowMap& map = *fitted;
     if (scratch != nullptr) {
         map.depth = std::move(*scratch);
     }
     map.depth.assign(static_cast<size_t>(size) * size, kNoOccluder);
     rasterize_shadow_casters(scene.meshes, scene.dynamics, map);
-    return map;
+    return fitted;
 }
+
+float shadow_tap_slack(const ShadowMap& map) { return kTapSlackTexels * shadow_texel_metres(map); }
 
 float ShadowSet::sample(const glm::vec3& world_pos, const glm::vec3& normal) const {
     float lit = statics == nullptr ? 1.0f : sample_shadow(*statics, world_pos, normal, filter_texels);
@@ -472,7 +484,7 @@ static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos
     // convex edge): that face can lie nearer the sun than this receiver's plane by up to a texel's run times its own
     // slope, which the plane cannot know. Those taps carry that much more bias (half a texel's metres), so the filter
     // widens a shadow's edge without shadowing a lit face beside an edge; the point's own texel keeps the bias alone.
-    const float tap_slack = kTapSlackTexels * shadow_texel_metres(map);
+    const float tap_slack = shadow_tap_slack(map);
     float lit_sum = 0.0f, weight_sum = 0.0f;
     for (int y = y0; y <= y1; ++y) {
         const float wy = std::min(static_cast<float>(y + 1), vy + half) - std::max(static_cast<float>(y), vy - half);
