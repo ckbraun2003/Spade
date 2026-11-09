@@ -124,7 +124,8 @@ long long quantile(std::vector<long long> samples, double q) {
     return samples[rank];
 }
 
-void write_checkpoint(std::string& out, const spade::Simulation& sim, uint32_t world_count, uint64_t chain) {
+// Non-const: the digests sync a device-resident array first (stage 7, Task C2), so a checkpoint never folds stale host bytes.
+void write_checkpoint(std::string& out, spade::Simulation& sim, uint32_t world_count, uint64_t chain) {
     appendf(out, "checkpoint %llu %016llx %016llx", static_cast<unsigned long long>(sim.tick().value),
             static_cast<unsigned long long>(chain), static_cast<unsigned long long>(spade::testing::state_digest(sim)));
     for (uint32_t w = 0; w < world_count; ++w) {

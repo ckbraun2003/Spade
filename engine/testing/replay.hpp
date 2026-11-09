@@ -181,10 +181,18 @@ template <class T>
 // different), the world INDEX is not (that is the whole point).
 // ---------------------------------------------------------------------------
 [[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept;
+// The same two forms as state_digest (stage 7, Task C2 and its replay carry): the non-const world_digest syncs the device-resident
+// arrays first (noexcept, so a failed sync folds the host bytes as they stand and resident_current() says so); the checked const
+// form refuses `unavailable` naming the array and sync_resident() when one is stale. The const form below folds the host bytes
+// unchecked, for the callers that cannot refuse; a set with no resident array, which is every set today, digests as it always did.
 [[nodiscard]] inline uint64_t world_digest(Simulation& sim, uint32_t world) noexcept {
+    (void)sim.sync_resident();
     return world_digest(static_cast<const Simulation&>(sim), world);
 }
 [[nodiscard]] inline Result<uint64_t> checked_world_digest(const Simulation& sim, uint32_t world) noexcept {
+    if (Result<std::reference_wrapper<const ArenaSet>> arenas = sim.checked_arenas(); !arenas) {
+        return std::unexpected(arenas.error());
+    }
     return world_digest(sim, world);
 }
 [[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept {
