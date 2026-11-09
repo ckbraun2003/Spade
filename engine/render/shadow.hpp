@@ -108,7 +108,7 @@ inline constexpr float kFocusShadowDepthBias = 0.005f;
 // limited by).
 [[nodiscard]] float shadow_texel_metres(const ShadowMap& map);
 
-// The extra bias, in metres, a filter tap away from the point's own texel carries on `map` (half a texel's metres):
+// The extra bias, in metres, a filter tap away from the point's own texel carries on `map` (a texel's metres):
 // a tap there may read a neighbouring face of the same body. sample_shadow() applies it; GL's port is given it.
 [[nodiscard]] float shadow_tap_slack(const ShadowMap& map);
 

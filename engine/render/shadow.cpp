@@ -216,7 +216,7 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
 constexpr float kMinFacing = 0.05f;
 
 // How much more bias (in texels' metres) a filter tap away from the point's own texel carries; see sample_shadow().
-constexpr float kTapSlackTexels = 0.5f;
+constexpr float kTapSlackTexels = 1.0f;
 
 // sample_shadow()'s receiver plane: the light-space depth, at texel (tx, ty)'s
 // centre, of the plane through the point whose light-space position is `p`,
@@ -482,7 +482,7 @@ static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos
     const ReceiverPlane plane = ReceiverPlane::of(map, normal);
     // A tap away from the point's own texel reads a texel that may belong to a neighbouring face of the same body (a
     // convex edge): that face can lie nearer the sun than this receiver's plane by up to a texel's run times its own
-    // slope, which the plane cannot know. Those taps carry that much more bias (half a texel's metres), so the filter
+    // slope, which the plane cannot know. Those taps carry that much more bias (a texel's metres, a neighbour's slope of 1), so the filter
     // widens a shadow's edge without shadowing a lit face beside an edge; the point's own texel keeps the bias alone.
     const float tap_slack = shadow_tap_slack(map);
     float lit_sum = 0.0f, weight_sum = 0.0f;
