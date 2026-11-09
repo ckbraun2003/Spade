@@ -83,9 +83,12 @@ struct LiveCase {
 // Physics' B7 and Test/Docs' harness share), as a film. `grid` replaces
 // kD1Grid, for a measurement. Without `parts_in_flow`, the parts are drawn
 // only, and the film's title and card say "no parts" (--gpu, B7's G2).
+// `heading_deg` is where the wind comes from, about +Y from the nose (Flight::heading_deg; Physics' d1_case():
+// 0 the headwind, +90 air moving +z, a crosswind). The air only: the discs ignore an in-plane inflow and
+// LiveRun holds the drone, so the hover throttle is the still-air one (Physics, 2026-11-08).
 using spade::testing::kD1Grid;
 [[nodiscard]] spade::Result<LiveCase> d1_live_case(double seconds,
                                                    const spade::physics::airflow::GridShape& grid = kD1Grid,
-                                                   bool parts_in_flow = true);
+                                                   bool parts_in_flow = true, float heading_deg = 0.0f);
 
 }  // namespace flow_movie

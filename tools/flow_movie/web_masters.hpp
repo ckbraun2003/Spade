@@ -38,48 +38,78 @@ struct Clip {
     std::string_view short_name;  // the file name's middle
     std::string_view title;       // the caption's title
     std::string_view shows;       // one plain sentence: what the footage shows
+    std::string_view group;       // the simulation its frames come from (web_groups()): clips of a group share a cache
     Scene scene = Scene::quad;
     Quantity quantity = Quantity::speed;
     Camera camera = Camera::still;
-    double seconds = 0.0;       // the clip's length on screen
-    double window_from_s = 0.0;  // the simulated time it films, from rest
-    double window_to_s = 0.0;
+    double seconds = 0.0;        // the clip's length on screen
     float orbit_degrees = 0.0f;  // the camera's sweep
     float range_lo = 0.0f;       // the colour range, fixed within a scene's quantity (0, 0: the case's own)
     float range_hi = 0.0f;
     bool still = false;  // a 5120x2880 PNG as well
 
     [[nodiscard]] uint32_t frames() const noexcept { return static_cast<uint32_t>(std::lround(seconds * kFps)); }
+    // One full orbit: the camera's last frame is followed by its first.
+    [[nodiscard]] bool camera_loops() const noexcept { return orbit_degrees >= 360.0f; }
 };
 
-// The brief's table. The quad's wake window (0.9 to 1.5 s of simulated time) is a default: it is filmed only once
-// the frames after 0.6 s have been looked at (Physics: the box's open faces over 1.5 s are unmeasured).
+// A simulation behind one or more clips: its frames are spread evenly over [from_s, to_s] of simulated time
+// from rest (a window), and a clip of the group draws the first `clip.frames()` of its `frames`.
+struct Group {
+    std::string_view name;
+    double from_s = 0.0;
+    double to_s = 0.0;
+    uint32_t frames = 0;
+};
+
+// The windows. The quad's developed wake (0.9 to 1.5 s of simulated time) is a default: it is filmed only once
+// the frames after 0.6 s have been looked at (Physics: the box's open faces over 1.5 s are unmeasured). The
+// Taylor-Green case's time is dimensionless.
+[[nodiscard]] inline const std::array<Group, 4>& web_groups() {
+    static const std::array<Group, 4> table{{
+        {"quad-developed", 0.9, 1.5, 450},
+        {"quad-startup", 0.0, 0.6, 360},
+        {"d1-crosswind", 0.0, 0.567, 360},
+        {"taylor-green", 0.0, 10.0, 300},
+    }};
+    return table;
+}
+
+[[nodiscard]] inline const Group* find_group(std::string_view name) {
+    for (const Group& g : web_groups()) {
+        if (g.name == name) return &g;
+    }
+    return nullptr;
+}
+
+// The brief's table. Cameras: S1 one full orbit (the brief's), S3 a half orbit, the other orbits and the rotate
+// slow partial arcs (a full turn in ten seconds is not slow), S5 and S6 still.
 [[nodiscard]] inline const std::array<Clip, 8>& web_clips() {
     static const std::array<Clip, 8> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad: streamlines of the rotor wake",
          "Streamlines seeded above each of four actuator discs, coloured by relative speed, in one slow orbit.",
-         Scene::quad, Quantity::speed, Camera::loop_orbit, 15.0, 0.9, 1.5, 360.0f, 0.0f, 12.0f, true},
+         "quad-developed", Scene::quad, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true},
         {"S2", "rotor-wake-vortex-surfaces", "Reference quad: vortex surfaces from the start-up",
          "Vortex surfaces (lambda2) of four actuator discs from the start-up roll-up, in a slow push-in.",
-         Scene::quad, Quantity::speed, Camera::push_in, 12.0, 0.0, 0.6, 0.0f, 0.0f, 12.0f, false},
+         "quad-startup", Scene::quad, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
-         Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 0.0, 0.567, 180.0f, 0.0f, 0.0f, true},
+         "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},
         {"S4", "d1-airframe-cp", "D1 quad in a crosswind: pressure on the airframe",
          "Pressure coefficient on the reference quad's airframe, held at hover in a crosswind, in a slow orbit.",
-         Scene::d1, Quantity::cp, Camera::slow_orbit, 10.0, 0.0, 0.567, 360.0f, -1.0f, 1.0f, true},
+         "d1-crosswind", Scene::d1, Quantity::cp, Camera::slow_orbit, 10.0, 120.0f, -1.0f, 1.0f, true},
         {"S5", "rotor-wake-velocity-slice", "Reference quad: a velocity slice through the wake",
-         "Relative speed on the vertical plane through two opposite actuator discs.", Scene::quad, Quantity::speed,
-         Camera::still, 10.0, 0.9, 1.5, 0.0f, 0.0f, 12.0f, false},
+         "Relative speed on the vertical plane through two opposite actuator discs.", "quad-developed", Scene::quad,
+         Quantity::speed, Camera::still, 10.0, 0.0f, 0.0f, 12.0f, false},
         {"S6", "rotor-swirl-from-above", "Reference quad: the rotor swirl from above",
          "Streamlines through each of four actuator discs seen from above, the rims drawn by spin direction.",
-         Scene::quad, Quantity::speed, Camera::still, 10.0, 0.9, 1.5, 0.0f, 0.0f, 12.0f, false},
+         "quad-developed", Scene::quad, Quantity::speed, Camera::still, 10.0, 0.0f, 0.0f, 12.0f, false},
         {"S7", "taylor-green-q-surfaces", "Taylor-Green vortex: Q surfaces breaking down",
          "Q surfaces of the Taylor-Green vortex in a periodic box as it breaks down, in a slow rotate.",
-         Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 0.0, 10.0, 360.0f, 0.0f, 1.0f, true},
+         "taylor-green", Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 90.0f, 0.0f, 1.0f, true},
         {"S8", "rotor-wake-volume", "Reference quad: a volume render of the rotor wake",
-         "Vorticity magnitude of four actuator discs' wake as a volume, in a slow orbit.", Scene::quad,
-         Quantity::vorticity, Camera::slow_orbit, 10.0, 0.9, 1.5, 360.0f, 0.0f, 400.0f, false},
+         "Vorticity magnitude of four actuator discs' wake as a volume, in a slow orbit.", "quad-developed",
+         Scene::quad, Quantity::vorticity, Camera::slow_orbit, 10.0, 90.0f, 0.0f, 400.0f, false},
     }};
     return table;
 }
@@ -198,11 +228,17 @@ struct DeliveryGuard {
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
         t += "The wake is a single run on the device of record, not a measurement.";
     } else if (c.scene == Scene::d1) {
-        t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs, "
-             "the drone held at hover; the crosswind setting supported but not validated, and not a case D1's "
-             "checks were judged on. ";
-        t += "Colour shows relative speed, not validated speed (pressure: a coefficient, first order in the cell "
-             "size), and the picture carries no speed figures. ";
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
+             "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
+             "the side (crosswind setting supported but not validated). The wind bends and carries the wake and "
+             "flows round the airframe's parts, but the rotors do not respond to it and the held drone does not "
+             "need to compensate: this is a visualisation of the air, not a prediction of the thrust, power or "
+             "attitude a real quad would need in a crosswind. ";
+        t += c.quantity == Quantity::cp
+                 ? "Pressure is a coefficient against the inflow's pressure, read one cell off each wall (first "
+                   "order in the cell size); its sign on the arms' tops has not been measured. "
+                 : "The wake below the quad has not been measured against a downwash record. ";
+        t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
         t += "The fluid is stepped by the GPU solver (GpuFluid), checked bit-equal to the CPU's through about 0.18 s "
              "of simulated time only: a single run on the device of record, not the CPU's run.";
     } else {
@@ -212,16 +248,41 @@ struct DeliveryGuard {
     return t;
 }
 
+// The camera's line: what loops and what does not (no crossfade, no repeated frames).
+[[nodiscard]] inline std::string loop_line(const Clip& c) {
+    if (c.camera_loops()) {
+        return "the camera completes one full orbit and loops; the flow does not, so the last frame does not match "
+               "the first.";
+    }
+    if (c.camera == Camera::still) {
+        return "the camera is still; the flow does not loop, so the last frame does not match the first.";
+    }
+    char deg[32];
+    std::snprintf(deg, sizeof deg, "%.0f", static_cast<double>(c.orbit_degrees));
+    return std::string("the camera sweeps ") + deg +
+           " degrees and does not return to its start; the flow does not loop either.";
+}
+
 struct CaptionInput {
     const Clip* clip = nullptr;
     std::string commit;
     std::string date_utc;
     std::string command;
     std::string ticket;
-    double sim_seconds = 0.0;
+    double sim_seconds = 0.0;  // simulated time shown, in the case's own units
     double screen_seconds = 0.0;
-    std::string extra;  // anything else the run's log carries (the device, the grid)
+    std::string extra;  // anything else the run's log carries (the device, the grid, a legend's note)
 };
+
+// Time on the clip, in words: seconds of simulated time per screen second, and how much slower than real time;
+// the Taylor-Green case's time has no unit.
+[[nodiscard]] inline std::string time_line(const Clip& c, double sim, double screen) {
+    if (c.scene != Scene::taylor_green) return slow_motion_line(sim, screen);
+    char out[160];
+    std::snprintf(out, sizeof out, "Time: the case's own dimensionless time, %.4f units in each screen second.",
+                  screen > 0.0 ? sim / screen : 0.0);
+    return out;
+}
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
 // and the stand-in. It never claims more than the footage shows.
@@ -232,8 +293,8 @@ struct CaptionInput {
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + in.command + "`, jobrun ticket " + in.ticket + "\n";
     t += "- Shows: " + std::string(c.shows) + "\n";
-    t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
-    t += "- Loop: the camera loops; the flow does not, so the last frame does not match the first.\n";
+    t += "- " + time_line(c, in.sim_seconds, in.screen_seconds) + "\n";
+    t += "- Loop: " + loop_line(c) + "\n";
     t += "- " + standing_caveats(c) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;

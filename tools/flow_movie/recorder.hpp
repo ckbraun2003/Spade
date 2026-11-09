@@ -37,6 +37,9 @@ class GlStage {
     [[nodiscard]] spade::Result<void> draw(const spade::render::RenderScene& scene,
                                            const spade::render::Camera& camera, std::vector<uint8_t>& rgba);
     [[nodiscard]] std::string device() const;
+    // The GL limits this stage's frame was checked against: "max renderbuffer 16384, max viewport 16384x16384, max
+    // texture 16384" (create() refuses a frame past them, naming the limit).
+    [[nodiscard]] const std::string& limits() const noexcept { return limits_; }
     [[nodiscard]] uint32_t width() const noexcept { return width_; }
     [[nodiscard]] uint32_t height() const noexcept { return height_; }
 
@@ -46,6 +49,7 @@ class GlStage {
     std::unique_ptr<spade::render_gl::GlRenderer> renderer_;
     unsigned fbo_ = 0, colour_ = 0, depth_ = 0;
     uint32_t width_ = 0, height_ = 0;
+    std::string limits_;
     std::vector<uint8_t> bottom_first_;
 };
 
@@ -88,6 +92,30 @@ class Clip {
     std::string name_;
     std::FILE* pipe_ = nullptr;
     std::vector<std::vector<Caption>> captions_;  // per frame
+};
+
+// A website master (web_masters.hpp): raw RGBA frames straight into one libx264 pass, CRF 15, yuv420p, faststart,
+// no audio, and no captions burned in. The file is written to `out` as the frames arrive.
+class WebClip {
+  public:
+    [[nodiscard]] static spade::Result<std::unique_ptr<WebClip>> open(const std::string& ffmpeg, uint32_t width,
+                                                                    uint32_t height,
+                                                                    const std::filesystem::path& out);
+    ~WebClip();
+    WebClip(const WebClip&) = delete;
+    WebClip& operator=(const WebClip&) = delete;
+
+    // One frame, RGBA8, top row first, width x height x 4 bytes.
+    [[nodiscard]] spade::Result<void> add_frame(std::span<const uint8_t> rgba);
+    // Closes the pipe; refused when ffmpeg did not finish cleanly. The file exists only after this returns.
+    [[nodiscard]] spade::Result<std::filesystem::path> finish();
+    [[nodiscard]] uint32_t frames() const noexcept { return frames_; }
+
+  private:
+    WebClip() = default;
+    uint32_t width_ = 0, height_ = 0, frames_ = 0;
+    std::filesystem::path out_;
+    std::FILE* pipe_ = nullptr;
 };
 
 // `seconds` of a still frame (a dark background) with captions.

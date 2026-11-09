@@ -139,6 +139,36 @@ TEST(FlowMovieWeb, TheTableHasTheEightClipsAtThirtyFramesASecondAndOneRangeAScen
     EXPECT_EQ(web::find_clip("S9"), nullptr);
 }
 
+TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheWindows) {
+    for (const web::Clip& c : web::web_clips()) {
+        const web::Group* g = web::find_group(c.group);
+        ASSERT_NE(g, nullptr) << c.id << " names a group that is not in the table";
+        EXPECT_GE(g->frames, c.frames()) << c.id << ": its group's cache holds all its frames";
+        EXPECT_GT(g->to_s, g->from_s) << c.id;
+    }
+    // One window a group: S1, S5, S6 and S8 share the quad's developed wake; S3 and S4 the D1 run.
+    EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S8")->group);
+    EXPECT_EQ(web::find_clip("S3")->group, web::find_clip("S4")->group);
+    EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S2")->group);
+    EXPECT_EQ(web::find_group("quad-developed")->frames, 450u);
+    EXPECT_DOUBLE_EQ(web::find_group("quad-developed")->from_s, 0.9);
+    EXPECT_DOUBLE_EQ(web::find_group("d1-crosswind")->to_s, 0.567);
+    EXPECT_EQ(web::find_group("nothing"), nullptr);
+}
+
+TEST(FlowMovieWeb, OnlyAFullOrbitLoopsTheCamera) {
+    EXPECT_TRUE(web::find_clip("S1")->camera_loops());
+    for (const char* id : {"S2", "S3", "S4", "S5", "S6", "S7", "S8"}) {
+        EXPECT_FALSE(web::find_clip(id)->camera_loops()) << id;
+    }
+    EXPECT_TRUE(has(web::loop_line(*web::find_clip("S1")), "completes one full orbit and loops"));
+    EXPECT_TRUE(has(web::loop_line(*web::find_clip("S5")), "the camera is still"));
+    EXPECT_TRUE(has(web::loop_line(*web::find_clip("S3")), "sweeps 180 degrees and does not return"));
+    for (const web::Clip& c : web::web_clips()) {
+        EXPECT_TRUE(has(web::loop_line(c), "flow does not")) << c.id << ": the flow is never claimed to loop";
+    }
+}
+
 TEST(FlowMovieWeb, TheEncodeIsOneLibx264PassAtCrf15WithNoCaptionsAndNoAudio) {
     const std::vector<std::string> args = web::ffmpeg_web_args("ffmpeg", web::kWidth, web::kHeight, "out.mp4");
     const auto at = [&](const std::string& flag) -> std::string {
@@ -203,9 +233,11 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_TRUE(has(text, "flow_movie --web S3"));
     EXPECT_TRUE(has(text, "Slow motion"));
     EXPECT_TRUE(has(text, "times slower than real time"));
-    EXPECT_TRUE(has(text, "the camera loops; the flow does not"));
+    EXPECT_TRUE(has(text, "the camera sweeps 180 degrees and does not return to its start; the flow does not loop"));
     EXPECT_TRUE(has(text, "Colour shows relative speed, not validated speed"));
     EXPECT_TRUE(has(text, "crosswind setting supported but not validated"));
+    EXPECT_TRUE(has(text, "the rotors do not respond to it"));
+    EXPECT_TRUE(has(text, "not a prediction of the thrust, power or attitude a real quad would need"));
     EXPECT_TRUE(has(text, "about 0.18 s of simulated time only"));
     EXPECT_TRUE(has(text, "a single run on the device of record"));
     EXPECT_FALSE(has(text, "identical to the CPU"));
@@ -213,6 +245,20 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_FALSE(has(standing, "m/s")) << "no speed figures in the standing caveats";
     EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S2")), "inviscid"));
     EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S1")), "four actuator discs"));
+    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S4")), "sign on the arms' tops has not been measured"));
+    for (const web::Clip& c : web::web_clips()) {
+        EXPECT_FALSE(has(web::standing_caveats(c), "m/s")) << c.id << ": no speed figures";
+        EXPECT_TRUE(c.scene == web::Scene::taylor_green || has(web::standing_caveats(c), "relative speed, not validated"))
+            << c.id;
+    }
+    // The Taylor-Green case's time has no seconds: its caption says so and claims no slow motion.
+    web::CaptionInput tg;
+    tg.clip = web::find_clip("S7");
+    tg.sim_seconds = 10.0;
+    tg.screen_seconds = 10.0;
+    const std::string tg_text = web::caption_text(tg);
+    EXPECT_TRUE(has(tg_text, "dimensionless time"));
+    EXPECT_FALSE(has(tg_text, "times slower than real time"));
     EXPECT_EQ(web::slow_motion_line(0.6, 12.0),
               "Slow motion: 0.0500 simulated seconds in each screen second (20.0 times slower than real time).");
 }

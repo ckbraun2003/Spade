@@ -209,12 +209,20 @@ spade::Result<LiveCase> smoke_live_case(double seconds) {
 }
 
 spade::Result<LiveCase> d1_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
-                                     bool parts_in_flow) {
+                                     bool parts_in_flow, float heading_deg) {
     if (!parts_in_flow) {
         return film_of(spade::testing::d1_case(seconds, grid, false), seconds, true, "D1 hover preview, no parts",
                        "NO PARTS: the airframe is drawn but not in the flow, which meets only the rotors' discs; held "
                        "at hover, not flying; the rotors are actuator discs, not blades; idle 5 % and the charge are "
                        "the film's own (chain pin)");
+    }
+    if (heading_deg != 0.0f) {
+        return film_of(spade::testing::d1_case(seconds, grid, true, heading_deg), seconds, true,
+                       "D1 hover preview, crosswind",
+                       "a crosswind setting supported but not validated; held at hover, not flying, at the still-air "
+                       "throttle (the rotors ignore the wind); the rotors are actuator discs, not blades; the "
+                       "airframe's parts are solids in the flow at 4 mm; idle 5 % and the charge are the film's own "
+                       "(chain pin)");
     }
     return film_of(spade::testing::d1_case(seconds, grid), seconds, true, "D1 hover preview",
                    "held at hover, not flying; the rotors are actuator discs, not blades; the airframe's parts are "

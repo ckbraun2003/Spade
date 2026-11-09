@@ -14,6 +14,7 @@
 
 #include "core/build_identity.hpp"
 #include "render_gl/gl_renderer.hpp"
+#include "web_masters.hpp"
 
 namespace flow_movie {
 namespace {
@@ -204,6 +205,20 @@ spade::Result<std::unique_ptr<GlStage>> GlStage::create(uint32_t width, uint32_t
     quality.scale = spade::render_gl::GlRenderer::FlowScale::full;
     stage->renderer_->set_flow_quality(quality);
 
+    GLint max_renderbuffer = 0, max_texture = 0;
+    GLint max_viewport[2] = {0, 0};
+    glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_renderbuffer);
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture);
+    glGetIntegerv(GL_MAX_VIEWPORT_DIMS, max_viewport);
+    stage->limits_ = "max renderbuffer " + std::to_string(max_renderbuffer) + ", max viewport " +
+                     std::to_string(max_viewport[0]) + "x" + std::to_string(max_viewport[1]) + ", max texture " +
+                     std::to_string(max_texture);
+    const auto w = static_cast<GLint>(width), h = static_cast<GLint>(height);
+    if (w > max_renderbuffer || h > max_renderbuffer || w > max_viewport[0] || h > max_viewport[1] ||
+        w > max_texture || h > max_texture) {
+        return refuse(Code::unavailable, "a " + std::to_string(width) + "x" + std::to_string(height) +
+                                             " frame is past this GL's limits (" + stage->limits_ + ")");
+    }
     glGenFramebuffers(1, &stage->fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, stage->fbo_);
     glGenRenderbuffers(1, &stage->colour_);
@@ -215,8 +230,10 @@ spade::Result<std::unique_ptr<GlStage>> GlStage::create(uint32_t width, uint32_t
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, static_cast<GLsizei>(width),
                           static_cast<GLsizei>(height));
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, stage->depth_);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        return refuse(Code::unavailable, "the offscreen framebuffer is incomplete");
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || glGetError() == GL_OUT_OF_MEMORY) {
+        return refuse(Code::unavailable, "the " + std::to_string(width) + "x" + std::to_string(height) +
+                                             " offscreen framebuffer is incomplete or out of memory (" +
+                                             stage->limits_ + ")");
     }
     stage->bottom_first_.resize(static_cast<std::size_t>(width) * height * 4u);
     return stage;
@@ -350,6 +367,54 @@ spade::Result<void> concatenate(const Encoder& encoder, const std::vector<fs::pa
     fs::remove(list, ec);
     if (!ok) return refuse(Code::io_error, "joining the clips into " + out.string() + " failed: " + printed);
     return {};
+}
+
+// --- WebClip --------------------------------------------------------------------------
+
+spade::Result<std::unique_ptr<WebClip>> WebClip::open(const std::string& ffmpeg, uint32_t width, uint32_t height,
+                                                       const fs::path& out) {
+    std::error_code ec;
+    fs::create_directories(out.parent_path(), ec);
+    if (ec) return refuse(Code::io_error, "cannot create " + out.parent_path().string() + ": " + ec.message());
+    std::unique_ptr<WebClip> clip(new WebClip());
+    clip->width_ = width;
+    clip->height_ = height;
+    clip->out_ = out;
+    const std::vector<std::string> args = flow_movie::web::ffmpeg_web_args(ffmpeg, width, height, out.string());
+    std::string command = in_quotes(args.front());
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        const bool path_arg = i + 1u == args.size();  // the output file, which may hold spaces
+        command += " " + (path_arg ? in_quotes(args[i]) : args[i]);
+    }
+    clip->pipe_ = open_pipe(command, "wb");
+    if (clip->pipe_ == nullptr) return refuse(Code::unavailable, "cannot start ffmpeg: " + command);
+    return clip;
+}
+
+WebClip::~WebClip() {
+    if (pipe_ != nullptr) (void)close_pipe(pipe_);
+}
+
+spade::Result<void> WebClip::add_frame(std::span<const uint8_t> rgba) {
+    const std::size_t want = static_cast<std::size_t>(width_) * height_ * 4u;
+    if (pipe_ == nullptr) return refuse(Code::invalid_argument, "web clip " + out_.string() + " is finished");
+    if (rgba.size() != want) {
+        return refuse(Code::invalid_argument, "web clip " + out_.string() + ": a frame of " +
+                                                  std::to_string(rgba.size()) + " bytes, not " + std::to_string(want));
+    }
+    if (std::fwrite(rgba.data(), 1, rgba.size(), pipe_) != rgba.size()) {
+        return refuse(Code::io_error, "web clip " + out_.string() + ": ffmpeg stopped reading frames");
+    }
+    ++frames_;
+    return {};
+}
+
+spade::Result<fs::path> WebClip::finish() {
+    if (pipe_ == nullptr) return refuse(Code::invalid_argument, "web clip " + out_.string() + " is finished");
+    const int status = close_pipe(pipe_);
+    pipe_ = nullptr;
+    if (status != 0) return refuse(Code::io_error, "web clip " + out_.string() + ": ffmpeg's encode failed");
+    return out_;
 }
 
 spade::Result<void> save_png(const Encoder& encoder, std::span<const uint8_t> rgba, const fs::path& path) {
