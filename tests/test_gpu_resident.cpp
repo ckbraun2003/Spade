@@ -165,7 +165,7 @@ TEST(GpuResident, ModuleRowsAndArenasAndDigestSyncOrRefuse) {
     EXPECT_TRUE(sim.resident_current());
     EXPECT_EQ(synced, spade::testing::state_digest(view));
     ASSERT_TRUE(sim.step(1).has_value());
-    const auto arenas_rows = sim.arenas();  // non-const arenas() syncs
+    const auto& arenas_rows = sim.arenas();  // non-const arenas() syncs
     (void)arenas_rows;
     EXPECT_TRUE(sim.resident_current());
 }

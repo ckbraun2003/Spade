@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -35,12 +36,15 @@ using spade::modules::ModuleDesc;
 using spade::test::kResidentCells;
 using spade::test::ResidentRow;
 
+// A configuration image must be a type with unique object representations, which a float is not: the value rides as its bit
+// pattern (0.25f, exact in fp32) and the kernel reads it back with asfloat.
 struct GridConfig {
-    float k;
+    uint32_t k_bits;
     uint32_t pad[3];
 };
 static_assert(sizeof(GridConfig) == 16);
-constexpr GridConfig kConfig{0.25f, {0, 0, 0}};  // exact in fp32
+constexpr GridConfig kConfig{0x3e800000u, {0, 0, 0}};
+const float kConfigK = std::bit_cast<float>(kConfig.k_bits);
 
 void groups_record(spade::compute::RecipeEmitter& emitter, const spade::compute::RecipeContext& context) {
     const uint64_t cells = uint64_t{context.base.world_count} * kResidentCells;
@@ -69,7 +73,7 @@ void fill_cpu(const spade::physics::SubstepContext& ctx) noexcept {
     for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
         const std::span<ResidentRow> v = spade::world_rows<ResidentRow>(ctx.state[0], w);
         if (v.empty()) continue;
-        for (float& c : v[0].cell) c = kConfig.k;
+        for (float& c : v[0].cell) c = kConfigK;
     }
 }
 
