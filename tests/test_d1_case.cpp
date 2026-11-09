@@ -13,7 +13,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <string>
+#include <vector>
 
 #include "d1_case.hpp"
 
@@ -74,6 +76,54 @@ TEST(D1Case, WithoutItsPartsTheyAreDrawnOnly) {
     const auto resolved = spade::testing::resolve_with_grid(without->c, without->run_model, without->grid);
     ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
     EXPECT_EQ(resolved->base.nx, kD1Grid.nx);
+}
+
+// The heading is the wind's direction about +Y from the nose (+X): 0 a headwind moving -x, +90 from the left (-Z) so
+// the air moves +z, -90 the other way. A heading that did nothing would put a wrong label on a clip, so this reads it
+// back three ways: the case, the resolved ambient, and the air itself after a few steps on a small grid (the CPU
+// step, no solids): the open faces carry the ambient in, and the mean velocity leans to the wind's side at every
+// heading. Mutation: the builder not passing the heading on turns it red (both side headings read a headwind).
+TEST(D1Case, TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign) {
+    struct Row {
+        float heading;
+        glm::vec3 air;  // the direction the air moves, unit
+    };
+    const Row rows[] = {{0.0f, {-1.0f, 0.0f, 0.0f}}, {90.0f, {0.0f, 0.0f, 1.0f}}, {-90.0f, {0.0f, 0.0f, -1.0f}}};
+    const af::GridShape small{24, 24, 24, 0.02f};
+    for (const Row& row : rows) {
+        const auto q = spade::testing::d1_case(0.1, small, false, row.heading);
+        ASSERT_TRUE(q.has_value()) << q.error().context;
+        EXPECT_EQ(q->c.flight.heading_deg, row.heading) << "the heading reached the case";
+        const auto resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid);
+        ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+        const glm::vec3 want = 3.0f * row.air;
+        EXPECT_NEAR(resolved->domain.ambient.x, want.x, 1e-5f) << "heading " << row.heading;
+        EXPECT_NEAR(resolved->domain.ambient.y, want.y, 1e-5f) << "heading " << row.heading;
+        EXPECT_NEAR(resolved->domain.ambient.z, want.z, 1e-5f) << "heading " << row.heading;
+
+        auto grid = af::make_grid(small, resolved->domain);
+        ASSERT_TRUE(grid.has_value()) << grid.error().context;
+        const af::FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.002f, .n_v = 2, .threads = 1};
+        auto scratch = af::make_fluid_scratch(*grid, resolved->domain, cfg);
+        ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
+        for (int t = 0; t < 24; ++t) {
+            const af::FluidHealth health = af::fluid_step(*grid, resolved->domain, cfg, *scratch);
+            ASSERT_EQ(health.fault, af::FluidFault::none) << "step " << t;
+        }
+        const auto mean = [](const std::vector<float>& f) {
+            double s = 0.0;
+            for (const float v : f) s += v;
+            return static_cast<float>(s / static_cast<double>(f.size()));
+        };
+        const glm::vec3 m(mean(grid->u), mean(grid->v), mean(grid->w));
+        const float along = glm::dot(m, row.air);
+        const float across = glm::length(m - along * row.air);
+        std::printf("[D1Case] heading %+.0f: mean air (%.4f, %.4f, %.4f) m/s, along the wind %.4f, across %.4f\n",
+                    row.heading, m.x, m.y, m.z, along, across);
+        EXPECT_GT(along, 1.0f) << "the air moves with the wind, at heading " << row.heading;
+        // Across the wind the mean is the open faces' entrainment (0.27 against 1.18 at the side headings).
+        EXPECT_LT(across, 0.5f * along) << "and not across it, at heading " << row.heading;
+    }
 }
 
 }  // namespace
