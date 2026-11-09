@@ -295,6 +295,13 @@ class LiveRun {
     // `out` (its storage reused), with the world origin at the box's centre.
     [[nodiscard]] Result<LiveFrame> advance_frame(const Controls& controls, FlowVolume& out);
 
+    // Steps `n` more times, then publishes the fluid into `out` as advance_frame() does, and counts one frame:
+    // for a host that wants a frame cadence other than kFramesPerSecond (the offline recorder's website clips).
+    // The frame carries its TRUE time, LiveFrame::t_s and steps (steps x the step), never an index over
+    // kFramesPerSecond. A run may mix the two calls; each counts one frame. n = 0 is refused by name, with
+    // nothing stepped.
+    [[nodiscard]] Result<LiveFrame> advance_steps(const Controls& controls, uint64_t n, FlowVolume& out);
+
     [[nodiscard]] const LiveState& state() const noexcept;
     [[nodiscard]] double step_s() const noexcept;  // h
     // The drone ticks each step flies: ceil(h / kLiveDroneStepS), at least 1 (L13).
