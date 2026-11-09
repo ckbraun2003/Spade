@@ -55,6 +55,9 @@ struct PoweredQuadSetup {
     float step = 0.0005f;
     bool parts_in_flow = false;  // the rigid parts as the grid's solids (P2); else drawn only
     bool hover_only = false;     // armed at the hover throttle from the start; else the showcase's moves
+    // Where the wind comes from, about +Y from the nose (Flight::heading_deg): 0 a headwind (air moving -x, the nose
+    // on +X), + from the left (-Z, the air moving +z), - from the right. D1's record is heading 0.
+    float heading_deg = 0.0f;
 };
 
 struct PoweredQuad {
@@ -91,6 +94,7 @@ struct PoweredQuad {
     q.c.time.step = s.step;
     q.c.flight.kind = analysis::FlightKind::hover_in_wind;
     q.c.flight.speed = 3.0f;
+    q.c.flight.heading_deg = s.heading_deg;  // before the trim, which reads the case
     auto trim = analysis::showcase_trim(q.c, q.run_model);
     if (!trim) return std::unexpected(trim.error());
     q.trim = *trim;
@@ -109,14 +113,15 @@ struct PoweredQuad {
 // (kD1Grid; another grid for a measurement). Without `parts_in_flow`, the
 // parts are drawn only: B7's interim GPU film, until GpuFluid takes solids.
 [[nodiscard]] inline Result<PoweredQuad> d1_case(double seconds, const physics::airflow::GridShape& grid = kD1Grid,
-                                                 bool parts_in_flow = true) {
+                                                 bool parts_in_flow = true, float heading_deg = 0.0f) {
     const float longest = grid.dx * static_cast<float>(std::max({grid.nx, grid.ny, grid.nz}));
     auto q = powered_library_quad(PoweredQuadSetup{.seconds = seconds,
                                                    .box = longest,
                                                    .spacing = grid.dx,
                                                    .step = kD1Step,
                                                    .parts_in_flow = parts_in_flow,
-                                                   .hover_only = true});
+                                                   .hover_only = true,
+                                                   .heading_deg = heading_deg});
     if (!q) return q;
     q->grid = grid;
     return q;
