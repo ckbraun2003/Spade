@@ -669,7 +669,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                                const glm::vec3& combined0, const glm::vec3& combined1, const glm::vec3& combined2,
                                const glm::vec3& sun0, const glm::vec3& sun1, const glm::vec3& sun2,
                                const glm::vec3& wpos0, const glm::vec3& wpos1, const glm::vec3& wpos2,
-                               const glm::vec3& receiver_normal, const ShadowMap* shadow,
+                               const glm::vec3& receiver_normal, const ShadowSet* shadow,
                                const AtmosphereContext& atmo) {
     const bool equal_combined = (combined0 == combined1 && combined1 == combined2);
     // ⚠⚠ `!atmo.active()` IS LOAD-BEARING, NOT DEFENSIVE. The flat fast path
@@ -745,7 +745,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 world = world_over_depth / static_cast<float>(invD);
             }
             if (shadow != nullptr) {
-                const float lit = sample_shadow(*shadow, world, receiver_normal);
+                const float lit = shadow->sample(world, receiver_normal);
                 const glm::vec3 sun = equal_sun ? sun0
                                                  : (sun0 * static_cast<float>(b0) + sun1 * static_cast<float>(b1) +
                                                     sun2 * static_cast<float>(b2));
@@ -807,7 +807,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
 
 void draw_mesh_triangle_shaded(FrameBuffers& fb, const ViewContext& vc, const Vec3& a, const Vec3& b, const Vec3& c,
                                 const glm::vec3& na, const glm::vec3& nb, const glm::vec3& nc,
-                                const Material& material, const Lighting& lighting, const ShadowMap* shadow,
+                                const Material& material, const Lighting& lighting, const ShadowSet* shadow,
                                 const AtmosphereContext& atmo) {
     const ClipVertex ac{worldToCameraSpace(vc, a), na, vec3f(a)};
     const ClipVertex bc{worldToCameraSpace(vc, b), nb, vec3f(b)};
@@ -946,7 +946,7 @@ void draw_mesh_triangle_sensor(FrameBuffers& fb, const ViewContext& vc, const Ve
 }
 
 void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const DrawItem& item,
-                     const RenderOptions& options, const ShadowMap* shadow) {
+                     const RenderOptions& options, const ShadowSet* shadow) {
     const DrawMode mode = options.mode;
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
@@ -1155,7 +1155,7 @@ struct PixelRect {
 // lookup, and the SR-17a blend. Runs after every mesh, so the depth already
 // in a pixel also ends that pixel's march early.
 void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const Camera& camera,
-                       const RenderOptions& options, const ShadowMap* shadow) {
+                       const RenderOptions& options, const ShadowSet* shadow) {
     if (scene.materials.empty()) {
         return;  // nothing to shade with, as draw_mesh_item
     }
@@ -1226,7 +1226,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                 const ShadedColor shaded = shade_vertex_color(material, scene.lighting, normal);
                 glm::vec3 color = shaded.combined;
                 if (shadow != nullptr) {
-                    color = apply_shadow(shaded, sample_shadow(*shadow, march.p, normal));
+                    color = apply_shadow(shaded, shadow->sample(march.p, normal));
                 }
                 if (atmo.active()) {
                     const glm::vec3 eye_to_surface = march.p - atmo.eye;
@@ -1802,7 +1802,7 @@ struct PixelRays {
 // render()'s body, and its comment on why the policy stays visible in one
 // place).
 void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene,
-                                     bool draw_analytic_ground, const ShadowMap* shadow,
+                                     bool draw_analytic_ground, const ShadowSet* shadow,
                                      const GroundGridParams* grid, float horizon_strength,
                                      float horizon_onset) {
     // Whether the analytic ground pass has anything at all to do -- still
@@ -1870,7 +1870,7 @@ void draw_sky_and_ground_background(FrameBuffers& fb, const ViewContext& vc, con
                     if (shadow != nullptr) {
                         // SR-25: ambient survives; only the sun term is
                         // attenuated -- see apply_shadow()'s own comment.
-                        const float lit = sample_shadow(*shadow, vec3f(hit), gp.normal);
+                        const float lit = shadow->sample(vec3f(hit), gp.normal);
                         color = apply_shadow(sc, lit);
                     }
 
@@ -2186,12 +2186,26 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // would recompute the same occluders, but is still wasted CPU to
     // recompute at all). Only the non-empty-dynamics path below allocates
     // (or, given `shadow_scratch`, reuses) a per-frame working copy.
-    std::optional<ShadowMap> frame_shadow;
-    const ShadowMap* shadow = nullptr;
+    std::optional<ShadowMap> frame_shadow;  // the folded copy: the static map with the dynamics added
+    std::optional<ShadowMap> frame_focus;   // the dynamic casters' own map (rendering/soft-shadows)
+    ShadowSet shadow_set;
+    const ShadowSet* shadow = nullptr;
     if (options.shadows && options.mode == DrawMode::shaded && scene.static_shadow.has_value()) {
-        if (scene.dynamics.empty()) {
-            shadow = &*scene.static_shadow;
-        } else {
+        shadow_set.statics = &*scene.static_shadow;
+        shadow_set.filter_texels = options.shadow_filter_texels;
+        shadow = &shadow_set;
+        // The dynamic casters get a map fitted to themselves where that is finer than the world's (the sun is
+        // orthographic, so their shadow lands on any receiver inside their light-space footprint); the static map
+        // is then read as it is, never copied. Without one (dynamic_shadow_size 0, or bodies too spread out) they
+        // fold into a per-frame copy of the static map, as before.
+        if (!scene.dynamics.empty() && options.dynamic_shadow_size > 0u) {
+            frame_focus = build_focus_shadow_map(scene, options.dynamic_shadow_size, options.shadow_filter_texels,
+                                                 *scene.static_shadow, shadow_scratch);
+            if (frame_focus.has_value()) {
+                shadow_set.focus = &*frame_focus;
+            }
+        }
+        if (!scene.dynamics.empty() && !frame_focus.has_value()) {
             ShadowMap& built = frame_shadow.emplace();
             built.size = scene.static_shadow->size;
             built.light_view_proj = scene.static_shadow->light_view_proj;
@@ -2207,7 +2221,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
             }
             built.depth.assign(scene.static_shadow->depth.begin(), scene.static_shadow->depth.end());
             rasterize_shadow_casters(scene.meshes, scene.dynamics, built);
-            shadow = &built;
+            shadow_set.statics = &built;
         }
     }
 
@@ -2279,7 +2293,9 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     // untouched. This is the LAST use of `frame_shadow`/`shadow` in this
     // function, so moving the buffer out here cannot affect anything drawn
     // above.
-    if (shadow_scratch != nullptr && frame_shadow.has_value()) {
+    if (shadow_scratch != nullptr && frame_focus.has_value()) {
+        *shadow_scratch = std::move(frame_focus->depth);
+    } else if (shadow_scratch != nullptr && frame_shadow.has_value()) {
         *shadow_scratch = std::move(frame_shadow->depth);
     }
 

@@ -104,7 +104,8 @@ struct ShadowMap {
 // other (0.05 m would erase a 30 cm drone's). Tuned against a mesh drone render (rendering/soft-shadows).
 inline constexpr float kFocusShadowDepthBias = 0.005f;
 
-// The size of one texel of `map` in metres: the smaller of its two axes' (the finer is what an edge can resolve).
+// The size of one texel of `map` in metres: the larger of its two axes' (the coarser, the one a shadow edge is
+// limited by).
 [[nodiscard]] float shadow_texel_metres(const ShadowMap& map);
 
 // The map the DYNAMIC casters get of their own. The sun is orthographic, so a receiver anywhere is shadowed by a
@@ -116,8 +117,10 @@ inline constexpr float kFocusShadowDepthBias = 0.005f;
 // read. Returns nullopt when there is nothing to cast, or when the bodies are so spread out that this map's texels
 // would be no finer than `statics`' (then the caller folds the dynamics into a copy of the static map, as before,
 // and the result is never worse than that).
+// `scratch`, when given, lends its capacity to the map's depth buffer (render() reclaims it after the frame).
 [[nodiscard]] std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size,
-                                                              float filter_texels, const ShadowMap& statics);
+                                                              float filter_texels, const ShadowMap& statics,
+                                                              std::vector<float>* scratch = nullptr);
 
 // What one pixel's sun term is tested against: the world-fitted map and, when the dynamic casters have a map of
 // their own, that one. The occluders are independent, so a point is lit by the product of the two.
@@ -166,8 +169,12 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // Returns 1.0f (unoccluded) when `world_pos` falls outside the map's own
 // ortho footprint (ruling SR-17: unshadowed past scene.bounds, by design) or
 // when no caster was ever rasterised at that texel; 0.0f when a closer-to-
-// the-sun occluder was found there. Never a value in between -- a single
-// texel sample, no filtering.
+// the-sun occluder was found there. With `filter_texels` 0, never a value in
+// between: a single texel sample, no filtering. With a width above 0 it is the
+// area-weighted box of that many texels about the point (bilinear at 1): each
+// texel the box overlaps is tested on its own, against ITS OWN receiver plane
+// (below), and weighted by its overlap, the taps visited rows first in a fixed
+// order. A fraction in [0, 1]; away from an edge it is exactly 0 or 1.
 //
 // RECEIVER PLANE (Kat's sawtooth, 2026-10-28): the occluder a texel holds is
 // the casters' depth at the texel's CENTRE. This point's surface -- the plane
