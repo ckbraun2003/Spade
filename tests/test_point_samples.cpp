@@ -40,12 +40,16 @@ constexpr uint32_t kElements = 4;      // its force-element slots
 constexpr uint32_t kSensors = 2;       // its sensor slots
 constexpr uint32_t kRowsPerWorld = kBodies + kElements * kK + kSensors + kHostRows;
 
-// The provider: for every point row, wind.x = 2 * pos.y and density = pos.x -- a function of WHERE the point is, so a
-// provider that saw a stale or zero position would write something else.
+// The provider: it places its own element rows (Core's positions pass writes body rows only: L43) at (i, i, i) for row i, then
+// for every point row sets wind.x = 2 * pos.y and density = pos.x -- a function of WHERE the point is, so a provider that
+// saw a stale or zero position would write something else.
 void provide(const spade::physics::SubstepContext& ctx) noexcept {
     if (ctx.state.size() != 2) return;  // state[i] views the pass's i-th access: field.swirl has no view, the points array is state[1]
     for (uint32_t w = 0; w < ctx.worlds.size(); ++w) {
-        for (PointRow& row : spade::world_rows<PointRow>(ctx.state[1], w)) {
+        const std::span<PointRow> rows = spade::world_rows<PointRow>(ctx.state[1], w);
+        for (uint32_t i = 0; i < rows.size(); ++i) {
+            PointRow& row = rows[i];
+            if (i >= kBodies && i < kBodies + kElements * kK) row.pos[0] = row.pos[1] = row.pos[2] = static_cast<float>(i);
             row.wind[0] = 2.0f * row.pos[1];
             row.density = row.pos[0];
         }
@@ -203,6 +207,21 @@ TEST(PointSamples, APositionDependentProviderSeesEachPointsPosition) {
     EXPECT_EQ((*rows)[0].density, a.pos.x);
     EXPECT_EQ((*rows)[1].wind[0], 2.0f * b.pos.y);
     EXPECT_EQ((*rows)[1].density, b.pos.x);
+    // The module's own pass filled its element rows (L43), and the provider saw them.
+    EXPECT_EQ((*rows)[kBodies].pos[1], static_cast<float>(kBodies));
+    EXPECT_EQ((*rows)[kBodies].wind[0], 2.0f * static_cast<float>(kBodies));
+}
+
+// THE GUARD, the sensor half (L43): the world's sensor rows are sized at create(), so the refusal is there. A set with no pass
+// that declares a write of points.points, in a world with sensor slots, is refused naming the array.
+TEST(PointSamples, SensorRowsWithNoWriterAreRefusedAtCreateNamingTheArray) {
+    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(kBodies);  // two sensor slots
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    const auto refused = spade::Simulation::create(*world, 1'000'000, 2, spade::compute::BackendDesc{}, with_points(true, false, 0));
+    ASSERT_FALSE(refused.has_value()) << "sensor rows, k == 0, and no writer of points.points";
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("points.points"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("sensor"), std::string::npos) << refused.error().context;
 }
 
 // Host requests: the last kHostRows rows are the host's. The positions pass leaves them alone; the provider sees what the
