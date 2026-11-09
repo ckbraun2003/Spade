@@ -137,6 +137,7 @@ add_executable(spade_tests
     test_parts_fold.cpp
     test_resident.cpp
     test_rebuild.cpp
+    test_point_samples.cpp
     test_design_frame.cpp
     test_model_registry.cpp
     test_model_parts.cpp
