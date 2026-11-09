@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <span>
@@ -3773,5 +3774,238 @@ TEST_F(GpuGlRenderer, AirflowPosterCoresMatchTheCpu) {
     EXPECT_NEAR(editor.gl, editor.cpu, kPosterCoreLuminance * editor.cpu) << device;
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// The shadow cost and picture record (rendering/soft-shadows, the lead's one table for Cameron). DISABLED_: a
+// measuring tool, run on purpose with --gtest_also_run_disabled_tests --gtest_filter=*ShadowRecord*, not a check.
+// It times GlRenderer's frame (draw plus glFinish) at 1920x1080 over the four shadow scenes of bench_render.cpp's
+// BM_RenderShadows, at four option sets, and writes raw RGBA frames (GL's and the CPU's) of the bench scenes and of a
+// mesh drone over a ~170 m world to $SPADE_SHADOW_RECORD_DIR when that is set.
+// ---------------------------------------------------------------------------
+
+struct RecordOption {
+    const char* name;
+    float filter;
+    uint32_t focus;
+};
+constexpr RecordOption kRecordOptions[4] = {
+    {"A_today", 0.0f, 0u}, {"B_defaults", 1.0f, 1024u}, {"C_focus512", 1.0f, 512u}, {"D_filter0.5", 0.5f, 1024u}};
+
+[[nodiscard]] MeshData record_mesh(spade::SdfPrim kind, glm::vec4 params, const spade::render::Aabb& bounds) {
+    auto made = spade::render::tessellate_primitive(kind, params, bounds, spade::render::kTessellationDefaults);
+    if (!made) {
+        ADD_FAILURE() << made.error().context;
+        return MeshData{};
+    }
+    return std::move(*made);
+}
+
+[[nodiscard]] glm::mat4 record_at(glm::vec3 t, glm::mat4 rotate = glm::mat4(1.0f)) {
+    return glm::translate(glm::mat4(1.0f), t) * rotate;
+}
+
+// A 172 m world: bounds as VQ1's, the ground mesh over them (it casts, so ~15 cm texels), the analytic ground, a
+// static map. variant: 0 none, 1 a 2 m static box, 2 a 0.5 m dynamic box, 3 both (bench_render.cpp's scenes).
+[[nodiscard]] RenderScene record_world(int variant) {
+    const spade::render::Aabb world{.min = glm::vec3(-80.0f, -1.0f, -10.0f), .max = glm::vec3(92.0f, 30.0f, 10.0f)};
+    const spade::render::Aabb small{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    RenderScene scene;
+    scene.bounds = world;
+    scene.materials = {Material{.base_color = glm::vec4(0.55f, 0.5f, 0.45f, 1.0f)},
+                       Material{.base_color = glm::vec4(0.75f, 0.3f, 0.25f, 1.0f)}};
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f), world));  // 0
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(1.0f, 1.0f, 1.0f, 0.0f), small));    // 1
+    scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(0.25f, 0.25f, 0.25f, 0.0f), small)); // 2
+    scene.ground_planes = {GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    if (variant == 1 || variant == 3) {
+        scene.statics.push_back(DrawItem{.mesh_index = 1, .local_to_world = record_at({0.0f, 1.0f, 0.0f}), .material_override = 1});
+    }
+    if (variant == 2 || variant == 3) {
+        scene.dynamics.push_back(DrawItem{.mesh_index = 2, .local_to_world = record_at({1.5f, 1.0f, 1.0f}), .material_override = 1});
+    }
+    auto map = spade::render::build_static_shadow_map(scene);
+    if (!map) {
+        ADD_FAILURE() << map.error().context;
+        return scene;
+    }
+    scene.static_shadow = std::move(*map);
+    return scene;
+}
+
+// The same world with a mesh drone 1.2 m over the ground: a body, four arms, four motors, four rotor discs, a camera
+// pod and four feet, every part its own dynamic draw item of the tessellated primitives, ~30 cm across.
+[[nodiscard]] RenderScene record_drone_world() {
+    RenderScene scene = record_world(0);
+    const spade::render::Aabb small{.min = glm::vec3(-1.0f), .max = glm::vec3(1.0f)};
+    scene.materials.push_back(Material{.base_color = glm::vec4(0.12f, 0.12f, 0.14f, 1.0f)});  // 2: body, motors, rotors
+    scene.materials.push_back(Material{.base_color = glm::vec4(0.8f, 0.8f, 0.82f, 1.0f)});    // 3: arms, feet
+    const auto box = [&](glm::vec3 half) {
+        scene.meshes.push_back(record_mesh(spade::SdfPrim::box, glm::vec4(half, 0.0f), small));
+        return static_cast<uint32_t>(scene.meshes.size() - 1u);
+    };
+    const auto cylinder = [&](float radius, float half_height) {
+        scene.meshes.push_back(record_mesh(spade::SdfPrim::cylinder, glm::vec4(radius, half_height, 0.0f, 0.0f), small));
+        return static_cast<uint32_t>(scene.meshes.size() - 1u);
+    };
+    const glm::vec3 at(0.0f, 1.2f, 0.0f);
+    const auto part = [&](uint32_t mesh, glm::vec3 offset, uint32_t material) {
+        scene.dynamics.push_back(DrawItem{.mesh_index = mesh, .local_to_world = record_at(at + offset), .material_override = material});
+    };
+    const uint32_t body = box({0.06f, 0.02f, 0.06f});
+    const uint32_t arm_x = box({0.14f, 0.008f, 0.012f});
+    const uint32_t arm_z = box({0.012f, 0.008f, 0.14f});
+    const uint32_t motor = cylinder(0.02f, 0.015f);
+    const uint32_t rotor = cylinder(0.09f, 0.002f);
+    const uint32_t pod = box({0.02f, 0.015f, 0.02f});
+    const uint32_t foot = box({0.01f, 0.03f, 0.01f});
+    part(body, {0.0f, 0.0f, 0.0f}, 2);
+    part(arm_x, {0.0f, 0.0f, 0.0f}, 3);
+    part(arm_z, {0.0f, 0.0f, 0.0f}, 3);
+    for (const glm::vec3 m : {glm::vec3(0.14f, 0.02f, 0.0f), glm::vec3(-0.14f, 0.02f, 0.0f), glm::vec3(0.0f, 0.02f, 0.14f), glm::vec3(0.0f, 0.02f, -0.14f)}) {
+        part(motor, m, 2);
+        part(rotor, m + glm::vec3(0.0f, 0.03f, 0.0f), 2);
+    }
+    part(pod, {0.0f, -0.0f, 0.075f}, 2);
+    for (const glm::vec3 f : {glm::vec3(0.05f, -0.05f, 0.05f), glm::vec3(-0.05f, -0.05f, 0.05f), glm::vec3(0.05f, -0.05f, -0.05f), glm::vec3(-0.05f, -0.05f, -0.05f)}) {
+        part(foot, f, 3);
+    }
+    return scene;
+}
+
+[[nodiscard]] Camera record_camera(glm::vec3 from, glm::vec3 to) {
+    Camera camera;
+    camera.position = from;
+    camera.orientation = glm::quatLookAt(glm::normalize(to - from), glm::vec3(0.0f, 1.0f, 0.0f));
+    return camera;
+}
+
+// raster_cpu's 1080p frame in GL's layout (RGBA8, bottom row first).
+[[nodiscard]] std::vector<uint8_t> record_cpu_frame(const RenderScene& scene, const Camera& camera,
+                                                    const RenderOptions& options, uint32_t w, uint32_t h) {
+    std::vector<uint8_t> bgrx(static_cast<size_t>(w) * h * 4u);
+    RenderTarget target{.pixels = std::span<uint8_t>(bgrx), .width = w, .height = h, .stride = w * 4u};
+    if (auto drew = spade::render::render(scene, camera, options, target); !drew) {
+        ADD_FAILURE() << drew.error().context;
+        return {};
+    }
+    std::vector<uint8_t> rgba(bgrx.size());
+    for (size_t y = 0; y < h; ++y) {
+        for (size_t x = 0; x < w; ++x) {
+            const size_t src = (y * w + x) * 4u;
+            const size_t dst = ((h - 1u - y) * w + x) * 4u;
+            rgba[dst] = bgrx[src + 2u];
+            rgba[dst + 1u] = bgrx[src + 1u];
+            rgba[dst + 2u] = bgrx[src];
+            rgba[dst + 3u] = 255u;
+        }
+    }
+    return rgba;
+}
+
+TEST_F(GpuGlRenderer, DISABLED_ShadowRecord) {
+    constexpr uint32_t kW = 1920, kH = 1080;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* record_dir_env = std::getenv("SPADE_SHADOW_RECORD_DIR");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    const std::string record_dir = record_dir_env != nullptr ? record_dir_env : "";
+    const auto write_frame = [&](const std::string& name, const std::vector<uint8_t>& rgba) {
+        if (record_dir.empty() || rgba.empty()) return;
+        std::ofstream(record_dir + "/" + name + ".rgba", std::ios::binary)
+            .write(reinterpret_cast<const char*>(rgba.data()), static_cast<std::streamsize>(rgba.size()));
+    };
+    const auto options_for = [](const RecordOption& o) {
+        RenderOptions options = comparable_options();
+        options.shadows = true;
+        options.shadow_filter_texels = o.filter;
+        options.dynamic_shadow_size = o.focus;
+        return options;
+    };
+    const auto gl_frame = [&](const RenderScene& scene, const Camera& camera, const RenderOptions& options) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        if (auto drew = renderer_->draw(scene, camera, options, kW, kH); !drew) {
+            ADD_FAILURE() << drew.error().context;
+            return std::vector<uint8_t>{};
+        }
+        std::vector<uint8_t> rgba(static_cast<size_t>(kW) * kH * 4u);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+        return rgba;
+    };
+
+    // --- GL frame times: draw + glFinish, the median of 25 after 5 warm-ups -------------------------------------------
+    static const char* const kScene[4] = {"no_edges", "static_box", "dynamic_box", "both"};
+    const Camera bench_camera = record_camera({5.0f, 2.5f, 7.0f}, {0.0f, 0.8f, 0.0f});
+    const Camera close_camera = record_camera({2.6f, 1.0f, 2.8f}, {1.0f, 0.0f, 0.3f});
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ shadow record ] GL frame times, 1920x1080, draw + glFinish, median of 25, on %s\n", device.c_str());
+    for (int variant = 0; variant < 4; ++variant) {
+        const RenderScene scene = record_world(variant);
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        for (const RecordOption& o : kRecordOptions) {
+            const RenderOptions options = options_for(o);
+            std::vector<double> ms;
+            for (int i = 0; i < 30; ++i) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                const auto t0 = std::chrono::steady_clock::now();
+                ASSERT_TRUE(renderer_->draw(scene, bench_camera, options, kW, kH).has_value());
+                glFinish();
+                const auto t1 = std::chrono::steady_clock::now();
+                if (i >= 5) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            std::sort(ms.begin(), ms.end());
+            std::printf("[ shadow record ] GL %-12s %-12s %7.3f ms (min %7.3f, max %7.3f)\n", kScene[variant], o.name,
+                        ms[ms.size() / 2], ms.front(), ms.back());
+        }
+    }
+
+    // --- frames: the bench scenes' shadow edges (GL), and the mesh drone (GL and CPU) -----------------------------------
+    for (const int variant : {1, 2}) {
+        const RenderScene scene = record_world(variant);
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        for (const RecordOption& o : kRecordOptions) {
+            write_frame(std::string("scene") + kScene[variant] + "_wide_gl_" + o.name, gl_frame(scene, bench_camera, options_for(o)));
+            write_frame(std::string("scene") + kScene[variant] + "_close_gl_" + o.name, gl_frame(scene, close_camera, options_for(o)));
+        }
+    }
+    {
+        const RenderScene scene = record_drone_world();
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        const Camera drone_camera = record_camera({0.9f, 1.15f, 1.1f}, {-0.1f, 0.55f, 0.05f});
+        const Camera top_camera = record_camera({0.25f, 1.9f, 0.55f}, {0.0f, 0.9f, 0.0f});
+        for (const RecordOption& o : kRecordOptions) {
+            const RenderOptions options = options_for(o);
+            write_frame(std::string("drone_gl_") + o.name, gl_frame(scene, drone_camera, options));
+            write_frame(std::string("drone_cpu_") + o.name, record_cpu_frame(scene, drone_camera, options, kW, kH));
+            write_frame(std::string("dronetop_gl_") + o.name, gl_frame(scene, top_camera, options));
+            write_frame(std::string("dronetop_cpu_") + o.name, record_cpu_frame(scene, top_camera, options, kW, kH));
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
 
 }  // namespace
