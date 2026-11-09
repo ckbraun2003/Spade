@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -93,6 +94,39 @@ struct ShadowMap {
     std::vector<float> depth;
     uint32_t size = 1024;
     glm::mat4 light_view_proj{1.0f};
+    // What sample_shadow() takes off the receiver's depth before comparing: kShadowDepthBias for the world-fitted
+    // map, kFocusShadowDepthBias for a focus map, whose texels are millimetres, not decimetres.
+    float depth_bias = kShadowDepthBias;
+};
+
+// A focus map's depth bias: its texels are about a thousand times finer, so a tenth of a texel-slope's worth is left
+// for a marched surface against its cruder shadow mesh and for rounding, and a caster's own parts still shadow each
+// other (0.05 m would erase a 30 cm drone's). Tuned against a mesh drone render (rendering/soft-shadows).
+inline constexpr float kFocusShadowDepthBias = 0.005f;
+
+// The size of one texel of `map` in metres: the smaller of its two axes' (the finer is what an edge can resolve).
+[[nodiscard]] float shadow_texel_metres(const ShadowMap& map);
+
+// The map the DYNAMIC casters get of their own. The sun is orthographic, so a receiver anywhere is shadowed by a
+// dynamic body exactly when its light-space (x, y) falls inside that body's light-space footprint: this map is
+// fitted to the union of the dynamic items' footprints (padded by what a filter of `filter_texels` reads) and
+// holds nothing else. Its texels are the footprint over `size`, millimetres for a drone however large the world.
+// Unlike the static map it is fitted to the bodies, not scene.bounds, so a body past the world's bounds still casts
+// (ruling L42, closing M6); statics stay as SR-17 says. Rebuilt every frame by render(); `scene.statics` is never
+// read. Returns nullopt when there is nothing to cast, or when the bodies are so spread out that this map's texels
+// would be no finer than `statics`' (then the caller folds the dynamics into a copy of the static map, as before,
+// and the result is never worse than that).
+[[nodiscard]] std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size,
+                                                              float filter_texels, const ShadowMap& statics);
+
+// What one pixel's sun term is tested against: the world-fitted map and, when the dynamic casters have a map of
+// their own, that one. The occluders are independent, so a point is lit by the product of the two.
+struct ShadowSet {
+    const ShadowMap* statics = nullptr;  // the world-fitted map, or the folded copy of it (dynamics folded in)
+    const ShadowMap* focus = nullptr;    // the dynamic casters' own map, or null
+    float filter_texels = 0.0f;          // RenderOptions::shadow_filter_texels
+
+    [[nodiscard]] float sample(const glm::vec3& world_pos, const glm::vec3& normal) const;
 };
 
 // Builds a shadow map fitted to `scene.bounds`, rasterising `scene.statics`
@@ -172,6 +206,7 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 // have to be rebuilt every frame the moment any dynamic left the box) --
 // that trade is intentionally left for CK-② to weigh against real frames,
 // not decided unilaterally in a fix round.
-[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal);
+[[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                  float filter_texels = 0.0f);
 
 }  // namespace spade::render

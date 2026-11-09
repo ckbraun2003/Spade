@@ -195,6 +195,19 @@ struct RenderOptions {
 
     DepthRange depth{};  // DrawMode::depth only
     SegmentBy segment_by = SegmentBy::objects;  // DrawMode::segmentation only
+
+    // SOFT AND TIGHT SHADOWS (rendering/soft-shadows, after "the shadow is pixelated"). `shadows` still means on or
+    // off; these two say how, and their defaults are the fix, so a host that leaves RenderOptions untouched gets it.
+    // Last in the struct, so no existing designated initialiser moves.
+    //   shadow_filter_texels: the width, in texels, of the area-weighted box a shadow edge is filtered with (a fixed
+    //     number of taps in a fixed order, so it is deterministic): 0 is one texel, unfiltered, as before; 1 is
+    //     bilinear (4 taps); 2 is 9. The result is a smooth fraction, not a step.
+    //   dynamic_shadow_size: the side of the map the dynamic casters get of their own, fitted to their light-space
+    //     footprint (shadow.hpp's build_focus_shadow_map()), so a drone's shadow keeps millimetre texels on a
+    //     170 m world. 0: dynamics are folded into the world-fitted map's per-frame copy, as before. Bodies so far
+    //     apart that their own map would be no finer than the world's fall back to folding, by themselves.
+    float shadow_filter_texels = 1.0f;
+    uint32_t dynamic_shadow_size = 1024;
 };
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp

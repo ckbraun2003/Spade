@@ -283,7 +283,22 @@ Result<ShadowMap> build_static_shadow_map(const RenderScene& scene, uint32_t siz
     return map;
 }
 
-float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal) {
+float shadow_texel_metres(const ShadowMap& map) {
+    const glm::mat4& m = map.light_view_proj;
+    const float per_metre = std::min(glm::length(glm::vec3(m[0][0], m[1][0], m[2][0])),
+                                     glm::length(glm::vec3(m[0][1], m[1][1], m[2][1])));
+    return map.size == 0 || per_metre <= 0.0f ? 0.0f : 2.0f / (per_metre * static_cast<float>(map.size));
+}
+
+std::optional<ShadowMap> build_focus_shadow_map(const RenderScene&, uint32_t, float, const ShadowMap&) {
+    return std::nullopt;  // RED: not written yet
+}
+
+float ShadowSet::sample(const glm::vec3& world_pos, const glm::vec3& normal) const {
+    return statics == nullptr ? 1.0f : sample_shadow(*statics, world_pos, normal, filter_texels);
+}
+
+float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal, float) {
     if (map.size == 0 || map.depth.empty()) {
         return 1.0f;
     }
