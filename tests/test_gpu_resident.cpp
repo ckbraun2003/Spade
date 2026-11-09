@@ -46,7 +46,7 @@ constexpr spade::compute::RecipeKernel kKernels[] = {{&spade::compute::gen::kSpv
 constexpr spade::compute::RecipeDesc kRecipe{.name = "resident_add_one", .kernels = kKernels, .record = &resident_record};
 
 [[nodiscard]] Simulation make(const ResidentModule& m, BackendKind kind, uint32_t bodies = 4) {
-    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(bodies);
+    const spade::Result<spade::WorldSetDesc> world = spade::test::two_world_set(bodies);
     EXPECT_TRUE(world.has_value()) << world.error().context;
     spade::Result<Simulation> sim = Simulation::create(*world, 1'000'000, kSubsteps, BackendDesc{.kind = kind}, m.set);
     EXPECT_TRUE(sim.has_value()) << sim.error().context;
@@ -193,8 +193,12 @@ TEST(GpuResident, TheDigestFoldsTheResidentArrayAfterASync) {
     Simulation ref = make(cpu, BackendKind::cpu);
     ASSERT_TRUE(vk.step(3).has_value());
     ASSERT_TRUE(ref.step(3).has_value());
-    EXPECT_EQ(spade::testing::state_digest(vk), spade::testing::state_digest(ref))
-        << "the grid is exact in fp32 and nothing else moves: D1 = A, the digest folds it after a sync";
+    EXPECT_TRUE(spade::test::grids_equal(vk, ref, kWorlds)) << "the grid is exact in fp32 on both backends";
+    // D1 = A: the digest folds the resident array after a sync. The non-const digest syncs; the checked const one then agrees.
+    const uint64_t synced = spade::testing::state_digest(vk);
+    const auto checked = spade::testing::checked_state_digest(vk);
+    ASSERT_TRUE(checked.has_value()) << checked.error().context;
+    EXPECT_EQ(*checked, synced);
 }
 
 TEST(GpuResident, AVulkanSnapshotRestoreResumeIsBitIdenticalToTheUninterruptedRun) {
@@ -227,7 +231,7 @@ TEST(GpuResident, ACpuBlobRestoresIntoVulkanWithinTheBandAndTheReverse) {
     Simulation vk = make(device, BackendKind::vulkan);
     ASSERT_TRUE(vk.restore(*cpu_blob).has_value());
     ASSERT_TRUE(vk.step(3).has_value());
-    EXPECT_EQ(spade::testing::state_digest(vk), spade::testing::state_digest(ref)) << "cpu -> vulkan";
+    EXPECT_TRUE(spade::test::grids_equal(vk, ref, kWorlds)) << "cpu -> vulkan";
 
     Simulation vk_first = make(device, BackendKind::vulkan);
     ASSERT_TRUE(vk_first.step(3).has_value());
@@ -236,7 +240,7 @@ TEST(GpuResident, ACpuBlobRestoresIntoVulkanWithinTheBandAndTheReverse) {
     Simulation back = make(cpu, BackendKind::cpu);
     ASSERT_TRUE(back.restore(*vk_blob).has_value());
     ASSERT_TRUE(back.step(3).has_value());
-    EXPECT_EQ(spade::testing::state_digest(back), spade::testing::state_digest(ref)) << "vulkan -> cpu";
+    EXPECT_TRUE(spade::test::grids_equal(back, ref, kWorlds)) << "vulkan -> cpu";
 }
 
 // A set with a set-1 user builds a second descriptor set; one without builds none (the existing pin is

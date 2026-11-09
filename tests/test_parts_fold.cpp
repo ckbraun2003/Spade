@@ -51,7 +51,9 @@ using spade::vehicles::PartSurface;
     program.nodes = {n};
     return PartDesc{.name = std::move(name),
                     .role = "arm",
-                    .attach = PartAttach::body,
+                    // Rotor-attached: a body part gives the standard contact_sets table rows, and those fold into the registry
+                    // identity through the config-table fold, which is not what these tests are about.
+                    .attach = PartAttach::rotor,
                     .rotor = 0,
                     .mount_pos = glm::vec3(0.0f),
                     .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),

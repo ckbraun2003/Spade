@@ -9,11 +9,13 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 #include "compute/recipe.hpp"
 #include "core/grade.hpp"
 #include "physics/schedule.hpp"
 #include "sim/module.hpp"
+#include "sim/simulation.hpp"
 #include "state/state_view.hpp"
 
 namespace spade::test {
@@ -39,6 +41,18 @@ inline constexpr modules::ArrayDecl kResidentOnDevice[] = {
      .residency = modules::Residency::device}};
 inline constexpr modules::ArrayDecl kResidentOnHost[] = {
     {.name = "airflow_u", .elem_size = sizeof(ResidentRow), .extent = modules::Extent::per_world}};
+
+// The resident grid of every world of `a` equals `b`'s, bit for bit (the non-const module_rows syncs a device-resident array).
+// What a cross-backend test compares: the whole-set digest also folds the dryden state, which the CPU and the device
+// advance in their own bands (GpuParity), so it is no exact cross-backend check beyond a few steps.
+[[nodiscard]] inline bool grids_equal(Simulation& a, Simulation& b, uint32_t worlds) {
+    for (uint32_t w = 0; w < worlds; ++w) {
+        const auto ra = a.module_rows<ResidentRow>("airflow_u", w);
+        const auto rb = b.module_rows<ResidentRow>("airflow_u", w);
+        if (!ra || !rb || std::memcmp(ra->data(), rb->data(), sizeof(ResidentRow)) != 0) return false;
+    }
+    return true;
+}
 
 struct ResidentModule {
     std::array<modules::PassDecl, 1> passes;

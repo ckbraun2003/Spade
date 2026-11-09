@@ -24,7 +24,7 @@ using spade::test::g_rebuild_derived;
 using spade::test::kDeriveConfig;
 
 [[nodiscard]] spade::Simulation make(const spade::modules::ModuleSet& set) {
-    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(2);
+    const spade::Result<spade::WorldSetDesc> world = spade::test::two_world_set(2);
     EXPECT_TRUE(world.has_value()) << world.error().context;
     spade::Result<spade::Simulation> sim = spade::Simulation::create(*world, 1'000'000, 2, spade::compute::BackendDesc{}, set);
     EXPECT_TRUE(sim.has_value()) << sim.error().context;

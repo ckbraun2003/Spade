@@ -110,7 +110,7 @@ struct GriddedModule {
 };
 
 [[nodiscard]] Simulation make(const GriddedModule& m, BackendKind kind) {
-    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(2);
+    const spade::Result<spade::WorldSetDesc> world = spade::test::two_world_set(2);
     EXPECT_TRUE(world.has_value()) << world.error().context;
     spade::Result<Simulation> sim = Simulation::create(*world, 1'000'000, 2, BackendDesc{.kind = kind}, m.set);
     EXPECT_TRUE(sim.has_value()) << sim.error().context;
@@ -136,7 +136,7 @@ TEST(GpuRebuild, TheOnDemandRecordingIsSubmittedOnceNotPerStep) {
 
 TEST(GpuRebuild, AStandardSetSubmitsNothingOnDemand) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    const spade::Result<spade::WorldSetDesc> world = spade::test::floor_world_set(2);
+    const spade::Result<spade::WorldSetDesc> world = spade::test::two_world_set(2);
     spade::Result<Simulation> sim = Simulation::create(*world, 1'000'000, 2, BackendDesc{.kind = BackendKind::vulkan},
                                                        spade::modules::standard_modules());
     ASSERT_TRUE(sim.has_value()) << sim.error().context;
@@ -170,5 +170,6 @@ TEST(GpuRebuild, AVulkanRestoreResumeIsBitIdenticalWithADerivedBuffer) {
     // And the cpu run is the same arithmetic.
     Simulation ref = make(cpu, BackendKind::cpu);
     ASSERT_TRUE(ref.step(6).has_value());
-    EXPECT_EQ(spade::testing::state_digest(ref), spade::testing::state_digest(straight));
+    EXPECT_TRUE(spade::test::grids_equal(ref, straight, 2)) << "the whole-set digest also folds the dryden state, which the "
+                                                              "backends advance in their own bands";
 }

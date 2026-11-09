@@ -73,18 +73,22 @@ TEST(Resident, OnlyPerWorldMayBeDevice) {
     EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
     EXPECT_NE(refused.error().context.find("cells"), std::string::npos) << refused.error().context;
     EXPECT_NE(refused.error().context.find("grid"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("device-resident"), std::string::npos) << "the residency rule's own text: " << refused.error().context;
 }
 
 TEST(Resident, RequiresACpuReference) {
     static const ArrayDecl per_world[] = {{.name = "grid", .elem_size = 16, .extent = Extent::per_world,
                                            .residency = Residency::device}};
     for (const spade::Grade cpu : {spade::Grade::best_effort, spade::Grade::banded}) {
+        // vulkan best_effort: L4 (a banded Vulkan grade needs a CPU reference) would refuse first and hide the residency rule.
         const auto refused = schedule_of({ModuleDesc{.name = "cells", .state = per_world,
-                                                     .grade = {.cpu = cpu, .vulkan = spade::Grade::banded}}});
+                                                     .grade = {.cpu = cpu, .vulkan = spade::Grade::best_effort}}});
         ASSERT_FALSE(refused.has_value()) << "cpu grade " << static_cast<int>(cpu);
         EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
         EXPECT_NE(refused.error().context.find("cells"), std::string::npos) << refused.error().context;
         EXPECT_NE(refused.error().context.find("grid"), std::string::npos) << refused.error().context;
+        EXPECT_NE(refused.error().context.find("device-resident"), std::string::npos)
+            << "the residency rule's own text, not L4's: " << refused.error().context;
         EXPECT_NE(refused.error().context.find("reference"), std::string::npos) << refused.error().context;
     }
     const auto accepted = schedule_of({ModuleDesc{.name = "cells", .state = per_world,
