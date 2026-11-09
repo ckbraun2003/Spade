@@ -10,11 +10,13 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "points_proof_support.hpp"
 #include "set_body_state_support.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
@@ -236,4 +238,14 @@ TEST(PointSamples, HostRequestRowsAreTheHostsAndThePositionsPassLeavesThemAlone)
     EXPECT_EQ(r.pos[1], 8.0f);
     EXPECT_EQ(r.wind[0], 16.0f);
     EXPECT_EQ(r.density, 7.0f);
+}
+
+// REVIEW FOCUS 2, the CPU: drag.forces reading the point rows, fed the world's own sample in every row, steps a drag body to the
+// standard set's bits (apply_drag_points and apply_drag share apply_drag_element's expressions). Twenty steps.
+TEST(PointSamples, DragReadingTheRowsFedTheWorldSampleReproducesTheStandardBits) {
+    const spade::test::ProofModule m(nullptr);
+    const auto standard = spade::test::proof_run(spade::modules::standard_modules(), spade::compute::BackendKind::cpu, false, 20);
+    const auto points = spade::test::proof_run(m.set, spade::compute::BackendKind::cpu, true, 20);
+    ASSERT_EQ(standard.size(), points.size());
+    EXPECT_EQ(std::memcmp(standard.data(), points.data(), standard.size()), 0) << "the body row differs bytewise";
 }

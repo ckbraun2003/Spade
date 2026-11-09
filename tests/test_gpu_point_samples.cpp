@@ -14,6 +14,8 @@
 #include "compute/backend.hpp"
 #include "gpu_skip.hpp"
 #include "point_samples_gpu_support.hpp"
+#include "points_proof_support.hpp"
+#include "probe_module_support.hpp"
 #include "set_body_state_support.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
@@ -114,4 +116,15 @@ TEST(GpuPointSamples, TheReaderKernelReadsThePerPointRowBehindTheVariant) {
     EXPECT_EQ(cpu.rows[0].wind[0], 4.0f);
     EXPECT_NEAR(gpu.force.x, cpu.force.x, 1e-5f * std::max(1.0f, std::abs(cpu.force.x)));
     EXPECT_NEAR(gpu.force.y, cpu.force.y, 1e-5f * std::max(1.0f, std::abs(cpu.force.y)));
+}
+
+// REVIEW FOCUS 2, the device: the points variant fed the world's own sample in every row steps a drag body to the standard
+// kernel's bits (the same expressions on the same operands). Twenty steps, so a drag force that differed in one ulp would show.
+TEST(GpuPointSamples, ThePointsVariantFedTheWorldSampleReproducesTheStandardBitsOnTheDevice) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::test::ProofModule m(&spade::test::kProbeRecipe);
+    const auto standard = spade::test::proof_run(spade::modules::standard_modules(), BackendKind::vulkan, false, 20);
+    const auto points = spade::test::proof_run(m.set, BackendKind::vulkan, true, 20);
+    ASSERT_EQ(standard.size(), points.size());
+    EXPECT_EQ(std::memcmp(standard.data(), points.data(), standard.size()), 0) << "the body row differs bytewise";
 }
