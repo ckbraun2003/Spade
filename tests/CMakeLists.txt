@@ -222,6 +222,7 @@ add_executable(spade_tests
     test_d1_case.cpp
     test_hover_download.cpp
     test_flow_movie_frame_check.cpp
+    test_flow_movie_web.cpp
     # write_frame(), which every film's frames pass through (the lead's grant,
     # 2026-10-27): the recorder's cache, compiled in from the tool.
     ../tools/flow_movie/cache.cpp
