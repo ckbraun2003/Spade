@@ -15,8 +15,8 @@
 #include <string_view>
 #include <vector>
 
-#include "bindings.gen.hpp"
 #include "compute/admit.hpp"
+#include "compute/set_one_bindings.hpp"  // kStateBindingCount (Vulkan-free)
 #include "core/error.hpp"
 
 namespace spade::compute {
@@ -47,7 +47,7 @@ inline constexpr uint32_t kSet1BindingSlots = 48;
         }
         named[b] = true;
     }
-    AdmitLayout layout{.name = std::string(kernel), .bindings_per_set = {gen::kBindingCount_state}};
+    AdmitLayout layout{.name = std::string(kernel), .bindings_per_set = {kStateBindingCount}};
     if (!set1_bindings.empty()) layout.bindings_per_set.push_back(static_cast<uint32_t>(set1_bindings.size()));
     return layout;
 }

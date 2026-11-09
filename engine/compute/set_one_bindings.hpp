@@ -3,8 +3,10 @@
 //
 // A walk array (StepShape::arrays) or a device-only scratch (ScratchShape) whose NAME is in this table is bound at that
 // set-1 binding, in whichever set-1 descriptor set a kernel's subset needs (compute/layout_classes.hpp). The numbers are
-// the generated gen::kBinding_airflow_* constants of bindings.slang section F; the static_asserts below tie the table to
-// them, as spike/airflow/chain_runner.hpp ties kAirflowSetBuffers. The table lists the 28 airflow names, bindings 0 to 27.
+// bindings.slang section F's, written here as plain constants so this header is Vulkan-free in the full sense: a SPADE_VULKAN=OFF
+// build has no generated headers (VulkanOff.NoFileAnOffTargetCompilesIncludesAGeneratedHeaderUnguarded), and sim/ includes this
+// file. Where the generated header exists (every Vulkan build) the static_asserts at the foot tie each number to the generated
+// gen::kBinding_airflow_* constant, as spike/airflow/chain_runner.hpp ties kAirflowSetBuffers. The table lists the 28 airflow names, bindings 0 to 27.
 // The stage 7 appendices (28 to 33) are not here: the configuration image is bound by StepShape::config_binding, and the
 // others by the batch that declares each row. The LBM's (40 to 47) have their own lists.
 #pragma once
@@ -14,49 +16,60 @@
 #include <iterator>
 #include <string_view>
 
-#include "bindings.gen.hpp"
 #include "compute/backend.hpp"
 
 namespace spade::compute {
+
+// The numbers of set 1 and set 0 that Vulkan-free code needs (the generated gen:: constants, which exist only in a Vulkan build, are
+// asserted equal to them below).
+inline constexpr uint32_t kStateBindingCount = 30;      // set 0's bindings (gen::kBindingCount_state)
+inline constexpr uint32_t kAirflowConfigBinding = 33;   // the module configuration image's set-1 binding (gen::kBinding_airflow_config)
+inline constexpr uint32_t kAirflowWallLoadBinding = 27;  // the last of section F's 28 airflow bindings
 
 struct SetOneBinding {
     std::string_view name;
     uint32_t binding;
 };
 
+// X(name, number): section F's airflow bindings 0 to 27, in binding order.
+#define SPADE_SET_ONE_BINDINGS(X) \
+    X(airflow_params, 0) \
+    X(airflow_u, 1) \
+    X(airflow_v, 2) \
+    X(airflow_w, 3) \
+    X(airflow_pressure, 4) \
+    X(airflow_next, 5) \
+    X(airflow_advect, 6) \
+    X(airflow_increments, 7) \
+    X(airflow_viscous_rhs, 8) \
+    X(airflow_rhs, 9) \
+    X(airflow_residual, 10) \
+    X(airflow_multigrid, 11) \
+    X(airflow_mg_weights, 12) \
+    X(airflow_apertures, 13) \
+    X(airflow_wall_velocity, 14) \
+    X(airflow_phi, 15) \
+    X(airflow_face_tags, 16) \
+    X(airflow_wall_links, 17) \
+    X(airflow_region_labels, 18) \
+    X(airflow_region_table, 19) \
+    X(airflow_pcg, 20) \
+    X(airflow_scalars, 21) \
+    X(airflow_discs, 22) \
+    X(airflow_partials, 23) \
+    X(airflow_health, 24) \
+    X(airflow_publish_v, 25) \
+    X(airflow_publish_s, 26) \
+    X(airflow_wall_load, 27)
+
 inline constexpr SetOneBinding kSetOneBindings[] = {
-    {"airflow_params", gen::kBinding_airflow_params},
-    {"airflow_u", gen::kBinding_airflow_u},
-    {"airflow_v", gen::kBinding_airflow_v},
-    {"airflow_w", gen::kBinding_airflow_w},
-    {"airflow_pressure", gen::kBinding_airflow_pressure},
-    {"airflow_next", gen::kBinding_airflow_next},
-    {"airflow_advect", gen::kBinding_airflow_advect},
-    {"airflow_increments", gen::kBinding_airflow_increments},
-    {"airflow_viscous_rhs", gen::kBinding_airflow_viscous_rhs},
-    {"airflow_rhs", gen::kBinding_airflow_rhs},
-    {"airflow_residual", gen::kBinding_airflow_residual},
-    {"airflow_multigrid", gen::kBinding_airflow_multigrid},
-    {"airflow_mg_weights", gen::kBinding_airflow_mg_weights},
-    {"airflow_apertures", gen::kBinding_airflow_apertures},
-    {"airflow_wall_velocity", gen::kBinding_airflow_wall_velocity},
-    {"airflow_phi", gen::kBinding_airflow_phi},
-    {"airflow_face_tags", gen::kBinding_airflow_face_tags},
-    {"airflow_wall_links", gen::kBinding_airflow_wall_links},
-    {"airflow_region_labels", gen::kBinding_airflow_region_labels},
-    {"airflow_region_table", gen::kBinding_airflow_region_table},
-    {"airflow_pcg", gen::kBinding_airflow_pcg},
-    {"airflow_scalars", gen::kBinding_airflow_scalars},
-    {"airflow_discs", gen::kBinding_airflow_discs},
-    {"airflow_partials", gen::kBinding_airflow_partials},
-    {"airflow_health", gen::kBinding_airflow_health},
-    {"airflow_publish_v", gen::kBinding_airflow_publish_v},
-    {"airflow_publish_s", gen::kBinding_airflow_publish_s},
-    {"airflow_wall_load", gen::kBinding_airflow_wall_load},
+#define SPADE_SET_ONE_ROW(name, number) {#name, number},
+    SPADE_SET_ONE_BINDINGS(SPADE_SET_ONE_ROW)
+#undef SPADE_SET_ONE_ROW
 };
 
 // Section F's bindings 0 to airflow_wall_load, in binding order: entry i is binding i.
-static_assert(std::size(kSetOneBindings) == gen::kBinding_airflow_wall_load + 1,
+static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1,
               "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load");
 static_assert(
     [] {
@@ -76,3 +89,19 @@ static_assert(
 }
 
 }  // namespace spade::compute
+
+// WHERE THE GENERATED HEADER EXISTS (every SPADE_VULKAN=ON build, and gcc-check's), each number above is held to the constant
+// bindings.slang generated for it: a renumbered binding fails to compile here, not on a device.
+#if __has_include("bindings.gen.hpp")
+#include "bindings.gen.hpp"
+namespace spade::compute {
+static_assert(kStateBindingCount == gen::kBindingCount_state, "set 0's binding count is bindings.slang's");
+static_assert(kAirflowConfigBinding == gen::kBinding_airflow_config, "the config image's binding is bindings.slang's");
+static_assert(kAirflowWallLoadBinding == gen::kBinding_airflow_wall_load, "section F's last airflow binding is bindings.slang's");
+#define SPADE_SET_ONE_ASSERT(name, number) \
+    static_assert(gen::kBinding_##name == number, "kSetOneBindings: " #name " is not bindings.slang's number");
+SPADE_SET_ONE_BINDINGS(SPADE_SET_ONE_ASSERT)
+#undef SPADE_SET_ONE_ASSERT
+}  // namespace spade::compute
+#endif
+#undef SPADE_SET_ONE_BINDINGS

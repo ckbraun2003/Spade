@@ -7,8 +7,8 @@
 #include <tuple>
 #include <utility>
 
-#include "bindings.gen.hpp"
 #include "compute/recipe.hpp"
+#include "compute/set_one_bindings.hpp"  // kAirflowConfigBinding (Vulkan-free; tied to the generated constant there)
 #include "core/rng.hpp"
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
@@ -184,10 +184,10 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
 [[nodiscard]] Result<void> check_config(std::span<const ModuleDesc> modules, std::size_t m) {
     const ModuleDesc& mod = modules[m];
     if (mod.config_binding == compute::kNoBinding) return {};
-    if (mod.config_binding != compute::gen::kBinding_airflow_config) {
+    if (mod.config_binding != compute::kAirflowConfigBinding) {
         return std::unexpected(invalid("module '" + std::string(mod.name) + "': config_binding " +
                                        std::to_string(mod.config_binding) + " is not the config buffer (set-1 binding " +
-                                       std::to_string(compute::gen::kBinding_airflow_config) + ")"));
+                                       std::to_string(compute::kAirflowConfigBinding) + ")"));
     }
     if (mod.config.empty()) {
         return std::unexpected(invalid("module '" + std::string(mod.name) +
