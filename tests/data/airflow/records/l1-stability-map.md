@@ -668,3 +668,27 @@ verdict: report only
 ```
 
 The earlier single-thread probes of the cases ran at 0.81 to 0.93 MLUPS (C0a 64 0.925, C0b 64 0.814, C1 Re 100 0.837; `.superpowers/sdd/2026-11-04-lbm/probe-*.log`), so 0.79 is the conservative number. A quiet re-probe (an empty queue, low priority) replaces the row only if it comes out higher (L33a).
+
+## The exact point on the device (2026-11-09)
+
+The L5 point (u_lat 0.196, nu_lat 4.2e-6) stepped on the device of record in lock step with the CPU to t* 20 (tests/test_gpu_lbm.cpp, GpuLbmCase.OneCaseInLockStepWithTheCpu, `map:0.196:4.2e-6`): the populations compared word for word every 5 steps. The first run at 20d98cc8 printed the same digest in 63.8 s; the rerun at d39efd2f took 94.7 s.
+
+```text
+=== validation record: L1 stability map, 64^3 Taylor-Green, u_lat 0.196, nu_lat 4.2e-6, LBM, on the device in lock step with the CPU ===
+commit: physics/lbm-gpu-t5 (T5; run at d39efd2f, SPADE_LBM_VALIDATION=1 SPADE_LBM_GPU_CASE=map:0.196:4.2e-6)
+date: 2026-11-09
+path: the device of record (the chain of lbm_macro and lbm_collide_stream, the staged lbm_f/lbm_u buffers) in lock step with the CPU reference, on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no); fp32 NaN preservation supported: yes; CPU MSVC 1943, release, 6 threads (WorkerPool)
+config: 64^3 periodic 2 pi box, C0b's field, D3Q27 recursive-regularized to 3rd order, WALE C_w 0.5, u_lat 0.196 (Ma 0.339), nu_lat 4.2e-6, to t* 20 (1039 steps), rho from the analytic pressure, fp32; the CPU step under the flush scope, the populations compared every 5 steps (208 samples); final-f digest 0x156f2790a0b24740
+measure: steps held to t* 20, of 1039 = 1039
+reference: none (the lattice's own stability)
+tolerance: none (report only)
+verdict: report only
+measure: kinetic energy at its largest, over its first, at the samples = 1.0000
+reference: K* finite and <= 1.05 K*(0) at every 5th step (the map's own test)
+tolerance: <= 1.05 (test-docs/2026-11-03-l1-lbm-tolerances.md, the map's held test, fixed before the first run)
+verdict: within
+measure: words of f differing from the CPU at the 208 sample steps = 0
+reference: the CPU reference's populations, word for word (TD-14: bit equality is for numbers, not NaN payloads, so the CPU field is checked finite at each sample)
+tolerance: exact (TD-14)
+verdict: within
+```

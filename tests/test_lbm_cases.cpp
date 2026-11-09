@@ -35,7 +35,6 @@ using namespace spade::physics::lbm;
 namespace ref = spade::testing::airflow_reference;
 using namespace spade::testing::lbm_support;
 
-constexpr double kTwoPi = 2.0 * std::numbers::pi;
 
 using Clock = std::chrono::steady_clock;
 
@@ -75,20 +74,7 @@ void run_c0b(uint32_t n) {
     const double u_lat = 0.1;
     const double l_lat = n / kTwoPi;
     const double nu = u_lat * l_lat / 1600.0;
-    LbmFlow fl = make_flow(n, n, n, static_cast<float>(nu), 0.5f);
-    for (uint32_t z = 0; z < n; ++z) {
-        for (uint32_t y = 0; y < n; ++y) {
-            for (uint32_t x = 0; x < n; ++x) {
-                const double X = kTwoPi * x / n;
-                const double Y = kTwoPi * y / n;
-                const double Z = kTwoPi * z / n;
-                const double p = u_lat * u_lat / 16.0 * (std::cos(2 * X) + std::cos(2 * Y)) * (std::cos(2 * Z) + 2.0);
-                set_node_equilibrium(fl, x, y, z, static_cast<float>(1.0 + 3.0 * p),
-                                     static_cast<float>(u_lat * std::sin(X) * std::cos(Y) * std::cos(Z)),
-                                     static_cast<float>(-u_lat * std::cos(X) * std::sin(Y) * std::cos(Z)), 0.0f);
-            }
-        }
-    }
+    LbmFlow fl = c0b_field(n, u_lat);
     const int steps = static_cast<int>(std::lround(20.0 * l_lat / u_lat));
     const int every = static_cast<int>(std::floor(0.05 * l_lat / u_lat));  // sample at most 0.05 t* apart
     const double dt_star = every * u_lat / l_lat;
@@ -167,12 +153,7 @@ std::vector<double> cavity_samples(LbmFlow& fl, double u_lat, bool skip_point_11
 void run_c1(int re, double u_lat) {
     constexpr uint32_t n = 128;
     const double nu = u_lat * n / re;
-    LbmFlow fl = make_flow(n, n, 1, static_cast<float>(nu), 0.5f);
-    fl.walls.periodic = {false, false, true};
-    fl.walls.wall_u[1][1] = {static_cast<float>(u_lat), 0.0f, 0.0f};
-    for (uint32_t y = 0; y < n; ++y) {
-        for (uint32_t x = 0; x < n; ++x) set_node_equilibrium(fl, x, y, 0, 1.0f, 0.0f, 0.0f, 0.0f);
-    }
+    LbmFlow fl = c1_field(re, u_lat);
     const double t_lu = re == 100 ? 50.0 : 190.0;  // T in L/U
     const int per_lu = static_cast<int>(std::lround(n / u_lat));
     const int steps = static_cast<int>(t_lu) * per_lu;

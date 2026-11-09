@@ -177,4 +177,47 @@ inline WorkerPool* case_pool() {
         case_threads() > 1 ? std::make_unique<WorkerPool>(case_threads()) : nullptr;
     return pool.get();
 }
+// ---- the cases' fields, shared by the CPU runs and the device's comparisons -----------------------------------------
+
+inline constexpr double kTwoPi = 2.0 * std::numbers::pi;
+
+// The three-dimensional Taylor-Green vortex of C0b and of the stability map's points: N^3 periodic, peak speed u_lat,
+// viscosity nu (lattice units), WALE on (C_w 0.5), the pressure field the vortex is in equilibrium with.
+[[nodiscard]] inline LbmFlow taylor_green_field(uint32_t n, double u_lat, double nu) {
+    LbmFlow fl = spade::physics::lbm::make_flow(n, n, n, static_cast<float>(nu), 0.5f);
+    for (uint32_t z = 0; z < n; ++z) {
+        for (uint32_t y = 0; y < n; ++y) {
+            for (uint32_t x = 0; x < n; ++x) {
+                const double X = kTwoPi * x / n;
+                const double Y = kTwoPi * y / n;
+                const double Z = kTwoPi * z / n;
+                const double p = u_lat * u_lat / 16.0 * (std::cos(2 * X) + std::cos(2 * Y)) * (std::cos(2 * Z) + 2.0);
+                spade::physics::lbm::set_node_equilibrium(
+                    fl, x, y, z, static_cast<float>(1.0 + 3.0 * p),
+                    static_cast<float>(u_lat * std::sin(X) * std::cos(Y) * std::cos(Z)),
+                    static_cast<float>(-u_lat * std::cos(X) * std::sin(Y) * std::cos(Z)), 0.0f);
+            }
+        }
+    }
+    return fl;
+}
+
+// C0b: the vortex at Re 1600 on N^3 (l_lat = N / 2 pi, nu = u_lat l_lat / 1600), u_lat 0.1.
+[[nodiscard]] inline LbmFlow c0b_field(uint32_t n, double u_lat = 0.1) {
+    return taylor_green_field(n, u_lat, u_lat * (n / kTwoPi) / 1600.0);
+}
+
+// C1: the lid-driven cavity at Reynolds number `re` on 128 x 128 x 1, the lid (high y) moving at u_lat along x, the
+// fluid at rest, WALE on; nu = u_lat 128 / re.
+[[nodiscard]] inline LbmFlow c1_field(int re, double u_lat) {
+    constexpr uint32_t n = 128;
+    LbmFlow fl = spade::physics::lbm::make_flow(n, n, 1, static_cast<float>(u_lat * n / re), 0.5f);
+    fl.walls.periodic = {false, false, true};
+    fl.walls.wall_u[1][1] = {static_cast<float>(u_lat), 0.0f, 0.0f};
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) spade::physics::lbm::set_node_equilibrium(fl, x, y, 0, 1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    return fl;
+}
+
 }  // namespace spade::testing::lbm_support

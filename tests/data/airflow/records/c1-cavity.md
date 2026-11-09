@@ -189,3 +189,17 @@ reference: none (the lattice's own cost)
 tolerance: none (report only)
 verdict: report only
 ```
+
+The same on the device, one run (tests/test_gpu_lbm.cpp, GpuLbmCase.OneCaseInLockStepWithTheCpu): the lid-driven cavity at Re 100 stepped on the device and on the CPU together, the populations compared word for word every 64 steps. The first run at 20d98cc8 printed the same digest in 268.9 s; the rerun at d39efd2f took 474.8 s (shared box).
+
+```text
+=== validation record: C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM, on the device in lock step with the CPU ===
+commit: physics/lbm-gpu-t5 (T5; run at d39efd2f, SPADE_LBM_VALIDATION=1 SPADE_LBM_GPU_CASE=c1:100:0.1)
+date: 2026-11-09
+path: the device of record (the chain of lbm_macro and lbm_collide_stream, the staged lbm_f/lbm_u buffers) in lock step with the CPU reference, on NVIDIA GeForce RTX 3060 Ti, driver NVIDIA 572.83 (0x8F14C000), Vulkan 1.4.303; fp32 denormals: no mode requested, device default (preserve supported: no, flush-to-zero supported: no); fp32 NaN preservation supported: yes; CPU MSVC 1943, release, 6 threads (WorkerPool)
+config: 128x128x1 slab (z periodic), D3Q27 recursive-regularized to 3rd order, WALE C_w 0.5, u_lat 0.1 (Ma 0.173), nu_lat 0.128 (tau 0.8840), Re 100, T 50 L/U (64000 steps), walls by halfway bounce-back, the lid by the moving-wall term, impulsive start at rho 1, fp32; the CPU step under the flush scope, the populations compared every 64 steps (1000 samples); final-f digest 0x5b1f30079bd5d15e (the scoped CPU run's digest above, equal)
+measure: words of f differing from the CPU at the 1000 sample steps = 0
+reference: the CPU reference's populations, word for word (TD-14: bit equality is for numbers, not NaN payloads, so the CPU field is checked finite at each sample)
+tolerance: exact (TD-14)
+verdict: within
+```

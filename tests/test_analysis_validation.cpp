@@ -331,9 +331,13 @@ TEST(AnalysisValidation, TheV1RecordsRead) {
                   "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM",
                   "C1 lid-driven cavity, Re 400, 128x128, u_lat 0.1, LBM",
                   "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.05, LBM",
-                  "C1 lid-driven cavity, Re 400, 128x128, u_lat 0.05, LBM"}));
+                  "C1 lid-driven cavity, Re 400, 128x128, u_lat 0.05, LBM",
+                  "C1 lid-driven cavity, Re 100, 128x128, u_lat 0.1, LBM, on the device in lock step with the CPU"}));
     EXPECT_EQ(c0_lbm_banded,
               (std::vector<std::string>{"C0 Taylor-Green, the 2D mode's exact decay, 32x32x1, u_lat 0.1, LBM",
                                         "C0 Taylor-Green, the 2D mode's exact decay, 64x64x1, u_lat 0.05, LBM",
-                                        "C0 Taylor-Green vortex, Re 1600, 128^3, LBM"}));
+                                        "C0 Taylor-Green vortex, Re 1600, 128^3, LBM",
+                                        // The device's lock-step record: its bit-equality row carries the exact band.
+                                        "C0 Taylor-Green vortex, Re 1600, 64^3, LBM, on the device in lock step "
+                                        "with the CPU"}));
 }
