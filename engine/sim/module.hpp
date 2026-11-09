@@ -32,6 +32,7 @@
 #include "core/grade.hpp"
 #include "physics/field_row.hpp"
 #include "state/layout.hpp"         // kStd430StructAlignment, WorldParams
+#include "world/medium.hpp"         // MediumSample (RegionSampleFn)
 #include "vehicles/model_type.hpp"  // complete: a span of an incomplete type breaks MSVC (physics/schedule.hpp)
 
 namespace spade::physics {
@@ -116,11 +117,27 @@ struct PassDecl {
 enum class FieldKind : uint8_t { scalar = 0, vec3 = 1, bands = 2 };
 inline constexpr uint32_t kMaxFieldBands = 32;
 
+// REGIONS (module API stage 7, Task D2; the stage 7 plan, batch D). A module may declare regions: named, prioritised volumes a
+// world places (WorldInstanceDesc::regions). A FIELD provider bound to a region (FieldDecl::region) answers the HOST's
+// Simulation::sample_medium inside that region with its `sample` function, on the CPU; on Vulkan sample_medium refuses inside a
+// region, naming it (no device region row in D2). Outside every region the answer is today's, the whole-world provider's.
+// Where regions overlap the highest priority wins; two overlapping placements of equal priority are refused at create(), naming
+// both. A region-bound provider has a sample function and no pass (the step path keeps the world's sample).
+using RegionSampleFn = MediumSample (*)(glm::vec3 pos) noexcept;
+struct RegionDecl {
+    std::string_view name;  // no '.'; unique within the module
+    uint32_t priority = 0;  // higher wins where placed regions overlap
+};
+
 struct FieldDecl {
     std::string_view name;  // no '.'; unique in the set
     FieldKind kind = FieldKind::scalar;
     uint32_t bands = 0;     // FieldKind::bands only: 1 .. kMaxFieldBands
     std::string_view unit;  // SI, spelt in ASCII ("m/s^2")
+    // Empty (every field today): the whole-world provider. Else the name of one of the module's RegionDecls: this provider
+    // answers inside that region only, with `sample` (required then). A field has exactly one whole-world provider.
+    std::string_view region{};
+    RegionSampleFn sample = nullptr;
 };
 
 // POINT SAMPLES (module API stage 7, Task D1; the stage 7 plan, batch D). A module whose field depends on WHERE it is read
@@ -510,6 +527,7 @@ struct ModuleDesc {
     std::span<const PassDecl> passes{};
     std::span<const FieldDecl> fields{};          // the fields this module provides
     std::optional<PointsDecl> points{};           // the points its fields are sampled at (stage 7 D1); at most one module has it
+    std::span<const RegionDecl> regions{};        // the regions its field providers are bound to (stage 7 D2)
     std::span<const ArrayDecl> state{};           // the arrays this module owns
     bool legacy_walk = false;                     // only on a module whose every array is in kLegacyWalkArrays
     std::span<const StreamDecl> streams{};        // the seeded streams this module's rows hold
