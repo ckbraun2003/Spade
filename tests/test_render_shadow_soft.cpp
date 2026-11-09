@@ -331,6 +331,60 @@ TEST(EarlyOut, TheFilteredLookupIsBitIdenticalToTheFullLoopWithItOff) {
     EXPECT_GT(skipped_candidates, points / 4u) << "and lit points, or it proves nothing about the skip";
 }
 
+// The footprint reject (a point far outside the map's [-1, 1] light-space x or y is lit, from two rows of the matrix
+// alone) is held to the full product the same way: points laid on the footprint's edge itself and just inside and
+// outside it (by 1e-2 down to 1e-7 of the half-width), at three depths so some are shadowed, on the world's map (where
+// the ground fills the map, so a point at the edge and deep is shadowed) and on a body's own.
+TEST(EarlyOut, TheFootprintRejectIsBitIdenticalToTheFullProductOnAndAroundTheEdge) {
+    RenderScene scene = world_with_a_small_dynamic_box(glm::vec3(3.0f, 1.0f, 1.0f), 0.25f);
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 1.0f, 0.0f)), .material_override = kNoMaterial});
+    const auto statics = build_static_shadow_map(scene);
+    ASSERT_TRUE(statics.has_value());
+    const auto focus = build_focus_shadow_map(scene, 1024, 1.0f, *statics);
+    ASSERT_TRUE(focus.has_value());
+
+    const std::array<glm::vec3, 3> normals = {glm::vec3(0.0f, 1.0f, 0.0f), glm::normalize(glm::vec3(0.6f, 0.8f, 0.0f)),
+                                              glm::vec3(1.0f, 0.0f, 0.0f)};
+    const std::array<float, 3> filters = {0.0f, 1.0f, 2.0f};
+    const std::array<float, 15> offsets = {-1e-2f, -1e-3f, -1e-4f, -1e-5f, -1e-6f, -1e-7f, 0.0f, 1e-7f,
+                                           1e-6f,  1e-5f,  1e-4f,  1e-3f,  1e-2f,  3e-2f,  0.2f};  // + is outward
+    uint64_t points = 0, differing = 0, outside = 0, inside = 0, edge_shadowed = 0;
+    for (const ShadowMap* map : {&*statics, &*focus}) {
+        const glm::mat4 inverse = glm::inverse(map->light_view_proj);
+        for (const float z : {-0.95f, 0.0f, 0.95f}) {
+            for (const int axis : {0, 1}) {
+                for (const float side : {-1.0f, 1.0f}) {
+                    for (const float off : offsets) {
+                        for (int k = -30; k <= 30; ++k) {
+                            const float along = 0.0371f * static_cast<float>(k);  // across the edge's length, past its corners
+                            glm::vec4 ndc(0.0f, 0.0f, z, 1.0f);
+                            ndc[axis] = side * (1.0f + off);
+                            ndc[1 - axis] = along;
+                            const glm::vec4 w4 = inverse * ndc;
+                            const glm::vec3 q(w4.x, w4.y, w4.z);
+                            for (const glm::vec3& n : normals) {
+                                for (const float f : filters) {
+                                    const float a = sample_shadow(*map, q, n, f);
+                                    const float b = spade::render::sample_shadow_without_early_out(*map, q, n, f);
+                                    ++points;
+                                    differing += std::bit_cast<uint32_t>(a) != std::bit_cast<uint32_t>(b) ? 1u : 0u;
+                                    outside += off > 1e-3f ? 1u : 0u;
+                                    inside += off < -1e-3f ? 1u : 0u;
+                                    edge_shadowed += (map == &*statics && off <= 0.0f && b < 1.0f) ? 1u : 0u;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_EQ(differing, 0u) << differing << " of " << points << " samples differ between the lookup and the full product";
+    EXPECT_GT(outside, 1000u);
+    EXPECT_GT(inside, 1000u);
+    EXPECT_GT(edge_shadowed, 100u) << "points on and inside the world map's edge must include shadowed ones, or an over-eager reject hides";
+}
+
 // ---------------------------------------------------------------------------
 // ShadowDefaults
 // ---------------------------------------------------------------------------

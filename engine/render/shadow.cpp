@@ -394,7 +394,24 @@ float ShadowSet::sample(const glm::vec3& world_pos, const glm::vec3& normal) con
     return lit;
 }
 
-// sample_shadow() with the box's early-out switchable, so a test can hold the early-out to the full loop.
+// Whether `world` is certainly outside the map's [-1, 1] footprint in light-space x or y, from the matrix's first two
+// rows alone (no z, no w: half the multiplies of the full product) and a margin that dwarfs the rounding of either
+// way of forming the sum (each of the four terms and three additions is good to a few 1e-8 of the sum of the terms'
+// magnitudes; the margin is 1e-5 of it). Only a point beyond the footprint by more than that margin is rejected, so
+// every point the full product would put outside gets the full product's answer (lit), and every other goes on to it.
+[[nodiscard]] static bool surely_outside_footprint(const glm::mat4& m, const glm::vec3& w) {
+    for (int row = 0; row < 2; ++row) {
+        const float a = m[0][row] * w.x, b = m[1][row] * w.y, c = m[2][row] * w.z, d = m[3][row];
+        const float margin = 1.0e-5f * (std::fabs(a) + std::fabs(b) + std::fabs(c) + std::fabs(d));
+        const float v = (a + b) + (c + d);
+        if (v < -1.0f - margin || v > 1.0f + margin) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// sample_shadow() with the early-outs switchable, so a test can hold them to the full computation.
 static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
                                 float filter_texels, bool allow_skip) {
     if (map.size == 0 || map.depth.empty()) {
@@ -402,6 +419,9 @@ static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos
     }
     // kShadowDepthBias (shadow.hpp) says what the bias still covers; GL's
     // lookup uses the same value and the same receiver plane.
+    if (allow_skip && surely_outside_footprint(map.light_view_proj, world_pos)) {
+        return 1.0f;  // far outside the footprint: the answer the product below would give, without it.
+    }
     const glm::vec4 p = map.light_view_proj * glm::vec4(world_pos, 1.0f);
     if (p.x < -1.0f || p.x > 1.0f || p.y < -1.0f || p.y > 1.0f) {
         return 1.0f;  // SR-17: outside the shadow frustum's own footprint -- unshadowed, by design.
