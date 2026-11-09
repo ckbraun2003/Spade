@@ -154,6 +154,7 @@ add_executable(spade_tests
     test_blade_azimuth.cpp
     test_part_bounds.cpp
     test_backend_stub_parity.cpp
+    test_vulkan_off_includes.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
     test_render_target.cpp
