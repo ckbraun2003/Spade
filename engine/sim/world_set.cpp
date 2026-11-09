@@ -493,6 +493,24 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
         seed = fold_value(seed, instance.turbulence);
         seed = fold_value(seed, instance.contacts);
         seed = fold_value(seed, instance.grid);
+
+        // PLACED REGIONS (stage 7 D2), only when there are any, so a world without them folds exactly what it always did.
+        // In order: name, then the box.
+        if (!instance.regions.empty()) {
+            seed = fold_value(seed, static_cast<uint64_t>(instance.regions.size()));
+            for (const RegionPlacement& r : instance.regions) {
+                seed = fold_value(seed, static_cast<uint64_t>(r.region.size()));
+                if (!r.region.empty()) {
+                    seed = fold_bytes(seed, std::as_bytes(std::span<const char>(r.region.data(), r.region.size())));
+                }
+                seed = fold_value(seed, r.lo.x);
+                seed = fold_value(seed, r.lo.y);
+                seed = fold_value(seed, r.lo.z);
+                seed = fold_value(seed, r.hi.x);
+                seed = fold_value(seed, r.hi.y);
+                seed = fold_value(seed, r.hi.z);
+            }
+        }
     }
 
     return seed;

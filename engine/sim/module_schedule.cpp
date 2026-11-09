@@ -611,6 +611,26 @@ Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modul
     // access resolves against it. One provider per field: this stage has one
     // region, the whole world (spec section 6).
     FieldOwners field_owner;
+    // REGIONS (stage 7 D2): every module's RegionDecls, named uniquely across the set (a world's placement names one), each
+    // given its provider's sample function by the region-bound FieldDecl below. A region-bound provider is not a field's owner:
+    // a field keeps exactly one whole-world provider, and the region providers answer the host's sample_medium inside theirs.
+    std::vector<CompiledRegion> regions;
+    for (std::size_t m = 0; m < modules.size(); ++m) {
+        for (const RegionDecl& r : modules[m].regions) {
+            const std::string where = "region '" + std::string(r.name) + "' (module '" + std::string(modules[m].name) + "')";
+            if (r.name.empty() || r.name.find('.') != std::string_view::npos) {
+                return std::unexpected(invalid(where + ": a region needs a name with no '.'"));
+            }
+            if (const auto dup = std::find_if(regions.begin(), regions.end(),
+                                              [&r](const CompiledRegion& c) { return c.name == r.name; });
+                dup != regions.end()) {
+                return std::unexpected(invalid(where + ": the name is also module '" + dup->module +
+                                               "''s; a region name is unique across the set"));
+            }
+            regions.push_back(CompiledRegion{std::string(modules[m].name), std::string(r.name), r.priority, nullptr});
+        }
+    }
+    std::vector<std::pair<std::size_t, const FieldDecl*>> region_bound;  // (module, field)
     for (std::size_t m = 0; m < modules.size(); ++m) {
         const ModuleDesc& mod = modules[m];
         for (const FieldDecl& f : mod.fields) {
@@ -635,12 +655,49 @@ Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modul
                                                (b->kind == FieldKind::vec3 ? "vec3" : "scalar") + " in " +
                                                std::string(b->unit)));
             }
+            if (!f.region.empty() || f.sample != nullptr) {
+                if (f.region.empty()) {
+                    return std::unexpected(invalid(where + ": a sample function belongs to a region-bound provider; name its region"));
+                }
+                const auto region = std::find_if(regions.begin(), regions.end(), [&](const CompiledRegion& c) {
+                    return c.name == f.region && c.module == mod.name;
+                });
+                if (region == regions.end()) {
+                    return std::unexpected(invalid(where + " is bound to region '" + std::string(f.region) +
+                                                   "', which the module does not declare"));
+                }
+                if (f.sample == nullptr) {
+                    return std::unexpected(invalid(where + " is bound to region '" + std::string(f.region) +
+                                                   "' but has no sample function"));
+                }
+                if (region->sample != nullptr) {
+                    return std::unexpected(invalid(where + ": region '" + std::string(f.region) +
+                                                   "' already has a provider; a region has one sample function"));
+                }
+                region->sample = f.sample;
+                region_bound.emplace_back(m, &f);
+                continue;
+            }
             if (const auto it = field_owner.find(f.name); it != field_owner.end()) {
                 return std::unexpected(invalid("field '" + std::string(f.name) + "' is declared by module '" +
                                                std::string(modules[it->second].name) + "' and module '" +
                                                std::string(mod.name) + "'; a field has one provider"));
             }
             field_owner.emplace(std::string(f.name), m);
+        }
+    }
+
+    for (const auto& [m, f] : region_bound) {
+        if (!field_owner.contains(f->name)) {
+            return std::unexpected(invalid("field '" + std::string(f->name) + "' (module '" + std::string(modules[m].name) +
+                                           "') is bound to region '" + std::string(f->region) +
+                                           "', but no module provides it for the whole world; a field has exactly one "
+                                           "whole-world provider, and region providers sit beside it"));
+        }
+    }
+    for (const CompiledRegion& r : regions) {
+        if (r.sample == nullptr) {
+            return std::unexpected(invalid("region '" + r.name + "' (module '" + r.module + "') has no field provider bound to it"));
         }
     }
 
@@ -788,6 +845,7 @@ Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modul
     uint32_t field_stride = kFieldBuiltinFloats;
     for (const ModuleDesc& mod : modules) {
         for (const FieldDecl& f : mod.fields) {
+            if (!f.region.empty()) continue;  // a region provider adds no row of its own
             if (builtin_field(f.name) != nullptr) continue;
             const uint32_t count = f.kind == FieldKind::bands ? f.bands : (f.kind == FieldKind::vec3 ? 3u : 1u);
             fields.push_back(CompiledField{std::string(f.name), f.kind, count, field_stride, std::string(f.unit)});
@@ -981,6 +1039,7 @@ Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modul
                                          [&role](const ModuleDesc& mod) { return mod.role == role.name; });
         if (filler != modules.end()) out.roles.push_back(CompiledRole{std::string(role.name), std::string(filler->name)});
     }
+    out.regions = std::move(regions);
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);

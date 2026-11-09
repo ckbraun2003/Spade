@@ -1834,6 +1834,14 @@ private:
         uint32_t declared_body_capacity = 0;     // the world's OWN capacity, enforced at spawn
         uint32_t declared_element_capacity = 0;  // ditto, for force elements
         uint32_t declared_sensor_capacity = 0;   // ditto, for sensors
+        // The regions placed in this world (stage 7 D2), resolved against the schedule's: `region` indexes
+        // CompiledSchedule::regions. Empty for every world today.
+        struct PlacedRegion {
+            uint32_t region = 0;
+            glm::vec3 lo{0.0f};
+            glm::vec3 hi{0.0f};
+        };
+        std::vector<PlacedRegion> regions{};
 
         // NO `seed` MEMBER, deliberately. The world's rng root lives in the
         // registered WorldParams row and nowhere else. A copy here would be

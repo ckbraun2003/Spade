@@ -619,6 +619,14 @@ struct CompiledField {
     std::string unit;
 };
 
+// One region of the compiled set (stage 7 D2), in set order then declaration order: its provider's host sample function.
+struct CompiledRegion {
+    std::string module;
+    std::string name;  // unique across the set: a world's placement names it
+    uint32_t priority = 0;
+    RegionSampleFn sample = nullptr;
+};
+
 // The compiled point-sample declaration (stage 7 D1): present only when a module declares position_dependent points.
 struct CompiledPoints {
     bool present = false;
@@ -733,6 +741,9 @@ struct CompiledSchedule {
     // The point samples (stage 7 D1); `present` false for every set today. The injected positions pass is in the compiled
     // order, so a set with points has its own identity; a set without keeps the one it has.
     CompiledPoints points{};
+    // The regions modules declare (stage 7 D2); empty for every set today. Not part of the identity: a region's placement is
+    // the world's (config_hash folds it), and its provider's answer is host-side behaviour.
+    std::vector<CompiledRegion> regions{};
 };
 
 // create()'s check that every required role has its filler (Task 6): invalid_argument,

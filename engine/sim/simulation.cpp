@@ -621,6 +621,39 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         config.declared_body_capacity = instance.world.capacities.bodies;
         config.declared_element_capacity = instance.world.capacities.force_elements;
         config.declared_sensor_capacity = instance.world.capacities.sensors;
+        // PLACED REGIONS (stage 7 D2): resolved against the set's, and checked here because only here are both known.
+        for (const RegionPlacement& placed : instance.regions) {
+            const auto region = std::find_if(compiled->regions.begin(), compiled->regions.end(),
+                                             [&placed](const modules::CompiledRegion& r) { return r.name == placed.region; });
+            if (region == compiled->regions.end()) {
+                return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "' places region '" +
+                                               placed.region + "', which no module in the set declares"));
+            }
+            const bool ordered = std::isfinite(placed.lo.x) && std::isfinite(placed.lo.y) && std::isfinite(placed.lo.z) &&
+                                 std::isfinite(placed.hi.x) && std::isfinite(placed.hi.y) && std::isfinite(placed.hi.z) &&
+                                 placed.lo.x <= placed.hi.x && placed.lo.y <= placed.hi.y && placed.lo.z <= placed.hi.z;
+            if (!ordered) {
+                return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "' places region '" +
+                                               placed.region + "' with a box that is not finite with lo <= hi"));
+            }
+            config.regions.push_back({static_cast<uint32_t>(region - compiled->regions.begin()), placed.lo, placed.hi});
+        }
+        for (std::size_t a = 0; a < config.regions.size(); ++a) {
+            for (std::size_t b = a + 1; b < config.regions.size(); ++b) {
+                const WorldConfig::PlacedRegion& ra = config.regions[a];
+                const WorldConfig::PlacedRegion& rb = config.regions[b];
+                const modules::CompiledRegion& na = compiled->regions[ra.region];
+                const modules::CompiledRegion& nb = compiled->regions[rb.region];
+                const bool overlap = ra.lo.x <= rb.hi.x && rb.lo.x <= ra.hi.x && ra.lo.y <= rb.hi.y && rb.lo.y <= ra.hi.y &&
+                                     ra.lo.z <= rb.hi.z && rb.lo.z <= ra.hi.z;
+                if (overlap && na.priority == nb.priority) {
+                    return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "': regions '" + na.name +
+                                                   "' and '" + nb.name + "' overlap at the same priority " +
+                                                   std::to_string(na.priority) + "; the highest priority resolves a point, so "
+                                                   "equal ones are ambiguous"));
+                }
+            }
+        }
         configs.push_back(std::move(config));
     }
 
@@ -3847,6 +3880,26 @@ Result<const WorldParams*> Simulation::world_params(uint32_t world_index) const 
 Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 pos) const {
     const Result<const WorldParams*> params = world_params(world_index);
     if (!params) return std::unexpected(params.error());
+    // REGIONS (stage 7 D2): inside a placed region the highest priority's provider answers (create() refused equal-priority
+    // overlaps, so there is one). On the CPU its host function; on Vulkan there is no device region row, so the call refuses
+    // naming the region. Outside every region the answer is today's, below.
+    const modules::CompiledRegion* inside = nullptr;
+    for (const WorldConfig::PlacedRegion& placed : configs_[world_index].regions) {
+        if (pos.x < placed.lo.x || pos.x > placed.hi.x || pos.y < placed.lo.y || pos.y > placed.hi.y || pos.z < placed.lo.z ||
+            pos.z > placed.hi.z) {
+            continue;
+        }
+        const modules::CompiledRegion& candidate = schedule_.regions[placed.region];
+        if (inside == nullptr || candidate.priority > inside->priority) inside = &candidate;
+    }
+    if (inside != nullptr) {
+        if (vulkan_backend_) {
+            return std::unexpected(Error{Code::unavailable, "sample_medium: the point lies in region '" + inside->name + "' (module '" +
+                                                                inside->module + "'), whose provider runs on the host; the "
+                                                                "vulkan backend has no device row for a region"});
+        }
+        return inside->sample(pos);
+    }
     const Result<std::span<const DrydenState>> dryden = arenas_.array(dryden_id_);
     if (!dryden) return std::unexpected(dryden.error());
     // Paired by the same world index rebuild_views() uses, so this is the
