@@ -215,6 +215,9 @@ void rasterize_shadow_triangle(const glm::vec3& wa, const glm::vec3& wb, const g
 // surface takes almost no sun term anyway.
 constexpr float kMinFacing = 0.05f;
 
+// How much more bias (in texels' metres) a filter tap away from the point's own texel carries; see sample_shadow().
+constexpr float kTapSlackTexels = 0.5f;
+
 // sample_shadow()'s receiver plane: the light-space depth, at texel (tx, ty)'s
 // centre, of the plane through the point whose light-space position is `p`,
 // with unit normal `normal`. light_view_proj's rows are sx * right, sy * up
@@ -441,6 +444,11 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
     if (!any) {
         return 1.0f;
     }
+    // A tap away from the point's own texel reads a texel that may belong to a neighbouring face of the same body (a
+    // convex edge): that face can lie nearer the sun than this receiver's plane by up to a texel's run times its own
+    // slope, which the plane cannot know. Those taps carry that much more bias (half a texel's metres), so the filter
+    // widens a shadow's edge without shadowing a lit face beside an edge; the point's own texel keeps the bias alone.
+    const float tap_slack = kTapSlackTexels * shadow_texel_metres(map);
     float lit_sum = 0.0f, weight_sum = 0.0f;
     for (int y = y0; y <= y1; ++y) {
         const float wy = std::min(static_cast<float>(y + 1), vy + half) - std::max(static_cast<float>(y), vy - half);
@@ -455,7 +463,8 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
             float lit = 1.0f;
             if (occluder != kNoOccluder) {
                 const float depth = std::max(p.z, plane.depth_at_texel_centre(p, cx, cy));
-                lit = (depth < occluder - map.depth_bias) ? 0.0f : 1.0f;
+                const float bias = map.depth_bias + ((cx == tx && cy == ty) ? 0.0f : tap_slack);
+                lit = (depth < occluder - bias) ? 0.0f : 1.0f;
             }
             lit_sum += w * lit;
             weight_sum += w;
