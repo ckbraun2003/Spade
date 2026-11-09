@@ -135,13 +135,9 @@ struct PointsDecl {
     uint32_t host_requests = 0;  // rows the host may fill (Simulation::module_rows<PointRow>("points", w))
     bool position_dependent = false;
 };
-// One point's row. std430 layout, 8 words: the set-1 `airflow_points` binding (bindings.slang) is an array of these.
-struct PointRow {
-    float pos[3];
-    float reserved;  // 0.0; kept so the row is two vec4s on the device
-    float wind[3];   // m/s, written by the provider
-    float density;   // kg/m^3, written by the provider
-};
+// One point's row (physics/field_row.hpp). std430 layout, 8 words: the set-1 `airflow_points` binding (bindings.slang) is an
+// array of these.
+using PointRow = physics::PointRow;
 static_assert(sizeof(PointRow) == 32 && std::is_trivially_copyable_v<PointRow>);
 inline constexpr uint32_t kPointRowWords = 8;
 inline constexpr std::string_view kPointsModule = "points";  // the internal module compile_schedule injects: pass "positions", array "points"
@@ -174,7 +170,9 @@ inline constexpr uint32_t kFieldBuiltinFloats = physics::kFieldBuiltinFloats;
 //   per_row      depth rows for each row of `owner`, which holds rows
 //                (per_body, per_element or per_sensor); row g of the owner
 //                owns rows [g * depth, (g + 1) * depth)
-enum class Extent : uint8_t { per_world = 0, per_body = 1, per_element = 2, per_sensor = 3, per_row = 4 };
+// `per_point` (5) is internal: only the injected module `points` (PointsDecl) has an array of it, sized per world from the
+// declared counts (bodies + force elements x k + sensors + host rows); compile_schedule refuses it from any other module.
+enum class Extent : uint8_t { per_world = 0, per_body = 1, per_element = 2, per_sensor = 3, per_row = 4, per_point = 5 };
 
 // ATTACHED ROWS (stage 4; spec section 3). A per_body, per_element or
 // per_sensor array is ATTACHED to bodies. Simulation::attach_row() -- which the
@@ -609,6 +607,7 @@ struct CompiledPoints {
     uint32_t k = 0;
     uint32_t host_requests = 0;
     std::string module{};  // the declaring module
+    bool writer = false;   // a pass of a module other than the injected one declares a write of points.points (L43)
 };
 
 // One module array of the compiled table.

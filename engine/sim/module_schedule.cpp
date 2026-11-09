@@ -10,6 +10,7 @@
 #include "compute/recipe.hpp"
 #include "compute/set_one_bindings.hpp"  // kAirflowConfigBinding (Vulkan-free; tied to the generated constant there)
 #include "core/rng.hpp"
+#include "physics/schedule.hpp"  // pass_points_positions (stage 7 D1)
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
 namespace spade::modules {
@@ -270,6 +271,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
         case Extent::per_element: return "per_element";
         case Extent::per_sensor: return "per_sensor";
         case Extent::per_row: return "per_row";
+        case Extent::per_point: return "per_point";
     }
     return "unknown";
 }
@@ -306,8 +308,12 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 if (a.elem_size == 0) {
                     return std::unexpected(invalid(where + ": elem_size is 0; a row has a size"));
                 }
-                if (static_cast<uint8_t>(a.extent) > static_cast<uint8_t>(Extent::per_row)) {
+                if (static_cast<uint8_t>(a.extent) > static_cast<uint8_t>(Extent::per_point)) {
                     return std::unexpected(invalid(where + ": unknown extent"));
+                }
+                if (a.extent == Extent::per_point && mod.name != kPointsModule) {
+                    return std::unexpected(invalid(where + ": per_point is internal (the module '" +
+                                                   std::string(kPointsModule) + "' compile_schedule injects owns it)"));
                 }
                 if (a.extent == Extent::per_row && a.depth == 0) {
                     return std::unexpected(invalid(where + ": a per_row array needs a depth of at least 1"));
@@ -384,7 +390,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                                            "' is not an array any module in the set declares"));
         }
         const Extent owner_extent = out[it->second].extent;
-        if (owner_extent == Extent::per_world || owner_extent == Extent::per_row) {
+        if (owner_extent == Extent::per_world || owner_extent == Extent::per_row || owner_extent == Extent::per_point) {
             return std::unexpected(invalid(where + ": its owner '" + std::string(owners[i]) + "' is " +
                                            std::string(extent_name(owner_extent)) +
                                            "; a per_row array's owner holds rows (per_body, per_element or "
@@ -596,7 +602,8 @@ constexpr BuiltinField kBuiltinFields[] = {
 
 }  // namespace
 
-Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
+namespace {
+Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modules) {
     std::vector<Node> nodes;
     std::map<std::string, std::size_t, std::less<>> by_name;
 
@@ -987,6 +994,65 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             out.vehicle_rows.push_back(CompiledVehicleRows{std::string(mod.name), mod.vehicle_rows});
         }
     }
+    return out;
+}
+}  // namespace
+
+// POINT SAMPLES (stage 7 D1). A set with a position-dependent provider (ModuleDesc::points) gets the internal module `points`
+// appended: its pass `positions` (after behaviors.kinematic when the set has it) and its per_point array `points`, so the
+// array is registered after every other module's and so after the standard walk. A set without one compiles as it always did.
+Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
+    const ModuleDesc* declarer = nullptr;
+    for (const ModuleDesc& mod : modules) {
+        if (!mod.points.has_value()) continue;
+        if (declarer != nullptr) {
+            return std::unexpected(invalid("modules '" + std::string(declarer->name) + "' and '" + std::string(mod.name) +
+                                           "' both declare point samples; a set has one points declaration"));
+        }
+        declarer = &mod;
+    }
+    if (declarer == nullptr || !declarer->points->position_dependent) return compile_schedule_impl(modules);
+
+    const PointsDecl& decl = *declarer->points;
+    // THE GUARD (lead's ruling L43): the positions pass writes body rows only, so an unfilled element row would be read as a
+    // real point at the origin. With element rows (k > 0) some pass of another module must declare a write of points.points;
+    // the ordering machinery then puts it before the first reader (drag.forces). Sensor rows are checked at create(), where
+    // their count is known.
+    bool written = false;
+    for (const ModuleDesc& mod : modules) {
+        for (const PassDecl& p : mod.passes) {
+            for (const QuantityAccess& qa : p.access) {
+                if (qa.quantity == "points.points" && qa.access != Access::read) written = true;
+            }
+        }
+    }
+    if (decl.k > 0) {
+        if (!written) {
+            return std::unexpected(invalid("module '" + std::string(declarer->name) + "' declares " + std::to_string(decl.k) +
+                                           " points per force element, but no pass declares a write of points.points: the "
+                                           "positions pass writes body rows only, so the element rows would be read unfilled"));
+        }
+    }
+
+    static constexpr QuantityAccess kPositionsAccess[] = {{"body.pose", Access::read}, {"points.points", Access::write}};
+    static constexpr std::string_view kAfterKinematic[] = {"behaviors.kinematic"};
+    static constexpr PassDecl kPositionsAfter[] = {{.name = "positions", .phase = Phase::fields, .access = kPositionsAccess,
+                                                    .after = kAfterKinematic, .cpu = &physics::pass_points_positions}};
+    static constexpr PassDecl kPositionsPlain[] = {
+        {.name = "positions", .phase = Phase::fields, .access = kPositionsAccess, .cpu = &physics::pass_points_positions}};
+    static constexpr ArrayDecl kPointsState[] = {{.name = kPointsArray, .elem_size = sizeof(PointRow), .extent = Extent::per_point}};
+    const bool has_kinematic =
+        std::any_of(modules.begin(), modules.end(), [](const ModuleDesc& m) { return m.name == "behaviors"; });
+
+    std::vector<ModuleDesc> augmented(modules.begin(), modules.end());
+    augmented.push_back(ModuleDesc{.name = kPointsModule,
+                                   .passes = has_kinematic ? std::span<const PassDecl>(kPositionsAfter)
+                                                           : std::span<const PassDecl>(kPositionsPlain),
+                                   .state = kPointsState,
+                                   .grade = {.cpu = Grade::reference, .vulkan = Grade::best_effort}});
+    Result<CompiledSchedule> out = compile_schedule_impl(augmented);
+    if (!out) return out;
+    out->points = CompiledPoints{true, decl.k, decl.host_requests, std::string(declarer->name), written};
     return out;
 }
 

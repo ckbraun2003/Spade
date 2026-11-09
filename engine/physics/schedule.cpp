@@ -63,9 +63,36 @@ void pass_rotor_forces(const SubstepContext& ctx) noexcept {
 }
 
 void pass_drag(const SubstepContext& ctx) noexcept {
-    for (const WorldSubstepView& w : ctx.worlds) {
+    // THE POINTS READER (stage 7 D1): with the optional points.points access bound (the set has a position-dependent
+    // provider), the medium at a body is its point row; otherwise the world's stored sample, as ever.
+    const bool points = ctx.state.size() > kDragPassPointsAccess && ctx.state[kDragPassPointsAccess].present();
+    for (std::size_t i = 0; i < ctx.worlds.size(); ++i) {
+        const WorldSubstepView& w = ctx.worlds[i];
+        if (points) {
+            apply_drag_points(w.bodies, w.drag_elements,
+                              world_rows<const PointRow>(ctx.state[kDragPassPointsAccess], static_cast<uint32_t>(i)));
+            continue;
+        }
         const SampledMedium medium(w.fields);
         apply_drag(w.bodies, w.drag_elements, medium, *w.params, ctx.h);
+    }
+}
+
+// THE POSITIONS PASS (stage 7 D1; compile_schedule injects it as points.positions, after behaviors.kinematic): each world's
+// BODY rows get the body's position, in slot order. Element x k and sensor rows are the declaring module's to place (their
+// offsets are the element model's geometry); the reserved word is zeroed, wind and density are the provider's.
+void pass_points_positions(const SubstepContext& ctx) noexcept {
+    if (ctx.state.size() != 2) return;
+    for (std::size_t i = 0; i < ctx.worlds.size(); ++i) {
+        const std::span<PointRow> rows = world_rows<PointRow>(ctx.state[1], static_cast<uint32_t>(i));
+        const std::span<BodyState> bodies = ctx.worlds[i].bodies;
+        const std::size_t n = bodies.size() < rows.size() ? bodies.size() : rows.size();
+        for (std::size_t b = 0; b < n; ++b) {
+            rows[b].pos[0] = bodies[b].pos.x;
+            rows[b].pos[1] = bodies[b].pos.y;
+            rows[b].pos[2] = bodies[b].pos.z;
+            rows[b].reserved = 0.0f;
+        }
     }
 }
 

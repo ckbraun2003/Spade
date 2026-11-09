@@ -275,6 +275,7 @@ template <class Row>
         case modules::Extent::per_body: return out + "per_body" + spawn;
         case modules::Extent::per_element: return out + "per_element" + spawn;
         case modules::Extent::per_sensor: return out + "per_sensor" + spawn;
+        case modules::Extent::per_point: return out + "per_point";
         case modules::Extent::per_row:
             return out + "per_row: " + std::to_string(depth) + " per row of '" + std::string(owner) + "'";
     }
@@ -361,11 +362,22 @@ struct ExtentRows {
             case modules::Extent::per_body: return rows.body;
             case modules::Extent::per_element: return rows.element;
             case modules::Extent::per_sensor: return rows.sensor;
-            case modules::Extent::per_row: break;
+            case modules::Extent::per_row:
+            case modules::Extent::per_point: break;
         }
         return 0u;  // unreachable: compile_schedule refused an unknown extent, and per_row is handled below
     };
     const modules::CompiledArray& a = schedule.arrays[index];
+    if (a.extent == modules::Extent::per_point) {
+        // POINT SAMPLES (stage 7 D1): every body slot, every force-element slot k times, every sensor slot, then the host's rows.
+        const uint64_t points = uint64_t{rows.body} + uint64_t{rows.element} * schedule.points.k + rows.sensor +
+                                schedule.points.host_requests;
+        if (points > std::numeric_limits<uint32_t>::max()) {
+            return std::unexpected(Error{Code::capacity_exceeded, "array '" + a.name + "' (module '" + a.module +
+                                                                      "'): its point rows exceed 2^32-1 per world"});
+        }
+        return static_cast<uint32_t>(points);
+    }
     if (a.extent != modules::Extent::per_row) return extent_rows(a.extent);
     const uint64_t owned = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
     if (owned > std::numeric_limits<uint32_t>::max()) {
@@ -612,6 +624,14 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         configs.push_back(std::move(config));
     }
 
+    // THE POINTS GUARD, the sensor half (stage 7 D1, L43): sensor rows are sized here, and Core's positions pass writes body
+    // rows only, so a set with sensor slots and no writer of points.points would read them as points at the origin.
+    if (compiled->points.present && layout->sensor_capacity > 0 && !compiled->points.writer) {
+        return std::unexpected(invalid("Simulation::create: module '" + compiled->points.module + "' declares point samples and the set has " +
+                                       std::to_string(layout->sensor_capacity) +
+                                       " sensor slots a world, but no pass declares a write of points.points: the sensor rows "
+                                       "would be read unfilled"));
+    }
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);
     sim.schedule_ = std::move(*compiled);
     sim.minimum_grade_ = minimum_grade;
