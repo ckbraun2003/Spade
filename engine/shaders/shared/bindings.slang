@@ -473,6 +473,11 @@ import layouts;
 [[vk::binding(26, 1)]] RWStructuredBuffer<uint>  airflow_publish_s;
 [[vk::binding(27, 1)]] RWStructuredBuffer<float> airflow_wall_load;
 
+// MODULE API STAGE 7's FIRST APPENDED BINDING (Task C1): the module's hashed configuration image, read-only to the kernels.
+// It is the very bytes ModuleDesc::config hashes into the schedule identity (the mirror uploads them at create()). 28 to 32
+// stay unclaimed until the batch that needs each, 34 to 39 are spare.
+[[vk::binding(33, 1)]] StructuredBuffer<uint>    airflow_config;
+
 // THE LBM TIER'S BINDINGS (L1, the GPU twin; docs/design/physics/plans/
 // 2026-11-06-l1-gpu-twin-plan.md). Set 1 bindings 40 to 47 are the LBM's, named
 // lbm_*, append-only like the rest. 28 to 33 are module API stage 7's named

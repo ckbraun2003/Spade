@@ -13,8 +13,10 @@
 #include "bindings.gen.hpp"
 
 #include "compute/grid_entry.hpp"
+#include "compute/layout_classes.hpp"
 #include "compute/optional_bindings.hpp"
 #include "compute/sdf_program.hpp"
+#include "compute/set_one_bindings.hpp"
 #include "compute/step_params.hpp"
 #include "physics/contacts.hpp"
 #include "physics/field_row.hpp"
@@ -437,7 +439,8 @@ Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& s
 // create
 // ---------------------------------------------------------------------------
 
-Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, const StepShape& shape) {
+Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, const StepShape& shape,
+                                                         std::span<const std::vector<uint32_t>> set1_subsets) {
     // -----------------------------------------------------------------------
     // THE REGISTERED WALK IS THE SHAPE'S (module-API stage 4): one buffer per
     // StepShape::arrays entry, which Simulation::create() fills from the
@@ -464,6 +467,51 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
             array.name, array.elem_size, uint64_t{shape.world_count} * uint64_t{array.capacity_per_world});
         if (!bytes) return std::unexpected(bytes.error());
         walk_bytes.push_back(*bytes);
+    }
+
+    // THE CONFIGURATION IMAGE AND SET 1's NAMES (stage 7 Task C1/C2), refused by name before anything is made. The image and
+    // its binding come together; the binding is inside set 1's space and is held by nothing else (a walk array or scratch
+    // whose name is in set_one_bindings.hpp holds the number that table gives it).
+    if (shape.config_image.empty() != (shape.config_binding == kNoBinding)) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "StateMirror::create: a configuration image (" +
+                                         std::to_string(shape.config_image.size()) + " bytes) and its binding (" +
+                                         (shape.config_binding == kNoBinding ? std::string("none")
+                                                                             : std::to_string(shape.config_binding)) +
+                                         ") come together: StepShape::config_image and config_binding"});
+    }
+    if (shape.config_binding != kNoBinding) {
+        if (shape.config_binding >= kSet1BindingSlots) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "StateMirror::create: the configuration image's binding " +
+                                             std::to_string(shape.config_binding) + " is past set 1's " +
+                                             std::to_string(kSet1BindingSlots) + " binding slots"});
+        }
+        for (const StateArrayShape& array : shape.arrays) {
+            if (set_one_binding_of(array.name) == shape.config_binding) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "StateMirror::create: the configuration image's binding " +
+                                                 std::to_string(shape.config_binding) + " is already bound to walk array '" +
+                                                 array.name + "'"});
+            }
+        }
+        for (const ScratchShape& scratch : shape.scratch) {
+            if (scratch.binding == kNoBinding && set_one_binding_of(scratch.name) == shape.config_binding) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "StateMirror::create: the configuration image's binding " +
+                                                 std::to_string(shape.config_binding) + " is already bound to scratch '" +
+                                                 scratch.name + "'"});
+            }
+        }
+    }
+    // A scratch that names no set-0 binding but whose name is in the set-1 table is a set-1 scratch, sized like any scratch.
+    std::vector<std::pair<const ScratchShape*, VkDeviceSize>> set1_scratch;
+    for (const ScratchShape& scratch : shape.scratch) {
+        if (scratch.binding != kNoBinding || set_one_binding_of(scratch.name) == kNoBinding) continue;
+        Result<VkDeviceSize> bytes = buffer_bytes(scratch.name, scratch.elem_size,
+                                                  uint64_t{shape.world_count} * uint64_t{scratch.capacity_per_world});
+        if (!bytes) return std::unexpected(bytes.error());
+        set1_scratch.emplace_back(&scratch, *bytes);
     }
 
     auto self = std::unique_ptr<StateMirror>(new StateMirror());
@@ -527,6 +575,7 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         e.capacity_per_world = array.capacity_per_world;
         e.byte_size = walk_bytes[i];
         e.has_binding = binding_for(e.name, e.binding);
+        e.resident = array.resident;
 
         void* unused_device_mapped = nullptr;  // create_buffer(map=false) always writes null here; never read
         if (Result<void> made = create_buffer(self->device_, self->physical_device_, e.byte_size, kDeviceUsage,
@@ -535,6 +584,9 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
             !made) {
             return std::unexpected(made.error());
         }
+        // A RESIDENT array is device-only (stage 7 Task C2): the host never writes or reads it per step, so it has no
+        // staging twin; the one shared staging buffer below serves upload_resident() and readback_resident().
+        if (e.resident) continue;
         if (Result<void> made =
                 create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
@@ -646,6 +698,62 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
     }
 
     // -----------------------------------------------------------------------
+    // SET 1's OWN BUFFERS (stage 7 Task C1/C2), after the set-0 ones and by the same builder. A set with none of them makes
+    // none of them (the standard set: nothing here runs).
+    //   * the set-1 scratch: device-only, zero-filled with the rest below, bound at its name's set-1 binding;
+    //   * the one shared staging buffer of the resident arrays, sized to the largest (host-visible, no device half);
+    //   * the configuration image: staged, so it is uploaded here and read back on demand.
+    // -----------------------------------------------------------------------
+    self->set_one_scratch_.resize(set1_scratch.size());
+    for (std::size_t i = 0; i < set1_scratch.size(); ++i) {
+        const ScratchShape& scratch = *set1_scratch[i].first;
+        const DerivedBufferShape row{.name = scratch.name,
+                                     .elem_size = scratch.elem_size,
+                                     .count = uint64_t{shape.world_count} * uint64_t{scratch.capacity_per_world},
+                                     .byte_size = set1_scratch[i].second,
+                                     .binding = set_one_binding_of(scratch.name)};
+        if (Result<void> made = make_derived(self->set_one_scratch_[i], row, /*staged=*/false); !made) {
+            return std::unexpected(made.error());
+        }
+    }
+    {
+        VkDeviceSize largest = 0;
+        bool any_resident = false;
+        for (const Entry& e : self->entries_) {
+            if (!e.resident) continue;
+            any_resident = true;
+            largest = std::max(largest, e.byte_size);
+        }
+        if (any_resident) {
+            Entry& staging = self->resident_staging_;
+            staging.name = "resident_staging";
+            staging.byte_size = largest;
+            if (Result<void> made = create_buffer(
+                    self->device_, self->physical_device_, largest, kStagingUsage,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
+                    staging.staging_buffer, staging.staging_memory, staging.staging_mapped, &staging.staging_type);
+                !made) {
+                return std::unexpected(made.error());
+            }
+        }
+    }
+    if (shape.config_binding != kNoBinding) {
+        const DerivedBufferShape row{.name = "airflow_config",
+                                     .elem_size = 1u,
+                                     .count = shape.config_image.size(),
+                                     .byte_size = shape.config_image.size(),
+                                     .binding = shape.config_binding};
+        if (shape.config_image.size() > std::numeric_limits<uint32_t>::max()) {
+            return std::unexpected(Error{Code::capacity_exceeded, "StateMirror::create: the configuration image is " +
+                                                                      std::to_string(shape.config_image.size()) +
+                                                                      " bytes, past what a uint32 addresses"});
+        }
+        if (Result<void> made = make_derived(self->config_, row, /*staged=*/true); !made) {
+            return std::unexpected(made.error());
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // ZERO-FILL EVERY DEVICE-LOCAL DERIVED BUFFER, ONCE, HERE. Not tidiness:
     // device-local memory comes back from vkAllocateMemory UNDEFINED, and a
     // caller is not obliged to upload every derived buffer (a Simulation
@@ -703,6 +811,17 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         });
         for (Entry* e : derived_buffers) {
             if (e->byte_size > 0) std::memset(e->staging_mapped, 0, static_cast<std::size_t>(e->byte_size));
+        }
+        // Set 1's (stage 7 Task C1/C2): a resident array and a set-1 scratch are device-only, so they are filled with zeros;
+        // the configuration image is copied up from its twin, in this same submit (and counted as uploaded).
+        for (Entry& e : self->entries_) {
+            if (e.resident) device_only.push_back(&e);
+        }
+        for (Entry& e : self->set_one_scratch_) device_only.push_back(&e);
+        if (self->config_.device_buffer != VK_NULL_HANDLE) {
+            std::memcpy(self->config_.staging_mapped, shape.config_image.data(), shape.config_image.size());
+            derived_buffers.push_back(&self->config_);
+            self->transfer_.uploaded += shape.config_image.size();
         }
         if (Result<void> zeroed = run_copy_batch(self->device_, self->cmd_, self->queue_, self->fence_,
                                                   /*to_device=*/true, derived_buffers, &device_only);
@@ -764,13 +883,17 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         return std::unexpected(map_vk_error(r, "vkCreateDescriptorSetLayout"));
     }
 
+    // ONE pool for set 0 and every set-1 set (stage 7 Task C2): the standard set asks for exactly the one set it always did.
+    uint32_t pool_descriptors = static_cast<uint32_t>(layout_bindings.size());
+    for (const std::vector<uint32_t>& subset : set1_subsets) pool_descriptors += static_cast<uint32_t>(subset.size());
+
     VkDescriptorPoolSize pool_size{};
     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_size.descriptorCount = static_cast<uint32_t>(layout_bindings.size());
+    pool_size.descriptorCount = pool_descriptors;
 
     VkDescriptorPoolCreateInfo desc_pool_info{};
     desc_pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    desc_pool_info.maxSets = 1;
+    desc_pool_info.maxSets = 1u + static_cast<uint32_t>(set1_subsets.size());
     desc_pool_info.poolSizeCount = 1;
     desc_pool_info.pPoolSizes = &pool_size;
     if (VkResult r = vkCreateDescriptorPool(self->device_, &desc_pool_info, nullptr, &self->desc_pool_);
@@ -798,6 +921,81 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
         writes.push_back(w);
     }
     vkUpdateDescriptorSets(self->device_, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    // -----------------------------------------------------------------------
+    // SET 1 (stage 7 Tasks C1/C2; plan decisions 1 and 2): one descriptor set layout and one set per DISTINCT subset a kernel
+    // of the schedule names, holding exactly those bindings at the declaration's numbers. Each is written from the buffer
+    // whose name is in set_one_bindings.hpp (a walk array's device buffer, resident or not; a set-1 scratch) or the
+    // configuration image. A set with no set-1 user was given no subsets, and nothing below runs.
+    // -----------------------------------------------------------------------
+    struct SetOneBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+    };
+    const auto provider_of = [&self](uint32_t binding) -> SetOneBuffer {
+        for (const Entry& e : self->entries_) {
+            if (set_one_binding_of(e.name) == binding) return {e.device_buffer, e.byte_size};
+        }
+        for (const Entry& e : self->set_one_scratch_) {
+            if (e.binding == binding) return {e.device_buffer, e.byte_size};
+        }
+        if (self->config_.device_buffer != VK_NULL_HANDLE && self->config_.binding == binding) {
+            return {self->config_.device_buffer, self->config_.byte_size};
+        }
+        return {};
+    };
+    self->set1_.reserve(set1_subsets.size());
+    for (const std::vector<uint32_t>& subset : set1_subsets) {
+        self->set1_.push_back(SetOneSet{.bindings = subset});
+        SetOneSet& one = self->set1_.back();
+
+        std::vector<VkDescriptorSetLayoutBinding> one_bindings(subset.size());
+        std::vector<VkDescriptorBufferInfo> one_infos(subset.size());
+        for (std::size_t i = 0; i < subset.size(); ++i) {
+            const SetOneBuffer provided = provider_of(subset[i]);
+            if (provided.buffer == VK_NULL_HANDLE) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "StateMirror::create: a kernel names set-1 binding " +
+                                                 std::to_string(subset[i]) +
+                                                 ", which no walk array, scratch or configuration image of the set "
+                                                 "provides (names are the contract: compute/set_one_bindings.hpp)"});
+            }
+            one_bindings[i].binding = subset[i];
+            one_bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            one_bindings[i].descriptorCount = 1;
+            one_bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            one_infos[i].buffer = provided.buffer;
+            one_infos[i].offset = 0;
+            one_infos[i].range = provided.size == 0 ? VkDeviceSize{4} : provided.size;
+        }
+
+        VkDescriptorSetLayoutCreateInfo one_layout_info{};
+        one_layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        one_layout_info.bindingCount = static_cast<uint32_t>(one_bindings.size());
+        one_layout_info.pBindings = one_bindings.data();
+        if (VkResult r = vkCreateDescriptorSetLayout(self->device_, &one_layout_info, nullptr, &one.layout);
+            r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkCreateDescriptorSetLayout (set 1)"));
+        }
+        VkDescriptorSetAllocateInfo one_alloc{};
+        one_alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        one_alloc.descriptorPool = self->desc_pool_;
+        one_alloc.descriptorSetCount = 1;
+        one_alloc.pSetLayouts = &one.layout;
+        if (VkResult r = vkAllocateDescriptorSets(self->device_, &one_alloc, &one.set); r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkAllocateDescriptorSets (set 1)"));
+        }
+        std::vector<VkWriteDescriptorSet> one_writes(subset.size());
+        for (std::size_t i = 0; i < subset.size(); ++i) {
+            one_writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            one_writes[i].dstSet = one.set;
+            one_writes[i].dstBinding = subset[i];
+            one_writes[i].descriptorCount = 1;
+            one_writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            one_writes[i].pBufferInfo = &one_infos[i];
+        }
+        vkUpdateDescriptorSets(self->device_, static_cast<uint32_t>(one_writes.size()), one_writes.data(), 0, nullptr);
+    }
 
     return self;
 }
@@ -882,9 +1080,30 @@ Result<void> StateMirror::run_copy_batch(VkDevice device, VkCommandBuffer cmd, V
     return {};
 }
 
+// run_copy_batch() on this mirror's own queue, command buffer and fence, counting what crossed the host/device boundary: the
+// byte size of each region it issued (an entry with no bytes issues none). The count moves only when the batch completed.
+Result<void> StateMirror::copy_batch(bool to_device, const std::vector<Entry*>& targets) {
+    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, to_device, targets); !copied) return copied;
+    uint64_t moved = 0;
+    for (const Entry* e : targets) moved += e->byte_size;
+    (to_device ? transfer_.uploaded : transfer_.read_back) += moved;
+    return {};
+}
+
+// One resident array, whole, between its device buffer and the shared staging buffer: run_copy_batch() copies between an
+// entry's own two halves, so it is handed a COPY of the entry whose staging half is the shared buffer (the copy owns
+// nothing; destroy_entry() is only ever called on the originals).
+Result<void> StateMirror::copy_resident(Entry& e, bool to_device) {
+    Entry view = e;
+    view.staging_buffer = resident_staging_.staging_buffer;
+    std::vector<Entry*> targets{&view};
+    return copy_batch(to_device, targets);
+}
+
 Result<void> StateMirror::upload(const ArenaSet& arenas) {
     std::vector<Entry*> touched;
     touched.reserve(entries_.size());
+    std::size_t seen = 0;  // every walk entry, resident ones too: the registry must still match the mirror entry for entry
     bool ok = true;
     Error err{Code::internal, ""};
 
@@ -908,19 +1127,21 @@ Result<void> StateMirror::upload(const ArenaSet& arenas) {
                             " capacity_per_world=" + std::to_string(array.capacity_per_world) + ")"};
             return;
         }
+        ++seen;
+        if (e->resident) return;  // the step does not upload a resident array (upload_resident() does)
         if (e->byte_size > 0) {
             std::memcpy(e->staging_mapped, array.data, static_cast<std::size_t>(e->byte_size));
         }
         touched.push_back(e);
     });
     if (!ok) return std::unexpected(err);
-    if (touched.size() != entries_.size()) {
+    if (seen != entries_.size()) {
         return std::unexpected(Error{Code::invalid_argument,
-                                     "StateMirror::upload: arenas registry has " + std::to_string(touched.size()) +
+                                     "StateMirror::upload: arenas registry has " + std::to_string(seen) +
                                          " entries, this mirror expects " + std::to_string(entries_.size())});
     }
 
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, touched); !copied) {
+    if (Result<void> copied = copy_batch(true, touched); !copied) {
         return copied;
     }
     ++upload_count_;
@@ -930,6 +1151,7 @@ Result<void> StateMirror::upload(const ArenaSet& arenas) {
 Result<void> StateMirror::readback(ArenaSet& arenas) {
     std::vector<Entry*> touched;
     touched.reserve(entries_.size());
+    std::size_t seen = 0;
     bool ok = true;
     Error err{Code::internal, ""};
 
@@ -951,16 +1173,17 @@ Result<void> StateMirror::readback(ArenaSet& arenas) {
             err = Error{Code::invalid_argument, "StateMirror::readback: shape mismatch for '" + array.name + "'"};
             return;
         }
-        touched.push_back(e);
+        ++seen;
+        if (!e->resident) touched.push_back(e);  // the step does not read a resident array back (readback_resident() does)
     });
     if (!ok) return std::unexpected(err);
-    if (touched.size() != entries_.size()) {
+    if (seen != entries_.size()) {
         return std::unexpected(Error{Code::invalid_argument,
-                                     "StateMirror::readback: arenas registry has " + std::to_string(touched.size()) +
+                                     "StateMirror::readback: arenas registry has " + std::to_string(seen) +
                                          " entries, this mirror expects " + std::to_string(entries_.size())});
     }
 
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, touched); !copied) {
+    if (Result<void> copied = copy_batch(false, touched); !copied) {
         return copied;
     }
 
@@ -969,11 +1192,96 @@ Result<void> StateMirror::readback(ArenaSet& arenas) {
     // to fold the staging bytes back into the arenas the caller owns.
     arenas.registry().for_each_array([&](const RegisteredArray& array) {
         const Entry* e = find(array.name);
-        if (e != nullptr && e->byte_size > 0) {
+        if (e != nullptr && !e->resident && e->byte_size > 0) {
             std::memcpy(array.data, e->staging_mapped, static_cast<std::size_t>(e->byte_size));
         }
     });
     return {};
+}
+
+// Both resident moves check every resident array's shape against `arenas` before a byte moves: a resident array the registry
+// does not carry, or carries in another shape, is invalid_argument naming it.
+Result<void> StateMirror::upload_resident(const ArenaSet& arenas) {
+    std::vector<std::pair<Entry*, const void*>> moves;
+    bool ok = true;
+    Error err{Code::internal, ""};
+    arenas.registry().for_each_array([&](const RegisteredArray& array) {
+        if (!ok) return;
+        Entry* e = find(array.name);
+        if (e == nullptr || !e->resident) return;
+        if (e->elem_size != array.elem_size || e->world_count != array.world_count ||
+            e->capacity_per_world != array.capacity_per_world) {
+            ok = false;
+            err = Error{Code::invalid_argument,
+                        "StateMirror::upload_resident: shape mismatch for resident array '" + array.name + "'"};
+            return;
+        }
+        moves.emplace_back(e, array.data);
+    });
+    if (!ok) return std::unexpected(err);
+    const auto resident_count = static_cast<std::size_t>(
+        std::ranges::count_if(entries_, [](const Entry& e) { return e.resident; }));
+    if (moves.size() != resident_count) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "StateMirror::upload_resident: arenas registry holds " + std::to_string(moves.size()) +
+                                         " of the " + std::to_string(resident_count) + " resident arrays"});
+    }
+    // One array at a time through the one staging buffer: the next array's bytes may overwrite it only once this copy is done.
+    for (const auto& [e, data] : moves) {
+        if (e->byte_size == 0) continue;
+        std::memcpy(resident_staging_.staging_mapped, data, static_cast<std::size_t>(e->byte_size));
+        if (Result<void> copied = copy_resident(*e, /*to_device=*/true); !copied) return copied;
+    }
+    return {};
+}
+
+Result<void> StateMirror::readback_resident(ArenaSet& arenas) {
+    std::vector<std::pair<Entry*, void*>> moves;
+    bool ok = true;
+    Error err{Code::internal, ""};
+    arenas.registry().for_each_array([&](const RegisteredArray& array) {
+        if (!ok) return;
+        Entry* e = find(array.name);
+        if (e == nullptr || !e->resident) return;
+        if (e->elem_size != array.elem_size || e->world_count != array.world_count ||
+            e->capacity_per_world != array.capacity_per_world) {
+            ok = false;
+            err = Error{Code::invalid_argument,
+                        "StateMirror::readback_resident: shape mismatch for resident array '" + array.name + "'"};
+            return;
+        }
+        moves.emplace_back(e, array.data);
+    });
+    if (!ok) return std::unexpected(err);
+    const auto resident_count = static_cast<std::size_t>(
+        std::ranges::count_if(entries_, [](const Entry& e) { return e.resident; }));
+    if (moves.size() != resident_count) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "StateMirror::readback_resident: arenas registry holds " + std::to_string(moves.size()) +
+                                         " of the " + std::to_string(resident_count) + " resident arrays"});
+    }
+    for (const auto& [e, data] : moves) {
+        if (e->byte_size == 0) continue;
+        if (Result<void> copied = copy_resident(*e, /*to_device=*/false); !copied) return copied;
+        std::memcpy(data, resident_staging_.staging_mapped, static_cast<std::size_t>(e->byte_size));
+    }
+    return {};
+}
+
+Result<std::vector<std::byte>> StateMirror::read_config_image() {
+    if (config_.device_buffer == VK_NULL_HANDLE) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "StateMirror::read_config_image: no module bound a configuration image "
+                                     "(StepShape::config_image / config_binding)"});
+    }
+    // A diagnostic read: run_copy_batch() directly, so the module's own transfer count is not moved by looking.
+    std::vector<Entry*> targets{&config_};
+    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets); !copied) {
+        return std::unexpected(copied.error());
+    }
+    std::vector<std::byte> out(static_cast<std::size_t>(config_.byte_size));
+    std::memcpy(out.data(), config_.staging_mapped, out.size());
+    return out;
 }
 
 Result<void> StateMirror::upload_dryden_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
@@ -999,7 +1307,7 @@ Result<void> StateMirror::upload_dryden_params(std::span<const std::byte> params
     }
 
     std::vector<Entry*> targets{&dryden_params_};
-    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+    return copy_batch(true, targets);
 }
 
 // ---------------------------------------------------------------------------
@@ -1038,7 +1346,7 @@ Result<void> StateMirror::upload_sdf_program(std::span<const std::byte> node_byt
     }
 
     std::vector<Entry*> targets{&sdf_nodes_, &sdf_transforms_, &sdf_ranges_};
-    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+    return copy_batch(true, targets);
 }
 
 Result<void> StateMirror::upload_contact_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
@@ -1063,7 +1371,7 @@ Result<void> StateMirror::upload_contact_params(std::span<const std::byte> param
         std::memcpy(contact_params_.staging_mapped, params_bytes.data(), expected);
     }
     std::vector<Entry*> targets{&contact_params_};
-    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+    return copy_batch(true, targets);
 }
 
 Result<void> StateMirror::upload_grid_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
@@ -1088,7 +1396,7 @@ Result<void> StateMirror::upload_grid_params(std::span<const std::byte> params_b
         std::memcpy(grid_params_.staging_mapped, params_bytes.data(), expected);
     }
     std::vector<Entry*> targets{&grid_params_};
-    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+    return copy_batch(true, targets);
 }
 
 Result<void> StateMirror::upload_table(uint32_t index, std::span<const std::byte> bytes) {
@@ -1111,7 +1419,7 @@ Result<void> StateMirror::upload_table(uint32_t index, std::span<const std::byte
         std::memset(static_cast<std::byte*>(e.staging_mapped) + bytes.size(), 0, size - bytes.size());
     }
     std::vector<Entry*> targets{&e};
-    return run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/true, targets);
+    return copy_batch(true, targets);
 }
 
 Result<void> StateMirror::read_table(uint32_t index, std::span<std::byte> out_bytes) {
@@ -1128,7 +1436,7 @@ Result<void> StateMirror::read_table(uint32_t index, std::span<std::byte> out_by
                                                                  std::to_string(out_bytes.size())});
     }
     std::vector<Entry*> targets{&e};
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+    if (Result<void> copied = copy_batch(false, targets);
         !copied) {
         return copied;
     }
@@ -1144,7 +1452,7 @@ Result<void> StateMirror::read_step_witness(std::span<std::byte> out_bytes) {
                                          " bytes, got " + std::to_string(out_bytes.size())});
     }
     std::vector<Entry*> targets{&step_witness_};
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+    if (Result<void> copied = copy_batch(false, targets);
         !copied) {
         return copied;
     }
@@ -1161,7 +1469,7 @@ Result<void> StateMirror::read_field_samples(std::span<std::byte> out_bytes) {
     }
     if (expected == 0) return {};
     std::vector<Entry*> targets{&field_samples_};
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+    if (Result<void> copied = copy_batch(false, targets);
         !copied) {
         return copied;
     }
@@ -1178,7 +1486,7 @@ Result<void> StateMirror::read_grid_entries(std::span<std::byte> out_bytes) {
     }
     if (expected == 0) return {};
     std::vector<Entry*> targets{&grid_entries_};
-    if (Result<void> copied = run_copy_batch(device_, cmd_, queue_, fence_, /*to_device=*/false, targets);
+    if (Result<void> copied = copy_batch(false, targets);
         !copied) {
         return copied;
     }
@@ -1225,7 +1533,15 @@ void StateMirror::destroy() noexcept {
         vkDestroyDescriptorSetLayout(device_, set_layout_, nullptr);
         set_layout_ = VK_NULL_HANDLE;
     }
+    for (SetOneSet& one : set1_) {
+        if (one.layout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device_, one.layout, nullptr);
+    }
+    set1_.clear();  // the sets themselves were freed with the pool
 
+    for (Entry& e : set_one_scratch_) destroy_entry(device_, e);
+    set_one_scratch_.clear();
+    destroy_entry(device_, resident_staging_);
+    destroy_entry(device_, config_);
     for_each_derived([this](Entry& e) { destroy_entry(device_, e); });
     scratch_entries_.clear();
     table_entries_.clear();
@@ -1280,6 +1596,11 @@ MemoryReport StateMirror::memory_report() {
         add(e, e.name.ends_with(" (absent)") ? MemoryKind::dummy : MemoryKind::scratch);
     }
     for (const Entry& e : table_entries_) add(e, MemoryKind::table);
+    // Set 1's (stage 7 Tasks C1/C2): the device-only scratch, then the ONE shared staging buffer of the resident arrays (a
+    // resident array's own record has no staging twin; this is the single twin, staging only) and the configuration image.
+    for (const Entry& e : set_one_scratch_) add(e, MemoryKind::scratch);
+    if (resident_staging_.staging_buffer != VK_NULL_HANDLE) add(resident_staging_, MemoryKind::walk);
+    if (config_.device_buffer != VK_NULL_HANDLE) add(config_, MemoryKind::table);
     return report;
 }
 
@@ -1299,6 +1620,27 @@ Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_
     if (!derived) return std::unexpected(derived.error());
     for (const DerivedBufferShape& d : *derived) {
         out.buffers.push_back(AdmitBuffer{.name = d.name, .bytes = d.byte_size});
+    }
+    // Set 1's buffers (stage 7 Tasks C1/C2): the set-1 scratch (a scratch naming no set-0 binding whose name is in
+    // set_one_bindings.hpp), the resident arrays' one shared staging buffer, the configuration image.
+    for (const ScratchShape& scratch : shape.scratch) {
+        if (scratch.binding != kNoBinding || set_one_binding_of(scratch.name) == kNoBinding) continue;
+        Result<VkDeviceSize> bytes = buffer_bytes(scratch.name, scratch.elem_size,
+                                                  uint64_t{shape.world_count} * uint64_t{scratch.capacity_per_world});
+        if (!bytes) return std::unexpected(bytes.error());
+        out.buffers.push_back(AdmitBuffer{.name = scratch.name, .bytes = *bytes});
+    }
+    uint64_t largest_resident = 0;
+    bool any_resident = false;
+    for (const StateArrayShape& array : shape.arrays) {
+        if (!array.resident) continue;
+        any_resident = true;
+        largest_resident = std::max<uint64_t>(
+            largest_resident, uint64_t{shape.world_count} * uint64_t{array.capacity_per_world} * uint64_t{array.elem_size});
+    }
+    if (any_resident) out.buffers.push_back(AdmitBuffer{.name = "resident_staging", .bytes = largest_resident});
+    if (!shape.config_image.empty()) {
+        out.buffers.push_back(AdmitBuffer{.name = "airflow_config", .bytes = shape.config_image.size()});
     }
     return out;
 }
@@ -1326,6 +1668,8 @@ uint64_t StateMirror::host_visible_bytes() {
     for_each_derived([&](Entry& e) {
         if (e.staging_buffer != VK_NULL_HANDLE) total += e.byte_size;
     });
+    if (resident_staging_.staging_buffer != VK_NULL_HANDLE) total += resident_staging_.byte_size;
+    if (config_.staging_buffer != VK_NULL_HANDLE) total += config_.byte_size;
     return total;
 }
 

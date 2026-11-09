@@ -87,9 +87,19 @@ public:
     // gpu_passes() of the Simulation's compiled schedule. compute/ keeps no
     // pass table of its own (module-API plan, stage 2). A pass with
     // GpuRecipe::none is refused with Code::invalid_argument.
+    //
+    // `rebuilds` (module API stage 7, Task C3) are the modules' rebuild hooks, each a GpuPass whose `custom` RecipeDesc is
+    // recorded, in order, into ONE on-demand command buffer at create() (no timing, no cadence); submit_rebuild() submits
+    // it. Empty: no such recording.
+    //
+    // SET 1 (Tasks C1/C2). A kernel of a pass or a rebuild that names set-1 bindings (RecipeKernel::set1_bindings) is bound
+    // from the buffers whose NAMES are in compute/set_one_bindings.hpp (a walk array, a scratch naming no set-0 binding) and
+    // the configuration image at StepShape::config_binding. A binding none of them provides is Code::invalid_argument naming
+    // the pass, the kernel and the binding, returned before any device is touched.
     [[nodiscard]] static Result<std::unique_ptr<VulkanBackend>> create(const BackendDesc& desc,
                                                                         const StepShape& shape,
-                                                                        std::span<const GpuPass> passes);
+                                                                        std::span<const GpuPass> passes,
+                                                                        std::span<const GpuPass> rebuilds = {});
 
     // Declared, not defaulted, here: Impl is only forward-declared in this
     // header (see the file header note above), and an implicitly-defined
@@ -112,7 +122,35 @@ public:
     // capacity_per_world) does not match what this backend was created for,
     // and with capacity_exceeded/internal on the underlying Vulkan failure
     // taxonomy `create()` documents.
+    //
+    // It SKIPS the device-resident arrays (StateArrayShape::resident): they are filled by upload_resident() and read by
+    // readback_resident() (stage 7 Task C2), and a step moves none of them.
     [[nodiscard]] Result<void> upload(const ArenaSet& arenas);
+
+    // Every resident array whole, host arenas -> device, one array at a time through ONE shared staging buffer sized to the
+    // largest (memory_report() lists it once, as "resident_staging"). A shape mismatch with `arenas` is invalid_argument
+    // naming the array, before any byte moves. A set with no resident array does nothing.
+    [[nodiscard]] Result<void> upload_resident(const ArenaSet& arenas);
+
+    // The reverse: every resident array's device buffer -> `arenas`, through the same staging buffer.
+    [[nodiscard]] Result<void> readback_resident(ArenaSet& arenas);
+
+    // Submits the on-demand rebuild recording (create()'s `rebuilds`) once and waits on its fence. With no rebuild recipes
+    // it does nothing and is NOT counted (stage 7 Task C3).
+    [[nodiscard]] Result<void> submit_rebuild();
+
+    // Bytes moved across the host/device boundary since create() (compute/backend.hpp's TransferBytes): upload(), readback(),
+    // the resident syncs, the table and params uploads, and the configuration image's upload at create().
+    [[nodiscard]] TransferBytes transfer_bytes() const noexcept;
+
+    // 1 (set 0, the state set) plus the number of distinct set-1 descriptor sets built: 1 for every set with no set-1 user.
+    [[nodiscard]] uint32_t descriptor_set_count() const noexcept;
+
+    // How many times submit_rebuild() ran a recording (a call with no rebuild recipes is not counted).
+    [[nodiscard]] uint64_t on_demand_count() const noexcept;
+
+    // The configuration image's device buffer, read back. Code::unavailable, naming it, when no module bound one.
+    [[nodiscard]] Result<std::vector<std::byte>> read_config_image() const;
 
     // The per-world Dryden turbulence CONFIGURATION (binding 13,
     // `dryden_params` -- bindings.slang section C). NOT part of the verbatim

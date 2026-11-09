@@ -81,6 +81,7 @@
 #include "compute/step_params.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
+#include "compute/vulkan/state_mirror.hpp"
 #include "compute/vulkan/timestamps.hpp"
 #include "core/error.hpp"
 
@@ -250,13 +251,24 @@ public:
     // Code::invalid_argument, never skipped: it would leave the GPU running a
     // different experiment from the CPU (L6). Simulation::create() refuses such
     // a set first, by name; this is the closer guard for a direct caller.
+    //
+    // `set1_sets` are the mirror's set-1 descriptor sets (StateMirror::set_one_sets()): a kernel naming a set-1 subset gets
+    // a pipeline layout [set 0, the set-1 layout of exactly that subset] and binds that subset's set before each of its
+    // dispatches (stage 7 Task C2; plan decision 1). A kernel whose subset the mirror did not build is internal. Kernels
+    // with no subset keep the one set-0 pipeline layout, so every standard kernel is unchanged.
+    //
+    // `rebuilds` are the modules' rebuild hooks (Task C3), each a GpuPass whose `custom` RecipeDesc is recorded into ONE
+    // on-demand command buffer: one emitter walk per pass, in order, a barrier between dispatches and none after the last,
+    // no timing and no cadence. submit_rebuild() submits it. Empty: no such recording exists.
     [[nodiscard]] static Result<std::unique_ptr<StepRecorder>> create(VulkanContext& ctx,
                                                                         const StepShape& shape,
                                                                         VkDescriptorSetLayout set_layout,
                                                                         VkDescriptorSet set,
                                                                         void* step_params_mapped,
                                                                         uint32_t workgroup_size,
-                                                                        std::span<const GpuPass> passes);
+                                                                        std::span<const GpuPass> passes,
+                                                                        std::span<const SetOneSet> set1_sets = {},
+                                                                        std::span<const GpuPass> rebuilds = {});
 
     ~StepRecorder();
     StepRecorder(const StepRecorder&) = delete;
@@ -275,6 +287,11 @@ public:
     // the next -- so last_written_tick() below always reflects exactly the
     // value the most recently completed submit carried.
     [[nodiscard]] Result<void> submit(uint64_t n, uint64_t first_tick);
+
+    // Submits the on-demand rebuild recording ONCE and waits on its own fence (stage 7 Task C3). With no rebuild recipes it
+    // does nothing and is not counted. A diagnostic count of the submits that happened is on_demand_count().
+    [[nodiscard]] Result<void> submit_rebuild();
+    [[nodiscard]] uint64_t on_demand_count() const noexcept { return on_demand_count_; }
 
     // The tick most recently written into the step-params buffer -- what
     // Task 5's C2 fix test reads to prove "the host-side write happens per
@@ -338,6 +355,16 @@ private:
     // push constant.
     [[nodiscard]] Result<void> record(uint32_t recording);
 
+    // The on-demand rebuild recording (stage 7 Task C3), recorded once from create(): every rebuild pass's dispatches, in
+    // order, with a barrier between adjacent dispatches and none after the last. No timing marks.
+    [[nodiscard]] Result<void> record_rebuild();
+
+    // The PassParams base and the grid widths every recipe starts from (substep 0), shared by both recordings.
+    [[nodiscard]] RecipeContext base_context() const;
+
+    // What each kernel binds (set 1) when dispatched, indexed like kernels_ (dispatch_chain.hpp).
+    [[nodiscard]] std::vector<PipelineSetBinding> set_bindings() const;
+
     // How many bitonic stages the recorded chain carries for one
     // CollisionDynamic pass: log2(segment) * (log2(segment) + 1) / 2, i.e. the
     // (k, j) pairs of grid_sort.slang's textbook double loop. 0 when the
@@ -352,10 +379,11 @@ private:
     // divided by another is a Vulkan valid-usage violation whose symptom is
     // wrong physics rather than an error, so it must never be reachable.
     //
-    // Every pipeline shares pipeline_layout_ (see the class note above).
+    // `layout` is the kernel's: pipeline_layout_ (set 0 only), or [set 0, its set-1 layout] when it names a set-1 subset.
     // `report` is the context's, for make_compute_pipeline's float-controls check.
     [[nodiscard]] Result<void> make_pipeline(const SpirvVariantSet& variants, const DeviceReport& report,
-                                              VkShaderModule& out_module, VkPipeline& out_pipeline);
+                                              VkPipelineLayout layout, VkShaderModule& out_module,
+                                              VkPipeline& out_pipeline);
 
     // No VkPhysicalDevice member as of S6 Task 6: this class allocates no
     // memory of its own any more (StateMirror owns the step-params buffer, the
@@ -368,13 +396,27 @@ private:
     VkFence fence_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;   // non-owning; StateMirror owns the pool/set
 
-    // One compute pipeline per distinct kernel the schedule's recipes name (stage 7 Task B1), deduplicated by variant set.
+    // One compute pipeline per distinct kernel the schedule's recipes name (stage 7 Task B1), deduplicated by variant set and
+    // set-1 subset (the same kernel under another subset is another pipeline layout, so another pipeline).
     struct Kernel {
         const SpirvVariantSet* variants = nullptr;
+        std::vector<uint32_t> set1_key{};              // the sorted set-1 subset it names; empty: the set-0-only layout
+        VkPipelineLayout layout = VK_NULL_HANDLE;      // pipeline_layout_, or one of set1_layouts_ (non-owning)
+        VkDescriptorSet set1 = VK_NULL_HANDLE;         // the mirror's set for set1_key; null when the key is empty
         VkShaderModule shader = VK_NULL_HANDLE;
         VkPipeline pipeline = VK_NULL_HANDLE;
     };
     std::vector<Kernel> kernels_;
+    std::vector<VkPipelineLayout> set1_layouts_;  // owned: one pipeline layout [set 0, set-1 layout] per distinct subset
+
+    // The on-demand rebuild recording (stage 7 Task C3): the passes' recipes and kernel slots as for the step's, its own
+    // command buffer and its own fence, the number of times it was submitted. No command buffer without rebuild recipes.
+    std::vector<GpuPass> rebuilds_;
+    std::vector<const RecipeDesc*> rebuild_recipes_;
+    std::vector<std::vector<uint32_t>> rebuild_kernels_;
+    VkCommandBuffer rebuild_cmd_ = VK_NULL_HANDLE;
+    VkFence rebuild_fence_ = VK_NULL_HANDLE;
+    uint64_t on_demand_count_ = 0;
 
     void* step_params_mapped_ = nullptr;
 

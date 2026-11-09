@@ -1,8 +1,15 @@
 #include "compute/vulkan/backend.hpp"
 
+#include <algorithm>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
+#include "compute/layout_classes.hpp"
+#include "compute/recipe.hpp"
+#include "compute/set_one_bindings.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/state_mirror.hpp"
 #include "compute/vulkan/step_recorder.hpp"
@@ -25,13 +32,79 @@ struct VulkanBackend::Impl {
     std::unique_ptr<StepRecorder> recorder;
 };
 
+namespace {
+
+// The recipe a pass dispatches: its own, or its built-in's (nullptr when it has neither).
+[[nodiscard]] const RecipeDesc* recipe_of(const GpuPass& pass) noexcept {
+    return pass.custom != nullptr ? pass.custom : builtin_recipe(pass.recipe);
+}
+
+// The name set_one_bindings.hpp gives a set-1 binding, for a refusal; the number alone when the table does not name it.
+[[nodiscard]] std::string set_one_binding_text(uint32_t binding) {
+    for (const SetOneBinding& row : kSetOneBindings) {
+        if (row.binding == binding) return "'" + std::string(row.name) + "' (" + std::to_string(binding) + ")";
+    }
+    return std::to_string(binding);
+}
+
+// Whether the shape carries a buffer for set-1 `binding`: a walk array or a scratch (naming no set-0 binding) whose name the
+// table maps to it, or the configuration image bound there.
+[[nodiscard]] bool set_one_provided(const StepShape& shape, uint32_t binding) {
+    for (const StateArrayShape& array : shape.arrays) {
+        if (set_one_binding_of(array.name) == binding) return true;
+    }
+    for (const ScratchShape& scratch : shape.scratch) {
+        if (scratch.binding == kNoBinding && set_one_binding_of(scratch.name) == binding) return true;
+    }
+    return shape.config_binding == binding && !shape.config_image.empty();
+}
+
+// Every kernel of every pass and rebuild against the shape, BEFORE any device is touched (stage 7 Task C2, decision 2): a
+// kernel names set-1 bindings it can be bound (kernel_layout(): in range, named once), and each one has a provider. The
+// refusal names the pass, the kernel and the binding. Fills `subsets` with the distinct, sorted, non-empty subsets, in the
+// order they first appear: the set-1 descriptor sets the mirror builds, and none for a set with no set-1 user.
+[[nodiscard]] Result<void> collect_set_one(const StepShape& shape, std::span<const GpuPass> passes,
+                                           std::span<const GpuPass> rebuilds,
+                                           std::vector<std::vector<uint32_t>>& subsets) {
+    for (const std::span<const GpuPass> list : {passes, rebuilds}) {
+        for (const GpuPass& pass : list) {
+            const RecipeDesc* desc = recipe_of(pass);
+            if (desc == nullptr) continue;  // GpuRecipe::none: refused by the caller
+            for (const RecipeKernel& kernel : desc->kernels) {
+                if (kernel.variants == nullptr || kernel.set1_bindings.empty()) continue;
+                const std::string_view name = kernel.variants->name;
+                if (Result<AdmitLayout> layout = kernel_layout(name, kernel.set1_bindings); !layout) {
+                    return std::unexpected(Error{layout.error().code, "VulkanBackend::create: pass '" + pass.name +
+                                                                          "': " + layout.error().context});
+                }
+                for (const uint32_t binding : kernel.set1_bindings) {
+                    if (set_one_provided(shape, binding)) continue;
+                    return std::unexpected(Error{
+                        Code::invalid_argument,
+                        "VulkanBackend::create: pass '" + pass.name + "', kernel '" + std::string(name) +
+                            "' names set-1 binding " + set_one_binding_text(binding) +
+                            ", which no walk array, scratch or configuration image of the set provides (names are "
+                            "the contract: compute/set_one_bindings.hpp; the configuration image is "
+                            "StepShape::config_binding)"});
+                }
+                std::vector<uint32_t> key = normalized_set1_subset(kernel.set1_bindings);
+                if (std::ranges::find(subsets, key) == subsets.end()) subsets.push_back(std::move(key));
+            }
+        }
+    }
+    return {};
+}
+
+}  // namespace
+
 VulkanBackend::VulkanBackend() : impl_(std::make_unique<Impl>()) {}
 VulkanBackend::~VulkanBackend() = default;
 VulkanBackend::VulkanBackend(VulkanBackend&&) noexcept = default;
 VulkanBackend& VulkanBackend::operator=(VulkanBackend&&) noexcept = default;
 
 Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& desc, const StepShape& shape,
-                                                             std::span<const GpuPass> passes) {
+                                                             std::span<const GpuPass> passes,
+                                                             std::span<const GpuPass> rebuilds) {
     // ARGUMENT VALIDATION BEFORE RESOURCE ACQUISITION (S6 Task 9b). Checked
     // ahead of VulkanContext::create() deliberately, and the ordering is a
     // contract rather than a style preference:
@@ -62,12 +135,21 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     // A pass with no GPU kernel, checked before any device is touched for the
     // same reason: it is wrong on every machine. (StepRecorder::create() keeps
     // the closer guard.)
-    for (const GpuPass& pass : passes) {
-        if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
-            return std::unexpected(Error{Code::invalid_argument, "VulkanBackend::create: pass '" + pass.name +
-                                                                     "' has no GPU kernel (GpuRecipe::none)"});
+    // (A rebuild hook is a pass too.)
+    for (const std::span<const GpuPass> list : {passes, rebuilds}) {
+        for (const GpuPass& pass : list) {
+            if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
+                return std::unexpected(Error{Code::invalid_argument, "VulkanBackend::create: pass '" + pass.name +
+                                                                         "' has no GPU kernel (GpuRecipe::none)"});
+            }
         }
     }
+
+    // SET 1 (stage 7 Tasks C1/C2): every kernel's set-1 bindings against what the shape provides, by pass, kernel and
+    // binding, wrong on every machine and so before any device is touched; and the distinct subsets the mirror builds a
+    // descriptor set for. The standard set names none, so it builds no set-1 set.
+    std::vector<std::vector<uint32_t>> set1_subsets;
+    if (Result<void> ok = collect_set_one(shape, passes, rebuilds, set1_subsets); !ok) return std::unexpected(ok.error());
 
     Result<std::unique_ptr<VulkanContext>> ctx = VulkanContext::create(desc);
     if (!ctx) return std::unexpected(ctx.error());
@@ -101,7 +183,7 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
         }
     }
 
-    Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape);
+    Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape, set1_subsets);
     if (!mirror) return std::unexpected(mirror.error());
 
     // The recorder is handed the mirror's step-params mapping rather than
@@ -110,7 +192,8 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     // never be bound. See StateMirror::step_params_mapped().
     Result<std::unique_ptr<StepRecorder>> recorder =
         StepRecorder::create(**ctx, shape, (*mirror)->descriptor_set_layout(), (*mirror)->descriptor_set(),
-                             (*mirror)->step_params_mapped(), desc.workgroup_size, passes);
+                             (*mirror)->step_params_mapped(), desc.workgroup_size, passes, (*mirror)->set_one_sets(),
+                             rebuilds);
     if (!recorder) return std::unexpected(recorder.error());
 
     // std::unique_ptr<VulkanBackend>(new VulkanBackend()): the default
@@ -126,6 +209,20 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
 }
 
 Result<void> VulkanBackend::upload(const ArenaSet& arenas) { return impl_->mirror->upload(arenas); }
+
+Result<void> VulkanBackend::upload_resident(const ArenaSet& arenas) { return impl_->mirror->upload_resident(arenas); }
+
+Result<void> VulkanBackend::readback_resident(ArenaSet& arenas) { return impl_->mirror->readback_resident(arenas); }
+
+Result<void> VulkanBackend::submit_rebuild() { return impl_->recorder->submit_rebuild(); }
+
+TransferBytes VulkanBackend::transfer_bytes() const noexcept { return impl_->mirror->transfer_bytes(); }
+
+uint32_t VulkanBackend::descriptor_set_count() const noexcept { return impl_->mirror->descriptor_set_count(); }
+
+uint64_t VulkanBackend::on_demand_count() const noexcept { return impl_->recorder->on_demand_count(); }
+
+Result<std::vector<std::byte>> VulkanBackend::read_config_image() const { return impl_->mirror->read_config_image(); }
 
 Result<void> VulkanBackend::upload_dryden_params(std::span<const std::byte> params_bytes, uint32_t elem_size,
                                                    uint32_t world_count) {

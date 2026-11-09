@@ -116,14 +116,18 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
                                                              VkDescriptorSetLayout set_layout,
                                                              VkDescriptorSet set, void* step_params_mapped,
                                                              uint32_t workgroup_size,
-                                                             std::span<const GpuPass> passes) {
+                                                             std::span<const GpuPass> passes,
+                                                             std::span<const SetOneSet> set1_sets,
+                                                             std::span<const GpuPass> rebuilds) {
     // A pass with no recipe has no GPU kernel: recording the rest would run a
     // different experiment from the CPU, silently (L6). Refused before any
-    // resource is built.
-    for (const GpuPass& pass : passes) {
-        if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
-            return std::unexpected(Error{Code::invalid_argument, "StepRecorder::create: pass '" + pass.name +
-                                                                     "' has no GPU kernel (GpuRecipe::none)"});
+    // resource is built. A rebuild hook is a pass too.
+    for (const std::span<const GpuPass> list : {passes, rebuilds}) {
+        for (const GpuPass& pass : list) {
+            if (pass.recipe == GpuRecipe::none && pass.custom == nullptr) {
+                return std::unexpected(Error{Code::invalid_argument, "StepRecorder::create: pass '" + pass.name +
+                                                                         "' has no GPU kernel (GpuRecipe::none)"});
+            }
         }
     }
 
@@ -164,6 +168,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     self->step_params_mapped_ = step_params_mapped;
     self->workgroup_size_ = workgroup_size;
     self->passes_.assign(passes.begin(), passes.end());
+    self->rebuilds_.assign(rebuilds.begin(), rebuilds.end());
     self->dispatch_groups_x_ = dispatch_groups_for(shape, workgroup_size);
 
     // S6 Task 7: the CollisionDynamic chain's own shape, decided ONCE here for
@@ -188,14 +193,16 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
 
     // THE RECIPES (stage 7 Task B1): each pass's own, or its built-in's. The kernels are deduplicated by variant set, in the
     // order they first appear, so the standard set builds the twelve it always did and a set that never names a recipe builds
-    // none of its kernels. A kernel naming set-1 bindings needs a set-1 layout the mirror does not build yet.
+    // none of its kernels. A kernel naming set-1 bindings is counted by admit() as set 0's thirty plus its subset
+    // (kernel_layout()), and gets its own pipeline layout below. The rebuild hooks' recipes (Task C3) are resolved the same way.
     AdmitShape asked;
-    for (const GpuPass& pass : self->passes_) {
+    const auto resolve = [&](const GpuPass& pass, std::vector<const RecipeDesc*>& recipes,
+                             std::vector<std::vector<uint32_t>>& all_slots) -> Result<void> {
         const RecipeDesc* desc = pass.custom != nullptr ? pass.custom : builtin_recipe(pass.recipe);
         if (desc == nullptr || desc->record == nullptr) {
             return std::unexpected(Error{Code::internal, "StepRecorder::create: pass '" + pass.name + "' has no recipe"});
         }
-        self->pass_recipes_.push_back(desc);
+        recipes.push_back(desc);
         std::vector<uint32_t> slots;
         for (const RecipeKernel& k : desc->kernels) {
             if (k.variants == nullptr) {
@@ -205,19 +212,30 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
             }
             Result<AdmitLayout> layout = kernel_layout(k.variants->name, k.set1_bindings);
             if (!layout) return std::unexpected(layout.error());
-            if (!k.set1_bindings.empty()) {
-                return std::unexpected(Error{Code::unavailable,
-                                             "StepRecorder::create: kernel '" + std::string(k.variants->name) +
-                                                 "' of recipe '" + std::string(desc->name) + "' (pass '" + pass.name +
-                                                 "') names set-1 bindings, and the mirror builds no set 1 yet"});
-            }
             asked.layouts.push_back(std::move(*layout));
+            std::vector<uint32_t> key = normalized_set1_subset(k.set1_bindings);
             std::size_t at = 0;
-            while (at < self->kernels_.size() && self->kernels_[at].variants != k.variants) ++at;
-            if (at == self->kernels_.size()) self->kernels_.push_back(Kernel{.variants = k.variants});
+            while (at < self->kernels_.size() &&
+                   !(self->kernels_[at].variants == k.variants && self->kernels_[at].set1_key == key)) {
+                ++at;
+            }
+            if (at == self->kernels_.size()) {
+                self->kernels_.push_back(Kernel{.variants = k.variants, .set1_key = std::move(key)});
+            }
             slots.push_back(static_cast<uint32_t>(at));
         }
-        self->pass_kernels_.push_back(std::move(slots));
+        all_slots.push_back(std::move(slots));
+        return {};
+    };
+    for (const GpuPass& pass : self->rebuilds_) {
+        if (Result<void> ok = resolve(pass, self->rebuild_recipes_, self->rebuild_kernels_); !ok) {
+            return std::unexpected(ok.error());
+        }
+    }
+    for (const GpuPass& pass : self->passes_) {
+        if (Result<void> ok = resolve(pass, self->pass_recipes_, self->pass_kernels_); !ok) {
+            return std::unexpected(ok.error());
+        }
         if (pass.every_steps > 1) {
             if (self->cadence_ != 1 && self->cadence_ != pass.every_steps) {
                 return std::unexpected(Error{Code::invalid_argument,
@@ -288,10 +306,51 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
         return std::unexpected(map_vk_error(r, "vkCreatePipelineLayout"));
     }
 
+    // THE LAYOUT CLASSES (stage 7 Task C2; plan decision 1). A kernel with no set-1 subset keeps the one set-0 layout above,
+    // exactly as every standard kernel always did. A kernel naming a subset gets a layout [set 0, the set-1 layout the
+    // mirror built for exactly that subset], one per distinct subset, shared by the kernels naming it. A subset the mirror
+    // did not build is a defect of the caller's (backend.cpp derives both from the same recipes), named.
+    for (Kernel& kernel : self->kernels_) {
+        kernel.layout = self->pipeline_layout_;
+        if (kernel.set1_key.empty()) continue;
+        const SetOneSet* one = nullptr;
+        for (const SetOneSet& candidate : set1_sets) {
+            if (candidate.bindings == kernel.set1_key) one = &candidate;
+        }
+        if (one == nullptr) {
+            return std::unexpected(Error{Code::internal, "StepRecorder::create: kernel '" +
+                                                             std::string(kernel.variants->name) +
+                                                             "' names a set-1 subset the state mirror built no set for"});
+        }
+        kernel.set1 = one->set;
+        const Kernel* shared = nullptr;
+        for (const Kernel& other : self->kernels_) {
+            if (&other == &kernel) break;
+            if (other.set1_key == kernel.set1_key) shared = &other;
+        }
+        if (shared != nullptr) {
+            kernel.layout = shared->layout;
+            continue;
+        }
+        const VkDescriptorSetLayout both[] = {set_layout, one->layout};
+        VkPipelineLayoutCreateInfo one_layout_info{};
+        one_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        one_layout_info.setLayoutCount = 2;
+        one_layout_info.pSetLayouts = both;
+        one_layout_info.pushConstantRangeCount = 1;
+        one_layout_info.pPushConstantRanges = &push_range;
+        VkPipelineLayout made = VK_NULL_HANDLE;
+        if (VkResult r = vkCreatePipelineLayout(self->device_, &one_layout_info, nullptr, &made); r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkCreatePipelineLayout (set 0 + set 1)"));
+        }
+        self->set1_layouts_.push_back(made);
+        kernel.layout = made;
+    }
+
     // One pipeline per distinct kernel (stage 7 Task B1); make_pipeline() picks the variant matching workgroup_size_.
     for (Kernel& kernel : self->kernels_) {
-        if (Result<void> made =
-                self->make_pipeline(*kernel.variants, ctx.device_report(), kernel.shader, kernel.pipeline);
+        if (Result<void> made = self->make_pipeline(*kernel.variants, ctx.device_report(), kernel.layout, kernel.shader,
+                                                    kernel.pipeline);
             !made) {
             return std::unexpected(made.error());
         }
@@ -317,13 +376,17 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     cmd_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmd_info.commandPool = self->pool_;
     cmd_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmd_info.commandBufferCount = recording_count;
+    // The step's recordings, then (Task C3) the one on-demand rebuild recording when the set has rebuild hooks.
+    const bool has_rebuild = !self->rebuilds_.empty();
+    const uint32_t buffer_count = recording_count + (has_rebuild ? 1u : 0u);
+    cmd_info.commandBufferCount = buffer_count;
     {
-        std::vector<VkCommandBuffer> cmds(recording_count, VK_NULL_HANDLE);
+        std::vector<VkCommandBuffer> cmds(buffer_count, VK_NULL_HANDLE);
         if (VkResult r = vkAllocateCommandBuffers(self->device_, &cmd_info, cmds.data()); r != VK_SUCCESS) {
             return std::unexpected(map_vk_error(r, "vkAllocateCommandBuffers (StepRecorder)"));
         }
         for (uint32_t r = 0; r < recording_count; ++r) self->recordings_[r].cmd = cmds[r];
+        if (has_rebuild) self->rebuild_cmd_ = cmds[recording_count];
     }
 
     VkFenceCreateInfo fence_info{};
@@ -331,22 +394,63 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->fence_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkCreateFence (StepRecorder)"));
     }
+    if (has_rebuild) {
+        if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->rebuild_fence_); r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkCreateFence (StepRecorder rebuild)"));
+        }
+    }
 
     // Records the fixed dispatch chain ONCE -- see record()'s own comment.
     for (uint32_t r = 0; r < recording_count; ++r) {
         if (Result<void> recorded = self->record(r); !recorded) return std::unexpected(recorded.error());
+    }
+    if (has_rebuild) {
+        if (Result<void> recorded = self->record_rebuild(); !recorded) return std::unexpected(recorded.error());
     }
 
     return self;
 }
 
 Result<void> StepRecorder::make_pipeline(const SpirvVariantSet& variants, const DeviceReport& report,
-                                           VkShaderModule& out_module, VkPipeline& out_pipeline) {
+                                           VkPipelineLayout layout, VkShaderModule& out_module,
+                                           VkPipeline& out_pipeline) {
     // The selection, the shader module and the pipeline: dispatch_chain.hpp's
     // make_compute_pipeline, shared with the airflow chain runner (its design
     // note §1). The messages name "StepRecorder", as they always have.
-    return make_compute_pipeline(device_, pipeline_layout_, variants, workgroup_size_, report, "StepRecorder",
-                                 out_module, out_pipeline);
+    return make_compute_pipeline(device_, layout, variants, workgroup_size_, report, "StepRecorder", out_module,
+                                 out_pipeline);
+}
+
+// The context every recipe starts from (substep 0; record() sets each substep), shared by the step's recordings and the
+// rebuild recording.
+RecipeContext StepRecorder::base_context() const {
+    RecipeContext context;
+    context.base.world_count = shape_.world_count;
+    context.base.body_capacity = shape_.body_capacity;
+    context.base.element_capacity = shape_.element_capacity;
+    context.base.sensor_capacity = shape_.sensor_capacity;
+    context.base.h = shape_.h;
+    context.base.grid_entry_count = grid_.entry_count;
+    context.base.grid_segment = grid_.segment;
+    context.base.grid_segment_slots = grid_.segment_slots;
+    context.base.switches = shape_.switches;  // module API stage 6: which optional bindings hold a real array
+    context.workgroup_size = workgroup_size_;
+    context.bodies_groups = dispatch_groups_x_;
+    context.grid_groups = grid_groups_x_;
+    context.worlds_groups = world_groups_x_;
+    context.sensors_groups = sensor_groups_x_;
+    return context;
+}
+
+// One entry per kernel: the pipeline layout and set-1 set a kernel with a set-1 subset binds before each dispatch; a null
+// layout for a kernel with none, which binds nothing (the chain's set 0 is bound once at the head of each recording).
+std::vector<PipelineSetBinding> StepRecorder::set_bindings() const {
+    std::vector<PipelineSetBinding> binds(kernels_.size());
+    for (std::size_t i = 0; i < kernels_.size(); ++i) {
+        if (kernels_[i].set1_key.empty()) continue;
+        binds[i] = PipelineSetBinding{.layout = kernels_[i].layout, .set_index = 1, .set = kernels_[i].set1};
+    }
+    return binds;
 }
 
 // ---------------------------------------------------------------------------
@@ -405,21 +509,7 @@ Result<void> StepRecorder::record(uint32_t recording) {
                   "the push range must fit a chain command's push block");
     std::vector<ChainCommand> commands;
 
-    RecipeContext context;
-    context.base.world_count = shape_.world_count;
-    context.base.body_capacity = shape_.body_capacity;
-    context.base.element_capacity = shape_.element_capacity;
-    context.base.sensor_capacity = shape_.sensor_capacity;
-    context.base.h = shape_.h;
-    context.base.grid_entry_count = grid_.entry_count;
-    context.base.grid_segment = grid_.segment;
-    context.base.grid_segment_slots = grid_.segment_slots;
-    context.base.switches = shape_.switches;  // module API stage 6: which optional bindings hold a real array
-    context.workgroup_size = workgroup_size_;
-    context.bodies_groups = dispatch_groups_x_;
-    context.grid_groups = grid_groups_x_;
-    context.worlds_groups = world_groups_x_;
-    context.sensors_groups = sensor_groups_x_;
+    RecipeContext context = base_context();
 
     std::vector<std::string> walked;  // the pass names as the walk visits them, once, for recorded_chain()
     walked.reserve(rec.passes.size());
@@ -471,17 +561,93 @@ Result<void> StepRecorder::record(uint32_t recording) {
 
     rec.chain = RecordedChain{.sort_stages = sort_stage_count()};
     rec.chain.passes = std::move(walked);
+    const std::vector<PipelineSetBinding> set_binds = set_bindings();
     const ChainCounts counts = record_dispatch_chain(
         cmd, pipeline_layout_, pipelines, commands, gen::kPushConstantOffset, gen::kPushConstantSize,
         [&rec](VkCommandBuffer c, uint32_t substep, uint32_t boundary) {
             rec.timestamps->record_mark(c, substep, boundary);
-        });
+        },
+        set_binds);
     rec.chain.dispatches = counts.dispatches;
     rec.chain.barriers = counts.barriers;
 
     if (VkResult r = vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkEndCommandBuffer (StepRecorder record)"));
     }
+    return {};
+}
+
+// ---------------------------------------------------------------------------
+// record_rebuild -- ONCE, from create(), when the set has rebuild hooks (stage 7 Task C3). One emitter walk per rebuild
+// pass, in order; the chain's barrier rule (CORE-2) puts a barrier between adjacent dispatches and none after the last.
+// No timing marks and no cadence: the recording is submitted on demand (submit_rebuild()), at create() and at restore().
+// Every emitted dispatch's group counts are admitted like any other.
+// ---------------------------------------------------------------------------
+Result<void> StepRecorder::record_rebuild() {
+    VkCommandBuffer cmd = rebuild_cmd_;
+    VkCommandBufferBeginInfo begin{};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    // NOT ONE_TIME_SUBMIT: the same recording is resubmitted at every restore().
+    if (VkResult r = vkBeginCommandBuffer(cmd, &begin); r != VK_SUCCESS) {
+        return std::unexpected(map_vk_error(r, "vkBeginCommandBuffer (StepRecorder rebuild)"));
+    }
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout_, 0, 1, &set_, 0, nullptr);
+
+    RecipeContext context = base_context();
+    context.base.substep = 0;
+    std::vector<ChainCommand> commands;
+    AdmitShape emitted;
+    for (std::size_t i = 0; i < rebuilds_.size(); ++i) {
+        RecipeEmitter emitter;
+        rebuild_recipes_[i]->record(emitter, context);
+        for (const EmittedDispatch& d : emitter.dispatches()) {
+            if (d.kernel >= rebuild_kernels_[i].size()) {
+                return std::unexpected(Error{Code::internal, "StepRecorder::record_rebuild: recipe '" +
+                                                                 std::string(rebuild_recipes_[i]->name) +
+                                                                 "' dispatched kernel " + std::to_string(d.kernel) +
+                                                                 " of " + std::to_string(rebuild_kernels_[i].size())});
+            }
+            ChainCommand c{.is_dispatch = true, .pipeline = rebuild_kernels_[i][d.kernel], .groups = d.groups};
+            std::memcpy(c.push.data(), &d.params, sizeof(PassParams));
+            commands.push_back(c);
+            emitted.dispatches.push_back(AdmitDispatch{.pass = rebuilds_[i].name, .groups = d.groups});
+        }
+    }
+    if (Result<void> ok = admit(emitted, limits_, device_name_); !ok) {
+        Error e = ok.error();
+        e.context = "StepRecorder::record_rebuild: " + e.context;
+        return std::unexpected(std::move(e));
+    }
+
+    std::vector<VkPipeline> pipelines;
+    pipelines.reserve(kernels_.size());
+    for (const Kernel& kernel : kernels_) pipelines.push_back(kernel.pipeline);
+    const std::vector<PipelineSetBinding> set_binds = set_bindings();
+    (void)record_dispatch_chain(cmd, pipeline_layout_, pipelines, commands, gen::kPushConstantOffset,
+                                gen::kPushConstantSize, [](VkCommandBuffer, uint32_t, uint32_t) {}, set_binds);
+
+    if (VkResult r = vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
+        return std::unexpected(map_vk_error(r, "vkEndCommandBuffer (StepRecorder rebuild)"));
+    }
+    return {};
+}
+
+Result<void> StepRecorder::submit_rebuild() {
+    if (rebuild_cmd_ == VK_NULL_HANDLE) return {};  // no rebuild recipes: nothing to submit, and not counted
+    if (VkResult r = vkResetFences(device_, 1, &rebuild_fence_); r != VK_SUCCESS) {
+        return std::unexpected(map_vk_error(r, "vkResetFences (StepRecorder rebuild)"));
+    }
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &rebuild_cmd_;
+    if (VkResult r = vkQueueSubmit(queue_, 1, &submit_info, rebuild_fence_); r != VK_SUCCESS) {
+        return std::unexpected(map_vk_error(r, "vkQueueSubmit (StepRecorder rebuild)"));
+    }
+    if (VkResult r = vkWaitForFences(device_, 1, &rebuild_fence_, VK_TRUE, UINT64_MAX); r != VK_SUCCESS) {
+        return std::unexpected(map_vk_error(r, "vkWaitForFences (StepRecorder rebuild)"));
+    }
+    ++on_demand_count_;
     return {};
 }
 
@@ -575,6 +741,10 @@ void StepRecorder::destroy() noexcept {
         vkDestroyFence(device_, fence_, nullptr);
         fence_ = VK_NULL_HANDLE;
     }
+    if (rebuild_fence_ != VK_NULL_HANDLE) {
+        vkDestroyFence(device_, rebuild_fence_, nullptr);
+        rebuild_fence_ = VK_NULL_HANDLE;
+    }
     if (pool_ != VK_NULL_HANDLE) {
         vkDestroyCommandPool(device_, pool_, nullptr);  // frees the recordings' command buffers implicitly
         pool_ = VK_NULL_HANDLE;
@@ -585,6 +755,8 @@ void StepRecorder::destroy() noexcept {
         if (kernel.shader != VK_NULL_HANDLE) vkDestroyShaderModule(device_, kernel.shader, nullptr);
     }
     kernels_.clear();
+    for (VkPipelineLayout layout : set1_layouts_) vkDestroyPipelineLayout(device_, layout, nullptr);
+    set1_layouts_.clear();
     if (pipeline_layout_ != VK_NULL_HANDLE) {
         vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
         pipeline_layout_ = VK_NULL_HANDLE;

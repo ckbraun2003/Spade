@@ -7,6 +7,7 @@
 #include <tuple>
 #include <utility>
 
+#include "bindings.gen.hpp"
 #include "compute/recipe.hpp"
 #include "core/rng.hpp"
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
@@ -178,6 +179,29 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
     return {};
 }
 
+// A module's configuration image (stage 7, Task C1): the one binding it may name is the config buffer, it needs an image to
+// upload there, and no earlier module names it too.
+[[nodiscard]] Result<void> check_config(std::span<const ModuleDesc> modules, std::size_t m) {
+    const ModuleDesc& mod = modules[m];
+    if (mod.config_binding == compute::kNoBinding) return {};
+    if (mod.config_binding != compute::gen::kBinding_airflow_config) {
+        return std::unexpected(invalid("module '" + std::string(mod.name) + "': config_binding " +
+                                       std::to_string(mod.config_binding) + " is not the config buffer (set-1 binding " +
+                                       std::to_string(compute::gen::kBinding_airflow_config) + ")"));
+    }
+    if (mod.config.empty()) {
+        return std::unexpected(invalid("module '" + std::string(mod.name) +
+                                       "': config_binding names the config buffer but the module has no configuration image"));
+    }
+    for (std::size_t k = 0; k < m; ++k) {
+        if (modules[k].config_binding == mod.config_binding) {
+            return std::unexpected(invalid("modules '" + std::string(modules[k].name) + "' and '" + std::string(mod.name) +
+                                           "' both bind the config buffer; it holds one module's image"));
+        }
+    }
+    return {};
+}
+
 // An access that binds nothing and orders nothing: an optional read of a
 // module the set does not hold.
 [[nodiscard]] bool absent_access(const QuantityAccess& qa, std::span<const ModuleDesc> modules) noexcept {
@@ -331,10 +355,21 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                         where + ": an array that predates replay_config registers before it, so its module "
                                 "must carry the legacy walk marker; without it the walk would move"));
                 }
+                // DEVICE RESIDENCY (stage 7, Task C2): only a per_world array, of a module whose CPU run is its reference
+                // (the CPU array is what the device one is held to, and what a cpu-backend run steps).
+                if (a.residency == Residency::device) {
+                    if (a.extent != Extent::per_world) {
+                        return std::unexpected(invalid(where + ": only a per_world array may be device-resident"));
+                    }
+                    if (mod.grade.cpu != Grade::reference) {
+                        return std::unexpected(invalid(where + ": a device-resident array needs the module to claim a CPU "
+                                                               "`reference` (its cpu run is the array's meaning)"));
+                    }
+                }
                 by_name.emplace(std::string(a.name), out.size());
                 out.push_back(CompiledArray{std::string(mod.name), std::string(a.name), a.elem_size, a.extent,
                                             kNoArray, a.depth, mod.legacy_walk, a.spawn_size, a.init,
-                                            a.validate});
+                                            a.validate, a.residency});
                 owners.push_back(a.owner);
             }
         }
@@ -625,6 +660,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         // ROLES (Task 6), here and so before the pass graph is built: two fillers of dynamic_contact are
         // also two writers of body.pose with no edge, and a later check would refuse them as a hazard.
         if (Result<void> ok = check_role(modules, m); !ok) return std::unexpected(ok.error());
+        if (Result<void> ok = check_config(modules, m); !ok) return std::unexpected(ok.error());
         for (std::size_t d = 0; d < mod.passes.size(); ++d) {
             const PassDecl& p = mod.passes[d];
             std::string full = std::string(mod.name) + "." + std::string(p.name);
@@ -887,6 +923,13 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
         h = fold_str(h, m.name);
         h = fold_byte(h, 0);
         h = fold_u32_le(h, m.version);
+        // A configuration image is a different schedule (stage 7, Task C1): 0x02, its length, its bytes. A module with none
+        // folds nothing, and keeps the identity it had.
+        if (!m.config.empty()) {
+            h = fold_byte(h, 0x02);
+            h = fold_u32_le(h, static_cast<uint32_t>(m.config.size()));
+            for (const std::byte b : m.config) h = fold_byte(h, static_cast<uint8_t>(b));
+        }
     }
     h = fold_byte(h, 1);
     for (const CompiledPass& p : out.passes) {
@@ -903,7 +946,28 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     }
     out.identity = h;
     for (const ModuleDesc& mod : modules) {
-        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role)});
+        std::vector<CompiledBinding> rebuild_state;
+        if (mod.rebuild_cpu != nullptr || mod.rebuild_gpu != nullptr) {
+            if (mod.rebuild_access.empty()) {
+                return std::unexpected(invalid("module '" + std::string(mod.name) +
+                                               "': a rebuild hook needs rebuild_access (the arrays and scratch it reads and writes)"));
+            }
+            for (const QuantityAccess& qa : mod.rebuild_access) {
+                const CompiledBinding b = binding_of(qa, *arrays, *tables, *scratch);
+                if (b.kind == BindingKind::absent) {
+                    return std::unexpected(invalid("module '" + std::string(mod.name) + "': rebuild_access names '" +
+                                                   std::string(qa.quantity) +
+                                                   "', which is no array, table or scratch of this set"));
+                }
+                rebuild_state.push_back(b);
+            }
+        } else if (!mod.rebuild_access.empty()) {
+            return std::unexpected(invalid("module '" + std::string(mod.name) +
+                                           "': rebuild_access is declared but the module has neither rebuild_cpu nor rebuild_gpu"));
+        }
+        out.modules.push_back(CompiledModule{std::string(mod.name), mod.version, mod.grade, std::string(mod.role),
+                                             std::vector<std::byte>(mod.config.begin(), mod.config.end()), mod.config_binding,
+                                             std::move(rebuild_state), mod.rebuild_cpu, mod.rebuild_gpu});
     }
     for (const RoleDecl& role : kRoles) {  // kRoles order; check_role allowed at most one filler
         const auto filler = std::find_if(modules.begin(), modules.end(),

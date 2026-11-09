@@ -54,6 +54,15 @@ namespace spade::test {
     return WorldSetDesc{{instance}};
 }
 
+// Two such worlds (floor_world_set(n) is ONE world with room for n bodies): the second has its own seed.
+[[nodiscard]] inline Result<WorldSetDesc> two_world_set(uint32_t bodies = 4) {
+    Result<WorldSetDesc> set = floor_world_set(bodies);
+    if (!set) return set;
+    set->worlds.push_back(set->worlds.front());
+    set->worlds.back().seed += 1;
+    return set;
+}
+
 // A bare body of the replay's mass and (anisotropic) inertia at `pos`.
 [[nodiscard]] inline BodySpawn bare_body(glm::vec3 pos) {
     BodySpawn body;

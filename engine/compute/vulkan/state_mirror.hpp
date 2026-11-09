@@ -126,10 +126,24 @@ struct DerivedBufferShape {
 // create() refused BEFORE it allocated.
 [[nodiscard]] uint64_t mirror_allocation_count() noexcept;
 
+// One SET-1 DESCRIPTOR SET (module API stage 7, Task C2; plan decisions 1 and 2): the layout and the set for one distinct
+// subset of set 1's bindings that a kernel of the schedule names, at the declaration's numbers. A pipeline layout [set 0,
+// this layout] is what a kernel naming exactly this subset is created with, and Vulkan requires the bound set to have
+// been allocated from an identically defined layout, hence one per distinct subset. Owned by the StateMirror.
+struct SetOneSet {
+    std::vector<uint32_t> bindings{};  // sorted, no duplicates: the key (layout_classes.hpp's normalized_set1_subset)
+    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+};
+
 class StateMirror {
 public:
-    [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(VulkanContext& ctx,
-                                                                       const StepShape& shape);
+    // `set1_subsets` are the distinct, sorted, non-empty set-1 subsets the schedule's kernels name (empty: the standard
+    // set, which builds NO set-1 descriptor set). Each is bound from the buffers whose NAMES are in
+    // compute/set_one_bindings.hpp (a walk array, resident or not; a scratch that names no set-0 binding), or from the
+    // configuration image at StepShape::config_binding. A binding no buffer provides is invalid_argument naming it.
+    [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(
+        VulkanContext& ctx, const StepShape& shape, std::span<const std::vector<uint32_t>> set1_subsets = {});
 
     ~StateMirror();
     StateMirror(const StateMirror&) = delete;
@@ -155,9 +169,27 @@ public:
     // host never writes or reads has none. False for a name the mirror does not hold.
     [[nodiscard]] bool has_staging(std::string_view name);
 
-    // How many descriptor sets the mirror built: 1 (set 0, the state set), plus set 1 only when the schedule has a set-1
-    // user (stage 7 Task B1; Review Focus 2). Nothing builds set 1 yet, so this is 1 for every set.
-    [[nodiscard]] uint32_t descriptor_set_count() const noexcept { return 1; }
+    // How many descriptor sets the mirror built: 1 (set 0, the state set), plus one per distinct set-1 subset a kernel of
+    // the schedule names (stage 7 Tasks B1 and C2; Review Focus 2): a set with no set-1 user builds none.
+    [[nodiscard]] uint32_t descriptor_set_count() const noexcept { return 1u + static_cast<uint32_t>(set1_.size()); }
+
+    // The set-1 descriptor sets, in the order of create()'s `set1_subsets`.
+    [[nodiscard]] std::span<const SetOneSet> set_one_sets() const noexcept { return set1_; }
+
+    // Device-resident arrays (StepShape::arrays with resident = true; stage 7 Task C2). The per-step upload() and
+    // readback() skip them. These move EVERY resident array whole, one array at a time through the ONE shared staging
+    // buffer (sized to the largest). Both validate every resident array's shape against `arenas` before any copy, and
+    // refuse with invalid_argument naming the array; readback_resident() can still fail mid-way on a Vulkan error, having
+    // written the arrays before the failing one.
+    [[nodiscard]] Result<void> upload_resident(const ArenaSet& arenas);
+    [[nodiscard]] Result<void> readback_resident(ArenaSet& arenas);
+
+    // Bytes moved across the host/device boundary since create(): each region of every vkCmdCopyBuffer the mirror issued
+    // after create(), plus the configuration image's upload at create().
+    [[nodiscard]] TransferBytes transfer_bytes() const noexcept { return transfer_; }
+
+    // The configuration image's device buffer, read back (a diagnostic). unavailable, naming it, when no module bound one.
+    [[nodiscard]] Result<std::vector<std::byte>> read_config_image();
 
     // Every buffer this mirror created (the device buffer and its staging twin, when it has one, are two records) with
     // its kind, bytes, memory type and heap, and the walk's host rows' bytes (stage 7 Task A3). A diagnostic.
@@ -290,6 +322,7 @@ private:
         uint32_t staging_type = 0;
         uint32_t binding = 0;
         bool has_binding = false;
+        bool resident = false;  // a device-resident walk entry: device-only, moved by upload_resident()/readback_resident()
     };
 
     [[nodiscard]] Entry* find(const std::string& name) noexcept;
@@ -306,6 +339,12 @@ private:
                                                         VkFence fence, bool to_device,
                                                         const std::vector<Entry*>& targets,
                                                         const std::vector<Entry*>* zero_fill = nullptr);
+
+    // run_copy_batch() and the count of the bytes it moved (transfer_bytes()): every copy after create() goes through here.
+    [[nodiscard]] Result<void> copy_batch(bool to_device, const std::vector<Entry*>& targets);
+
+    // One resident array, whole, through the shared staging buffer (the caller has already filled it, or reads it after).
+    [[nodiscard]] Result<void> copy_resident(Entry& e, bool to_device);
 
     // Unmaps/destroys/frees one Entry's buffers+memory; safe on a
     // partially-constructed or already-destroyed Entry (every handle it
@@ -388,6 +427,19 @@ private:
     // derived buffers at the table's capacity, zero-filled here and filled by
     // upload_table(). Sized once in create(), like scratch_entries_.
     std::vector<Entry> table_entries_;
+
+    // SET 1's buffers that are not walk entries (module API stage 7, Task C2). None is bound in set 0.
+    //  * set_one_scratch_: every declared scratch that names no set-0 binding but whose NAME is in set_one_bindings.hpp:
+    //    device-only, zero-filled at create(), never uploaded or read back.
+    //  * resident_staging_: the ONE host-visible buffer (no device half) every resident array is uploaded and read back
+    //    through, sized to the largest resident array. Default (null handles) when no array is resident.
+    //  * config_: the module's configuration image, staged (uploaded at create(), read back on demand), bound read-only at
+    //    StepShape::config_binding. Default (null handles) when no module bound one.
+    std::vector<Entry> set_one_scratch_;
+    Entry resident_staging_;
+    Entry config_;
+    std::vector<SetOneSet> set1_;
+    TransferBytes transfer_{};
 
     // THE HAND-LISTED derived buffers above, in derived_buffer_shapes()' row
     // order. Until 2026-10-02 there were three hand-kept lists of them, and

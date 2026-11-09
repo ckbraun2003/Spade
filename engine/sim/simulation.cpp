@@ -17,6 +17,7 @@
 
 #include "compute/optional_bindings.hpp"
 #include "compute/sdf_program.hpp"
+#include "compute/set_one_bindings.hpp"
 #include "compute/step_params.hpp"
 #include "compute/vulkan/backend.hpp"
 #include "core/rng.hpp"
@@ -420,8 +421,9 @@ Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::
     const ExtentRows rows{shape.body_capacity, shape.element_capacity, shape.sensor_capacity};
     std::vector<compute::StateArrayShape> out;
     out.reserve(2 * (std::size(modules::kCoreArrays) + schedule.arrays.size()));
-    const auto add = [&out](const std::string& name, uint32_t elem_size, uint32_t capacity_per_world) {
-        out.push_back({name, elem_size, capacity_per_world});
+    const auto add = [&out](const std::string& name, uint32_t elem_size, uint32_t capacity_per_world,
+                            bool resident = false) {
+        out.push_back({name, elem_size, capacity_per_world, resident});
         out.push_back({name + std::string(kSlotToWorldSuffix), static_cast<uint32_t>(sizeof(uint32_t)),
                        capacity_per_world});
     };
@@ -443,7 +445,7 @@ Result<std::vector<compute::StateArrayShape>> state_array_shapes(const modules::
             const auto index = static_cast<std::size_t>(it - schedule.arrays.begin());
             const Result<uint32_t> capacity = array_capacity(schedule, index, rows);
             if (!capacity) return std::unexpected(capacity.error());
-            add(name, it->elem_size, *capacity);
+            add(name, it->elem_size, *capacity, it->residency == modules::Residency::device);
         }
     }
     return out;
@@ -559,7 +561,9 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
             for (const modules::CompiledBinding& binding : pass.state) {
                 if (binding.kind != modules::BindingKind::scratch) continue;
                 const modules::CompiledScratch& scratch = compiled->scratch[binding.index];
-                if (scratch.binding == modules::kNoBinding) {
+                // A scratch whose name is a set-1 binding's (stage 7, Task C2) is bound there by name.
+                if (scratch.binding == modules::kNoBinding &&
+                    compute::set_one_binding_of(scratch.name) == compute::kNoBinding) {
                     return std::unexpected(Error{
                         Code::unavailable, "module set: pass '" + pass.module + "." + pass.pass +
                                                "' declares scratch '" + scratch.module + "." + scratch.name +
@@ -862,7 +866,17 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
     for (const modules::CompiledPass& pass : sim.schedule_.passes) {
         sim.pass_view_begin_.push_back(sim.pass_view_begin_.back() + static_cast<uint32_t>(pass.state.size()));
     }
-    sim.pass_views_.assign(sim.pass_view_begin_.back(), StateView{});
+    // The rebuild hooks' views (stage 7, Task C3) follow the passes', one range per module with a hook.
+    sim.hook_view_begin_.push_back(sim.pass_view_begin_.back());
+    for (uint32_t m = 0; m < sim.schedule_.modules.size(); ++m) {
+        const modules::CompiledModule& mod = sim.schedule_.modules[m];
+        if (mod.rebuild_cpu == nullptr && mod.rebuild_gpu == nullptr) continue;
+        sim.hook_modules_.push_back(m);
+        sim.hook_view_begin_.push_back(sim.hook_view_begin_.back() + static_cast<uint32_t>(mod.rebuild_state.size()));
+    }
+    sim.pass_views_.assign(sim.hook_view_begin_.back(), StateView{});
+    sim.has_resident_ = std::any_of(sim.schedule_.arrays.begin(), sim.schedule_.arrays.end(),
+                                    [](const modules::CompiledArray& a) { return a.residency == modules::Residency::device; });
     sim.view_fault_ = std::make_unique<ViewFault>();
     // The field sample rows, sized once and zero-filled (module-API stage 3).
     sim.field_rows_.assign(static_cast<std::size_t>(layout->world_count) * sim.schedule_.field_stride, 0.0f);
@@ -966,6 +980,25 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // The optional bindings this set holds (module API stage 6): the recorder bakes the bits into every
         // dispatch, and the mirror binds a zeroed buffer at each one whose array the walk above does not carry.
         shape.switches = optional_switches(sim.schedule_);
+        // The one module configuration image that names the config buffer (stage 7, Task C1): the mirror uploads these bytes.
+        for (const modules::CompiledModule& mod : sim.schedule_.modules) {
+            if (mod.config_binding == compute::kNoBinding) continue;
+            shape.config_image = mod.config;
+            shape.config_binding = mod.config_binding;
+        }
+        // The rebuild hooks (Task C3): on the device each module's hook is its GPU recipe, an on-demand recording. A module
+        // with only a CPU hook has no device meaning for its derived buffers, so Vulkan refuses it rather than skip it.
+        std::vector<compute::GpuPass> rebuild_chain;
+        for (const modules::CompiledModule& mod : sim.schedule_.modules) {
+            if (mod.rebuild_cpu != nullptr && mod.rebuild_gpu == nullptr) {
+                return std::unexpected(Error{Code::unavailable,
+                                             "module '" + mod.name + "' has a rebuild_cpu hook but no rebuild_gpu; the Vulkan "
+                                             "backend cannot rebuild its derived buffers and refuses rather than skip it"});
+            }
+            if (mod.rebuild_gpu != nullptr) {
+                rebuild_chain.push_back(compute::GpuPass{.name = mod.name + ".rebuild", .custom = mod.rebuild_gpu});
+            }
+        }
 
         // NO RunParams ARGUMENT AS OF S6 TASK 6b (checkpoint-1 ruling):
         // PassParams no longer carries a per-batch ContactParams/GridParams
@@ -976,7 +1009,7 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // contact_params and grid_params uploads a few lines further down.
         const std::vector<compute::GpuPass> gpu_chain = modules::gpu_passes(sim.schedule_);
         Result<std::unique_ptr<compute::VulkanBackend>> vulkan_backend =
-            compute::VulkanBackend::create(backend, shape, gpu_chain);
+            compute::VulkanBackend::create(backend, shape, gpu_chain, rebuild_chain);
         if (!vulkan_backend) return std::unexpected(vulkan_backend.error());
         sim.vulkan_backend_ = std::move(*vulkan_backend);
 
@@ -1074,6 +1107,10 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         }
     }
 
+    // The device-resident arrays start zero on the device; the host rows are what the first step must see (Task C2).
+    if (sim.vulkan_backend_ && sim.has_resident_) sim.resident_state_ = ResidentState::host_newer;
+    // The rebuild hooks (stage 7, Task C3): what is derived from the configuration and the initial rows, before the first step.
+    if (Result<void> rebuilt = sim.run_rebuilds(); !rebuilt) return std::unexpected(rebuilt.error());
     return sim;
 }
 
@@ -1184,30 +1221,68 @@ uint64_t Simulation::registry_identity() const {
     const uint64_t models = vehicles::model_registry_identity(models_);
     bool any = false;
     for (const std::vector<float>& t : config_tables_) any = any || !t.empty();
-    if (!any) return models;
-    uint64_t h = rng::kFnv1aOffsetBasis;
-    const auto byte = [&h](uint8_t b) {
-        h ^= b;
-        h *= rng::kFnv1aPrime;
-    };
-    const auto u32 = [&byte](uint32_t v) {
-        for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
-    };
-    const auto text = [&byte](std::string_view s) {
-        for (const char c : s) byte(static_cast<uint8_t>(c));
-        byte(0);
-    };
-    byte(0xFE);
-    for (const char c : std::string_view("config_tables")) byte(static_cast<uint8_t>(c));
-    for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(models >> (8 * i)));
-    u32(static_cast<uint32_t>(config_tables_.size()));
-    for (std::size_t i = 0; i < config_tables_.size(); ++i) {
-        text(schedule_.tables[i].module);
-        text(schedule_.tables[i].name);
-        u32(static_cast<uint32_t>(config_tables_[i].size()));
-        for (const float f : config_tables_[i]) u32(std::bit_cast<uint32_t>(f));
+    uint64_t result = models;
+    if (any) {
+        uint64_t h = rng::kFnv1aOffsetBasis;
+        const auto byte = [&h](uint8_t b) {
+            h ^= b;
+            h *= rng::kFnv1aPrime;
+        };
+        const auto u32 = [&byte](uint32_t v) {
+            for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+        };
+        const auto text = [&byte](std::string_view s) {
+            for (const char c : s) byte(static_cast<uint8_t>(c));
+            byte(0);
+        };
+        byte(0xFE);
+        for (const char c : std::string_view("config_tables")) byte(static_cast<uint8_t>(c));
+        for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(models >> (8 * i)));
+        u32(static_cast<uint32_t>(config_tables_.size()));
+        for (std::size_t i = 0; i < config_tables_.size(); ++i) {
+            text(schedule_.tables[i].module);
+            text(schedule_.tables[i].name);
+            u32(static_cast<uint32_t>(config_tables_[i].size()));
+            for (const float f : config_tables_[i]) u32(std::bit_cast<uint32_t>(f));
+        }
+        result = h;
     }
-    return h;
+
+    // THE PARTS TAIL (stage 7, Task C1; L35 question 1). Only a schedule that declares a part table (a configuration table named
+    // modules::kPartTableName) folds the models' parts, and only the models that have some: FNV-1a 64 over 0xFD, the ASCII bytes
+    // "parts", the identity so far as 8 bytes little-endian, the count of models with parts (u32), then per such model, in
+    // registration order, its registration index (u32) and vehicles::parts_identity() as 8 bytes little-endian. A set without
+    // a part table, which is every set today, and a registry with no parts anywhere, keep the value they have.
+    const bool part_table = std::any_of(schedule_.tables.begin(), schedule_.tables.end(),
+                                        [](const modules::CompiledTable& t) { return t.name == modules::kPartTableName; });
+    if (part_table) {
+        uint32_t with_parts = 0;
+        for (const vehicles::ModelType& m : models_) with_parts += m.parts.empty() ? 0u : 1u;
+        if (with_parts != 0) {
+            uint64_t h = rng::kFnv1aOffsetBasis;
+            const auto byte = [&h](uint8_t b) {
+                h ^= b;
+                h *= rng::kFnv1aPrime;
+            };
+            const auto u32 = [&byte](uint32_t v) {
+                for (int i = 0; i < 4; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+            };
+            const auto u64 = [&byte](uint64_t v) {
+                for (int i = 0; i < 8; ++i) byte(static_cast<uint8_t>(v >> (8 * i)));
+            };
+            byte(0xFD);
+            for (const char c : std::string_view("parts")) byte(static_cast<uint8_t>(c));
+            u64(result);
+            u32(with_parts);
+            for (std::size_t i = 0; i < models_.size(); ++i) {
+                if (models_[i].parts.empty()) continue;
+                u32(static_cast<uint32_t>(i));
+                u64(vehicles::parts_identity(models_[i]));
+            }
+            result = h;
+        }
+    }
+    return result;
 }
 
 uint32_t Simulation::contact_set_of(ModelTypeId model) const noexcept {
@@ -1345,10 +1420,14 @@ Result<void> Simulation::rebuild_views() {
     // Every view, absent ones included, carries its index here as its id and
     // points at view_fault_, where an accessor records a misuse for step() to
     // refuse (state/state_view.hpp).
-    for (std::size_t p = 0; p < schedule_.passes.size(); ++p) {
-        const std::vector<modules::CompiledBinding>& bindings = schedule_.passes[p].state;
+    const std::size_t pass_count = schedule_.passes.size();
+    for (std::size_t p = 0; p < pass_count + hook_modules_.size(); ++p) {
+        const bool is_pass = p < pass_count;
+        const std::vector<modules::CompiledBinding>& bindings =
+            is_pass ? schedule_.passes[p].state : schedule_.modules[hook_modules_[p - pass_count]].rebuild_state;
+        const uint32_t first_view = is_pass ? pass_view_begin_[p] : hook_view_begin_[p - pass_count];
         for (std::size_t k = 0; k < bindings.size(); ++k) {
-            const uint32_t view_id = pass_view_begin_[p] + static_cast<uint32_t>(k);
+            const uint32_t view_id = first_view + static_cast<uint32_t>(k);
             StateView& view = pass_views_[view_id];
             view = StateView{.id = view_id, .fault = view_fault_.get()};
             if (bindings[k].kind == modules::BindingKind::table) {
@@ -1436,16 +1515,12 @@ Result<void> Simulation::step(uint64_t n) {
         if (Result<void> flushed = flush_structural(); !flushed) {
             return flushed;
         }
-        if (vulkan_dirty_) {
-            // NO STATE-TIME GATE HERE ANY MORE (S6 Task 8). Through Task 7 this
-            // was where check_vulkan_unported_state() scanned for a live rotor
-            // or a live IMU sensor and refused the step, because the
-            // RotorElement half of ForceElements and SensorSynthesis were
-            // stubs. Both are ported; see simulation.hpp for the full note.
-            if (Result<void> uploaded = vulkan_backend_->upload(arenas_); !uploaded) {
-                return uploaded;
-            }
-            vulkan_dirty_ = false;
+        // NO STATE-TIME GATE HERE ANY MORE (S6 Task 8). Through Task 7 this was where check_vulkan_unported_state() scanned
+        // for a live rotor or a live IMU sensor and refused the step, because the RotorElement half of ForceElements and
+        // SensorSynthesis were stubs. Both are ported; see simulation.hpp for the full note. The upload is the dirty mirror's,
+        // and the device-resident arrays' when the host holds newer bytes (stage 7, Task C2).
+        if (Result<void> uploaded = upload_to_device(); !uploaded) {
+            return uploaded;
         }
         if (Result<void> stepped = vulkan_backend_->step(n, tick_.value); !stepped) {
             return stepped;
@@ -1453,6 +1528,8 @@ Result<void> Simulation::step(uint64_t n) {
         if (Result<void> read_back = vulkan_backend_->readback(arenas_); !read_back) {
             return read_back;
         }
+        // A device-resident array is neither uploaded nor read back by the step: the device holds the current bytes now.
+        if (has_resident_) resident_state_ = ResidentState::device_newer;
         tick_ = Tick{tick_.value + n};
         return {};
     }
@@ -1629,6 +1706,181 @@ Result<std::vector<compute::RecordedChain>> Simulation::vulkan_recorded_chains()
                                      "vulkan_recorded_chains: this Simulation runs on the cpu backend"});
     }
     return vulkan_backend_->recorded_chains();
+}
+
+// Each module's configuration image as the schedule folded it (stage 7, Task C1). schedule_.modules is in set order and the
+// images are the ModuleDescs' own, kept by schedule_.config_images (compile_schedule copies them, the spans may not outlive
+// the set).
+std::vector<modules::ConfigurationEntry> Simulation::configuration_report() const {
+    std::vector<modules::ConfigurationEntry> out;
+    out.reserve(schedule_.modules.size());
+    for (const modules::CompiledModule& m : schedule_.modules) {
+        uint64_t h = rng::kFnv1aOffsetBasis;
+        for (const std::byte b : m.config) {
+            h ^= static_cast<uint8_t>(b);
+            h *= rng::kFnv1aPrime;
+        }
+        out.push_back(modules::ConfigurationEntry{.module = m.name,
+                                                  .version = m.version,
+                                                  .bytes = static_cast<uint32_t>(m.config.size()),
+                                                  .hash = h});
+    }
+    return out;
+}
+
+Result<compute::TransferBytes> Simulation::vulkan_transfer_bytes() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_transfer_bytes: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->transfer_bytes();
+}
+
+Result<uint32_t> Simulation::vulkan_descriptor_set_count() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_descriptor_set_count: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->descriptor_set_count();
+}
+
+Result<uint64_t> Simulation::vulkan_on_demand_count() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_on_demand_count: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->on_demand_count();
+}
+
+Result<std::vector<std::byte>> Simulation::vulkan_config_image() const {
+    if (!vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable, "vulkan_config_image: this Simulation runs on the cpu backend"});
+    }
+    return vulkan_backend_->read_config_image();
+}
+
+// ---------------------------------------------------------------------------
+// Device-resident arrays (stage 7, Task C2) and the rebuild hooks (Task C3)
+// ---------------------------------------------------------------------------
+
+bool Simulation::resident_current() const noexcept { return resident_state_ != ResidentState::device_newer; }
+
+// The first device-resident array, for a message: the one a reader would have got stale bytes of.
+static std::string first_resident_array(const modules::CompiledSchedule& schedule) {
+    for (const modules::CompiledArray& a : schedule.arrays) {
+        if (a.residency == modules::Residency::device) return a.name;
+    }
+    return {};
+}
+
+Result<void> Simulation::check_resident_current(std::string_view what) const {
+    if (resident_current()) return {};
+    return std::unexpected(Error{Code::unavailable,
+                                 std::string(what) + ": the device-resident array '" + first_resident_array(schedule_) +
+                                     "' is stale on the host after a Vulkan step; call sync_resident() first (the non-const "
+                                     "forms do it for you)"});
+}
+
+Result<void> Simulation::check_array_current(std::string_view array, std::string_view what) const {
+    if (resident_current()) return {};
+    for (const modules::CompiledArray& a : schedule_.arrays) {
+        if (a.name == array && a.residency == modules::Residency::device) {
+            return std::unexpected(Error{Code::unavailable,
+                                         std::string(what) + ": the device-resident array '" + std::string(array) +
+                                             "' is stale on the host after a Vulkan step; call sync_resident() first (the "
+                                             "non-const forms do it for you)"});
+        }
+    }
+    return {};
+}
+
+Result<void> Simulation::sync_resident() {
+    if (resident_state_ != ResidentState::device_newer) return {};
+    if (Result<void> read = vulkan_backend_->readback_resident(arenas_); !read) return read;
+    resident_state_ = ResidentState::in_sync;
+    return {};
+}
+
+Result<void> Simulation::upload_to_device() {
+    if (!vulkan_backend_) return {};
+    if (vulkan_dirty_) {
+        if (Result<void> uploaded = vulkan_backend_->upload(arenas_); !uploaded) return uploaded;
+        vulkan_dirty_ = false;
+    }
+    if (resident_state_ == ResidentState::host_newer) {
+        if (Result<void> uploaded = vulkan_backend_->upload_resident(arenas_); !uploaded) return uploaded;
+        resident_state_ = ResidentState::in_sync;
+    }
+    return {};
+}
+
+Result<void> Simulation::write_module_rows(std::string_view array, uint32_t world_index, std::span<const std::byte> bytes) {
+    const Result<ArrayIndex> index = module_array(array);
+    if (!index) return std::unexpected(index.error());
+    const auto compiled = std::ranges::find(schedule_.arrays, array, &modules::CompiledArray::name);
+    if (compiled == schedule_.arrays.end()) return std::unexpected(missing("write_module_rows: no such array"));
+    if (world_index >= layout_.world_count) {
+        return std::unexpected(invalid("write_module_rows: world " + std::to_string(world_index) + " is outside the set"));
+    }
+    // A device-resident array is brought current first, so the other worlds' device bytes are not lost to the write.
+    if (Result<void> synced = sync_resident(); !synced) return synced;
+    const Result<WorldRange> range = arenas_.range(*index, world_index);
+    if (!range) return std::unexpected(range.error());
+    const std::size_t row_bytes = compiled->elem_size;
+    if (bytes.size() != static_cast<std::size_t>(range->count) * row_bytes) {
+        return std::unexpected(invalid("write_module_rows: array '" + std::string(array) + "' holds " +
+                                       std::to_string(static_cast<std::size_t>(range->count) * row_bytes) +
+                                       " bytes a world; " + std::to_string(bytes.size()) + " were given"));
+    }
+    const Result<std::span<std::byte>> all = arenas_.bytes(*index);
+    if (!all) return std::unexpected(all.error());
+    std::memcpy(all->data() + static_cast<std::size_t>(range->begin) * row_bytes, bytes.data(), bytes.size());
+    if (vulkan_backend_) {
+        if (compiled->residency == modules::Residency::device) {
+            resident_state_ = ResidentState::host_newer;  // uploaded before the next step
+        } else {
+            mark_vulkan_dirty();
+        }
+    }
+    return {};
+}
+
+// The rebuild hooks, in set order (Task C3). On the cpu backend each module's rebuild_cpu sees its declared views; on Vulkan the
+// state goes up first (the hook reads the restored rows) and the modules' GPU recordings are submitted once.
+Result<void> Simulation::run_rebuilds() {
+    if (hook_modules_.empty()) return {};
+    if (vulkan_backend_) {
+        if (Result<void> uploaded = upload_to_device(); !uploaded) return uploaded;
+        return vulkan_backend_->submit_rebuild();
+    }
+    if (Result<void> views = rebuild_views(); !views) return views;
+    Result<std::span<BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    Result<std::span<const uint32_t>> map = arenas_.slot_to_world(bodies_id_);
+    if (!map) return std::unexpected(map.error());
+    physics::SubstepContext ctx;
+    ctx.worlds = std::span<const physics::WorldSubstepView>(views_);
+    ctx.all_bodies = *bodies;
+    ctx.all_slot_to_world = *map;
+    ctx.batch_dynamic_collision = layout_.uniform_dynamic_params;
+    ctx.dynamic_contacts = configs_[0].contacts;
+    ctx.dynamic_grid = configs_[0].grid;
+    ctx.scratch = &scratch_;
+    ctx.h = h_;
+    ctx.dt_s = static_cast<float>(dt_ns_) / 1.0e9f;
+    ctx.tick = tick_;
+    const std::span<const StateView> views(pass_views_);
+    for (std::size_t h = 0; h < hook_modules_.size(); ++h) {
+        const modules::CompiledModule& mod = schedule_.modules[hook_modules_[h]];
+        if (mod.rebuild_cpu == nullptr) {
+            return std::unexpected(Error{Code::unavailable, "module '" + mod.name + "' has a rebuild_gpu hook but no rebuild_cpu; "
+                                                            "its cpu run would never rebuild what the device does"});
+        }
+        ctx.state = views.subspan(hook_view_begin_[h], hook_view_begin_[h + 1] - hook_view_begin_[h]);
+        mod.rebuild_cpu(ctx);
+    }
+    if (view_fault_->misuse != ViewMisuse::none) [[unlikely]] {
+        const ViewFault fault = std::exchange(*view_fault_, ViewFault{});
+        return std::unexpected(invalid("rebuild: a hook misused a view (" + std::to_string(static_cast<int>(fault.misuse)) + ")"));
+    }
+    return {};
 }
 
 Result<uint32_t> Simulation::vulkan_pipeline_count() const {
@@ -2921,11 +3173,20 @@ Result<void> Simulation::unlock(BodyRef ref) { return lock_front(ref, 0u, false,
 // snapshot / restore
 // ---------------------------------------------------------------------------
 
+Result<SnapshotBlob> Simulation::snapshot() {
+    if (Result<void> synced = sync_resident(); !synced) return std::unexpected(synced.error());
+    return static_cast<const Simulation&>(*this).snapshot();
+}
+
 Result<SnapshotBlob> Simulation::snapshot() const {
     // Poisoned by a misused view (step()): the state is invalid, so no blob of
     // it may exist, and any blob a restore() reads is from before the fault.
     if (!poisoned_.empty()) {
         return std::unexpected(invalid(poisoned_));
+    }
+    // A stale device-resident array would put stale bytes in the blob (stage 7, Task C2): a const snapshot cannot sync.
+    if (Result<void> current = check_resident_current("snapshot"); !current) {
+        return std::unexpected(current.error());
     }
     if (!queue_.empty()) {
         return std::unexpected(invalid("snapshot: the structural queue is not empty; pending "
@@ -3171,6 +3432,7 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // partially-applied queue IS a mutation.
     // -----------------------------------------------------------------------
     mark_vulkan_dirty();
+    if (vulkan_backend_ && has_resident_) resident_state_ = ResidentState::host_newer;
 
     tick_ = blob.tick();
 
@@ -3192,7 +3454,9 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     // blob's, and a poisoned Simulation writes no blob, so the poison is
     // cleared -- by a successful restore only.
     poisoned_.clear();
-    return {};
+    // What is DERIVED from the restored rows and the configuration is not in the blob: rebuilt now, before the next step
+    // (stage 7, Task C3).
+    return run_rebuilds();
 }
 
 // ---------------------------------------------------------------------------

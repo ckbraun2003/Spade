@@ -186,6 +186,12 @@ using RowInitFn = void (*)(const RowInit&) noexcept;
 // prefix: the caller adds "add_imu_sensor: " or "attach_row: ".
 using RowValidateFn = Result<void> (*)(std::span<const std::byte> spawn);
 
+// Where an array's rows live between steps (module API stage 7, Task C2). `host` (the default) is every array today: the
+// step uploads it and reads it back. `device` keeps the rows on the device across steps: the step neither uploads nor reads
+// them back, and a host read syncs them first (Simulation::sync_resident()). On the cpu backend a device array is an ordinary
+// host array. Only a per_world array may be `device`, of a module that claims a CPU `reference` (the CPU run is its meaning).
+enum class Residency : uint8_t { host, device };
+
 struct ArrayDecl {
     std::string_view name;     // the registered name: unique in the set, no '.', not in kCoreArrays
     uint32_t elem_size = 0;    // attached_row_size<T>() for per_element and per_sensor; row_size<T>() otherwise
@@ -198,6 +204,7 @@ struct ArrayDecl {
     uint32_t spawn_size = 0;          // bytes of the spawn record, <= kMaxSpawnBytes
     RowInitFn init = nullptr;         // writes the row at the step boundary
     RowValidateFn validate = nullptr; // checks a record when it is offered, before anything is reserved
+    Residency residency = Residency::host;  // stage 7, Task C2
 };
 
 // The row inside RowInit::row, typed. Row is the array's own row type, so
@@ -486,9 +493,47 @@ struct ModuleDesc {
     std::span<const ScratchDecl> scratch{};       // the scratch this module owns (Task 7b)
     GradeDecl grade{};                            // what it claims per backend (stage 5, Task 3)
     std::string_view role{};                      // a kRoles name this module fills; empty fills none (Task 6)
+    // THE CONFIGURATION IMAGE (module API stage 7, Task C1). The module's canonical configuration as bytes (config_image()
+    // makes one from a padding-free trivially copyable struct): the grid, the cadence, the rotor-model choice. It is
+    // HASHED INTO THE SCHEDULE IDENTITY (compile_schedule spells it after the module's version: 0x02, its length as a u32,
+    // its bytes), so a blob restores only under the same configuration, and it is the very bytes the kernels read: when
+    // `config_binding` names gen::kBinding_airflow_config the mirror uploads this image there at create(). Empty (the
+    // default) folds nothing, so a set without one keeps the identity it has. Not state: it is not in the walk or the digest.
+    std::span<const std::byte> config{};
+    uint32_t config_binding = compute::kNoBinding;  // gen::kBinding_airflow_config, or kNoBinding: the image is hashed only
+    // THE REBUILD HOOK (stage 7, Task C3). Buffers DERIVED from the module's configuration and its rows (a region table, a
+    // grid's coefficients) are not state, so a snapshot does not carry them and a restore must rebuild them. create() and
+    // restore() run each module's hook, in set order, before the next step: `rebuild_cpu` on the cpu backend (and on Vulkan
+    // for a module with no `rebuild_gpu`, followed by an upload), `rebuild_gpu` on Vulkan as an ON-DEMAND recording submitted
+    // once, never per step. `rebuild_access` is the hook's declared access, bound as a pass's is: the function sees one
+    // StateView per entry in SubstepContext::state. A module with none (every module today) is unchanged.
+    std::span<const QuantityAccess> rebuild_access{};
+    PassFn rebuild_cpu = nullptr;
+    const compute::RecipeDesc* rebuild_gpu = nullptr;
 };
 
 using ModuleSet = std::vector<ModuleDesc>;
+
+// The canonical image of a configuration struct: its object bytes. The type must have no padding (every byte a value
+// byte), so two equal configurations are equal images on every platform; a type with padding does not compile.
+template <class T>
+    requires(std::is_trivially_copyable_v<T> && std::has_unique_object_representations_v<T>)
+[[nodiscard]] std::span<const std::byte> config_image(const T& value) noexcept {
+    return std::as_bytes(std::span<const T, 1>(&value, 1));
+}
+
+// A part table is a configuration table of this name ("<module>.parts"). A schedule that declares one folds each registered
+// model's parts_identity() into the registry identity (Task C1; Simulation::registry_identity()); a schedule that does not,
+// which is every set today, keeps the identity it has.
+inline constexpr std::string_view kPartTableName = "parts";
+
+// One module's configuration as Simulation::configuration_report() lists it.
+struct ConfigurationEntry {
+    std::string module;
+    uint32_t version = 1;
+    uint32_t bytes = 0;  // the image's length; 0: the module has none
+    uint64_t hash = 0;   // FNV-1a 64 over the image bytes (core/rng.hpp's constants); the empty image's basis when bytes == 0
+};
 
 inline constexpr uint32_t kNoArray = 0xFFFF'FFFFu;
 
@@ -543,6 +588,7 @@ struct CompiledArray {
     uint32_t spawn_size = 0;    // attached arrays only, as declared
     RowInitFn init = nullptr;
     RowValidateFn validate = nullptr;
+    Residency residency = Residency::host;  // as declared (stage 7, Task C2)
 };
 
 // One declared stream of the compiled table.
@@ -583,6 +629,14 @@ struct CompiledModule {
     uint32_t version = 1;
     GradeDecl grade{};
     std::string role{};  // the kRoles name it fills, or empty (Task 6)
+    // The configuration image, copied (stage 7, Task C1): the ModuleDesc's span points into the caller's storage, which need
+    // not outlive the set. Empty: none.
+    std::vector<std::byte> config{};
+    uint32_t config_binding = compute::kNoBinding;
+    // The rebuild hook (stage 7, Task C3), as declared: one binding per rebuild_access entry, in declaration order.
+    std::vector<CompiledBinding> rebuild_state{};
+    PassFn rebuild_cpu = nullptr;
+    const compute::RecipeDesc* rebuild_gpu = nullptr;
 };
 
 // One filled role (Task 6): the role and the module that fills it.

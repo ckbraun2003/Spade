@@ -30,7 +30,7 @@ namespace {
 
 ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, std::span<const VkPipeline> pipelines,
                                   std::span<const ChainCommand> commands, uint32_t push_offset, uint32_t push_size,
-                                  const ChainMark& mark) {
+                                  const ChainMark& mark, std::span<const PipelineSetBinding> set_binds) {
     assert(push_offset + push_size <= kMaxChainPushBytes && "a push must fit the command's block");
     std::size_t last_dispatch = 0;
     for (std::size_t i = 0; i < commands.size(); ++i) {
@@ -44,7 +44,14 @@ ChainCounts record_dispatch_chain(VkCommandBuffer cmd, VkPipelineLayout layout, 
             continue;
         }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelines[c.pipeline]);
-        vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, push_offset, push_size, c.push.data());
+        VkPipelineLayout push_layout = layout;
+        if (c.pipeline < set_binds.size() && set_binds[c.pipeline].layout != VK_NULL_HANDLE) {
+            const PipelineSetBinding& bind = set_binds[c.pipeline];
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bind.layout, bind.set_index, 1, &bind.set, 0,
+                                    nullptr);
+            push_layout = bind.layout;
+        }
+        vkCmdPushConstants(cmd, push_layout, VK_SHADER_STAGE_COMPUTE_BIT, push_offset, push_size, c.push.data());
         vkCmdDispatch(cmd, c.groups[0], c.groups[1], c.groups[2]);
         ++counts.dispatches;
         if (i < last_dispatch) {

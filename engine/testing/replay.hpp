@@ -140,6 +140,26 @@ template <class T>
 // ---------------------------------------------------------------------------
 // The whole world set's state, at the current tick.
 // ---------------------------------------------------------------------------
+[[nodiscard]] inline uint64_t state_digest(const Simulation& sim) noexcept;
+
+// With device-resident arrays (stage 7, Task C2): the non-const form syncs them first, so the digest folds current bytes (D1 = A:
+// a resident array is part of the digest after a sync); the checked const form refuses `unavailable` naming the array and
+// sync_resident() when one is stale, instead of folding stale bytes. A set with none, which is every set today, digests as it
+// always did through either. The non-const form is noexcept and cannot report a failed sync (the device lost): it then folds the
+// host bytes as they stand, and resident_current() says so.
+[[nodiscard]] inline uint64_t state_digest(Simulation& sim) noexcept {
+    (void)sim.sync_resident();
+    return state_digest(static_cast<const Simulation&>(sim));
+}
+[[nodiscard]] inline Result<uint64_t> checked_state_digest(const Simulation& sim) noexcept {
+    if (Result<std::reference_wrapper<const ArenaSet>> arenas = sim.checked_arenas(); !arenas) {
+        return std::unexpected(arenas.error());
+    }
+    return state_digest(sim);
+}
+
+// The two const folds below read sim.arenas() unchecked: they return a bare uint64_t (106 call sites) and cannot refuse. A set with a
+// device-resident array reaches them only through state_digest(Simulation&) (syncs) or checked_state_digest() (refuses first).
 [[nodiscard]] inline uint64_t state_digest(const Simulation& sim) noexcept {
     uint64_t seed = kFnv1a64Offset;
     seed = detail::fold_value(seed, sim.tick().value);

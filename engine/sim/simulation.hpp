@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -731,6 +732,33 @@ public:
     // members are: this class body only forward-declares the type.
     [[nodiscard]] uint64_t vulkan_upload_count() const noexcept;
 
+    // Bytes moved across the host/device boundary since create(), and how many descriptor sets the mirror built (1: set 0
+    // only; 2 with a set-1 user): `unavailable` on the cpu backend. Diagnostics (stage 7, Task C2).
+    [[nodiscard]] Result<compute::TransferBytes> vulkan_transfer_bytes() const;
+    [[nodiscard]] Result<uint32_t> vulkan_descriptor_set_count() const;
+
+    // How many on-demand recordings (the rebuild hooks', stage 7 Task C3) the Vulkan path has submitted since create():
+    // `unavailable` on the cpu backend.
+    [[nodiscard]] Result<uint64_t> vulkan_on_demand_count() const;
+
+    // ---------------------------------------------------------------------
+    // Device-resident arrays (stage 7, Task C2). An array declared Residency::device lives on the device between steps, so
+    // the host copy can be STALE after a Vulkan step. Every host read path either syncs first or refuses by name; none
+    // returns stale bytes silently:
+    //   - the NON-CONST snapshot(), module_rows<T>() and arenas() sync (a device read per stale array, once);
+    //   - the CONST ones refuse `unavailable` naming the array and sync_resident() (module_rows, snapshot), or, for arenas()
+    //     which returns a reference, are the CPU/host-only view (see arenas()' note);
+    //   - testing::state_digest(Simulation&) syncs; testing::checked_state_digest(const Simulation&) refuses.
+    // sync_resident() brings every stale array current; resident_current() says whether none is. A host WRITE of a resident
+    // array (write_module_rows) syncs first, writes, then marks the array for upload before the next step.
+    // ---------------------------------------------------------------------
+    [[nodiscard]] Result<void> sync_resident();
+    [[nodiscard]] bool resident_current() const noexcept;
+    // `unavailable` naming the first stale device-resident array and sync_resident(), for a reader (`what`) that cannot sync;
+    // ok when none is stale. testing::checked_state_digest() is built on it.
+    [[nodiscard]] Result<void> check_resident_current(std::string_view what) const;
+    [[nodiscard]] Result<void> write_module_rows(std::string_view array, uint32_t world_index, std::span<const std::byte> bytes);
+
     // ---------------------------------------------------------------------
     // S6 Task 6: the StepWitness the Integrate kernel published on its most
     // recent dispatch -- the tick it READ out of the per-step buffer and the
@@ -808,6 +836,14 @@ public:
     // (VulkanBackend::pipeline_count()): `unavailable` on the cpu backend. Diagnostics (stage 7 Tasks B1, B2).
     [[nodiscard]] Result<std::vector<compute::RecordedChain>> vulkan_recorded_chains() const;
     [[nodiscard]] Result<uint32_t> vulkan_pipeline_count() const;
+
+    // Each module's name, version and configuration hash, in set order (stage 7 Task C1): what a front end prints beside the
+    // schedule identity, which folds the same images.
+    [[nodiscard]] std::vector<modules::ConfigurationEntry> configuration_report() const;
+
+    // The configuration image as the device holds it (the bytes at gen::kBinding_airflow_config), read back: a diagnostic,
+    // `unavailable` on the cpu backend or when no module binds one (Task C1).
+    [[nodiscard]] Result<std::vector<std::byte>> vulkan_config_image() const;
 
     // Which device and driver this Vulkan run uses, and its fp32 denormal
     // controls (compute/backend.hpp's DeviceReport; compute::describe() gives
@@ -1067,9 +1103,20 @@ public:
     [[nodiscard]] Result<std::span<const T>> module_rows(std::string_view array, uint32_t world_index) const {
         const Result<ArrayIndex> index = module_array(array);
         if (!index) return std::unexpected(index.error());
+        // A device-resident array whose host copy is stale (stage 7, Task C2): a const reader cannot sync, so it refuses.
+        if (Result<void> current = check_array_current(array, "module_rows"); !current) {
+            return std::unexpected(current.error());
+        }
         const Result<ArrayId<T>> typed = arenas_.typed<T>(*index);
         if (!typed) return std::unexpected(typed.error());
         return arenas_.world_slice(*typed, world_index);
+    }
+
+    // The same, non-const: a stale device-resident array is synced first (stage 7, Task C2).
+    template <class T>
+    [[nodiscard]] Result<std::span<const T>> module_rows(std::string_view array, uint32_t world_index) {
+        if (Result<void> synced = sync_resident(); !synced) return std::unexpected(synced.error());
+        return static_cast<const Simulation&>(*this).module_rows<T>(array, world_index);
     }
 
     // A configuration table by its declared name (sim/module.hpp's
@@ -1330,6 +1377,7 @@ public:
     // exist, so a restore always restores state from before the fault.
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<SnapshotBlob> snapshot() const;
+    [[nodiscard]] Result<SnapshotBlob> snapshot();  // syncs the resident arrays first (stage 7, Task C2)
 
     // ---------------------------------------------------------------------
     // restore -- overwrite all state from a blob, and reset the clock to it.
@@ -1536,7 +1584,22 @@ public:
 
     // The whole state, for snapshots, digests and tests. Const protects the
     // arena DESCRIPTORS, not the bytes (state/registry.hpp).
+    // HAZARD (stage 7, Task C2): this const form returns the host's bytes as they stand, so on a Vulkan set with a device-resident
+    // array it hands out STALE bytes after a step, silently. Use it only where no array is resident; a const reader that might
+    // see one calls checked_arenas(), which refuses by name. The non-const arenas() syncs.
     [[nodiscard]] const ArenaSet& arenas() const noexcept { return arenas_; }
+    // The non-const form syncs the device-resident arrays first (stage 7, Task C2). It returns a reference, so it cannot report a
+    // failed sync: resident_current() says whether the sync happened. The const form is the host's view as it stands.
+    [[nodiscard]] const ArenaSet& arenas() noexcept {
+        (void)sync_resident();
+        return arenas_;
+    }
+    // The checked door for a const reader (stage 7, Task C2): the arenas, or `unavailable` naming the stale device-resident
+    // array and sync_resident() when the host copy is stale. The same shape as testing::checked_state_digest().
+    [[nodiscard]] Result<std::reference_wrapper<const ArenaSet>> checked_arenas() const {
+        if (Result<void> current = check_resident_current("arenas"); !current) return std::unexpected(current.error());
+        return std::cref(arenas_);
+    }
 
     // Handy typed accessors for the two arrays a caller is likely to read back.
     [[nodiscard]] Result<std::span<const BodyState>> world_bodies(uint32_t world_index) const;
@@ -2117,6 +2180,20 @@ private:
     // SubstepContext::state, so a step allocates nothing.
     std::vector<StateView> pass_views_;
     std::vector<uint32_t> pass_view_begin_;  // schedule_.passes.size() + 1 entries
+    // The rebuild hooks' views (stage 7, Task C3) follow the passes' in pass_views_: hook h's are
+    // [hook_view_begin_[h], hook_view_begin_[h + 1]), for the module hook_modules_[h] of schedule_.modules.
+    std::vector<uint32_t> hook_modules_;
+    std::vector<uint32_t> hook_view_begin_;  // hook_modules_.size() + 1 entries
+
+    // DEVICE-RESIDENT ARRAYS (stage 7, Task C2): who holds the current bytes. `in_sync` both; `device_newer` after a Vulkan
+    // step (the host copy is stale); `host_newer` after a host write or a restore (the device copy is stale, uploaded before
+    // the next step). Always `in_sync` on the cpu backend and for a set with no resident array (has_resident_ false).
+    enum class ResidentState : uint8_t { in_sync, host_newer, device_newer };
+    ResidentState resident_state_ = ResidentState::in_sync;
+    bool has_resident_ = false;
+    [[nodiscard]] Result<void> check_array_current(std::string_view array, std::string_view what) const;
+    [[nodiscard]] Result<void> upload_to_device();  // the full upload if dirty, and the resident arrays if host_newer
+    [[nodiscard]] Result<void> run_rebuilds();      // the modules' rebuild hooks, in set order (Task C3)
     // Where every one of those views records a misuse (state/state_view.hpp;
     // stage 5, Task 1): a view's StateView::id is its index in pass_views_.
     // step() refuses a recorded fault at the end of the step, clears it, and
