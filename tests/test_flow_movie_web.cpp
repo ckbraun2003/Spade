@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -156,9 +157,26 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
     EXPECT_EQ(web::find_group("nothing"), nullptr);
 }
 
-TEST(FlowMovieWeb, OnlyAFullOrbitLoopsTheCamera) {
+TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {
+    const uint32_t n = 300;
+    EXPECT_FLOAT_EQ(web::there_and_back_azimuth(25.0f, 60.0f, 0, n), 25.0f);
+    EXPECT_NEAR(web::there_and_back_azimuth(25.0f, 60.0f, n, n), 25.0f, 1e-4f);  // frame n would be frame 0
+    EXPECT_NEAR(web::there_and_back_azimuth(25.0f, 60.0f, n / 2, n), 85.0f, 1e-3f);
+    float peak_step = 0.0f;
+    for (uint32_t k = 1; k < n; ++k) {
+        const float s = std::abs(web::there_and_back_azimuth(0.0f, 60.0f, k, n) - web::there_and_back_azimuth(0.0f, 60.0f, k - 1, n));
+        peak_step = std::max(peak_step, s);
+        ASSERT_LE(web::there_and_back_azimuth(0.0f, 60.0f, k, n), 60.0f + 1e-4f);
+    }
+    EXPECT_LT(peak_step, 0.7f);  // never a fast turn: under 21 degrees a second at 30 fps
+    EXPECT_LT(web::there_and_back_azimuth(0.0f, 60.0f, 1, n), 0.01f);  // it eases in
+}
+
+TEST(FlowMovieWeb, OnlyAFullOrbitOrASwingBackLoopsTheCamera) {
     EXPECT_TRUE(web::find_clip("S1")->camera_loops());
-    for (const char* id : {"S2", "S3", "S4", "S5", "S6", "S7", "S8"}) {
+    EXPECT_TRUE(web::find_clip("S8")->camera_loops());
+    EXPECT_TRUE(has(web::loop_line(*web::find_clip("S8")), "swings out and back and loops"));
+    for (const char* id : {"S2", "S3", "S4", "S5", "S6", "S7"}) {
         EXPECT_FALSE(web::find_clip(id)->camera_loops()) << id;
     }
     EXPECT_TRUE(has(web::loop_line(*web::find_clip("S1")), "completes one full orbit and loops"));
@@ -258,6 +276,7 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     tg.screen_seconds = 10.0;
     const std::string tg_text = web::caption_text(tg);
     EXPECT_TRUE(has(tg_text, "dimensionless time"));
+    EXPECT_TRUE(has(tg_text, "the C0 case at 128^3, not the validation record (64^3)"));
     EXPECT_FALSE(has(tg_text, "times slower than real time"));
     EXPECT_EQ(web::slow_motion_line(0.6, 12.0),
               "Slow motion: 0.0500 simulated seconds in each screen second (20.0 times slower than real time).");

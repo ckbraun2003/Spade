@@ -30,7 +30,7 @@ inline constexpr int kCrf = 15;          // the brief's 14 to 16
 
 enum class Scene : uint8_t { quad, d1, taylor_green };
 enum class Quantity : uint8_t { speed, vorticity, cp, q_surface };
-enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, push_in, still, slow_rotate };
+enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, there_and_back, push_in, still, slow_rotate };
 
 // One clip of the brief.
 struct Clip {
@@ -49,8 +49,10 @@ struct Clip {
     bool still = false;  // a 5120x2880 PNG as well
 
     [[nodiscard]] uint32_t frames() const noexcept { return static_cast<uint32_t>(std::lround(seconds * kFps)); }
-    // One full orbit: the camera's last frame is followed by its first.
-    [[nodiscard]] bool camera_loops() const noexcept { return orbit_degrees >= 360.0f; }
+    // The camera's last frame is followed by its first: one full orbit, or a swing out and back.
+    [[nodiscard]] bool camera_loops() const noexcept {
+        return orbit_degrees >= 360.0f || camera == Camera::there_and_back;
+    }
 };
 
 // A simulation behind one or more clips: its frames are spread evenly over [from_s, to_s] of simulated time
@@ -82,8 +84,8 @@ struct Group {
     return nullptr;
 }
 
-// The brief's table. Cameras: S1 one full orbit (the brief's), S3 a half orbit, the other orbits and the rotate
-// slow partial arcs (a full turn in ten seconds is not slow), S5 and S6 still.
+// The brief's table. Cameras: S1 one full orbit (the brief's), S3 a half orbit, S4 and S7 slow one-way arcs (their
+// flow evolves, so nothing loops), S8 a smooth swing out and back that loops, S5 and S6 still.
 [[nodiscard]] inline const std::array<Clip, 8>& web_clips() {
     static const std::array<Clip, 8> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad: streamlines of the rotor wake",
@@ -109,7 +111,7 @@ struct Group {
          "taylor-green", Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 90.0f, 0.0f, 1.0f, true},
         {"S8", "rotor-wake-volume", "Reference quad: a volume render of the rotor wake",
          "Vorticity magnitude of four actuator discs' wake as a volume, in a slow orbit.", "quad-developed",
-         Scene::quad, Quantity::vorticity, Camera::slow_orbit, 10.0, 90.0f, 0.0f, 400.0f, false},
+         Scene::quad, Quantity::vorticity, Camera::there_and_back, 10.0, 60.0f, 0.0f, 400.0f, false},
     }};
     return table;
 }
@@ -127,6 +129,13 @@ struct Group {
 // full orbit loops with no frame shown twice.
 [[nodiscard]] inline float loop_azimuth(float start_deg, float sweep_deg, uint32_t k, uint32_t n) {
     return start_deg + sweep_deg * (n == 0u ? 0.0f : static_cast<float>(k) / static_cast<float>(n));
+}
+
+// Azimuth of frame k of n for a swing of `sweep` degrees out and back: start + sweep (1 - cos(2 pi k / n)) / 2. It
+// starts and ends at rest, and frame n would be frame 0, so the camera loops with no fast turn.
+[[nodiscard]] inline float there_and_back_azimuth(float start_deg, float sweep_deg, uint32_t k, uint32_t n) {
+    const double u = n == 0u ? 0.0 : static_cast<double>(k) / static_cast<double>(n);
+    return start_deg + sweep_deg * static_cast<float>(0.5 * (1.0 - std::cos(2.0 * 3.14159265358979323846 * u)));
 }
 
 // A distance from `wide` to `close` over n frames, eased (a smoothstep) so the move starts and ends at rest.
@@ -242,14 +251,18 @@ struct DeliveryGuard {
         t += "The fluid is stepped by the GPU solver (GpuFluid), checked bit-equal to the CPU's through about 0.18 s "
              "of simulated time only: a single run on the device of record, not the CPU's run.";
     } else {
-        t += "Stand-in: the validation case C0 (a periodic, inviscid Taylor-Green box at 64^3), not a drone; its "
-             "energy loss is the numerics' own. A single run on the CPU reference.";
+        t += "Stand-in: the C0 case at 128^3, not the validation record (64^3): a periodic, inviscid Taylor-Green "
+             "box, not a drone, its energy loss the numerics' own. A single run on the CPU reference solver.";
     }
     return t;
 }
 
 // The camera's line: what loops and what does not (no crossfade, no repeated frames).
 [[nodiscard]] inline std::string loop_line(const Clip& c) {
+    if (c.camera == Camera::there_and_back) {
+        return "the camera swings out and back and loops; the flow does not, so the last frame does not match the "
+               "first.";
+    }
     if (c.camera_loops()) {
         return "the camera completes one full orbit and loops; the flow does not, so the last frame does not match "
                "the first.";

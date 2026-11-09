@@ -261,8 +261,8 @@ struct Film {
         return std::unexpected(spade::Error{
             spade::Code::invalid_argument,
             film.stem + ": " + std::to_string(film.frames) + " frames over a window of " + std::to_string(steps) +
-                " steps of h " + fixed(h, 6) + ": a frame needs a step of its own, or the clip stutters (a smaller step "
-                "needs the lead's word, --step-divisor; or fewer frames)"});
+                " steps of h " + fixed(h, 6) + ": a frame needs a step of its own, or the clip stutters (fewer frames, "
+                "or a finer grid)"});
     }
     return {};
 }
@@ -1048,10 +1048,10 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     return film;
 }
 
-[[nodiscard]] Film taylor_green_film(uint32_t frames) {
+[[nodiscard]] Film taylor_green_film(uint32_t frames, uint32_t cells = 64) {
     Film film;
     film.stem = "taylor-green";
-    film.airflow = taylor_green_case();
+    film.airflow = taylor_green_case(cells);
     film.frames = frames;
     film.expected_speed = 1.0f;  // the vortex's peak speed at the start
     film.time_decimals = 2;
@@ -1254,7 +1254,7 @@ constexpr float kVortexFloor = -5.0f;
 struct WebPlan {
     uint32_t frames = 0;
     double from_s = 0.0, to_s = 0.0;
-    uint32_t step_divisor = 1;  // the Taylor-Green case's step divided by this (a smaller step needs the lead's word)
+    uint32_t cells = 128;       // the Taylor-Green case's cells a side: S7 films 128, not the record's 64
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
 };
 
@@ -1289,7 +1289,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
     char window[64];
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
-    if (plan.step_divisor > 1u) stem += "-h" + std::to_string(plan.step_divisor);
+    if (plan.cells != 64u) stem += "-n" + std::to_string(plan.cells);
     return stem;
 }
 
@@ -1322,7 +1322,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
         } else if (id == "S8") {
             view = with_camera(*view_named(film, "vorticity"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(target, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
-                             web::loop_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
+                             web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
             }, false);
         } else {  // S5: the plane through the rotors on +x and -x, the frame's own shape, edge to edge
             const float lo = clip.range_lo, hi = clip.range_hi;
@@ -1349,8 +1349,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
                 }};
         }
     } else if (clip.scene == web::Scene::taylor_green) {
-        film = taylor_green_film(plan.frames);
-        film.airflow.fluid.h /= static_cast<float>(plan.step_divisor);
+        film = taylor_green_film(plan.frames, plan.cells);
         view = with_camera(*view_named(film, "q"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
             return orbit(volume_centre(v), web::fit_distance(4.2f, kWebFov, kWebAspect, fit),
                          web::loop_azimuth(30.0f, clip.orbit_degrees, k, n), 24.0f);
@@ -1465,7 +1464,7 @@ struct Options {
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
     std::string ticket;            // --ticket: the jobrun ticket the caption names
-    uint32_t step_divisor = 1;     // --step-divisor N: the Taylor-Green case's step divided by N (the lead's word)
+    uint32_t cells = 128;          // --cells N: the Taylor-Green case's cells a side (S7: 128; the record's is 64)
     std::string command_line;      // the arguments as given, for the caption
 };
 
@@ -1725,7 +1724,7 @@ struct WebTimes {
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
     plan.to_s = opt.window_to > 0.0 ? opt.window_to : group->to_s;
-    plan.step_divisor = std::max(1u, opt.step_divisor);
+    plan.cells = std::max(8u, opt.cells);
     plan.grid = opt.grid;
     const uint32_t n = std::min(clip->frames(), plan.frames);
     const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");
@@ -1972,8 +1971,8 @@ int main(int argc, char** argv) {
             opt.web_deliver = value();
         } else if (arg == "--ticket") {
             opt.ticket = value();
-        } else if (arg == "--step-divisor") {
-            opt.step_divisor = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--cells") {
+            opt.cells = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;
