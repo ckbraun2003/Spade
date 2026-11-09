@@ -194,6 +194,7 @@ The risky batch: it touches the identity spelling, the digest and the snapshot p
 
 - [ ] **Step 1: Write the failing tests:** on CPU, `Resident.ADeviceArrayIsAnOrdinaryHostArrayOnTheCpu` (snapshot, digest, goldens as today); `Resident.OnlyPerWorldMayBeDevice`, `…RequiresACpuReference`, `…ARowPast4GiBIsRefused`; on the device, `GpuResident.AStepUploadsAndReadsBackNothingResident`, `…ASetRotorCommandsLoopDoesNotReuploadTheGrid` (counts the bytes moved per step), `…AHostWriteSyncsFirstThenMarksForUpload`, `…AConstSnapshotOfAStaleArrayRefusesNamingTheArrayAndSyncResident`, `…ModuleRowsAndArenasAndDigestSyncOrRefuse` (**Review Focus 4**), `…StagingIsOneBufferSizedToTheLargestRow`, `…TheDigestFoldsTheResidentArrayAfterASync` (D1 = A), `…AVulkanSnapshotRestoreResumeIsBitIdenticalToTheUninterruptedRun` (the banded-parity T7 test the design says is built nowhere yet), `…ACpuBlobRestoresIntoVulkanWithinTheBand` and the reverse; `GpuResident.AModuleWithNoSetOneUserCreatesNoSetOneSet` (pin).
 - [ ] **Step 2–5:** red; implement; focused; the full CPU and `-L gpu`; `gcc-check`; commit. READY prints the const-call-site count and the host bytes before and after on a shape with a 16³ grid.
+- **As built (lead, 2026-11-09):** C2 drops the planned 'row past 4 GiB' check (`…ARowPast4GiBIsRefused`): `elem_size` is u32, so it is vacuous, and `admit()` already bounds each buffer by `maxStorageBufferRange`.
 
 ## Task C3 (T6): the rebuild hook and on-demand recordings
 
