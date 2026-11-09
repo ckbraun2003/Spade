@@ -181,6 +181,6 @@ TEST(Snapshot, AStandardBlobIsByteIdenticalAfterStage7) {
     ASSERT_TRUE(blob.has_value()) << blob.error().context;
     uint64_t h = spade::rng::kFnv1aOffsetBasis;
     for (const std::byte b : blob->bytes()) h = fold(h, static_cast<uint8_t>(b));
-    constexpr uint64_t kMasterBlobFnv = 0;  // MEASURED AT THE RED BUILD (see the commit that fills it)
+    constexpr uint64_t kMasterBlobFnv = 0xd308a402feb67728ull;  // measured at the RED head (no batch C engine code), 2026-11-08
     EXPECT_EQ(h, kMasterBlobFnv) << "measured: 0x" << std::hex << h;
 }
