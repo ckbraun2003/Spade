@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "bindings.gen.hpp"
+#include "compute/set_one_bindings.hpp"
 
 namespace gen = spade::compute::gen;
 
@@ -53,7 +54,7 @@ TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {
 // highest index, and sparse numbering is legal). An owner's change is a one-number
 // edit to its own row:
 //   airflow   0..27   the airflow kernels' (append-only list above)
-//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named, 34 to 39 spare
+//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 to 39 spare
 //   lbm       40..47  the LBM tier's: lbm_f, lbm_u declared; lbm_flags (42, L2) reserved
 TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     struct Owner {
@@ -75,7 +76,7 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
           gen::kBinding_airflow_scalars,      gen::kBinding_airflow_discs,       gen::kBinding_airflow_partials,
           gen::kBinding_airflow_health,       gen::kBinding_airflow_publish_v,   gen::kBinding_airflow_publish_s,
           gen::kBinding_airflow_wall_load}},
-        {"stage 7", 28, 39, 1, {gen::kBinding_airflow_config}},
+        {"stage 7", 28, 39, 3, {gen::kBinding_airflow_points, gen::kBinding_airflow_config, gen::kBinding_airflow_centred}},
         {"lbm", 40, 47, 2, {gen::kBinding_lbm_f, gen::kBinding_lbm_u}},
     };
     uint32_t total = 0;
@@ -102,4 +103,14 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     EXPECT_EQ(total, gen::kBindingCount_airflow);
     EXPECT_EQ(gen::kBinding_lbm_f, 40u);
     EXPECT_EQ(gen::kBinding_lbm_u, 41u);
+}
+
+// Names are the contract (stage 7 plan, decision 2): the two stage 7 rows a batch D module binds by name resolve to the
+// declared numbers. The configuration image is bound by StepShape::config_binding, so it is not a name here.
+TEST(BindingsAirflow, TheStageSevenRowsADModuleBindsByNameResolveToTheirNumbers) {
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_points"), gen::kBinding_airflow_points);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_centred"), gen::kBinding_airflow_centred);
+    EXPECT_EQ(gen::kBinding_airflow_points, 28u);
+    EXPECT_EQ(gen::kBinding_airflow_centred, 34u);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_config"), spade::compute::kNoBinding);
 }
