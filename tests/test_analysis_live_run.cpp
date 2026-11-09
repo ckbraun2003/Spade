@@ -300,6 +300,39 @@ TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {
     EXPECT_EQ(run.state().frames, 2u);
 }
 
+// advance_steps(): a host that wants a frame cadence of its own (the website clips: about 300 frames over 0.57 s)
+// steps n times and publishes. Each frame carries its TRUE time, steps x the 4 ms step, not the frame's index over
+// kFramesPerSecond; a frame of either kind counts as one frame; n = 0 is refused by name.
+TEST(AnalysisLiveRun, AdvanceStepsPublishesAFrameEveryNStepsWithItsTrueTime) {
+    const spade::vehicles::ModelType m = rotorless();
+    an::LiveRun run = started(tiny_case(m), m);
+    spade::FlowVolume volume;
+    const spade::Result<an::LiveFrame> first = run.advance_steps(an::Controls{}, 5, volume);
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    EXPECT_EQ(first->frame, 1u);
+    EXPECT_EQ(first->steps, 5u);
+    EXPECT_DOUBLE_EQ(first->t_s, 0.020);
+    EXPECT_DOUBLE_EQ(run.state().t_s, 0.020);
+    EXPECT_EQ(volume.header.nx, 8u);
+    const spade::Result<an::LiveFrame> second = run.advance_steps(an::Controls{}, 2, volume);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->frame, 2u);
+    EXPECT_EQ(second->steps, 7u);
+    EXPECT_DOUBLE_EQ(second->t_s, 0.028);
+    EXPECT_EQ(run.state().frames, 2u);
+    // advance_frame() is untouched: its third frame ends at the first step at or past 3/30 s, step 25.
+    const spade::Result<an::LiveFrame> third = run.advance_frame(an::Controls{}, volume);
+    ASSERT_TRUE(third.has_value());
+    EXPECT_EQ(third->frame, 3u);
+    EXPECT_EQ(third->steps, 25u);
+    EXPECT_DOUBLE_EQ(third->t_s, 0.100);
+    const spade::Result<an::LiveFrame> none = run.advance_steps(an::Controls{}, 0, volume);
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(none.error().context.find("advance_steps"), std::string::npos) << none.error().context;
+    EXPECT_EQ(run.state().frames, 3u) << "a refused call counts no frame";
+}
+
 // The hold turns the drone toward the controls' attitude at kHoldRateDegPerS,
 // and its rate is the hold's omega_body.
 TEST(AnalysisLiveRun, TheHoldTurnsAtItsRate) {
