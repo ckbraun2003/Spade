@@ -439,6 +439,7 @@ RecipeContext StepRecorder::base_context() const {
     context.grid_groups = grid_groups_x_;
     context.worlds_groups = world_groups_x_;
     context.sensors_groups = sensor_groups_x_;
+    context.point_rows = shape_.point_rows;
     return context;
 }
 

@@ -69,12 +69,14 @@
 #include "field_dryden.spv.gen.hpp"
 #include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
+#include "forces_drag_points.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
 #include "denorm_probe.spv.gen.hpp"  // the standing device record (T6)
 #include "grid_build.spv.gen.hpp"
 #include "grid_sort.spv.gen.hpp"
 #include "integrate.spv.gen.hpp"
 #include "medium_update.spv.gen.hpp"
+#include "points_positions.spv.gen.hpp"
 #include "rotors.spv.gen.hpp"
 #include "sensor_gnss.spv.gen.hpp"
 #include "sensor_imu.spv.gen.hpp"
@@ -473,6 +475,9 @@ const SpirvModule kSpirvModules[] = {
     // so scanning this module IS scanning the SDF evaluator. It also carries
     // fp32_math itself, transitively, through the heightfield's sin32.
     {gen::kSpvVariants_forces_drag, spade::testing::SpirvProfile::parity},
+    // Stage 7 D1: drag's points variant (the same source, SPADE_POINTS) and the injected positions pass's kernel (no arithmetic).
+    {gen::kSpvVariants_forces_drag_points, spade::testing::SpirvProfile::parity},
+    {gen::kSpvVariants_points_positions, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_collision_static, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_integrate, spade::testing::SpirvProfile::parity},
     // S6 Task 7's three, the dynamic_contact.resolve chain, all under PARITY for

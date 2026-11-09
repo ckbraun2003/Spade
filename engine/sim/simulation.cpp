@@ -1033,6 +1033,15 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // The optional bindings this set holds (module API stage 6): the recorder bakes the bits into every
         // dispatch, and the mirror binds a zeroed buffer at each one whose array the walk above does not carry.
         shape.switches = optional_switches(sim.schedule_);
+        if (sim.schedule_.points.present) {
+            const auto points = std::ranges::find(sim.schedule_.arrays, modules::kPointsArray, &modules::CompiledArray::name);
+            if (points != sim.schedule_.arrays.end()) {
+                const ExtentRows shape_rows{shape.body_capacity, shape.element_capacity, shape.sensor_capacity};
+                const Result<uint32_t> capacity = array_capacity(sim.schedule_, static_cast<std::size_t>(points - sim.schedule_.arrays.begin()), shape_rows);
+                if (!capacity) return std::unexpected(capacity.error());
+                shape.point_rows = *capacity;
+            }
+        }
         // The one module configuration image that names the config buffer (stage 7, Task C1): the mirror uploads these bytes.
         for (const modules::CompiledModule& mod : sim.schedule_.modules) {
             if (mod.config_binding == compute::kNoBinding) continue;

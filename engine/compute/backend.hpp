@@ -324,6 +324,9 @@ struct StepShape {
     bool batch_dynamic_collision = false;
     uint32_t sdf_node_count = 0;       // total SDF nodes across every world
     uint32_t sdf_transform_count = 0;  // total SDF transforms across every world
+    // Rows of the airflow_points array per world (stage 7 D1): bodies + force elements x k + sensors + host requests. 0 when
+    // the set has none. A recipe reads it through RecipeContext::point_rows.
+    uint32_t point_rows = 0;
     std::vector<StateArrayShape> arrays{};  // one per walk entry, maps included, in walk order
     std::vector<ScratchShape> scratch{};    // every declared scratch, in the schedule's order (Task 7b)
     std::vector<TableShape> tables{};       // every bound configuration table, in the schedule's order (L10)
@@ -359,6 +362,11 @@ enum class GpuRecipe : uint8_t {
     sensor_gnss,
     environment_sample,  // the field providers (module-API stage 3): each
     dryden_sample,       // writes every world's field sample row
+    // POINT SAMPLES (stage 7 D1). drag_points is drag.forces' second variant (L40): the same kernel source compiled with
+    // SPADE_POINTS, reading each body's wind and density from its airflow_points row; compile_schedule chooses it only for
+    // a set with a position-dependent provider. points_positions is the injected points.positions pass.
+    drag_points,
+    points_positions,
 };
 
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its

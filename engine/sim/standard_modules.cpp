@@ -372,6 +372,8 @@ PassFn builtin_cpu_for(compute::GpuRecipe recipe) noexcept {
         case compute::GpuRecipe::sensor_gnss: return &physics::pass_sensor_gnss;
         case compute::GpuRecipe::environment_sample: return &physics::pass_environment_sample;
         case compute::GpuRecipe::dryden_sample: return &physics::pass_dryden_sample;
+        case compute::GpuRecipe::drag_points: return &physics::pass_drag;
+        case compute::GpuRecipe::points_positions: return &physics::pass_points_positions;
     }
     return nullptr;
 }

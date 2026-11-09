@@ -41,6 +41,7 @@ struct RecipeContext {
     uint32_t grid_groups = 0;     // the key array's entries
     uint32_t worlds_groups = 0;   // one thread per world
     uint32_t sensors_groups = 0;  // one thread per sensor slot
+    uint32_t point_rows = 0;      // airflow_points rows per world (StepShape::point_rows); 0 without point samples
 };
 
 struct EmittedDispatch {

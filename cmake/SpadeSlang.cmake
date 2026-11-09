@@ -405,14 +405,24 @@ function(spade_slang_kernel_variants target name)
 
     # SOURCE_DIR (stage 7 Task B1): where the kernel's .slang lives when it is not an engine kernel -- the tests' own
     # kernels (tests/kernels/), which are built for the tests and never reach the engine.
-    cmake_parse_arguments(PARSE_ARGV 2 _arg "NAN_PRESERVE" "SOURCE_DIR" "")
+    # SOURCE and DEFINE (stage 7 Task D1, L40): a second kernel compiled from ANOTHER kernel's source with extra -D defines
+    # (forces_drag_points = forces_drag.slang + SPADE_POINTS), under its own name, header and symbol.
+    cmake_parse_arguments(PARSE_ARGV 2 _arg "NAN_PRESERVE" "SOURCE_DIR;SOURCE" "DEFINE")
     if(_arg_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "spade_slang_kernel_variants(${name}): unknown arguments ${_arg_UNPARSED_ARGUMENTS}")
     endif()
+    set(_source_name "${name}")
+    if(_arg_SOURCE)
+        set(_source_name "${_arg_SOURCE}")
+    endif()
+    set(_extra_defines "")
+    foreach(_define IN LISTS _arg_DEFINE)
+        list(APPEND _extra_defines "-D${_define}")
+    endforeach()
     if(_arg_SOURCE_DIR)
-        set(_src "${_arg_SOURCE_DIR}/${name}.slang")
+        set(_src "${_arg_SOURCE_DIR}/${_source_name}.slang")
     else()
-        set(_src "${SPADE_SLANG_KERNELS_DIR}/${name}.slang")
+        set(_src "${SPADE_SLANG_KERNELS_DIR}/${_source_name}.slang")
     endif()
     if(NOT EXISTS "${_src}")
         message(FATAL_ERROR "spade_slang_kernel_variants: no such kernel source: ${_src}")
@@ -460,13 +470,14 @@ function(spade_slang_kernel_variants target name)
                     -DSPADE_WG_X=${_shape_x}
                     -DSPADE_WG_Y=${_shape_y}
                     -DSPADE_WG_Z=${_shape_z}
+                    ${_extra_defines}
                     -I "${SPADE_SLANG_SHARED_DIR}"
                     -I "${SPADE_SLANG_SHADERS_DIR}"
                     -o "${_spv}"
                     -depfile "${_dep}"
             DEPENDS "${_src}" ${SPADE_SLANG_SHARED_MODULES}
             DEPFILE "${_dep}"
-            COMMENT "slangc: ${name}.slang -> SPIR-V (local size ${_wg}, fp-mode precise)"
+            COMMENT "slangc: ${_source_name}.slang -> ${name} SPIR-V (local size ${_wg}, fp-mode precise)"
             VERBATIM
         )
 

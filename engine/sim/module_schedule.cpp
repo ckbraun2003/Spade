@@ -1096,9 +1096,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     static constexpr QuantityAccess kPositionsAccess[] = {{"body.pose", Access::read}, {"points.airflow_points", Access::write}};
     static constexpr std::string_view kAfterKinematic[] = {"behaviors.kinematic"};
     static constexpr PassDecl kPositionsAfter[] = {{.name = "positions", .phase = Phase::fields, .access = kPositionsAccess,
-                                                    .after = kAfterKinematic, .cpu = &physics::pass_points_positions}};
+                                                    .after = kAfterKinematic, .cpu = &physics::pass_points_positions,
+                                                    .gpu = compute::GpuRecipe::points_positions}};
     static constexpr PassDecl kPositionsPlain[] = {
-        {.name = "positions", .phase = Phase::fields, .access = kPositionsAccess, .cpu = &physics::pass_points_positions}};
+        {.name = "positions", .phase = Phase::fields, .access = kPositionsAccess, .cpu = &physics::pass_points_positions,
+         .gpu = compute::GpuRecipe::points_positions}};
     static constexpr ArrayDecl kPointsState[] = {{.name = kPointsArray, .elem_size = sizeof(PointRow), .extent = Extent::per_point}};
     const bool has_kinematic =
         std::any_of(modules.begin(), modules.end(), [](const ModuleDesc& m) { return m.name == "behaviors"; });
@@ -1111,6 +1113,11 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                                    .grade = {.cpu = Grade::reference, .vulkan = Grade::best_effort}});
     Result<CompiledSchedule> out = compile_schedule_impl(augmented);
     if (!out) return out;
+    // THE SECOND DRAG VARIANT (L40): a set with point samples records drag.forces' points variant, which reads each body's
+    // row; every other set keeps the standard kernel. The CPU function is the same (pass_drag reads the rows when bound).
+    for (CompiledPass& p : out->passes) {
+        if (p.module == "drag" && p.pass == "forces" && p.gpu == compute::GpuRecipe::drag) p.gpu = compute::GpuRecipe::drag_points;
+    }
     out->points = CompiledPoints{true, decl.k, decl.host_requests, std::string(declarer->name), written};
     return out;
 }
