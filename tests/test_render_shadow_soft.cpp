@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -282,6 +283,52 @@ TEST(FocusShadow, BodiesSoSpreadOutThatTheirMapWouldBeNoFinerFallBackToFolding) 
     // And no dynamics, no map.
     scene.dynamics.clear();
     EXPECT_FALSE(build_focus_shadow_map(scene, 1024, 1.0f, *statics).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// EarlyOut
+// ---------------------------------------------------------------------------
+
+// The filtered lookup returns "lit" without the plane arithmetic when no tap's stored depth is nearer than the point
+// (the lead's ruling, 2026-11-09: exact, so every image and every digest is as before it). Held to the full loop, bit
+// for bit, over a dense off-grid sample of ground and box faces at filters 0, 0.5, 1 and 2, on the world's map and on a
+// dynamic body's own map, with edges in both (so that both the skipped and the unskipped branches are exercised).
+TEST(EarlyOut, TheFilteredLookupIsBitIdenticalToTheFullLoopWithItOff) {
+    RenderScene scene = world_with_a_small_dynamic_box(glm::vec3(3.0f, 1.0f, 1.0f), 0.25f);
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = translation(glm::vec3(0.0f, 1.0f, 0.0f)), .material_override = kNoMaterial});
+    const auto statics = build_static_shadow_map(scene);
+    ASSERT_TRUE(statics.has_value());
+    const auto focus = build_focus_shadow_map(scene, 1024, 1.0f, *statics);
+    ASSERT_TRUE(focus.has_value());
+
+    const std::array<glm::vec3, 3> normals = {glm::vec3(0.0f, 1.0f, 0.0f), glm::normalize(glm::vec3(0.6f, 0.8f, 0.0f)),
+                                              glm::vec3(1.0f, 0.0f, 0.0f)};
+    const std::array<float, 4> filters = {0.0f, 0.5f, 1.0f, 2.0f};
+    const std::array<const ShadowMap*, 2> maps = {&*statics, &*focus};
+    uint64_t points = 0, differing = 0, partial = 0, skipped_candidates = 0;
+    for (int i = -150; i <= 150; ++i) {
+        for (int j = -90; j <= 90; ++j) {
+            const float x = 0.0371f * static_cast<float>(i) + 0.0013f, z = 0.0359f * static_cast<float>(j) - 0.0007f;
+            for (const float y : {0.0f, 2.0f}) {  // the ground, and the static box's top (the same plane height)
+                const glm::vec3 q(x, y, z);
+                for (const glm::vec3& n : normals) {
+                    for (const ShadowMap* map : maps) {
+                        for (const float f : filters) {
+                            const float a = sample_shadow(*map, q, n, f);
+                            const float b = spade::render::sample_shadow_without_early_out(*map, q, n, f);
+                            ++points;
+                            differing += std::bit_cast<uint32_t>(a) != std::bit_cast<uint32_t>(b) ? 1u : 0u;
+                            partial += (f == 1.0f && a > 0.0f && a < 1.0f) ? 1u : 0u;
+                            skipped_candidates += a == 1.0f ? 1u : 0u;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    EXPECT_EQ(differing, 0u) << differing << " of " << points << " samples differ between the lookup and the full loop";
+    EXPECT_GT(partial, 200u) << "the sample must reach penumbrae, or it proves nothing about the unskipped branch";
+    EXPECT_GT(skipped_candidates, points / 4u) << "and lit points, or it proves nothing about the skip";
 }
 
 // ---------------------------------------------------------------------------

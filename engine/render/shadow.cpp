@@ -394,7 +394,9 @@ float ShadowSet::sample(const glm::vec3& world_pos, const glm::vec3& normal) con
     return lit;
 }
 
-float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal, float filter_texels) {
+// sample_shadow() with the box's early-out switchable, so a test can hold the early-out to the full loop.
+static float sample_shadow_impl(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                float filter_texels, bool allow_skip) {
     if (map.size == 0 || map.depth.empty()) {
         return 1.0f;
     }
@@ -411,8 +413,8 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
     const int ty = std::clamp(static_cast<int>((p.y * 0.5f + 0.5f) * size_f), 0, size_i - 1);
     const size_t idx = static_cast<size_t>(ty) * map.size + static_cast<size_t>(tx);
 
-    const ReceiverPlane plane = ReceiverPlane::of(map, normal);
     if (!(filter_texels > 0.0f)) {
+        const ReceiverPlane plane = ReceiverPlane::of(map, normal);
         const float occluder = map.depth[idx];
         if (occluder == kNoOccluder) {
             return 1.0f;  // no caster ever covered this texel.
@@ -429,21 +431,23 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
     const float vx = (p.x * 0.5f + 0.5f) * size_f, vy = (p.y * 0.5f + 0.5f) * size_f;
     const int x0 = static_cast<int>(std::floor(vx - half)), x1 = static_cast<int>(std::floor(vx + half));
     const int y0 = static_cast<int>(std::floor(vy - half)), y1 = static_cast<int>(std::floor(vy + half));
-    // Nothing under the whole box: lit, without the plane arithmetic (most pixels, away from any caster).
-    bool any = false;
-    for (int y = y0; y <= y1 && !any; ++y) {
-        for (int x = x0; x <= x1; ++x) {
-            const size_t i = static_cast<size_t>(std::clamp(y, 0, size_i - 1)) * map.size +
-                             static_cast<size_t>(std::clamp(x, 0, size_i - 1));
-            if (map.depth[i] != kNoOccluder) {
-                any = true;
-                break;
+    // Nothing under the box nearer than the point: lit, without the plane arithmetic (most pixels). A tap shadows only
+    // when depth < occluder - bias, and depth is never below the point's own p.z, so a box whose nearest stored depth
+    // (kNoOccluder, the lowest float, for an empty texel) is within the bias of p.z cannot shadow it: the same answer
+    // the loop below gives, with fewer operations. The slack only ever adds bias, so it cannot change this either.
+    if (allow_skip) {
+        float nearest = kNoOccluder;
+        for (int y = y0; y <= y1; ++y) {
+            const size_t row = static_cast<size_t>(std::clamp(y, 0, size_i - 1)) * map.size;
+            for (int x = x0; x <= x1; ++x) {
+                nearest = std::max(nearest, map.depth[row + static_cast<size_t>(std::clamp(x, 0, size_i - 1))]);
             }
         }
+        if (nearest - map.depth_bias <= p.z) {
+            return 1.0f;
+        }
     }
-    if (!any) {
-        return 1.0f;
-    }
+    const ReceiverPlane plane = ReceiverPlane::of(map, normal);
     // A tap away from the point's own texel reads a texel that may belong to a neighbouring face of the same body (a
     // convex edge): that face can lie nearer the sun than this receiver's plane by up to a texel's run times its own
     // slope, which the plane cannot know. Those taps carry that much more bias (half a texel's metres), so the filter
@@ -471,6 +475,15 @@ float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm:
         }
     }
     return weight_sum > 0.0f ? lit_sum / weight_sum : 1.0f;
+}
+
+float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal, float filter_texels) {
+    return sample_shadow_impl(map, world_pos, normal, filter_texels, true);
+}
+
+float sample_shadow_without_early_out(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
+                                      float filter_texels) {
+    return sample_shadow_impl(map, world_pos, normal, filter_texels, false);
 }
 
 }  // namespace spade::render

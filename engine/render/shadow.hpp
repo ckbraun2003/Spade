@@ -216,4 +216,10 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
 [[nodiscard]] float sample_shadow(const ShadowMap& map, const glm::vec3& world_pos, const glm::vec3& normal,
                                   float filter_texels = 0.0f);
 
+// sample_shadow() without the filtered lookup's early-out ("no tap is nearer than the point": lit, without the plane
+// arithmetic). The early-out is exact, so this returns the same float bit for bit; it exists so a test can hold it to
+// that (tests/test_render_shadow_soft.cpp), and costs what the lookup cost before the early-out.
+[[nodiscard]] float sample_shadow_without_early_out(const ShadowMap& map, const glm::vec3& world_pos,
+                                                    const glm::vec3& normal, float filter_texels);
+
 }  // namespace spade::render

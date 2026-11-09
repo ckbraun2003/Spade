@@ -342,7 +342,9 @@ void BM_RenderGroundPlane(benchmark::State& state) {
 //   scene 1: ground and a 2 m static box in view: a big shadow with its edge across the frame;
 //   scene 2: ground and a 0.5 m dynamic box in view: the drone's case;
 //   scene 3: ground, the static box and the dynamic box.
-//   options 0: filter 0, dynamic_shadow_size 0 (today's); 1: the defaults (filter 1, focus 1024);
+//   options 0: filter 0, dynamic_shadow_size 0 (today's); 1: the defaults (filter 1, focus 1024); 4: filter 0, focus 1024;
+//   the cost splits as: the filter taps = 3 - 0, the focus map (its build and its second lookup) = 4 - 0, and its build alone
+//   is BM_FocusShadowBuild;
 //   2: filter 2, focus 1024; 3: filter 1, no focus map (folded).
 [[nodiscard]] spade::render::MeshData bench_box(float h) {
     spade::render::MeshData mesh;
@@ -402,10 +404,26 @@ void BM_RenderGroundPlane(benchmark::State& state) {
     return scene;
 }
 
+// The dynamic casters' map alone, as render() builds it each frame (a reused scratch, size 1024, filter 1).
+void BM_FocusShadowBuild(benchmark::State& state) {
+    const RenderScene scene = shadow_scene(static_cast<int>(state.range(0)));
+    std::vector<float> scratch;
+    state.SetLabel("focus_map_1024_filter1");
+    for (auto _ : state) {
+        auto map = spade::render::build_focus_shadow_map(scene, 1024u, 1.0f, *scene.static_shadow, &scratch);
+        if (!map) {
+            state.SkipWithError("no focus map");
+            return;
+        }
+        benchmark::DoNotOptimize(map->depth.data());
+        scratch = std::move(map->depth);
+    }
+}
+
 void BM_RenderShadows(benchmark::State& state) {
     const RenderScene scene = shadow_scene(static_cast<int>(state.range(0)));
-    constexpr float kFilter[4] = {0.0f, 1.0f, 2.0f, 1.0f};
-    constexpr uint32_t kFocus[4] = {0u, 1024u, 1024u, 0u};
+    constexpr float kFilter[5] = {0.0f, 1.0f, 2.0f, 1.0f, 0.0f};
+    constexpr uint32_t kFocus[5] = {0u, 1024u, 1024u, 0u, 1024u};
     const auto o = static_cast<size_t>(state.range(1));
     RenderOptions options = bench_options();
     options.shadows = true;
@@ -418,8 +436,8 @@ void BM_RenderShadows(benchmark::State& state) {
     RenderTarget target = make_target(storage, 1920, 1080);
     std::vector<float> shadow_scratch;
     static const char* const kScene[4] = {"no_edges", "static_box", "dynamic_box", "both"};
-    static const char* const kOptions[4] = {"filter0_nofocus_today", "filter1_focus1024_defaults", "filter2_focus1024",
-                                            "filter1_nofocus"};
+    static const char* const kOptions[5] = {"filter0_nofocus_today", "filter1_focus1024_defaults", "filter2_focus1024",
+                                            "filter1_nofocus", "filter0_focus1024"};
     state.SetLabel(std::string(kScene[state.range(0)]) + "__" + kOptions[o] + "__1920x1080");
     for (auto _ : state) {
         const auto result = spade::render::render(scene, camera, options, target, &shadow_scratch);
@@ -623,7 +641,8 @@ void BM_CsgFrame(benchmark::State& state) {
 BENCHMARK(BM_RenderBackgroundFill)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderGroundPlane)->DenseRange(0, kResCaseCount - 1, 1)->UseRealTime();
 BENCHMARK(BM_RenderSlots)->DenseRange(1, 4, 1)->UseRealTime();
-BENCHMARK(BM_RenderShadows)->ArgsProduct({{0, 1, 2, 3}, {0, 1, 2, 3}})->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_RenderShadows)->ArgsProduct({{0, 1, 2, 3}, {0, 1, 2, 3, 4}})->Unit(benchmark::kMillisecond)->UseRealTime();
+BENCHMARK(BM_FocusShadowBuild)->Arg(2)->Arg(3)->Unit(benchmark::kMicrosecond)->UseRealTime();
 BENCHMARK(BM_CsgMeshShell)->Arg(169)->Arg(80)->Arg(50)->Unit(benchmark::kMillisecond)->Iterations(3)->UseRealTime();
 BENCHMARK(BM_CsgFrame)->ArgsProduct({{0, 1, 2, 3}, {0, 1}, {0, 1}})->Unit(benchmark::kMillisecond)->UseRealTime();
 
