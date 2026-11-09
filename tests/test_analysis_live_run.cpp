@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -331,6 +332,41 @@ TEST(AnalysisLiveRun, AdvanceStepsPublishesAFrameEveryNStepsWithItsTrueTime) {
     EXPECT_EQ(none.error().code, spade::Code::invalid_argument);
     EXPECT_NE(none.error().context.find("advance_steps"), std::string::npos) << none.error().context;
     EXPECT_EQ(run.state().frames, 3u) << "a refused call counts no frame";
+}
+
+// A clip's state has to be the sim's own: how a host groups steps into frames does not change what the run is.
+// One run takes five steps in one advance_steps(5), a second takes five advance_steps(1), and the two end in the
+// same state and the same body row, byte for byte, with the rotors armed and spinning. (Only `frames` differs: one
+// frame against five.)
+TEST(AnalysisLiveRun, TheStateAfterAdvanceStepsIsTheSimsOwnWhateverTheGrouping) {
+    const Powered p = powered();
+    an::Controls controls{};
+    controls.armed = true;
+    controls.throttle = 0.6f;
+    controls.pitch_deg = 20.0f;
+    controls.roll_deg = -10.0f;
+    an::LiveRun grouped = started(tiny_case(p.model), p);
+    an::LiveRun single = started(tiny_case(p.model), p);
+    spade::FlowVolume volume;
+    ASSERT_TRUE(grouped.advance_steps(controls, 5, volume).has_value());
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(single.advance_steps(controls, 1, volume).has_value());
+
+    const an::LiveState& a = grouped.state();
+    const an::LiveState& b = single.state();
+    EXPECT_EQ(a.steps, 5u);
+    EXPECT_EQ(b.steps, 5u);
+    EXPECT_EQ(a.frames, 1u);
+    EXPECT_EQ(b.frames, 5u);
+    EXPECT_EQ(std::memcmp(&a.t_s, &b.t_s, sizeof a.t_s), 0);
+    EXPECT_EQ(std::memcmp(&a.attitude, &b.attitude, sizeof a.attitude), 0);
+    EXPECT_EQ(std::memcmp(&a.omega_body, &b.omega_body, sizeof a.omega_body), 0);
+    EXPECT_EQ(a.armed, b.armed);
+    EXPECT_EQ(a.propulsion_flags, b.propulsion_flags);
+    ASSERT_EQ(a.rotor_omega.size(), b.rotor_omega.size());
+    ASSERT_FALSE(a.rotor_omega.empty());
+    EXPECT_EQ(std::memcmp(a.rotor_omega.data(), b.rotor_omega.data(), a.rotor_omega.size() * sizeof(float)), 0);
+    EXPECT_GT(*std::max_element(a.rotor_omega.begin(), a.rotor_omega.end()), 0.0f) << "the rotors must be spinning";
+    EXPECT_EQ(std::memcmp(&grouped.body(), &single.body(), sizeof(spade::BodyState)), 0);
 }
 
 // The hold turns the drone toward the controls' attitude at kHoldRateDegPerS,
