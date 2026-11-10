@@ -1498,6 +1498,8 @@ struct Options {
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
+    std::string synthetic_still;  // --synthetic-still NAME: the web look on a synthetic wake, no simulation
+    uint32_t supersample = 1;     // --supersample N: that still at N times the frame, box-filtered down
     std::string export_name;      // --export-lines NAME: a cached frame's streamlines as JSON (line_export.hpp); no film
     int export_frame = -1;        // --export-frame N: the cached frame to export (default: the last)
     fs::path export_deliver;      // --export-deliver RAW: also copy it to RAW/spade and add a MANIFEST line
@@ -1996,6 +1998,137 @@ struct WebTimes {
     }
     return 0;
 }
+// --synthetic-still NAME: the look of the web masters' streamlines on a SYNTHETIC wake, with no simulation (the
+// lead, 2026-11-10: a test still before any sim). Four rotors' wakes written straight into a FlowVolume at the
+// quad's grid (80 x 128 x 80 at 1 cm): a downwash jet under each disc, inflow above it, and a decaying swirl
+// about each axis by spin. It is a picture of the look, never of a flow: nothing here is a result.
+// --supersample N renders at N times the frame and box-filters it down, the lines' widths scaled to match.
+[[nodiscard]] spade::FlowVolume synthetic_wake() {
+    constexpr uint32_t nx = 80, ny = 128, nz = 80;
+    constexpr float cell = 0.01f, radius = 0.0762f, hub_y = 0.024f, v_h = 5.3f;
+    struct Rotor {
+        float x, z, spin;
+    };
+    constexpr Rotor rotors[4] = {{0.11f, 0.0f, +1.0f}, {0.0f, 0.11f, -1.0f}, {-0.11f, 0.0f, +1.0f}, {0.0f, -0.11f, -1.0f}};
+    spade::FlowVolume volume;
+    spade::FlowVolumeHeader& h = volume.header;
+    h.origin = glm::vec3(-0.40f, -0.96f, -0.40f);
+    h.cell = cell;
+    h.nx = nx;
+    h.ny = ny;
+    h.nz = nz;
+    const std::size_t cells = std::size_t{nx} * ny * nz;
+    volume.v.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    volume.s.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    std::array<bool, spade::kFlowChannelCount> seen{};
+    for (uint32_t k = 0; k < nz; ++k) {
+        for (uint32_t j = 0; j < ny; ++j) {
+            for (uint32_t i = 0; i < nx; ++i) {
+                const glm::vec3 p =
+                    h.origin + (glm::vec3(static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)) + glm::vec3(0.5f)) * cell;
+                glm::vec3 u(0.0f);
+                for (const Rotor& r : rotors) {
+                    const float dx = p.x - r.x, dz = p.z - r.z;
+                    const float rho = std::sqrt(dx * dx + dz * dz);
+                    const float below = hub_y - p.y;  // m under the disc plane
+                    if (below >= 0.0f) {
+                        const float rw = radius * (1.0f + 0.35f * below);
+                        const float t = rho / rw, t2 = t * t;
+                        u.y -= (v_h + 5.0f * std::min(below / 0.3f, 1.0f)) * std::exp(-t2 * t2 * t2);
+                        if (rho > 1.0e-6f) {
+                            const float rc = 0.35f * radius * (1.0f + 2.0f * below);
+                            const float swirl = 30.0f * (1.0f - std::exp(-rho * rho / (rc * rc))) / (6.2831853f * rho) *
+                                                std::exp(-below / 0.7f);
+                            u.x += -r.spin * swirl * dz / rho;
+                            u.z += r.spin * swirl * dx / rho;
+                        }
+                    } else {
+                        u.y -= v_h * std::exp(-rho * rho / (4.0f * radius * radius)) * std::exp(below / (1.2f * radius));
+                    }
+                }
+                const std::size_t base = spade::flow_cell_index(h, i, j, k) * spade::kFlowHalvesPerCell;
+                const float channel[3] = {u.x, u.y, u.z};
+                for (uint32_t c = 0; c < 3; ++c) {
+                    const spade::fp16::Half half = spade::fp16::from_f32(channel[c]);
+                    volume.v[base + c] = half.bits;
+                    const float x = spade::fp16::to_f32(half.bits);
+                    h.channel_min[c] = seen[c] ? std::min(h.channel_min[c], x) : x;
+                    h.channel_max[c] = seen[c] ? std::max(h.channel_max[c], x) : x;
+                    seen[c] = true;
+                }
+            }
+        }
+    }
+    volume.generation = spade::next_flow_generation();
+    return volume;
+}
+
+// The frame's pixels averaged over s x s blocks (RGBA8, the top row first), for a render at s times the size.
+[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s) {
+    std::vector<uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
+    const uint32_t bw = w * s;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            for (uint32_t c = 0; c < 4u; ++c) {
+                uint32_t sum = 0;
+                for (uint32_t dy = 0; dy < s; ++dy) {
+                    for (uint32_t dx = 0; dx < s; ++dx) {
+                        sum += big[((static_cast<std::size_t>(y) * s + dy) * bw + (x * s + dx)) * 4u + c];
+                    }
+                }
+                out[(static_cast<std::size_t>(y) * w + x) * 4u + c] = static_cast<uint8_t>((sum + s * s / 2u) / (s * s));
+            }
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] int run_synthetic_still(const Options& opt, const Encoder& encoder) {
+    const uint32_t s = std::max(1u, std::min(opt.supersample, 4u));
+    const spade::FlowVolume volume = synthetic_wake();
+    render::RenderScene scene = black_scene(volume);
+    const auto speed_colours = render::colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, 12.0f);
+    std::vector<glm::vec3> seeds;
+    constexpr float radius = 0.0762f;
+    const glm::vec3 hubs[4] = {{0.11f, 0.024f, 0.0f}, {0.0f, 0.024f, 0.11f}, {-0.11f, 0.024f, 0.0f}, {0.0f, 0.024f, -0.11f}};
+    for (const glm::vec3& hub : hubs) {
+        for (const float r : {0.35f, 0.75f}) {
+            for (const glm::vec3& p :
+                 render::seed_ring(hub + glm::vec3(0.0f, 0.06f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), r * radius, 12)) {
+                seeds.push_back(p);
+            }
+        }
+    }
+    render::StreamlineOptions lines;
+    lines.max_steps = 1200;
+    if (auto ok = render::add_streamlines(scene, volume, seeds, lines, speed_colours); !ok) return fail(ok.error());
+    scene.flow_line_style = render::FlowLineStyle{kWebLineStyle.width_px * static_cast<float>(s),
+                                                  kWebLineStyle.glow_px * static_cast<float>(s), kWebLineStyle.glow_strength};
+    const render::Camera camera =
+        orbit(glm::vec3(0.0f, -0.30f, 0.0f), web::fit_distance(0.55f, kWebFov, kWebAspect, web::kMargin), 25.0f, 20.0f);
+    auto stage = GlStage::create(encoder.width * s, encoder.height * s);
+    if (!stage) return fail(stage.error());
+    std::vector<uint8_t> rgba;
+    const auto start = std::chrono::steady_clock::now();
+    if (auto drew = (*stage)->draw(scene, camera, rgba); !drew) return fail(drew.error());
+    const double draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (s > 1u) rgba = box_down(rgba, encoder.width, encoder.height, s);
+    if (!corners_black(rgba, encoder.width, encoder.height)) {
+        std::fprintf(stderr, "flow_movie: synthetic still: a corner is not pure black (0, 0, 0)\n");
+        return 1;
+    }
+    const fs::path dir = opt.out / "synthetic";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path png = dir / (opt.synthetic_still + "-x" + std::to_string(s) + ".png");
+    if (auto saved = save_png(encoder, rgba, png); !saved) return fail(saved.error());
+    std::printf("synthetic-timing: %s %ux%u rendered at %ux%u (%ux), draw %.3f s, %zu lines (%s)\n", opt.synthetic_still.c_str(),
+                encoder.width, encoder.height, encoder.width * s, encoder.height * s, s, draw_s, scene.flow_polylines.size(),
+                (*stage)->limits().c_str());
+    std::printf("flow_movie: wrote %s (a synthetic wake, not a simulation)\n", png.string().c_str());
+    return 0;
+}
+
 // The builds behind a film's frames: the one that simulated them (its cache's
 // mark) and, when different, the one drawing them.
 [[nodiscard]] std::string builds_line(const Film& film, const fs::path& out) {
@@ -2102,6 +2235,10 @@ int main(int argc, char** argv) {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--arm-pressure") {
             opt.arm_pressure = true;
+        } else if (arg == "--synthetic-still") {
+            opt.synthetic_still = value();
+        } else if (arg == "--supersample") {
+            opt.supersample = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--export-lines") {
             opt.export_name = value();
         } else if (arg == "--export-frame") {
@@ -2177,7 +2314,7 @@ int main(int argc, char** argv) {
         encoder.width = 640;
         encoder.height = 360;
     }
-    if (!opt.web_id.empty()) {
+    if (!opt.web_id.empty() || !opt.synthetic_still.empty()) {
         encoder.width = web::kWidth;
         encoder.height = web::kHeight;
     }
@@ -2190,6 +2327,7 @@ int main(int argc, char** argv) {
     std::printf("flow_movie: built from %s\n", build_identity().c_str());
 
     if (!opt.web_id.empty()) return run_web(opt, **stage, encoder);
+    if (!opt.synthetic_still.empty()) return run_synthetic_still(opt, encoder);
 
     std::vector<Film> films;
     if (opt.video == "smoke") {
