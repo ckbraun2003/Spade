@@ -1363,7 +1363,7 @@ struct HeldPose {
 }
 
 // --- the website masters ---------------------------------------------------------------------------
-// Cameron's render brief (relayed by the lead, 2026-11-08): S1 to S8 of web_masters.hpp, 3840x2160 at 30 fps on pure
+// Cameron's render brief (relayed by the lead, 2026-11-08): S1 to S6 and S8 of web_masters.hpp (S7 dropped), 3840x2160 at 30 fps on pure
 // black, no text, one libx264 pass, and a 5120x2880 PNG of four of them. Each clip is one view of a film built here
 // from the films above: their shots with the camera replaced. The cameras' numbers are the film's to tune from its
 // stills (the timing job's), so they sit together in web_film().
@@ -1373,7 +1373,6 @@ struct WebPlan {
     uint32_t frames = 0;
     double from_s = 0.0, to_s = 0.0;
     uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
-    uint32_t cells = 128;       // the Taylor-Green case's cells a side: S7 films 128, not the record's 64
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
 };
 
@@ -1425,7 +1424,6 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     char window[64];
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
-    if (plan.cells != 64u) stem += "-n" + std::to_string(plan.cells);
     return stem;
 }
 
@@ -1468,15 +1466,9 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
                     return {};
                 }};
         }
-    } else if (clip.scene == web::Scene::taylor_green) {
-        film = taylor_green_film(plan.frames, plan.cells);
-        view = with_camera(*view_named(film, "q"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-            return orbit(volume_centre(v), web::fit_distance(4.2f, kWebFov, kWebAspect, fit),
-                         web::loop_azimuth(30.0f, clip.orbit_degrees, k, n), 24.0f);
-        }, true);
     } else {  // D1, the parts in the flow, on the device, at 0.2 ms with Cs 0.17: S1 and S8 in still air, the rest in
               // a crosswind (heading 90: the air moves +z)
-        const bool still = clip.scene == web::Scene::d1_still;
+        const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
                                    static_cast<float>(web::kD1WebStepS), web::kD1WebSgsCs);
         if (!lc) return std::unexpected(lc.error());
@@ -1534,10 +1526,11 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
 // `ss` is how many times larger than the frame `stage` is (1: the frame's own size): the scene's pixel widths are
 // scaled to match, the stage's picture is box-filtered down to the frame, and `draw_s` is the time of the large draw
 // (the lead, 2026-11-10: the web masters render at 2x).
-[[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t k, uint32_t n,
-                                                 GlStage& stage, uint32_t ss, spade::FlowVolume& volume, FrameLog& log,
-                                                 std::vector<uint8_t>& rgba, std::string& note, double& draw_s) {
-    if (auto read = read_frame(cache, k, volume, log); !read) return read;
+[[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t first, uint32_t k,
+                                                 uint32_t n, GlStage& stage, uint32_t ss, spade::FlowVolume& volume,
+                                                 FrameLog& log, std::vector<uint8_t>& rgba, std::string& note,
+                                                 double& draw_s) {
+    if (auto read = read_frame(cache, first + k, volume, log); !read) return read;
     const View& view = film.views.front();
     render::RenderScene scene = black_scene(volume);
     render::Camera camera;
@@ -1619,14 +1612,13 @@ struct Options {
     fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
     bool gpu = false;  // --gpu: a LiveRun film's fluid on GpuFluid, no parts (gpu_live.hpp)
-    // --web S1..S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
+    // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
     std::string ticket;            // --ticket: the jobrun ticket the caption names
-    uint32_t cells = 128;          // --cells N: the Taylor-Green case's cells a side (S7: 128; the record's is 64)
     std::string command_line;      // the arguments as given, for the caption
 };
 
@@ -1963,11 +1955,11 @@ struct WebTimes {
     uint64_t last_step = 0;
 };
 
-[[nodiscard]] spade::Result<WebTimes> web_times(const fs::path& cache, uint32_t n) {
+[[nodiscard]] spade::Result<WebTimes> web_times(const fs::path& cache, uint32_t from, uint32_t n) {
     spade::FlowVolume volume;
     FrameLog first, last;
-    if (auto a = read_frame(cache, 0, volume, first); !a) return std::unexpected(a.error());
-    if (auto b = read_frame(cache, n - 1u, volume, last); !b) return std::unexpected(b.error());
+    if (auto a = read_frame(cache, from, volume, first); !a) return std::unexpected(a.error());
+    if (auto b = read_frame(cache, from + n - 1u, volume, last); !b) return std::unexpected(b.error());
     return WebTimes{n > 1u ? (last.time - first.time) / static_cast<double>(n - 1u) : 0.0, last.step};
 }
 
@@ -1984,22 +1976,26 @@ struct WebTimes {
 [[nodiscard]] int run_web(const Options& opt, GlStage& stage, const Encoder& encoder) {
     const web::Clip* clip = web::find_clip(opt.web_id);
     if (clip == nullptr) {
-        std::fprintf(stderr, "flow_movie: --web %s is not one of S1 to S8\n", opt.web_id.c_str());
+        std::fprintf(stderr, "flow_movie: --web %s is not one of the web clips S1 to S6 and S8\n", opt.web_id.c_str());
         return 2;
     }
     const web::Group* group = web::find_group(clip->group);
     WebPlan plan;
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
-    plan.cells = std::max(8u, opt.cells);
     plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
     plan.to_s = opt.window_to > 0.0
                     ? opt.window_to
-                    : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame,
-                                        clip->scene == web::Scene::taylor_green ? double{web::taylor_green_step(plan.cells)}
-                                                                                : group->step_s);
+                    : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame, group->step_s);
     plan.grid = opt.grid;
-    const uint32_t n = std::min(clip->frames(), plan.frames);
+    // The clip draws its frames from the group's cache, from `first` on (a --window run spreads its own frames).
+    const uint32_t first = opt.window_to > 0.0 ? 0u : clip->first_frame;
+    if (first >= plan.frames) {
+        std::fprintf(stderr, "flow_movie: web %s starts at frame %u of its group's cache, which holds %u\n",
+                     opt.web_id.c_str(), first, plan.frames);
+        return 2;
+    }
+    const uint32_t n = std::min(clip->frames(), plan.frames - first);
     const uint32_t ss = opt.supersample > 0u ? std::min(opt.supersample, 4u) : 2u;  // rendered at ss x, filtered down
     const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");
     const fs::path work = opt.out / "web";
@@ -2037,7 +2033,7 @@ struct WebTimes {
     std::string note;
     double draw_s = 0.0;
     if (!opt.web_still_only) {
-        auto times = web_times(cache, n);
+        auto times = web_times(cache, first, n);
         if (!times) return fail(times.error());
         auto webclip = WebClip::open(opt.ffmpeg, encoder.width, encoder.height, work / (base + "mp4"));
         if (!webclip) return fail(webclip.error());
@@ -2051,7 +2047,7 @@ struct WebTimes {
         double draw_total = 0.0;
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t k = 0; k < n; ++k) {
-            if (auto drew = draw_web_frame(*film, cache, k, n, frame_stage, ss, volume, log, rgba, note, draw_s); !drew) {
+            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s); !drew) {
                 return fail(drew.error());
             }
             draw_total += draw_s;
@@ -2097,7 +2093,7 @@ struct WebTimes {
         if (!big) return fail(big.error());
         const uint32_t k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
         const auto start = std::chrono::steady_clock::now();
-        if (auto drew = draw_web_frame(*film, cache, k, n, **big, ss, volume, log, rgba, note, draw_s); !drew) {
+        if (auto drew = draw_web_frame(*film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s); !drew) {
             return fail(drew.error());
         }
         Encoder still_encoder = encoder;
@@ -2399,8 +2395,6 @@ int main(int argc, char** argv) {
             opt.web_deliver = value();
         } else if (arg == "--ticket") {
             opt.ticket = value();
-        } else if (arg == "--cells") {
-            opt.cells = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;

@@ -118,7 +118,7 @@ TEST(FlowMovieWeb, TheWindowsFrameToStepMapIsMonotoneAndEndsOnTheWindowsEnd) {
 // at every step the groups use and for every frame the group holds.
 TEST(FlowMovieWeb, EveryFrameOfEveryGroupIsTheSameWholeNumberOfStepsAfterTheOneBefore) {
     for (const web::Group& g : web::web_groups()) {
-        const double h = g.name == "taylor-green" ? static_cast<double>(web::taylor_green_step(128)) : g.step_s;
+        const double h = g.step_s;
         const uint64_t from_step = static_cast<uint64_t>(std::llround(g.from_s / h));
         uint64_t last = from_step;
         for (uint32_t k = 0; k < g.frames; ++k) {
@@ -145,11 +145,11 @@ TEST(FlowMovieWeb, EveryFrameOfEveryGroupIsTheSameWholeNumberOfStepsAfterTheOneB
     EXPECT_LE(web::window_end_s(0.9, 450, 2, web::kLiveStepS), 1.5);
 }
 
-TEST(FlowMovieWeb, TheTableHasTheEightClipsAtThirtyFramesASecondAndOneRangeAScene) {
+TEST(FlowMovieWeb, TheTableHasTheSevenClipsAtThirtyFramesASecondAndOneRangeAScene) {
     const auto& clips = web::web_clips();
-    ASSERT_EQ(clips.size(), std::size_t{8});
-    const char* ids[] = {"S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"};
-    const uint32_t frames[] = {450, 360, 360, 300, 300, 300, 300, 300};
+    ASSERT_EQ(clips.size(), std::size_t{7}) << "S7, the Taylor-Green clip, was dropped (L53)";
+    const char* ids[] = {"S1", "S2", "S3", "S4", "S5", "S6", "S8"};
+    const uint32_t frames[] = {450, 360, 360, 300, 300, 300, 300};
     for (std::size_t i = 0; i < clips.size(); ++i) {
         EXPECT_EQ(std::string(clips[i].id), ids[i]);
         EXPECT_EQ(clips[i].frames(), frames[i]) << ids[i];
@@ -163,13 +163,14 @@ TEST(FlowMovieWeb, TheTableHasTheEightClipsAtThirtyFramesASecondAndOneRangeAScen
             }
         }
     }
-    const char* with_still[] = {"S1", "S3", "S4", "S7"};
+    const char* with_still[] = {"S1", "S3", "S4"};
     for (const web::Clip& c : clips) {
         bool want = false;
         for (const char* s : with_still) want = want || std::string(c.id) == s;
         EXPECT_EQ(c.still, want) << c.id;
     }
     EXPECT_NE(web::find_clip("S4"), nullptr);
+    EXPECT_EQ(web::find_clip("S7"), nullptr);
     EXPECT_EQ(web::find_clip("S9"), nullptr);
 }
 
@@ -180,19 +181,27 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
         EXPECT_GE(g->frames, c.frames()) << c.id << ": its group's cache holds all its frames";
         EXPECT_GT(g->steps_per_frame, 0u) << c.id;
     }
-    // One window a group: S5 and S6 share the quad's developed wake; S1 and S8 the D1 still-air run; S2, S3 and S4
-    // the D1 side-wind run from rest.
+    // One run a group: S5 and S6 share the quad's developed wake; S1, S2 and S8 the D1 still-air run from rest (S2
+    // from its frame 0, S1 and S8 from frame 150); S3 and S4 the D1 side-wind run.
     EXPECT_EQ(web::find_clip("S5")->group, web::find_clip("S6")->group);
     EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S8")->group);
-    EXPECT_EQ(web::find_clip("S2")->group, web::find_clip("S3")->group);
+    EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S2")->group);
     EXPECT_EQ(web::find_clip("S3")->group, web::find_clip("S4")->group);
-    EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S2")->group);
+    EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S3")->group);
+    EXPECT_EQ(web::find_clip("S2")->first_frame, 0u);
+    EXPECT_EQ(web::find_clip("S1")->first_frame, 150u);
+    EXPECT_EQ(web::find_clip("S8")->first_frame, 150u);
+    // Each clip's frames end inside its group's cache, and S1 and S8 end at its last frame.
+    for (const web::Clip& c : web::web_clips()) {
+        EXPECT_LE(c.first_frame + c.frames(), web::find_group(c.group)->frames) << c.id;
+    }
+    EXPECT_EQ(web::find_clip("S1")->first_frame + web::find_clip("S1")->frames(), web::find_group("d1-still")->frames);
     EXPECT_EQ(web::find_group("quad-developed")->frames, 450u);
     EXPECT_DOUBLE_EQ(web::find_group("quad-developed")->from_s, 0.9);
     EXPECT_EQ(web::find_group("d1-crosswind")->steps_per_frame, 7u);
-    EXPECT_EQ(web::find_group("d1-still-developed")->steps_per_frame, 5u);
-    EXPECT_DOUBLE_EQ(web::find_group("d1-still-developed")->from_s, 0.15);
-    EXPECT_EQ(web::find_group("d1-still-developed")->frames, 450u);
+    EXPECT_EQ(web::find_group("d1-still")->steps_per_frame, 5u);
+    EXPECT_DOUBLE_EQ(web::find_group("d1-still")->from_s, 0.0) << "from rest: S2's start-up is its frame 0";
+    EXPECT_EQ(web::find_group("d1-still")->frames, 600u);
     EXPECT_EQ(web::find_group("nothing"), nullptr);
 }
 
@@ -201,9 +210,9 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
 TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointOneSeven) {
     EXPECT_DOUBLE_EQ(web::kD1WebStepS, 0.0002);
     EXPECT_FLOAT_EQ(web::kD1WebSgsCs, 0.17f);
-    for (const char* id : {"S1", "S8"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1_still) << id;
-    for (const char* id : {"S2", "S3", "S4"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1) << id;
-    for (const char* name : {"d1-still-developed", "d1-crosswind"}) {
+    for (const char* id : {"S1", "S2", "S8"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1_still) << id;
+    for (const char* id : {"S3", "S4"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1) << id;
+    for (const char* name : {"d1-still", "d1-crosswind"}) {
         const web::Group& g = *web::find_group(name);
         EXPECT_DOUBLE_EQ(g.step_s, web::kD1WebStepS) << name;
         const double ms_a_frame = static_cast<double>(g.steps_per_frame) * g.step_s * 1000.0;
@@ -212,9 +221,13 @@ TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointO
     }
     EXPECT_FLOAT_EQ(web::find_group("quad-developed")->step_s, 0.0005f) << "the quad's film is as it was";
     // The windows end at 0.60 s (still air) and 0.504 s (side wind).
-    const web::Group& still = *web::find_group("d1-still-developed");
+    const web::Group& still = *web::find_group("d1-still");
     const web::Group& wind = *web::find_group("d1-crosswind");
     EXPECT_NEAR(web::window_end_s(still.from_s, still.frames, still.steps_per_frame, still.step_s), 0.60, 1e-9);
+    // S1 and S8 start at 0.15 s of it, S2 at 0, and S2 ends at 0.36 s.
+    const double frame_s = static_cast<double>(still.steps_per_frame) * still.step_s;
+    EXPECT_NEAR(web::find_clip("S1")->first_frame * frame_s, 0.15, 1e-9);
+    EXPECT_NEAR(web::find_clip("S2")->frames() * frame_s, 0.36, 1e-9);
     EXPECT_NEAR(web::window_end_s(wind.from_s, wind.frames, wind.steps_per_frame, wind.step_s), 0.504, 1e-9);
 }
 
@@ -249,7 +262,7 @@ TEST(FlowMovieWeb, OnlyAFullOrbitOrASwingBackLoopsTheCamera) {
     EXPECT_TRUE(web::find_clip("S1")->camera_loops());
     EXPECT_TRUE(web::find_clip("S8")->camera_loops());
     EXPECT_TRUE(has(web::loop_line(*web::find_clip("S8")), "swings out and back and loops"));
-    for (const char* id : {"S2", "S3", "S4", "S5", "S6", "S7"}) {
+    for (const char* id : {"S2", "S3", "S4", "S5", "S6"}) {
         EXPECT_FALSE(web::find_clip(id)->camera_loops()) << id;
     }
     EXPECT_TRUE(has(web::loop_line(*web::find_clip("S1")), "completes one full orbit and loops"));
@@ -337,7 +350,8 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     const std::string standing = web::standing_caveats(*s3);
     EXPECT_FALSE(has(standing, "m/s")) << "no speed figures in the standing caveats";
     EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S5")), "inviscid")) << "the quad's CPU film";
-    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S2")), "steady wind from the side"));
+    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S3")), "steady wind from the side"));
+    EXPECT_FALSE(has(web::standing_caveats(*web::find_clip("S2")), "wind from the side")) << "S2 is in still air";
     const std::string s1_caveats = web::standing_caveats(*web::find_clip("S1"));
     EXPECT_TRUE(has(s1_caveats, "rigid parts as solids in the flow at 4 mm"));
     EXPECT_TRUE(has(s1_caveats, "hover throttle in still air"));
@@ -347,18 +361,8 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S4")), "sign on the arms' tops has not been measured"));
     for (const web::Clip& c : web::web_clips()) {
         EXPECT_FALSE(has(web::standing_caveats(c), "m/s")) << c.id << ": no speed figures";
-        EXPECT_TRUE(c.scene == web::Scene::taylor_green || has(web::standing_caveats(c), "relative speed, not validated"))
-            << c.id;
+        EXPECT_TRUE(has(web::standing_caveats(c), "relative speed, not validated")) << c.id;
     }
-    // The Taylor-Green case's time has no seconds: its caption says so and claims no slow motion.
-    web::CaptionInput tg;
-    tg.clip = web::find_clip("S7");
-    tg.sim_seconds = 10.0;
-    tg.screen_seconds = 10.0;
-    const std::string tg_text = web::caption_text(tg);
-    EXPECT_TRUE(has(tg_text, "dimensionless time"));
-    EXPECT_TRUE(has(tg_text, "the C0 case at 128^3, not the validation record (64^3)"));
-    EXPECT_FALSE(has(tg_text, "times slower than real time"));
     EXPECT_EQ(web::slow_motion_line(0.6, 12.0),
               "Slow motion: 0.0500 simulated seconds in each screen second (20.0 times slower than real time).");
 }

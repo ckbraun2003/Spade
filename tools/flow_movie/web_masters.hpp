@@ -1,5 +1,5 @@
 // tools/flow_movie/web_masters.hpp -- the website clips' pure parts (Cameron's render brief, relayed by the
-// lead 2026-11-08): the table of the eight clips S1 to S8, the camera maths, the window's frame-to-step map,
+// lead 2026-11-08): the table of the seven clips S1 to S6 and S8, the camera maths, the window's frame-to-step map,
 // the encode's arguments, the file name, the MANIFEST line, the delivery guard and the caption's standing
 // caveats. Header-only and free of GL, ffmpeg and the solver, so a test links nothing of the tool.
 //
@@ -29,10 +29,10 @@ inline constexpr float kMargin = 0.10f;  // clear space on every side, a fractio
 inline constexpr int kCrf = 15;          // the brief's 14 to 16
 
 // quad: the reference quad's discs on the CPU film at 1 cm (S5, S6). d1: D1, the parts in the flow, in a side wind
-// (S2, S3, S4). d1_still: D1 in still air (S1, S8). taylor_green: S7, dropped by Cameron (L53), never run.
-enum class Scene : uint8_t { quad, d1, taylor_green, d1_still };
-enum class Quantity : uint8_t { speed, cp, q_surface };
-enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, there_and_back, push_in, still, slow_rotate };
+// (S3, S4). d1_still: D1 in still air (S1, S2, S8). (S7, the Taylor-Green clip, was dropped by Cameron: L53.)
+enum class Scene : uint8_t { quad, d1, d1_still };
+enum class Quantity : uint8_t { speed, cp };
+enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, there_and_back, push_in, still };
 
 // One clip of the brief.
 struct Clip {
@@ -49,6 +49,9 @@ struct Clip {
     float range_lo = 0.0f;       // the colour range, fixed within a scene's quantity (0, 0: the case's own)
     float range_hi = 0.0f;
     bool still = false;  // a 5120x2880 PNG as well
+    // The first frame of the group's cache the clip draws: clips of a group that start at different times share one
+    // simulation (S2 from the group's frame 0, S1 and S8 from frame 150).
+    uint32_t first_frame = 0;
 
     [[nodiscard]] uint32_t frames() const noexcept { return static_cast<uint32_t>(std::lround(seconds * kFps)); }
     // The camera's last frame is followed by its first: one full orbit, or a swing out and back.
@@ -67,7 +70,7 @@ struct Group {
     double from_s = 0.0;
     uint32_t steps_per_frame = 0;
     uint32_t frames = 0;
-    double step_s = 0.0005;  // the group's solver step h, s (the Taylor-Green case's is its own, dimensionless)
+    double step_s = 0.0005;  // the group's solver step h, s
 };
 
 // The solver step of the quad (LiveRun's), s.
@@ -78,22 +81,16 @@ inline constexpr double kLiveStepS = 0.0005;
 inline constexpr double kD1WebStepS = 0.0002;
 inline constexpr float kD1WebSgsCs = 0.17f;
 
-// The Taylor-Green case's step in its own (dimensionless) time: half a cell of the 2 pi box, as the case sets it.
-[[nodiscard]] inline float taylor_green_step(uint32_t cells) {
-    return 0.5f * static_cast<float>(2.0 * 3.14159265358979323846 / static_cast<double>(cells));
-}
-
 // The windows. The quad's (S5, S6; 0.5 ms a step): developed wake 0.9 to 1.35 s at 2 steps a frame (Physics: the
-// box's open faces past 1.5 s are unmeasured). D1's (0.2 ms a step; a frame is about 1 ms of simulated time, as the
-// quad's were): the still-air wake from 0.15 s at 5 steps a frame, 450 frames, to 0.60 s (0.15 s is the wake's
-// development time AS ASSUMED: the 0.15 s test run confirms it); the side wind's run from rest at 7 steps a frame
-// (1.4 ms), 360 frames, to 0.504 s. The Taylor-Green case one step a frame, 300 steps (S7, dropped, never run).
-[[nodiscard]] inline const std::array<Group, 4>& web_groups() {
-    static const std::array<Group, 4> table{{
+// box's open faces past 1.5 s are unmeasured). D1's (0.2 ms a step): ONE still-air run from rest, 5 steps (1 ms) a
+// frame, 600 frames to 0.60 s: S2 draws frames 0 to 359 (the start-up roll-up, to 0.36 s), S1 and S8 frames 150 to
+// 599 (0.15 s on, 450 frames; 0.15 s is the wake's development time AS ASSUMED: the 0.15 s test run confirms it).
+// The side wind's run from rest at 7 steps a frame (1.4 ms), 360 frames, to 0.504 s (S3, S4).
+[[nodiscard]] inline const std::array<Group, 3>& web_groups() {
+    static const std::array<Group, 3> table{{
         {"quad-developed", 0.9, 2, 450, kLiveStepS},
-        {"d1-still-developed", 0.15, 5, 450, kD1WebStepS},
+        {"d1-still", 0.0, 5, 600, kD1WebStepS},
         {"d1-crosswind", 0.0, 7, 360, kD1WebStepS},
-        {"taylor-green", 0.0, 1, 300, kLiveStepS},
     }};
     return table;
 }
@@ -105,18 +102,18 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return nullptr;
 }
 
-// The brief's table. Cameras: S1 one full orbit (the brief's), S3 a half orbit, S4 and S7 slow one-way arcs (their
+// The brief's table. Cameras: S1 one full orbit (the brief's), S3 a half orbit, S4 a slow one-way arc (its
 // flow evolves, so nothing loops), S8 a smooth swing out and back that loops, S5 and S6 still.
-[[nodiscard]] inline const std::array<Clip, 8>& web_clips() {
-    static const std::array<Clip, 8> table{{
+[[nodiscard]] inline const std::array<Clip, 7>& web_clips() {
+    static const std::array<Clip, 7> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad in hover: streamlines of the rotor wake",
          "Streamlines seeded above each of four actuator discs round the reference quad's rigid parts, coloured by "
          "relative speed, in one slow orbit.",
-         "d1-still-developed", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true},
-        {"S2", "rotor-wake-vortex-surfaces", "Reference quad in a side wind: vortex surfaces from the start-up",
-         "Vortex surfaces (lambda2) round the reference quad's rigid parts from the start-up roll-up, held at hover "
-         "in a side wind, in a slow push-in.",
-         "d1-crosswind", Scene::d1, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 0.0f, false},
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true, 150},
+        {"S2", "rotor-wake-vortex-surfaces", "Reference quad in hover: vortex surfaces from the start-up",
+         "Vortex surfaces (lambda2) round the reference quad's rigid parts, held at hover in still air, from the "
+         "start-up roll-up into the developed column, in a slow push-in.",
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 0.0f, false, 0},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
          "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},
@@ -129,14 +126,10 @@ inline constexpr float kD1WebSgsCs = 0.17f;
         {"S6", "rotor-swirl-from-above", "Reference quad: the rotor swirl from above",
          "Streamlines through each of four actuator discs seen from above, the rims drawn by spin direction.",
          "quad-developed", Scene::quad, Quantity::speed, Camera::still, 10.0, 0.0f, 0.0f, 12.0f, false},
-        {"S7", "taylor-green-q-surfaces", "Taylor-Green vortex: Q surfaces breaking down",
-         "Q surfaces of the Taylor-Green vortex in a periodic box as it breaks down, in a slow rotate.",
-         "taylor-green", Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 90.0f, 0.0f, 1.0f, true},
         {"S8", "rotor-wake-volume", "Reference quad in hover: a volume render of the rotor wake",
          "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a volume, in a "
          "slow orbit.",
-         "d1-still-developed", Scene::d1_still, Quantity::speed, Camera::there_and_back, 10.0, 60.0f, 0.0f, 12.0f,
-         false},
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::there_and_back, 10.0, 60.0f, 0.0f, 12.0f, false, 150},
     }};
     return table;
 }
@@ -282,7 +275,7 @@ struct DeliveryGuard {
         t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
              "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
-    } else if (c.scene == Scene::d1) {
+    } else {
         t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
              "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
              "the side (crosswind setting supported but not validated). The wind bends and carries the wake and "
@@ -298,9 +291,6 @@ struct DeliveryGuard {
         t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
              "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
-    } else {
-        t += "Stand-in: the C0 case at 128^3, not the validation record (64^3): a periodic, inviscid Taylor-Green "
-             "box, not a drone, its energy loss the numerics' own. A single run on the CPU reference solver.";
     }
     return t;
 }
@@ -335,16 +325,6 @@ struct CaptionInput {
     std::string extra;  // anything else the run's log carries (the device, the grid, a legend's note)
 };
 
-// Time on the clip, in words: seconds of simulated time per screen second, and how much slower than real time;
-// the Taylor-Green case's time has no unit.
-[[nodiscard]] inline std::string time_line(const Clip& c, double sim, double screen) {
-    if (c.scene != Scene::taylor_green) return slow_motion_line(sim, screen);
-    char out[160];
-    std::snprintf(out, sizeof out, "Time: the case's own dimensionless time, %.4f units in each screen second.",
-                  screen > 0.0 ? sim / screen : 0.0);
-    return out;
-}
-
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
 // and the stand-in. It never claims more than the footage shows.
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
@@ -354,7 +334,7 @@ struct CaptionInput {
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + in.command + "`, jobrun ticket " + in.ticket + "\n";
     t += "- Shows: " + std::string(c.shows) + "\n";
-    t += "- " + time_line(c, in.sim_seconds, in.screen_seconds) + "\n";
+    t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
     t += "- " + standing_caveats(c) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
