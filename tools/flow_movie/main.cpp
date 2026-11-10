@@ -1431,8 +1431,13 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
 
 // Frame k of the cache, drawn through the film's one view for a clip of n frames: the scene on pure black, the
 // view's shot, the held drone's parts and what the view draws on them. `note` takes the view's legend line.
+[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s);
+
+// `ss` is how many times larger than the frame `stage` is (1: the frame's own size): the scene's pixel widths are
+// scaled to match, the stage's picture is box-filtered down to the frame, and `draw_s` is the time of the large draw
+// (the lead, 2026-11-10: the web masters render at 2x).
 [[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t k, uint32_t n,
-                                                 GlStage& stage, spade::FlowVolume& volume, FrameLog& log,
+                                                 GlStage& stage, uint32_t ss, spade::FlowVolume& volume, FrameLog& log,
                                                  std::vector<uint8_t>& rgba, std::string& note, double& draw_s) {
     if (auto read = read_frame(cache, k, volume, log); !read) return read;
     const View& view = film.views.front();
@@ -1448,9 +1453,16 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         if (!on) return std::unexpected(on.error());
         note = std::move(*on);
     }
+    if (ss > 1u) {
+        const auto scale = static_cast<float>(ss);
+        scene.flow_line_style.width_px *= scale;
+        scene.flow_line_style.glow_px *= scale;
+        for (render::FlowPolyline& line : scene.flow_polylines) line.width_px *= scale;
+    }
     const auto start = std::chrono::steady_clock::now();
     auto drew = stage.draw(scene, camera, rgba);
     draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (drew && ss > 1u) rgba = box_down(rgba, stage.width() / ss, stage.height() / ss, ss);
     return drew;
 }
 
@@ -1499,7 +1511,8 @@ struct Options {
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
     std::string synthetic_still;  // --synthetic-still NAME: the web look on a synthetic wake, no simulation
-    uint32_t supersample = 1;     // --supersample N: that still at N times the frame, box-filtered down
+    uint32_t supersample = 0;     // --supersample N: render at N times the frame and box-filter down (0: the mode's
+                                  // own: 2 for a web master, 1 for the synthetic still)
     std::string export_name;      // --export-lines NAME: a cached frame's streamlines as JSON (line_export.hpp); no film
     int export_frame = -1;        // --export-frame N: the cached frame to export (default: the last)
     fs::path export_deliver;      // --export-deliver RAW: also copy it to RAW/spade and add a MANIFEST line
@@ -1889,6 +1902,7 @@ struct WebTimes {
                                                                                 : web::kLiveStepS);
     plan.grid = opt.grid;
     const uint32_t n = std::min(clip->frames(), plan.frames);
+    const uint32_t ss = opt.supersample > 0u ? std::min(opt.supersample, 4u) : 2u;  // rendered at ss x, filtered down
     const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");
     const fs::path work = opt.out / "web";
     std::printf("flow_movie: web %s \"%s\": %u frames of %u, window %g..%g, frame %ux%u (%s)\n", opt.web_id.c_str(),
@@ -1929,10 +1943,17 @@ struct WebTimes {
         if (!times) return fail(times.error());
         auto webclip = WebClip::open(opt.ffmpeg, encoder.width, encoder.height, work / (base + "mp4"));
         if (!webclip) return fail(webclip.error());
+        std::unique_ptr<GlStage> large;
+        if (ss > 1u) {
+            auto made = GlStage::create(encoder.width * ss, encoder.height * ss);
+            if (!made) return fail(made.error());
+            large = std::move(*made);
+        }
+        GlStage& frame_stage = large ? *large : stage;
         double draw_total = 0.0;
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t k = 0; k < n; ++k) {
-            if (auto drew = draw_web_frame(*film, cache, k, n, stage, volume, log, rgba, note, draw_s); !drew) {
+            if (auto drew = draw_web_frame(*film, cache, k, n, frame_stage, ss, volume, log, rgba, note, draw_s); !drew) {
                 return fail(drew.error());
             }
             draw_total += draw_s;
@@ -1974,11 +1995,11 @@ struct WebTimes {
     }
 
     if (clip->still || opt.web_still_only) {
-        auto big = GlStage::create(web::kStillWidth, web::kStillHeight);
+        auto big = GlStage::create(web::kStillWidth * ss, web::kStillHeight * ss);
         if (!big) return fail(big.error());
         const uint32_t k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
         const auto start = std::chrono::steady_clock::now();
-        if (auto drew = draw_web_frame(*film, cache, k, n, **big, volume, log, rgba, note, draw_s); !drew) {
+        if (auto drew = draw_web_frame(*film, cache, k, n, **big, ss, volume, log, rgba, note, draw_s); !drew) {
             return fail(drew.error());
         }
         Encoder still_encoder = encoder;
