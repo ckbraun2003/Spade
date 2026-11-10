@@ -2237,6 +2237,7 @@ int main(int argc, char** argv) {
             opt.arm_pressure = true;
         } else if (arg == "--synthetic-still") {
             opt.synthetic_still = value();
+            if (opt.video.empty()) opt.video = "synthetic-still";
         } else if (arg == "--supersample") {
             opt.supersample = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--export-lines") {
