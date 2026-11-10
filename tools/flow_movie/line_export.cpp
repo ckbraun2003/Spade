@@ -263,12 +263,23 @@ std::string export_caption_text(const ExportCaption& in) {
     t += "- Decimation: points at least " + std::string(spacing) + " mm of arc apart, to fit " +
          std::to_string(kExportMaxBytes / 1'000'000u) + " MB.\n";
     t += "- Run: " + i.sim + "; case " + i.config + "\n";
-    t += "- Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs of "
-         "fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady 3 m/s wind";
-    t += in.crosswind ? " from the side (crosswind setting supported but not validated). The rotors do not respond "
-                        "to the wind and the held drone does not compensate: this is a visualisation of the air, "
-                        "not a prediction of the thrust, power or attitude a real quad would need in a crosswind. "
-                      : " (the case's headwind). ";
+    char cell[32], wind[32];
+    std::snprintf(cell, sizeof cell, "%.3g", static_cast<double>(in.cell_mm));
+    std::snprintf(wind, sizeof wind, "%.3g", static_cast<double>(in.wind_mps));
+    t += "- Stand-in: the reference quad's rigid parts as solids in the flow at " + std::string(cell) +
+         " mm, its rotors as actuator discs of fixed thrust and swirl, the drone held level at its still-air hover "
+         "throttle";
+    if (!(in.wind_mps > 0.0f)) {
+        t += " in still air. ";
+    } else if (!in.crosswind) {
+        t += " in a steady " + std::string(wind) + " m/s headwind. ";
+    } else {
+        t += " in a steady " + std::string(wind) +
+             " m/s wind from the side (crosswind setting supported but not validated). In plain words: the rotor "
+             "model's push does not respond to the side wind, and the grid carries the wake downwind. The held drone "
+             "does not compensate: this is a visualisation of the air, not a prediction of the thrust, power or "
+             "attitude a real quad would need in a crosswind. ";
+    }
     t += "The wake below the quad has not been measured against a downwash record. Speeds are relative speeds, "
          "not validated speeds.";
     if (in.device) {

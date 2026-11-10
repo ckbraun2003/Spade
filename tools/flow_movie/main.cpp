@@ -10,7 +10,7 @@
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
 //              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
-//   flow_movie --video d1-hover|case ... --gpu
+//   flow_movie --video d1-hover|d1-still|case ... --gpu
 //
 // --cpu draws stills on the CPU renderer, the GL views' reference; --view
 // limits stills to one view.
@@ -1587,7 +1587,9 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     cap.date_utc = utc_now();
     cap.command = opt.command_line;
     cap.ticket = opt.ticket.empty() ? "none" : opt.ticket;
-    cap.crosswind = std::fabs(heading) > 1.0f;
+    cap.wind_mps = wind;
+    cap.crosswind = wind > 0.0f && std::fabs(heading) > 1.0f;
+    cap.cell_mm = volume.header.cell * 1000.0f;
     cap.device = film.device;
     {
         std::ofstream out(json, std::ios::binary | std::ios::trunc);
@@ -2153,7 +2155,7 @@ int main(int argc, char** argv) {
         return 2;
 #else
         const bool live = opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
-                          opt.video == "d1-hover";
+                          opt.video == "d1-hover" || opt.video == "d1-still";
         if (!live || opt.step_time > 0u || opt.subnormal_scan > 0u || opt.subnormal_locate > 0u) {
             std::fprintf(stderr, "flow_movie: --gpu films a LiveRun case (d1-hover, case, case-*), and only films "
                                  "it\n");
@@ -2198,9 +2200,10 @@ int main(int argc, char** argv) {
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
     } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
-               opt.video == "d1-hover") {
+               opt.video == "d1-hover" || opt.video == "d1-still") {
         const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad", d1 = opt.video == "d1-hover";
-        if (!smoke && !quad && !d1 && opt.case_file.empty()) {
+        const bool still = opt.video == "d1-still";  // D1 in still air: the hover run, wind 0
+        if (!smoke && !quad && !d1 && !still && opt.case_file.empty()) {
             std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
             return 2;
         }
@@ -2208,6 +2211,8 @@ int main(int argc, char** argv) {
                   : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
                   : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid),
                                         !opt.gpu)
+                  : still ? d1_still_air_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds,
+                                                   opt.grid.value_or(kD1Grid))
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
         if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
@@ -2219,6 +2224,7 @@ int main(int argc, char** argv) {
                               std::string(smoke ? "case-smoke"
                                           : quad ? "case-quad"
                                           : d1   ? "d1-hover"
+                                          : still ? "d1-still"
                                                  : "case-" + opt.case_file.stem().string()) +
                                   (opt.gpu ? "-gpu" : ""),
                               opt.gpu);

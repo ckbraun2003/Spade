@@ -229,4 +229,15 @@ spade::Result<LiveCase> d1_live_case(double seconds, const spade::physics::airfl
                    "solids in the flow at 4 mm; idle 5 % and the charge are the film's own (chain pin)");
 }
 
+spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::physics::airflow::GridShape& grid) {
+    auto q = spade::testing::d1_case(seconds, grid);
+    if (q) {
+        q->c.flight.kind = spade::analysis::FlightKind::hover;  // still air: no wind to carry or to bend the wake
+        q->c.flight.speed = 0.0f;
+    }
+    return film_of(std::move(q), seconds, true, "D1 hover, still air",
+                   "held at hover in still air, not flying; the rotors are actuator discs, not blades; the airframe's "
+                   "parts are solids in the flow; idle 5 % and the charge are the film's own (chain pin)");
+}
+
 }  // namespace flow_movie

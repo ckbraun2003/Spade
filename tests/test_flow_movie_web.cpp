@@ -300,6 +300,7 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_TRUE(has(text, "Colour shows relative speed, not validated speed"));
     EXPECT_TRUE(has(text, "crosswind setting supported but not validated"));
     EXPECT_TRUE(has(text, "the rotors do not respond to it"));
+    EXPECT_TRUE(has(text, "the rotor model's push does not respond to the side wind, and the grid carries the wake downwind"));
     EXPECT_TRUE(has(text, "not a prediction of the thrust, power or attitude a real quad would need"));
     EXPECT_TRUE(has(text, "about 0.18 s of simulated time only"));
     EXPECT_TRUE(has(text, "a single run on the device of record"));

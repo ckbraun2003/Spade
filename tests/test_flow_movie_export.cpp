@@ -288,7 +288,14 @@ TEST(FlowMovieExport, TheCaptionNamesWhatTheFileIsAndNeverClaimsMore) {
     in.date_utc = "2026-11-10";
     in.command = "flow_movie --video d1-hover --export-lines flow_hover";
     in.ticket = "web-spade-export";
+    in.cell_mm = 8.0f;
+    const std::string still = fm::export_caption_text(in);
+    EXPECT_TRUE(has(still, "solids in the flow at 8 mm")) << still;
+    EXPECT_TRUE(has(still, "in still air."));
+    EXPECT_FALSE(has(still, "headwind")) << "still air names no wind";
+    in.wind_mps = 3.0f;
     const std::string hover = fm::export_caption_text(in);
+    EXPECT_TRUE(has(hover, "in a steady 3 m/s headwind."));
     for (const char* part : {"# flow_hover", "- Commit: abc123", "612 streamlines", "frame 17, step 1020",
                              "a snapshot of an unsteady field", "+x the nose", "not validated speeds",
                              "has not been measured against a downwash record", "web-spade-export"}) {
@@ -300,6 +307,8 @@ TEST(FlowMovieExport, TheCaptionNamesWhatTheFileIsAndNeverClaimsMore) {
     in.device = true;
     const std::string cross = fm::export_caption_text(in);
     EXPECT_TRUE(has(cross, "supported but not validated"));
+    EXPECT_TRUE(has(cross, "the rotor model's push does not respond to the side wind, and the grid carries the wake downwind"));
+    EXPECT_TRUE(has(cross, "in a steady 3 m/s wind from the side"));
     EXPECT_TRUE(has(cross, "not a prediction of the thrust, power or attitude"));
     EXPECT_TRUE(has(cross, "bit-equal to the CPU's through about 0.18 s"));
     EXPECT_TRUE(has(cross, "a single run on the device of record"));

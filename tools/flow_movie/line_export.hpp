@@ -94,7 +94,9 @@ struct ExportCaption {
     std::string date_utc;
     std::string command;
     std::string ticket;
-    bool crosswind = false;  // a wind from the side (supported but not validated), else the case's own headwind
+    float wind_mps = 0.0f;   // the case's wind: 0 is still air
+    bool crosswind = false;  // the wind is from the side (supported but not validated), else a headwind
+    float cell_mm = 0.0f;    // the grid's cell the parts are solids at
     bool device = false;     // the fluid stepped by the GPU solver
 };
 [[nodiscard]] std::string export_caption_text(const ExportCaption& in);

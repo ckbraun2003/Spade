@@ -264,7 +264,8 @@ struct DeliveryGuard {
              "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
              "the side (crosswind setting supported but not validated). The wind bends and carries the wake and "
              "flows round the airframe's parts, but the rotors do not respond to it and the held drone does not "
-             "need to compensate: this is a visualisation of the air, not a prediction of the thrust, power or "
+             "need to compensate. In plain words: the rotor model's push does not respond to the side wind, and the "
+             "grid carries the wake downwind. This is a visualisation of the air, not a prediction of the thrust, power or "
              "attitude a real quad would need in a crosswind. ";
         t += c.quantity == Quantity::cp
                  ? "Pressure is a coefficient against the inflow's pressure, read one cell off each wall (first "

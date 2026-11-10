@@ -91,4 +91,10 @@ using spade::testing::kD1Grid;
                                                    const spade::physics::airflow::GridShape& grid = kD1Grid,
                                                    bool parts_in_flow = true, float heading_deg = 0.0f);
 
+// D1 in STILL AIR (the lead, 2026-11-10: "a hovering-quadrotor run"): the same case with the wind taken off, as
+// Physics' hover-download row sets it (flight kind hover, speed 0), the parts as solids and the throttle the
+// still-air hover. `grid` as d1_live_case().
+[[nodiscard]] spade::Result<LiveCase> d1_still_air_live_case(double seconds,
+                                                             const spade::physics::airflow::GridShape& grid = kD1Grid);
+
 }  // namespace flow_movie
