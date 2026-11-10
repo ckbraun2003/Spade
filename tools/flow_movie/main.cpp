@@ -2037,7 +2037,7 @@ struct WebTimes {
                         u.y -= (v_h + 5.0f * std::min(below / 0.3f, 1.0f)) * std::exp(-t2 * t2 * t2);
                         if (rho > 1.0e-6f) {
                             const float rc = 0.35f * radius * (1.0f + 2.0f * below);
-                            const float swirl = 30.0f * (1.0f - std::exp(-rho * rho / (rc * rc))) / (6.2831853f * rho) *
+                            const float swirl = 0.4f * (1.0f - std::exp(-rho * rho / (rc * rc))) / (6.2831853f * rho) *
                                                 std::exp(-below / 0.7f);
                             u.x += -r.spin * swirl * dz / rho;
                             u.z += r.spin * swirl * dx / rho;
