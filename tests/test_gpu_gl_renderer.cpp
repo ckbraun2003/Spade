@@ -2583,6 +2583,89 @@ TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
+// RND-11 (L47, the lead 2026-11-10): see-through draw items. Three overlapping discs facing the camera, at alpha
+// 0.25, 0.4 and 0.6, over the shadow scene's lambert ground and its shadow, listed in both orders. A see-through item
+// is drawn after the opaques, farther first, blended src-over with its material's alpha, and the two backends draw
+// the same frame to a band: the interior is 1 level for the shading plus one more for each blend layer, the
+// coverage edges as the existing bands. The band here is NOT YET MEASURED: it is loose, and the first run's printed
+// line is what pins it (measured + 1).
+[[nodiscard]] MeshData make_disc_mesh(float radius, int segments) {
+    MeshData disc;
+    disc.positions.push_back(glm::vec3(0.0f));
+    disc.normals.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+    for (int i = 0; i < segments; ++i) {
+        const float a = 6.2831853f * static_cast<float>(i) / static_cast<float>(segments);
+        disc.positions.push_back(glm::vec3(radius * std::cos(a), radius * std::sin(a), 0.0f));
+        disc.normals.push_back(glm::vec3(0.0f, 0.0f, 1.0f));
+    }
+    for (int i = 0; i < segments; ++i) {
+        disc.indices.insert(disc.indices.end(), {0u, 1u + static_cast<uint32_t>(i),
+                                                 1u + static_cast<uint32_t>((i + 1) % segments)});
+    }
+    disc.submesh_first_index = {0};
+    disc.submesh_index_count = {static_cast<uint32_t>(disc.indices.size())};
+    disc.submesh_material = {0};
+    return disc;
+}
+
+TEST_F(GpuGlRenderer, SeeThroughDiscsMatchTheCpuWithinTheirBandInEitherListingOrder) {
+    const Camera camera = camera_over_shadow();
+    const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+    const float alphas[3] = {0.25f, 0.4f, 0.6f};
+    const glm::vec3 colours[3] = {glm::vec3(1.0f, 0.3f, 0.2f), glm::vec3(0.2f, 0.9f, 0.3f), glm::vec3(0.3f, 0.4f, 1.0f)};
+    const float distance[3] = {3.0f, 3.5f, 4.0f};
+    const float lateral[3] = {-0.5f, 0.0f, 0.5f};
+    const auto build = [&](bool reversed, bool flagged) {
+        RenderScene scene = make_shadow_scene(false);
+        const auto disc_mesh = static_cast<uint32_t>(scene.meshes.size());
+        scene.meshes.push_back(make_disc_mesh(0.8f, 24));
+        const auto first_material = static_cast<uint32_t>(scene.materials.size());
+        for (int k = 0; k < 3; ++k) scene.materials.push_back(Material{.base_color = glm::vec4(colours[k], alphas[k])});
+        const int order[2][3] = {{0, 1, 2}, {2, 1, 0}};
+        for (const int k : order[reversed ? 1 : 0]) {
+            const glm::vec3 at = camera.position + forward * distance[k] + right * lateral[k];
+            scene.statics.push_back(DrawItem{
+                .mesh_index = disc_mesh,
+                .local_to_world = glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(camera.orientation),
+                .material_override = first_material + static_cast<uint32_t>(k),
+                .see_through = flagged});
+        }
+        return scene;
+    };
+    RenderOptions options = comparable_options();
+    options.shadows = true;
+    const RenderScene flagged = build(false, true), reversed = build(true, true), opaque = build(false, false);
+
+    const std::vector<uint8_t> cpu_flagged = cpu_rgba(flagged, camera, options);
+    const std::vector<uint8_t> cpu_reversed = cpu_rgba(reversed, camera, options);
+    const std::vector<uint8_t> cpu_opaque = cpu_rgba(opaque, camera, options);
+    const std::vector<uint8_t> gl_flagged = draw_and_read(flagged, options, camera);
+    const std::vector<uint8_t> gl_reversed = draw_and_read(reversed, options, camera);
+    const std::vector<uint8_t> gl_opaque = draw_and_read(opaque, options, camera);
+    ASSERT_EQ(gl_flagged.size(), kPixels * 4u);
+
+    // They blend: the same discs unflagged are opaque and the frames differ by hundreds of pixels, on both paths.
+    EXPECT_GT(count_differing(cpu_flagged, cpu_opaque), 300u) << "the CPU blends the discs";
+    EXPECT_GT(count_differing(gl_flagged, gl_opaque), 300u) << "GL blends the discs";
+    // Order independence: the listing order changes nothing, on either path.
+    EXPECT_EQ(count_differing(cpu_flagged, cpu_reversed), 0u);
+    EXPECT_EQ(count_differing(gl_flagged, gl_reversed), 0u);
+
+    const ChannelDiff base = channel_diff(cpu_opaque, gl_opaque);
+    const ChannelDiff d = channel_diff(cpu_flagged, gl_flagged);
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    RecordProperty("opaque_worst_levels", base.worst);
+    RecordProperty("opaque_differing_pixels", static_cast<int>(base.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ see-through ] worst %d levels (the same discs opaque %d), %zu over two; %zu pixels differ (opaque %zu); "
+                "on %s\n",
+                d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
+    constexpr int kBandWorstLevels = 12;  // unmeasured: tighten to measured + 1
+    EXPECT_LE(d.worst, std::max(base.worst, kBandWorstLevels)) << device;
+}
+
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
 // Lines as GL_LINES, each segment in the mean of its ends' colours; points as
 // squares of size_px. Depth-tested against the ground. Lines rasterize by

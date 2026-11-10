@@ -544,6 +544,20 @@ struct DrawItem {
     // its part of it; segmentation by parts falls back to the object.
     uint32_t object_label = kNoLabel;
     uint32_t part_label = kNoLabel;
+
+    // A see-through item (RND-11, L47; Kat's rotor discs and the like): drawn AFTER every opaque item, blended
+    // over what is there by its material's alpha, farther items first (see_through_order()). False, the
+    // default, is an opaque item: its alpha is ignored, as it always was, so no existing frame moves.
+    //   * src-over with the resolved material's alpha (material_override first, else the submesh's), clamped to
+    //     0..1; depth-tested against the opaque depth, never writing depth;
+    //   * it RECEIVES shadows and never casts one (the shadow maps skip it), and takes the atmosphere as a shaded
+    //     surface does;
+    //   * shaded frames only: the sensor modes and velocity leave it out, wireframe draws its edges like any item's;
+    //   * back faces cull, as for every shaded mesh (SR-13): a disc seen from both sides must be closed or carry both
+    //     windings, since coincident faces cull to one and blend once;
+    //   * an item a CSG subtree marches (CsgSubtree::draw_item) cannot be see-through: render() refuses it by name;
+    //   * a flow volume composites over a see-through item even when the item is nearer (known limit).
+    bool see_through = false;
 };
 
 // A CSG subtree the raster ray-marches instead of drawing its mesh.
@@ -677,6 +691,13 @@ struct SceneLabels {
 };
 [[nodiscard]] Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const NamedMesh> resolved_meshes,
                                                     const SceneLabels& labels);
+
+// The see-through items of `scene` in the order they are drawn, as indices into statics followed by dynamics (an
+// index below statics.size() is statics[i], else dynamics[i - statics.size()]): FARTHER FIRST by the view depth of
+// the centre of each item's mesh's local bounding box, taken through local_to_world, as dot(centre - eye, forward)
+// in double; ties by that index. A centre behind the eye keeps its (negative) key, no special case. An item with no
+// mesh to draw is left out. Both backends draw in this order. A pure function of its inputs.
+[[nodiscard]] std::vector<uint32_t> see_through_order(const RenderScene& scene, const Camera& camera);
 
 // `name`'s index in scene.labels, appended if it is not there yet.
 [[nodiscard]] uint32_t intern_label(RenderScene& scene, std::string_view name);

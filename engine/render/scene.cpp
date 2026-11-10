@@ -575,4 +575,7 @@ void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
     }
 }
 
+// RED stub: the real order is the next commit's.
+std::vector<uint32_t> see_through_order(const RenderScene&, const Camera&) { return {}; }
+
 }  // namespace spade::render
