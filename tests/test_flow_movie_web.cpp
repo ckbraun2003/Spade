@@ -118,7 +118,7 @@ TEST(FlowMovieWeb, TheWindowsFrameToStepMapIsMonotoneAndEndsOnTheWindowsEnd) {
 // at every step the groups use and for every frame the group holds.
 TEST(FlowMovieWeb, EveryFrameOfEveryGroupIsTheSameWholeNumberOfStepsAfterTheOneBefore) {
     for (const web::Group& g : web::web_groups()) {
-        const double h = g.name == "taylor-green" ? static_cast<double>(web::taylor_green_step(128)) : web::kLiveStepS;
+        const double h = g.name == "taylor-green" ? static_cast<double>(web::taylor_green_step(128)) : g.step_s;
         const uint64_t from_step = static_cast<uint64_t>(std::llround(g.from_s / h));
         uint64_t last = from_step;
         for (uint32_t k = 0; k < g.frames; ++k) {
@@ -180,14 +180,42 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
         EXPECT_GE(g->frames, c.frames()) << c.id << ": its group's cache holds all its frames";
         EXPECT_GT(g->steps_per_frame, 0u) << c.id;
     }
-    // One window a group: S1, S5, S6 and S8 share the quad's developed wake; S3 and S4 the D1 run.
+    // One window a group: S5 and S6 share the quad's developed wake; S1 and S8 the D1 still-air run; S2, S3 and S4
+    // the D1 side-wind run from rest.
+    EXPECT_EQ(web::find_clip("S5")->group, web::find_clip("S6")->group);
     EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S8")->group);
+    EXPECT_EQ(web::find_clip("S2")->group, web::find_clip("S3")->group);
     EXPECT_EQ(web::find_clip("S3")->group, web::find_clip("S4")->group);
     EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S2")->group);
     EXPECT_EQ(web::find_group("quad-developed")->frames, 450u);
     EXPECT_DOUBLE_EQ(web::find_group("quad-developed")->from_s, 0.9);
-    EXPECT_EQ(web::find_group("d1-crosswind")->steps_per_frame, 3u);
+    EXPECT_EQ(web::find_group("d1-crosswind")->steps_per_frame, 7u);
+    EXPECT_EQ(web::find_group("d1-still-developed")->steps_per_frame, 5u);
+    EXPECT_DOUBLE_EQ(web::find_group("d1-still-developed")->from_s, 0.15);
+    EXPECT_EQ(web::find_group("d1-still-developed")->frames, 450u);
     EXPECT_EQ(web::find_group("nothing"), nullptr);
+}
+
+// The hero clips run on D1 at the film's step with the Smagorinsky term (the lead, 2026-11-10, L54): S1 and S8 in
+// still air, S2 in the side wind; a frame is about a millisecond of simulated time, as the quad's were.
+TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointOneSeven) {
+    EXPECT_DOUBLE_EQ(web::kD1WebStepS, 0.0002);
+    EXPECT_FLOAT_EQ(web::kD1WebSgsCs, 0.17f);
+    for (const char* id : {"S1", "S8"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1_still) << id;
+    for (const char* id : {"S2", "S3", "S4"}) EXPECT_TRUE(web::find_clip(id)->scene == web::Scene::d1) << id;
+    for (const char* name : {"d1-still-developed", "d1-crosswind"}) {
+        const web::Group& g = *web::find_group(name);
+        EXPECT_DOUBLE_EQ(g.step_s, web::kD1WebStepS) << name;
+        const double ms_a_frame = static_cast<double>(g.steps_per_frame) * g.step_s * 1000.0;
+        EXPECT_GE(ms_a_frame, 1.0) << name;
+        EXPECT_LE(ms_a_frame, 1.5) << name;
+    }
+    EXPECT_FLOAT_EQ(web::find_group("quad-developed")->step_s, 0.0005f) << "the quad's film is as it was";
+    // The windows end at 0.60 s (still air) and 0.504 s (side wind).
+    const web::Group& still = *web::find_group("d1-still-developed");
+    const web::Group& wind = *web::find_group("d1-crosswind");
+    EXPECT_NEAR(web::window_end_s(still.from_s, still.frames, still.steps_per_frame, still.step_s), 0.60, 1e-9);
+    EXPECT_NEAR(web::window_end_s(wind.from_s, wind.frames, wind.steps_per_frame, wind.step_s), 0.504, 1e-9);
 }
 
 TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {
@@ -302,13 +330,20 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_TRUE(has(text, "the rotors do not respond to it"));
     EXPECT_TRUE(has(text, "the rotor model's push does not respond to the side wind, and the grid carries the wake downwind"));
     EXPECT_TRUE(has(text, "not a prediction of the thrust, power or attitude a real quad would need"));
-    EXPECT_TRUE(has(text, "about 0.18 s of simulated time only"));
+    EXPECT_TRUE(has(text, "at 0.2 ms with a Smagorinsky subgrid viscosity (Cs 0.17)"));
+    EXPECT_FALSE(has(text, "bit-equal")) << "the term is new on the device: no equality with the CPU is claimed";
     EXPECT_TRUE(has(text, "a single run on the device of record"));
     EXPECT_FALSE(has(text, "identical to the CPU"));
     const std::string standing = web::standing_caveats(*s3);
     EXPECT_FALSE(has(standing, "m/s")) << "no speed figures in the standing caveats";
-    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S2")), "inviscid"));
-    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S1")), "four actuator discs"));
+    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S5")), "inviscid")) << "the quad's CPU film";
+    EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S2")), "steady wind from the side"));
+    const std::string s1_caveats = web::standing_caveats(*web::find_clip("S1"));
+    EXPECT_TRUE(has(s1_caveats, "rigid parts as solids in the flow at 4 mm"));
+    EXPECT_TRUE(has(s1_caveats, "hover throttle in still air"));
+    EXPECT_TRUE(has(s1_caveats, "Smagorinsky subgrid viscosity (Cs 0.17)"));
+    EXPECT_FALSE(has(s1_caveats, "wind from the side")) << "S1 and S8 are in still air";
+    EXPECT_FALSE(has(s1_caveats, "bit-equal"));
     EXPECT_TRUE(has(web::standing_caveats(*web::find_clip("S4")), "sign on the arms' tops has not been measured"));
     for (const web::Clip& c : web::web_clips()) {
         EXPECT_FALSE(has(web::standing_caveats(c), "m/s")) << c.id << ": no speed figures";

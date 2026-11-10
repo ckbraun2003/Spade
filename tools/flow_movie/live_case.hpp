@@ -37,6 +37,9 @@ struct LiveCase {
     // its centre either way. The case's box then names its longest side, and
     // identity names the grid.
     std::optional<spade::physics::airflow::GridShape> grid;
+    // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
+    // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.
+    float sgs_cs = 0.0f;
 };
 
 // The fastest the case's air is expected to move, m/s, at least 1: the
@@ -94,6 +97,9 @@ using spade::testing::kD1Grid;
 // D1 in STILL AIR (the lead, 2026-11-10: "a hovering-quadrotor run"): the same case with the wind taken off, as
 // Physics' hover-download row sets it (flight kind hover, speed 0), the parts as solids and the throttle the
 // still-air hover. `grid` as d1_live_case().
+[[nodiscard]] spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
+                                                       float heading_deg, float step_s, float sgs_cs);
+
 [[nodiscard]] spade::Result<LiveCase> d1_still_air_live_case(double seconds,
                                                              const spade::physics::airflow::GridShape& grid = kD1Grid);
 

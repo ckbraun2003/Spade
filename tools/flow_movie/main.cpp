@@ -243,6 +243,9 @@ struct Film {
     if (film.run) {
         return film.stem + ": " + std::to_string(film.frames) +
                (film.gpu      ? " frames of GpuFluid, no parts, the rotors held; "
+                : film.device && film.run->sgs_cs > 0.0f
+                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, not checked "
+                      "against the CPU; "
                 : film.device ? " frames of LiveRun on GpuFluid, the parts in the flow, checked bit-equal to the "
                                 "CPU through about 0.18 s of simulated time only; "
                               : " frames of LiveRun; ") +
@@ -417,7 +420,17 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         return std::unexpected(spade::Error{spade::Code::unavailable, film.stem + ": a device film needs the Vulkan build"});
 #endif
     }
-    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, device.maker)
+    // L52: LiveRun's config has no subgrid viscosity, so a device film's maker is handed the case's Cs on a copy of
+    // the config (GpuFluid refuses a nonzero Cs until its kernel lands, naming it: the film then stops by name).
+    an::LiveFluidMaker maker = device.maker;
+    if (film.device && lc.sgs_cs > 0.0f) {
+        maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
+            spade::physics::airflow::FluidConfig config = s.config;
+            config.sgs_cs = cs;
+            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids});
+        };
+    }
+    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker)
                : resuming  ? an::LiveRun::restore(save, *resolved, lc.run_model)
                            : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
@@ -1135,6 +1148,14 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 // it, as in a box of uniform wind, the deepest value is the grid's noise.
 constexpr float kVortexFloor = -5.0f;
 
+// The held body's pose, from the last frame decorate() saw: a view that seeds at the rotors (a streamline view's
+// on_parts runs after decorate) reads it. The drone is held, so it is the same every frame.
+struct HeldPose {
+    glm::vec3 pos{0.0f};
+    glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};
+    bool known = false;
+};
+
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions. `gpu`: its fluid
@@ -1178,7 +1199,15 @@ constexpr float kVortexFloor = -5.0f;
                            fixed(c.roll_deg, 0) + " deg, yaw " + fixed(c.yaw_deg, 0) + " deg");
         return t;
     };
-    film.decorate = [run, parts](const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+    const auto pose = std::make_shared<HeldPose>();
+    film.decorate = [run, parts, pose](const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+        if (log.live.size() >= 7u) {
+            pose->pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]),
+                                  static_cast<float>(log.live[2]));
+            pose->orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                                     static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+            pose->known = true;
+        }
         if (parts->parts.empty()) return {};
         if (log.live.size() < 7u) {
             return std::unexpected(spade::Error{spade::Code::internal, "a LiveRun frame's log holds no held body"});
@@ -1226,6 +1255,57 @@ constexpr float kVortexFloor = -5.0f;
                            0.95f * std::max({size.x, size.y, size.z}), sweep_azimuth(30.0f, 60.0f, k, n), 20.0f);
             return {};
         }});
+    // The web masters' D1 views (the lead, 2026-11-10, L54): the quad's own two, on the held drone's rotors. Speed
+    // 0 to 12 m/s as the quad's were. The camera is the clip's.
+    {
+        constexpr float kWebSpeedTop = 12.0f;
+        const render::TransferFunction web_colours =
+            colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, kWebSpeedTop);
+        const auto frame_on_drone = [](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::Camera& camera) {
+            const glm::vec3 size = volume_size(v);
+            camera = orbit(volume_centre(v), 0.95f * std::max({size.x, size.y, size.z}), sweep_azimuth(30.0f, 60.0f, k, n),
+                           20.0f);
+        };
+        film.views.push_back(View{
+            "speed-volume", "speed |u| as a volume, 0 to 12 m/s",
+            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                             render::Camera& camera) -> spade::Result<void> {
+                scene.flow_layers.push_back(render::FlowLayer{
+                    &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, kWebSpeedTop, 0.15f, 30.0f)},
+                    {}});
+                frame_on_drone(v, k, n, camera);
+                return {};
+            }});
+        film.views.push_back(View{
+            "streamlines", "streamlines seeded above each rotor, coloured by speed |u|, 0 to 12 m/s",
+            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+                             render::Camera& camera) -> spade::Result<void> {
+                frame_on_drone(v, k, n, camera);
+                return {};
+            },
+            [run, pose, web_colours](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                if (!pose->known) {
+                    return std::unexpected(spade::Error{spade::Code::internal, "the streamline view ran before a frame's "
+                                                                              "held body was read"});
+                }
+                std::vector<glm::vec3> seeds;
+                for (const spade::vehicles::RotorDesc& r : run->run_model.rotors) {
+                    const glm::vec3 hub = pose->pos + pose->orient * r.local_pos;
+                    const glm::vec3 axis = glm::normalize(pose->orient * (r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f)));
+                    for (const float ring : {0.35f, 0.75f}) {
+                        for (const glm::vec3& s : render::seed_ring(hub - axis * 0.06f, axis, ring * r.radius, 8)) {
+                            seeds.push_back(s);
+                        }
+                    }
+                }
+                render::StreamlineOptions options;
+                options.max_steps = 1200;
+                if (auto ok = add_streamlines(scene, v, seeds, options, web_colours); !ok) {
+                    return std::unexpected(ok.error());
+                }
+                return std::string();
+            }});
+    }
     film.views.push_back(View{
         "slice", "speed |u| on the vertical plane through the drone, 0 to " + fixed(speed_top, 0) + " m/s",
         [speed_colours](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
@@ -1359,27 +1439,11 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         const AirflowCase q = film.airflow;
-        const glm::vec3 target(0.0f, -0.30f, 0.0f);  // the discs and the wake below them
-        if (id == "S1") {
-            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(target, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
-                             web::loop_azimuth(25.0f, 360.0f, k, n), 20.0f);
-            }, true);
-        } else if (id == "S2") {
-            view = with_camera(*view_named(film, "lambda2"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                const float wide = web::fit_distance(0.95f, kWebFov, kWebAspect, fit);
-                const float close = web::fit_distance(0.42f, kWebFov, kWebAspect, fit);
-                return orbit(glm::vec3(0.0f, -0.25f, 0.0f), web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
-            }, true);
-        } else if (id == "S6") {
+        // S5 and S6 stay on the reference quad's CPU film; S1, S2 and S8 moved to D1 (the lead, L54).
+        if (id == "S6") {
             view = with_camera(*view_named(film, "above"), [=](const spade::FlowVolume&, uint32_t, uint32_t) {
                 return orbit(glm::vec3(0.0f), web::fit_distance(0.30f, kWebFov, kWebAspect, fit), 0.0f, 80.0f);
             }, true);
-        } else if (id == "S8") {
-            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(target, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
-                             web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
-            }, false);
         } else {  // S5: the plane through the rotors on +x and -x, the frame's own shape, edge to edge
             const float lo = clip.range_lo, hi = clip.range_hi;
             view = View{
@@ -1410,14 +1474,36 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
             return orbit(volume_centre(v), web::fit_distance(4.2f, kWebFov, kWebAspect, fit),
                          web::loop_azimuth(30.0f, clip.orbit_degrees, k, n), 24.0f);
         }, true);
-    } else {  // D1 in a crosswind (heading 90: the air moves +z), the parts in the flow, on the device
-        auto lc = d1_live_case(plan.to_s, plan.grid.value_or(kD1Grid), true, 90.0f);
+    } else {  // D1, the parts in the flow, on the device, at 0.2 ms with Cs 0.17: S1 and S8 in still air, the rest in
+              // a crosswind (heading 90: the air moves +z)
+        const bool still = clip.scene == web::Scene::d1_still;
+        auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
+                                   static_cast<float>(web::kD1WebStepS), web::kD1WebSgsCs);
         if (!lc) return std::unexpected(lc.error());
-        auto made = case_film(std::move(*lc), plan.frames, "web-d1", false);
+        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
-        if (id == "S3") {
+        // PROVISIONAL framing: the radii and targets below are the quad's, not yet fitted on D1's field (the lead:
+        // fit on the still-air field's real line extents, the airframe and the wake column inside the 10% margin).
+        const auto below_drone = [](const spade::FlowVolume& v) { return volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f); };
+        if (id == "S1") {
+            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+                             web::loop_azimuth(25.0f, 360.0f, k, n), 20.0f);
+            }, false);
+        } else if (id == "S8") {
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+                             web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
+            }, false);
+        } else if (id == "S2") {
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                const float wide = web::fit_distance(0.70f, kWebFov, kWebAspect, fit);
+                const float close = web::fit_distance(0.42f, kWebFov, kWebAspect, fit);
+                return orbit(below_drone(v), web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
+            }, false);
+        } else if (id == "S3") {
             view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
                 return orbit(volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f), web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
                              web::loop_azimuth(300.0f, clip.orbit_degrees, k, n), 20.0f);
@@ -1911,7 +1997,7 @@ struct WebTimes {
                     ? opt.window_to
                     : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame,
                                         clip->scene == web::Scene::taylor_green ? double{web::taylor_green_step(plan.cells)}
-                                                                                : web::kLiveStepS);
+                                                                                : group->step_s);
     plan.grid = opt.grid;
     const uint32_t n = std::min(clip->frames(), plan.frames);
     const uint32_t ss = opt.supersample > 0u ? std::min(opt.supersample, 4u) : 2u;  // rendered at ss x, filtered down

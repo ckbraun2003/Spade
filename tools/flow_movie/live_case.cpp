@@ -63,7 +63,8 @@ namespace {
            std::to_string(lc.seconds) + " s" +
            (lc.grid ? ", grid " + std::to_string(lc.grid->nx) + " x " + std::to_string(lc.grid->ny) + " x " +
                           std::to_string(lc.grid->nz) + " at " + std::to_string(lc.grid->dx) + " m"
-                    : std::string());
+                    : std::string()) +
+           (lc.sgs_cs > 0.0f ? ", Smagorinsky Cs " + std::to_string(lc.sgs_cs) : std::string());
 }
 
 }  // namespace
@@ -238,6 +239,24 @@ spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::phys
     return film_of(std::move(q), seconds, true, "D1 hover, still air",
                    "held at hover in still air, not flying; the rotors are actuator discs, not blades; the airframe's "
                    "parts are solids in the flow; idle 5 % and the charge are the film's own (chain pin)");
+}
+
+spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
+                                         float heading_deg, float step_s, float sgs_cs) {
+    // The website masters' D1 (the lead, 2026-11-10, L54): the parts in the flow, held at hover, at the film's step
+    // and with the L52 subgrid viscosity (0.2 ms and Cs 0.17 in web_masters.hpp). Heading 0: still air; else the side wind, as before.
+    auto made = heading_deg == 0.0f ? d1_still_air_live_case(seconds, grid) : d1_live_case(seconds, grid, true, heading_deg);
+    if (!made) return made;
+    made->c.time.step = step_s;
+    made->sgs_cs = sgs_cs;
+    char line[96];
+    std::snprintf(line, sizeof line, "; step %.2g ms with a Smagorinsky subgrid viscosity, Cs %.2f",
+                  static_cast<double>(step_s) * 1000.0, static_cast<double>(sgs_cs));
+    made->notes += line;
+    auto id = identity_of(*made);
+    if (!id) return std::unexpected(id.error());
+    made->identity = std::move(*id);
+    return made;
 }
 
 }  // namespace flow_movie

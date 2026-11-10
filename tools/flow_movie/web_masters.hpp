@@ -28,7 +28,9 @@ inline constexpr uint32_t kFps = 30;
 inline constexpr float kMargin = 0.10f;  // clear space on every side, a fraction of the frame
 inline constexpr int kCrf = 15;          // the brief's 14 to 16
 
-enum class Scene : uint8_t { quad, d1, taylor_green };
+// quad: the reference quad's discs on the CPU film at 1 cm (S5, S6). d1: D1, the parts in the flow, in a side wind
+// (S2, S3, S4). d1_still: D1 in still air (S1, S8). taylor_green: S7, dropped by Cameron (L53), never run.
+enum class Scene : uint8_t { quad, d1, taylor_green, d1_still };
 enum class Quantity : uint8_t { speed, cp, q_surface };
 enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, there_and_back, push_in, still, slow_rotate };
 
@@ -65,25 +67,33 @@ struct Group {
     double from_s = 0.0;
     uint32_t steps_per_frame = 0;
     uint32_t frames = 0;
+    double step_s = 0.0005;  // the group's solver step h, s (the Taylor-Green case's is its own, dimensionless)
 };
 
-// The solver step of the quad and of D1 (LiveRun's), s.
+// The solver step of the quad (LiveRun's), s.
 inline constexpr double kLiveStepS = 0.0005;
+
+// D1's web masters (the lead, 2026-11-10, L54): the 4 mm GPU sim with the drone's parts in the flow, at the film's
+// step of 0.2 ms and with the L52 Smagorinsky term at Cs 0.17.
+inline constexpr double kD1WebStepS = 0.0002;
+inline constexpr float kD1WebSgsCs = 0.17f;
 
 // The Taylor-Green case's step in its own (dimensionless) time: half a cell of the 2 pi box, as the case sets it.
 [[nodiscard]] inline float taylor_green_step(uint32_t cells) {
     return 0.5f * static_cast<float>(2.0 * 3.14159265358979323846 / static_cast<double>(cells));
 }
 
-// The windows, at 0.5 ms a step. The quad's developed wake runs 0.9 to 1.35 s at 2 steps a frame (Physics: the
-// box's open faces past 1.5 s are unmeasured); its start-up 0 to 0.54 s at 3; D1's crosswind run 0 to 0.54 s at
-// 3; the Taylor-Green case one step a frame, 300 steps (to 7.36 at 128 cells; its time is dimensionless).
+// The windows. The quad's (S5, S6; 0.5 ms a step): developed wake 0.9 to 1.35 s at 2 steps a frame (Physics: the
+// box's open faces past 1.5 s are unmeasured). D1's (0.2 ms a step; a frame is about 1 ms of simulated time, as the
+// quad's were): the still-air wake from 0.15 s at 5 steps a frame, 450 frames, to 0.60 s (0.15 s is the wake's
+// development time AS ASSUMED: the 0.15 s test run confirms it); the side wind's run from rest at 7 steps a frame
+// (1.4 ms), 360 frames, to 0.504 s. The Taylor-Green case one step a frame, 300 steps (S7, dropped, never run).
 [[nodiscard]] inline const std::array<Group, 4>& web_groups() {
     static const std::array<Group, 4> table{{
-        {"quad-developed", 0.9, 2, 450},
-        {"quad-startup", 0.0, 3, 360},
-        {"d1-crosswind", 0.0, 3, 360},
-        {"taylor-green", 0.0, 1, 300},
+        {"quad-developed", 0.9, 2, 450, kLiveStepS},
+        {"d1-still-developed", 0.15, 5, 450, kD1WebStepS},
+        {"d1-crosswind", 0.0, 7, 360, kD1WebStepS},
+        {"taylor-green", 0.0, 1, 300, kLiveStepS},
     }};
     return table;
 }
@@ -99,12 +109,14 @@ inline constexpr double kLiveStepS = 0.0005;
 // flow evolves, so nothing loops), S8 a smooth swing out and back that loops, S5 and S6 still.
 [[nodiscard]] inline const std::array<Clip, 8>& web_clips() {
     static const std::array<Clip, 8> table{{
-        {"S1", "rotor-wake-streamlines", "Reference quad: streamlines of the rotor wake",
-         "Streamlines seeded above each of four actuator discs, coloured by relative speed, in one slow orbit.",
-         "quad-developed", Scene::quad, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true},
-        {"S2", "rotor-wake-vortex-surfaces", "Reference quad: vortex surfaces from the start-up",
-         "Vortex surfaces (lambda2) of four actuator discs from the start-up roll-up, in a slow push-in.",
-         "quad-startup", Scene::quad, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false},
+        {"S1", "rotor-wake-streamlines", "Reference quad in hover: streamlines of the rotor wake",
+         "Streamlines seeded above each of four actuator discs round the reference quad's rigid parts, coloured by "
+         "relative speed, in one slow orbit.",
+         "d1-still-developed", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true},
+        {"S2", "rotor-wake-vortex-surfaces", "Reference quad in a side wind: vortex surfaces from the start-up",
+         "Vortex surfaces (lambda2) round the reference quad's rigid parts from the start-up roll-up, held at hover "
+         "in a side wind, in a slow push-in.",
+         "d1-crosswind", Scene::d1, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 0.0f, false},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
          "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},
@@ -120,9 +132,11 @@ inline constexpr double kLiveStepS = 0.0005;
         {"S7", "taylor-green-q-surfaces", "Taylor-Green vortex: Q surfaces breaking down",
          "Q surfaces of the Taylor-Green vortex in a periodic box as it breaks down, in a slow rotate.",
          "taylor-green", Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 90.0f, 0.0f, 1.0f, true},
-        {"S8", "rotor-wake-volume", "Reference quad: a volume render of the rotor wake",
-         "Relative speed of four actuator discs' wake as a volume, in a slow orbit.", "quad-developed",
-         Scene::quad, Quantity::speed, Camera::there_and_back, 10.0, 60.0f, 0.0f, 12.0f, false},
+        {"S8", "rotor-wake-volume", "Reference quad in hover: a volume render of the rotor wake",
+         "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a volume, in a "
+         "slow orbit.",
+         "d1-still-developed", Scene::d1_still, Quantity::speed, Camera::there_and_back, 10.0, 60.0f, 0.0f, 12.0f,
+         false},
     }};
     return table;
 }
@@ -259,6 +273,15 @@ struct DeliveryGuard {
              "still air; the run is inviscid, so the shear layers break down to the grid scale. ";
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
         t += "The wake is a single run on the device of record, not a measurement.";
+    } else if (c.scene == Scene::d1_still) {
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
+             "of fixed thrust and swirl, the drone held level at its hover throttle in still air. This is a "
+             "visualisation of the air, not a prediction of the thrust, power or attitude of a real quad. ";
+        t += "The wake below the quad has not been measured against a downwash record. ";
+        t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
+        t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
+             "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
+             "record, not a measurement.";
     } else if (c.scene == Scene::d1) {
         t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
              "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
@@ -272,8 +295,9 @@ struct DeliveryGuard {
                    "order in the cell size); its sign on the arms' tops has not been measured. "
                  : "The wake below the quad has not been measured against a downwash record. ";
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
-        t += "The fluid is stepped by the GPU solver (GpuFluid), checked bit-equal to the CPU's through about 0.18 s "
-             "of simulated time only: a single run on the device of record, not the CPU's run.";
+        t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
+             "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
+             "record, not a measurement.";
     } else {
         t += "Stand-in: the C0 case at 128^3, not the validation record (64^3): a periodic, inviscid Taylor-Green "
              "box, not a drone, its energy loss the numerics' own. A single run on the CPU reference solver.";
