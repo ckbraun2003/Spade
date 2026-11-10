@@ -723,13 +723,28 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
     const int y0 = std::max(0, static_cast<int>(std::floor(std::min({v0.y, v1.y, v2.y}))));
     const int y1 =
         std::min(static_cast<int>(fb.height) - 1, static_cast<int>(std::ceil(std::max({v0.y, v1.y, v2.y}))));
+    // The edge a -> b is this triangle's to claim when, turned to the triangle's orientation, it points down the
+    // screen, or along a row to the left: of the two triangles sharing an edge (it runs opposite ways in them) exactly
+    // one owns it.
+    const bool blending = fb.blend_alpha >= 0.0f;
+    const double orient = area > 0.0 ? 1.0 : -1.0;
+    const auto owns_edge = [orient](const ScreenPoint& a, const ScreenPoint& b) {
+        const double dx = (b.x - a.x) * orient, dy = (b.y - a.y) * orient;
+        return dy > 0.0 || (dy == 0.0 && dx < 0.0);
+    };
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
             const ScreenPoint p{x + 0.5, y + 0.5, 0.0};
             const double w0 = edgeFn(v1, v2, p);
             const double w1 = edgeFn(v2, v0, p);
             const double w2 = edgeFn(v0, v1, p);
-            const bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            if (inside && blending && (w0 == 0.0 || w1 == 0.0 || w2 == 0.0)) {
+                // RND-11: a blended pixel centre ON an edge belongs to the triangle that owns that edge, so a mesh's
+                // shared edge blends once, not once a side (an opaque pixel is claimed by the first writer's depth).
+                inside = (w0 != 0.0 || owns_edge(v1, v2)) && (w1 != 0.0 || owns_edge(v2, v0)) &&
+                         (w2 != 0.0 || owns_edge(v0, v1));
+            }
             if (!inside) {
                 continue;
             }
