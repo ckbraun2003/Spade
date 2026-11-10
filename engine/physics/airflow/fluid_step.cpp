@@ -103,6 +103,9 @@ std::string describe(const FluidHealth& health, const GridShape& s) {
                    std::to_string((c / s.nx) % s.ny) + ", " + std::to_string(c / (uint64_t{s.nx} * s.ny)) +
                    ")) has no outlet and takes a net prescribed flux through faces " + face_list(health.faces);
         }
+        case FluidFault::bad_sgs_cs:
+            return "airflow fluid step: sgs_cs must be 0 (off) or finite, above 0 and at most " +
+                   std::to_string(kSgsCsMax) + ", and h positive with it on";
         case FluidFault::non_finite: {
             const uint32_t q = health.quantity;
             if (health.index == kNoSample) {
@@ -195,6 +198,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     if (!(cfg.nu >= 0.0f) || !std::isfinite(cfg.nu)) return refuse("nu must be non-negative and finite");
     if (cfg.n_v == 0u) return refuse("n_v must be at least 1");
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) return refuse("visc_sweeps must be at least 1 when nu > 0");
+    if (!sgs_cs_valid(cfg.sgs_cs)) return refuse("sgs_cs must be 0 (off) or finite and at most kSgsCsMax");
     if (cfg.interior == SolidInterior::extrapolate && cfg.nu > 0.0f) {
         return refuse("the free-slip interior (SolidInterior::extrapolate) is the inviscid lean mode: nu must be 0");
     }
@@ -207,6 +211,7 @@ Result<FluidScratch> make_fluid_scratch(const MacGrid& g, const DomainBc& bc, co
     s.du.assign(g.u.size(), 0.0f);
     s.dv.assign(g.v.size(), 0.0f);
     s.dw.assign(g.w.size(), 0.0f);
+    if (cfg.sgs_cs > 0.0f) sgs_size(s.sgs, g.shape);
     if (cfg.threads > 1u) {
         s.pool = std::make_shared<WorkerPool>(cfg.threads);
         s.rhs_uv[0].assign(g.u.size(), 0.0f);
@@ -264,6 +269,10 @@ namespace {
 SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const FluidConfig& cfg,
                                         FluidScratch& s) noexcept {
     if (s.health.fault != FluidFault::none) return s.health;
+    if (!sgs_cs_valid(cfg.sgs_cs) || (cfg.sgs_cs > 0.0f && !(cfg.h > 0.0f))) {
+        s.health = FluidHealth{.fault = FluidFault::bad_sgs_cs};
+        return s.health;
+    }
     const bool solid = s.solids.any;
     if (solid) {
         if (const RegionFault rf = check_regions(s.regions, g.shape, bc, s.solids); rf.region != kNoRegion) {
@@ -285,6 +294,14 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
     add_and_clear(g.w, s.dw);
     apply_velocity_boundaries(g, bc);
     if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
+    SgsReport sgs_report;
+    if (cfg.sgs_cs > 0.0f) {
+        if (s.sgs.nut.size() != std::size_t{g.shape.nx} * g.shape.ny * g.shape.nz) sgs_size(s.sgs, g.shape);
+        sgs_report = sgs_diffuse(g, bc, solid ? &s.solids : nullptr, solid ? s.regions.solid.data() : nullptr,
+                                 cfg.sgs_cs, cfg.h, s.sgs, s.pool.get());
+        apply_velocity_boundaries(g, bc);
+        if (solid) apply_solid_velocities(g, s.solids, cfg.interior);
+    }
     if (cfg.nu > 0.0f) {
         diffuse(g, bc, cfg.nu, cfg.h, cfg.visc_sweeps, s.rhs, s.rhs_uv, solid ? &s.solids : nullptr, s.pool.get());
         apply_velocity_boundaries(g, bc);
@@ -299,6 +316,9 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
     if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;
         s.health.pressure_iterations = rep.iterations;
+        s.health.sgs_capped_cells = sgs_report.capped_cells;
+        s.health.sgs_limited_faces = sgs_report.limited_faces;
+        s.health.sgs_nu_t_max = sgs_report.nu_t_max;
         // With solids the CG ran on to the mark, so a miss is its cap reached
         // or a stall at fp32's floor before it (P2d), never both. Plan A's
         // fixed cycles are announced above their own mark (2a).

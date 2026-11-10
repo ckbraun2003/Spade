@@ -252,6 +252,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     in.periodic = airflow::periodic_axes(c.bc);
     spade::FlowVolume volume;
     uint64_t step = 0;
+    uint64_t sgs_capped = 0;   // L52: cells held at the nu_t cap and faces wall-limited, in cell- and face-steps
+    uint64_t sgs_limited = 0;
+    float sgs_nu_t_max = 0.0f;
     uint32_t first = 0;
     if (fs::exists(cache / "state.bin")) {
         auto at = read_state(cache, step, g);
@@ -271,6 +274,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                 airflow::spread_actuator(d, c.shape, c.fluid.rho, c.fluid.h, scratch->du, scratch->dv, scratch->dw);
             }
             const airflow::FluidHealth health = airflow::fluid_step(g, c.bc, c.fluid, *scratch);
+            sgs_capped += health.sgs_capped_cells;
+            sgs_limited += health.sgs_limited_faces;
+            sgs_nu_t_max = std::max(sgs_nu_t_max, health.sgs_nu_t_max);
             if (health.fault != airflow::FluidFault::none) {
                 return std::unexpected(spade::Error{spade::Code::internal, film.stem + ": the solver faulted at step " +
                                                                                 std::to_string(step) + ": " +
@@ -307,6 +313,12 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                         h.channel_max[spade::kFlowVorticity], h.channel_min[spade::kFlowQHat],
                         h.channel_max[spade::kFlowQHat], h.channel_min[spade::kFlowLambda2Hat],
                         h.channel_max[spade::kFlowLambda2Hat], elapsed, eta);
+            if (c.fluid.sgs_cs > 0.0f) {
+                std::printf("[ %s ] Smagorinsky Cs %.2f: nu_t max %.3g m2/s, %llu cell-steps held at the cap, "
+                            "%llu face-steps wall-limited (since this run's start)\n",
+                            film.stem.c_str(), static_cast<double>(c.fluid.sgs_cs), static_cast<double>(sgs_nu_t_max),
+                            static_cast<unsigned long long>(sgs_capped), static_cast<unsigned long long>(sgs_limited));
+            }
             std::fflush(stdout);
         }
     }

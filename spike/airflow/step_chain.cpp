@@ -210,6 +210,13 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     if (cfg.nu > 0.0f && cfg.visc_sweeps == 0u) {
         return std::unexpected(invalid("visc_sweeps must be at least 1 when nu > 0"));
     }
+    if (!af::sgs_cs_valid(cfg.sgs_cs)) {
+        return std::unexpected(invalid("sgs_cs must be 0 (off) or finite and at most kSgsCsMax"));
+    }
+    // The device step has no subgrid kernel yet (L52: the CPU first): a nonzero Cs is refused, never ignored.
+    if (cfg.sgs_cs != 0.0f) {
+        return std::unexpected(invalid("sgs_cs is on the CPU step only: the device has no subgrid kernel yet"));
+    }
     const bool with_solids = solids != nullptr && solids->any;
     if (Result<void> ok = af::check_grid(g.shape, bc, with_solids); !ok) return std::unexpected(ok.error());
     const af::GridShape& s = g.shape;

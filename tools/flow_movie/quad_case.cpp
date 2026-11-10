@@ -49,10 +49,12 @@ spade::Result<AirflowCase> quad_hover_case() {
     AirflowCase c;
     c.name = "Quadrotor in hover: four swirling actuator discs";
     c.settings = "reference quad 0.526 kg: R 0.0762 m, T 1.290 N and Q 0.0131 N m per rotor at 801 rad/s, "
-                 "spins + - + - (+x, +z, -x, -z); 80x128x80 at dx 1 cm, h 0.5 ms, inviscid, still air";
+                 "spins + - + - (+x, +z, -x, -z); 80x128x80 at dx 1 cm, h 0.5 ms, inviscid with Smagorinsky Cs 0.17, "
+                 "still air";
     c.shape = airflow::GridShape{80, 128, 80, 0.01f};
     c.bc = airflow::DomainBc{};  // every face open, ambient 0: still air
-    c.fluid = airflow::FluidConfig{.rho = 1.225f, .nu = 0.0f, .h = 0.0005f, .n_v = 2};
+    // L52: the wake's grid-scale energy grows without a subgrid viscosity (the L48 probes); Cs 0.17.
+    c.fluid = airflow::FluidConfig{.rho = 1.225f, .nu = 0.0f, .h = 0.0005f, .n_v = 2, .sgs_cs = 0.17f};
     c.origin = -com;  // the COM at the world origin
     // The discs come through the one rule (physics/airflow/rotor_discs.hpp,
     // P7a): the body level at the world origin, so the grid's corner is at

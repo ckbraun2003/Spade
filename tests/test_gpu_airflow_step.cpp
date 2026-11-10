@@ -554,6 +554,22 @@ TEST(GpuAirflowStep, AnIllPosedRegionFaultsAsOnTheCpu) {
     EXPECT_EQ(differing(read, start), 0u);
 }
 
+// The subgrid viscosity (L52) is on the CPU step only for now: GpuFluid refuses a nonzero Cs by name at creation,
+// as it refuses the other bad settings, and never runs on ignoring it.
+TEST(GpuAirflowStep, ASubgridViscosityIsRefusedByNameUntilTheDeviceHasItsKernel) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    Case c = sphere_box();
+    const af::MacGrid start = noisy(c, 7u, 1.0f);
+    for (const float cs : {0.17f, -0.1f}) {
+        c.cfg.sgs_cs = cs;
+        auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, nullptr);
+        ASSERT_FALSE(gpu.has_value()) << cs;
+        EXPECT_NE(gpu.error().context.find("sgs_cs"), std::string::npos) << gpu.error().context;
+    }
+}
+
 // One NaN in an open u face above the spinning sphere: the CPU's step scans
 // it (non_finite), and GpuFluid's faults on the CG's r . z, which the NaN
 // reaches through the divergence -- naming the pressure, with no sample

@@ -761,6 +761,7 @@ add_library(spade_physics STATIC
     physics/airflow/advect.cpp
     physics/airflow/reduce.cpp
     physics/airflow/viscous.cpp
+    physics/airflow/sgs.cpp
     physics/airflow/fluid_step.cpp
     physics/airflow/publish.cpp
     physics/airflow/actuator.cpp
