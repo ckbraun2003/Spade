@@ -332,7 +332,26 @@ namespace {
 }  // namespace
 
 Result<void> validate_flow_polyline(const FlowPolyline& line) {
+    if (!std::isfinite(line.width_px)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is not finite"});
+    }
+    if (line.width_px < 0.0f) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is negative"});
+    }
+    if (line.width_px != 0.0f && !(line.width_px >= 0.5f && line.width_px <= 64.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is not 0 or 0.5 to 64 pixels"});
+    }
     return check_coloured(line.points, line.colours, "flow polyline");
+}
+
+Result<void> validate_flow_line_styling(std::span<const FlowPolyline> lines, const FlowLineStyle& style) {
+    if (Result<void> valid = validate_flow_line_style(style); !valid) return valid;
+    if (style.glow_px > 0.0f) {
+        bool wide = false;
+        for (const FlowPolyline& line : lines) wide = wide || effective_width_px(line, style) > 0.0f;
+        if (!wide) return std::unexpected(Error{Code::invalid_argument, "flow line style: a glow needs a width"});
+    }
+    return {};
 }
 
 Result<void> validate_flow_line_style(const FlowLineStyle& style) {
@@ -344,9 +363,6 @@ Result<void> validate_flow_line_style(const FlowLineStyle& style) {
     }
     if (!(style.glow_px >= 0.0f && style.glow_px <= 64.0f)) {
         return std::unexpected(Error{Code::invalid_argument, "flow line style: the glow is not 0 to 64 pixels"});
-    }
-    if (style.glow_px > 0.0f && style.width_px == 0.0f) {
-        return std::unexpected(Error{Code::invalid_argument, "flow line style: a glow needs a width"});
     }
     if (!(style.glow_strength >= 0.0f && style.glow_strength <= 1.0f)) {
         return std::unexpected(Error{Code::invalid_argument, "flow line style: the glow strength is not 0 to 1"});

@@ -181,6 +181,100 @@ TEST(RenderFlowLineStyle, ALineBehindASurfaceIsHiddenByIt) {
     EXPECT_EQ(got.rgb(16, 14), draw(alone).rgb(16, 14));
 }
 
+// Two segments on row 16's centre line that do not meet: A from x = -1 to 0 (columns 10.8 to 16.5) and B from
+// x = 0.2 to 1 (columns 17.6 to 22.2), so column 12 is A's alone and column 20 is B's alone.
+[[nodiscard]] FlowPolyline left_half(float width_px) {
+    FlowPolyline line{{glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 0.0f)}, {kRed, kRed}};
+    line.width_px = width_px;
+    return line;
+}
+[[nodiscard]] FlowPolyline right_part(float width_px) {
+    FlowPolyline line{{glm::vec3(0.2f, 0.0f, 0.0f), glm::vec3(1.0f, 0.0f, 0.0f)}, {kGreen, kGreen}};
+    line.width_px = width_px;
+    return line;
+}
+[[nodiscard]] std::vector<int> column(const Frame& f, uint32_t x, bool green = false) {
+    std::vector<int> out;
+    for (uint32_t y = 13; y <= 19; ++y) out.push_back(green ? f.rgb(x, y).g : f.rgb(x, y).r);
+    return out;
+}
+
+// A polyline's own width draws it as a capsule of that width, whatever the scene's (the lead, 2026-11-10, L49):
+// two polylines of different widths in one scene, on a scene whose style is off.
+TEST(RenderFlowLineStyle, TwoPolylinesOfDifferentWidthsInOneSceneEachDrawAtItsOwn) {
+    RenderScene scene = black_scene();  // flow_line_style left at its default: off
+    scene.flow_polylines = {left_half(2.0f), right_part(4.0f)};
+    const Frame got = draw(scene);
+    EXPECT_EQ(column(got, 12), (std::vector<int>{0, 0, 100, 200, 100, 0, 0})) << "A is 2 px wide";
+    EXPECT_EQ(column(got, 20, true), (std::vector<int>{0, 100, 200, 200, 200, 100, 0})) << "B is 4 px wide";
+}
+
+// A width of 0 inherits the scene's: A inherits 4, B says 2.
+TEST(RenderFlowLineStyle, APolylineWithNoWidthInheritsTheScenesAndOneWithItsOwnKeepsIt) {
+    RenderScene scene = black_scene();
+    scene.flow_line_style = FlowLineStyle{4.0f, 0.0f, 0.35f};
+    scene.flow_polylines = {left_half(0.0f), right_part(2.0f)};
+    const Frame got = draw(scene);
+    EXPECT_EQ(column(got, 12), (std::vector<int>{0, 100, 200, 200, 200, 100, 0})) << "A inherits the scene's 4 px";
+    EXPECT_EQ(column(got, 20, true), (std::vector<int>{0, 0, 100, 200, 100, 0, 0})) << "B keeps its own 2 px";
+}
+
+// A scene with no width and one polyline with its own: that one is a capsule and the other is the one-pixel line.
+TEST(RenderFlowLineStyle, AWidthOnOnePolylineLeavesTheOthersTheOnePixelLine) {
+    RenderScene scene = black_scene();
+    scene.flow_polylines = {left_half(2.0f), right_part(0.0f)};
+    const Frame got = draw(scene);
+    EXPECT_EQ(column(got, 12), (std::vector<int>{0, 0, 100, 200, 100, 0, 0}));
+    EXPECT_EQ(column(got, 20, true), (std::vector<int>{0, 0, 0, 200, 0, 0, 0})) << "B is one row";
+}
+
+// 0 everywhere is today's line, byte for byte: the same frame as the scene with the default style, and the one-pixel
+// rows the existing line tests pin.
+TEST(RenderFlowLineStyle, ZeroWidthEverywhereIsTodaysBytes) {
+    RenderScene scene = black_scene();
+    scene.flow_polylines = {left_half(0.0f), right_part(0.0f)};
+    const Frame got = draw(scene);
+    EXPECT_EQ(column(got, 12), (std::vector<int>{0, 0, 0, 200, 0, 0, 0}));
+    EXPECT_EQ(column(got, 20, true), (std::vector<int>{0, 0, 0, 200, 0, 0, 0}));
+    RenderScene explicit_off = scene;
+    explicit_off.flow_line_style = FlowLineStyle{0.0f, 0.0f, 0.35f};
+    EXPECT_EQ(draw(explicit_off).px, got.px);
+}
+
+// The glow is the scene's, a polyline's own width gets it: a scene with no width and a glow is refused only when
+// no polyline is wide.
+TEST(RenderFlowLineStyle, TheGlowIsTheScenesAndANarrowSceneGivesItToAPolylineWithAWidth) {
+    RenderScene scene = black_scene();
+    scene.flow_line_style = FlowLineStyle{0.0f, 2.0f, 0.5f};
+    scene.flow_polylines = {left_half(2.0f)};
+    spade::Result<void> r;
+    const Frame got = draw(scene, &r);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(column(got, 12), (std::vector<int>{0, 25, 150, 200, 150, 25, 0}));
+    scene.flow_polylines = {left_half(0.0f)};
+    (void)draw(scene, &r);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("a glow needs a width"), std::string::npos) << r.error().context;
+}
+
+TEST(RenderFlowLineStyle, ABadPolylineWidthIsRefusedByName) {
+    const auto refused = [](float width, const char* part) {
+        RenderScene scene = black_scene();
+        scene.flow_polylines = {left_half(width)};
+        spade::Result<void> r;
+        const Frame f = draw(scene, &r);
+        ASSERT_FALSE(r.has_value()) << width;
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(r.error().context.find(part), std::string::npos) << r.error().context;
+        EXPECT_TRUE(std::all_of(f.px.begin(), f.px.end(), [](uint8_t b) { return b == 0xABu; }));
+    };
+    refused(-1.0f, "the width is negative");
+    refused(std::numeric_limits<float>::quiet_NaN(), "the width is not finite");
+    refused(std::numeric_limits<float>::infinity(), "the width is not finite");
+    refused(0.2f, "the width is not 0 or 0.5 to 64 pixels");
+    refused(65.0f, "the width is not 0 or 0.5 to 64 pixels");
+}
+
 TEST(RenderFlowLineStyle, ABadStyleIsRefusedByNameBeforeAnyPixel) {
     const auto refused = [](FlowLineStyle style, const char* part) {
         spade::Result<void> r;

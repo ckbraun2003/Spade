@@ -132,6 +132,10 @@ struct TracerState {
 struct FlowPolyline {
     std::vector<glm::vec3> points;
     std::vector<glm::vec3> colours;  // one per point, in [0, 1]
+    // This polyline's own width, pixels (the lead, 2026-11-10, `L49`): 0 inherits the scene's flow_line_style
+    // width, and 0 there is the one-pixel line, byte for byte; above 0 it is drawn as a capsule of this width
+    // (FlowLineStyle, below) on both backends, whatever the scene's width. The glow stays the scene's.
+    float width_px = 0.0f;  // 0, or 0.5 to 64
 };
 
 struct FlowPoints {
@@ -159,12 +163,22 @@ struct FlowLineStyle {
     [[nodiscard]] bool on() const noexcept { return width_px > 0.0f; }
 };
 
-// invalid_argument, by name: a width that is not 0 or 0.5 to 64, a glow outside 0 to 64 or any glow with no
-// width, a strength outside 0 to 1, or a value that is not finite.
+// invalid_argument, by name: a width that is not 0 or 0.5 to 64, a glow outside 0 to 64, a strength outside
+// 0 to 1, or a value that is not finite.
 [[nodiscard]] Result<void> validate_flow_line_style(const FlowLineStyle& style);
 
+// The width a polyline is drawn at: its own, else the scene's; 0 is the one-pixel line.
+[[nodiscard]] inline float effective_width_px(const FlowPolyline& line, const FlowLineStyle& style) noexcept {
+    return line.width_px > 0.0f ? line.width_px : style.width_px;
+}
+
+// validate_flow_line_style(), and a glow needs a width: some polyline is drawn wider than a pixel (the scene's
+// width or its own). The one check both backends make of a scene's lines' styling.
+[[nodiscard]] Result<void> validate_flow_line_styling(std::span<const FlowPolyline> lines, const FlowLineStyle& style);
+
 // invalid_argument, by name: not one colour per point, a point that is not
-// finite, a colour outside [0, 1], or (points) a size outside 1 to 16.
+// finite, a colour outside [0, 1], a polyline width that is not finite, negative or 0.5 to 64, or (points) a
+// size outside 1 to 16.
 [[nodiscard]] Result<void> validate_flow_polyline(const FlowPolyline& line);
 [[nodiscard]] Result<void> validate_flow_points(const FlowPoints& points);
 

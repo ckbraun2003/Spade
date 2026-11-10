@@ -2545,6 +2545,10 @@ TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
         scene.flow_polylines.push_back(std::move(line));
     }
     scene.flow_line_style = spade::render::FlowLineStyle{3.0f, 4.0f, 0.4f};
+    // A mixed-width scene (the lead, 2026-11-10, L49): the second helix is 8 px wide of its own, the others inherit
+    // the scene's 3, and the fourth is 1 px: the one capsule path, three widths.
+    scene.flow_polylines[1].width_px = 8.0f;
+    scene.flow_polylines[3].width_px = 1.0f;
     RenderScene bare = scene;
     bare.flow_polylines.clear();
     const Camera camera = camera_over_ground();

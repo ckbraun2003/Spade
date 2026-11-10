@@ -1376,12 +1376,14 @@ void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene
 // per fragment. float32 throughout; no libm (TD-3): sqrt and arithmetic only.
 void draw_styled_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
     const FlowLineStyle& style = scene.flow_line_style;
-    const float half = 0.5f * style.width_px;
     const float glow = style.glow_px;
     const float strength = style.glow_strength;
-    const int pad = static_cast<int>(std::ceil(half + glow)) + 1;
     for (int pass = 0; pass < 2; ++pass) {
         for (const FlowPolyline& line : scene.flow_polylines) {
+            const float width = effective_width_px(line, style);  // a polyline's own, else the scene's
+            if (!(width > 0.0f)) continue;                         // the one-pixel line, drawn after these
+            const float half = 0.5f * width;
+            const int pad = static_cast<int>(std::ceil(half + glow)) + 1;
             for (size_t i = 0; i + 1u < line.points.size(); ++i) {
                 const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
                 const float src[3] = {static_cast<float>(to_byte(c.r)) / 255.0f, static_cast<float>(to_byte(c.g)) / 255.0f,
@@ -1443,15 +1445,18 @@ void draw_styled_flow_lines(FrameBuffers& fb, const ViewContext& vc, const Rende
 // flow_line_style has a width), each point a square of size_px pixels about its projection. render() has
 // refused malformed ones.
 void draw_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
-    if (scene.flow_line_style.on()) {
-        draw_styled_flow_lines(fb, vc, scene);
-    } else {
-        for (const FlowPolyline& line : scene.flow_polylines) {
-            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
-                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
-                draw_world_segment(fb, vc, vec3d(line.points[i]), vec3d(line.points[i + 1u]), to_byte(c.r), to_byte(c.g),
-                                   to_byte(c.b));
-            }
+    // The polylines wider than a pixel (their own width, else the scene's) first, as capsules; then the one-pixel
+    // lines. GL draws them in the same order.
+    const FlowLineStyle& style = scene.flow_line_style;
+    bool any_styled = false;
+    for (const FlowPolyline& line : scene.flow_polylines) any_styled = any_styled || effective_width_px(line, style) > 0.0f;
+    if (any_styled) draw_styled_flow_lines(fb, vc, scene);
+    for (const FlowPolyline& line : scene.flow_polylines) {
+        if (effective_width_px(line, style) > 0.0f) continue;
+        for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+            const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+            draw_world_segment(fb, vc, vec3d(line.points[i]), vec3d(line.points[i + 1u]), to_byte(c.r), to_byte(c.g),
+                               to_byte(c.b));
         }
     }
     const FlowPoints& points = scene.flow_points;
@@ -2155,7 +2160,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (Result<void> valid = validate_flow_points(scene.flow_points); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
-    if (Result<void> valid = validate_flow_line_style(scene.flow_line_style); !valid) {
+    if (Result<void> valid = validate_flow_line_styling(scene.flow_polylines, scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
     if (scene.flow_surface_colouring) {
