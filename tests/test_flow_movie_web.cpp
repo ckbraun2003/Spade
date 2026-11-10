@@ -219,7 +219,7 @@ TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointO
         EXPECT_GE(ms_a_frame, 1.0) << name;
         EXPECT_LE(ms_a_frame, 1.5) << name;
     }
-    EXPECT_FLOAT_EQ(web::find_group("quad-developed")->step_s, 0.0005f) << "the quad's film is as it was";
+    EXPECT_DOUBLE_EQ(web::find_group("quad-developed")->step_s, 0.0005) << "the quad's film is as it was";
     // The windows end at 0.60 s (still air) and 0.504 s (side wind).
     const web::Group& still = *web::find_group("d1-still");
     const web::Group& wind = *web::find_group("d1-crosswind");
