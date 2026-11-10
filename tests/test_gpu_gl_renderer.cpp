@@ -2527,10 +2527,11 @@ TEST_F(GpuGlRenderer, FlowSkippingChangesNoPixel) {
 // 4 px glow at 0.4, on both paths. GL's flow-line program computes raster_cpu's draw_styled_flow_lines() per
 // fragment (the distance to the segment from the pixel's centre, the coverage, the glow, the depth at the nearest
 // point), so the two differ by float32 against the CPU's mixed float and double, and by the one-pixel boundary
-// cases. The measure is the whole frame against the CPU's, beside the same frame without the lines, which is the
-// ground's own band: the lines may add at most the margin below. THE MARGINS ARE NOT YET MEASURED (this test was
-// written without a GPU run): they are loose on purpose, and the first run's printed line is what tightens them
-// to measured + 1.
+// cases. The measure is the whole frame against the CPU's (the ground's own band is in it; the same frame without
+// the lines is printed beside it). Measured 2026-11-10, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0,
+// driver 572.83), at a3e85246's code: 2107 pixels styled; worst 3 levels, one pixel over two, 1014 pixels differ
+// (the ground alone: worst 1, 608 differ), with one 8 px and one 1 px helix among the 3 px ones. Pinned at
+// measured + 1.
 TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
     RenderScene scene = make_ground_scene();
     for (int k = 0; k < 5; ++k) {
@@ -2574,10 +2575,12 @@ TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
     std::printf("[ styled lines ] %zu px styled; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ "
                 "(the ground alone %zu); on %s\n",
                 styled, d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
-    constexpr int kMarginWorstLevels = 12;           // unmeasured: tighten to measured + 1
-    constexpr size_t kMarginDifferingFraction = 2;   // at most styled / 2 more pixels than the ground's band
-    EXPECT_LE(d.worst, std::max(base.worst, kMarginWorstLevels)) << device;
-    EXPECT_LE(d.differing, base.differing + styled / kMarginDifferingFraction) << device;
+    constexpr int kBandWorstLevels = 4;           // measured 3
+    constexpr size_t kBandOverTwoPixels = 2;      // measured 1
+    constexpr size_t kBandDifferingPixels = 1015;  // measured 1014
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
