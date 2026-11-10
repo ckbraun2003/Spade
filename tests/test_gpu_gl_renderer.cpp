@@ -3218,8 +3218,9 @@ TEST_F(GpuGlRenderer, CreateReportsEachProgramAndRefusesABadSalt) {
     probe.on_program = [&names](std::string_view name) { names.emplace_back(name); };
     const auto made = GlRenderer::create(loader, GlRenderer::CreateOptions{}, probe);
     ASSERT_TRUE(made.has_value()) << made.error().context;
-    const std::vector<std::string> want = {"mesh", "background",  "field",       "overlay",       "shadow caster",
-                                           "csg",  "flow volume", "flow bricks", "flow composite"};
+    const std::vector<std::string> want = {"mesh",        "background",  "field",       "overlay",
+                                           "flow lines",  "shadow caster", "csg",       "flow volume",
+                                           "flow bricks", "flow composite"};
     EXPECT_EQ(names, want);
 
     GlRenderer::CreateProbe bad;
