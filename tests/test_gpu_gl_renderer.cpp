@@ -2587,8 +2587,9 @@ TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
 // 0.25, 0.4 and 0.6, over the shadow scene's lambert ground and its shadow, listed in both orders. A see-through item
 // is drawn after the opaques, farther first, blended src-over with its material's alpha, and the two backends draw
 // the same frame to a band: the interior is 1 level for the shading plus one more for each blend layer, the
-// coverage edges as the existing bands. The band here is NOT YET MEASURED: it is loose, and the first run's printed
-// line is what pins it (measured + 1).
+// coverage edges as the existing bands. Measured 2026-11-10 on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver
+// 572.83), 160x120: worst 1 level (the same discs opaque: 1), 0 pixels over two, 290 pixels differ (opaque 99).
+// Pinned at measured + 1.
 [[nodiscard]] MeshData make_disc_mesh(float radius, int segments) {
     MeshData disc;
     disc.positions.push_back(glm::vec3(0.0f));
@@ -2662,8 +2663,81 @@ TEST_F(GpuGlRenderer, SeeThroughDiscsMatchTheCpuWithinTheirBandInEitherListingOr
     std::printf("[ see-through ] worst %d levels (the same discs opaque %d), %zu over two; %zu pixels differ (opaque %zu); "
                 "on %s\n",
                 d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
-    constexpr int kBandWorstLevels = 12;  // unmeasured: tighten to measured + 1
-    EXPECT_LE(d.worst, std::max(base.worst, kBandWorstLevels)) << device;
+    constexpr int kBandWorstLevels = 2;            // measured 1
+    constexpr size_t kBandOverTwoPixels = 1;       // measured 0
+    constexpr size_t kBandDifferingPixels = 291;   // measured 290
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// A flagged item a CSG subtree marches is refused at upload, by name, as the CPU refuses it.
+TEST_F(GpuGlRenderer, RefusesASeeThroughItemACsgSubtreeMarches) {
+    RenderScene scene = slab_scene();
+    ASSERT_EQ(scene.csg_subtrees.size(), 1u);
+    scene.statics[scene.csg_subtrees[0].draw_item].see_through = true;
+    const spade::Result<void> up = renderer_->upload_scene(scene);
+    ASSERT_FALSE(up.has_value());
+    EXPECT_EQ(up.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(up.error().context.find("see-through"), std::string::npos) << up.error().context;
+    EXPECT_NE(up.error().context.find("CSG subtree 0"), std::string::npos) << up.error().context;
+}
+
+// What 24 see-through discs cost a 1080p frame (the lead's request, L47): opt-in, SPADE_SEE_THROUGH_COST=1, since
+// it measures and asserts nothing about the machine. Prop-sized discs (about 0.3 m across at 4 m, a rotor's size) and
+// full-screen ones (each covers the frame), against the same frame with none and with the same discs opaque.
+TEST_F(GpuGlRenderer, TwentyFourSeeThroughDiscsCostOnA1080pFrameIsMeasured) {
+    if (!env_gate_is_set("SPADE_SEE_THROUGH_COST")) GTEST_SKIP() << "opt-in: set SPADE_SEE_THROUGH_COST=1";
+    const Camera camera = camera_over_shadow();
+    const glm::vec3 forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
+    const glm::vec3 right = camera.orientation * glm::vec3(1.0f, 0.0f, 0.0f);
+    const glm::vec3 up = camera.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+    const auto build = [&](float radius, int count, bool flagged) {
+        RenderScene scene = make_shadow_scene(false);
+        const auto disc_mesh = static_cast<uint32_t>(scene.meshes.size());
+        scene.meshes.push_back(make_disc_mesh(radius, 24));
+        const auto material = static_cast<uint32_t>(scene.materials.size());
+        scene.materials.push_back(Material{.base_color = glm::vec4(0.9f, 0.4f, 0.3f, 0.3f)});
+        for (int k = 0; k < count; ++k) {
+            const float fk = static_cast<float>(k);
+            const glm::vec3 at = camera.position + forward * (3.0f + 0.05f * fk) +
+                                 right * (-0.6f + 0.1f * std::fmod(fk, 12.0f)) + up * (-0.3f + 0.2f * std::floor(fk / 12.0f));
+            scene.statics.push_back(DrawItem{
+                .mesh_index = disc_mesh,
+                .local_to_world = glm::translate(glm::mat4(1.0f), at) * glm::mat4_cast(camera.orientation),
+                .material_override = material,
+                .see_through = flagged});
+        }
+        return scene;
+    };
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const auto median_ms = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        std::vector<double> ms;
+        for (int i = 0; i < 12; ++i) {
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> drew =
+                renderer_->draw(scene, camera, comparable_options(), 1920u, 1080u);
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(drew.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[4] + ms[5]);
+    };
+    const double none = median_ms(build(0.15f, 0, true));
+    const double small_blend = median_ms(build(0.15f, 24, true));
+    const double small_opaque = median_ms(build(0.15f, 24, false));
+    const double big_blend = median_ms(build(40.0f, 24, true));
+    const double big_opaque = median_ms(build(40.0f, 24, false));
+    std::printf("[ see-through cost ] 1080p, 24 discs: none %.3f ms; prop-sized %.3f ms blended, %.3f opaque; "
+                "full-screen %.3f ms blended, %.3f opaque; on %s\n",
+                none, small_blend, small_opaque, big_blend, big_opaque, device.c_str());
+    RecordProperty("none_ms_x1000", static_cast<int>(none * 1000.0));
+    RecordProperty("small_blend_ms_x1000", static_cast<int>(small_blend * 1000.0));
+    RecordProperty("big_blend_ms_x1000", static_cast<int>(big_blend * 1000.0));
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
