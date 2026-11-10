@@ -343,7 +343,7 @@ void setPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, uint8_t r
     if (fb.normals != nullptr) (*fb.normals)[idx] = fb.normal_now;
 }
 
-// RND-11: src-over of `colour` (0..1, float) at `alpha` onto the pixel's byte colour, one rounding:
+// RND-11: src-over of `colour` (clamped to 0..1, float) at `alpha` onto the pixel's byte colour, one rounding:
 // to_byte(dst / 255 * (1 - alpha) + colour * alpha), depth-tested as setPixelIfCloser() tests, writing no depth.
 void blendPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, const glm::vec3& colour, float alpha) {
     if (x < 0 || y < 0 || x >= static_cast<int>(fb.width) || y >= static_cast<int>(fb.height)) {
@@ -354,10 +354,12 @@ void blendPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, const g
         return;  // behind (or tied with) what is there
     }
     uint8_t* px = &fb.pixels[idx * 4];
+    // The source is clamped to 0..1 first, as a blend stage clamps a fragment colour for a fixed-point target (a
+    // bright lambert surface shades past 1): an opaque pixel is to_byte()d, which clamps it the same way.
     const float keep = 1.0f - alpha;
-    px[0] = to_byte(static_cast<float>(px[0]) / 255.0f * keep + colour.b * alpha);
-    px[1] = to_byte(static_cast<float>(px[1]) / 255.0f * keep + colour.g * alpha);
-    px[2] = to_byte(static_cast<float>(px[2]) / 255.0f * keep + colour.r * alpha);
+    px[0] = to_byte(static_cast<float>(px[0]) / 255.0f * keep + std::clamp(colour.b, 0.0f, 1.0f) * alpha);
+    px[1] = to_byte(static_cast<float>(px[1]) / 255.0f * keep + std::clamp(colour.g, 0.0f, 1.0f) * alpha);
+    px[2] = to_byte(static_cast<float>(px[2]) / 255.0f * keep + std::clamp(colour.r, 0.0f, 1.0f) * alpha);
 }
 
 // Simple parametric line walk (screen-space DDA) with linear invDepth
