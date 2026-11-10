@@ -271,6 +271,9 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
     // iteration, matching raster_cpu.cpp's own render()/draw_mesh_item
     // discipline.
     for (const DrawItem& item : items) {
+        if (item.see_through) {
+            continue;  // RND-11: a see-through item receives shadows and never casts one.
+        }
         if (item.mesh_index >= meshes.size()) {
             continue;  // kNoMesh, or an out-of-range slot -- nothing to cast.
         }
@@ -327,8 +330,8 @@ std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t
     float rmin = 0.0f, rmax = 0.0f, umin = 0.0f, umax = 0.0f, zmin = 0.0f, zmax = 0.0f;
     bool any = false;
     for (const DrawItem& item : scene.dynamics) {
-        if (item.mesh_index >= scene.meshes.size()) {
-            continue;
+        if (item.see_through || item.mesh_index >= scene.meshes.size()) {
+            continue;  // a see-through item casts nothing (RND-11), so it has no footprint to fit
         }
         for (const glm::vec3& local : scene.meshes[item.mesh_index].positions) {
             const glm::vec3 w(item.local_to_world * glm::vec4(local, 1.0f));

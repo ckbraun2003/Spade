@@ -575,4 +575,44 @@ void update_dynamics(RenderScene& scene, std::span<const BodyPose> bodies) {
     }
 }
 
+std::vector<uint32_t> see_through_order(const RenderScene& scene, const Camera& camera) {
+    // The camera's forward, -Z turned by its orientation, from the quaternion's components in double (arithmetic
+    // only, as raster_cpu's own view rotation is).
+    const double qw = camera.orientation.w, qx = camera.orientation.x, qy = camera.orientation.y,
+                 qz = camera.orientation.z;
+    const double forward[3] = {-2.0 * (qx * qz + qw * qy), -2.0 * (qy * qz - qw * qx),
+                               -(1.0 - 2.0 * (qx * qx + qy * qy))};
+    struct Keyed {
+        double depth;
+        uint32_t index;
+    };
+    std::vector<Keyed> keyed;
+    const size_t statics = scene.statics.size();
+    const size_t total = statics + scene.dynamics.size();
+    for (size_t i = 0; i < total; ++i) {
+        const DrawItem& item = i < statics ? scene.statics[i] : scene.dynamics[i - statics];
+        if (!item.see_through || item.mesh_index >= scene.meshes.size()) continue;
+        const MeshData& mesh = scene.meshes[item.mesh_index];
+        if (mesh.positions.empty() || mesh.indices.empty()) continue;  // nothing to draw
+        glm::vec3 lo = mesh.positions.front(), hi = lo;
+        for (const glm::vec3& p : mesh.positions) {
+            lo = glm::min(lo, p);
+            hi = glm::max(hi, p);
+        }
+        const glm::vec3 centre(item.local_to_world * glm::vec4(0.5f * (lo + hi), 1.0f));
+        const double depth = (static_cast<double>(centre.x) - static_cast<double>(camera.position.x)) * forward[0] +
+                             (static_cast<double>(centre.y) - static_cast<double>(camera.position.y)) * forward[1] +
+                             (static_cast<double>(centre.z) - static_cast<double>(camera.position.z)) * forward[2];
+        keyed.push_back(Keyed{depth, static_cast<uint32_t>(i)});
+    }
+    // Farther first, ties by item index: a strict total order, so the result does not depend on the sort.
+    std::sort(keyed.begin(), keyed.end(), [](const Keyed& a, const Keyed& b) {
+        return a.depth > b.depth || (a.depth == b.depth && a.index < b.index);
+    });
+    std::vector<uint32_t> order;
+    order.reserve(keyed.size());
+    for (const Keyed& k : keyed) order.push_back(k.index);
+    return order;
+}
+
 }  // namespace spade::render

@@ -1022,6 +1022,7 @@ layout(std430, binding = 8) readonly buffer Segments { uint uSegment[]; };    //
 
 uniform uint uSubmeshMaterial;
 uniform uint uNoMaterial;
+uniform uint uSeeThrough;  // 1 in the see-through pass (RND-11): the shaded colour with the material's alpha
 
 out vec4 fragColor;
 
@@ -1046,8 +1047,12 @@ void main() {
     // Velocity swaps the colour and keeps the material's shading, as raster_cpu does.
     if (uMode == 3u) { base = velocity_ramp(uSpeed[vInstance], uVelocityScale); }
     vec3 face = flow_face_normal(vWorld);  // in uniform control flow, as it asks
-    fragColor = vec4(flow_colour_surface(vWorld, face, wall,
-                                         shade_surface(m.shading, base, normalize(vNormal), vWorld, face)), 1.0);
+    vec3 shaded = shade_surface(m.shading, base, normalize(vNormal), vWorld, face);
+    if (uSeeThrough != 0u) {  // blended over the frame, no flow colouring (raster_cpu's see-through pass)
+        fragColor = vec4(shaded, clamp(m.base_color.a, 0.0, 1.0));
+        return;
+    }
+    fragColor = vec4(flow_colour_surface(vWorld, face, wall, shaded), 1.0);
 }
 )GLSL";
 
@@ -2090,7 +2095,7 @@ struct GlRenderer::Impl {
     std::string renderer_name;
     std::string version_string;
 
-    GLint u_instance_base = -1, u_view_proj = -1, u_submesh_material = -1, u_no_material = -1;
+    GLint u_instance_base = -1, u_view_proj = -1, u_submesh_material = -1, u_no_material = -1, u_see_through = -1;
     GLint u_sun_dir = -1, u_sun_color = -1, u_ambient = -1, u_sun_intensity = -1;
     GLint u_mode = -1, u_velocity_scale = -1, u_cam_pos = -1;
     GLint u_sky_zenith = -1, u_sky_horizon = -1, u_horizon_strength = -1, u_horizon_onset = -1;
@@ -2421,6 +2426,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->u_view_proj = gl.GetUniformLocation(p, "uViewProj");
     impl->u_submesh_material = gl.GetUniformLocation(p, "uSubmeshMaterial");
     impl->u_no_material = gl.GetUniformLocation(p, "uNoMaterial");
+    impl->u_see_through = gl.GetUniformLocation(p, "uSeeThrough");
     impl->u_sun_dir = gl.GetUniformLocation(p, "uSunDir");
     impl->u_sun_color = gl.GetUniformLocation(p, "uSunColor");
     impl->u_ambient = gl.GetUniformLocation(p, "uAmbient");
@@ -2703,6 +2709,12 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
             return std::unexpected(Error{Code::invalid_argument,
                                          which + " names draw item " + std::to_string(sub.draw_item) + ", past the " +
                                              std::to_string(scene.statics.size()) + " statics"});
+        }
+        if (scene.statics[sub.draw_item].see_through) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         which + " marches draw item " + std::to_string(sub.draw_item) +
+                                             ", which is see-through (DrawItem::see_through): a marched surface "
+                                             "cannot blend"});
         }
         // An invalid program would overrun the shader's fixed stack. validate()'s
         // own code comes through: capacity_exceeded past kMaxSdfDepth.
@@ -3020,14 +3032,19 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
 
     // --- group by mesh_index. This IS the mechanism. -----------------------
     const size_t mesh_count = s.meshes.size();
+    // RND-11: a see-through item is in no batch (so no instanced shadow caster draws it either): shaded frames draw
+    // it in the sorted tail after the batches, velocity and the sensor modes not at all, wireframe as any item.
+    const bool flagged_out = !wireframe;
     s.batch_count.assign(mesh_count, 0u);
     for (size_t i = 0; i < scene.statics.size(); ++i) {
         const render::DrawItem& d = scene.statics[i];
-        if (d.mesh_index < mesh_count && s.static_marched[i] == 0u) ++s.batch_count[d.mesh_index];
+        if (d.mesh_index < mesh_count && s.static_marched[i] == 0u && !(flagged_out && d.see_through)) {
+            ++s.batch_count[d.mesh_index];
+        }
     }
     s.batch_static.assign(s.batch_count.begin(), s.batch_count.end());
     for (const render::DrawItem& d : scene.dynamics) {
-        if (d.mesh_index < mesh_count) ++s.batch_count[d.mesh_index];
+        if (d.mesh_index < mesh_count && !(flagged_out && d.see_through)) ++s.batch_count[d.mesh_index];
     }
     s.batch_base.assign(mesh_count, 0u);
     uint32_t running = 0;
@@ -3035,7 +3052,10 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         s.batch_base[i] = running;
         running += s.batch_count[i];
     }
-    const uint32_t total_instances = running;
+    // The tail: the see-through items, farther first (render::see_through_order, shared with raster_cpu).
+    std::vector<uint32_t> see_order;
+    if (shaded) see_order = render::see_through_order(scene, camera);
+    const uint32_t total_instances = running + static_cast<uint32_t>(see_order.size());
 
     s.instance_transforms.assign(total_instances, glm::mat4(1.0f));
     s.instance_overrides.assign(total_instances, render::kNoMaterial);
@@ -3045,7 +3065,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     const bool sensor_segments = options.mode == render::DrawMode::segmentation;
     std::vector<uint32_t> cursor(s.batch_base.begin(), s.batch_base.end());
     const auto place = [&](const render::DrawItem& d) {
-        if (d.mesh_index >= mesh_count) return;
+        if (d.mesh_index >= mesh_count || (flagged_out && d.see_through)) return;
         const uint32_t at = cursor[d.mesh_index]++;
         s.instance_transforms[at] = d.local_to_world;
         s.instance_overrides[at] = d.material_override;
@@ -3059,6 +3079,14 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         if (s.static_marched[i] == 0u) place(scene.statics[i]);
     }
     for (const render::DrawItem& d : scene.dynamics) place(d);
+    for (size_t j = 0; j < see_order.size(); ++j) {
+        const size_t at_item = see_order[j];
+        const render::DrawItem& d =
+            at_item < scene.statics.size() ? scene.statics[at_item] : scene.dynamics[at_item - scene.statics.size()];
+        const uint32_t at = running + static_cast<uint32_t>(j);
+        s.instance_transforms[at] = d.local_to_world;
+        s.instance_overrides[at] = d.material_override;
+    }
 
     // --- ground planes: per frame, because is_front depends on the camera --
     // raster_cpu's own precompute: shaded mode only (SR-22), each plane's
@@ -3334,6 +3362,25 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // The opaque passes: meshes, CSG subtrees and field layers. A flow layer
     // marches to their depth, so it gets them once more, depth only, first.
     uint32_t draw_calls = 0;
+    const auto set_mesh_uniforms = [&]() {
+        gl.UseProgram(s.program);
+        gl.UniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
+        gl.Uniform1ui(s.u_no_material, render::kNoMaterial);
+        gl.Uniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
+        gl.Uniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
+        gl.Uniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
+        gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
+        gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
+        gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
+        set_shadow_uniforms(s.mesh_shadow);
+        set_flow_uniforms(s.mesh_flow);
+        set_sensor_uniforms(s.mesh_sensor);
+        gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
+        gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
+        gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
+        gl.Uniform1f(s.u_horizon_strength, horizon_strength);
+        gl.Uniform1f(s.u_horizon_onset, options.horizon_blend_onset);
+    };
     const auto draw_opaque = [&]() {
         // --- meshes ------------------------------------------------------------
         gl.Enable(GL_DEPTH_TEST);
@@ -3352,23 +3399,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.FrontFace(GL_CCW);
         }
 
-        gl.UseProgram(s.program);
-        gl.UniformMatrix4fv(s.u_view_proj, 1, GL_FALSE, glm::value_ptr(view_proj));
-        gl.Uniform1ui(s.u_no_material, render::kNoMaterial);
-        gl.Uniform3fv(s.u_sun_dir, 1, glm::value_ptr(light.sun_direction));
-        gl.Uniform3fv(s.u_sun_color, 1, glm::value_ptr(light.sun_color));
-        gl.Uniform3fv(s.u_ambient, 1, glm::value_ptr(light.ambient_color));
-        gl.Uniform1f(s.u_sun_intensity, light.sun_intensity);
-        gl.Uniform1ui(s.u_mode, static_cast<GLuint>(options.mode));
-        gl.Uniform1f(s.u_velocity_scale, options.velocity_scale_mps);
-        set_shadow_uniforms(s.mesh_shadow);
-        set_flow_uniforms(s.mesh_flow);
-        set_sensor_uniforms(s.mesh_sensor);
-        gl.Uniform3fv(s.u_cam_pos, 1, glm::value_ptr(camera.position));
-        gl.Uniform3fv(s.u_sky_zenith, 1, glm::value_ptr(light.sky_zenith));
-        gl.Uniform3fv(s.u_sky_horizon, 1, glm::value_ptr(light.sky_horizon));
-        gl.Uniform1f(s.u_horizon_strength, horizon_strength);
-        gl.Uniform1f(s.u_horizon_onset, options.horizon_blend_onset);
+        set_mesh_uniforms();
 
         for (size_t i = 0; i < mesh_count; ++i) {
             const uint32_t count = s.batch_count[i];
@@ -3535,6 +3566,47 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         draw_calls = 0;  // the frame's own passes count; the copy does not
     }
     draw_opaque();
+
+    // --- see-through items (RND-11) ----------------------------------------------------------------------
+    // After the opaque passes and before the flow layer, farther first, one draw a submesh at the item's slot in the
+    // tail of the instance arrays: src-over with the material's alpha, depth-tested against the opaque depth and
+    // writing none, back faces culled as the opaque passes cull them. The depth-only copy the flow march reads is
+    // taken without them, so a flow volume composites over a see-through item even when it is nearer (the known limit).
+    if (!see_order.empty()) {
+        gl.Enable(GL_DEPTH_TEST);
+        gl.DepthFunc(GL_LESS);
+        gl.DepthMask(GL_FALSE);
+        gl.Enable(GL_CULL_FACE);
+        gl.CullFace(GL_BACK);
+        gl.FrontFace(GL_CCW);
+        gl.Enable(GL_BLEND);
+        gl.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+        set_mesh_uniforms();
+        gl.Uniform1ui(s.u_see_through, 1u);
+        for (size_t j = 0; j < see_order.size(); ++j) {
+            const size_t at_item = see_order[j];
+            const render::DrawItem& d =
+                at_item < scene.statics.size() ? scene.statics[at_item] : scene.dynamics[at_item - scene.statics.size()];
+            if (d.mesh_index >= mesh_count) continue;
+            const GpuMesh& m = s.meshes[d.mesh_index];
+            gl.BindVertexArray(m.vao);
+            gl.Uniform1ui(s.u_instance_base, running + static_cast<uint32_t>(j));
+            for (size_t sm = 0; sm < m.submesh_first_index.size(); ++sm) {
+                const uint32_t first = m.submesh_first_index[sm];
+                const uint32_t n = m.submesh_index_count[sm];
+                if (n == 0u) continue;
+                gl.Uniform1ui(s.u_submesh_material, m.submesh_material[sm]);
+                gl.DrawElementsInstanced(
+                    GL_TRIANGLES, static_cast<GLsizei>(n), GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(static_cast<uintptr_t>(first) * sizeof(uint32_t)), 1);
+                ++draw_calls;
+            }
+        }
+        gl.Uniform1ui(s.u_see_through, 0u);
+        gl.Disable(GL_BLEND);
+        gl.BlendFunc(GL_ONE, GL_ZERO);
+        gl.DepthMask(GL_TRUE);
+    }
 
     // --- flow layer (render/flow_render.hpp) ----------------------------------
     float flow_scale = 0.0f;  // what last_flow_scale() reports

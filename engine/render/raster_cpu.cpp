@@ -308,6 +308,9 @@ struct FrameBuffers {
     glm::vec3 normal_now{0.0f};
     // DrawMode::segmentation: the colour the pass drawing now fills with.
     Rgb8 flat_now{0, 0, 0};
+    // RND-11: the see-through pass blends with this alpha, 0..1, instead of replacing; negative is the opaque
+    // passes' (the default). A blended pixel is depth-tested and writes no depth, surface or normal.
+    float blend_alpha = -1.0f;
 };
 
 // Sets what the pixels drawn in a scope record, and clears it after.
@@ -338,6 +341,25 @@ void setPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, uint8_t r
     px[3] = kBgrxOpaqueByte;
     if (fb.surfaces != nullptr) (*fb.surfaces)[idx] = fb.surface_now;
     if (fb.normals != nullptr) (*fb.normals)[idx] = fb.normal_now;
+}
+
+// RND-11: src-over of `colour` (clamped to 0..1, float) at `alpha` onto the pixel's byte colour, one rounding:
+// to_byte(dst / 255 * (1 - alpha) + colour * alpha), depth-tested as setPixelIfCloser() tests, writing no depth.
+void blendPixelIfCloser(FrameBuffers& fb, int x, int y, double invDepth, const glm::vec3& colour, float alpha) {
+    if (x < 0 || y < 0 || x >= static_cast<int>(fb.width) || y >= static_cast<int>(fb.height)) {
+        return;
+    }
+    const size_t idx = static_cast<size_t>(y) * fb.width + static_cast<size_t>(x);
+    if (invDepth <= fb.depth[idx]) {
+        return;  // behind (or tied with) what is there
+    }
+    uint8_t* px = &fb.pixels[idx * 4];
+    // The source is clamped to 0..1 first, as a blend stage clamps a fragment colour for a fixed-point target (a
+    // bright lambert surface shades past 1): an opaque pixel is to_byte()d, which clamps it the same way.
+    const float keep = 1.0f - alpha;
+    px[0] = to_byte(static_cast<float>(px[0]) / 255.0f * keep + std::clamp(colour.b, 0.0f, 1.0f) * alpha);
+    px[1] = to_byte(static_cast<float>(px[1]) / 255.0f * keep + std::clamp(colour.g, 0.0f, 1.0f) * alpha);
+    px[2] = to_byte(static_cast<float>(px[2]) / 255.0f * keep + std::clamp(colour.r, 0.0f, 1.0f) * alpha);
 }
 
 // Simple parametric line walk (screen-space DDA) with linear invDepth
@@ -680,7 +702,7 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
     // term across every constant-normal triangle (which is most of them: a
     // plane, a box face, a wall). It would look like the feature simply did not
     // work on flat surfaces, with nothing red.
-    if (equal_combined && shadow == nullptr && !atmo.active()) {
+    if (equal_combined && shadow == nullptr && !atmo.active() && fb.blend_alpha < 0.0f) {
         rasterizeTriangleFlat(fb, v0, v1, v2, to_byte(combined0.r), to_byte(combined0.g), to_byte(combined0.b));
         return;
     }
@@ -703,13 +725,28 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
     const int y0 = std::max(0, static_cast<int>(std::floor(std::min({v0.y, v1.y, v2.y}))));
     const int y1 =
         std::min(static_cast<int>(fb.height) - 1, static_cast<int>(std::ceil(std::max({v0.y, v1.y, v2.y}))));
+    // The edge a -> b is this triangle's to claim when, turned to the triangle's orientation, it points down the
+    // screen, or along a row to the left: of the two triangles sharing an edge (it runs opposite ways in them) exactly
+    // one owns it.
+    const bool blending = fb.blend_alpha >= 0.0f;
+    const double orient = area > 0.0 ? 1.0 : -1.0;
+    const auto owns_edge = [orient](const ScreenPoint& a, const ScreenPoint& b) {
+        const double dx = (b.x - a.x) * orient, dy = (b.y - a.y) * orient;
+        return dy > 0.0 || (dy == 0.0 && dx < 0.0);
+    };
     for (int y = y0; y <= y1; ++y) {
         for (int x = x0; x <= x1; ++x) {
             const ScreenPoint p{x + 0.5, y + 0.5, 0.0};
             const double w0 = edgeFn(v1, v2, p);
             const double w1 = edgeFn(v2, v0, p);
             const double w2 = edgeFn(v0, v1, p);
-            const bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            if (inside && blending && (w0 == 0.0 || w1 == 0.0 || w2 == 0.0)) {
+                // RND-11: a blended pixel centre ON an edge belongs to the triangle that owns that edge, so a mesh's
+                // shared edge blends once, not once a side (an opaque pixel is claimed by the first writer's depth).
+                inside = (w0 != 0.0 || owns_edge(v1, v2)) && (w1 != 0.0 || owns_edge(v2, v0)) &&
+                         (w2 != 0.0 || owns_edge(v0, v1));
+            }
             if (!inside) {
                 continue;
             }
@@ -774,7 +811,11 @@ void rasterizeTriangleGouraud(FrameBuffers& fb, const ScreenPoint& v0, const Scr
                 const glm::vec3 sky = sky_gradient_color(*atmo.lighting, eye_to_surface);
                 color = horizon_blend(color, sky, view_distance, atmo.onset, atmo.strength);
             }
-            setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
+            if (fb.blend_alpha >= 0.0f) {
+                blendPixelIfCloser(fb, x, y, invD, color, fb.blend_alpha);
+            } else {
+                setPixelIfCloser(fb, x, y, invD, to_byte(color.r), to_byte(color.g), to_byte(color.b));
+            }
         }
     }
 }
@@ -945,8 +986,10 @@ void draw_mesh_triangle_sensor(FrameBuffers& fb, const ViewContext& vc, const Ve
     return glm::vec3(u, 0.0f, 1.0f - u);
 }
 
+// `blended`: the see-through pass (RND-11) -- each submesh blends over the frame with its resolved material's
+// alpha, 0..1, instead of replacing it. Shaded frames only; the caller guards that.
 void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, const DrawItem& item,
-                     const RenderOptions& options, const ShadowSet* shadow) {
+                     const RenderOptions& options, const ShadowSet* shadow, bool blended = false) {
     const DrawMode mode = options.mode;
     if (item.mesh_index >= scene.meshes.size()) {
         return;  // kNoMesh, or an out-of-range slot -- nothing to draw.
@@ -1026,6 +1069,16 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
         }
         const Material& material = (mode == DrawMode::velocity) ? velocity_tinted : resolved;
 
+        // The see-through pass: this submesh's alpha, a NaN or negative one 0 (nothing to blend), above 1 clamped.
+        // An alpha of 0 draws nothing at all.
+        float alpha = 1.0f;
+        if (blended) {
+            alpha = resolved.base_color.a;
+            alpha = !(alpha > 0.0f) ? 0.0f : std::min(alpha, 1.0f);
+            if (alpha <= 0.0f) continue;
+        }
+        fb.blend_alpha = blended ? alpha : -1.0f;
+
         // Wireframe's flat colour -- the submesh's raw base_color, never
         // relit (this function's own header comment above).
         const uint8_t r = to_byte(material.base_color.r);
@@ -1065,7 +1118,14 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
                 }
             }
         }
+        fb.blend_alpha = -1.0f;
     }
+}
+
+// RND-11: where a see-through item is drawn. Shaded frames blend it after the opaque passes; velocity and the sensor
+// modes leave it out; wireframe draws its edges like any item's (the flag is shaded's).
+[[nodiscard]] bool see_through_left_out(const DrawItem& item, DrawMode mode) {
+    return item.see_through && mode != DrawMode::wireframe;
 }
 
 // ---------------------------------------------------------------------------
@@ -2186,6 +2246,13 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
                                              std::to_string(sub.draw_item) + ", past the " +
                                              std::to_string(scene.statics.size()) + " statics"});
         }
+        if (scene.statics[sub.draw_item].see_through) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "render: CSG subtree " + std::to_string(i) + " marches draw item " +
+                                             std::to_string(sub.draw_item) +
+                                             ", which is see-through (DrawItem::see_through): a marched surface "
+                                             "cannot blend"});
+        }
     }
     // S7a Task R8: raymarch is an exact SDF sphere-tracer, not a rasterizer
     // -- it shares this file's target-validation entry point (above) but
@@ -2231,12 +2298,12 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         draw_sensor_ground(fb, vc, scene, options);
         const std::vector<bool> marched = csg_marched_items(scene);
         for (size_t i = 0; i < scene.statics.size(); ++i) {
-            if (!marched[i]) {
+            if (!marched[i] && !scene.statics[i].see_through) {
                 draw_mesh_item(fb, vc, scene, scene.statics[i], options, nullptr);
             }
         }
         for (const DrawItem& item : scene.dynamics) {
-            draw_mesh_item(fb, vc, scene, item, options, nullptr);
+            if (!item.see_through) draw_mesh_item(fb, vc, scene, item, options, nullptr);
         }
         draw_csg_subtrees(fb, vc, scene, camera, options, nullptr);
         colour_sensor_frame(fb, options);
@@ -2338,18 +2405,26 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         marched = csg_marched_items(scene);
     }
     for (size_t i = 0; i < scene.statics.size(); ++i) {
-        if (!march_csg || !marched[i]) {
+        if ((!march_csg || !marched[i]) && !see_through_left_out(scene.statics[i], options.mode)) {
             draw_mesh_item(fb, vc, scene, scene.statics[i], options, shadow);
         }
     }
     for (const DrawItem& item : scene.dynamics) {
-        draw_mesh_item(fb, vc, scene, item, options, shadow);
+        if (!see_through_left_out(item, options.mode)) draw_mesh_item(fb, vc, scene, item, options, shadow);
     }
     if (march_csg) {
         draw_csg_subtrees(fb, vc, scene, camera, options, shadow);
     }
     draw_flow_surface_colouring(fb, vc, scene, camera, flow_report);
     draw_field_layers(fb, vc, scene);
+    // RND-11: the see-through items, farther first, over everything opaque and before the flow layers.
+    if (shaded) {
+        const size_t statics = scene.statics.size();
+        for (const uint32_t at : see_through_order(scene, camera)) {
+            const DrawItem& item = at < statics ? scene.statics[at] : scene.dynamics[at - statics];
+            draw_mesh_item(fb, vc, scene, item, options, shadow, /*blended=*/true);
+        }
+    }
     draw_flow_layers(fb, vc, scene, camera, flow_report);
     draw_flow_lines(fb, vc, scene);
 
