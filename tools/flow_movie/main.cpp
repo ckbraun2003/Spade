@@ -73,6 +73,7 @@
 #include "arm_pressure.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
+#include "line_export.hpp"
 #ifdef SPADE_FLOW_MOVIE_GPU
 #include "gpu_live.hpp"
 #endif
@@ -1479,6 +1480,9 @@ struct Options {
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
+    std::string export_name;      // --export-lines NAME: a cached frame's streamlines as JSON (line_export.hpp); no film
+    int export_frame = -1;        // --export-frame N: the cached frame to export (default: the last)
+    fs::path export_deliver;      // --export-deliver RAW: also copy it to RAW/spade and add a MANIFEST line
     uint32_t subnormal_scan = 0;  // --subnormal-scan N: D1's subnormal scan, N steps of two runs; no film
     uint32_t subnormal_locate = 0;  // --subnormal-locate N: what raises them, N steps of one run; no film
     fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
@@ -1509,6 +1513,106 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     (void)mark;
     return std::unexpected(spade::Error{spade::Code::unavailable, film.stem + ": --gpu needs the Vulkan build"});
 #endif
+}
+
+// --export-lines NAME: a cached frame of a LiveRun film (the last, or --export-frame N) as streamlines in JSON for
+// the website's 3-D viewer (line_export.hpp): <out>/export/NAME.json and NAME.md. With --export-deliver RAW, both
+// also go to RAW/spade and one line to RAW/MANIFEST.md, through the guard a clip's delivery passes: nothing else
+// under the site is written.
+[[nodiscard]] spade::Result<void> export_lines_report(const Film& film, const fs::path& cache, const Options& opt) {
+    using spade::Code;
+    using spade::Error;
+    if (!film.run) return std::unexpected(Error{Code::invalid_argument, "--export-lines reads a LiveRun film's frames"});
+    const LiveCase& lc = *film.run;
+    const uint32_t frames = cached_frames(cache);
+    if (frames == 0u) {
+        return std::unexpected(Error{Code::not_found, "no cached frames in " + cache.string() + ": film the case first"});
+    }
+    const uint32_t k = opt.export_frame >= 0 ? static_cast<uint32_t>(opt.export_frame) : frames - 1u;
+    if (k >= frames) {
+        return std::unexpected(Error{Code::invalid_argument, "--export-frame " + std::to_string(k) + ": the cache holds " +
+                                                                 std::to_string(frames) + " frames"});
+    }
+    spade::FlowVolume volume;
+    FrameLog log;
+    if (auto read = read_frame(cache, k, volume, log); !read) return read;
+    if (log.live.size() < 7u) return std::unexpected(Error{Code::internal, "a LiveRun frame's log holds no held body"});
+    ExportBody body;
+    body.pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
+    body.orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                            static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+    std::vector<ExportRotor> rotors;
+    for (const spade::vehicles::RotorDesc& r : lc.run_model.rotors) {
+        rotors.push_back(ExportRotor{r.local_pos, glm::normalize(r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f)), r.radius,
+                                     r.spin_dir});
+    }
+    const CacheMark mark = read_mark(cache);
+    const float wind = lc.c.flight.speed, heading = lc.c.flight.heading_deg;
+    ExportInfo info;
+    info.name = opt.export_name;
+    info.sim = mark.build.empty() ? build_identity() : mark.build;
+    info.config = lc.name + "; wind " + fixed(wind, 1) + " m/s from heading " + fixed(heading, 0) + " deg; " + lc.identity;
+    info.note = "one frame of the reference quad's run, in the aircraft's body frame; a stand-in, see the caption";
+    info.frame = k;
+    info.step = log.step;
+    info.t_s = log.time;
+    auto made = export_streamlines(volume, body, rotors, info);
+    if (!made) return std::unexpected(made.error());
+    const fs::path dir = opt.out / "export";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path json = dir / (opt.export_name + ".json"), caption = dir / (opt.export_name + ".md");
+    ExportCaption cap;
+    cap.info = &info;
+    cap.result = &*made;
+    cap.commit = build_identity();
+    cap.date_utc = utc_now();
+    cap.command = opt.command_line;
+    cap.ticket = opt.ticket.empty() ? "none" : opt.ticket;
+    cap.crosswind = std::fabs(heading) > 1.0f;
+    cap.device = film.device;
+    {
+        std::ofstream out(json, std::ios::binary | std::ios::trunc);
+        out << made->json;
+        std::ofstream md(caption, std::ios::binary | std::ios::trunc);
+        md << export_caption_text(cap);
+        if (!out || !md) return std::unexpected(Error{Code::io_error, "writing " + json.string() + " or " + caption.string()});
+    }
+    std::printf("[ export ] %s: frame %u, %u lines, %llu points, %zu bytes, least arc %.1f mm, %u dropped: %s\n",
+                opt.export_name.c_str(), k, made->lines, static_cast<unsigned long long>(made->points), made->json.size(),
+                static_cast<double>(made->spacing_m) * 1000.0, made->dropped, json.string().c_str());
+    if (opt.export_deliver.empty()) return {};
+
+    const web::DeliveryGuard guard{opt.export_deliver};
+    const fs::path spade_dir = opt.export_deliver / "spade";
+    const fs::path manifest = opt.export_deliver / "MANIFEST.md";
+    fs::create_directories(spade_dir, ec);
+    if (ec) return std::unexpected(Error{Code::io_error, "cannot create " + spade_dir.string() + ": " + ec.message()});
+    for (const fs::path& from : {json, caption}) {
+        const fs::path to = spade_dir / from.filename();
+        if (!guard.may_write(to)) return std::unexpected(Error{Code::invalid_argument, to.string() + " is outside " + spade_dir.string()});
+        fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected(Error{Code::io_error, "copying " + from.string() + ": " + ec.message()});
+        std::printf("flow_movie: delivered %s\n", to.string().c_str());
+    }
+    if (!guard.may_write(manifest)) return std::unexpected(Error{Code::invalid_argument, manifest.string() + " is not the manifest"});
+    std::string have;
+    {
+        std::ifstream in(manifest, std::ios::binary);
+        have.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string file = opt.export_name + ".json";
+    if (have.find("- " + file + " |") != std::string::npos) {
+        std::printf("flow_movie: MANIFEST already lists %s\n", file.c_str());
+        return {};
+    }
+    std::ofstream out(manifest, std::ios::binary | std::ios::app);
+    if (!have.empty() && have.back() != '\n') out << '\n';
+    out << data_manifest_line(file, made->json.size(), "sim", "Streamlines around the reference quad's rotors in its body frame (JSON)")
+        << '\n';
+    if (!out) return std::unexpected(Error{Code::io_error, "writing " + manifest.string()});
+    std::printf("flow_movie: MANIFEST.md: 1 line added\n");
+    return {};
 }
 
 // d1-hover's length: D1-3's window ends 0.50 s after arming (armed at 0), and
@@ -1551,6 +1655,10 @@ constexpr double kD1Seconds = 0.6;
     if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
     if (opt.arm_pressure) {
         if (auto measured = arm_pressure_report(film, cache); !measured) return std::unexpected(measured.error());
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
+    if (!opt.export_name.empty()) {
+        if (auto exported = export_lines_report(film, cache, opt); !exported) return std::unexpected(exported.error());
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     }
     if (opt.probe_swirl >= 0) {
@@ -1768,6 +1876,11 @@ struct WebTimes {
     auto film = web_film(*clip, *group, plan);
     if (!film) return fail(film.error());
     if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
+    if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
+        auto exported = run_film(*film, opt, stage, encoder);
+        if (!exported) return fail(exported.error());
+        return 0;
+    }
 
     // The cache: the simulation, from rest, over the window.
     Options sim = opt;
@@ -1969,6 +2082,12 @@ int main(int argc, char** argv) {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--arm-pressure") {
             opt.arm_pressure = true;
+        } else if (arg == "--export-lines") {
+            opt.export_name = value();
+        } else if (arg == "--export-frame") {
+            opt.export_frame = std::atoi(value().c_str());
+        } else if (arg == "--export-deliver") {
+            opt.export_deliver = value();
         } else if (arg == "--step-time") {
             opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--subnormal-scan") {
@@ -2153,7 +2272,10 @@ int main(int argc, char** argv) {
         auto clips = run_film(film, opt, **stage, encoder);
         if (!clips) return fail(clips.error());
         if (!*clips) return kExitIncomplete;
-        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) continue;
+        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0 ||
+            !opt.export_name.empty()) {
+            continue;
+        }
         const bool smoke = opt.video == "smoke" || opt.video == "case-smoke";
         auto card = film_card(encoder, opt.out / "clips", film, smoke ? 0.2 : 4.0, builds);
         if (!card) return fail(card.error());

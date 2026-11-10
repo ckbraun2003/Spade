@@ -223,6 +223,9 @@ add_executable(spade_tests
     test_hover_download.cpp
     test_flow_movie_frame_check.cpp
     test_flow_movie_web.cpp
+    # The hover frame's streamlines as JSON (the lead, 2026-11-10), compiled in from the tool.
+    test_flow_movie_export.cpp
+    ../tools/flow_movie/line_export.cpp
     # write_frame(), which every film's frames pass through (the lead's grant,
     # 2026-10-27): the recorder's cache, compiled in from the tool.
     ../tools/flow_movie/cache.cpp
