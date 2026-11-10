@@ -297,6 +297,10 @@ TEST(SeeThrough, ASeeThroughItemReceivesAShadow) {
     }
     EXPECT_GT(darker, 10u) << "the see-through floor takes the caster's shadow";
     EXPECT_EQ(brighter, 0u);
+    // And it is blended: the lit floor (ambient + sun, past white) at alpha 0.5 over the black sky is 128, not 255.
+    int brightest_red = 0;
+    for (size_t i = 0; i < lit.px.size(); i += 4) brightest_red = std::max(brightest_red, int{lit.px[i + 2]});
+    EXPECT_NEAR(brightest_red, 128, 2);
 }
 
 // ---- the modes ----------------------------------------------------------------------------------------------
@@ -356,6 +360,7 @@ TEST(SeeThrough, ASeeThroughSurfaceTakesTheAtmosphereAsAShadedSurfaceDoes) {
     clear.horizon_blend_strength = 0.0f;
     const glm::ivec3 with_haze = draw(scene, hazy).centre();
     const glm::ivec3 without = draw(scene, clear).centre();
+    EXPECT_EQ(without, glm::ivec3(128, 0, 128)) << "red at 0.5 over the blue sky, no haze";
     EXPECT_NE(with_haze, without) << "the term reaches the blended surface";
     EXPECT_LT(with_haze.r, without.r) << "red is hazed toward the blue sky";
 }
