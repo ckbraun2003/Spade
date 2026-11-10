@@ -113,7 +113,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
         {"S2", "rotor-wake-vortex-surfaces", "Reference quad in hover: vortex surfaces from the start-up",
          "Vortex surfaces (lambda2) round the reference quad's rigid parts, held at hover in still air, from the "
          "start-up roll-up into the developed column, in a slow push-in.",
-         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 0.0f, false, 0},
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 0},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
          "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},

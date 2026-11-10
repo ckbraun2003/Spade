@@ -249,6 +249,7 @@ spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::a
     if (!made) return made;
     made->c.time.step = step_s;
     made->sgs_cs = sgs_cs;
+    if (heading_deg == 0.0f) made->speed_max = 12.0f;  // the still-air clips' one speed range, 0 to 12 m/s (S1, S2, S8)
     char line[96];
     std::snprintf(line, sizeof line, "; step %.2g ms with a Smagorinsky subgrid viscosity, Cs %.2f",
                   static_cast<double>(step_s) * 1000.0, static_cast<double>(sgs_cs));
