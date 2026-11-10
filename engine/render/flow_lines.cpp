@@ -344,16 +344,6 @@ Result<void> validate_flow_polyline(const FlowPolyline& line) {
     return check_coloured(line.points, line.colours, "flow polyline");
 }
 
-Result<void> validate_flow_line_styling(std::span<const FlowPolyline> lines, const FlowLineStyle& style) {
-    if (Result<void> valid = validate_flow_line_style(style); !valid) return valid;
-    if (style.glow_px > 0.0f) {
-        bool wide = false;
-        for (const FlowPolyline& line : lines) wide = wide || effective_width_px(line, style) > 0.0f;
-        if (!wide) return std::unexpected(Error{Code::invalid_argument, "flow line style: a glow needs a width"});
-    }
-    return {};
-}
-
 Result<void> validate_flow_line_style(const FlowLineStyle& style) {
     if (!std::isfinite(style.width_px) || !std::isfinite(style.glow_px) || !std::isfinite(style.glow_strength)) {
         return std::unexpected(Error{Code::invalid_argument, "flow line style: a value is not finite"});

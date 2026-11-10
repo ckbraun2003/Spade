@@ -156,13 +156,18 @@ struct FlowPoints {
 // styled. Segment colour is the mean of its two ends', as for the one-pixel line.
 struct FlowLineStyle {
     float width_px = 0.0f;        // 0 is off, else 0.5 to 64
-    float glow_px = 0.0f;         // 0 to 64; needs a width
+    float glow_px = 0.0f;         // 0 to 64; round the capsules only
     float glow_strength = 0.35f;  // 0 to 1: the halo's alpha at the edge
 
     [[nodiscard]] bool operator==(const FlowLineStyle&) const = default;
     [[nodiscard]] bool on() const noexcept { return width_px > 0.0f; }
 };
 
+// THE GLOW belongs to the capsules: it is drawn round every polyline drawn as a capsule (the scene's width or its
+// own), and a frame with no capsule draws none, so a glow set on a style whose polylines are all at width 0 renders
+// the one-pixel lines, byte for byte (the lead, 2026-11-10, `L49`: a host keeps one scene style while a layer of
+// lines comes and goes, and a frame's content must never decide whether it renders).
+//
 // invalid_argument, by name: a width that is not 0 or 0.5 to 64, a glow outside 0 to 64, a strength outside
 // 0 to 1, or a value that is not finite.
 [[nodiscard]] Result<void> validate_flow_line_style(const FlowLineStyle& style);
@@ -172,9 +177,6 @@ struct FlowLineStyle {
     return line.width_px > 0.0f ? line.width_px : style.width_px;
 }
 
-// validate_flow_line_style(), and a glow needs a width: some polyline is drawn wider than a pixel (the scene's
-// width or its own). The one check both backends make of a scene's lines' styling.
-[[nodiscard]] Result<void> validate_flow_line_styling(std::span<const FlowPolyline> lines, const FlowLineStyle& style);
 
 // invalid_argument, by name: not one colour per point, a point that is not
 // finite, a colour outside [0, 1], a polyline width that is not finite, negative or 0.5 to 64, or (points) a

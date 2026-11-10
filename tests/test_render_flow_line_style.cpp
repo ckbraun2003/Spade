@@ -241,9 +241,10 @@ TEST(RenderFlowLineStyle, ZeroWidthEverywhereIsTodaysBytes) {
     EXPECT_EQ(draw(explicit_off).px, got.px);
 }
 
-// The glow is the scene's, a polyline's own width gets it: a scene with no width and a glow is refused only when
-// no polyline is wide.
-TEST(RenderFlowLineStyle, TheGlowIsTheScenesAndANarrowSceneGivesItToAPolylineWithAWidth) {
+// The glow is the scene's and belongs to every capsule: a polyline's own width gets it on a scene whose width is 0.
+// And a frame with no capsule draws no glow and is not refused: a host keeps one style while a layer of lines comes
+// and goes (the lead, 2026-11-10, L49), so the same style with every polyline at width 0 is today's one-pixel bytes.
+TEST(RenderFlowLineStyle, TheGlowBelongsToTheCapsulesAndAFrameWithNoCapsuleDrawsNoneAndIsNotRefused) {
     RenderScene scene = black_scene();
     scene.flow_line_style = FlowLineStyle{0.0f, 2.0f, 0.5f};
     scene.flow_polylines = {left_half(2.0f)};
@@ -251,10 +252,15 @@ TEST(RenderFlowLineStyle, TheGlowIsTheScenesAndANarrowSceneGivesItToAPolylineWit
     const Frame got = draw(scene, &r);
     ASSERT_TRUE(r.has_value()) << r.error().context;
     EXPECT_EQ(column(got, 12), (std::vector<int>{0, 25, 150, 200, 150, 25, 0}));
-    scene.flow_polylines = {left_half(0.0f)};
-    (void)draw(scene, &r);
-    ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().context.find("a glow needs a width"), std::string::npos) << r.error().context;
+
+    scene.flow_polylines = {left_half(0.0f), right_part(0.0f)};
+    const Frame none = draw(scene, &r);
+    ASSERT_TRUE(r.has_value()) << "no capsule in the frame is not an error: " << r.error().context;
+    EXPECT_EQ(column(none, 12), (std::vector<int>{0, 0, 0, 200, 0, 0, 0})) << "the one-pixel line, no halo";
+    EXPECT_EQ(column(none, 20, true), (std::vector<int>{0, 0, 0, 200, 0, 0, 0}));
+    RenderScene plain = scene;
+    plain.flow_line_style = FlowLineStyle{};
+    EXPECT_EQ(draw(plain).px, none.px) << "byte for byte what a scene with no style draws";
 }
 
 TEST(RenderFlowLineStyle, ABadPolylineWidthIsRefusedByName) {
@@ -288,7 +294,6 @@ TEST(RenderFlowLineStyle, ABadStyleIsRefusedByNameBeforeAnyPixel) {
     refused(FlowLineStyle{65.0f, 0.0f, 0.35f}, "the width is not 0 or 0.5 to 64");
     refused(FlowLineStyle{2.0f, -1.0f, 0.35f}, "the glow is not 0 to 64");
     refused(FlowLineStyle{2.0f, 65.0f, 0.35f}, "the glow is not 0 to 64");
-    refused(FlowLineStyle{0.0f, 3.0f, 0.35f}, "a glow needs a width");
     refused(FlowLineStyle{2.0f, 3.0f, 1.5f}, "the glow strength is not 0 to 1");
     refused(FlowLineStyle{std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.35f}, "not finite");
 }

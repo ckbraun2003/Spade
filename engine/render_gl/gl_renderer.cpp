@@ -2904,7 +2904,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     if (Result<void> valid = render::validate_flow_points(scene.flow_points); !valid) {
         return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
     }
-    if (Result<void> valid = render::validate_flow_line_styling(scene.flow_polylines, scene.flow_line_style); !valid) {
+    if (Result<void> valid = render::validate_flow_line_style(scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
     }
     GLint max_3d = 0;

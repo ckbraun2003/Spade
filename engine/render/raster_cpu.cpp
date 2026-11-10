@@ -2160,7 +2160,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (Result<void> valid = validate_flow_points(scene.flow_points); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
-    if (Result<void> valid = validate_flow_line_styling(scene.flow_polylines, scene.flow_line_style); !valid) {
+    if (Result<void> valid = validate_flow_line_style(scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
     if (scene.flow_surface_colouring) {
