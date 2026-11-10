@@ -112,6 +112,39 @@ TEST(FlowMovieWeb, TheWindowsFrameToStepMapIsMonotoneAndEndsOnTheWindowsEnd) {
     EXPECT_EQ(web::frame_end_step(0, 1, 0.0, 0.6, 0.0005), uint64_t{1200});
 }
 
+// The one jitter the render path owns (the lead, 2026-11-10): frames spread evenly over a window land on
+// round(t / h) steps, which for 2.67 steps a frame is 3, 3, 2, so a structure advances 25 % less every third
+// frame. In a group every frame is the same whole number of steps after the one before, from the window's start,
+// at every step the groups use and for every frame the group holds.
+TEST(FlowMovieWeb, EveryFrameOfEveryGroupIsTheSameWholeNumberOfStepsAfterTheOneBefore) {
+    for (const web::Group& g : web::web_groups()) {
+        const double h = g.name == "taylor-green" ? static_cast<double>(web::taylor_green_step(128)) : web::kLiveStepS;
+        const uint64_t from_step = static_cast<uint64_t>(std::llround(g.from_s / h));
+        uint64_t last = from_step;
+        for (uint32_t k = 0; k < g.frames; ++k) {
+            const uint64_t s = web::whole_frame_end_step(k, from_step, g.steps_per_frame);
+            ASSERT_EQ(s - last, uint64_t{g.steps_per_frame}) << g.name << " frame " << k;
+            last = s;
+        }
+        // The window the table names ends where its last frame does.
+        const double end = web::window_end_s(g.from_s, g.frames, g.steps_per_frame, h);
+        EXPECT_EQ(static_cast<uint64_t>(std::llround(end / h)), last) << g.name;
+    }
+    // The even spread this replaces: 450 frames over 0.9 to 1.5 s at 0.5 ms are 2.67 steps a frame, and the step
+    // counts it gives are not all equal. This is the beat the groups no longer have.
+    uint64_t lo = ~uint64_t{0}, hi = 0, prev = web::frame_end_step(0, 450, 0.9, 1.5, 0.0005);
+    for (uint32_t k = 1; k < 450; ++k) {
+        const uint64_t s = web::frame_end_step(k, 450, 0.9, 1.5, 0.0005);
+        lo = std::min(lo, s - prev);
+        hi = std::max(hi, s - prev);
+        prev = s;
+    }
+    EXPECT_EQ(lo, uint64_t{2});
+    EXPECT_EQ(hi, uint64_t{3});
+    // The quad's developed wake stays inside the 1.5 s Physics measured: 1800 + 450 * 2 steps is 1.35 s.
+    EXPECT_LE(web::window_end_s(0.9, 450, 2, web::kLiveStepS), 1.5);
+}
+
 TEST(FlowMovieWeb, TheTableHasTheEightClipsAtThirtyFramesASecondAndOneRangeAScene) {
     const auto& clips = web::web_clips();
     ASSERT_EQ(clips.size(), std::size_t{8});
@@ -145,7 +178,7 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
         const web::Group* g = web::find_group(c.group);
         ASSERT_NE(g, nullptr) << c.id << " names a group that is not in the table";
         EXPECT_GE(g->frames, c.frames()) << c.id << ": its group's cache holds all its frames";
-        EXPECT_GT(g->to_s, g->from_s) << c.id;
+        EXPECT_GT(g->steps_per_frame, 0u) << c.id;
     }
     // One window a group: S1, S5, S6 and S8 share the quad's developed wake; S3 and S4 the D1 run.
     EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S8")->group);
@@ -153,7 +186,7 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
     EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S2")->group);
     EXPECT_EQ(web::find_group("quad-developed")->frames, 450u);
     EXPECT_DOUBLE_EQ(web::find_group("quad-developed")->from_s, 0.9);
-    EXPECT_DOUBLE_EQ(web::find_group("d1-crosswind")->to_s, 0.567);
+    EXPECT_EQ(web::find_group("d1-crosswind")->steps_per_frame, 3u);
     EXPECT_EQ(web::find_group("nothing"), nullptr);
 }
 

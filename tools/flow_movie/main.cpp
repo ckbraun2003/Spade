@@ -210,6 +210,10 @@ struct Film {
     // ending at web::frame_end_step() (0, 0: the film's own spread over t_end); a LiveRun film then steps
     // advance_steps() between them, each frame carrying its true time.
     double window_from = 0.0, window_to = 0.0;
+    // Nonzero: the window is whole steps, frame k ending (k + 1) * steps_per_frame steps past the window's start
+    // (web::whole_frame_end_step); window_to then only names where the last frame ends. Zero: the frames are
+    // spread evenly over [window_from, window_to] (--window).
+    uint32_t steps_per_frame = 0;
     // A LiveRun film's fluid on GpuFluid WITH the parts in the flow (gpu_live.hpp: open_device_fluid()).
     bool device = false;
 };
@@ -251,10 +255,19 @@ struct Film {
            window_note(film);
 }
 
+// The solver step at which frame k of a windowed film ends, at step h.
+[[nodiscard]] uint64_t film_frame_end_step(const Film& film, uint32_t k, double h) {
+    if (film.steps_per_frame > 0u) {
+        return web::whole_frame_end_step(k, static_cast<uint64_t>(std::llround(film.window_from / h)),
+                                         film.steps_per_frame);
+    }
+    return web::frame_end_step(k, film.frames, film.window_from, film.window_to, h);
+}
+
 // A windowed film's frames each need a step of their own: more frames than the window has steps would show one
-// state twice, and a clip meant to play smoothly would stutter.
+// state twice, and a clip meant to play smoothly would stutter. (A whole-step window gives each its own.)
 [[nodiscard]] spade::Result<void> check_window(const Film& film, double h) {
-    if (film.window_to <= 0.0) return {};
+    if (film.window_to <= 0.0 || film.steps_per_frame > 0u) return {};
     const uint64_t steps = web::frame_end_step(0, 1, 0.0, film.window_to, h) -
                            web::frame_end_step(0, 1, 0.0, film.window_from, h);
     if (steps < film.frames) {
@@ -307,7 +320,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
         const uint64_t target =
-            film.window_to > 0.0 ? web::frame_end_step(k, film.frames, film.window_from, film.window_to, c.fluid.h)
+            film.window_to > 0.0 ? film_frame_end_step(film, k, c.fluid.h)
             : film.frames <= 1u  ? total
                                  : static_cast<uint64_t>(std::llround(static_cast<double>(k) * total / (film.frames - 1u)));
         for (; step < target; ++step) {
@@ -430,7 +443,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
         // A window spreads the frames over its simulated time, a frame every few steps; else LiveRun's own 30 a second.
         const uint64_t target =
-            film.window_to > 0.0 ? web::frame_end_step(k, film.frames, film.window_from, film.window_to, run->step_s()) : 0u;
+            film.window_to > 0.0 ? film_frame_end_step(film, k, run->step_s()) : 0u;
         if (film.window_to > 0.0 && target <= run->state().steps) {
             return std::unexpected(spade::Error{spade::Code::internal, film.stem + ": frame " + std::to_string(k) +
                                                                            " has no step of its own in its window"});
@@ -1254,6 +1267,7 @@ constexpr float kVortexFloor = -5.0f;
 struct WebPlan {
     uint32_t frames = 0;
     double from_s = 0.0, to_s = 0.0;
+    uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
     uint32_t cells = 128;       // the Taylor-Green case's cells a side: S7 films 128, not the record's 64
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
 };
@@ -1379,6 +1393,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
     film.frames = plan.frames;
     film.window_from = plan.from_s;
     film.window_to = plan.to_s;
+    film.steps_per_frame = plan.steps_per_frame;
     if (!film.run) film.airflow.t_end = static_cast<float>(plan.to_s);
     return film;
 }
@@ -1723,8 +1738,13 @@ struct WebTimes {
     WebPlan plan;
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
-    plan.to_s = opt.window_to > 0.0 ? opt.window_to : group->to_s;
     plan.cells = std::max(8u, opt.cells);
+    plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
+    plan.to_s = opt.window_to > 0.0
+                    ? opt.window_to
+                    : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame,
+                                        clip->scene == web::Scene::taylor_green ? double{web::taylor_green_step(plan.cells)}
+                                                                                : web::kLiveStepS);
     plan.grid = opt.grid;
     const uint32_t n = std::min(clip->frames(), plan.frames);
     const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");

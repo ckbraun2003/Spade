@@ -55,24 +55,35 @@ struct Clip {
     }
 };
 
-// A simulation behind one or more clips: its frames are spread evenly over [from_s, to_s] of simulated time
-// from rest (a window), and a clip of the group draws the first `clip.frames()` of its `frames`.
+// A simulation behind one or more clips: from `from_s` of simulated time (from rest), frame k ends
+// (k + 1) * steps_per_frame solver steps on, and a clip of the group draws the first `clip.frames()` of its
+// `frames`. A WHOLE number of steps a frame, so every frame shows the same advance of time: a frame spacing that
+// is not a whole step count rounds to 2, 3, 3 steps and the flow beats at a tenth of the frame rate (the lead,
+// 2026-11-10). A cache of fewer frames is a prefix of the full run.
 struct Group {
     std::string_view name;
     double from_s = 0.0;
-    double to_s = 0.0;
+    uint32_t steps_per_frame = 0;
     uint32_t frames = 0;
 };
 
-// The windows. The quad's developed wake (0.9 to 1.5 s of simulated time) is a default: it is filmed only once
-// the frames after 0.6 s have been looked at (Physics: the box's open faces over 1.5 s are unmeasured). The
-// Taylor-Green case's time is dimensionless.
+// The solver step of the quad and of D1 (LiveRun's), s.
+inline constexpr double kLiveStepS = 0.0005;
+
+// The Taylor-Green case's step in its own (dimensionless) time: half a cell of the 2 pi box, as the case sets it.
+[[nodiscard]] inline float taylor_green_step(uint32_t cells) {
+    return 0.5f * static_cast<float>(2.0 * 3.14159265358979323846 / static_cast<double>(cells));
+}
+
+// The windows, at 0.5 ms a step. The quad's developed wake runs 0.9 to 1.35 s at 2 steps a frame (Physics: the
+// box's open faces past 1.5 s are unmeasured); its start-up 0 to 0.54 s at 3; D1's crosswind run 0 to 0.54 s at
+// 3; the Taylor-Green case one step a frame, 300 steps (to 7.36 at 128 cells; its time is dimensionless).
 [[nodiscard]] inline const std::array<Group, 4>& web_groups() {
     static const std::array<Group, 4> table{{
-        {"quad-developed", 0.9, 1.5, 450},
-        {"quad-startup", 0.0, 0.6, 360},
-        {"d1-crosswind", 0.0, 0.567, 360},
-        {"taylor-green", 0.0, 10.0, 300},
+        {"quad-developed", 0.9, 2, 450},
+        {"quad-startup", 0.0, 3, 360},
+        {"d1-crosswind", 0.0, 3, 360},
+        {"taylor-green", 0.0, 1, 300},
     }};
     return table;
 }
@@ -167,8 +178,20 @@ struct Group {
 
 // ---- the window ---------------------------------------------------------------------------------------
 
+// The solver step at which frame k ends in a whole-step group: `steps_per_frame` after the frame before, the
+// first that many past `from_step` (the step of the window's start).
+[[nodiscard]] inline uint64_t whole_frame_end_step(uint32_t k, uint64_t from_step, uint32_t steps_per_frame) {
+    return from_step + (static_cast<uint64_t>(k) + 1u) * steps_per_frame;
+}
+
+// Where a whole-step window of `frames` frames ends, s, at step h.
+[[nodiscard]] inline double window_end_s(double from_s, uint32_t frames, uint32_t steps_per_frame, double h) {
+    return from_s + static_cast<double>(frames) * static_cast<double>(steps_per_frame) * h;
+}
+
 // The solver step at which frame k of n ends, when the n frames span the simulated window [t0, t1] and the
-// step is h: the frames are spread evenly over the window, the last ending at t1.
+// step is h: the frames are spread evenly over the window, the last ending at t1. (A window given by --window
+// A:B: its frames are not a whole number of steps apart unless the window happens to make them so.)
 [[nodiscard]] inline uint64_t frame_end_step(uint32_t k, uint32_t n, double t0, double t1, double h) {
     const double t = t0 + (t1 - t0) * (static_cast<double>(k) + 1.0) / static_cast<double>(n == 0u ? 1u : n);
     return static_cast<uint64_t>(std::llround(t / h));
