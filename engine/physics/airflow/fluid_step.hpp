@@ -14,6 +14,7 @@
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/projection.hpp"
 #include "physics/airflow/regions.hpp"
+#include "physics/airflow/sgs.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/viscous.hpp"
 #include "physics/airflow/worker_pool.hpp"
@@ -42,6 +43,9 @@ struct FluidConfig {
     // step; 0 is taken as 1. The count is read once, at make_fluid_scratch(), which
     // makes the pool: setting it afterwards does nothing.
     uint32_t threads = default_fluid_threads();
+    // The subgrid eddy viscosity (sgs.hpp; L52): Smagorinsky's Cs. 0, the default, is off and the step is as it was,
+    // bit for bit. Valid: 0, or a finite Cs up to kSgsCsMax; anything else is refused by name (bad_sgs_cs).
+    float sgs_cs = 0.0f;
 };
 
 enum class FluidFault : uint8_t {
@@ -49,6 +53,7 @@ enum class FluidFault : uint8_t {
     non_finite,        // a NaN or infinity in u, v, w or p after the step
     ill_posed_domain,  // a closed domain whose prescribed wall fluxes do not balance
     ill_posed_region,  // a closed fluid region whose prescribed domain fluxes do not balance (regions.hpp)
+    bad_sgs_cs,        // FluidConfig::sgs_cs is negative, not finite, or above kSgsCsMax (sgs.hpp)
 };
 
 // FluidHealth's index for a non-finite flow found with no sample to name:
@@ -68,6 +73,11 @@ struct FluidHealth {
     bool unconverged = false;        // pressure_residual > kResidualAnnounce: announced (L6), not refused
     bool stalled = false;  // with solids: the CG stopped above kResidualAnnounce at fp32's floor, before its cap
                            // (pcg.hpp's stall rule); an unconverged solids step is capped or stalled, never both
+    // The subgrid viscosity's own account of this step (sgs.hpp), 0 with sgs_cs 0: the cells whose nu_t the cap
+    // held, the faces whose wall weight the explicit bound limited, and the largest nu_t met, m^2/s.
+    uint32_t sgs_capped_cells = 0;
+    uint32_t sgs_limited_faces = 0;
+    float sgs_nu_t_max = 0.0f;
 };
 
 // The CG iteration count for a run with solids (P2 Task 9, the solids design
@@ -103,6 +113,7 @@ struct FluidScratch {
     std::shared_ptr<WorkerPool> pool;
     std::array<std::vector<float>, 2> rhs_uv;  // u's and v's viscous right sides on the pool (w's in rhs)
     SpreadCache spread;                        // spread_actuators()' kept weights, a disc each
+    SgsScratch sgs;  // sized by make_fluid_scratch() when sgs_cs > 0, else at the first step that asks for it
 };
 
 // The step's discs into the scratch's increments, as spread_actuator() adds
