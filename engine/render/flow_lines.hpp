@@ -140,6 +140,29 @@ struct FlowPoints {
     uint32_t size_px = 3;            // 1 to 16
 };
 
+// STYLED LINES (the lead, 2026-11-10; RenderScene::flow_line_style). OFF BY DEFAULT: width_px 0 is the one-pixel
+// line above, byte for byte, so every pinned frame stays. With a width, a polyline's segments are CAPSULES: the
+// set of points within width_px / 2 of the segment, in pixels, drawn with coverage anti-aliasing (a pixel whose
+// centre is d from the segment has coverage clamp(width_px / 2 + 0.5 - d, 0, 1)), blended over what is behind,
+// out = behind (1 - a) + colour a, in submission order. A GLOW is a halo past the edge: alpha
+// glow_strength (1 - (d - width_px / 2) / glow_px)^2 out to glow_px from the edge, combined with the coverage as
+// a = c + (1 - c) g. Pixels with coverage 0.5 or more are drawn last and are the only ones that write depth, so a
+// halo never hides a line behind it; all are depth-tested against what is drawn before them. A segment with an
+// end outside the near and far planes is clipped to them, as the one-pixel line is. Points (tracers) are not
+// styled. Segment colour is the mean of its two ends', as for the one-pixel line.
+struct FlowLineStyle {
+    float width_px = 0.0f;        // 0 is off, else 0.5 to 64
+    float glow_px = 0.0f;         // 0 to 64; needs a width
+    float glow_strength = 0.35f;  // 0 to 1: the halo's alpha at the edge
+
+    [[nodiscard]] bool operator==(const FlowLineStyle&) const = default;
+    [[nodiscard]] bool on() const noexcept { return width_px > 0.0f; }
+};
+
+// invalid_argument, by name: a width that is not 0 or 0.5 to 64, a glow outside 0 to 64 or any glow with no
+// width, a strength outside 0 to 1, or a value that is not finite.
+[[nodiscard]] Result<void> validate_flow_line_style(const FlowLineStyle& style);
+
 // invalid_argument, by name: not one colour per point, a point that is not
 // finite, a colour outside [0, 1], or (points) a size outside 1 to 16.
 [[nodiscard]] Result<void> validate_flow_polyline(const FlowPolyline& line);

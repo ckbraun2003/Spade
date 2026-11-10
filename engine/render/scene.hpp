@@ -626,6 +626,9 @@ struct RenderScene {
     // caller adds them.
     std::vector<FlowPolyline> flow_polylines;
     FlowPoints flow_points;
+    // How the polylines are drawn: the one-pixel line unless a width is set (render/flow_lines.hpp's
+    // FlowLineStyle). Off by default, so no pinned frame changes.
+    FlowLineStyle flow_line_style;
     // Surface colouring by a flow quantity (render/flow_field.hpp): the
     // raster modes apply it after the meshes and CSG, and GL in their passes;
     // the ray-march mode does not. Unset unless a caller sets it.

@@ -1312,6 +1312,23 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
                 base.on_parts};
 }
 
+// The website masters' streamlines: capsules 4 px wide with a 10 px glow at 0.3, at 3840 x 2160 (the lead,
+// 2026-11-10: line width as quads, coverage anti-aliasing and a glow, on black). The one-pixel line is a hairline
+// at 4K; the engine's default stays it, so only a view that asks gets this.
+constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
+
+// `base`'s view with its polylines (the streamlines and the rims) drawn in `style`.
+[[nodiscard]] View with_line_style(const View& base, render::FlowLineStyle style) {
+    return View{base.name, base.label,
+                [shot = base.shot, style](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                          render::Camera& camera) -> spade::Result<void> {
+                    if (auto ok = shot(v, k, n, scene, camera); !ok) return ok;
+                    scene.flow_line_style = style;
+                    return {};
+                },
+                base.on_parts};
+}
+
 [[nodiscard]] std::string web_stem(const web::Group& group, const WebPlan& plan) {
     char window[64];
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
@@ -1400,6 +1417,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
             }, true);
         }
     }
+    if (id == "S1" || id == "S6") view = with_line_style(view, kWebLineStyle);  // the clips that are lines
     film.views.clear();
     film.views.push_back(std::move(view));
     film.stem = web_stem(group, plan);

@@ -1241,6 +1241,116 @@ void main() {
 }
 )GLSL";
 
+// STYLED STREAMLINES (render/flow_lines.hpp's FlowLineStyle): each segment is a quad of six vertices, one
+// instance a segment from an SSBO (a and b in world, then the mean colour), grown in pixels by the capsule's
+// half width, the glow and a pixel, so the fragment shader can take the exact distance to the segment. The
+// segment is clipped to the near and far planes in camera space, as raster_cpu's clipSegmentToHalfSpace() does.
+// The fragment computes raster_cpu's draw_styled_flow_lines() per pixel: the distance from the pixel's centre
+// to the segment, the coverage and the glow, and the depth at the nearest point of the segment (window depth is
+// affine in 1/d, so it is linear in screen space, as the CPU's inverse depth is). Two passes: uPass 0 draws the
+// pixels under half coverage and writes no depth (the host turns the depth mask off), uPass 1 those with half
+// or more, which write it.
+constexpr const char* kFlowLineVertexSrc = R"GLSL(
+struct FlowSeg { vec4 a; vec4 b; vec4 colour; };
+layout(std430, binding = 9) readonly buffer FlowSegs { FlowSeg uSeg[]; };
+
+uniform mat4 uView;  // world to camera
+uniform mat4 uProj;
+uniform vec2 uViewport;
+uniform float uPad;  // pixels: half width + glow + 1
+uniform float uNear;
+uniform float uFar;
+
+flat out vec2 fA;     // the ends in window pixels, y up, as gl_FragCoord
+flat out vec2 fB;
+flat out vec3 fColour;
+flat out vec2 fZ;     // window depth at the ends
+
+// Clips the camera-space segment to the depths [uNear, uFar] (d = -z), in place; false if none of it is inside.
+bool clip_depth(inout vec3 a, inout vec3 b) {
+    float da = -a.z, db = -b.z;
+    if (da < uNear && db < uNear) return false;
+    if (da > uFar && db > uFar) return false;
+    vec3 a0 = a, b0 = b;
+    if (da < uNear) a = a0 + (b0 - a0) * ((uNear - da) / (db - da));
+    else if (da > uFar) a = a0 + (b0 - a0) * ((uFar - da) / (db - da));
+    if (db < uNear) b = b0 + (a0 - b0) * ((uNear - db) / (da - db));
+    else if (db > uFar) b = b0 + (a0 - b0) * ((uFar - db) / (da - db));
+    return true;
+}
+
+void main() {
+    FlowSeg s = uSeg[gl_InstanceID];
+    vec3 a = (uView * vec4(s.a.xyz, 1.0)).xyz;
+    vec3 b = (uView * vec4(s.b.xyz, 1.0)).xyz;
+    if (!clip_depth(a, b)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // all six vertices there: nothing is drawn
+        return;
+    }
+    vec4 ca = uProj * vec4(a, 1.0);
+    vec4 cb = uProj * vec4(b, 1.0);
+    vec2 sa = (ca.xy / ca.w * 0.5 + 0.5) * uViewport;
+    vec2 sb = (cb.xy / cb.w * 0.5 + 0.5) * uViewport;
+    vec2 dir = sb - sa;
+    float len = length(dir);
+    dir = len > 1.0e-6 ? dir / len : vec2(1.0, 0.0);
+    vec2 n = vec2(-dir.y, dir.x);
+    // Two triangles over the corners 0 (a, -n), 1 (a, +n), 2 (b, -n), 3 (b, +n).
+    int corner;
+    switch (gl_VertexID % 6) {
+        case 0: corner = 0; break;
+        case 1: corner = 1; break;
+        case 2: corner = 2; break;
+        case 3: corner = 2; break;
+        case 4: corner = 1; break;
+        default: corner = 3; break;
+    }
+    float end = float(corner >> 1);
+    float side = (corner & 1) == 1 ? 1.0 : -1.0;
+    vec2 p = mix(sa, sb, end) + dir * ((end > 0.5 ? 1.0 : -1.0) * uPad) + n * (side * uPad);
+    vec4 cc = mix(ca, cb, end);
+    gl_Position = vec4((p / uViewport * 2.0 - 1.0) * cc.w, cc.z, cc.w);
+    fA = sa;
+    fB = sb;
+    fColour = s.colour.rgb;
+    fZ = vec2(ca.z / ca.w, cb.z / cb.w) * 0.5 + 0.5;
+}
+)GLSL";
+
+constexpr const char* kFlowLineFragmentSrc = R"GLSL(
+flat in vec2 fA;
+flat in vec2 fB;
+flat in vec3 fColour;
+flat in vec2 fZ;
+
+uniform float uHalf;      // half the width, pixels
+uniform float uGlow;      // pixels
+uniform float uStrength;  // the halo's alpha at the edge
+uniform uint uPass;       // 0: coverage under one half, no depth write; 1: one half or more
+
+out vec4 fragColor;
+
+void main() {
+    vec2 p = gl_FragCoord.xy;
+    vec2 ab = fB - fA;
+    float l2 = dot(ab, ab);
+    float t = l2 > 1.0e-12 ? clamp(dot(p - fA, ab) / l2, 0.0, 1.0) : 0.0;
+    vec2 d = p - (fA + ab * t);
+    float dist = sqrt(dot(d, d));
+    float cov = clamp(uHalf + 0.5 - dist, 0.0, 1.0);
+    float g = 0.0;
+    if (uGlow > 0.0) {
+        float u = clamp(1.0 - max(dist - uHalf, 0.0) / uGlow, 0.0, 1.0);
+        g = uStrength * u * u;
+    }
+    float alpha = cov + (1.0 - cov) * g;
+    bool core = cov >= 0.5;
+    if (alpha <= 0.0 || core != (uPass == 1u)) discard;
+    gl_FragDepth = mix(fZ.x, fZ.y, t);
+    fragColor = vec4(fColour, alpha);
+}
+)GLSL";
+
 // Dynamic shadow casters, drawn from the sun into this frame's copy of the
 // static map (render/shadow.cpp's rasterize_shadow_casters()). Each fragment
 // writes its light-clip z, and GL_MAX blending keeps the larger: the CPU's
@@ -1829,6 +1939,12 @@ struct GlRenderer::Impl {
     size_t overlay_capacity = 0;  // in floats
     std::vector<float> overlay_vertices;
 
+    // Styled streamlines (FlowLineStyle): their own program, and an SSBO of three vec4 a segment, a, b, colour.
+    GLuint flow_line_program = 0;
+    GLuint ssbo_flow_lines = 0;
+    size_t flow_lines_capacity = 0;  // in vec4s
+    std::vector<glm::vec4> flow_line_segments;
+
     // The sun's shadow map (render/shadow.hpp): the CPU's static map,
     // uploaded with the scene, and a working copy that a frame with dynamic
     // casters draws them into, through `shadow_fbo`.
@@ -1989,6 +2105,11 @@ struct GlRenderer::Impl {
         GLint view = -1, proj = -1, depth_bias = -1;
     } overlay;
 
+    struct FlowLineUniforms {
+        GLint view = -1, proj = -1, viewport = -1, pad = -1, near_plane = -1, far_plane = -1, half = -1, glow = -1,
+              strength = -1, pass = -1;
+    } flow_line;
+
     struct CasterUniforms {
         GLint instance_base = -1, light_view_proj = -1;
     } caster;
@@ -2119,6 +2240,8 @@ struct GlRenderer::Impl {
         if (overlay_vbo != 0) gl.DeleteBuffers(1, &overlay_vbo);
         if (overlay_vao != 0) gl.DeleteVertexArrays(1, &overlay_vao);
         if (overlay_program != 0) gl.DeleteProgram(overlay_program);
+        if (ssbo_flow_lines != 0) gl.DeleteBuffers(1, &ssbo_flow_lines);
+        if (flow_line_program != 0) gl.DeleteProgram(flow_line_program);
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
@@ -2253,6 +2376,10 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
          &impl->background_program},
         {"field", {kGlslVersion, kFieldVertexSrc}, {kGlslVersion, kFieldFragmentSrc}, &impl->field_program},
         {"overlay", {kGlslVersion, kOverlayVertexSrc}, {kGlslVersion, kOverlayFragmentSrc}, &impl->overlay_program},
+        {"flow lines",
+         {kGlslVersion, kFlowLineVertexSrc},
+         {kGlslVersion, kFlowLineFragmentSrc},
+         &impl->flow_line_program},
         {"shadow caster",
          {kGlslVersion, kCasterVertexSrc},
          {kGlslVersion, kCasterFragmentSrc},
@@ -2346,6 +2473,18 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->overlay.view = gl.GetUniformLocation(o, "uView");
     impl->overlay.proj = gl.GetUniformLocation(o, "uProj");
     impl->overlay.depth_bias = gl.GetUniformLocation(o, "uDepthBias");
+    const GLuint fl = impl->flow_line_program;
+    impl->flow_line.view = gl.GetUniformLocation(fl, "uView");
+    impl->flow_line.proj = gl.GetUniformLocation(fl, "uProj");
+    impl->flow_line.viewport = gl.GetUniformLocation(fl, "uViewport");
+    impl->flow_line.pad = gl.GetUniformLocation(fl, "uPad");
+    impl->flow_line.near_plane = gl.GetUniformLocation(fl, "uNear");
+    impl->flow_line.far_plane = gl.GetUniformLocation(fl, "uFar");
+    impl->flow_line.half = gl.GetUniformLocation(fl, "uHalf");
+    impl->flow_line.glow = gl.GetUniformLocation(fl, "uGlow");
+    impl->flow_line.strength = gl.GetUniformLocation(fl, "uStrength");
+    impl->flow_line.pass = gl.GetUniformLocation(fl, "uPass");
+    gl.GenBuffers(1, &impl->ssbo_flow_lines);
     // Position then colour, six floats a vertex. The array records the
     // buffer object, so a later BufferData that grows it needs no re-setup.
     gl.GenVertexArrays(1, &impl->overlay_vao);
@@ -2760,6 +2899,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         }
     }
     if (Result<void> valid = render::validate_flow_points(scene.flow_points); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+    }
+    if (Result<void> valid = render::validate_flow_line_style(scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
     }
     GLint max_3d = 0;
@@ -3632,7 +3774,54 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // segment's two vertices carry the mean of its ends' colours, so GL draws
     // the CPU's flat segment colour; tracers are GL_POINTS of size_px.
     // draw() validated them before any pixel.
-    if (!scene.flow_polylines.empty() || !scene.flow_points.positions.empty()) {
+    // A style with a width draws the polylines as capsules (the flow-line program, two passes); the points below
+    // are not styled.
+    const bool styled_lines = scene.flow_line_style.on() && !scene.flow_polylines.empty();
+    if (styled_lines) {
+        s.flow_line_segments.clear();
+        const auto to_unit = [](float channel) { return static_cast<float>(render::to_byte(channel)) / 255.0f; };
+        for (const render::FlowPolyline& line : scene.flow_polylines) {
+            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+                s.flow_line_segments.emplace_back(line.points[i], 0.0f);
+                s.flow_line_segments.emplace_back(line.points[i + 1u], 0.0f);
+                s.flow_line_segments.emplace_back(to_unit(c.r), to_unit(c.g), to_unit(c.b), 1.0f);
+            }
+        }
+        const auto segment_count = static_cast<GLsizei>(s.flow_line_segments.size() / 3u);
+        if (segment_count > 0) {
+            const render::FlowLineStyle& style = scene.flow_line_style;
+            upload_in_place(gl, s.ssbo_flow_lines, s.flow_lines_capacity, s.flow_line_segments);
+            gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 9, s.ssbo_flow_lines);
+            gl.Enable(GL_DEPTH_TEST);
+            gl.DepthFunc(GL_LESS);
+            gl.Disable(GL_CULL_FACE);
+            gl.Enable(GL_BLEND);
+            gl.BlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+            gl.UseProgram(s.flow_line_program);
+            gl.UniformMatrix4fv(s.flow_line.view, 1, GL_FALSE, glm::value_ptr(view));
+            gl.UniformMatrix4fv(s.flow_line.proj, 1, GL_FALSE, glm::value_ptr(proj));
+            gl.Uniform2f(s.flow_line.viewport, static_cast<float>(width), static_cast<float>(height));
+            gl.Uniform1f(s.flow_line.pad, 0.5f * style.width_px + style.glow_px + 1.0f);
+            gl.Uniform1f(s.flow_line.near_plane, camera.near_plane);
+            gl.Uniform1f(s.flow_line.far_plane, camera.far_plane);
+            gl.Uniform1f(s.flow_line.half, 0.5f * style.width_px);
+            gl.Uniform1f(s.flow_line.glow, style.glow_px);
+            gl.Uniform1f(s.flow_line.strength, style.glow_strength);
+            gl.BindVertexArray(s.empty_vao);
+            for (int pass = 0; pass < 2; ++pass) {
+                gl.DepthMask(pass == 1 ? GL_TRUE : GL_FALSE);
+                gl.Uniform1ui(s.flow_line.pass, static_cast<GLuint>(pass));
+                gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, segment_count);
+            }
+            gl.BindVertexArray(0);
+            gl.DepthMask(GL_TRUE);
+            gl.Disable(GL_BLEND);
+            gl.BlendFunc(GL_ONE, GL_ZERO);
+        }
+    }
+    if ((!styled_lines && !scene.flow_polylines.empty()) || !scene.flow_points.positions.empty()) {
         std::vector<float>& v = s.overlay_vertices;
         v.clear();
         // Colours go up as raster_cpu's own bytes (to_byte, then /255), which
@@ -3643,11 +3832,13 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                static_cast<float>(render::to_byte(c.g)) / 255.0f,
                                static_cast<float>(render::to_byte(c.b)) / 255.0f});
         };
-        for (const render::FlowPolyline& line : scene.flow_polylines) {
-            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
-                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
-                push(line.points[i], c);
-                push(line.points[i + 1u], c);
+        if (!styled_lines) {
+            for (const render::FlowPolyline& line : scene.flow_polylines) {
+                for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+                    const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+                    push(line.points[i], c);
+                    push(line.points[i + 1u], c);
+                }
             }
         }
         const auto line_vertices = static_cast<GLsizei>(v.size() / 6u);

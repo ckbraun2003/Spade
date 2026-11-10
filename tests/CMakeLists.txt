@@ -178,6 +178,7 @@ add_executable(spade_tests
     test_render_segmentation.cpp
     test_render_flow_tracers.cpp
     test_render_flow_draw.cpp
+    test_render_flow_line_style.cpp
     test_render_flow_feed.cpp
     test_render_flow_field.cpp
     test_render_solid_drone.cpp
