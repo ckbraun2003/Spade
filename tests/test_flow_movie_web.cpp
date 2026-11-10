@@ -205,6 +205,18 @@ TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {
     EXPECT_LT(web::there_and_back_azimuth(0.0f, 60.0f, 1, n), 0.01f);  // it eases in
 }
 
+// The volume shows speed (the lead, 2026-11-10): |w| is a derivative and non-negative, so grid-scale ripple in the
+// field rectifies into a fog; the colour rule is viridis and the caption says "speed".
+TEST(FlowMovieWeb, TheVolumeClipShowsSpeedOverTheQuadsOneRangeAndItsCaptionSaysSpeed) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    EXPECT_EQ(s8.quantity, web::Quantity::speed);
+    EXPECT_EQ(s8.range_lo, 0.0f);
+    EXPECT_EQ(s8.range_hi, 12.0f);
+    EXPECT_EQ(s8.range_hi, web::find_clip("S1")->range_hi) << "one colour range a scene and quantity";
+    EXPECT_TRUE(has(std::string(s8.shows), "speed"));
+    EXPECT_FALSE(has(std::string(s8.shows), "ortic")) << "no vorticity claim in the caption";
+}
+
 TEST(FlowMovieWeb, OnlyAFullOrbitOrASwingBackLoopsTheCamera) {
     EXPECT_TRUE(web::find_clip("S1")->camera_loops());
     EXPECT_TRUE(web::find_clip("S8")->camera_loops());

@@ -890,6 +890,18 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
             camera = orbit_at(k, n);
             return {};
         }});
+    // The web master's volume (the lead, 2026-11-10): speed, not |w|. |w| is a derivative and non-negative, so grid-scale
+    // ripple rectifies into a fog; the wake is a jet of fast air, which speed shows. Viridis, from the ramp's 15%.
+    film.views.push_back(View{
+        "speed-volume", "speed |u| as a volume, 0 to 12 m/s",
+        [q, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                      render::Camera& camera) -> spade::Result<void> {
+            scene.flow_layers.push_back(render::FlowLayer{
+                &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, 12.0f, 0.15f, 30.0f)}, {}});
+            add_rims(scene, q);
+            camera = orbit_at(k, n);
+            return {};
+        }});
     film.views.push_back(View{
         "streamlines", "streamlines seeded above each rotor, coloured by speed |u|, 0 to 12 m/s",
         [q, speed_colours, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
@@ -1334,7 +1346,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
                 return orbit(glm::vec3(0.0f), web::fit_distance(0.30f, kWebFov, kWebAspect, fit), 0.0f, 80.0f);
             }, true);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, "vorticity"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(target, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
             }, false);

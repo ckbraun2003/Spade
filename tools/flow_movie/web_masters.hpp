@@ -29,7 +29,7 @@ inline constexpr float kMargin = 0.10f;  // clear space on every side, a fractio
 inline constexpr int kCrf = 15;          // the brief's 14 to 16
 
 enum class Scene : uint8_t { quad, d1, taylor_green };
-enum class Quantity : uint8_t { speed, vorticity, cp, q_surface };
+enum class Quantity : uint8_t { speed, cp, q_surface };
 enum class Camera : uint8_t { loop_orbit, half_orbit, slow_orbit, there_and_back, push_in, still, slow_rotate };
 
 // One clip of the brief.
@@ -121,8 +121,8 @@ inline constexpr double kLiveStepS = 0.0005;
          "Q surfaces of the Taylor-Green vortex in a periodic box as it breaks down, in a slow rotate.",
          "taylor-green", Scene::taylor_green, Quantity::q_surface, Camera::slow_rotate, 10.0, 90.0f, 0.0f, 1.0f, true},
         {"S8", "rotor-wake-volume", "Reference quad: a volume render of the rotor wake",
-         "Vorticity magnitude of four actuator discs' wake as a volume, in a slow orbit.", "quad-developed",
-         Scene::quad, Quantity::vorticity, Camera::there_and_back, 10.0, 60.0f, 0.0f, 400.0f, false},
+         "Relative speed of four actuator discs' wake as a volume, in a slow orbit.", "quad-developed",
+         Scene::quad, Quantity::speed, Camera::there_and_back, 10.0, 60.0f, 0.0f, 12.0f, false},
     }};
     return table;
 }
