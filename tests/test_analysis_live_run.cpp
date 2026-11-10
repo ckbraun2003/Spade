@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -298,6 +299,74 @@ TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {
     EXPECT_EQ(second->frame, 2u);
     EXPECT_EQ(second->steps, 17u);
     EXPECT_EQ(run.state().frames, 2u);
+}
+
+// advance_steps(): a host that wants a frame cadence of its own (the website clips: about 300 frames over 0.57 s)
+// steps n times and publishes. Each frame carries its TRUE time, steps x the 4 ms step, not the frame's index over
+// kFramesPerSecond; a frame of either kind counts as one frame; n = 0 is refused by name.
+TEST(AnalysisLiveRun, AdvanceStepsPublishesAFrameEveryNStepsWithItsTrueTime) {
+    const spade::vehicles::ModelType m = rotorless();
+    an::LiveRun run = started(tiny_case(m), m);
+    spade::FlowVolume volume;
+    const spade::Result<an::LiveFrame> first = run.advance_steps(an::Controls{}, 5, volume);
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    EXPECT_EQ(first->frame, 1u);
+    EXPECT_EQ(first->steps, 5u);
+    EXPECT_DOUBLE_EQ(first->t_s, 0.020);
+    EXPECT_DOUBLE_EQ(run.state().t_s, 0.020);
+    EXPECT_EQ(volume.header.nx, 8u);
+    const spade::Result<an::LiveFrame> second = run.advance_steps(an::Controls{}, 2, volume);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->frame, 2u);
+    EXPECT_EQ(second->steps, 7u);
+    EXPECT_DOUBLE_EQ(second->t_s, 0.028);
+    EXPECT_EQ(run.state().frames, 2u);
+    // advance_frame() is untouched: its third frame ends at the first step at or past 3/30 s, step 25.
+    const spade::Result<an::LiveFrame> third = run.advance_frame(an::Controls{}, volume);
+    ASSERT_TRUE(third.has_value());
+    EXPECT_EQ(third->frame, 3u);
+    EXPECT_EQ(third->steps, 25u);
+    EXPECT_DOUBLE_EQ(third->t_s, 0.100);
+    const spade::Result<an::LiveFrame> none = run.advance_steps(an::Controls{}, 0, volume);
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(none.error().context.find("advance_steps"), std::string::npos) << none.error().context;
+    EXPECT_EQ(run.state().frames, 3u) << "a refused call counts no frame";
+}
+
+// A clip's state has to be the sim's own: how a host groups steps into frames does not change what the run is.
+// One run takes five steps in one advance_steps(5), a second takes five advance_steps(1), and the two end in the
+// same state and the same body row, byte for byte, with the rotors armed and spinning. (Only `frames` differs: one
+// frame against five.)
+TEST(AnalysisLiveRun, TheStateAfterAdvanceStepsIsTheSimsOwnWhateverTheGrouping) {
+    const Powered p = powered();
+    an::Controls controls{};
+    controls.armed = true;
+    controls.throttle = 0.6f;
+    controls.pitch_deg = 20.0f;
+    controls.roll_deg = -10.0f;
+    an::LiveRun grouped = started(tiny_case(p.model), p);
+    an::LiveRun single = started(tiny_case(p.model), p);
+    spade::FlowVolume volume;
+    ASSERT_TRUE(grouped.advance_steps(controls, 5, volume).has_value());
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(single.advance_steps(controls, 1, volume).has_value());
+
+    const an::LiveState& a = grouped.state();
+    const an::LiveState& b = single.state();
+    EXPECT_EQ(a.steps, 5u);
+    EXPECT_EQ(b.steps, 5u);
+    EXPECT_EQ(a.frames, 1u);
+    EXPECT_EQ(b.frames, 5u);
+    EXPECT_EQ(std::memcmp(&a.t_s, &b.t_s, sizeof a.t_s), 0);
+    EXPECT_EQ(std::memcmp(&a.attitude, &b.attitude, sizeof a.attitude), 0);
+    EXPECT_EQ(std::memcmp(&a.omega_body, &b.omega_body, sizeof a.omega_body), 0);
+    EXPECT_EQ(a.armed, b.armed);
+    EXPECT_EQ(a.propulsion_flags, b.propulsion_flags);
+    ASSERT_EQ(a.rotor_omega.size(), b.rotor_omega.size());
+    ASSERT_FALSE(a.rotor_omega.empty());
+    EXPECT_EQ(std::memcmp(a.rotor_omega.data(), b.rotor_omega.data(), a.rotor_omega.size() * sizeof(float)), 0);
+    EXPECT_GT(*std::max_element(a.rotor_omega.begin(), a.rotor_omega.end()), 0.0f) << "the rotors must be spinning";
+    EXPECT_EQ(std::memcmp(&grouped.body(), &single.body(), sizeof(spade::BodyState)), 0);
 }
 
 // The hold turns the drone toward the controls' attitude at kHoldRateDegPerS,

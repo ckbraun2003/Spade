@@ -18,6 +18,8 @@ add_executable(flow_movie
     live_case.cpp
     arm_pressure.hpp
     arm_pressure.cpp
+    line_export.hpp
+    line_export.cpp
     subnormal_scan.hpp
     subnormal_scan.cpp
     frame_check.hpp)

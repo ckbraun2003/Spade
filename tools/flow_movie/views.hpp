@@ -27,6 +27,9 @@ namespace flow_movie {
 // An empty scene for flow views: a dark sky, the volume's box as its bounds.
 [[nodiscard]] spade::render::RenderScene dark_scene(const spade::FlowVolume& volume);
 
+// dark_scene() with a pure black sky (#000000): nothing but the flow and the parts is drawn (the website masters).
+[[nodiscard]] spade::render::RenderScene black_scene(const spade::FlowVolume& volume);
+
 // The box's centre and its far corner, in the world.
 [[nodiscard]] glm::vec3 volume_centre(const spade::FlowVolume& volume);
 [[nodiscard]] glm::vec3 volume_size(const spade::FlowVolume& volume);

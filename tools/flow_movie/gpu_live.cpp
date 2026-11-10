@@ -18,6 +18,7 @@
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
+#include "spike/airflow/live_fluid.hpp"
 #include "spike/airflow/step_chain.hpp"
 #include "vehicles/rotor_discs.hpp"
 
@@ -37,6 +38,17 @@ constexpr uint64_t kNsPerSecond = 1'000'000'000;  // live_run.cpp's
 }
 
 }  // namespace
+
+spade::Result<DeviceFluid> open_device_fluid() {
+    auto ctx = spade::compute::VulkanContext::create(
+        spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
+    if (!ctx) return std::unexpected(ctx.error());
+    std::shared_ptr<spade::compute::VulkanContext> held(std::move(*ctx));
+    DeviceFluid out;
+    out.maker = spade::airflow_gpu::gpu_live_fluid(*held);
+    out.context = std::move(held);
+    return out;
+}
 
 spade::Result<void> simulate_gpu(const LiveCase& lc, uint32_t frames, const std::string& stem, const fs::path& cache,
                                  const CacheMark& mark) {

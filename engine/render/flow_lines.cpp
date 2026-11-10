@@ -332,7 +332,32 @@ namespace {
 }  // namespace
 
 Result<void> validate_flow_polyline(const FlowPolyline& line) {
+    if (!std::isfinite(line.width_px)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is not finite"});
+    }
+    if (line.width_px < 0.0f) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is negative"});
+    }
+    if (line.width_px != 0.0f && !(line.width_px >= 0.5f && line.width_px <= 64.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is not 0 or 0.5 to 64 pixels"});
+    }
     return check_coloured(line.points, line.colours, "flow polyline");
+}
+
+Result<void> validate_flow_line_style(const FlowLineStyle& style) {
+    if (!std::isfinite(style.width_px) || !std::isfinite(style.glow_px) || !std::isfinite(style.glow_strength)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow line style: a value is not finite"});
+    }
+    if (style.width_px != 0.0f && !(style.width_px >= 0.5f && style.width_px <= 64.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow line style: the width is not 0 or 0.5 to 64 pixels"});
+    }
+    if (!(style.glow_px >= 0.0f && style.glow_px <= 64.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow line style: the glow is not 0 to 64 pixels"});
+    }
+    if (!(style.glow_strength >= 0.0f && style.glow_strength <= 1.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow line style: the glow strength is not 0 to 1"});
+    }
+    return {};
 }
 
 Result<void> validate_flow_points(const FlowPoints& points) {

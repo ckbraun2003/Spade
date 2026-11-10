@@ -11,8 +11,10 @@
 // meaningless (the hold, not the air, sets its motion), so none are exposed.
 //
 // TIME is whole nanoseconds. The drone and the fluid both step at the case's
-// h, one drone step per fluid step, so the clocks never drift. Frame k ends
-// at the first step at or past round(k / kFramesPerSecond) s. No wall clock
+// h, one drone step per fluid step, so the clocks never drift. Under
+// advance_frame() alone, frame k ends at the first step at or past
+// round(k / kFramesPerSecond) s: that rule is advance_frame()'s, not the run's
+// (advance_steps() ends a frame after n steps whatever k is). No wall clock
 // (M1B): a host measures the real-time ratio around advance_frame().
 //
 // THE ROTORS turn through the drone's propulsion chain (Core's throttle
@@ -51,7 +53,7 @@
 // part outside the grid, a part's own malformed size. The case resolves with
 // ThinWalls::drawn_by_the_live_run, so resolve() leaves thin walls to it.
 //
-// Long calls: start() and advance_frame(). A host runs them off its GUI
+// Long calls: start(), advance_frame() and advance_steps(). A host runs them off its GUI
 // thread. A LiveRun is used from one thread at a time.
 //
 // Display-free. Owned by Interface (INT-6).
@@ -294,6 +296,14 @@ class LiveRun {
     // Steps to the end of the next frame, then publishes the fluid into
     // `out` (its storage reused), with the world origin at the box's centre.
     [[nodiscard]] Result<LiveFrame> advance_frame(const Controls& controls, FlowVolume& out);
+
+    // Steps `n` more times, then publishes the fluid into `out` as advance_frame() does, and counts one frame:
+    // for a host that wants a frame cadence other than kFramesPerSecond (the offline recorder's website clips).
+    // The frame carries its TRUE time, LiveFrame::t_s and steps (steps x the step), never an index over
+    // kFramesPerSecond. A host picks one cadence per run: advance_frame() after advance_steps() may publish
+    // without stepping, because its target is round((frames + 1) / kFramesPerSecond) s, and a run that has
+    // already stepped past it has nothing left to step. n = 0 is refused by name, with nothing stepped.
+    [[nodiscard]] Result<LiveFrame> advance_steps(const Controls& controls, uint64_t n, FlowVolume& out);
 
     [[nodiscard]] const LiveState& state() const noexcept;
     [[nodiscard]] double step_s() const noexcept;  // h

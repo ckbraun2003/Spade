@@ -777,6 +777,27 @@ Result<LiveFrame> LiveRun::advance_frame(const Controls& controls, FlowVolume& o
     return LiveFrame{next, r.state.t_s, r.state.steps};
 }
 
+Result<LiveFrame> LiveRun::advance_steps(const Controls& controls, uint64_t n, FlowVolume& out) {
+    Impl& r = *impl_;
+    if (n == 0) {
+        return std::unexpected(Error{Code::invalid_argument, "advance_steps: n is 0, a frame needs at least one step"});
+    }
+    for (uint64_t i = 0; i < n; ++i) {
+        if (Result<void> s = step(controls); !s) return std::unexpected(s.error());
+    }
+    if (r.device) {
+        if (const Result<void> published = r.device->publish(r.publish, out); !published) {
+            return std::unexpected(published.error());
+        }
+    } else if (const Result<af::PublishCounts> published =
+                   af::publish_render_volume(r.grid, r.publish, out, r.scratch.pool.get());
+               !published) {
+        return std::unexpected(published.error());
+    }
+    r.state.frames += 1;
+    return LiveFrame{r.state.frames, r.state.t_s, r.state.steps};
+}
+
 const LiveState& LiveRun::state() const noexcept { return impl_->state; }
 
 double LiveRun::step_s() const noexcept { return seconds(impl_->h_ns); }

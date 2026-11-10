@@ -37,6 +37,9 @@ struct LiveCase {
     // its centre either way. The case's box then names its longest side, and
     // identity names the grid.
     std::optional<spade::physics::airflow::GridShape> grid;
+    // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
+    // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.
+    float sgs_cs = 0.0f;
 };
 
 // The fastest the case's air is expected to move, m/s, at least 1: the
@@ -83,9 +86,21 @@ struct LiveCase {
 // Physics' B7 and Test/Docs' harness share), as a film. `grid` replaces
 // kD1Grid, for a measurement. Without `parts_in_flow`, the parts are drawn
 // only, and the film's title and card say "no parts" (--gpu, B7's G2).
+// `heading_deg` is where the wind comes from, about +Y from the nose (Flight::heading_deg; Physics' d1_case():
+// 0 the headwind, +90 air moving +z, a crosswind). The air only: the discs ignore an in-plane inflow and
+// LiveRun holds the drone, so the hover throttle is the still-air one (Physics, 2026-11-08).
 using spade::testing::kD1Grid;
 [[nodiscard]] spade::Result<LiveCase> d1_live_case(double seconds,
                                                    const spade::physics::airflow::GridShape& grid = kD1Grid,
-                                                   bool parts_in_flow = true);
+                                                   bool parts_in_flow = true, float heading_deg = 0.0f);
+
+// D1 in STILL AIR (the lead, 2026-11-10: "a hovering-quadrotor run"): the same case with the wind taken off, as
+// Physics' hover-download row sets it (flight kind hover, speed 0), the parts as solids and the throttle the
+// still-air hover. `grid` as d1_live_case().
+[[nodiscard]] spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
+                                                       float heading_deg, float step_s, float sgs_cs);
+
+[[nodiscard]] spade::Result<LiveCase> d1_still_air_live_case(double seconds,
+                                                             const spade::physics::airflow::GridShape& grid = kD1Grid);
 
 }  // namespace flow_movie

@@ -10,7 +10,7 @@
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
 //              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
-//   flow_movie --video d1-hover|case ... --gpu
+//   flow_movie --video d1-hover|d1-still|case ... --gpu
 //
 // --cpu draws stills on the CPU renderer, the GL views' reference; --view
 // limits stills to one view.
@@ -58,6 +58,7 @@
 #include <ctime>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -72,6 +73,7 @@
 #include "arm_pressure.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
+#include "line_export.hpp"
 #ifdef SPADE_FLOW_MOVIE_GPU
 #include "gpu_live.hpp"
 #endif
@@ -79,6 +81,7 @@
 #include "recorder.hpp"
 #include "subnormal_scan.hpp"
 #include "views.hpp"
+#include "web_masters.hpp"
 
 #include "physics/airflow/publish.hpp"
 #include "core/fp16.hpp"
@@ -97,6 +100,14 @@ namespace render = spade::render;
 using namespace flow_movie;
 
 constexpr int kExitUnavailable = 77;
+
+#ifdef SPADE_FLOW_MOVIE_GPU
+using DeviceHandle = DeviceFluid;  // gpu_live.hpp's
+#else
+struct DeviceHandle {
+    spade::analysis::LiveFluidMaker maker;  // never filled: a device film is refused without the Vulkan build
+};
+#endif
 
 // --- captions ---------------------------------------------------------------------------
 
@@ -196,6 +207,16 @@ struct Film {
     std::shared_ptr<std::map<uint64_t, std::string>> run_labels;
     std::function<spade::Result<void>(const FrameLog&, render::RenderScene&)> decorate;
     bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
+    // The website masters (web_masters.hpp). The frames are spread over this simulated window from rest, frame k
+    // ending at web::frame_end_step() (0, 0: the film's own spread over t_end); a LiveRun film then steps
+    // advance_steps() between them, each frame carrying its true time.
+    double window_from = 0.0, window_to = 0.0;
+    // Nonzero: the window is whole steps, frame k ending (k + 1) * steps_per_frame steps past the window's start
+    // (web::whole_frame_end_step); window_to then only names where the last frame ends. Zero: the frames are
+    // spread evenly over [window_from, window_to] (--window).
+    uint32_t steps_per_frame = 0;
+    // A LiveRun film's fluid on GpuFluid WITH the parts in the flow (gpu_live.hpp: open_device_fluid()).
+    bool device = false;
 };
 
 [[nodiscard]] std::string fixed(double x, int decimals) {
@@ -213,17 +234,54 @@ struct Film {
 // The case a cache holds: the film, its frames and steps, and its grid.
 // With the build (build_identity()), what a snapshot must match to be
 // continued (Physics' and the lead's rule: never into another case or commit).
+[[nodiscard]] std::string window_note(const Film& film) {
+    if (film.window_to <= 0.0) return "";
+    return ", window " + fixed(film.window_from, 4) + ".." + fixed(film.window_to, 4) + " of simulated time";
+}
+
 [[nodiscard]] std::string film_identity(const Film& film) {
     if (film.run) {
         return film.stem + ": " + std::to_string(film.frames) +
-               (film.gpu ? " frames of GpuFluid, no parts, the rotors held; " : " frames of LiveRun; ") +
-               film.run->identity;
+               (film.gpu      ? " frames of GpuFluid, no parts, the rotors held; "
+                : film.device && film.run->sgs_cs > 0.0f
+                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, not checked "
+                      "against the CPU; "
+                : film.device ? " frames of LiveRun on GpuFluid, the parts in the flow, checked bit-equal to the "
+                                "CPU through about 0.18 s of simulated time only; "
+                              : " frames of LiveRun; ") +
+               film.run->identity + window_note(film);
     }
     const AirflowCase& c = film.airflow;
     return film.stem + ": " + std::to_string(film.frames) + " frames over " + std::to_string(total_steps(c)) +
            " steps of h " + fixed(c.fluid.h, 6) + " on " + std::to_string(c.shape.nx) + "x" +
            std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) + " at dx " + fixed(c.shape.dx, 6) +
-           ", n_v " + std::to_string(c.fluid.n_v) + ", nu " + fixed(c.fluid.nu, 8) + ", rho " + fixed(c.fluid.rho, 4);
+           ", n_v " + std::to_string(c.fluid.n_v) + ", nu " + fixed(c.fluid.nu, 8) + ", rho " + fixed(c.fluid.rho, 4) +
+           window_note(film);
+}
+
+// The solver step at which frame k of a windowed film ends, at step h.
+[[nodiscard]] uint64_t film_frame_end_step(const Film& film, uint32_t k, double h) {
+    if (film.steps_per_frame > 0u) {
+        return web::whole_frame_end_step(k, static_cast<uint64_t>(std::llround(film.window_from / h)),
+                                         film.steps_per_frame);
+    }
+    return web::frame_end_step(k, film.frames, film.window_from, film.window_to, h);
+}
+
+// A windowed film's frames each need a step of their own: more frames than the window has steps would show one
+// state twice, and a clip meant to play smoothly would stutter. (A whole-step window gives each its own.)
+[[nodiscard]] spade::Result<void> check_window(const Film& film, double h) {
+    if (film.window_to <= 0.0 || film.steps_per_frame > 0u) return {};
+    const uint64_t steps = web::frame_end_step(0, 1, 0.0, film.window_to, h) -
+                           web::frame_end_step(0, 1, 0.0, film.window_from, h);
+    if (steps < film.frames) {
+        return std::unexpected(spade::Error{
+            spade::Code::invalid_argument,
+            film.stem + ": " + std::to_string(film.frames) + " frames over a window of " + std::to_string(steps) +
+                " steps of h " + fixed(h, 6) + ": a frame needs a step of its own, or the clip stutters (fewer frames, "
+                "or a finer grid)"});
+    }
+    return {};
 }
 
 constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
@@ -247,6 +305,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     std::error_code ec;
     fs::create_directories(cache, ec);
     const uint64_t total = total_steps(c);
+    if (auto ok = check_window(film, c.fluid.h); !ok) return std::unexpected(ok.error());
     airflow::PublishInput in;
     in.origin = c.origin;
     in.periodic = airflow::periodic_axes(c.bc);
@@ -268,7 +327,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
         const uint64_t target =
-            film.frames <= 1u ? total : static_cast<uint64_t>(std::llround(static_cast<double>(k) * total / (film.frames - 1u)));
+            film.window_to > 0.0 ? film_frame_end_step(film, k, c.fluid.h)
+            : film.frames <= 1u  ? total
+                                 : static_cast<uint64_t>(std::llround(static_cast<double>(k) * total / (film.frames - 1u)));
         for (; step < target; ++step) {
             for (const airflow::ActuatorDisc& d : c.discs) {
                 airflow::spread_actuator(d, c.shape, c.fluid.rho, c.fluid.h, scratch->du, scratch->dv, scratch->dw);
@@ -343,10 +404,37 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     std::error_code ec;
     fs::create_directories(cache, ec);
     const fs::path save = cache / "live.save";
-    const bool resuming = fs::exists(save, ec);
-    auto run = resuming ? an::LiveRun::restore(save, *resolved, lc.run_model)
-                        : an::LiveRun::start(*resolved, lc.run_model);
+    // A device film keeps no save (it runs in minutes and a cache left unfinished starts again), so no budget.
+    if (film.device && (budget_s > 0.0 || frame_budget > 0u)) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument,
+                                            film.stem + ": a film on the device keeps no save, so it takes no budget"});
+    }
+    const bool resuming = !film.device && fs::exists(save, ec);
+    DeviceHandle device;  // the run's context, which must outlive it
+    if (film.device) {
+#ifdef SPADE_FLOW_MOVIE_GPU
+        auto opened = open_device_fluid();
+        if (!opened) return std::unexpected(spade::Error{opened.error().code, film.stem + ": " + opened.error().context});
+        device = std::move(*opened);
+#else
+        return std::unexpected(spade::Error{spade::Code::unavailable, film.stem + ": a device film needs the Vulkan build"});
+#endif
+    }
+    // L52: LiveRun's config has no subgrid viscosity, so a device film's maker is handed the case's Cs on a copy of
+    // the config (GpuFluid refuses a nonzero Cs until its kernel lands, naming it: the film then stops by name).
+    an::LiveFluidMaker maker = device.maker;
+    if (film.device && lc.sgs_cs > 0.0f) {
+        maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
+            spade::physics::airflow::FluidConfig config = s.config;
+            config.sgs_cs = cs;
+            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids});
+        };
+    }
+    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker)
+               : resuming  ? an::LiveRun::restore(save, *resolved, lc.run_model)
+                           : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
+    if (auto ok = check_window(film, run->step_s()); !ok) return std::unexpected(ok.error());
     const auto first = static_cast<uint32_t>(run->state().frames);
     // run.txt: the saved frames' lines as they were (a kill after the save
     // may have left more), then this run's.
@@ -379,7 +467,15 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
     const auto start = std::chrono::steady_clock::now();
     for (uint32_t k = first; k < film.frames; ++k) {
         const an::Controls controls = an::controls_at(lc.program, static_cast<float>(run->state().t_s));
-        auto frame = run->advance_frame(controls, volume);
+        // A window spreads the frames over its simulated time, a frame every few steps; else LiveRun's own 30 a second.
+        const uint64_t target =
+            film.window_to > 0.0 ? film_frame_end_step(film, k, run->step_s()) : 0u;
+        if (film.window_to > 0.0 && target <= run->state().steps) {
+            return std::unexpected(spade::Error{spade::Code::internal, film.stem + ": frame " + std::to_string(k) +
+                                                                           " has no step of its own in its window"});
+        }
+        auto frame = film.window_to > 0.0 ? run->advance_steps(controls, target - run->state().steps, volume)
+                                          : run->advance_frame(controls, volume);
         if (!frame) return std::unexpected(spade::Error{frame.error().code, film.stem + ": " + frame.error().context});
         const spade::BodyState& b = run->body();
         std::vector<double> live{b.pos.x, b.pos.y, b.pos.z, b.orient.w, b.orient.x, b.orient.y, b.orient.z};
@@ -398,7 +494,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
                                  (frame_budget > 0u && k + 1u - first >= frame_budget);
-        if ((k + 1u) % kStateEvery == 0u || (over_budget && k + 1u < film.frames)) {
+        if (!film.device && ((k + 1u) % kStateEvery == 0u || (over_budget && k + 1u < film.frames))) {
             lines.flush();  // the save's frames are all in run.txt first
             if (auto kept_run = run->save(save); !kept_run) {
                 return std::unexpected(spade::Error{kept_run.error().code, film.stem + ": " + kept_run.error().context});
@@ -820,6 +916,18 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
             camera = orbit_at(k, n);
             return {};
         }});
+    // The web master's volume (the lead, 2026-11-10): speed, not |w|. |w| is a derivative and non-negative, so grid-scale
+    // ripple rectifies into a fog; the wake is a jet of fast air, which speed shows. Viridis, from the ramp's 15%.
+    film.views.push_back(View{
+        "speed-volume", "speed |u| as a volume, 0 to 12 m/s",
+        [q, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                      render::Camera& camera) -> spade::Result<void> {
+            scene.flow_layers.push_back(render::FlowLayer{
+                &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, 12.0f, 0.15f, 30.0f)}, {}});
+            add_rims(scene, q);
+            camera = orbit_at(k, n);
+            return {};
+        }});
     film.views.push_back(View{
         "streamlines", "streamlines seeded above each rotor, coloured by speed |u|, 0 to 12 m/s",
         [q, speed_colours, orbit_at](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
@@ -991,10 +1099,10 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
     return film;
 }
 
-[[nodiscard]] Film taylor_green_film(uint32_t frames) {
+[[nodiscard]] Film taylor_green_film(uint32_t frames, uint32_t cells = 64) {
     Film film;
     film.stem = "taylor-green";
-    film.airflow = taylor_green_case();
+    film.airflow = taylor_green_case(cells);
     film.frames = frames;
     film.expected_speed = 1.0f;  // the vortex's peak speed at the start
     film.time_decimals = 2;
@@ -1040,6 +1148,14 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 // it, as in a box of uniform wind, the deepest value is the grid's noise.
 constexpr float kVortexFloor = -5.0f;
 
+// The held body's pose, from the last frame decorate() saw: a view that seeds at the rotors (a streamline view's
+// on_parts runs after decorate) reads it. The drone is held, so it is the same every frame.
+struct HeldPose {
+    glm::vec3 pos{0.0f};
+    glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};
+    bool known = false;
+};
+
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions. `gpu`: its fluid
@@ -1083,7 +1199,15 @@ constexpr float kVortexFloor = -5.0f;
                            fixed(c.roll_deg, 0) + " deg, yaw " + fixed(c.yaw_deg, 0) + " deg");
         return t;
     };
-    film.decorate = [run, parts](const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+    const auto pose = std::make_shared<HeldPose>();
+    film.decorate = [run, parts, pose](const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+        if (log.live.size() >= 7u) {
+            pose->pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]),
+                                  static_cast<float>(log.live[2]));
+            pose->orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                                     static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+            pose->known = true;
+        }
         if (parts->parts.empty()) return {};
         if (log.live.size() < 7u) {
             return std::unexpected(spade::Error{spade::Code::internal, "a LiveRun frame's log holds no held body"});
@@ -1131,6 +1255,57 @@ constexpr float kVortexFloor = -5.0f;
                            0.95f * std::max({size.x, size.y, size.z}), sweep_azimuth(30.0f, 60.0f, k, n), 20.0f);
             return {};
         }});
+    // The web masters' D1 views (the lead, 2026-11-10, L54): the quad's own two, on the held drone's rotors. Speed
+    // 0 to 12 m/s as the quad's were. The camera is the clip's.
+    {
+        constexpr float kWebSpeedTop = 12.0f;
+        const render::TransferFunction web_colours =
+            colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, kWebSpeedTop);
+        const auto frame_on_drone = [](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::Camera& camera) {
+            const glm::vec3 size = volume_size(v);
+            camera = orbit(volume_centre(v), 0.95f * std::max({size.x, size.y, size.z}), sweep_azimuth(30.0f, 60.0f, k, n),
+                           20.0f);
+        };
+        film.views.push_back(View{
+            "speed-volume", "speed |u| as a volume, 0 to 12 m/s",
+            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                             render::Camera& camera) -> spade::Result<void> {
+                scene.flow_layers.push_back(render::FlowLayer{
+                    &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, kWebSpeedTop, 0.15f, 30.0f)},
+                    {}});
+                frame_on_drone(v, k, n, camera);
+                return {};
+            }});
+        film.views.push_back(View{
+            "streamlines", "streamlines seeded above each rotor, coloured by speed |u|, 0 to 12 m/s",
+            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+                             render::Camera& camera) -> spade::Result<void> {
+                frame_on_drone(v, k, n, camera);
+                return {};
+            },
+            [run, pose, web_colours](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                if (!pose->known) {
+                    return std::unexpected(spade::Error{spade::Code::internal, "the streamline view ran before a frame's "
+                                                                              "held body was read"});
+                }
+                std::vector<glm::vec3> seeds;
+                for (const spade::vehicles::RotorDesc& r : run->run_model.rotors) {
+                    const glm::vec3 hub = pose->pos + pose->orient * r.local_pos;
+                    const glm::vec3 axis = glm::normalize(pose->orient * (r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f)));
+                    for (const float ring : {0.35f, 0.75f}) {
+                        for (const glm::vec3& s : render::seed_ring(hub - axis * 0.06f, axis, ring * r.radius, 8)) {
+                            seeds.push_back(s);
+                        }
+                    }
+                }
+                render::StreamlineOptions options;
+                options.max_steps = 1200;
+                if (auto ok = add_streamlines(scene, v, seeds, options, web_colours); !ok) {
+                    return std::unexpected(ok.error());
+                }
+                return std::string();
+            }});
+    }
     film.views.push_back(View{
         "slice", "speed |u| on the vertical plane through the drone, 0 to " + fixed(speed_top, 0) + " m/s",
         [speed_colours](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
@@ -1187,6 +1362,224 @@ constexpr float kVortexFloor = -5.0f;
     return film;
 }
 
+// --- the website masters ---------------------------------------------------------------------------
+// Cameron's render brief (relayed by the lead, 2026-11-08): S1 to S6 and S8 of web_masters.hpp (S7 dropped), 3840x2160 at 30 fps on pure
+// black, no text, one libx264 pass, and a 5120x2880 PNG of four of them. Each clip is one view of a film built here
+// from the films above: their shots with the camera replaced. The cameras' numbers are the film's to tune from its
+// stills (the timing job's), so they sit together in web_film().
+
+// What a clip is filmed with: its group's frames and window, or the command line's.
+struct WebPlan {
+    uint32_t frames = 0;
+    double from_s = 0.0, to_s = 0.0;
+    uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
+    std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
+};
+
+constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
+constexpr float kWebAspect = static_cast<float>(web::kWidth) / static_cast<float>(web::kHeight);
+
+using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t frame, uint32_t frames)>;
+
+[[nodiscard]] const View* view_named(const Film& film, const std::string& name) {
+    for (const View& v : film.views) {
+        if (v.name == name) return &v;
+    }
+    return nullptr;
+}
+
+// `base`'s view with its camera replaced: the shot (the layers, and the rims) runs as it did, then `aim` sets the
+// camera. `rims`: the discs' rims stay, else they are dropped.
+[[nodiscard]] View with_camera(const View& base, Aim aim, bool rims) {
+    return View{base.name, base.label,
+                [shot = base.shot, aim = std::move(aim), rims](const spade::FlowVolume& v, uint32_t k, uint32_t n,
+                                                              render::RenderScene& scene,
+                                                              render::Camera& camera) -> spade::Result<void> {
+                    if (auto ok = shot(v, k, n, scene, camera); !ok) return ok;
+                    if (!rims) scene.flow_polylines.clear();
+                    camera = aim(v, k, n);
+                    return {};
+                },
+                base.on_parts};
+}
+
+// The website masters' streamlines: capsules 4 px wide with a 10 px glow at 0.3, at 3840 x 2160 (the lead,
+// 2026-11-10: line width as quads, coverage anti-aliasing and a glow, on black). The one-pixel line is a hairline
+// at 4K; the engine's default stays it, so only a view that asks gets this.
+constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
+
+// `base`'s view with its polylines (the streamlines and the rims) drawn in `style`.
+[[nodiscard]] View with_line_style(const View& base, render::FlowLineStyle style) {
+    return View{base.name, base.label,
+                [shot = base.shot, style](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                          render::Camera& camera) -> spade::Result<void> {
+                    if (auto ok = shot(v, k, n, scene, camera); !ok) return ok;
+                    scene.flow_line_style = style;
+                    return {};
+                },
+                base.on_parts};
+}
+
+[[nodiscard]] std::string web_stem(const web::Group& group, const WebPlan& plan) {
+    char window[64];
+    std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
+    std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
+    return stem;
+}
+
+[[nodiscard]] spade::Result<Film> web_film(const web::Clip& clip, const web::Group& group, const WebPlan& plan) {
+    const std::string id(clip.id);
+    const float fit = web::kMargin;
+    Film film;
+    View view{"", "", View::Shot{}};
+    if (clip.scene == web::Scene::quad) {
+        auto made = quad_film(plan.frames);
+        if (!made) return std::unexpected(made.error());
+        film = std::move(*made);
+        const AirflowCase q = film.airflow;
+        // S5 and S6 stay on the reference quad's CPU film; S1, S2 and S8 moved to D1 (the lead, L54).
+        if (id == "S6") {
+            view = with_camera(*view_named(film, "above"), [=](const spade::FlowVolume&, uint32_t, uint32_t) {
+                return orbit(glm::vec3(0.0f), web::fit_distance(0.30f, kWebFov, kWebAspect, fit), 0.0f, 80.0f);
+            }, true);
+        } else {  // S5: the plane through the rotors on +x and -x, the frame's own shape, edge to edge
+            const float lo = clip.range_lo, hi = clip.range_hi;
+            view = View{
+                "slice", "speed |u| on the plane through rotors +x and -x",
+                [q, lo, hi](const spade::FlowVolume& v, uint32_t, uint32_t, render::RenderScene& scene,
+                            render::Camera& camera) -> spade::Result<void> {
+                    // The window the frame sees, inside the box; the plane a little larger so no edge shows.
+                    const float window_w = 0.78f, window_h = web::plane_window_height(window_w, kWebAspect);
+                    const float hub_y = q.discs[0].centre.y + q.origin.y;
+                    const float centre_y = hub_y + 0.12f - 0.5f * window_h;  // 12 cm above the hubs at the top
+                    render::FieldLayer plane;
+                    plane.center = glm::vec3(0.0f, centre_y, 0.0f);
+                    plane.width = 1.02f * window_w;
+                    plane.height = 1.02f * window_h;
+                    plane.cells_u = 2u * static_cast<uint32_t>(std::lround(plane.width / v.header.cell));
+                    plane.cells_v = 2u * static_cast<uint32_t>(std::lround(plane.height / v.header.cell));
+                    if (auto ok = add_slice(scene, v, render::FlowQuantity::speed, plane, render::ColourMapId::viridis, lo, hi);
+                        !ok) {
+                        return ok;
+                    }
+                    camera = orbit(plane.center, web::fit_plane_distance(window_h, kWebFov), 0.0f, 0.0f);
+                    return {};
+                }};
+        }
+    } else {  // D1, the parts in the flow, on the device, at 0.2 ms with Cs 0.17: S1 and S8 in still air, the rest in
+              // a crosswind (heading 90: the air moves +z)
+        const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
+        auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
+                                   static_cast<float>(web::kD1WebStepS), web::kD1WebSgsCs);
+        if (!lc) return std::unexpected(lc.error());
+        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false);
+        if (!made) return std::unexpected(made.error());
+        film = std::move(*made);
+        film.device = true;
+        // PROVISIONAL framing: the radii and targets below are the quad's, not yet fitted on D1's field (the lead:
+        // fit on the still-air field's real line extents, the airframe and the wake column inside the 10% margin).
+        const auto below_drone = [](const spade::FlowVolume& v) { return volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f); };
+        if (id == "S1") {
+            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+                             web::loop_azimuth(25.0f, 360.0f, k, n), 20.0f);
+            }, false);
+        } else if (id == "S8") {
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+                             web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
+            }, false);
+        } else if (id == "S2") {
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                const float wide = web::fit_distance(0.70f, kWebFov, kWebAspect, fit);
+                const float close = web::fit_distance(0.42f, kWebFov, kWebAspect, fit);
+                return orbit(below_drone(v), web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
+            }, false);
+        } else if (id == "S3") {
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f), web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
+                             web::loop_azimuth(300.0f, clip.orbit_degrees, k, n), 20.0f);
+            }, true);
+        } else {  // S4: C_p on the airframe, filling 60% of the frame's height
+            view = with_camera(*view_named(film, "cp"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+                return orbit(volume_centre(v), web::fill_distance(0.30f, 0.6f, kWebFov),
+                             web::loop_azimuth(240.0f, clip.orbit_degrees, k, n), 40.0f);
+            }, true);
+        }
+    }
+    if (id == "S1" || id == "S6") view = with_line_style(view, kWebLineStyle);  // the clips that are lines
+    film.views.clear();
+    film.views.push_back(std::move(view));
+    film.stem = web_stem(group, plan);
+    film.frames = plan.frames;
+    film.window_from = plan.from_s;
+    film.window_to = plan.to_s;
+    film.steps_per_frame = plan.steps_per_frame;
+    if (!film.run) film.airflow.t_end = static_cast<float>(plan.to_s);
+    return film;
+}
+
+// Frame k of the cache, drawn through the film's one view for a clip of n frames: the scene on pure black, the
+// view's shot, the held drone's parts and what the view draws on them. `note` takes the view's legend line.
+[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s);
+
+// `ss` is how many times larger than the frame `stage` is (1: the frame's own size): the scene's pixel widths are
+// scaled to match, the stage's picture is box-filtered down to the frame, and `draw_s` is the time of the large draw
+// (the lead, 2026-11-10: the web masters render at 2x).
+[[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t first, uint32_t k,
+                                                 uint32_t n, GlStage& stage, uint32_t ss, spade::FlowVolume& volume,
+                                                 FrameLog& log, std::vector<uint8_t>& rgba, std::string& note,
+                                                 double& draw_s) {
+    if (auto read = read_frame(cache, first + k, volume, log); !read) return read;
+    const View& view = film.views.front();
+    render::RenderScene scene = black_scene(volume);
+    render::Camera camera;
+    if (auto shot = view.shot(volume, k, n, scene, camera); !shot) return shot;
+    if (film.decorate) {
+        if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
+    }
+    note.clear();
+    if (view.on_parts) {
+        auto on = view.on_parts(volume, scene);
+        if (!on) return std::unexpected(on.error());
+        note = std::move(*on);
+    }
+    if (ss > 1u) {
+        const auto scale = static_cast<float>(ss);
+        scene.flow_line_style.width_px *= scale;
+        scene.flow_line_style.glow_px *= scale;
+        for (render::FlowPolyline& line : scene.flow_polylines) line.width_px *= scale;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    auto drew = stage.draw(scene, camera, rgba);
+    draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (drew && ss > 1u) rgba = box_down(rgba, stage.width() / ss, stage.height() / ss, ss);
+    return drew;
+}
+
+// The brief's pure black: the four corners of a frame whose subject keeps its margin are (0, 0, 0).
+[[nodiscard]] bool corners_black(const std::vector<uint8_t>& rgba, uint32_t w, uint32_t h) {
+    for (const std::size_t at : {std::size_t{0}, static_cast<std::size_t>(w - 1u) * 4u,
+                                 static_cast<std::size_t>(h - 1u) * w * 4u,
+                                 (static_cast<std::size_t>(h) * w - 1u) * 4u}) {
+        if (rgba[at] != 0u || rgba[at + 1u] != 0u || rgba[at + 2u] != 0u) return false;
+    }
+    return true;
+}
+
+[[nodiscard]] std::string utc_now() {
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
+    char out[40];
+    std::strftime(out, sizeof out, "%Y-%m-%d %H:%M UTC", &utc);
+    return out;
+}
+
 struct Options {
     std::string video;
     fs::path out;
@@ -1208,11 +1601,25 @@ struct Options {
     fs::path controls_file;       // --controls: its control program (empty: the showcase)
     uint32_t step_time = 0;       // --step-time N: a case's start and N steps timed; no film
     bool arm_pressure = false;    // --arm-pressure: D1's arm-top samples from the cached frames; no film
+    std::string synthetic_still;  // --synthetic-still NAME: the web look on a synthetic wake, no simulation
+    uint32_t supersample = 0;     // --supersample N: render at N times the frame and box-filter down (0: the mode's
+                                  // own: 2 for a web master, 1 for the synthetic still)
+    std::string export_name;      // --export-lines NAME: a cached frame's streamlines as JSON (line_export.hpp); no film
+    int export_frame = -1;        // --export-frame N: the cached frame to export (default: the last)
+    fs::path export_deliver;      // --export-deliver RAW: also copy it to RAW/spade and add a MANIFEST line
     uint32_t subnormal_scan = 0;  // --subnormal-scan N: D1's subnormal scan, N steps of two runs; no film
     uint32_t subnormal_locate = 0;  // --subnormal-locate N: what raises them, N steps of one run; no film
     fs::path from_save;           // --from-save: the scan's runs restore this LiveRun save, not start
     std::optional<spade::physics::airflow::GridShape> grid;  // --grid NXxNYxNZ: d1-hover's grid, at its 4 mm
     bool gpu = false;  // --gpu: a LiveRun film's fluid on GpuFluid, no parts (gpu_live.hpp)
+    // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
+    std::string web_id;
+    uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
+    bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
+    fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
+    std::string ticket;            // --ticket: the jobrun ticket the caption names
+    std::string command_line;      // the arguments as given, for the caption
 };
 
 constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continue
@@ -1229,6 +1636,108 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     (void)mark;
     return std::unexpected(spade::Error{spade::Code::unavailable, film.stem + ": --gpu needs the Vulkan build"});
 #endif
+}
+
+// --export-lines NAME: a cached frame of a LiveRun film (the last, or --export-frame N) as streamlines in JSON for
+// the website's 3-D viewer (line_export.hpp): <out>/export/NAME.json and NAME.md. With --export-deliver RAW, both
+// also go to RAW/spade and one line to RAW/MANIFEST.md, through the guard a clip's delivery passes: nothing else
+// under the site is written.
+[[nodiscard]] spade::Result<void> export_lines_report(const Film& film, const fs::path& cache, const Options& opt) {
+    using spade::Code;
+    using spade::Error;
+    if (!film.run) return std::unexpected(Error{Code::invalid_argument, "--export-lines reads a LiveRun film's frames"});
+    const LiveCase& lc = *film.run;
+    const uint32_t frames = cached_frames(cache);
+    if (frames == 0u) {
+        return std::unexpected(Error{Code::not_found, "no cached frames in " + cache.string() + ": film the case first"});
+    }
+    const uint32_t k = opt.export_frame >= 0 ? static_cast<uint32_t>(opt.export_frame) : frames - 1u;
+    if (k >= frames) {
+        return std::unexpected(Error{Code::invalid_argument, "--export-frame " + std::to_string(k) + ": the cache holds " +
+                                                                 std::to_string(frames) + " frames"});
+    }
+    spade::FlowVolume volume;
+    FrameLog log;
+    if (auto read = read_frame(cache, k, volume, log); !read) return read;
+    if (log.live.size() < 7u) return std::unexpected(Error{Code::internal, "a LiveRun frame's log holds no held body"});
+    ExportBody body;
+    body.pos = glm::vec3(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
+    body.orient = glm::quat(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]),
+                            static_cast<float>(log.live[5]), static_cast<float>(log.live[6]));
+    std::vector<ExportRotor> rotors;
+    for (const spade::vehicles::RotorDesc& r : lc.run_model.rotors) {
+        rotors.push_back(ExportRotor{r.local_pos, glm::normalize(r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f)), r.radius,
+                                     r.spin_dir});
+    }
+    const CacheMark mark = read_mark(cache);
+    const float wind = lc.c.flight.speed, heading = lc.c.flight.heading_deg;
+    ExportInfo info;
+    info.name = opt.export_name;
+    info.sim = mark.build.empty() ? build_identity() : mark.build;
+    info.config = lc.name + "; wind " + fixed(wind, 1) + " m/s from heading " + fixed(heading, 0) + " deg; " + lc.identity;
+    info.note = "one frame of the reference quad's run, in the aircraft's body frame; a stand-in, see the caption";
+    info.frame = k;
+    info.step = log.step;
+    info.t_s = log.time;
+    auto made = export_streamlines(volume, body, rotors, info);
+    if (!made) return std::unexpected(made.error());
+    const fs::path dir = opt.out / "export";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path json = dir / (opt.export_name + ".json"), caption = dir / (opt.export_name + ".md");
+    ExportCaption cap;
+    cap.info = &info;
+    cap.result = &*made;
+    cap.commit = build_identity();
+    cap.date_utc = utc_now();
+    cap.command = opt.command_line;
+    cap.ticket = opt.ticket.empty() ? "none" : opt.ticket;
+    cap.wind_mps = wind;
+    cap.crosswind = wind > 0.0f && std::fabs(heading) > 1.0f;
+    cap.cell_mm = volume.header.cell * 1000.0f;
+    cap.device = film.device;
+    {
+        std::ofstream out(json, std::ios::binary | std::ios::trunc);
+        out << made->json;
+        std::ofstream md(caption, std::ios::binary | std::ios::trunc);
+        md << export_caption_text(cap);
+        if (!out || !md) return std::unexpected(Error{Code::io_error, "writing " + json.string() + " or " + caption.string()});
+    }
+    std::printf("[ export ] %s: frame %u, %u lines, %llu points, %zu bytes, least arc %.1f mm, %u dropped: %s\n",
+                opt.export_name.c_str(), k, made->lines, static_cast<unsigned long long>(made->points), made->json.size(),
+                static_cast<double>(made->spacing_m) * 1000.0, made->dropped, json.string().c_str());
+    if (opt.export_deliver.empty()) return {};
+
+    const web::DeliveryGuard guard{opt.export_deliver};
+    const fs::path spade_dir = opt.export_deliver / "spade";
+    const fs::path manifest = opt.export_deliver / "MANIFEST.md";
+    fs::create_directories(spade_dir, ec);
+    if (ec) return std::unexpected(Error{Code::io_error, "cannot create " + spade_dir.string() + ": " + ec.message()});
+    for (const fs::path& from : {json, caption}) {
+        const fs::path to = spade_dir / from.filename();
+        if (!guard.may_write(to)) return std::unexpected(Error{Code::invalid_argument, to.string() + " is outside " + spade_dir.string()});
+        fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+        if (ec) return std::unexpected(Error{Code::io_error, "copying " + from.string() + ": " + ec.message()});
+        std::printf("flow_movie: delivered %s\n", to.string().c_str());
+    }
+    if (!guard.may_write(manifest)) return std::unexpected(Error{Code::invalid_argument, manifest.string() + " is not the manifest"});
+    std::string have;
+    {
+        std::ifstream in(manifest, std::ios::binary);
+        have.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const std::string file = opt.export_name + ".json";
+    if (have.find("- " + file + " |") != std::string::npos) {
+        std::printf("flow_movie: MANIFEST already lists %s\n", file.c_str());
+        return {};
+    }
+    std::ofstream out(manifest, std::ios::binary | std::ios::app);
+    if (!have.empty() && have.back() != '\n') out << '\n';
+    out << data_manifest_line(file, made->json.size(), "sim", "Streamlines around the reference quad's rotors in its body frame (JSON)")
+        << '\n';
+    if (!out) return std::unexpected(Error{Code::io_error, "writing " + manifest.string()});
+    std::printf("flow_movie: MANIFEST.md: 1 line added\n");
+    return {};
 }
 
 // d1-hover's length: D1-3's window ends 0.50 s after arming (armed at 0), and
@@ -1271,6 +1780,10 @@ constexpr double kD1Seconds = 0.6;
     if (started && theirs.film != mine.film) return refuse_cache("film", theirs.film, mine.film);
     if (opt.arm_pressure) {
         if (auto measured = arm_pressure_report(film, cache); !measured) return std::unexpected(measured.error());
+        return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
+    }
+    if (!opt.export_name.empty()) {
+        if (auto exported = export_lines_report(film, cache, opt); !exported) return std::unexpected(exported.error());
         return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     }
     if (opt.probe_swirl >= 0) {
@@ -1349,6 +1862,388 @@ constexpr double kD1Seconds = 0.6;
     return e.code == spade::Code::unavailable ? kExitUnavailable : 1;
 }
 
+// Delivers a filmed master: checks the files in <out>/web (the clip's size, frame count, codec, pixel format and no
+// audio, by ffprobe; the still's size; the caption beside them), copies them to <raw>/spade and appends one MANIFEST
+// line per file to <raw>/MANIFEST.md. Every destination passes the guard: nothing is written under the site but
+// <raw>/spade and <raw>/MANIFEST.md (the brief's "write nothing else").
+[[nodiscard]] int web_deliver(const Options& opt, const web::Clip& clip, uint32_t n, const fs::path& work,
+                              const std::string& base) {
+    const auto stop = [](const std::string& why) {
+        std::fprintf(stderr, "flow_movie: delivery refused: %s\n", why.c_str());
+        return 1;
+    };
+    if (opt.web_frames > 0u) return stop("a clip filmed from a --web-frames cache is a timing run, not a master");
+    const web::DeliveryGuard guard{opt.web_deliver};
+    const fs::path spade_dir = opt.web_deliver / "spade";
+    const fs::path manifest = opt.web_deliver / "MANIFEST.md";
+    struct Item {
+        std::string name;
+        uint32_t width, height;
+        double seconds;
+        std::string description;
+    };
+    std::vector<Item> items;
+    {
+        const fs::path mp4 = work / (base + "mp4");
+        auto info = probe_video(opt.ffmpeg, mp4);
+        if (!info) return stop(info.error().context);
+        if (info->width != web::kWidth || info->height != web::kHeight || info->frames != clip.frames() ||
+            info->codec != "h264" || info->pix_fmt != "yuv420p" || info->has_audio) {
+            return stop(mp4.string() + " is " + std::to_string(info->width) + "x" + std::to_string(info->height) + ", " +
+                        std::to_string(info->frames) + " frames, " + info->codec + ", " + info->pix_fmt +
+                        (info->has_audio ? ", with audio" : "") + "; wanted 3840x2160, " + std::to_string(n) +
+                        " frames, h264, yuv420p, no audio");
+        }
+        items.push_back({base + "mp4", info->width, info->height, static_cast<double>(info->frames) / web::kFps,
+                         std::string(clip.title)});
+    }
+    if (clip.still) {
+        const fs::path png = work / (base + "png");
+        auto info = probe_video(opt.ffmpeg, png);
+        if (!info) return stop(info.error().context);
+        if (info->width != web::kStillWidth || info->height != web::kStillHeight) {
+            return stop(png.string() + " is " + std::to_string(info->width) + "x" + std::to_string(info->height) +
+                        ", not 5120x2880");
+        }
+        items.push_back({base + "png", info->width, info->height, 0.0, std::string(clip.title) + " (still)"});
+    }
+    const fs::path caption = work / (base + "md");
+    if (!fs::exists(caption)) return stop(caption.string() + " does not exist");
+
+    std::vector<fs::path> copies;
+    for (const Item& item : items) copies.push_back(work / item.name);
+    copies.push_back(caption);
+    std::error_code ec;
+    fs::create_directories(spade_dir, ec);
+    if (ec) return stop("cannot create " + spade_dir.string() + ": " + ec.message());
+    for (const fs::path& from : copies) {
+        const fs::path to = spade_dir / from.filename();
+        if (!guard.may_write(to)) return stop(to.string() + " is outside " + spade_dir.string());
+        fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+        if (ec) return stop("copying " + from.string() + ": " + ec.message());
+        std::printf("flow_movie: delivered %s\n", to.string().c_str());
+    }
+    if (!guard.may_write(manifest)) return stop(manifest.string() + " is not the manifest");
+    std::string have;
+    {
+        std::ifstream in(manifest, std::ios::binary);
+        have.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    std::string add;
+    for (const Item& item : items) {
+        if (have.find("- " + item.name + " |") != std::string::npos) {
+            std::printf("flow_movie: MANIFEST already lists %s\n", item.name.c_str());
+            continue;
+        }
+        add += web::manifest_line(item.name, item.width, item.height, item.seconds, "sim", item.description) + "\n";
+    }
+    if (!add.empty()) {
+        std::ofstream out(manifest, std::ios::binary | std::ios::app);
+        if (!have.empty() && have.back() != '\n') out << '\n';
+        out << add;
+        if (!out) return stop("writing " + manifest.string());
+        std::printf("flow_movie: MANIFEST.md: %zu line(s) added\n", items.size());
+    }
+    return 0;
+}
+
+// --- filming and delivering a website master -----------------------------------------------------------
+
+// The simulated time a clip of `n` frames shows and what it is: the frames' own times, never an index over 30.
+struct WebTimes {
+    double per_frame = 0.0;  // simulated time between frames, in the case's units
+    uint64_t last_step = 0;
+};
+
+[[nodiscard]] spade::Result<WebTimes> web_times(const fs::path& cache, uint32_t from, uint32_t n) {
+    spade::FlowVolume volume;
+    FrameLog first, last;
+    if (auto a = read_frame(cache, from, volume, first); !a) return std::unexpected(a.error());
+    if (auto b = read_frame(cache, from + n - 1u, volume, last); !b) return std::unexpected(b.error());
+    return WebTimes{n > 1u ? (last.time - first.time) / static_cast<double>(n - 1u) : 0.0, last.step};
+}
+
+[[nodiscard]] std::string grid_line(const Film& film) {
+    if (film.run) return film.run_labels && !film.run_labels->empty() ? "Run: " + film.run_labels->rbegin()->second : "";
+    const AirflowCase& c = film.airflow;
+    return "Run: " + std::to_string(c.shape.nx) + "x" + std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) +
+           " cells at " + fixed(c.shape.dx * 1000.0, 2) + " mm, step " + fixed(c.fluid.h * 1000.0, 3) + " ms, n_v " +
+           std::to_string(c.fluid.n_v) + ".";
+}
+
+// Films one website master: simulates (unless cached), draws its frames at 3840x2160 into <out>/web/<name>.mp4 and
+// its caption beside it, and, for the four that have one (or --web-still), a 5120x2880 PNG. Nothing leaves <out>.
+[[nodiscard]] int run_web(const Options& opt, GlStage& stage, const Encoder& encoder) {
+    const web::Clip* clip = web::find_clip(opt.web_id);
+    if (clip == nullptr) {
+        std::fprintf(stderr, "flow_movie: --web %s is not one of the web clips S1 to S6 and S8\n", opt.web_id.c_str());
+        return 2;
+    }
+    const web::Group* group = web::find_group(clip->group);
+    WebPlan plan;
+    plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
+    plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
+    plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
+    plan.to_s = opt.window_to > 0.0
+                    ? opt.window_to
+                    : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame, group->step_s);
+    plan.grid = opt.grid;
+    // The clip draws its frames from the group's cache, from `first` on (a --window run spreads its own frames).
+    const uint32_t first = opt.window_to > 0.0 ? 0u : clip->first_frame;
+    if (first >= plan.frames) {
+        std::fprintf(stderr, "flow_movie: web %s starts at frame %u of its group's cache, which holds %u\n",
+                     opt.web_id.c_str(), first, plan.frames);
+        return 2;
+    }
+    const uint32_t n = std::min(clip->frames(), plan.frames - first);
+    const uint32_t ss = opt.supersample > 0u ? std::min(opt.supersample, 4u) : 2u;  // rendered at ss x, filtered down
+    const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");
+    const fs::path work = opt.out / "web";
+    std::printf("flow_movie: web %s \"%s\": %u frames of %u, window %g..%g, frame %ux%u (%s)\n", opt.web_id.c_str(),
+                std::string(clip->title).c_str(), n, plan.frames, plan.from_s, plan.to_s, encoder.width, encoder.height,
+                stage.limits().c_str());
+
+    auto film = web_film(*clip, *group, plan);
+    if (!film) return fail(film.error());
+    if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
+    if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
+        auto exported = run_film(*film, opt, stage, encoder);
+        if (!exported) return fail(exported.error());
+        return 0;
+    }
+
+    // The cache: the simulation, from rest, over the window.
+    Options sim = opt;
+    sim.simulate_only = true;
+    sim.stills = 0;
+    sim.still_frame = -1;
+    sim.arm_pressure = false;
+    sim.probe_swirl = -1;
+    const auto sim_start = std::chrono::steady_clock::now();
+    auto simmed = run_film(*film, sim, stage, encoder);
+    if (!simmed) return fail(simmed.error());
+    if (!*simmed) return kExitIncomplete;
+    std::printf("flow_movie: web %s: simulation %.0f s\n", opt.web_id.c_str(),
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
+    const fs::path cache = opt.out / "cache" / film->stem;
+
+    spade::FlowVolume volume;
+    FrameLog log;
+    std::vector<uint8_t> rgba;
+    std::string note;
+    double draw_s = 0.0;
+    if (!opt.web_still_only) {
+        auto times = web_times(cache, first, n);
+        if (!times) return fail(times.error());
+        auto webclip = WebClip::open(opt.ffmpeg, encoder.width, encoder.height, work / (base + "mp4"));
+        if (!webclip) return fail(webclip.error());
+        std::unique_ptr<GlStage> large;
+        if (ss > 1u) {
+            auto made = GlStage::create(encoder.width * ss, encoder.height * ss);
+            if (!made) return fail(made.error());
+            large = std::move(*made);
+        }
+        GlStage& frame_stage = large ? *large : stage;
+        double draw_total = 0.0;
+        const auto start = std::chrono::steady_clock::now();
+        for (uint32_t k = 0; k < n; ++k) {
+            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s); !drew) {
+                return fail(drew.error());
+            }
+            draw_total += draw_s;
+            if (clip->id != "S5" && (k == 0u || k + 1u == n) && !corners_black(rgba, encoder.width, encoder.height)) {
+                std::fprintf(stderr, "flow_movie: web %s frame %u: a corner is not pure black (0, 0, 0), or the subject "
+                                     "runs to the frame's edge\n", opt.web_id.c_str(), k);
+                return 1;
+            }
+            if (auto added = (*webclip)->add_frame(rgba); !added) return fail(added.error());
+            if (k % 30u == 0u || k + 1u == n) {
+                std::printf("[ %s ] frame %u/%u, t %s, %.2f s a frame\n", opt.web_id.c_str(), k + 1u, n,
+                            fixed(log.time, 4).c_str(),
+                            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / (k + 1u));
+                std::fflush(stdout);
+            }
+        }
+        const double through = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        auto finished = (*webclip)->finish();
+        if (!finished) return fail(finished.error());
+        const double with_encode = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        std::printf("web-timing: %s %ux%u, %u frames: draw %.3f s a frame (GL, read back), draw+pipe %.3f s a frame, "
+                    "through the encode %.3f s a frame, %.0f s in all\n",
+                    opt.web_id.c_str(), encoder.width, encoder.height, n, draw_total / n, through / n, with_encode / n,
+                    with_encode);
+        web::CaptionInput in;
+        in.clip = clip;
+        in.commit = build_identity();
+        in.date_utc = utc_now();
+        in.command = opt.command_line;
+        in.ticket = opt.ticket.empty() ? "(run by hand, not queued)" : opt.ticket;
+        in.screen_seconds = static_cast<double>(n) / static_cast<double>(web::kFps);
+        in.sim_seconds = times->per_frame * static_cast<double>(n);
+        in.extra = grid_line(*film);
+        if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
+        std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
+        caption << web::caption_text(in);
+        if (!caption) return fail(spade::Error{spade::Code::io_error, "writing " + (work / (base + "md")).string()});
+        std::printf("flow_movie: wrote %s and its caption\n", (work / (base + "mp4")).string().c_str());
+    }
+
+    if (clip->still || opt.web_still_only) {
+        auto big = GlStage::create(web::kStillWidth * ss, web::kStillHeight * ss);
+        if (!big) return fail(big.error());
+        const uint32_t k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
+        const auto start = std::chrono::steady_clock::now();
+        if (auto drew = draw_web_frame(*film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s); !drew) {
+            return fail(drew.error());
+        }
+        Encoder still_encoder = encoder;
+        still_encoder.width = web::kStillWidth;
+        still_encoder.height = web::kStillHeight;
+        if (clip->id != "S5" && !corners_black(rgba, web::kStillWidth, web::kStillHeight)) {
+            std::fprintf(stderr, "flow_movie: web %s still: a corner is not pure black (0, 0, 0)\n", opt.web_id.c_str());
+            return 1;
+        }
+        const fs::path png = work / (base + "png");
+        if (auto saved = save_png(still_encoder, rgba, png); !saved) return fail(saved.error());
+        std::printf("web-timing: %s still %ux%u of frame %u: draw %.3f s, %.3f s with the PNG (%s)\n",
+                    opt.web_id.c_str(), web::kStillWidth, web::kStillHeight, k, draw_s,
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                    (*big)->limits().c_str());
+        std::printf("flow_movie: wrote %s\n", png.string().c_str());
+    }
+    return 0;
+}
+// --synthetic-still NAME: the look of the web masters' streamlines on a SYNTHETIC wake, with no simulation (the
+// lead, 2026-11-10: a test still before any sim). Four rotors' wakes written straight into a FlowVolume at the
+// quad's grid (80 x 128 x 80 at 1 cm): a downwash jet under each disc, inflow above it, and a decaying swirl
+// about each axis by spin. It is a picture of the look, never of a flow: nothing here is a result.
+// --supersample N renders at N times the frame and box-filters it down, the lines' widths scaled to match.
+[[nodiscard]] spade::FlowVolume synthetic_wake() {
+    constexpr uint32_t nx = 80, ny = 128, nz = 80;
+    constexpr float cell = 0.01f, radius = 0.0762f, hub_y = 0.024f, v_h = 5.3f;
+    struct Rotor {
+        float x, z, spin;
+    };
+    constexpr Rotor rotors[4] = {{0.11f, 0.0f, +1.0f}, {0.0f, 0.11f, -1.0f}, {-0.11f, 0.0f, +1.0f}, {0.0f, -0.11f, -1.0f}};
+    spade::FlowVolume volume;
+    spade::FlowVolumeHeader& h = volume.header;
+    h.origin = glm::vec3(-0.40f, -0.96f, -0.40f);
+    h.cell = cell;
+    h.nx = nx;
+    h.ny = ny;
+    h.nz = nz;
+    const std::size_t cells = std::size_t{nx} * ny * nz;
+    volume.v.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    volume.s.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    std::array<bool, spade::kFlowChannelCount> seen{};
+    for (uint32_t k = 0; k < nz; ++k) {
+        for (uint32_t j = 0; j < ny; ++j) {
+            for (uint32_t i = 0; i < nx; ++i) {
+                const glm::vec3 p =
+                    h.origin + (glm::vec3(static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)) + glm::vec3(0.5f)) * cell;
+                glm::vec3 u(0.0f);
+                for (const Rotor& r : rotors) {
+                    const float dx = p.x - r.x, dz = p.z - r.z;
+                    const float rho = std::sqrt(dx * dx + dz * dz);
+                    const float below = hub_y - p.y;  // m under the disc plane
+                    if (below >= 0.0f) {
+                        const float rw = radius * (1.0f + 0.35f * below);
+                        const float t = rho / rw, t2 = t * t;
+                        u.y -= (v_h + 5.0f * std::min(below / 0.3f, 1.0f)) * std::exp(-t2 * t2 * t2);
+                        if (rho > 1.0e-6f) {
+                            const float rc = 0.35f * radius * (1.0f + 2.0f * below);
+                            const float swirl = 0.4f * (1.0f - std::exp(-rho * rho / (rc * rc))) / (6.2831853f * rho) *
+                                                std::exp(-below / 0.7f);
+                            u.x += -r.spin * swirl * dz / rho;
+                            u.z += r.spin * swirl * dx / rho;
+                        }
+                    } else {
+                        u.y -= v_h * std::exp(-rho * rho / (4.0f * radius * radius)) * std::exp(below / (1.2f * radius));
+                    }
+                }
+                const std::size_t base = spade::flow_cell_index(h, i, j, k) * spade::kFlowHalvesPerCell;
+                const float channel[3] = {u.x, u.y, u.z};
+                for (uint32_t c = 0; c < 3; ++c) {
+                    const spade::fp16::Half half = spade::fp16::from_f32(channel[c]);
+                    volume.v[base + c] = half.bits;
+                    const float x = spade::fp16::to_f32(half.bits);
+                    h.channel_min[c] = seen[c] ? std::min(h.channel_min[c], x) : x;
+                    h.channel_max[c] = seen[c] ? std::max(h.channel_max[c], x) : x;
+                    seen[c] = true;
+                }
+            }
+        }
+    }
+    volume.generation = spade::next_flow_generation();
+    return volume;
+}
+
+// The frame's pixels averaged over s x s blocks (RGBA8, the top row first), for a render at s times the size.
+[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s) {
+    std::vector<uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
+    const uint32_t bw = w * s;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            for (uint32_t c = 0; c < 4u; ++c) {
+                uint32_t sum = 0;
+                for (uint32_t dy = 0; dy < s; ++dy) {
+                    for (uint32_t dx = 0; dx < s; ++dx) {
+                        sum += big[((static_cast<std::size_t>(y) * s + dy) * bw + (x * s + dx)) * 4u + c];
+                    }
+                }
+                out[(static_cast<std::size_t>(y) * w + x) * 4u + c] = static_cast<uint8_t>((sum + s * s / 2u) / (s * s));
+            }
+        }
+    }
+    return out;
+}
+
+[[nodiscard]] int run_synthetic_still(const Options& opt, const Encoder& encoder) {
+    const uint32_t s = std::max(1u, std::min(opt.supersample, 4u));
+    const spade::FlowVolume volume = synthetic_wake();
+    render::RenderScene scene = black_scene(volume);
+    const auto speed_colours = render::colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, 12.0f);
+    std::vector<glm::vec3> seeds;
+    constexpr float radius = 0.0762f;
+    const glm::vec3 hubs[4] = {{0.11f, 0.024f, 0.0f}, {0.0f, 0.024f, 0.11f}, {-0.11f, 0.024f, 0.0f}, {0.0f, 0.024f, -0.11f}};
+    for (const glm::vec3& hub : hubs) {
+        for (const float r : {0.35f, 0.75f}) {
+            for (const glm::vec3& p :
+                 render::seed_ring(hub + glm::vec3(0.0f, 0.06f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f), r * radius, 12)) {
+                seeds.push_back(p);
+            }
+        }
+    }
+    render::StreamlineOptions lines;
+    lines.max_steps = 1200;
+    if (auto ok = render::add_streamlines(scene, volume, seeds, lines, speed_colours); !ok) return fail(ok.error());
+    scene.flow_line_style = render::FlowLineStyle{kWebLineStyle.width_px * static_cast<float>(s),
+                                                  kWebLineStyle.glow_px * static_cast<float>(s), kWebLineStyle.glow_strength};
+    const render::Camera camera =
+        orbit(glm::vec3(0.0f, -0.30f, 0.0f), web::fit_distance(0.55f, kWebFov, kWebAspect, web::kMargin), 25.0f, 20.0f);
+    auto stage = GlStage::create(encoder.width * s, encoder.height * s);
+    if (!stage) return fail(stage.error());
+    std::vector<uint8_t> rgba;
+    const auto start = std::chrono::steady_clock::now();
+    if (auto drew = (*stage)->draw(scene, camera, rgba); !drew) return fail(drew.error());
+    const double draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (s > 1u) rgba = box_down(rgba, encoder.width, encoder.height, s);
+    if (!corners_black(rgba, encoder.width, encoder.height)) {
+        std::fprintf(stderr, "flow_movie: synthetic still: a corner is not pure black (0, 0, 0)\n");
+        return 1;
+    }
+    const fs::path dir = opt.out / "synthetic";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const fs::path png = dir / (opt.synthetic_still + "-x" + std::to_string(s) + ".png");
+    if (auto saved = save_png(encoder, rgba, png); !saved) return fail(saved.error());
+    std::printf("synthetic-timing: %s %ux%u rendered at %ux%u (%ux), draw %.3f s, %zu lines (%s)\n", opt.synthetic_still.c_str(),
+                encoder.width, encoder.height, encoder.width * s, encoder.height * s, s, draw_s, scene.flow_polylines.size(),
+                (*stage)->limits().c_str());
+    std::printf("flow_movie: wrote %s (a synthetic wake, not a simulation)\n", png.string().c_str());
+    return 0;
+}
+
 // The builds behind a film's frames: the one that simulated them (its cache's
 // mark) and, when different, the one drawing them.
 [[nodiscard]] std::string builds_line(const Film& film, const fs::path& out) {
@@ -1410,6 +2305,11 @@ int main(int argc, char** argv) {
     Options opt;
     for (int a = 1; a < argc; ++a) {
         const std::string arg = argv[a];
+        opt.command_line += (a > 1 ? " " : "") + (arg.find(' ') == std::string::npos ? arg : "\"" + arg + "\"");
+    }
+    opt.command_line = "flow_movie " + opt.command_line;
+    for (int a = 1; a < argc; ++a) {
+        const std::string arg = argv[a];
         const auto value = [&]() -> std::string { return a + 1 < argc ? argv[++a] : std::string(); };
         if (arg == "--video") {
             opt.video = value();
@@ -1450,6 +2350,17 @@ int main(int argc, char** argv) {
             opt.frame_budget = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--arm-pressure") {
             opt.arm_pressure = true;
+        } else if (arg == "--synthetic-still") {
+            opt.synthetic_still = value();
+            if (opt.video.empty()) opt.video = "synthetic-still";
+        } else if (arg == "--supersample") {
+            opt.supersample = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--export-lines") {
+            opt.export_name = value();
+        } else if (arg == "--export-frame") {
+            opt.export_frame = std::atoi(value().c_str());
+        } else if (arg == "--export-deliver") {
+            opt.export_deliver = value();
         } else if (arg == "--step-time") {
             opt.step_time = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--subnormal-scan") {
@@ -1467,6 +2378,23 @@ int main(int argc, char** argv) {
             opt.grid = g;
         } else if (arg == "--gpu") {
             opt.gpu = true;
+        } else if (arg == "--web") {
+            opt.web_id = value();
+            opt.video = "web";
+        } else if (arg == "--web-frames") {
+            opt.web_frames = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--window") {
+            if (std::sscanf(value().c_str(), "%lf:%lf", &opt.window_from, &opt.window_to) != 2 ||
+                opt.window_to <= opt.window_from) {
+                std::fprintf(stderr, "flow_movie: --window takes T0:T1, as 0.9:1.5, with T1 past T0\n");
+                return 2;
+            }
+        } else if (arg == "--web-still") {
+            opt.web_still_only = true;
+        } else if (arg == "--web-deliver") {
+            opt.web_deliver = value();
+        } else if (arg == "--ticket") {
+            opt.ticket = value();
         } else {
             std::fprintf(stderr, "flow_movie: unknown argument %s\n", arg.c_str());
             return 2;
@@ -1478,7 +2406,7 @@ int main(int argc, char** argv) {
         return 2;
 #else
         const bool live = opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
-                          opt.video == "d1-hover";
+                          opt.video == "d1-hover" || opt.video == "d1-still";
         if (!live || opt.step_time > 0u || opt.subnormal_scan > 0u || opt.subnormal_locate > 0u) {
             std::fprintf(stderr, "flow_movie: --gpu films a LiveRun case (d1-hover, case, case-*), and only films "
                                  "it\n");
@@ -1500,6 +2428,10 @@ int main(int argc, char** argv) {
         encoder.width = 640;
         encoder.height = 360;
     }
+    if (!opt.web_id.empty() || !opt.synthetic_still.empty()) {
+        encoder.width = web::kWidth;
+        encoder.height = web::kHeight;
+    }
 
     if (auto ok = check_ffmpeg(encoder); !ok) return fail(ok.error());
     auto stage = GlStage::create(encoder.width, encoder.height);
@@ -1507,6 +2439,9 @@ int main(int argc, char** argv) {
     std::printf("flow_movie: %s on %s, %ux%u at %u fps, into %s\n", opt.video.c_str(), (*stage)->device().c_str(),
                 encoder.width, encoder.height, encoder.fps, opt.out.string().c_str());
     std::printf("flow_movie: built from %s\n", build_identity().c_str());
+
+    if (!opt.web_id.empty()) return run_web(opt, **stage, encoder);
+    if (!opt.synthetic_still.empty()) return run_synthetic_still(opt, encoder);
 
     std::vector<Film> films;
     if (opt.video == "smoke") {
@@ -1517,9 +2452,10 @@ int main(int argc, char** argv) {
         if (opt.n_v > 0u) film->airflow.fluid.n_v = opt.n_v;  // Physics' noise test only
         films.push_back(std::move(*film));
     } else if (opt.video == "case" || opt.video == "case-smoke" || opt.video == "case-quad" ||
-               opt.video == "d1-hover") {
+               opt.video == "d1-hover" || opt.video == "d1-still") {
         const bool smoke = opt.video == "case-smoke", quad = opt.video == "case-quad", d1 = opt.video == "d1-hover";
-        if (!smoke && !quad && !d1 && opt.case_file.empty()) {
+        const bool still = opt.video == "d1-still";  // D1 in still air: the hover run, wind 0
+        if (!smoke && !quad && !d1 && !still && opt.case_file.empty()) {
             std::fprintf(stderr, "flow_movie: --video case needs --case FILE.case.yaml\n");
             return 2;
         }
@@ -1527,6 +2463,8 @@ int main(int argc, char** argv) {
                   : quad ? quad_live_case(opt.seconds > 0.0 ? opt.seconds : spade::analysis::showcase_seconds())
                   : d1   ? d1_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds, opt.grid.value_or(kD1Grid),
                                         !opt.gpu)
+                  : still ? d1_still_air_live_case(opt.seconds > 0.0 ? opt.seconds : kD1Seconds,
+                                                   opt.grid.value_or(kD1Grid))
                          : live_case_from_files(opt.case_file, opt.controls_file, opt.seconds);
         if (!lc) return fail(lc.error());
         if (opt.step_time > 0u) return step_time_report(*lc, opt.step_time);
@@ -1538,6 +2476,7 @@ int main(int argc, char** argv) {
                               std::string(smoke ? "case-smoke"
                                           : quad ? "case-quad"
                                           : d1   ? "d1-hover"
+                                          : still ? "d1-still"
                                                  : "case-" + opt.case_file.stem().string()) +
                                   (opt.gpu ? "-gpu" : ""),
                               opt.gpu);
@@ -1609,7 +2548,10 @@ int main(int argc, char** argv) {
         auto clips = run_film(film, opt, **stage, encoder);
         if (!clips) return fail(clips.error());
         if (!*clips) return kExitIncomplete;
-        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0) continue;
+        if (opt.stills > 0u || opt.simulate_only || opt.still_frame >= 0 || opt.probe_swirl >= 0 ||
+            !opt.export_name.empty()) {
+            continue;
+        }
         const bool smoke = opt.video == "smoke" || opt.video == "case-smoke";
         auto card = film_card(encoder, opt.out / "clips", film, smoke ? 0.2 : 4.0, builds);
         if (!card) return fail(card.error());

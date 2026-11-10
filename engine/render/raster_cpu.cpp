@@ -1370,11 +1370,89 @@ void draw_flow_layers(FrameBuffers& fb, const ViewContext& vc, const RenderScene
     }
 }
 
+// STYLED LINES (FlowLineStyle): capsules of a width in pixels with coverage anti-aliasing and a glow, blended
+// over what is behind, in two passes: the pixels with coverage under one half (the fringe and the glow), which
+// write no depth, then those with one half or more, which do. GL's flow-line program computes the same numbers
+// per fragment. float32 throughout; no libm (TD-3): sqrt and arithmetic only.
+void draw_styled_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    const FlowLineStyle& style = scene.flow_line_style;
+    const float glow = style.glow_px;
+    const float strength = style.glow_strength;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const FlowPolyline& line : scene.flow_polylines) {
+            const float width = effective_width_px(line, style);  // a polyline's own, else the scene's
+            if (!(width > 0.0f)) continue;                         // the one-pixel line, drawn after these
+            const float half = 0.5f * width;
+            const int pad = static_cast<int>(std::ceil(half + glow)) + 1;
+            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
+                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
+                const float src[3] = {static_cast<float>(to_byte(c.r)) / 255.0f, static_cast<float>(to_byte(c.g)) / 255.0f,
+                                      static_cast<float>(to_byte(c.b)) / 255.0f};
+                Vec3 ac = worldToCameraSpace(vc, vec3d(line.points[i]));
+                Vec3 bc = worldToCameraSpace(vc, vec3d(line.points[i + 1u]));
+                if (!clipSegmentToHalfSpace(ac, bc, -vc.nearP, /*keepLessEq=*/true)) continue;
+                if (!clipSegmentToHalfSpace(ac, bc, -vc.farP, /*keepLessEq=*/false)) continue;
+                const ScreenPoint sa = projectCameraSpace(vc, ac);
+                const ScreenPoint sb = projectCameraSpace(vc, bc);
+                const float ax = static_cast<float>(sa.x), ay = static_cast<float>(sa.y);
+                const float bx = static_cast<float>(sb.x), by = static_cast<float>(sb.y);
+                const float abx = bx - ax, aby = by - ay;
+                const float l2 = abx * abx + aby * aby;
+                const int x0 = std::max(0, static_cast<int>(std::floor(std::min(ax, bx))) - pad);
+                const int x1 = std::min(static_cast<int>(fb.width) - 1, static_cast<int>(std::floor(std::max(ax, bx))) + pad);
+                const int y0 = std::max(0, static_cast<int>(std::floor(std::min(ay, by))) - pad);
+                const int y1 = std::min(static_cast<int>(fb.height) - 1, static_cast<int>(std::floor(std::max(ay, by))) + pad);
+                for (int y = y0; y <= y1; ++y) {
+                    for (int x = x0; x <= x1; ++x) {
+                        const float px = static_cast<float>(x) + 0.5f, py = static_cast<float>(y) + 0.5f;
+                        float t = l2 > 1.0e-12f ? ((px - ax) * abx + (py - ay) * aby) / l2 : 0.0f;
+                        t = std::min(1.0f, std::max(0.0f, t));
+                        const float dx = px - (ax + abx * t), dy = py - (ay + aby * t);
+                        const float dist = std::sqrt(dx * dx + dy * dy);
+                        const float cov = std::min(1.0f, std::max(0.0f, half + 0.5f - dist));
+                        float g = 0.0f;
+                        if (glow > 0.0f) {
+                            const float u = std::min(1.0f, std::max(0.0f, 1.0f - std::max(dist - half, 0.0f) / glow));
+                            g = strength * u * u;
+                        }
+                        const float alpha = cov + (1.0f - cov) * g;
+                        const bool core = cov >= 0.5f;
+                        if (alpha <= 0.0f || core != (pass == 1)) continue;
+                        const double inv = sa.invDepth + (sb.invDepth - sa.invDepth) * static_cast<double>(t);
+                        const size_t idx = static_cast<size_t>(y) * fb.width + static_cast<size_t>(x);
+                        if (inv <= fb.depth[idx]) continue;  // not nearer than what is there
+                        uint8_t* p = &fb.pixels[idx * 4u];  // B, G, R, X
+                        const float behind[3] = {static_cast<float>(p[2]) / 255.0f, static_cast<float>(p[1]) / 255.0f,
+                                                 static_cast<float>(p[0]) / 255.0f};
+                        p[0] = to_byte(behind[2] * (1.0f - alpha) + src[2] * alpha);
+                        p[1] = to_byte(behind[1] * (1.0f - alpha) + src[1] * alpha);
+                        p[2] = to_byte(behind[0] * (1.0f - alpha) + src[0] * alpha);
+                        p[3] = kBgrxOpaqueByte;
+                        if (core) {
+                            fb.depth[idx] = inv;
+                            if (fb.surfaces != nullptr) (*fb.surfaces)[idx] = fb.surface_now;
+                            if (fb.normals != nullptr) (*fb.normals)[idx] = fb.normal_now;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Streamlines and tracers (render/flow_lines.hpp), depth-tested and unlit:
-// each segment in the mean of its ends' colours, each point a square of
-// size_px pixels about its projection. render() has refused malformed ones.
+// each segment in the mean of its ends' colours (the one-pixel line, or a styled one when the scene's
+// flow_line_style has a width), each point a square of size_px pixels about its projection. render() has
+// refused malformed ones.
 void draw_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene) {
+    // The polylines wider than a pixel (their own width, else the scene's) first, as capsules; then the one-pixel
+    // lines. GL draws them in the same order.
+    const FlowLineStyle& style = scene.flow_line_style;
+    bool any_styled = false;
+    for (const FlowPolyline& line : scene.flow_polylines) any_styled = any_styled || effective_width_px(line, style) > 0.0f;
+    if (any_styled) draw_styled_flow_lines(fb, vc, scene);
     for (const FlowPolyline& line : scene.flow_polylines) {
+        if (effective_width_px(line, style) > 0.0f) continue;
         for (size_t i = 0; i + 1u < line.points.size(); ++i) {
             const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
             draw_world_segment(fb, vc, vec3d(line.points[i]), vec3d(line.points[i + 1u]), to_byte(c.r), to_byte(c.g),
@@ -2080,6 +2158,9 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
         }
     }
     if (Result<void> valid = validate_flow_points(scene.flow_points); !valid) {
+        return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+    }
+    if (Result<void> valid = validate_flow_line_style(scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
     if (scene.flow_surface_colouring) {

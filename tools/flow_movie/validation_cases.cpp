@@ -24,11 +24,11 @@ AirflowCase cavity_re400_case() {
     return c;
 }
 
-AirflowCase taylor_green_case() {
-    constexpr uint32_t n = 64;
+AirflowCase taylor_green_case(uint32_t n) {
     AirflowCase c;
     c.name = "C0 Taylor-Green vortex";
-    c.settings = "u = sin x cos y cos z, v = -cos x sin y cos z; inviscid; 64^3 periodic 2 pi box";
+    c.settings = "u = sin x cos y cos z, v = -cos x sin y cos z; inviscid; " + std::to_string(n) +
+                 "^3 periodic 2 pi box";
     c.bc.face.fill(airflow::FaceBc::periodic);
     c.shape = {n, n, n, static_cast<float>(2.0 * std::numbers::pi / n)};
     c.fluid = {.rho = 1.0f, .nu = 0.0f, .h = 0.5f * c.shape.dx, .n_v = 2};

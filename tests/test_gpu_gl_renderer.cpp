@@ -2523,6 +2523,66 @@ TEST_F(GpuGlRenderer, FlowSkippingChangesNoPixel) {
     renderer_->set_flow_quality({});
 }
 
+// STYLED STREAMLINES (FlowLineStyle; the lead, 2026-11-10): the same five helices as capsules 3 px wide with a
+// 4 px glow at 0.4, on both paths. GL's flow-line program computes raster_cpu's draw_styled_flow_lines() per
+// fragment (the distance to the segment from the pixel's centre, the coverage, the glow, the depth at the nearest
+// point), so the two differ by float32 against the CPU's mixed float and double, and by the one-pixel boundary
+// cases. The measure is the whole frame against the CPU's (the ground's own band is in it; the same frame without
+// the lines is printed beside it). Measured 2026-11-10, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0,
+// driver 572.83), at a3e85246's code: 2107 pixels styled; worst 3 levels, one pixel over two, 1014 pixels differ
+// (the ground alone: worst 1, 608 differ), with one 8 px and one 1 px helix among the 3 px ones. Pinned at
+// measured + 1.
+TEST_F(GpuGlRenderer, StyledFlowLinesMatchTheCpuWithinTheirBand) {
+    RenderScene scene = make_ground_scene();
+    for (int k = 0; k < 5; ++k) {
+        spade::render::FlowPolyline line;
+        for (int i = 0; i <= 40; ++i) {
+            const float s = static_cast<float>(i) / 40.0f;
+            const float a = 6.0f * s + 1.3f * static_cast<float>(k);
+            line.points.push_back(glm::vec3(-2.0f + 4.0f * s, 0.6f + 0.4f * static_cast<float>(k) * 0.3f + 0.5f * std::sin(a),
+                                            -1.0f + 0.5f * std::cos(a) + 0.3f * static_cast<float>(k)));
+            line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+        }
+        scene.flow_polylines.push_back(std::move(line));
+    }
+    scene.flow_line_style = spade::render::FlowLineStyle{3.0f, 4.0f, 0.4f};
+    // A mixed-width scene (the lead, 2026-11-10, L49): the second helix is 8 px wide of its own, the others inherit
+    // the scene's 3, and the fourth is 1 px: the one capsule path, three widths.
+    scene.flow_polylines[1].width_px = 8.0f;
+    scene.flow_polylines[3].width_px = 1.0f;
+    RenderScene bare = scene;
+    bare.flow_polylines.clear();
+    const Camera camera = camera_over_ground();
+
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, comparable_options());
+    const std::vector<uint8_t> cpu_off = cpu_rgba(bare, camera, comparable_options());
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(bare, comparable_options(), camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u) << "GL must draw styled streamlines";
+    ASSERT_EQ(gl_off.size(), kPixels * 4u);
+    const size_t styled = count_differing(cpu_on, cpu_off);
+    ASSERT_GT(styled, 1000u) << "the capsules and their halos must reach the frame";
+    ASSERT_GT(count_differing(gl_on, gl_off), 1000u) << "and GL's";
+
+    const ChannelDiff base = channel_diff(cpu_off, gl_off);
+    const ChannelDiff d = channel_diff(cpu_on, gl_on);
+    RecordProperty("styled_pixels", static_cast<int>(styled));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    RecordProperty("ground_worst_levels", base.worst);
+    RecordProperty("ground_differing_pixels", static_cast<int>(base.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ styled lines ] %zu px styled; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ "
+                "(the ground alone %zu); on %s\n",
+                styled, d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
+    constexpr int kBandWorstLevels = 4;           // measured 3
+    constexpr size_t kBandOverTwoPixels = 2;      // measured 1
+    constexpr size_t kBandDifferingPixels = 1015;  // measured 1014
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
 // Lines as GL_LINES, each segment in the mean of its ends' colours; points as
 // squares of size_px. Depth-tested against the ground. Lines rasterize by

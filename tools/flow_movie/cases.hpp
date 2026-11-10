@@ -41,7 +41,9 @@ struct AirflowCase {
 // The validation reel's cases (validation_cases.cpp), as
 // tests/test_airflow_validation.cpp runs them for the V1 records.
 [[nodiscard]] AirflowCase cavity_re400_case();  // C1: 128 x 128 slab, Re 400, T 60
-[[nodiscard]] AirflowCase taylor_green_case();  // C0: 64^3 periodic, inviscid, t 10
+// C0: n^3 periodic, inviscid, t 10, h = dx / 2. 64 is the validation record's; the website's S7 films 128 (a finer
+// grid of the same case: 408 steps, so 300 distinct frames), which its caption names.
+[[nodiscard]] AirflowCase taylor_green_case(uint32_t n = 64);
 [[nodiscard]] AirflowCase disc_wake_case();     // C8: 64 x 128 x 64 at 1 cm, 384 steps
 
 // A small open box with one disc, for the smoke test.
