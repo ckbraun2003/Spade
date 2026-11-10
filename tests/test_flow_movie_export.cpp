@@ -292,7 +292,7 @@ TEST(FlowMovieExport, TheCaptionNamesWhatTheFileIsAndNeverClaimsMore) {
     const std::string still = fm::export_caption_text(in);
     EXPECT_TRUE(has(still, "solids in the flow at 8 mm")) << still;
     EXPECT_TRUE(has(still, "in still air."));
-    EXPECT_FALSE(has(still, "headwind")) << "still air names no wind";
+    EXPECT_FALSE(has(still, "in a steady")) << "still air names no wind";
     in.wind_mps = 3.0f;
     const std::string hover = fm::export_caption_text(in);
     EXPECT_TRUE(has(hover, "in a steady 3 m/s headwind."));
