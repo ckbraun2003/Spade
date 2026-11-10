@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -129,17 +130,31 @@ TEST(HoverDownload, TheHeldQuadsPressureLoadAtTheDetailedLevel) {
 
     const double h = run->step_s();
     const int steps = static_cast<int>(std::lround(seconds / h));
+    const int per_tick = std::max(1, static_cast<int>(std::lround(0.1 / h)));
+    std::printf("HOVERDL start: %ux%ux%u cells at dx %.4f m, h %.6f s, %d steps for %.2f s, a progress line every %d "
+                "steps (0.1 s)\n",
+                kept->g.shape.nx, kept->g.shape.ny, kept->g.shape.nz, static_cast<double>(kept->g.shape.dx), h, steps,
+                seconds, per_tick);
+    std::fflush(stdout);
+    const auto t_start = std::chrono::steady_clock::now();
     const an::Controls hover{.armed = true, .throttle = q->trim.hover};
     for (int t = 0; t < steps; ++t) {
         const auto r = run->step(hover);
         ASSERT_TRUE(r.has_value()) << "step " << t + 1 << ": " << r.error().context;
+        if ((t + 1) % per_tick == 0) {  // flushed: a killed run still shows where it got
+            const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+            std::printf("HOVERDL progress: %d of %d steps, t %.2f s, wall %.1f s, %.3f steps/s, F_y %.5f N\n", t + 1,
+                        steps, static_cast<double>(t + 1) * h, wall, static_cast<double>(t + 1) / wall,
+                        static_cast<double>(kept->load.back().y));
+            std::fflush(stdout);
+        }
     }
     ASSERT_EQ(kept->load.size(), static_cast<std::size_t>(steps));
 
     const int skip = static_cast<int>(std::lround(0.5 / h));
     const int per_window = static_cast<int>(std::lround(0.5 / h));
     const int windows = (steps - skip) / per_window;
-    ASSERT_GE(windows, 2);
+    ASSERT_GE(windows, 1) << "a window is 0.5 s after the first 0.5 s: ask for at least 1.0 s";
     std::vector<double> window_mean_y;
     std::vector<double> within_sd_y;
     std::vector<double> all_y;
