@@ -2711,10 +2711,35 @@ TEST_F(GpuGlRenderer, TwentyFourSeeThroughDiscsCostOnA1080pFrameIsMeasured) {
         return scene;
     };
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    // A real 1080p target: draw() fills the bound framebuffer, and the fixture's own is 160 x 120.
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, 1920, 1080);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, 1920, 1080);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const auto centre_pixel = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        EXPECT_TRUE(renderer_->draw(scene, camera, comparable_options(), 1920u, 1080u).has_value());
+        uint8_t rgba[4] = {0, 0, 0, 0};
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(960, 540, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        return glm::ivec3(rgba[0], rgba[1], rgba[2]);
+    };
     const auto median_ms = [&](const RenderScene& scene) {
         EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
         std::vector<double> ms;
         for (int i = 0; i < 12; ++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glFinish();
             const auto t0 = std::chrono::steady_clock::now();
             const spade::Result<void> drew =
@@ -2727,6 +2752,8 @@ TEST_F(GpuGlRenderer, TwentyFourSeeThroughDiscsCostOnA1080pFrameIsMeasured) {
         std::sort(ms.begin(), ms.end());
         return 0.5 * (ms[4] + ms[5]);
     };
+    // The discs reach the 1080p frame: the full-screen ones change the centre pixel the bare scene leaves.
+    EXPECT_NE(centre_pixel(build(40.0f, 24, true)), centre_pixel(build(40.0f, 0, true)));
     const double none = median_ms(build(0.15f, 0, true));
     const double small_blend = median_ms(build(0.15f, 24, true));
     const double small_opaque = median_ms(build(0.15f, 24, false));
@@ -2738,6 +2765,10 @@ TEST_F(GpuGlRenderer, TwentyFourSeeThroughDiscsCostOnA1080pFrameIsMeasured) {
     RecordProperty("none_ms_x1000", static_cast<int>(none * 1000.0));
     RecordProperty("small_blend_ms_x1000", static_cast<int>(small_blend * 1000.0));
     RecordProperty("big_blend_ms_x1000", static_cast<int>(big_blend * 1000.0));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 // Airflow plan step 7a: GL draws streamlines and tracers as the CPU does.
