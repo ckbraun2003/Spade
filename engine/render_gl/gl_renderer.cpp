@@ -3793,12 +3793,12 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         const auto to_unit = [](float channel) { return static_cast<float>(render::to_byte(channel)) / 255.0f; };
         for (const render::FlowPolyline& line : scene.flow_polylines) {
             if (!styled(line)) continue;
-            const float width = render::effective_width_px(line, scene.flow_line_style);
+            const float line_width = render::effective_width_px(line, scene.flow_line_style);
             for (size_t i = 0; i + 1u < line.points.size(); ++i) {
                 const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
                 s.flow_line_segments.emplace_back(line.points[i], 0.0f);
                 s.flow_line_segments.emplace_back(line.points[i + 1u], 0.0f);
-                s.flow_line_segments.emplace_back(to_unit(c.r), to_unit(c.g), to_unit(c.b), width);
+                s.flow_line_segments.emplace_back(to_unit(c.r), to_unit(c.g), to_unit(c.b), line_width);
             }
         }
         const auto segment_count = static_cast<GLsizei>(s.flow_line_segments.size() / 3u);
