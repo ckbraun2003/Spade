@@ -143,6 +143,12 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 
 // ---- the camera --------------------------------------------------------------------------------------
 
+// The point a D1 web camera aims at, `below_m` below the drone's centre of mass, in world coordinates (the COM is
+// the world origin: the live run holds it there). It is NOT the box's centre: the cameras aimed at that until L60,
+// when the box stopped being symmetric about the drone (a deeper floor, the drone 0.354 m below the top face), and
+// the centre moved 0.43 m off it. In the old box (0.354 m either side in y) the two are the same point.
+[[nodiscard]] inline glm::vec3 subject_point(float below_m = 0.0f) { return glm::vec3(0.0f, -below_m, 0.0f); }
+
 // Azimuth of frame k of n, in degrees. Over k / n, not k / (n - 1): frame n would be frame 0 a sweep on, so a
 // full orbit loops with no frame shown twice.
 [[nodiscard]] inline float loop_azimuth(float start_deg, float sweep_deg, uint32_t k, uint32_t n) {

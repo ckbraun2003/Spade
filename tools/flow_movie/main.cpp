@@ -1497,31 +1497,31 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         film.device = true;
         // PROVISIONAL framing: the radii and targets below are the quad's, not yet fitted on D1's field (the lead:
         // fit on the still-air field's real line extents, the airframe and the wake column inside the 10% margin).
-        const auto below_drone = [](const spade::FlowVolume& v) { return volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f); };
+        const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
         if (id == "S1") {
-            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(below_drone, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
                              web::loop_azimuth(25.0f, 360.0f, k, n), 20.0f);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(below_drone, web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
             }, false);
         } else if (id == "S2") {
-            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(0.70f, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(0.42f, kWebFov, kWebAspect, fit);
-                return orbit(below_drone(v), web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
+                return orbit(below_drone, web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
             }, false);
         } else if (id == "S3") {
-            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f), web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(below_drone, web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
                              web::loop_azimuth(300.0f, clip.orbit_degrees, k, n), 20.0f);
             }, true);
         } else {  // S4: C_p on the airframe, filling 60% of the frame's height
-            view = with_camera(*view_named(film, "cp"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(volume_centre(v), web::fill_distance(0.30f, 0.6f, kWebFov),
+            view = with_camera(*view_named(film, "cp"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(web::subject_point(), web::fill_distance(0.30f, 0.6f, kWebFov),
                              web::loop_azimuth(240.0f, clip.orbit_degrees, k, n), 40.0f);
             }, true);
         }

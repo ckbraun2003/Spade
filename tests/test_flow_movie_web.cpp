@@ -250,6 +250,26 @@ TEST(FlowMovieWeb, ALiveFilmSaysItsPeakEddyViscosityEvenWhenNothingBound) {
     EXPECT_NE(line.find("held at the cap on 12 steps"), std::string::npos) << line;
 }
 
+// L60: the D1 cameras aim at the drone's COM, not the box's centre. The old box is symmetric about the drone, so the
+// aim is where it was; in the deeper box (the drone 0.354 m below the top face, the floor 1.214 m below it) the box's
+// centre is 0.43 m off the drone and the aim must not follow it.
+TEST(FlowMovieWeb, TheD1CamerasAimAtTheDronesCentreOfMassNotTheBoxCentre) {
+    const auto centre = [](glm::vec3 origin, float cell, uint32_t nx, uint32_t ny, uint32_t nz) {
+        return origin + 0.5f * cell * glm::vec3(static_cast<float>(nx), static_cast<float>(ny), static_cast<float>(nz));
+    };
+    // kD1Grid: 240 x 177 x 168 at 4 mm, the drone 0.354 m above the floor and 0.48 m / 0.336 m from the x / z faces.
+    const glm::vec3 old_centre = centre(glm::vec3(-0.48f, -0.354f, -0.336f), 0.004f, 240u, 177u, 168u);
+    const glm::vec3 old_aim = web::subject_point(0.08f);
+    EXPECT_NEAR(old_aim.x, old_centre.x, 1e-3f) << "the old box's centre was the drone's x";
+    EXPECT_NEAR(old_aim.y, old_centre.y - 0.08f, 1e-3f) << "the old aim: the box centre, 0.08 m down";
+    EXPECT_NEAR(old_aim.z, old_centre.z, 1e-3f);
+    // L60's box: 240 x 392 x 168, the top face 0.354 m above the COM, the floor 1.214 m below it.
+    const glm::vec3 deep_centre = centre(glm::vec3(-0.48f, -1.214f, -0.336f), 0.004f, 240u, 392u, 168u);
+    EXPECT_NEAR(deep_centre.y, -0.43f, 1e-3f) << "the deeper box's centre is 0.43 m below the drone";
+    EXPECT_FLOAT_EQ(web::subject_point(0.08f).y, -0.08f) << "the aim is the same point in either box";
+    EXPECT_EQ(web::subject_point(), glm::vec3(0.0f)) << "no offset: the COM itself (S4)";
+}
+
 TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {
     const uint32_t n = 300;
     EXPECT_FLOAT_EQ(web::there_and_back_azimuth(25.0f, 60.0f, 0, n), 25.0f);
