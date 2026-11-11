@@ -82,6 +82,7 @@
 #include "airflow_tile_sum.spv.gen.hpp"
 #include "airflow_tile_sum_probe.spv.gen.hpp"
 #include "airflow_velocity_bc.spv.gen.hpp"
+#include "airflow_sgs.spv.gen.hpp"
 #include "airflow_viscous.spv.gen.hpp"
 #include "airflow_wall_load.spv.gen.hpp"
 #include "compute/backend.hpp"
@@ -1739,6 +1740,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_advection, false},
                               {gen::kSpvVariants_airflow_velocity_bc, true},
                               {gen::kSpvVariants_airflow_viscous, false},
+                              // L54's subgrid viscosity: the exact division and square root, no atomics.
+                              {gen::kSpvVariants_airflow_sgs, false},
                               // B6's publish kernels (Rendering): the pack is bit work on the
                               // channels' words.
                               {gen::kSpvVariants_airflow_publish_fields, false},

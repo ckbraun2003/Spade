@@ -43,11 +43,14 @@
 // 9-23 B5.4's decisions (pcg.cpp's solve_pcg_to()), with 9-12 the 16-byte
 // decision word the host reads {stop, restart, iterations, stalled}, then
 // residual_at, least, since, restarted, best, best_at, measured, exact,
-// keep_best, take_best and capped; 24-31 free.
+// keep_best, take_best and capped; 24-27 the health word; 28-30 the subgrid kernel's report (L54:
+// airflow_sgs.slang's capped count and limited count as uint bits, then the nu_t peak); 31 free.
 //
 // APPEND-ONLY. A word, once given a meaning, keeps it: words 0-16 are already
 // coded against (Rendering's B3 and B6). A new scalar takes a free word in
-// 29-31; past those, the table moves only by a new layout with its own name.
+// 29-31 (L54 took all three: the subgrid kernel's k = h / dx^2, c2 = (Cs dx)^2 and the cap
+// dx^2 / (8 h), words 29, 30 and 31, written when Cs > 0 and 0 otherwise); past those, the table
+// moves only by a new layout with its own name.
 //
 // THE FLOAT WORDS ARE THE HOST'S (TD-9): inv_dx is 1.0f / dx, and b_coef,
 // g_coef, inv_count and alpha are the CPU's own expressions (projection.cpp's

@@ -82,6 +82,9 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_advection NAN_PRESERVE)
 # grant, 2026-10-22). airflow_viscous imports fp32_math.slang.
 spade_slang_kernel_variants(spade_airflow_runner airflow_velocity_bc NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_viscous NAN_PRESERVE)
+# L54: the subgrid viscosity (sgs.cpp, expression for expression; tests/test_gpu_airflow_step.cpp's Subgrid*
+# rows). It imports fp32_math.slang for the exact division and square root.
+spade_slang_kernel_variants(spade_airflow_runner airflow_sgs NAN_PRESERVE)
 
 # B6's publish kernels, publish_render_volume's channels and their binary16
 # pack (tests/test_gpu_airflow_publish.cpp).

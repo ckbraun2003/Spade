@@ -51,6 +51,7 @@
 #include "airflow_solid_shapes.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
+#include "../tools/flow_movie/cases.hpp"
 #include "b7_harness.hpp"
 #include "compute/backend.hpp"
 #include "compute/vulkan/context.hpp"
@@ -346,21 +347,32 @@ struct CpuFluid {
 }
 
 // The health fields fluid_step() fills from the projection's report (the CG's with solids, plan A's
-// residual without, 0fcb99f9): how many of the five differ.
+// residual without, 0fcb99f9) and from the subgrid viscosity (L52, L54: the counts and the peak, 0 with Cs 0):
+// how many of the eight differ.
 [[nodiscard]] std::size_t health_differing(const af::FluidHealth& cpu, const af::FluidHealth& gpu) {
     return differing(cpu.pressure_residual, gpu.pressure_residual) +
            (cpu.pressure_iterations != gpu.pressure_iterations ? 1u : 0u) +
            (cpu.unconverged != gpu.unconverged ? 1u : 0u) + (cpu.capped != gpu.capped ? 1u : 0u) +
-           (cpu.stalled != gpu.stalled ? 1u : 0u);
+           (cpu.stalled != gpu.stalled ? 1u : 0u) + (cpu.sgs_capped_cells != gpu.sgs_capped_cells ? 1u : 0u) +
+           (cpu.sgs_limited_faces != gpu.sgs_limited_faces ? 1u : 0u) + differing(cpu.sgs_nu_t_max, gpu.sgs_nu_t_max);
 }
+
+// What the CPU's subgrid viscosity did over a run, summed over its steps: a case that never caps or limits proves
+// nothing about those two paths.
+struct SgsSeen {
+    uint64_t capped = 0;
+    uint64_t limited = 0;
+    float peak = 0.0f;
+};
 
 // Steps `c` kSteps times on both sides from the same noise, comparing after
 // every step: u, v, w and p; with solids, the health's CG report and the
 // wall load about c.about too. The count of differing values summed over the
 // steps, or nullopt on a refusal.
 [[nodiscard]] std::optional<std::size_t> run_both(VulkanContext& ctx, const Case& c, uint32_t workgroup_size,
-                                                  af::MacGrid* gpu_end = nullptr) {
-    const af::MacGrid start = noisy(c, 0x57E9ull, 1.0f);
+                                                  af::MacGrid* gpu_end = nullptr, SgsSeen* seen = nullptr,
+                                                  uint32_t steps = kSteps, const af::MacGrid* from = nullptr) {
+    const af::MacGrid start = from != nullptr ? *from : noisy(c, 0x57E9ull, 1.0f);
     auto cpu = cpu_fluid(c, start);
     if (!cpu) return std::nullopt;
     auto gpu = ag::GpuFluid::create(ctx, start, c.bc, c.cfg, solids_of(*cpu), workgroup_size);
@@ -371,11 +383,16 @@ struct CpuFluid {
     const bool solids = !c.shapes.empty();
     af::MacGrid read = start;
     std::size_t total = 0;
-    for (uint32_t step = 0; step < kSteps; ++step) {
+    for (uint32_t step = 0; step < steps; ++step) {
         const af::FluidHealth h = cpu->step(c);
         if (h.fault != af::FluidFault::none) {
             ADD_FAILURE() << "the CPU step faulted: " << af::describe(h, c.shape);
             return std::nullopt;
+        }
+        if (seen != nullptr) {
+            seen->capped += h.sgs_capped_cells;
+            seen->limited += h.sgs_limited_faces;
+            seen->peak = std::max(seen->peak, h.sgs_nu_t_max);
         }
         const auto g = (*gpu)->step(c.discs);
         if (!g) {
@@ -389,7 +406,12 @@ struct CpuFluid {
             EXPECT_EQ(g->pressure_iterations, c.cfg.n_v);
             EXPECT_GT(h.pressure_residual, 0.0f) << c.name << " step " << step + 1;
             const std::size_t dh = health_differing(h, *g);
-            std::printf("[ step    ] %-28s   plan A residual %.6g (CPU %.6g); %zu of 5 health values differ\n", "",
+            if (c.cfg.sgs_cs > 0.0f) {
+                std::printf("[ step    ] %-28s   subgrid: CPU %u capped, %u limited, peak %.4g; GPU %u, %u, %.4g\n", "",
+                            h.sgs_capped_cells, h.sgs_limited_faces, static_cast<double>(h.sgs_nu_t_max),
+                            g->sgs_capped_cells, g->sgs_limited_faces, static_cast<double>(g->sgs_nu_t_max));
+            }
+            std::printf("[ step    ] %-28s   plan A residual %.6g (CPU %.6g); %zu of 8 health values differ\n", "",
                         static_cast<double>(g->pressure_residual), static_cast<double>(h.pressure_residual), dh);
             total += dh;
         }
@@ -410,7 +432,7 @@ struct CpuFluid {
             }
             const std::size_t dh = health_differing(h, *g);
             const std::size_t dl = differing(want.force, got->force) + differing(want.moment, got->moment);
-            std::printf("[ step    ] %-28s   CG %u iterations, residual %.3g (CPU %u, %.3g); %zu of 5 health and %zu "
+            std::printf("[ step    ] %-28s   CG %u iterations, residual %.3g (CPU %u, %.3g); %zu of 8 health and %zu "
                         "of 6 wall-load values differ; force (%.4g, %.4g, %.4g) N\n",
                         "", g->pressure_iterations, static_cast<double>(g->pressure_residual), h.pressure_iterations,
                         static_cast<double>(h.pressure_residual), dh, dl, static_cast<double>(want.force.x),
@@ -420,6 +442,40 @@ struct CpuFluid {
     }
     if (gpu_end != nullptr) *gpu_end = read;
     return total;
+}
+
+// `c` with Cs and a step h on: the noise (scale 1) puts nu_t at the cap when the h is large, as a Run air step at
+// CFL 2 would; the counts below are what the case proves about the cap and the wall limit.
+[[nodiscard]] Case with_sgs(Case c, float cs, float h) {
+    c.cfg.sgs_cs = cs;
+    c.cfg.h = h;
+    c.name = "with Cs";
+    return c;
+}
+
+// The device's step with the subgrid viscosity is the CPU's, bit for bit: u, v, w, p, the CG's report and the
+// subgrid health after every step. `want_capped` and `want_limited` say which paths the case must reach on the CPU.
+void expect_sgs_bit_equal(const Case& c, bool want_capped, bool want_limited) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const bool bit_equal = spade::testing::airflow_bit_equal_device(*ctx);
+    SgsSeen seen;
+    const auto d = run_both(*ctx, c, 64u, nullptr, &seen);
+    ASSERT_TRUE(d.has_value());
+    std::printf("[ sgs     ] %-28s CPU over %u steps: %llu capped cells, %llu limited faces, peak nu_t %.4g\n", c.name,
+                kSteps, static_cast<unsigned long long>(seen.capped), static_cast<unsigned long long>(seen.limited),
+                static_cast<double>(seen.peak));
+    EXPECT_GT(seen.peak, 0.0f) << "the subgrid viscosity did nothing on the CPU";
+    if (want_capped) {
+        EXPECT_GT(seen.capped, 0u) << "the case never reaches the cap";
+    }
+    if (want_limited) {
+        EXPECT_GT(seen.limited, 0u) << "the case never reaches the wall limit";
+    }
+    if (bit_equal) {
+        EXPECT_EQ(*d, 0u);
+    }
 }
 
 void expect_bit_equal(const Case& c) {
@@ -554,20 +610,66 @@ TEST(GpuAirflowStep, AnIllPosedRegionFaultsAsOnTheCpu) {
     EXPECT_EQ(differing(read, start), 0u);
 }
 
-// The subgrid viscosity (L52) is on the CPU step only for now: GpuFluid refuses a nonzero Cs by name at creation,
-// as it refuses the other bad settings, and never runs on ignoring it.
-TEST(GpuAirflowStep, ASubgridViscosityIsRefusedByNameUntilTheDeviceHasItsKernel) {
+// A bad Cs is refused by name at creation, as the other bad settings are; GpuFluid never runs ignoring it.
+TEST(GpuAirflowStep, ABadSubgridCsIsRefusedByName) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
     Case c = sphere_box();
     const af::MacGrid start = noisy(c, 7u, 1.0f);
-    for (const float cs : {0.17f, -0.1f}) {
+    for (const float cs : {-0.1f, 0.3001f, std::numeric_limits<float>::quiet_NaN()}) {
         c.cfg.sgs_cs = cs;
         auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, nullptr);
         ASSERT_FALSE(gpu.has_value()) << cs;
         EXPECT_NE(gpu.error().context.find("sgs_cs"), std::string::npos) << gpu.error().context;
     }
+}
+
+// L54: the device's subgrid kernel against sgs.cpp, in the CPU's four phases. The h of 0.002 s keeps nu_t under the
+// cap; the larger h (the cap dx^2 / (8 h) falls with it) reaches the cap and, beside walls, the wall limit.
+TEST(GpuAirflowStep, SubgridOpenBoxWithDiscsMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(open_box(), 0.17f, 0.002f), false, false);
+}
+
+TEST(GpuAirflowStep, SubgridOddSizedOpenBoxAtTheCapMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(odd_open_box(), 0.3f, 0.012f), true, false);
+}
+
+TEST(GpuAirflowStep, SubgridPeriodicChannelMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(periodic_channel(), 0.17f, 0.002f), false, false);
+}
+
+TEST(GpuAirflowStep, SubgridSpinningSphereAtTheCapMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(sphere_box(), 0.3f, 0.012f), true, true);
+}
+
+TEST(GpuAirflowStep, SubgridTurnedPartInTheOpenBoxMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(part_open_box(), 0.17f, 0.002f), false, false);
+}
+
+TEST(GpuAirflowStep, SubgridPeriodicChannelWithASphereAtTheCapMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(part_channel(), 0.3f, 0.012f), true, true);
+}
+
+TEST(GpuAirflowStep, SubgridBlockOverTheInflowMatchesFluidStepBitForBit) {
+    expect_sgs_bit_equal(with_sgs(covered_inflow_box(), 0.17f, 0.005f), false, false);
+}
+
+// Cs 0 is off: the device's step makes the subgrid health 0 and runs no subgrid pass (its bits are the existing
+// cases' above, unchanged).
+TEST(GpuAirflowStep, WithCsZeroTheSubgridHealthIsZero) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Case c = open_box();
+    const af::MacGrid start = noisy(c, 7u, 1.0f);
+    auto gpu = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, nullptr);
+    ASSERT_TRUE(gpu.has_value());
+    const auto g = (*gpu)->step(c.discs);
+    ASSERT_TRUE(g.has_value());
+    EXPECT_EQ(g->sgs_capped_cells, 0u);
+    EXPECT_EQ(g->sgs_limited_faces, 0u);
+    EXPECT_EQ(g->sgs_nu_t_max, 0.0f);
 }
 
 // One NaN in an open u face above the spinning sphere: the CPU's step scans
@@ -896,5 +998,163 @@ TEST(GpuAirflowStep, D1NoPartsCaseStepByStepAgainstTheCpu) {
     EXPECT_EQ(gpu_bad, cpu_bad) << "the GPU goes non-finite when, and only when, the CPU does";
     if (spade::testing::airflow_bit_equal_device(*ctx)) {
         EXPECT_EQ(first_differing, 0u);
+    }
+}
+
+// The subgrid viscosity moves the CPU's flow: the Subgrid* comparisons below compare a step that differs from the
+// step without it, so a kernel that did nothing could not pass them.
+TEST(GpuAirflowStep, TheSubgridViscosityMovesTheCpuFlow) {
+    const Case with = with_sgs(sphere_box(), 0.17f, 0.002f);
+    Case without = with;
+    without.cfg.sgs_cs = 0.0f;
+    const af::MacGrid start = noisy(with, 0x57E9ull, 1.0f);
+    auto a = cpu_fluid(with, start);
+    auto b = cpu_fluid(without, start);
+    ASSERT_TRUE(a && b);
+    ASSERT_EQ(a->step(with).fault, af::FluidFault::none);
+    ASSERT_EQ(b->step(without).fault, af::FluidFault::none);
+    EXPECT_GT(differing(a->g, b->g), 0u);
+}
+
+// L54: the film's case (flow_movie's quad_hover_case(): 80 x 128 x 80 at 1 cm, h 0.5 ms, inviscid, Cs 0.17, still
+// air, four swirling discs) from rest, 32 steps, against the CPU: u, v, w, p and the health after every step.
+TEST(GpuAirflowStep, SubgridTheQuadFilmCaseMatchesFluidStepBitForBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const spade::Result<flow_movie::AirflowCase> made = flow_movie::quad_hover_case();
+    ASSERT_TRUE(made.has_value()) << made.error().context;
+    ASSERT_GT(made->fluid.sgs_cs, 0.0f) << "the film's case runs with the subgrid viscosity on";
+    Case c{"quad film case", made->shape, made->bc, made->fluid, made->discs};
+    const af::MacGrid start = *af::make_grid(c.shape, c.bc);
+    SgsSeen seen;
+    const auto d = run_both(*ctx, c, 64u, nullptr, &seen, 32u, &start);
+    ASSERT_TRUE(d.has_value());
+    std::printf("[ sgs     ] quad film, CPU over 32 steps: %llu capped cells, %llu limited faces, peak nu_t %.4g\n",
+                static_cast<unsigned long long>(seen.capped), static_cast<unsigned long long>(seen.limited),
+                static_cast<double>(seen.peak));
+    EXPECT_GT(seen.peak, 0.0f);
+    if (spade::testing::airflow_bit_equal_device(*ctx)) {
+        EXPECT_EQ(*d, 0u);
+    }
+}
+
+namespace {
+
+// An unsigned from the environment, 0 if it is not set.
+[[nodiscard]] uint32_t env_count(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* text = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return text == nullptr ? 0u : static_cast<uint32_t>(std::strtoul(text, nullptr, 10));
+}
+
+}  // namespace
+
+// L54: D1 with its solids (b7::d1_box, Rendering's box) at Cs 0.17, the CPU's fluid_step() beside GpuFluid, every
+// step compared: u, v, w, p, the health with the subgrid fields, the parts' wall load. Opt-in with
+// SPADE_SGS_D1_STEPS=<n> (the CPU's side is 30 to 47 s a step with the dense disc: 2 steps about 2 minutes, 32 about
+// 25).
+TEST(GpuAirflowStep, SubgridD1BoxWithItsSolidsMatchesFluidStepStepByStep) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const uint32_t steps = env_count("SPADE_SGS_D1_STEPS");
+    if (steps == 0u) GTEST_SKIP() << "opt-in: SPADE_SGS_D1_STEPS=<steps> (30 to 47 s a step on the CPU)";
+    spade::Result<b7::B7Box> box = b7::d1_box(b7::BoxSolids::with);
+    ASSERT_TRUE(box.has_value()) << box.error().context;
+    box->cfg.sgs_cs = 0.17f;
+    spade::Result<af::FluidScratch> scratch = b7::box_scratch(*box);
+    ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    auto gpu = ag::GpuFluid::create(*ctx, box->grid, box->bc, box->cfg, &box->solids);
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    af::MacGrid cpu_grid = box->grid;
+    af::MacGrid read = box->grid;
+    std::size_t total = 0;
+    SgsSeen seen;
+    for (uint32_t step = 1; step <= steps; ++step) {
+        for (const af::ActuatorDisc& d : box->discs) {
+            af::spread_actuator(d, cpu_grid.shape, box->cfg.rho, box->cfg.h, scratch->du, scratch->dv, scratch->dw);
+        }
+        const af::FluidHealth h = af::fluid_step(cpu_grid, box->bc, box->cfg, *scratch);
+        ASSERT_EQ(h.fault, af::FluidFault::none) << af::describe(h, cpu_grid.shape);
+        const auto g = (*gpu)->step(box->discs);
+        ASSERT_TRUE(g.has_value()) << g.error().context;
+        ASSERT_TRUE((*gpu)->read(read).has_value());
+        const std::size_t d = differing(read, cpu_grid);
+        const std::size_t dh = health_differing(h, *g);
+        const af::WallLoad want = af::wall_load(cpu_grid, scratch->solids, scratch->regions, box->about);
+        const auto got = (*gpu)->wall_load(box->about);
+        ASSERT_TRUE(got.has_value()) << got.error().context;
+        const std::size_t dl = differing(want.force, got->force) + differing(want.moment, got->moment);
+        seen.capped += h.sgs_capped_cells;
+        seen.limited += h.sgs_limited_faces;
+        seen.peak = std::max(seen.peak, h.sgs_nu_t_max);
+        std::printf("[ d1 sgs  ] step %u: %zu of %zu values differ, %zu of 8 health, %zu of 6 wall-load; CPU %u capped "
+                    "cells, %u limited faces, nu_t max %.4g (GPU %u, %u, %.4g)\n",
+                    step, d, samples_of(read), dh, dl, h.sgs_capped_cells, h.sgs_limited_faces,
+                    static_cast<double>(h.sgs_nu_t_max), g->sgs_capped_cells, g->sgs_limited_faces,
+                    static_cast<double>(g->sgs_nu_t_max));
+        std::fflush(stdout);
+        total += d + dh + dl;
+    }
+    std::printf("[ d1 sgs  ] %u steps, %zu differing values in all\n", steps, total);
+    EXPECT_GT(seen.peak, 0.0f);
+    if (spade::testing::airflow_bit_equal_device(*ctx)) {
+        EXPECT_EQ(total, 0u);
+    }
+}
+
+// L54's measurements, GPU only, in D1's box with its solids from rest: the subgrid bound's counts at two steps h, and
+// the step's cost with Cs 0.17 beside Cs 0. Opt-in with SPADE_SGS_MEASURE=1. Report only.
+TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    if (env_count("SPADE_SGS_MEASURE") == 0u) GTEST_SKIP() << "opt-in: SPADE_SGS_MEASURE=1";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    struct Run {
+        float h;
+        float cs;
+    };
+    const std::array<Run, 4> runs{{{0.0002f, 0.0f}, {0.0002f, 0.17f}, {0.00073f, 0.17f}, {0.00073f, 0.0f}}};
+    constexpr uint32_t kWarm = 2;
+    constexpr uint32_t kStepsRun = 40;
+    for (const Run& r : runs) {
+        spade::Result<b7::B7Box> box = b7::d1_box(b7::BoxSolids::with);
+        ASSERT_TRUE(box.has_value()) << box.error().context;
+        box->cfg.h = r.h;
+        box->cfg.sgs_cs = r.cs;
+        auto gpu = ag::GpuFluid::create(*ctx, box->grid, box->bc, box->cfg, &box->solids);
+        ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+        const float dx = box->grid.shape.dx;
+        double timed_ms = 0.0;
+        uint32_t capped_max = 0, limited_max = 0;
+        uint64_t capped_sum = 0, limited_sum = 0;
+        float peak = 0.0f;
+        for (uint32_t step = 0; step < kStepsRun; ++step) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto h = (*gpu)->step(box->discs);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            ASSERT_TRUE(h.has_value()) << h.error().context;
+            ASSERT_EQ(h->fault, af::FluidFault::none);
+            if (step >= kWarm) timed_ms += ms;
+            capped_max = std::max(capped_max, h->sgs_capped_cells);
+            limited_max = std::max(limited_max, h->sgs_limited_faces);
+            capped_sum += h->sgs_capped_cells;
+            limited_sum += h->sgs_limited_faces;
+            peak = std::max(peak, h->sgs_nu_t_max);
+        }
+        std::printf("[ sgs     ] D1 + solids, dx %.4g m, h %.3g ms, Cs %.2f: cap %.4g m2/s, nu_t max %.4g; over %u "
+                    "steps capped cells max %u (mean %.1f), wall-limited faces max %u (mean %.1f); %.2f ms a step\n",
+                    static_cast<double>(dx), static_cast<double>(r.h) * 1000.0, static_cast<double>(r.cs),
+                    static_cast<double>(dx * dx / (8.0f * r.h)), static_cast<double>(peak), kStepsRun, capped_max,
+                    static_cast<double>(capped_sum) / kStepsRun, limited_max,
+                    static_cast<double>(limited_sum) / kStepsRun, timed_ms / (kStepsRun - kWarm));
+        std::fflush(stdout);
     }
 }
