@@ -135,6 +135,7 @@ add_executable(spade_tests
     test_set_body_state.cpp
     test_translation_lock.cpp
     test_sim_medium.cpp
+    test_world_wind.cpp
     test_module_schedule.cpp
     test_module_config.cpp
     test_parts_fold.cpp
@@ -386,6 +387,7 @@ if(SPADE_VULKAN)
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp
         test_gpu_point_samples.cpp
+        test_gpu_world_wind.cpp
         test_gpu_grid_kernels.cpp
         test_gpu_airflow_projection.cpp
         test_gpu_airflow_advection.cpp

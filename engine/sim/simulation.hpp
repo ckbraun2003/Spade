@@ -1580,6 +1580,9 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> reseed(uint64_t scene_seed);
 
+    // L46 (RED stub): set a world's mean wind. Implemented in the GREEN commit.
+    [[nodiscard]] Result<void> set_world_wind(uint32_t world_index, glm::vec3 wind);
+
     // --- state inspection --------------------------------------------------
 
     // The whole state, for snapshots, digests and tests. Const protects the

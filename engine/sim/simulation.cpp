@@ -3595,6 +3595,10 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     return {};
 }
 
+Result<void> Simulation::set_world_wind(uint32_t, glm::vec3) {
+    return std::unexpected(Error{Code::unavailable, "set_world_wind: not implemented"});
+}
+
 Result<void> Simulation::derive_streams(uint32_t world_index) {
     Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
     if (!params) return std::unexpected(params.error());
