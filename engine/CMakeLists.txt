@@ -749,6 +749,7 @@ endif()
 add_library(spade_physics STATIC
     physics/integrator.cpp
     physics/contacts.cpp
+    physics/rigid_contact.cpp
     physics/grid.cpp
     physics/forces.cpp
     physics/airflow/mac_grid.cpp

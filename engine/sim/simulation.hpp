@@ -21,6 +21,7 @@
 #include "core/time.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
+#include "physics/rigid_contact.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -1360,6 +1361,15 @@ public:
     // boundary: Integrate would snap the pose back (decision 6 of the stage 6 plan).
     [[nodiscard]] Result<void> lock_translation(BodyRef ref, uint32_t axes);
     [[nodiscard]] Result<void> unlock(BodyRef ref);
+
+    // set_body_shape -- give a live body a contact shape (L68; physics/rigid_contact.hpp), or clear it with ShapeDesc{}. The shape row
+    // is written at once, resolved and validated before any write. Refusals: unavailable when the set holds no rigid_contact
+    // module (sim/module.hpp's rigid_contact_module()); invalid_argument for a description compile_shape() refuses, naming it;
+    // not_found for a dead, stale or foreign ref and for a body spawned but not yet flushed. Mass and inertia stay the caller's
+    // (BodySpawn; physics::box_inv_inertia() is a helper). A sphere rolls on: there is no rolling resistance.
+    [[nodiscard]] Result<void> set_body_shape(BodyRef ref, const physics::ShapeDesc& shape);
+    // The body's shape row as the arena holds it (all zero: no shape). A diagnostic: it copies.
+    [[nodiscard]] Result<physics::ShapeRow> body_shape_row(BodyRef ref) const;
 
     // --- snapshot / restore -----------------------------------------------
 

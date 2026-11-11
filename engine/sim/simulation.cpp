@@ -3231,6 +3231,15 @@ Result<void> Simulation::lock_translation(BodyRef ref, uint32_t axes) {
 
 Result<void> Simulation::unlock(BodyRef ref) { return lock_front(ref, 0u, false, "unlock"); }
 
+// L68 RED stubs: the calls exist and say so; the GREEN commits write the row.
+Result<void> Simulation::set_body_shape(BodyRef, const physics::ShapeDesc&) {
+    return std::unexpected(Error{Code::unavailable, "set_body_shape: not implemented"});
+}
+
+Result<physics::ShapeRow> Simulation::body_shape_row(BodyRef) const {
+    return std::unexpected(Error{Code::unavailable, "body_shape_row: not implemented"});
+}
+
 // ---------------------------------------------------------------------------
 // snapshot / restore
 // ---------------------------------------------------------------------------

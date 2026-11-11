@@ -4,11 +4,14 @@
 // hold a seeded stream declares it.
 #include "sim/module.hpp"
 
+#include <cstring>
+
 #include "physics/forces.hpp"
 #include "physics/contact_dv.hpp"
 #include "physics/contact_sets.hpp"
 #include "core/validate.hpp"
 #include "physics/lock.hpp"
+#include "physics/rigid_contact.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -334,6 +337,35 @@ constexpr ArrayDecl kLockArrays[] = {{.name = "lock_rows",
 
 ModuleDesc lock_module() {
     return {.name = "lock", .state = kLockArrays, .grade = kPhy2Grade};
+}
+
+// rigid_contact (L68): the shape rows (written by Simulation::set_body_shape, zero = no shape) and the pass that reads them. The
+// pass writes the pose and accumulates the contact scratch as the two contact passes do, and sits between them.
+void shape_rows_init(const RowInit& init) noexcept {
+    std::memset(init.row.data(), 0, init.row.size());  // a row is born "no shape"
+}
+constexpr ArrayDecl kRigidContactArrays[] = {{.name = "shape",
+                                              .elem_size = row_size<physics::ShapeRow>(),
+                                              .extent = Extent::per_body,
+                                              .init = &shape_rows_init}};
+constexpr QuantityAccess kRigidContactAccess[] = {{"body.pose", Access::write},
+                                                  {"integrate.contact_dv", Access::accumulate},
+                                                  {"rigid_contact.shape", Access::read}};
+static_assert(kRigidContactAccess[physics::kContactPassContactDvAccess].quantity == "integrate.contact_dv",
+              "rigid_contact.resolve reads the contact scratch at physics::kContactPassContactDvAccess");
+static_assert(kRigidContactAccess[physics::kRigidContactShapeAccess].quantity == "rigid_contact.shape",
+              "rigid_contact.resolve reads its shape rows at physics::kRigidContactShapeAccess");
+constexpr std::string_view kRigidAfter[] = {"static_contact.resolve"};
+constexpr std::string_view kRigidBefore[] = {"dynamic_contact.resolve"};
+constexpr PassDecl kRigidContactPasses[] = {{.name = "resolve",
+                                             .phase = Phase::constraints,
+                                             .access = kRigidContactAccess,
+                                             .after = kRigidAfter,
+                                             .before = kRigidBefore,
+                                             .cpu = &physics::pass_rigid_contact}};
+
+ModuleDesc rigid_contact_module() {
+    return {.name = "rigid_contact", .passes = kRigidContactPasses, .state = kRigidContactArrays, .grade = kPhy2Grade};
 }
 
 ModuleSet standard_modules() {
