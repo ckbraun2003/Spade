@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "../tools/flow_movie/sgs_note.hpp"
 #include "../tools/flow_movie/web_masters.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
@@ -229,6 +230,24 @@ TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointO
     EXPECT_NEAR(web::find_clip("S1")->first_frame * frame_s, 0.15, 1e-9);
     EXPECT_NEAR(web::find_clip("S2")->frames() * frame_s, 0.36, 1e-9);
     EXPECT_NEAR(web::window_end_s(wind.from_s, wind.frames, wind.steps_per_frame, wind.step_s), 0.504, 1e-9);
+}
+
+// L59: a live film says its subgrid viscosity: LiveRun's line when something bound, else the peak nu_t on its own (a
+// Cs 0.17 run where nothing bound would otherwise print nothing), and nothing at Cs 0.
+TEST(FlowMovieWeb, ALiveFilmSaysItsPeakEddyViscosityEvenWhenNothingBound) {
+    spade::analysis::LiveSgs none;
+    EXPECT_EQ(flow_movie::sgs_note(none), "") << "Cs 0: nothing was met";
+    spade::analysis::LiveSgs quiet;
+    quiet.nu_t_max = 0.0031f;
+    const std::string said = flow_movie::sgs_note(quiet);
+    EXPECT_NE(said.find("nu_t up to 0.0031 m2/s"), std::string::npos) << said;
+    EXPECT_NE(said.find("nothing held at the cap"), std::string::npos) << said;
+    spade::analysis::LiveSgs bound = quiet;
+    bound.capped_steps = 12;
+    bound.capped_cell_steps = 40;
+    const std::string line = flow_movie::sgs_note(bound);
+    EXPECT_EQ(line, spade::analysis::sgs_health_line(bound)) << "LiveRun's own line when something bound";
+    EXPECT_NE(line.find("held at the cap on 12 steps"), std::string::npos) << line;
 }
 
 TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {

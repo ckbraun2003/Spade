@@ -79,6 +79,7 @@
 #endif
 #include "live_case.hpp"
 #include "recorder.hpp"
+#include "sgs_note.hpp"
 #include "subnormal_scan.hpp"
 #include "views.hpp"
 #include "web_masters.hpp"
@@ -508,14 +509,27 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         }
         if (k % 10u == 0u || k + 1u == film.frames) {
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            const std::string sgs_text = sgs_note(run->sgs());  // L59: the peak nu_t even when nothing bound
             std::printf("[ %s ] frame %u/%u, t %s s; held at (%.3f, %.3f, %.3f) in a box from (%.3f, %.3f, %.3f); "
-                        "%.0f s\n",
+                        "%.0f s%s%s\n",
                         film.stem.c_str(), k + 1u, film.frames, fixed(frame->t_s, 3).c_str(), b.pos.x, b.pos.y,
-                        b.pos.z, volume.header.origin.x, volume.header.origin.y, volume.header.origin.z, elapsed);
+                        b.pos.z, volume.header.origin.x, volume.header.origin.y, volume.header.origin.z, elapsed,
+                        sgs_text.empty() ? "" : "; ", sgs_text.c_str());
             std::fflush(stdout);
         }
     }
     if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
+    // The run's subgrid account beside run.txt (whose lines must stay "step<TAB>label"): sgs.txt, one line.
+    {
+        const std::string sgs_text = sgs_note(run->sgs());
+        const std::string said = sgs_text.empty() ? "no subgrid viscosity (Cs 0)" : sgs_text;
+        std::ofstream sgs_file(cache / "sgs.txt", std::ios::binary | std::ios::trunc);
+        sgs_file << said << '\n';
+        if (!sgs_file) {
+            return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "sgs.txt").string()});
+        }
+        std::printf("[ %s ] %s (since this run's start; in sgs.txt)\n", film.stem.c_str(), said.c_str());
+    }
     fs::remove(save, ec);
     return true;
 }
