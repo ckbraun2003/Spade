@@ -135,6 +135,40 @@ static_assert(
     }(),
     "kAirflowSetBuffers is in binding order: entry i is section F's binding i");
 
+// THE ACTUATOR LINE'S FOUR BUFFERS (P4c), a second list. They sit at bindings 36 to 39, past the stage 7 appendices (28 to 35), so
+// kAirflowSetBuffers is untouched: it stays 0 to 27, contiguous, pinned to wall_load above. The runner binds buffers[i] at
+// binding_base + i, so a runner that uses the line lists kAirflowSetBuffers, then a placeholder for each binding 28 to 35 it does not
+// use (a 4-byte device_only buffer, as the tests' unused slots are), then these four in order. No sparse bindings: a runner that
+// skips numbers is its own design, and this one needs none. What each buffer holds, and who writes it, is bindings.slang's note at
+// airflow_line_elems; the records' layout is the host's (step_chain), so a change to the CPU model's smearing or sampling is a host
+// change, not a binding. All four are named in set_one_bindings.hpp.
+inline constexpr std::array<AirflowSetBuffer, compute::kAirflowLineBufferCount> kAirflowLineBuffers{{
+    {"airflow_line_elems", compute::gen::kBinding_airflow_line_elems, BufferKind::resident},
+    {"airflow_line_polar", compute::gen::kBinding_airflow_line_polar, BufferKind::resident},
+    {"airflow_line_vel", compute::gen::kBinding_airflow_line_vel, BufferKind::device_only},
+    // staged: the host reads it back (ChainReadback) and sums the report in element order, in double.
+    {"airflow_line_force", compute::gen::kBinding_airflow_line_force, BufferKind::staged},
+}};
+static_assert(
+    [] {
+        for (uint32_t i = 0; i < kAirflowLineBuffers.size(); ++i) {
+            if (kAirflowLineBuffers[i].binding != compute::kAirflowLineFirstBinding + i) return false;
+        }
+        return true;
+    }(),
+    "kAirflowLineBuffers is contiguous from kAirflowLineFirstBinding, in binding order");
+static_assert(compute::kAirflowLineFirstBinding > kAirflowSetBuffers.back().binding,
+              "the line's buffers lie past the airflow list, which stays 0 to 27");
+
+// The line's capacities as a runner is sized for D1 at R/dx 38: 4 rotors x 3 blades x 64 elements x 8 sub-azimuths records a step,
+// and 1024 polar samples. The caller's own capacities (GpuFluid's create parameters, Physics) may be smaller; these are the most a
+// host asks of the runner today. 0 elements means no line.
+inline constexpr uint32_t kAirflowLineMaxElements = 6144;
+inline constexpr uint32_t kAirflowLinePolarCapacity = 1024;
+// airflow_line_force's floats an element: the readback region of a step with `n` elements is n * kAirflowLineForceFloats * 4 bytes
+// (the air-side force 3, the blade's axial and tangent load, the element's thrust and torque contributions, the rest spare).
+inline constexpr uint32_t kAirflowLineForceFloats = 16;
+
 struct RunnerBuffer {
     std::string name{};
     uint64_t bytes = 0;
