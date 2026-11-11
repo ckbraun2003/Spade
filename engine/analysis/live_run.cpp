@@ -417,9 +417,12 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     if (!posed) {
         return std::unexpected(Error{posed.error().code, "the model's parts at the hover: " + posed.error().context});
     }
-    // The world's origin is the box's centre, where the drone is held.
+    // The world's origin is where the drone is held: the box's centre, or hold_from_centre from it (L63; subtracting
+    // the default 0 is exact, so a centred run's origin is as it was).
     const af::GridShape& g = resolved.base;
-    impl->publish.origin = -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz));
+    impl->publish.origin =
+        -0.5f * g.dx * glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz)) -
+        resolved.hold_from_centre;
     impl->grid_origin = impl->publish.origin;
     impl->publish.periodic = af::periodic_axes(resolved.domain);
     // The parts the air takes (P-1; the header's A PART THE GRID CAN'T HOLD).

@@ -217,6 +217,12 @@ struct ResolvedCase {
     float finest_spacing = 0.0f;         // spacing / 2^nests, around the drone
     physics::airflow::GridShape base{};  // the base grid
     physics::airflow::DomainBc domain{};  // the drone box's faces: open, the wind as ambient, the floor a wall
+    // Where the held drone (the world's origin) sits relative to the box's centre, m: +y is above it (L63, the deep
+    // box: room below the drone for its wake). LiveRun puts the box's minimum corner at -0.5 dx n - hold. 0, the
+    // default, is the drone at the centre, every run as it was, to the bit. Set by the host after resolve(): it is not
+    // part of case_to_yaml(spec), so no case hash or pin moves, and a LiveRun save does not name it (restore() builds
+    // from the caller's ResolvedCase, grid shape included, so the host passes the same hold).
+    glm::vec3 hold_from_centre{0.0f};
     // physics::airflow::fluid_bytes(base) and the rotors' spread_cache_bytes(); the nests' come with R1
     uint64_t base_bytes = 0;
     std::vector<ResolvedRotor> rotors;
