@@ -30,6 +30,8 @@
 #include <string>
 #include <utility>
 
+#include <glm/glm.hpp>
+
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
@@ -43,6 +45,19 @@
 namespace spade::testing {
 
 inline constexpr physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
+
+// L63 (Cameron, 2026-11-11): the website's still-air clips (S1, S8, S2) in a deeper box, so the open bottom face is not
+// the invisible plane the column ends on. The same 4 mm cells and the same 0.354 m from the drone to the top face, with
+// 303.5 cells (1.214 m) below it: 240 x 392 x 168, 15.8 M cells. Where the drone sits in the box is d1_hold().
+inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
+
+// Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
+// as far below the top face as kD1Grid holds it (0.354 m, 88.5 cells), so +y above the centre by half the extra rows.
+// Zero for kD1Grid, exactly. kD1DeepGrid's is 107.5 cells, 0.43 m: the drone keeps its cell alignment (an x and z
+// face, a y cell centre) because ny - 177 is odd, so half a row.
+[[nodiscard]] inline glm::vec3 d1_hold(const physics::airflow::GridShape& grid) noexcept {
+    return glm::vec3(0.0f, 0.5f * (static_cast<float>(grid.ny) - static_cast<float>(kD1Grid.ny)) * grid.dx, 0.0f);
+}
 inline constexpr float kD1Step = 0.00038f;  // s
 
 // The library's reference quad, under SPADE_ASSETS_DIR.
@@ -68,8 +83,11 @@ struct PoweredQuad {
     std::string program_name;  // "held at hover", or "the showcase around hover"
     analysis::ShowcaseTrim trim;
     // The grid, when it is not the case's cube (D1): LiveRun holds the drone
-    // at its centre either way, and the case's box names its longest side.
+    // at its centre, or at `hold` from it, and the case's box names its longest side.
     std::optional<physics::airflow::GridShape> grid;
+    // Where LiveRun holds the drone in that grid, from the box's centre (d1_hold(); L63): zero in kD1Grid. Pass it to
+    // resolve_with_grid(), which sets ResolvedCase::hold_from_centre.
+    glm::vec3 hold{0.0f};
 };
 
 [[nodiscard]] inline Result<PoweredQuad> powered_library_quad(const PoweredQuadSetup& s) {
@@ -114,7 +132,10 @@ struct PoweredQuad {
 // parts are drawn only: B7's interim GPU film, until GpuFluid takes solids.
 [[nodiscard]] inline Result<PoweredQuad> d1_case(double seconds, const physics::airflow::GridShape& grid = kD1Grid,
                                                  bool parts_in_flow = true, float heading_deg = 0.0f) {
-    const float longest = grid.dx * static_cast<float>(std::max({grid.nx, grid.ny, grid.nz}));
+    // The case's cube names the HORIZONTAL longest side (240 x 4 mm for both D1 boxes): the cube resolve() checks against the
+    // solver's cap must stay a cube the cap holds, and 392^3 cells (kD1DeepGrid's height) is 6.3 GiB. resolve_with_grid() puts
+    // the real grid over it.
+    const float longest = grid.dx * static_cast<float>(std::max(grid.nx, grid.nz));
     auto q = powered_library_quad(PoweredQuadSetup{.seconds = seconds,
                                                    .box = longest,
                                                    .spacing = grid.dx,
@@ -124,15 +145,17 @@ struct PoweredQuad {
                                                    .heading_deg = heading_deg});
     if (!q) return q;
     q->grid = grid;
+    q->hold = d1_hold(grid);
     return q;
 }
 
 // The case resolved against its run model, with `grid` in place of the
-// cube's when set. Refused as resolve() refuses, with every issue, and a grid
-// past kGridByteCap.
+// cube's when set, and the drone held `hold` from the box's centre (d1_hold(grid)
+// for a D1 box; the default is the centre). Refused as resolve() refuses, with
+// every issue, and a grid past kGridByteCap.
 [[nodiscard]] inline Result<analysis::ResolvedCase> resolve_with_grid(
     const analysis::AnalysisCase& c, const vehicles::ModelType& run_model,
-    const std::optional<physics::airflow::GridShape>& grid) {
+    const std::optional<physics::airflow::GridShape>& grid, const glm::vec3& hold = glm::vec3(0.0f)) {
     auto resolved = analysis::resolve(c, run_model);
     if (!resolved) {
         std::string issues;
@@ -141,6 +164,7 @@ struct PoweredQuad {
         }
         return std::unexpected(Error{Code::invalid_argument, "the case does not resolve: " + issues});
     }
+    resolved->hold_from_centre = hold;
     if (grid) {
         resolved->base = *grid;
         resolved->base_bytes = physics::airflow::fluid_bytes(resolved->base, resolved->domain);
