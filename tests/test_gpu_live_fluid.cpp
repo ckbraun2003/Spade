@@ -59,6 +59,7 @@
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
 #include "gpu_skip.hpp"
+#include "live_sgs_probe.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -720,4 +721,34 @@ TEST(GpuLiveFluid, FrameTimeOnTheEditorsGrid) {
     std::printf("measure: LiveRun frame on 32^3 at 25 mm, h 1 ms, 4 discs: GPU %.1f ms (1/%.1f of real time), "
                 "CPU %.1f ms (1/%.1f of real time): %.1fx\n",
                 gpu_ms, gpu_ms / frame_ms, cpu_ms, cpu_ms / frame_ms, cpu_ms / gpu_ms);
+}
+
+// L54 through LiveRun: on the device with the subgrid viscosity on (Cs 0.17, as the website clips run it), the run's
+// sgs() account arrives non-zero and is the sum of the health the device reported each step (a probe round the
+// device keeps them). Whatever binds is printed; the equality is the claim.
+TEST(GpuLiveFluid, TheRunsSgsAccountIsTheDevicesHealthSums) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Powered p = an::test::powered_quad();
+    spade::test::SgsSums sums;
+    an::LiveRun run = started(editor_case(p), p.model, spade::test::sgs_probe(ag::gpu_live_fluid(*ctx), 0.17f, sums));
+    const an::ControlProgram program = changing();
+    while (run.state().steps < 40) {
+        const spade::Result<void> s = run.step(an::controls_at(program, static_cast<float>(run.state().t_s)));
+        ASSERT_TRUE(s.has_value()) << s.error().context;
+    }
+    const an::LiveSgs& s = run.sgs();
+    ASSERT_EQ(sums.steps, 40u);
+    EXPECT_GT(s.nu_t_max, 0.0f) << "the account arrived from the device";
+    EXPECT_EQ(s.nu_t_max, sums.nu_t_max);
+    EXPECT_EQ(s.capped_cell_steps, sums.capped_cell_steps);
+    EXPECT_EQ(s.limited_face_steps, sums.limited_face_steps);
+    EXPECT_EQ(s.capped_steps, sums.capped_steps);
+    EXPECT_EQ(s.limited_steps, sums.limited_steps);
+    std::printf("[ sgs     ] device, 40 steps at Cs 0.17: nu_t up to %.4g m2/s; capped %llu cell-steps on %llu steps; "
+                "limited %llu face-steps on %llu steps; line '%s'\n",
+                static_cast<double>(s.nu_t_max), static_cast<unsigned long long>(s.capped_cell_steps),
+                static_cast<unsigned long long>(s.capped_steps), static_cast<unsigned long long>(s.limited_face_steps),
+                static_cast<unsigned long long>(s.limited_steps), an::sgs_health_line(s).c_str());
 }

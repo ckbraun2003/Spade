@@ -219,6 +219,26 @@ struct LiveSolids {
 // healthy solve ends near 2e-6)".
 [[nodiscard]] std::string solids_health_line(const LiveSolids& solids, uint32_t cap);
 
+// What a run's subgrid eddy viscosity did (LiveRun::sgs(); sgs.hpp, L52/L54; the lead, 2026-11-10): the step's own
+// FluidHealth::sgs_* summed over every step, on the CPU and on a device alike, with or without solids. Everything is
+// 0 at Cs 0 (a run's own fluid is always at Cs 0: the case has no Cs; a host's maker sets one on a device's config).
+// It is health, not state: a save does not carry it (as the solids' counters aren't) and a restored run starts it at
+// zero. It changes nothing the run computes.
+struct LiveSgs {
+    uint64_t capped_cell_steps = 0;    // the sum over steps of the cells whose nu_t the cap held
+    uint64_t limited_face_steps = 0;   // the sum over steps of the faces whose wall weight the explicit bound limited
+    uint64_t capped_steps = 0;         // the steps that had any capped cell
+    uint64_t limited_steps = 0;        // the steps that had any limited face
+    float nu_t_max = 0.0f;             // the largest nu_t met, m^2/s (before the cap); 0 at Cs 0
+};
+
+// What a run says of its subgrid viscosity, "" at Cs 0 and when nothing bound (no cell at the cap, no face
+// limited), naming only what occurred: the largest nu_t, then how many steps and cell-steps the cap held, then how
+// many steps and face-steps the wall limit bound. For example "subgrid nu_t up to 0.0031 m2/s; held at the cap on
+// 12 steps (40 cell-steps), wall-limited on 600 steps (52,000 face-steps)" and "subgrid nu_t up to 0.0012 m2/s;
+// wall-limited on 600 steps (52,000 face-steps)".
+[[nodiscard]] std::string sgs_health_line(const LiveSgs& sgs);
+
 struct LiveFrame {
     uint64_t frame = 0;  // 1 for the first
     double t_s = 0.0;
@@ -334,6 +354,9 @@ class LiveRun {
     // The run's solids: whether the model's parts are in the grid, what
     // set_solids() made of them, and the pressure's residual.
     [[nodiscard]] const LiveSolids& solids() const noexcept;
+
+    // The subgrid viscosity's account so far (LiveSgs); sgs_health_line() says it.
+    [[nodiscard]] const LiveSgs& sgs() const noexcept;
 
     // The caption without the time: the rotor model, the grid, dx and R/dx,
     // then set_solids()' line when the parts are in the grid, then any

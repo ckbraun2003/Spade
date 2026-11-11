@@ -303,6 +303,7 @@ struct LiveRun::Impl {
     ControlProgram flown;
     std::string fault;  // non-empty once the fluid has faulted
     LiveSolids solids;  // the model's parts in the grid, and the pressure's residual
+    LiveSgs sgs;        // the subgrid viscosity's account, every step; not saved
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
     uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
@@ -733,6 +734,17 @@ Result<void> LiveRun::step(const Controls& controls) {
                   af::describe(health, r.resolved.base);
         return std::unexpected(Error{Code::internal, r.fault});
     }
+    // The subgrid viscosity's own account of this step, as the fluid reported it (0 at Cs 0): summed on the CPU and
+    // on a device alike, whether or not there are solids.
+    if (health.sgs_capped_cells > 0) {
+        ++r.sgs.capped_steps;
+        r.sgs.capped_cell_steps += health.sgs_capped_cells;
+    }
+    if (health.sgs_limited_faces > 0) {
+        ++r.sgs.limited_steps;
+        r.sgs.limited_face_steps += health.sgs_limited_faces;
+    }
+    r.sgs.nu_t_max = std::max(r.sgs.nu_t_max, health.sgs_nu_t_max);
     if (r.solids.any) {
         // L6: an unconverged pressure is announced (run_line()), never refused.
         r.solids.pressure_residual = health.pressure_residual;
@@ -966,6 +978,36 @@ namespace {
 }
 }  // namespace
 
+namespace {
+// 52000 as "52,000".
+[[nodiscard]] std::string grouped(uint64_t n) {
+    std::string digits = std::to_string(n);
+    for (std::size_t at = digits.size(); at > 3;) {
+        at -= 3;
+        digits.insert(at, ",");
+    }
+    return digits;
+}
+}  // namespace
+
+std::string sgs_health_line(const LiveSgs& s) {
+    if (s.capped_steps == 0 && s.limited_steps == 0) return {};
+    std::string out = std::format("subgrid nu_t up to {:.2g} m2/s", static_cast<double>(s.nu_t_max));
+    const char* sep = "; ";
+    if (s.capped_steps > 0) {
+        out += std::format("{}held at the cap on {} step{} ({} cell-step{})", sep, s.capped_steps,
+                           s.capped_steps == 1 ? "" : "s", grouped(s.capped_cell_steps),
+                           s.capped_cell_steps == 1 ? "" : "s");
+        sep = ", ";
+    }
+    if (s.limited_steps > 0) {
+        out += std::format("{}wall-limited on {} step{} ({} face-step{})", sep, s.limited_steps,
+                           s.limited_steps == 1 ? "" : "s", grouped(s.limited_face_steps),
+                           s.limited_face_steps == 1 ? "" : "s");
+    }
+    return out;
+}
+
 std::string solids_health_line(const LiveSolids& s, uint32_t cap) {
     std::string out;
     if (s.unconverged_steps > 0) {
@@ -1001,6 +1043,7 @@ std::string LiveRun::pressure_line() const {
 }
 
 const LiveSolids& LiveRun::solids() const noexcept { return impl_->solids; }
+const LiveSgs& LiveRun::sgs() const noexcept { return impl_->sgs; }
 
 void LiveRun::set_test_increment_nudge(TestIncrementNudge nudge, void* context) noexcept {
     impl_->test_nudge = nudge;
