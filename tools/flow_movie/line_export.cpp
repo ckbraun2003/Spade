@@ -282,7 +282,15 @@ std::string export_caption_text(const ExportCaption& in) {
     }
     t += "The wake below the quad has not been measured against a downwash record. Speeds are relative speeds, "
          "not validated speeds.";
-    if (in.device) {
+    if (in.device && in.sgs_cs > 0.0f) {
+        // What film_identity says: the subgrid term was checked for 32 steps of D1, not through 0.18 s (the Cs 0 check).
+        char cs[32];
+        std::snprintf(cs, sizeof cs, "%.2f", static_cast<double>(in.sgs_cs));
+        t += std::string(" The fluid is stepped by the GPU solver (GpuFluid) with the Smagorinsky subgrid viscosity (Cs ") +
+             cs +
+             "); that term is checked bit-equal to the CPU's for 32 steps of D1 (0.01216 s of simulated time at h "
+             "0.38 ms) only: a single run on the device of record, not the CPU's run.";
+    } else if (in.device) {
         t += " The fluid is stepped by the GPU solver (GpuFluid), checked bit-equal to the CPU's through about "
              "0.18 s of simulated time only: a single run on the device of record, not the CPU's run.";
     }

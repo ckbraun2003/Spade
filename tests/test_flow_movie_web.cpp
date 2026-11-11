@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "../tools/flow_movie/sgs_note.hpp"
 #include "../tools/flow_movie/web_masters.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
@@ -229,6 +230,87 @@ TEST(FlowMovieWeb, TheHeroClipsRunOnD1AtZeroPointTwoMillisecondsWithCsZeroPointO
     EXPECT_NEAR(web::find_clip("S1")->first_frame * frame_s, 0.15, 1e-9);
     EXPECT_NEAR(web::find_clip("S2")->frames() * frame_s, 0.36, 1e-9);
     EXPECT_NEAR(web::window_end_s(wind.from_s, wind.frames, wind.steps_per_frame, wind.step_s), 0.504, 1e-9);
+}
+
+// L59: a live film says its subgrid viscosity: LiveRun's line when something bound, else the peak nu_t on its own (a
+// Cs 0.17 run where nothing bound would otherwise print nothing), and nothing at Cs 0.
+TEST(FlowMovieWeb, ALiveFilmSaysItsPeakEddyViscosityEvenWhenNothingBound) {
+    spade::analysis::LiveSgs none;
+    EXPECT_EQ(flow_movie::sgs_note(none), "") << "Cs 0: nothing was met";
+    spade::analysis::LiveSgs quiet;
+    quiet.nu_t_max = 0.0031f;
+    const std::string said = flow_movie::sgs_note(quiet);
+    EXPECT_NE(said.find("nu_t up to 0.0031 m2/s"), std::string::npos) << said;
+    EXPECT_NE(said.find("nothing held at the cap"), std::string::npos) << said;
+    spade::analysis::LiveSgs bound = quiet;
+    bound.capped_steps = 12;
+    bound.capped_cell_steps = 40;
+    const std::string line = flow_movie::sgs_note(bound);
+    EXPECT_EQ(line, spade::analysis::sgs_health_line(bound)) << "LiveRun's own line when something bound";
+    EXPECT_NE(line.find("held at the cap on 12 steps"), std::string::npos) << line;
+}
+
+// L60: the D1 cameras aim at the drone's COM, not the box's centre. The old box is symmetric about the drone, so the
+// aim is where it was; in the deeper box (the drone 0.354 m below the top face, the floor 1.214 m below it) the box's
+// centre is 0.43 m off the drone and the aim must not follow it.
+TEST(FlowMovieWeb, TheD1CamerasAimAtTheDronesCentreOfMassNotTheBoxCentre) {
+    const auto centre = [](glm::vec3 origin, float cell, uint32_t nx, uint32_t ny, uint32_t nz) {
+        return origin + 0.5f * cell * glm::vec3(static_cast<float>(nx), static_cast<float>(ny), static_cast<float>(nz));
+    };
+    // kD1Grid: 240 x 177 x 168 at 4 mm, the drone 0.354 m above the floor and 0.48 m / 0.336 m from the x / z faces.
+    const glm::vec3 old_centre = centre(glm::vec3(-0.48f, -0.354f, -0.336f), 0.004f, 240u, 177u, 168u);
+    const glm::vec3 old_aim = web::subject_point(0.08f);
+    EXPECT_NEAR(old_aim.x, old_centre.x, 1e-3f) << "the old box's centre was the drone's x";
+    EXPECT_NEAR(old_aim.y, old_centre.y - 0.08f, 1e-3f) << "the old aim: the box centre, 0.08 m down";
+    EXPECT_NEAR(old_aim.z, old_centre.z, 1e-3f);
+    // L60's box: 240 x 392 x 168, the top face 0.354 m above the COM, the floor 1.214 m below it.
+    const glm::vec3 deep_centre = centre(glm::vec3(-0.48f, -1.214f, -0.336f), 0.004f, 240u, 392u, 168u);
+    EXPECT_NEAR(deep_centre.y, -0.43f, 1e-3f) << "the deeper box's centre is 0.43 m below the drone";
+    EXPECT_FLOAT_EQ(web::subject_point(0.08f).y, -0.08f) << "the aim is the same point in either box";
+    EXPECT_EQ(web::subject_point(), glm::vec3(0.0f)) << "no offset: the COM itself (S4)";
+}
+
+// L63: S1, S8 and S2 look down only 8 degrees from close in, so the deeper box's 1.214 m floor face (open: whatever the
+// solve shows there is an artifact) stays below the bottom edge of every frame, with the subject at the 10% margin.
+TEST(FlowMovieWeb, TheStillAirFramingKeepsTheFloorFaceBelowEveryFrame) {
+    const glm::vec3 aim = web::subject_point(web::kD1StillAimBelowM);
+    const auto still = [&](float radius, float azimuth) {
+        return web::floor_top_ndc(aim, web::fit_distance(radius, kFov, kAspect, web::kMargin), azimuth,
+                                  web::kD1StillElevationDeg, kFov);
+    };
+    // The subject: a sphere of kD1StillSubjectM at its fitted distance reaches 0.8 of the frame's half-height.
+    const float d = web::fit_distance(web::kD1StillSubjectM, kFov, kAspect, web::kMargin);
+    EXPECT_NEAR(web::kD1StillSubjectM / std::sqrt(d * d - web::kD1StillSubjectM * web::kD1StillSubjectM) /
+                    std::tan(0.5f * kFov),
+                1.0f - 2.0f * web::kMargin, 1e-3f);
+    // S1: one orbit, the frames' own azimuths (450 frames).
+    float worst_s1 = -9.0f;
+    for (uint32_t k = 0; k < 450u; ++k) {
+        worst_s1 = std::max(worst_s1, still(web::kD1StillSubjectM, web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, 450u)));
+    }
+    EXPECT_LE(worst_s1, -1.06f) << "S1's floor top, NDC y (-1 is the bottom edge)";
+    // S8: the swing out and back (a 60 degree sweep, 300 frames).
+    float worst_s8 = -9.0f;
+    for (uint32_t k = 0; k < 300u; ++k) {
+        worst_s8 = std::max(worst_s8, still(web::kD1StillSubjectM, web::there_and_back_azimuth(web::kD1StillAzimuthDeg, 60.0f, k, 300u)));
+    }
+    EXPECT_LE(worst_s8, -1.06f) << "S8's floor top";
+    // S2: the push-in from 0.45 m to 0.30 m, 360 frames, at a fixed azimuth.
+    const float wide = web::fit_distance(web::kD1PushWideM, kFov, kAspect, web::kMargin);
+    const float close = web::fit_distance(web::kD1PushCloseM, kFov, kAspect, web::kMargin);
+    float worst_s2 = -9.0f;
+    for (uint32_t k = 0; k < 360u; ++k) {
+        worst_s2 = std::max(worst_s2, web::floor_top_ndc(aim, web::push_in_distance(wide, close, k, 360u),
+                                                         web::kD1StillAzimuthDeg, web::kD1StillElevationDeg, kFov));
+    }
+    EXPECT_LE(worst_s2, -1.04f) << "S2's floor top";
+    EXPECT_NEAR(wide, 1.073f, 1e-3f);
+    EXPECT_NEAR(close, 0.715f, 1e-3f);
+    // The test discriminates: the quad's old framing (0.55 m subject, 20 degrees) leaves the floor in frame.
+    const float old_d = web::fit_distance(0.55f, kFov, kAspect, web::kMargin);
+    EXPECT_GT(web::floor_top_ndc(aim, old_d, 25.0f, 20.0f, kFov), -0.8f);
+    // A corner behind the camera's plane is not known to be out of frame.
+    EXPECT_GT(web::floor_top_ndc(glm::vec3(0.0f, -2.0f, 0.0f), 0.1f, 0.0f, 80.0f, kFov), 1e9f);
 }
 
 TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {

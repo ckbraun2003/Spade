@@ -79,6 +79,7 @@
 #endif
 #include "live_case.hpp"
 #include "recorder.hpp"
+#include "sgs_note.hpp"
 #include "subnormal_scan.hpp"
 #include "views.hpp"
 #include "web_masters.hpp"
@@ -244,8 +245,9 @@ struct Film {
         return film.stem + ": " + std::to_string(film.frames) +
                (film.gpu      ? " frames of GpuFluid, no parts, the rotors held; "
                 : film.device && film.run->sgs_cs > 0.0f
-                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, not checked "
-                      "against the CPU; "
+                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, the term "
+                      "checked bit-equal to the CPU for 32 steps of D1 (0.01216 s of simulated time at h 0.38 ms) "
+                      "only; "
                 : film.device ? " frames of LiveRun on GpuFluid, the parts in the flow, checked bit-equal to the "
                                 "CPU through about 0.18 s of simulated time only; "
                               : " frames of LiveRun; ") +
@@ -421,7 +423,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 #endif
     }
     // L52: LiveRun's config has no subgrid viscosity, so a device film's maker is handed the case's Cs on a copy of
-    // the config (GpuFluid refuses a nonzero Cs until its kernel lands, naming it: the film then stops by name).
+    // the config (GpuFluid takes it since L54: its kernel is bit-equal to sgs.cpp).
     an::LiveFluidMaker maker = device.maker;
     if (film.device && lc.sgs_cs > 0.0f) {
         maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
@@ -507,14 +509,31 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         }
         if (k % 10u == 0u || k + 1u == film.frames) {
             const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            const std::string sgs_text = sgs_note(run->sgs());  // L59: the peak nu_t even when nothing bound
             std::printf("[ %s ] frame %u/%u, t %s s; held at (%.3f, %.3f, %.3f) in a box from (%.3f, %.3f, %.3f); "
-                        "%.0f s\n",
+                        "%.0f s%s%s\n",
                         film.stem.c_str(), k + 1u, film.frames, fixed(frame->t_s, 3).c_str(), b.pos.x, b.pos.y,
-                        b.pos.z, volume.header.origin.x, volume.header.origin.y, volume.header.origin.z, elapsed);
+                        b.pos.z, volume.header.origin.x, volume.header.origin.y, volume.header.origin.z, elapsed,
+                        sgs_text.empty() ? "" : "; ", sgs_text.c_str());
             std::fflush(stdout);
         }
     }
     if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
+    // The run's health beside run.txt (whose lines must stay "step<TAB>label"): health.txt, the subgrid account and the
+    // pressure solve's, each one line, counted since this run's start.
+    {
+        const std::string sgs_text = sgs_note(run->sgs());
+        const std::string pressure_text = run->pressure_line();
+        const std::string sgs_said = sgs_text.empty() ? "no subgrid viscosity (Cs 0)" : sgs_text;
+        const std::string pressure_said = pressure_text.empty() ? "every step's pressure converged" : pressure_text;
+        std::ofstream health_file(cache / "health.txt", std::ios::binary | std::ios::trunc);
+        health_file << "subgrid: " << sgs_said << '\n' << "pressure: " << pressure_said << '\n';
+        if (!health_file) {
+            return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "health.txt").string()});
+        }
+        std::printf("[ %s ] subgrid: %s\n[ %s ] pressure: %s (since this run's start; in health.txt)\n",
+                    film.stem.c_str(), sgs_said.c_str(), film.stem.c_str(), pressure_said.c_str());
+    }
     fs::remove(save, ec);
     return true;
 }
@@ -1476,33 +1495,37 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
-        // PROVISIONAL framing: the radii and targets below are the quad's, not yet fitted on D1's field (the lead:
-        // fit on the still-air field's real line extents, the airframe and the wake column inside the 10% margin).
-        const auto below_drone = [](const spade::FlowVolume& v) { return volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f); };
+        // S1, S8 and S2 are framed closer, looking down 8 degrees, so the deeper box's floor stays out of frame (L63;
+        // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
+        // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
+        const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
+        const glm::vec3 still_aim = web::subject_point(web::kD1StillAimBelowM);
         if (id == "S1") {
-            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
-                             web::loop_azimuth(25.0f, 360.0f, k, n), 20.0f);
+            view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
+                             web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), web::kD1StillElevationDeg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(below_drone(v), web::fit_distance(0.55f, kWebFov, kWebAspect, fit),
-                             web::there_and_back_azimuth(25.0f, clip.orbit_degrees, k, n), 20.0f);
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
+                             web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
+                             web::kD1StillElevationDeg);
             }, false);
         } else if (id == "S2") {
-            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                const float wide = web::fit_distance(0.70f, kWebFov, kWebAspect, fit);
-                const float close = web::fit_distance(0.42f, kWebFov, kWebAspect, fit);
-                return orbit(below_drone(v), web::push_in_distance(wide, close, k, n), 25.0f, 18.0f);
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                const float wide = web::fit_distance(web::kD1PushWideM, kWebFov, kWebAspect, fit);
+                const float close = web::fit_distance(web::kD1PushCloseM, kWebFov, kWebAspect, fit);
+                return orbit(still_aim, web::push_in_distance(wide, close, k, n), web::kD1StillAzimuthDeg,
+                             web::kD1StillElevationDeg);
             }, false);
         } else if (id == "S3") {
-            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(volume_centre(v) - glm::vec3(0.0f, 0.08f, 0.0f), web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
+            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(below_drone, web::fit_distance(0.42f, kWebFov, kWebAspect, fit),
                              web::loop_azimuth(300.0f, clip.orbit_degrees, k, n), 20.0f);
             }, true);
         } else {  // S4: C_p on the airframe, filling 60% of the frame's height
-            view = with_camera(*view_named(film, "cp"), [=](const spade::FlowVolume& v, uint32_t k, uint32_t n) {
-                return orbit(volume_centre(v), web::fill_distance(0.30f, 0.6f, kWebFov),
+            view = with_camera(*view_named(film, "cp"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                return orbit(web::subject_point(), web::fill_distance(0.30f, 0.6f, kWebFov),
                              web::loop_azimuth(240.0f, clip.orbit_degrees, k, n), 40.0f);
             }, true);
         }
@@ -1696,6 +1719,7 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     cap.crosswind = wind > 0.0f && std::fabs(heading) > 1.0f;
     cap.cell_mm = volume.header.cell * 1000.0f;
     cap.device = film.device;
+    cap.sgs_cs = film.run ? film.run->sgs_cs : 0.0f;
     {
         std::ofstream out(json, std::ios::binary | std::ios::trunc);
         out << made->json;
@@ -2025,6 +2049,7 @@ struct WebTimes {
     if (!*simmed) return kExitIncomplete;
     std::printf("flow_movie: web %s: simulation %.0f s\n", opt.web_id.c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
+    if (opt.simulate_only) return 0;  // the group's cache is all this run was for; a clip's own run draws from it
     const fs::path cache = opt.out / "cache" / film->stem;
 
     spade::FlowVolume volume;
@@ -2104,6 +2129,8 @@ struct WebTimes {
             return 1;
         }
         const fs::path png = work / (base + "png");
+        std::error_code made;
+        fs::create_directories(work, made);  // a --web-still run has not made the folder the clip's mp4 would have
         if (auto saved = save_png(still_encoder, rgba, png); !saved) return fail(saved.error());
         std::printf("web-timing: %s still %ux%u of frame %u: draw %.3f s, %.3f s with the PNG (%s)\n",
                     opt.web_id.c_str(), web::kStillWidth, web::kStillHeight, k, draw_s,

@@ -312,6 +312,14 @@ TEST(FlowMovieExport, TheCaptionNamesWhatTheFileIsAndNeverClaimsMore) {
     EXPECT_TRUE(has(cross, "not a prediction of the thrust, power or attitude"));
     EXPECT_TRUE(has(cross, "bit-equal to the CPU's through about 0.18 s"));
     EXPECT_TRUE(has(cross, "a single run on the device of record"));
+    EXPECT_FALSE(has(cross, "Smagorinsky")) << "Cs 0: the 0.18 s claim only";
+    // A Cs > 0 film says what film_identity says: only 32 steps of D1 were checked, not 0.18 s.
+    in.sgs_cs = 0.17f;
+    const std::string sgs = fm::export_caption_text(in);
+    EXPECT_TRUE(has(sgs, "with the Smagorinsky subgrid viscosity (Cs 0.17)"));
+    EXPECT_TRUE(has(sgs, "checked bit-equal to the CPU's for 32 steps of D1 (0.01216 s of simulated time at h 0.38 ms) only"));
+    EXPECT_FALSE(has(sgs, "0.18 s")) << "the Cs 0 check does not cover the subgrid term";
+    EXPECT_TRUE(has(sgs, "a single run on the device of record"));
     EXPECT_EQ(fm::data_manifest_line("flow_hover.json", 4096, "sim", "hover streamlines"),
               "- flow_hover.json | data, 4096 bytes | - | sim | hover streamlines");
 }
