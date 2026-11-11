@@ -1064,7 +1064,11 @@ TEST(GpuAirflowStep, SubgridD1BoxWithItsSolidsMatchesFluidStepStepByStep) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const uint32_t steps = env_count("SPADE_SGS_D1_STEPS");
     if (steps == 0u) GTEST_SKIP() << "opt-in: SPADE_SGS_D1_STEPS=<steps> (30 to 47 s a step on the CPU)";
-    spade::Result<b7::B7Box> box = b7::d1_box(b7::BoxSolids::with);
+    // SPADE_SGS_D1_DEEP=1: the L63 box (kD1DeepGrid, 240 x 392 x 168, the drone held 0.43 m above its centre); the CPU's
+    // side is about 2.2x as long a step.
+    const bool deep = env_count("SPADE_SGS_D1_DEEP") != 0u;
+    spade::Result<b7::B7Box> box =
+        b7::d1_box(b7::BoxSolids::with, deep ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid);
     ASSERT_TRUE(box.has_value()) << box.error().context;
     box->cfg.sgs_cs = 0.17f;
     spade::Result<af::FluidScratch> scratch = b7::box_scratch(*box);
@@ -1121,11 +1125,16 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
         float h;
         float cs;
     };
-    const std::array<Run, 4> runs{{{0.0002f, 0.0f}, {0.0002f, 0.17f}, {0.00073f, 0.17f}, {0.00073f, 0.0f}}};
+    // SPADE_SGS_D1_DEEP=1 (L63): the deep box (kD1DeepGrid, the drone held 0.43 m above its centre) at the web clips' one
+    // setting, h 0.2 ms with Cs 0.17; the pressure's residual and its unconverged steps are printed with the cost.
+    const bool deep = env_count("SPADE_SGS_D1_DEEP") != 0u;
+    const std::array<Run, 4> all_runs{{{0.0002f, 0.0f}, {0.0002f, 0.17f}, {0.00073f, 0.17f}, {0.00073f, 0.0f}}};
+    const std::span<const Run> runs = deep ? std::span<const Run>(all_runs).subspan(1, 1) : std::span<const Run>(all_runs);
     constexpr uint32_t kWarm = 2;
     constexpr uint32_t kStepsRun = 40;
     for (const Run& r : runs) {
-        spade::Result<b7::B7Box> box = b7::d1_box(b7::BoxSolids::with);
+        spade::Result<b7::B7Box> box =
+            b7::d1_box(b7::BoxSolids::with, deep ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid);
         ASSERT_TRUE(box.has_value()) << box.error().context;
         box->cfg.h = r.h;
         box->cfg.sgs_cs = r.cs;
@@ -1136,6 +1145,8 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
         uint32_t capped_max = 0, limited_max = 0;
         uint64_t capped_sum = 0, limited_sum = 0;
         float peak = 0.0f;
+        float residual_max = 0.0f;
+        uint32_t unconverged = 0;
         for (uint32_t step = 0; step < kStepsRun; ++step) {
             const auto t0 = std::chrono::steady_clock::now();
             const auto h = (*gpu)->step(box->discs);
@@ -1148,6 +1159,8 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
             capped_sum += h->sgs_capped_cells;
             limited_sum += h->sgs_limited_faces;
             peak = std::max(peak, h->sgs_nu_t_max);
+            residual_max = std::max(residual_max, h->pressure_residual);
+            unconverged += h->unconverged ? 1u : 0u;
         }
         std::printf("[ sgs     ] D1 + solids, dx %.4g m, h %.3g ms, Cs %.2f: cap %.4g m2/s, nu_t max %.4g; over %u "
                     "steps capped cells max %u (mean %.1f), wall-limited faces max %u (mean %.1f); %.2f ms a step\n",
@@ -1155,6 +1168,73 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
                     static_cast<double>(dx * dx / (8.0f * r.h)), static_cast<double>(peak), kStepsRun, capped_max,
                     static_cast<double>(capped_sum) / kStepsRun, limited_max,
                     static_cast<double>(limited_sum) / kStepsRun, timed_ms / (kStepsRun - kWarm));
+        std::printf("[ sgs     ] %ux%ux%u: pressure residual max %.3g over %u steps, %u unconverged (announced above 1e-4)\n",
+                    box->grid.shape.nx, box->grid.shape.ny, box->grid.shape.nz, static_cast<double>(residual_max), kStepsRun,
+                    unconverged);
         std::fflush(stdout);
+    }
+}
+
+// L63's boundary-versus-flow experiment, GPU only, in D1's box with its solids from rest at h 0.2 ms, Cs 0.17: the vertical
+// velocity under the held drone at 0.10, 0.20 and 0.30 s, as depth below the centre of mass. Run it on kD1Grid and on the deep
+// grid (SPADE_SGS_D1_DEEP=1): where the two profiles differ above kD1Grid's open face it was the boundary; where they agree
+// it is the flow. Opt-in with SPADE_SGS_AXIS_STEPS=<steps> (1500 is 0.30 s). Report only.
+TEST(GpuAirflowStep, TheAxisProfileUnderTheDroneAtThreeTimes) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const uint32_t steps = env_count("SPADE_SGS_AXIS_STEPS");
+    if (steps == 0u) GTEST_SKIP() << "opt-in: SPADE_SGS_AXIS_STEPS=<steps> (1500 is 0.30 s)";
+    const bool deep = env_count("SPADE_SGS_D1_DEEP") != 0u;
+    spade::Result<b7::B7Box> box =
+        b7::d1_box(b7::BoxSolids::with, deep ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid);
+    ASSERT_TRUE(box.has_value()) << box.error().context;
+    box->cfg.sgs_cs = 0.17f;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    auto gpu = ag::GpuFluid::create(*ctx, box->grid, box->bc, box->cfg, &box->solids);
+    ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+    af::MacGrid read = box->grid;
+    const af::GridShape& s = read.shape;
+    const float dx = s.dx;
+    const auto ci = static_cast<uint32_t>(box->about.x / dx);
+    const auto ck = static_cast<uint32_t>(box->about.z / dx);
+    std::printf("[ axis    ] %s grid %ux%ux%u, centre of mass at y %.4f m (cell %u), column (%u, %u), h %.3g ms\n",
+                deep ? "deep" : "kD1Grid", s.nx, s.ny, s.nz, static_cast<double>(box->about.y),
+                static_cast<uint32_t>(box->about.y / dx), ci, ck, static_cast<double>(box->cfg.h) * 1000.0);
+    const uint32_t marks[3] = {steps / 3u, 2u * steps / 3u, steps};
+    uint32_t next = 0;
+    double ms_total = 0.0;
+    for (uint32_t step = 1; step <= steps; ++step) {
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto g = (*gpu)->step(box->discs);
+        ms_total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        ASSERT_TRUE(g.has_value()) << g.error().context;
+        ASSERT_EQ(g->fault, af::FluidFault::none);
+        if (next < 3u && step == marks[next]) {
+            ++next;
+            ASSERT_TRUE((*gpu)->read(read).has_value());
+            std::printf("[ axis    ] t = %.3f s (step %u), %.1f ms a step; depth below the centre of mass: column v / plane's most "
+                        "downward v (m/s)\n",
+                        static_cast<double>(step) * static_cast<double>(box->cfg.h), step, ms_total / step);
+            float front = 0.0f;
+            for (int dd = 1; dd <= 13; ++dd) {
+                const float depth = 0.1f * static_cast<float>(dd);
+                const float y = box->about.y - depth;
+                if (y < 0.0f) break;
+                const auto j = static_cast<uint32_t>(y / dx);
+                float plane_min = 0.0f;
+                for (uint32_t k = 0; k < s.nz; ++k) {
+                    for (uint32_t i = 0; i < s.nx; ++i) {
+                        const float v = 0.5f * (read.v[af::v_index(s, i, j, k)] + read.v[af::v_index(s, i, j + 1u, k)]);
+                        plane_min = std::min(plane_min, v);
+                    }
+                }
+                const float col = 0.5f * (read.v[af::v_index(s, ci, j, ck)] + read.v[af::v_index(s, ci, j + 1u, ck)]);
+                if (plane_min < -0.5f) front = depth;
+                std::printf("[ axis    ]   %.2f m: %7.3f / %7.3f\n", static_cast<double>(depth), static_cast<double>(col),
+                            static_cast<double>(plane_min));
+            }
+            std::printf("[ axis    ]   front (deepest sampled plane below -0.5 m/s): %.2f m\n", static_cast<double>(front));
+            std::fflush(stdout);
+        }
     }
 }

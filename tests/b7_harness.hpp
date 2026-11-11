@@ -231,6 +231,7 @@ struct B7Box {
     std::vector<uint8_t> solid_cells;  // the publish's mask (LiveRun's publish.solid)
     std::vector<ActuatorDisc> discs;
     glm::vec3 about{0.0f};  // the wall load's moment point: the body's centre
+    glm::vec3 origin{0.0f};  // the grid's minimum corner, world frame: the box's centre, less the hold (L63)
 };
 
 // A box with its solids, or without them: plan A's V-cycles, the path LiveRun
@@ -345,18 +346,20 @@ struct D1Solids {
 // the discs are those rows at their commanded hover speed, held constant.
 // The box's solids must be LiveRun's (its set_solids() line and solid
 // cells), or it refuses. Without solids it is the same air and discs, at
-// plan A's V-cycles.
-[[nodiscard]] inline spade::Result<B7Box> d1_box(BoxSolids solids = BoxSolids::with) {
+// plan A's V-cycles. `grid` is kD1Grid, or kD1DeepGrid (L63), where the drone is held d1_hold(grid) off the centre.
+[[nodiscard]] inline spade::Result<B7Box> d1_box(BoxSolids solids = BoxSolids::with,
+                                                 const GridShape& grid = spade::testing::kD1Grid) {
     namespace vh = spade::vehicles;
     const bool with = solids == BoxSolids::with;
-    spade::Result<spade::testing::PoweredQuad> q = spade::testing::d1_case(0.5);
+    spade::Result<spade::testing::PoweredQuad> q = spade::testing::d1_case(0.5, grid);
     if (!q) return std::unexpected(q.error());
-    spade::Result<an::ResolvedCase> resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid);
+    spade::Result<an::ResolvedCase> resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid, q->hold);
     if (!resolved) return std::unexpected(resolved.error());
     const GridShape& shape = resolved->base;
     const glm::vec3 origin = -0.5f * shape.dx *
-                             glm::vec3(static_cast<float>(shape.nx), static_cast<float>(shape.ny),
-                                       static_cast<float>(shape.nz));
+                                 glm::vec3(static_cast<float>(shape.nx), static_cast<float>(shape.ny),
+                                           static_cast<float>(shape.nz)) -
+                             resolved->hold_from_centre;
     spade::Result<LiveHover> live = live_hover(*resolved, q->run_model, q->trim.hover);
     if (!live) return std::unexpected(live.error());
     std::vector<vh::RotorRow>& rows = live->rows;
@@ -365,7 +368,9 @@ struct D1Solids {
     const uint32_t live_cells = live->cells;
 
     B7Box box;
-    box.name = with ? "D1 box 240x177x168" : "D1 box 240x177x168 without its solids";
+    const std::string dims = std::to_string(shape.nx) + "x" + std::to_string(shape.ny) + "x" + std::to_string(shape.nz);
+    box.name = with ? "D1 box " + dims : "D1 box " + dims + " without its solids";
+    box.origin = origin;
     box.bc = resolved->domain;
     const an::AnalysisCase& c = resolved->spec;
     box.h_ns = static_cast<uint64_t>(static_cast<double>(*c.time.step) * static_cast<double>(kNsPerSecond) + 0.5);
@@ -732,9 +737,8 @@ struct Timing {
     if (!plan.film) return t;
     spade::Result<std::unique_ptr<FluidStepper>> made = make(box.grid, box.bc, box.cfg, &box.solids);
     if (!made) return std::unexpected(made.error());
-    const GridShape& s = box.grid.shape;
     const PublishInput in{
-        .origin = -0.5f * s.dx * glm::vec3(static_cast<float>(s.nx), static_cast<float>(s.ny), static_cast<float>(s.nz)),
+        .origin = box.origin,
         .solid = box.solid_cells,
         .periodic = periodic_axes(box.bc),
         .theta = {box.solids.theta[0], box.solids.theta[1], box.solids.theta[2]}};

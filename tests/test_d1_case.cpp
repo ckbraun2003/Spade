@@ -53,6 +53,37 @@ TEST(D1Case, TheCaseIsTheRecordsAndResolvesOnKD1Grid) {
     EXPECT_LE(resolved->base_bytes, af::kGridByteCap);
 }
 
+TEST(D1Case, TheDeepBoxHoldsTheDroneOffCentreOnTheCellAlignment) {
+    // L63 (Cameron, 2026-11-11): 1.214 m below the drone, the same 0.354 m above it, in 240 x 392 x 168 at 4 mm.
+    using spade::testing::kD1DeepGrid;
+    EXPECT_EQ(spade::testing::d1_hold(kD1Grid), glm::vec3(0.0f)) << "kD1Grid keeps the centre, exactly";
+    const auto q = spade::testing::d1_case(0.6, kD1DeepGrid);
+    ASSERT_TRUE(q.has_value()) << q.error().context;
+    ASSERT_TRUE(q->grid.has_value());
+    EXPECT_EQ(q->grid->ny, 392u);
+    EXPECT_EQ(q->hold, spade::testing::d1_hold(kD1DeepGrid));
+    const auto resolved = spade::testing::resolve_with_grid(q->c, q->run_model, q->grid, q->hold);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    EXPECT_EQ(resolved->hold_from_centre, q->hold);
+    EXPECT_EQ(resolved->base.ny, 392u);
+    EXPECT_LT(resolved->base_bytes, af::kGridByteCap);
+
+    // LiveRun's origin (live_run.cpp): -0.5 dx n - hold; the drone, the world origin, in the grid's cells.
+    const af::GridShape& g = resolved->base;
+    const glm::vec3 origin = -0.5f * g.dx *
+                                 glm::vec3(static_cast<float>(g.nx), static_cast<float>(g.ny), static_cast<float>(g.nz)) -
+                             resolved->hold_from_centre;
+    const glm::vec3 cells = -origin / g.dx;
+    EXPECT_NEAR(cells.x, 120.0f, 1e-3f) << "an x face";
+    EXPECT_NEAR(cells.y, 303.5f, 1e-3f) << "a y cell centre, 1.214 m above the floor";
+    EXPECT_NEAR(cells.z, 84.0f, 1e-3f) << "a z face";
+    EXPECT_NEAR(origin.y + static_cast<float>(g.ny) * g.dx, 0.354f, 1e-5f) << "0.354 m to the top face, as kD1Grid";
+
+    const auto d1 = spade::testing::d1_case(0.6);
+    ASSERT_TRUE(d1.has_value());
+    EXPECT_EQ(d1->hold, glm::vec3(0.0f)) << "the D1 grid keeps the centre";
+}
+
 TEST(D1Case, AGridPastTheCapIsRefusedByName) {
     const auto q = spade::testing::d1_case(0.1);
     ASSERT_TRUE(q.has_value()) << q.error().context;
