@@ -98,6 +98,7 @@ struct ExportCaption {
     bool crosswind = false;  // the wind is from the side (supported but not validated), else a headwind
     float cell_mm = 0.0f;    // the grid's cell the parts are solids at
     bool device = false;     // the fluid stepped by the GPU solver
+    float sgs_cs = 0.0f;     // the film's Smagorinsky Cs, 0 for none: the device's check against the CPU differs
 };
 [[nodiscard]] std::string export_caption_text(const ExportCaption& in);
 

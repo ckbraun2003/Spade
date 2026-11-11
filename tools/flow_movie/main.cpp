@@ -1697,6 +1697,7 @@ constexpr int kExitIncomplete = 3;  // stopped by a budget; run again to continu
     cap.crosswind = wind > 0.0f && std::fabs(heading) > 1.0f;
     cap.cell_mm = volume.header.cell * 1000.0f;
     cap.device = film.device;
+    cap.sgs_cs = film.run ? film.run->sgs_cs : 0.0f;
     {
         std::ofstream out(json, std::ios::binary | std::ios::trunc);
         out << made->json;
