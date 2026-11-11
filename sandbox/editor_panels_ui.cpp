@@ -728,6 +728,25 @@ void pilot_section(ed::EditorPanels& p) {
     ui::gap();
 }
 
+// While Run runs (not Run air): the running world's wind, set now (the lead's (c), 2026-11-11). A Run input, not an
+// edit: the scene and world files don't change. The airflow keeps the wind it started with (L46).
+void wind_section(ed::EditorPanels& p) {
+    if (!p.running || p.air || !ui::section("Wind now", true)) return;
+    if (ui::begin_properties("livewind")) {
+        glm::vec3 next = p.live_wind;
+        if (vec3_row("Wind (m/s)", "##livewind", p.live_wind, 0.05f, next, "%.2f")) p.wind_request = next;
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Sets the running world's mean wind now (Simulation::set_world_wind): a Run input, not "
+                              "saved in the scene. The airflow keeps its start wind.");
+        }
+        ui::end_properties();
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("A Run input, not saved. The airflow keeps its start wind.");
+    ImGui::PopTextWrapPos();
+    ui::gap();
+}
+
 // While Run air runs: the airspeed, the angles the air meets the drone at, each rotor's static thrust against the
 // weight, and the attitude and rates (editor_flight_readout.hpp). The labels say what each number is, and the note
 // names what is not shown.
@@ -829,6 +848,7 @@ void inspector(ed::EditorPanels& p) {
         return;
     }
     pilot_section(p);
+    wind_section(p);
     flight_section(p);
     switch (p.selection.kind) {
         case ed::Selection::Kind::none:

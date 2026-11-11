@@ -33,6 +33,13 @@
 // Run steps one at a time whenever a vehicle has rotors, bit for bit as a
 // batch would.
 //
+// THE WIND (the lead's (c), 2026-11-11; Core's L46). set_wind() sets the running world's MEAN wind through
+// Simulation::set_world_wind(): at the next step, a Run input and not an edit (the documents don't change), RECORDED as
+// the replayable input L46 defines, wind_sets(): the tick it was applied at and the wind (the engine keeps no input log;
+// a replay applies the same set at the same tick). A rebuild during Run keeps the live wind, unless the edit was to the
+// document's own wind, which wins and ends the live set. The airflow (Run air) keeps the wind it started with: its
+// inflow does not follow (L46).
+//
 // THE RECORDS (EDT-018): turbulence, contacts and the broad-phase grid are not
 // in the world file until v3, so they come from the scene file's stem
 // (builtin_records.hpp) or a default, and are not saved with the world.
@@ -78,6 +85,12 @@ using spade::sandbox::BuiltinRecords;
     return *builtin_records("hover");
 }
 
+// One mid-run wind set, as it was applied: the run's tick (EditorRun::tick()) and the mean wind, world frame, m/s.
+struct WindSet {
+    uint64_t tick = 0;
+    glm::vec3 wind{0.0f};
+};
+
 class EditorRun {
   public:
     [[nodiscard]] static Result<EditorRun> start(const scene::SceneDesc& scene, const WorldDesc& world,
@@ -116,6 +129,21 @@ class EditorRun {
         }
         return {};
     }
+
+    // Sets the running world's mean wind (world 0, world frame, m/s) for the next step and on, and records it
+    // (wind_sets()). Core's refusal verbatim (a wind that is not finite), changing nothing.
+    [[nodiscard]] Result<void> set_wind(glm::vec3 wind) {
+        if (Result<void> set = run_->sim.set_world_wind(0, wind); !set) return set;
+        wind_ = wind;
+        wind_sets_.push_back(WindSet{ticks_, wind});
+        return {};
+    }
+
+    // The world's mean wind now: the document's at start(), or the last set_wind().
+    [[nodiscard]] glm::vec3 wind() const noexcept { return wind_; }
+
+    // The mid-run sets, in order, each with the tick it was applied at.
+    [[nodiscard]] const std::vector<WindSet>& wind_sets() const noexcept { return wind_sets_; }
 
     // The named vehicle's blade azimuths, one per rotor in its model's order,
     // in [0, 2 pi) (L7c2): 0 at start(), turned after every step, carried by
@@ -202,6 +230,13 @@ class EditorRun {
             if (i && psi_[*i].size() == next->psi_[j].size()) next->psi_[j] = psi_[*i];
         }
         next->azimuth_refused_ = azimuth_refused_;
+        // The live wind goes on in the rebuilt world, unless the document's own wind was edited (that wins, and the
+        // live set ends with its record).
+        if (world.environment.wind == doc_wind_ && wind_ != doc_wind_) {
+            if (Result<void> set = next->run_->sim.set_world_wind(0, wind_); !set) return set;
+            next->wind_ = wind_;
+            next->wind_sets_ = wind_sets_;
+        }
         const uint64_t ticks = ticks_;
         *this = std::move(*next);
         ticks_ = ticks;
@@ -285,6 +320,7 @@ class EditorRun {
         EditorRun out(std::make_unique<scene::SceneRun>(std::move(*run)), std::move(names), records);
         out.cell_ = sized.grid.cell_size;
         out.sized_for_ = std::move(sized_for);
+        out.wind_ = out.doc_wind_ = world.environment.wind;
         out.flight_.resize(scene.vehicles.size());
         out.why_not_.resize(scene.vehicles.size());
         out.psi_.resize(scene.vehicles.size());
@@ -360,6 +396,9 @@ class EditorRun {
     BuiltinRecords records_;
     float cell_ = 0.0f;      // grid_cell()
     std::string sized_for_;  // cell_sized_for()
+    glm::vec3 wind_{0.0f};      // wind(): the document's at build, or the last set
+    glm::vec3 doc_wind_{0.0f};  // the document's wind this run was built with
+    std::vector<WindSet> wind_sets_;
     uint64_t ticks_ = 0;
 };
 
