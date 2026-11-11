@@ -1202,3 +1202,49 @@ TEST(AnalysisLiveRun, TheSolidsIterationLimitUnsetFliesToTheBit) {
     EXPECT_EQ(a.solids().unconverged_steps, b.solids().unconverged_steps);
     EXPECT_EQ(a.solids().pressure_iterations, b.solids().pressure_iterations);
 }
+
+// The subgrid viscosity's account (the lead, 2026-11-10; the website clips' Smagorinsky runs): its line names only
+// what occurred, and says nothing while nothing bound (also at Cs 0, when every count is 0).
+TEST(AnalysisLiveRun, TheSgsLineNamesOnlyWhatOccurred) {
+    an::LiveSgs s;
+    EXPECT_EQ(an::sgs_health_line(s), "");
+    s.nu_t_max = 0.0031f;  // a nu_t met and nothing bound: said nowhere
+    EXPECT_EQ(an::sgs_health_line(s), "");
+
+    s.capped_steps = 1;
+    s.capped_cell_steps = 1;
+    EXPECT_EQ(an::sgs_health_line(s), "subgrid nu_t up to 0.0031 m2/s; held at the cap on 1 step (1 cell-step)");
+
+    an::LiveSgs wall;
+    wall.nu_t_max = 0.0012f;
+    wall.limited_steps = 600;
+    wall.limited_face_steps = 52000;
+    EXPECT_EQ(an::sgs_health_line(wall),
+              "subgrid nu_t up to 0.0012 m2/s; wall-limited on 600 steps (52,000 face-steps)");
+
+    an::LiveSgs both = s;
+    both.capped_steps = 12;
+    both.capped_cell_steps = 40;
+    both.limited_steps = 600;
+    both.limited_face_steps = 52000;
+    EXPECT_EQ(an::sgs_health_line(both),
+              "subgrid nu_t up to 0.0031 m2/s; held at the cap on 12 steps (40 cell-steps), wall-limited on 600 "
+              "steps (52,000 face-steps)");
+}
+
+// A run's own fluid steps at Cs 0 (the case has no Cs): the account stays 0 and says nothing, over steps and
+// frames alike.
+TEST(AnalysisLiveRun, ARunAtCsZeroKeepsAnEmptySgsAccount) {
+    const spade::vehicles::ModelType m = rotorless();
+    an::LiveRun run = started(tiny_case(m), m);
+    spade::FlowVolume volume;
+    for (int i = 0; i < 5; ++i) ASSERT_TRUE(run.step(an::Controls{}).has_value());
+    ASSERT_TRUE(run.advance_frame(an::Controls{}, volume).has_value());
+    const an::LiveSgs& s = run.sgs();
+    EXPECT_EQ(s.capped_cell_steps, 0u);
+    EXPECT_EQ(s.limited_face_steps, 0u);
+    EXPECT_EQ(s.capped_steps, 0u);
+    EXPECT_EQ(s.limited_steps, 0u);
+    EXPECT_EQ(s.nu_t_max, 0.0f);
+    EXPECT_EQ(an::sgs_health_line(s), "");
+}

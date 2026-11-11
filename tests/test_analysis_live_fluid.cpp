@@ -7,13 +7,16 @@
 //
 //   AnalysisLiveFluid  the twin's run against the run's own, frame by frame
 //                      and in its save; what a device starts from; a
-//                      device's refusal and failure, by name.
+//                      device's refusal and failure, by name; the run's
+//                      subgrid-viscosity account (LiveSgs) against the sums
+//                      of the health the device reported each step.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -28,6 +31,7 @@
 #include "analysis/live_run.hpp"
 #include "analysis_powered_quad.hpp"
 #include "core/flow_volume.hpp"
+#include "live_sgs_probe.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -271,4 +275,92 @@ TEST(AnalysisLiveFluid, ADeviceFailureEndsTheRunNamingTheStep) {
     EXPECT_EQ(run.state().steps, 2u);
     const spade::test::TempDir dir("live-fluid-fault");
     EXPECT_FALSE(run.save(dir.path() / "run.bin").has_value());
+}
+
+// LiveRun::sgs() sums what the device's health reports each step: capped cell-steps and limited face-steps, the
+// steps that had any of either, and the largest nu_t. The sgs fields are scripted here (12 steps, a script of 6
+// repeating), so the numbers are exact whatever the flow binds.
+TEST(AnalysisLiveFluid, TheSgsAccountSumsWhatTheDeviceReportsEveryStep) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p);
+    const std::vector<spade::test::ScriptedSgs> script{{0, 0, 0.0f},    {3, 0, 0.0010f}, {0, 100, 0.0030f},
+                                                       {5, 200, 0.0020f}, {0, 0, 0.0015f}, {2, 300, 0.0031f}};
+    TwinLog log;
+    spade::test::SgsSums sums;
+    an::LiveRun run = started(r, p.model, spade::test::sgs_probe(twin(log), 0.0f, sums, script));
+    for (int i = 0; i < 12; ++i) ASSERT_TRUE(run.step(an::Controls{}).has_value());
+    const an::LiveSgs& s = run.sgs();
+    EXPECT_EQ(s.capped_cell_steps, 20u);
+    EXPECT_EQ(s.limited_face_steps, 1200u);
+    EXPECT_EQ(s.capped_steps, 6u);
+    EXPECT_EQ(s.limited_steps, 6u);
+    EXPECT_EQ(s.nu_t_max, 0.0031f);
+    EXPECT_EQ(sums.capped_cell_steps, s.capped_cell_steps) << "the probe's own sums are the oracle";
+    EXPECT_EQ(sums.limited_face_steps, s.limited_face_steps);
+    EXPECT_EQ(an::sgs_health_line(s),
+              "subgrid nu_t up to 0.0031 m2/s; held at the cap on 6 steps (20 cell-steps), wall-limited on 6 steps "
+              "(1,200 face-steps)");
+}
+
+// The same, with the subgrid viscosity really on (the maker sets Cs 0.17 as a host does): whatever the flow binds,
+// the run's account is the sum of the health the fluid reported, and the term ran.
+TEST(AnalysisLiveFluid, ARealSubgridViscosityIsAccountedAsTheFluidReportedIt) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p);
+    TwinLog log;
+    spade::test::SgsSums sums;
+    an::LiveRun run = started(r, p.model, spade::test::sgs_probe(twin(log), 0.17f, sums));
+    const an::ControlProgram program = changing();
+    while (run.state().steps < 60) {
+        ASSERT_TRUE(run.step(an::controls_at(program, static_cast<float>(run.state().t_s))).has_value());
+    }
+    const an::LiveSgs& s = run.sgs();
+    ASSERT_EQ(sums.steps, 60u);
+    EXPECT_GT(sums.nu_t_max, 0.0f) << "the subgrid viscosity ran";
+    EXPECT_EQ(s.nu_t_max, sums.nu_t_max);
+    EXPECT_EQ(s.capped_cell_steps, sums.capped_cell_steps);
+    EXPECT_EQ(s.limited_face_steps, sums.limited_face_steps);
+    EXPECT_EQ(s.capped_steps, sums.capped_steps);
+    EXPECT_EQ(s.limited_steps, sums.limited_steps);
+    std::printf("[ sgs     ] 60 steps at Cs 0.17: nu_t up to %.4g m2/s; capped %llu cell-steps on %llu steps; limited "
+                "%llu face-steps on %llu steps; line '%s'\n",
+                static_cast<double>(s.nu_t_max), static_cast<unsigned long long>(s.capped_cell_steps),
+                static_cast<unsigned long long>(s.capped_steps), static_cast<unsigned long long>(s.limited_face_steps),
+                static_cast<unsigned long long>(s.limited_steps), an::sgs_health_line(s).c_str());
+}
+
+// At Cs 0 the device reports 0 and the account stays 0, on the device's path as on the run's own.
+TEST(AnalysisLiveFluid, ADeviceAtCsZeroKeepsAnEmptySgsAccount) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p);
+    TwinLog log;
+    spade::test::SgsSums sums;
+    an::LiveRun run = started(r, p.model, spade::test::sgs_probe(twin(log), 0.0f, sums));
+    for (int i = 0; i < 20; ++i) ASSERT_TRUE(run.step(an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f}).has_value());
+    EXPECT_EQ(sums.capped_cell_steps + sums.limited_face_steps, 0u);
+    const an::LiveSgs& s = run.sgs();
+    EXPECT_EQ(s.capped_cell_steps + s.limited_face_steps + s.capped_steps + s.limited_steps, 0u);
+    EXPECT_EQ(s.nu_t_max, 0.0f);
+    EXPECT_EQ(an::sgs_health_line(s), "");
+}
+
+// The account is health, not state: a save does not carry it (the solids' counters aren't carried either), and a
+// restored run starts it at zero, the run's own fluid on the CPU stepping on at Cs 0. Documented in live_run.hpp.
+TEST(AnalysisLiveFluid, ARestoredRunStartsItsSgsAccountAtZero) {
+    const Powered p = an::test::powered_quad();
+    const an::ResolvedCase r = windy(p);
+    const std::vector<spade::test::ScriptedSgs> script{{4, 50, 0.0020f}};
+    TwinLog log;
+    spade::test::SgsSums sums;
+    an::LiveRun run = started(r, p.model, spade::test::sgs_probe(twin(log), 0.0f, sums, script));
+    for (int i = 0; i < 6; ++i) ASSERT_TRUE(run.step(an::Controls{}).has_value());
+    ASSERT_EQ(run.sgs().capped_cell_steps, 24u);
+    const spade::test::TempDir dir("live-sgs");
+    ASSERT_TRUE(run.save(dir.path() / "run.bin").has_value());
+    spade::Result<an::LiveRun> restored = an::LiveRun::restore(dir.path() / "run.bin", r, p.model);
+    ASSERT_TRUE(restored.has_value()) << restored.error().context;
+    EXPECT_EQ(restored->sgs().capped_cell_steps, 0u);
+    EXPECT_EQ(restored->sgs().limited_face_steps, 0u);
+    EXPECT_EQ(restored->sgs().nu_t_max, 0.0f);
+    EXPECT_EQ(an::sgs_health_line(restored->sgs()), "");
 }
