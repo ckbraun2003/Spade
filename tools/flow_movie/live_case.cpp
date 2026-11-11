@@ -64,6 +64,10 @@ namespace {
            (lc.grid ? ", grid " + std::to_string(lc.grid->nx) + " x " + std::to_string(lc.grid->ny) + " x " +
                           std::to_string(lc.grid->nz) + " at " + std::to_string(lc.grid->dx) + " m"
                     : std::string()) +
+           (lc.hold != glm::vec3(0.0f)
+                ? ", hold " + std::to_string(lc.hold.x) + " " + std::to_string(lc.hold.y) + " " + std::to_string(lc.hold.z) +
+                      " m"
+                : std::string()) +
            (lc.sgs_cs > 0.0f ? ", Smagorinsky Cs " + std::to_string(lc.sgs_cs) : std::string());
 }
 
@@ -106,7 +110,7 @@ float expected_speed(const LiveCase& lc) {
 }
 
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
-    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid);
+    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold);
 }
 
 spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs::path& controls_file, double seconds) {
@@ -155,6 +159,10 @@ namespace {
     lc.program = std::move(built->program);
     lc.program_name = std::move(built->program_name);
     lc.grid = built->grid;
+    // d1_hold() counts from kD1Grid's 177 rows, so a SHORTER box than that gets a negative hold, which puts the drone
+    // outside a box like the gate's 112 x 80 x 112 (the rotors' discs leave the grid). A --grid shorter than D1's was always
+    // centred on the drone and stays so; only a deeper box moves it.
+    lc.hold = glm::max(built->hold, glm::vec3(0.0f));
     const spade::analysis::ShowcaseTrim trim = built->trim;
     lc.seconds = seconds;
     lc.name = std::move(name);
