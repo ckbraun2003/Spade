@@ -176,9 +176,17 @@ void batch_tour(Tour& t, const fs::path& assets) {
             batch_ground_point(wide, static_cast<float>(kW), static_cast<float>(kH),
                                static_cast<float>(sum_x / static_cast<double>(dark)),
                                static_cast<float>(sum_y / static_cast<double>(dark)), 0.0f);
-        const float off = ground ? glm::length(glm::vec2(ground->x - drone_at.x, ground->z - drone_at.z)) : -1.0f;
-        if (!s.check(ground.has_value() && off < 2.0f, "shadow-on-the-ground",
-                     ground ? std::format("the shadow's centre is {:.2f} m from under the drone", off)
+        // Where the sun's direction puts it, to prove the unprojection and the light: the world file's sun_direction
+        // points FROM the ground TOWARD the sun, so a point h above the ground throws its shadow h x (sun.xz / sun.y)
+        // away from it (the hover quad at 3 m, the sun (0.4, 0.8, 0.6): 2.7 m). The found centre must be within
+        // 0.5 m of that: the quad's shadow is about 0.64 m across (half the span 0.19 plus a rotor's 0.13, doubled).
+        const glm::vec3 sun = glm::normalize(w().documents().world.desc().lighting.sun_direction);
+        const glm::vec2 predicted = glm::vec2(drone_at.x, drone_at.z) - drone_at.y * glm::vec2(sun.x, sun.z) / sun.y;
+        const float off = ground ? glm::length(glm::vec2(ground->x, ground->z) - predicted) : -1.0f;
+        if (!s.check(ground.has_value() && off < 0.5f, "shadow-on-the-ground",
+                     ground ? std::format("the shadow's centre is {:.2f} m from where the sun's direction puts it "
+                                          "({:.2f}, {:.2f})",
+                                          off, predicted.x, predicted.y)
                             : std::string("the shadow's centre is above the horizon"))) {
             return;
         }
@@ -240,8 +248,11 @@ void batch_tour(Tour& t, const fs::path& assets) {
     // and the line names Cs; with no device the row is off and the card says so.
     t.step("batch", "turbulence_air", [&] {
         if (!open()) return;
-        constexpr uint64_t kAirFrames = 6;
-        constexpr int kMaxIterations = 150;  // 5 s of video at most
+        // The air takes about 1.4 s of wall time a frame at the Detailed level on the device (editor.airflow's 12
+        // frames took 16.8 s), and a frame is 34 steps: nu_t is 0 at the first frame's start-up and met by the third
+        // (the unit test's 67 steps read 0.0073). So the third frame; at most 8 s of video.
+        constexpr uint64_t kAirFrames = 3;
+        constexpr int kMaxIterations = 240;
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
         arm("Phantom 3-class quad");
         click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));
