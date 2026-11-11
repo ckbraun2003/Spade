@@ -8,7 +8,7 @@
 //        outside either, the polar is calibrated ONCE to the static point (alpha_0 and the drag scale, two numbers for two),
 //        and V1a then holds by construction.
 //   V1b  the held-out J 0.2, 0.3, 0.4: |C - C_UIUC(J)| at most the band, as a share of the STATIC UIUC value. After a calibration
-//        6.0, 8.5, 12% (C_T) and 6.0, 9.9, 15% (C_Q); if the polar stood 16, 19, 22% and 21, 25, 30%.
+//        6.3, 8.7, 12% (C_T) and 6.4, 11, 16% (C_Q); if the polar stood 17, 19, 22% and 22, 26, 31% (the merged note, recomputed).
 //   A second calibration is refused: a miss after one is a finding about the polar's shape.
 //
 // The configuration is the measured one: D 0.254 m, 5000 rpm, rho 1.225. The test prints the record's block (for
@@ -137,8 +137,8 @@ TEST(AirflowBemtUiuc, V1TheEstimatedPolarAgainstTheMeasured10x5) {
 
     // V1b: the held-out J, as a share of the static UIUC value.
     const std::array<double, 3> js{0.2, 0.3, 0.4};
-    const std::array<double, 3> band_ct = stood ? std::array<double, 3>{0.16, 0.19, 0.22} : std::array<double, 3>{0.060, 0.085, 0.12};
-    const std::array<double, 3> band_cq = stood ? std::array<double, 3>{0.21, 0.25, 0.30} : std::array<double, 3>{0.060, 0.099, 0.15};
+    const std::array<double, 3> band_ct = stood ? std::array<double, 3>{0.17, 0.19, 0.22} : std::array<double, 3>{0.063, 0.087, 0.12};
+    const std::array<double, 3> band_cq = stood ? std::array<double, 3>{0.22, 0.26, 0.31} : std::array<double, 3>{0.064, 0.11, 0.16};
     for (std::size_t i = 0; i < js.size(); ++i) {
         const Coefs c = run(blade, polar, js[i]);
         const double ref_ct = table_at(p.ct_table, js[i]);

@@ -767,6 +767,7 @@ add_library(spade_physics STATIC
     physics/airflow/actuator.cpp
     physics/airflow/rotor_discs.cpp
     physics/airflow/blade.cpp
+    physics/airflow/line.cpp
     physics/airflow/wall_load.cpp
     physics/airflow/grid_io.cpp
     physics/airflow/solids.cpp
