@@ -372,6 +372,76 @@ TEST(GpuAirflowRunner, RecordOnceSubmitFiveTimesAddsFive) {
 }
 
 // ===========================================================================
+// P4c: the actuator line's four buffers, a second contiguous list from binding 36 (the runner binds buffers[i] at binding_base + i,
+// so a runner that uses them lists 28 to 35 as placeholders; kAirflowSetBuffers itself stays 0 to 27).
+// ===========================================================================
+
+TEST(GpuAirflowRunner, TheLineBuffersAreASecondContiguousListFromBindingThirtySix) {
+    namespace ag = spade::airflow_gpu;
+    EXPECT_EQ(ag::kAirflowLineBuffers.size(), std::size_t{4});
+    EXPECT_EQ(spade::compute::kAirflowLineFirstBinding, 36u);
+    EXPECT_EQ(ag::kAirflowSetBuffers.back().binding + 1u, 28u) << "the first list still ends at airflow_wall_load";
+    for (uint32_t i = 0; i < ag::kAirflowLineBuffers.size(); ++i) {
+        EXPECT_EQ(ag::kAirflowLineBuffers[i].binding, spade::compute::kAirflowLineFirstBinding + i) << "entry " << i;
+        EXPECT_EQ(spade::compute::set_one_binding_of(ag::kAirflowLineBuffers[i].name), ag::kAirflowLineBuffers[i].binding)
+            << ag::kAirflowLineBuffers[i].name;
+    }
+    EXPECT_EQ(ag::kAirflowLineBuffers[0].name, "airflow_line_elems");
+    EXPECT_EQ(ag::kAirflowLineBuffers[0].kind, BufferKind::resident);
+    EXPECT_EQ(ag::kAirflowLineBuffers[1].name, "airflow_line_polar");
+    EXPECT_EQ(ag::kAirflowLineBuffers[1].kind, BufferKind::resident);
+    EXPECT_EQ(ag::kAirflowLineBuffers[2].name, "airflow_line_vel");
+    EXPECT_EQ(ag::kAirflowLineBuffers[2].kind, BufferKind::device_only);
+    EXPECT_EQ(ag::kAirflowLineBuffers[3].name, "airflow_line_force");
+    EXPECT_EQ(ag::kAirflowLineBuffers[3].kind, BufferKind::staged) << "the host sums the report from it";
+    EXPECT_EQ(ag::kAirflowLineMaxElements, 6144u) << "D1 at R/dx 38: 4 rotors x 3 blades x 64 elements x 8 sub-azimuths";
+    EXPECT_EQ(ag::kAirflowLinePolarCapacity, 1024u);
+    EXPECT_EQ(ag::kAirflowLineForceFloats, 16u);
+}
+
+// The force buffer at its full capacity crosses to the host in a chain's own readback: one submit, one wait, the bytes the upload put there
+// (the device's write is Physics' airflow_line_load; this pins the buffer, its binding and its readback region). The runner lists
+// bindings 0 to 39, 28 to 35 as placeholders.
+TEST(GpuAirflowRunner, TheLineForceBufferReadsBackThroughAChainInOneWait) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    namespace ag = spade::airflow_gpu;
+
+    constexpr uint64_t kForceBytes = uint64_t{ag::kAirflowLineMaxElements} * ag::kAirflowLineForceFloats * 4u;
+    std::vector<RunnerBuffer> buffers;
+    for (const auto& entry : kAirflowSetBuffers) buffers.push_back(RunnerBuffer{std::string(entry.name), 4, entry.kind});
+    while (buffers.size() < spade::compute::kAirflowLineFirstBinding) {
+        buffers.push_back(RunnerBuffer{"placeholder_" + std::to_string(buffers.size()), 4, BufferKind::device_only});
+    }
+    for (const auto& entry : ag::kAirflowLineBuffers) buffers.push_back(RunnerBuffer{std::string(entry.name), 4, entry.kind});
+    const uint32_t force = ag::kAirflowLineBuffers[3].binding;
+    ASSERT_EQ(buffers.size(), std::size_t{force + 1u});
+    buffers[force].bytes = kForceBytes;
+
+    SplitMix rng{0x11F0CEull};
+    std::vector<uint32_t> pattern(kForceBytes / 4u);
+    for (uint32_t& w : pattern) w = static_cast<uint32_t>(rng.next());
+
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_add_one};
+    auto runner = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes,
+                                                       .workgroup_size = kWorkgroupSize, .readback_bytes = kForceBytes});
+    ASSERT_TRUE(runner.has_value()) << runner.error().context;
+    ASSERT_TRUE((*runner)->upload(force, bytes_of(pattern)).has_value());
+
+    const ChainReadback readbacks[] = {{.buffer = force, .src_offset = 0, .bytes = kForceBytes}};
+    const ChainCommand chain[] = {dispatch(0, count_push(1), {1, 1, 1})};
+    auto id = (*runner)->record(chain, readbacks);
+    ASSERT_TRUE(id.has_value()) << id.error().context;
+    const uint64_t before = (*runner)->waits();
+    ASSERT_TRUE((*runner)->submit(*id, 1).has_value());
+    EXPECT_EQ((*runner)->waits() - before, 1u) << "the report costs no second submit";
+    const std::span<const std::byte> got = (*runner)->readback(*id, 0);
+    ASSERT_EQ(got.size(), std::size_t{kForceBytes});
+    EXPECT_EQ(std::memcmp(got.data(), pattern.data(), kForceBytes), 0);
+}
+
+// ===========================================================================
 // Readbacks recorded into a chain (0fcb99f9): a named buffer region copied into the staging buffer's reserved
 // readback region at the chain's end, read after the wait submit() already makes.
 // ===========================================================================
