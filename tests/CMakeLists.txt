@@ -531,6 +531,7 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_airflow.cpp
         test_editor_flight_readout.cpp
         test_editor_cli.cpp
+        test_sandbox_app_paths.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
         test_editor_pick.cpp
