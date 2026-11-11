@@ -64,6 +64,10 @@ namespace {
            (lc.grid ? ", grid " + std::to_string(lc.grid->nx) + " x " + std::to_string(lc.grid->ny) + " x " +
                           std::to_string(lc.grid->nz) + " at " + std::to_string(lc.grid->dx) + " m"
                     : std::string()) +
+           (lc.hold != glm::vec3(0.0f)
+                ? ", hold " + std::to_string(lc.hold.x) + " " + std::to_string(lc.hold.y) + " " + std::to_string(lc.hold.z) +
+                      " m"
+                : std::string()) +
            (lc.sgs_cs > 0.0f ? ", Smagorinsky Cs " + std::to_string(lc.sgs_cs) : std::string());
 }
 
@@ -106,7 +110,7 @@ float expected_speed(const LiveCase& lc) {
 }
 
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
-    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid);
+    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold);
 }
 
 spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs::path& controls_file, double seconds) {
@@ -155,6 +159,7 @@ namespace {
     lc.program = std::move(built->program);
     lc.program_name = std::move(built->program_name);
     lc.grid = built->grid;
+    lc.hold = built->hold;
     const spade::analysis::ShowcaseTrim trim = built->trim;
     lc.seconds = seconds;
     lc.name = std::move(name);

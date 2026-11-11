@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include <glm/glm.hpp>
+
 #include "analysis/case.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
@@ -37,6 +39,10 @@ struct LiveCase {
     // its centre either way. The case's box then names its longest side, and
     // identity names the grid.
     std::optional<spade::physics::airflow::GridShape> grid;
+    // L63: where LiveRun holds the drone in that grid, from the box's centre (ResolvedCase::hold_from_centre; the drone
+    // stays at the world origin and the box's centre sits at -hold). tests/d1_case.hpp's d1_hold(): zero in kD1Grid, so
+    // a centred film is the centred run to the bit; 0.43 m up in kD1DeepGrid. identity names it when it is not zero.
+    glm::vec3 hold{0.0f};
     // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
     // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.
     float sgs_cs = 0.0f;
@@ -49,8 +55,8 @@ struct LiveCase {
 [[nodiscard]] float expected_speed(const LiveCase& lc);
 
 // The case resolved against its run model, with LiveCase::grid in place of
-// the cube's when set. Refused as resolve() refuses, with every issue, and a
-// grid past kGridByteCap.
+// the cube's when set and the drone held LiveCase::hold from its centre. Refused
+// as resolve() refuses, with every issue, and a grid past kGridByteCap.
 [[nodiscard]] spade::Result<spade::analysis::ResolvedCase> resolve_live(const LiveCase& lc);
 
 // The case's model, through the one path a case has to its model today:
