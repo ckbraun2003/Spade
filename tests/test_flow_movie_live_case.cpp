@@ -79,6 +79,21 @@ TEST(FlowMovieLiveCase, AHoldOfZeroIsTheCentredRunBitForBit) {
     EXPECT_EQ(cube->hold_from_centre, glm::vec3(0.0f));
 }
 
+TEST(FlowMovieLiveCase, ABoxShorterThanD1sStaysCentredAsAGridFlagAlwaysDid) {
+    // d1_hold() is relative to kD1Grid's 177 rows, so a shorter box would get a NEGATIVE hold: the gate's 112 x 80 x 112
+    // box (GpuFlowMovie.GpuD1RendersTwoFrames, --grid 112x80x112) put the drone 0.194 m below the grid's centre, outside
+    // the box ("rotor 0: actuator disc: its kernel support leaves the grid"). Only a deeper box moves the drone.
+    for (const spade::physics::airflow::GridShape grid :
+         {spade::physics::airflow::GridShape{112, 80, 112, 0.004f}, spade::physics::airflow::GridShape{224, 160, 168, 0.004f}}) {
+        const auto lc = flow_movie::d1_live_case(0.01, grid, false);
+        ASSERT_TRUE(lc.has_value()) << lc.error().context;
+        const auto resolved = flow_movie::resolve_live(*lc);
+        ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+        EXPECT_EQ(resolved->hold_from_centre, glm::vec3(0.0f)) << grid.ny << " rows";
+        EXPECT_EQ(lc->identity.find("hold"), std::string::npos) << lc->identity;
+    }
+}
+
 TEST(FlowMovieLiveCase, TheCachesMarkNamesTheHoldOnlyWhenThereIsOne) {
     // A cache made with the drone off centre is not the centred box's, even on the same grid: the mark names the hold. A
     // centred film's mark is as it was before the hold existed (no new words), so the caches already on disk still match.
