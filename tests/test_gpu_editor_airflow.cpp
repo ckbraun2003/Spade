@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -299,4 +300,35 @@ TEST(GpuEditorAirflow, AFlowPastTheBoundStopsTheAirAtItsFrame) {
     EXPECT_EQ(last->frames, 0u) << "the frame past the bound is not handed over";
     EXPECT_NE(last->error.find(": frame 1: the fastest cell, (1, 2, 3), is at "), std::string::npos) << last->error;
     EXPECT_NE(last->error.find(" m/s, past ten times the top speed ("), std::string::npos) << last->error;
+}
+
+// Run air's subgrid turbulence on the device (the Advanced row; the lead, 2026-11-11): asked for at kAirSgsCs, the
+// run says "GPU", its frame carries the account (nu_t's largest met, non-zero) and the panel's line names Cs; asked
+// for nothing, the account is empty and the line says nothing.
+TEST(GpuEditorAirflow, TurbulenceOnTheDeviceReachesTheFramesAccountAndLine) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    const an::ControlProgram program{{{0.0f, kHalf}}};
+    Result<std::unique_ptr<ed::AirflowRun>> on = ed::AirflowRun::start(
+        s, s.airflow.back(), program, {}, ed::gpu_air_starter(), ed::AirLevel::detailed, ed::kAirSgsCs);
+    ASSERT_TRUE(on.has_value()) << on.error().context;
+    EXPECT_EQ((*on)->backend(), "GPU");
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**on, 2);
+    (*on)->stop();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->error.empty()) << frame->error;
+    EXPECT_GT(frame->sgs.nu_t_max, 0.0f) << "the term ran on the device";
+    EXPECT_EQ(frame->turbulence_line.rfind("Cs 0.17 \xC2\xB7 ", 0), 0u) << frame->turbulence_line;
+    std::printf("[ turb    ] device, %llu steps at Cs 0.17: %s\n", static_cast<unsigned long long>(frame->steps),
+                frame->turbulence_line.c_str());
+
+    Result<std::unique_ptr<ed::AirflowRun>> off =
+        ed::AirflowRun::start(s, s.airflow.back(), program, {}, ed::gpu_air_starter());
+    ASSERT_TRUE(off.has_value()) << off.error().context;
+    const std::shared_ptr<const ed::AirFrame> plain = wait_for_frames(**off, 2);
+    (*off)->stop();
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->sgs.nu_t_max, 0.0f);
+    EXPECT_EQ(plain->turbulence_line, "");
 }
