@@ -48,7 +48,7 @@ TEST(RigidContact, AStandardSetHasNoRigidContactAndKeepsItsIdentity) {
     EXPECT_FALSE(std::ranges::any_of(s->arrays, [](const auto& a) { return a.module == "rigid_contact"; }));
     EXPECT_FALSE(std::ranges::any_of(s->passes, [](const auto& p) { return p.module == "rigid_contact"; }));
     Simulation sim = make(spade::modules::standard_modules());
-    EXPECT_FALSE(sim.module_array("shape").has_value()) << "no shape array in a standard set";
+    EXPECT_FALSE(sim.module_array("contact_shapes").has_value()) << "no shape array in a standard set";
 }
 
 // PIN. The module adds one array and one pass between the two contact passes, and nothing else.

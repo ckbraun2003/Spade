@@ -65,6 +65,7 @@
 #include "collision_dynamic.spv.gen.hpp"
 #include "collision_fill.spv.gen.hpp"
 #include "collision_gather.spv.gen.hpp"
+#include "collision_shape.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
 #include "field_dryden.spv.gen.hpp"
 #include "field_environment.spv.gen.hpp"
@@ -481,6 +482,9 @@ const SpirvModule kSpirvModules[] = {
     {gen::kSpvVariants_forces_drag_points, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_points_positions, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
     {gen::kSpvVariants_collision_static, spade::testing::SpirvProfile::parity},
+    // L68: the rigid_contact module's kernel, under PARITY like collision_static (its div and sqrt sites are fp32_math's div32_ftz and
+    // sqrt32_ftz, listed in its header against the CPU expressions they mirror).
+    {gen::kSpvVariants_collision_shape, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_integrate, spade::testing::SpirvProfile::parity},
     // S6 Task 7's three, the dynamic_contact.resolve chain, all under PARITY for
     // wave A's reasons. Two of them are worth a word each:
@@ -1026,8 +1030,8 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
     // quietly became the less trustworthy of the two. It is written relative to
     // the constant now, so it cannot drift again. 12 as of the GPU-sensor leg
     // (sensor_gnss joined the schedule); 14 with the two field-sample kernels
-    // (module-API stage 3); 16 with batch D's forces_drag_points and points_positions (stage 7 D1).
-    constexpr std::size_t kScheduleKernels = 16;
+    // (module-API stage 3); 16 with batch D's forces_drag_points and points_positions (stage 7 D1); 17 with L68's collision_shape.
+    constexpr std::size_t kScheduleKernels = 17;
     constexpr std::size_t kSingleVariantKernels = 2;  // fp32_math_probe and denorm_probe (T6)
 
     std::size_t scanned = 0;

@@ -2686,7 +2686,7 @@ Result<const vehicles::ModelType*> Simulation::model(ModelTypeId id) const {
 namespace {
 [[nodiscard]] uint32_t shape_array_index(const modules::CompiledSchedule& schedule) noexcept {
     for (uint32_t i = 0; i < schedule.arrays.size(); ++i) {
-        if (schedule.arrays[i].module == "rigid_contact" && schedule.arrays[i].name == "shape") return i;
+        if (schedule.arrays[i].module == "rigid_contact" && schedule.arrays[i].name == "contact_shapes") return i;
     }
     return modules::kNoArray;
 }

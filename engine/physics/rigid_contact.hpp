@@ -21,7 +21,7 @@
 // and restitution act per point. The module is OPT-IN (sim/module.hpp's rigid_contact_module()); a set without it, and a body
 // without a shape in a set with it, are untouched, bit for bit.
 //
-// THE SHAPE ROW (ShapeRow, the per_body array rigid_contact.shape, 288 bytes): every shape is compiled to a point list (body frame,
+// THE SHAPE ROW (ShapeRow, the per_body array rigid_contact.contact_shapes, 288 bytes): every shape is compiled to a point list (body frame,
 // the centre of mass at the origin, the principal axes) plus a radius, so one contact test serves all four.
 //   sphere   one point at the origin, radius r;
 //   capsule  points on the segment a-b from a to b, spaced at most r apart, ends included, radius r;

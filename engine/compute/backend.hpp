@@ -367,6 +367,8 @@ enum class GpuRecipe : uint8_t {
     // a set with a position-dependent provider. points_positions is the injected points.positions pass.
     drag_points,
     points_positions,
+    // L68: the rigid_contact module's resolve pass, collision_shape.slang (one thread per body slot; set-1 binding contact_shapes).
+    collision_shape,
 };
 
 // One pass of the GPU chain, in schedule order: "<module>.<pass>" and its

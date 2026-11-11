@@ -344,16 +344,16 @@ ModuleDesc lock_module() {
 void shape_rows_init(const RowInit& init) noexcept {
     std::memset(init.row.data(), 0, init.row.size());  // a row is born "no shape"
 }
-constexpr ArrayDecl kRigidContactArrays[] = {{.name = "shape",
+constexpr ArrayDecl kRigidContactArrays[] = {{.name = "contact_shapes",
                                               .elem_size = row_size<physics::ShapeRow>(),
                                               .extent = Extent::per_body,
                                               .init = &shape_rows_init}};
 constexpr QuantityAccess kRigidContactAccess[] = {{"body.pose", Access::write},
                                                   {"integrate.contact_dv", Access::accumulate},
-                                                  {"rigid_contact.shape", Access::read}};
+                                                  {"rigid_contact.contact_shapes", Access::read}};
 static_assert(kRigidContactAccess[physics::kContactPassContactDvAccess].quantity == "integrate.contact_dv",
               "rigid_contact.resolve reads the contact scratch at physics::kContactPassContactDvAccess");
-static_assert(kRigidContactAccess[physics::kRigidContactShapeAccess].quantity == "rigid_contact.shape",
+static_assert(kRigidContactAccess[physics::kRigidContactShapeAccess].quantity == "rigid_contact.contact_shapes",
               "rigid_contact.resolve reads its shape rows at physics::kRigidContactShapeAccess");
 constexpr std::string_view kRigidAfter[] = {"static_contact.resolve"};
 constexpr std::string_view kRigidBefore[] = {"dynamic_contact.resolve"};
@@ -362,7 +362,8 @@ constexpr PassDecl kRigidContactPasses[] = {{.name = "resolve",
                                              .access = kRigidContactAccess,
                                              .after = kRigidAfter,
                                              .before = kRigidBefore,
-                                             .cpu = &physics::pass_rigid_contact}};
+                                             .cpu = &physics::pass_rigid_contact,
+                                             .gpu = compute::GpuRecipe::collision_shape}};
 
 ModuleDesc rigid_contact_module() {
     return {.name = "rigid_contact", .passes = kRigidContactPasses, .state = kRigidContactArrays, .grade = kPhy2Grade};
@@ -406,6 +407,7 @@ PassFn builtin_cpu_for(compute::GpuRecipe recipe) noexcept {
         case compute::GpuRecipe::dryden_sample: return &physics::pass_dryden_sample;
         case compute::GpuRecipe::drag_points: return &physics::pass_drag;
         case compute::GpuRecipe::points_positions: return &physics::pass_points_positions;
+        case compute::GpuRecipe::collision_shape: return &physics::pass_rigid_contact;
     }
     return nullptr;
 }

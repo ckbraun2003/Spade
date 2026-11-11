@@ -144,10 +144,10 @@ TEST(LayoutClasses, AStandardKernelWithoutASetOneUserIsStillThirty) {
 }
 
 // BATCH D's FIRST RED (lead, 2026-11-09): an undeclared set-1 number INSIDE the 0..47 space is refused by name when the layout is
-// made, not later. Declared today: 0..27 (airflow), 28 (points), 33 (config), 34 (centred), 40 and 41 (lbm). 29 to 32 are
-// named in the plan but not yet declared; 35 to 39 are spare; 42 to 47 are reserved.
+// made, not later. Declared today: 0..27 (airflow), 28 (points), 33 (config), 34 (centred), 35 (contact_shapes, L68), 40 and 41 (lbm).
+// 29 to 32 are named in the plan but not yet declared; 36 to 39 are spare; 42 to 47 are reserved.
 TEST(LayoutClasses, AnUndeclaredSetOneNumberInsideTheSlotsIsRefusedByName) {
-    for (const uint32_t undeclared : {29u, 30u, 31u, 32u, 35u, 39u, 42u, 47u}) {
+    for (const uint32_t undeclared : {29u, 30u, 31u, 32u, 36u, 39u, 42u, 47u}) {
         const std::array<uint32_t, 1> named = {undeclared};
         const auto refused = kernel_layout("airflow_step", named);
         ASSERT_FALSE(refused.has_value()) << "binding " << undeclared << " is declared nowhere in bindings.slang";
@@ -156,7 +156,7 @@ TEST(LayoutClasses, AnUndeclaredSetOneNumberInsideTheSlotsIsRefusedByName) {
         EXPECT_NE(refused.error().context.find(std::to_string(undeclared)), std::string::npos) << refused.error().context;
         EXPECT_NE(refused.error().context.find("undeclared"), std::string::npos) << refused.error().context;
     }
-    for (const uint32_t declared : {0u, 27u, 28u, 33u, 34u, 40u, 41u}) {
+    for (const uint32_t declared : {0u, 27u, 28u, 33u, 34u, 35u, 40u, 41u}) {
         const std::array<uint32_t, 1> named = {declared};
         EXPECT_TRUE(kernel_layout("airflow_step", named).has_value()) << "binding " << declared << " is declared";
     }
