@@ -107,6 +107,9 @@ constexpr std::array kSteps = {
     StepName{"editor", "library"},       StepName{"editor", "add_drone"},
     StepName{"editor", "airflow"},       StepName{"editor", "add_objects"},
     StepName{"editor", "fly"},
+    // Chapter 4, "new in this batch" (L64): its steps are THIS batch's, replaced at the next one.
+    StepName{"batch", "soft_shadows"},   StepName{"batch", "turbulence_air"},
+    StepName{"batch", "wind_change"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
@@ -119,7 +122,7 @@ constexpr std::array<std::string_view, 14> kSnapshots = {"editor_picker",   "edi
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
-constexpr std::array<std::string_view, 3> kMains = {"drone_box", "airflow", "editor"};
+constexpr std::array<std::string_view, 4> kMains = {"drone_box", "airflow", "editor", "batch"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
@@ -1861,6 +1864,9 @@ void editor_tour(Tour& t, const fs::path& assets) {
     if (ec) s.note("the editor's work copy was not removed: " + ec.message());
 }
 
+// The batch chapter's steps (live_tour_batch.inc): a textual include, since the tour's classes are this file's.
+#include "live_tour_batch.inc"
+
 // Clears an earlier run's files so a stale frame never poses as a new one.
 // Deletes only names a run writes (plan_sweep in live_smoke.hpp); a folder
 // that holds anything else is refused before anything is deleted.
@@ -1993,6 +1999,10 @@ int run_live_smoke(const TourOptions& options) {
     if (!tour.stopped()) {
         chapter("3  The editor\nopen a scene, place, select, move, edit, undo, run, save");
         editor_tour(tour, options.assets_dir);
+    }
+    if (!tour.stopped()) {
+        chapter(batch_card(options.label));
+        batch_tour(tour, options.assets_dir);
     }
 
     // The closing card shows the tour's verdict. Closing ffmpeg comes after it
