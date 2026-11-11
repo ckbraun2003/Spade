@@ -749,6 +749,7 @@ endif()
 add_library(spade_physics STATIC
     physics/integrator.cpp
     physics/contacts.cpp
+    physics/rigid_contact.cpp
     physics/grid.cpp
     physics/forces.cpp
     physics/airflow/mac_grid.cpp
@@ -1432,6 +1433,8 @@ spade_slang_kernel_variants(spade_compute forces_drag)
 spade_slang_kernel_variants(spade_compute forces_drag_points SOURCE forces_drag DEFINE SPADE_POINTS)
 spade_slang_kernel_variants(spade_compute points_positions)
 spade_slang_kernel_variants(spade_compute collision_static)
+# L68: the rigid_contact module's resolve pass (one thread per body slot; set-1 binding contact_shapes).
+spade_slang_kernel_variants(spade_compute collision_shape)
 spade_slang_kernel_variants(spade_compute integrate)
 
 # ------------------------------------------------------------------------------

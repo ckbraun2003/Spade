@@ -364,6 +364,8 @@ void pass_behaviors_force(const SubstepContext&) noexcept;
 
 // static_contact.resolve -- every world's active bodies against its world SDF.
 void pass_collision_static(const SubstepContext&) noexcept;
+// L68 (physics/rigid_contact.hpp): the shaped bodies' contact, after static_contact.resolve; in the set only with rigid_contact_module().
+void pass_rigid_contact(const SubstepContext&) noexcept;
 
 // dynamic_contact.resolve -- the sorted-grid body-body sweep.
 //

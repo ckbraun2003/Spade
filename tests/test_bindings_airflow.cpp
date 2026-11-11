@@ -54,7 +54,7 @@ TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {
 // highest index, and sparse numbering is legal). An owner's change is a one-number
 // edit to its own row:
 //   airflow   0..27   the airflow kernels' (append-only list above)
-//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 to 39 spare
+//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 contact_shapes (L68), 36 to 39 spare
 //   lbm       40..47  the LBM tier's: lbm_f, lbm_u declared; lbm_flags (42, L2) reserved
 TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     struct Owner {
@@ -76,7 +76,8 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
           gen::kBinding_airflow_scalars,      gen::kBinding_airflow_discs,       gen::kBinding_airflow_partials,
           gen::kBinding_airflow_health,       gen::kBinding_airflow_publish_v,   gen::kBinding_airflow_publish_s,
           gen::kBinding_airflow_wall_load}},
-        {"stage 7", 28, 39, 3, {gen::kBinding_airflow_points, gen::kBinding_airflow_config, gen::kBinding_airflow_centred}},
+        {"stage 7", 28, 39, 4,
+         {gen::kBinding_airflow_points, gen::kBinding_airflow_config, gen::kBinding_airflow_centred, gen::kBinding_contact_shapes}},
         {"lbm", 40, 47, 2, {gen::kBinding_lbm_f, gen::kBinding_lbm_u}},
     };
     uint32_t total = 0;

@@ -6,6 +6,7 @@
 #include "physics/contact_sets.hpp"  // kStaticContactSetsAccess
 #include "physics/integrator.hpp"
 #include "physics/lock.hpp"
+#include "physics/rigid_contact.hpp"
 #include "physics/sampled_medium.hpp"
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,15 @@ void pass_collision_static(const SubstepContext& ctx) noexcept {
                                 world_rows<ContactDvRow>(ctx.state[kContactPassContactDvAccess],
                                                          static_cast<uint32_t>(w)),
                                 table_rows<float>(ctx.state[kStaticContactSetsAccess]));
+    }
+}
+
+void pass_rigid_contact(const SubstepContext& ctx) noexcept {
+    for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
+        const WorldSubstepView& view = ctx.worlds[w];
+        resolve_rigid_contacts(view.bodies, world_rows<const ShapeRow>(ctx.state[kRigidContactShapeAccess], static_cast<uint32_t>(w)),
+                               *view.sdf, view.contacts, view.params->gravity, ctx.h,
+                               world_rows<ContactDvRow>(ctx.state[kContactPassContactDvAccess], static_cast<uint32_t>(w)));
     }
 }
 

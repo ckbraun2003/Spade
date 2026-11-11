@@ -11,6 +11,7 @@
 
 #include "core/error.hpp"
 #include "physics/forces.hpp"  // drag_mode:: -- the element mode a DragBodyDesc names
+#include "physics/rigid_contact.hpp"  // ShapeDesc -- a model's contact shape (L68)
 #include "vehicles/model_part.hpp"  // PartDesc -- a model's solid geometry, part by part (CORE-7)
 #include "vehicles/propulsion_steady.hpp"  // PropulsionChain -- a model's host-side propulsion (N5a)
 
@@ -226,6 +227,9 @@ struct ModelType {
     uint32_t param_schema_id = 0;      // which parameter schema these values were authored against
     std::string visual_ref;            // viewer/editor mesh reference; NOT read by the engine
     uint32_t version = 1;              // the compiled model's version (DBE-005); >= 1
+    // L68: the contact shape every instance's body gets in a set that holds rigid_contact_module() (physics/rigid_contact.hpp);
+    // none: the model's bodies have no shape, as before.
+    std::optional<physics::ShapeDesc> shape{};
 
     // THE DESIGN FRAME (drone-builder physics DBP-44..47). The model is
     // compiled into its principal body frame -- every mount below is expressed

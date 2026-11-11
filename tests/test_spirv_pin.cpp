@@ -53,6 +53,7 @@
 #include "collision_dynamic.spv.gen.hpp"
 #include "collision_fill.spv.gen.hpp"
 #include "collision_gather.spv.gen.hpp"
+#include "collision_shape.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
 #include "denorm_probe.spv.gen.hpp"
 #include "field_dryden.spv.gen.hpp"
@@ -191,6 +192,10 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_collision_gather, "collision_gather", 32, 0xa316bb50f748c14cull},
     {&spade::compute::gen::kSpvVariants_collision_gather, "collision_gather", 64, 0x3153dd13b39836acull},
     {&spade::compute::gen::kSpvVariants_collision_gather, "collision_gather", 128, 0x642daffd15acd16cull},
+    // L68: the rigid_contact module's kernel, recorded at the build that first compiled it (a new kernel, not a moved one).
+    {&spade::compute::gen::kSpvVariants_collision_shape, "collision_shape", 32, 0x72fb9c94950178e3ull},
+    {&spade::compute::gen::kSpvVariants_collision_shape, "collision_shape", 64, 0x7748f71981cb6643ull},
+    {&spade::compute::gen::kSpvVariants_collision_shape, "collision_shape", 128, 0xa2a4af94ead8eb83ull},
     {&spade::compute::gen::kSpvVariants_collision_static, "collision_static", 32, 0xc91d4bdceeae0b0aull},
     {&spade::compute::gen::kSpvVariants_collision_static, "collision_static", 64, 0x15ecf658ddc8d4aaull},
     {&spade::compute::gen::kSpvVariants_collision_static, "collision_static", 128, 0xb9a2c7d112ff1feaull},

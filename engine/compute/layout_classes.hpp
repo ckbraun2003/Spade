@@ -27,11 +27,11 @@ namespace spade::compute {
 inline constexpr uint32_t kSet1BindingSlots = 48;
 
 // Whether bindings.slang section F declares set-1 binding `b`: the airflow kernels' 0..27, then the stage 7 appendices declared
-// so far (airflow_points, airflow_config, airflow_centred) and the LBM twin's lbm_f and lbm_u. A batch that declares another
+// so far (airflow_points, airflow_config, airflow_centred, contact_shapes) and the LBM twin's lbm_f and lbm_u. A batch that declares another
 // binding adds it here, and the count assert below fails until it does.
 [[nodiscard]] constexpr bool is_declared_set1(uint32_t b) noexcept {
     return b <= kAirflowWallLoadBinding || b == kAirflowPointsBinding || b == kAirflowConfigBinding ||
-           b == kAirflowCentredBinding || b == kLbmFBinding || b == kLbmUBinding;
+           b == kAirflowCentredBinding || b == kContactShapesBinding || b == kLbmFBinding || b == kLbmUBinding;
 }
 static_assert(
     [] {
@@ -63,6 +63,7 @@ static_assert(
                                              std::to_string(kAirflowPointsBinding) + ", " +
                                              std::to_string(kAirflowConfigBinding) + ", " +
                                              std::to_string(kAirflowCentredBinding) + ", " +
+                                             std::to_string(kContactShapesBinding) + ", " +
                                              std::to_string(kLbmFBinding) + " and " +
                                              std::to_string(kLbmUBinding) + ")"});
         }

@@ -21,6 +21,7 @@
 #include "core/time.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
+#include "physics/rigid_contact.hpp"
 #include "physics/schedule.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
@@ -1361,6 +1362,15 @@ public:
     [[nodiscard]] Result<void> lock_translation(BodyRef ref, uint32_t axes);
     [[nodiscard]] Result<void> unlock(BodyRef ref);
 
+    // set_body_shape -- give a live body a contact shape (L68; physics/rigid_contact.hpp), or clear it with ShapeDesc{}. The shape row
+    // is written at once, resolved and validated before any write. Refusals: unavailable when the set holds no rigid_contact
+    // module (sim/module.hpp's rigid_contact_module()); invalid_argument for a description compile_shape() refuses, naming it;
+    // not_found for a dead, stale or foreign ref and for a body spawned but not yet flushed. Mass and inertia stay the caller's
+    // (BodySpawn; physics::box_inv_inertia() is a helper). A sphere rolls on: there is no rolling resistance.
+    [[nodiscard]] Result<void> set_body_shape(BodyRef ref, const physics::ShapeDesc& shape);
+    // The body's shape row as the arena holds it (all zero: no shape). A diagnostic: it copies.
+    [[nodiscard]] Result<physics::ShapeRow> body_shape_row(BodyRef ref) const;
+
     // --- snapshot / restore -----------------------------------------------
 
     // ---------------------------------------------------------------------
@@ -1887,6 +1897,7 @@ private:
         init_body,  // write the reserved body slot and set body_flags::active
         free_body,  // release a body slot, after the declared cascade frees its attached rows (free_rows_of)
         init_row,   // run a module array's init on one attached row (sim/module.hpp's ATTACHED ROWS)
+        init_shape, // L68: write a compiled rigid_contact shape row (288 B, past a spawn record's size) to a new body's row
     };
 
     struct StructuralOp {
@@ -1909,6 +1920,9 @@ private:
         // when Simulation::spawn(world, ModelTypeId, VehicleSpawn) finds its
         // model a non-empty contact set (contact_set_of()).
         uint32_t body_contact_set = 0;
+        // init_shape: the compiled shape row (a model's ModelType::shape, compiled at spawn so a bad one refuses before anything is
+        // reserved), and `array` is the shape array's index; the row goes to the per_body slot `slot`.
+        std::array<std::byte, sizeof(physics::ShapeRow)> shape{};  // bytes: a ShapeRow member would align (and pad) every op
         // init_row: the array (its index in schedule_.arrays) and the module's
         // spawn record, by value -- its first spawn_size bytes.
         uint32_t array = modules::kNoArray;

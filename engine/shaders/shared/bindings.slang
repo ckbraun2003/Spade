@@ -474,7 +474,7 @@ import layouts;
 [[vk::binding(27, 1)]] RWStructuredBuffer<float> airflow_wall_load;
 
 // MODULE API STAGE 7's APPENDED BINDINGS, declared by the batch that first needs each (29 to 32 stay unclaimed until theirs,
-// 35 to 39 are spare).
+// 36 to 39 are spare; 35 is L68's contact_shapes below).
 //
 // airflow_points (Task D1): the per-point rows of a set with a position-dependent provider, ONE ROW PER POINT of 8 words, no
 // padding: [0..2] the point's world position in metres (written by Core's positions pass), [3] reserved, kept 0.0f, [4..6] the
@@ -490,6 +490,12 @@ import layouts;
 // reads, 4 floats a cell [ux, uy, uz, p] with p the gauge pressure in Pa, index 4 * (x + nx * (y + ny * z)), x fastest. A
 // device-only scratch, registered only when a position-dependent provider is in the set.
 [[vk::binding(34, 1)]] RWStructuredBuffer<float> airflow_centred;
+
+// contact_shapes (L68; owner and reader Core, the rigid_contact module's collision_shape kernel): the per-body shape rows of a set that holds the
+// rigid_contact module, ONE ROW PER BODY SLOT of 72 floats (288 bytes, physics/rigid_contact.hpp's ShapeRow): [0] kind, [1] count, [2] radius,
+// [3] rest_speed, [4] friction, [5] restitution, [6] iterations (words 0, 1 and 6 are uints), [7] reserved, then 16 body-frame points {x, y, z, 0}.
+// All zeros is "no shape". Read-only to the kernel; the host writes it (Simulation::set_body_shape, a model's shape at spawn).
+[[vk::binding(35, 1)]] StructuredBuffer<float>   contact_shapes;
 
 // THE LBM TIER'S BINDINGS (L1, the GPU twin; docs/design/physics/plans/
 // 2026-11-06-l1-gpu-twin-plan.md). Set 1 bindings 40 to 47 are the LBM's, named

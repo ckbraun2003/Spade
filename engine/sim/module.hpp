@@ -842,6 +842,12 @@ struct SetGrade {
 // are refused with `unavailable` in a set that does not hold it. CPU reference, Vulkan banded.
 [[nodiscard]] ModuleDesc lock_module();
 
+// Contact tumbling (L68; physics/rigid_contact.hpp): a built-in module that is NOT in the standard set. It owns one per_body array,
+// `shape` (physics::ShapeRow), and one pass, rigid_contact.resolve, between static_contact.resolve and dynamic_contact.resolve. A
+// body with a shape meets the world SDF at its points and the impulse at each point spins it; a body without one, and a set without
+// the module, are untouched. Simulation::set_body_shape() is its typed call, refused with `unavailable` in a set that does not hold it.
+[[nodiscard]] ModuleDesc rigid_contact_module();
+
 // The CPU function a GPU recipe stands for; nullptr for `none`. A pass that
 // names a recipe must carry exactly this function (compile_schedule refuses
 // anything else), so the two backends run one experiment.

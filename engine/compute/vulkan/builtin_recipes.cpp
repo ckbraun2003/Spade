@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "collision_dynamic.spv.gen.hpp"
+#include "collision_shape.spv.gen.hpp"
 #include "collision_static.spv.gen.hpp"
 #include "bindings.gen.hpp"
 #include "compute/recipe.hpp"
@@ -34,6 +35,9 @@ constexpr uint32_t kPointsSet1[] = {gen::kBinding_airflow_points};
 constexpr RecipeKernel kDragPoints[] = {{&gen::kSpvVariants_forces_drag_points, kPointsSet1}};
 constexpr RecipeKernel kPointsPositions[] = {{&gen::kSpvVariants_points_positions, kPointsSet1}};
 constexpr RecipeKernel kStatic[] = {{&gen::kSpvVariants_collision_static, {}}};
+// RIGID CONTACT (L68): one thread per body slot, naming set-1 binding contact_shapes.
+constexpr uint32_t kShapeSet1[] = {gen::kBinding_contact_shapes};
+constexpr RecipeKernel kShape[] = {{&gen::kSpvVariants_collision_shape, kShapeSet1}};
 // physics/grid.cpp's five-stage shape as three kernels, in the order record_dynamic() indexes them.
 constexpr RecipeKernel kDynamic[] = {{&gen::kSpvVariants_grid_build, {}},
                                      {&gen::kSpvVariants_grid_sort, {}},
@@ -81,6 +85,7 @@ constexpr RecipeDesc kDragDesc{"drag", kDrag, &record_per_body};
 constexpr RecipeDesc kDragPointsDesc{"drag_points", kDragPoints, &record_per_body_points};
 constexpr RecipeDesc kPointsPositionsDesc{"points_positions", kPointsPositions, &record_per_body_points};
 constexpr RecipeDesc kCollisionStatic{"collision_static", kStatic, &record_per_body};
+constexpr RecipeDesc kCollisionShape{"collision_shape", kShape, &record_per_body};
 constexpr RecipeDesc kCollisionDynamic{"collision_dynamic", kDynamic, &record_dynamic};
 constexpr RecipeDesc kIntegrateDesc{"integrate", kIntegrate, &record_per_body};
 constexpr RecipeDesc kSensorImu{"sensor_imu", kImu, &record_per_sensor};
@@ -107,6 +112,7 @@ const RecipeDesc* builtin_recipe(GpuRecipe recipe) noexcept {
         case GpuRecipe::dryden_sample: return &kDrydenSample;
         case GpuRecipe::drag_points: return &kDragPointsDesc;
         case GpuRecipe::points_positions: return &kPointsPositionsDesc;
+        case GpuRecipe::collision_shape: return &kCollisionShape;
     }
     return nullptr;
 }

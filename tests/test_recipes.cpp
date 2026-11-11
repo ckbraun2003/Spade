@@ -86,6 +86,7 @@ TEST(BuiltinRecipes, EveryRecipeNamesItsKernelsAndTakesItsOwnGridsGroups) {
         {GpuRecipe::drag_points, {"forces_drag_points"}, kB},
         {GpuRecipe::points_positions, {"points_positions"}, kB},
         {GpuRecipe::collision_static, {"collision_static"}, kB},
+        {GpuRecipe::collision_shape, {"collision_shape"}, kB},
         {GpuRecipe::integrate, {"integrate"}, kB},
         {GpuRecipe::sensor_imu, {"sensor_imu"}, kS},
         {GpuRecipe::sensor_gnss, {"sensor_gnss"}, kS},
