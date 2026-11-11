@@ -103,7 +103,14 @@ Device (Gpu*): pipeline count 12 to 13 only with the module; the drop and the co
 About 8 working days (6 to 10): shape row, module, validation, API and the vehicle hook 2; CPU pass and the REDs 2.5; device kernel, binding, SpirvPin and device tests 2;
 tuning the settle, gates and review rounds 1.5. Physics' review is about half a day of theirs. The queue, not the work, sets the date.
 
-## Decisions I need (Spade, Physics)
+## Decisions (Spade, 2026-11-11: approved on all six, subject to Physics' review)
 
-1. Opt-in module (recommended) over always-on. 2. The device grade above. 3. Spheres' rolling resistance: out or in. 4. One sweep first, iterations only if the settle test needs
-them. 5. Rest speed default 0.1 m/s. 6. Convex hull capped at 16 points. 7. Include `box_inv_inertia`.
+1. Opt-in module `rigid_contact`; READY proves the standard set unchanged with the standard digests and the SpirvPin rows.
+2. Grade: CPU-CPU and GPU-GPU bit-identical; the GPU within a stated band of the CPU (settled pose, bounce count), the grade static contact has today.
+   Test/Docs names the band before the first comparison.
+3. No rolling resistance in the first cut. The API docs say a sphere rolls on.
+4. One sweep per substep first. Iterations are added only if the settle test needs them, and READY says so.
+5. A hull is capped at 16 points; a larger one is refused by name.
+6. `box_inv_inertia(mass, half_extents)` is included.
+
+If Physics' review changes anything material, it goes back to Spade before any ticket.
