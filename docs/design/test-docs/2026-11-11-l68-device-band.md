@@ -38,6 +38,21 @@ The scenario is Core's: a 0.2 m cube (half extent 0.1, mass 1 kg, μ 0.5, e 0.3)
 - **Both runs must be settled** at 6 s. A run that is not settled is reported, not compared.
 - **A different body, shape, tilt, material or substep** needs its own ensemble, not these constants.
 
+## The CPU ensemble's result (Core, 2026-11-11, branch core/l68-tumbling, before any device comparison)
+
+Nine runs, the protocol above exactly; the first tilt of the list (20° about (1, 2, 3)/√14). All nine settle (|v| < 0.02 m/s and |ω| < 0.1 rad/s over the last 0.5 s) on the same face, each tilt ≤ 1°, each centre height within [−0.002, +0.005] m of the half extent.
+
+| Outcome | Pairwise spread, nine runs | Band (max of floor and 2 × spread) |
+|---|---|---|
+| Lateral position | 0.00000 m | **0.010 m** (the floor) |
+| Yaw | 0.000° | **2°** (the floor) |
+| Bounce count | 0 | **1** (the floor) |
+
+- **The bands are the floors.** The solve is sequential impulses with 4 sweeps (accumulated impulses); with one sweep the spreads were 0.00005 m, 0.009° and 0. The ensemble says nothing beyond the floors, and that is the result: at a perturbation ten times the device's gap the CPU's outcome does not move.
+- **The perturbation stays 1e-6, and one tilt is enough.** A larger one (1e-4) would measure a sensitivity the device's gap (about 1e-7) cannot reach, and a second tilt answers a different question (another basin). Neither would change a band, because a spread of 0 already gives the floor. The half-band guard (each spread at most half its band) passes and still catches a solve that turns chaotic.
+- **The measures are Core's, in `tests/rigid_contact_support.hpp` (`run_cube`), and they are accepted as written:** the settled face is the body axis whose world-up component is largest in magnitude; yaw is the heading of the next body axis about the vertical; an impact is a step where the centre's vertical speed rises by more than 0.1 m/s (the same 0.1 m/s as the rest speed). This replaces "approach speed above the rest speed" in the table above, with the same threshold.
+- **The device comparison is the first one, and it runs against these bands.** A result within 10% of a band edge is a finding for the lead, as above.
+
 ## Not covered
 
 - **A tumble's trajectory** is never compared: only the outcomes above, as Core's plan says.
