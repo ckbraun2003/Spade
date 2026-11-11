@@ -244,8 +244,9 @@ struct Film {
         return film.stem + ": " + std::to_string(film.frames) +
                (film.gpu      ? " frames of GpuFluid, no parts, the rotors held; "
                 : film.device && film.run->sgs_cs > 0.0f
-                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, not checked "
-                      "against the CPU; "
+                    ? " frames of LiveRun on GpuFluid with the Smagorinsky term, the parts in the flow, the term "
+                      "checked bit-equal to the CPU for 32 steps of D1 (0.01216 s of simulated time at h 0.38 ms) "
+                      "only; "
                 : film.device ? " frames of LiveRun on GpuFluid, the parts in the flow, checked bit-equal to the "
                                 "CPU through about 0.18 s of simulated time only; "
                               : " frames of LiveRun; ") +
@@ -421,7 +422,7 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
 #endif
     }
     // L52: LiveRun's config has no subgrid viscosity, so a device film's maker is handed the case's Cs on a copy of
-    // the config (GpuFluid refuses a nonzero Cs until its kernel lands, naming it: the film then stops by name).
+    // the config (GpuFluid takes it since L54: its kernel is bit-equal to sgs.cpp).
     an::LiveFluidMaker maker = device.maker;
     if (film.device && lc.sgs_cs > 0.0f) {
         maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
