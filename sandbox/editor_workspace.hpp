@@ -557,7 +557,8 @@ class EditorWorkspace {
             panels_.status = "Run air: no drone here has an airflow region; select a drone and Add airflow region";
             return;
         }
-        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(s, *region, std::nullopt, {}, air_starter_, panels_.air_level);
+        Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(
+            s, *region, std::nullopt, {}, air_starter_, panels_.air_level, panels_.air_turbulence ? kAirSgsCs : 0.0f);
         if (!started) {
             panels_.status = started.error().context;
             return;

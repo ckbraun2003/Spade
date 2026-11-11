@@ -350,6 +350,7 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
     air_frame_ = w.air() != nullptr ? w.air()->latest() : nullptr;
     w.panels().flight = w.air() != nullptr && air_frame_ ? editor::flight_rows(air_frame_->flight)
                                                          : std::vector<editor::FlightRow>{};
+    w.panels().turbulence_line = w.air() != nullptr && air_frame_ ? air_frame_->turbulence_line : std::string{};
     if (w.air() == nullptr) {
         air_speed_ = editor::AirSpeed{};
         w.panels().air_band.clear();

@@ -637,3 +637,61 @@ TEST(EditorAirflow, AFrameFasterThanTenTimesTheTopSpeedIsAFault) {
     EXPECT_EQ(ed::air_frame_fault(v, 10.0f, 7),
               "frame 7: the fastest cell, (1, 0, 1), is at 100.5 m/s, past ten times the top speed (100.0 m/s)");
 }
+
+// ---------------------------------------------------------------------------
+// Run air's subgrid turbulence (the Advanced "Subgrid turbulence" row; the lead, 2026-11-11): Smagorinsky's term at
+// kAirSgsCs (L52's 0.17) through the device's maker. GPU only: a LiveRun's own CPU fluid has no Cs, so on the CPU
+// the row is off and the run says so, in its backend and in the panel line. The line is the account of what the term
+// did: nu_t's largest and what bound (LiveSgs).
+// ---------------------------------------------------------------------------
+TEST(EditorAirflow, TheTurbulenceLineSaysWhatOccurredAndWhenItIsOff) {
+    EXPECT_EQ(ed::kAirSgsCs, 0.17f);
+    an::LiveSgs none;
+    EXPECT_EQ(ed::turbulence_line(0.0f, true, none), "") << "the row off says nothing";
+    EXPECT_EQ(ed::turbulence_line(0.0f, false, none), "");
+    EXPECT_EQ(ed::turbulence_line(0.17f, false, none), "Subgrid turbulence needs the GPU: this run is on the CPU, so it is off");
+
+    an::LiveSgs quiet;
+    quiet.nu_t_max = 0.0024f;
+    EXPECT_EQ(ed::turbulence_line(0.17f, true, quiet),
+              "Cs 0.17 \xC2\xB7 nu_t up to 0.0024 m2/s; nothing at the cap or the wall limit");
+
+    an::LiveSgs bound;
+    bound.nu_t_max = 0.0031f;
+    bound.capped_steps = 12;
+    bound.capped_cell_steps = 40;
+    bound.limited_steps = 600;
+    bound.limited_face_steps = 52000;
+    EXPECT_EQ(ed::turbulence_line(0.17f, true, bound),
+              "Cs 0.17 \xC2\xB7 subgrid nu_t up to 0.0031 m2/s; held at the cap on 12 steps (40 cell-steps), "
+              "wall-limited on 600 steps (52,000 face-steps)");
+}
+
+// Asked for on the CPU, the run flies without it (the CPU's fluid has no Cs), says so in its backend, and its frames
+// carry the same words for the panel; asked for nothing, the backend and the line are as they were.
+TEST(EditorAirflow, TurbulenceOnTheCpuIsOffAndSaysSo) {
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    const spade::scene::SceneAirflowRegion& region = s.airflow.back();
+    const an::ControlProgram program{{{0.0f, kHalf}}};
+    Result<std::unique_ptr<ed::AirflowRun>> on = ed::AirflowRun::start(
+        s, region, program, {}, ed::cpu_air_starter("no Vulkan device"), ed::AirLevel::detailed, ed::kAirSgsCs);
+    ASSERT_TRUE(on.has_value()) << on.error().context;
+    EXPECT_EQ((*on)->backend(), "CPU: no Vulkan device; subgrid turbulence needs the GPU");
+    const std::shared_ptr<const ed::AirFrame> frame = wait_for_frames(**on, 1);
+    (*on)->stop();
+    ASSERT_NE(frame, nullptr);
+    ASSERT_TRUE(frame->error.empty()) << frame->error;
+    EXPECT_EQ(frame->turbulence_line, "Subgrid turbulence needs the GPU: this run is on the CPU, so it is off");
+    EXPECT_EQ(frame->sgs.nu_t_max, 0.0f);
+    EXPECT_EQ(frame->sgs.capped_cell_steps + frame->sgs.limited_face_steps, 0u);
+
+    Result<std::unique_ptr<ed::AirflowRun>> off =
+        ed::AirflowRun::start(s, region, program, {}, ed::cpu_air_starter("no Vulkan device"));
+    ASSERT_TRUE(off.has_value()) << off.error().context;
+    EXPECT_EQ((*off)->backend(), "CPU: no Vulkan device");
+    const std::shared_ptr<const ed::AirFrame> plain = wait_for_frames(**off, 1);
+    (*off)->stop();
+    ASSERT_NE(plain, nullptr);
+    EXPECT_EQ(plain->turbulence_line, "");
+}
