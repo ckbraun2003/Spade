@@ -236,3 +236,43 @@ TEST(WorldWind, ARefusalWritesNoComponent) {
     ASSERT_FALSE(sim.set_world_wind(0, bad).has_value());
     EXPECT_TRUE(bits_equal(row_wind(sim, 0), kCreated));
 }
+
+// A mid-run set is an INPUT the caller's script applies, and it replays. The engine records no input log: a replay is a Scenario
+// whose `input` hook runs before each step (testing/replay.hpp), so the set is applied at the same tick on every run. From a snapshot
+// taken before the set the hook applies it again; from one taken after, the set is already in the restored state and the hook is
+// not asked for it. Both reach the uninterrupted run's digest, and the set matters (the run without it differs).
+TEST(WorldWind, AMidRunSetInAScenarioInputReplaysFromASnapshotOnEitherSide) {
+    constexpr uint64_t kSetTick = 5;
+    constexpr uint64_t kSteps = 12;
+    spade::testing::Scenario with_set;
+    with_set.name = "wind-set";
+    with_set.substeps = 2;
+    with_set.steps = kSteps;
+    with_set.build = [] { return two_calm_worlds(); };
+    with_set.input = [](spade::Simulation& sim, spade::Tick tick) -> spade::Result<void> {
+        if (tick.value == kSetTick) return sim.set_world_wind(0, kSet);
+        return {};
+    };
+    spade::testing::Scenario without_set = with_set;
+    without_set.input = nullptr;
+
+    const spade::Result<uint64_t> whole = spade::testing::run_scenario(with_set);
+    ASSERT_TRUE(whole.has_value()) << whole.error().context;
+    const spade::Result<uint64_t> unset = spade::testing::run_scenario(without_set);
+    ASSERT_TRUE(unset.has_value()) << unset.error().context;
+    EXPECT_NE(*whole, *unset) << "the set is an input that changes the run";
+
+    for (const uint64_t resume : {uint64_t{3}, uint64_t{8}}) {
+        spade::Result<spade::Simulation> first = spade::testing::start_scenario(with_set);
+        ASSERT_TRUE(first.has_value()) << first.error().context;
+        ASSERT_TRUE(spade::testing::advance_scenario(with_set, *first, resume).has_value());
+        const spade::Result<spade::SnapshotBlob> blob = first->snapshot();
+        ASSERT_TRUE(blob.has_value()) << blob.error().context;
+        spade::Result<spade::Simulation> second = spade::testing::start_scenario(with_set);
+        ASSERT_TRUE(second.has_value()) << second.error().context;
+        ASSERT_TRUE(second->restore(*blob).has_value());
+        ASSERT_TRUE(spade::testing::advance_scenario(with_set, *second, kSteps).has_value());
+        EXPECT_EQ(spade::testing::state_digest(*second), *whole) << "resumed at tick " << resume;
+        EXPECT_TRUE(bits_equal(row_wind(*second, 0), kSet));
+    }
+}
