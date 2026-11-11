@@ -95,6 +95,8 @@ add_executable(spade_tests
     test_airflow_ftz.cpp
     test_airflow_threads.cpp
     test_airflow_sgs.cpp
+    test_airflow_blade.cpp
+    test_airflow_bemt_uiuc.cpp
     # the quad film's own case, compiled in for AirflowSgsFilm (L52)
     ../tools/flow_movie/quad_case.cpp
     test_airflow_check_grid.cpp
