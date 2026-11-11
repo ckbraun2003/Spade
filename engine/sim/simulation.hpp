@@ -1580,7 +1580,27 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> reseed(uint64_t scene_seed);
 
-    // L46 (RED stub): set a world's mean wind. Implemented in the GREEN commit.
+    // ---------------------------------------------------------------------
+    // set_world_wind -- set one world's MEAN wind, world frame, m/s, signed (L46). It writes the world's registered WorldParams.wind
+    // row (the row every pass reads: the standard set's dryden.sample adds its gust to it) and marks the device mirror dirty, so
+    // the next step() uploads it on Vulkan. It takes effect at the NEXT step(): every substep of that step, and of every later
+    // one, reads the set value (Dryden still adds its gust on top); nothing already computed is touched.
+    //
+    // WHAT A SET IS. The live wind is STATE: it is in the arenas, so a snapshot after a set carries it, restore() brings it back,
+    // and state_digest() folds it (setting a different value moves the digest, setting the value a world already has moves none).
+    // The wind AT CREATION is IDENTITY and stays what it was: config_hash(WorldSetDesc) folds env.wind once, into the
+    // replay_config row, and a set does not change it, so a blob taken after a set restores into a set created with the original
+    // wind. The engine keeps no input log; a mid-run set is an INPUT the caller applies, and a replay applies it again at the same
+    // tick (a Scenario's `input` hook, testing/replay.hpp). A replay resumed from a snapshot taken after the set does not need it
+    // again.
+    //
+    // WHAT IT DOES NOT MOVE. The LBM inflow does not follow: the airflow tier's inlet takes the wind it was configured with, not
+    // this row. A body, a rotor, a ring and the tick are untouched.
+    //
+    // Refuses (invalid_argument), and a refusal changes nothing, not a component of the row: a `world_index` outside the set, and
+    // a non-finite component of `wind` ("wind.x", "wind.y" or "wind.z" in the text). Each text opens with "set_world_wind:".
+    // No queue rule: unlike reseed(), nothing a queued op does reads the wind at flush time.
+    // ---------------------------------------------------------------------
     [[nodiscard]] Result<void> set_world_wind(uint32_t world_index, glm::vec3 wind);
 
     // --- state inspection --------------------------------------------------
