@@ -20,7 +20,7 @@ Proof: the pins at the standard set stay green (below) and a module-set run with
 
 ## The shape row
 
-One `per_body` array `rigid_contact.shape`, row = 18 float4 (288 B): row 0 `{kind, count, radius, rest_speed}`, row 1 `{friction, restitution, 0, 0}`, then up to 16 body-frame
+One `per_body` array `rigid_contact.shape`, row = 18 float4 (288 B): row 0 `{kind, count, radius, rest_speed}`, row 1 `{friction, restitution, iterations, 0}` (`iterations` is reserved from the start, 0 = 1 sweep; Physics' review), then up to 16 body-frame
 points `{x, y, z, 0}` (centre of mass at the origin, principal axes, as the contact sets). Registered arrays are walked, so the row is in the snapshot and in
 `state_digest` for free; zero is "no shape". Every shape is compiled to this: a point list plus a radius.
 
@@ -34,7 +34,8 @@ points `{x, y, z, 0}` (centre of mass at the origin, principal axes, as the cont
 A point query is one `sample(world_sdf, pos + orient * p)` (distance and gradient from one walk, as today), so every shape works against the floor, walls, gate frames and
 props, all of which are the world SDF. The set of shapes is closed (the four above); a mesh or an analytic capsule-vs-SDF distance is not planned.
 Material: `friction`/`restitution` in the row, a NEGATIVE value means "this world's `ContactParams`". The SDF carries no material id, so one world has one surface
-material (a per-surface table is out of scope). `rest_speed` (m/s, 0 = the default 0.1): approach speed below it gets e = 0, so a body settles without micro-bounces.
+material (a per-surface table is out of scope). `rest_speed` (m/s, 0 = the default 0.1): approach speed below `max(rest_speed, 2 |g| h)` gets e = 0, with the world's gravity and the substep `h` the pass is given, so a body
+settles without micro-bounces and the default cannot be wrong at a coarse substep (at h = 10 ms, g h is 0.098 m/s; Physics' review).
 
 ## The model, per substep, per shaped body (this order is the parity contract)
 
@@ -44,8 +45,8 @@ For each point k (p = pos + orient * local_k):
 1. `s = sample(sdf, p)`; contact iff `s.distance < radius` (strict, NaN fails), `|grad| > 0`; `n = grad/|grad|`, `depth = radius - distance`; the contact point
    `c = p - n * radius`, lever `r = c - pos`.
 2. Velocity at the point `v_c = vel + cross(orient * omega_body, r)`; `v_n = dot(v_c, n)`. Only an approaching point (`v_n < 0`) gets an impulse.
-3. Normal: `e_eff = (-v_n > rest_speed) ? e : 0`; `a = conj(orient) * cross(r, n)`; `K_n = 1/m + dot(a, a * inv_inertia_diag)`; `j = -(1 + e_eff) * v_n / K_n`;
-   `vel += (j/m) n`; `omega_body += inv_inertia_diag * (conj(orient) * cross(r, j n))`.
+3. Normal: `e_eff = (-v_n > max(rest_speed, 2 |g| h)) ? e : 0`; `a = conj(orient) * cross(r, n)`; `K_n = 1/m + dot(a, a * inv_inertia_diag)`; `j = -(1 + e_eff) * v_n / K_n`;
+   `vel += (j/m) n` (the divides and the normalize of step 1 are IEEE on the CPU and fp32_math's `div32_ftz`/`sqrt32_ftz` on the device, so that gap is the SDF walk only); `omega_body += inv_inertia_diag * (conj(orient) * cross(r, j n))`.
 4. Friction, on the velocity after step 3: `v_t = v_c - dot(v_c, n) n`; if `|v_t| > 0`, `t = v_t/|v_t|`, `b = conj(orient) * cross(r, t)`, `K_t = 1/m + dot(b, b * inv_inertia_diag)`;
    `j_t = min(|v_t| / K_t, mu * j)` (an isotropic Coulomb cone: one tangent, the sliding direction; the cap makes it an exact stop and never a reversal); apply `-j_t t`
    at `c` the way step 3 applies `j n`.
@@ -58,9 +59,14 @@ re-run every substep at 1 kHz, removes the rotation at each contact until all po
 **The substep rule** is the existing one: the pass runs once per substep, so its effect scales with the substep count the way the sphere's does. No CCD: the usable
 envelope is `|v| h < radius` for radius shapes, and for radius-0 shapes `|v_point| h` must stay below the thinnest wall (the limit `contacts.hpp` states, now per point).
 
+Integrate already carries the gyroscopic term `omega x (I omega)` (`integrator.cpp` step 4b), so an asymmetric free tumble shows the intermediate-axis flip.
+If the settle test needs more than one sweep, the per-shape `iterations` lane turns it on, the friction cap then uses the point's ACCUMULATED normal impulse (not the last `j`, or
+the second sweep loses friction), and READY says so.
+
 Known risks, each a test: (1) one sequential sweep per substep may jitter a resting box; if the settle test fails the fix is a per-shape iteration count (a lane in
 row 0), not a new model. (2) A sphere on a flat floor rolls without end (there is no rolling resistance); a box or capsule stops. A small `spin_damping` (1/s, in the shape row) is
-the standard answer; I recommend it OUT of the first cut unless Cameron wants spheres to stop (decision for Spade). (3) A radius-0 point deep in a thin wall pops out (as the sphere does).
+the standard answer; I recommend it OUT of the first cut unless Cameron wants spheres to stop (decision for Spade). (3) A radius-0 point deep in a thin wall pops out (as the sphere does), and eight corners at radius 0 miss a thin SDF feature that falls between them (a gate bar thinner than the box's
+corner spacing, as well as a thin wall): stated for gate frames too. The settle test takes a tolerance in depth, not zero (a box on an edge resolves one corner at a time).
 
 ## Existing world friction and restitution
 
@@ -84,8 +90,8 @@ One new kernel `collision_shape.slang`, one thread per body slot, mirroring the 
 `collision_static`; the shape array at a NEW set-1 binding (`contact_shapes`, the appendix pattern of `airflow_points`), so only a set with the module builds a second descriptor
 set (pipelines 12 to 13). Standard sets: unchanged, SpirvPin standard rows unmoved, 3 new rows for the kernel. **Grade, for Physics and Spade to confirm:** the device is
 within the existing static-contact band of the CPU (the SDF walk and normalize are the device's), bit-identical to itself run to run, and the CPU is bit-identical to
-itself. "CPU and GPU bit-equal" is not what static contact is today and a body-level pass cannot beat its SDF; I will bound the difference in the tests instead (position and
-orientation of a settled drop, and the number of bounces).
+itself. "CPU and GPU bit-equal" is not what static contact is today and a body-level pass cannot beat its SDF; I will bound the difference in the tests instead, pinning OUTCOMES, not trajectories: the settled face (up-axis index) identical, settled position and orientation within the
+static-contact band, bounce count equal within 1.
 
 ## REDs (each built, each failure line in READY)
 
