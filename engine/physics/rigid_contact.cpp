@@ -74,6 +74,9 @@ Result<ShapeRow> compile_shape(const ShapeDesc& desc) {
         return std::unexpected(refuse("restitution must be in [0, 1] (negative means the world's)"));
     }
     if (!std::isfinite(desc.rest_speed) || desc.rest_speed < 0.0f) return std::unexpected(refuse("rest_speed must be finite and >= 0"));
+    if (desc.iterations > kMaxSweeps) {
+        return std::unexpected(refuse("iterations must be 0 (the default) to " + std::to_string(kMaxSweeps) + ", not " + std::to_string(desc.iterations)));
+    }
     row.friction = desc.friction < 0.0f ? -1.0f : desc.friction;
     row.restitution = desc.restitution < 0.0f ? -1.0f : desc.restitution;
     row.rest_speed = desc.rest_speed;
@@ -159,9 +162,16 @@ glm::vec3 box_inv_inertia(float mass, glm::vec3 half_extents) noexcept {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------
-// The pass. THE NUMBERED OP ORDER BELOW IS THE PARITY CONTRACT: collision_shape.slang performs the same operations, in the same order, with
-// the same groupings, in fp32 (the divides and the normalize through fp32_math's div32_ftz and sqrt32_ftz). Bodies in slot order, points in
-// row order, ONE sweep per substep (the row's `iterations` lane is reserved and not read).
+// The pass: sequential impulses on the points' contacts. THE NUMBERED OP ORDER BELOW IS THE PARITY CONTRACT: collision_shape.slang performs the
+// same operations, in the same order, with the same groupings, in fp32 (the divides and square roots through fp32_math's div32_ftz and
+// sqrt32_ftz). Bodies in slot order, points in row order.
+//
+// A: the contacts, found ONCE per substep (one SDF walk per point; the points do not move inside the substep's velocity sweeps).
+// B: `sweeps` passes over the found contacts, each point's normal impulse and then its friction impulse, with ACCUMULATED impulses: the
+//    normal one clamped at >= 0 and the friction one inside the cone |j_t| <= mu j_n, so a later sweep can take back what an earlier one over-did.
+//    Without that a body rests on jitter (a rocking box leaks into a lateral creep). One sweep with nothing accumulated is the plain
+//    "approaching points only" response.
+// C: the positional correction of the deepest point.
 // ---------------------------------------------------------------------------------------------------------------------------------------
 void resolve_rigid_contacts(std::span<BodyState> bodies, std::span<const ShapeRow> shapes, const SdfProgram& world_sdf,
                             const ContactParams& params, glm::vec3 gravity, float h, std::span<ContactDvRow> contact_dv) noexcept {
@@ -185,14 +195,20 @@ void resolve_rigid_contacts(std::span<BodyState> bodies, std::span<const ShapeRo
         const float inv_m = 1.0f / body.mass;
         const glm::vec3 inv_i = body.inv_inertia_diag;
         const glm::vec3 vel_in = body.vel;
+        const uint32_t sweeps = shape.iterations == 0u ? kDefaultSweeps : glm::min(shape.iterations, kMaxSweeps);
 
-        bool found = false;
+        // A. The contacts. STRICT `<`, NaN fails (as the sphere's); |grad| == 0 has no normal and is skipped.
+        glm::vec3 c_n[kShapeMaxPoints];
+        glm::vec3 c_r[kShapeMaxPoints];
+        float c_kn[kShapeMaxPoints];
+        float c_bias[kShapeMaxPoints];
+        float c_acc_n[kShapeMaxPoints];
+        glm::vec3 c_acc_t[kShapeMaxPoints];
+        uint32_t found = 0;
         float deepest = 0.0f;
         glm::vec3 deepest_n(0.0f);
-
         const uint32_t count = glm::min(shape.count, kShapeMaxPoints);
         for (uint32_t k = 0; k < count; ++k) {
-            // 1. The point and its contact. STRICT `<`, NaN fails (as the sphere's); |grad| == 0 has no normal and is skipped.
             const glm::vec3 local(shape.points[k][0], shape.points[k][1], shape.points[k][2]);
             const glm::vec3 p = contact_point_world(body, local);
             const SdfSample s = spade::sample(world_sdf, p);
@@ -202,45 +218,64 @@ void resolve_rigid_contacts(std::span<BodyState> bodies, std::span<const ShapeRo
             const glm::vec3 n = s.gradient / grad_len;
             const float depth = radius - s.distance;
             const glm::vec3 lever = (p - n * radius) - body.pos;
-
-            // 2. The velocity at the contact point, and its normal part. Only an approaching point gets an impulse.
-            glm::vec3 v_c = body.vel + glm::cross(body.orient * body.omega_body, lever);
-            const float v_n = glm::dot(v_c, n);
-            float j_n = 0.0f;
-            if (v_n < 0.0f) {
-                // 3. Normal impulse: effective mass 1/m + (r x n)^T I^-1 (r x n), restitution unless the approach is under the rest speed.
-                const float e_eff = (-v_n > rest_speed) ? e : 0.0f;
-                const glm::vec3 a = glm::conjugate(body.orient) * glm::cross(lever, n);
-                const float k_n = inv_m + glm::dot(a, a * inv_i);
-                j_n = -(1.0f + e_eff) * v_n / k_n;
-                body.vel += (j_n * inv_m) * n;
-                body.omega_body += inv_i * (glm::conjugate(body.orient) * glm::cross(lever, j_n * n));
-            }
-
-            // 4. Coulomb friction on the velocity after step 3: one tangent (the sliding direction), capped at mu j_n, so it is an exact
-            //    stop and never a reversal.
-            v_c = body.vel + glm::cross(body.orient * body.omega_body, lever);
-            const glm::vec3 v_t = v_c - glm::dot(v_c, n) * n;
-            const float v_t_len = glm::length(v_t);
-            if (v_t_len > 0.0f) {
-                const glm::vec3 t = v_t / v_t_len;
-                const glm::vec3 b = glm::conjugate(body.orient) * glm::cross(lever, t);
-                const float k_t = inv_m + glm::dot(b, b * inv_i);
-                const float j_t = glm::min(v_t_len / k_t, mu * j_n);
-                body.vel -= (j_t * inv_m) * t;
-                body.omega_body -= inv_i * (glm::conjugate(body.orient) * glm::cross(lever, j_t * t));
-            }
-
+            // The restitution bias: the separating speed the contact is solved to, set from the approach speed BEFORE any impulse of this
+            // substep, and 0 (a plastic contact) under the rest speed.
+            const glm::vec3 v_c = body.vel + glm::cross(body.orient * body.omega_body, lever);
+            const float v_n0 = glm::dot(v_c, n);
+            const glm::vec3 a = glm::conjugate(body.orient) * glm::cross(lever, n);
+            c_n[found] = n;
+            c_r[found] = lever;
+            c_kn[found] = inv_m + glm::dot(a, a * inv_i);
+            c_bias[found] = (-v_n0 > rest_speed) ? e * (-v_n0) : 0.0f;
+            c_acc_n[found] = 0.0f;
+            c_acc_t[found] = glm::vec3(0.0f);
             // The deepest point (strict `>`: the first in row order wins a tie) takes the positional correction.
-            if (!found || depth > deepest) {
-                found = true;
+            if (found == 0u || depth > deepest) {
                 deepest = depth;
                 deepest_n = n;
             }
+            ++found;
+        }
+        if (found == 0u) continue;
+
+        // B. The sweeps.
+        for (uint32_t it = 0; it < sweeps; ++it) {
+            for (uint32_t c = 0; c < found; ++c) {
+                const glm::vec3 n = c_n[c];
+                const glm::vec3 lever = c_r[c];
+                // Normal: drive the point's normal speed to its bias; the accumulated impulse stays >= 0 (a contact pushes, never pulls).
+                glm::vec3 v_c = body.vel + glm::cross(body.orient * body.omega_body, lever);
+                const float v_n = glm::dot(v_c, n);
+                const float wanted = c_acc_n[c] + (c_bias[c] - v_n) / c_kn[c];
+                const float acc_n = glm::max(wanted, 0.0f);
+                const float j_n = acc_n - c_acc_n[c];
+                c_acc_n[c] = acc_n;
+                body.vel += (j_n * inv_m) * n;
+                body.omega_body += inv_i * (glm::conjugate(body.orient) * glm::cross(lever, j_n * n));
+
+                // Friction on the velocity after that: one tangent (the sliding direction); the accumulated friction impulse stays in the
+                // cone |j_t| <= mu acc_n, so it is an exact stop and never a reversal, and a later sweep can give back an over-shoot.
+                v_c = body.vel + glm::cross(body.orient * body.omega_body, lever);
+                const glm::vec3 v_t = v_c - glm::dot(v_c, n) * n;
+                const float v_t_len = glm::length(v_t);
+                if (v_t_len > 0.0f) {
+                    const glm::vec3 t = v_t / v_t_len;
+                    const glm::vec3 b = glm::conjugate(body.orient) * glm::cross(lever, t);
+                    const float k_t = inv_m + glm::dot(b, b * inv_i);
+                    glm::vec3 next = c_acc_t[c] - (v_t_len / k_t) * t;
+                    const float cap = mu * acc_n;
+                    const float next_len = glm::length(next);
+                    if (next_len > cap) next = next * (cap / next_len);
+                    const glm::vec3 dj = next - c_acc_t[c];
+                    c_acc_t[c] = next;
+                    body.vel += inv_m * dj;
+                    body.omega_body += inv_i * (glm::conjugate(body.orient) * glm::cross(lever, dj));
+                }
+            }
         }
 
-        // 5. Positional correction of the deepest point, as the sphere's: beta of the excess over the slop, along its normal, on `pos`.
-        if (found) body.pos += deepest_n * (beta * glm::max(deepest - slop, 0.0f));
+        // C. Positional correction of the deepest point, as the sphere's: beta of the excess over the slop, along its normal, on `pos`.
+        body.pos += deepest_n * (beta * glm::max(deepest - slop, 0.0f));
         if (!contact_dv.empty() && i < contact_dv.size()) contact_dv[i].dv += body.vel - vel_in;
     }
 }

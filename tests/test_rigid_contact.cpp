@@ -153,6 +153,8 @@ TEST(RigidContact, ABadDescriptionIsRefusedNamingItAndChangesNothing) {
     nan_friction.friction = nan;
     ph::ShapeDesc negative_rest = cube();
     negative_rest.rest_speed = -1.0f;
+    ph::ShapeDesc too_many_sweeps = cube();
+    too_many_sweeps.iterations = 17;
     const Case cases[] = {
         {ph::sphere_shape(0.0f), "radius"},
         {ph::sphere_shape(-1.0f), "radius"},
@@ -166,6 +168,7 @@ TEST(RigidContact, ABadDescriptionIsRefusedNamingItAndChangesNothing) {
         {bad_restitution, "restitution"},
         {nan_friction, "friction"},
         {negative_rest, "rest_speed"},
+        {too_many_sweeps, "iterations"},
     };
     for (const Case& c : cases) {
         const spade::Result<void> r = sim.set_body_shape(ref, c.desc);
@@ -238,6 +241,70 @@ TEST(RigidContact, ALevelSlideStopsAtVSquaredOverTwoMuG) {
     EXPECT_LT(glm::length(glm::vec2(end.vel.x, end.vel.z)), 5e-3f);
     EXPECT_LT(std::abs(end.vel.y), 0.03f);
     EXPECT_NEAR(end.pos.y, half.y, 0.005f);
+}
+
+// A settled box does not creep. After a slide has stopped, over the next 10 s the lateral speed stays under 1e-4 m/s and the body moves less than
+// 1 mm: a drone that has come to rest must not slide across the editor for as long as it runs. The box, and the hull of the same eight corners.
+struct Creep {
+    float max_speed = 0.0f;  // m/s, horizontal, at the end of each step of the window
+    float drift = 0.0f;      // m, horizontal, over the window
+    float sink = 0.0f;       // m, the largest change of height over the window
+};
+
+[[nodiscard]] Creep creep_after_slide(const ph::ShapeDesc& shape, int settle_steps = 3000, int window_steps = 10000) {
+    Simulation sim = make(tumbling_set());
+    const glm::vec3 half(0.2f, 0.05f, 0.2f);
+    const BodyRef ref = put(sim, glm::vec3(0.0f, half.y, 0.0f), glm::vec3(3.0f, 0.0f, 0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                            ph::box_inv_inertia(1.0f, half));
+    EXPECT_TRUE(shaped(sim, ref, shape));
+    EXPECT_TRUE(sim.step(settle_steps).has_value());
+    const BodyState start = body(sim, ref);
+    Creep c;
+    for (int i = 0; i < window_steps; ++i) {
+        EXPECT_TRUE(sim.step(1).has_value());
+        const BodyState b = body(sim, ref);
+        c.max_speed = std::max(c.max_speed, glm::length(glm::vec2(b.vel.x, b.vel.z)));
+        c.sink = std::max(c.sink, std::abs(b.pos.y - start.pos.y));
+    }
+    const BodyState end = body(sim, ref);
+    c.drift = glm::length(glm::vec2(end.pos.x - start.pos.x, end.pos.z - start.pos.z));
+    return c;
+}
+
+TEST(RigidContact, ASettledBoxAndHullDoNotCreep) {
+    const glm::vec3 half(0.2f, 0.05f, 0.2f);
+    ph::ShapeDesc box = ph::box_shape(half);
+    box.friction = 0.5f;
+    box.restitution = 0.0f;
+    ph::ShapeDesc hull = ph::hull_shape(cube_corners(1.0f));
+    hull.points.clear();
+    for (const glm::vec3& c : cube_corners(1.0f)) hull.points.push_back(c * half);
+    hull.friction = 0.5f;
+    hull.restitution = 0.0f;
+    for (const ph::ShapeDesc* d : {&box, &hull}) {
+        const Creep c = creep_after_slide(*d);
+        EXPECT_LT(c.max_speed, 1e-4f) << "lateral speed after settling";
+        EXPECT_LT(c.drift, 1e-3f) << "lateral drift over 10 s";
+        EXPECT_LT(c.sink, 1e-3f) << "height change over 10 s";
+    }
+}
+
+// The row's iterations lane is the number of sweeps, and the creep is the sweeps' doing: one sweep (the plain per-point impulse) leaves a
+// millimetre-per-second creep (measured 2.5e-3 m/s), the default of four removes it, and 0 is exactly four.
+TEST(RigidContact, TheIterationsLaneSetsTheSweepsAndZeroIsTheDefault) {
+    const glm::vec3 half(0.2f, 0.05f, 0.2f);
+    Creep by[3];
+    const uint32_t lanes[3] = {1u, 0u, ph::kDefaultSweeps};
+    for (int v = 0; v < 3; ++v) {
+        ph::ShapeDesc box = ph::box_shape(half);
+        box.friction = 0.5f;
+        box.restitution = 0.0f;
+        box.iterations = lanes[v];
+        by[v] = creep_after_slide(box);
+    }
+    EXPECT_GT(by[0].max_speed, 1e-3f) << "one sweep creeps";
+    EXPECT_LT(by[1].max_speed, 1e-4f) << "the default does not";
+    EXPECT_EQ(std::memcmp(&by[1], &by[2], sizeof(Creep)), 0) << "iterations 0 is kDefaultSweeps";
 }
 
 // The corner hit: a cube dropped on a corner spins up at the first impact, then rolls and comes to rest on a face.

@@ -34,6 +34,9 @@
 namespace spade::physics {
 
 inline constexpr uint32_t kShapeMaxPoints = 16;
+// Sweeps of the velocity solve per substep: the default (a row's iterations lane 0) and the most a row may ask for.
+inline constexpr uint32_t kDefaultSweeps = 4;
+inline constexpr uint32_t kMaxSweeps = 16;
 
 // rigid_contact.resolve's index of the shape array in its access list (sim/standard_modules.cpp pins it); the contact scratch is at
 // kContactPassContactDvAccess, as in the other two contact passes.
@@ -42,8 +45,8 @@ inline constexpr std::size_t kRigidContactShapeAccess = 2;
 enum class ShapeKind : uint32_t { none = 0, sphere = 1, capsule = 2, box = 3, hull = 4 };
 
 // What the host describes. Negative friction/restitution mean "this world's ContactParams" (the SDF carries no material, so a
-// world has one surface material). rest_speed 0 is the default 0.1 m/s; the pass uses max(rest_speed, 2 |g| h). iterations 0 is
-// one sweep per substep.
+// world has one surface material). rest_speed 0 is the default 0.1 m/s; the pass uses max(rest_speed, 2 |g| h). iterations is the
+// number of sweeps of the contact solve per substep: 0 is the default (kDefaultSweeps), at most kMaxSweeps.
 struct ShapeDesc {
     ShapeKind kind = ShapeKind::none;  // none clears the body's shape
     float radius = 0.0f;               // sphere and capsule: the radius (> 0); box and hull: the skin (>= 0)
@@ -54,7 +57,7 @@ struct ShapeDesc {
     float friction = -1.0f;            // Coulomb mu, >= 0; negative: the world's
     float restitution = -1.0f;         // e in [0, 1]; negative: the world's
     float rest_speed = 0.0f;           // m/s, >= 0
-    uint32_t iterations = 0;           // sweeps per substep beyond the first-sweep default (reserved: 0)
+    uint32_t iterations = 0;           // sweeps of the contact solve per substep: 0 = kDefaultSweeps, else 1..kMaxSweeps
 };
 
 [[nodiscard]] ShapeDesc sphere_shape(float radius);
