@@ -29,6 +29,7 @@
 #include "airflow_publish_fields.spv.gen.hpp"
 #include "airflow_region_mean.spv.gen.hpp"
 #include "airflow_remove_mean.spv.gen.hpp"
+#include "airflow_sgs.spv.gen.hpp"
 #include "airflow_solid_divergence.spv.gen.hpp"
 #include "airflow_solid_gradient.spv.gen.hpp"
 #include "airflow_solid_velocities.spv.gen.hpp"
@@ -62,6 +63,7 @@ enum Pipeline : uint32_t {
     kGather,
     kAddIncrements,
     kViscous,
+    kSgs,
     kDivergence,
     kSmooth,
     kResidual,
@@ -110,7 +112,8 @@ constexpr ProjectionSolidsPipelines kProjectionSolids{
 constexpr std::array<const compute::SpirvVariantSet*, kPcgScalars + 1> kStepKernels = {
     &gen::kSpvVariants_airflow_velocity_bc,     &gen::kSpvVariants_airflow_advection,
     &gen::kSpvVariants_airflow_actuator_gather, &gen::kSpvVariants_airflow_add_increments,
-    &gen::kSpvVariants_airflow_viscous,         &gen::kSpvVariants_airflow_divergence,
+    &gen::kSpvVariants_airflow_viscous,         &gen::kSpvVariants_airflow_sgs,
+    &gen::kSpvVariants_airflow_divergence,
     &gen::kSpvVariants_airflow_mg_smooth,       &gen::kSpvVariants_airflow_mg_residual,
     &gen::kSpvVariants_airflow_mg_restrict,     &gen::kSpvVariants_airflow_mg_prolong,
     &gen::kSpvVariants_airflow_gradient_subtract, &gen::kSpvVariants_airflow_tile_sum,
@@ -129,6 +132,16 @@ constexpr std::array<const compute::SpirvVariantSet*, kWallLoad - kPcgScalars> k
 // side, the ambient.
 constexpr uint32_t kFaceBlockWords = 22;
 
+// The subgrid kernel's (airflow_sgs.slang): its three params words, the scalars' three report words, and the
+// invocations of its reduction.
+constexpr uint32_t kParamsSgsK = 29;
+constexpr uint32_t kParamsSgsC2 = 30;
+constexpr uint32_t kParamsSgsCap = 31;
+constexpr uint32_t kSlotSgsCapped = 28;
+constexpr uint32_t kSlotSgsLimited = 29;
+constexpr uint32_t kSlotSgsPeak = 30;
+constexpr uint32_t kSgsReduceThreads = 1024;
+
 [[nodiscard]] Error invalid(std::string what) {
     return Error{Code::invalid_argument, "GpuFluid: " + std::move(what)};
 }
@@ -141,6 +154,17 @@ constexpr uint32_t kFaceBlockWords = 22;
 [[nodiscard]] ChainCommand dispatch(uint32_t pipeline, uint32_t a, uint32_t b, uint32_t count, uint32_t d,
                                     uint32_t wg) {
     return projection_dispatch(pipeline, ProjectionPush{a, b, count, d}, wg);
+}
+
+// sgs_diffuse(): nu_t per cell, each component's change, each component's add, then the report's two-stage
+// reduction (airflow_sgs.slang's modes 0-4).
+void append_sgs(std::vector<ChainCommand>& out, const af::GridShape& s, uint32_t wg) {
+    const auto n = face_counts(s);
+    out.push_back(dispatch(kSgs, 0u, 0u, s.nx * s.ny * s.nz, 0u, wg));
+    for (uint32_t c = 0; c < 3; ++c) out.push_back(dispatch(kSgs, c, 1u, n[c], 0u, wg));
+    for (uint32_t c = 0; c < 3; ++c) out.push_back(dispatch(kSgs, c, 2u, n[c], 0u, wg));
+    out.push_back(dispatch(kSgs, 0u, 3u, kSgsReduceThreads, 0u, wg));
+    out.push_back(dispatch(kSgs, 0u, 4u, 1u, 0u, wg));
 }
 
 // apply_velocity_boundaries(): apply_axis() per axis, one invocation per line.
@@ -164,6 +188,15 @@ void append_viscous(std::vector<ChainCommand>& out, const af::GridShape& s, cons
         }
         if (periodic[c]) out.push_back(dispatch(kViscous, c, 2u, faces / cnt[c], 0u, wg));
     }
+}
+
+// The subgrid kernel's report off the scalars: the counts as uint bits, the peak a float. 0 with Cs 0 (the kernel
+// never ran, the words are never read).
+void add_sgs_health(af::FluidHealth& h, const std::array<float, kScalarSlots>& scalars, bool on) {
+    if (!on) return;
+    h.sgs_capped_cells = std::bit_cast<uint32_t>(scalars[kSlotSgsCapped]);
+    h.sgs_limited_faces = std::bit_cast<uint32_t>(scalars[kSlotSgsLimited]);
+    h.sgs_nu_t_max = scalars[kSlotSgsPeak];
 }
 
 }  // namespace
@@ -212,10 +245,6 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     }
     if (!af::sgs_cs_valid(cfg.sgs_cs)) {
         return std::unexpected(invalid("sgs_cs must be 0 (off) or finite and at most kSgsCsMax"));
-    }
-    // The device step has no subgrid kernel yet (L52: the CPU first): a nonzero Cs is refused, never ignored.
-    if (cfg.sgs_cs != 0.0f) {
-        return std::unexpected(invalid("sgs_cs is on the CPU step only: the device has no subgrid kernel yet"));
     }
     const bool with_solids = solids != nullptr && solids->any;
     if (Result<void> ok = af::check_grid(g.shape, bc, with_solids); !ok) return std::unexpected(ok.error());
@@ -291,6 +320,12 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         params[14] = 2u * total;
         params[15] = total;
         params[kParamsFlags] = 0u;
+        if (cfg.sgs_cs > 0.0f) {
+            // sgs_diffuse()'s own expressions (sgs.cpp), under the same flush.
+            params[kParamsSgsK] = std::bit_cast<uint32_t>(cfg.h / (s.dx * s.dx));
+            params[kParamsSgsC2] = std::bit_cast<uint32_t>(cfg.sgs_cs * cfg.sgs_cs * s.dx * s.dx);
+            params[kParamsSgsCap] = std::bit_cast<uint32_t>(s.dx * s.dx / (8.0f * cfg.h));
+        }
         write_projection_params(std::span<uint32_t>(params).first(level_words), self->layout_, kinds,
                                 af::projection_floats(s, cfg.rho, cfg.h));
         params[27] = static_cast<uint32_t>(level_words);
@@ -323,7 +358,9 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     set(gen::kBinding_airflow_w, n[2], BufferKind::resident);
     set(gen::kBinding_airflow_pressure, cells, BufferKind::resident);
     set(gen::kBinding_airflow_next, total, BufferKind::device_only);
-    set(gen::kBinding_airflow_advect, std::max<uint64_t>(3u * uint64_t{total}, kFlowChannelCount * cells),
+    // The subgrid kernel's scratch: the change, its limited flags, the raw nu_t and the reduction's partials.
+    const uint64_t sgs_floats = cfg.sgs_cs > 0.0f ? 2u * uint64_t{total} + cells + 3u * kSgsReduceThreads : 0u;
+    set(gen::kBinding_airflow_advect, std::max({3u * uint64_t{total}, kFlowChannelCount * cells, sgs_floats}),
         BufferKind::device_only);
     set(gen::kBinding_airflow_increments, total, BufferKind::device_only);
     if (cfg.nu > 0.0f) set(gen::kBinding_airflow_viscous_rhs, total, BufferKind::device_only);
@@ -423,6 +460,12 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     chain.push_back(dispatch(kAddIncrements, 0u, 0u, n[0] + n[1] + n[2], 0u, wg));
     append_velocity_bc(chain, s, wg);
     solid_velocities();
+    if (cfg_.sgs_cs > 0.0f) {
+        // fluid_step()'s hook: after the sources and the boundary passes, before the molecular diffusion.
+        append_sgs(chain, s, wg);
+        append_velocity_bc(chain, s, wg);
+        solid_velocities();
+    }
     if (cfg_.nu > 0.0f) {
         append_viscous(chain, s, af::periodic_axes(bc_), cfg_.visc_sweeps, wg);
         append_velocity_bc(chain, s, wg);
@@ -488,6 +531,7 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
         af::FluidHealth h{.pressure_iterations = cfg_.n_v};
         h.pressure_residual = scalars[kSlotResidual];
         h.unconverged = h.pressure_residual > af::kPlanAResidualAnnounce;
+        add_sgs_health(h, scalars, cfg_.sgs_cs > 0.0f);
         return h;
     }
     Result<GpuProjectionReport> projected = project_with_solids(*runner_, projection_, cfg_.n_v, cfg_.cg_cap);
@@ -516,6 +560,7 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
     h.unconverged = rep.residual > af::kResidualAnnounce;
     h.capped = h.unconverged && !rep.stalled;
     h.stalled = h.unconverged && rep.stalled;
+    add_sgs_health(h, scalars, cfg_.sgs_cs > 0.0f);
     return h;
 }
 

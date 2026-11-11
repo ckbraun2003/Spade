@@ -504,6 +504,36 @@ TEST(GpuLiveFluid, ItsRefusalsFallBackToTheCpuByName) {
         << refused.error().context;
 }
 
+// L54: the maker takes a fluid config with the subgrid viscosity on (the device has its kernel since L54; before it
+// the maker refused a nonzero Cs by name, and start_live_run() fell back to the CPU and said why) and steps it, and a
+// bad Cs is still the maker's refusal by name.
+TEST(GpuLiveFluid, TheMakerTakesASubgridViscosityAndRefusesABadOne) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const af::GridShape shape{16, 12, 12, 0.02f};
+    const af::DomainBc bc;
+    const spade::Result<af::MacGrid> grid = af::make_grid(shape, bc);
+    ASSERT_TRUE(grid.has_value());
+    af::FluidConfig config{.rho = 1.225f, .nu = 1.4607e-5f, .h = 0.002f, .n_v = 2, .visc_sweeps = 8};
+    config.sgs_cs = 0.17f;
+    const an::LiveFluidMaker maker = ag::gpu_live_fluid(*ctx);
+    const an::LiveFluidStart s{*grid, bc, config, nullptr};
+    auto fluid = maker(s);
+    ASSERT_TRUE(fluid.has_value()) << fluid.error().context;
+    const af::ActuatorDisc disc{.centre = {0.16f, 0.16f, 0.12f}, .axis = {0.0f, -1.0f, 0.0f}, .radius = 0.05f,
+                                .thrust = 1.0f, .torque = 0.01f};
+    const auto health = (*fluid)->step(std::span(&disc, 1));
+    ASSERT_TRUE(health.has_value()) << health.error().context;
+    EXPECT_EQ(health->fault, af::FluidFault::none);
+    EXPECT_GT(health->sgs_nu_t_max, 0.0f) << "the subgrid viscosity ran on the device";
+
+    config.sgs_cs = 0.31f;  // above kSgsCsMax
+    const auto refused = maker(s);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("sgs_cs"), std::string::npos) << refused.error().context;
+}
+
 // One NaN in an interior u face of the editor's still air, one step: the
 // device's u, v, w and p hold as many NaNs and infinities as the CPU's, whose
 // step faults there (fluid_step's non_finite). Counts, not payloads: a NaN's
