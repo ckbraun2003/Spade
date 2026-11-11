@@ -49,7 +49,7 @@ struct WorldOpts {
     env.wind = glm::vec3(0.0f);
     env.air_density = 1.225f;
     spade::WorldBuilder b;
-    b.name("rigid").environment(env).capacities(spade::Capacities{4, 4, 2, 1});
+    b.name("rigid").environment(env).capacities(spade::Capacities{4, 12, 4, 1});
     b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
     if (std::isfinite(o.wall_x)) b.plane(glm::vec3(-1.0f, 0.0f, 0.0f), -o.wall_x).union_();
     if (o.bar) b.box(glm::vec3(0.5f, 0.05f, 0.05f), spade::SdfPose{.position = glm::vec3(0.0f, 0.5f, 0.0f)}).union_();

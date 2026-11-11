@@ -1897,6 +1897,7 @@ private:
         init_body,  // write the reserved body slot and set body_flags::active
         free_body,  // release a body slot, after the declared cascade frees its attached rows (free_rows_of)
         init_row,   // run a module array's init on one attached row (sim/module.hpp's ATTACHED ROWS)
+        init_shape, // L68: write a compiled rigid_contact shape row (288 B, past a spawn record's size) to a new body's row
     };
 
     struct StructuralOp {
@@ -1919,6 +1920,9 @@ private:
         // when Simulation::spawn(world, ModelTypeId, VehicleSpawn) finds its
         // model a non-empty contact set (contact_set_of()).
         uint32_t body_contact_set = 0;
+        // init_shape: the compiled shape row (a model's ModelType::shape, compiled at spawn so a bad one refuses before anything is
+        // reserved), and `array` is the shape array's index; the row goes to the per_body slot `slot`.
+        std::array<std::byte, sizeof(physics::ShapeRow)> shape{};  // bytes: a ShapeRow member would align (and pad) every op
         // init_row: the array (its index in schedule_.arrays) and the module's
         // spawn record, by value -- its first spawn_size bytes.
         uint32_t array = modules::kNoArray;

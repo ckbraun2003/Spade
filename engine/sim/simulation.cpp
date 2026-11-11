@@ -2140,6 +2140,19 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             });
             return {};
         }
+
+        case OpKind::init_shape: {
+            // The body is written by the init_body op queued just before this one; the shape row is the body's own (direct-indexed).
+            const modules::CompiledArray& array = schedule_.arrays[op.array];
+            Result<std::span<std::byte>> bytes = arenas_.bytes(module_array_ids_[op.array]);
+            if (!bytes) return std::unexpected(bytes.error());
+            const std::size_t at = std::size_t{op.slot} * array.elem_size;
+            if (at + sizeof(physics::ShapeRow) > bytes->size() || array.elem_size != sizeof(physics::ShapeRow)) {
+                return std::unexpected(internal("structural queue: init_shape row is outside the shape array"));
+            }
+            std::memcpy(bytes->data() + at, op.shape.data(), sizeof(physics::ShapeRow));
+            return {};
+        }
     }
     return std::unexpected(internal("structural queue: unknown op kind"));
 }
@@ -2669,6 +2682,16 @@ Result<const vehicles::ModelType*> Simulation::model(ModelTypeId id) const {
 // ModuleVehicleRows.ARequestOutsideTheVehicleIsRefusedAndUnwinds pins it.
 // ---------------------------------------------------------------------------
 
+// L68: the rigid_contact module's shape array (its index in schedule_.arrays), or kNoArray when the set holds no such module.
+namespace {
+[[nodiscard]] uint32_t shape_array_index(const modules::CompiledSchedule& schedule) noexcept {
+    for (uint32_t i = 0; i < schedule.arrays.size(); ++i) {
+        if (schedule.arrays[i].module == "rigid_contact" && schedule.arrays[i].name == "shape") return i;
+    }
+    return modules::kNoArray;
+}
+}  // namespace
+
 Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                      const VehicleSpawn& where) {
     const Result<uint32_t> world = checked_world(world_index);
@@ -2679,6 +2702,22 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     const WorldConfig& config = configs_[world_index];
 
     // --- validation, before anything is reserved ----------------------------
+    // L68: a model with a shape needs the rigid_contact module (else unavailable, naming it) and a shape that compiles. Both refuse here, so
+    // nothing is reserved; a model with no shape is not asked anything.
+    physics::ShapeRow model_shape{};
+    uint32_t model_shape_array = modules::kNoArray;
+    if (model.shape.has_value()) {
+        model_shape_array = shape_array_index(schedule_);
+        if (model_shape_array == modules::kNoArray) {
+            return std::unexpected(Error{Code::unavailable,
+                                         "spawn(vehicle): model '" + model.name +
+                                             "' carries a shape, but this module set holds no 'rigid_contact' module "
+                                             "(add modules::rigid_contact_module() to the set)"});
+        }
+        const Result<physics::ShapeRow> compiled = physics::compile_shape(*model.shape);
+        if (!compiled) return std::unexpected(Error{compiled.error().code, "spawn(vehicle): model '" + model.name + "': " + compiled.error().context});
+        model_shape = *compiled;
+    }
     if (!finite(where.pos) || !finite(where.vel) || !finite(where.omega_body)) {
         return std::unexpected(invalid("spawn(vehicle): pos/vel/omega must all be finite"));
     }
@@ -2905,6 +2944,16 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
                                               1.0f / model.body.inertia_diag.y,
                                               1.0f / model.body.inertia_diag.z);
     queue_.push_back(body_op);
+    if (model_shape_array != modules::kNoArray) {
+        StructuralOp shape_op;
+        shape_op.kind = OpKind::init_shape;
+        shape_op.world_index = world_index;
+        shape_op.slot = *body_slot;
+        shape_op.body_slot = *body_slot;
+        shape_op.array = model_shape_array;
+        std::memcpy(shape_op.shape.data(), &model_shape, sizeof(physics::ShapeRow));
+        queue_.push_back(shape_op);
+    }
 
     // Each row is an init_row of its module's array, with that module's spawn
     // record -- the records attach_row() takes -- and no validate: the model
@@ -3231,13 +3280,51 @@ Result<void> Simulation::lock_translation(BodyRef ref, uint32_t axes) {
 
 Result<void> Simulation::unlock(BodyRef ref) { return lock_front(ref, 0u, false, "unlock"); }
 
-// L68 RED stubs: the calls exist and say so; the GREEN commits write the row.
-Result<void> Simulation::set_body_shape(BodyRef, const physics::ShapeDesc&) {
-    return std::unexpected(Error{Code::unavailable, "set_body_shape: not implemented"});
+
+// Every refusal before the write (unavailable without the module, the poison, the description, the ref, a body not yet flushed), then the
+// row is compiled and written whole, and the mirror is marked dirty (the row is a registered array the device uploads and reads back).
+Result<void> Simulation::set_body_shape(BodyRef ref, const physics::ShapeDesc& shape) {
+    const uint32_t array = shape_array_index(schedule_);
+    if (array == modules::kNoArray) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "set_body_shape: this module set holds no 'rigid_contact' module, so it cannot shape a body "
+                                     "(add modules::rigid_contact_module() to the set)"});
+    }
+    if (!poisoned_.empty()) return std::unexpected(invalid(poisoned_));
+    const Result<physics::ShapeRow> row = physics::compile_shape(shape);
+    if (!row) return std::unexpected(row.error());
+    if (Result<void> valid = validate_ref(ref); !valid) {
+        return std::unexpected(Error{valid.error().code, "set_body_shape: " + valid.error().context});
+    }
+    Result<std::span<BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    if (((*bodies)[ref.slot].flags & physics::body_flags::active) == 0u) {
+        return std::unexpected(missing("set_body_shape: body is spawned but not yet flushed (call step() or flush_structural() first)"));
+    }
+    const Result<std::span<std::byte>> bytes = arenas_.bytes(module_array_ids_[array]);
+    if (!bytes) return std::unexpected(bytes.error());
+    const std::size_t at = std::size_t{ref.slot} * sizeof(physics::ShapeRow);
+    if (at + sizeof(physics::ShapeRow) > bytes->size()) return std::unexpected(internal("set_body_shape: the body's row is outside the shape array"));
+    std::memcpy(bytes->data() + at, &*row, sizeof(physics::ShapeRow));
+    mark_vulkan_dirty();
+    return {};
 }
 
-Result<physics::ShapeRow> Simulation::body_shape_row(BodyRef) const {
-    return std::unexpected(Error{Code::unavailable, "body_shape_row: not implemented"});
+Result<physics::ShapeRow> Simulation::body_shape_row(BodyRef ref) const {
+    const uint32_t array = shape_array_index(schedule_);
+    if (array == modules::kNoArray) {
+        return std::unexpected(Error{Code::unavailable, "body_shape_row: this module set holds no 'rigid_contact' module"});
+    }
+    if (Result<void> valid = validate_ref(ref); !valid) {
+        return std::unexpected(Error{valid.error().code, "body_shape_row: " + valid.error().context});
+    }
+    const Result<std::span<const std::byte>> bytes = std::as_const(arenas_).bytes(module_array_ids_[array]);
+    if (!bytes) return std::unexpected(bytes.error());
+    const std::size_t at = std::size_t{ref.slot} * sizeof(physics::ShapeRow);
+    if (at + sizeof(physics::ShapeRow) > bytes->size()) return std::unexpected(internal("body_shape_row: the body's row is outside the shape array"));
+    physics::ShapeRow row;
+    std::memcpy(&row, bytes->data() + at, sizeof(physics::ShapeRow));
+    return row;
 }
 
 // ---------------------------------------------------------------------------
