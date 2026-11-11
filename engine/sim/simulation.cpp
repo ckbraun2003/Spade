@@ -3595,6 +3595,29 @@ Result<void> Simulation::reseed(uint64_t scene_seed) {
     return {};
 }
 
+Result<void> Simulation::set_world_wind(uint32_t world_index, glm::vec3 wind) {
+    // RESOLVE AND CHECK FIRST, WRITE LAST, as reseed() does: a refusal leaves the row, the digest and the mirror as they were.
+    if (world_index >= layout_.world_count) {
+        return std::unexpected(invalid("set_world_wind: world_index " + std::to_string(world_index) +
+                                       " is outside the set, which has " + std::to_string(layout_.world_count) + " world(s)"));
+    }
+    constexpr const char* kComponent[3] = {"wind.x", "wind.y", "wind.z"};
+    for (int i = 0; i < 3; ++i) {
+        if (!std::isfinite(wind[i])) {
+            return std::unexpected(invalid(std::string("set_world_wind: ") + kComponent[i] + " is not finite; a wind is a finite "
+                                           "vector in m/s (world index " + std::to_string(world_index) + ")"));
+        }
+    }
+    Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
+    if (!params) return std::unexpected(params.error());
+    (*params)[world_index].wind = wind;
+
+    // The device mirror is stale for the same reason reseed()'s note gives: WorldParams is a registered array the mirror uploads
+    // and reads back, so an unmarked write would be erased by the next step's readback.
+    mark_vulkan_dirty();
+    return {};
+}
+
 Result<void> Simulation::derive_streams(uint32_t world_index) {
     Result<std::span<WorldParams>> params = arenas_.array(world_params_id_);
     if (!params) return std::unexpected(params.error());

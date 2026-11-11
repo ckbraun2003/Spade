@@ -1059,6 +1059,13 @@ install(TARGETS spade_scene
 install(DIRECTORY scene/ DESTINATION include/scene FILES_MATCHING PATTERN "*.hpp"
     PATTERN "detail" EXCLUDE)
 
+# The default library, installed beside the headers (L50): everything under assets/library -- the index, its sources registry and
+# SOURCES.md, the drones' model and sources files, the part files and the meshes and thumbnails they cite -- at
+# <prefix>/share/spade/library, and nothing else from assets/. A host that installs Spade loads a drone by that path
+# (scene::load_library of share/spade/library/library.yaml). Its own component so a test can install just it into a temp prefix
+# (tests/test_library_install.cpp); a plain `cmake --install` still installs it with everything else.
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/assets/library DESTINATION share/spade COMPONENT spade_library)
+
 # spade::render_parts -- a model's parts as render-scene items (RND-9; docs/
 # design/rendering/plans/2026-10-13-render-parts-plan.md). Owned by
 # Rendering. It sits above spade::render and spade::vehicles, and neither
