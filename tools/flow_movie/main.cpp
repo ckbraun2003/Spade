@@ -2106,6 +2106,8 @@ struct WebTimes {
             return 1;
         }
         const fs::path png = work / (base + "png");
+        std::error_code made;
+        fs::create_directories(work, made);  // a --web-still run has not made the folder the clip's mp4 would have
         if (auto saved = save_png(still_encoder, rgba, png); !saved) return fail(saved.error());
         std::printf("web-timing: %s still %ux%u of frame %u: draw %.3f s, %.3f s with the PNG (%s)\n",
                     opt.web_id.c_str(), web::kStillWidth, web::kStillHeight, k, draw_s,
