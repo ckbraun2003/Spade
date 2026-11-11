@@ -265,3 +265,23 @@ Totals: dropped 36, kept 53, moved 15, new test 24; 128 check ids.
 1. The new headless tests, red then green, before any step is cut, so coverage never dips.
 2. The tour: chapter 1 trimmed; the scene and builder mains removed (posters and kMains with them); chapter 2's capability card; the stale descriptions fixed. One live smoke run, its journal attached.
 3. Chapter 2's live views as LiveRun steps rotors (Core's command) and flow_look lands; C_p after P2.
+
+## 6. Chapter 4, the batch chapter (L64; the lead, 2026-11-11)
+
+**Why.** The tour went ten batches without changing, because the batches' visible changes were opt-in or engine only. Chapter 4 holds THIS batch's visible changes. Its steps are replaced at the next batch (a step worth keeping is promoted into a standing chapter by a light edit); a batch with nothing visible says so on the card: "Engine only: <list>. Nothing new to see."
+
+**Where.** A fourth main, `batch`, poster `04_batch.png`, after the editor, opened by a 2 s card. Its code is `sandbox/live_tour_batch.inc`, a textual include of `live_tour.cpp` (the tour's classes are that file's). The ledger is the `batch` entries of `kSteps`.
+
+**Budget.** At most 3 steps and 25 s of video (the card's 2 s included); the whole tour at most 170 s. The checks `batch.*/length-budget` and `harness/tour-length` fail the run past either. 60 rendered frames make a second of video.
+
+**How a batch adds its step.** The merging realm's READY carries a "tour line": what to show, the control or view it needs, the observable it must satisfy, the seconds it may take. Interface writes the step in the batch's light slot and the smoke at the batch gate runs it. A feature meant for viewers ships with a way to switch it on in the editor; one without is "engine only". Thresholds are fixed, with their derivation in the code, before they are measured.
+
+**The first run: "New since batch 23"** (batches 24-29), run 2026-11-11 at d86953f7 (PASS, 165.1 s, chapter 17.7 s of steps):
+
+| Step | On screen | Checks |
+|---|---|---|
+| `batch.soft_shadows` | The drone's shadow on the ground, close (RND-10) | defaults-on (the window's options: filter 1 texel, the dynamics' own 1024 map); on the CPU raster, the same scene and camera: shadow-seen, shadow-on-the-ground (within 0.5 m of where the sun's direction puts it), deterministic (the noise floor: two renders at the defaults are byte for byte the same), penumbra (pixels changed from the old frame's at least 1/20 of the shadow's outline) |
+| `batch.turbulence_air` | Run air with the Advanced "Subgrid turbulence" row on (L52/L54): Cs 0.17 on the device | publishes (3 frames), turbulence (on the GPU nu_t is met and the line names Cs; with no device the row is off and the card says "Subgrid turbulence needs the GPU: this run is on the CPU, so it is off"), row-line |
+| `batch.wind_change` | A Phantom climbing in Run; the "Wind now" row set to 6 m/s along +x (L46) | wind-set (the run's wind and its one recorded set), row-shows-it, not-an-edit (the world's own wind and its saved state untouched), wind-moves-the-drone (the velocity along the wind changes in the second after the set by at least 10 times the second before's drift and 0.05 m/s); the card says the airflow keeps its start wind |
+
+Parked: the prop discs (until the line model, P4, settles the rotor items) and the D1 airframe with its parts in the flow (until Physics' deep-box measurement). "Engine only" on this card: L50, the installed drone library.
