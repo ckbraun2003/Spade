@@ -137,6 +137,7 @@ class EditorWorkspace {
             settle(before, apply(docs_.world, e));
         }
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
+        if (const std::optional<glm::vec3> wind = std::exchange(panels_.wind_request, std::nullopt)) set_live_wind(*wind);
         keep_staging_alive();
         refresh_panels();
         // A selection ends a part's or a drone's inspection (the lead's Q1),
@@ -231,6 +232,7 @@ class EditorWorkspace {
         panels_.air = air_ != nullptr;
         panels_.paused = paused_;
         panels_.tick = run_ ? run_->tick() : 0u;
+        panels_.live_wind = run_ ? run_->wind() : docs_.world.desc().environment.wind;
         panels_.can_undo = !undo_.empty();
         panels_.can_redo = !redo_.empty();
         panels_.hierarchy.clear();
@@ -567,6 +569,18 @@ class EditorWorkspace {
         panels_.pilot = PilotPanel{};
         panels_.pilot.vehicle = region->follows;
         panels_.status.clear();
+    }
+
+    // The panels' wind request (the lead's (c), 2026-11-11): the running world's wind, a Run input and not an edit.
+    // The airflow keeps its start wind (L46), so with none running, or only Run air, it is dropped, saying why.
+    void set_live_wind(glm::vec3 wind) {
+        if (!run_) {
+            panels_.status = air_ != nullptr
+                                 ? "Wind: the airflow keeps its start wind; Stop it and Run to change the wind"
+                                 : "Wind: only a running scene has a live wind; Run it first";
+            return;
+        }
+        if (Result<void> set = run_->set_wind(wind); !set) panels_.status = set.error().context;
     }
 
     // N17: the selection when it is a drone Run flies, else the first one;

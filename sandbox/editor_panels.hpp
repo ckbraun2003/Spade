@@ -126,6 +126,10 @@ struct EditorPanels {
     AirLineCache air_line;  // kept by the panels between frames
     // ---- Written by the panels, read by the workspace at Run air.
     AirLevel air_level = AirLevel::detailed;
+    // The Run-mode wind row (the lead's (c), 2026-11-11): the running world's wind, filled every frame (the document's
+    // outside Run); and the panels' request to set it, taken by the workspace (EditorRun::set_wind()).
+    glm::vec3 live_wind{0.0f};
+    std::optional<glm::vec3> wind_request;
     bool air_turbulence = false;  // the Advanced "Subgrid turbulence" row: Run air at kAirSgsCs (GPU only)
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
