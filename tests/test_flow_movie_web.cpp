@@ -270,6 +270,49 @@ TEST(FlowMovieWeb, TheD1CamerasAimAtTheDronesCentreOfMassNotTheBoxCentre) {
     EXPECT_EQ(web::subject_point(), glm::vec3(0.0f)) << "no offset: the COM itself (S4)";
 }
 
+// L63: S1, S8 and S2 look down only 8 degrees from close in, so the deeper box's 1.214 m floor face (open: whatever the
+// solve shows there is an artifact) stays below the bottom edge of every frame, with the subject at the 10% margin.
+TEST(FlowMovieWeb, TheStillAirFramingKeepsTheFloorFaceBelowEveryFrame) {
+    const glm::vec3 aim = web::subject_point(web::kD1StillAimBelowM);
+    const auto still = [&](float radius, float azimuth) {
+        return web::floor_top_ndc(aim, web::fit_distance(radius, kFov, kAspect, web::kMargin), azimuth,
+                                  web::kD1StillElevationDeg, kFov);
+    };
+    // The subject: a sphere of kD1StillSubjectM at its fitted distance reaches 0.8 of the frame's half-height.
+    const float d = web::fit_distance(web::kD1StillSubjectM, kFov, kAspect, web::kMargin);
+    EXPECT_NEAR(web::kD1StillSubjectM / std::sqrt(d * d - web::kD1StillSubjectM * web::kD1StillSubjectM) /
+                    std::tan(0.5f * kFov),
+                1.0f - 2.0f * web::kMargin, 1e-3f);
+    // S1: one orbit, the frames' own azimuths (450 frames).
+    float worst_s1 = -9.0f;
+    for (uint32_t k = 0; k < 450u; ++k) {
+        worst_s1 = std::max(worst_s1, still(web::kD1StillSubjectM, web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, 450u)));
+    }
+    EXPECT_LE(worst_s1, -1.06f) << "S1's floor top, NDC y (-1 is the bottom edge)";
+    // S8: the swing out and back (a 60 degree sweep, 300 frames).
+    float worst_s8 = -9.0f;
+    for (uint32_t k = 0; k < 300u; ++k) {
+        worst_s8 = std::max(worst_s8, still(web::kD1StillSubjectM, web::there_and_back_azimuth(web::kD1StillAzimuthDeg, 60.0f, k, 300u)));
+    }
+    EXPECT_LE(worst_s8, -1.06f) << "S8's floor top";
+    // S2: the push-in from 0.45 m to 0.30 m, 360 frames, at a fixed azimuth.
+    const float wide = web::fit_distance(web::kD1PushWideM, kFov, kAspect, web::kMargin);
+    const float close = web::fit_distance(web::kD1PushCloseM, kFov, kAspect, web::kMargin);
+    float worst_s2 = -9.0f;
+    for (uint32_t k = 0; k < 360u; ++k) {
+        worst_s2 = std::max(worst_s2, web::floor_top_ndc(aim, web::push_in_distance(wide, close, k, 360u),
+                                                         web::kD1StillAzimuthDeg, web::kD1StillElevationDeg, kFov));
+    }
+    EXPECT_LE(worst_s2, -1.04f) << "S2's floor top";
+    EXPECT_NEAR(wide, 1.073f, 1e-3f);
+    EXPECT_NEAR(close, 0.715f, 1e-3f);
+    // The test discriminates: the quad's old framing (0.55 m subject, 20 degrees) leaves the floor in frame.
+    const float old_d = web::fit_distance(0.55f, kFov, kAspect, web::kMargin);
+    EXPECT_GT(web::floor_top_ndc(aim, old_d, 25.0f, 20.0f, kFov), -0.8f);
+    // A corner behind the camera's plane is not known to be out of frame.
+    EXPECT_GT(web::floor_top_ndc(glm::vec3(0.0f, -2.0f, 0.0f), 0.1f, 0.0f, 80.0f, kFov), 1e9f);
+}
+
 TEST(FlowMovieWeb, ASwingOutAndBackStartsAndEndsAtRestAndLoops) {
     const uint32_t n = 300;
     EXPECT_FLOAT_EQ(web::there_and_back_azimuth(25.0f, 60.0f, 0, n), 25.0f);

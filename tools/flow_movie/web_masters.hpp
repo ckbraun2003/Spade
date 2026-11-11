@@ -14,9 +14,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <glm/glm.hpp>
 
 #include "render/scene.hpp"
 
@@ -148,6 +151,50 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // when the box stopped being symmetric about the drone (a deeper floor, the drone 0.354 m below the top face), and
 // the centre moved 0.43 m off it. In the old box (0.354 m either side in y) the two are the same point.
 [[nodiscard]] inline glm::vec3 subject_point(float below_m = 0.0f) { return glm::vec3(0.0f, -below_m, 0.0f); }
+
+// The still-air D1 clips' framing (S1, S8, S2; the lead, L63: cameras closer, the floor out of frame). The subject is
+// a sphere about subject_point(kD1StillAimBelowM) that the 10% margin fits; the camera looks DOWN only 8 degrees, so
+// the box's floor face stays below the frame's bottom edge (a steeper look at the same size puts it back in: at the
+// old 20 degrees and a 0.55 m subject the floor topped out 17% up the frame).
+inline constexpr float kD1StillAimBelowM = 0.08f;
+inline constexpr float kD1StillSubjectM = 0.40f;    // S1 and S8: the airframe (about 0.3 m) and about 0.1 m of wake
+inline constexpr float kD1PushWideM = 0.45f;        // S2: from this subject radius ...
+inline constexpr float kD1PushCloseM = 0.30f;       // ... to this one (the airframe)
+inline constexpr float kD1StillElevationDeg = 8.0f;
+inline constexpr float kD1StillAzimuthDeg = 25.0f;  // where S1, S8 and S2 start
+
+// The deeper D1 box's floor face (Physics' plan A, L60/L63), world coordinates (the COM is the origin): 1.214 m below
+// the COM, the box ±0.48 m in x and ±0.336 m in z. No wall: the face is open, so what the solve shows there is an
+// artifact the clips keep out of frame.
+inline constexpr float kDeepFloorY = -1.214f;
+inline constexpr float kBoxHalfX = 0.48f, kBoxHalfZ = 0.336f;
+
+// The highest the floor face reaches in the frame, as normalised device y (+1 the top edge, -1 the bottom edge), for a
+// camera `distance` from `target` at an azimuth about +y (0 on +z) and an elevation, looking at it (views.cpp's
+// orbit()), with a vertical field of view `fov_y_radians`. The floor is out of frame when this is at most -1. A
+// projection keeps a straight edge straight, so its highest point is a corner of the face. A corner at or behind the
+// camera's plane answers FLT_MAX (not known to be out of frame).
+[[nodiscard]] inline float floor_top_ndc(glm::vec3 target, float distance, float azimuth_deg, float elevation_deg,
+                                         float fov_y_radians) {
+    const double az = static_cast<double>(azimuth_deg) * 3.14159265358979323846 / 180.0;
+    const double el = static_cast<double>(elevation_deg) * 3.14159265358979323846 / 180.0;
+    const glm::dvec3 from(std::cos(el) * std::sin(az), std::sin(el), std::cos(el) * std::cos(az));
+    const glm::dvec3 eye = glm::dvec3(target) + static_cast<double>(distance) * from;
+    const glm::dvec3 forward = -from;
+    const glm::dvec3 right = glm::normalize(glm::cross(forward, glm::dvec3(0.0, 1.0, 0.0)));
+    const glm::dvec3 up = glm::cross(right, forward);
+    const double tan_half = std::tan(0.5 * static_cast<double>(fov_y_radians));
+    double top = -1.0e30;
+    for (const float sx : {-kBoxHalfX, kBoxHalfX}) {
+        for (const float sz : {-kBoxHalfZ, kBoxHalfZ}) {
+            const glm::dvec3 rel = glm::dvec3(sx, kDeepFloorY, sz) - eye;
+            const double depth = glm::dot(rel, forward);
+            if (depth <= 1.0e-6) return std::numeric_limits<float>::max();
+            top = std::max(top, glm::dot(rel, up) / depth / tan_half);
+        }
+    }
+    return static_cast<float>(top);
+}
 
 // Azimuth of frame k of n, in degrees. Over k / n, not k / (n - 1): frame n would be frame 0 a sweep on, so a
 // full orbit loops with no frame shown twice.
