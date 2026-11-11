@@ -136,10 +136,10 @@ inline constexpr uint32_t kMaterialShadingCount = 3;
 // reason (an empty string names nothing and is always a mistake); it is NOT
 // required to be unique, since materials are referenced by INDEX
 // (node_materials, PropDesc::material), never looked up by name the way a
-// spawn point is. `base_color`'s alpha lane is carried for a future
-// transparency pass; today's renderer (R6) is opaque-only and simply ignores
-// it. materials[0] -- the default -- always exists once a WorldDesc has
-// passed validate_world_desc() (WorldBuilder::build() and the world-file
+// spawn point is. `base_color`'s alpha lane counts only on a draw item flagged
+// `DrawItem::see_through` (RND-11, L47): the renderer blends that item src-over with
+// the resolved alpha. An unflagged item is opaque whatever its alpha. materials[0]
+// -- the default -- always exists once a WorldDesc has passed validate_world_desc() (WorldBuilder::build() and the world-file
 // loader both guarantee it, inserting this very default when the caller never
 // added one), so `node_materials`/`PropDesc::material`'s default value of 0
 // always resolves to something.
