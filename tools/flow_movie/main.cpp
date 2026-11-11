@@ -519,16 +519,20 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         }
     }
     if (!lines) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "run.txt").string()});
-    // The run's subgrid account beside run.txt (whose lines must stay "step<TAB>label"): sgs.txt, one line.
+    // The run's health beside run.txt (whose lines must stay "step<TAB>label"): health.txt, the subgrid account and the
+    // pressure solve's, each one line, counted since this run's start.
     {
         const std::string sgs_text = sgs_note(run->sgs());
-        const std::string said = sgs_text.empty() ? "no subgrid viscosity (Cs 0)" : sgs_text;
-        std::ofstream sgs_file(cache / "sgs.txt", std::ios::binary | std::ios::trunc);
-        sgs_file << said << '\n';
-        if (!sgs_file) {
-            return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "sgs.txt").string()});
+        const std::string pressure_text = run->pressure_line();
+        const std::string sgs_said = sgs_text.empty() ? "no subgrid viscosity (Cs 0)" : sgs_text;
+        const std::string pressure_said = pressure_text.empty() ? "every step's pressure converged" : pressure_text;
+        std::ofstream health_file(cache / "health.txt", std::ios::binary | std::ios::trunc);
+        health_file << "subgrid: " << sgs_said << '\n' << "pressure: " << pressure_said << '\n';
+        if (!health_file) {
+            return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (cache / "health.txt").string()});
         }
-        std::printf("[ %s ] %s (since this run's start; in sgs.txt)\n", film.stem.c_str(), said.c_str());
+        std::printf("[ %s ] subgrid: %s\n[ %s ] pressure: %s (since this run's start; in health.txt)\n",
+                    film.stem.c_str(), sgs_said.c_str(), film.stem.c_str(), pressure_said.c_str());
     }
     fs::remove(save, ec);
     return true;
@@ -2041,6 +2045,7 @@ struct WebTimes {
     if (!*simmed) return kExitIncomplete;
     std::printf("flow_movie: web %s: simulation %.0f s\n", opt.web_id.c_str(),
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
+    if (opt.simulate_only) return 0;  // the group's cache is all this run was for; a clip's own run draws from it
     const fs::path cache = opt.out / "cache" / film->stem;
 
     spade::FlowVolume volume;
