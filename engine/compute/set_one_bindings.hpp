@@ -7,8 +7,8 @@
 // build has no generated headers (VulkanOff.NoFileAnOffTargetCompilesIncludesAGeneratedHeaderUnguarded), and sim/ includes this
 // file. Where the generated header exists (every Vulkan build) the static_asserts at the foot tie each number to the generated
 // gen::kBinding_airflow_* constant, as spike/airflow/chain_runner.hpp ties kAirflowSetBuffers. The table lists the 28 airflow names, bindings 0 to 27.
-// The stage 7 appendices (28 to 33) are not here: the configuration image is bound by StepShape::config_binding, and the
-// others by the batch that declares each row. The LBM's (40 to 47) have their own lists.
+// The stage 7 appendices are here as their batch declares them (28 points, 34 centred); the configuration image (33) is bound by
+// StepShape::config_binding, so it is not a name. The LBM's (40 to 47) have their own lists.
 #pragma once
 
 #include <array>
@@ -25,6 +25,12 @@ namespace spade::compute {
 inline constexpr uint32_t kStateBindingCount = 30;      // set 0's bindings (gen::kBindingCount_state)
 inline constexpr uint32_t kAirflowConfigBinding = 33;   // the module configuration image's set-1 binding (gen::kBinding_airflow_config)
 inline constexpr uint32_t kAirflowWallLoadBinding = 27;  // the last of section F's 28 airflow bindings
+// The stage 7 appendices and the LBM twin's, for layout_classes.hpp's is_declared_set1 (each tied to its gen:: constant below).
+inline constexpr uint32_t kAirflowPointsBinding = 28;   // the per-point rows (batch D)
+inline constexpr uint32_t kAirflowCentredBinding = 34;  // the cell-centred field (batch D)
+inline constexpr uint32_t kLbmFBinding = 40;
+inline constexpr uint32_t kLbmUBinding = 41;
+inline constexpr uint32_t kAirflowDeclaredCount = 33;   // bindings section F declares (gen::kBindingCount_airflow)
 
 struct SetOneBinding {
     std::string_view name;
@@ -60,7 +66,10 @@ struct SetOneBinding {
     X(airflow_health, 24) \
     X(airflow_publish_v, 25) \
     X(airflow_publish_s, 26) \
-    X(airflow_wall_load, 27)
+    X(airflow_wall_load, 27) \
+    /* The stage 7 appendices a module binds by name (batch D): the per-point rows and the cell-centred field. */ \
+    X(airflow_points, 28) \
+    X(airflow_centred, 34)
 
 inline constexpr SetOneBinding kSetOneBindings[] = {
 #define SPADE_SET_ONE_ROW(name, number) {#name, number},
@@ -68,17 +77,17 @@ inline constexpr SetOneBinding kSetOneBindings[] = {
 #undef SPADE_SET_ONE_ROW
 };
 
-// Section F's bindings 0 to airflow_wall_load, in binding order: entry i is binding i.
-static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1,
-              "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load");
+// Section F's bindings 0 to airflow_wall_load come first, in binding order: entry i is binding i. The two appendices follow.
+static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1 + 2,
+              "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load, then points and centred");
 static_assert(
     [] {
-        for (uint32_t i = 0; i < std::size(kSetOneBindings); ++i) {
+        for (uint32_t i = 0; i <= kAirflowWallLoadBinding; ++i) {
             if (kSetOneBindings[i].binding != i) return false;
         }
         return true;
     }(),
-    "kSetOneBindings is in binding order: entry i is section F's binding i");
+    "kSetOneBindings is in binding order: entry i is section F's binding i, for 0 to airflow_wall_load");
 
 // The set-1 binding named `name`, or kNoBinding when the table does not hold it.
 [[nodiscard]] constexpr uint32_t set_one_binding_of(std::string_view name) noexcept {
@@ -98,6 +107,10 @@ namespace spade::compute {
 static_assert(kStateBindingCount == gen::kBindingCount_state, "set 0's binding count is bindings.slang's");
 static_assert(kAirflowConfigBinding == gen::kBinding_airflow_config, "the config image's binding is bindings.slang's");
 static_assert(kAirflowWallLoadBinding == gen::kBinding_airflow_wall_load, "section F's last airflow binding is bindings.slang's");
+static_assert(kAirflowPointsBinding == gen::kBinding_airflow_points, "airflow_points is bindings.slang's number");
+static_assert(kAirflowCentredBinding == gen::kBinding_airflow_centred, "airflow_centred is bindings.slang's number");
+static_assert(kLbmFBinding == gen::kBinding_lbm_f && kLbmUBinding == gen::kBinding_lbm_u, "the LBM bindings are bindings.slang's");
+static_assert(kAirflowDeclaredCount == gen::kBindingCount_airflow, "the declared airflow binding count is bindings.slang's");
 #define SPADE_SET_ONE_ASSERT(name, number) \
     static_assert(gen::kBinding_##name == number, "kSetOneBindings: " #name " is not bindings.slang's number");
 SPADE_SET_ONE_BINDINGS(SPADE_SET_ONE_ASSERT)

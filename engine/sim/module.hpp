@@ -20,6 +20,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 #include "core/grade.hpp"
 #include "physics/field_row.hpp"
 #include "state/layout.hpp"         // kStd430StructAlignment, WorldParams
+#include "world/medium.hpp"         // MediumSample (RegionSampleFn)
 #include "vehicles/model_type.hpp"  // complete: a span of an incomplete type breaks MSVC (physics/schedule.hpp)
 
 namespace spade::physics {
@@ -115,12 +117,51 @@ struct PassDecl {
 enum class FieldKind : uint8_t { scalar = 0, vec3 = 1, bands = 2 };
 inline constexpr uint32_t kMaxFieldBands = 32;
 
+// REGIONS (module API stage 7, Task D2; the stage 7 plan, batch D). A module may declare regions: named, prioritised volumes a
+// world places (WorldInstanceDesc::regions). A FIELD provider bound to a region (FieldDecl::region) answers the HOST's
+// Simulation::sample_medium inside that region with its `sample` function, on the CPU; on Vulkan sample_medium refuses inside a
+// region, naming it (no device region row in D2). Outside every region the answer is today's, the whole-world provider's.
+// Where regions overlap the highest priority wins; two overlapping placements of equal priority are refused at create(), naming
+// both. A region-bound provider has a sample function and no pass (the step path keeps the world's sample).
+using RegionSampleFn = MediumSample (*)(glm::vec3 pos) noexcept;
+struct RegionDecl {
+    std::string_view name;  // no '.'; unique within the module
+    uint32_t priority = 0;  // higher wins where placed regions overlap
+};
+
 struct FieldDecl {
     std::string_view name;  // no '.'; unique in the set
     FieldKind kind = FieldKind::scalar;
     uint32_t bands = 0;     // FieldKind::bands only: 1 .. kMaxFieldBands
     std::string_view unit;  // SI, spelt in ASCII ("m/s^2")
+    // Empty (every field today): the whole-world provider. Else the name of one of the module's RegionDecls: this provider
+    // answers inside that region only, with `sample` (required then). A field has exactly one whole-world provider.
+    std::string_view region{};
+    RegionSampleFn sample = nullptr;
 };
+
+// POINT SAMPLES (module API stage 7, Task D1; the stage 7 plan, batch D). A module whose field depends on WHERE it is read
+// (a gust field, a wake, an SPH neighbourhood) declares the points it is sampled at. A set with a position-dependent provider
+// gets one internal per-world array `points.airflow_points`, appended after the registry walk: one PointRow per point, in this order
+// per world -- every body slot, then every force-element slot times `k`, then every sensor slot, then `host_requests` rows
+// the host fills. compile_schedule injects the positions pass (`points.positions`, after behaviors.kinematic, before any
+// provider) that writes `pos`; the provider writes `wind` and `density`; drag.forces reads them. A set with no
+// position-dependent provider registers nothing and its schedule is the standard one.
+struct PointsDecl {
+    uint32_t k = 0;              // sample points per force-element slot (0: none)
+    uint32_t host_requests = 0;  // rows the host may fill (Simulation::module_rows<PointRow>("airflow_points", w))
+    bool position_dependent = false;
+};
+// One point's row (physics/field_row.hpp). std430 layout, 8 words: the set-1 `airflow_points` binding (bindings.slang) is an
+// array of these.
+using PointRow = physics::PointRow;
+static_assert(sizeof(PointRow) == 32 && std::is_trivially_copyable_v<PointRow>);
+inline constexpr uint32_t kPointRowWords = 8;
+inline constexpr std::string_view kPointsModule = "points";  // the internal module compile_schedule injects: pass "positions", array "airflow_points"
+// Named for the set-1 binding it fills: names are the contract (compute/set_one_bindings.hpp), so the mirror binds it at
+// gen::kBinding_airflow_points.
+inline constexpr std::string_view kPointsArray = "airflow_points";
+inline constexpr std::string_view kPositionsPass = "positions";
 
 // The built-in fields sit at fixed places at the front of every world's sample
 // row, whether or not the set provides them, so the GPU row's layout and a
@@ -148,7 +189,9 @@ inline constexpr uint32_t kFieldBuiltinFloats = physics::kFieldBuiltinFloats;
 //   per_row      depth rows for each row of `owner`, which holds rows
 //                (per_body, per_element or per_sensor); row g of the owner
 //                owns rows [g * depth, (g + 1) * depth)
-enum class Extent : uint8_t { per_world = 0, per_body = 1, per_element = 2, per_sensor = 3, per_row = 4 };
+// `per_point` (5) is internal: only the injected module `points` (PointsDecl) has an array of it, sized per world from the
+// declared counts (bodies + force elements x k + sensors + host rows); compile_schedule refuses it from any other module.
+enum class Extent : uint8_t { per_world = 0, per_body = 1, per_element = 2, per_sensor = 3, per_row = 4, per_point = 5 };
 
 // ATTACHED ROWS (stage 4; spec section 3). A per_body, per_element or
 // per_sensor array is ATTACHED to bodies. Simulation::attach_row() -- which the
@@ -485,6 +528,8 @@ struct ModuleDesc {
     uint32_t version = 1;
     std::span<const PassDecl> passes{};
     std::span<const FieldDecl> fields{};          // the fields this module provides
+    std::optional<PointsDecl> points{};           // the points its fields are sampled at (stage 7 D1); at most one module has it
+    std::span<const RegionDecl> regions{};        // the regions its field providers are bound to (stage 7 D2)
     std::span<const ArrayDecl> state{};           // the arrays this module owns
     bool legacy_walk = false;                     // only on a module whose every array is in kLegacyWalkArrays
     std::span<const StreamDecl> streams{};        // the seeded streams this module's rows hold
@@ -574,6 +619,23 @@ struct CompiledField {
     uint32_t count = 0;   // 1, 3, or its bands
     uint32_t offset = 0;  // in floats, from the start of the row
     std::string unit;
+};
+
+// One region of the compiled set (stage 7 D2), in set order then declaration order: its provider's host sample function.
+struct CompiledRegion {
+    std::string module;
+    std::string name;  // unique across the set: a world's placement names it
+    uint32_t priority = 0;
+    RegionSampleFn sample = nullptr;
+};
+
+// The compiled point-sample declaration (stage 7 D1): present only when a module declares position_dependent points.
+struct CompiledPoints {
+    bool present = false;
+    uint32_t k = 0;
+    uint32_t host_requests = 0;
+    std::string module{};  // the declaring module
+    bool writer = false;   // a pass of a module other than the injected one declares a write of points.airflow_points (L43)
 };
 
 // One module array of the compiled table.
@@ -678,6 +740,12 @@ struct CompiledSchedule {
     // The filled roles, one per role, in kRoles order (Task 6). Not part of the
     // identity: the filler's name already is.
     std::vector<CompiledRole> roles{};
+    // The point samples (stage 7 D1); `present` false for every set today. The injected positions pass is in the compiled
+    // order, so a set with points has its own identity; a set without keeps the one it has.
+    CompiledPoints points{};
+    // The regions modules declare (stage 7 D2); empty for every set today. Not part of the identity: a region's placement is
+    // the world's (config_hash folds it), and its provider's answer is host-side behaviour.
+    std::vector<CompiledRegion> regions{};
 };
 
 // create()'s check that every required role has its filler (Task 6): invalid_argument,

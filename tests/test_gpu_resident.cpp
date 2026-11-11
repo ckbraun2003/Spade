@@ -6,7 +6,9 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -169,6 +171,84 @@ TEST(GpuResident, ModuleRowsAndArenasAndDigestSyncOrRefuse) {
     (void)arenas_rows;
     EXPECT_TRUE(sim.resident_current());
 }
+
+// THE REPLAY CARRY (C2's carried item; the audit of every const caller of state_digest, world_digest and arenas()): a world's digest
+// and a replay of a set with a device-resident array sync or refuse, never fold stale bytes. The non-const world_digest syncs, the
+// checked const form refuses by name, and a snapshot taken mid-run restores into a second simulation that resumes to the very
+// digests of the first (the resident grid and every other array).
+TEST(GpuResident, AReplayOfASetWithAResidentArraySyncsOrRefuses) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation a = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(a.step(2).has_value());
+    ASSERT_FALSE(a.resident_current());
+    const Simulation& view = a;
+
+    const auto refused = spade::testing::checked_world_digest(view, 0);
+    ASSERT_FALSE(refused.has_value()) << "the checked world digest refuses a stale resident array";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("airflow_u"), std::string::npos) << refused.error().context;
+
+    const uint64_t synced = spade::testing::world_digest(a, 0);  // the non-const form syncs
+    EXPECT_TRUE(a.resident_current());
+    const auto checked = spade::testing::checked_world_digest(view, 0);
+    ASSERT_TRUE(checked.has_value()) << checked.error().context;
+    EXPECT_EQ(*checked, synced);
+
+    // The replay: a blob of the running set restores into a second simulation, and both resume to the same digests.
+    const auto blob = a.snapshot();
+    ASSERT_TRUE(blob.has_value()) << blob.error().context;
+    Simulation b = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(b.restore(*blob).has_value());
+    ASSERT_TRUE(a.step(2).has_value());
+    ASSERT_TRUE(b.step(2).has_value());
+    for (uint32_t w = 0; w < kWorlds; ++w) {
+        EXPECT_EQ(spade::testing::world_digest(a, w), spade::testing::world_digest(b, w)) << "world " << w;
+    }
+    EXPECT_EQ(spade::testing::state_digest(a), spade::testing::state_digest(b));
+}
+
+// REVIEW FOCUS 4, the last host path: the two CONST digest folds cannot refuse (they return a bare uint64_t), so on a set whose
+// resident array is stale they must STOP, loudly, naming the array and pointing at sync_resident() -- never fold stale bytes
+// silently. (abort() under GoogleTest ends in _exit(3) on Windows, SIGABRT elsewhere: tests/test_fatal_report.cpp.)
+#if defined(_WIN32)
+#define SPADE_STOPPED ::testing::ExitedWithCode(3)
+#else
+#define SPADE_STOPPED ::testing::KilledBySignal(SIGABRT)
+#endif
+
+TEST(GpuResidentDeathTest, AConstStateDigestOfAStaleArrayStopsLoudlyNamingIt) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_FALSE(sim.resident_current());
+    const Simulation& view = sim;
+    EXPECT_EXIT({ (void)spade::testing::state_digest(view); std::exit(0); }, SPADE_STOPPED, "airflow_u.*sync_resident");
+}
+
+TEST(GpuResidentDeathTest, AConstWorldDigestOfAStaleArrayStopsLoudlyNamingIt) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_FALSE(sim.resident_current());
+    const Simulation& view = sim;
+    EXPECT_EXIT({ (void)spade::testing::world_digest(view, 0); std::exit(0); }, SPADE_STOPPED, "airflow_u.*sync_resident");
+}
+
+// And once the array is current the const folds answer as ever.
+TEST(GpuResident, TheConstDigestsAnswerOnceTheResidentArrayIsCurrent) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const ResidentModule m(Residency::device, &kRecipe);
+    Simulation sim = make(m, BackendKind::vulkan);
+    ASSERT_TRUE(sim.step(1).has_value());
+    ASSERT_TRUE(sim.sync_resident().has_value());
+    const Simulation& view = sim;
+    EXPECT_EQ(spade::testing::state_digest(view), spade::testing::state_digest(sim));
+    EXPECT_EQ(spade::testing::world_digest(view, 1), spade::testing::world_digest(sim, 1));
+}
+#undef SPADE_STOPPED
 
 TEST(GpuResident, StagingIsOneBufferSizedToTheLargestRow) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;

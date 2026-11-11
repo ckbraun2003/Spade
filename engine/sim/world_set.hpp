@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "core/error.hpp"
 #include "physics/contacts.hpp"
@@ -100,12 +103,23 @@ namespace spade {
 // state/layout.hpp's WorldParams.
 #pragma warning(disable : 4324)
 #endif
+// A region of the module set placed in a world (stage 7 D2): the axis-aligned box lo <= p <= hi, named by a RegionDecl of some
+// module. validate/create refuse a name no module declares, a box with lo > hi, and two overlapping placements of equal priority.
+struct RegionPlacement {
+    std::string region;
+    glm::vec3 lo{0.0f};
+    glm::vec3 hi{0.0f};
+};
+
 struct WorldInstanceDesc {
     WorldDesc world;                   // geometry, spawn points, environment, capacities
     uint64_t seed = 0;                 // this instance's rng root -> WorldParams::seed
     DrydenParams turbulence{};         // per-world turbulence config (see above)
     physics::ContactParams contacts{}; // per-world material/solver record
     physics::GridParams grid{};        // broad-phase cell size (see the note on uniformity below)
+    // The module set's regions placed in this world (stage 7 D2). Empty (every world today) is no regions, and config_hash
+    // folds nothing for it; a world with regions folds each one's name, box and order.
+    std::vector<RegionPlacement> regions{};
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)

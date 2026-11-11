@@ -473,10 +473,23 @@ import layouts;
 [[vk::binding(26, 1)]] RWStructuredBuffer<uint>  airflow_publish_s;
 [[vk::binding(27, 1)]] RWStructuredBuffer<float> airflow_wall_load;
 
-// MODULE API STAGE 7's FIRST APPENDED BINDING (Task C1): the module's hashed configuration image, read-only to the kernels.
-// It is the very bytes ModuleDesc::config hashes into the schedule identity (the mirror uploads them at create()). 28 to 32
-// stay unclaimed until the batch that needs each, 34 to 39 are spare.
+// MODULE API STAGE 7's APPENDED BINDINGS, declared by the batch that first needs each (29 to 32 stay unclaimed until theirs,
+// 35 to 39 are spare).
+//
+// airflow_points (Task D1): the per-point rows of a set with a position-dependent provider, ONE ROW PER POINT of 8 words, no
+// padding: [0..2] the point's world position in metres (written by Core's positions pass), [3] reserved, kept 0.0f, [4..6] the
+// wind in m/s in world axes and [7] the density in kg/m^3 (the provider's answer). Row index = the point's place in
+// declaration order: per body (slot order), then per element x k (element-major), then per sensor, then host requests.
+[[vk::binding(28, 1)]] RWStructuredBuffer<float> airflow_points;
+
+// airflow_config (Task C1): the module's hashed configuration image, read-only to the kernels. It is the very bytes
+// ModuleDesc::config hashes into the schedule identity (the mirror uploads them at create()).
 [[vk::binding(33, 1)]] StructuredBuffer<uint>    airflow_config;
+
+// airflow_centred (Task D1; owner and writer Physics, its airflow_centre pass): the cell-centred fp32 field the point gather
+// reads, 4 floats a cell [ux, uy, uz, p] with p the gauge pressure in Pa, index 4 * (x + nx * (y + ny * z)), x fastest. A
+// device-only scratch, registered only when a position-dependent provider is in the set.
+[[vk::binding(34, 1)]] RWStructuredBuffer<float> airflow_centred;
 
 // THE LBM TIER'S BINDINGS (L1, the GPU twin; docs/design/physics/plans/
 // 2026-11-06-l1-gpu-twin-plan.md). Set 1 bindings 40 to 47 are the LBM's, named

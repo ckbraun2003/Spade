@@ -155,8 +155,19 @@ void forces_drag(uint3 tid : SV_DispatchThreadID) {
     // Read from this world's field samples (module-API stage 3), written in
     // Fields by field_environment and field_dryden: the same bits
     // dryden_medium_sample() would compute here.
+#ifdef SPADE_POINTS
+    // THE POINTS VARIANT (stage 7 D1, L40): the same kernel compiled with SPADE_POINTS reads this body's airflow_points row
+    // (row = world * rows_per_world + the body's world-local slot; rows_per_world rides in the `sweep` lane): [4..6] the
+    // wind, [7] the density, the position-dependent provider's answer. Fed the world's own sample in every row it computes
+    // the standard kernel's bits.
+    const uint point_row = (world * pass_params.sweep + local_body) * 8u;
+    const float density = airflow_points[point_row + 7u];
+    const float3 v_rel = vel - float3(airflow_points[point_row + 4u], airflow_points[point_row + 5u],
+                                      airflow_points[point_row + 6u]);
+#else
     const float density = field_samples[world].density;
     const float3 v_rel = vel - field_samples[world].wind;
+#endif
 
     float3 force_acc = bodies[slot].force_acc;
     float3 torque_acc = bodies[slot].torque_acc;

@@ -23,6 +23,17 @@
 
 namespace spade::physics {
 
+// One point sample's row (module API stage 7, Task D1; sim/module.hpp's PointsDecl): std430 layout, 8 words, the set-1
+// `airflow_points` binding's element. The positions pass writes `pos` (bodies' rows); the position-dependent provider writes
+// `wind` and `density`; drag.forces reads them.
+struct PointRow {
+    float pos[3];
+    float reserved;  // 0.0; kept so the row is two vec4s on the device
+    float wind[3];   // m/s
+    float density;   // kg/m^3
+};
+static_assert(sizeof(PointRow) == 32);
+
 inline constexpr uint32_t kFieldGravityOffset = 0;  // vec3, m/s^2: floats 0..2
 inline constexpr uint32_t kFieldDensityOffset = 3;  // scalar, kg/m^3: float 3
 inline constexpr uint32_t kFieldWindOffset = 4;     // vec3, m/s: floats 4..6 (float 7 is padding)

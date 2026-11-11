@@ -22,14 +22,29 @@
 namespace spade::compute {
 
 // Set 1's binding space: numbers 0..47 (28 in use, six new for the fluid module, six spare, eight reserved for the LBM twin).
-// The declared count (gen::kBindingCount_airflow) is NOT the bound -- the numbers are sparse -- so an undeclared number inside
-// the space is refused later, when the pipeline layout is made.
+// The declared count (kAirflowDeclaredCount) is NOT the bound -- the numbers are sparse -- so a number inside the space
+// that bindings.slang declares nowhere is refused by kernel_layout() below, by name, when the layout is made.
 inline constexpr uint32_t kSet1BindingSlots = 48;
 
+// Whether bindings.slang section F declares set-1 binding `b`: the airflow kernels' 0..27, then the stage 7 appendices declared
+// so far (airflow_points, airflow_config, airflow_centred) and the LBM twin's lbm_f and lbm_u. A batch that declares another
+// binding adds it here, and the count assert below fails until it does.
+[[nodiscard]] constexpr bool is_declared_set1(uint32_t b) noexcept {
+    return b <= kAirflowWallLoadBinding || b == kAirflowPointsBinding || b == kAirflowConfigBinding ||
+           b == kAirflowCentredBinding || b == kLbmFBinding || b == kLbmUBinding;
+}
+static_assert(
+    [] {
+        uint32_t declared = 0;
+        for (uint32_t b = 0; b < kSet1BindingSlots; ++b) declared += is_declared_set1(b) ? 1u : 0u;
+        return declared == kAirflowDeclaredCount;
+    }(),
+    "is_declared_set1 lists exactly the bindings bindings.slang section F declares (kAirflowDeclaredCount)");
+
 // The layout of `kernel` with the set-1 bindings it names (numbers from bindings.slang section F, each below
-// kSet1BindingSlots and named once). An empty list is the plain state layout: one set of
-// gen::kBindingCount_state bindings. A binding out of range or named twice is invalid_argument naming the kernel and the
-// binding.
+// kSet1BindingSlots, declared in bindings.slang, and named once). An empty list is the plain state layout: one set of
+// kStateBindingCount bindings. A binding out of range, undeclared or named twice is invalid_argument naming the kernel and
+// the binding.
 [[nodiscard]] inline Result<AdmitLayout> kernel_layout(std::string_view kernel,
                                                       std::span<const uint32_t> set1_bindings) {
     std::vector<bool> named(kSet1BindingSlots, false);
@@ -40,6 +55,16 @@ inline constexpr uint32_t kSet1BindingSlots = 48;
                                              " is past set 1's " + std::to_string(kSet1BindingSlots) +
                                              " binding slots (bindings.slang section F, 0-" +
                                              std::to_string(kSet1BindingSlots - 1u) + ")"});
+        }
+        if (!is_declared_set1(b)) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "kernel '" + std::string(kernel) + "': set-1 binding " + std::to_string(b) +
+                                             " is undeclared (bindings.slang section F declares 0-27, " +
+                                             std::to_string(kAirflowPointsBinding) + ", " +
+                                             std::to_string(kAirflowConfigBinding) + ", " +
+                                             std::to_string(kAirflowCentredBinding) + ", " +
+                                             std::to_string(kLbmFBinding) + " and " +
+                                             std::to_string(kLbmUBinding) + ")"});
         }
         if (named[b]) {
             return std::unexpected(Error{Code::invalid_argument, "kernel '" + std::string(kernel) + "': set-1 binding " +

@@ -166,7 +166,10 @@ constexpr QuantityAccess kDragAccess[] = {{"body.pose", Access::read},
                                           {"body.wrench", Access::accumulate},
                                           {"drag.drag_bodies", Access::read},
                                           {"field.density", Access::read},
-                                          {"field.wind", Access::read}};
+                                          {"field.wind", Access::read},
+                                          // The point rows (stage 7 D1): present only in a set with a position-dependent
+                                          // provider (the injected module `points`); absent, it orders and binds nothing.
+                                          {"points.airflow_points", Access::read, true}};
 constexpr std::string_view kDragAfter[] = {"rotor.forces"};
 constexpr PassDecl kDragPasses[] = {{.name = "forces",
                                      .phase = Phase::forces,
@@ -369,6 +372,8 @@ PassFn builtin_cpu_for(compute::GpuRecipe recipe) noexcept {
         case compute::GpuRecipe::sensor_gnss: return &physics::pass_sensor_gnss;
         case compute::GpuRecipe::environment_sample: return &physics::pass_environment_sample;
         case compute::GpuRecipe::dryden_sample: return &physics::pass_dryden_sample;
+        case compute::GpuRecipe::drag_points: return &physics::pass_drag;
+        case compute::GpuRecipe::points_positions: return &physics::pass_points_positions;
     }
     return nullptr;
 }

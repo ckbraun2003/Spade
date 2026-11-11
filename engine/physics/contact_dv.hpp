@@ -25,6 +25,8 @@ namespace spade::physics {
 // so reordering a list is a compile error rather than a wrong view (Core's
 // suggestion, 2026-10-06).
 inline constexpr std::size_t kContactPassContactDvAccess = 1;
+// drag.forces' optional read of points.airflow_points (stage 7 D1), the sixth entry of its access list (sim/standard_modules.cpp).
+inline constexpr std::size_t kDragPassPointsAccess = 5;
 inline constexpr std::size_t kIntegratePassContactDvAccess = 3;
 
 struct ContactDvRow {

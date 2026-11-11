@@ -140,6 +140,8 @@ add_executable(spade_tests
     test_parts_fold.cpp
     test_resident.cpp
     test_rebuild.cpp
+    test_point_samples.cpp
+    test_regions.cpp
     test_design_frame.cpp
     test_model_registry.cpp
     test_model_parts.cpp
@@ -383,6 +385,7 @@ if(SPADE_VULKAN)
         test_gpu_module_config.cpp
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp
+        test_gpu_point_samples.cpp
         test_gpu_grid_kernels.cpp
         test_gpu_airflow_projection.cpp
         test_gpu_airflow_advection.cpp
@@ -663,6 +666,7 @@ if(SPADE_VULKAN)
     # dispatch_3d_id is the 3D dispatch's witness. Registered before the attach below so its generator is ordered too.
     spade_slang_kernel_variants(spade_tests dispatch_3d_id SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     spade_slang_kernel_variants(spade_tests recipe_probe SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
+    spade_slang_kernel_variants(spade_tests points_probe_provide SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     spade_slang_kernel_variants(spade_tests resident_add_one SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     spade_slang_kernel_variants(spade_tests rebuild_fill_derived SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")
     spade_slang_kernel_variants(spade_tests rebuild_add_derived SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/kernels")

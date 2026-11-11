@@ -893,7 +893,8 @@ struct CensusGaps {
     const auto owned_by_a_body = [&](uint32_t i) {
         for (std::size_t hops = 0; hops <= arrays.size() && i < arrays.size(); ++hops) {
             switch (arrays[i].extent) {
-                case spade::modules::Extent::per_world: return false;
+                case spade::modules::Extent::per_world:
+                case spade::modules::Extent::per_point: return false;
                 case spade::modules::Extent::per_body:
                 case spade::modules::Extent::per_element:
                 case spade::modules::Extent::per_sensor: return true;

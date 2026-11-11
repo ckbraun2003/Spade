@@ -10,6 +10,7 @@
 #include "compute/recipe.hpp"
 #include "compute/set_one_bindings.hpp"  // kAirflowConfigBinding (Vulkan-free; tied to the generated constant there)
 #include "core/rng.hpp"
+#include "physics/schedule.hpp"  // pass_points_positions (stage 7 D1)
 #include "sim/world_set.hpp"  // kWorldSeedDomainTag
 
 namespace spade::modules {
@@ -270,6 +271,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
         case Extent::per_element: return "per_element";
         case Extent::per_sensor: return "per_sensor";
         case Extent::per_row: return "per_row";
+        case Extent::per_point: return "per_point";
     }
     return "unknown";
 }
@@ -306,8 +308,12 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                 if (a.elem_size == 0) {
                     return std::unexpected(invalid(where + ": elem_size is 0; a row has a size"));
                 }
-                if (static_cast<uint8_t>(a.extent) > static_cast<uint8_t>(Extent::per_row)) {
+                if (static_cast<uint8_t>(a.extent) > static_cast<uint8_t>(Extent::per_point)) {
                     return std::unexpected(invalid(where + ": unknown extent"));
+                }
+                if (a.extent == Extent::per_point && mod.name != kPointsModule) {
+                    return std::unexpected(invalid(where + ": per_point is internal (the module '" +
+                                                   std::string(kPointsModule) + "' compile_schedule injects owns it)"));
                 }
                 if (a.extent == Extent::per_row && a.depth == 0) {
                     return std::unexpected(invalid(where + ": a per_row array needs a depth of at least 1"));
@@ -384,7 +390,7 @@ using FieldOwners = std::map<std::string, std::size_t, std::less<>>;  // field n
                                            "' is not an array any module in the set declares"));
         }
         const Extent owner_extent = out[it->second].extent;
-        if (owner_extent == Extent::per_world || owner_extent == Extent::per_row) {
+        if (owner_extent == Extent::per_world || owner_extent == Extent::per_row || owner_extent == Extent::per_point) {
             return std::unexpected(invalid(where + ": its owner '" + std::string(owners[i]) + "' is " +
                                            std::string(extent_name(owner_extent)) +
                                            "; a per_row array's owner holds rows (per_body, per_element or "
@@ -596,7 +602,8 @@ constexpr BuiltinField kBuiltinFields[] = {
 
 }  // namespace
 
-Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
+namespace {
+Result<CompiledSchedule> compile_schedule_impl(std::span<const ModuleDesc> modules) {
     std::vector<Node> nodes;
     std::map<std::string, std::size_t, std::less<>> by_name;
 
@@ -604,6 +611,26 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     // access resolves against it. One provider per field: this stage has one
     // region, the whole world (spec section 6).
     FieldOwners field_owner;
+    // REGIONS (stage 7 D2): every module's RegionDecls, named uniquely across the set (a world's placement names one), each
+    // given its provider's sample function by the region-bound FieldDecl below. A region-bound provider is not a field's owner:
+    // a field keeps exactly one whole-world provider, and the region providers answer the host's sample_medium inside theirs.
+    std::vector<CompiledRegion> regions;
+    for (std::size_t m = 0; m < modules.size(); ++m) {
+        for (const RegionDecl& r : modules[m].regions) {
+            const std::string where = "region '" + std::string(r.name) + "' (module '" + std::string(modules[m].name) + "')";
+            if (r.name.empty() || r.name.find('.') != std::string_view::npos) {
+                return std::unexpected(invalid(where + ": a region needs a name with no '.'"));
+            }
+            if (const auto dup = std::find_if(regions.begin(), regions.end(),
+                                              [&r](const CompiledRegion& c) { return c.name == r.name; });
+                dup != regions.end()) {
+                return std::unexpected(invalid(where + ": the name is also module '" + dup->module +
+                                               "''s; a region name is unique across the set"));
+            }
+            regions.push_back(CompiledRegion{std::string(modules[m].name), std::string(r.name), r.priority, nullptr});
+        }
+    }
+    std::vector<std::pair<std::size_t, const FieldDecl*>> region_bound;  // (module, field)
     for (std::size_t m = 0; m < modules.size(); ++m) {
         const ModuleDesc& mod = modules[m];
         for (const FieldDecl& f : mod.fields) {
@@ -628,12 +655,49 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                                                (b->kind == FieldKind::vec3 ? "vec3" : "scalar") + " in " +
                                                std::string(b->unit)));
             }
+            if (!f.region.empty() || f.sample != nullptr) {
+                if (f.region.empty()) {
+                    return std::unexpected(invalid(where + ": a sample function belongs to a region-bound provider; name its region"));
+                }
+                const auto region = std::find_if(regions.begin(), regions.end(), [&](const CompiledRegion& c) {
+                    return c.name == f.region && c.module == mod.name;
+                });
+                if (region == regions.end()) {
+                    return std::unexpected(invalid(where + " is bound to region '" + std::string(f.region) +
+                                                   "', which the module does not declare"));
+                }
+                if (f.sample == nullptr) {
+                    return std::unexpected(invalid(where + " is bound to region '" + std::string(f.region) +
+                                                   "' but has no sample function"));
+                }
+                if (region->sample != nullptr) {
+                    return std::unexpected(invalid(where + ": region '" + std::string(f.region) +
+                                                   "' already has a provider; a region has one sample function"));
+                }
+                region->sample = f.sample;
+                region_bound.emplace_back(m, &f);
+                continue;
+            }
             if (const auto it = field_owner.find(f.name); it != field_owner.end()) {
                 return std::unexpected(invalid("field '" + std::string(f.name) + "' is declared by module '" +
                                                std::string(modules[it->second].name) + "' and module '" +
                                                std::string(mod.name) + "'; a field has one provider"));
             }
             field_owner.emplace(std::string(f.name), m);
+        }
+    }
+
+    for (const auto& [m, f] : region_bound) {
+        if (!field_owner.contains(f->name)) {
+            return std::unexpected(invalid("field '" + std::string(f->name) + "' (module '" + std::string(modules[m].name) +
+                                           "') is bound to region '" + std::string(f->region) +
+                                           "', but no module provides it for the whole world; a field has exactly one "
+                                           "whole-world provider, and region providers sit beside it"));
+        }
+    }
+    for (const CompiledRegion& r : regions) {
+        if (r.sample == nullptr) {
+            return std::unexpected(invalid("region '" + r.name + "' (module '" + r.module + "') has no field provider bound to it"));
         }
     }
 
@@ -781,6 +845,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
     uint32_t field_stride = kFieldBuiltinFloats;
     for (const ModuleDesc& mod : modules) {
         for (const FieldDecl& f : mod.fields) {
+            if (!f.region.empty()) continue;  // a region provider adds no row of its own
             if (builtin_field(f.name) != nullptr) continue;
             const uint32_t count = f.kind == FieldKind::bands ? f.bands : (f.kind == FieldKind::vec3 ? 3u : 1u);
             fields.push_back(CompiledField{std::string(f.name), f.kind, count, field_stride, std::string(f.unit)});
@@ -974,6 +1039,7 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
                                          [&role](const ModuleDesc& mod) { return mod.role == role.name; });
         if (filler != modules.end()) out.roles.push_back(CompiledRole{std::string(role.name), std::string(filler->name)});
     }
+    out.regions = std::move(regions);
     out.fields = std::move(fields);
     out.field_stride = field_stride;
     out.arrays = std::move(*arrays);
@@ -987,6 +1053,72 @@ Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
             out.vehicle_rows.push_back(CompiledVehicleRows{std::string(mod.name), mod.vehicle_rows});
         }
     }
+    return out;
+}
+}  // namespace
+
+// POINT SAMPLES (stage 7 D1). A set with a position-dependent provider (ModuleDesc::points) gets the internal module `points`
+// appended: its pass `positions` (after behaviors.kinematic when the set has it) and its per_point array `points`, so the
+// array is registered after every other module's and so after the standard walk. A set without one compiles as it always did.
+Result<CompiledSchedule> compile_schedule(std::span<const ModuleDesc> modules) {
+    const ModuleDesc* declarer = nullptr;
+    for (const ModuleDesc& mod : modules) {
+        if (!mod.points.has_value()) continue;
+        if (declarer != nullptr) {
+            return std::unexpected(invalid("modules '" + std::string(declarer->name) + "' and '" + std::string(mod.name) +
+                                           "' both declare point samples; a set has one points declaration"));
+        }
+        declarer = &mod;
+    }
+    if (declarer == nullptr || !declarer->points->position_dependent) return compile_schedule_impl(modules);
+
+    const PointsDecl& decl = *declarer->points;
+    // THE GUARD (lead's ruling L43): the positions pass writes body rows only, so an unfilled element row would be read as a
+    // real point at the origin. With element rows (k > 0) some pass of another module must declare a write of points.airflow_points;
+    // the ordering machinery then puts it before the first reader (drag.forces). Sensor rows are checked at create(), where
+    // their count is known.
+    bool written = false;
+    for (const ModuleDesc& mod : modules) {
+        for (const PassDecl& p : mod.passes) {
+            for (const QuantityAccess& qa : p.access) {
+                if (qa.quantity == "points.airflow_points" && qa.access != Access::read) written = true;
+            }
+        }
+    }
+    if (decl.k > 0) {
+        if (!written) {
+            return std::unexpected(invalid("module '" + std::string(declarer->name) + "' declares " + std::to_string(decl.k) +
+                                           " points per force element, but no pass declares a write of points.airflow_points: the "
+                                           "positions pass writes body rows only, so the element rows would be read unfilled"));
+        }
+    }
+
+    static constexpr QuantityAccess kPositionsAccess[] = {{"body.pose", Access::read}, {"points.airflow_points", Access::write}};
+    static constexpr std::string_view kAfterKinematic[] = {"behaviors.kinematic"};
+    static constexpr PassDecl kPositionsAfter[] = {{.name = "positions", .phase = Phase::fields, .access = kPositionsAccess,
+                                                    .after = kAfterKinematic, .cpu = &physics::pass_points_positions,
+                                                    .gpu = compute::GpuRecipe::points_positions}};
+    static constexpr PassDecl kPositionsPlain[] = {
+        {.name = "positions", .phase = Phase::fields, .access = kPositionsAccess, .cpu = &physics::pass_points_positions,
+         .gpu = compute::GpuRecipe::points_positions}};
+    static constexpr ArrayDecl kPointsState[] = {{.name = kPointsArray, .elem_size = sizeof(PointRow), .extent = Extent::per_point}};
+    const bool has_kinematic =
+        std::any_of(modules.begin(), modules.end(), [](const ModuleDesc& m) { return m.name == "behaviors"; });
+
+    std::vector<ModuleDesc> augmented(modules.begin(), modules.end());
+    augmented.push_back(ModuleDesc{.name = kPointsModule,
+                                   .passes = has_kinematic ? std::span<const PassDecl>(kPositionsAfter)
+                                                           : std::span<const PassDecl>(kPositionsPlain),
+                                   .state = kPointsState,
+                                   .grade = {.cpu = Grade::reference, .vulkan = Grade::best_effort}});
+    Result<CompiledSchedule> out = compile_schedule_impl(augmented);
+    if (!out) return out;
+    // THE SECOND DRAG VARIANT (L40): a set with point samples records drag.forces' points variant, which reads each body's
+    // row; every other set keeps the standard kernel. The CPU function is the same (pass_drag reads the rows when bound).
+    for (CompiledPass& p : out->passes) {
+        if (p.module == "drag" && p.pass == "forces" && p.gpu == compute::GpuRecipe::drag) p.gpu = compute::GpuRecipe::drag_points;
+    }
+    out->points = CompiledPoints{true, decl.k, decl.host_requests, std::string(declarer->name), written};
     return out;
 }
 

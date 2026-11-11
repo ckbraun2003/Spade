@@ -275,6 +275,7 @@ template <class Row>
         case modules::Extent::per_body: return out + "per_body" + spawn;
         case modules::Extent::per_element: return out + "per_element" + spawn;
         case modules::Extent::per_sensor: return out + "per_sensor" + spawn;
+        case modules::Extent::per_point: return out + "per_point";
         case modules::Extent::per_row:
             return out + "per_row: " + std::to_string(depth) + " per row of '" + std::string(owner) + "'";
     }
@@ -361,11 +362,22 @@ struct ExtentRows {
             case modules::Extent::per_body: return rows.body;
             case modules::Extent::per_element: return rows.element;
             case modules::Extent::per_sensor: return rows.sensor;
-            case modules::Extent::per_row: break;
+            case modules::Extent::per_row:
+            case modules::Extent::per_point: break;
         }
         return 0u;  // unreachable: compile_schedule refused an unknown extent, and per_row is handled below
     };
     const modules::CompiledArray& a = schedule.arrays[index];
+    if (a.extent == modules::Extent::per_point) {
+        // POINT SAMPLES (stage 7 D1): every body slot, every force-element slot k times, every sensor slot, then the host's rows.
+        const uint64_t points = uint64_t{rows.body} + uint64_t{rows.element} * schedule.points.k + rows.sensor +
+                                schedule.points.host_requests;
+        if (points > std::numeric_limits<uint32_t>::max()) {
+            return std::unexpected(Error{Code::capacity_exceeded, "array '" + a.name + "' (module '" + a.module +
+                                                                      "'): its point rows exceed 2^32-1 per world"});
+        }
+        return static_cast<uint32_t>(points);
+    }
     if (a.extent != modules::Extent::per_row) return extent_rows(a.extent);
     const uint64_t owned = uint64_t{extent_rows(schedule.arrays[a.owner].extent)} * a.depth;
     if (owned > std::numeric_limits<uint32_t>::max()) {
@@ -609,9 +621,50 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         config.declared_body_capacity = instance.world.capacities.bodies;
         config.declared_element_capacity = instance.world.capacities.force_elements;
         config.declared_sensor_capacity = instance.world.capacities.sensors;
+        // PLACED REGIONS (stage 7 D2): resolved against the set's, and checked here because only here are both known.
+        for (const RegionPlacement& placed : instance.regions) {
+            const auto region = std::find_if(compiled->regions.begin(), compiled->regions.end(),
+                                             [&placed](const modules::CompiledRegion& r) { return r.name == placed.region; });
+            if (region == compiled->regions.end()) {
+                return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "' places region '" +
+                                               placed.region + "', which no module in the set declares"));
+            }
+            const bool ordered = std::isfinite(placed.lo.x) && std::isfinite(placed.lo.y) && std::isfinite(placed.lo.z) &&
+                                 std::isfinite(placed.hi.x) && std::isfinite(placed.hi.y) && std::isfinite(placed.hi.z) &&
+                                 placed.lo.x <= placed.hi.x && placed.lo.y <= placed.hi.y && placed.lo.z <= placed.hi.z;
+            if (!ordered) {
+                return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "' places region '" +
+                                               placed.region + "' with a box that is not finite with lo <= hi"));
+            }
+            config.regions.push_back({static_cast<uint32_t>(region - compiled->regions.begin()), placed.lo, placed.hi});
+        }
+        for (std::size_t a = 0; a < config.regions.size(); ++a) {
+            for (std::size_t b = a + 1; b < config.regions.size(); ++b) {
+                const WorldConfig::PlacedRegion& ra = config.regions[a];
+                const WorldConfig::PlacedRegion& rb = config.regions[b];
+                const modules::CompiledRegion& na = compiled->regions[ra.region];
+                const modules::CompiledRegion& nb = compiled->regions[rb.region];
+                const bool overlap = ra.lo.x <= rb.hi.x && rb.lo.x <= ra.hi.x && ra.lo.y <= rb.hi.y && rb.lo.y <= ra.hi.y &&
+                                     ra.lo.z <= rb.hi.z && rb.lo.z <= ra.hi.z;
+                if (overlap && na.priority == nb.priority) {
+                    return std::unexpected(invalid("Simulation::create: world '" + instance.world.name + "': regions '" + na.name +
+                                                   "' and '" + nb.name + "' overlap at the same priority " +
+                                                   std::to_string(na.priority) + "; the highest priority resolves a point, so "
+                                                   "equal ones are ambiguous"));
+                }
+            }
+        }
         configs.push_back(std::move(config));
     }
 
+    // THE POINTS GUARD, the sensor half (stage 7 D1, L43): sensor rows are sized here, and Core's positions pass writes body
+    // rows only, so a set with sensor slots and no writer of points.airflow_points would read them as points at the origin.
+    if (compiled->points.present && layout->sensor_capacity > 0 && !compiled->points.writer) {
+        return std::unexpected(invalid("Simulation::create: module '" + compiled->points.module + "' declares point samples and the set has " +
+                                       std::to_string(layout->sensor_capacity) +
+                                       " sensor slots a world, but no pass declares a write of points.airflow_points: the sensor rows "
+                                       "would be read unfilled"));
+    }
     Simulation sim(ArenaSet(layout->world_count), *layout, std::move(configs), dt_ns, substeps, h);
     sim.schedule_ = std::move(*compiled);
     sim.minimum_grade_ = minimum_grade;
@@ -980,6 +1033,15 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         // The optional bindings this set holds (module API stage 6): the recorder bakes the bits into every
         // dispatch, and the mirror binds a zeroed buffer at each one whose array the walk above does not carry.
         shape.switches = optional_switches(sim.schedule_);
+        if (sim.schedule_.points.present) {
+            const auto points = std::ranges::find(sim.schedule_.arrays, modules::kPointsArray, &modules::CompiledArray::name);
+            if (points != sim.schedule_.arrays.end()) {
+                const ExtentRows shape_rows{shape.body_capacity, shape.element_capacity, shape.sensor_capacity};
+                const Result<uint32_t> capacity = array_capacity(sim.schedule_, static_cast<std::size_t>(points - sim.schedule_.arrays.begin()), shape_rows);
+                if (!capacity) return std::unexpected(capacity.error());
+                shape.point_rows = *capacity;
+            }
+        }
         // The one module configuration image that names the config buffer (stage 7, Task C1): the mirror uploads these bytes.
         for (const modules::CompiledModule& mod : sim.schedule_.modules) {
             if (mod.config_binding == compute::kNoBinding) continue;
@@ -3827,6 +3889,26 @@ Result<const WorldParams*> Simulation::world_params(uint32_t world_index) const 
 Result<MediumSample> Simulation::sample_medium(uint32_t world_index, glm::vec3 pos) const {
     const Result<const WorldParams*> params = world_params(world_index);
     if (!params) return std::unexpected(params.error());
+    // REGIONS (stage 7 D2): inside a placed region the highest priority's provider answers (create() refused equal-priority
+    // overlaps, so there is one). On the CPU its host function; on Vulkan there is no device region row, so the call refuses
+    // naming the region. Outside every region the answer is today's, below.
+    const modules::CompiledRegion* inside = nullptr;
+    for (const WorldConfig::PlacedRegion& placed : configs_[world_index].regions) {
+        if (pos.x < placed.lo.x || pos.x > placed.hi.x || pos.y < placed.lo.y || pos.y > placed.hi.y || pos.z < placed.lo.z ||
+            pos.z > placed.hi.z) {
+            continue;
+        }
+        const modules::CompiledRegion& candidate = schedule_.regions[placed.region];
+        if (inside == nullptr || candidate.priority > inside->priority) inside = &candidate;
+    }
+    if (inside != nullptr) {
+        if (vulkan_backend_) {
+            return std::unexpected(Error{Code::unavailable, "sample_medium: the point lies in region '" + inside->name + "' (module '" +
+                                                                inside->module + "'), whose provider runs on the host; the "
+                                                                "vulkan backend has no device row for a region"});
+        }
+        return inside->sample(pos);
+    }
     const Result<std::span<const DrydenState>> dryden = arenas_.array(dryden_id_);
     if (!dryden) return std::unexpected(dryden.error());
     // Paired by the same world index rebuild_views() uses, so this is the

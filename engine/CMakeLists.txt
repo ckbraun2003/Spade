@@ -1419,6 +1419,10 @@ spade_slang_kernel(spade_compute denorm_probe)
 # is exactly why CPU<->GPU here is banded rather than bit-identical.
 # ------------------------------------------------------------------------------
 spade_slang_kernel_variants(spade_compute forces_drag)
+# Stage 7 D1 (L40): drag.forces' second variant, the same source compiled with SPADE_POINTS, chosen only by a set with a
+# position-dependent provider; and the injected positions pass's kernel.
+spade_slang_kernel_variants(spade_compute forces_drag_points SOURCE forces_drag DEFINE SPADE_POINTS)
+spade_slang_kernel_variants(spade_compute points_positions)
 spade_slang_kernel_variants(spade_compute collision_static)
 spade_slang_kernel_variants(spade_compute integrate)
 

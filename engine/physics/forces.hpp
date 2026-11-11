@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "physics/field_row.hpp"  // PointRow
 #include "state/layout.hpp"
 #include "world/medium.hpp"
 
@@ -197,5 +198,13 @@ static_assert(sizeof(DragBodyRow::body_slot) + sizeof(DragBodyRow::enabled) + si
 // ---------------------------------------------------------------------------
 void apply_drag(std::span<BodyState> bodies, std::span<const DragBodyRow> elems, const Medium& medium,
                  const WorldParams& params, float h) noexcept;
+
+// One drag element's contribution to `body` given the medium sample at it: apply_drag's loop body, the same expressions.
+void apply_drag_element(BodyState& body, const DragBodyRow& elem, const MediumSample& sample) noexcept;
+
+// apply_drag with the medium read from the point rows (stage 7 D1): the sample at an element's body is row `body_slot` of
+// `points` (rows 0..bodies are the body rows, in slot order), so a position-dependent provider's wind and density reach the
+// force. Fed the world's own sample in every row it computes apply_drag's bits.
+void apply_drag_points(std::span<BodyState> bodies, std::span<const DragBodyRow> elems, std::span<const PointRow> points) noexcept;
 
 }  // namespace spade::physics

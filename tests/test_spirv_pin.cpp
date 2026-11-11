@@ -58,11 +58,13 @@
 #include "field_dryden.spv.gen.hpp"
 #include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
+#include "forces_drag_points.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
 #include "grid_build.spv.gen.hpp"
 #include "grid_sort.spv.gen.hpp"
 #include "integrate.spv.gen.hpp"
 #include "medium_update.spv.gen.hpp"
+#include "points_positions.spv.gen.hpp"
 #include "rotors.spv.gen.hpp"
 #include "sensor_gnss.spv.gen.hpp"
 #include "sensor_imu.spv.gen.hpp"
@@ -202,6 +204,10 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_forces_drag, "forces_drag", 32, 0x31d28a856b48d837ull},
     {&spade::compute::gen::kSpvVariants_forces_drag, "forces_drag", 64, 0x354f7cefc0845997ull},
     {&spade::compute::gen::kSpvVariants_forces_drag, "forces_drag", 128, 0x0db5a35d184dc3d7ull},
+    // Stage 7 D1: the two kernels batch D adds, recorded at the build that first compiled them (a new kernel, not a moved one).
+    {&spade::compute::gen::kSpvVariants_forces_drag_points, "forces_drag_points", 32, 0xd28b4685d6a66980ull},
+    {&spade::compute::gen::kSpvVariants_forces_drag_points, "forces_drag_points", 64, 0xdac2f0a5b0d69820ull},
+    {&spade::compute::gen::kSpvVariants_forces_drag_points, "forces_drag_points", 128, 0x2bbcb95b5064d260ull},
     {&spade::compute::gen::kSpvVariants_fp32_math_probe, "fp32_math_probe", 64, 0x7925132bb5e42de4ull},
     {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 32, 0xd17ec7bac8ae24b9ull},
     {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 64, 0x30ec0aac95579959ull},
@@ -215,6 +221,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_medium_update, "medium_update", 32, 0x6459a7d73b74cff8ull},
     {&spade::compute::gen::kSpvVariants_medium_update, "medium_update", 64, 0x184907d7ed7c4518ull},
     {&spade::compute::gen::kSpvVariants_medium_update, "medium_update", 128, 0x419284400c19a158ull},
+    {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 32, 0x0f34ed07b2209ee8ull},
+    {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 64, 0xd345cfee9c44e588ull},
+    {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 128, 0x7e4a8a4a8e723348ull},
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 32, 0x6d59a88deb8de7bfull},
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 64, 0x0406e0ac98e5f6dfull},
     {&spade::compute::gen::kSpvVariants_rotors, "rotors", 128, 0x1816b0a38307911full},

@@ -334,6 +334,7 @@ void pass_behaviors_kinematic(const SubstepContext&) noexcept;
 // leave it stale for a reader.
 void pass_rotor_forces(const SubstepContext&) noexcept;
 void pass_drag(const SubstepContext&) noexcept;
+void pass_points_positions(const SubstepContext&) noexcept;  // stage 7 D1: points.positions, body rows
 
 // The built-in field providers (module-API stage 3), in Fields. Each writes its
 // fields into every world's sample row:

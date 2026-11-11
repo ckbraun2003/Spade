@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <span>
@@ -135,6 +137,20 @@ template <class T>
     return std::string_view(name).substr(name.size() - kSlotToWorldSuffix.size()) == kSlotToWorldSuffix;
 }
 
+// The two CONST folds below return a bare uint64_t and cannot refuse, so a stale device-resident array (stage 7, Task C2: the
+// ledger says device_newer or host_newer) stops the process, loudly: one line on stderr naming the array and pointing at
+// sync_resident(), then abort() -- the path tests/test_fatal_report.cpp's reporters already name. Never a digest of stale bytes.
+// A set with no resident array, which is every set today, never reaches it.
+inline void stop_on_stale_resident(const Simulation& sim, std::string_view what) noexcept {
+    const Result<void> current = sim.check_resident_current(what);
+    if (current.has_value()) return;
+    std::fputs("[spade] fatal: ", stderr);
+    std::fputs(current.error().context.c_str(), stderr);
+    std::fputc('\n', stderr);
+    std::fflush(stderr);
+    std::abort();
+}
+
 }  // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -145,8 +161,8 @@ template <class T>
 // With device-resident arrays (stage 7, Task C2): the non-const form syncs them first, so the digest folds current bytes (D1 = A:
 // a resident array is part of the digest after a sync); the checked const form refuses `unavailable` naming the array and
 // sync_resident() when one is stale, instead of folding stale bytes. A set with none, which is every set today, digests as it
-// always did through either. The non-const form is noexcept and cannot report a failed sync (the device lost): it then folds the
-// host bytes as they stand, and resident_current() says so.
+// always did through either. The non-const form is noexcept and cannot report a failed sync (the device lost): the array is then
+// still stale, so the const fold it ends in stops loudly rather than fold the stale host bytes.
 [[nodiscard]] inline uint64_t state_digest(Simulation& sim) noexcept {
     (void)sim.sync_resident();
     return state_digest(static_cast<const Simulation&>(sim));
@@ -158,9 +174,11 @@ template <class T>
     return state_digest(sim);
 }
 
-// The two const folds below read sim.arenas() unchecked: they return a bare uint64_t (106 call sites) and cannot refuse. A set with a
-// device-resident array reaches them only through state_digest(Simulation&) (syncs) or checked_state_digest() (refuses first).
+// The two const folds below return a bare uint64_t (106 call sites) and cannot refuse. A set with a device-resident array
+// reaches them cleanly only through state_digest(Simulation&) (syncs) or checked_state_digest() (refuses first); reached with a
+// stale resident array they stop loudly (detail::stop_on_stale_resident), never fold stale bytes.
 [[nodiscard]] inline uint64_t state_digest(const Simulation& sim) noexcept {
+    detail::stop_on_stale_resident(sim, "state_digest");
     uint64_t seed = kFnv1a64Offset;
     seed = detail::fold_value(seed, sim.tick().value);
     sim.arenas().registry().for_each_array([&seed](const RegisteredArray& array) {
@@ -180,7 +198,23 @@ template <class T>
 // The tick is folded (two runs of the same world at different ticks are
 // different), the world INDEX is not (that is the whole point).
 // ---------------------------------------------------------------------------
+[[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept;
+// The same two forms as state_digest (stage 7, Task C2 and its replay carry): the non-const world_digest syncs the device-resident
+// arrays first (noexcept, so a failed sync folds the host bytes as they stand and resident_current() says so); the checked const
+// form refuses `unavailable` naming the array and sync_resident() when one is stale. The const form below cannot refuse, so with a
+// stale resident array it stops loudly; a set with no resident array, which is every set today, digests as it always did.
+[[nodiscard]] inline uint64_t world_digest(Simulation& sim, uint32_t world) noexcept {
+    (void)sim.sync_resident();
+    return world_digest(static_cast<const Simulation&>(sim), world);
+}
+[[nodiscard]] inline Result<uint64_t> checked_world_digest(const Simulation& sim, uint32_t world) noexcept {
+    if (Result<std::reference_wrapper<const ArenaSet>> arenas = sim.checked_arenas(); !arenas) {
+        return std::unexpected(arenas.error());
+    }
+    return world_digest(sim, world);
+}
 [[nodiscard]] inline uint64_t world_digest(const Simulation& sim, uint32_t world) noexcept {
+    detail::stop_on_stale_resident(sim, "world_digest");
     uint64_t seed = kFnv1a64Offset;
     seed = detail::fold_value(seed, sim.tick().value);
     sim.arenas().registry().for_each_array([&seed, world](const RegisteredArray& array) {

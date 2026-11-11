@@ -69,12 +69,14 @@
 #include "field_dryden.spv.gen.hpp"
 #include "field_environment.spv.gen.hpp"
 #include "forces_drag.spv.gen.hpp"
+#include "forces_drag_points.spv.gen.hpp"
 #include "fp32_math_probe.spv.gen.hpp"
 #include "denorm_probe.spv.gen.hpp"  // the standing device record (T6)
 #include "grid_build.spv.gen.hpp"
 #include "grid_sort.spv.gen.hpp"
 #include "integrate.spv.gen.hpp"
 #include "medium_update.spv.gen.hpp"
+#include "points_positions.spv.gen.hpp"
 #include "rotors.spv.gen.hpp"
 #include "sensor_gnss.spv.gen.hpp"
 #include "sensor_imu.spv.gen.hpp"
@@ -473,6 +475,11 @@ const SpirvModule kSpirvModules[] = {
     // so scanning this module IS scanning the SDF evaluator. It also carries
     // fp32_math itself, transitively, through the heightfield's sin32.
     {gen::kSpvVariants_forces_drag, spade::testing::SpirvProfile::parity},
+    // Stage 7 D1: drag's points variant (the same source, SPADE_POINTS) and the injected positions pass's kernel (no arithmetic).
+    // points_positions copies each body's position into its row (index math, float loads and stores, a constant 0.0f store), so it is
+    // integer_only like field_environment: zero contractable ops is the assertion, its stores the non-vacuity proof.
+    {gen::kSpvVariants_forces_drag_points, spade::testing::SpirvProfile::parity},
+    {gen::kSpvVariants_points_positions, spade::testing::SpirvProfile::parity, /*integer_only=*/true},
     {gen::kSpvVariants_collision_static, spade::testing::SpirvProfile::parity},
     {gen::kSpvVariants_integrate, spade::testing::SpirvProfile::parity},
     // S6 Task 7's three, the dynamic_contact.resolve chain, all under PARITY for
@@ -1019,8 +1026,8 @@ TEST(SlangSpirv, EveryCompiledVariantIsScanned) {
     // quietly became the less trustworthy of the two. It is written relative to
     // the constant now, so it cannot drift again. 12 as of the GPU-sensor leg
     // (sensor_gnss joined the schedule); 14 with the two field-sample kernels
-    // (module-API stage 3).
-    constexpr std::size_t kScheduleKernels = 14;
+    // (module-API stage 3); 16 with batch D's forces_drag_points and points_positions (stage 7 D1).
+    constexpr std::size_t kScheduleKernels = 16;
     constexpr std::size_t kSingleVariantKernels = 2;  // fp32_math_probe and denorm_probe (T6)
 
     std::size_t scanned = 0;
