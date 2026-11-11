@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -481,4 +482,68 @@ TEST(EditorRun, ARebuildThatChangesARotorCountStartsItsPropsAtZero) {
     ASSERT_EQ(after.size(), rotors + 2);
     EXPECT_TRUE(std::all_of(after.begin(), after.end(), [](float p) { return p == 0.0f; }))
         << "a changed rotor count starts at 0";
+}
+
+// ---------------------------------------------------------------------------
+// The Run-mode wind (the lead's (c), 2026-11-11; Core's L46). EditorRun::set_wind() sets the running world's MEAN wind
+// through Simulation::set_world_wind(): it takes effect at the next step, is not the document's (the scene and world
+// files do not change), and is RECORDED as the replayable input L46 defines: the run's tick it was applied at and the
+// wind. The engine keeps no input log; a replay applies the same set at the same tick.
+// ---------------------------------------------------------------------------
+TEST(EditorRun, AMidRunWindSetIsTheNextStepsAndIsRecordedAsAReplayableInput) {
+    const glm::vec3 kWind(4.0f, 0.0f, -1.5f);
+    ed::EditorRun run = start_hover();
+    EXPECT_EQ(run.wind(), support::sample_world().environment.wind) << "the run starts at the document's wind";
+    EXPECT_TRUE(run.wind_sets().empty());
+    ASSERT_TRUE(run.step(20).has_value());
+    ASSERT_TRUE(run.set_wind(kWind).has_value());
+    EXPECT_EQ(run.wind(), kWind);
+    ASSERT_EQ(run.wind_sets().size(), 1u);
+    EXPECT_EQ(run.wind_sets()[0].tick, 20u) << "applied at the tick the next step starts from";
+    EXPECT_EQ(run.wind_sets()[0].wind, kWind);
+    ASSERT_TRUE(run.step(20).has_value());
+
+    ed::EditorRun still = start_hover();
+    ASSERT_TRUE(still.step(40).has_value());
+    EXPECT_NE(spade::testing::state_digest(run.sim()), spade::testing::state_digest(still.sim()))
+        << "a different wind is a different state (the digest folds it)";
+
+    // The replay: a fresh run applies the recorded set at its tick and ends bit for bit where the first did.
+    ed::EditorRun replay = start_hover();
+    ASSERT_TRUE(replay.step(run.wind_sets()[0].tick).has_value());
+    ASSERT_TRUE(replay.set_wind(run.wind_sets()[0].wind).has_value());
+    ASSERT_TRUE(replay.step(20).has_value());
+    EXPECT_EQ(spade::testing::state_digest(replay.sim()), spade::testing::state_digest(run.sim()));
+}
+
+// A refused set (a wind that is not finite) is Core's refusal verbatim and changes nothing: not the wind, not the record.
+TEST(EditorRun, ARefusedWindSetChangesNothingAndIsNotRecorded) {
+    ed::EditorRun run = start_hover();
+    ASSERT_TRUE(run.step(5).has_value());
+    const uint64_t digest = spade::testing::state_digest(run.sim());
+    const glm::vec3 before = run.wind();
+    const Result<void> r = run.set_wind(glm::vec3(std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().context.rfind("set_world_wind:", 0), 0u) << r.error().context;
+    EXPECT_EQ(run.wind(), before);
+    EXPECT_TRUE(run.wind_sets().empty());
+    EXPECT_EQ(spade::testing::state_digest(run.sim()), digest);
+}
+
+// An edit during Run rebuilds the run from the documents: the live wind goes on (the document did not change), unless
+// the edit is to the document's own wind, which wins and ends the live set.
+TEST(EditorRun, ARebuildKeepsTheLiveWindUnlessTheDocumentsWindChanged) {
+    const glm::vec3 kWind(2.0f, 0.0f, 0.0f);
+    ed::EditorRun run = start_hover();
+    ASSERT_TRUE(run.step(10).has_value());
+    ASSERT_TRUE(run.set_wind(kWind).has_value());
+    ASSERT_TRUE(run.rebuild(support::sample_scene(), support::sample_world()).has_value());
+    EXPECT_EQ(run.wind(), kWind);
+    EXPECT_EQ(run.wind_sets().size(), 1u) << "the record goes on across the rebuild";
+    ASSERT_TRUE(run.step(5).has_value());  // and it flies on in it
+
+    auto windier = support::sample_world();
+    windier.environment.wind = glm::vec3(0.0f, 0.0f, 6.0f);
+    ASSERT_TRUE(run.rebuild(support::sample_scene(), windier).has_value());
+    EXPECT_EQ(run.wind(), windier.environment.wind) << "the edited document's wind wins";
 }

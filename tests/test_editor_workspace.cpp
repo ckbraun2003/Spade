@@ -725,3 +725,34 @@ TEST(EditorWorkspaceAir, RunAirStartsThroughTheEditorsStarter) {
     EXPECT_EQ(w->air()->backend(), "CPU: told so; discs only, the body needs the GPU");
     command(*w, Command::stop);
 }
+
+// The Run-mode wind row (the lead's (c), 2026-11-11): the panels' request while Run runs sets the running world's wind
+// (EditorRun::set_wind) and is not an edit: the documents do not change, nothing is dirty, no undo step. The panel's
+// live_wind is the run's wind. With no Run (or Run air, whose fluid keeps its start wind), the request is dropped and
+// the status says why.
+TEST(EditorWorkspace, ALiveWindRequestSetsTheRunsWindAndIsNotAnEdit) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const glm::vec3 document = w->documents().world.desc().environment.wind;
+    command(*w, Command::run);
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
+    EXPECT_EQ(w->panels().live_wind, document) << "the row opens at the run's wind";
+    w->panels().wind_request = glm::vec3(3.0f, 0.0f, 0.0f);
+    w->apply_panels();
+    EXPECT_FALSE(w->panels().wind_request.has_value()) << "taken";
+    EXPECT_EQ(w->run()->wind(), glm::vec3(3.0f, 0.0f, 0.0f));
+    EXPECT_EQ(w->panels().live_wind, glm::vec3(3.0f, 0.0f, 0.0f));
+    EXPECT_EQ(w->documents().world.desc().environment.wind, document) << "the document is not edited";
+    EXPECT_FALSE(w->documents().world.dirty());
+    EXPECT_FALSE(w->panels().can_undo) << "a Run input, not an edit";
+    EXPECT_TRUE(w->panels().status.empty()) << w->panels().status;
+}
+
+TEST(EditorWorkspace, AWindRequestWithNoRunIsDroppedAndSaysWhy) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    w->panels().wind_request = glm::vec3(3.0f, 0.0f, 0.0f);
+    w->apply_panels();
+    EXPECT_FALSE(w->panels().wind_request.has_value());
+    EXPECT_NE(w->panels().status.find("Run"), std::string::npos) << w->panels().status;
+}
