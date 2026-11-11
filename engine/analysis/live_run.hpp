@@ -4,7 +4,9 @@
 // (flow_movie --case), D2's panel, the queued runner's real path and Kat's
 // host.
 //
-// THE DRONE IS HELD at the box's centre (Cameron's drone-box premise): a
+// THE DRONE IS HELD at the box's centre (Cameron's drone-box premise), or
+// ResolvedCase::hold_from_centre from it (L63, the deep box: the drone above the
+// centre, room below it for its wake): a
 // Simulation of the case's model, set each step by set_body_state() to the
 // commanded attitude, with zero velocity and the attitude's rate as its
 // omega_body. It is one-way: the air never pushes back. A held drone's IMU readings are
@@ -175,7 +177,7 @@ struct LiveState {
     double t_s = 0.0;  // simulated, whole steps of h
     uint64_t steps = 0;
     uint64_t frames = 0;
-    glm::quat attitude{1.0f, 0.0f, 0.0f, 0.0f};  // the design frame's axes -> the world's, at the box's centre
+    glm::quat attitude{1.0f, 0.0f, 0.0f, 0.0f};  // the design frame's axes -> the world's, at the held point
     glm::vec3 omega_body{0.0f};                  // the hold's rate, design axes, rad/s
     bool armed = false;
     std::vector<float> rotor_omega;  // rad/s, in the model's rotor order
@@ -314,7 +316,8 @@ class LiveRun {
     [[nodiscard]] Result<void> step(const Controls& controls);
 
     // Steps to the end of the next frame, then publishes the fluid into
-    // `out` (its storage reused), with the world origin at the box's centre.
+    // `out` (its storage reused), with the world origin where the drone is held (the box's centre, or
+    // hold_from_centre from it).
     [[nodiscard]] Result<LiveFrame> advance_frame(const Controls& controls, FlowVolume& out);
 
     // Steps `n` more times, then publishes the fluid into `out` as advance_frame() does, and counts one frame:
@@ -337,7 +340,8 @@ class LiveRun {
     // The rotors' rows after the last step, in the model's rotor order: each
     // one's speed, k_T, radius, and hub and axis in the body. With body(), what
     // a host's probes read (the tour's on-screen downwash check). The body is
-    // held at the box's centre, the published volume's frame. Empty for a
+    // held at the world origin (the box's centre, or hold_from_centre from it), the published volume's frame.
+    // Empty for a
     // model without rotors.
     [[nodiscard]] std::span<const vehicles::RotorRow> rotor_rows() const noexcept;
     // The blade azimuth psi, one per rotor in the model's rotor order, in

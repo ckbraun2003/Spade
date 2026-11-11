@@ -9,7 +9,8 @@
 //                      and in its save; what a device starts from; a
 //                      device's refusal and failure, by name; the run's
 //                      subgrid-viscosity account (LiveSgs) against the sums
-//                      of the health the device reported each step.
+//                      of the health the device reported each step; the
+//                      off-centre hold (ResolvedCase::hold_from_centre, L63).
 
 #include <gtest/gtest.h>
 
@@ -363,4 +364,110 @@ TEST(AnalysisLiveFluid, ARestoredRunStartsItsSgsAccountAtZero) {
     EXPECT_EQ(restored->sgs().limited_face_steps, 0u);
     EXPECT_EQ(restored->sgs().nu_t_max, 0.0f);
     EXPECT_EQ(an::sgs_health_line(restored->sgs()), "");
+}
+
+// ---------------------------------------------------------------------------
+// ResolvedCase::hold_from_centre (L63; Cameron's deeper box for the website wake). The drone is held at the world
+// origin; the box's centre sits at -hold from it, so a hold of +y puts the drone ABOVE the box's centre and the box's
+// minimum corner at -0.5 dx n - hold. 0, the default, is the centred run, to the bit.
+// ---------------------------------------------------------------------------
+namespace {
+
+// A LiveFluid that forwards to another and keeps the discs of its last step, in the grid's frame.
+class DiscTap final : public an::LiveFluid {
+  public:
+    DiscTap(std::unique_ptr<an::LiveFluid> inner, std::vector<af::ActuatorDisc>& seen)
+        : inner_(std::move(inner)), seen_(seen) {}
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc> discs) override {
+        seen_.assign(discs.begin(), discs.end());
+        return inner_->step(discs);
+    }
+    [[nodiscard]] spade::Result<void> publish(const af::PublishInput& in, spade::FlowVolume& out) override {
+        return inner_->publish(in, out);
+    }
+    [[nodiscard]] spade::Result<void> read(af::MacGrid& g) const override { return inner_->read(g); }
+
+  private:
+    std::unique_ptr<an::LiveFluid> inner_;
+    std::vector<af::ActuatorDisc>& seen_;
+};
+
+[[nodiscard]] an::LiveFluidMaker tapped(TwinLog& log, std::vector<af::ActuatorDisc>& seen) {
+    return [&log, &seen](const an::LiveFluidStart& s) -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+        spade::Result<std::unique_ptr<an::LiveFluid>> inner = CpuTwin::make(s, log);
+        if (!inner) return inner;
+        return std::unique_ptr<an::LiveFluid>(new DiscTap(std::move(*inner), seen));
+    };
+}
+
+// Still air, 32 x 64 x 32 cells at 25 mm (a 0.8 x 1.6 x 0.8 m box), the 4 ms step: the quad's rotors and a 20 cm
+// ball in the air, the drone small in a tall box. `hold` is the case's.
+[[nodiscard]] an::ResolvedCase tall(const Powered& p, const glm::vec3& hold) {
+    an::AnalysisCase c;
+    c.model = an::pin_model("quad.model.yaml", p.model);
+    c.power = p.power;
+    c.grid.box = 0.8f;
+    c.grid.spacing = 0.025f;
+    c.time.duration = 1.0f;
+    c.time.step = 0.004f;
+    c.rotors.assign(p.model.rotors.size(), an::RotorSetup{});
+    const auto r = an::resolve(c, p.model);
+    EXPECT_TRUE(r.has_value()) << (r ? "" : r.error().front().field + ": " + r.error().front().message);
+    an::ResolvedCase out = r ? *r : an::ResolvedCase{};
+    out.base = af::GridShape{32, 64, 32, 0.025f};
+    out.base_bytes = af::fluid_bytes(out.base, out.domain);
+    out.hold_from_centre = hold;
+    return out;
+}
+
+}  // namespace
+
+// The default hold is 0, and a run at it publishes the box centred on the drone, the minimum corner at
+// -0.5 dx n (the same float operations as before the field), over every frame.
+TEST(AnalysisLiveFluid, TheDefaultHoldIsZeroAndTheBoxIsCentred) {
+    EXPECT_EQ(an::ResolvedCase{}.hold_from_centre, glm::vec3(0.0f));
+    const Powered p = with_ball_body();
+    const an::ResolvedCase r = tall(p, glm::vec3(0.0f));
+    an::LiveRun run = started(r, p.model, {});
+    spade::FlowVolume v;
+    ASSERT_TRUE(run.advance_frame(an::Controls{true, 0.5f, 0.0f, 0.0f, 0.0f}, v).has_value());
+    const glm::vec3 centred = -0.5f * 0.025f * glm::vec3(32.0f, 64.0f, 32.0f);
+    EXPECT_EQ(v.header.origin, centred);
+}
+
+// A hold of (0, 0.4, 0) m (16 cells up): the box's minimum corner is at -0.5 dx n - hold, the drone is 16 cells
+// higher in the grid's frame, every rotor disc's centre is the centred run's plus the hold (the grid's frame has
+// moved by -hold), and the ball in the air is the same cells shifted by the 16 (the same solid count, 16 cells up).
+TEST(AnalysisLiveFluid, AHoldPutsTheDroneHigherInTheBoxAndMovesEverythingWithIt) {
+    const Powered p = with_ball_body();
+    const glm::vec3 hold(0.0f, 0.4f, 0.0f);
+    TwinLog log_a;
+    TwinLog log_b;
+    std::vector<af::ActuatorDisc> centred_discs;
+    std::vector<af::ActuatorDisc> held_discs;
+    an::LiveRun centred = started(tall(p, glm::vec3(0.0f)), p.model, tapped(log_a, centred_discs));
+    an::LiveRun held = started(tall(p, hold), p.model, tapped(log_b, held_discs));
+    const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    spade::FlowVolume a;
+    spade::FlowVolume b;
+    ASSERT_TRUE(centred.advance_frame(armed, a).has_value());
+    ASSERT_TRUE(held.advance_frame(armed, b).has_value());
+
+    const glm::vec3 shape(32.0f, 64.0f, 32.0f);
+    EXPECT_EQ(b.header.origin, -0.5f * 0.025f * shape - hold);
+    EXPECT_EQ(a.header.origin.x, b.header.origin.x);
+    EXPECT_EQ(a.header.origin.z, b.header.origin.z);
+    EXPECT_NEAR(a.header.origin.y - b.header.origin.y, hold.y, 1.0e-6f);
+
+    ASSERT_EQ(centred_discs.size(), p.model.rotors.size());
+    ASSERT_EQ(held_discs.size(), centred_discs.size());
+    for (std::size_t i = 0; i < held_discs.size(); ++i) {
+        EXPECT_NEAR(held_discs[i].centre.x, centred_discs[i].centre.x + hold.x, 1.0e-5f) << "rotor " << i;
+        EXPECT_NEAR(held_discs[i].centre.y, centred_discs[i].centre.y + hold.y, 1.0e-5f) << "rotor " << i;
+        EXPECT_NEAR(held_discs[i].centre.z, centred_discs[i].centre.z + hold.z, 1.0e-5f) << "rotor " << i;
+        EXPECT_EQ(held_discs[i].axis, centred_discs[i].axis) << "the disc's direction is the frame's, not moved";
+        EXPECT_EQ(held_discs[i].radius, centred_discs[i].radius);
+    }
+    EXPECT_GT(centred.solids().solid_cells, 0u);
+    EXPECT_EQ(held.solids().solid_cells, centred.solids().solid_cells) << "the ball's cells, 16 cells up";
 }
