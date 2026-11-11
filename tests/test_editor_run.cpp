@@ -510,7 +510,7 @@ TEST(EditorRun, AMidRunWindSetIsTheNextStepsAndIsRecordedAsAReplayableInput) {
 
     // The replay: a fresh run applies the recorded set at its tick and ends bit for bit where the first did.
     ed::EditorRun replay = start_hover();
-    ASSERT_TRUE(replay.step(run.wind_sets()[0].tick).has_value());
+    ASSERT_TRUE(replay.step(static_cast<uint32_t>(run.wind_sets()[0].tick)).has_value());
     ASSERT_TRUE(replay.set_wind(run.wind_sets()[0].wind).has_value());
     ASSERT_TRUE(replay.step(20).has_value());
     EXPECT_EQ(spade::testing::state_digest(replay.sim()), spade::testing::state_digest(run.sim()));
