@@ -130,6 +130,7 @@ add_executable(spade_tests
     test_part_file.cpp
     test_library_parts.cpp
     test_library_drones.cpp
+    test_library_install.cpp
     test_library_drone_solids.cpp
     test_determinism.cpp
     test_set_body_state.cpp
@@ -242,6 +243,12 @@ add_executable(spade_tests
     test_mesh_pack.cpp
     ../tools/mesh_pack/mesh_pack.cpp
 )
+
+# test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
+# the build tree and the cmake that configured it, so those two are defined for that one file (not for the whole target: a target-wide
+# definition would recompile every test).
+set_source_files_properties(test_library_install.cpp PROPERTIES
+    COMPILE_DEFINITIONS "SPADE_TEST_BUILD_DIR=\"${CMAKE_BINARY_DIR}\";SPADE_TEST_CMAKE_COMMAND=\"${CMAKE_COMMAND}\"")
 
 # test_compute_context.cpp (S6 Task 1) -- includes compute/vulkan/context.hpp
 # directly, which needs volk on ITS OWN include path (see engine/CMakeLists.txt's
