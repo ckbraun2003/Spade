@@ -54,6 +54,7 @@
 
 #include "bindings.gen.hpp"
 #include "compute/device_limits.hpp"
+#include "compute/set_one_bindings.hpp"
 #include "compute/spirv_variants.hpp"
 #include "compute/vulkan/context.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
