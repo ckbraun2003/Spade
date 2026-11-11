@@ -33,6 +33,7 @@
 
 #include "gl_target_sink.hpp"
 
+#include "app_paths.hpp"      // where the fonts are (beside the exe, else the assets folder's)
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
 #include "editor_panels.hpp"     // the editor's panel model: its library's thumbnails become textures here
 #include "editor_panels_ui.hpp"  // the editor's panels, drawn; the workspace decides
@@ -259,19 +260,12 @@ void draw_view_lines(const std::vector<editor::GizmoLine>& lines, const Viewport
     }
 }
 
-// The folder holding this executable, where the build puts the UI font. Not
-// the working directory: the sandbox is launched from anywhere.
-std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    std::wstring path(32768, L'\0');
-    const DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    path.resize(n);
-    return std::filesystem::path(path).parent_path();
-#else
+// Where the UI font is: beside the executable, where the build puts it, else the assets folder's, where the installer
+// does (app_paths.hpp, L73a). Not the working directory: the sandbox is launched from anywhere.
+std::filesystem::path font_folder() {
     std::error_code ec;
-    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
-    return ec ? std::filesystem::current_path(ec) : self.parent_path();
-#endif
+    const std::filesystem::path exe = app::executable_dir();
+    return app::fonts_dir(exe, app::resolve_assets({}, exe, std::filesystem::current_path(ec)));
 }
 #endif
 
@@ -500,7 +494,7 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
     // font is announced here and in the HUD, never swapped silently (L6).
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ui::apply_theme();
-    impl->ui_font_loaded = ui::load_fonts(executable_dir() / "fonts");
+    impl->ui_font_loaded = ui::load_fonts(font_folder());
     if (!impl->ui_font_loaded) {
         std::fprintf(stderr, "spade_sandbox: %s\n", ui::fonts().missing.c_str());
     }

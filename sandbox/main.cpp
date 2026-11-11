@@ -50,6 +50,7 @@
 #include "render/target.hpp"
 #include "world/builder.hpp"
 
+#include "app_paths.hpp"       // the asset root from the exe, and what a bare launch opens (L73a)
 #include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "editor_cli.hpp"      // --edit: the editor's command line, no window
 #include "editor_session.hpp"  // --editor: the editor's window
@@ -71,10 +72,10 @@ constexpr uint32_t kDefaultHeight = 180;
 
 void print_usage() {
     std::puts("spade_sandbox -- the Spade engine's reference application.\n");
-    std::puts("  (no mode flag)        open a window on the default scene -- THE DEFAULT");
-    std::puts("  --window              the same, stated explicitly");
+    std::puts("  (no mode flag)        open the editor's window on assets/scenes/hover.scene.yaml -- THE DEFAULT");
+    std::puts("  --window              the drone sim box's window (also --scene drone)");
     std::puts("  --headless            render one frame with no window and exit (the CI surface)");
-    std::puts("  --scene drone         the drone sim box, the only scene (the default)");
+    std::puts("  --scene drone         the drone sim box, the only scene (a window unless --headless)");
     std::puts("  --out <path>          write the frame as a binary PPM (default: no file, render only)");
     std::puts("  --width/--height <n>  frame size (headless 320x180, window 1280x720)");
     std::puts("  --no-vsync            do not wait for the display refresh");
@@ -83,16 +84,17 @@ void print_usage() {
     std::puts("                        --out <dir>; exit 0 PASS, 1 FAIL, 2 no verdict");
     std::puts("                        (scripts/live-smoke.ps1 runs it)");
     std::puts("  --label <text>        live smoke: the commit and date for the title cards");
-    std::puts("  --assets <dir>        live smoke: the repository's assets/, for the editor's scene files");
+    std::puts("  --assets <dir>        the assets/ folder (scenes, worlds, library, fonts): the editor's and the");
+    std::puts("                        live smoke's. Default: assets/ beside this program, else ./assets");
     std::puts("  --inject <spec>       live smoke red runs: skip:<step> or anomaly:<step>/<name>");
     std::puts("  --horizon-blur <f>    SR-17a atmospheric strength, 0 = off (default 0)");
     std::puts("  --edit <scene.yaml>   FIRST ARGUMENT ONLY: the editor's command line, no window:");
     std::puts("                        [--apply <edits.txt>] [--save <scene.yaml>] [--save-world <world.yaml>]");
     std::puts("                        [--run <steps>]; exit 0 done, 1 refused, 2 bad arguments");
     std::puts("  --editor [scene.yaml] FIRST ARGUMENT ONLY: the editor's window on a scene file");
-    std::puts("                        (default: assets/scenes/hover.scene.yaml from the working directory)");
+    std::puts("                        (default: assets/scenes/hover.scene.yaml, found as --assets says)");
     std::puts("  --help                this text\n");
-    std::puts("In the window -- THE DRONE SIM BOX (default):");
+    std::puts("In the drone sim box's window (--window):");
     std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
     std::puts("  R              level");
     std::puts("  A/D around     E/Q over/under     W/S nearer/further (0.5-6 m)     drag orbit");
@@ -259,6 +261,13 @@ int run_headless_drone(uint32_t width, uint32_t height, float blur, const char* 
     return 0;
 }
 
+// The scene a bare launch opens: hover under the assets folder (--assets, else beside the program, else ./assets).
+std::filesystem::path default_editor_scene(const std::filesystem::path& assets_override) {
+    std::error_code ec;
+    return spade::sandbox::app::default_scene(spade::sandbox::app::resolve_assets(
+        assets_override, spade::sandbox::app::executable_dir(), std::filesystem::current_path(ec)));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -276,8 +285,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "spade_sandbox: --editor takes one scene file at most\n");
             return 2;
         }
-        const std::filesystem::path scene = argc == 3 ? std::filesystem::path(argv[2])
-                                                      : std::filesystem::path("assets/scenes/hover.scene.yaml");
+        const std::filesystem::path scene = argc == 3 ? std::filesystem::path(argv[2]) : default_editor_scene({});
         if (!std::filesystem::is_regular_file(scene)) {
             std::fprintf(stderr,
                          "spade_sandbox: --editor: no scene file at %s; give one: spade_sandbox --editor "
@@ -366,14 +374,27 @@ int main(int argc, char** argv) {
                                  "journal (scripts/live-smoke.ps1 picks one)\n");
             return 2;
         }
+        // No --assets: the folder beside this program, else ./assets (the install folder runs the tour as it stands).
+        {
+            std::error_code ec;
+            tour.assets_dir = spade::sandbox::app::resolve_assets(
+                tour.assets_dir, spade::sandbox::app::executable_dir(), std::filesystem::current_path(ec));
+        }
         tour.out_dir = out_path;
         tour.width = width_set ? width : 1280u;
         tour.height = height_set ? height : 720u;
         tour.blur = blur;
         return spade::sandbox::live::run_live_smoke(tour);
     }
-    if (!tour.label.empty() || !tour.injections.empty() || !tour.assets_dir.empty()) {
-        std::fprintf(stderr, "spade_sandbox: --label, --inject and --assets apply to --live-smoke only\n");
+    if (!tour.label.empty() || !tour.injections.empty()) {
+        std::fprintf(stderr, "spade_sandbox: --label and --inject apply to --live-smoke only\n");
+        return 2;
+    }
+    // What a bare command line opens (L73a): the editor, unless the drone box was asked for.
+    const spade::sandbox::app::Mode mode =
+        spade::sandbox::app::default_mode(headless, windowed, scene_name != nullptr, false);
+    if (!tour.assets_dir.empty() && mode != spade::sandbox::app::Mode::editor) {
+        std::fprintf(stderr, "spade_sandbox: --assets applies to the editor and --live-smoke only\n");
         return 2;
     }
     // REFUSES rather than guessing. Two modes named at once is not a
@@ -391,9 +412,7 @@ int main(int argc, char** argv) {
                          : "");
         return 2;
     }
-    if (!headless) {
-        windowed = true;
-    }
+    windowed = mode != spade::sandbox::app::Mode::headless;
 
     // The two modes have genuinely different natural sizes -- a CI frame is
     // small on purpose and a window is not -- so the default depends on the
@@ -416,6 +435,22 @@ int main(int argc, char** argv) {
         return 2;
     }
 
+    if (mode == spade::sandbox::app::Mode::editor) {
+        if (blur != 0.0f) {
+            std::fprintf(stderr, "spade_sandbox: --horizon-blur applies to the drone sim box (--window)\n");
+            return 2;
+        }
+        const std::filesystem::path scene = default_editor_scene(tour.assets_dir);
+        if (!std::filesystem::is_regular_file(scene)) {
+            std::fprintf(stderr,
+                         "spade_sandbox: no scene file at %s; the editor looks for an assets folder beside this "
+                         "program, then in the working directory (--assets <dir> names one), or open a scene: "
+                         "spade_sandbox --editor <scene.yaml>\n",
+                         scene.string().c_str());
+            return 2;
+        }
+        return run_windowed_editor(scene, width, height, vsync);
+    }
     if (windowed) {
         std::printf("spade_sandbox: opening a %ux%u window on the drone sim box (--headless for the CI surface)\n",
                     width, height);

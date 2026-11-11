@@ -10,6 +10,7 @@
 #pragma once
 
 #include <filesystem>
+#include <system_error>
 
 namespace spade::sandbox::app {
 
@@ -18,16 +19,15 @@ namespace spade::sandbox::app {
 enum class Mode { editor, drone_box, headless, live_smoke };
 
 [[nodiscard]] constexpr Mode default_mode(bool headless, bool window, bool scene_named, bool live_smoke) noexcept {
-    (void)window;
-    (void)scene_named;
-    (void)live_smoke;
-    return headless ? Mode::headless : Mode::drone_box;
+    if (live_smoke) return Mode::live_smoke;
+    if (headless) return Mode::headless;
+    return window || scene_named ? Mode::drone_box : Mode::editor;
 }
 
 // An assets folder the editor can use: it holds scenes/ and worlds/ (the built-in scenes and the worlds they name).
 [[nodiscard]] inline bool is_assets_root(const std::filesystem::path& dir) {
-    (void)dir;
-    return false;
+    std::error_code ec;
+    return std::filesystem::is_directory(dir / "scenes", ec) && std::filesystem::is_directory(dir / "worlds", ec);
 }
 
 // The assets folder: --assets as given when there is one (so a wrong one is named in the refusal, not replaced), else
@@ -36,8 +36,8 @@ enum class Mode { editor, drone_box, headless, live_smoke };
 [[nodiscard]] inline std::filesystem::path resolve_assets(const std::filesystem::path& override_dir,
                                                           const std::filesystem::path& exe_dir,
                                                           const std::filesystem::path& cwd) {
-    (void)override_dir;
-    (void)exe_dir;
+    if (!override_dir.empty()) return override_dir;
+    if (const std::filesystem::path beside = exe_dir / "assets"; is_assets_root(beside)) return beside;
     return cwd / "assets";
 }
 
@@ -50,8 +50,9 @@ enum class Mode { editor, drone_box, headless, live_smoke };
 // installer puts them.
 [[nodiscard]] inline std::filesystem::path fonts_dir(const std::filesystem::path& exe_dir,
                                                      const std::filesystem::path& assets) {
-    (void)assets;
-    return exe_dir / "fonts";
+    std::error_code ec;
+    if (std::filesystem::exists(exe_dir / "fonts" / "Inter-Regular.ttf", ec)) return exe_dir / "fonts";
+    return assets / "fonts";
 }
 
 // The folder holding this executable (not the working directory); the working directory's when the OS won't say.

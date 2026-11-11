@@ -24,6 +24,8 @@
 
 add_executable(spade_sandbox
     main.cpp
+    # Where the app finds its assets, and what a bare launch opens (L73a).
+    app_paths.cpp
     gl_target_sink.cpp
     # The drone sim box's setup and its one frame function, shared by the
     # window and the live smoke.
