@@ -41,7 +41,8 @@ struct LiveCase {
     std::optional<spade::physics::airflow::GridShape> grid;
     // L63: where LiveRun holds the drone in that grid, from the box's centre (ResolvedCase::hold_from_centre; the drone
     // stays at the world origin and the box's centre sits at -hold). tests/d1_case.hpp's d1_hold(): zero in kD1Grid, so
-    // a centred film is the centred run to the bit; 0.43 m up in kD1DeepGrid. identity names it when it is not zero.
+    // a centred film is the centred run to the bit; 0.43 m up in kD1DeepGrid; a box shorter than kD1Grid stays centred
+    // (zero). identity names it when it is not zero.
     glm::vec3 hold{0.0f};
     // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
     // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.

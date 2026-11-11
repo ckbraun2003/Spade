@@ -159,7 +159,10 @@ namespace {
     lc.program = std::move(built->program);
     lc.program_name = std::move(built->program_name);
     lc.grid = built->grid;
-    lc.hold = built->hold;
+    // d1_hold() counts from kD1Grid's 177 rows, so a SHORTER box than that gets a negative hold, which puts the drone
+    // outside a box like the gate's 112 x 80 x 112 (the rotors' discs leave the grid). A --grid shorter than D1's was always
+    // centred on the drone and stays so; only a deeper box moves it.
+    lc.hold = glm::max(built->hold, glm::vec3(0.0f));
     const spade::analysis::ShowcaseTrim trim = built->trim;
     lc.seconds = seconds;
     lc.name = std::move(name);
