@@ -6,7 +6,7 @@
 
 ## What Physics should know first
 
-1. **The estimated polar jumps at stall.** By its own formula C_l is 5.5 × (11 + 3)° = 1.34 at α = 11° and sin 2α = 0.375 just above it (the design note says "about 1.2"). C_d is continuous there. The root stations (β up to 37°) sit past stall, so a cliff in C_l is in the thrust. This is Physics' to settle before R2 is written; it is not a band.
+1. **The estimated polar jumped at stall, and no longer does.** The design note's formula gave C_l 1.34 at α = 11° and sin 2α = 0.375 just above it. Physics' shipped polar (`engine/physics/airflow/blade.hpp`, physics/line @ 87571693) is attached to 11° and blended linearly in α over 14° more to the flat plate, so it is continuous. The sensitivities below were first run on the old polar and re-run on the shipped one (this note's numbers are the shipped polar's).
 2. **V3 at ±10% is not reachable by a correct line.** The library's own measured table puts the 9.4 in stand-in at 2.995 N at 5300 rpm (ρ 1.225), 3.9% under NASA's 3.115 N a rotor. That leaves 6.1% for the whole chain. V3's band is the sum of its terms (below).
 3. **The held-out J range ends at 0.581.** The table's last measured point is J 0.581 (`first_measured_j` 0.113, `last_measured_j` 0.581). J 0.6 has no data, and J 0.5's band is wider than half its value (below).
 4. **The 0.78 R contraction and "2 v_h at 1.5 R" are not momentum theory's.** The ideal far wake has 2 v_h and 0.707 R. I cannot source 0.78 R, so these two are report only.
@@ -20,17 +20,17 @@
 
 ## The polar's own spread (computed for this note, relative only)
 
-A hover BEMT written for this note, on the library's `uiuc_apce_10x5` stations, D 0.254 m, 5000 rpm, Physics' estimated polar. **Only relative changes were printed, never an absolute C_T or C_Q and never a comparison with UIUC's data**, so no band comes from the model's error (`.agents/refs/l61-sensitivity/`).
+A hover BEMT written for this note, on the library's `uiuc_apce_10x5` stations, D 0.254 m, 5000 rpm, the estimated polar as shipped (the blend above). **Only relative changes were printed, never an absolute C_T or C_Q and never a comparison with UIUC's data**, so no band comes from the model's error (`.agents/refs/l61-sensitivity/`).
 
 | Change to the polar (static point) | dC_T | dC_Q |
 |---|---|---|
-| lift slope 5.5 → 2π (thin-plate theory) | +9.5% | +12.1% |
-| lift slope 5.5 → 4.4 (−20%, my bracket) | −14.2% | −16.7% |
-| α₀ −3° → −1° / −5° | −13.5% / +13.8% | −15.9% / +17.7% |
-| C_d × 0.7 / × 1.5 | +0.2% / −0.4% | −10.5% / +17.5% |
-| Prandtl tip loss on, against off | −3.9% | −0.9% |
+| lift slope 5.5 → 2π (thin-plate theory) | +10.8% | +13.7% |
+| lift slope 5.5 → 4.4 (−20%, my bracket) | −15.9% | −18.6% |
+| α₀ −3° → −1° / −5° | −14.5% / +14.9% | −17.1% / +19.3% |
+| C_d × 0.7 / × 1.5 | +0.3% / −0.4% | −9.0% / +15.1% |
+| Prandtl tip loss on, against off | −3.5% | −0.8% |
 
-An estimated polar's plausible spread is about ±14% in thrust and ±17% or more in torque. So **V1's static band is a decision threshold for calibration, not a validation**: a pass would be luck. The validation is the held-out J.
+An estimated polar's plausible spread is about ±15% in thrust and ±19% or more in torque. So **V1's static band is a decision threshold for calibration, not a validation**: a pass would be luck. The validation is the held-out J.
 
 ## V1: the BEMT against UIUC's 10x5
 
@@ -40,27 +40,27 @@ An estimated polar's plausible spread is about ±14% in thrust and ±17% or more
 
 The terms, per J:
 
-- **The slope:** with α₀ and the drag scale re-matched so the static point equals the nominal's, a polar slope anywhere from 4.4 to 2π moves the J sweep by up to the values below (the −20% side; the 2π side is 2.1, 3.8 and 5.8% in C_T). This is the one polar freedom a static point cannot fix. The 4.4 is my bracket, a judgment, and the record says so.
+- **The slope:** with α₀ and the drag scale re-matched so the static point equals the nominal's, a polar slope anywhere from 4.4 to 2π moves the J sweep by up to the values below (the −20% side; the 2π side is 2.4, 3.9 and 5.8% in C_T). This is the one polar freedom a static point cannot fix. The 4.4 is my bracket, a judgment, and the record says so.
 - **The reference:** 2.7% (C_T) or 1.5% (C_Q) of the static value.
 - **If the polar stood** (no calibration), the static band is added.
 
 | J | slope term, C_T | slope term, C_Q | band after calibration, C_T / C_Q | band if the polar stood, C_T / C_Q |
 |---|---|---|---|---|
-| 0.2 | 3.3% | 4.5% | **6.0% / 6.0%** | 16% / 21% |
-| 0.3 | 5.8% | 8.4% | **8.5% / 9.9%** | 19% / 25% |
-| 0.4 | 8.9% | 13.5% | **12% / 15%** | 22% / 30% |
+| 0.2 | 3.6% | 4.9% | **6.3% / 6.4%** | 17% / 22% |
+| 0.3 | 6.0% | 8.8% | **8.7% / 11%** | 19% / 26% |
+| 0.4 | 8.8% | 13.7% | **12% / 16%** | 22% / 31% |
 
-- **J 0.5 is report only.** The slope term there is 12.5% and 19.9% of the static value, but UIUC's C_T at J 0.5 is 0.029, 30% of the static value. The band would cover over half the quantity.
+- **J 0.5 is report only.** The slope term there is 12.0% and 19.7% of the static value, but UIUC's C_T at J 0.5 is 0.029, 30% of the static value. The band would cover over half the quantity.
 - **J 0.6 has no UIUC point** (last measured 0.581). **The efficiency** J C_T / C_P is report only: it is built from two banded quantities.
 - **A second calibration is refused:** a miss at J 0.2 to 0.4 after calibrating is a finding about the polar's shape, not a reason to refit.
 
 ## V2: one rotor hovering in a grid box
 
-CPU at R/dx 19 and 25, the GPU at 38 (4, 3 and 2 mm for D1's rotor). Compared at one rotor, one disc loading, the same blade stations and the same polar (calibrated by V1 if it was). **The comparator is the BEMT with Prandtl tip loss**, the standard hover model. The line has no tip correction, but its grid carries the tip vortex, so the tip loss belongs in the comparator. If Physics' BEMT has none, the thrust band's centre moves by −3.9% and the power's by −0.9%, and the record says which BEMT it used.
+CPU at R/dx 19 and 25, the GPU at 38 (4, 3 and 2 mm for D1's rotor). Compared at one rotor, one disc loading, the same blade stations and the same polar (calibrated by V1 if it was). **The comparator is the BEMT with Prandtl tip loss**, the standard hover model. The line has no tip correction, but its grid carries the tip vortex, so the tip loss belongs in the comparator. If Physics' BEMT has none, the thrust band's centre moves by −3.5% and the power's by −0.8%, and the record says which BEMT it used.
 
 | Measure | Band | Built from |
 |---|---|---|
-| Line thrust against the BEMT | **within ±10%** | Physics' number, kept. What I can derive is small: the tip-loss term is the 3.9% above, removed by the comparator. The rest (the kernel's smoothing, eps/c of 0.5 to 0.9 against the 0.25 optimum Physics cites, so the load reads low; the grid; the root) cannot be separated before a run. The R/dx sweep is what measures it |
+| Line thrust against the BEMT | **within ±10%** | Physics' number, kept. What I can derive is small: the tip-loss term is the 3.5% above, removed by the comparator. The rest (the kernel's smoothing, eps/c of 0.5 to 0.9 against the 0.25 optimum Physics cites, so the load reads low; the grid; the root) cannot be separated before a run. The R/dx sweep is what measures it |
 | Line power (torque × ω) against the BEMT | **within ±15%** | Physics' number, kept. Torque is the more sensitive: the drag term moves it ±10 to 17% on its own |
 | Momentum flux through the plane 1.5 R below, over the line's own thrust | **within ±10%** | steady momentum theory: with ambient pressure on the plane, the flux ρ ∫ w² dA equals the thrust, centre 1. The width is the L52 calibration's 0.089 at a similar plane, rounded up (`2026-11-10-sgs-film-bands.md`). It does not use the BEMT |
 | Figure of merit T^1.5 / (√(2ρA) P) | report only | built from the two banded quantities: the worst-case band, 1.5 × 10% + 15% = 30%, tells nothing. The UIUC static value is 0.573 |
