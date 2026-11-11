@@ -201,6 +201,8 @@ struct AirFrame {
     std::string run_label;
     std::string pressure_line;
     FlightReadout flight;  // the Flight section's numbers (editor_flight_readout.hpp)
+    analysis::LiveSgs sgs;          // the subgrid viscosity's account so far (LiveRun::sgs()); 0 without it
+    std::string turbulence_line;    // turbulence_line() for it: what the panel says, "" with the row off
     float speed_top = 1.0f;  // the colour scale's top: twice the hover's induced speed (airflow::speed_top())
     std::string error;  // "" while the air runs; else why it stopped, in the last frame
 };
@@ -238,7 +240,13 @@ struct AirCases {
     AirCase body;
     AirCase discs;
     bool loses_parts = false;
+    float sgs_cs = 0.0f;  // the subgrid viscosity asked for (kAirSgsCs), 0 off: the starter's device takes it
 };
+
+// Run air's subgrid turbulence (the Advanced row; the lead, 2026-11-11): Smagorinsky's Cs, L52's value. On the GPU
+// only: a LiveRun's own CPU fluid has no Cs, so on the CPU the run is without it and its backend says so.
+inline constexpr float kAirSgsCs = 0.17f;
+inline constexpr std::string_view kAirTurbulenceNeedsTheGpu = "; subgrid turbulence needs the GPU";
 
 // Real time's grids (L17, Rendering's frontier, 2026-11-03): cells a side.
 inline constexpr uint32_t kAirRealTimeGpuCells = 48;
@@ -317,6 +325,20 @@ namespace detail {
 
 using AirStarter = std::function<Result<AirStart>(const AirCases&)>;
 
+// What the Advanced row says while Run air flies (the lead, 2026-11-11), "" with the row off (`cs` 0): on the CPU,
+// that the term is off (a LiveRun's own CPU fluid has no Cs); on the device, Cs and the account of what the term did:
+// nu_t's largest met, then what bound (sgs_health_line(): the cap's steps, the wall limit's), or that nothing did.
+[[nodiscard]] inline std::string turbulence_line(float cs, bool on_gpu, const analysis::LiveSgs& sgs) {
+    if (!(cs > 0.0f)) return {};
+    if (!on_gpu) return "Subgrid turbulence needs the GPU: this run is on the CPU, so it is off";
+    const std::string bound = analysis::sgs_health_line(sgs);
+    if (bound.empty()) {
+        return std::format("Cs {:.2f} \xc2\xb7 nu_t up to {:.2g} m2/s; nothing at the cap or the wall limit",
+                           static_cast<double>(cs), static_cast<double>(sgs.nu_t_max));
+    }
+    return std::format("Cs {:.2f} \xc2\xb7 {}", static_cast<double>(cs), bound);
+}
+
 // LiveRun::start() on the CPU with the discs' case, its backend "CPU: " and
 // `why`, and kAirBodyNeedsTheGpu when it loses parts. The editor's window
 // gives Run air the GPU's starter (editor_air_gpu.hpp); given none, Run air
@@ -325,7 +347,9 @@ using AirStarter = std::function<Result<AirStart>(const AirCases&)>;
     return [why = std::move(why)](const AirCases& cases) -> Result<AirStart> {
         Result<analysis::LiveRun> run = analysis::LiveRun::start(cases.discs.resolved, cases.discs.model);
         if (!run) return std::unexpected(run.error());
-        return AirStart{std::move(*run), "CPU: " + why + (cases.loses_parts ? std::string(kAirBodyNeedsTheGpu) : ""),
+        return AirStart{std::move(*run),
+                        "CPU: " + why + (cases.loses_parts ? std::string(kAirBodyNeedsTheGpu) : "") +
+                            (cases.sgs_cs > 0.0f ? std::string(kAirTurbulenceNeedsTheGpu) : ""),
                         nullptr};
     };
 }
@@ -381,18 +405,19 @@ class AirflowRun {
     [[nodiscard]] static Result<std::unique_ptr<AirflowRun>> start(
         const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
         std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {},
-        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed) {
+        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed, float sgs_cs = 0.0f) {
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
-        const Result<AirCases> cases = air_cases(s, region, level);
+        Result<AirCases> cases = air_cases(s, region, level);
         if (!cases) return std::unexpected(cases.error());
+        cases->sgs_cs = sgs_cs;
         Result<AirStart> started = starter(*cases);
         if (!started) return std::unexpected(detail::air_refusal(region, started.error().context));
         if (prepare) prepare(started->run);
         const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
-                           cases->body.resolved.domain.ambient, std::move(program), level));
+                           cases->body.resolved.domain.ambient, std::move(program), level, sgs_cs));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -428,8 +453,9 @@ class AirflowRun {
 
   private:
     AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top, glm::vec3 ambient,
-               std::optional<analysis::ControlProgram> program, AirLevel level)
+               std::optional<analysis::ControlProgram> program, AirLevel level, float sgs_cs)
         : level_(level),
+          sgs_cs_(sgs_cs),
           keep_(std::move(started.keep)),
           run_(std::move(started.run)),
           backend_(std::move(started.backend)),
@@ -511,6 +537,8 @@ class AirflowRun {
         flight.rotor_omega = frame->rotor_omega;
         flight.thrust_coeff = thrust_coeff;
         frame->flight = flight_readout(flight);
+        frame->sgs = run_.sgs();
+        frame->turbulence_line = turbulence_line(sgs_cs_, backend_ == "GPU", run_.sgs());
         std::shared_ptr<const AirFrame> done = std::move(frame);
         const std::lock_guard<std::mutex> lock(mutex_);
         latest_ = std::move(done);
@@ -525,6 +553,7 @@ class AirflowRun {
     }
 
     AirLevel level_;
+    float sgs_cs_;  // the subgrid viscosity asked for, 0 off
     std::shared_ptr<void> keep_;  // the starter's: outlives run_
     analysis::LiveRun run_;       // the worker's alone once it starts
     std::string backend_;

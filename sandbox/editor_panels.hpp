@@ -121,9 +121,12 @@ struct EditorPanels {
     // While Run air runs: the Flight section's rows (flight_rows()), filled from the run's latest frame; empty
     // otherwise.
     std::vector<FlightRow> flight;
+    // While Run air runs with the turbulence row on: the line the row shows (turbulence_line()); empty otherwise.
+    std::string turbulence_line;
     AirLineCache air_line;  // kept by the panels between frames
     // ---- Written by the panels, read by the workspace at Run air.
     AirLevel air_level = AirLevel::detailed;
+    bool air_turbulence = false;  // the Advanced "Subgrid turbulence" row: Run air at kAirSgsCs (GPU only)
     const WorldDesc* world = nullptr;
     const BuiltinRecords* records = nullptr;  // not saved with the world yet (EDT-018)
     std::string grid_cell;                    // its Grid cell row (grid_cell_line()): a Run's sized cell, and why

@@ -92,13 +92,18 @@ class GpuLiveFluid final : public analysis::LiveFluid {
 };
 
 // The maker LiveRun::start() takes: GpuFluid::create() on `ctx` from the
-// run's start, at `workgroup_size`, its refusals passed on.
+// run's start, at `workgroup_size`, its refusals passed on. `sgs_cs` above 0
+// turns the subgrid eddy viscosity on in the config the device is made from
+// (L52/L54: LiveRun's own config has none, so a host hands it here, as
+// flow_movie does); 0, the default, leaves the run's config as it is.
 [[nodiscard]] inline analysis::LiveFluidMaker gpu_live_fluid(compute::VulkanContext& ctx,
-                                                             uint32_t workgroup_size = 64) {
-    return [&ctx, workgroup_size](
+                                                             uint32_t workgroup_size = 64, float sgs_cs = 0.0f) {
+    return [&ctx, workgroup_size, sgs_cs](
                const analysis::LiveFluidStart& s) -> Result<std::unique_ptr<analysis::LiveFluid>> {
+        auto config = s.config;
+        if (sgs_cs > 0.0f) config.sgs_cs = sgs_cs;
         Result<std::unique_ptr<GpuFluid>> fluid =
-            GpuFluid::create(ctx, s.grid, s.domain, s.config, s.solids, workgroup_size);
+            GpuFluid::create(ctx, s.grid, s.domain, config, s.solids, workgroup_size);
         if (!fluid) return std::unexpected(fluid.error());
         return std::make_unique<GpuLiveFluid>(std::move(*fluid));
     };
@@ -127,11 +132,11 @@ struct CpuCase {
                                                       const vehicles::ModelType& model,
                                                       compute::VulkanContext* ctx,
                                                       uint32_t workgroup_size = 64,
-                                                      CpuCase cpu = {}) {
+                                                      CpuCase cpu = {}, float sgs_cs = 0.0f) {
     std::string because = "no Vulkan device";
     if (ctx != nullptr) {
         std::optional<Error> refused;
-        const analysis::LiveFluidMaker gpu = gpu_live_fluid(*ctx, workgroup_size);
+        const analysis::LiveFluidMaker gpu = gpu_live_fluid(*ctx, workgroup_size, sgs_cs);
         const analysis::LiveFluidMaker kept = [&](const analysis::LiveFluidStart& s) {
             Result<std::unique_ptr<analysis::LiveFluid>> device = gpu(s);
             if (!device) refused = device.error();

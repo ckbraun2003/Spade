@@ -52,12 +52,13 @@ namespace spade::sandbox::editor {
         }
         Result<airflow_gpu::LiveRunOn> on =
             airflow_gpu::start_live_run(cases.body.resolved, cases.body.model, device->ctx.get(), workgroup_size,
-                                        airflow_gpu::CpuCase{&cases.discs.resolved, &cases.discs.model});
+                                        airflow_gpu::CpuCase{&cases.discs.resolved, &cases.discs.model}, cases.sgs_cs);
         if (!on) return std::unexpected(on.error());
         std::string backend = on->cpu_because.empty() ? std::string("GPU")
                               : device->ctx            ? "CPU: " + on->cpu_because
                                                        : "CPU: " + device->why;
         if (!on->cpu_because.empty() && cases.loses_parts) backend += kAirBodyNeedsTheGpu;
+        if (!on->cpu_because.empty() && cases.sgs_cs > 0.0f) backend += kAirTurbulenceNeedsTheGpu;
         return AirStart{std::move(on->run), std::move(backend), device->ctx};
     };
 }

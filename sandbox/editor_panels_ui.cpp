@@ -450,6 +450,26 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             } else {
                 ImGui::TextDisabled("%s", line.text.c_str());
             }
+            // The air's subgrid turbulence (Smagorinsky's term at Cs 0.17, L52), folded as Advanced: GPU only, so a run
+            // on the CPU says it is off; not while the air runs.
+            ImGui::PushID("airflow-advanced");  // its own ids: the model's Advanced section has the same label
+            if (ui::section("Advanced", false) && ui::begin_properties("airflow-advanced")) {
+                ImGui::BeginDisabled(p.air);
+                ui::property_row("Subgrid turbulence");
+                ImGui::Checkbox("##turbulence", &p.air_turbulence);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    ImGui::SetTooltip("Smagorinsky's subgrid eddy viscosity, Cs 0.17, on the GPU's fluid only: a run on "
+                                      "the CPU flies without it and says so.");
+                }
+                ImGui::EndDisabled();
+                ui::end_properties();
+            }
+            ImGui::PopID();
+            if (!p.turbulence_line.empty()) {
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", p.turbulence_line.c_str());
+                ImGui::PopTextWrapPos();
+            }
             if (ImGui::Button("Remove airflow region")) p.pending.push_back(ed::RemoveAirflowRegion{region->name});
         }
     }
