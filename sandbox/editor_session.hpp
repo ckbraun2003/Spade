@@ -66,6 +66,8 @@ class EditorSession {
     // The last frame's render scene, its vehicles bound: what the tour's
     // editor.add_drone counts and poses for Test/Docs' drawn.
     [[nodiscard]] const render::RenderScene& render_scene() const noexcept { return scene_; }
+    // The options the window draws with (the soft-shadow defaults among them): what the tour's batch chapter checks.
+    [[nodiscard]] const render::RenderOptions& render_options() const noexcept { return options_; }
     // While on, each frame draws the view's background alone: its item lists
     // are emptied after binding (the meshes stay, so nothing re-uploads). The
     // tour's editor.views judges "not blank" against this frame.

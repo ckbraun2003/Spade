@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <functional>
@@ -34,6 +35,7 @@
 #include "analysis/case.hpp"
 #include "analysis/live_run.hpp"
 #include "core/path_text.hpp"
+#include "render/raster_cpu.hpp"
 #include "render_parts/render_parts.hpp"
 #include "editor_session.hpp"
 #include "pilot_keys.hpp"
@@ -2020,6 +2022,11 @@ int run_live_smoke(const TourOptions& options) {
     // What the run leaves behind, checked rather than assumed: ffmpeg given no
     // frames still exits 0, and a poster request can go unanswered.
     (void)smoke.check(rec.video_frames() > 0u, "frames-recorded", std::to_string(rec.video_frames()) + " frames");
+    // L64's budget: the whole tour at most 170 s of video.
+    (void)smoke.check(rec.video_frames() <= kTourMaxVideoFrames, "tour-length",
+                      std::format("{:.1f} s of video (at most {} s)",
+                                  static_cast<double>(rec.video_frames()) / static_cast<double>(kVideoFps),
+                                  kTourMaxVideoFrames / kVideoFps));
     // The UI font (the editor design's §13): a missing font is announced, so
     // the recording must not quietly show ImGui's built-in one instead.
     (void)smoke.check(sink->ui_font_loaded(), "ui-font",
