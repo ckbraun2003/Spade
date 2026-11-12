@@ -132,8 +132,19 @@ class EditorWorkspace {
 
     // Closing (Esc, the window's close button; L73a item 11): with nothing unsaved the editor may quit at once
     // (close_confirmed()); with changes it asks "Save changes to <scene>?" first (panels().close_prompt).
-    [[nodiscard]] bool unsaved() const { return false; }
-    void request_close() {}
+    [[nodiscard]] bool unsaved() const { return docs_.scene.dirty() || docs_.world.dirty(); }
+    void request_close() {
+        if (!panels_.close_prompt.empty()) {  // Esc with the prompt up is Cancel
+            panels_.close_prompt.clear();
+            return;
+        }
+        if (!unsaved()) {
+            close_confirmed_ = true;
+            return;
+        }
+        const std::string name = docs_.scene.path.filename().string();
+        panels_.close_prompt = name.empty() ? std::string("this scene") : name;
+    }
     [[nodiscard]] bool close_confirmed() const noexcept { return close_confirmed_; }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }
     [[nodiscard]] const BuiltinRecords& records() const noexcept { return records_; }
@@ -152,6 +163,10 @@ class EditorWorkspace {
         }
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
         if (const std::optional<glm::vec3> wind = std::exchange(panels_.wind_request, std::nullopt)) set_live_wind(*wind);
+        if (std::exchange(panels_.user_guide_request, false)) open_user_guide();
+        if (const std::optional<CloseChoice> choice = std::exchange(panels_.close_choice, std::nullopt)) {
+            answer_close(*choice);
+        }
         keep_staging_alive();
         refresh_panels();
         // A selection ends a part's or a drone's inspection (the lead's Q1),
@@ -583,6 +598,34 @@ class EditorWorkspace {
         panels_.pilot = PilotPanel{};
         panels_.pilot.vehicle = region->follows;
         panels_.status.clear();
+    }
+
+    // Help > User Guide: the guide's file in the default browser. A missing file, or a browser that will not take it,
+    // is a line in the panel, never a failure.
+    void open_user_guide() {
+        std::error_code ec;
+        if (guide_file_.empty()) {
+            panels_.status = "User Guide: this copy of Spade Editor has no guide installed";
+        } else if (!std::filesystem::is_regular_file(guide_file_, ec)) {
+            panels_.status = "User Guide: the guide is missing (" + guide_file_.string() +
+                             "); installing Spade Editor again puts it back";
+        } else if (!guide_opener_ || !guide_opener_(guide_file_)) {
+            panels_.status = "User Guide: Windows would not open " + guide_file_.string();
+        }
+    }
+
+    // The answer to "Save changes to <scene>?": Save writes the scene and quits when that worked (a refusal is in the
+    // status line and the editor stays), Don't Save quits writing nothing, Cancel goes back to the editor.
+    void answer_close(CloseChoice choice) {
+        panels_.close_prompt.clear();
+        switch (choice) {
+            case CloseChoice::cancel: return;
+            case CloseChoice::discard: close_confirmed_ = true; return;
+            case CloseChoice::save:
+                command(Command::save);
+                if (!unsaved()) close_confirmed_ = true;
+                return;
+        }
     }
 
     // The panels' wind request (the lead's (c), 2026-11-11): the running world's wind, a Run input and not an edit.

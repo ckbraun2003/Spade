@@ -11,6 +11,8 @@
 #include <glm/glm.hpp>
 
 #include "analysis/controls.hpp"
+#include "app_failure.hpp"
+#include "app_host.hpp"
 #include "render/raster_cpu.hpp"
 #include "render_gap.hpp"     // the HUD line naming what the GPU path does not draw
 #include "vehicle_draw.hpp"   // the drone drawn from its parts (N12)
@@ -134,17 +136,22 @@ std::unique_ptr<GpuRenderer> start_gpu(const spade::render::RenderScene& scene) 
 // missing capability refuses, never degrades -- a window that silently fails
 // to appear is the worst possible outcome for someone judging whether the GUI
 // works.
-std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync) {
+std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync, bool tell_the_person) {
     GlTargetSink::Options opts;
     opts.width = width;
     opts.height = height;
     opts.title = "spade sandbox";
     opts.vsync = vsync;
     std::string why_not;
-    std::unique_ptr<GlTargetSink> sink = GlTargetSink::create(opts, &why_not);
+    app::WindowFailure kind = app::WindowFailure::other;
+    std::unique_ptr<GlTargetSink> sink = GlTargetSink::create(opts, &why_not, &kind);
     if (!sink) {
         std::fprintf(stderr, "spade_sandbox: cannot open a window -- %s\n", why_not.c_str());
         std::fprintf(stderr, "spade_sandbox: --headless still works in this build.\n");
+        if (tell_the_person) {
+            const app::FailureText text = app::window_failure_text(kind, why_not);
+            app::show_error(text.title, text.body);
+        }
         return nullptr;
     }
     // ⚠⚠ WHICH GL IMPLEMENTATION ARE WE ACTUALLY ON. Printed unconditionally

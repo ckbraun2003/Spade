@@ -48,8 +48,12 @@
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "spade_version.hpp"  // Core's generated version: spade::version::kString, "0.1.0+<sha>"
 #include "world/builder.hpp"
 
+#include "app_about.hpp"       // --version and Help > About (L73a)
+#include "app_failure.hpp"     // what a tester is told when something will not open
+#include "app_host.hpp"        // the message box and the default browser
 #include "app_paths.hpp"       // the asset root from the exe, and what a bare launch opens (L73a)
 #include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "editor_cli.hpp"      // --edit: the editor's command line, no window
@@ -93,6 +97,7 @@ void print_usage() {
     std::puts("                        [--run <steps>]; exit 0 done, 1 refused, 2 bad arguments");
     std::puts("  --editor [scene.yaml] FIRST ARGUMENT ONLY: the editor's window on a scene file");
     std::puts("                        (default: assets/scenes/hover.scene.yaml, found as --assets says)");
+    std::puts("  --version             print Spade Editor's version and exit");
     std::puts("  --help                this text\n");
     std::puts("In the drone sim box's window (--window):");
     std::puts("  arrows         pitch and roll (held; the target holds when released)   Z/X yaw");
@@ -152,6 +157,14 @@ void print_exit_summary(const spade::sandbox::GlTargetSink& sink, uint32_t width
 // asserted with no display; the wiring is DroneSession (scene_sessions.hpp).
 // ---------------------------------------------------------------------------
 
+// An interactive launch has no console to read: a failure is also a box in plain words, with where the log is
+// (L73a). Only the interactive windows call this, never the tour, --headless or --edit.
+void tell(const std::string& what) {
+    std::fprintf(stderr, "spade_sandbox: %s\n", what.c_str());
+    spade::sandbox::app::show_error(
+        "Spade Editor", what + "\n\nIf you ask for help, send the newest file in %LOCALAPPDATA%\\Spade\\logs.");
+}
+
 int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) {
     // Declared first, so it is destroyed last: the session detaches from it.
     // Opened second, so a stand that will not build refuses with no window.
@@ -161,7 +174,7 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
         std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
         return 1;
     }
-    sink = spade::sandbox::open_window(width, height, vsync);
+    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true);
     if (!sink) {
         return 3;
     }
@@ -187,28 +200,39 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
 // refuses with no window.
 int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width, uint32_t height, bool vsync) {
     std::unique_ptr<spade::sandbox::GlTargetSink> sink;  // destroyed last: the session detaches from it
+    // The log's first line says which build this is (the launcher sends stdout to the log).
+    std::printf("spade_sandbox: %s\n", spade::sandbox::app::version_line(spade::version::kString).c_str());
     spade::Result<spade::sandbox::editor::OpenedScene> opened = spade::sandbox::editor::open_scene(scene_file);
     if (!opened) {
-        std::fprintf(stderr, "spade_sandbox: --editor %s: %s\n", scene_file.string().c_str(),
-                     opened.error().context.c_str());
+        tell("Spade Editor could not open the scene " + scene_file.string() + ":\n\n" + opened.error().context);
         return 1;
     }
     spade::Result<std::unique_ptr<spade::sandbox::EditorSession>> made =
         spade::sandbox::EditorSession::create(std::move(*opened));
     if (!made) {
-        std::fprintf(stderr, "spade_sandbox: --editor %s: %s\n", scene_file.string().c_str(),
-                     made.error().context.c_str());
+        tell("Spade Editor could not open the scene " + scene_file.string() + ":\n\n" + made.error().context);
         return 1;
     }
-    sink = spade::sandbox::open_window(width, height, vsync);
+    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true);
     if (!sink) {
         return 3;
     }
     spade::sandbox::EditorSession& session = **made;
     session.attach(*sink);
-    while (!sink->should_close()) {
+    spade::sandbox::editor::EditorWorkspace& workspace = session.workspace();
+    workspace.panels().about = spade::sandbox::app::about_text(spade::version::kString);
+    workspace.set_user_guide(spade::sandbox::app::user_guide_file(spade::sandbox::app::executable_dir()),
+                             [](const std::filesystem::path& guide) {
+                                 return spade::sandbox::app::open_in_default_app(guide);
+                             });
+    for (;;) {
         const spade::sandbox::FrameInput in = sink->poll();
-        if (in.want_close) {
+        // Esc or the close button: with unsaved changes the editor asks first (L73a); with none it quits as before.
+        if (in.want_close || sink->should_close()) {
+            sink->keep_open();
+            workspace.request_close();
+        }
+        if (workspace.close_confirmed()) {
             break;
         }
         if (const spade::Result<void> drew = session.frame(in, sink->delta_seconds()); !drew) {
@@ -271,6 +295,9 @@ std::filesystem::path default_editor_scene(const std::filesystem::path& assets_o
 }  // namespace
 
 int main(int argc, char** argv) {
+    // stdout goes unbuffered: the launcher sends it to a log file (L73a), and a block-buffered log loses its last
+    // lines to a crash. Nothing prints per frame, so it costs nothing.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     // --edit IS ITS OWN PROGRAM: the editor's command line (editor_cli.hpp)
     // takes every argument after it, parses them itself, and never opens a
     // window, so it is dispatched before any of the modes below.
@@ -287,10 +314,8 @@ int main(int argc, char** argv) {
         }
         const std::filesystem::path scene = argc == 3 ? std::filesystem::path(argv[2]) : default_editor_scene({});
         if (!std::filesystem::is_regular_file(scene)) {
-            std::fprintf(stderr,
-                         "spade_sandbox: --editor: no scene file at %s; give one: spade_sandbox --editor "
-                         "<scene.yaml>\n",
-                         scene.string().c_str());
+            tell("Spade Editor could not find the scene " + scene.string() +
+                 ".\n\nGive one: spade_sandbox --editor <scene.yaml>");
             return 2;
         }
         return run_windowed_editor(scene, 1280u, 720u, true);
@@ -319,6 +344,9 @@ int main(int argc, char** argv) {
             return 0;
         } else if (std::strcmp(a, "--scene") == 0 && i + 1 < argc) {
             scene_name = argv[++i];
+        } else if (std::strcmp(a, "--version") == 0) {
+            std::puts(spade::sandbox::app::version_line(spade::version::kString).c_str());
+            return 0;
         } else if (std::strcmp(a, "--smoke") == 0) {
             // Named, not just unrecognised: an old command line says what replaced it.
             std::fprintf(stderr, "spade_sandbox: --smoke scripted the scene builder, which is retired (INT-9); "
@@ -442,11 +470,9 @@ int main(int argc, char** argv) {
         }
         const std::filesystem::path scene = default_editor_scene(tour.assets_dir);
         if (!std::filesystem::is_regular_file(scene)) {
-            std::fprintf(stderr,
-                         "spade_sandbox: no scene file at %s; the editor looks for an assets folder beside this "
-                         "program, then in the working directory (--assets <dir> names one), or open a scene: "
-                         "spade_sandbox --editor <scene.yaml>\n",
-                         scene.string().c_str());
+            tell("Spade Editor could not find its scenes: there is no " + scene.string() +
+                 ".\n\nThe editor looks for an assets folder beside the program, then in the working directory "
+                 "(--assets <dir> names one). Install Spade Editor again if its files were moved or deleted.");
             return 2;
         }
         return run_windowed_editor(scene, width, height, vsync);

@@ -24,8 +24,9 @@
 
 add_executable(spade_sandbox
     main.cpp
-    # Where the app finds its assets, and what a bare launch opens (L73a).
+    # Where the app finds its assets, and what a bare launch opens (L73a); the message box and the browser.
     app_paths.cpp
+    app_host.cpp
     gl_target_sink.cpp
     # The drone sim box's setup and its one frame function, shared by the
     # window and the live smoke.
@@ -128,6 +129,17 @@ else()
     message(STATUS
         "spade_sandbox: no windowing backend (SPADE_GLFW_HAS_BACKEND=0). "
         "The target builds and --headless works; the window refuses at runtime with the cause.")
+endif()
+
+# SpadeEditor.exe, the launcher (L73a): a WIN32-subsystem program, so a Start-menu launch has no console window. It
+# starts spade_sandbox.exe beside it with its own arguments, the sandbox's output going to a log in
+# %LOCALAPPDATA%\Spade\logs, and returns its exit code. spade_sandbox itself stays a console program, so the live
+# smoke's exit code and CI's output are as they were. launcher_logic.hpp is its tested part.
+if(WIN32)
+    add_executable(spade_editor_launcher WIN32 launcher/main.cpp)
+    set_target_properties(spade_editor_launcher PROPERTIES OUTPUT_NAME SpadeEditor)
+    target_compile_features(spade_editor_launcher PRIVATE cxx_std_23)
+    target_compile_definitions(spade_editor_launcher PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 endif()
 
 # The UI font (the editor design's §13; assets/fonts/README.md), copied beside

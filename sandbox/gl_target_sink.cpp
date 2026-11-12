@@ -324,6 +324,7 @@ struct GlTargetSink::Impl {
     bool show_help = true;
     bool help_drawn = false;  // the last overlay drew the legend
     bool f1_was_down = false;
+    bool esc_was_down = false;  // Esc closes on its press, not while it is held (the editor's prompt toggles on it)
     bool f2_was_down = false;  // reset layout
     // The GPU path's offscreen target, the view's size (begin_gpu_frame()).
     FramebufferApi fbo_api;
@@ -398,11 +399,14 @@ bool GlTargetSink::backend_available() noexcept {
 #endif
 }
 
-std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::string* why_not) {
-    const auto refuse = [why_not](std::string reason) -> std::unique_ptr<GlTargetSink> {
+std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::string* why_not,
+                                                   app::WindowFailure* kind) {
+    const auto refuse = [why_not, kind](std::string reason,
+                                        app::WindowFailure why = app::WindowFailure::other) -> std::unique_ptr<GlTargetSink> {
         if (why_not != nullptr) {
             *why_not = std::move(reason);
         }
+        if (kind != nullptr) *kind = why;
         return nullptr;
     };
 
@@ -434,8 +438,9 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
         // backend compiled in, and the two need different answers.
         return refuse("GLFW could not initialise, which usually means there is no display available "
                       "to this process. " +
-                      (g_last_glfw_error.empty() ? std::string("(GLFW reported no detail.)")
-                                                 : g_last_glfw_error));
+                          (g_last_glfw_error.empty() ? std::string("(GLFW reported no detail.)")
+                                                     : g_last_glfw_error),
+                      app::WindowFailure::no_display);
     }
 
     // ⚠ 4.3, NOT 3.3, AND THE REASON IS THE GPU RENDER PATH. GlRenderer's whole
@@ -462,7 +467,8 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
                       (g_last_glfw_error.empty()
                            ? std::string("GLFW reported no detail; an OpenGL 3.3 core context may "
                                          "not be available on this driver.")
-                           : g_last_glfw_error));
+                           : g_last_glfw_error),
+                      app::WindowFailure::no_opengl);
     }
 
     glfwMakeContextCurrent(impl->window);
@@ -517,7 +523,8 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         return refuse("ImGui's OpenGL3 backend failed to initialise, which usually means the driver "
-                      "did not provide an OpenGL 3.3 core context.");
+                      "did not provide an OpenGL 3.3 core context.",
+                      app::WindowFailure::no_opengl);
     }
     impl->imgui_ready = true;
 
@@ -713,9 +720,11 @@ FrameInput GlTargetSink::poll() {
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.
-    if (glfwGetKey(impl_->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    const bool esc = glfwGetKey(impl_->window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+    if (esc && !impl_->esc_was_down) {
         glfwSetWindowShouldClose(impl_->window, GLFW_TRUE);
     }
+    impl_->esc_was_down = esc;
     in.want_close = glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 #endif
     return in;
@@ -805,6 +814,12 @@ bool GlTargetSink::should_close() const noexcept {
     return glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 #else
     return true;
+#endif
+}
+
+void GlTargetSink::keep_open() noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    glfwSetWindowShouldClose(impl_->window, GLFW_FALSE);
 #endif
 }
 

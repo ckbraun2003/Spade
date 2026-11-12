@@ -57,8 +57,7 @@ enum class Mode { editor, drone_box, headless, live_smoke };
 
 // Help > User Guide's file: <exe dir>/docs/user-guide/index.html (the installer puts it there).
 [[nodiscard]] inline std::filesystem::path user_guide_file(const std::filesystem::path& exe_dir) {
-    (void)exe_dir;
-    return {};
+    return exe_dir / "docs" / "user-guide" / "index.html";
 }
 
 // The folder holding this executable (not the working directory); the working directory's when the OS won't say.

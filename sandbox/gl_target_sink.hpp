@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "app_failure.hpp"
 #include "editor_gizmo.hpp"
 #include "orbit_camera.hpp"
 #include "target_sink.hpp"
@@ -57,8 +58,9 @@ class GlTargetSink final : public TargetSink {
     // Returns nullptr on refusal, with `why_not` set to a cause a human can
     // act on. Not a bool-out-param: the reason IS the product here, because
     // "no window appeared" without one is indistinguishable from a crash.
-    [[nodiscard]] static std::unique_ptr<GlTargetSink> create(const Options& options,
-                                                              std::string* why_not);
+    // `kind`, when given, says which sort of refusal it was (app_failure.hpp), for the message a tester reads.
+    [[nodiscard]] static std::unique_ptr<GlTargetSink> create(const Options& options, std::string* why_not,
+                                                              app::WindowFailure* kind = nullptr);
 
     // True when this build cannot open a window AT ALL -- reported separately
     // from create() failing, because "this binary was built without a backend"
@@ -83,6 +85,9 @@ class GlTargetSink final : public TargetSink {
     [[nodiscard]] FrameInput poll();
 
     [[nodiscard]] bool should_close() const noexcept;
+
+    // Takes back a close request (Esc, the close button): the editor asks about unsaved changes before it goes.
+    void keep_open() noexcept;
 
     // The framebuffer size in pixels. NOT the window size: on a HiDPI display
     // they differ, and rendering at window size then stretching is exactly the

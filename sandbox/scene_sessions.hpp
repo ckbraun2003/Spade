@@ -102,8 +102,11 @@ class GpuRenderer {
 // the scene, otherwise nullptr, with the reason printed.
 [[nodiscard]] std::unique_ptr<GpuRenderer> start_gpu(const spade::render::RenderScene& scene);
 
-// Opens the window, or explains why not and returns nullptr.
-[[nodiscard]] std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync);
+// Opens the window, or explains why not and returns nullptr. With `tell_the_person` (an interactive launch, where a
+// tester sees no stderr) the refusal is also a message box in plain words (app_failure.hpp); the tour and the
+// automated runs never ask for it, since a modal box would hang them.
+[[nodiscard]] std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync,
+                                                        bool tell_the_person = false);
 
 // ---------------------------------------------------------------------------
 // The drone sim box in a window.

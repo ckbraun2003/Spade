@@ -11,14 +11,15 @@ namespace spade::sandbox::app {
 
 // `spade_sandbox --version` prints this and exits 0.
 [[nodiscard]] inline std::string version_line(std::string_view version) {
-    (void)version;
-    return {};
+    return "Spade Editor " + std::string(version);
 }
 
 // Help > About Spade Editor: the version, the licence, and where the third-party notices are.
 [[nodiscard]] inline std::string about_text(std::string_view version) {
-    (void)version;
-    return {};
+    return version_line(version) +
+           "\n\nLicensed under the Apache License, Version 2.0.\n"
+           "The libraries Spade Editor is built with, and their licences, are listed in THIRD_PARTY_NOTICES, in the "
+           "folder Spade Editor is installed in.";
 }
 
 }  // namespace spade::sandbox::app
