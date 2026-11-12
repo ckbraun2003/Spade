@@ -136,11 +136,12 @@ std::unique_ptr<GpuRenderer> start_gpu(const spade::render::RenderScene& scene) 
 // missing capability refuses, never degrades -- a window that silently fails
 // to appear is the worst possible outcome for someone judging whether the GUI
 // works.
-std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync, bool tell_the_person) {
+std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync, bool tell_the_person,
+                                          const char* title) {
     GlTargetSink::Options opts;
     opts.width = width;
     opts.height = height;
-    opts.title = "spade sandbox";
+    opts.title = title;
     opts.vsync = vsync;
     std::string why_not;
     app::WindowFailure kind = app::WindowFailure::other;

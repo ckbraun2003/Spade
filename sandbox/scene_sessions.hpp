@@ -106,7 +106,8 @@ class GpuRenderer {
 // tester sees no stderr) the refusal is also a message box in plain words (app_failure.hpp); the tour and the
 // automated runs never ask for it, since a modal box would hang them.
 [[nodiscard]] std::unique_ptr<GlTargetSink> open_window(uint32_t width, uint32_t height, bool vsync,
-                                                        bool tell_the_person = false);
+                                                        bool tell_the_person = false,
+                                                        const char* title = "spade sandbox");
 
 // ---------------------------------------------------------------------------
 // The drone sim box in a window.

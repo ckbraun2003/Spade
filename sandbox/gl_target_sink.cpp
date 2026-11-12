@@ -324,6 +324,9 @@ struct GlTargetSink::Impl {
     bool show_help = true;
     bool help_drawn = false;  // the last overlay drew the legend
     bool f1_was_down = false;
+    bool capture_without_text = false;  // the armed capture leaves the caption and the card out
+    bool text_drawn = false;            // the frame being drawn has the caption or the card on it
+    bool captured_text = false;         // the last captured frame did
     bool esc_was_down = false;  // Esc closes on its press, not while it is held (the editor's prompt toggles on it)
     bool f2_was_down = false;  // reset layout
     // The GPU path's offscreen target, the view's size (begin_gpu_frame()).
@@ -969,9 +972,16 @@ void GlTargetSink::draw_overlay() {
 
 void GlTargetSink::draw_live_smoke_text() {
 #if SPADE_SANDBOX_HAS_GL
+    impl_->text_drawn = false;
     if (impl_->caption.empty() && impl_->card.empty()) {
         return;
     }
+    // A still for the guide: this frame has neither (the video's own frame, if it is also one, loses its caption
+    // for one frame).
+    if (impl_->capture_armed && impl_->capture_without_text) {
+        return;
+    }
+    impl_->text_drawn = true;
     // The FOREGROUND draw list, not a window: it is drawn after every window,
     // so no panel can cover the caption or the card in the recording.
     ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -1030,6 +1040,8 @@ void GlTargetSink::tap_frame() {
         return;
     }
     impl_->capture_armed = false;
+    impl_->capture_without_text = false;
+    impl_->captured_text = impl_->text_drawn;
     const uint32_t w = impl_->fb_width;
     const uint32_t h = impl_->fb_height;
     impl_->readback.resize(static_cast<std::size_t>(w) * h * 4u);
@@ -1060,7 +1072,22 @@ void GlTargetSink::set_scripted_input(bool on) noexcept {
 #endif
 }
 void GlTargetSink::set_frame_tap(FrameTap tap) { impl_->tap = std::move(tap); }
-void GlTargetSink::capture_next_present() noexcept { impl_->capture_armed = true; }
+void GlTargetSink::capture_next_present(bool without_text) noexcept {
+    impl_->capture_armed = true;
+#if SPADE_SANDBOX_HAS_GL
+    impl_->capture_without_text = without_text;
+#else
+    (void)without_text;
+#endif
+}
+
+bool GlTargetSink::last_capture_had_text() const noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    return impl_->captured_text;
+#else
+    return false;
+#endif
+}
 
 void GlTargetSink::toggle_help() noexcept {
 #if SPADE_SANDBOX_HAS_GL

@@ -174,7 +174,7 @@ int run_windowed_drone(uint32_t width, uint32_t height, float blur, bool vsync) 
         std::fprintf(stderr, "spade_sandbox: %s\n", made.error().context.c_str());
         return 1;
     }
-    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true);
+    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true, "Spade Drone Box");
     if (!sink) {
         return 3;
     }
@@ -213,7 +213,7 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
         tell("Spade Editor could not open the scene " + scene_file.string() + ":\n\n" + made.error().context);
         return 1;
     }
-    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true);
+    sink = spade::sandbox::open_window(width, height, vsync, /*tell_the_person=*/true, "Spade Editor");
     if (!sink) {
         return 3;
     }

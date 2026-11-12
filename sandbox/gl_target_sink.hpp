@@ -264,7 +264,11 @@ class GlTargetSink final : public TargetSink {
     // Arms the tap for the next present only. A readback stalls the pipeline,
     // so a frame is read only when asked for. A read frame's ui figure on the
     // HUD includes the readback.
-    void capture_next_present() noexcept;
+    // `without_text` leaves the tour's caption and title card out of that frame (the guide's stills, L73a item 10).
+    void capture_next_present(bool without_text = false) noexcept;
+
+    // True when the last captured frame had the caption or the card drawn on it.
+    [[nodiscard]] bool last_capture_had_text() const noexcept;
 
     // Shows or hides the HUD. F1 calls this from poll(), and the live smoke
     // calls it too, so the tour drives the key's own path.

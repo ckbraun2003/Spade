@@ -262,6 +262,7 @@ void batch_tour(Tour& t, const fs::path& assets) {
         w().apply_panels();
         if (!s.check(!scene_now().airflow.empty(), "region", w().panels().status)) return;
         w().panels().air_turbulence = true;  // the Advanced row
+        w().panels().advanced_open = true;   // open, so the guide's still shows the row ticked
         command(editor::Command::run_air);
         if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
         w().panels().pilot.controls = analysis::Controls{true, 0.6f, 0.0f, 0.0f, 0.0f};
@@ -297,11 +298,13 @@ void batch_tour(Tour& t, const fs::path& assets) {
         }
         t.poster("batch");
         then(5);
+        t.snapshot("editor_subgrid");  // the row ticked and its line, without the title card
         then(25);
         t.sink().set_card({});
         command(editor::Command::stop);
         session->camera() = before;
         w().panels().air_turbulence = false;
+        w().panels().advanced_open.reset();
         command(editor::Command::undo);  // the region
         command(editor::Command::undo);  // the drone
     });
@@ -374,6 +377,7 @@ void batch_tour(Tour& t, const fs::path& assets) {
                 std::format("{:.3f} m/s along the wind in the second after the set, against {:.3f} m/s of its own "
                             "drift the second before (at least {:.3f})",
                             moved, own, std::max(10.0f * own, 0.05f)));
+        t.snapshot("editor_wind");  // the Wind now row at 6 0 0, without the title card
         t.sink().set_card("a live wind in Run: set on the row, recorded, not saved.\nThe airflow keeps its start wind.");
         then(30);
         t.sink().set_card({});

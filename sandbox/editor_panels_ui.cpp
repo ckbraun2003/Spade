@@ -484,6 +484,7 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             // The air's subgrid turbulence (Smagorinsky's term at Cs 0.17, L52), folded as Advanced: GPU only, so a run
             // on the CPU says it is off; not while the air runs.
             ImGui::PushID("airflow-advanced");  // its own ids: the model's Advanced section has the same label
+            if (p.advanced_open) ImGui::SetNextItemOpen(*p.advanced_open, ImGuiCond_Always);
             if (ui::section("Advanced", false) && ui::begin_properties("airflow-advanced")) {
                 ImGui::BeginDisabled(p.air);
                 ui::property_row("Subgrid turbulence");
