@@ -80,7 +80,7 @@ TEST(AppAbout, TheVersionLineAndTheAboutTextCarryTheSameVersion) {
     const std::string about = app::about_text("0.1.0+abc1234");
     EXPECT_NE(about.find("Spade Editor 0.1.0+abc1234"), std::string::npos) << about;
     EXPECT_NE(about.find("Apache License, Version 2.0"), std::string::npos) << about;
-    EXPECT_NE(about.find("THIRD_PARTY_NOTICES"), std::string::npos) << about;
+    EXPECT_NE(about.find("THIRD_PARTY_NOTICES.md"), std::string::npos) << "the installed file has its extension: " << about;
 }
 
 }  // namespace

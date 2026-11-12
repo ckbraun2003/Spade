@@ -261,6 +261,7 @@ class EditorWorkspace {
         panels_.air = air_ != nullptr;
         panels_.paused = paused_;
         panels_.tick = run_ ? run_->tick() : 0u;
+        panels_.turbulence_row_visible = false;  // the panel sets it again when it draws the row
         panels_.live_wind = run_ ? run_->wind() : docs_.world.desc().environment.wind;
         panels_.can_undo = !undo_.empty();
         panels_.can_redo = !redo_.empty();

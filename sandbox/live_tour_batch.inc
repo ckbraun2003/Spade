@@ -298,6 +298,10 @@ void batch_tour(Tour& t, const fs::path& assets) {
         }
         t.poster("batch");
         then(5);
+        // The guide's still shows the row ticked: it must be on screen, inside the inspector's view.
+        s.check(w().panels().turbulence_row_visible && w().panels().air_turbulence, "subgrid-row-visible",
+                w().panels().turbulence_row_visible ? "the Subgrid turbulence row is drawn in view, ticked"
+                                                    : "the row is scrolled out of the inspector's view");
         t.snapshot("editor_subgrid");  // the row ticked and its line, without the title card
         then(25);
         t.sink().set_card({});

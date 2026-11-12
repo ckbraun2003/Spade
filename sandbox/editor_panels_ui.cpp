@@ -489,6 +489,7 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
                 ImGui::BeginDisabled(p.air);
                 ui::property_row("Subgrid turbulence");
                 ImGui::Checkbox("##turbulence", &p.air_turbulence);
+                p.turbulence_row_visible = ImGui::IsItemVisible();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     ImGui::SetTooltip("Smagorinsky's subgrid eddy viscosity, Cs 0.17, on the GPU's fluid only: a run on "
                                       "the CPU flies without it and says so.");

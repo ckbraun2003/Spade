@@ -180,6 +180,7 @@ struct EditorPanels {
     std::string item_path;                    // what Load from file (Command::load_item) reads
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
     std::optional<bool> advanced_open;        // a script's request: the airflow region's Advanced section open/folded
+    bool turbulence_row_visible = false;      // the last frame drew the Subgrid turbulence row inside the inspector's view
     std::optional<std::size_t> library_scroll_to;  // a script's request: bring this item's tile into view
     // Where each library item's thumbnail was drawn this frame, in framebuffer
     // pixels from the top-left; none when it was not wholly in view. The
