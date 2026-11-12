@@ -733,6 +733,10 @@ target_compile_definitions(spade_tests PRIVATE
     SPADE_ANALYSIS_HOST_PROBE="$<TARGET_FILE:spade_analysis_host_probe>"
 )
 
+# The generated version header and the product's VERSION file (L73a).
+target_sources(spade_tests PRIVATE test_version_header.cpp)
+target_compile_definitions(spade_tests PRIVATE SPADE_REPO_DIR="${PROJECT_SOURCE_DIR}")
+
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
