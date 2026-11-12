@@ -116,11 +116,17 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 14> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 21> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
                                                          "editor_part",     "editor_drone",    "editor_placed_drone",
-                                                         "editor_airflow",  "editor_fly_props"};
+                                                         "editor_airflow",  "editor_fly_props",
+                                                         // The user guide's stills (L73a item 10; the lead,
+                                                         // 2026-11-11): written clean, with no caption bar and no
+                                                         // title card, at steps the tour already has.
+                                                         "drone_box_hud",   "editor_undo",     "editor_views",
+                                                         "editor_save",     "editor_air_running", "editor_subgrid",
+                                                         "editor_wind"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -2045,6 +2051,15 @@ int run_live_smoke(const TourOptions& options) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
         (void)smoke.check(!ec && size > 0u, "poster-" + std::string(kMains[i]),
+                          ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
+    }
+
+    // The stills (Tour::snapshot) are checked as the posters are: a declared one that was not written is a failure.
+    for (const std::string_view snap : kSnapshots) {
+        const std::string name = std::string(snap) + ".png";
+        std::error_code ec;
+        const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
+        (void)smoke.check(!ec && size > 0u, "still-" + std::string(snap),
                           ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
     }
 
