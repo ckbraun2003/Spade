@@ -14,7 +14,7 @@ When the install is done you have two entries in the **Start menu** (press the W
 - **Spade Editor**: the editor. This is where you place drones and objects, fly, and run the airflow.
 - **Spade Drone Box**: a single drone on a test stand, to learn the controls and see the numbers.
 
-You also get a **User Guide** shortcut in the same Start-menu folder, and a Spade Editor icon on the desktop.
+You also get a **Spade User Guide** shortcut in the same Start-menu folder. It opens this guide. You get a Spade Editor icon on the desktop too.
 
 ## Start it
 
