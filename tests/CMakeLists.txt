@@ -768,7 +768,7 @@ if(SPADE_BUILD_SANDBOX)
     add_test(NAME SandboxVersion.PrintsTheVersionAndExits COMMAND $<TARGET_FILE:spade_sandbox> --version)
     set_tests_properties(SandboxVersion.PrintsTheVersionAndExits PROPERTIES
         LABELS spade
-        PASS_REGULAR_EXPRESSION "^Spade Editor [0-9]+\.[0-9]+\.[0-9]+\+(unknown|[0-9a-f]+)(-dirty)?"
+        PASS_REGULAR_EXPRESSION "^Spade Editor [0-9]+[.][0-9]+[.][0-9]+[+](unknown|[0-9a-f]+)(-dirty)?"
         TIMEOUT 60)
 endif()
 
