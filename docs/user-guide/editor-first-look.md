@@ -3,7 +3,7 @@
 ## Open it
 
 1. Press the **Windows key**, type **Spade Editor** and press **Enter**.
-2. The editor opens on a scene called **hover**: one small drone on a flat grey ground. [to confirm: the scene the editor opens on]
+2. The editor opens on a scene called **hover**: one small drone on a flat grey ground.
 
 ![The editor when it opens](images/03_editor.png)
 

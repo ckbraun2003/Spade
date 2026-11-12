@@ -21,7 +21,7 @@ You also get a **Spade User Guide** shortcut in the same Start-menu folder. It o
 1. Press the Windows key, type **Spade Editor** and press **Enter**.
 2. A window opens with the editor.
 
-To see the program's version, [to confirm: the Help menu item that shows it].
+To see the version, click **Help**, then **About Spade Editor**. To open the user guide from the editor, click **Help**, then **User Guide**.
 
 ## Uninstall
 

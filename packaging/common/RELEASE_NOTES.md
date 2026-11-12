@@ -38,4 +38,4 @@ This is the first version we are putting in front of testers. It works, and it h
 
 ### Version
 
-Spade Editor 0.1.0. The program shows the exact build [to confirm: where it shows it].
+Spade Editor 0.1.0. To see the exact build, click **Help**, then **About Spade Editor** in the editor.
