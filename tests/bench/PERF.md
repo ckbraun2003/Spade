@@ -4,6 +4,8 @@
 **Why:** Cameron wants training, physics and rendering to run much faster. A speed-up is only real if two numbers taken a week apart can be compared. This page fixes how a number is taken, so it can.
 **Not a gate.** A slow number is a finding for the lead, not a red build (`01-verification.md`, the bench paragraph; TD-8).
 
+**Scope.** This page measures Spade. **KAT's training throughput is measured by KAT, not here:** its rollout and its PPO update run on KAT's own fake host and do not step Spade. Two Spade numbers sit in KAT's path and are in the table: the live training view's frame time with 128 and 1024 drone puppets (Rendering), and the real-time step for 1 to 16 vehicles (Core).
+
 ## What counts as a metric
 
 A metric is **something a person waits for**, on a command they can type. Each one names:
@@ -24,7 +26,7 @@ The numbers are only comparable if nothing else is using the box. So:
 2. **The measurement is a heavy job:** `jobrun.py --heavy-class test --ticket perf-<sha7>-<n> --expect-s <N> --limit-s <2N> --log <abs log> -- python tests/bench/measure.py ...`, with `--gpu` for a metric that needs the card.
 3. **The harness watches the queue.** It reads `--queue-status` before the first run, after each repeat and at the end. If another heavy, gpu or quick job appears in any reading, that **run is marked noisy and repeated**; a noisy run is never in the median.
 4. **The box is idle at the start:** total CPU use under 5% over 10 s before the first run. The harness records it and refuses to start otherwise.
-5. **The lead coordinates the quiet windows** with KAT. The harness cannot hold the other slots; it can only tell that they were not held.
+5. **The lead coordinates the quiet windows** with KAT, who holds its heavy tickets for a window the lead names. A window is 10 to 20 minutes, so a suite is split into runs that each fit one window. The harness cannot hold the other slots; it can only tell that they were not held.
 
 ## The run
 
