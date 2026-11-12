@@ -11,7 +11,7 @@ The window has five parts:
 
 | Part | Where | What it is for |
 |---|---|---|
-| **Toolbar** | top | Run, Run air, Pause, Step, Undo, Redo, the Move and Rotate tools, Snap, the View list, Save and File. The name of the scene is on the right. A star after the name (for example `hover.scene.yaml *`) means you have changes you have not saved. |
+| **Toolbar** | top | Run, Run air, Pause, Step, Undo, Redo, the Move and Rotate tools, Snap, the View list, Save, File and Help. The name of the scene is on the right. A star after the name (for example `hover.scene.yaml *`) means you have changes you have not saved. |
 | **Hierarchy** | left | The list of what is in the scene. Click a name to select it. |
 | **3D view** | middle | The scene itself. |
 | **Inspector** | right | The details of whatever is selected, and messages from the editor. |
@@ -32,6 +32,11 @@ The window has five parts:
 ![The File menu with the scene list](images/editor_picker.png)
 
 You can also type the path of a scene file into **Scene file** and click **Open**. **Save As** (in the same menu) saves your scene under the path you typed there.
+
+## Help
+
+1. Click **Help**, next to **File** on the toolbar.
+2. Click **User Guide** to open this guide, or **About Spade Editor** to see the version.
 
 ## Keys to know
 
