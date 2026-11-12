@@ -48,7 +48,8 @@ One row in `tests/bench/environment.csv` per measurement session (the `run` colu
 | Field | How |
 |---|---|
 | run | `<date>_<sha7>` |
-| sha | the **gated** SHA, the one the lead's gate passed; a number is never taken on an ungated tree |
+| sha | the **gated** SHA, the one the lead's gate passed, of the measured tree; a number is never taken on an ungated tree |
+| harness_sha, tree | the harness checkout's `HEAD`, and the measured tree's path |
 | build type | `Release`, MSVC, the preset's build tree; debug is not measured |
 | gpu | the card's name |
 | gpu driver | the driver version (`nvidia-smi --query-gpu=driver_version` or the video controller's `DriverVersion`) |
@@ -77,13 +78,13 @@ Measure at **every gated batch** while the whole suite fits in about **15 minute
 
 `tests/bench/measure.py`, Python standard library only. It runs the metrics in `metrics.json`, and:
 
-- refuses to run on an ungated tree: `--sha` must be the checked-out `HEAD`, and the tree must have no uncommitted change;
+- measures a **tree**, not itself: `--tree <dir>` is the checkout and build being measured. Its `HEAD` must equal `--sha`, it must have no uncommitted change, and the binaries come from its build folder (`--build-dir`, inside it). The harness can run from any checkout, including one newer than the measured SHA; the environment row records both SHAs;
 - reads the queue, checks the box is idle, records the environment row, runs the warm-up and the repeats, and appends the ledger rows;
 - `--dry-run` runs and prints but writes nothing (`--ignore-queue` with it tests the mechanics on a busy box);
 - `--out-json` keeps the raw values; `--floors A.json B.json --out-floors tests/bench/floors.json` computes the noise floors from two runs of one SHA;
 - `--trend` prints each metric's last two ledger rows and says "REAL" or "noise" by the rule above.
 
-A real run: `python jobrun.py --heavy-class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --build-dir build-ninja/release --out-json build-bench/<run>.json`.
+A real run: `python jobrun.py --heavy-class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --tree <measured checkout> --build-dir build-ninja/release --out-json build-bench/<run>.json`. Run it from the Test/Docs worktree and commit the new ledger rows on a branch; the measured tree is never written to.
 
 ## The ledger
 

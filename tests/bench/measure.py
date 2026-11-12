@@ -1,6 +1,7 @@
 """The performance harness (tests/bench/PERF.md is the protocol; read it first).
 
-  python tests/bench/measure.py --sha <gated sha> --build-dir build-ninja/release [--metrics core.*,rendering.*]
+  python tests/bench/measure.py --sha <gated sha> --tree <the measured checkout> --build-dir build-ninja/release [--metrics core.*,rendering.*]
+      the harness may run from any checkout (a later one than the measured SHA); the measured tree is --tree
   python tests/bench/measure.py --dry-run ...        run and print, write nothing, accept any tree and any sha
   python tests/bench/measure.py --floors A.json B.json   the noise floor from two runs of one SHA
   python tests/bench/measure.py --trend              the ledger's last two rows per metric, judged against the floors
@@ -29,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 JOBRUN = r"C:\Users\Cameron\Desktop\Projects\kat-wt\_handoff\tools\jobrun.py"
 LEDGER_HEADER = ["date", "sha", "metric", "unit", "median", "min", "max", "n", "notes"]
-ENV_HEADER = ["run", "sha", "build_type", "compiler", "gpu", "gpu_driver", "power_plan", "free_phys_gb", "free_commit_gb",
+ENV_HEADER = ["run", "sha", "harness_sha", "tree", "build_type", "compiler", "gpu", "gpu_driver", "power_plan", "free_phys_gb", "free_commit_gb",
               "cpu", "logical_cpus", "idle_cpu_pct", "queue", "noisy", "metrics"]
 NS_TO = {"ns": 1.0, "us": 1e-3, "ms": 1e-6, "s": 1e-9}
 MAX_NOISY_RETRIES = 3
@@ -254,8 +255,8 @@ def append_rows(path, header, rows):
         w.writerows(rows)
 
 
-def git(*args):
-    return run_text(["git", "-C", REPO] + list(args))
+def git(tree, *args):
+    return run_text(["git", "-C", tree] + list(args))
 
 
 def cmd_measure(a):
@@ -264,15 +265,20 @@ def cmd_measure(a):
     if not chosen:
         sys.exit("no metric matches %r" % a.metrics)
     say = lambda s: print(s, flush=True)
-    sha = (a.sha or git("rev-parse", "HEAD"))[:10]
+    tree = os.path.abspath(a.tree) if a.tree else REPO
+    harness_sha = git(REPO, "rev-parse", "HEAD")[:10]
+    sha = (a.sha or git(tree, "rev-parse", "HEAD"))[:10]
     if not a.dry_run:
         if not a.sha:
             sys.exit("--sha <the gated sha> is required: a number is never taken on an ungated tree")
-        head = git("rev-parse", "HEAD")
+        head = git(tree, "rev-parse", "HEAD")
         if not head.startswith(a.sha):
-            sys.exit("HEAD is %s, not the gated sha %s" % (head[:10], a.sha))
-        if git("status", "--porcelain", "--untracked-files=no"):
-            sys.exit("the tree has uncommitted changes: refusing to measure")
+            sys.exit("the tree %s is at %s, not the gated sha %s" % (tree, head[:10] or "(not a git tree)", a.sha))
+        if git(tree, "status", "--porcelain", "--untracked-files=no"):
+            sys.exit("the tree %s has uncommitted changes: refusing to measure" % tree)
+    build_dir = os.path.abspath(os.path.join(tree, a.build_dir))
+    if not a.dry_run and os.path.commonpath([build_dir, tree]) != tree:
+        sys.exit("the build folder %s is not inside the tree %s: the binaries must come from the measured tree" % (build_dir, tree))
     others = queue_others()
     if others is None:
         say("warning: jobrun not found at %s; the queue is not checked" % JOBRUN)
@@ -284,8 +290,7 @@ def cmd_measure(a):
     idle = wait_idle(a.idle_limit_s, a.idle_pct)
     if idle is not None and idle < 0:
         sys.exit("the box never got under %.0f%% CPU in %d s; last reading %.1f%%. Not measured." % (a.idle_pct, a.idle_limit_s, -idle))
-    build_dir = os.path.join(REPO, a.build_dir) if not os.path.isabs(a.build_dir) else a.build_dir
-    ctx = {"repo": REPO, "build": build_dir, "bench": os.path.join(build_dir, "bin", "spade_bench.exe")}
+    ctx = {"repo": tree, "build": build_dir, "bench": os.path.join(build_dir, "bin", "spade_bench.exe")}
     env = environment(build_dir)
     today = datetime.date.today().isoformat()
     run_id = "%s_%s" % (today, sha[:7])
@@ -315,7 +320,7 @@ def cmd_measure(a):
         say("dry run: nothing written (%d rows)" % len(rows))
         return
     append_rows(a.ledger, LEDGER_HEADER, rows)
-    append_rows(a.env, ENV_HEADER, [[run_id, sha, env["build_type"], env["compiler"], env["gpu"], env["gpu_driver"],
+    append_rows(a.env, ENV_HEADER, [[run_id, sha, harness_sha, tree, env["build_type"], env["compiler"], env["gpu"], env["gpu_driver"],
                                      env["power_plan"], env["free_phys_gb"], env["free_commit_gb"], env["cpu"],
                                      env["logical_cpus"], "%.1f" % (idle if idle is not None else -1), ",".join(queue_readings), noisy,
                                      len(rows)]])
@@ -383,6 +388,7 @@ def cmd_table(a):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sha", help="the gated SHA (required unless --dry-run)")
+    p.add_argument("--tree", help="the checkout and build being measured (default: this harness's own checkout). Its HEAD must equal --sha and it must have no uncommitted change; --build-dir is inside it")
     p.add_argument("--build-dir", default=os.path.join("build-ninja", "release"))
     p.add_argument("--metrics", help="comma-separated names, owners or globs (default: every ledger metric)")
     p.add_argument("--repeats", type=int, default=5)
