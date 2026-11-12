@@ -1,0 +1,51 @@
+site_name: Spade Editor 0.1.0, User Guide
+site_description: How to install and use Spade Editor, the first tester release.
+# Opens straight from the install folder (file:// links), with search that works offline.
+use_directory_urls: false
+docs_dir: src
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+
+plugins:
+  - search
+  - offline
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: false
+  - pymdownx.details
+  - pymdownx.keys
+
+nav:
+  - Quick start: index.md
+  - Install and uninstall: install.md
+  - System requirements: requirements.md
+  - The drone box: drone-box.md
+  - The editor:
+      - A first look: editor-first-look.md
+      - Select, place and move: select-place-move.md
+      - Inspect, undo and redo: inspect-undo.md
+      - Run: run.md
+      - The world and the scene: world.md
+      - Views: views.md
+      - Save and the library: save-library.md
+      - Add a drone: add-drone.md
+      - Run air: run-air.md
+      - Add objects: add-objects.md
+      - Fly a drone: fly.md
+  - Try this: try-this.md
+  - Known limits: known-limits.md
+  - Release notes: release-notes.md
