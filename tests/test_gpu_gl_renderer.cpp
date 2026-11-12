@@ -47,6 +47,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "render/gltf.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/shadow.hpp"
@@ -1661,6 +1662,19 @@ TEST_F(GpuGlRenderer, FlowIsoMatchesTheCpuWithinItsBand) {
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 
+// An environment variable's text, "" when it is not set (the same C4996 as below).
+[[nodiscard]] std::string env_text(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* v = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return v != nullptr ? std::string(v) : std::string();
+}
+
 // Whether an opt-in gate is set, as test_core_fp16.cpp asks it.
 [[nodiscard]] bool env_gate_is_set(const char* name) {
 #if defined(_MSC_VER)
@@ -1779,6 +1793,195 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
     EXPECT_LT(iso_half_ms, 0.75 * iso_ms) << device;
     renderer_->set_flow_quality({});
 
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
+}
+
+// L74's first metric (the lead, 2026-11-11; Cameron: "drastically speed up ... training/physics/rendering"): what the
+// editor's live training view waits on. KAT's view draws the run's drones as render-only puppets (a pose each frame, no
+// physics) through this renderer, so a frame is the poses refreshed (update_dynamics(), which the host calls each render),
+// the draw submitted, the GPU's time, and the read back. The scene has static geometry (the ground, six gate-sized boxes) and
+// so a static shadow map, as a world's does: without one GL treats every pixel as unshadowed and the dynamic casters' pass
+// never runs.
+// A measurement, so opt-in: SPADE_GL_PUPPET_COST=1 (about 10 s). SPADE_PUPPET_GLTF=<file> draws that mesh for every puppet
+// (KAT's content/meshes/drone/competition-700.gltf: 15 submeshes, 14,100 triangles); without it a UV sphere of 14,000
+// triangles stands in, the same triangle count and one submesh. The puppets are DYNAMIC items (a pose per frame), as the
+// host's are, over the analytic ground, 1280 x 720, the default sun with its shadows ON and then OFF; the frame's
+// shadow cost is the difference (the dynamic casters drawn into the sun's map, plus their sampling). Each figure is the
+// median of 20 frames after 3 warm-ups: `pose` the CPU filling the BodyPoses and update_dynamics() (and the clear), `submit` draw()
+// returning (the instance buffers refreshed, the shadow pass and the draws issued), `wait` the CPU blocked in glFinish()
+// after it, `gpu` a GL_TIME_ELAPSED query around draw(), `read` glReadPixels of the frame into memory.
+TEST_F(GpuGlRenderer, PuppetFrameCostAt128And1024Drones) {
+    if (!env_gate_is_set("SPADE_GL_PUPPET_COST")) {
+        GTEST_SKIP() << "a measurement: set SPADE_GL_PUPPET_COST=1 to run it (SPADE_PUPPET_GLTF=<a drone .gltf> for a real mesh)";
+    }
+    constexpr int kW = 1280, kH = 720;
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+
+    // The puppet's mesh.
+    MeshData drone;
+    std::string source = "a UV sphere, 14,000 triangles";
+    const std::string gltf_path = env_text("SPADE_PUPPET_GLTF");
+    if (!gltf_path.empty()) {
+        auto loaded = spade::render::load_gltf(gltf_path);
+        ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+        drone = std::move(*loaded);
+        drone.source_materials.clear();  // the scene's one material draws every submesh
+        std::fill(drone.submesh_material.begin(), drone.submesh_material.end(), 0u);
+        source = gltf_path + ", " + std::to_string(drone.indices.size() / 3u) + " triangles, " +
+                 std::to_string(drone.submesh_first_index.size()) + " submeshes";
+    } else {
+        constexpr uint32_t kLat = 70, kLon = 100;  // 2 * 70 * 100 = 14,000 triangles
+        for (uint32_t i = 0; i <= kLat; ++i) {
+            const float a = glm::pi<float>() * static_cast<float>(i) / static_cast<float>(kLat);
+            for (uint32_t j = 0; j <= kLon; ++j) {
+                const float b = 2.0f * glm::pi<float>() * static_cast<float>(j) / static_cast<float>(kLon);
+                const glm::vec3 n(std::sin(a) * std::cos(b), std::cos(a), std::sin(a) * std::sin(b));
+                drone.positions.push_back(0.16f * n);
+                drone.normals.push_back(n);
+            }
+        }
+        for (uint32_t i = 0; i < kLat; ++i) {
+            for (uint32_t j = 0; j < kLon; ++j) {
+                const uint32_t p = i * (kLon + 1u) + j, q = p + kLon + 1u;
+                for (const uint32_t v : {p, q, p + 1u, p + 1u, q, q + 1u}) drone.indices.push_back(v);
+            }
+        }
+        drone.submesh_first_index = {0u};
+        drone.submesh_index_count = {static_cast<uint32_t>(drone.indices.size())};
+        drone.submesh_material = {0u};
+    }
+    const double triangles = static_cast<double>(drone.indices.size() / 3u);
+
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const auto median = [](std::vector<double> v) {
+        std::sort(v.begin(), v.end());
+        return 0.5 * (v[(v.size() - 1u) / 2u] + v[v.size() / 2u]);
+    };
+    const auto ms_between = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    std::printf("[ puppets ] %dx%d, mesh %s; on %s\n", kW, kH, source.c_str(), device.c_str());
+    for (const uint32_t n : {1u, 128u, 1024u}) {
+        const uint32_t cols = static_cast<uint32_t>(std::ceil(std::sqrt(static_cast<double>(n))));
+        const float spacing = 1.0f;  // a training run's drones are spread about its world; a metre apart here
+        const float extent = std::max(spacing * static_cast<float>(cols), 4.0f);
+        const float reach = 0.5f * extent + 6.0f;
+        const spade::render::Aabb tess_bounds{.min = glm::vec3(-reach), .max = glm::vec3(reach)};
+        const auto tessellated = [&](spade::SdfPrim kind, glm::vec4 params) {
+            auto made = spade::render::tessellate_primitive(kind, params, tess_bounds, spade::render::kTessellationDefaults);
+            EXPECT_TRUE(made.has_value());
+            return made ? std::move(*made) : MeshData{};
+        };
+        RenderScene scene;
+        scene.meshes.push_back(drone);                                                        // 0: the puppets
+        scene.meshes.push_back(tessellated(spade::SdfPrim::plane, glm::vec4(0.0f, 1.0f, 0.0f, 0.0f)));  // 1: the ground
+        scene.meshes.push_back(tessellated(spade::SdfPrim::box, glm::vec4(1.0f, 1.0f, 0.1f, 0.0f)));    // 2: a gate-sized box
+        scene.materials = {Material{.base_color = glm::vec4(0.7f, 0.72f, 0.75f, 1.0f)}};
+        scene.ground_planes = {GroundPlane{.normal = glm::vec3(0.0f, 1.0f, 0.0f), .offset = 0.0f, .material = 0}};
+        scene.statics.push_back(DrawItem{.mesh_index = 1, .local_to_world = glm::mat4(1.0f)});
+        for (int g = 0; g < 6; ++g) {
+            const float a = 2.0f * glm::pi<float>() * static_cast<float>(g) / 6.0f;
+            scene.statics.push_back(DrawItem{
+                .mesh_index = 2,
+                .local_to_world = glm::translate(glm::mat4(1.0f), glm::vec3(0.45f * extent * std::cos(a), 1.0f, 0.45f * extent * std::sin(a)))});
+        }
+        scene.bounds = spade::render::Aabb{.min = glm::vec3(-reach, -1.0f, -reach), .max = glm::vec3(reach, 6.0f, reach)};
+        const auto shadow_start = std::chrono::steady_clock::now();
+        auto static_map = spade::render::build_static_shadow_map(scene);
+        ASSERT_TRUE(static_map.has_value()) << static_map.error().context;
+        const double shadow_build_ms = ms_between(shadow_start, std::chrono::steady_clock::now());
+        scene.static_shadow = std::move(*static_map);
+        std::vector<spade::render::BodyPose> bodies(n);
+        const auto pose = [&](float t) {
+            for (uint32_t i = 0; i < n; ++i) {
+                bodies[i].position = glm::vec3(spacing * static_cast<float>(i % cols) - 0.5f * extent,
+                                               1.0f + 0.2f * std::sin(t + 0.3f * static_cast<float>(i)),
+                                               spacing * static_cast<float>(i / cols) - 0.5f * extent);
+                bodies[i].orientation = glm::angleAxis(0.5f * t + 0.1f * static_cast<float>(i), glm::vec3(0.0f, 1.0f, 0.0f));
+                bodies[i].velocity = glm::vec3(0.0f, 0.2f, 0.0f);
+                bodies[i].mesh_index = 0;
+            }
+            spade::render::update_dynamics(scene, bodies);
+        };
+        pose(0.0f);
+        // The camera: the whole formation in view, from above and to one side, as the free camera sits.
+        Camera camera;
+        camera.position = glm::vec3(0.0f, 0.55f * extent + 1.5f, 0.95f * extent + 2.5f);
+        const glm::mat4 view = glm::lookAt(camera.position, glm::vec3(0.0f, 0.5f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        camera.orientation = glm::quat_cast(glm::inverse(view));
+        const auto up_start = std::chrono::steady_clock::now();
+        ASSERT_TRUE(renderer_->upload_scene(scene).has_value());
+        glFinish();
+        const double upload_ms = ms_between(up_start, std::chrono::steady_clock::now());
+        std::printf("[ puppets ] %u drones (%.1f M triangles): upload_scene (the mesh set and static map, once) %.2f ms; "
+                    "build_static_shadow_map (once) %.2f ms\n", n, 1e-6 * triangles * n, upload_ms, shadow_build_ms);
+        GLuint query = 0;
+        glGenQueries(1, &query);
+        struct Row {
+            double pose = 0, submit = 0, wait = 0, gpu = 0, read = 0;
+            uint32_t draws = 0, instances = 0;
+        };
+        Row rows[2];
+        std::vector<uint8_t> rgba(static_cast<size_t>(kW) * kH * 4u);
+        for (int shadows = 1; shadows >= 0; --shadows) {
+            RenderOptions options = comparable_options();
+            options.shadows = shadows == 1;
+            std::vector<double> pose_ms, submit_ms, wait_ms, gpu_ms, read_ms;
+            for (int frame = 0; frame < 23; ++frame) {
+                const auto t_pose = std::chrono::steady_clock::now();
+                pose(0.05f * static_cast<float>(frame));
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                glFinish();
+                const auto t0 = std::chrono::steady_clock::now();
+                glBeginQuery(GL_TIME_ELAPSED, query);
+                const spade::Result<void> drew = renderer_->draw(scene, camera, options, kW, kH);
+                glEndQuery(GL_TIME_ELAPSED);
+                const auto t1 = std::chrono::steady_clock::now();
+                glFinish();
+                const auto t2 = std::chrono::steady_clock::now();
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+                const auto t3 = std::chrono::steady_clock::now();
+                ASSERT_TRUE(drew.has_value()) << drew.error().context;
+                GLuint64 ns = 0;
+                glGetQueryObjectui64v(query, GL_QUERY_RESULT, &ns);
+                if (frame < 3) continue;
+                pose_ms.push_back(ms_between(t_pose, t0));
+                submit_ms.push_back(ms_between(t0, t1));
+                wait_ms.push_back(ms_between(t1, t2));
+                gpu_ms.push_back(1e-6 * static_cast<double>(ns));
+                read_ms.push_back(ms_between(t2, t3));
+            }
+            Row& r = rows[shadows];
+            r = Row{median(pose_ms), median(submit_ms), median(wait_ms), median(gpu_ms), median(read_ms),
+                    renderer_->last_draw_calls(), renderer_->last_instances()};
+            std::printf("[ puppets ] %4u drones, shadows %-3s: pose+clear %6.2f ms, submit %6.2f ms, wait %6.2f ms, "
+                        "gpu %6.2f ms, read %5.2f ms; frame %6.2f ms; %u draw calls, %u instances\n",
+                        n, shadows == 1 ? "on" : "off", r.pose, r.submit, r.wait, r.gpu, r.read,
+                        r.pose + r.submit + r.wait + r.read, r.draws, r.instances);
+            RecordProperty(("gpu_ms_x100_" + std::to_string(n) + (shadows == 1 ? "_shadows" : "_noshadows")).c_str(),
+                           static_cast<int>(r.gpu * 100.0));
+        }
+        std::printf("[ puppets ] %4u drones: the shadows cost submit %+.2f ms, gpu %+.2f ms\n", n,
+                    rows[1].submit - rows[0].submit, rows[1].gpu - rows[0].gpu);
+        glDeleteQueries(1, &query);
+        EXPECT_LT(rows[1].gpu, 5000.0) << device;
+        EXPECT_GE(rows[1].instances, n) << "the puppets are drawn";
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteRenderbuffers(1, &colour);
