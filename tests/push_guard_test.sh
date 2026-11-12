@@ -52,11 +52,22 @@ setup() {
     "$GIT" clone -q "$remote" "$clone" 2>/dev/null || exit 2
     "$GIT" -C "$clone" commit -q --allow-empty -m base || exit 2
     "$GIT" -C "$clone" push -q origin HEAD:refs/heads/master HEAD:refs/heads/gone 2>/dev/null || exit 2
-    i=0
-    while [ "$i" -lt 40 ]; do
-        "$GIT" -C "$clone" commit -q --allow-empty -m "c$i" || exit 2
-        i=$((i + 1))
-    done
+    # Forty empty commits from ONE git process (fast-import), not forty `git commit` processes: each setup() ran 40 of them, seven
+    # setups a run, and on Windows a process costs a quarter second or more, so the test took 38 s alone and timed out at 120 s
+    # under a loaded gate (2026-11-11). The commits are the same (empty, one parent each); the guard sees the same push.
+    branch=$("$GIT" -C "$clone" symbolic-ref --short HEAD) || exit 2
+    {
+        i=0
+        while [ "$i" -lt 40 ]; do
+            echo "commit refs/heads/$branch"
+            echo "committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $((1700000000 + i)) +0000"
+            echo "data ${#i}"
+            echo "$i"
+            [ "$i" -eq 0 ] && echo "from refs/heads/$branch^0"
+            echo
+            i=$((i + 1))
+        done
+    } | "$GIT" -C "$clone" fast-import --quiet || exit 2
     mkdir -p hooks
     cp "$guard" hooks/pre-push
     chmod +x hooks/pre-push
