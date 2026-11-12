@@ -26,6 +26,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -121,6 +122,19 @@ class EditorWorkspace {
     // Where Run air's fluid steps (slice 3): the window gives the GPU's
     // starter (editor_air_gpu.hpp); until given one, the CPU's.
     void set_air_starter(AirStarter starter) { air_starter_ = std::move(starter); }
+
+    // Help > User Guide (L73a item 3): the guide's file, and what opens it in the default browser (false: it would not).
+    using GuideOpener = std::function<bool(const std::filesystem::path&)>;
+    void set_user_guide(std::filesystem::path file, GuideOpener open) {
+        guide_file_ = std::move(file);
+        guide_opener_ = std::move(open);
+    }
+
+    // Closing (Esc, the window's close button; L73a item 11): with nothing unsaved the editor may quit at once
+    // (close_confirmed()); with changes it asks "Save changes to <scene>?" first (panels().close_prompt).
+    [[nodiscard]] bool unsaved() const { return false; }
+    void request_close() {}
+    [[nodiscard]] bool close_confirmed() const noexcept { return close_confirmed_; }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }
     [[nodiscard]] const BuiltinRecords& records() const noexcept { return records_; }
     // Changes whenever composed() does.
@@ -908,6 +922,9 @@ class EditorWorkspace {
     OpenedScene docs_;
     uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
     AirStarter air_starter_ = cpu_air_starter();
+    std::filesystem::path guide_file_;
+    GuideOpener guide_opener_;
+    bool close_confirmed_ = false;
     std::unique_ptr<AirflowRun> air_;  // Run air's worker; reset (joined) by Stop and by a change
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened

@@ -106,6 +106,9 @@ struct AirLineCache {
     uint64_t resolves = 0;  // how many times it has resolved
 };
 
+// The answer to "Save changes to <scene>?" (L73a item 11).
+enum class CloseChoice { save, discard, cancel };
+
 struct EditorPanels {
     // ---- Read by the panels; the workspace fills these every frame.
     const scene::SceneDesc* scene = nullptr;
@@ -154,6 +157,15 @@ struct EditorPanels {
     std::vector<render::ViewLegend> legends;  // the view's last draw, one per layer
     std::string view_note;                    // why the view isn't drawing its chosen mode; empty when it is
     render::BaseLegend base_legend;           // the base's legend: depth's range, the normals key
+
+    // Closing with unsaved changes (L73a item 11): the scene's name while the "Save changes to <scene>?" prompt shows,
+    // empty otherwise (EditorWorkspace::request_close()); and the prompt's answer, taken by apply_panels().
+    std::string close_prompt;
+    std::optional<CloseChoice> close_choice;
+    // Help > About Spade Editor's text (app_about.hpp), set by the host; Help > User Guide's request, taken by
+    // apply_panels() (set_user_guide()).
+    std::string about;
+    bool user_guide_request = false;
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;

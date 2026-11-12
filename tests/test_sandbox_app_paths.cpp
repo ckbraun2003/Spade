@@ -119,6 +119,11 @@ TEST(AppPaths, TheFontsComeFromBesideTheExeThenFromTheAssets) {
     EXPECT_EQ(app::fonts_dir(exe, assets), exe / "fonts") << "a build's own";
 }
 
+TEST(AppPaths, TheUserGuideIsTheIndexOfTheDocsFolderBesideTheExe) {
+    EXPECT_EQ(app::user_guide_file(fs::path("X") / "Spade"),
+              fs::path("X") / "Spade" / "docs" / "user-guide" / "index.html");
+}
+
 // THE BARE LAUNCH IS THE EDITOR (L73a). The drone sim box is --window or --scene drone; --headless and --live-smoke
 // are their own; nothing else changes.
 TEST(AppPaths, ABareLaunchOpensTheEditorAndTheDroneBoxIsAskedFor) {
