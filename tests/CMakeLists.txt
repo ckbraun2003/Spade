@@ -763,6 +763,13 @@ if(SPADE_BUILD_SANDBOX)
         LABELS spade
         PASS_REGULAR_EXPRESSION "done: applied 3 edits, ran 25 steps"
         TIMEOUT 120)
+
+    # --version (L73a item 2): "Spade Editor 0.1.0+<sha>", Core's generated version, and exit 0 with no window.
+    add_test(NAME SandboxVersion.PrintsTheVersionAndExits COMMAND $<TARGET_FILE:spade_sandbox> --version)
+    set_tests_properties(SandboxVersion.PrintsTheVersionAndExits PROPERTIES
+        LABELS spade
+        PASS_REGULAR_EXPRESSION "^Spade Editor [0-9]+\.[0-9]+\.[0-9]+\+(unknown|[0-9a-f]+)(-dirty)?"
+        TIMEOUT 60)
 endif()
 
 # The build stamp's fallbacks (core/build_identity.hpp), which a build inside a
