@@ -735,6 +735,7 @@ target_compile_definitions(spade_tests PRIVATE
 
 # The generated version header and the product's VERSION file (L73a).
 target_sources(spade_tests PRIVATE test_version_header.cpp)
+target_link_libraries(spade_tests PRIVATE spade_version)
 target_compile_definitions(spade_tests PRIVATE SPADE_REPO_DIR="${PROJECT_SOURCE_DIR}")
 
 target_compile_definitions(spade_tests PRIVATE

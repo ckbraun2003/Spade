@@ -126,6 +126,9 @@ if(SPADE_BUILD_V1)
     file(COPY ${CMAKE_SOURCE_DIR}/assets DESTINATION ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 endif()
 
+# The generated version header (L73a): spade_version.hpp, regenerated on every build; the editor's --version and About read it.
+include(cmake/SpadeVersion.cmake)
+
 # v2 engine tree.
 add_subdirectory(engine)
 
