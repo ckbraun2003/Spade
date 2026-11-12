@@ -1,0 +1,29 @@
+{
+  "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>'), wall (process wall time and peak working set). {bench}, {build} and {repo} expand in command. A diagnostic stays out of the ledger. The realms' metrics are added as they send them.",
+  "metrics": [
+    {"name": "core.step_plain_bodies", "owner": "core", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a developer or user stepping the simulation (one world of plain bodies)", "workload": "BM_StepPlainBodies, the sizes in bench_sim.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_StepPlainBodies", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "core.step_dense_bodies", "owner": "core", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a developer or user stepping a world crowded with bodies", "workload": "BM_StepDenseBodies, the sizes in bench_sim.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_StepDenseBodies", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "core.step_quad_worlds", "owner": "core", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a user flying drones in real time (the real-time step for 1 to 16 vehicles, Core's proposal pending)", "workload": "BM_StepQuadWorlds, the sizes in bench_sim.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_StepQuadWorlds", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "rendering.render_background_fill", "owner": "rendering", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a user waiting for a frame (the empty-scene floor of the CPU renderer)", "workload": "BM_RenderBackgroundFill, the sizes in bench_render.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_RenderBackgroundFill", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "rendering.render_ground_plane", "owner": "rendering", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a user waiting for a frame (the ground plane on the CPU renderer)", "workload": "BM_RenderGroundPlane, the sizes in bench_render.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_RenderGroundPlane", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "rendering.render_slots", "owner": "rendering", "kind": "gbench", "basis": "cpu_time", "unit": "ms",
+     "who_waits": "a user waiting for a frame with many objects on the CPU renderer", "workload": "BM_RenderSlots, the sizes in bench_render.cpp",
+     "command": ["{bench}", "--benchmark_filter=^BM_RenderSlots", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "core.integrate_orientation", "owner": "core", "kind": "gbench", "basis": "cpu_time", "unit": "ns", "diagnostic": true,
+     "who_waits": "no one: one sub-step of the integrator", "workload": "BM_IntegrateOrientation",
+     "command": ["{bench}", "--benchmark_filter=^BM_IntegrateOrientation", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]},
+    {"name": "rendering.csg_mesh_shell", "owner": "rendering", "kind": "gbench", "basis": "cpu_time", "unit": "ms", "diagnostic": true,
+     "who_waits": "no one: one stage of mesh building", "workload": "BM_CsgMeshShell",
+     "command": ["{bench}", "--benchmark_filter=^BM_CsgMeshShell", "--benchmark_repetitions=5", "--benchmark_min_warmup_time=1", "--benchmark_format=json"]}
+  ]
+}
