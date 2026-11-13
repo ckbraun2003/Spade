@@ -69,8 +69,8 @@ bool open_in_default_app(const std::filesystem::path& file) {
     (void)file;
     return false;
 }
-#endif
 
+double process_age_ms() { return fallback_age_ms(); }
 #endif
 
 }  // namespace spade::sandbox::app
