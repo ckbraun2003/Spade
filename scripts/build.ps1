@@ -30,7 +30,7 @@
 .PARAMETER ParallelLevel
     Compile jobs, 1..64, default 8. All-cores (0) is not expressible here: on
     the old, memory-bound box its failure mode was a silent OOM kill. When the
-    box's job queue (jobrun) sets JOBRUN_PARALLEL -- 4 while the owner's game
+    box's Vantage jobs service (vantage.py job run) sets JOBRUN_PARALLEL -- 4 while the owner's game
     runs -- the build takes the SMALLER of the two, and the first line it
     prints says which.
 
@@ -81,7 +81,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # THE JOB COUNT: -ParallelLevel, capped by the box queue's JOBRUN_PARALLEL
-# when that is set (Kat's jobrun, approved by the owner 2026-10-19). A cap
+# when that is set (the Vantage jobs service, vantage.py job run; it took over from Kat's jobrun, approved by the owner 2026-10-19). A cap
 # that is not a whole number of at least 1 refuses: a queue that meant to
 # throttle this build must not be ignored by a typo.
 $Jobs = $ParallelLevel
