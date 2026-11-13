@@ -225,6 +225,7 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
                              [](const std::filesystem::path& guide) {
                                  return spade::sandbox::app::open_in_default_app(guide);
                              });
+    bool first_frame_pending = spade::sandbox::perf::enabled();  // L74: SPADE_EDITOR_PERF, off by default
     for (;;) {
         const spade::sandbox::FrameInput in = sink->poll();
         // Esc or the close button: with unsaved changes the editor asks first (L73a); with none it quits as before.
@@ -238,6 +239,12 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
         if (const spade::Result<void> drew = session.frame(in, sink->delta_seconds()); !drew) {
             std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
             return 1;
+        }
+        if (first_frame_pending && sink->presented() > 0u) {
+            first_frame_pending = false;
+            std::puts(spade::sandbox::perf::line("interface.editor_first_frame",
+                                                 spade::sandbox::app::process_age_ms(), "ms")
+                          .c_str());
         }
     }
     print_exit_summary(*sink, width, height, vsync);
