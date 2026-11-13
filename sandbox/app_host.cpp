@@ -49,4 +49,6 @@ bool open_in_default_app(const std::filesystem::path& file) {
 }
 #endif
 
+double process_age_ms() { return 0.0; }  // RED stub
+
 }  // namespace spade::sandbox::app

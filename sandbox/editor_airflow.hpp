@@ -405,7 +405,9 @@ class AirflowRun {
     [[nodiscard]] static Result<std::unique_ptr<AirflowRun>> start(
         const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
         std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {},
-        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed, float sgs_cs = 0.0f) {
+        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed, float sgs_cs = 0.0f,
+        bool measure = false) {
+        (void)measure;  // RED stub
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
         Result<AirCases> cases = air_cases(s, region, level);
@@ -430,6 +432,9 @@ class AirflowRun {
     // Where the run's fluid steps: "GPU", or "CPU: " and why (its starter's).
     [[nodiscard]] const std::string& backend() const noexcept { return backend_; }
     [[nodiscard]] AirLevel level() const noexcept { return level_; }  // the level it flies (D10)
+
+    // The PERF lines of a run started with `measure` (L74), after stopping it; empty without. RED stub.
+    [[nodiscard]] std::vector<std::string> take_perf_lines() { return {}; }
 
     // The last frame handed over; none before the first publish.
     [[nodiscard]] std::shared_ptr<const AirFrame> latest() const {
