@@ -66,6 +66,7 @@
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
+#include "perf_line.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/multigrid.hpp"
@@ -695,6 +696,11 @@ TEST(GpuAirflowProjection, TimingsAt64And128Cubed) {
                     static_cast<double>(total) * 1e-6, static_cast<double>(best[1]) * 1e-6,
                     static_cast<double>(best[2]) * 1e-6, static_cast<double>(best[3]) * 1e-6,
                     static_cast<double>(best[4]) * 1e-6);
+        {
+            std::string metric = std::string("physics.diag_project_") + d.name;  // one line per case, the best of the runs
+            std::ranges::replace(metric, ' ', '_');
+            spade::test::perf_line(metric.c_str(), static_cast<double>(total) * 1e-6, "ms");
+        }
         if (extended) {
             af::MacGrid cpu = g;
             af::ProjectionScratch scratch = af::make_projection_scratch(d.shape, d.bc);

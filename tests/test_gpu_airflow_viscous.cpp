@@ -50,6 +50,7 @@
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
+#include "perf_line.hpp"
 #include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/solids.hpp"
@@ -636,4 +637,5 @@ TEST(GpuAirflowViscous, DiffuseTimeInTheD1Box) {
     ASSERT_TRUE(run_on_gpu(*ctx, start, bc, alpha, nullptr, chain, kWorkgroupSize, &ms).has_value());
     std::printf("measure: diffuse in the D1 box, 240x177x168 at 4 mm, %u sweeps per component: %.3f ms\n", kSweeps,
                 ms);
+    spade::test::perf_line("physics.diag_diffuse_d1", ms, "ms");
 }

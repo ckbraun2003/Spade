@@ -60,6 +60,7 @@
 #include "core/fp16.hpp"
 #include "gpu_skip.hpp"
 #include "live_sgs_probe.hpp"
+#include "perf_line.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -721,6 +722,8 @@ TEST(GpuLiveFluid, FrameTimeOnTheEditorsGrid) {
     std::printf("measure: LiveRun frame on 32^3 at 25 mm, h 1 ms, 4 discs: GPU %.1f ms (1/%.1f of real time), "
                 "CPU %.1f ms (1/%.1f of real time): %.1fx\n",
                 gpu_ms, gpu_ms / frame_ms, cpu_ms, cpu_ms / frame_ms, cpu_ms / gpu_ms);
+    spade::test::perf_line("physics.gpu_frame_editor_32", gpu_ms, "ms");  // the mean of 30 frames, a whole LiveRun frame
+    spade::test::perf_line("physics.diag_cpu_frame_editor_32", cpu_ms, "ms");  // the mean of 3 frames
 }
 
 // L54 through LiveRun: on the device with the subgrid viscosity on (Cs 0.17, as the website clips run it), the run's
