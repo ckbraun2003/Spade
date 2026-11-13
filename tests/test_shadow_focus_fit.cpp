@@ -85,8 +85,8 @@ using spade::render::ShadowMap;
 }
 
 // Both fits of `scene`; they must agree bit for bit. Returns the skip fit's stats.
-[[nodiscard]] FocusFitStats expect_identical(const RenderScene& scene, const ShadowMap& statics, const std::string& what,
-                                             float filter_texels = 1.0f) {
+FocusFitStats expect_identical(const RenderScene& scene, const ShadowMap& statics, const std::string& what,
+                               float filter_texels = 1.0f) {
     FocusFitStats stats;
     const auto fast = spade::render::fit_focus_shadow_map(scene, 1024, filter_texels, statics, &stats);
     const auto full = spade::render::fit_focus_shadow_map_exhaustive(scene, 1024, filter_texels, statics);

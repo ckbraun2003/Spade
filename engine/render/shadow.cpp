@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <span>
 
 #include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
@@ -316,8 +317,173 @@ float shadow_texel_metres(const ShadowMap& map) {
     return map.size == 0 || per_metre <= 0.0f ? 0.0f : 2.0f / (per_metre * static_cast<float>(map.size));
 }
 
-std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
-                                              const ShadowMap& statics) {
+namespace {
+
+// The dynamic items' light-space bounds (the extremes of every vertex's right, up and forward in the light's basis).
+struct LightBounds {
+    float rmin = 0.0f, rmax = 0.0f, umin = 0.0f, umax = 0.0f, zmin = 0.0f, zmax = 0.0f;
+    bool any = false;
+};
+
+// One item's vertices into `b`: the original loop's body, shared by the exhaustive fit and the skip fit so each vertex
+// takes the same operations in the same order whichever way it is reached.
+void accumulate_item(const DrawItem& item, const std::vector<glm::vec3>& positions, const LightBasis& basis,
+                     LightBounds& b) {
+    for (const glm::vec3& local : positions) {
+        const glm::vec3 w(item.local_to_world * glm::vec4(local, 1.0f));
+        const float r = glm::dot(w, basis.right), u = glm::dot(w, basis.up), z = glm::dot(w, basis.forward);
+        if (!b.any) {
+            b.rmin = b.rmax = r;
+            b.umin = b.umax = u;
+            b.zmin = b.zmax = z;
+            b.any = true;
+        } else {
+            b.rmin = std::min(b.rmin, r);
+            b.rmax = std::max(b.rmax, r);
+            b.umin = std::min(b.umin, u);
+            b.umax = std::max(b.umax, u);
+            b.zmin = std::min(b.zmin, z);
+            b.zmax = std::max(b.zmax, z);
+        }
+    }
+}
+
+// Whether the fit looks at this item at all: a see-through item casts nothing (RND-11), so it has no footprint to fit.
+[[nodiscard]] bool fits_item(const RenderScene& scene, const DrawItem& item) {
+    return !item.see_through && item.mesh_index < scene.meshes.size();
+}
+
+// The original: every vertex of every item, in the items' fixed order.
+LightBounds exhaustive_bounds(const RenderScene& scene, const LightBasis& basis, FocusFitStats* stats) {
+    LightBounds b;
+    uint64_t vertices = 0;
+    for (const DrawItem& item : scene.dynamics) {
+        if (!fits_item(scene, item)) continue;
+        accumulate_item(item, scene.meshes[item.mesh_index].positions, basis, b);
+        vertices += scene.meshes[item.mesh_index].positions.size();
+    }
+    if (stats != nullptr) stats->vertices_total = stats->vertices_transformed = vertices;
+    return b;
+}
+
+// A mesh's local bounding box and ball (centre, half extents, radius), in double, for the item bounds.
+struct MeshBall {
+    double centre[3] = {0.0, 0.0, 0.0};
+    double half[3] = {0.0, 0.0, 0.0};
+    double radius = 0.0;
+    bool ready = false;
+};
+
+// One item's light-space extent, per axis (right, up, forward), in double: lo and hi enclose every vertex's computed
+// value, rounding included.
+struct ItemExtent {
+    double lo[3] = {0.0, 0.0, 0.0};
+    double hi[3] = {0.0, 0.0, 0.0};
+    uint32_t item = 0;
+};
+
+// The skip fit. Returns false (and the caller takes the exhaustive path) on anything not finite: a pose, a vertex or a
+// bound.
+[[nodiscard]] bool skip_bounds(const RenderScene& scene, const LightBasis& basis, LightBounds& out, FocusFitStats* stats) {
+    std::vector<MeshBall> balls(scene.meshes.size());
+    std::vector<ItemExtent> extents;
+    extents.reserve(scene.dynamics.size());
+    const glm::dvec3 dirs[3] = {glm::dvec3(basis.right), glm::dvec3(basis.up), glm::dvec3(basis.forward)};
+    uint64_t total = 0;
+    for (uint32_t index = 0; index < scene.dynamics.size(); ++index) {
+        const DrawItem& item = scene.dynamics[index];
+        if (!fits_item(scene, item)) continue;
+        const std::vector<glm::vec3>& positions = scene.meshes[item.mesh_index].positions;
+        if (positions.empty()) continue;
+        total += positions.size();
+        MeshBall& ball = balls[item.mesh_index];
+        if (!ball.ready) {
+            glm::dvec3 lo(positions.front()), hi(positions.front());
+            for (const glm::vec3& p : positions) {
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return false;
+                lo = glm::min(lo, glm::dvec3(p));
+                hi = glm::max(hi, glm::dvec3(p));
+            }
+            double radius_sq = 0.0;
+            for (int k = 0; k < 3; ++k) {
+                ball.centre[k] = 0.5 * (lo[k] + hi[k]);
+                ball.half[k] = 0.5 * (hi[k] - lo[k]);
+            }
+            for (const glm::vec3& p : positions) {
+                const double dx = p.x - ball.centre[0], dy = p.y - ball.centre[1], dz = p.z - ball.centre[2];
+                radius_sq = std::max(radius_sq, dx * dx + dy * dy + dz * dz);
+            }
+            ball.radius = std::sqrt(radius_sq);
+            ball.ready = true;
+        }
+        const glm::mat4& m = item.local_to_world;
+        for (int k = 0; k < 4; ++k) {  // the fit uses columns 0..3 of rows 0..2 (the w row is dropped)
+            if (!std::isfinite(m[k][0]) || !std::isfinite(m[k][1]) || !std::isfinite(m[k][2])) return false;
+        }
+        ItemExtent e;
+        e.item = index;
+        for (int axis = 0; axis < 3; ++axis) {
+            const glm::dvec3& d = dirs[axis];
+            double a[3], mag = 0.0, centre_value = 0.0, a_sq = 0.0, box = 0.0;
+            for (int k = 0; k < 3; ++k) {
+                a[k] = d.x * m[k][0] + d.y * m[k][1] + d.z * m[k][2];
+                centre_value += a[k] * ball.centre[k];
+                a_sq += a[k] * a[k];
+                box += std::fabs(a[k]) * ball.half[k];
+                mag += (std::fabs(d.x * m[k][0]) + std::fabs(d.y * m[k][1]) + std::fabs(d.z * m[k][2])) *
+                       (std::fabs(ball.centre[k]) + ball.half[k]);
+            }
+            const double b = d.x * m[3][0] + d.y * m[3][1] + d.z * m[3][2];
+            centre_value += b;
+            mag += std::fabs(d.x * m[3][0]) + std::fabs(d.y * m[3][1]) + std::fabs(d.z * m[3][2]);
+            const double reach = std::min(box, ball.radius * std::sqrt(a_sq));
+            // The computed float is within a few units of 2^-24 of the exact sum of the terms' magnitudes; the margin
+            // is 1e-5 of it, ten times what the transform and the dot can lose.
+            const double margin = 1.0e-5 * mag + 1.0e-30;  // and a floor over any flushed subnormal
+            e.lo[axis] = centre_value - reach - margin;
+            e.hi[axis] = centre_value + reach + margin;
+            if (!(std::fabs(e.lo[axis]) < 1.0e30) || !(std::fabs(e.hi[axis]) < 1.0e30)) return false;
+        }
+        extents.push_back(e);
+    }
+    if (stats != nullptr) stats->vertices_total = total;
+    if (extents.empty()) return true;  // nothing to fit: out.any stays false, as the exhaustive loop's would
+    std::vector<char> done(extents.size(), 0);
+    uint64_t transformed = 0;
+    const auto evaluate = [&](size_t at) {
+        done[at] = 1;
+        const DrawItem& item = scene.dynamics[extents[at].item];
+        const std::vector<glm::vec3>& positions = scene.meshes[item.mesh_index].positions;
+        accumulate_item(item, positions, basis, out);
+        transformed += positions.size();
+    };
+    // The items whose bound reaches furthest each way set the extremes first, so the rest can be skipped against them.
+    for (int axis = 0; axis < 3; ++axis) {
+        size_t lowest = 0, highest = 0;
+        for (size_t i = 1; i < extents.size(); ++i) {
+            if (extents[i].lo[axis] < extents[lowest].lo[axis]) lowest = i;
+            if (extents[i].hi[axis] > extents[highest].hi[axis]) highest = i;
+        }
+        if (done[lowest] == 0) evaluate(lowest);
+        if (done[highest] == 0) evaluate(highest);
+    }
+    for (size_t i = 0; i < extents.size(); ++i) {
+        if (done[i] != 0) continue;
+        const ItemExtent& e = extents[i];
+        // Strictly inside the extremes found: no vertex of this item can be the min or the max (an equal one could
+        // flip a signed zero), so it is never transformed.
+        const bool inside = e.lo[0] > static_cast<double>(out.rmin) && e.hi[0] < static_cast<double>(out.rmax) &&
+                            e.lo[1] > static_cast<double>(out.umin) && e.hi[1] < static_cast<double>(out.umax) &&
+                            e.lo[2] > static_cast<double>(out.zmin) && e.hi[2] < static_cast<double>(out.zmax);
+        if (!inside) evaluate(i);
+    }
+    if (stats != nullptr) stats->vertices_transformed = transformed;
+    return true;
+}
+
+std::optional<ShadowMap> fit_focus(const RenderScene& scene, uint32_t size, float filter_texels, const ShadowMap& statics,
+                                   bool exhaustive, FocusFitStats* stats) {
+    if (stats != nullptr) *stats = FocusFitStats{};
     if (size == 0 || scene.dynamics.empty()) {
         return std::nullopt;
     }
@@ -326,32 +492,16 @@ std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t
         return std::nullopt;
     }
     const LightBasis basis = build_light_basis(scene.lighting.sun_direction);
-    // The dynamic items' light-space bounds, over every vertex of every mesh they draw, in the items' fixed order.
-    float rmin = 0.0f, rmax = 0.0f, umin = 0.0f, umax = 0.0f, zmin = 0.0f, zmax = 0.0f;
-    bool any = false;
-    for (const DrawItem& item : scene.dynamics) {
-        if (item.see_through || item.mesh_index >= scene.meshes.size()) {
-            continue;  // a see-through item casts nothing (RND-11), so it has no footprint to fit
-        }
-        for (const glm::vec3& local : scene.meshes[item.mesh_index].positions) {
-            const glm::vec3 w(item.local_to_world * glm::vec4(local, 1.0f));
-            const float r = glm::dot(w, basis.right), u = glm::dot(w, basis.up), z = glm::dot(w, basis.forward);
-            if (!any) {
-                rmin = rmax = r;
-                umin = umax = u;
-                zmin = zmax = z;
-                any = true;
-            } else {
-                rmin = std::min(rmin, r);
-                rmax = std::max(rmax, r);
-                umin = std::min(umin, u);
-                umax = std::max(umax, u);
-                zmin = std::min(zmin, z);
-                zmax = std::max(zmax, z);
-            }
-        }
+    // The dynamic items' light-space bounds, over every vertex of every mesh they draw.
+    LightBounds bounds;
+    if (exhaustive) {
+        bounds = exhaustive_bounds(scene, basis, stats);
+    } else if (!skip_bounds(scene, basis, bounds, stats)) {
+        bounds = exhaustive_bounds(scene, basis, stats);
     }
-    if (!any) {
+    const float rmin = bounds.rmin, rmax = bounds.rmax, umin = bounds.umin, umax = bounds.umax, zmin = bounds.zmin,
+                zmax = bounds.zmax;
+    if (!bounds.any) {
         return std::nullopt;
     }
     // One texel size for both axes: the larger footprint side over the texels left inside the padding.
@@ -382,6 +532,18 @@ std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t
         return std::nullopt;
     }
     return map;
+}
+
+}  // namespace
+
+std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
+                                              const ShadowMap& statics, FocusFitStats* stats) {
+    return fit_focus(scene, size, filter_texels, statics, false, stats);
+}
+
+std::optional<ShadowMap> fit_focus_shadow_map_exhaustive(const RenderScene& scene, uint32_t size, float filter_texels,
+                                                         const ShadowMap& statics) {
+    return fit_focus(scene, size, filter_texels, statics, true, nullptr);
 }
 
 std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size, float filter_texels,
