@@ -1813,6 +1813,10 @@ TEST_F(GpuGlRenderer, FlowLayerCostAt128CubedAnd1080p) {
 // median of 20 frames after 3 warm-ups: `pose` the CPU filling the BodyPoses and update_dynamics() (and the clear), `submit` draw()
 // returning (the instance buffers refreshed, the shadow pass and the draws issued), `wait` the CPU blocked in glFinish()
 // after it, `gpu` a GL_TIME_ELAPSED query around draw(), `read` glReadPixels of the frame into memory.
+// The ledger's metric (Test/Docs, PERF.md) is the in-repo workload, the UV sphere: with it each row also prints one
+// `PERF rendering.puppet_frame_<N>_shadows_<on|off> <median ms> ms` line (the median of the whole frame, pose to read-back)
+// and `PERF rendering.diag_<phase>_<N>_shadows_<on|off> <ms> ms` for each phase. With SPADE_PUPPET_GLTF (a one-off check
+// against KAT's mesh) the PERF lines are not printed, so no ledger row rests on a file outside the repo.
 TEST_F(GpuGlRenderer, PuppetFrameCostAt128And1024Drones) {
     if (!env_gate_is_set("SPADE_GL_PUPPET_COST")) {
         GTEST_SKIP() << "a measurement: set SPADE_GL_PUPPET_COST=1 to run it (SPADE_PUPPET_GLTF=<a drone .gltf> for a real mesh)";
@@ -1932,13 +1936,14 @@ TEST_F(GpuGlRenderer, PuppetFrameCostAt128And1024Drones) {
         struct Row {
             double pose = 0, submit = 0, wait = 0, gpu = 0, read = 0;
             uint32_t draws = 0, instances = 0;
+            double frame = 0;
         };
         Row rows[2];
         std::vector<uint8_t> rgba(static_cast<size_t>(kW) * kH * 4u);
         for (int shadows = 1; shadows >= 0; --shadows) {
             RenderOptions options = comparable_options();
             options.shadows = shadows == 1;
-            std::vector<double> pose_ms, submit_ms, wait_ms, gpu_ms, read_ms;
+            std::vector<double> pose_ms, submit_ms, wait_ms, gpu_ms, read_ms, frame_ms;
             for (int frame = 0; frame < 23; ++frame) {
                 const auto t_pose = std::chrono::steady_clock::now();
                 pose(0.05f * static_cast<float>(frame));
@@ -1965,10 +1970,20 @@ TEST_F(GpuGlRenderer, PuppetFrameCostAt128And1024Drones) {
                 wait_ms.push_back(ms_between(t1, t2));
                 gpu_ms.push_back(1e-6 * static_cast<double>(ns));
                 read_ms.push_back(ms_between(t2, t3));
+                frame_ms.push_back(ms_between(t_pose, t3));
             }
             Row& r = rows[shadows];
             r = Row{median(pose_ms), median(submit_ms), median(wait_ms), median(gpu_ms), median(read_ms),
-                    renderer_->last_draw_calls(), renderer_->last_instances()};
+                    renderer_->last_draw_calls(), renderer_->last_instances(), median(frame_ms)};
+            if (gltf_path.empty()) {
+                const std::string tag = std::to_string(n) + "_shadows_" + (shadows == 1 ? "on" : "off");
+                std::printf("PERF rendering.puppet_frame_%s %.3f ms\n", tag.c_str(), r.frame);
+                std::printf("PERF rendering.diag_pose_%s %.3f ms\nPERF rendering.diag_submit_%s %.3f ms\n"
+                            "PERF rendering.diag_wait_%s %.3f ms\nPERF rendering.diag_gpu_%s %.3f ms\n"
+                            "PERF rendering.diag_read_%s %.3f ms\n",
+                            tag.c_str(), r.pose, tag.c_str(), r.submit, tag.c_str(), r.wait, tag.c_str(), r.gpu,
+                            tag.c_str(), r.read);
+            }
             std::printf("[ puppets ] %4u drones, shadows %-3s: pose+clear %6.2f ms, submit %6.2f ms, wait %6.2f ms, "
                         "gpu %6.2f ms, read %5.2f ms; frame %6.2f ms; %u draw calls, %u instances\n",
                         n, shadows == 1 ? "on" : "off", r.pose, r.submit, r.wait, r.gpu, r.read,
