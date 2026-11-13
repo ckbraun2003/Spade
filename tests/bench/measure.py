@@ -32,6 +32,8 @@ JOBRUN = r"C:\Users\Cameron\Desktop\Projects\kat-wt\_handoff\tools\jobrun.py"
 LEDGER_HEADER = ["date", "sha", "metric", "unit", "median", "min", "max", "n", "notes"]
 ENV_HEADER = ["run", "sha", "harness_sha", "tree", "build_type", "compiler", "gpu", "gpu_driver", "power_plan", "free_phys_gb", "free_commit_gb",
               "cpu", "logical_cpus", "idle_cpu_pct", "queue", "noisy", "metrics"]
+PERF_RE = re.compile(r"PERF\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
+NOTE_RE = re.compile(r"PERF-NOTE\s+(\S+)\s+(.*)$")
 NS_TO = {"ns": 1.0, "us": 1e-3, "ms": 1e-6, "s": 1e-9}
 MAX_NOISY_RETRIES = 3
 IGNORE_QUEUE = False  # --dry-run --ignore-queue only: tests the mechanics on a busy box
@@ -42,12 +44,16 @@ def load_registry(path):
         return json.load(f)["metrics"]
 
 
-def selected(registry, patterns, include_diagnostics=False):
-    if not patterns:
-        return [m for m in registry if include_diagnostics or not m.get("diagnostic")]
+def selected(registry, patterns, include_diagnostics=False, cls=None):
+    """The metrics to run: by name, owner or glob (default: every ledger metric), and by job class (test or gpu)."""
     out = []
     for m in registry:
-        if any(fnmatch.fnmatch(m["name"], p) or fnmatch.fnmatch(m.get("owner", ""), p) for p in patterns):
+        if cls and m.get("class", "test") != cls:
+            continue
+        if not patterns:
+            if include_diagnostics or not m.get("diagnostic"):
+                out.append(m)
+        elif any(fnmatch.fnmatch(m["name"], p) or fnmatch.fnmatch(m.get("owner", ""), p) for p in patterns):
             out.append(m)
     return out
 
@@ -163,10 +169,21 @@ def expand(argv, ctx):
     return [a.format(**ctx) for a in argv]
 
 
-def run_process(argv, cwd):
+def child_env(m, ctx):
+    """This process's environment plus the metric's "env" (a null value removes the variable)."""
+    env = dict(os.environ)
+    for k, v in (m.get("env") or {}).items():
+        if v is None:
+            env.pop(k, None)
+        else:
+            env[k] = v.format(**ctx)
+    return env
+
+
+def run_process(argv, cwd, env=None):
     """Run once; returns (stdout, wall_s, peak_working_set_mb, returncode)."""
     t0 = time.perf_counter()
-    proc = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf8", errors="replace")
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf8", errors="replace")
     out, _ = proc.communicate()
     wall = time.perf_counter() - t0
     return out, wall, peak_working_set_mb(proc), proc.returncode
@@ -189,6 +206,7 @@ def measure_metric(m, ctx, repeats, say):
     """Returns {metric name: {"unit", "values", "basis", "noisy"}}. One warm-up run is thrown away."""
     kind = m["kind"]
     argv = expand(m["command"], ctx)
+    env = child_env(m, ctx)
     cwd = ctx["repo"]
     result = {}
     noisy_total = 0
@@ -197,7 +215,7 @@ def measure_metric(m, ctx, repeats, say):
         nonlocal noisy_total
         for attempt in range(MAX_NOISY_RETRIES + 1):
             before = queue_others()
-            out, wall, peak, code = run_process(argv, cwd)
+            out, wall, peak, code = run_process(argv, cwd, env)
             after = queue_others()
             seen = sorted(set((before or []) + (after or [])))
             if code != 0:
@@ -224,12 +242,29 @@ def measure_metric(m, ctx, repeats, say):
             say("%s: repeat %d/%d" % (m["name"], i + 1, repeats))
             runs.append(one_run())
         if kind == "perf-lines":
+            # One value per run per name: a name printed several times in one run (one line per timed step) is that run's median.
+            notes = {}
             for out, wall, peak, seen in runs:
+                got = {}
                 for line in out.splitlines():
-                    p = re.match(r"PERF\s+(\S+)\s+(\S+)\s+(\S+)\s*$", line)
+                    p = PERF_RE.match(line)
                     if p:
-                        r = result.setdefault(p.group(1), {"unit": p.group(3), "values": [], "basis": "own"})
-                        r["values"].append(float(p.group(2)))
+                        got.setdefault(p.group(1), (p.group(3), []))[1].append(float(p.group(2)))
+                    n = NOTE_RE.match(line)
+                    if n:
+                        notes[n.group(1)] = re.sub(r"[;,\s]+", "_", n.group(2).strip())
+                for name, (unit, vals) in got.items():
+                    r = result.setdefault(name, {"unit": unit, "values": [], "basis": m.get("basis", "own")})
+                    r["values"].append(statistics.median(vals))
+            if not result:
+                raise RuntimeError("%s printed no PERF lines (is its env var set, and is the test built?)\n%s" % (m["name"], runs[-1][0][-1500:]))
+            note = ";".join("%s=%s" % kv for kv in sorted(notes.items()))
+            for name, r in result.items():
+                r["diag"] = bool(m.get("diagnostic")) or ".diag_" in name
+                if note:
+                    r["note"] = note
+                if len(r["values"]) != repeats:
+                    say("  warning: %s has %d values for %d repeats" % (name, len(r["values"]), repeats))
         elif kind == "wall":
             result[m["name"]] = {"unit": "s", "values": [r[1] for r in runs], "basis": "wall"}
             result[m["name"] + ".peak_mb"] = {"unit": "MB", "values": [r[2] for r in runs], "basis": "peak_working_set"}
@@ -261,7 +296,7 @@ def git(tree, *args):
 
 def cmd_measure(a):
     registry = load_registry(a.registry)
-    chosen = selected(registry, a.metrics.split(",") if a.metrics else None, a.include_diagnostics)
+    chosen = selected(registry, a.metrics.split(",") if a.metrics else None, a.include_diagnostics, a.job_class)
     if not chosen:
         sys.exit("no metric matches %r" % a.metrics)
     say = lambda s: print(s, flush=True)
@@ -290,10 +325,12 @@ def cmd_measure(a):
     idle = wait_idle(a.idle_limit_s, a.idle_pct)
     if idle is not None and idle < 0:
         sys.exit("the box never got under %.0f%% CPU in %d s; last reading %.1f%%. Not measured." % (a.idle_pct, a.idle_limit_s, -idle))
-    ctx = {"repo": tree, "build": build_dir, "bench": os.path.join(build_dir, "bin", "spade_bench.exe")}
-    env = environment(build_dir)
     today = datetime.date.today().isoformat()
     run_id = "%s_%s" % (today, sha[:7])
+    exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
+    ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"),
+           "ticket": "perf-" + run_id}
+    env = environment(build_dir)
     queue_readings = []
     results, noisy = {}, 0
     for m in chosen:
@@ -308,7 +345,7 @@ def cmd_measure(a):
         s = summary(r["values"])
         if r.get("diag"):
             continue
-        notes = "run=%s;basis=%s;noisy=%d" % (run_id, r["basis"], r["noisy"])
+        notes = "run=%s;basis=%s;noisy=%d%s" % (run_id, r["basis"], r["noisy"], (";" + r["note"]) if r.get("note") else "")
         rows.append([today, sha, name, r["unit"], "%.6g" % s["median"], "%.6g" % s["min"], "%.6g" % s["max"], s["n"], notes])
     for row in rows:
         say("  %-52s %12s %s  [%s .. %s]  n=%s" % (row[2], row[4], row[3], row[5], row[6], row[7]))
@@ -344,6 +381,8 @@ def cmd_floors(a):
         floors[name] = round(100.0 * max(between, within), 2)
         print("%-52s between %.2f%%  within %.2f%%  floor %.2f%%" % (name, 100 * between, 100 * within, floors[name]))
     if a.out_floors:
+        if os.path.exists(a.out_floors):  # the test-class and gpu-class runs are separate invocations: merge, never drop
+            floors = {**json.load(open(a.out_floors, encoding="utf8")), **floors}
         with open(a.out_floors, "w", encoding="utf8") as f:
             json.dump(floors, f, indent=1, sort_keys=True)
         print("floors written to", a.out_floors)
@@ -375,14 +414,16 @@ def cmd_trend(a):
 
 def cmd_table(a):
     floors = json.load(open(a.floors_file, encoding="utf8")) if os.path.exists(a.floors_file) else {}
-    print("| Metric | Who waits, for what | Workload | Command | Unit | Owner | Kind | Floor |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| Metric | Who waits, for what | Workload | Command | Unit | Owner | Kind | Class | Floor |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for m in load_registry(a.registry):
         own = [v for k, v in floors.items() if k == m["name"] or k.startswith(m["name"] + "/")]
         f = max(own) if own else None
-        print("| `%s` | %s | %s | `%s` | %s | %s | %s | %s |" % (
-            m["name"], m.get("who_waits", ""), m.get("workload", ""), " ".join(m["command"]).replace("|", "\\|"), m["unit"],
-            m.get("owner", ""), "diagnostic" if m.get("diagnostic") else "metric", ("%.1f%%" % f) if f is not None else "not measured"))
+        cmd = " ".join(["%s=%s" % (k, v) for k, v in (m.get("env") or {}).items() if v is not None] + m["command"])
+        print("| `%s` | %s | %s | `%s` | %s | %s | %s | %s | %s |" % (
+            m["name"], m.get("who_waits", ""), m.get("workload", ""), cmd.replace("|", "\\|"), m["unit"],
+            m.get("owner", ""), "diagnostic" if m.get("diagnostic") else "metric", m.get("class", "test"),
+            ("%.1f%%" % f) if f is not None else "not measured"))
 
 
 def main():
@@ -391,6 +432,7 @@ def main():
     p.add_argument("--tree", help="the checkout and build being measured (default: this harness's own checkout). Its HEAD must equal --sha and it must have no uncommitted change; --build-dir is inside it")
     p.add_argument("--build-dir", default=os.path.join("build-ninja", "release"))
     p.add_argument("--metrics", help="comma-separated names, owners or globs (default: every ledger metric)")
+    p.add_argument("--class", dest="job_class", choices=["test", "gpu"], help="only the metrics of this jobrun class (run each class as its own job)")
     p.add_argument("--repeats", type=int, default=5)
     p.add_argument("--registry", default=os.path.join(HERE, "metrics.json"))
     p.add_argument("--ledger", default=os.path.join(HERE, "ledger.csv"))
