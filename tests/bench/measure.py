@@ -7,7 +7,7 @@
   python tests/bench/measure.py --trend              the ledger's last two rows per metric, judged against the floors
   python tests/bench/measure.py --table              the metrics table as Markdown (for PERF.md)
 
-Run a real measurement under jobrun, as the protocol says (a heavy job, with --gpu for a GPU metric); the harness
+Run a real measurement as a Vantage job, as the protocol says (`vantage.py job run --class test|gpu`); the harness
 reads the queue itself, excludes its own slot (its command line holds "measure.py"), and marks a run noisy and repeats
 it when another heavy, gpu or quick job shows up in a reading.
 
@@ -30,7 +30,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-JOBRUN = r"C:\Users\Cameron\Desktop\Projects\kat-wt\_handoff\tools\jobrun.py"
+VANTAGE = r"C:\Users\Cameron\Desktop\Vantage\vantage.py"  # the jobs service: `job status` lists the slots (the old jobrun.py is a shim to it)
 LEDGER_HEADER = ["date", "sha", "metric", "unit", "median", "min", "max", "n", "notes"]
 ENV_HEADER = ["run", "sha", "harness_sha", "tree", "build_type", "compiler", "gpu", "gpu_driver", "power_plan", "free_phys_gb", "free_commit_gb",
               "cpu", "logical_cpus", "idle_cpu_pct", "queue", "noisy", "metrics"]
@@ -129,12 +129,12 @@ def environment(build_dir):
 
 
 def queue_others():
-    """The other jobs running now (heavy, gpu or quick slots), from jobrun --queue-status, never this harness."""
+    """The other jobs running now (heavy, gpu or quick slots), from `vantage.py job status`, never this harness."""
     if IGNORE_QUEUE:
         return []
-    if not os.path.exists(JOBRUN):
+    if not os.path.exists(VANTAGE):
         return None
-    text = run_text([sys.executable, "-I", JOBRUN, "--queue-status"])
+    text = run_text([sys.executable, "-I", VANTAGE, "job", "status"])
     others = []
     for line in text.splitlines():
         if re.match(r"\s+(heavy|gpu|quick)-\d+\s+pid=", line) and "measure.py" not in line:
@@ -423,7 +423,7 @@ def cmd_measure(a):
         sys.exit("the build folder %s is not inside the tree %s: the binaries must come from the measured tree" % (build_dir, tree))
     others = queue_others()
     if others is None:
-        say("warning: jobrun not found at %s; the queue is not checked" % JOBRUN)
+        say("warning: vantage.py not found at %s; the queue is not checked" % VANTAGE)
     elif others:
         say("the queue is busy:\n  " + "\n  ".join(others))
         if not a.dry_run:
@@ -540,7 +540,7 @@ def main():
     p.add_argument("--tree", help="the checkout and build being measured (default: this harness's own checkout). Its HEAD must equal --sha and it must have no uncommitted change; --build-dir is inside it")
     p.add_argument("--build-dir", default=os.path.join("build-ninja", "release"))
     p.add_argument("--metrics", help="comma-separated names, owners or globs (default: every ledger metric)")
-    p.add_argument("--class", dest="job_class", choices=["test", "gpu"], help="only the metrics of this jobrun class (run each class as its own job)")
+    p.add_argument("--class", dest="job_class", choices=["test", "gpu"], help="only the metrics of this job class (run each class as its own job)")
     p.add_argument("--repeats", type=int, default=5)
     p.add_argument("--registry", default=os.path.join(HERE, "metrics.json"))
     p.add_argument("--ledger", default=os.path.join(HERE, "ledger.csv"))

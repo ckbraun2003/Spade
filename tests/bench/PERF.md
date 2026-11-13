@@ -22,9 +22,9 @@ A number that no person waits for (a counter, a sub-step, a ratio) is a **diagno
 
 The numbers are only comparable if nothing else is using the box. So:
 
-1. **Start only when `jobrun.py --queue-status` shows no other heavy, gpu or quick job** running, and nothing waiting that would start inside the window.
-2. **The measurement is a heavy job:** `jobrun.py --heavy-class test --ticket perf-<sha7>-<n> --expect-s <N> --limit-s <2N> --log <abs log> -- python tests/bench/measure.py ...`, with `--gpu` for a metric that needs the card.
-3. **The harness watches the queue.** It reads `--queue-status` before the first run, after each repeat and at the end. If another heavy, gpu or quick job appears in any reading, that **run is marked noisy and repeated**; a noisy run is never in the median.
+1. **Start only when `vantage.py job status` shows no other heavy, gpu or quick job** running, and nothing waiting that would start inside the window.
+2. **The measurement is a heavy job:** `python C:/Users/Cameron/Desktop/Vantage/vantage.py job run --class test --ticket perf-<sha7>-<n> --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python tests/bench/measure.py ...`, with `--class gpu` for a metric that needs the card.
+3. **The harness watches the queue.** It reads `job status` before the first run, after each repeat and at the end. If another heavy, gpu or quick job appears in any reading, that **run is marked noisy and repeated**; a noisy run is never in the median.
 4. **The box is idle at the start:** total CPU use under 5% over 10 s before the first run. The harness waits up to **10 minutes** for that. If the box never gets under 5%, it stops and reports the last reading; it does not wait forever.
 5. **The lead coordinates the quiet windows** with KAT, who holds its heavy tickets for a window the lead names. A window is 10 to 20 minutes, so a suite is split into runs that each fit one window. The harness cannot hold the other slots; it can only tell that they were not held.
 
@@ -54,10 +54,10 @@ One row in `tests/bench/environment.csv` per measurement session (the `run` colu
 | gpu | the card's name |
 | gpu driver | the driver version (`nvidia-smi --query-gpu=driver_version` or the video controller's `DriverVersion`) |
 | power plan | `powercfg /getactivescheme`, recorded and **not changed** |
-| free memory | free physical and free commit in GB at the start (the same reading jobrun uses) |
+| free memory | free physical and free commit in GB at the start (the same reading the job service uses) |
 | cpu | name and logical count |
 | idle cpu | the pre-run reading |
-| queue | the three `--queue-status` readings, or `clean` |
+| queue | the three `job status` readings, or `clean` |
 | noisy | how many runs were marked noisy and repeated |
 
 ## The noise floor
@@ -79,13 +79,13 @@ Measure at **every gated batch** while the whole suite fits in about **15 minute
 `tests/bench/measure.py`, Python standard library only. It runs the metrics in `metrics.json`, and:
 
 - measures a **tree**, not itself: `--tree <dir>` is the checkout and build being measured. Its `HEAD` must equal `--sha`, it must have no uncommitted change, and the binaries come from its build folder (`--build-dir`, inside it). The harness can run from any checkout, including one newer than the measured SHA; the environment row records both SHAs;
-- gives a metric its **env** (a registry field; a null value removes a variable), its **class** (`test` or `gpu`, the jobrun class: run each class as its own job, `--class test` and `--class gpu`) and the placeholders `{bench}`, `{tests}`, `{flow_movie}`, `{build}`, `{repo}` and `{ticket}`;
+- gives a metric its **env** (a registry field; a null value removes a variable), its **class** (`test` or `gpu`, the job class: run each class as its own job, `--class test` and `--class gpu`) and the placeholders `{bench}`, `{tests}`, `{flow_movie}`, `{build}`, `{repo}` and `{ticket}`;
 - reads the queue, checks the box is idle, records the environment row, runs the warm-up and the repeats, and appends the ledger rows;
 - `--dry-run` runs and prints but writes nothing (`--ignore-queue` with it tests the mechanics on a busy box);
 - `--out-json` keeps the raw values; `--floors A.json B.json --out-floors tests/bench/floors.json` computes the noise floors from two runs of one SHA (the test-class and gpu-class runs are separate files; `--out-floors` merges into the file that exists);
 - `--trend` prints each metric's last two ledger rows and says "REAL" or "noise" by the rule above.
 
-A real run: `python jobrun.py --heavy-class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --tree <measured checkout> --build-dir build-ninja/release --out-json build-bench/<run>.json`. Run it from the Test/Docs worktree and commit the new ledger rows on a branch; the measured tree is never written to.
+A real run: `python C:/Users/Cameron/Desktop/Vantage/vantage.py job run --class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --tree <measured checkout> --build-dir build-ninja/release --out-json build-bench/<run>.json`. Run it from the Test/Docs worktree and commit the new ledger rows on a branch; the measured tree is never written to.
 
 ## The ledger
 
@@ -128,5 +128,5 @@ The October seed predates most of the code. At the first gated SHA, under this p
 ## Not covered
 
 - **Other machines.** A number is for this box, this driver and this power plan; the environment row says which.
-- **A noisy neighbour outside jobrun** (a browser, the owner's game, a virus scan) is caught only by the idle check and the noisy mark, not prevented.
+- **A noisy neighbour outside the job service** (a browser, the owner's game, a virus scan) is caught only by the idle check and the noisy mark, not prevented.
 - **Debug builds and sanitizer builds** are not measured.
