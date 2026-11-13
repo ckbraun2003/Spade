@@ -18,7 +18,7 @@ namespace spade::sandbox::app {
 [[nodiscard]] inline std::string about_text(std::string_view version) {
     return version_line(version) +
            "\n\nLicensed under the Apache License, Version 2.0.\n"
-           "The libraries Spade Editor is built with, and their licences, are listed in THIRD_PARTY_NOTICES, in the "
+           "The libraries Spade Editor is built with, and their licences, are listed in THIRD_PARTY_NOTICES.md, in the "
            "folder Spade Editor is installed in.";
 }
 
