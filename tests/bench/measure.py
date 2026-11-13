@@ -24,6 +24,7 @@ import re
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -189,6 +190,55 @@ def run_process(argv, cwd, env=None):
     return out, wall, peak_working_set_mb(proc), proc.returncode
 
 
+def process_cpu_s(proc):
+    """Kernel plus user CPU seconds the process used (the handle is still valid after the process has exited)."""
+    c, e, k, u = (ctypes.c_uint64() for _ in range(4))  # a FILETIME is two little-endian 32-bit words: one uint64
+    ok = ctypes.windll.kernel32.GetProcessTimes(ctypes.c_void_p(int(proc._handle)), ctypes.byref(c), ctypes.byref(e), ctypes.byref(k), ctypes.byref(u))
+    return (k.value + u.value) / 1e7 if ok else float("nan")
+
+
+def close_windows(pid):
+    """Post WM_CLOSE to every visible top-level window of the process: the same as clicking the window's close button."""
+    user32 = ctypes.windll.user32
+    user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+    proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    def each(hwnd, _):
+        owner = ctypes.c_uint32()
+        user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(ctypes.c_void_p(hwnd)):
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        return True
+    user32.EnumWindows(proto(each), 0)
+
+
+def run_window(argv, cwd, env, hold_s, exit_timeout_s=30):
+    """Launch a program that opens a window, hands off for hold_s seconds, closes it, and returns the same tuple as run_process.
+    The stdout gets one more line, `HARNESS cpu_s <s>`: the CPU seconds the process used from launch to exit."""
+    t0 = time.perf_counter()
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf8", errors="replace")
+    chunks = []
+    reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()))
+    reader.start()
+    while time.perf_counter() - t0 < hold_s and proc.poll() is None:
+        time.sleep(0.2)
+    closing = time.perf_counter()
+    while proc.poll() is None:
+        if time.perf_counter() - closing > exit_timeout_s:
+            proc.kill()
+            proc.wait()
+            reader.join()
+            raise RuntimeError("the window did not close within %d s of WM_CLOSE:\n%s" % (exit_timeout_s, "".join(chunks)[-1500:]))
+        close_windows(proc.pid)
+        time.sleep(1.0)
+    reader.join()
+    wall = time.perf_counter() - t0
+    out = "".join(chunks) + "\nHARNESS cpu_s %.3f\n" % process_cpu_s(proc)
+    if wall < 0.9 * hold_s and proc.returncode == 0:
+        raise RuntimeError("the program exited after %.1f s, before the %d s hold:\n%s" % (wall, hold_s, out[-1500:]))
+    return out, wall, peak_working_set_mb(proc), proc.returncode
+
+
 def gbench_values(out, basis, unit):
     """{benchmark name: [one value per repetition]} from google-benchmark JSON, in `unit`."""
     start = out.index("{")
@@ -215,7 +265,10 @@ def measure_metric(m, ctx, repeats, say):
         nonlocal noisy_total
         for attempt in range(MAX_NOISY_RETRIES + 1):
             before = queue_others()
-            out, wall, peak, code = run_process(argv, cwd, env)
+            if kind == "editor-idle":
+                out, wall, peak, code = run_window(argv, cwd, env, float(m.get("hold_s", 30)))
+            else:
+                out, wall, peak, code = run_process(argv, cwd, env)
             after = queue_others()
             seen = sorted(set((before or []) + (after or [])))
             if code != 0:
@@ -268,6 +321,30 @@ def measure_metric(m, ctx, repeats, say):
                     r["note"] = note
                 if len(r["values"]) != repeats:
                     say("  warning: %s has %d values for %d repeats" % (name, len(r["values"]), repeats))
+        elif kind == "editor-idle":
+            # the sandbox's exit summary (sandbox/main.cpp print_exit_summary) after a hands-off hold, plus the process's CPU seconds
+            name = m["name"]
+            hold = float(m.get("hold_s", 30))
+            for out, wall, peak, seen in runs:
+                mean = re.search(r"mean frame ([\d.]+) ms \(([\d.]+) fps\)", out)
+                split = re.search(r"physics ([\d.]+)\s+render ([\d.]+)\s+convert ([\d.]+)\s+upload ([\d.]+)\s+ui ([\d.]+)\s+swap ([\d.]+)\s+ms", out)
+                frames = re.search(r"closed after (\d+) frames", out)
+                ws = re.search(r"working set ([\d.]+) MB", out)
+                cpu = re.search(r"HARNESS cpu_s ([\d.]+)", out)
+                if not (mean and split and frames and cpu):
+                    raise RuntimeError("%s: the exit summary is missing:\n%s" % (name, out[-1500:]))
+                rows = {name + "_frame": ("ms", float(mean.group(1)), False),
+                        name + "_cpu": ("s", float(cpu.group(1)), False),
+                        name + ".diag_frames": ("frames", float(frames.group(1)), True)}
+                for k, part in enumerate(("physics", "render", "convert", "upload", "ui", "swap")):
+                    rows["%s.diag_%s" % (name, part)] = ("ms", float(split.group(k + 1)), True)
+                if ws:
+                    rows[name + ".diag_working_set"] = ("MB", float(ws.group(1)), True)
+                for key, (unit, value, diag) in rows.items():
+                    r = result.setdefault(key, {"unit": unit, "values": [], "basis": "own", "diag": diag})
+                    r["values"].append(value)
+            for r in result.values():
+                r["note"] = "hold_s=%g;mean_is_lifetime" % hold
         elif kind == "wall":
             result[m["name"]] = {"unit": "s", "values": [r[1] for r in runs], "basis": "wall"}
             result[m["name"] + ".peak_mb"] = {"unit": "MB", "values": [r[2] for r in runs], "basis": "peak_working_set"}
@@ -331,7 +408,7 @@ def cmd_measure(a):
     today = datetime.date.today().isoformat()
     run_id = "%s_%s" % (today, sha[:7])
     exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
-    ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"),
+    ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
            "ticket": "perf-" + run_id}
     env = environment(build_dir)
     queue_readings = []

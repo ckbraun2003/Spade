@@ -1,5 +1,5 @@
 {
- "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu.",
+ "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe.",
  "metrics": [
   {
    "name": "core.step_plain_bodies",
@@ -125,24 +125,6 @@
    ]
   },
   {
-   "name": "core.step_plain_bodies_gpu_unbatched",
-   "owner": "core",
-   "kind": "gbench",
-   "basis": "real_time",
-   "unit": "ms",
-   "class": "gpu",
-   "divisor": 50,
-   "who_waits": "a real-time loop that calls step(1) once per tick on the GPU backend (what a caller pays per call, with the submit, the fence wait and the readback)",
-   "workload": "BM_StepPlainBodiesGpuUnbatched, the sizes in bench_sim.cpp; one iteration is 50 calls of step(1), reported per call (ms)",
-   "command": [
-    "{bench}",
-    "--benchmark_filter=^BM_StepPlainBodiesGpuUnbatched/",
-    "--benchmark_repetitions=5",
-    "--benchmark_min_warmup_time=1",
-    "--benchmark_format=json"
-   ]
-  },
-  {
    "name": "rendering.puppet_frame",
    "owner": "rendering",
    "kind": "perf-lines",
@@ -180,6 +162,33 @@
     "C:/Users/Cameron/Desktop/spade-videos/perf-web-s1-30",
     "--ticket",
     "{ticket}"
+   ]
+  },
+  {
+   "name": "interface.editor_idle",
+   "owner": "interface",
+   "kind": "editor-idle",
+   "unit": "ms",
+   "class": "gpu",
+   "hold_s": 30,
+   "who_waits": "a tester with the editor open and hands off (frame time and CPU seconds of an idle editor on the hover scene; the baseline for render on demand)",
+   "workload": "the editor on hover, no vsync, 30 s hands off, then the window closed. Rows interface.editor_idle_frame (ms, the exit summary's lifetime mean, so start-up frames are in it) and interface.editor_idle_cpu (CPU s over the run); the split and the frame count are diagnostics interface.editor_idle.diag_*",
+   "command": [
+    "{sandbox}",
+    "--no-vsync"
+   ]
+  },
+  {
+   "name": "interface.startup_version",
+   "owner": "interface",
+   "kind": "wall",
+   "unit": "s",
+   "class": "test",
+   "who_waits": "a tester starting the program (the floor: loader, launcher and exit; not the time to the first frame, which is not recorded)",
+   "workload": "spade_sandbox --version, process wall time and peak working set",
+   "command": [
+    "{sandbox}",
+    "--version"
    ]
   },
   {
