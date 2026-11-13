@@ -235,6 +235,24 @@ if (-not (Test-Path $cacheFile)) {
     if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "Already configured. Skipping configure (pass -Clean to force a fresh one)."
+
+    # A tree configured earlier keeps the Python it cached, and the Store's is the one that failed builds with "Access is denied" -- on
+    # trees like this one. When the cache names a Store Python and scripts/find-python.ps1 has another, re-run the configure on THIS tree
+    # with -DPython3_EXECUTABLE (every other cache entry is kept; the _deps are not fetched again). The generated files are byte-identical
+    # under any Python 3 (cmake/SpadePython.cmake), so the generators rerun once and their dependents recompile once, to the same bytes.
+    $cachedPython = $null
+    foreach ($key in 'Python3_EXECUTABLE', '_Python3_EXECUTABLE') {
+        $hit = Select-String -Path $cacheFile -Pattern "^$key(:[A-Z]+)?=(.+)$" | Select-Object -First 1
+        if ($hit) { $cachedPython = $hit.Matches[0].Groups[2].Value; break }
+    }
+    if ($cachedPython -like '*WindowsApps*') {
+        $other = @(& (Join-Path $PSScriptRoot 'find-python.ps1'))
+        if ($other.Count -gt 0 -and $other[0]) {
+            Write-Host "Python : this tree's cached Python is the Microsoft Store's ($cachedPython); reconfiguring it with $($other[0])"
+            Invoke-Native { & cmake -S $SpadeDir -B $BuildDir "-DPython3_EXECUTABLE=$($other[0])" }
+            if ($LASTEXITCODE -ne 0) { throw "CMake reconfigure with $($other[0]) failed (exit $LASTEXITCODE)" }
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------
