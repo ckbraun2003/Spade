@@ -61,6 +61,7 @@
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
+#include "perf_lines.hpp"      // SPADE_EDITOR_PERF: the first-frame line (L74)
 #include "scene_sessions.hpp"  // each scene's setup and its one frame function
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
 

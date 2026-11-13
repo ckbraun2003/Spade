@@ -18,8 +18,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -44,6 +46,7 @@
 #include "editor_flight_readout.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_panels.hpp"
+#include "perf_lines.hpp"
 #include "physics/airflow/solids.hpp"
 #include "scene/scene_file.hpp"
 #include "state/layout.hpp"
