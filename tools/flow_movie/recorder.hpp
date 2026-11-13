@@ -36,6 +36,12 @@ class GlStage {
     // One frame at full flow quality: RGBA8, the top row first.
     [[nodiscard]] spade::Result<void> draw(const spade::render::RenderScene& scene,
                                            const spade::render::Camera& camera, std::vector<uint8_t>& rgba);
+    // Where the last draw() spent its seconds (the perf stopwatch): the scene's upload, the draw (submit and the GPU
+    // finishing it), the read of the picture to memory, and the flip to top row first with the alpha fill.
+    struct DrawTimes {
+        double upload = 0.0, render = 0.0, readback = 0.0, flip = 0.0;
+    };
+    [[nodiscard]] const DrawTimes& last_times() const noexcept { return last_times_; }
     [[nodiscard]] std::string device() const;
     // The GL limits this stage's frame was checked against: "max renderbuffer 16384, max viewport 16384x16384, max
     // texture 16384" (create() refuses a frame past them, naming the limit).
@@ -51,6 +57,7 @@ class GlStage {
     uint32_t width_ = 0, height_ = 0;
     std::string limits_;
     std::vector<uint8_t> bottom_first_;
+    DrawTimes last_times_;
 };
 
 // A caption line. Rows count down from the top left (row >= 0), or up from
