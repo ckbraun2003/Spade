@@ -7,7 +7,7 @@
 // build has no generated headers (VulkanOff.NoFileAnOffTargetCompilesIncludesAGeneratedHeaderUnguarded), and sim/ includes this
 // file. Where the generated header exists (every Vulkan build) the static_asserts at the foot tie each number to the generated
 // gen::kBinding_airflow_* constant, as spike/airflow/chain_runner.hpp ties kAirflowSetBuffers. The table lists the 28 airflow names, bindings 0 to 27.
-// The stage 7 appendices are here as their batch declares them (28 points, 34 centred); the configuration image (33) is bound by
+// The stage 7 appendices are here as their batch declares them (28 points, 34 centred, 35 contact_shapes, 36 to 39 the actuator line); the configuration image (33) is bound by
 // StepShape::config_binding, so it is not a name. The LBM's (40 to 47) have their own lists.
 #pragma once
 
@@ -29,9 +29,11 @@ inline constexpr uint32_t kAirflowWallLoadBinding = 27;  // the last of section 
 inline constexpr uint32_t kAirflowPointsBinding = 28;   // the per-point rows (batch D)
 inline constexpr uint32_t kAirflowCentredBinding = 34;  // the cell-centred field (batch D)
 inline constexpr uint32_t kContactShapesBinding = 35;   // the per-body shape rows (L68, the rigid_contact module)
+inline constexpr uint32_t kAirflowLineFirstBinding = 36;  // the actuator line's four buffers, 36 to 39 (P4c; gen::kBinding_airflow_line_elems)
+inline constexpr uint32_t kAirflowLineBufferCount = 4;
 inline constexpr uint32_t kLbmFBinding = 40;
 inline constexpr uint32_t kLbmUBinding = 41;
-inline constexpr uint32_t kAirflowDeclaredCount = 34;   // bindings section F declares (gen::kBindingCount_airflow)
+inline constexpr uint32_t kAirflowDeclaredCount = 38;   // bindings section F declares (gen::kBindingCount_airflow)
 
 struct SetOneBinding {
     std::string_view name;
@@ -71,7 +73,12 @@ struct SetOneBinding {
     /* The stage 7 appendices a module binds by name (batch D): the per-point rows and the cell-centred field. */ \
     X(airflow_points, 28) \
     X(airflow_centred, 34) \
-    X(contact_shapes, 35)
+    X(contact_shapes, 35) \
+    /* P4c: the actuator line's four buffers, a second contiguous list (spike/airflow/chain_runner.hpp's kAirflowLineBuffers). */ \
+    X(airflow_line_elems, 36) \
+    X(airflow_line_polar, 37) \
+    X(airflow_line_vel, 38) \
+    X(airflow_line_force, 39)
 
 inline constexpr SetOneBinding kSetOneBindings[] = {
 #define SPADE_SET_ONE_ROW(name, number) {#name, number},
@@ -80,8 +87,8 @@ inline constexpr SetOneBinding kSetOneBindings[] = {
 };
 
 // Section F's bindings 0 to airflow_wall_load come first, in binding order: entry i is binding i. The two appendices follow.
-static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1 + 3,
-              "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load, then points, centred and contact_shapes");
+static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1 + 3 + kAirflowLineBufferCount,
+              "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load, then points, centred, contact_shapes and the four airflow_line_*");
 static_assert(
     [] {
         for (uint32_t i = 0; i <= kAirflowWallLoadBinding; ++i) {
@@ -112,6 +119,11 @@ static_assert(kAirflowWallLoadBinding == gen::kBinding_airflow_wall_load, "secti
 static_assert(kAirflowPointsBinding == gen::kBinding_airflow_points, "airflow_points is bindings.slang's number");
 static_assert(kAirflowCentredBinding == gen::kBinding_airflow_centred, "airflow_centred is bindings.slang's number");
 static_assert(kContactShapesBinding == gen::kBinding_contact_shapes, "contact_shapes is bindings.slang's number");
+static_assert(kAirflowLineFirstBinding == gen::kBinding_airflow_line_elems &&
+                  kAirflowLineFirstBinding + 1 == gen::kBinding_airflow_line_polar &&
+                  kAirflowLineFirstBinding + 2 == gen::kBinding_airflow_line_vel &&
+                  kAirflowLineFirstBinding + 3 == gen::kBinding_airflow_line_force,
+              "the actuator line's four buffers are bindings.slang's, contiguous from kAirflowLineFirstBinding");
 static_assert(kLbmFBinding == gen::kBinding_lbm_f && kLbmUBinding == gen::kBinding_lbm_u, "the LBM bindings are bindings.slang's");
 static_assert(kAirflowDeclaredCount == gen::kBindingCount_airflow, "the declared airflow binding count is bindings.slang's");
 #define SPADE_SET_ONE_ASSERT(name, number) \

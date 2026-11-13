@@ -497,12 +497,31 @@ import layouts;
 // All zeros is "no shape". Read-only to the kernel; the host writes it (Simulation::set_body_shape, a model's shape at spawn).
 [[vk::binding(35, 1)]] StructuredBuffer<float>   contact_shapes;
 
+// THE ACTUATOR LINE'S FOUR BUFFERS (P4c; owner Physics, the airflow_line_{sample,load,spread} kernels; the host packs them from
+// spike/airflow/step_chain). They take 36 to 39, the last spare numbers below the LBM range, in this order. THE BINDING CARRIES DATA:
+// everything geometric about an element (its stencil per component per axis, the weights, the weight sums, the chord, sin and cos of
+// beta, r, dr times the sub-azimuth share, the axis and the motion direction) is packed by the host from the CPU model's own functions
+// (physics/airflow/line.hpp), so a change to the smearing or the sampling is a host change, not a new binding. Each record's layout is
+// the host's (a stride constant in airflow_params_layout, held to the CPU's by a parity test); these four only fix what is read and
+// written, and by whom.
+//   airflow_line_elems  host-written, read-only on the device: one record per element per sub-azimuth, in the CPU's order.
+//   airflow_line_polar  host-written once per polar change: the PolarTable's key angles, then C_l and C_d.
+//   airflow_line_vel    device-written by airflow_line_sample, read by airflow_line_load: the air sampled at each element (4 floats).
+//   airflow_line_force  device-written by airflow_line_load, read by airflow_line_spread and by the host (a chain readback of
+//                       16 floats an element): the air-side force, the blade's axial and tangent load, the element's thrust and torque.
+// The chain runner binds buffers[i] at binding_base + i, so a runner that uses these lists 28 to 35 as placeholders
+// (spike/airflow/chain_runner.hpp's kAirflowLineBuffers).
+[[vk::binding(36, 1)]] StructuredBuffer<float>   airflow_line_elems;
+[[vk::binding(37, 1)]] StructuredBuffer<float>   airflow_line_polar;
+[[vk::binding(38, 1)]] RWStructuredBuffer<float> airflow_line_vel;
+[[vk::binding(39, 1)]] RWStructuredBuffer<float> airflow_line_force;
+
 // THE LBM TIER'S BINDINGS (L1, the GPU twin; docs/design/physics/plans/
 // 2026-11-06-l1-gpu-twin-plan.md). Set 1 bindings 40 to 47 are the LBM's, named
 // lbm_*, append-only like the rest. 28 to 33 are module API stage 7's named
 // appendices (airflow_points, airflow_parts, airflow_posed, airflow_vehicle,
 // airflow_rotor_model, airflow_config, in that order, Physics-confirmed) and 34
-// to 39 are spare (the lead's answer, 2026-11-05), so the numbers below skip them
+// to 39 were spare (the lead's answer, 2026-11-05; 34 to 39 are now declared: centred, contact_shapes and the four airflow_line_*), so the numbers below skip them
 // on purpose and the generated kBindingCount_airflow counts DECLARED bindings,
 // not the highest index; nothing keys on the highest index. Declared now: the
 // populations and the macroscopic velocity. Reserved, not declared: lbm_flags (42,

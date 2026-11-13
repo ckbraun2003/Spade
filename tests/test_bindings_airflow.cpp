@@ -54,7 +54,7 @@ TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {
 // highest index, and sparse numbering is legal). An owner's change is a one-number
 // edit to its own row:
 //   airflow   0..27   the airflow kernels' (append-only list above)
-//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 contact_shapes (L68), 36 to 39 spare
+//   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 contact_shapes (L68), 36 to 39 airflow_line_* (P4c)
 //   lbm       40..47  the LBM tier's: lbm_f, lbm_u declared; lbm_flags (42, L2) reserved
 TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     struct Owner {
@@ -76,8 +76,10 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
           gen::kBinding_airflow_scalars,      gen::kBinding_airflow_discs,       gen::kBinding_airflow_partials,
           gen::kBinding_airflow_health,       gen::kBinding_airflow_publish_v,   gen::kBinding_airflow_publish_s,
           gen::kBinding_airflow_wall_load}},
-        {"stage 7", 28, 39, 4,
-         {gen::kBinding_airflow_points, gen::kBinding_airflow_config, gen::kBinding_airflow_centred, gen::kBinding_contact_shapes}},
+        {"stage 7", 28, 39, 8,
+         {gen::kBinding_airflow_points, gen::kBinding_airflow_config, gen::kBinding_airflow_centred, gen::kBinding_contact_shapes,
+          gen::kBinding_airflow_line_elems, gen::kBinding_airflow_line_polar, gen::kBinding_airflow_line_vel,
+          gen::kBinding_airflow_line_force}},
         {"lbm", 40, 47, 2, {gen::kBinding_lbm_f, gen::kBinding_lbm_u}},
     };
     uint32_t total = 0;
@@ -104,6 +106,20 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     EXPECT_EQ(total, gen::kBindingCount_airflow);
     EXPECT_EQ(gen::kBinding_lbm_f, 40u);
     EXPECT_EQ(gen::kBinding_lbm_u, 41u);
+}
+
+// P4c: the actuator line's four buffers take the last four spare numbers below the LBM range, in the order the host packs them, and
+// are bound by name like the other appendices.
+TEST(BindingsAirflow, TheActuatorLineBuffersAreSetOnesLastFourSpares) {
+    EXPECT_EQ(gen::kBinding_airflow_line_elems, 36u);
+    EXPECT_EQ(gen::kBinding_airflow_line_polar, 37u);
+    EXPECT_EQ(gen::kBinding_airflow_line_vel, 38u);
+    EXPECT_EQ(gen::kBinding_airflow_line_force, 39u);
+    EXPECT_EQ(spade::compute::kAirflowLineFirstBinding, gen::kBinding_airflow_line_elems);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_elems"), gen::kBinding_airflow_line_elems);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_polar"), gen::kBinding_airflow_line_polar);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_vel"), gen::kBinding_airflow_line_vel);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_force"), gen::kBinding_airflow_line_force);
 }
 
 // Names are the contract (stage 7 plan, decision 2): the two stage 7 rows a batch D module binds by name resolve to the
