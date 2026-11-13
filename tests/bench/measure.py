@@ -21,6 +21,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import sys
@@ -255,6 +256,7 @@ def gbench_values(out, basis, unit):
 def measure_metric(m, ctx, repeats, say):
     """Returns {metric name: {"unit", "values", "basis", "noisy"}}. One warm-up run is thrown away."""
     kind = m["kind"]
+    repeats = m.get("repeats", repeats)  # a long run (the live smoke) says how many it takes
     argv = expand(m["command"], ctx)
     env = child_env(m, ctx)
     cwd = ctx["repo"]
@@ -265,10 +267,17 @@ def measure_metric(m, ctx, repeats, say):
         nonlocal noisy_total
         for attempt in range(MAX_NOISY_RETRIES + 1):
             before = queue_others()
+            if kind == "live-smoke":
+                if not shutil.which("ffmpeg", path=env.get("PATH")):
+                    raise RuntimeError("%s: ffmpeg is not on PATH (the smoke records the tour through it)" % m["name"])
+                shutil.rmtree(ctx["smoke_out"], ignore_errors=True)  # no stale mp4 or journal can pass for this run
             if kind == "editor-idle":
                 out, wall, peak, code = run_window(argv, cwd, env, float(m.get("hold_s", 30)))
             else:
                 out, wall, peak, code = run_process(argv, cwd, env)
+            if kind == "live-smoke":
+                journal = os.path.join(ctx["smoke_out"], "journal.txt")
+                out += "\nJOURNAL\n" + (open(journal, encoding="utf8", errors="replace").read() if os.path.exists(journal) else "")
             after = queue_others()
             seen = sorted(set((before or []) + (after or [])))
             if code != 0:
@@ -321,6 +330,24 @@ def measure_metric(m, ctx, repeats, say):
                     r["note"] = note
                 if len(r["values"]) != repeats:
                     say("  warning: %s has %d values for %d repeats" % (name, len(r["values"]), repeats))
+        elif kind == "live-smoke":
+            # the wall time of the whole tour (process launch to exit, ffmpeg's finish included), against the video it makes
+            name = m["name"]
+            notes = ""
+            for out, wall, peak, seen in runs:
+                note = re.search(r"frames (\d+), recorded (\d+) \((\d+) s of video\)", out)
+                if not note:
+                    raise RuntimeError("%s: the journal has no 'frames ..., recorded ... (N s of video)' line:\n%s" % (name, out[-1500:]))
+                air = [float(x) for x in re.findall(r"frames in ([\d.]+) s of wall time", out)]
+                rows = {name + "_wall": ("s", wall, False),
+                        name + ".diag_video": ("s", float(note.group(3)), True),
+                        name + ".diag_frames": ("frames", float(note.group(1)), True),
+                        name + ".diag_peak_mb": ("MB", peak, True)}
+                if air:
+                    rows[name + ".diag_air_wall"] = ("s", sum(air), True)  # the Run air chapters' frames, wall seconds
+                for key, (unit, value, diag) in rows.items():
+                    r = result.setdefault(key, {"unit": unit, "values": [], "basis": "wall", "diag": diag})
+                    r["values"].append(value)
         elif kind == "editor-idle":
             # the sandbox's exit summary (sandbox/main.cpp print_exit_summary) after a hands-off hold, plus the process's CPU seconds
             name = m["name"]
@@ -409,6 +436,7 @@ def cmd_measure(a):
     run_id = "%s_%s" % (today, sha[:7])
     exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
     ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
+           "smoke_out": os.path.join(REPO, "build-bench", "perf-smoke"),
            "ticket": "perf-" + run_id}
     env = environment(build_dir)
     queue_readings = []

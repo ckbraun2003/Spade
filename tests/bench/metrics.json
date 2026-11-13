@@ -1,5 +1,5 @@
 {
- "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe.",
+ "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe. Kind live-smoke: the scripted tour (spade_sandbox --live-smoke --out {smoke_out}); needs ffmpeg on PATH; the run's wall time is the metric, the journal's video length, frame count and Run air wall seconds are diagnostics. 'repeats' overrides the default 5.",
  "metrics": [
   {
    "name": "core.step_plain_bodies",
@@ -189,6 +189,24 @@
    "command": [
     "{sandbox}",
     "--version"
+   ]
+  },
+  {
+   "name": "interface.live_smoke",
+   "owner": "interface",
+   "kind": "live-smoke",
+   "unit": "s",
+   "class": "gpu",
+   "repeats": 3,
+   "who_waits": "a developer or the gate waiting for the live smoke (the whole scripted tour with its recording; wall time of the process, not the video's length)",
+   "workload": "spade_sandbox --live-smoke, the tour of the drone box, the airflow, the editor and the batch; ffmpeg on PATH. Row interface.live_smoke_wall (s); diagnostics: the video length, the frame count, the Run air chapters' wall seconds and the peak working set. The run must pass (a FAILED tour fails the run). n=3, its own window",
+   "command": [
+    "{sandbox}",
+    "--live-smoke",
+    "--out",
+    "{smoke_out}",
+    "--label",
+    "perf {ticket}"
    ]
   },
   {
