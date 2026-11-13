@@ -93,6 +93,9 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "Spade Editor")
 set(CPACK_PACKAGE_FILE_NAME "Spade-Editor-${SPADE_EDITOR_VERSION}-setup")
 set(CPACK_RESOURCE_FILE_LICENSE "${PROJECT_SOURCE_DIR}/LICENSE")
 set(CPACK_COMPONENTS_ALL editor)
+# One component, always installed: Inno's generator has only a "custom" type, so an unflagged component is unticked in a silent install
+# (/VERYSILENT installed no files). REQUIRED gives it Inno's "fixed" flag.
+set(CPACK_COMPONENT_EDITOR_REQUIRED TRUE)
 
 set(CPACK_INNOSETUP_ARCHITECTURE "x64")
 set(CPACK_INNOSETUP_USE_MODERN_WIZARD ON)
