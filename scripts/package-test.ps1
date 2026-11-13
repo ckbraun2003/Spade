@@ -91,7 +91,7 @@ if ($before) { Write-Host 'package-test: a Spade Editor is already installed for
 
 # ---- 1 install ------------------------------------------------------------------------------------------------------------------------
 $installLog = Join-Path $work 'install.log'
-$p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "`"/DIR=$dir`"", "`"/LOG=$installLog`"" -Wait -PassThru
+$p = Start-Process -FilePath $Setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/TASKS=desktopicon', "`"/DIR=$dir`"", "`"/LOG=$installLog`"" -Wait -PassThru
 Check 'install exits 0' ($p.ExitCode -eq 0) "(exit $($p.ExitCode); log $installLog)"
 $keys = @(UninstallKeys)
 Check 'uninstaller registered under HKCU only (per-user, no administrator)' ($keys.Count -eq 1 -and $keys[0] -like '*HKEY_CURRENT_USER*') "($($keys -join '; '))"
