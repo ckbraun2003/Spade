@@ -1580,7 +1580,10 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     }
     if (times != nullptr) times->streamline_shot = since(lap);
     const auto start = std::chrono::steady_clock::now();
-    auto drew = stage.draw(scene, camera, rgba);
+    // A supersampled frame's row flip and alpha fill are folded into its filter (box_down_flipped): the 4x picture is
+    // read once, never copied.
+    const bool fold = ss > 1u;
+    auto drew = fold ? stage.draw_bottom_first(scene, camera) : stage.draw(scene, camera, rgba);
     draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (times != nullptr) {
         times->gl_upload = stage.last_times().upload;
@@ -1589,7 +1592,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         times->flip = stage.last_times().flip;
     }
     lap = Clock::now();
-    if (drew && ss > 1u) rgba = box_down(rgba, stage.width() / ss, stage.height() / ss, ss);
+    if (drew && fold) rgba = box_down_flipped(stage.bottom_first(), stage.width() / ss, stage.height() / ss, ss);
     if (times != nullptr) times->box_down = since(lap);
     return drew;
 }
