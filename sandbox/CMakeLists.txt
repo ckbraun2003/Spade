@@ -69,7 +69,7 @@ endif()
 target_compile_features(spade_sandbox PRIVATE cxx_std_23)
 
 # live_tour.cpp has so many template instantiations (the tour chapters, one lambda each) that a /Od /Zi debug object
-passes the PE/COFF 65535-section limit (C1128). /bigobj lifts it; this one file only, so no other object changes.
+# passes the PE/COFF 65535-section limit (C1128). /bigobj lifts it; this one file only, so no other object changes.
 if(MSVC)
     set_source_files_properties(live_tour.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
 endif()
