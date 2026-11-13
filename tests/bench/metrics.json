@@ -1,5 +1,5 @@
 {
- "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe. Kind live-smoke: the scripted tour (spade_sandbox --live-smoke --out {smoke_out}); needs ffmpeg on PATH; the run's wall time is the metric, the journal's video length, frame count and Run air wall seconds are diagnostics. 'repeats' overrides the default 5.",
+ "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe. Kind live-smoke: the scripted tour (spade_sandbox --live-smoke --out {smoke_out}); needs ffmpeg on PATH; the run's wall time is the metric, the journal's video length, frame count and Run air wall seconds are diagnostics. 'repeats' overrides the default 5. The editor-idle and live-smoke kinds also take PERF lines from the program (SPADE_EDITOR_PERF=1), as perf-lines does; 'per_occurrence' suffixes a name printed once per chapter.",
  "metrics": [
   {
    "name": "core.step_plain_bodies",
@@ -209,11 +209,14 @@
    "class": "gpu",
    "hold_s": 30,
    "who_waits": "a tester with the editor open and hands off (frame time and CPU seconds of an idle editor on the hover scene; the baseline for render on demand)",
-   "workload": "the editor on hover, no vsync, 30 s hands off, then the window closed. Rows interface.editor_idle_frame (ms, the exit summary's lifetime mean, so start-up frames are in it) and interface.editor_idle_cpu (CPU s over the run); the split and the frame count are diagnostics interface.editor_idle.diag_*",
+   "workload": "the editor on hover, no vsync, 30 s hands off, then the window closed. Rows interface.editor_idle_frame (ms, the exit summary's lifetime mean, so start-up frames are in it) and interface.editor_idle_cpu (CPU s over the run); the split and the frame count are diagnostics interface.editor_idle.diag_*. With SPADE_EDITOR_PERF=1 the editor also prints PERF interface.editor_first_frame (ms, process creation to the first presented frame), a ledger row once interface/l74-metrics (ef82d560) is merged",
    "command": [
     "{sandbox}",
     "--no-vsync"
-   ]
+   ],
+   "env": {
+    "SPADE_EDITOR_PERF": "1"
+   }
   },
   {
    "name": "interface.startup_version",
@@ -236,7 +239,7 @@
    "class": "gpu",
    "repeats": 3,
    "who_waits": "a developer or the gate waiting for the live smoke (the whole scripted tour with its recording; wall time of the process, not the video's length)",
-   "workload": "spade_sandbox --live-smoke, the tour of the drone box, the airflow, the editor and the batch; ffmpeg on PATH. Row interface.live_smoke_wall (s); diagnostics: the video length, the frame count, the Run air chapters' wall seconds and the peak working set. The run must pass (a FAILED tour fails the run). n=3, its own window",
+   "workload": "spade_sandbox --live-smoke, the tour of the drone box, the airflow, the editor and the batch; ffmpeg on PATH. Row interface.live_smoke_wall (s); diagnostics: the video length, the frame count, the Run air chapters' wall seconds and the peak working set. The run must pass (a FAILED tour fails the run). n=3, its own window. With SPADE_EDITOR_PERF=1 each Run air that stops prints interface.run_air_frame (ms, one air frame, a ledger row) and the diagnostics interface.diag_run_air_step, _publish and _assemble; the tour has two (the editor.airflow chapter's, then batch.turbulence_air with subgrid on), suffixed _editor_airflow and _batch_turbulence. These rows exist once interface/l74-metrics (ef82d560) is merged",
    "command": [
     "{sandbox}",
     "--live-smoke",
@@ -244,6 +247,13 @@
     "{smoke_out}",
     "--label",
     "perf {ticket}"
+   ],
+   "env": {
+    "SPADE_EDITOR_PERF": "1"
+   },
+   "per_occurrence": [
+    "_editor_airflow",
+    "_batch_turbulence"
    ]
   },
   {

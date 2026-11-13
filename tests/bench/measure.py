@@ -253,6 +253,24 @@ def gbench_values(out, basis, unit):
     return values
 
 
+def add_perf(result, out, m):
+    """PERF lines in a program's output (SPADE_EDITOR_PERF=1 and the like) join the rows, one value per run per name as in the perf-lines kind.
+    A registry "per_occurrence" list gives the suffixes for a name printed that many times (the live smoke prints a Run air set per chapter)."""
+    got = {}
+    for line in out.splitlines():
+        p = PERF_RE.match(line)
+        if p:
+            got.setdefault(p.group(1), (p.group(3), []))[1].append(float(p.group(2)))
+    occ = m.get("per_occurrence") or []
+    for name, (unit, vals) in got.items():
+        pairs = list(zip(occ, vals)) if occ and len(vals) == len(occ) else [("", statistics.median(vals))]
+        for suffix, v in pairs:
+            key = name + suffix
+            r = result.setdefault(key, {"unit": unit, "values": [], "basis": m.get("basis", "own"), "perf": True})
+            r["diag"] = bool(m.get("diagnostic")) or ".diag_" in key
+            r["values"].append(v)
+
+
 def measure_metric(m, ctx, repeats, say):
     """Returns {metric name: {"unit", "values", "basis", "noisy"}}. One warm-up run is thrown away."""
     kind = m["kind"]
@@ -348,6 +366,7 @@ def measure_metric(m, ctx, repeats, say):
                 for key, (unit, value, diag) in rows.items():
                     r = result.setdefault(key, {"unit": unit, "values": [], "basis": "wall", "diag": diag})
                     r["values"].append(value)
+                add_perf(result, out, m)
         elif kind == "editor-idle":
             # the sandbox's exit summary (sandbox/main.cpp print_exit_summary) after a hands-off hold, plus the process's CPU seconds
             name = m["name"]
@@ -370,6 +389,7 @@ def measure_metric(m, ctx, repeats, say):
                 for key, (unit, value, diag) in rows.items():
                     r = result.setdefault(key, {"unit": unit, "values": [], "basis": "own", "diag": diag})
                     r["values"].append(value)
+                add_perf(result, out, m)
             for r in result.values():
                 r["note"] = "hold_s=%g;mean_is_lifetime" % hold
         elif kind == "wall":
@@ -377,8 +397,10 @@ def measure_metric(m, ctx, repeats, say):
             result[m["name"] + ".peak_mb"] = {"unit": "MB", "values": [r[2] for r in runs], "basis": "peak_working_set"}
         else:
             raise ValueError("unknown kind %r" % kind)
-    for r in result.values():
+    for key, r in result.items():
         r["noisy"] = noisy_total
+        if r.get("perf") and len(r["values"]) != repeats:
+            say("  warning: %s has %d values for %d repeats" % (key, len(r["values"]), repeats))
     return result
 
 
