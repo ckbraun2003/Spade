@@ -7,12 +7,16 @@
 //                     oracle). Over random RGBA8 pictures of every shape the filter may meet (odd and tiny sizes,
 //                     s = 1 to 4, one thread to more threads than rows), the extremes (all 0, all 255, alternating),
 //                     and a frame at the web size, 8K to 4K.
+//                   box_down_flipped, the same filter reading GL's picture (the BOTTOM row first, alpha not yet 255) and
+//                     writing the top row first with every alpha 255, equals GlStage::draw's row flip and alpha fill
+//                     followed by box_down: bit for bit (the flip and the fill folded into the filter).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <random>
 #include <vector>
 
@@ -46,7 +50,52 @@ namespace {
     return big;
 }
 
+// GlStage::draw's own post-processing of what glReadPixels returns (the bottom row first): the rows reversed and every
+// alpha 255. The oracle for box_down_flipped.
+[[nodiscard]] std::vector<uint8_t> flip_and_opaque(const std::vector<uint8_t>& bottom_first, uint32_t width, uint32_t height) {
+    std::vector<uint8_t> rgba(bottom_first.size());
+    const std::size_t row = static_cast<std::size_t>(width) * 4u;
+    for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(rgba.data() + y * row, bottom_first.data() + (height - 1u - y) * row, row);
+    }
+    for (std::size_t p = 3; p < rgba.size(); p += 4u) rgba[p] = 255u;
+    return rgba;
+}
+
 }  // namespace
+
+TEST(FlowMovieBoxDown, TheFlippedFilterEqualsTheFlipAndTheAlphaFillThenTheFilterBitForBit) {
+    std::mt19937 rng(0xF11Bu);
+    const uint32_t shapes[][2] = {{1, 1}, {3, 5}, {16, 9}, {17, 11}, {64, 36}, {5, 40}, {129, 3}};
+    for (const auto& shape : shapes) {
+        for (uint32_t s = 1; s <= 4; ++s) {
+            const std::vector<uint8_t> raw = random_picture(rng, shape[0], shape[1], s);  // alpha is random, as GL leaves it
+            const std::vector<uint8_t> want =
+                box_down_original(flip_and_opaque(raw, shape[0] * s, shape[1] * s), shape[0], shape[1], s);
+            for (const uint32_t threads : {0u, 1u, 3u, 8u}) {
+                EXPECT_EQ(flow_movie::box_down_flipped(raw, shape[0], shape[1], s, threads), want)
+                    << shape[0] << "x" << shape[1] << " at s " << s << ", " << threads << " threads";
+            }
+        }
+    }
+}
+
+TEST(FlowMovieBoxDown, TheFlippedFilterOfAWebSizeFrameIsIdentical) {
+    std::mt19937 rng(0x5EEDu);
+    const uint32_t w = 3840, h = 2160, s = 2;
+    std::vector<uint8_t> raw(static_cast<std::size_t>(w) * s * h * s * 4u, 0);
+    for (std::size_t p = 0; p + 3 < raw.size(); p += 4) {
+        const uint32_t r = rng();
+        if ((r & 0x7u) == 0u) {
+            raw[p] = static_cast<uint8_t>(r >> 8);
+            raw[p + 1] = static_cast<uint8_t>(r >> 16);
+            raw[p + 2] = static_cast<uint8_t>(r >> 24);
+        }
+        raw[p + 3] = static_cast<uint8_t>(r % 255u);  // not yet opaque: the march leaves its transmittance there
+    }
+    EXPECT_EQ(flow_movie::box_down_flipped(raw, w, h, s),
+              box_down_original(flip_and_opaque(raw, w * s, h * s), w, h, s));
+}
 
 TEST(FlowMovieBoxDown, TheFilterIsByteIdenticalToTheOriginalOverRandomPicturesAndEveryThreadCount) {
     std::mt19937 rng(0xB0C5D0u);
