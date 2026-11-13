@@ -7,7 +7,7 @@
   python tests/bench/measure.py --trend              the ledger's last two rows per metric, judged against the floors
   python tests/bench/measure.py --table              the metrics table as Markdown (for PERF.md)
 
-Run a real measurement as a Vantage job, as the protocol says (`vantage.py job run --class test|gpu`); the harness
+Run a real measurement under jobrun, as the protocol says (`jobrun.py --heavy --heavy-class test|gpu`); the harness
 reads the queue itself, excludes its own slot (its command line holds "measure.py"), and marks a run noisy and repeats
 it when another heavy, gpu or quick job shows up in a reading.
 

@@ -23,7 +23,7 @@ A number that no person waits for (a counter, a sub-step, a ratio) is a **diagno
 The numbers are only comparable if nothing else is using the box. So:
 
 1. **Start only when `vantage.py job status` shows no other heavy, gpu or quick job** running, and nothing waiting that would start inside the window.
-2. **The measurement is a heavy job:** `python C:/Users/Cameron/Desktop/Vantage/vantage.py job run --class test --ticket perf-<sha7>-<n> --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python tests/bench/measure.py ...`, with `--class gpu` for a metric that needs the card.
+2. **The measurement is a heavy job:** `python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class test --ticket perf-<sha7>-<n> --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python tests/bench/measure.py ...`, with `--heavy-class gpu` for a metric that needs the card. The old `jobrun.py` is a shim to the jobs service whose jobs are tied to their caller, which a baseline run wants; moving to `vantage.py job run` comes later.
 3. **The harness watches the queue.** It reads `job status` before the first run, after each repeat and at the end. If another heavy, gpu or quick job appears in any reading, that **run is marked noisy and repeated**; a noisy run is never in the median.
 4. **The box is idle at the start:** total CPU use under 5% over 10 s before the first run. The harness waits up to **10 minutes** for that. If the box never gets under 5%, it stops and reports the last reading; it does not wait forever.
 5. **The lead coordinates the quiet windows** with KAT, who holds its heavy tickets for a window the lead names. A window is 10 to 20 minutes, so a suite is split into runs that each fit one window. The harness cannot hold the other slots; it can only tell that they were not held.
@@ -85,7 +85,7 @@ Measure at **every gated batch** while the whole suite fits in about **15 minute
 - `--out-json` keeps the raw values; `--floors A.json B.json --out-floors tests/bench/floors.json` computes the noise floors from two runs of one SHA (the test-class and gpu-class runs are separate files; `--out-floors` merges into the file that exists);
 - `--trend` prints each metric's last two ledger rows and says "REAL" or "noise" by the rule above.
 
-A real run: `python C:/Users/Cameron/Desktop/Vantage/vantage.py job run --class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --tree <measured checkout> --build-dir build-ninja/release --out-json build-bench/<run>.json`. Run it from the Test/Docs worktree and commit the new ledger rows on a branch; the measured tree is never written to.
+A real run: `python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class test --ticket perf-<sha7>-1 --expect-s <N> --limit-s <2N> --log <abs log> --cwd <worktree> -- python -I tests/bench/measure.py --sha <gated sha> --tree <measured checkout> --build-dir build-ninja/release --out-json build-bench/<run>.json`. Run it from the Test/Docs worktree and commit the new ledger rows on a branch; the measured tree is never written to.
 
 ## The ledger
 
