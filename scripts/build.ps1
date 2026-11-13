@@ -223,7 +223,15 @@ if (-not (Test-Path $cacheFile)) {
     }
     Write-Host ""
     Write-Host "=== Configuring ($PresetName) ===" -ForegroundColor Cyan
-    Invoke-Native { & cmake -S $SpadeDir --preset $PresetName }
+    # A Python outside the Microsoft Store (scripts/find-python.ps1): the Store's can fail a build with "Access is denied", and the
+    # generated files are byte-identical under any Python 3 (cmake/SpadePython.cmake). None found: CMake chooses, and warns on the Store's.
+    $python = @(& (Join-Path $PSScriptRoot 'find-python.ps1'))
+    $pythonArg = @()
+    if ($python.Count -gt 0 -and $python[0]) {
+        Write-Host "Python : $($python[0])"
+        $pythonArg = @("-DPython3_EXECUTABLE=$($python[0])")
+    }
+    Invoke-Native { & cmake -S $SpadeDir --preset $PresetName @pythonArg }
     if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "Already configured. Skipping configure (pass -Clean to force a fresh one)."

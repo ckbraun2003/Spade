@@ -136,7 +136,8 @@ if(NOT SPADE_SLANGC)
         "vendor/CMakeLists.txt sets it after fetching the slang prebuilt.")
 endif()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+include("${CMAKE_CURRENT_LIST_DIR}/SpadePython.cmake")
+spade_find_python()
 
 set(SPADE_SLANG_SHADERS_DIR "${PROJECT_SOURCE_DIR}/engine/shaders")
 set(SPADE_SLANG_TOOLS_DIR "${PROJECT_SOURCE_DIR}/engine/shaders/tools")
