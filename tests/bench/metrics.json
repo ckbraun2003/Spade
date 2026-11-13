@@ -1,5 +1,5 @@
 {
- "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them.",
+ "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu.",
  "metrics": [
   {
    "name": "core.step_plain_bodies",
@@ -8,15 +8,16 @@
    "basis": "cpu_time",
    "unit": "ms",
    "who_waits": "a developer or user stepping the simulation (one world of plain bodies)",
-   "workload": "BM_StepPlainBodies, the sizes in bench_sim.cpp",
+   "workload": "BM_StepPlainBodies, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
    "command": [
     "{bench}",
-    "--benchmark_filter=^BM_StepPlainBodies",
+    "--benchmark_filter=^BM_StepPlainBodies/",
     "--benchmark_repetitions=5",
     "--benchmark_min_warmup_time=1",
     "--benchmark_format=json"
    ],
-   "class": "test"
+   "class": "test",
+   "divisor": 50
   },
   {
    "name": "core.step_dense_bodies",
@@ -25,15 +26,16 @@
    "basis": "cpu_time",
    "unit": "ms",
    "who_waits": "a developer or user stepping a world crowded with bodies",
-   "workload": "BM_StepDenseBodies, the sizes in bench_sim.cpp",
+   "workload": "BM_StepDenseBodies, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
    "command": [
     "{bench}",
-    "--benchmark_filter=^BM_StepDenseBodies",
+    "--benchmark_filter=^BM_StepDenseBodies/",
     "--benchmark_repetitions=5",
     "--benchmark_min_warmup_time=1",
     "--benchmark_format=json"
    ],
-   "class": "test"
+   "class": "test",
+   "divisor": 50
   },
   {
    "name": "core.step_quad_worlds",
@@ -41,16 +43,17 @@
    "kind": "gbench",
    "basis": "cpu_time",
    "unit": "ms",
-   "who_waits": "a user flying drones in real time (the real-time step for 1 to 16 vehicles, Core's proposal pending)",
-   "workload": "BM_StepQuadWorlds, the sizes in bench_sim.cpp",
+   "who_waits": "a user flying drones in real time on the CPU backend (quad worlds, 1 to 64 vehicles; the 1 kHz step budget is 1 ms)",
+   "workload": "BM_StepQuadWorlds, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
    "command": [
     "{bench}",
-    "--benchmark_filter=^BM_StepQuadWorlds",
+    "--benchmark_filter=^BM_StepQuadWorlds/",
     "--benchmark_repetitions=5",
     "--benchmark_min_warmup_time=1",
     "--benchmark_format=json"
    ],
-   "class": "test"
+   "class": "test",
+   "divisor": 50
   },
   {
    "name": "rendering.render_background_fill",
@@ -102,6 +105,42 @@
     "--benchmark_format=json"
    ],
    "class": "test"
+  },
+  {
+   "name": "core.step_quad_worlds_gpu",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "real_time",
+   "unit": "ms",
+   "class": "gpu",
+   "divisor": 50,
+   "who_waits": "a user or trainer flying drones in real time on the GPU backend (quad worlds, 1 to 64 vehicles; the 1 kHz step budget is 1 ms)",
+   "workload": "BM_StepQuadWorldsGpu, the sizes in bench_sim.cpp; one iteration is a batched step(50), reported per step (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepQuadWorldsGpu/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ]
+  },
+  {
+   "name": "core.step_plain_bodies_gpu_unbatched",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "real_time",
+   "unit": "ms",
+   "class": "gpu",
+   "divisor": 50,
+   "who_waits": "a real-time loop that calls step(1) once per tick on the GPU backend (what a caller pays per call, with the submit, the fence wait and the readback)",
+   "workload": "BM_StepPlainBodiesGpuUnbatched, the sizes in bench_sim.cpp; one iteration is 50 calls of step(1), reported per call (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepPlainBodiesGpuUnbatched/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ]
   },
   {
    "name": "rendering.puppet_frame",

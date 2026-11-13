@@ -232,10 +232,13 @@ def measure_metric(m, ctx, repeats, say):
     if kind == "gbench":
         # one process makes all repetitions, so a run is the whole invocation
         out, wall, peak, seen = one_run()
+        div = float(m.get("divisor", 1))  # an iteration that makes N steps is reported per step with "divisor": N
         for name, vals in gbench_values(out, m["basis"], m["unit"]).items():
             _, _, arg = name.partition("/")  # BM_StepPlainBodies/1000 -> <registry name>/1000
             label = m["name"] + ("/" + arg if arg else "")
-            result[label] = {"unit": m["unit"], "values": vals, "basis": m["basis"], "diag": bool(m.get("diagnostic"))}
+            if label in result:
+                raise RuntimeError("%s: two benchmarks give the ledger name %s (anchor the filter, for example ^BM_Name/)" % (m["name"], label))
+            result[label] = {"unit": m["unit"], "values": [v / div for v in vals], "basis": m["basis"], "diag": bool(m.get("diagnostic"))}
     else:
         runs = []
         for i in range(repeats):
