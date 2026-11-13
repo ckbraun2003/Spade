@@ -74,6 +74,12 @@ target_compile_features(spade_sandbox PRIVATE cxx_std_23)
 # The version header (L73a): spade::version::kString for --version and About.
 target_link_libraries(spade_sandbox PRIVATE spade_version)
 
+# live_tour.cpp has so many template instantiations (the tour chapters, one lambda each) that a /Od /Zi debug object
+# passes the PE/COFF 65535-section limit (C1128). /bigobj lifts it; this one file only, so no other object changes.
+if(MSVC)
+    set_source_files_properties(live_tour.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
+
 # Run air on the GPU (slice 3; the lead's grant, 2026-10-27): the editor's
 # window starts Run air through spike/airflow's start_live_run()
 # (editor_air_gpu.hpp). The root adds spike/airflow after this directory, under
