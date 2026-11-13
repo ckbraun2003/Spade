@@ -125,6 +125,43 @@
    ]
   },
   {
+   "name": "physics.gpu_airflow",
+   "owner": "physics",
+   "kind": "perf-lines",
+   "basis": "own",
+   "unit": "ms",
+   "class": "gpu",
+   "env": {
+    "SPADE_AIRFLOW_TIMINGS": "1",
+    "SPADE_SGS_MEASURE": "1",
+    "SPADE_SGS_D1_DEEP": "1"
+   },
+   "who_waits": "a user of Run air waiting for the GPU airflow: one step of the D1 box with its solids, one step of the deep box (and the device memory that run holds, in MiB), and one live frame on the editor's 32^3 grid",
+   "workload": "the three tests in the command (Physics' physics/perf-lines 679bf4e8): physics.gpu_step_d1_solids (ms, a line per timed step), physics.gpu_step_deep (ms, a line per timed step after 2 warm-ups), physics.gpu_step_deep_peak_mem (MiB, this process's device memory), physics.gpu_frame_editor_32 (ms, the mean of 30 LiveRun frames, 32^3 at 25 mm, 4 discs). About 60 s a run. The editor's 64^3 grid is not here yet",
+   "command": [
+    "{tests}",
+    "--gtest_filter=GpuAirflowStep.StepTimeInTheD1BoxWithItsSolids:GpuAirflowStep.SubgridBoundAndCostInTheD1BoxWithItsSolids:GpuLiveFluid.FrameTimeOnTheEditorsGrid"
+   ]
+  },
+  {
+   "name": "physics.gpu_airflow_diag",
+   "owner": "physics",
+   "kind": "perf-lines",
+   "basis": "own",
+   "unit": "ms",
+   "class": "gpu",
+   "diagnostic": true,
+   "env": {
+    "SPADE_AIRFLOW_TIMINGS": "1"
+   },
+   "who_waits": "no one: the open-box step, the projection, gather and diffuse kernels alone, and the CPU references",
+   "workload": "the four tests in the command (physics.diag_*; report only); run with --include-diagnostics. About 16 s a run",
+   "command": [
+    "{tests}",
+    "--gtest_filter=GpuAirflowStep.StepTimeInTheD1Box:GpuAirflowProjection.TimingsAt64And128Cubed:GpuAirflowActuator.GatherTimeInTheD1Box:GpuAirflowViscous.DiffuseTimeInTheD1Box"
+   ]
+  },
+  {
    "name": "rendering.puppet_frame",
    "owner": "rendering",
    "kind": "perf-lines",
