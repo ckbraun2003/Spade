@@ -35,5 +35,5 @@ The Start-menu entries and the desktop icon go away with it. Scenes you saved in
 
 Spade Editor writes a log of what it did. If the program closes by itself or says something you do not understand, the log is the first place to look.
 
-1. Press **Windows key + R**, paste `%LOCALAPPDATA%\Spade\logs` and press **Enter**.
+1. Open File Explorer, click its address bar, paste `%LOCALAPPDATA%\Spade\logs` and press **Enter**.
 2. The newest file in the folder is the log of the last time you ran the program.
