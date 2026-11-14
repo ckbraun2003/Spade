@@ -54,6 +54,7 @@
 #include "analysis/validation.hpp"
 #include "compute/vulkan/dispatch_chain.hpp"
 #include "gpu_skip.hpp"
+#include "perf_line.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -417,6 +418,7 @@ TEST(GpuAirflowActuator, GatherTimeInTheD1Box) {
     double ms = 0.0;
     ASSERT_TRUE(gather_on_gpu(*ctx, kD1, discs, start, kStepS, kWorkgroupSize, &ms).has_value());
     std::printf("measure: the gather in the D1 box, 240x177x168 at 4 mm: %.3f ms for u, v and w\n", ms);
+    spade::test::perf_line("physics.diag_gather_d1", ms, "ms");
 }
 
 // No reduction, nothing shared between invocations: the workgroup size

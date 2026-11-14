@@ -58,6 +58,7 @@
 #include "core/flow_volume.hpp"
 #include "d1_case.hpp"
 #include "gpu_skip.hpp"
+#include "perf_line.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -861,6 +862,8 @@ TEST(GpuAirflowStep, StepTimeInTheD1Box) {
     for (int step = 0; step < kTimed; ++step) ASSERT_TRUE((*gpu)->step(c.discs).has_value());
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / kTimed;
     std::printf("measure: GpuFluid step in the D1 box, 240x177x168 at 4 mm, 4 discs, n_v 2, 8 sweeps: %.3f ms\n", ms);
+    // The D1 open box is a development reference (no solids, no website clip runs it): a diagnostic, the mean of kTimed steps.
+    spade::test::perf_line("physics.diag_gpu_step_d1_open", ms, "ms");
 
     auto cpu = cpu_fluid(c, start);
     ASSERT_TRUE(cpu.has_value());
@@ -872,6 +875,7 @@ TEST(GpuAirflowStep, StepTimeInTheD1Box) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count() / kCpuTimed;
     std::printf("measure: fluid_step on the CPU (plan A, no parts) in the same box: %.1f ms; the GPU's %.0fx faster\n",
                 cpu_ms, cpu_ms / ms);
+    spade::test::perf_line("physics.diag_cpu_step_d1_open", cpu_ms, "ms");  // the mean of kCpuTimed (3) steps
 }
 
 // B7a's first full-GPU D1 step (G3): the D1 box with the reference quad's
@@ -908,7 +912,10 @@ TEST(GpuAirflowStep, StepTimeInTheD1BoxWithItsSolids) {
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         ASSERT_TRUE(h.has_value()) << h.error().context;
         ASSERT_EQ(h->fault, af::FluidFault::none);
-        if (step >= kWarm) timed_ms += ms;
+        if (step >= kWarm) {
+            timed_ms += ms;
+            spade::test::perf_line("physics.gpu_step_d1_solids", ms, "ms");  // one line per timed step (10)
+        }
         iterations += (iterations.empty() ? "" : " ") + std::to_string(h->pressure_iterations);
         std::printf("[ d1      ] step %d: %.1f ms, CG %u iterations, residual %.3g%s%s\n", step + 1, ms,
                     h->pressure_iterations, static_cast<double>(h->pressure_residual), h->capped ? ", capped" : "",
@@ -1153,7 +1160,10 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
             const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
             ASSERT_TRUE(h.has_value()) << h.error().context;
             ASSERT_EQ(h->fault, af::FluidFault::none);
-            if (step >= kWarm) timed_ms += ms;
+            if (step >= kWarm) {
+                timed_ms += ms;
+                if (deep) spade::test::perf_line("physics.gpu_step_deep", ms, "ms");  // one line per timed step (38)
+            }
             capped_max = std::max(capped_max, h->sgs_capped_cells);
             limited_max = std::max(limited_max, h->sgs_limited_faces);
             capped_sum += h->sgs_capped_cells;
@@ -1168,6 +1178,11 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
                     static_cast<double>(dx * dx / (8.0f * r.h)), static_cast<double>(peak), kStepsRun, capped_max,
                     static_cast<double>(capped_sum) / kStepsRun, limited_max,
                     static_cast<double>(limited_sum) / kStepsRun, timed_ms / (kStepsRun - kWarm));
+        if (deep) {
+            // The device memory this process holds with the run resident (VK_EXT_memory_budget's usage), in MiB.
+            spade::test::perf_line("physics.gpu_step_deep_peak_mem",
+                                   static_cast<double>(ctx->memory_budget().usage) / (1024.0 * 1024.0), "MiB");
+        }
         std::printf("[ sgs     ] %ux%ux%u: pressure residual max %.3g over %u steps, %u unconverged (announced above 1e-4)\n",
                     box->grid.shape.nx, box->grid.shape.ny, box->grid.shape.nz, static_cast<double>(residual_max), kStepsRun,
                     unconverged);
