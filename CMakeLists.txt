@@ -167,3 +167,7 @@ add_subdirectory(tools/step_convert)
 if(SPADE_RENDER_GL AND TARGET glfw AND SPADE_GLFW_HAS_BACKEND)
     add_subdirectory(tools/flow_movie)
 endif()
+
+# The Windows installer for Spade Editor (L73a): the `editor` install component and CPack's Inno Setup config. LAST, so CPack sees every
+# target; every rule is EXCLUDE_FROM_ALL, so the SDK install is unchanged.
+include(packaging/Packaging.cmake)

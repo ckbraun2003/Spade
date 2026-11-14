@@ -160,7 +160,10 @@ add_custom_command(TARGET spade_sandbox POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SPADE_SANDBOX_FONTS} "$<TARGET_FILE_DIR:spade_sandbox>/fonts/"
     VERBATIM)
 
-# NOT installed, and that is deliberate: SL2a gives Spade a release identity of
+# NOT in the SDK install, and that is deliberate: SL2a gives Spade a release identity of
 # eleven LIBRARY modules. The sandbox is a consumer of that surface, not part
 # of it -- installing it would put a developer tool in a package whose whole
 # claim is "a domain-neutral engine an out-of-tree consumer links against".
+# (L73a: packaging/Packaging.cmake installs it in its own `editor` component,
+# every rule EXCLUDE_FROM_ALL, so only `cmake --install --component editor`
+# and the Windows installer carry it.)

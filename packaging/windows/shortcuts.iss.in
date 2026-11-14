@@ -1,0 +1,5 @@
+; Extra Inno Setup script included by CPack (CPACK_INNOSETUP_EXTRA_SCRIPTS); configured by packaging/Packaging.cmake.
+; Spade Editor and its desktop icon come from CPACK_PACKAGE_EXECUTABLES. These two cannot: one passes an argument, one opens a document.
+[Icons]
+Name: "{group}\Spade Drone Box"; Filename: "{app}\@SPADE_EDITOR_EXE_NAME@.exe"; Parameters: "--window"; WorkingDir: "{app}"
+Name: "{group}\Spade User Guide"; Filename: "{app}\docs\user-guide\index.html"
