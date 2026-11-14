@@ -30,7 +30,7 @@
 .PARAMETER ParallelLevel
     Compile jobs, 1..64, default 8. All-cores (0) is not expressible here: on
     the old, memory-bound box its failure mode was a silent OOM kill. When the
-    box's job queue (jobrun) sets JOBRUN_PARALLEL -- 4 while the owner's game
+    box's Vantage jobs service (vantage.py job run) sets JOBRUN_PARALLEL -- 4 while the owner's game
     runs -- the build takes the SMALLER of the two, and the first line it
     prints says which.
 
@@ -81,7 +81,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # THE JOB COUNT: -ParallelLevel, capped by the box queue's JOBRUN_PARALLEL
-# when that is set (Kat's jobrun, approved by the owner 2026-10-19). A cap
+# when that is set (the Vantage jobs service, vantage.py job run; it took over from Kat's jobrun, approved by the owner 2026-10-19). A cap
 # that is not a whole number of at least 1 refuses: a queue that meant to
 # throttle this build must not be ignored by a typo.
 $Jobs = $ParallelLevel
@@ -223,10 +223,36 @@ if (-not (Test-Path $cacheFile)) {
     }
     Write-Host ""
     Write-Host "=== Configuring ($PresetName) ===" -ForegroundColor Cyan
-    Invoke-Native { & cmake -S $SpadeDir --preset $PresetName }
+    # A Python outside the Microsoft Store (scripts/find-python.ps1): the Store's can fail a build with "Access is denied", and the
+    # generated files are byte-identical under any Python 3 (cmake/SpadePython.cmake). None found: CMake chooses, and warns on the Store's.
+    $python = @(& (Join-Path $PSScriptRoot 'find-python.ps1'))
+    $pythonArg = @()
+    if ($python.Count -gt 0 -and $python[0]) {
+        Write-Host "Python : $($python[0])"
+        $pythonArg = @("-DPython3_EXECUTABLE=$($python[0])")
+    }
+    Invoke-Native { & cmake -S $SpadeDir --preset $PresetName @pythonArg }
     if ($LASTEXITCODE -ne 0) { throw "CMake configure failed (exit $LASTEXITCODE)" }
 } else {
     Write-Host "Already configured. Skipping configure (pass -Clean to force a fresh one)."
+
+    # A tree configured earlier keeps the Python it cached, and the Store's is the one that failed builds with "Access is denied" -- on
+    # trees like this one. When the cache names a Store Python and scripts/find-python.ps1 has another, re-run the configure on THIS tree
+    # with -DPython3_EXECUTABLE (every other cache entry is kept; the _deps are not fetched again). The generated files are byte-identical
+    # under any Python 3 (cmake/SpadePython.cmake), so the generators rerun once and their dependents recompile once, to the same bytes.
+    $cachedPython = $null
+    foreach ($key in 'Python3_EXECUTABLE', '_Python3_EXECUTABLE') {
+        $hit = Select-String -Path $cacheFile -Pattern "^$key(:[A-Z]+)?=(.+)$" | Select-Object -First 1
+        if ($hit) { $cachedPython = $hit.Matches[0].Groups[2].Value; break }
+    }
+    if ($cachedPython -like '*WindowsApps*') {
+        $other = @(& (Join-Path $PSScriptRoot 'find-python.ps1'))
+        if ($other.Count -gt 0 -and $other[0]) {
+            Write-Host "Python : this tree's cached Python is the Microsoft Store's ($cachedPython); reconfiguring it with $($other[0])"
+            Invoke-Native { & cmake -S $SpadeDir -B $BuildDir "-DPython3_EXECUTABLE=$($other[0])" }
+            if ($LASTEXITCODE -ne 0) { throw "CMake reconfigure with $($other[0]) failed (exit $LASTEXITCODE)" }
+        }
+    }
 }
 
 # ---------------------------------------------------------------------------

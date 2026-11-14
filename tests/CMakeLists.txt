@@ -786,6 +786,16 @@ set_tests_properties(StampIdentity.ArchiveFallback PROPERTIES
     LABELS spade
     TIMEOUT 60)
 
+# cmake/SpadePython.cmake: the build warns, naming the fix, when the generators' Python is the Microsoft Store's (L75), and
+# stays quiet for any other. python_choice_test.cmake checks the warning text without a configure. LABELS spade, as above.
+cmake_path(SET SPADE_PYTHON_CHOICE_SCRIPT NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/SpadePython.cmake")
+add_test(NAME SpadePython.StoreWarning
+    COMMAND "${CMAKE_COMMAND}" "-DPYTHON_CHOICE_SCRIPT=${SPADE_PYTHON_CHOICE_SCRIPT}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/python_choice_test.cmake")
+set_tests_properties(SpadePython.StoreWarning PROPERTIES
+    LABELS spade
+    TIMEOUT 60)
+
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
 # throwaway bare repositories: every push without the owner's word refused, a
 # reader that closes early included, and the authorised one let through
