@@ -3,12 +3,12 @@
 
 #include <gtest/gtest.h>
 
-#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
 
 #include "../sandbox/app_paths.hpp"
+#include "unique_temp.hpp"
 
 namespace {
 
@@ -18,14 +18,7 @@ namespace fs = std::filesystem;
 // A folder of its own, removed after.
 struct Dir {
     fs::path path;
-    Dir() {
-        static std::atomic<int> n{0};
-        path = fs::temp_directory_path() / ("spade_app_paths_" + std::to_string(++n) + "_" +
-                                            std::to_string(static_cast<long long>(fs::file_time_type::clock::now()
-                                                                                      .time_since_epoch()
-                                                                                      .count())));
-        fs::create_directories(path);
-    }
+    Dir() : path(spade::test::unique_temp_dir("app_paths")) {}
     ~Dir() {
         std::error_code ec;
         fs::remove_all(path, ec);
