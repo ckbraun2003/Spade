@@ -116,11 +116,17 @@ constexpr std::array kSteps = {
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
 // so that a later run into the same folder owns them.
-constexpr std::array<std::string_view, 14> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
+constexpr std::array<std::string_view, 21> kSnapshots = {"editor_picker",   "editor_vehicle",  "editor_place",
                                                          "editor_gizmo",    "editor_inspect",  "editor_running",
                                                          "editor_world",    "editor_conflict", "editor_objects",
                                                          "editor_part",     "editor_drone",    "editor_placed_drone",
-                                                         "editor_airflow",  "editor_fly_props"};
+                                                         "editor_airflow",  "editor_fly_props",
+                                                         // The user guide's stills (L73a item 10; the lead,
+                                                         // 2026-11-11): written clean, with no caption bar and no
+                                                         // title card, at steps the tour already has.
+                                                         "drone_box_hud",   "editor_undo",     "editor_views",
+                                                         "editor_save",     "editor_air_running", "editor_subgrid",
+                                                         "editor_wind"};
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
@@ -232,7 +238,17 @@ class Recorder {
     }
 
     void want_video_frame() noexcept { video_pending_ = true; }
-    void want_poster(fs::path path) { poster_ = std::move(path); }
+    void want_poster(fs::path path) {
+        poster_ = std::move(path);
+        clean_ = false;
+    }
+    // A still for the user guide: the next captured frame, drawn without the caption and the card, and an anomaly if
+    // it still had one.
+    void want_still(fs::path path) {
+        poster_ = std::move(path);
+        clean_ = true;
+    }
+    [[nodiscard]] bool wants_clean() const noexcept { return clean_ && !poster_.empty(); }
     // The next captured frame, kept for a step to judge (rows bottom-up).
     void want_grab() noexcept {
         grab_pending_ = true;
@@ -245,7 +261,7 @@ class Recorder {
     [[nodiscard]] bool wants_capture() const noexcept { return video_pending_ || !poster_.empty() || grab_pending_; }
 
     // The window's frame tap: rows bottom-up, as GL reads them.
-    void on_frame(const uint8_t* rgba, uint32_t w, uint32_t h) {
+    void on_frame(const uint8_t* rgba, uint32_t w, uint32_t h, bool had_text) {
         if (grab_pending_) {
             grab_.assign(rgba, rgba + static_cast<std::size_t>(w) * h * 4u);
             grab_w_ = w;
@@ -258,7 +274,12 @@ class Recorder {
             } else {
                 smoke_.note("poster " + poster_.string());
             }
+            if (clean_ && had_text) {
+                smoke_.anomaly("recording/still-not-clean",
+                               poster_.filename().string() + " has the tour's caption or a title card on it");
+            }
             poster_.clear();
+            clean_ = false;
         }
         if (!video_pending_) {
             return;
@@ -320,6 +341,7 @@ class Recorder {
     std::FILE* pipe_ = nullptr;
     bool video_pending_ = false;
     fs::path poster_;
+    bool clean_ = false;  // poster_ is a still for the guide: no caption, no card
     bool grab_pending_ = false;
     std::vector<uint8_t> grab_;
     uint32_t grab_w_ = 0;
@@ -393,7 +415,7 @@ class Tour {
                 rec_.want_video_frame();
             }
             if (rec_.wants_capture()) {
-                sink_.capture_next_present();
+                sink_.capture_next_present(rec_.wants_clean());
             }
             if (const Result<void> drew = draw(in); !drew) {
                 smoke_.anomaly("harness/frame-failed", drew.error().context);
@@ -423,7 +445,7 @@ class Tour {
             smoke_.anomaly("harness/snapshot-undeclared", name);
             return;
         }
-        rec_.want_poster(options_.out_dir / (std::string(name) + ".png"));
+        rec_.want_still(options_.out_dir / (std::string(name) + ".png"));
     }
     [[nodiscard]] const fs::path& out_dir() const noexcept { return options_.out_dir; }
 
@@ -605,6 +627,7 @@ void drone_box(Tour& t, DroneSession& d) {
         s.check(before && !t.sink().help_drawn(), "hidden",
                 "HUD stats line " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
         t.sink().toggle_help();
+        t.snapshot("drone_box_hud");  // the HUD drawn again, the backend named on it
         t.pump(60, idle, draw);
         s.check(t.sink().help_drawn(), "shown", "HUD stats line " + drawn());
     });
@@ -895,10 +918,12 @@ void editor_tour(Tour& t, const fs::path& assets) {
         const std::string before = text_of(scene_now());
         command(editor::Command::undo);
         const bool changed = text_of(scene_now()) != before;
+        t.snapshot("editor_undo");  // undone: Redo is on the bar
+        then(2);
         command(editor::Command::redo);
         s.check(changed && text_of(scene_now()) == before, "bytes-equal",
                 changed ? "undo changed it; redo restored every byte" : "undo changed nothing");
-        then(20);
+        then(18);
     });
 
     // An edit while running rebuilds the run, carrying each vehicle's state.
@@ -1032,6 +1057,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
                 framed = false;
                 break;
             }
+            if (menu[i].base == render::ViewBase::depth) t.snapshot("editor_views");  // the next frame: this view, again
             // What the judged frame did with the mode (Test/Docs' nit: the
             // facts of the frame grabbed, not of the one before it).
             m.applied = session->last_view().applied && session->last_view().base == menu[i].base;
@@ -1079,6 +1105,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
                            bytes_of(copy) == mine;
         s.check(equal, "byte-equal",
                 back ? (equal ? "saved, reopened, every byte equal" : "differs") : back.error().context);
+        t.snapshot("editor_save");  // saved: the title has no mark
         then(20);
     });
 
@@ -1466,6 +1493,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
                                      frame->flight.thrust_n, frame->flight.weight_n));
         s.check(!w().panels().flight.empty(), "flight-section",
                 std::format("{} rows in the panel", w().panels().flight.size()));
+        t.snapshot("editor_air_running");  // the air running, the card not yet up (and a still never has it)
         if (frame && wall_s > 0.0f) {
             t.sink().set_card(std::format("Run air, {}: {}, {}", editor::air_level_name(w().panels().air_level),
                                           frame->run_label.find("solids: ") != std::string::npos ? "the body in the air"
@@ -1971,7 +1999,9 @@ int run_live_smoke(const TourOptions& options) {
 
     Recorder rec(options.out_dir, smoke);
     rec.start(sink->framebuffer_width(), sink->framebuffer_height());
-    sink->set_frame_tap([&rec](const uint8_t* rgba, uint32_t w, uint32_t h) { rec.on_frame(rgba, w, h); });
+    sink->set_frame_tap([&rec, &sink](const uint8_t* rgba, uint32_t w, uint32_t h) {
+        rec.on_frame(rgba, w, h, sink->last_capture_had_text());
+    });
 
     Tour tour(options, *sink, smoke, rec);
     const DrawFn blank = blank_frame(*sink);
@@ -2045,6 +2075,15 @@ int run_live_smoke(const TourOptions& options) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
         (void)smoke.check(!ec && size > 0u, "poster-" + std::string(kMains[i]),
+                          ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
+    }
+
+    // The stills (Tour::snapshot) are checked as the posters are: a declared one that was not written is a failure.
+    for (const std::string_view snap : kSnapshots) {
+        const std::string name = std::string(snap) + ".png";
+        std::error_code ec;
+        const std::uintmax_t size = fs::file_size(options.out_dir / name, ec);
+        (void)smoke.check(!ec && size > 0u, "still-" + std::string(snap),
                           ec ? name + ": " + ec.message() : name + " " + std::to_string(size) + " bytes");
     }
 

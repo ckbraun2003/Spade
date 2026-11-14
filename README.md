@@ -63,7 +63,7 @@ The first build fetches its dependencies. `scripts\test.ps1` is the gate: green 
 
 ## Run
 
-`build-ninja\release\bin\spade_sandbox.exe` (the **Spade Builder** desktop shortcut on the development machine) opens the sandbox on its default scene, the drone sim box: a quadrotor held in place while the air moves around it, with an air-velocity view (`V`) and a physics panel. `--scene builder` opens the object builder instead, and `--headless` renders one frame with no window. `--help` lists the rest.
+`build-ninja\release\bin\spade_sandbox.exe` with no arguments opens the editor on `assets/scenes/hover.scene.yaml` (the assets folder beside the program, else `./assets`; `--assets <dir>` names one). `--window` opens the drone sim box instead: a quadrotor held in place while the air moves around it, with an air-velocity view (`V`) and a physics panel. `--headless` renders one frame with no window. `--help` lists the rest.
 
 `scripts\demo.ps1 -Scene <name>` builds if needed and launches a scene: `sandbox` or `sandbox-builder` in the sandbox, or one of the viewer scenes `drop`, `bounce`, `shower`, `gate`, `hover`, `wind`, `flight`, `swarm`.
 

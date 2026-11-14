@@ -26,6 +26,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -121,6 +122,30 @@ class EditorWorkspace {
     // Where Run air's fluid steps (slice 3): the window gives the GPU's
     // starter (editor_air_gpu.hpp); until given one, the CPU's.
     void set_air_starter(AirStarter starter) { air_starter_ = std::move(starter); }
+
+    // Help > User Guide (L73a item 3): the guide's file, and what opens it in the default browser (false: it would not).
+    using GuideOpener = std::function<bool(const std::filesystem::path&)>;
+    void set_user_guide(std::filesystem::path file, GuideOpener open) {
+        guide_file_ = std::move(file);
+        guide_opener_ = std::move(open);
+    }
+
+    // Closing (Esc, the window's close button; L73a item 11): with nothing unsaved the editor may quit at once
+    // (close_confirmed()); with changes it asks "Save changes to <scene>?" first (panels().close_prompt).
+    [[nodiscard]] bool unsaved() const { return docs_.scene.dirty() || docs_.world.dirty(); }
+    void request_close() {
+        if (!panels_.close_prompt.empty()) {  // Esc with the prompt up is Cancel
+            panels_.close_prompt.clear();
+            return;
+        }
+        if (!unsaved()) {
+            close_confirmed_ = true;
+            return;
+        }
+        const std::string name = docs_.scene.path.filename().string();
+        panels_.close_prompt = name.empty() ? std::string("this scene") : name;
+    }
+    [[nodiscard]] bool close_confirmed() const noexcept { return close_confirmed_; }
     [[nodiscard]] const scene::ComposedScene& composed() const noexcept { return composed_; }
     [[nodiscard]] const BuiltinRecords& records() const noexcept { return records_; }
     // Changes whenever composed() does.
@@ -138,6 +163,10 @@ class EditorWorkspace {
         }
         for (const Command c : std::exchange(panels_.commands, {})) command(c);
         if (const std::optional<glm::vec3> wind = std::exchange(panels_.wind_request, std::nullopt)) set_live_wind(*wind);
+        if (std::exchange(panels_.user_guide_request, false)) open_user_guide();
+        if (const std::optional<CloseChoice> choice = std::exchange(panels_.close_choice, std::nullopt)) {
+            answer_close(*choice);
+        }
         keep_staging_alive();
         refresh_panels();
         // A selection ends a part's or a drone's inspection (the lead's Q1),
@@ -232,6 +261,7 @@ class EditorWorkspace {
         panels_.air = air_ != nullptr;
         panels_.paused = paused_;
         panels_.tick = run_ ? run_->tick() : 0u;
+        panels_.turbulence_row_visible = false;  // the panel sets it again when it draws the row
         panels_.live_wind = run_ ? run_->wind() : docs_.world.desc().environment.wind;
         panels_.can_undo = !undo_.empty();
         panels_.can_redo = !redo_.empty();
@@ -571,6 +601,34 @@ class EditorWorkspace {
         panels_.status.clear();
     }
 
+    // Help > User Guide: the guide's file in the default browser. A missing file, or a browser that will not take it,
+    // is a line in the panel, never a failure.
+    void open_user_guide() {
+        std::error_code ec;
+        if (guide_file_.empty()) {
+            panels_.status = "User Guide: this copy of Spade Editor has no guide installed";
+        } else if (!std::filesystem::is_regular_file(guide_file_, ec)) {
+            panels_.status = "User Guide: the guide is missing (" + guide_file_.string() +
+                             "); installing Spade Editor again puts it back";
+        } else if (!guide_opener_ || !guide_opener_(guide_file_)) {
+            panels_.status = "User Guide: Windows would not open " + guide_file_.string();
+        }
+    }
+
+    // The answer to "Save changes to <scene>?": Save writes the scene and quits when that worked (a refusal is in the
+    // status line and the editor stays), Don't Save quits writing nothing, Cancel goes back to the editor.
+    void answer_close(CloseChoice choice) {
+        panels_.close_prompt.clear();
+        switch (choice) {
+            case CloseChoice::cancel: return;
+            case CloseChoice::discard: close_confirmed_ = true; return;
+            case CloseChoice::save:
+                command(Command::save);
+                if (!unsaved()) close_confirmed_ = true;
+                return;
+        }
+    }
+
     // The panels' wind request (the lead's (c), 2026-11-11): the running world's wind, a Run input and not an edit.
     // The airflow keeps its start wind (L46), so with none running, or only Run air, it is dropped, saying why.
     void set_live_wind(glm::vec3 wind) {
@@ -908,6 +966,9 @@ class EditorWorkspace {
     OpenedScene docs_;
     uint64_t opened_ = 0;  // documents opened: the panels' cache key with the serial
     AirStarter air_starter_ = cpu_air_starter();
+    std::filesystem::path guide_file_;
+    GuideOpener guide_opener_;
+    bool close_confirmed_ = false;
     std::unique_ptr<AirflowRun> air_;  // Run air's worker; reset (joined) by Stop and by a change
     BuiltinRecords records_;
     std::filesystem::path assets_;  // where the built-in scenes are, once a built-in was opened

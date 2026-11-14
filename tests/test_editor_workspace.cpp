@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -755,4 +757,164 @@ TEST(EditorWorkspace, AWindRequestWithNoRunIsDroppedAndSaysWhy) {
     w->apply_panels();
     EXPECT_FALSE(w->panels().wind_request.has_value());
     EXPECT_NE(w->panels().status.find("Run"), std::string::npos) << w->panels().status;
+}
+
+// Help > User Guide (L73a item 3): the request opens the guide's file in the default browser; a missing file, or a
+// browser that will not open it, is said in the status line (a panel line) and nothing fails.
+TEST(EditorWorkspace, AUserGuideRequestOpensTheGuideAndAMissingOrRefusedOneIsSaidInTheStatusLine) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const support::TempDir tmp;
+    const std::filesystem::path guide = tmp.path() / "docs" / "user-guide" / "index.html";
+    std::filesystem::path opened;
+    int calls = 0;
+    bool accept = true;
+    w->set_user_guide(guide, [&](const std::filesystem::path& p) {
+        ++calls;
+        opened = p;
+        return accept;
+    });
+
+    w->panels().user_guide_request = true;
+    w->apply_panels();
+    EXPECT_FALSE(w->panels().user_guide_request) << "taken";
+    EXPECT_EQ(calls, 0) << "a missing guide is not handed to the browser";
+    EXPECT_NE(w->panels().status.find("User Guide"), std::string::npos) << w->panels().status;
+    EXPECT_NE(w->panels().status.find("index.html"), std::string::npos) << "it names the place: " << w->panels().status;
+
+    std::filesystem::create_directories(guide.parent_path());
+    std::ofstream(guide) << "<html></html>";
+    w->panels().status.clear();
+    w->panels().user_guide_request = true;
+    w->apply_panels();
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(opened, guide);
+    EXPECT_TRUE(w->panels().status.empty()) << w->panels().status;
+
+    accept = false;
+    w->panels().user_guide_request = true;
+    w->apply_panels();
+    EXPECT_EQ(calls, 2);
+    EXPECT_NE(w->panels().status.find("would not open"), std::string::npos) << w->panels().status;
+}
+
+// With no guide set (a dev run) the request says so too.
+TEST(EditorWorkspace, AUserGuideRequestWithNoGuideSetSaysSo) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    w->panels().user_guide_request = true;
+    w->apply_panels();
+    EXPECT_NE(w->panels().status.find("User Guide"), std::string::npos) << w->panels().status;
+}
+
+// Closing (L73a item 11): nothing unsaved quits at once; unsaved changes ask "Save changes to <scene>?" first.
+TEST(EditorWorkspace, ClosingWithNothingUnsavedQuitsAtOnceAndWithChangesAsksFirst) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    EXPECT_FALSE(w->unsaved());
+    w->request_close();
+    EXPECT_TRUE(w->close_confirmed());
+    EXPECT_TRUE(w->panels().close_prompt.empty());
+
+    auto d = hover();
+    ASSERT_NE(d, nullptr);
+    spade::VehicleSpawn moved = scene_of(*d).vehicles.at(0).start;
+    moved.pos.x += 1.0f;
+    d->panels().pending.push_back(ed::SetVehicleStart{"hover_quad_0", moved});
+    d->apply_panels();
+    EXPECT_TRUE(d->unsaved());
+    d->request_close();
+    EXPECT_FALSE(d->close_confirmed()) << "not before the person has answered";
+    EXPECT_EQ(d->panels().close_prompt, "hover.scene.yaml") << "the prompt names the scene";
+}
+
+// Cancel keeps the editor open and the changes as they were; Esc again, with the prompt up, is Cancel too.
+TEST(EditorWorkspace, CancelKeepsTheEditorOpenAndASecondEscapeIsCancel) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    spade::VehicleSpawn moved = scene_of(*w).vehicles.at(0).start;
+    moved.pos.x += 1.0f;
+    w->panels().pending.push_back(ed::SetVehicleStart{"hover_quad_0", moved});
+    w->apply_panels();
+    w->request_close();
+    ASSERT_FALSE(w->panels().close_prompt.empty());
+    w->panels().close_choice = ed::CloseChoice::cancel;
+    w->apply_panels();
+    EXPECT_TRUE(w->panels().close_prompt.empty());
+    EXPECT_FALSE(w->close_confirmed());
+    EXPECT_TRUE(w->unsaved());
+
+    w->request_close();
+    ASSERT_FALSE(w->panels().close_prompt.empty());
+    w->request_close();
+    EXPECT_TRUE(w->panels().close_prompt.empty()) << "Esc with the prompt up dismisses it";
+    EXPECT_FALSE(w->close_confirmed());
+}
+
+// Don't Save quits and writes nothing; Save writes the scene, then quits.
+TEST(EditorWorkspace, DontSaveQuitsWritingNothingAndSaveWritesThenQuits) {
+    const support::TempDir tmp;
+    const std::filesystem::path mine = tmp.path() / "mine.scene.yaml";
+    const auto edited = [&](bool& ok) {
+        auto w = hover();
+        ok = w != nullptr;
+        if (!ok) return w;
+        w->panels().path = mine.string();
+        command(*w, Command::save_as);
+        spade::VehicleSpawn moved = scene_of(*w).vehicles.at(0).start;
+        moved.pos.x += 1.0f;
+        w->panels().pending.push_back(ed::SetVehicleStart{"hover_quad_0", moved});
+        w->apply_panels();
+        return w;
+    };
+    const auto read = [&] {
+        std::ifstream in(mine, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    bool ok = false;
+    auto w = edited(ok);
+    ASSERT_TRUE(ok);
+    ASSERT_TRUE(w->unsaved());
+    const std::string before = read();
+    ASSERT_FALSE(before.empty()) << w->panels().status;
+    w->request_close();
+    EXPECT_EQ(w->panels().close_prompt, "mine.scene.yaml");
+    w->panels().close_choice = ed::CloseChoice::discard;
+    w->apply_panels();
+    EXPECT_TRUE(w->close_confirmed());
+    EXPECT_EQ(read(), before) << "Don't Save writes nothing";
+
+    auto s = edited(ok);
+    ASSERT_TRUE(ok);
+    s->request_close();
+    s->panels().close_choice = ed::CloseChoice::save;
+    s->apply_panels();
+    EXPECT_TRUE(s->close_confirmed()) << s->panels().status;
+    EXPECT_FALSE(s->unsaved());
+    EXPECT_NE(read(), before) << "Save wrote the moved vehicle";
+}
+
+// A save that is refused does not quit: the status says why and the prompt is gone, the changes still there.
+TEST(EditorWorkspace, ASaveThatIsRefusedDoesNotQuit) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const support::TempDir tmp;
+    const std::filesystem::path mine = tmp.path() / "mine.scene.yaml";
+    w->panels().path = mine.string();
+    command(*w, Command::save_as);  // the document now lives in the temp folder, never in assets/
+    ASSERT_TRUE(std::filesystem::exists(mine)) << w->panels().status;
+    spade::VehicleSpawn moved = scene_of(*w).vehicles.at(0).start;
+    moved.pos.x += 1.0f;
+    w->panels().pending.push_back(ed::SetVehicleStart{"hover_quad_0", moved});
+    w->apply_panels();
+    std::filesystem::remove(mine);
+    std::filesystem::create_directories(mine);  // a folder where the file was: the save cannot write
+    w->request_close();
+    ASSERT_FALSE(w->panels().close_prompt.empty());
+    w->panels().close_choice = ed::CloseChoice::save;
+    w->apply_panels();
+    EXPECT_FALSE(w->close_confirmed());
+    EXPECT_TRUE(w->unsaved());
+    EXPECT_TRUE(w->panels().close_prompt.empty());
 }

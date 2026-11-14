@@ -33,6 +33,7 @@
 
 #include "gl_target_sink.hpp"
 
+#include "app_paths.hpp"      // where the fonts are (beside the exe, else the assets folder's)
 #include "drone_view.hpp"     // the drone sim box's panel model -- pure, no UI in it
 #include "editor_panels.hpp"     // the editor's panel model: its library's thumbnails become textures here
 #include "editor_panels_ui.hpp"  // the editor's panels, drawn; the workspace decides
@@ -259,19 +260,12 @@ void draw_view_lines(const std::vector<editor::GizmoLine>& lines, const Viewport
     }
 }
 
-// The folder holding this executable, where the build puts the UI font. Not
-// the working directory: the sandbox is launched from anywhere.
-std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    std::wstring path(32768, L'\0');
-    const DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    path.resize(n);
-    return std::filesystem::path(path).parent_path();
-#else
+// Where the UI font is: beside the executable, where the build puts it, else the assets folder's, where the installer
+// does (app_paths.hpp, L73a). Not the working directory: the sandbox is launched from anywhere.
+std::filesystem::path font_folder() {
     std::error_code ec;
-    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", ec);
-    return ec ? std::filesystem::current_path(ec) : self.parent_path();
-#endif
+    const std::filesystem::path exe = app::executable_dir();
+    return app::fonts_dir(exe, app::resolve_assets({}, exe, std::filesystem::current_path(ec)));
 }
 #endif
 
@@ -330,6 +324,10 @@ struct GlTargetSink::Impl {
     bool show_help = true;
     bool help_drawn = false;  // the last overlay drew the legend
     bool f1_was_down = false;
+    bool capture_without_text = false;  // the armed capture leaves the caption and the card out
+    bool text_drawn = false;            // the frame being drawn has the caption or the card on it
+    bool captured_text = false;         // the last captured frame did
+    bool esc_was_down = false;  // Esc closes on its press, not while it is held (the editor's prompt toggles on it)
     bool f2_was_down = false;  // reset layout
     // The GPU path's offscreen target, the view's size (begin_gpu_frame()).
     FramebufferApi fbo_api;
@@ -404,11 +402,14 @@ bool GlTargetSink::backend_available() noexcept {
 #endif
 }
 
-std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::string* why_not) {
-    const auto refuse = [why_not](std::string reason) -> std::unique_ptr<GlTargetSink> {
+std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::string* why_not,
+                                                   app::WindowFailure* kind) {
+    const auto refuse = [why_not, kind](std::string reason,
+                                        app::WindowFailure why = app::WindowFailure::other) -> std::unique_ptr<GlTargetSink> {
         if (why_not != nullptr) {
             *why_not = std::move(reason);
         }
+        if (kind != nullptr) *kind = why;
         return nullptr;
     };
 
@@ -440,8 +441,9 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
         // backend compiled in, and the two need different answers.
         return refuse("GLFW could not initialise, which usually means there is no display available "
                       "to this process. " +
-                      (g_last_glfw_error.empty() ? std::string("(GLFW reported no detail.)")
-                                                 : g_last_glfw_error));
+                          (g_last_glfw_error.empty() ? std::string("(GLFW reported no detail.)")
+                                                     : g_last_glfw_error),
+                      app::WindowFailure::no_display);
     }
 
     // ⚠ 4.3, NOT 3.3, AND THE REASON IS THE GPU RENDER PATH. GlRenderer's whole
@@ -468,7 +470,8 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
                       (g_last_glfw_error.empty()
                            ? std::string("GLFW reported no detail; an OpenGL 3.3 core context may "
                                          "not be available on this driver.")
-                           : g_last_glfw_error));
+                           : g_last_glfw_error),
+                      app::WindowFailure::no_opengl);
     }
 
     glfwMakeContextCurrent(impl->window);
@@ -500,7 +503,7 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
     // font is announced here and in the HUD, never swapped silently (L6).
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ui::apply_theme();
-    impl->ui_font_loaded = ui::load_fonts(executable_dir() / "fonts");
+    impl->ui_font_loaded = ui::load_fonts(font_folder());
     if (!impl->ui_font_loaded) {
         std::fprintf(stderr, "spade_sandbox: %s\n", ui::fonts().missing.c_str());
     }
@@ -523,7 +526,8 @@ std::unique_ptr<GlTargetSink> GlTargetSink::create(const Options& options, std::
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
         return refuse("ImGui's OpenGL3 backend failed to initialise, which usually means the driver "
-                      "did not provide an OpenGL 3.3 core context.");
+                      "did not provide an OpenGL 3.3 core context.",
+                      app::WindowFailure::no_opengl);
     }
     impl->imgui_ready = true;
 
@@ -719,9 +723,11 @@ FrameInput GlTargetSink::poll() {
     }
     // Esc closes, because a tool you cannot leave with the key everyone
     // reaches for reads as hung.
-    if (glfwGetKey(impl_->window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+    const bool esc = glfwGetKey(impl_->window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+    if (esc && !impl_->esc_was_down) {
         glfwSetWindowShouldClose(impl_->window, GLFW_TRUE);
     }
+    impl_->esc_was_down = esc;
     in.want_close = glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 #endif
     return in;
@@ -811,6 +817,12 @@ bool GlTargetSink::should_close() const noexcept {
     return glfwWindowShouldClose(impl_->window) == GLFW_TRUE;
 #else
     return true;
+#endif
+}
+
+void GlTargetSink::keep_open() noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    glfwSetWindowShouldClose(impl_->window, GLFW_FALSE);
 #endif
 }
 
@@ -960,9 +972,16 @@ void GlTargetSink::draw_overlay() {
 
 void GlTargetSink::draw_live_smoke_text() {
 #if SPADE_SANDBOX_HAS_GL
+    impl_->text_drawn = false;
     if (impl_->caption.empty() && impl_->card.empty()) {
         return;
     }
+    // A still for the guide: this frame has neither (the video's own frame, if it is also one, loses its caption
+    // for one frame).
+    if (impl_->capture_armed && impl_->capture_without_text) {
+        return;
+    }
+    impl_->text_drawn = true;
     // The FOREGROUND draw list, not a window: it is drawn after every window,
     // so no panel can cover the caption or the card in the recording.
     ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -1021,6 +1040,8 @@ void GlTargetSink::tap_frame() {
         return;
     }
     impl_->capture_armed = false;
+    impl_->capture_without_text = false;
+    impl_->captured_text = impl_->text_drawn;
     const uint32_t w = impl_->fb_width;
     const uint32_t h = impl_->fb_height;
     impl_->readback.resize(static_cast<std::size_t>(w) * h * 4u);
@@ -1051,7 +1072,22 @@ void GlTargetSink::set_scripted_input(bool on) noexcept {
 #endif
 }
 void GlTargetSink::set_frame_tap(FrameTap tap) { impl_->tap = std::move(tap); }
-void GlTargetSink::capture_next_present() noexcept { impl_->capture_armed = true; }
+void GlTargetSink::capture_next_present(bool without_text) noexcept {
+    impl_->capture_armed = true;
+#if SPADE_SANDBOX_HAS_GL
+    impl_->capture_without_text = without_text;
+#else
+    (void)without_text;
+#endif
+}
+
+bool GlTargetSink::last_capture_had_text() const noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    return impl_->captured_text;
+#else
+    return false;
+#endif
+}
 
 void GlTargetSink::toggle_help() noexcept {
 #if SPADE_SANDBOX_HAS_GL

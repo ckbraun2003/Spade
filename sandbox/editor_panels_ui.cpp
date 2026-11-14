@@ -177,7 +177,7 @@ void toolbar(ed::EditorPanels& p) {
     const ImGuiStyle& style = ImGui::GetStyle();
     const auto button_width = [&style](const char* label) { return ImGui::CalcTextSize(label).x + 2.0f * style.FramePadding.x; };
     const float trailing = 4.0f * ui::kBase + button_width("Save") + style.ItemSpacing.x + button_width("File") +
-                           6.0f * ui::kBase + ImGui::CalcTextSize(p.title.c_str()).x;
+                           style.ItemSpacing.x + button_width("Help") + 6.0f * ui::kBase + ImGui::CalcTextSize(p.title.c_str()).x;
     ImGui::AlignTextToFramePadding();
     if (p.air_band.empty()) {
         ImGui::TextDisabled("tick %llu", static_cast<unsigned long long>(p.tick));
@@ -304,6 +304,37 @@ void toolbar(ed::EditorPanels& p) {
             p.commands.push_back(ed::Command::save_as);
             ImGui::CloseCurrentPopup();
         }
+        ImGui::EndPopup();
+    }
+    // Help (L73a): the User Guide in the browser, and About. A button with a popup, as File is: the toolbar has no
+    // menu bar.
+    ImGui::SameLine();
+    if (ImGui::Button("Help")) ImGui::OpenPopup("help");
+    bool open_about = false;
+    if (ImGui::BeginPopup("help")) {
+        if (ImGui::Selectable("User Guide")) p.user_guide_request = true;
+        if (ImGui::Selectable("About Spade Editor")) open_about = true;
+        ImGui::EndPopup();
+    }
+    if (open_about) ImGui::OpenPopup("About Spade Editor");
+    if (ImGui::BeginPopupModal("About Spade Editor", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(p.about.c_str());
+        ui::gap();
+        if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    // Esc or the window's close button with unsaved changes (L73a): ask first. Only the interactive editor window
+    // sets close_prompt; the tour and the automated runs never do.
+    if (!p.close_prompt.empty()) ImGui::OpenPopup("Unsaved changes");
+    if (ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (p.close_prompt.empty()) ImGui::CloseCurrentPopup();  // answered, or Esc again
+        ImGui::Text("Save changes to %s?", p.close_prompt.c_str());
+        ui::gap();
+        if (ImGui::Button("Save")) p.close_choice = ed::CloseChoice::save;
+        ImGui::SameLine();
+        if (ImGui::Button("Don't Save")) p.close_choice = ed::CloseChoice::discard;
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) p.close_choice = ed::CloseChoice::cancel;
         ImGui::EndPopup();
     }
     ImGui::SameLine(0.0f, 6.0f * ui::kBase);
@@ -453,10 +484,13 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
             // The air's subgrid turbulence (Smagorinsky's term at Cs 0.17, L52), folded as Advanced: GPU only, so a run
             // on the CPU says it is off; not while the air runs.
             ImGui::PushID("airflow-advanced");  // its own ids: the model's Advanced section has the same label
+            if (p.advanced_open) ImGui::SetNextItemOpen(*p.advanced_open, ImGuiCond_Always);
             if (ui::section("Advanced", false) && ui::begin_properties("airflow-advanced")) {
                 ImGui::BeginDisabled(p.air);
                 ui::property_row("Subgrid turbulence");
                 ImGui::Checkbox("##turbulence", &p.air_turbulence);
+                p.turbulence_row_visible = ImGui::IsItemVisible();
+                if (p.advanced_open.value_or(false)) ImGui::SetScrollHereY(0.5f);  // the guide's still: the row in view
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
                     ImGui::SetTooltip("Smagorinsky's subgrid eddy viscosity, Cs 0.17, on the GPU's fluid only: a run on "
                                       "the CPU flies without it and says so.");

@@ -262,6 +262,7 @@ void batch_tour(Tour& t, const fs::path& assets) {
         w().apply_panels();
         if (!s.check(!scene_now().airflow.empty(), "region", w().panels().status)) return;
         w().panels().air_turbulence = true;  // the Advanced row
+        w().panels().advanced_open = true;   // open, so the guide's still shows the row ticked
         command(editor::Command::run_air);
         if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
         w().panels().pilot.controls = analysis::Controls{true, 0.6f, 0.0f, 0.0f, 0.0f};
@@ -297,11 +298,17 @@ void batch_tour(Tour& t, const fs::path& assets) {
         }
         t.poster("batch");
         then(5);
+        // The guide's still shows the row ticked: it must be on screen, inside the inspector's view.
+        s.check(w().panels().turbulence_row_visible && w().panels().air_turbulence, "subgrid-row-visible",
+                w().panels().turbulence_row_visible ? "the Subgrid turbulence row is drawn in view, ticked"
+                                                    : "the row is scrolled out of the inspector's view");
+        t.snapshot("editor_subgrid");  // the row ticked and its line, without the title card
         then(25);
         t.sink().set_card({});
         command(editor::Command::stop);
         session->camera() = before;
         w().panels().air_turbulence = false;
+        w().panels().advanced_open.reset();
         command(editor::Command::undo);  // the region
         command(editor::Command::undo);  // the drone
     });
@@ -310,6 +317,7 @@ void batch_tour(Tour& t, const fs::path& assets) {
     // to 6 m/s along +x; the wind is the run's (recorded as an input), not the document's, and it moves the drone.
     t.step("batch", "wind_change", [&] {
         if (!open()) return;
+        const OrbitCamera camera_before = session->camera();
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
         const std::size_t before = scene_now().vehicles.size();
         arm("Phantom 3-class quad");
@@ -374,10 +382,21 @@ void batch_tour(Tour& t, const fs::path& assets) {
                 std::format("{:.3f} m/s along the wind in the second after the set, against {:.3f} m/s of its own "
                             "drift the second before (at least {:.3f})",
                             moved, own, std::max(10.0f * own, 0.05f)));
+        // The guide's still: the quad in view, flying in the wind, beside the row.
+        if (const std::optional<VehicleRef> ref = run != nullptr ? run->vehicle_ref(quad) : std::nullopt; ref) {
+            if (const Result<const BodyState*> flying = run->sim().body(ref->body); flying) {
+                session->camera().target = (*flying)->pos;
+                session->camera().distance = 3.0f;
+                session->camera().yaw = 0.52f;
+                session->camera().pitch = 0.35f;
+            }
+        }
+        t.snapshot("editor_wind");  // the Wind now row at 6 0 0, without the title card
         t.sink().set_card("a live wind in Run: set on the row, recorded, not saved.\nThe airflow keeps its start wind.");
         then(30);
         t.sink().set_card({});
         command(editor::Command::stop);
+        session->camera() = camera_before;
         command(editor::Command::undo);
         s.check(t.frames() - frames_at_start <= kBatchChapterMaxFrames, "length-budget",
                 std::format("{:.1f} s of video in the chapter's steps (at most {} s, the card besides)",

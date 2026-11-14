@@ -106,6 +106,9 @@ struct AirLineCache {
     uint64_t resolves = 0;  // how many times it has resolved
 };
 
+// The answer to "Save changes to <scene>?" (L73a item 11).
+enum class CloseChoice { save, discard, cancel };
+
 struct EditorPanels {
     // ---- Read by the panels; the workspace fills these every frame.
     const scene::SceneDesc* scene = nullptr;
@@ -155,6 +158,15 @@ struct EditorPanels {
     std::string view_note;                    // why the view isn't drawing its chosen mode; empty when it is
     render::BaseLegend base_legend;           // the base's legend: depth's range, the normals key
 
+    // Closing with unsaved changes (L73a item 11): the scene's name while the "Save changes to <scene>?" prompt shows,
+    // empty otherwise (EditorWorkspace::request_close()); and the prompt's answer, taken by apply_panels().
+    std::string close_prompt;
+    std::optional<CloseChoice> close_choice;
+    // Help > About Spade Editor's text (app_about.hpp), set by the host; Help > User Guide's request, taken by
+    // apply_panels() (set_user_guide()).
+    std::string about;
+    bool user_guide_request = false;
+
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;
     PilotPanel pilot;  // N17: written by the pilot's keys and the Pilot section
@@ -167,6 +179,8 @@ struct EditorPanels {
     std::string path;                         // what Open and Save As use
     std::string item_path;                    // what Load from file (Command::load_item) reads
     std::optional<bool> file_menu;            // a script's request: open (true) or close (false) the File menu
+    std::optional<bool> advanced_open;        // a script's request: the airflow region's Advanced section open/folded
+    bool turbulence_row_visible = false;      // the last frame drew the Subgrid turbulence row inside the inspector's view
     std::optional<std::size_t> library_scroll_to;  // a script's request: bring this item's tile into view
     // Where each library item's thumbnail was drawn this frame, in framebuffer
     // pixels from the top-left; none when it was not wholly in view. The

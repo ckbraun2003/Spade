@@ -531,6 +531,8 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_airflow.cpp
         test_editor_flight_readout.cpp
         test_editor_cli.cpp
+        test_sandbox_app_paths.cpp
+        test_sandbox_launcher.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
         test_editor_pick.cpp
@@ -732,6 +734,11 @@ target_compile_definitions(spade_tests PRIVATE
     SPADE_ANALYSIS_HOST_PROBE="$<TARGET_FILE:spade_analysis_host_probe>"
 )
 
+# The generated version header and the product's VERSION file (L73a).
+target_sources(spade_tests PRIVATE test_version_header.cpp)
+target_link_libraries(spade_tests PRIVATE spade_version)
+target_compile_definitions(spade_tests PRIVATE SPADE_REPO_DIR="${PROJECT_SOURCE_DIR}")
+
 target_compile_definitions(spade_tests PRIVATE
     SPADE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
     SPADE_ENGINE_DIR="${SPADE_ENGINE_DIR_NORMALIZED}"
@@ -756,6 +763,13 @@ if(SPADE_BUILD_SANDBOX)
         LABELS spade
         PASS_REGULAR_EXPRESSION "done: applied 3 edits, ran 25 steps"
         TIMEOUT 120)
+
+    # --version (L73a item 2): "Spade Editor 0.1.0+<sha>", Core's generated version, and exit 0 with no window.
+    add_test(NAME SandboxVersion.PrintsTheVersionAndExits COMMAND $<TARGET_FILE:spade_sandbox> --version)
+    set_tests_properties(SandboxVersion.PrintsTheVersionAndExits PROPERTIES
+        LABELS spade
+        PASS_REGULAR_EXPRESSION "^Spade Editor [0-9]+[.][0-9]+[.][0-9]+[+](unknown|[0-9a-f]+)(-dirty)?"
+        TIMEOUT 60)
 endif()
 
 # The build stamp's fallbacks (core/build_identity.hpp), which a build inside a
