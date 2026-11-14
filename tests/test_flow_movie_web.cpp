@@ -418,6 +418,8 @@ TEST(FlowMovieWeb, TheCaptionNamesWhatItMustAndClaimsNothingElse) {
     EXPECT_TRUE(has(text, "abc123def456"));
     EXPECT_TRUE(has(text, "2026-11-09 03:00 UTC"));
     EXPECT_TRUE(has(text, "web-spade-S3"));
+    EXPECT_TRUE(has(text, "job ticket web-spade-S3")) << "the ticket is the jobs service's (O25)";
+    EXPECT_FALSE(has(text, "jobrun")) << "the old runner's name is gone from the caption";
     EXPECT_TRUE(has(text, "flow_movie --web S3"));
     EXPECT_TRUE(has(text, "Slow motion"));
     EXPECT_TRUE(has(text, "times slower than real time"));

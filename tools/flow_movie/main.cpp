@@ -1655,7 +1655,7 @@ struct Options {
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
-    std::string ticket;            // --ticket: the jobrun ticket the caption names
+    std::string ticket;            // --ticket: the jobs service's ticket the caption names
     std::string command_line;      // the arguments as given, for the caption
 };
 
