@@ -1,0 +1,296 @@
+{
+ "_comment": "The metrics registry, the source of PERF.md's table (python tests/bench/measure.py --table). Kinds: gbench (a spade_bench filter; one row per benchmark name), perf-lines (the command prints 'PERF <metric> <value> <unit>', and 'PERF-NOTE <key> <text>' for the ledger notes; a name printed several times in one run is that run's median; a name holding '.diag_' is a diagnostic), wall (process wall time and peak working set). 'env' sets variables for the command (null removes one). 'class' is the jobrun class, test (default) or gpu: run each class as its own job (--class). {bench}, {tests}, {flow_movie}, {build}, {repo} and {ticket} expand in command and env. A diagnostic stays out of the ledger. The realms' metrics are added as they send them. 'divisor' divides each value (an iteration of the step families is step(50), so divisor 50 gives ms per step). A gbench filter ends in '/' so that BM_Name does not also match BM_NameGpu. Kind editor-idle: launch a program that opens a window (hold_s seconds hands-off, default 30), close it with WM_CLOSE, read the sandbox's exit summary (mean frame and the split) and the process's CPU seconds; {sandbox} is spade_sandbox.exe. Kind live-smoke: the scripted tour (spade_sandbox --live-smoke --out {smoke_out}); needs ffmpeg on PATH; the run's wall time is the metric, the journal's video length, frame count and Run air wall seconds are diagnostics. 'repeats' overrides the default 5. The editor-idle and live-smoke kinds also take PERF lines from the program (SPADE_EDITOR_PERF=1), as perf-lines does; 'per_occurrence' suffixes a name printed once per chapter.",
+ "metrics": [
+  {
+   "name": "core.step_plain_bodies",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a developer or user stepping the simulation (one world of plain bodies)",
+   "workload": "BM_StepPlainBodies, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepPlainBodies/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test",
+   "divisor": 50
+  },
+  {
+   "name": "core.step_dense_bodies",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a developer or user stepping a world crowded with bodies",
+   "workload": "BM_StepDenseBodies, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepDenseBodies/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test",
+   "divisor": 50
+  },
+  {
+   "name": "core.step_quad_worlds",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a user flying drones in real time on the CPU backend (quad worlds, 1 to 64 vehicles; the 1 kHz step budget is 1 ms)",
+   "workload": "BM_StepQuadWorlds, the sizes in bench_sim.cpp; one iteration is step(50), reported per step (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepQuadWorlds/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test",
+   "divisor": 50
+  },
+  {
+   "name": "rendering.render_background_fill",
+   "owner": "rendering",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a user waiting for a frame (the empty-scene floor of the CPU renderer)",
+   "workload": "BM_RenderBackgroundFill, the sizes in bench_render.cpp",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_RenderBackgroundFill",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test"
+  },
+  {
+   "name": "rendering.render_ground_plane",
+   "owner": "rendering",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a user waiting for a frame (the ground plane on the CPU renderer)",
+   "workload": "BM_RenderGroundPlane, the sizes in bench_render.cpp",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_RenderGroundPlane",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test"
+  },
+  {
+   "name": "rendering.render_slots",
+   "owner": "rendering",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "who_waits": "a user waiting for a frame with many objects on the CPU renderer",
+   "workload": "BM_RenderSlots, the sizes in bench_render.cpp",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_RenderSlots",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test"
+  },
+  {
+   "name": "core.step_quad_worlds_gpu",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "real_time",
+   "unit": "ms",
+   "class": "gpu",
+   "divisor": 50,
+   "who_waits": "a user or trainer flying drones in real time on the GPU backend (quad worlds, 1 to 64 vehicles; the 1 kHz step budget is 1 ms)",
+   "workload": "BM_StepQuadWorldsGpu, the sizes in bench_sim.cpp; one iteration is a batched step(50), reported per step (ms)",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_StepQuadWorldsGpu/",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ]
+  },
+  {
+   "name": "physics.gpu_airflow",
+   "owner": "physics",
+   "kind": "perf-lines",
+   "basis": "own",
+   "unit": "ms",
+   "class": "gpu",
+   "env": {
+    "SPADE_AIRFLOW_TIMINGS": "1",
+    "SPADE_SGS_MEASURE": "1",
+    "SPADE_SGS_D1_DEEP": "1"
+   },
+   "who_waits": "a user of Run air waiting for the GPU airflow: one step of the D1 box with its solids, one step of the deep box (and the device memory that run holds, in MiB), and one live frame on the editor's 32^3 grid",
+   "workload": "the three tests in the command (Physics' physics/perf-lines 679bf4e8): physics.gpu_step_d1_solids (ms, a line per timed step), physics.gpu_step_deep (ms, a line per timed step after 2 warm-ups), physics.gpu_step_deep_peak_mem (MiB, this process's device memory), physics.gpu_frame_editor_32 (ms, the mean of 30 LiveRun frames, 32^3 at 25 mm, 4 discs). About 60 s a run. The editor's 64^3 grid is not here yet",
+   "command": [
+    "{tests}",
+    "--gtest_filter=GpuAirflowStep.StepTimeInTheD1BoxWithItsSolids:GpuAirflowStep.SubgridBoundAndCostInTheD1BoxWithItsSolids:GpuLiveFluid.FrameTimeOnTheEditorsGrid"
+   ]
+  },
+  {
+   "name": "physics.gpu_airflow_diag",
+   "owner": "physics",
+   "kind": "perf-lines",
+   "basis": "own",
+   "unit": "ms",
+   "class": "gpu",
+   "diagnostic": true,
+   "env": {
+    "SPADE_AIRFLOW_TIMINGS": "1"
+   },
+   "who_waits": "no one: the open-box step, the projection, gather and diffuse kernels alone, and the CPU references",
+   "workload": "the four tests in the command (physics.diag_*; report only); run with --include-diagnostics. About 16 s a run",
+   "command": [
+    "{tests}",
+    "--gtest_filter=GpuAirflowStep.StepTimeInTheD1Box:GpuAirflowProjection.TimingsAt64And128Cubed:GpuAirflowActuator.GatherTimeInTheD1Box:GpuAirflowViscous.DiffuseTimeInTheD1Box"
+   ]
+  },
+  {
+   "name": "rendering.puppet_frame",
+   "owner": "rendering",
+   "kind": "perf-lines",
+   "basis": "real_time",
+   "unit": "ms",
+   "class": "gpu",
+   "env": {
+    "SPADE_GL_PUPPET_COST": "1",
+    "SPADE_PUPPET_GLTF": null
+   },
+   "who_waits": "a trainer watching the live training view (the frame with N drone puppets on GL, 1280x720, shadows on and off; N = 1, 128, 1024)",
+   "workload": "GpuGlRenderer.PuppetFrameCostAt128And1024Drones on the in-repo UV sphere (14,000 triangles); median of 20 frames after 3 warm-ups in each run. Ledger rows rendering.puppet_frame_<N>_shadows_<on|off>; phases rendering.diag_{pose,submit,wait,gpu,read}_<N>_shadows_<on|off> are diagnostics",
+   "command": [
+    "{tests}",
+    "--gtest_filter=GpuGlRenderer.PuppetFrameCostAt128And1024Drones"
+   ]
+  },
+  {
+   "name": "rendering.web_frame_4k",
+   "owner": "rendering",
+   "kind": "perf-lines",
+   "basis": "real_time",
+   "unit": "s",
+   "class": "gpu",
+   "who_waits": "a person making a website clip (one 4K web frame, drawn from a solved cache, no solve in the run)",
+   "workload": "flow_movie --web S1, the 30 frames drawn from the fixed 180-frame cache (S1 draws from frame 150); the median per-frame loop body without the encode tail. Phases rendering.diag_web_<phase> are diagnostics. The cache path and byte count go in the ledger notes",
+   "command": [
+    "{flow_movie}",
+    "--web",
+    "S1",
+    "--web-frames",
+    "180",
+    "--keep-cache",
+    "--out",
+    "C:/Users/Cameron/Desktop/spade-videos/perf-web-s1-30",
+    "--ticket",
+    "{ticket}"
+   ]
+  },
+  {
+   "name": "interface.editor_idle",
+   "owner": "interface",
+   "kind": "editor-idle",
+   "unit": "ms",
+   "class": "gpu",
+   "hold_s": 30,
+   "who_waits": "a tester with the editor open and hands off (frame time and CPU seconds of an idle editor on the hover scene; the baseline for render on demand)",
+   "workload": "the editor on hover, no vsync, 30 s hands off, then the window closed. Rows interface.editor_idle_frame (ms, the exit summary's lifetime mean, so start-up frames are in it) and interface.editor_idle_cpu (CPU s over the run); the split and the frame count are diagnostics interface.editor_idle.diag_*. With SPADE_EDITOR_PERF=1 the editor also prints PERF interface.editor_first_frame (ms, process creation to the first presented frame), a ledger row once interface/l74-metrics (ef82d560) is merged",
+   "command": [
+    "{sandbox}",
+    "--no-vsync"
+   ],
+   "env": {
+    "SPADE_EDITOR_PERF": "1"
+   }
+  },
+  {
+   "name": "interface.startup_version",
+   "owner": "interface",
+   "kind": "wall",
+   "unit": "s",
+   "class": "test",
+   "who_waits": "a tester starting the program (the floor: loader, launcher and exit; not the time to the first frame, which is not recorded)",
+   "workload": "spade_sandbox --version, process wall time and peak working set",
+   "command": [
+    "{sandbox}",
+    "--version"
+   ]
+  },
+  {
+   "name": "interface.live_smoke",
+   "owner": "interface",
+   "kind": "live-smoke",
+   "unit": "s",
+   "class": "gpu",
+   "repeats": 3,
+   "who_waits": "a developer or the gate waiting for the live smoke (the whole scripted tour with its recording; wall time of the process, not the video's length)",
+   "workload": "spade_sandbox --live-smoke, the tour of the drone box, the airflow, the editor and the batch; ffmpeg on PATH. Row interface.live_smoke_wall (s); diagnostics: the video length, the frame count, the Run air chapters' wall seconds and the peak working set. The run must pass (a FAILED tour fails the run). n=3, its own window. With SPADE_EDITOR_PERF=1 each Run air that stops prints interface.run_air_frame (ms, one air frame, a ledger row) and the diagnostics interface.diag_run_air_step, _publish and _assemble; the tour has two (the editor.airflow chapter's, then batch.turbulence_air with subgrid on), suffixed _editor_airflow and _batch_turbulence. These rows exist once interface/l74-metrics (ef82d560) is merged",
+   "command": [
+    "{sandbox}",
+    "--live-smoke",
+    "--out",
+    "{smoke_out}",
+    "--label",
+    "perf {ticket}"
+   ],
+   "env": {
+    "SPADE_EDITOR_PERF": "1"
+   },
+   "per_occurrence": [
+    "_editor_airflow",
+    "_batch_turbulence"
+   ]
+  },
+  {
+   "name": "core.integrate_orientation",
+   "owner": "core",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ns",
+   "diagnostic": true,
+   "who_waits": "no one: one sub-step of the integrator",
+   "workload": "BM_IntegrateOrientation",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_IntegrateOrientation",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test"
+  },
+  {
+   "name": "rendering.csg_mesh_shell",
+   "owner": "rendering",
+   "kind": "gbench",
+   "basis": "cpu_time",
+   "unit": "ms",
+   "diagnostic": true,
+   "who_waits": "no one: one stage of mesh building",
+   "workload": "BM_CsgMeshShell",
+   "command": [
+    "{bench}",
+    "--benchmark_filter=^BM_CsgMeshShell",
+    "--benchmark_repetitions=5",
+    "--benchmark_min_warmup_time=1",
+    "--benchmark_format=json"
+   ],
+   "class": "test"
+  }
+ ]
+}
