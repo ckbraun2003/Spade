@@ -57,4 +57,9 @@ endif()
 message(STATUS "spade_sandbox (standalone): spade from ${spade_DIR}; GPU path "
                "${SPADE_RENDER_GL}; window backend ${SPADE_GLFW_HAS_BACKEND}")
 
+# The sandbox links spade_version (the editor's --version and About; L73a), which the root CMakeLists.txt defines in-tree. This project
+# is not the root, so it defines it here the same way. The generated header goes into THIS build tree and is never installed into
+# the SDK prefix: the engine's install surface stays domain-neutral (SL2a).
+include(${CMAKE_CURRENT_LIST_DIR}/../../cmake/SpadeVersion.cmake)
+
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/.. ${CMAKE_BINARY_DIR}/sandbox)
