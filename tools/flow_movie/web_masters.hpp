@@ -394,6 +394,61 @@ struct CaptionInput {
     return t;
 }
 
+// The perf stopwatch (L74, Test/Docs' PERF.md): the seconds each phase of one frame of a web clip took. `frame` is the
+// whole loop body (every phase but the encode's tail); `render` is the GL draw's submit and the GPU's time to finish it,
+// `readback` the copy of the picture to memory, `flip` the top-row-first reorder and the alpha fill, `box_down` the
+// 2x supersample's filter down to the frame, `pipe` the write of the frame into ffmpeg (it stalls when the encoder is
+// behind), `cache_read` the frame's read from the cache, `streamline_shot` the view's streamlines and parts.
+struct FrameTimes {
+    double frame = 0.0, cache_read = 0.0, streamline_shot = 0.0, gl_upload = 0.0, render = 0.0, readback = 0.0,
+           flip = 0.0, box_down = 0.0, pipe = 0.0;
+};
+
+// The middle value (an even count: the mean of the middle two), 0 for none: a first frame's one-off costs do not move it.
+[[nodiscard]] inline double median_of(std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    const std::size_t mid = v.size() / 2u;
+    return v.size() % 2u == 1u ? v[mid] : 0.5 * (v[mid - 1u] + v[mid]);
+}
+
+// One figure of the ledger: `PERF <name> <value> <unit>`, the value to four places.
+[[nodiscard]] inline std::string perf_line(const std::string& name, double value, const std::string& unit) {
+    char text[64];
+    std::snprintf(text, sizeof text, "%.4f", value);
+    return "PERF " + name + " " + text + " " + unit;
+}
+
+// Where a web run's frames came from, for the ledger's note: the cache's folder, its frames and its bytes.
+[[nodiscard]] inline std::string web_cache_note(const std::string& cache, uint64_t frames, uint64_t bytes) {
+    return "PERF-NOTE web_cache " + cache + " " + std::to_string(frames) + " frames " + std::to_string(bytes) + " bytes";
+}
+
+// What a web run prints: the frame's median first (`rendering.web_frame_4k`), then each phase's median
+// (`rendering.diag_web_<phase>`), then the encode's tail after the last frame (the clip's finish) shared over its frames.
+// Nothing for a run of no frames.
+[[nodiscard]] inline std::vector<std::string> web_perf_lines(const std::vector<FrameTimes>& frames, double encode_tail_s) {
+    std::vector<std::string> lines;
+    if (frames.empty()) return lines;
+    const auto median = [&](double FrameTimes::*field) {
+        std::vector<double> v;
+        v.reserve(frames.size());
+        for (const FrameTimes& f : frames) v.push_back(f.*field);
+        return median_of(std::move(v));
+    };
+    lines.push_back(perf_line("rendering.web_frame_4k", median(&FrameTimes::frame), "s"));
+    lines.push_back(perf_line("rendering.diag_web_cache_read", median(&FrameTimes::cache_read), "s"));
+    lines.push_back(perf_line("rendering.diag_web_streamline_shot", median(&FrameTimes::streamline_shot), "s"));
+    lines.push_back(perf_line("rendering.diag_web_gl_upload", median(&FrameTimes::gl_upload), "s"));
+    lines.push_back(perf_line("rendering.diag_web_render", median(&FrameTimes::render), "s"));
+    lines.push_back(perf_line("rendering.diag_web_readback", median(&FrameTimes::readback), "s"));
+    lines.push_back(perf_line("rendering.diag_web_flip", median(&FrameTimes::flip), "s"));
+    lines.push_back(perf_line("rendering.diag_web_box_down", median(&FrameTimes::box_down), "s"));
+    lines.push_back(perf_line("rendering.diag_web_pipe", median(&FrameTimes::pipe), "s"));
+    lines.push_back(perf_line("rendering.diag_web_encode_tail", encode_tail_s / static_cast<double>(frames.size()), "s"));
+    return lines;
+}
+
 // A scene whose background is pure black (#000000): no sky, so nothing but the flow and the parts is drawn.
 inline void blacken(spade::render::RenderScene& scene) {
     scene.lighting.sky_zenith = glm::vec3(0.0f);

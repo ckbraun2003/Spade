@@ -1,6 +1,7 @@
 #include "recorder.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -251,9 +252,15 @@ GlStage::~GlStage() {
 
 spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const spade::render::Camera& camera,
                                   std::vector<uint8_t>& rgba) {
+    using Clock = std::chrono::steady_clock;
+    const auto seconds = [](Clock::time_point from, Clock::time_point to) {
+        return std::chrono::duration<double>(to - from).count();
+    };
+    const auto t0 = Clock::now();
     // The flow views carry no meshes, so an upload per frame costs nothing,
     // and a scene that does carry them never draws against a stale set.
     if (auto up = renderer_->upload_scene(scene); !up) return up;
+    const auto t1 = Clock::now();
     spade::render::RenderOptions options;
     options.shadows = false;
     options.overlays = false;
@@ -262,10 +269,13 @@ spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     if (auto drew = renderer_->draw(scene, camera, options, width_, height_); !drew) return drew;
+    glFinish();  // the GPU's time belongs to the draw, not to the read that would otherwise wait for it
+    const auto t2 = Clock::now();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, static_cast<GLsizei>(width_), static_cast<GLsizei>(height_), GL_RGBA, GL_UNSIGNED_BYTE,
                  bottom_first_.data());
+    const auto t3 = Clock::now();
     const std::size_t row = static_cast<std::size_t>(width_) * 4u;
     rgba.resize(bottom_first_.size());
     for (uint32_t y = 0; y < height_; ++y) {
@@ -274,6 +284,8 @@ spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const
     // The march leaves its transmittance in alpha (0 behind an opaque iso):
     // a frame is a picture, so every pixel is opaque.
     for (std::size_t p = 3; p < rgba.size(); p += 4u) rgba[p] = 255u;
+    const auto t4 = Clock::now();
+    last_times_ = DrawTimes{seconds(t0, t1), seconds(t1, t2), seconds(t2, t3), seconds(t3, t4)};
     return {};
 }
 

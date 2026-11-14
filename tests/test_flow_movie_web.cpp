@@ -11,6 +11,8 @@
 //                 (only raw/spade and MANIFEST.md); the caption's standing
 //                 caveats; and a blackened scene drawing pure black on the CPU
 //                 renderer, the GL views' reference.
+//   the perf stopwatch (L74): the median of a run's frames, the `PERF <name> <value> <unit>` line, the lines one web run
+//                 prints (the frame's median and each phase's) and the cache's `PERF-NOTE`.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -466,6 +468,59 @@ TEST(FlowMovieWeb, ABlackenedSceneDrawsPureBlackOnTheCpuRenderer) {
     std::size_t lit = 0;
     for (std::size_t p = 0; p < bgrx.size(); p += 4u) lit += (bgrx[p] | bgrx[p + 1u] | bgrx[p + 2u]) != 0u ? 1u : 0u;
     EXPECT_EQ(lit, std::size_t{0}) << "every pixel's B, G and R are 0";
+}
+
+// --- the perf stopwatch (L74, Test/Docs' PERF.md) --------------------------------------------------------------
+
+TEST(FlowMovieWeb, ThePerfMedianIsTheMiddleFrameAndOneSlowFrameDoesNotMoveIt) {
+    EXPECT_EQ(web::median_of({}), 0.0);
+    EXPECT_EQ(web::median_of({0.5}), 0.5);
+    EXPECT_EQ(web::median_of({3.0, 1.0, 2.0}), 2.0);
+    EXPECT_EQ(web::median_of({4.0, 1.0, 2.0, 3.0}), 2.5);  // an even count: the mean of the middle two
+    EXPECT_EQ(web::median_of({0.6, 0.6, 0.6, 0.6, 9.0}), 0.6);  // the first frame's one-off cost is not the frame's cost
+}
+
+TEST(FlowMovieWeb, APerfLineIsTheNameTheValueAndTheUnit) {
+    EXPECT_EQ(web::perf_line("rendering.web_frame_4k", 0.67149, "s"), "PERF rendering.web_frame_4k 0.6715 s");
+    EXPECT_EQ(web::perf_line("rendering.diag_web_box_down", 0.032, "s"), "PERF rendering.diag_web_box_down 0.0320 s");
+    EXPECT_EQ(web::web_cache_note("C:/v/cache/d1-still", 180, 123456789u),
+              "PERF-NOTE web_cache C:/v/cache/d1-still 180 frames 123456789 bytes");
+}
+
+TEST(FlowMovieWeb, AWebRunPrintsTheFramesMedianAndEachPhaseUnderTheLedgersNames) {
+    std::vector<web::FrameTimes> frames(3);
+    const double frame[3] = {0.9, 0.6, 0.7};  // the whole loop body of each frame
+    for (int i = 0; i < 3; ++i) {
+        frames[i].frame = frame[i];
+        frames[i].cache_read = 0.010 * (i + 1);
+        frames[i].streamline_shot = 0.100;
+        frames[i].gl_upload = 0.020;
+        frames[i].render = 0.050;
+        frames[i].readback = 0.080;
+        frames[i].flip = 0.030;
+        frames[i].box_down = 0.150;
+        frames[i].pipe = 0.200;
+    }
+    const std::vector<std::string> lines = web::web_perf_lines(frames, 3.0);
+    ASSERT_FALSE(lines.empty());
+    EXPECT_EQ(lines.front(), "PERF rendering.web_frame_4k 0.7000 s");  // the median of 0.9, 0.6, 0.7, first
+    const auto line_of = [&](const std::string& name) {
+        for (const std::string& line : lines) {
+            if (line.rfind("PERF rendering." + name + " ", 0) == 0) return line;
+        }
+        return std::string("(missing ") + name + ")";
+    };
+    EXPECT_EQ(line_of("diag_web_cache_read"), "PERF rendering.diag_web_cache_read 0.0200 s");
+    EXPECT_EQ(line_of("diag_web_streamline_shot"), "PERF rendering.diag_web_streamline_shot 0.1000 s");
+    EXPECT_EQ(line_of("diag_web_gl_upload"), "PERF rendering.diag_web_gl_upload 0.0200 s");
+    EXPECT_EQ(line_of("diag_web_render"), "PERF rendering.diag_web_render 0.0500 s");
+    EXPECT_EQ(line_of("diag_web_readback"), "PERF rendering.diag_web_readback 0.0800 s");
+    EXPECT_EQ(line_of("diag_web_flip"), "PERF rendering.diag_web_flip 0.0300 s");
+    EXPECT_EQ(line_of("diag_web_box_down"), "PERF rendering.diag_web_box_down 0.1500 s");
+    EXPECT_EQ(line_of("diag_web_pipe"), "PERF rendering.diag_web_pipe 0.2000 s");
+    // The encode's tail after the last frame, shared over the clip's frames: 3.0 s over 3 frames.
+    EXPECT_EQ(line_of("diag_web_encode_tail"), "PERF rendering.diag_web_encode_tail 1.0000 s");
+    EXPECT_TRUE(web::web_perf_lines({}, 1.0).empty());  // no frames, no figures
 }
 
 }  // namespace

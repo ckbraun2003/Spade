@@ -1552,8 +1552,13 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
 [[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t first, uint32_t k,
                                                  uint32_t n, GlStage& stage, uint32_t ss, spade::FlowVolume& volume,
                                                  FrameLog& log, std::vector<uint8_t>& rgba, std::string& note,
-                                                 double& draw_s) {
+                                                 double& draw_s, web::FrameTimes* times = nullptr) {
+    using Clock = std::chrono::steady_clock;
+    const auto since = [](Clock::time_point from) { return std::chrono::duration<double>(Clock::now() - from).count(); };
+    auto lap = Clock::now();
     if (auto read = read_frame(cache, first + k, volume, log); !read) return read;
+    if (times != nullptr) times->cache_read = since(lap);
+    lap = Clock::now();
     const View& view = film.views.front();
     render::RenderScene scene = black_scene(volume);
     render::Camera camera;
@@ -1573,10 +1578,19 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         scene.flow_line_style.glow_px *= scale;
         for (render::FlowPolyline& line : scene.flow_polylines) line.width_px *= scale;
     }
+    if (times != nullptr) times->streamline_shot = since(lap);
     const auto start = std::chrono::steady_clock::now();
     auto drew = stage.draw(scene, camera, rgba);
     draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    if (times != nullptr) {
+        times->gl_upload = stage.last_times().upload;
+        times->render = stage.last_times().render;
+        times->readback = stage.last_times().readback;
+        times->flip = stage.last_times().flip;
+    }
+    lap = Clock::now();
     if (drew && ss > 1u) rgba = box_down(rgba, stage.width() / ss, stage.height() / ss, ss);
+    if (times != nullptr) times->box_down = since(lap);
     return drew;
 }
 
@@ -1995,6 +2009,20 @@ struct WebTimes {
            std::to_string(c.fluid.n_v) + ".";
 }
 
+// The bytes of the files under `dir` (the cache's size, for the ledger's note).
+[[nodiscard]] uint64_t dir_bytes(const fs::path& dir) {
+    uint64_t total = 0;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code size_ec;
+        if (it->is_regular_file(size_ec)) {
+            const auto bytes = it->file_size(size_ec);
+            if (!size_ec) total += bytes;
+        }
+    }
+    return total;
+}
+
 // Films one website master: simulates (unless cached), draws its frames at 3840x2160 into <out>/web/<name>.mp4 and
 // its caption beside it, and, for the four that have one (or --web-still), a 5120x2880 PNG. Nothing leaves <out>.
 [[nodiscard]] int run_web(const Options& opt, GlStage& stage, const Encoder& encoder) {
@@ -2070,9 +2098,14 @@ struct WebTimes {
         }
         GlStage& frame_stage = large ? *large : stage;
         double draw_total = 0.0;
+        std::vector<web::FrameTimes> perf;  // each frame's phases: the ledger's figures are their medians
+        perf.reserve(n);
         const auto start = std::chrono::steady_clock::now();
         for (uint32_t k = 0; k < n; ++k) {
-            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s); !drew) {
+            web::FrameTimes ft;
+            const auto frame_start = std::chrono::steady_clock::now();
+            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s, &ft);
+                !drew) {
                 return fail(drew.error());
             }
             draw_total += draw_s;
@@ -2081,7 +2114,12 @@ struct WebTimes {
                                      "runs to the frame's edge\n", opt.web_id.c_str(), k);
                 return 1;
             }
+            const auto pipe_start = std::chrono::steady_clock::now();
             if (auto added = (*webclip)->add_frame(rgba); !added) return fail(added.error());
+            const auto frame_end = std::chrono::steady_clock::now();
+            ft.pipe = std::chrono::duration<double>(frame_end - pipe_start).count();
+            ft.frame = std::chrono::duration<double>(frame_end - frame_start).count();
+            perf.push_back(ft);
             if (k % 30u == 0u || k + 1u == n) {
                 std::printf("[ %s ] frame %u/%u, t %s, %.2f s a frame\n", opt.web_id.c_str(), k + 1u, n,
                             fixed(log.time, 4).c_str(),
@@ -2097,6 +2135,9 @@ struct WebTimes {
                     "through the encode %.3f s a frame, %.0f s in all\n",
                     opt.web_id.c_str(), encoder.width, encoder.height, n, draw_total / n, through / n, with_encode / n,
                     with_encode);
+        // The ledger's figures (Test/Docs' PERF.md): the median frame and each phase, and which cache they were drawn from.
+        for (const std::string& line : web::web_perf_lines(perf, with_encode - through)) std::printf("%s\n", line.c_str());
+        std::printf("%s\n", web::web_cache_note(cache.generic_string(), cached_frames(cache), dir_bytes(cache)).c_str());
         web::CaptionInput in;
         in.clip = clip;
         in.commit = build_identity();
