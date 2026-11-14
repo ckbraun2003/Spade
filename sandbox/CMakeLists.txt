@@ -31,6 +31,8 @@ add_executable(spade_sandbox
     # The drone sim box's setup and its one frame function, shared by the
     # window and the live smoke.
     scene_sessions.cpp
+    # The tour's chapter 4: the row of four shapes under L68's contact tumbling, drawn (bodies_sim.hpp is the tested half).
+    bodies_session.cpp
     # --live-smoke: the recorded tour (scripts/live-smoke.ps1). Its verdict
     # machinery is display-free in live_smoke.hpp and tested in spade_tests.
     live_tour.cpp
