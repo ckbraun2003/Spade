@@ -42,6 +42,11 @@
 namespace spade::physics {
 
 inline constexpr uint32_t kShapeMaxPoints = 16;
+
+// L82d: the radius a shaped model's bodies carry in BodyState::proxy_radius, in metres. 0 in that lane means "the world's", so the
+// proxy sphere is made inert by a radius no body origin gets within: static_contact.resolve tests `distance < radius` at the origin.
+inline constexpr float kInertProxyRadius = 1e-6f;
+
 // Sweeps of the velocity solve per substep: the default (a row's iterations lane 0) and the most a row may ask for.
 inline constexpr uint32_t kDefaultSweeps = 4;
 inline constexpr uint32_t kMaxSweeps = 16;
