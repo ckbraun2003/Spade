@@ -94,8 +94,10 @@ namespace spade::scene {
 //   4  adds `propulsion` to a model (N5a), its propulsion chain, written only
 //      when a model has one;
 //   5  adds `airflow`, the scene's airflow regions (N5b), written only when
-//      the scene has one.
-inline constexpr uint32_t kSceneFileVersion = 5;
+//      the scene has one;
+//   6  adds `collision` to a model (L82), its contact shape (physics::ShapeDesc), written only when
+//      a model has one. Any shape makes the scene version 6, whatever else it holds.
+inline constexpr uint32_t kSceneFileVersion = 6;
 inline constexpr uint32_t kSceneFileOldestVersion = 1;
 
 // The world a scene is placed in (SCN-001).

@@ -1,6 +1,7 @@
 #include "scene/scene_file.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <charconv>
 #include <cstddef>
@@ -25,6 +26,7 @@
 #include "physics/forces.hpp"              // drag_mode
 #include "scene/detail/asset_block.hpp"
 #include "scene/detail/model_block.hpp"
+#include "physics/rigid_contact.hpp"
 #include "world/detail/yaml_text.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
@@ -66,16 +68,18 @@ using yaml_text::vec3_field;
 
 // The first scene version that carries a model's parts (CORE-7), the first
 // that carries a mesh part's `shape: {mesh: {file, hash}}` (CORE-6), the
-// first that carries a model's `propulsion` chain (N5a), and the first that
-// carries the scene's `airflow` regions (N5b).
+// first that carries a model's `propulsion` chain (N5a), the first that
+// carries the scene's `airflow` regions (N5b), and the first that carries a
+// model's `collision` shape (L82).
 constexpr uint32_t kPartsVersion = 2;
 constexpr uint32_t kMeshPartsVersion = 3;
 constexpr uint32_t kPropulsionVersion = 4;
 constexpr uint32_t kAirflowVersion = 5;
+constexpr uint32_t kCollisionVersion = 6;
 static_assert(kSceneFileOldestVersion < kPartsVersion && kPartsVersion < kMeshPartsVersion &&
                   kMeshPartsVersion < kPropulsionVersion && kPropulsionVersion < kAirflowVersion &&
-                  kAirflowVersion <= kSceneFileVersion,
-              "this build reads the versions that carry parts, mesh parts, chains and airflow regions");
+                  kAirflowVersion < kCollisionVersion && kCollisionVersion <= kSceneFileVersion,
+              "this build reads the versions that carry parts, mesh parts, chains, airflow regions and shapes");
 
 // The schema a diagnostic blames: the file's OWN declared version wherever
 // the reader has one, because a key set is version-gated (a model's `parts`),
@@ -131,9 +135,13 @@ static_assert(physics::airflow::kXMinus == 0 && physics::airflow::kXPlus == 1 &&
 
 // The version a scene is written as: the oldest that carries everything in it
 // (scene_file.hpp, property 3). Every model is looked at: a chain on the last
-// model makes the scene version 4 however early a mesh part appears, and a
-// region makes it version 5 whatever its models hold.
+// model makes the scene version 4 however early a mesh part appears, a
+// region makes it version 5 whatever its models hold, and a shape on any
+// model makes it version 6.
 [[nodiscard]] uint32_t written_version(const SceneDesc& scene) {
+    for (const vehicles::ModelType& m : scene.models) {
+        if (m.shape) return kCollisionVersion;
+    }
     if (!scene.airflow.empty()) return kAirflowVersion;
     uint32_t version = kSceneFileOldestVersion;
     for (const vehicles::ModelType& m : scene.models) {
@@ -253,6 +261,48 @@ void emit_part(std::string& out, const vehicles::PartDesc& p, const std::string&
     emit_sdf_lists(out, p.shape, indent + "        ");
 }
 
+// A model's `collision` (L82), physics::ShapeDesc by its own names: `kind`, then the keys the kind uses, then the optional ones. A
+// sphere or capsule has a `radius`; a box or hull a `skin`. `friction` and `restitution` are written only when the shape sets
+// them (a negative value is "this world's"), `rest_speed` and `iterations` only when not 0 (the default). Floats are format_float's.
+constexpr std::string_view kShapeKindNames[] = {"", "sphere", "capsule", "box", "hull"};
+static_assert(static_cast<uint32_t>(physics::ShapeKind::sphere) == 1 && static_cast<uint32_t>(physics::ShapeKind::capsule) == 2 &&
+                  static_cast<uint32_t>(physics::ShapeKind::box) == 3 && static_cast<uint32_t>(physics::ShapeKind::hull) == 4,
+              "kShapeKindNames is indexed by physics::ShapeKind");
+
+void emit_collision(std::string& out, const physics::ShapeDesc& d, const std::string& indent) {
+    out += indent + "kind: " + quote_yaml(kShapeKindNames[static_cast<uint32_t>(d.kind)]) + "\n";
+    switch (d.kind) {
+        case physics::ShapeKind::sphere:
+            out += indent + "radius: " + format_float(d.radius) + "\n";
+            break;
+        case physics::ShapeKind::capsule:
+            out += indent + "radius: " + format_float(d.radius) + "\n";
+            out += indent + "a: " + vec3_list(d.a) + "\n";
+            out += indent + "b: " + vec3_list(d.b) + "\n";
+            break;
+        case physics::ShapeKind::box:
+            out += indent + "skin: " + format_float(d.radius) + "\n";
+            out += indent + "half_extents: " + vec3_list(d.half_extents) + "\n";
+            break;
+        case physics::ShapeKind::hull: {
+            out += indent + "skin: " + format_float(d.radius) + "\n";
+            out += indent + "points: [";
+            for (std::size_t i = 0; i < d.points.size(); ++i) {
+                if (i != 0) out += ", ";
+                out += vec3_list(d.points[i]);
+            }
+            out += "]\n";
+            break;
+        }
+        case physics::ShapeKind::none:
+            break;
+    }
+    if (d.friction >= 0.0f) out += indent + "friction: " + format_float(d.friction) + "\n";
+    if (d.restitution >= 0.0f) out += indent + "restitution: " + format_float(d.restitution) + "\n";
+    if (d.rest_speed != 0.0f) out += indent + "rest_speed: " + format_float(d.rest_speed) + "\n";
+    if (d.iterations != 0) out += indent + "iterations: " + dec(d.iterations) + "\n";
+}
+
 }  // namespace
 
 void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::string_view lead,
@@ -322,6 +372,13 @@ void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::str
     if (m.propulsion) {
         out += in + "propulsion:\n";
         detail::emit_propulsion(out, *m.propulsion, in + "  ");
+    }
+
+    // The contact shape (version 6, L82), the model's last key, as ModelType::shape is its last member: written only
+    // when set, so a model without one is the text it always was.
+    if (m.shape) {
+        out += in + "collision:\n";
+        emit_collision(out, *m.shape, in + "  ");
     }
 }
 
@@ -494,6 +551,13 @@ void emit_region(std::string& out, const SceneAirflowRegion& r) {
             "# A model's last key, `propulsion` (scene version 4), is its propulsion\n"
             "# chain, as a model file writes it: every field of\n"
             "# vehicles::PropulsionChain by its own name, kv in rad/(s V).\n";
+    }
+    if (version >= kCollisionVersion) {
+        out +=
+            "# A model's `collision` (scene version 6), after `propulsion`, is its contact shape: `kind` (sphere,\n"
+            "# capsule, box or hull), then its `radius` (sphere, capsule) or `skin` (box, hull), its `a` and `b`\n"
+            "# (capsule), `half_extents` (box) or `points` (hull, at most 16), in the body's principal frame; then, when\n"
+            "# not the default, `friction` and `restitution` (absent: the world's), `rest_speed` and `iterations`.\n";
     }
     if (scene.models.empty()) {
         out += "models: []\n";
@@ -898,10 +962,118 @@ struct PartMesh {
     return out;
 }
 
+// A model's `collision` (version 6, L82). The keys a kind uses are required; `friction`, `restitution`, `rest_speed` and `iterations` are
+// optional (absent: the world's, the world's, 0, 0). A key another kind owns is unknown here, blamed as an unknown key is. The shape
+// is then compiled as set_body_shape() compiles it, so a description the engine refuses is refused here, by that text, at the line.
+[[nodiscard]] Result<physics::ShapeDesc> parse_collision(const YAML::Node& node, const std::string& what, std::string_view schema) {
+    if (Result<void> r = check_map(node, what,
+                                   {"kind", "radius", "skin", "a", "b", "half_extents", "points", "friction", "restitution",
+                                    "rest_speed", "iterations"},
+                                   schema);
+        !r) {
+        return std::unexpected(r.error());
+    }
+    const Result<YAML::Node> kind_node = field(node, "kind", what);
+    if (!kind_node) return std::unexpected(kind_node.error());
+    const Result<std::string> kind_text = scalar(*kind_node, what + ".kind");
+    if (!kind_text) return std::unexpected(kind_text.error());
+    uint32_t kind = 0;
+    for (uint32_t k = 1; k < std::size(kShapeKindNames); ++k) {
+        if (kShapeKindNames[k] == *kind_text) kind = k;
+    }
+    if (kind == 0) {
+        return std::unexpected(at(*kind_node, what + ".kind: unknown shape kind '" + *kind_text +
+                                                  "' (expected sphere, capsule, box or hull)"));
+    }
+    const auto shape_kind = static_cast<physics::ShapeKind>(kind);
+
+    // The keys this kind uses, besides `kind` and the four optional ones.
+    const auto owns = [&](std::string_view key) {
+        switch (shape_kind) {
+            case physics::ShapeKind::sphere: return key == "radius";
+            case physics::ShapeKind::capsule: return key == "radius" || key == "a" || key == "b";
+            case physics::ShapeKind::box: return key == "skin" || key == "half_extents";
+            case physics::ShapeKind::hull: return key == "skin" || key == "points";
+            case physics::ShapeKind::none: return false;
+        }
+        return false;
+    };
+    for (YAML::const_iterator it = node.begin(); it != node.end(); ++it) {
+        const std::string key = it->first.Scalar();
+        const bool optional = key == "kind" || key == "friction" || key == "restitution" || key == "rest_speed" ||
+                              key == "iterations";
+        if (!optional && !owns(key)) {
+            return std::unexpected(at(it->first, "unknown key '" + key + "' in " + what + " -- " + std::string(schema) +
+                                                     " does not define it"));
+        }
+    }
+
+    physics::ShapeDesc out{};
+    out.kind = shape_kind;
+    if (shape_kind == physics::ShapeKind::sphere || shape_kind == physics::ShapeKind::capsule) {
+        const Result<float> radius = float_field(node, "radius", what);
+        if (!radius) return std::unexpected(radius.error());
+        out.radius = *radius;
+    } else {
+        const Result<float> skin = float_field(node, "skin", what);
+        if (!skin) return std::unexpected(skin.error());
+        out.radius = *skin;
+    }
+    if (shape_kind == physics::ShapeKind::capsule) {
+        const Result<glm::vec3> a = vec3_field(node, "a", what);
+        if (!a) return std::unexpected(a.error());
+        const Result<glm::vec3> b = vec3_field(node, "b", what);
+        if (!b) return std::unexpected(b.error());
+        out.a = *a;
+        out.b = *b;
+    }
+    if (shape_kind == physics::ShapeKind::box) {
+        const Result<glm::vec3> half = vec3_field(node, "half_extents", what);
+        if (!half) return std::unexpected(half.error());
+        out.half_extents = *half;
+    }
+    if (shape_kind == physics::ShapeKind::hull) {
+        const Result<YAML::Node> points = field(node, "points", what);
+        if (!points) return std::unexpected(points.error());
+        if (!points->IsSequence()) {
+            return std::unexpected(at(*points, what + ".points must be a sequence of [x, y, z] points"));
+        }
+        for (std::size_t i = 0; i < points->size(); ++i) {
+            const Result<std::array<float, 3>> p = yaml_text::parse_floats<3>((*points)[i], what + ".points[" + dec(i) + "]");
+            if (!p) return std::unexpected(p.error());
+            out.points.emplace_back((*p)[0], (*p)[1], (*p)[2]);
+        }
+    }
+    if (has(node, "friction")) {
+        const Result<float> v = float_field(node, "friction", what);
+        if (!v) return std::unexpected(v.error());
+        out.friction = *v;
+    }
+    if (has(node, "restitution")) {
+        const Result<float> v = float_field(node, "restitution", what);
+        if (!v) return std::unexpected(v.error());
+        out.restitution = *v;
+    }
+    if (has(node, "rest_speed")) {
+        const Result<float> v = float_field(node, "rest_speed", what);
+        if (!v) return std::unexpected(v.error());
+        out.rest_speed = *v;
+    }
+    if (has(node, "iterations")) {
+        const Result<uint32_t> v = uint_field<uint32_t>(node, "iterations", what);
+        if (!v) return std::unexpected(v.error());
+        out.iterations = *v;
+    }
+    if (const Result<physics::ShapeRow> compiled = physics::compile_shape(out); !compiled) {
+        return std::unexpected(at(node, what + ": " + compiled.error().context));
+    }
+    return out;
+}
+
 }  // namespace
 
 // `format.key_version` gates the key set (`parts` from scene version 2, a
-// part's mesh from version 3, `propulsion` from version 4), and every
+// part's mesh from version 3, `propulsion` from version 4, `collision` from version 6), and every
 // diagnostic blames `format.schema`, the file's own. `base_dir` resolves a
 // mesh part's sidecar.
 Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const std::string& what,
@@ -910,8 +1082,15 @@ Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const st
     const std::string file_schema(format.schema);
     const bool reads_parts = format.key_version >= kPartsVersion;
     const bool reads_propulsion = format.key_version >= kPropulsionVersion;
+    const bool reads_collision = format.key_version >= kCollisionVersion;
     const Result<void> keys =
-        reads_propulsion
+        reads_collision
+            ? check_map(node, what,
+                        {"name", "version", "param_schema_id", "visual_ref", "design_to_principal", "com_offset",
+                         "body", "proxy_radius", "rotors", "drag_bodies", "imu_mounts", "parts", "propulsion",
+                         "collision"},
+                        file_schema)
+        : reads_propulsion
             ? check_map(node, what,
                         {"name", "version", "param_schema_id", "visual_ref", "design_to_principal", "com_offset",
                          "body", "proxy_radius", "rotors", "drag_bodies", "imu_mounts", "parts", "propulsion"},
@@ -1004,6 +1183,13 @@ Result<vehicles::ModelType> detail::parse_model(const YAML::Node& node, const st
             detail::parse_propulsion(node["propulsion"], what + ".propulsion", file_schema);
         if (!chain) return std::unexpected(chain.error());
         out.propulsion = std::move(*chain);
+    }
+
+    // collision: optional, as the writer omits it for a model without a shape (version 6, L82).
+    if (reads_collision && has(node, "collision")) {
+        Result<physics::ShapeDesc> shape = parse_collision(node["collision"], what + ".collision", file_schema);
+        if (!shape) return std::unexpected(shape.error());
+        out.shape = std::move(*shape);
     }
     return out;
 }
@@ -1474,6 +1660,12 @@ Result<void> detail::validate_model(const vehicles::ModelType& m, std::string_vi
     // every other orientation.
     if (!unit(m.design_to_principal)) {
         return std::unexpected(invalid("model '" + m.name + "': design_to_principal must be a unit quaternion"));
+    }
+    // The contact shape (L82) is compiled as set_body_shape() compiles it, so a file never holds one the engine would refuse.
+    if (m.shape) {
+        if (const Result<physics::ShapeRow> compiled = physics::compile_shape(*m.shape); !compiled) {
+            return std::unexpected(invalid("model '" + m.name + "': collision: " + compiled.error().context));
+        }
     }
     // A part's shape must be expressible as its file (SCN-002), as an
     // asset's collider must. Every other part rule is the model's, above.

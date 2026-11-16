@@ -1676,7 +1676,7 @@ TEST(SceneFile, ASceneWithoutAShapeIsWrittenAsItAlwaysWas) {
     const spade::Result<std::string> before = spade::scene::scene_to_yaml(*plain);
     ASSERT_OK(before);
     EXPECT_TRUE(contains(*before, "\nscene_version: 1\n")) << *before;
-    EXPECT_FALSE(contains(*before, "collision")) << *before;
+    EXPECT_FALSE(contains(*before, "\n    collision:")) << *before;  // the key (the assets' comment says "no collision")
 
     // A shape added and removed leaves the same bytes.
     SceneDesc s = *plain;
