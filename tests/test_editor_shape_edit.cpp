@@ -6,6 +6,12 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -16,6 +22,7 @@
 #include "../sandbox/editor_files.hpp"
 #include "../sandbox/editor_scene_edits.hpp"
 #include "../sandbox/editor_shapes.hpp"
+#include "../sandbox/editor_workspace.hpp"
 #include "editor_test_support.hpp"
 #include "physics/rigid_contact.hpp"
 
@@ -162,6 +169,120 @@ TEST(EditorShapeEdit, ABadLineIsRefusedWithAPlaceInIt) {
     const spade::Result<ed::SceneEdit> bad = ed::parse_edit("scene set-model-shape hover_quad_0 cone radius 1");
     ASSERT_FALSE(bad.has_value());
     EXPECT_NE(bad.error().context.find("cone"), std::string::npos) << bad.error().context;
+}
+
+// ---- the file and the Run (Core's half: scene version 6, instantiate's module set) --------------------------------------
+
+namespace fs = std::filesystem;
+
+[[nodiscard]] std::string read_text(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::string version_line(const std::string& yaml) {
+    const std::size_t at = yaml.find("scene_version:");
+    return at == std::string::npos ? std::string() : yaml.substr(at, yaml.find_first_of("\r\n", at) - at);
+}
+
+TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
+    const support::TempDir tmp;
+    const fs::path copy = support::mirror({fs::path(SPADE_ASSETS_DIR), support::hover_scene()}, tmp.path());
+    const std::string before = version_line(read_text(copy));
+    ASSERT_FALSE(before.empty());
+    spade::Result<ed::OpenedScene> opened = ed::open_scene(copy);
+    ASSERT_TRUE(opened.has_value());
+
+    ShapeDesc hull = spade::physics::hull_shape({glm::vec3(0.1f, 0.0f, 0.0f), glm::vec3(-0.1f, 0.0f, 0.0f),
+                                                 glm::vec3(0.0f, 0.1f, 0.0f), glm::vec3(0.0f, 0.0f, 0.1f)},
+                                                0.002f);
+    hull.friction = 0.4f;
+    hull.iterations = 3;
+    ASSERT_TRUE(ed::apply(opened->scene, ed::SetModelShape{"hover_quad_0", hull}).has_value());
+    ASSERT_TRUE(ed::save_scene(opened->scene, opened->world).has_value());
+    const std::string saved = read_text(copy);
+    EXPECT_EQ(version_line(saved), "scene_version: 6") << "a shape is what makes it version 6";
+    EXPECT_NE(saved.find("collision:"), std::string::npos);
+
+    spade::Result<ed::OpenedScene> again = ed::open_scene(copy);
+    ASSERT_TRUE(again.has_value()) << (again ? "" : again.error().context);
+    const auto* m = model_of(again->scene.desc(), "hover_quad_0");
+    ASSERT_NE(m, nullptr);
+    EXPECT_TRUE(ed::same_shape(m->shape, hull)) << "the shape reads back bit for bit";
+
+    // Cleared and saved, the file is the version it was before and carries no collision key.
+    ASSERT_TRUE(ed::apply(again->scene, ed::SetModelShape{"hover_quad_0", std::nullopt}).has_value());
+    ASSERT_TRUE(ed::save_scene(again->scene, again->world).has_value());
+    const std::string cleared = read_text(copy);
+    EXPECT_EQ(version_line(cleared), before);
+    EXPECT_EQ(cleared.find("collision:"), std::string::npos);
+}
+
+[[nodiscard]] std::unique_ptr<ed::EditorWorkspace> hover_workspace() {
+    spade::Result<ed::OpenedScene> opened = ed::open_scene(support::hover_scene());
+    EXPECT_TRUE(opened.has_value()) << (opened ? "" : opened.error().context);
+    spade::Result<std::unique_ptr<ed::EditorWorkspace>> w = ed::EditorWorkspace::create(std::move(*opened));
+    EXPECT_TRUE(w.has_value()) << (w ? "" : w.error().context);
+    return w ? std::move(*w) : nullptr;
+}
+
+// The hover quad with a box shape from its parts, dropped tilted from 0.6 m, run 5 s: its final design state.
+[[nodiscard]] std::optional<spade::FrameState> drop_the_box(std::string* why) {
+    auto w = hover_workspace();
+    if (!w) return std::nullopt;
+    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    const std::string quad = s.vehicles.at(0).name;
+    const auto* model = model_of(s, quad);
+    spade::Result<ShapeDesc> box = ed::shape_for_kind(*model, ShapeKind::box);
+    if (!box) {
+        if (why) *why = box.error().context;
+        return std::nullopt;
+    }
+    box->friction = 0.5f;
+    box->restitution = 0.1f;
+    w->panels().pending.push_back(ed::SetModelShape{quad, *box});
+    spade::VehicleSpawn start = s.vehicles.at(0).start;
+    start.pos.y = 0.6f;
+    start.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 0.4f)));
+    start.vel = glm::vec3(0.0f);
+    start.omega_body = glm::vec3(0.0f);
+    w->panels().pending.push_back(ed::SetVehicleStart{quad, start});
+    w->apply_panels();
+    w->panels().commands.push_back(ed::Command::run);
+    w->apply_panels();
+    if (w->run() == nullptr) {
+        if (why) *why = w->panels().status;
+        return std::nullopt;
+    }
+    for (int i = 0; i < 300; ++i) w->advance(1.0f / 60.0f);
+    return w->run()->state_of(quad);
+}
+
+TEST(EditorShapeEdit, ABoxDroppedFromATiltLandsOnAFaceAndTwoRunsAreBitEqual) {
+    std::string why;
+    const std::optional<spade::FrameState> a = drop_the_box(&why);
+    ASSERT_TRUE(a.has_value()) << "the Run did not start: " << why;
+    // Resting on a face: one of the body's axes is within 3 degrees of the world's up (cos 3 deg = 0.99863), it is nearly
+    // still, and it came down from 0.6 m.
+    const glm::vec3 up_in_body = glm::conjugate(a->orient) * glm::vec3(0.0f, 1.0f, 0.0f);
+    const float aligned = std::max({std::fabs(up_in_body.x), std::fabs(up_in_body.y), std::fabs(up_in_body.z)});
+    EXPECT_GE(aligned, 0.99863f) << "up in the body frame: " << up_in_body.x << " " << up_in_body.y << " " << up_in_body.z;
+    EXPECT_LT(glm::length(a->vel), 0.05f);
+    EXPECT_LT(glm::length(a->omega), 0.2f);
+    EXPECT_LT(a->pos.y, 0.3f);
+
+    const std::optional<spade::FrameState> b = drop_the_box(&why);
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(std::memcmp(&a->pos, &b->pos, sizeof a->pos), 0);
+    EXPECT_EQ(std::memcmp(&a->orient, &b->orient, sizeof a->orient), 0);
+}
+
+TEST(EditorShapeEdit, ARunWithoutAShapeBuildsTheStandardSetAsBefore) {
+    auto w = hover_workspace();
+    ASSERT_NE(w, nullptr);
+    w->panels().commands.push_back(ed::Command::run);
+    w->apply_panels();
+    ASSERT_NE(w->run(), nullptr) << w->panels().status;
 }
 
 }  // namespace
