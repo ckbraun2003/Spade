@@ -255,6 +255,7 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
         return std::nullopt;
     }
     for (int i = 0; i < 300; ++i) w->advance(1.0f / 60.0f);
+    if (why) *why = w->panels().status;  // a refused step pauses the run and says why here
     return w->run()->state_of(quad);
 }
 
@@ -262,6 +263,7 @@ TEST(EditorShapeEdit, ABoxDroppedFromATiltLandsOnAFaceAndTwoRunsAreBitEqual) {
     std::string why;
     const std::optional<spade::FrameState> a = drop_the_box(&why);
     ASSERT_TRUE(a.has_value()) << "the Run did not start: " << why;
+    EXPECT_TRUE(why.empty()) << "the Run said: " << why;
     // Resting on a face: one of the body's axes is within 3 degrees of the world's up (cos 3 deg = 0.99863), it is nearly
     // still, and it came down from 0.6 m.
     const glm::vec3 up_in_body = glm::conjugate(a->orient) * glm::vec3(0.0f, 1.0f, 0.0f);
