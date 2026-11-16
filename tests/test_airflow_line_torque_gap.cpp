@@ -322,4 +322,147 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
     EXPECT_TRUE(std::isfinite(sum_t) && std::isfinite(sum_q));
 }
 
+// A grid-free BEMT WITH the air's swirl fed back (angular induction), for L72h's question "how much of 'the BEMT reproduces
+// UIUC' survives with swirl". It mirrors tests/bemt_reference.hpp (the same annuli, interpolation, Prandtl factor and bisection;
+// that file is untouched) and adds the angular momentum balance per annulus: the blades' torque turns the air, B tangent r =
+// 4 pi rho r^2 ua u_t F, u_t the swirl at the disc (half the wake's), and the section then feels wt = omega r - u_t, the
+// convention the line's elements use. `swirl` false is the reference's own solve (checked against it below).
+struct SwirlSolve {
+    double thrust = 0.0;
+    double torque = 0.0;
+    double wt_ratio_mean = 0.0;  // the thrust-weighted mean of wt / (omega r)
+};
+
+SwirlSolve bemt_swirl(const af::BladeShape& b, const af::PolarTable& polar, float omega, bool swirl, bool tip_loss) {
+    constexpr uint32_t kAnnuli = 128;
+    const double pi = std::numbers::pi;
+    const double rho = static_cast<double>(kRho);
+    const double r0 = static_cast<double>(b.stations.front().r);
+    const double big_r = static_cast<double>(b.radius);
+    const double dr = (big_r - r0) / static_cast<double>(kAnnuli);
+    const double blades = static_cast<double>(b.blades);
+    const auto interpolate = [&](double r, auto pick) {
+        const auto& s = b.stations;
+        if (r <= static_cast<double>(s.front().r)) return static_cast<double>(pick(s.front()));
+        if (r >= static_cast<double>(s.back().r)) return static_cast<double>(pick(s.back()));
+        std::size_t i = 1;
+        while (static_cast<double>(s[i].r) < r) ++i;
+        const double r_lo = static_cast<double>(s[i - 1].r);
+        const double t = (r - r_lo) / (static_cast<double>(s[i].r) - r_lo);
+        const double lo_v = static_cast<double>(pick(s[i - 1]));
+        return lo_v + t * (static_cast<double>(pick(s[i])) - lo_v);
+    };
+    SwirlSolve out;
+    double wt_weighted = 0.0;
+    for (uint32_t k = 0; k < kAnnuli; ++k) {
+        const double r = r0 + dr * (static_cast<double>(k) + 0.5);
+        const float chord = static_cast<float>(interpolate(r, [](const af::BladeStation& s) { return s.chord; }));
+        const double beta = interpolate(r, [](const af::BladeStation& s) { return s.beta_deg; }) * pi / 180.0;
+        const float sin_b = static_cast<float>(std::sin(beta));
+        const float cos_b = static_cast<float>(std::cos(beta));
+        const double omega_r = static_cast<double>(omega) * r;
+        const auto prandtl = [&](double ua, double wt) {
+            if (!tip_loss) return 1.0;
+            const double w = std::sqrt(ua * ua + wt * wt);
+            const double sphi = w > 0.0 ? ua / w : 0.0;
+            if (sphi <= 0.0) return 1.0;
+            return (2.0 / pi) * std::acos(std::exp(-(blades / 2.0) * (big_r - r) / (r * sphi)));
+        };
+        // At the induced speed v: the swirl u_t from the angular balance (damped fixed point), then the section's load.
+        struct State {
+            double u = 0.0;
+            af::SectionLoad load;
+            double f = 1.0;
+        };
+        const auto at = [&](double v) {
+            State s;
+            for (int it = 0; it < (swirl && v > 1.0e-9 ? 60 : 1); ++it) {
+                const double wt = omega_r - s.u;
+                s.load = af::section_load(polar, chord, sin_b, cos_b, static_cast<float>(v), static_cast<float>(wt),
+                                          kRho);
+                s.f = prandtl(v, wt);
+                if (!swirl || v <= 1.0e-9) break;
+                const double u_new = blades * static_cast<double>(s.load.tangent) / (4.0 * pi * rho * r * v * s.f);
+                s.u = 0.5 * s.u + 0.5 * std::min(u_new, 0.5 * omega_r);
+            }
+            return s;
+        };
+        const auto residual = [&](double v) {
+            const State s = at(v);
+            return blades * static_cast<double>(s.load.axial) - 4.0 * pi * rho * r * v * v * s.f;
+        };
+        double lo = 0.0;
+        double hi = std::max(1.0, static_cast<double>(omega) * big_r);
+        double v = 0.0;
+        if (residual(0.0) > 0.0) {
+            for (int it = 0; it < 60; ++it) {
+                const double mid = 0.5 * (lo + hi);
+                (residual(mid) > 0.0 ? lo : hi) = mid;
+            }
+            v = 0.5 * (lo + hi);
+        }
+        const State s = at(v);
+        const double dt = blades * static_cast<double>(s.load.axial) * dr;
+        out.thrust += dt;
+        out.torque += blades * static_cast<double>(s.load.tangent) * r * dr;
+        wt_weighted += (omega_r - s.u) / omega_r * dt;
+    }
+    out.wt_ratio_mean = out.thrust > 0.0 ? wt_weighted / out.thrust : 0.0;
+    return out;
+}
+
+TEST(AirflowLineTorqueGap, BemtWithSwirlAgainstUiuc) {
+    if (!opted_in()) GTEST_SKIP() << "opt-in: SPADE_TORQUE_GAP=1 (a measurement, CPU, seconds)";
+    const Case cases[] = {{"uiuc_apce_10x5", 10.0 * kInch}, {"uiuc_mit_5x4", 5.0 * kInch}};
+    for (const Case& c : cases) {
+        const lp::Prop* prop = nullptr;
+        for (const lp::Prop& p : lp::kProps) {
+            if (std::string(p.id) == c.id) prop = &p;
+        }
+        ASSERT_NE(prop, nullptr) << c.id;
+        const double d = c.diameter;
+        const double n_rev = prop->run_rpm / 60.0;
+        const float omega = static_cast<float>(2.0 * std::numbers::pi * n_rev);
+        const double dim_t = static_cast<double>(kRho) * n_rev * n_rev * std::pow(d, 4);
+        const double dim_q = dim_t * d;
+        const double ct_uiuc = prop->ct_static;
+        const double cq_uiuc = prop->cq_static;
+        const af::BladeShape blade = blade_of(*prop, d);
+        const af::PolarTable polar = af::estimated_polar();
+
+        // The implementation check: with swirl off this is the reference's solve.
+        const bt::RotorLoads ref = solve(blade, {}, omega, true);
+        const SwirlSolve off = bemt_swirl(blade, polar, omega, false, true);
+        EXPECT_NEAR(off.thrust, static_cast<double>(ref.thrust), 1.0e-4 * static_cast<double>(ref.thrust)) << c.id;
+        EXPECT_NEAR(off.torque, static_cast<double>(ref.torque), 1.0e-4 * static_cast<double>(ref.torque)) << c.id;
+
+        for (const bool tip_loss : {true, false}) {
+            const SwirlSolve on = bemt_swirl(blade, polar, omega, true, tip_loss);
+            const SwirlSolve no = bemt_swirl(blade, polar, omega, false, tip_loss);
+            const double ct = on.thrust / dim_t;
+            const double cq = on.torque / dim_q;
+            std::printf("torque-gap %s BEMT with swirl (tip loss %s): C_T %.5f (%+.1f%% vs UIUC), C_Q %.6f (%+.1f%%), "
+                        "mean wt/(omega r) %.4f; without swirl: C_T %.5f (%+.1f%%), C_Q %.6f (%+.1f%%)\n",
+                        c.id, tip_loss ? "on" : "off", ct, 100.0 * (ct / ct_uiuc - 1.0), cq,
+                        100.0 * (cq / cq_uiuc - 1.0), on.wt_ratio_mean, no.thrust / dim_t,
+                        100.0 * (no.thrust / dim_t / ct_uiuc - 1.0), no.torque / dim_q,
+                        100.0 * (no.torque / dim_q / cq_uiuc - 1.0));
+            EXPECT_TRUE(std::isfinite(ct) && std::isfinite(cq));
+        }
+        // The drag scale at which the swirl BEMT's C_Q (tip loss on) meets UIUC's: a sensitivity, not adopted.
+        double lo = 0.25, hi = 4.0;
+        for (int i = 0; i < 40; ++i) {
+            const double mid = 0.5 * (lo + hi);
+            const af::PolarTable trial = af::estimated_polar(af::EstimatedPolarShape{-3.0f, static_cast<float>(mid)});
+            (bemt_swirl(blade, trial, omega, true, true).torque / dim_q < cq_uiuc ? lo : hi) = mid;
+        }
+        const double scale = 0.5 * (lo + hi);
+        const af::PolarTable fitted = af::estimated_polar(af::EstimatedPolarShape{-3.0f, static_cast<float>(scale)});
+        const SwirlSolve at_scale = bemt_swirl(blade, fitted, omega, true, true);
+        std::printf("torque-gap %s swirl BEMT sensitivity (not adopted): drag scale %.3f meets UIUC's C_Q, "
+                    "with C_T %.5f (%+.1f%%)\n",
+                    c.id, scale, at_scale.thrust / dim_t, 100.0 * (at_scale.thrust / dim_t / ct_uiuc - 1.0));
+    }
+}
+
 }  // namespace
