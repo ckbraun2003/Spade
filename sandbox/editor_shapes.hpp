@@ -35,7 +35,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "editor_gizmo.hpp"  // GizmoLine and project(): the wireframe is drawn through the gizmo's line path
 #include "physics/rigid_contact.hpp"
+#include "render/target.hpp"
 #include "sim/design_frame.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/model_type.hpp"
@@ -404,6 +406,26 @@ inline void hull_edges(std::vector<Segment>& out, const std::vector<glm::vec3>& 
         s.b = body.pos + body.orient * s.b;
     }
     return segments;
+}
+
+// The line colour index the viewport gives a contact shape (ui_theme.hpp's axis_colour: 0-2 the gizmo's axes, 3 an airflow
+// region's box, 4 this).
+inline constexpr int kShapeLine = 4;
+
+// The model's contact shape as the viewport draws it (L82): its wireframe placed at the vehicle whose DESIGN frame is `design`
+// (the run's state while it runs, else the scene's start) and projected into a view of `width` x `height` pixels. An edge with
+// an end behind the camera is left out; no shape, no lines.
+[[nodiscard]] inline std::vector<GizmoLine> shape_view_lines(const vehicles::ModelType& model, const FrameState& design,
+                                                            const render::Camera& cam, uint32_t width, uint32_t height) {
+    std::vector<GizmoLine> lines;
+    if (!model.shape) return lines;
+    const FrameState body = body_pose(model, design.pos, design.orient);
+    for (const Segment& s : placed(shape_segments(*model.shape), body)) {
+        const std::optional<glm::vec2> a = project(cam, s.a, width, height);
+        const std::optional<glm::vec2> b = project(cam, s.b, width, height);
+        if (a && b) lines.push_back(GizmoLine{*a, *b, kShapeLine, false});
+    }
+    return lines;
 }
 
 }  // namespace spade::sandbox::editor

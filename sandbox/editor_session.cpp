@@ -406,6 +406,12 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
             editor::region_box_lines(*w.panels().scene, rc, view.width, view.height);
         lines.insert(lines.begin(), boxes.begin(), boxes.end());
     }
+    // L82: the selected vehicle's contact shape, where its body is (the run's state while it runs).
+    if (const std::optional<editor::EditorWorkspace::ShapeView> shape = w.selected_shape()) {
+        const std::vector<editor::GizmoLine> wire =
+            editor::shape_view_lines(*shape->model, shape->design, rc, view.width, view.height);
+        lines.insert(lines.begin(), wire.begin(), wire.end());
+    }
     sink_->set_view_lines(std::move(lines));
     // SL10: the HUD names what the active path does not draw.
     // Run air's pressure line, then the gap (airflow::status_line()), or why
