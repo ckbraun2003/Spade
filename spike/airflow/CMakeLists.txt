@@ -19,6 +19,8 @@ add_library(spade_airflow_runner STATIC
     publish_chain.cpp
     step_chain.hpp
     step_chain.cpp
+    line_chain.hpp
+    line_chain.cpp
 )
 target_include_directories(spade_airflow_runner PUBLIC "${PROJECT_SOURCE_DIR}")
 target_compile_features(spade_airflow_runner PUBLIC cxx_std_23)
@@ -94,6 +96,12 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_pack_f16 NAN_PRESERVE)
 # B4's rotor discs, spread_actuator() as a gather
 # (tests/test_gpu_airflow_actuator.cpp).
 spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather NAN_PRESERVE)
+
+# P4c's actuator line, spread_line() on the device (tests/test_gpu_airflow_line.cpp; spike/airflow/line_chain.hpp packs
+# its records): the air each element feels, its section load, and the force spread as a gather.
+spade_slang_kernel_variants(spade_airflow_runner airflow_line_sample NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_line_load NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_line_spread NAN_PRESERVE)
 
 # B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):
 # the swap and add_and_clear as one add a face

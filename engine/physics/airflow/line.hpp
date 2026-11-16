@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -55,6 +56,10 @@ struct LineRotor {
     float psi = 0.0f;               // rad, the blade angle at the step's start
     const BladeShape* blade = nullptr;
     const PolarTable* polar = nullptr;
+    // The kernel's width eps in cells (the Gaussian's e-folding length): 2 is the line's own and, held by Interface, every run's; a
+    // diagnostic knob for a sweep that holds the PHYSICAL width fixed across resolutions. The support stays 6 cells (a wider eps is
+    // cut earlier than 3 eps). Refused outside [1, 3].
+    float eps_cells = 2.0f;
 };
 
 // One element of one blade at one sub-azimuth.
@@ -68,6 +73,26 @@ struct LineElement {
     float cos_beta = 1.0f;
 };
 
+// THE STENCIL (the device twin packs these, P4c). One axis of one component's stencil: the faces lo .. lo + n - 1 and their weights
+// exp(-((x_i - pos) / eps)^2); n is at most kLineTaps (the 6-cell support, whatever eps_cells), sum is the weights' sum.
+inline constexpr int kLineTaps = 13;
+
+struct LineAxisTaps {
+    int lo = 0;
+    int n = 0;
+    float sum = 0.0f;
+    std::array<float, kLineTaps> w{};
+};
+
+// The stencil of component c (0 u, 1 v, 2 w) at a point: its three axes' taps, and sum, the product of the axes' sums. The weights are
+// computed under the caller's flush scope (spread_line's own, when it computes them).
+struct LineStencil {
+    std::array<LineAxisTaps, 3> ax;
+    float sum = 0.0f;
+};
+
+[[nodiscard]] LineStencil line_stencil(const GridShape& shape, uint32_t component, glm::vec3 pos, float eps_cells) noexcept;
+
 // The kernel's reach beyond a rotor's radius: 3 eps = 6 dx.
 [[nodiscard]] inline float line_margin(float dx) noexcept { return 6.0f * dx; }
 
@@ -77,7 +102,7 @@ struct LineElement {
 [[nodiscard]] std::vector<LineElement> line_elements(const LineRotor& rotor, float dx, float h, uint32_t n_sub);
 
 // The air an element at `pos` feels: the kernel mean of the faces' velocities (THE KERNEL). `pos` must have its reach in the grid.
-[[nodiscard]] glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos) noexcept;
+[[nodiscard]] glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos, float eps_cells = 2.0f) noexcept;
 
 struct LineReport {
     float thrust = 0.0f;  // N along the axis, all blades, the mean over the sub-azimuths

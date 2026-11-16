@@ -21,6 +21,9 @@
 
 #include "compute/spirv_variants.hpp"
 #include "airflow_actuator_gather.spv.gen.hpp"
+#include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_sample.spv.gen.hpp"
+#include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
 #include "airflow_add_one.spv.gen.hpp"
 #include "airflow_advection.spv.gen.hpp"
@@ -96,6 +99,16 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0x4e277f29c0b7972aull},
     {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xf87449936054de8aull},
     {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 128, 0xb443b6d75cfb914aull},
+    // P4c: the actuator line's three kernels, recorded at the build that first compiled them (new kernels, not moved ones).
+    {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 32, 0xa8b04616db337126ull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 64, 0x9d39dba38a0056c6ull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 128, 0xeeb393910fbda186ull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 32, 0xfc4bbca18bcd96cdull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 64, 0x09d39026c7b4df6dull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 128, 0xd28935fd2777492dull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_spread, "airflow_line_spread", 32, 0x7f75dfc7d6fcb5b1ull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_spread, "airflow_line_spread", 64, 0xd98bda559dcd6351ull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_spread, "airflow_line_spread", 128, 0x2c4144e530d9cc11ull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 32, 0x965d899125eba947ull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 64, 0x7b5ddec1bed6fee7ull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 128, 0x3ef92492d1bc98a7ull},
