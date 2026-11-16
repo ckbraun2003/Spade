@@ -120,6 +120,9 @@ void airflow_actuator_gather(uint3 tid : SV_DispatchThreadID) {
         float swirl_sum = 0.0;
         for (uint i = 0u; i < count; ++i) {
             const float3 f = (x - disc_vec3(base + kPointsAt + 3u * i)) * inv_dx;
+            // A point two cells or more away on any axis has weight exactly 0 (peskin4 returns 0 there), so it adds exactly 0 to both
+            // sums: skipping it changes no bit and spares the three kernel evaluations (L74b).
+            if (abs(f.x) >= 2.0 || abs(f.y) >= 2.0 || abs(f.z) >= 2.0) continue;
             const float w = peskin4(f.x) * peskin4(f.y) * peskin4(f.z);
             sum += w;
             if (swirl) swirl_sum += airflow_discs[base + kTangentsAt + 3u * i + c] * w;
