@@ -240,10 +240,8 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
     }
     box->friction = 0.5f;
     box->restitution = 0.1f;
-    // The scene's model rests on a contact sphere of radius 0.2 (proxy_radius) that holds the body up with no torque, before any
-    // box face reaches the ground: a crate has a 1 mm one (0 means the world's radius, which is 0.2 here).
-    w->panels().pending.push_back(
-        ed::SetModelParam{quad, spade::vehicles::ModelIssue::Element::model, 0, "proxy_radius", 0.001f});
+    // The hover model's 0.2 m contact sphere (proxy_radius) is inert once it has a shape (L82d): the box alone meets the
+    // ground, so nothing is cleared here.
     w->panels().pending.push_back(ed::SetModelShape{quad, *box});
     spade::VehicleSpawn start = s.vehicles.at(0).start;
     start.pos.y = 0.6f;
