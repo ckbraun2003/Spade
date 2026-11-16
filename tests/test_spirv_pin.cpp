@@ -93,9 +93,9 @@ struct Row {
 };
 
 const Row kRows[] = {
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0xa7a28fa20e0349c8ull},
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xd5c906975cca98e8ull},
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 128, 0xd3d82509d193b228ull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0x4e277f29c0b7972aull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xf87449936054de8aull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 128, 0xb443b6d75cfb914aull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 32, 0x965d899125eba947ull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 64, 0x7b5ddec1bed6fee7ull},
     {&spade::compute::gen::kSpvVariants_airflow_add_increments, "airflow_add_increments", 128, 0x3ef92492d1bc98a7ull},
