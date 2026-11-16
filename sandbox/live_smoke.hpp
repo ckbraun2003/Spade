@@ -403,12 +403,12 @@ inline constexpr std::uintmax_t kSendableBytes = 30'000'000;
 // The first seconds of the video, so a forwarded MP4 says what it shows.
 // `label` is the commit and the date, from scripts/live-smoke.ps1.
 [[nodiscard]] inline std::string opening_card(std::string_view label) {
-    return "spade sandbox -- live smoke\n" + std::string(label) + "\nverdict at the end";
+    return "Spade Editor -- live smoke\n" + std::string(label) + "\nverdict at the end";
 }
 
 // The last seconds: the verdict and its counts.
 [[nodiscard]] inline std::string closing_card(std::string_view label, const Verdict& v) {
-    return "spade sandbox -- live smoke\n" + std::string(label) + "\nverdict " + (v.pass ? "PASS" : "FAIL") +
+    return "Spade Editor -- live smoke\n" + std::string(label) + "\nverdict " + (v.pass ? "PASS" : "FAIL") +
            "\nanomalies " + std::to_string(v.anomalies) + "   known-open " + std::to_string(v.known_open_fired) +
            "   unmarked " + std::to_string(v.unmarked.size()) + "   expired " + std::to_string(v.expired.size());
 }
