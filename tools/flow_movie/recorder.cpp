@@ -250,8 +250,8 @@ GlStage::~GlStage() {
     glfwTerminate();
 }
 
-spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const spade::render::Camera& camera,
-                                  std::vector<uint8_t>& rgba) {
+spade::Result<void> GlStage::draw_bottom_first(const spade::render::RenderScene& scene,
+                                               const spade::render::Camera& camera) {
     using Clock = std::chrono::steady_clock;
     const auto seconds = [](Clock::time_point from, Clock::time_point to) {
         return std::chrono::duration<double>(to - from).count();
@@ -276,6 +276,14 @@ spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const
     glReadPixels(0, 0, static_cast<GLsizei>(width_), static_cast<GLsizei>(height_), GL_RGBA, GL_UNSIGNED_BYTE,
                  bottom_first_.data());
     const auto t3 = Clock::now();
+    last_times_ = DrawTimes{seconds(t0, t1), seconds(t1, t2), seconds(t2, t3), 0.0};
+    return {};
+}
+
+spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const spade::render::Camera& camera,
+                                  std::vector<uint8_t>& rgba) {
+    if (auto drew = draw_bottom_first(scene, camera); !drew) return drew;
+    const auto t3 = std::chrono::steady_clock::now();
     const std::size_t row = static_cast<std::size_t>(width_) * 4u;
     rgba.resize(bottom_first_.size());
     for (uint32_t y = 0; y < height_; ++y) {
@@ -284,8 +292,7 @@ spade::Result<void> GlStage::draw(const spade::render::RenderScene& scene, const
     // The march leaves its transmittance in alpha (0 behind an opaque iso):
     // a frame is a picture, so every pixel is opaque.
     for (std::size_t p = 3; p < rgba.size(); p += 4u) rgba[p] = 255u;
-    const auto t4 = Clock::now();
-    last_times_ = DrawTimes{seconds(t0, t1), seconds(t1, t2), seconds(t2, t3), seconds(t3, t4)};
+    last_times_.flip = std::chrono::duration<double>(std::chrono::steady_clock::now() - t3).count();
     return {};
 }
 

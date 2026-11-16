@@ -238,6 +238,7 @@ add_executable(spade_tests
     test_hover_download.cpp
     test_flow_movie_frame_check.cpp
     test_flow_movie_web.cpp
+    test_flow_movie_box_down.cpp
     # the D1 films' hold (L63): live_case.cpp compiled in from the tool
     test_flow_movie_live_case.cpp
     ../tools/flow_movie/live_case.cpp

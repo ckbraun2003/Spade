@@ -71,6 +71,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "arm_pressure.hpp"
+#include "box_filter.hpp"
 #include "cache.hpp"
 #include "cases.hpp"
 #include "line_export.hpp"
@@ -1544,7 +1545,6 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
 
 // Frame k of the cache, drawn through the film's one view for a clip of n frames: the scene on pure black, the
 // view's shot, the held drone's parts and what the view draws on them. `note` takes the view's legend line.
-[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s);
 
 // `ss` is how many times larger than the frame `stage` is (1: the frame's own size): the scene's pixel widths are
 // scaled to match, the stage's picture is box-filtered down to the frame, and `draw_s` is the time of the large draw
@@ -1580,7 +1580,10 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     }
     if (times != nullptr) times->streamline_shot = since(lap);
     const auto start = std::chrono::steady_clock::now();
-    auto drew = stage.draw(scene, camera, rgba);
+    // A supersampled frame's row flip and alpha fill are folded into its filter (box_down_flipped): the 4x picture is
+    // read once, never copied.
+    const bool fold = ss > 1u;
+    auto drew = fold ? stage.draw_bottom_first(scene, camera) : stage.draw(scene, camera, rgba);
     draw_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     if (times != nullptr) {
         times->gl_upload = stage.last_times().upload;
@@ -1589,7 +1592,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         times->flip = stage.last_times().flip;
     }
     lap = Clock::now();
-    if (drew && ss > 1u) rgba = box_down(rgba, stage.width() / ss, stage.height() / ss, ss);
+    if (drew && fold) rgba = box_down_flipped(stage.bottom_first(), stage.width() / ss, stage.height() / ss, ss);
     if (times != nullptr) times->box_down = since(lap);
     return drew;
 }
@@ -2246,25 +2249,7 @@ struct WebTimes {
     return volume;
 }
 
-// The frame's pixels averaged over s x s blocks (RGBA8, the top row first), for a render at s times the size.
-[[nodiscard]] std::vector<uint8_t> box_down(const std::vector<uint8_t>& big, uint32_t w, uint32_t h, uint32_t s) {
-    std::vector<uint8_t> out(static_cast<std::size_t>(w) * h * 4u);
-    const uint32_t bw = w * s;
-    for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-            for (uint32_t c = 0; c < 4u; ++c) {
-                uint32_t sum = 0;
-                for (uint32_t dy = 0; dy < s; ++dy) {
-                    for (uint32_t dx = 0; dx < s; ++dx) {
-                        sum += big[((static_cast<std::size_t>(y) * s + dy) * bw + (x * s + dx)) * 4u + c];
-                    }
-                }
-                out[(static_cast<std::size_t>(y) * w + x) * 4u + c] = static_cast<uint8_t>((sum + s * s / 2u) / (s * s));
-            }
-        }
-    }
-    return out;
-}
+// box_down (the supersample's filter down to the frame) is tools/flow_movie/box_filter.hpp's.
 
 [[nodiscard]] int run_synthetic_still(const Options& opt, const Encoder& encoder) {
     const uint32_t s = std::max(1u, std::min(opt.supersample, 4u));
