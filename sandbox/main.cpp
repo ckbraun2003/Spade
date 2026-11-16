@@ -62,6 +62,7 @@
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
+#include "perf_lines.hpp"      // SPADE_EDITOR_PERF: the first-frame line (L74)
 #include "scene_sessions.hpp"  // each scene's setup and its one frame function
 #include "target_sink.hpp"     // Plan C task C1 -- the seam SL11 names
 
@@ -229,6 +230,7 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
     // RENDER ON DEMAND (L74b): an idle editor sleeps until an event or the heartbeat instead of drawing flat out
     // (idle_pacer.hpp). A run, Run air or a held input draws every pass, as before.
     spade::sandbox::IdlePacer pacer;
+    bool first_frame_pending = spade::sandbox::perf::enabled();  // L74: SPADE_EDITOR_PERF, off by default
     for (;;) {
         if (const double idle_s = pacer.wait_s(); idle_s > 0.0 && sink->wait_events(idle_s)) {
             pacer.woken();
@@ -247,6 +249,12 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
             return 1;
         }
         pacer.frame_done(in, session.animating());
+        if (first_frame_pending && sink->presented() > 0u) {
+            first_frame_pending = false;
+            std::puts(spade::sandbox::perf::line("interface.editor_first_frame",
+                                                 spade::sandbox::app::process_age_ms(), "ms")
+                          .c_str());
+        }
     }
     print_exit_summary(*sink, width, height, vsync);
     return 0;

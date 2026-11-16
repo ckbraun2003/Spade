@@ -538,6 +538,7 @@ if(SPADE_BUILD_SANDBOX)
         test_sandbox_app_paths.cpp
         test_sandbox_launcher.cpp
         test_sandbox_bodies.cpp
+        test_sandbox_perf.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
         test_editor_pick.cpp

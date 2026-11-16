@@ -593,7 +593,8 @@ class EditorWorkspace {
             return;
         }
         Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(
-            s, *region, std::nullopt, {}, air_starter_, panels_.air_level, panels_.air_turbulence ? kAirSgsCs : 0.0f);
+            s, *region, std::nullopt, {}, air_starter_, panels_.air_level, panels_.air_turbulence ? kAirSgsCs : 0.0f,
+            perf::enabled());
         if (!started) {
             panels_.status = started.error().context;
             return;
