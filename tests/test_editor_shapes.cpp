@@ -78,7 +78,8 @@ TEST(EditorShapes, ABoxNeedsAnAxisAlignedDesignFrame) {
     m.design_to_principal = glm::angleAxis(glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const auto turned = check_shape(m, box);
     ASSERT_FALSE(turned.has_value());
-    EXPECT_NE(turned.error().context.find("axis"), std::string::npos) << turned.error().context;
+    EXPECT_NE(turned.error().context.find("design_to_principal"), std::string::npos) << turned.error().context;
+    EXPECT_NE(turned.error().context.find("multiple of 90"), std::string::npos) << turned.error().context;
     // Only a box is refused: the other kinds have no axes to permute.
     EXPECT_TRUE(check_shape(m, spade::physics::sphere_shape(0.1f)).has_value());
     EXPECT_TRUE(check_shape(m, spade::physics::capsule_shape(glm::vec3(-0.2f, 0, 0), glm::vec3(0.2f, 0, 0), 0.05f))
