@@ -9,10 +9,10 @@
 // it the card (60 rendered frames make a second of video: the tour renders at 60 and records every second frame), and
 // the whole tour at most 170 s; the checks "length-budget" and "tour-length" fail the run past either.
 //
-// THIS RUN IS THE REFURBISHED TOUR (the audit, 2026-11-13): the catch-up chapter's soft shadows are retired (their
-// unit tests judge them), the Subgrid turbulence row and the Run-mode wind row moved into the editor chapter, and this
-// chapter shows what the L73a app work added for a tester: the About dialog and its version, Help > User Guide, and the
-// "Save changes?" prompt on closing with an unsaved scene.
+// THIS RUN (batch 32; the lead, 2026-11-16): L82, contact shapes in the editor. ONE step: the hover quad is tilted and
+// lifted, a Box is picked as the Collision section's combo does (the shape sized from the quad's parts), the cyan
+// wireframe is shown, and Run drops it: it lands on a face. The earlier batch's steps (About, User Guide, the "Save
+// changes?" prompt) are retired; their unit tests judge them.
 
 constexpr uint64_t kBatchChapterMaxFrames = 23u * 60u;  // 25 s less the card's 2
 constexpr uint64_t kTourMaxVideoFrames = 170u * kVideoFps;
@@ -26,7 +26,7 @@ constexpr uint64_t kTourMaxVideoFrames = 170u * kVideoFps;
     }
     return "5  New in this batch \xC2\xB7 " + tagged +
            "\nSpade Editor " + std::string(spade::version::kString) +
-           "\nHelp > About \xC2\xB7 Help > User Guide \xC2\xB7 \"Save changes?\" when closing an unsaved scene";
+           "\nA contact shape on a vehicle: pick it, see it, drop it";
 }
 
 void batch_tour(Tour& t, const fs::path& assets) {
@@ -34,7 +34,6 @@ void batch_tour(Tour& t, const fs::path& assets) {
     std::unique_ptr<EditorSession> session;
     const DrawFn draw = [&session, &t](const FrameInput& in) { return session->frame(in, t.sink().delta_seconds()); };
     const auto idle = InputFn{};
-    const auto open = [&]() -> bool { return s.check(session != nullptr, "open", "the chapter's editor is open"); };
     const auto w = [&]() -> editor::EditorWorkspace& { return session->workspace(); };
     const auto scene_now = [&]() -> const scene::SceneDesc& { return session->workspace().documents().scene.desc(); };
     const auto then = [&](int frames) { t.pump(frames, idle, draw); };
@@ -42,118 +41,75 @@ void batch_tour(Tour& t, const fs::path& assets) {
         w().panels().commands.push_back(c);
         then(5);
     };
-    const auto click_towards = [&](glm::vec3 at) {
-        const glm::vec3 eye = session->camera().to_render_camera().position;
-        w().click(eye, at - eye);
-    };
-    const auto arm = [&](std::string_view item) {
-        for (std::size_t i = 0; i < w().panels().library.size(); ++i) {
-            if (w().panels().library[i].name == item) w().panels().armed = i;
-        }
-    };
-    const fs::path work = t.out_dir() / "batch_work";
     const uint64_t frames_at_start = t.frames();
 
-    // ---- STEP 1: Help > About Spade Editor. The text the host hands the panels names the version and the licence;
-    // the dialog is opened as the Help button's entry would, shown, and closed by its Close button.
-    t.step("batch", "app", [&] {
-        std::error_code ec;
-        fs::remove_all(work, ec);
-        for (const char* dir : {"scenes", "worlds"}) {
-            fs::create_directories(work / dir, ec);
-            for (fs::directory_iterator it(assets / dir, ec), end; !ec && it != end; it.increment(ec)) {
-                if (it->is_regular_file()) {
-                    fs::copy_file(it->path(), work / dir / it->path().filename(), fs::copy_options::overwrite_existing,
-                                  ec);
-                }
-            }
-        }
-        if (!ec) {
-            fs::copy(assets / "library", work / "library",
-                     fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
-        }
-        if (!s.check(!ec, "work-copy", ec ? ec.message() : "assets/scenes, assets/worlds and assets/library copied")) {
-            return;
-        }
-        const fs::path file = work / "scenes" / "hover.scene.yaml";
-        Result<editor::OpenedScene> opened = editor::open_scene(file);
-        if (!s.check(opened.has_value(), "opens", opened ? file.filename().string() : opened.error().context)) return;
+    // ---- STEP 1: a Box on the hover quad, seen and dropped. Nothing is saved: the scene is opened from the assets as
+    // they are and never written.
+    t.step("batch", "shapes", [&] {
+        Result<editor::OpenedScene> opened = editor::open_scene(assets / "scenes" / "hover.scene.yaml");
+        if (!s.check(opened.has_value(), "opens", opened ? "hover.scene.yaml" : opened.error().context)) return;
         Result<std::unique_ptr<EditorSession>> made = EditorSession::create(std::move(*opened));
         if (!s.check(made.has_value(), "composes", made ? "hover" : made.error().context)) return;
         session = std::move(*made);
         session->attach(t.sink());
-        w().panels().about = app::about_text(spade::version::kString);
+        const std::string quad = scene_now().vehicles.at(0).name;
+
+        // Selected, tilted 0.6 rad and lifted to 0.6 m with its rotors still: it is dropped, not flown.
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, quad};
+        spade::VehicleSpawn start = scene_now().vehicles.at(0).start;
+        start.pos.y = 0.6f;
+        start.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 0.4f)));
+        start.vel = glm::vec3(0.0f);
+        start.omega_body = glm::vec3(0.0f);
+        start.rotor_omega = 0.0f;
+        w().panels().pending.push_back(editor::SetVehicleStart{quad, start});
+        w().apply_panels();
         then(30);
-        const std::string& about = w().panels().about;
-        s.check(about.find(spade::version::kString) != std::string::npos &&
-                    about.find("Apache License") != std::string::npos &&
-                    about.find("THIRD_PARTY_NOTICES.md") != std::string::npos,
-                "about-text", "the About text names " + std::string(spade::version::kString) + ", the licence and the notices");
-        s.check(w().panels().title == "hover.scene.yaml", "title", "the toolbar names the scene: " + w().panels().title);
-        w().panels().about_request = true;  // Help > About Spade Editor
-        then(150);
-        w().panels().about_dismiss = true;  // its Close button
-        then(10);
-    });
+        s.check(!w().selected_shape().has_value(), "no-shape", "the quad starts with no contact shape");
 
-    // ---- STEP 2: Help > User Guide. The guide's file is opened by the host's opener (a stand-in here: the tour opens
-    // no browser); a guide that is missing is a line in the panel, never a failure.
-    t.step("batch", "guide", [&] {
-        if (!open()) return;
-        const fs::path guide = work / "guide.html";
-        {
-            std::ofstream out(guide, std::ios::binary);
-            out << "<!doctype html><title>Spade Editor guide</title>";
+        // The combo's pick: a box sized from the model's parts.
+        const vehicles::ModelType* model = nullptr;
+        for (const auto& v : scene_now().vehicles) {
+            if (v.name != quad) continue;
+            for (const auto& m : scene_now().models) {
+                if (m.name == v.model) model = &m;
+            }
         }
-        fs::path asked;
-        w().set_user_guide(guide, [&asked](const fs::path& f) {
-            asked = f;
-            return true;
-        });
-        w().panels().user_guide_request = true;  // Help > User Guide
-        then(5);
-        s.check(asked == guide && w().panels().status.rfind("User Guide:", 0) != 0, "guide-opened",
-                asked.empty() ? "the opener was not asked" : "the opener was given " + path_text(asked.filename()));
-        t.sink().set_card("Help > User Guide opens the guide in the browser;\nwithout it the panel says so");
-        w().set_user_guide(work / "missing.html", [](const fs::path&) { return true; });
-        w().panels().user_guide_request = true;
-        then(5);
-        s.check(w().panels().status.find("the guide is missing") != std::string::npos, "guide-missing",
-                "the panel says: " + w().panels().status);
-        then(90);
-        t.sink().set_card({});
-    });
-
-    // ---- STEP 3: closing with an unsaved scene. A drone placed makes the scene unsaved (its title ends " *"); Esc asks
-    // "Save changes to <scene>?", and Cancel goes back to the editor with nothing lost or quit.
-    t.step("batch", "save_prompt", [&] {
-        if (!open()) return;
-        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
-        const std::size_t before = scene_now().vehicles.size();
-        arm("Phantom 3-class quad");
-        click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));
-        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
-        then(5);
-        s.check(w().unsaved() && w().panels().title == "hover.scene.yaml *", "title-unsaved",
-                "the toolbar says: " + w().panels().title);
-        w().request_close();  // Esc
-        then(5);
-        s.check(w().panels().close_prompt == "hover.scene.yaml" && !w().close_confirmed(), "prompt",
-                "asks about " + w().panels().close_prompt + ", not quit");
-        t.poster("batch");
+        if (!s.check(model != nullptr, "model", "the quad's model")) return;
+        Result<physics::ShapeDesc> box = editor::shape_for_kind(*model, physics::ShapeKind::box);
+        if (!s.check(box.has_value(), "box-sized", box ? "half extents from the parts" : box.error().context)) return;
+        w().panels().pending.push_back(editor::SetModelShape{quad, *box});
+        w().apply_panels();
+        t.sink().set_card("Collision shape: Box\nthe cyan wireframe is what the contact pass tests");
         then(120);
-        w().panels().close_choice = editor::CloseChoice::cancel;
-        then(5);
-        s.check(w().panels().close_prompt.empty() && !w().close_confirmed() && w().unsaved(), "cancel",
-                "back in the editor, the scene still unsaved and the editor still open");
-        command(editor::Command::undo);
+        const bool shown = w().selected_shape().has_value();
+        s.check(shown && w().panels().status.find("refus") == std::string::npos, "shape-set",
+                shown ? "the box is on the quad's model, drawn at its start pose" : "no shape: " + w().panels().status);
+        t.poster("batch");
+
+        // Run: it falls and lands on a face.
+        t.sink().set_card({});
+        command(editor::Command::run);
+        then(150);
+        const editor::EditorRun* run = w().run();
+        if (!s.check(run != nullptr && run->tick() > 0u, "runs",
+                     run != nullptr ? "tick " + std::to_string(run->tick()) : w().panels().status)) {
+            return;
+        }
+        const std::optional<FrameState> now = run->state_of(quad);
+        if (s.check(now.has_value(), "state", "the quad's state in the Run")) {
+            const glm::vec3 up = glm::conjugate(now->orient) * glm::vec3(0.0f, 1.0f, 0.0f);
+            const float aligned = std::max({std::fabs(up.x), std::fabs(up.y), std::fabs(up.z)});
+            s.check(aligned >= 0.99863f && now->pos.y < 0.3f, "lands-on-a-face",
+                    "a body axis is " + fmt(std::acos(std::min(aligned, 1.0f)) * 57.29578f) + " degrees from up, height " +
+                        fmt(now->pos.y) + " m");
+        }
+        then(30);
+        command(editor::Command::stop);
         s.check(t.frames() - frames_at_start <= kBatchChapterMaxFrames, "length-budget",
                 std::format("{:.1f} s of video in the chapter's steps (at most {} s, the card besides)",
                             static_cast<double>(t.frames() - frames_at_start) / 60.0, kBatchChapterMaxFrames / 60));
     });
 
     session.reset();  // detaches its panels while the window is still open
-    std::error_code ec;
-    fs::remove_all(work, ec);
-    if (ec) s.note("the chapter's work copy was not removed: " + ec.message());
 }
