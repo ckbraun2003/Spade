@@ -1970,16 +1970,30 @@ void bodies_chapter(Tour& t) {
         if (!s.check(made.has_value(), "starts", made ? "four shapes" : made.error().context)) return;
         BodiesSession& b = **made;
         b.attach(t.sink());
-        const DrawFn draw = [&b](const FrameInput&) { return b.frame(kDt); };
-        t.sink().set_card("Bodies\na sphere, a cube, a capsule and a drone-sized hull, each dropped on the ground:\n"
-                          "Core's contact, one shape each");
-        t.pump(45, {}, draw);
-        t.sink().set_card({});
-        // A check that cannot fail checks nothing: before the pieces have landed, the cube is not at rest on a face.
-        s.check(!b.sim().verdict(1).ok, "not-vacuous",
-                "the cube at " + std::to_string(b.sim().steps()) + " ms: " + b.sim().verdict(1).detail);
+        // Sim seconds per second of the window: 0 while the start pose is held, 0.5 for the first 2 s of the sim (half
+        // speed, so the drop and the tumble can be followed), then 1. The checks judge the sim, which is the same sim at
+        // any speed: the same steps, drawn more often.
+        float rate = 0.0f;
+        const DrawFn draw = [&b, &rate](const FrameInput&) { return b.frame(kDt * rate); };
+        // The chapter card has named the shapes; nothing here covers the scene. The row at its start pose, held a second
+        // so it is seen before anything moves.
+        t.pump(30, {}, draw);
+        constexpr uint64_t kHalfSpeedSteps = 2000;
         constexpr uint64_t kSettleSteps = 8000;  // 8 s of the sim, as the unit test judges it
+        t.sink().set_caption("bodies  -  half speed");
+        rate = 0.5f;
+        bool vacuous_checked = false;
         while (b.sim().steps() < kSettleSteps && !t.stopped()) {
+            if (rate < 1.0f && b.sim().steps() >= kHalfSpeedSteps) {
+                rate = 1.0f;
+                t.sink().set_caption("bodies  -  real time");
+            }
+            // A check that cannot fail checks nothing: before the pieces have landed, the cube is not at rest on a face.
+            if (!vacuous_checked && b.sim().steps() >= 1500) {
+                vacuous_checked = true;
+                s.check(!b.sim().verdict(1).ok, "not-vacuous",
+                        "the cube at " + std::to_string(b.sim().steps()) + " ms: " + b.sim().verdict(1).detail);
+            }
             // A slow dolly in while the shapes tumble: from the whole row to the cube and the capsule close.
             const float along = std::min(1.0f, static_cast<float>(b.sim().steps()) / static_cast<float>(kSettleSteps));
             b.camera().distance = kBodiesStartDistance + (kBodiesEndDistance - kBodiesStartDistance) * along;
