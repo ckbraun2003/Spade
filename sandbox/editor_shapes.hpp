@@ -111,6 +111,13 @@ namespace detail {
     return glm::vec3(mass * (y2 + z2) / 3.0f, mass * (x2 + z2) / 3.0f, mass * (x2 + y2) / 3.0f);
 }
 
+// The "Inertia from box" button's value (Q3): the model's body.inertia_diag as a solid box of the model's mass with the shape's
+// half extents. Only when the model's shape is a box; nothing is set automatically.
+[[nodiscard]] inline std::optional<glm::vec3> inertia_from_box(const vehicles::ModelType& model) {
+    if (!model.shape || model.shape->kind != physics::ShapeKind::box) return std::nullopt;
+    return box_inertia_diag(model.body.mass, model.shape->half_extents);
+}
+
 // The body parts' union box in the DESIGN frame, (lo, hi): each part's box (vehicles::part_bounds(), in the part's frame)
 // posed by its mount. A rotor's parts are left out (they turn; their reach is the rotor's). Refused by name with no parts, or
 // when no body part has a box.
