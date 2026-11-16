@@ -12,7 +12,7 @@
 //   SPADE_V2B_STEPS (a short run for timing: no settled check)
 // The box is the V2 box in units of R: 5.25 R across, the rotor 1.7 R under the top, 6.6 R of air below it; every face open, still air;
 // the step h = 0.38 ms * dx / 4 mm (D1's, CFL held). The window: the mean over 10 R/v_h starting at 20 R/v_h, v_h from the UIUC static
-// thrust; UNSETTLED when the last two windows' thrusts differ by more than 2.5%.
+// thrust; UNSETTLED when the window after the verdict window differs (thrust 2.5%, power 3.75%).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -229,20 +229,24 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
 
     const std::array<double, 2> thrust{thrust_sum[0] / count[0], thrust_sum[1] / count[1]};
     const std::array<double, 2> torque{torque_sum[0] / count[0], torque_sum[1] / count[1]};
-    const double drift = std::abs(thrust[1] - thrust[0]) / thrust[1];
-    const double ct = thrust[1] / dim_t;
-    const double cq = torque[1] / dim_q;
-    const double power = torque[1] * static_cast<double>(omega);
-    const double fm = std::pow(thrust[1], 1.5) / (std::sqrt(2.0 * static_cast<double>(kRho) * area) * power);
-    std::printf("V2b R/dx %u eps %.1f mm (%.2f cells) %.0f rpm: windows [20,30] [30,40] R/v_h thrust %.4f, %.4f N "
-                "(differ %.2f%%: %s)\n",
-                rdx, eps_mm, eps_cells, rpm, thrust[0], thrust[1], 100.0 * drift,
-                drift <= 0.025 ? "settled" : "UNSETTLED");
+    // L72d's note: the verdict is the mean over 10 R/v_h from 20 R/v_h; the run is settled when the window after it
+    // has the same thrust to 2.5% and the same power (torque at one omega) to 3.75%.
+    const double drift = std::abs(thrust[1] - thrust[0]) / thrust[0];
+    const double power_drift = std::abs(torque[1] - torque[0]) / torque[0];
+    const double ct = thrust[0] / dim_t;
+    const double cq = torque[0] / dim_q;
+    const double power = torque[0] * static_cast<double>(omega);
+    const double fm = std::pow(thrust[0], 1.5) / (std::sqrt(2.0 * static_cast<double>(kRho) * area) * power);
+    const bool settled = drift <= 0.025 && power_drift <= 0.0375;
+    std::printf("V2b R/dx %u eps %.1f mm (%.2f cells) %.0f rpm: windows [20,30] (verdict) and [30,40] R/v_h thrust "
+                "%.4f, %.4f N (differ %.2f%%), torque %.5f, %.5f N m (differ %.2f%%): %s\n",
+                rdx, eps_mm, eps_cells, rpm, thrust[0], thrust[1], 100.0 * drift, torque[0], torque[1],
+                100.0 * power_drift, settled ? "settled" : "UNSETTLED");
     std::printf("V2b C_T %.5f vs UIUC %.5f (%+.1f%%); C_Q %.6f vs %.6f (%+.1f%%); FM %.3f; both within 10%%: %s\n",
                 ct, ct_uiuc,
                 100.0 * (ct / ct_uiuc - 1.0), cq, cq_uiuc, 100.0 * (cq / cq_uiuc - 1.0), fm,
                 (std::abs(ct / ct_uiuc - 1.0) <= 0.10 && std::abs(cq / cq_uiuc - 1.0) <= 0.10) ? "yes" : "no");
-    EXPECT_LE(drift, 0.025) << "unsettled: run longer";
+    EXPECT_TRUE(settled) << "unsettled: run longer";
 }
 
 }  // namespace
