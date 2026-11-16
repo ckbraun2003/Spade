@@ -99,6 +99,7 @@ add_executable(spade_tests
     test_airflow_bemt_uiuc.cpp
     test_airflow_line.cpp
     test_airflow_line_v2.cpp
+    test_airflow_line_torque_gap.cpp
     # the quad film's own case, compiled in for AirflowSgsFilm (L52)
     ../tools/flow_movie/quad_case.cpp
     test_airflow_check_grid.cpp
@@ -416,6 +417,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_solids.cpp
         test_gpu_airflow_step.cpp
         test_gpu_airflow_line.cpp
+        test_gpu_airflow_line_v2b.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_lbm.cpp
