@@ -126,6 +126,7 @@ add_executable(spade_tests
     test_device_limits.cpp
     test_model_file.cpp
     test_object_file.cpp
+    test_library_crate.cpp
     test_library_quad.cpp
     test_library.cpp
     test_library_props.cpp

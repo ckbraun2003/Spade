@@ -216,6 +216,11 @@ entries:
     file: "parts/comp_4s.battery.yaml"
     thumbnail: "thumbnails/comp_4s.png"
 
+  - name: "Crate"
+    category: "bodies"
+    file: "bodies/crate.model.yaml"
+    thumbnail: "thumbnails/crate.png"
+
   - name: "Reference quad (test fixture)"
     category: "test fixtures"
     file: "drones/reference_quad.model.yaml"
