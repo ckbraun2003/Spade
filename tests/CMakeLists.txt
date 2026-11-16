@@ -523,6 +523,8 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_document.cpp
         test_editor_scene_edits.cpp
         test_editor_model_params.cpp
+        # L82: a model's contact shape in the editor (sandbox/editor_shapes.hpp): checks, hull, inertia, wireframe.
+        test_editor_shapes.cpp
         test_editor_world_edits.cpp
         test_editor_files.cpp
         test_editor_hash_follow.cpp
