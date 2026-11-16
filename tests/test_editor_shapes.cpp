@@ -25,6 +25,7 @@ using spade::sandbox::editor::check_shape;
 using spade::sandbox::editor::hull_from_model;
 using spade::sandbox::editor::Segment;
 using spade::sandbox::editor::shape_segments;
+using spade::sandbox::editor::shape_for_kind;
 using spade::sandbox::editor::test::quad_model;
 
 // The quad with its design frame made trivial, one body part (a box of half extents 0.08, 0.03, 0.08) and its four
@@ -169,6 +170,72 @@ TEST(EditorShapes, TheBodyPoseIsTheEngines) {
     EXPECT_NEAR(b.pos.x, 1.0f, 1e-6f);
     EXPECT_NEAR(b.pos.y, 2.1f, 1e-6f);
     EXPECT_NEAR(b.pos.z, 3.0f, 1e-6f);
+}
+
+TEST(EditorShapes, PickingAKindGivesDefaultsFromTheBodyPartsBox) {
+    using spade::physics::ShapeKind;
+    const spade::vehicles::ModelType m = quad_with_a_body();  // the body's box: half extents (0.08, 0.03, 0.08), centred on the CoM
+    const auto box = shape_for_kind(m, ShapeKind::box);
+    ASSERT_TRUE(box.has_value()) << (box ? "" : box.error().context);
+    EXPECT_EQ(box->kind, ShapeKind::box);
+    EXPECT_NEAR(box->half_extents.x, 0.08f, 1e-5f);
+    EXPECT_NEAR(box->half_extents.y, 0.03f, 1e-5f);
+    EXPECT_NEAR(box->half_extents.z, 0.08f, 1e-5f);
+
+    const auto sphere = shape_for_kind(m, ShapeKind::sphere);
+    ASSERT_TRUE(sphere.has_value());
+    EXPECT_NEAR(sphere->radius, 0.08f, 1e-5f);  // the largest half extent: it holds the box
+
+    // The capsule lies along the longest axis (x, the first of the two equal ones); its radius is the smaller of the other two
+    // half extents (0.03), its ends at +-(0.08 - 0.03).
+    const auto capsule = shape_for_kind(m, ShapeKind::capsule);
+    ASSERT_TRUE(capsule.has_value());
+    EXPECT_NEAR(capsule->radius, 0.03f, 1e-5f);
+    EXPECT_NEAR(capsule->a.x, -0.05f, 1e-5f);
+    EXPECT_NEAR(capsule->b.x, 0.05f, 1e-5f);
+    EXPECT_NEAR(capsule->a.y, 0.0f, 1e-6f);
+    EXPECT_NEAR(capsule->b.z, 0.0f, 1e-6f);
+
+    const auto hull = shape_for_kind(m, ShapeKind::hull);
+    ASSERT_TRUE(hull.has_value());
+    EXPECT_EQ(hull->points.size(), 12u);
+
+    const auto none = shape_for_kind(m, ShapeKind::none);
+    ASSERT_TRUE(none.has_value());
+    EXPECT_EQ(none->kind, ShapeKind::none);
+}
+
+TEST(EditorShapes, TheDefaultsAreInTheBodyFrameAndHoldTheBoxFromTheCentreOfMass) {
+    // The centre of mass 0.05 m up: the part's box spans y in [-0.03, 0.03] in the design, which is [-0.08, -0.02] from the CoM, so
+    // the half extent that holds it from there is 0.08.
+    spade::vehicles::ModelType m = quad_with_a_body();
+    m.com_offset = glm::vec3(0.0f, 0.05f, 0.0f);
+    const auto box = shape_for_kind(m, spade::physics::ShapeKind::box);
+    ASSERT_TRUE(box.has_value());
+    EXPECT_NEAR(box->half_extents.y, 0.08f, 1e-5f);
+
+    // A quarter turn about y swaps x and z: a part box of half extents (0.08, 0.03, 0.05) is (0.05, 0.03, 0.08) in the body.
+    spade::vehicles::ModelType turned = quad_with_a_body();
+    turned.parts.at(0).shape.nodes.at(0).params = glm::vec4(0.08f, 0.03f, 0.05f, 0.0f);
+    turned.design_to_principal = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto swapped = shape_for_kind(turned, spade::physics::ShapeKind::box);
+    ASSERT_TRUE(swapped.has_value()) << (swapped ? "" : swapped.error().context);
+    EXPECT_NEAR(swapped->half_extents.x, 0.05f, 1e-4f);
+    EXPECT_NEAR(swapped->half_extents.y, 0.03f, 1e-4f);
+    EXPECT_NEAR(swapped->half_extents.z, 0.08f, 1e-4f);
+}
+
+TEST(EditorShapes, AModelWithNoPartsGetsPlainDefaultsExceptTheHull) {
+    using spade::physics::ShapeKind;
+    spade::vehicles::ModelType m = quad_with_a_body();
+    m.parts.clear();
+    EXPECT_NEAR(shape_for_kind(m, ShapeKind::sphere)->radius, 0.1f, 1e-6f);
+    EXPECT_NEAR(shape_for_kind(m, ShapeKind::box)->half_extents.x, 0.1f, 1e-6f);
+    const auto capsule = shape_for_kind(m, ShapeKind::capsule);
+    ASSERT_TRUE(capsule.has_value());
+    EXPECT_NEAR(capsule->radius, 0.05f, 1e-6f);
+    EXPECT_NEAR(capsule->b.x - capsule->a.x, 0.2f, 1e-6f);
+    EXPECT_FALSE(shape_for_kind(m, ShapeKind::hull).has_value());  // a hull needs parts: it says so
 }
 
 TEST(EditorShapes, TheWireframesHaveTheirDocumentedSegments) {
