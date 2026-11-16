@@ -139,13 +139,14 @@ public:
     // already on the device, makes one, the plan A health word coming from the chain's own readback.
     [[nodiscard]] uint64_t waits() const noexcept { return runner_ ? runner_->waits() : 0; }
 
-    // OPT-IN DIAGNOSTIC (L74b): the time of each phase of the LAST step(). On, the step chain carries a timestamp mark after each phase
-    // (a mark writes a device timestamp: no bit of the flow moves), and with solids the CG's host loop is timed by the wall clock per
-    // submit and read. A phase is {name, ms, count}: count = how many submits or reads it took (1 for a chain phase). The chain phases
-    // are, in order, those the step has ("bc", "advection", "gather", "increments", "sgs", "viscous", and without solids "projection");
-    // with solids the CG's: "cg_setup", "cg_iterations", "cg_measure", "cg_restart", "cg_finish", and "cg_reads" (the host's waits on
-    // the decision word). Off (the default) the step is exactly what it was. A device that cannot time compute work leaves the chain
-    // phases out (the CG's wall times are still there).
+    // OPT-IN DIAGNOSTIC (L74b): the time of each phase of the LAST step(). On, the step chain carries a timestamp
+    // mark after each phase (a mark writes a device timestamp: no bit of the flow moves), and with solids the CG's
+    // host loop is timed by the wall clock per submit and read. A phase is {name, ms, count}: count = how many
+    // submits or reads it took (1 for a chain phase). The chain phases are, in order, those the step has ("bc",
+    // "advection", "gather", "increments", "sgs", "viscous", and without solids "projection"); with solids the CG's:
+    // "cg_setup", "cg_iterations", "cg_measure", "cg_restart", "cg_finish", and "cg_reads" (the host's waits on the
+    // decision word). Off (the default) the step is exactly what it was. A device that cannot time compute work
+    // leaves the chain phases out (the CG's wall times are still there).
     struct PhaseTime {
         std::string name;
         double ms = 0.0;

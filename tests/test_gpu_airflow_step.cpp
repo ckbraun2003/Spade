@@ -548,10 +548,11 @@ TEST(GpuAirflowStep, AStepWithoutSolidsMakesOneFenceWait) {
            families[ctx.compute_queue_family()].timestampValidBits > 0;
 }
 
-// L74b's phase timing (GpuFluid::set_phase_timing): opt-in, and no bit of the flow moves: two fluids from the same start, one timed,
-// agree on u, v, w and p after every step; the timed one names its phases, with times that are not negative and sum to no more than the
-// step's wall time. (A device that cannot time compute work leaves the chain phases out: then only the bits are checked.)
-// On a device that can, the phases must be there: an empty list is a failure, not a pass.
+// L74b's phase timing (GpuFluid::set_phase_timing): opt-in, and no bit of the flow moves: two fluids from the
+// same start, one timed, agree on u, v, w and p after every step; the timed one names its phases, with times
+// that are not negative and sum to no more than the step's wall time. (A device that cannot time compute work
+// leaves the chain phases out: then only the bits are checked.) On a device that can, the phases must be there:
+// an empty list is a failure, not a pass.
 TEST(GpuAirflowStep, PhaseTimingMovesNoBitAndAccountsForTheStepWithoutSolids) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -592,8 +593,8 @@ TEST(GpuAirflowStep, PhaseTimingMovesNoBitAndAccountsForTheStepWithoutSolids) {
     }
 }
 
-// With solids the CG's host loop is timed by the wall clock: the solve's phases appear with their submit counts, at least n_v
-// iterations and one wait on the decision word; and no bit moves.
+// With solids the CG's host loop is timed by the wall clock: the solve's phases appear with their submit counts,
+// at least n_v iterations and one wait on the decision word; and no bit moves.
 TEST(GpuAirflowStep, PhaseTimingNamesTheCgsPhasesWithSolidsAndMovesNoBit) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();

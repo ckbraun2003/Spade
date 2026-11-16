@@ -1,6 +1,7 @@
 #include "spike/airflow/solids_chain.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <span>
 #include <utility>
@@ -500,18 +501,43 @@ namespace {
 
 // run_solve()'s submits, through the finish's: the host loop that follows
 // the device's decision word (B5.6's projection runs it too).
+// The diagnostic's wall clock around one call (L74b): `phase` null (the default path) times nothing.
+template <typename Call>
+[[nodiscard]] auto timed(SolveTimes::Phase* phase, uint32_t count, Call&& call) {
+    if (phase == nullptr) return call();
+    const auto t0 = std::chrono::steady_clock::now();
+    auto result = call();
+    phase->ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    phase->n += count;
+    return result;
+}
+
 [[nodiscard]] Result<void> submit_solve(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor,
-                                        uint32_t cap) {
+                                        uint32_t cap, SolveTimes* times = nullptr) {
     const uint32_t scalars = compute::gen::kBinding_airflow_scalars;
-    if (Result<void> ok = runner.submit(ids.setup, 1); !ok) return std::unexpected(ok.error());
-    if (Result<void> ok = runner.submit(ids.iteration, floor); !ok) return std::unexpected(ok.error());
-    if (Result<void> ok = runner.submit(ids.measure, 1); !ok) return std::unexpected(ok.error());
+    const auto ph = [times](SolveTimes::Phase SolveTimes::* member) {
+        return times != nullptr ? &(times->*member) : nullptr;
+    };
+    if (Result<void> ok = timed(ph(&SolveTimes::setup), 1u, [&] { return runner.submit(ids.setup, 1); }); !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (Result<void> ok =
+            timed(ph(&SolveTimes::iterations), floor, [&] { return runner.submit(ids.iteration, floor); });
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (Result<void> ok = timed(ph(&SolveTimes::measure), 1u, [&] { return runner.submit(ids.measure, 1); }); !ok) {
+        return std::unexpected(ok.error());
+    }
     // The device measures at the floor and after each iteration past it, and
     // stops at the cap: max(floor, cap) - floor + 1 measures at the most.
     const uint32_t measures = std::max(floor, cap) - floor + 1u;
     std::array<float, kSlotDecision + kDecisionSlots> word{};
     for (uint32_t read = 1;; ++read) {
-        if (Result<void> ok = runner.read(scalars, std::as_writable_bytes(std::span(word))); !ok) {
+        if (Result<void> ok = timed(ph(&SolveTimes::reads), 1u, [&] {
+                return runner.read(scalars, std::as_writable_bytes(std::span(word)));
+            });
+            !ok) {
             return std::unexpected(ok.error());
         }
         if (word[kSlotStop] != 0.0f) break;
@@ -521,12 +547,21 @@ namespace {
                                                              std::to_string(measures) + ")"});
         }
         if (word[kSlotRestart] != 0.0f) {
-            if (Result<void> ok = runner.submit(ids.restart, 1); !ok) return std::unexpected(ok.error());
+            if (Result<void> ok = timed(ph(&SolveTimes::restart), 1u, [&] { return runner.submit(ids.restart, 1); });
+                !ok) {
+                return std::unexpected(ok.error());
+            }
         }
-        if (Result<void> ok = runner.submit(ids.iteration, 1); !ok) return std::unexpected(ok.error());
-        if (Result<void> ok = runner.submit(ids.measure, 1); !ok) return std::unexpected(ok.error());
+        if (Result<void> ok = timed(ph(&SolveTimes::iterations), 1u, [&] { return runner.submit(ids.iteration, 1); });
+            !ok) {
+            return std::unexpected(ok.error());
+        }
+        if (Result<void> ok = timed(ph(&SolveTimes::measure), 1u, [&] { return runner.submit(ids.measure, 1); });
+            !ok) {
+            return std::unexpected(ok.error());
+        }
     }
-    return runner.submit(ids.finish, 1);
+    return timed(ph(&SolveTimes::finish), 1u, [&] { return runner.submit(ids.finish, 1); });
 }
 
 }  // namespace
@@ -578,10 +613,12 @@ SolveChains projection_chains(const af::GridShape& shape, const MgLayout& layout
 }
 
 Result<GpuProjectionReport> project_with_solids(ChainRunner& runner, const SolveChainIds& ids, uint32_t floor,
-                                                uint32_t cap) {
-    if (Result<void> ok = submit_solve(runner, ids, floor, cap); !ok) return std::unexpected(ok.error());
+                                                uint32_t cap, SolveTimes* times) {
+    if (Result<void> ok = submit_solve(runner, ids, floor, cap, times); !ok) return std::unexpected(ok.error());
     std::array<float, kSlotHealth + kHealthSlots> word{};
-    if (Result<void> ok = runner.read(compute::gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(word)));
+    if (Result<void> ok = timed(times != nullptr ? &times->reads : nullptr, 1u, [&] {
+            return runner.read(compute::gen::kBinding_airflow_scalars, std::as_writable_bytes(std::span(word)));
+        });
         !ok) {
         return std::unexpected(ok.error());
     }
