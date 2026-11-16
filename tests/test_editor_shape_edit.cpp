@@ -246,6 +246,7 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
     start.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 0.4f)));
     start.vel = glm::vec3(0.0f);
     start.omega_body = glm::vec3(0.0f);
+    start.rotor_omega = 0.0f;  // the scene starts the rotors at hover speed: they would fly it, not drop it
     w->panels().pending.push_back(ed::SetVehicleStart{quad, start});
     w->apply_panels();
     w->panels().commands.push_back(ed::Command::run);
