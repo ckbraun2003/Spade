@@ -26,6 +26,7 @@ using spade::sandbox::editor::hull_from_model;
 using spade::sandbox::editor::Segment;
 using spade::sandbox::editor::shape_segments;
 using spade::sandbox::editor::shape_for_kind;
+using spade::sandbox::editor::inertia_from_box;
 using spade::sandbox::editor::test::quad_model;
 
 // The quad with its design frame made trivial, one body part (a box of half extents 0.08, 0.03, 0.08) and its four
@@ -97,6 +98,20 @@ TEST(EditorShapes, InertiaFromBoxIsTheSolidBoxsMoments) {
     EXPECT_NEAR(i.x * inv.x, 1.0f, 1e-5f);
     EXPECT_NEAR(i.y * inv.y, 1.0f, 1e-5f);
     EXPECT_NEAR(i.z * inv.z, 1.0f, 1e-5f);
+}
+
+TEST(EditorShapes, TheInertiaButtonOffersTheBoxsMomentsForTheModelsMassOnly) {
+    spade::vehicles::ModelType m = quad_with_a_body();
+    m.body.mass = 2.0f;
+    EXPECT_FALSE(inertia_from_box(m).has_value()) << "no shape, no button";
+    m.shape = spade::physics::sphere_shape(0.1f);
+    EXPECT_FALSE(inertia_from_box(m).has_value()) << "only a box";
+    m.shape = spade::physics::box_shape(glm::vec3(0.1f, 0.2f, 0.3f));
+    const auto i = inertia_from_box(m);
+    ASSERT_TRUE(i.has_value());
+    EXPECT_NEAR(i->x, 0.086667f, 1e-5f);  // box_inertia_diag(2, (0.1, 0.2, 0.3)) from above
+    EXPECT_NEAR(i->y, 0.066667f, 1e-5f);
+    EXPECT_NEAR(i->z, 0.033333f, 1e-5f);
 }
 
 TEST(EditorShapes, TheHullFromAModelIsItsBodysEightCornersAndItsRotorTips) {
