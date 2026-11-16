@@ -83,3 +83,18 @@ The same for H3, H4 and H5 as V2b's: the mean over **10 R/v_h starting at 20 R/v
 - **UIUC's own uncertainty** is not quoted, for either file.
 - **The 15% on H3 to H5 is a judgment** (10% plus 5%, Physics' rule). It is not derived from a spread of the measurement. If any of H3 to H5 lands within 10% of a band edge, that is a finding for the lead, not accepted or retuned.
 - **The chord ratio** uses the local chord at r/R 0.75 from the library's stations, interpolated linearly, as the rule says ("at 0.75R"). A mean chord over the blade would give another ratio; the lead sets the definition if it matters.
+
+## Addendum, 2026-11-16 (after the first width runs): H2, and two facts
+
+Written after Physics' results (`l72d-v2b-results.md`, branch physics/line-v2b @ e312e383). Nothing above is edited, and no verdict changes.
+
+**H2: the reference was weak by design.**
+- H2 compares the line's thrust on the blade stand-in with k_T w² of the chain's synthetic ramp (`tests/reference_airframe.hpp`, `ct_table` at J 0, C_T 0.12). Physics computed 1.2887 N from the table, not from a running chain. At hover J is near 0, so I expect the same value. I did not check, and a 58% gap does not hinge on it.
+- The ramp is a placeholder. No measurement stands behind it, and it is not the stand-in's blade. H2's "plus 5% for the stand-in blade" assumed the two would agree. That assumption was mine, and it was wrong: the design note (p4, section 3) already says they differ by construction.
+- **Ruling.** H2 as written is a FAIL (line 2.038 N against 1.289 N, +58.2%), and it stays recorded so. It is not re-banded. It is withdrawn as evidence for or against the width, because it measures the blade against the ramp. The width rests on the tune, H1, H3, H4 and H5.
+- **No switch to the BEMT as the reference.** The line gives 2.038 N and the BEMT 2.03 N. Choosing the BEMT after seeing the result would make H2 pass by selection. The BEMT also runs on the same estimated polar, so it is not independent of the line. The agreement can be reported as an unbanded consistency row: the line against the BEMT, about +0.4%, labelled "set after the result".
+- A real V4 band needs a reference measured for a prop of that size, blades included. The repo holds none. Whether to get one is the lead's call, and it would need a fetch word.
+
+**Two facts for the record.**
+1. **The 12 mm run is at R/dx 31, not 32.** The tune table above gives 12 mm as 3.0 cells. At R/dx 32 it is 3.02 cells, over the kernel's 3. Physics ran R/dx 31 (2.93 cells), a 3% change in dx. The bands are unchanged, and the 12 mm row reads R/dx 31.
+2. **The pick sits on the cap.** C_T and C_Q improve at every step to wider kernels, and the widest allowed width wins. The rule picked from the widths tried, and it did not find an optimum. Read with "Not separable" above: the width absorbs the polar's error, and C_Q stays low in every case (-11% to -30%). The record says so. H4's C_Q passes by 0.04% of its band, which the note makes a finding for the lead, neither accepted nor retuned.
