@@ -115,6 +115,29 @@ TEST(EditorWorkspace, AnArmedItemIsPlacedRestingWhereTheClickMeetsTheGround) {
     EXPECT_TRUE(scene_of(*w).assets.empty());
 }
 
+// L82: the selected vehicle's contact shape and where its design frame is, for the viewport's wireframe.
+TEST(EditorWorkspace, TheSelectedVehiclesShapeIsOfferedForTheWireframe) {
+    auto w = hover();
+    ASSERT_NE(w, nullptr);
+    const std::string quad = scene_of(*w).vehicles.at(0).name;
+    EXPECT_FALSE(w->selected_shape().has_value()) << "nothing selected";
+
+    w->panels().selection = object(quad);
+    EXPECT_FALSE(w->selected_shape().has_value()) << "a vehicle with no shape draws nothing";
+
+    w->panels().pending.push_back(ed::SetModelShape{quad, spade::physics::sphere_shape(0.1f)});
+    w->apply_panels();
+    ASSERT_TRUE(w->panels().status.empty() || w->panels().status.find("refus") == std::string::npos) << w->panels().status;
+    const auto shown = w->selected_shape();
+    ASSERT_TRUE(shown.has_value());
+    ASSERT_NE(shown->model, nullptr);
+    EXPECT_TRUE(shown->model->shape.has_value());
+    EXPECT_EQ(shown->design.pos, quad_start(*w)) << "at its start pose until a run moves it";
+
+    w->panels().selection = Selection{Selection::Kind::world, {}};
+    EXPECT_FALSE(w->selected_shape().has_value()) << "the world is not a vehicle";
+}
+
 TEST(EditorWorkspace, RunPauseStepAndStop) {
     auto w = hover();
     ASSERT_NE(w, nullptr);

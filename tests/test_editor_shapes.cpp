@@ -12,6 +12,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "../sandbox/editor_shapes.hpp"
+#include "render/target.hpp"
 #include "editor_test_support.hpp"
 #include "physics/rigid_contact.hpp"
 #include "vehicles/model_type.hpp"
@@ -27,6 +28,7 @@ using spade::sandbox::editor::Segment;
 using spade::sandbox::editor::shape_segments;
 using spade::sandbox::editor::shape_for_kind;
 using spade::sandbox::editor::inertia_from_box;
+using spade::sandbox::editor::shape_view_lines;
 using spade::sandbox::editor::test::quad_model;
 
 // The quad with its design frame made trivial, one body part (a box of half extents 0.08, 0.03, 0.08) and its four
@@ -251,6 +253,42 @@ TEST(EditorShapes, AModelWithNoPartsGetsPlainDefaultsExceptTheHull) {
     EXPECT_NEAR(capsule->radius, 0.05f, 1e-6f);
     EXPECT_NEAR(capsule->b.x - capsule->a.x, 0.2f, 1e-6f);
     EXPECT_FALSE(shape_for_kind(m, ShapeKind::hull).has_value());  // a hull needs parts: it says so
+}
+
+TEST(EditorShapes, TheSelectedShapeIsDrawnAsProjectedLinesInItsOwnColour) {
+    spade::vehicles::ModelType m = quad_with_a_body();
+    m.shape = spade::physics::box_shape(glm::vec3(0.1f, 0.2f, 0.3f));
+    spade::FrameState design;  // the design origin at the world origin, unturned
+    spade::render::Camera cam;
+    cam.position = glm::vec3(0.0f, 0.0f, 3.0f);
+    const std::vector<spade::sandbox::editor::GizmoLine> lines = shape_view_lines(m, design, cam, 800, 600);
+    ASSERT_EQ(lines.size(), 12u);
+    float lo = 1e9f;
+    float hi = -1e9f;
+    for (const auto& l : lines) {
+        EXPECT_EQ(l.axis, spade::sandbox::editor::kShapeLine);
+        lo = std::min({lo, l.a.x, l.b.x});
+        hi = std::max({hi, l.a.x, l.b.x});
+    }
+    const std::optional<glm::vec2> centre = spade::sandbox::editor::project(cam, glm::vec3(0.0f), 800, 600);
+    ASSERT_TRUE(centre.has_value());
+    EXPECT_NEAR(lo + hi, 2.0f * centre->x, 0.5f) << "centred on the body";
+
+    // The body is at the centre of mass: 0.1 m up in the design is 0.1 m up in the world for an unturned vehicle.
+    m.com_offset = glm::vec3(0.0f, 0.1f, 0.0f);
+    const auto raised = shape_view_lines(m, design, cam, 800, 600);
+    ASSERT_EQ(raised.size(), 12u);
+    float top_up = 1e9f;  // the smallest screen y is the highest point (y grows down)
+    for (const auto& l : raised) top_up = std::min({top_up, l.a.y, l.b.y});
+    float top_flat = 1e9f;
+    for (const auto& l : lines) top_flat = std::min({top_flat, l.a.y, l.b.y});
+    EXPECT_LT(top_up, top_flat) << "the shape moved up with the centre of mass";
+
+    // No shape draws nothing; a camera looking away draws nothing (an edge with an end behind the camera is left out).
+    spade::vehicles::ModelType plain = quad_with_a_body();
+    EXPECT_TRUE(shape_view_lines(plain, design, cam, 800, 600).empty());
+    cam.position = glm::vec3(0.0f, 0.0f, -3.0f);
+    EXPECT_TRUE(shape_view_lines(m, design, cam, 800, 600).empty());
 }
 
 TEST(EditorShapes, TheWireframesHaveTheirDocumentedSegments) {
