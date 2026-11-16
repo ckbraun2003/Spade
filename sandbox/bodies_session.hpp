@@ -19,6 +19,11 @@
 
 namespace spade::sandbox {
 
+// The camera starts wide, with the sphere rolling in shot, and the tour dollies in to kBodiesEndDistance while the shapes
+// tumble, so each covers a good part of the picture by the time it lands.
+inline constexpr float kBodiesStartDistance = 3.4f;
+inline constexpr float kBodiesEndDistance = 2.2f;
+
 class BodiesSession {
   public:
     // The sim and the scene, no window: a build that fails refuses before one opens.

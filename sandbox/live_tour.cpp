@@ -1980,6 +1980,9 @@ void bodies_chapter(Tour& t) {
                 "the cube at " + std::to_string(b.sim().steps()) + " ms: " + b.sim().verdict(1).detail);
         constexpr uint64_t kSettleSteps = 8000;  // 8 s of the sim, as the unit test judges it
         while (b.sim().steps() < kSettleSteps && !t.stopped()) {
+            // A slow dolly in while the shapes tumble: from the whole row to the cube and the capsule close.
+            const float along = std::min(1.0f, static_cast<float>(b.sim().steps()) / static_cast<float>(kSettleSteps));
+            b.camera().distance = kBodiesStartDistance + (kBodiesEndDistance - kBodiesStartDistance) * along;
             if (!t.pump(1, {}, draw)) return;
         }
         t.poster("bodies");

@@ -71,10 +71,10 @@ Result<std::unique_ptr<BodiesSession>> BodiesSession::create() {
 
     // The row spans about 3 m of x, and the sphere rolls on toward the camera: seen from above and ahead, the target a
     // little in front of the row.
-    s->camera_.target = glm::vec3(-0.2f, 0.0f, 0.5f);
+    s->camera_.target = glm::vec3(-0.1f, 0.0f, 0.3f);
     s->camera_.yaw = 0.0f;
-    s->camera_.pitch = 0.55f;
-    s->camera_.distance = 3.6f;
+    s->camera_.pitch = 0.5f;
+    s->camera_.distance = kBodiesStartDistance;
     s->draw_items();
     return s;
 }
