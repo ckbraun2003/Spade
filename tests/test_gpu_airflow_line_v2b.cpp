@@ -42,7 +42,7 @@ namespace af = spade::physics::airflow;
 namespace ag = spade::airflow_gpu;
 namespace lp = spade::test::library_props;
 
-constexpr double kD = 0.254;  // m, the measured prop's diameter
+constexpr double kInch = 0.0254;
 constexpr float kRho = 1.225f;
 
 uint32_t env_u32(const char* name, uint32_t fallback) {
@@ -57,16 +57,51 @@ uint32_t env_u32(const char* name, uint32_t fallback) {
     return v == nullptr ? fallback : static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
 }
 
-af::BladeShape apce_10x5() {
-    const lp::Prop& p = lp::kProps[0];  // uiuc_apce_10x5
+// The library's two measured props: the tune prop (SPADE_V2B_PROP unset or "apce": uiuc_apce_10x5, D 10 in) and the transfer prop
+// ("mit": uiuc_mit_5x4, D 5 in, 3 blades, measured at 6057 rpm).
+struct Chosen {
+    const lp::Prop* prop = nullptr;
+    double diameter = 0.0;
+};
+
+Chosen chosen_prop() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* v = std::getenv("SPADE_V2B_PROP");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    const std::string want = v == nullptr ? "apce" : v;
+    for (const lp::Prop& p : lp::kProps) {
+        if (want == "apce" && std::string(p.id) == "uiuc_apce_10x5") return {&p, 10.0 * kInch};
+        if (want == "mit" && std::string(p.id) == "uiuc_mit_5x4") return {&p, 5.0 * kInch};
+    }
+    return {};
+}
+
+af::BladeShape blade_of(const lp::Prop& p, double diameter) {
     af::BladeShape b;
     b.blades = static_cast<uint32_t>(p.blades);
-    b.radius = static_cast<float>(0.5 * kD);
+    b.radius = static_cast<float>(0.5 * diameter);
     for (std::size_t i = 0; i < p.r_over_r.size(); ++i) {
-        b.stations.push_back({static_cast<float>(p.r_over_r[i] * 0.5 * kD),
-                              static_cast<float>(p.c_over_r[i] * 0.5 * kD), static_cast<float>(p.beta_deg[i])});
+        b.stations.push_back({static_cast<float>(p.r_over_r[i] * 0.5 * diameter),
+                              static_cast<float>(p.c_over_r[i] * 0.5 * diameter), static_cast<float>(p.beta_deg[i])});
     }
     return b;
+}
+
+// The blade's chord at 0.75 R, linear between stations: "the mean chord" the same-fraction width is a share of.
+double chord_at_three_quarters(const af::BladeShape& b) {
+    const double r = 0.75 * static_cast<double>(b.radius);
+    for (std::size_t i = 1; i < b.stations.size(); ++i) {
+        if (r <= static_cast<double>(b.stations[i].r)) {
+            const double t = (r - b.stations[i - 1].r) / (static_cast<double>(b.stations[i].r) - b.stations[i - 1].r);
+            return b.stations[i - 1].chord + t * (static_cast<double>(b.stations[i].chord) - b.stations[i - 1].chord);
+        }
+    }
+    return b.stations.back().chord;
 }
 
 double static_value(std::span<const std::array<double, 2>> table) {
@@ -84,20 +119,28 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     const uint32_t n_sub = env_u32("SPADE_V2B_NSUB", 8);
     const uint32_t steps_override = env_u32("SPADE_V2B_STEPS", 0);
-    const double rpm = static_cast<double>(env_u32("SPADE_V2B_RPM", 5000));
-    const double eps_mm = static_cast<double>(env_u32("SPADE_V2B_EPS_MM10", 0)) / 10.0;
-    ASSERT_GT(eps_mm, 0.0) << "set SPADE_V2B_EPS_MM10 (80 is 8.0 mm)";
-
-    const lp::Prop& prop = lp::kProps[0];
-    ASSERT_EQ(std::string(prop.id), "uiuc_apce_10x5");
-    const af::BladeShape blade = apce_10x5();
+    const Chosen pick = chosen_prop();
+    ASSERT_NE(pick.prop, nullptr) << "SPADE_V2B_PROP is apce or mit";
+    const lp::Prop& prop = *pick.prop;
+    const double kD = pick.diameter;
+    const double rpm = static_cast<double>(env_u32("SPADE_V2B_RPM", static_cast<uint32_t>(prop.run_rpm)));
+    const af::BladeShape blade = blade_of(prop, kD);
     ASSERT_TRUE(af::check_blade(blade).has_value());
+    // The width: in mm, or as a share of the chord at 0.75 R (SPADE_V2B_EPS_CHORD100: 60 is 0.60 of it).
+    const double chord_mm = 1000.0 * chord_at_three_quarters(blade);
+    const double chord_share = static_cast<double>(env_u32("SPADE_V2B_EPS_CHORD100", 0)) / 100.0;
+    const double eps_mm = chord_share > 0.0 ? chord_share * chord_mm
+                                            : static_cast<double>(env_u32("SPADE_V2B_EPS_MM10", 0)) / 10.0;
+    ASSERT_GT(eps_mm, 0.0) << "set SPADE_V2B_EPS_MM10 (80 is 8.0 mm) or SPADE_V2B_EPS_CHORD100";
     const af::PolarTable polar = af::estimated_polar();
     const double radius = 0.5 * kD;
     const double n_rev = rpm / 60.0;
     const float omega = static_cast<float>(2.0 * std::numbers::pi * n_rev);
-    const double ct_uiuc = static_value(prop.ct_table);
-    const double cq_uiuc = static_value(prop.cq_table);
+    // The reference: the library's static point, or the one a band note gives (SPADE_V2B_CT_E6, SPADE_V2B_CQ_E7).
+    const uint32_t ct_env = env_u32("SPADE_V2B_CT_E6", 0);
+    const uint32_t cq_env = env_u32("SPADE_V2B_CQ_E7", 0);
+    const double ct_uiuc = ct_env != 0u ? static_cast<double>(ct_env) * 1.0e-6 : static_value(prop.ct_table);
+    const double cq_uiuc = cq_env != 0u ? static_cast<double>(cq_env) * 1.0e-7 : static_value(prop.cq_table);
     const double dim_t = static_cast<double>(kRho) * n_rev * n_rev * std::pow(kD, 4);  // T = C_T * dim_t
     const double dim_q = dim_t * kD;                                                   // Q = C_Q * dim_q
     const double area = std::numbers::pi * radius * radius;
@@ -144,6 +187,8 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
         return static_cast<uint32_t>(std::ceil(t * t_rv / static_cast<double>(cfg.h)));
     };
     const std::array<uint32_t, 4> edge{step_of(20.0), step_of(30.0), step_of(40.0), total};
+    std::printf("V2b prop %s, D %.3f m, %u blades, chord at 0.75 R %.2f mm (eps/chord %.2f)\n",
+                std::string(prop.id).c_str(), kD, blade.blades, chord_mm, eps_mm / chord_mm);
     std::printf("V2b setup: R/dx %u (dx %.3f mm), box %ux%ux%u = %.2f M cells, h %.3f ms, n_sub %u, %u elements, "
                 "%u steps (40 R/v_h = %.3f s); %.0f rpm; kernel eps %.2f mm = %.2f cells; UIUC static C_T %.5f "
                 "C_Q %.6f (T %.4f N), v_h %.3f m/s\n",
