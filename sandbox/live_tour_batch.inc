@@ -81,11 +81,16 @@ void batch_tour(Tour& t, const fs::path& assets) {
         w().panels().pending.push_back(editor::SetModelShape{quad, *box});
         w().apply_panels();
         t.sink().set_card("Collision shape: Box\nthe cyan wireframe is what the contact pass tests");
+        // The camera on the quad: its start pose at 0.6 m and the ground it will land on; the poster is the next frame.
+        session->camera().target = glm::vec3(start.pos.x, 0.3f, start.pos.z);
+        session->camera().yaw = 0.52f;
+        session->camera().pitch = 0.3f;
+        session->camera().distance = 1.4f;
+        t.poster("batch");
         then(120);
         const bool shown = w().selected_shape().has_value();
         s.check(shown && w().panels().status.find("refus") == std::string::npos, "shape-set",
                 shown ? "the box is on the quad's model, drawn at its start pose" : "no shape: " + w().panels().status);
-        t.poster("batch");
 
         // Run: it falls and lands on a face.
         t.sink().set_card({});
