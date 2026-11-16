@@ -54,8 +54,10 @@ inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
 // as far below the top face as kD1Grid holds it (0.354 m, 88.5 cells), so +y above the centre by half the extra rows.
 // Zero for kD1Grid, exactly. kD1DeepGrid's is 107.5 cells, 0.43 m: the drone keeps its cell alignment (an x and z
-// face, a y cell centre) because ny - 177 is odd, so half a row.
+// face, a y cell centre) because ny - 177 is odd, so half a row. A grid no taller than kD1Grid (a small gate box, 80 rows) keeps
+// the centre: zero, never negative (a negative hold put the rotors' kernels out of a 112 x 80 x 112 grid; Rendering, 2026-11-11).
 [[nodiscard]] inline glm::vec3 d1_hold(const physics::airflow::GridShape& grid) noexcept {
+    if (grid.ny <= kD1Grid.ny) return glm::vec3(0.0f);
     return glm::vec3(0.0f, 0.5f * (static_cast<float>(grid.ny) - static_cast<float>(kD1Grid.ny)) * grid.dx, 0.0f);
 }
 inline constexpr float kD1Step = 0.00038f;  // s

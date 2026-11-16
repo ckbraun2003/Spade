@@ -259,6 +259,45 @@ TEST(AirflowLine, FourSubAzimuthsSpreadTheSameThrustInADifferentPattern) {
     EXPECT_NE(one.dw, four.dw) << "the arcs differ";
 }
 
+TEST(AirflowLine, AWiderKernelKeepsTheImpulseAndSpreadsItThinner) {
+    const af::BladeShape blade = blade_of(2);
+    const af::PolarTable polar = af::estimated_polar();
+    const af::MacGrid g = grid_64();
+    const float h = 0.0002f;
+    const auto run = [&](float eps_cells, double& sum, float& peak) {
+        af::LineRotor r = rotor_of(blade, polar);
+        r.eps_cells = eps_cells;
+        Increments inc(g);
+        const auto rep = af::spread_line(r, g, kRho, h, 4, inc.du, inc.dv, inc.dw);
+        ASSERT_TRUE(rep.has_value()) << rep.error().context;
+        sum = 0.0;
+        peak = 0.0f;
+        for (const float v : inc.dv) {
+            sum += static_cast<double>(v);
+            peak = std::max(peak, std::fabs(v));
+        }
+    };
+    double sum2 = 0.0, sum3 = 0.0;
+    float peak2 = 0.0f, peak3 = 0.0f;
+    run(2.0f, sum2, peak2);
+    run(3.0f, sum3, peak3);
+    EXPECT_NEAR(sum3, sum2, 3e-4 * std::fabs(sum2)) << "the normalised kernel conserves the impulse at any width";
+    EXPECT_LT(peak3, 0.9f * peak2) << "a wider kernel spreads the same force thinner";
+}
+
+TEST(AirflowLine, TheKernelWidthIsRefusedByName) {
+    const af::BladeShape blade = blade_of(2);
+    const af::PolarTable polar = af::estimated_polar();
+    const af::GridShape shape{64, 64, 64, kDx};
+    for (const float bad : {0.5f, 3.5f, std::nanf("")}) {
+        af::LineRotor r = rotor_of(blade, polar);
+        r.eps_cells = bad;
+        const auto c = af::check_line(r, shape, kRho, 0.0002f, 1);
+        ASSERT_FALSE(c.has_value()) << bad;
+        EXPECT_NE(c.error().context.find("eps_cells"), std::string::npos) << c.error().context;
+    }
+}
+
 TEST(AirflowLine, AStillRotorInStillAirAddsNothing) {
     const af::BladeShape blade = blade_of(2);
     const af::PolarTable polar = af::estimated_polar();

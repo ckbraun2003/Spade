@@ -30,7 +30,7 @@ struct AxisTaps {
     std::array<float, kMaxTaps> w{};
 };
 
-AxisTaps axis_taps(float pos, float dx, float offset, uint32_t count) noexcept {
+AxisTaps axis_taps(float pos, float dx, float offset, uint32_t count, float eps_cells) noexcept {
     AxisTaps t;
     const float f = pos / dx - offset;  // the point in this component's face index
     const int lo = std::max(0, static_cast<int>(-std::floor(-(f - static_cast<float>(kReach)))));
@@ -39,7 +39,7 @@ AxisTaps axis_taps(float pos, float dx, float offset, uint32_t count) noexcept {
     t.lo = lo;
     t.n = hi - lo + 1;
     for (int i = 0; i < t.n; ++i) {
-        const float q = (static_cast<float>(lo + i) - f) * 0.5f;  // (x_i - pos) / eps, eps = 2 dx
+        const float q = (static_cast<float>(lo + i) - f) / eps_cells;  // (x_i - pos) / eps (eps_cells 2: the same bits as the old * 0.5f)
         t.w[static_cast<std::size_t>(i)] = math::exp32(-(q * q));
         t.sum += t.w[static_cast<std::size_t>(i)];
     }
@@ -52,12 +52,12 @@ struct Stencil {
     float sum = 0.0f;
 };
 
-Stencil stencil_at(const GridShape& s, uint32_t c, glm::vec3 pos) noexcept {
+Stencil stencil_at(const GridShape& s, uint32_t c, glm::vec3 pos, float eps_cells) noexcept {
     const std::array<uint32_t, 3> n{s.nx + (c == 0 ? 1u : 0u), s.ny + (c == 1 ? 1u : 0u), s.nz + (c == 2 ? 1u : 0u)};
     Stencil st;
     for (uint32_t a = 0; a < 3; ++a) {
         const float offset = a == c ? 0.0f : 0.5f;
-        st.ax[a] = axis_taps(pos[static_cast<glm::length_t>(a)], s.dx, offset, n[a]);
+        st.ax[a] = axis_taps(pos[static_cast<glm::length_t>(a)], s.dx, offset, n[a], eps_cells);
     }
     st.sum = st.ax[0].sum * st.ax[1].sum * st.ax[2].sum;
     return st;
@@ -147,6 +147,9 @@ Result<void> check_line(const LineRotor& rotor, const GridShape& shape, float rh
         return std::unexpected(refuse("line: psi must be finite and wrapped (|psi| <= 50 rad, sin32's domain)"));
     }
     if (!finite3(rotor.centre)) return std::unexpected(refuse("line: centre must be finite"));
+    if (!(rotor.eps_cells >= 1.0f && rotor.eps_cells <= 3.0f)) {
+        return std::unexpected(refuse("line: eps_cells must be in [1, 3] (the kernel's support is 6 cells)"));
+    }
     if (n_sub == 0) return std::unexpected(refuse("line: n_sub must be at least 1"));
     if (!(rho > 0.0f) || !std::isfinite(rho)) return std::unexpected(refuse("line: rho must be positive and finite"));
     if (!(h > 0.0f) || !std::isfinite(h)) return std::unexpected(refuse("line: h must be positive and finite"));
@@ -201,10 +204,10 @@ std::vector<LineElement> line_elements(const LineRotor& rotor, float dx, float h
     return out;
 }
 
-glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos) noexcept {
-    const Stencil su = stencil_at(grid.shape, 0, pos);
-    const Stencil sv = stencil_at(grid.shape, 1, pos);
-    const Stencil sw = stencil_at(grid.shape, 2, pos);
+glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos, float eps_cells) noexcept {
+    const Stencil su = stencil_at(grid.shape, 0, pos, eps_cells);
+    const Stencil sv = stencil_at(grid.shape, 1, pos, eps_cells);
+    const Stencil sw = stencil_at(grid.shape, 2, pos, eps_cells);
     return {stencil_mean(grid.shape, 0, su, grid.u), stencil_mean(grid.shape, 1, sv, grid.v),
             stencil_mean(grid.shape, 2, sw, grid.w)};
 }
@@ -221,7 +224,8 @@ SPADE_NOINLINE LineReport spread_flushed(const LineRotor& rotor, const MacGrid& 
     double thrust = 0.0;
     double torque = 0.0;
     for (const LineElement& e : line_elements(rotor, s.dx, h, n_sub)) {
-        const Stencil st[3] = {stencil_at(s, 0, e.pos), stencil_at(s, 1, e.pos), stencil_at(s, 2, e.pos)};
+        const Stencil st[3] = {stencil_at(s, 0, e.pos, rotor.eps_cells), stencil_at(s, 1, e.pos, rotor.eps_cells),
+                               stencil_at(s, 2, e.pos, rotor.eps_cells)};
         const glm::vec3 air(stencil_mean(s, 0, st[0], grid.u), stencil_mean(s, 1, st[1], grid.v),
                             stencil_mean(s, 2, st[2], grid.w));
         const float ua = -glm::dot(air, rotor.axis);

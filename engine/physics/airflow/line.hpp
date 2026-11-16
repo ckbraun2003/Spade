@@ -55,6 +55,10 @@ struct LineRotor {
     float psi = 0.0f;               // rad, the blade angle at the step's start
     const BladeShape* blade = nullptr;
     const PolarTable* polar = nullptr;
+    // The kernel's width eps in cells (the Gaussian's e-folding length): 2 is the line's own and, held by Interface, every run's; a
+    // diagnostic knob for a sweep that holds the PHYSICAL width fixed across resolutions. The support stays 6 cells (a wider eps is
+    // cut earlier than 3 eps). Refused outside [1, 3].
+    float eps_cells = 2.0f;
 };
 
 // One element of one blade at one sub-azimuth.
@@ -77,7 +81,7 @@ struct LineElement {
 [[nodiscard]] std::vector<LineElement> line_elements(const LineRotor& rotor, float dx, float h, uint32_t n_sub);
 
 // The air an element at `pos` feels: the kernel mean of the faces' velocities (THE KERNEL). `pos` must have its reach in the grid.
-[[nodiscard]] glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos) noexcept;
+[[nodiscard]] glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos, float eps_cells = 2.0f) noexcept;
 
 struct LineReport {
     float thrust = 0.0f;  // N along the axis, all blades, the mean over the sub-azimuths
