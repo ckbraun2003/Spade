@@ -438,6 +438,10 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     return self;
 }
 
+void GpuFluid::set_phase_timing(bool on) {  // RED stub: nothing is timed yet
+    phase_timing_ = on;
+}
+
 Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     if (step_chains_[disc_count]) return *step_chains_[disc_count];
     const af::GridShape& s = shape_;
