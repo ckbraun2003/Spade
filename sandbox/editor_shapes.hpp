@@ -111,20 +111,19 @@ namespace detail {
     return glm::vec3(mass * (y2 + z2) / 3.0f, mass * (x2 + z2) / 3.0f, mass * (x2 + y2) / 3.0f);
 }
 
-// The hull "From model" builds. The body parts' boxes (vehicles::part_bounds(), posed by their mounts) are united into one
-// box in the design frame and its eight corners are the first points; each rotor adds a tip, its hub pushed out along the
-// line from the centre of mass by the rotor's radius (the rule model_reach() uses for a tip). All in the body frame.
-[[nodiscard]] inline Result<physics::ShapeDesc> hull_from_model(const vehicles::ModelType& model) {
+// The body parts' union box in the DESIGN frame, (lo, hi): each part's box (vehicles::part_bounds(), in the part's frame)
+// posed by its mount. A rotor's parts are left out (they turn; their reach is the rotor's). Refused by name with no parts, or
+// when no body part has a box.
+[[nodiscard]] inline Result<std::pair<glm::vec3, glm::vec3>> parts_box(const vehicles::ModelType& model) {
     if (model.parts.empty()) {
-        return std::unexpected(Error{Code::invalid_argument,
-                                     detail::quoted(model) + "it has no parts to take a hull from"});
+        return std::unexpected(Error{Code::invalid_argument, detail::quoted(model) + "it has no parts to size a shape from"});
     }
     glm::vec3 lo(1e30f);
     glm::vec3 hi(-1e30f);
     bool any = false;
     std::string why;
     for (const vehicles::PartDesc& part : model.parts) {
-        if (part.attach != vehicles::PartAttach::body) continue;  // a rotor's parts turn: their tips are the rotor's
+        if (part.attach != vehicles::PartAttach::body) continue;
         const Result<Aabb> box = vehicles::part_bounds(part);
         if (!box) {
             why = box.error().context;
@@ -141,9 +140,19 @@ namespace detail {
     }
     if (!any) {
         return std::unexpected(Error{Code::invalid_argument,
-                                     detail::quoted(model) + "none of its body parts has a box to take a hull from" +
+                                     detail::quoted(model) + "none of its body parts has a box to size a shape from" +
                                          (why.empty() ? std::string{} : " (" + why + ")")});
     }
+    return std::pair{lo, hi};
+}
+
+// The hull "From model" builds. The body parts' boxes (vehicles::part_bounds(), posed by their mounts) are united into one
+// box in the design frame and its eight corners are the first points; each rotor adds a tip, its hub pushed out along the
+// line from the centre of mass by the rotor's radius (the rule model_reach() uses for a tip). All in the body frame.
+[[nodiscard]] inline Result<physics::ShapeDesc> hull_from_model(const vehicles::ModelType& model) {
+    const Result<std::pair<glm::vec3, glm::vec3>> box = parts_box(model);
+    if (!box) return std::unexpected(box.error());
+    const auto [lo, hi] = *box;
     const std::size_t needed = 8u + model.rotors.size();
     if (needed > physics::kShapeMaxPoints) {
         return std::unexpected(Error{Code::invalid_argument,
@@ -176,6 +185,50 @@ namespace detail {
     design.pos = pos;
     design.orient = orient;
     return to_body_state(design, vehicles::canonical_design_rotation(model.design_to_principal), model.com_offset);
+}
+
+// The half extents, in the BODY frame, of the box about the centre of mass that holds the body parts' box: each axis the
+// largest |coordinate| of the box's eight corners seen from the centre of mass. Refused as parts_box() is.
+[[nodiscard]] inline Result<glm::vec3> body_half_extents(const vehicles::ModelType& model) {
+    const Result<std::pair<glm::vec3, glm::vec3>> box = parts_box(model);
+    if (!box) return std::unexpected(box.error());
+    const glm::quat q_bd = vehicles::canonical_design_rotation(model.design_to_principal);
+    glm::vec3 half(0.0f);
+    for (int c = 0; c < 8; ++c) {
+        const glm::vec3 corner((c & 1) ? box->second.x : box->first.x, (c & 2) ? box->second.y : box->first.y,
+                               (c & 4) ? box->second.z : box->first.z);
+        half = glm::max(half, glm::abs(q_bd * (corner - model.com_offset)));
+    }
+    return half;
+}
+
+// What the inspector gives when a kind is picked from its list: sizes from the body parts' box (body_half_extents), or plain
+// ones (sphere 0.1 m, box 0.1 m, a capsule of radius 0.05 m along x, 0.2 m long) for a model whose parts give none. A box takes
+// the half extents; a sphere the largest; a capsule lies along the longest axis (x before y before z on a tie) with the smaller
+// of the other two as its radius, its ends at +-(h - r), no nearer the middle than r/2. The hull is hull_from_model(), and a
+// model with no parts has none. `none` is the empty description (the inspector clears the shape instead).
+[[nodiscard]] inline Result<physics::ShapeDesc> shape_for_kind(const vehicles::ModelType& model, physics::ShapeKind kind) {
+    using physics::ShapeKind;
+    if (kind == ShapeKind::none) return physics::ShapeDesc{};
+    if (kind == ShapeKind::hull) return hull_from_model(model);
+    const Result<glm::vec3> sized = body_half_extents(model);
+    if (kind == ShapeKind::sphere) return physics::sphere_shape(sized ? std::max({sized->x, sized->y, sized->z}) : 0.1f);
+    if (kind == ShapeKind::box) return physics::box_shape(sized ? *sized : glm::vec3(0.1f));
+    if (!sized) return physics::capsule_shape(glm::vec3(-0.1f, 0.0f, 0.0f), glm::vec3(0.1f, 0.0f, 0.0f), 0.05f);
+    int axis = 0;
+    for (int i = 1; i < 3; ++i) {
+        if ((*sized)[i] > (*sized)[axis]) axis = i;
+    }
+    float radius = 1e30f;
+    for (int i = 0; i < 3; ++i) {
+        if (i != axis) radius = std::min(radius, (*sized)[i]);
+    }
+    const float reach = std::max((*sized)[axis] - radius, 0.5f * radius);
+    glm::vec3 a(0.0f);
+    glm::vec3 b(0.0f);
+    a[axis] = -reach;
+    b[axis] = reach;
+    return physics::capsule_shape(a, b, radius);
 }
 
 namespace detail {
