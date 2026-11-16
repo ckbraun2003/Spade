@@ -642,6 +642,21 @@ void airflow_chapter(Tour& t, const fs::path& assets, const DrawFn& blank) {
     });
 }
 
+// Vsync on for a scope. The tour runs without it (a fixed step per frame, however fast the frames come), but Run air's
+// fluid steps on a worker thread in wall time, so a step that waits for its frames and then shows the air moving
+// needs the frames to come at the display's pace: without it the same number of frames would pass in a fraction of
+// the wall time and the video would show the air barely started.
+class WaitsForAWorker {
+public:
+    explicit WaitsForAWorker(GlTargetSink& sink) : sink_(sink) { sink_.set_vsync(true); }
+    ~WaitsForAWorker() { sink_.set_vsync(false); }
+    WaitsForAWorker(const WaitsForAWorker&) = delete;
+    WaitsForAWorker& operator=(const WaitsForAWorker&) = delete;
+
+private:
+    GlTargetSink& sink_;
+};
+
 // ---------------------------------------------------------------------------
 // MAIN FUNCTION 3: THE EDITOR (editor plan Task 10). The editor's window on the
 // hover scene: the default layout, a vehicle selected, a box placed from the
@@ -1385,6 +1400,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // over the snapshot. Stopped and undone after.
     t.step("editor", "airflow", [&] {
         if (!open()) return;
+        const WaitsForAWorker paced(t.sink());  // Run air's worker sets this step's length: vsync on until it ends
         // The third frame is the first with nu_t met (the Subgrid row is ticked below); five show the wake.
         constexpr uint64_t kAirFrames = 5;  // 0.17 s of air
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
@@ -2110,7 +2126,9 @@ int run_live_smoke(const TourOptions& options) {
         smoke.anomaly("harness/drone-session", drone.error().context);
     }
 
-    sink = open_window(options.width, options.height, /*vsync=*/true);
+    // NO VSYNC (L74b, part 7): the tour counts frames at a fixed step, so the display's rate only made it slower.
+    // The one step whose length a worker thread's wall time sets turns it back on (WaitsForAWorker).
+    sink = open_window(options.width, options.height, /*vsync=*/false);
     if (!sink) {
         // No tour, so no verdict: the journal is left without its END line,
         // and the exit code says the run could not be judged.
@@ -2135,9 +2153,13 @@ int run_live_smoke(const TourOptions& options) {
     sink->set_card({});
 
     // Each chapter opens with a card naming it (the storyboard's captions).
+    const auto wall0 = std::chrono::steady_clock::now();
     const auto chapter = [&](std::string_view card) {
-        // Where the video stands as each chapter opens (60 rendered frames make a second of video): the per-chapter times.
-        smoke.note(std::format("chapter at {:.1f} s of video: {}", static_cast<double>(tour.frames()) / 60.0,
+        // Where the video stands as each chapter opens (60 rendered frames make a second of video), and how much wall
+        // time the run has taken: the per-chapter times.
+        smoke.note(std::format("chapter at {:.1f} s of video, {:.1f} s of wall time: {}",
+                               static_cast<double>(tour.frames()) / 60.0,
+                               std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count(),
                                card.substr(0, card.find('\n'))));
         sink->set_card(std::string(card));
         tour.pump(kChapterCardFrames, {}, blank);
