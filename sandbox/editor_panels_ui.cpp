@@ -557,6 +557,7 @@ void collision_section(ed::EditorPanels& p, const std::string& vehicle, const ve
     }
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("Applies to this vehicle's model; another vehicle that flies the same model keeps its own.");
+    ImGui::TextDisabled("Shapes collide with the world, not yet with each other.");
     ImGui::PopTextWrapPos();
     ImGui::PopID();
 }
