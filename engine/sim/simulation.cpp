@@ -1349,6 +1349,9 @@ uint64_t Simulation::registry_identity() const {
 
 uint32_t Simulation::contact_set_of(ModelTypeId model) const noexcept {
     if (contact_table_ == kNoContactTable || model.is_null()) return 0;
+    // L82b: a model with a contact shape takes the shape's points as its ground response, not its L9 set. The lane is 0, so
+    // static_contact.resolve (not edited) takes the proxy sphere for the body and rigid_contact.resolve answers for the points.
+    if (model.value <= models_.size() && models_[model.value - 1u].shape.has_value()) return 0;
     const std::vector<float>& t = config_tables_[contact_table_];
     const std::size_t at = (static_cast<std::size_t>(model.value) - 1u) * physics::kContactSetRowFloats + 1u;
     if (at >= t.size()) return 0;

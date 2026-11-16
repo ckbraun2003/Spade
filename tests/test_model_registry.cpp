@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/rng.hpp"
+#include "physics/rigid_contact.hpp"
 #include "sim/simulation.hpp"
 #include "sim/world_set.hpp"
 #include "vehicles/model_identity.hpp"
@@ -211,6 +213,56 @@ TEST(ModelSnapshot, TheDesignFrameEntersTheIdentity) {
     const spade::vehicles::ModelType one[] = {plain};
     const spade::vehicles::ModelType other[] = {offset};
     EXPECT_NE(spade::vehicles::model_registry_identity(one), spade::vehicles::model_registry_identity(other));
+}
+
+// L82: a model's contact shape (ModelType::shape, L68) moves its identity, and only when it is present: a model without one folds
+// exactly what it always folded, so every stored identity and snapshot of a shapeless registry is unchanged.
+TEST(ModelIdentity, AShapeEntersTheIdentityAndAbsenceLeavesItAlone) {
+    using spade::vehicles::model_identity;
+    using spade::vehicles::model_registry_identity;
+    const spade::vehicles::ModelType plain = quad("a");
+
+    // A hand-measured value from before the fold learned about shapes (a quad named "a", the test's own): the shapeless identity is
+    // pinned, not merely compared with itself.
+    constexpr uint64_t kShapelessQuadA = 0x5f486e727fcf2e30ull;  // measured 2026-11-16, before the change
+    EXPECT_EQ(model_identity(plain), kShapelessQuadA) << std::hex << "measured 0x" << model_identity(plain);
+
+    spade::vehicles::ModelType shaped = plain;
+    shaped.shape = spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f));
+    const uint64_t with_shape = model_identity(shaped);
+    EXPECT_NE(with_shape, model_identity(plain)) << "two models that differ in physics have two identities";
+    shaped.shape.reset();
+    EXPECT_EQ(model_identity(shaped), model_identity(plain)) << "no shape, no change";
+
+    // Every field of the description is folded.
+    using spade::physics::ShapeDesc;
+    const auto varied = [&](const std::function<void(ShapeDesc&)>& change) {
+        spade::vehicles::ModelType m = plain;
+        ShapeDesc d = spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f));
+        change(d);
+        m.shape = d;
+        return model_identity(m);
+    };
+    const uint64_t base = varied([](ShapeDesc&) {});
+    EXPECT_EQ(base, with_shape);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.half_extents.y = 0.5f; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.radius = 0.01f; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.friction = 0.4f; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.restitution = 0.2f; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.rest_speed = 0.05f; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d.iterations = 8; }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d = spade::physics::sphere_shape(0.5f); }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d = spade::physics::hull_shape({glm::vec3(1.0f), glm::vec3(-1.0f)}); }), base);
+    EXPECT_NE(varied([](ShapeDesc& d) { d = spade::physics::hull_shape({glm::vec3(1.0f), glm::vec3(-1.0f), glm::vec3(0.0f, 1.0f, 0.0f)}); }),
+              varied([](ShapeDesc& d) { d = spade::physics::hull_shape({glm::vec3(1.0f), glm::vec3(-1.0f)}); }))
+        << "a point count is folded";
+
+    // The registry folds it too, so a snapshot of a shaped model does not restore into a shapeless one.
+    spade::vehicles::ModelType other = plain;
+    other.shape = spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f));
+    const spade::vehicles::ModelType one[] = {plain};
+    const spade::vehicles::ModelType two[] = {other};
+    EXPECT_NE(model_registry_identity(one), model_registry_identity(two));
 }
 
 // A model's identity is the per-model fold the airframe compiler and Kat hash a

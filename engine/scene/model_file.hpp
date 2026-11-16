@@ -21,7 +21,9 @@
 //                 as a mapping: ONE emitter and ONE parser for both files
 //                 (TD-9). model_version 1 reads it with the key set of scene
 //                 version 4, which carries everything (parts, mesh parts and
-//                 the chain). Its LAST key, `propulsion`, OPTIONAL and
+//                 the chain); model_version 2 with scene version 6's, which
+//                 adds `collision` (L82), written only when the model has a
+//                 shape, so every other file stays model_version 1. Its LAST key, `propulsion`, OPTIONAL and
 //                 written only when the model has a chain, is every field of
 //                 vehicles::PropulsionChain by its own name, in declaration
 //                 order; the propeller's {j_min, j_max, ct, cq} as the
@@ -48,7 +50,7 @@
 //   3. A VERSION GATE. A model_version this build does not read is
 //      schema_mismatch, read before any other key, so a caller can tell
 //      "upgrade" from "fix your file". Every diagnostic blames the file's own
-//      schema, "model schema v1" -- never the scene schema whose key set the
+//      schema, "model schema v1" or "v2" -- never the scene schema whose key set the
 //      model block borrows.
 //
 // MESH PARTS name their geometry, as in a scene: `shape: {mesh: {file,
@@ -73,8 +75,12 @@
 
 namespace spade::scene {
 
-// The model-file schema this build reads and writes (the only one so far).
-inline constexpr uint32_t kModelFileVersion = 1;
+// The newest model-file schema this build reads, and the oldest. It reads every version in between and writes each file as the
+// oldest that carries it:
+//   1  the model block with scene version 4's key set (parts, mesh parts, the chain);
+//   2  adds `collision` (L82), the model's contact shape, with scene version 6's key set; written only when the model has one.
+inline constexpr uint32_t kModelFileVersion = 2;
+inline constexpr uint32_t kModelFileOldestVersion = 1;
 
 // One model, its propulsion chain included (model.propulsion): the chain is
 // part of the model (N5a, the lead's ruling), so every copy of the model

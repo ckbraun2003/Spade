@@ -2121,7 +2121,8 @@ private:
     // that fold and every table's contents -- see restore().
     [[nodiscard]] uint64_t registry_identity() const;
     // What spawn() writes into BodyState::contact_set for a body of `model`:
-    // its id when the contact sets give it a non-empty range, else 0.
+    // its id when the contact sets give it a non-empty range, else 0. 0 as well
+    // for a model with a contact shape (L82b): the shape replaces the set.
     [[nodiscard]] uint32_t contact_set_of(ModelTypeId model) const noexcept;
     // The table index (schedule_.arrays) of a module array's arena id;
     // modules::kNoArray if it is not a module array.
