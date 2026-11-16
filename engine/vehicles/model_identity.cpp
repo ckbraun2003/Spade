@@ -92,6 +92,24 @@ uint64_t model_identity(const ModelType& m) noexcept {
         f.f32(i.sigma_ba);
         f.f32(i.sigma_bg);
     }
+    // The contact shape (L82), only when present, so a model without one folds exactly what it always folded. Its description is
+    // everything the shape row is compiled from.
+    if (m.shape) {
+        const physics::ShapeDesc& d = *m.shape;
+        f.byte(0xFF);
+        for (const char c : std::string_view("shape")) f.byte(static_cast<uint8_t>(c));
+        f.u32(static_cast<uint32_t>(d.kind));
+        f.f32(d.radius);
+        f.vec3(d.a);
+        f.vec3(d.b);
+        f.vec3(d.half_extents);
+        f.count(d.points.size());
+        for (const glm::vec3& p : d.points) f.vec3(p);
+        f.f32(d.friction);
+        f.f32(d.restitution);
+        f.f32(d.rest_speed);
+        f.u32(d.iterations);
+    }
     return f.value();
 }
 

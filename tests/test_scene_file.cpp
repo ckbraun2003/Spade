@@ -43,6 +43,7 @@
 #include "core/rng.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
+#include "physics/rigid_contact.hpp"
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/propulsion_steady.hpp"
@@ -497,17 +498,17 @@ TEST(SceneFile, UnknownMissingAndDuplicateKeysAreRefusedAtEveryLevel) {
 }
 
 TEST(SceneFile, AnotherSceneVersionIsASchemaMismatch) {
-    // This build reads versions 1 to 5 (2 carries parts, CORE-7; 3 a mesh
+    // This build reads versions 1 to 6 (2 carries parts, CORE-7; 3 a mesh
     // part, CORE-6; 4 a model's propulsion chain, N5a; 5 airflow regions,
-    // N5b). Above and below that range is "upgrade", never "fix your file".
-    for (const std::string version : {"6", "0"}) {
+    // N5b; 6 a model's contact shape, L82). Above and below that range is "upgrade", never "fix your file".
+    for (const std::string version : {"7", "0"}) {
         SCOPED_TRACE(version);
         const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(
             with(kMinimalScene, "scene_version: 1\n", "scene_version: " + version + "\n"));
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
         EXPECT_TRUE(contains(r.error().context, "scene file is schema version " + version)) << r.error().context;
-        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 5")) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "reads versions 1 to 6")) << r.error().context;
     }
 }
 
@@ -1199,12 +1200,12 @@ TEST(SceneFile, ASceneWithAMeshPartIsVersion3) {
         << why(relabelled);
 
     // A reader of versions 1 and 2 refuses a version-3 file as schema_mismatch,
-    // "upgrade", as this build refuses version 6.
+    // "upgrade", as this build refuses version 7.
     const spade::Result<SceneDesc> newer = spade::scene::scene_from_yaml(
-        with(*text, "\nscene_version: 3\n", "\nscene_version: 6\n"), std::filesystem::path("."));
+        with(*text, "\nscene_version: 3\n", "\nscene_version: 7\n"), std::filesystem::path("."));
     ASSERT_FALSE(newer);
     EXPECT_EQ(newer.error().code, spade::Code::schema_mismatch);
-    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 5")) << why(newer);
+    EXPECT_TRUE(contains(why(newer), "reads versions 1 to 6")) << why(newer);
 }
 
 TEST(SceneFile, AMeshPartLoadsFromItsSidecar) {
@@ -1588,6 +1589,205 @@ TEST(SceneFile, ABadChainIsRefusedWithTheModelsOwnMessage) {
     const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(
         with(minimal_chain_scene(), "\n      kv: 256.56340004316644\n", "\n      kv: 0\n"));
     EXPECT_EQ(why(read), expected);
+}
+
+// ===========================================================================
+// L82: a model's contact shape (`collision`, scene version 6)
+// ===========================================================================
+//
+// ModelType::shape (L68) is the body shape every instance of the model gets in a set that holds rigid_contact_module(). The scene
+// carries it as the model's last key, `collision`, from version 6, written only when a model has one: a scene without a shape is the
+// text it always was, at the version it always was (the other tests of this file, unedited, pin that).
+
+using spade::physics::ShapeDesc;
+using spade::physics::ShapeKind;
+
+[[nodiscard]] uint32_t bits32(float v) {
+    uint32_t b = 0;
+    std::memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+[[nodiscard]] bool same_shape(const ShapeDesc& a, const ShapeDesc& b) {
+    if (a.kind != b.kind || bits32(a.radius) != bits32(b.radius) || bits32(a.friction) != bits32(b.friction) ||
+        bits32(a.restitution) != bits32(b.restitution) || bits32(a.rest_speed) != bits32(b.rest_speed) ||
+        a.iterations != b.iterations || a.points.size() != b.points.size()) {
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) {
+        if (bits32(a.a[i]) != bits32(b.a[i]) || bits32(a.b[i]) != bits32(b.b[i]) ||
+            bits32(a.half_extents[i]) != bits32(b.half_extents[i])) {
+            return false;
+        }
+    }
+    for (std::size_t p = 0; p < a.points.size(); ++p) {
+        for (int i = 0; i < 3; ++i) {
+            if (bits32(a.points[p][i]) != bits32(b.points[p][i])) return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] std::vector<ShapeDesc> every_kind_of_shape() {
+    std::vector<ShapeDesc> shapes;
+    shapes.push_back(spade::physics::sphere_shape(0.25f));
+    shapes.push_back(spade::physics::capsule_shape(glm::vec3(0.0f, -0.5f, 0.0f), glm::vec3(0.0f, 0.5f, 0.125f), 0.125f));
+    shapes.push_back(spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f)));
+    shapes.push_back(spade::physics::hull_shape(
+        {glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(-1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+         glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(0.0f, 0.0f, -0.5f)},
+        0.015625f));
+    // Every optional key set: a skin on a box, the material, a rest speed and the sweeps.
+    ShapeDesc full = spade::physics::box_shape(glm::vec3(0.5f), 0.0625f);
+    full.friction = 0.4f;
+    full.restitution = 0.2f;
+    full.rest_speed = 0.05f;
+    full.iterations = 8;
+    shapes.push_back(full);
+    return shapes;
+}
+
+TEST(SceneFile, AModelsContactShapeRoundTripsAsVersionSix) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    const std::vector<ShapeDesc> shapes = every_kind_of_shape();
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+        SCOPED_TRACE(i);
+        SceneDesc s = *plain;
+        s.models[0].shape = shapes[i];
+        const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+        ASSERT_OK(text);
+        EXPECT_TRUE(contains(*text, "\nscene_version: 6\n")) << *text;
+        EXPECT_TRUE(contains(*text, "\n    collision:\n")) << *text;
+
+        const spade::Result<SceneDesc> read = spade::scene::scene_from_yaml(*text);
+        ASSERT_OK(read);
+        ASSERT_TRUE(read->models[0].shape.has_value());
+        EXPECT_TRUE(same_shape(*read->models[0].shape, shapes[i]));
+        const spade::Result<std::string> again = spade::scene::scene_to_yaml(*read);
+        ASSERT_OK(again);
+        EXPECT_EQ(*again, *text);  // canonical text
+    }
+}
+
+TEST(SceneFile, ASceneWithoutAShapeIsWrittenAsItAlwaysWas) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    const spade::Result<std::string> before = spade::scene::scene_to_yaml(*plain);
+    ASSERT_OK(before);
+    EXPECT_TRUE(contains(*before, "\nscene_version: 1\n")) << *before;
+    EXPECT_FALSE(contains(*before, "\n    collision:")) << *before;  // the key (the assets' comment says "no collision")
+
+    // A shape added and removed leaves the same bytes.
+    SceneDesc s = *plain;
+    s.models[0].shape = spade::physics::sphere_shape(0.5f);
+    s.models[0].shape.reset();
+    const spade::Result<std::string> after = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(after);
+    EXPECT_EQ(*after, *before);
+
+    // A shape on any model makes the scene version 6, whatever else it holds (a chain asks for 4, a mesh part for 3).
+    const spade::Result<SceneDesc> chain = spade::scene::scene_from_yaml(minimal_chain_scene());
+    ASSERT_OK(chain);
+    SceneDesc c = *chain;
+    c.models[0].shape = spade::physics::sphere_shape(0.5f);
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(c);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nscene_version: 6\n")) << *text;
+    EXPECT_TRUE(contains(*text, "\n    propulsion:\n")) << *text;
+    EXPECT_TRUE(contains(*text, "\n    collision:\n")) << *text;
+}
+
+TEST(SceneFile, TheCollisionKeyIsVersionSixs) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    s.models[0].shape = spade::physics::box_shape(glm::vec3(0.5f));
+    const spade::Result<std::string> text = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(text);
+    // The same text under an older version: the key is unknown there, and the file says which schema does not define it.
+    for (const std::string version : {"5", "4"}) {
+        SCOPED_TRACE(version);
+        const spade::Result<SceneDesc> r =
+            spade::scene::scene_from_yaml(with(*text, "scene_version: 6\n", "scene_version: " + version + "\n"));
+        ASSERT_FALSE(r);
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(contains(r.error().context, "unknown key 'collision' in scene.models[0] -- scene schema v" + version +
+                                                    " does not define it (line "))
+            << r.error().context;
+    }
+}
+
+TEST(SceneFile, AContactShapesKeysAreRefusedByName) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    s.models[0].shape = spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f));
+    const spade::Result<std::string> box = spade::scene::scene_to_yaml(s);
+    ASSERT_OK(box);
+    ASSERT_TRUE(contains(*box, "\n      kind: \"box\"\n")) << *box;
+    ASSERT_TRUE(contains(*box, "\n      skin: 0\n")) << *box;
+    ASSERT_TRUE(contains(*box, "\n      half_extents: [0.5, 0.25, 0.125]\n")) << *box;
+
+    struct Case {
+        std::string what;
+        std::string from;
+        std::string to;
+        std::string needle;
+    };
+    const std::vector<Case> cases = {
+        {"an unknown kind", "kind: \"box\"", "kind: \"cone\"",
+         "scene.models[0].collision.kind: unknown shape kind 'cone' (expected sphere, capsule, box or hull) (line "},
+        {"a kind that is none", "kind: \"box\"", "kind: \"none\"",
+         "scene.models[0].collision.kind: unknown shape kind 'none' (expected sphere, capsule, box or hull) (line "},
+        {"a key another kind owns", "\n      half_extents: [0.5, 0.25, 0.125]\n",
+         "\n      half_extents: [0.5, 0.25, 0.125]\n      radius: 1\n",
+         "unknown key 'radius' in scene.models[0].collision -- scene schema v6 does not define it (line "},
+        {"an unknown key", "\n      half_extents: [0.5, 0.25, 0.125]\n",
+         "\n      half_extents: [0.5, 0.25, 0.125]\n      bogus: 1\n",
+         "unknown key 'bogus' in scene.models[0].collision -- scene schema v6 does not define it (line "},
+        {"a missing key", "\n      half_extents: [0.5, 0.25, 0.125]\n", "\n",
+         "missing required key 'half_extents' in scene.models[0].collision (line "},
+        {"a duplicate key", "\n      skin: 0\n", "\n      skin: 0\n      skin: 0\n",
+         "duplicate key 'skin' in scene.models[0].collision"},
+        {"a value that is not a number", "\n      skin: 0\n", "\n      skin: thick\n",
+         "scene.models[0].collision.skin: 'thick' is not a decimal number (line "},
+        {"a half extent that is not positive", "[0.5, 0.25, 0.125]", "[0.5, 0, 0.125]",
+         "scene.models[0].collision: set_body_shape: "},
+        {"a negative skin", "\n      skin: 0\n", "\n      skin: -1\n", "scene.models[0].collision: set_body_shape: "},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(c.what);
+        const spade::Result<SceneDesc> r = spade::scene::scene_from_yaml(with(*box, c.from, c.to));
+        ASSERT_FALSE(r) << "accepted";
+        EXPECT_EQ(r.error().code, spade::Code::invalid_argument);
+        EXPECT_TRUE(contains(r.error().context, c.needle)) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "(line ")) << r.error().context;
+    }
+
+    // A collision that is not a mapping.
+    const spade::Result<SceneDesc> scalar = spade::scene::scene_from_yaml(
+        with(*box, "\n    collision:\n      kind: \"box\"\n", "\n    collision: 3\n    zz:\n      kind: \"box\"\n"));
+    EXPECT_FALSE(scalar);
+}
+
+TEST(SceneFile, ABadShapeInMemoryIsRefusedByTheWriterAndTheValidator) {
+    const spade::Result<SceneDesc> plain = spade::scene::scene_from_yaml(kMinimalScene);
+    ASSERT_OK(plain);
+    SceneDesc s = *plain;
+    s.models[0].shape = spade::physics::sphere_shape(-1.0f);
+    const spade::Result<void> validated = spade::scene::validate_scene(s);
+    ASSERT_FALSE(validated);
+    EXPECT_EQ(validated.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(validated.error().context, "model 'q': collision: set_body_shape: "))
+        << validated.error().context;
+    EXPECT_EQ(why(spade::scene::scene_to_yaml(s)), validated.error().context);
+
+    // More than 16 hull points.
+    std::vector<glm::vec3> many;
+    for (int i = 0; i < 17; ++i) many.emplace_back(static_cast<float>(i), 0.0f, 1.0f);
+    s.models[0].shape = spade::physics::hull_shape(std::move(many));
+    EXPECT_TRUE(contains(why(spade::scene::validate_scene(s)), "model 'q': collision: set_body_shape: "));
 }
 
 // ===========================================================================

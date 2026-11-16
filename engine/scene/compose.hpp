@@ -116,7 +116,9 @@ struct SceneRun {
 // and the world's physics records (turbulence, contacts, grid); its `world`
 // is replaced by the composed world. Creates a FRESH Simulation, registers the
 // models in order, spawns the vehicles in order into world 0, and flushes
-// once, so the returned vehicles are live. A start reaches spawn() exactly as
+// once, so the returned vehicles are live. The module set is the standard one,
+// plus rigid_contact_module() when some model has a shape (L82): a scene
+// without shapes builds exactly the standard set. A start reaches spawn() exactly as
 // the scene wrote it. Errors name the model or vehicle that failed, with the
 // Simulation's code.
 [[nodiscard]] Result<SceneRun> instantiate(const ComposedScene& scene, WorldInstanceDesc instance,
