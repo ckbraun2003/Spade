@@ -30,18 +30,26 @@
 // A sphere ROLLS ON: there is no rolling resistance, so a sphere on a flat floor keeps its speed once omega r = v (a box or a capsule
 // stops). Body-body contact is not part of this pass.
 //
-// A SHAPED BODY'S OTHER GROUND RESPONSES (L82b, the lead's ruling). static_contact.resolve is not edited and still runs for every
-// body, so a shaped body has two more: its L9 CONTACT SET and its PROXY SPHERE. The set is replaced: a model with a shape gets
-// BodyState::contact_set 0 at spawn (Simulation::contact_set_of), so the shape's points are its ground contact, one response. The
-// proxy sphere (the model's proxy_radius, else the world's ContactParams::proxy_radius, centred on the centre of mass) is NOT
-// switched off, because that needs a kernel edit and moves the SpirvPin rows. It is inert while the shape's smallest half-extent
-// (the inscribed radius) exceeds it, which holds for any compact shape at the usual 0.1 m. A THIN shape (a plate, a board) wants a
-// small model proxy_radius, below its half thickness, or the sphere holds it off the floor.
+// A SHAPED BODY'S OTHER GROUND RESPONSES (L82b, L82d, the lead's rulings). static_contact.resolve is not edited and still runs for
+// every body, so a shaped body has two more: its L9 CONTACT SET and its PROXY SPHERE, and both are replaced by the shape, so its
+// points are its one ground response. A model with a shape gets BodyState::contact_set 0 at spawn (Simulation::contact_set_of) and
+// BodyState::proxy_radius kInertProxyRadius (0 in that lane means the world's, so the sphere is made inert, not removed: no kernel
+// edit, no SpirvPin row moves). The model's own proxy_radius is ignored for a model with a shape. A shape is tested against the
+// WHOLE world SDF (every asset, wall and the floor), exactly as the sphere was, so a shaped body still stops at a scene's box.
+//
+// SHAPED BODIES DO NOT COLLIDE WITH EACH OTHER, yet: the grid's body-to-body contact (grid.cpp) is a pair of proxy spheres, and a
+// shaped body's is inert, so two shaped bodies pass through each other (and a plain body still meets a shaped one only at the
+// shaped body's centre). Shape-to-shape contact is built when a use needs it.
 // ---------------------------------------------------------------------------
 
 namespace spade::physics {
 
 inline constexpr uint32_t kShapeMaxPoints = 16;
+
+// L82d: the radius a shaped model's bodies carry in BodyState::proxy_radius, in metres. 0 in that lane means "the world's", so the
+// proxy sphere is made inert by a radius no body origin gets within: static_contact.resolve tests `distance < radius` at the origin.
+inline constexpr float kInertProxyRadius = 1e-6f;
+
 // Sweeps of the velocity solve per substep: the default (a row's iterations lane 0) and the most a row may ask for.
 inline constexpr uint32_t kDefaultSweeps = 4;
 inline constexpr uint32_t kMaxSweeps = 16;

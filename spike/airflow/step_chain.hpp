@@ -69,7 +69,9 @@
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/solids.hpp"
 #include "physics/airflow/wall_load.hpp"
+#include "physics/airflow/line.hpp"
 #include "spike/airflow/chain_runner.hpp"
+#include "spike/airflow/line_chain.hpp"
 #include "spike/airflow/projection_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -95,6 +97,15 @@ inline constexpr uint32_t kMaxDiscs = 16;
 [[nodiscard]] std::vector<float> disc_records(std::span<const physics::airflow::ActuatorDisc> discs,
                                               const physics::airflow::GridShape& shape, float rho, float h);
 
+// THE ACTUATOR LINE (P4c; line_chain.hpp, the kernels airflow_line_{sample,load,spread}): what a GpuFluid that steps
+// rotor lines is created with. The element count is fixed for the run (rotors x blades x elements x n_sub: it follows
+// the grid's dx and the blades, not the flow); every step's rotors must give exactly `elements`.
+struct LineSetup {
+    const physics::airflow::PolarTable* polar = nullptr;  // every rotor's polar: this table (its values are compared)
+    uint32_t elements = 0;                                // all rotors' elements a step, every sub-azimuth counted
+    uint32_t n_sub = 1;
+};
+
 class GpuFluid {
 public:
     // Uploads `g` (u, v, w and p), the step's constants and, with a SolidField
@@ -110,7 +121,8 @@ public:
                                                                   const physics::airflow::DomainBc& bc,
                                                                   const physics::airflow::FluidConfig& cfg,
                                                                   const physics::airflow::SolidField* solids = nullptr,
-                                                                  uint32_t workgroup_size = 64);
+                                                                  uint32_t workgroup_size = 64,
+                                                                  const LineSetup* line = nullptr);
 
     GpuFluid(const GpuFluid&) = delete;
     GpuFluid& operator=(const GpuFluid&) = delete;
@@ -119,6 +131,17 @@ public:
     // are uploaded when they differ from the last step's. With solids, the
     // step's chain, then project_with_solids(); the health as HEALTH above.
     [[nodiscard]] Result<physics::airflow::FluidHealth> step(std::span<const physics::airflow::ActuatorDisc> discs);
+
+    // The step with `lines`' elements and `discs` both: the line's sample, load and spread run first, on the air as the
+    // step begins (the CPU: spread_line() into the increments, then spread_actuator()'s, then fluid_step()); their
+    // increments add to the discs'. Refused (invalid_argument): a fluid created without a LineSetup, a rotor whose
+    // polar differs from the setup's or whose line spread_line() refuses, an element count other than the setup's.
+    // line_reports() are the rotors' reports of this step.
+    [[nodiscard]] Result<physics::airflow::FluidHealth> step(std::span<const physics::airflow::ActuatorDisc> discs,
+                                                             std::span<const physics::airflow::LineRotor> lines);
+    [[nodiscard]] const std::vector<physics::airflow::LineReport>& line_reports() const noexcept {
+        return line_reports_;
+    }
 
     // Reads u, v, w and p into `g`, whose shape must be the fluid's.
     [[nodiscard]] Result<void> read(physics::airflow::MacGrid& g) const;
@@ -174,6 +197,13 @@ private:
     std::optional<uint32_t> wall_load_chain_;  // recorded on the first wall_load()
     physics::airflow::FluidHealth fault_{};    // check_regions()' at create(): returned by every step()
     uint32_t extrapolated_ = 0;                // the publish's extrapolated cells (extrapolated_cells())
+    bool line_on_ = false;
+    uint32_t line_pipeline_ = 0;  // airflow_line_sample's pipeline; load and spread follow it
+    uint32_t line_elements_ = 0;
+    uint32_t line_n_sub_ = 1;
+    uint32_t line_chain_ = 0;     // sample, load and the three spreads, the force read back
+    physics::airflow::PolarTable line_polar_{};
+    std::vector<physics::airflow::LineReport> line_reports_;
     bool phase_timing_ = false;
     std::vector<PhaseTime> phases_;            // the last step's, when phase_timing_
     std::array<std::vector<std::string>, kMaxDiscs + 1> phase_names_{};  // the marks' names, by disc count

@@ -45,6 +45,9 @@
 #include "physics/airflow/projection.hpp"
 #include "physics/airflow/publish.hpp"
 #include "physics/airflow/regions.hpp"
+#include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_sample.spv.gen.hpp"
+#include "airflow_line_spread.spv.gen.hpp"
 #include "spike/airflow/publish_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -229,7 +232,8 @@ std::vector<float> disc_records(std::span<const af::ActuatorDisc> discs, const a
 
 Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, const af::MacGrid& g,
                                                    const af::DomainBc& bc, const af::FluidConfig& cfg,
-                                                   const af::SolidField* solids, uint32_t workgroup_size) {
+                                                   const af::SolidField* solids, uint32_t workgroup_size,
+                                                   const LineSetup* line) {
     // A copy of make_fluid_scratch()'s refusals (fluid_step.cpp), the rule they
     // mirror, in its order and words: a change there is made here too, until
     // the two share one check.
@@ -393,6 +397,30 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         set(gen::kBinding_airflow_wall_load, kWallLoadFloats, BufferKind::staged);
         kernels.insert(kernels.end(), kSolidsKernels.begin(), kSolidsKernels.end());
     }
+    // The actuator line: placeholders for the bindings below it, its four buffers, its kernels after all the others.
+    uint64_t line_readback = 0;
+    if (line != nullptr) {
+        if (line->polar == nullptr || line->polar->key.size() < 2u ||
+            line->polar->key.size() > kAirflowLinePolarCapacity || line->polar->cl.size() != line->polar->key.size() ||
+            line->polar->cd.size() != line->polar->key.size()) {
+            return std::unexpected(invalid("line: a polar of 2 to kAirflowLinePolarCapacity points is needed"));
+        }
+        if (line->elements == 0u || line->elements > kAirflowLineMaxElements || line->n_sub == 0u) {
+            return std::unexpected(invalid("line: elements must be 1 to kAirflowLineMaxElements and n_sub at least 1"));
+        }
+        for (uint32_t b = static_cast<uint32_t>(buffers.size()); b <= gen::kBinding_airflow_line_force; ++b) {
+            buffers.push_back({"airflow_unused_" + std::to_string(b), 4u, BufferKind::device_only});
+        }
+        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride, BufferKind::resident);
+        set(gen::kBinding_airflow_line_polar, 1u + 3u * uint64_t{line->polar->key.size()}, BufferKind::resident);
+        set(gen::kBinding_airflow_line_vel, uint64_t{line->elements} * 4u, BufferKind::device_only);
+        set(gen::kBinding_airflow_line_force, uint64_t{line->elements} * kLineForceStride, BufferKind::resident);
+        self->line_pipeline_ = static_cast<uint32_t>(kernels.size());
+        kernels.push_back(&gen::kSpvVariants_airflow_line_sample);
+        kernels.push_back(&gen::kSpvVariants_airflow_line_load);
+        kernels.push_back(&gen::kSpvVariants_airflow_line_spread);
+        line_readback = (uint64_t{line->elements} * kLineForceStride * sizeof(float) + 15u) & ~uint64_t{15};
+    }
 
     // Plan A's health word is read from each step chain's own readback of airflow_scalars: one 16-aligned
     // region a chain, one chain for each disc count.
@@ -401,7 +429,9 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
                                                       .kernels = kernels,
                                                       .push_bytes = sizeof(ProjectionPush),
                                                       .workgroup_size = workgroup_size,
-                                                      .readback_bytes = with_solids ? 0u : (kMaxDiscs + 1u) * kHealthRegion});
+                                                      .readback_bytes =
+                                                          (with_solids ? 0u : (kMaxDiscs + 1u) * kHealthRegion) +
+                                                          line_readback});
     if (!runner) return std::unexpected(runner.error());
     self->runner_ = std::move(*runner);
     ChainRunner& r = *self->runner_;
@@ -435,6 +465,28 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     auto cleared = r.record(clear);
     if (!cleared) return std::unexpected(cleared.error());
     if (Result<void> ok = r.submit(*cleared, 1); !ok) return std::unexpected(ok.error());
+    if (line != nullptr) {
+        self->line_on_ = true;
+        self->line_elements_ = line->elements;
+        self->line_n_sub_ = line->n_sub;
+        self->line_polar_ = *line->polar;
+        const std::vector<float> polar_floats = polar_records(*line->polar);
+        if (Result<void> ok = r.upload(gen::kBinding_airflow_line_polar, bytes(polar_floats)); !ok) {
+            return std::unexpected(ok.error());
+        }
+        const uint32_t e = line->elements;
+        const uint32_t p = self->line_pipeline_;
+        std::vector<ChainCommand> chain;
+        chain.push_back(dispatch(p, e, 0u, 3u * e, 0u, workgroup_size));
+        chain.push_back(dispatch(p + 1u, e, 0u, e, 0u, workgroup_size));
+        for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(p + 2u, c, e, n[c], 0u, workgroup_size));
+        const ChainReadback force{.buffer = gen::kBinding_airflow_line_force,
+                                  .src_offset = 0,
+                                  .bytes = uint64_t{e} * kLineForceStride * sizeof(float)};
+        auto id = r.record(chain, std::span(&force, 1));
+        if (!id) return std::unexpected(id.error());
+        self->line_chain_ = *id;
+    }
     return self;
 }
 
@@ -512,6 +564,37 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     step_chains_[disc_count] = *id;
     phase_names_[disc_count] = std::move(names);
     return *id;
+}
+
+Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, std::span<const af::LineRotor> lines) {
+    if (!line_on_) return std::unexpected(invalid("step: this GpuFluid was created without a LineSetup"));
+    for (const af::LineRotor& rotor : lines) {
+        if (rotor.polar == nullptr || rotor.polar->key != line_polar_.key || rotor.polar->cl != line_polar_.cl ||
+            rotor.polar->cd != line_polar_.cd) {
+            return std::unexpected(invalid("step: a rotor's polar is not the LineSetup's"));
+        }
+    }
+    if (fault_.fault != af::FluidFault::none) return fault_;
+    Result<LineRecords> records = line_records(lines, shape_, cfg_.rho, cfg_.h, line_n_sub_);
+    if (!records) return std::unexpected(records.error());
+    if (records->elems.size() != std::size_t{line_elements_} * kLineStride) {
+        return std::unexpected(invalid("step: the rotors give " + std::to_string(records->elems.size() / kLineStride) +
+                                       " line elements, the LineSetup says " + std::to_string(line_elements_)));
+    }
+    if (Result<void> ok = runner_->upload(gen::kBinding_airflow_line_elems, std::as_bytes(std::span(records->elems)));
+        !ok) {
+        return std::unexpected(ok.error());
+    }
+    if (Result<void> ok = runner_->submit(line_chain_, 1); !ok) return std::unexpected(ok.error());
+    const std::span<const std::byte> force = runner_->readback(line_chain_, 0);
+    if (force.size() != std::size_t{line_elements_} * kLineForceStride * sizeof(float)) {
+        return std::unexpected(Error{Code::internal, "GpuFluid: the line chain's readback of the force is " +
+                                                         std::to_string(force.size()) + " bytes"});
+    }
+    std::vector<float> force_floats(std::size_t{line_elements_} * kLineForceStride);
+    std::memcpy(force_floats.data(), force.data(), force.size());
+    line_reports_ = airflow_gpu::line_reports(*records, lines, force_floats);
+    return step(discs);
 }
 
 Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) {

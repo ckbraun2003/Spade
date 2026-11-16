@@ -105,6 +105,7 @@ TEST(AirflowLineHover, V2OneRotorInAGridBox) {
     rotor.omega = kOmega;
     rotor.blade = &blade;
     rotor.polar = &polar;
+    rotor.eps_cells = static_cast<float>(env_u32("SPADE_V2_EPS_X100", 200)) / 100.0f;  // a diagnostic sweep: the kernel width in cells
 
     const uint32_t total = steps_override != 0u
                                ? steps_override
@@ -121,12 +122,16 @@ TEST(AirflowLineHover, V2OneRotorInAGridBox) {
     std::array<double, 2> thrust_sum{}, power_sum{}, flux_sum{};
     std::array<uint32_t, 2> count{};
     double wall = 0.0;
+    double line_ms = 0.0;  // the line's own part of the wall (spread_line)
     double psi = 0.0;
+    std::printf("V2 kernel eps %.2f cells = %.2f mm\n", static_cast<double>(rotor.eps_cells), static_cast<double>(rotor.eps_cells) * dx * 1000.0);
     for (uint32_t step = 0; step < total; ++step) {
         const auto t0 = std::chrono::steady_clock::now();
         rotor.psi = static_cast<float>(psi);
         const auto rep = af::spread_line(rotor, *grid, kRho, cfg.h, n_sub, scratch->du, scratch->dv, scratch->dw);
         ASSERT_TRUE(rep.has_value()) << rep.error().context;
+        const auto after_line = std::chrono::steady_clock::now();
+        line_ms += std::chrono::duration<double, std::milli>(after_line - t0).count();
         const af::FluidHealth h = af::fluid_step(*grid, bc, cfg, *scratch);
         ASSERT_EQ(h.fault, af::FluidFault::none) << af::describe(h, grid->shape);
         psi = std::fmod(psi + static_cast<double>(kOmega) * cfg.h, 2.0 * std::numbers::pi);
@@ -154,7 +159,91 @@ TEST(AirflowLineHover, V2OneRotorInAGridBox) {
             }
         }
     }
-    std::printf("V2 wall: %.1f s over %u steps (%.0f ms a step)\n", wall / 1000.0, total, wall / total);
+
+    if (env_u32("SPADE_V2_PROBE", 0) != 0u) {
+        // The power-gap diagnosis: the final field, the line's elements at 8 azimuths of one turn, per radius: what the line feels and
+        // loads against the BEMT's annulus at the same radius, and the air sampled with a NARROWER Gaussian (eps 1 and 0.5 dx) in place of 2 dx.
+        rotor.psi = static_cast<float>(psi);
+        const std::vector<af::LineElement> el = af::line_elements(rotor, dx, 2.0f * static_cast<float>(std::numbers::pi) / kOmega, 8);
+        const uint32_t per = static_cast<uint32_t>(el.size()) / (8u * blade.blades);
+        const auto bm = bt::bemt(bt::BemtInput{.blade = &blade, .polar = &polar, .omega = kOmega, .rho = kRho, .climb = 0.0f,
+                                               .annuli = per, .tip_loss = true});
+        ASSERT_TRUE(bm.has_value());
+        const auto narrow = [&](glm::vec3 pos, double eps_cells) {  // Gaussian eps_cells * dx, +-3 eps, normalised, per component
+            glm::dvec3 out(0.0);
+            for (uint32_t c = 0; c < 3; ++c) {
+                const std::vector<float>& data = c == 0 ? grid->u : c == 1 ? grid->v : grid->w;
+                double acc = 0.0, sum = 0.0;
+                const int reach = static_cast<int>(std::ceil(3.0 * eps_cells));
+                std::array<int, 3> lo{};
+                std::array<double, 3> f{};
+                for (uint32_t a = 0; a < 3; ++a) {
+                    f[a] = pos[static_cast<glm::length_t>(a)] / dx - (a == c ? 0.0 : 0.5);
+                    lo[a] = static_cast<int>(std::floor(f[a])) - reach;
+                }
+                for (int k = lo[2]; k <= lo[2] + 2 * reach + 1; ++k) {
+                    for (int j = lo[1]; j <= lo[1] + 2 * reach + 1; ++j) {
+                        for (int i = lo[0]; i <= lo[0] + 2 * reach + 1; ++i) {
+                            const int n_x = static_cast<int>(shape.nx) + (c == 0 ? 1 : 0), n_y = static_cast<int>(shape.ny) + (c == 1 ? 1 : 0),
+                                      n_z = static_cast<int>(shape.nz) + (c == 2 ? 1 : 0);
+                            if (i < 0 || j < 0 || k < 0 || i >= n_x || j >= n_y || k >= n_z) continue;
+                            const double d2 = ((i - f[0]) * (i - f[0]) + (j - f[1]) * (j - f[1]) + (k - f[2]) * (k - f[2])) /
+                                              (eps_cells * eps_cells);
+                            const double w = std::exp(-d2);
+                            const std::size_t idx = c == 0 ? af::u_index(shape, i, j, k) : c == 1 ? af::v_index(shape, i, j, k)
+                                                                                                 : af::w_index(shape, i, j, k);
+                            acc += w * data[idx];
+                            sum += w;
+                        }
+                    }
+                }
+                out[static_cast<glm::length_t>(c)] = sum > 0.0 ? acc / sum : 0.0;
+            }
+            return out;
+        };
+        struct Acc { double ua = 0, ua1 = 0, ua05 = 0, wt = 0, dt = 0, dq = 0; uint32_t n = 0; };
+        std::vector<Acc> acc(per);
+        for (std::size_t i = 0; i < el.size(); ++i) {
+            const af::LineElement& e = el[i];
+            const glm::vec3 air = af::line_sample(*grid, e.pos);
+            const double ua = -glm::dot(air, rotor.axis);
+            const double wt = static_cast<double>(kOmega) * e.r - glm::dot(air, e.motion);
+            const af::SectionLoad l = af::section_load(polar, e.chord, e.sin_beta, e.cos_beta, static_cast<float>(ua),
+                                                       static_cast<float>(wt), kRho);
+            Acc& a = acc[i % per];
+            a.ua += ua;
+            a.ua1 += -glm::dot(narrow(e.pos, 1.0), glm::dvec3(rotor.axis));
+            a.ua05 += -glm::dot(narrow(e.pos, 0.5), glm::dvec3(rotor.axis));
+            a.wt += wt;
+            a.dt += static_cast<double>(blade.blades) * l.axial;
+            a.dq += static_cast<double>(blade.blades) * l.tangent * e.r;
+            ++a.n;
+        }
+        const double pi = std::numbers::pi;
+        std::printf("V2 probe R/dx %u, final field, 8 azimuths (24 blade samples a radius); eps_cells in the line: 2 (the line's own)\n", rdx);
+        std::printf("V2 probe  r/R   chord/R | BEMT: v   phi  alpha  dT/dr  dQ/dr | line ua(eps2) ua(eps1) ua(eps.5) phi alpha dT/dr dQ/dr\n");
+        double pi_b = 0, pp_b = 0, pi_l = 0, pp_l = 0;
+        for (uint32_t k = 0; k < per; ++k) {
+            const bt::AnnulusLoad& b = bm->annulus[k];
+            const Acc& a = acc[k];
+            const double ua = a.ua / a.n;
+            const double wt = a.wt / a.n;
+            const double phi_b = std::atan2(b.ua, b.wt), phi_l = std::atan2(ua, wt);
+            const double dt_l = a.dt / a.n, dq_l = a.dq / a.n;
+            const double dr = (blade.radius - blade.stations.front().r) / per;
+            pi_b += b.dt_dr * b.ua * dr;
+            pp_b += (b.dq_dr * kOmega - b.dt_dr * b.ua) * dr;
+            pi_l += dt_l * ua * dr;
+            pp_l += (dq_l * kOmega - dt_l * ua) * dr;
+            std::printf("V2 probe  %.3f | %6.3f %6.2f %6.2f %7.3f %8.5f | %6.3f %6.3f %6.3f %6.2f %6.2f %7.3f %8.5f\n", b.r / kRadius, b.v,
+                        phi_b * 180 / pi, (b.beta - phi_b) * 180 / pi, b.dt_dr, b.dq_dr, ua, a.ua1 / a.n, a.ua05 / a.n, phi_l * 180 / pi,
+                        (b.beta - phi_l) * 180 / pi, dt_l, dq_l);
+        }
+        std::printf("V2 probe power split (W): BEMT induced %.3f profile %.3f total %.3f; line induced %.3f profile %.3f total %.3f\n",
+                    pi_b, pp_b, pi_b + pp_b, pi_l, pp_l, pi_l + pp_l);
+    }
+    std::printf("V2 wall: %.1f s over %u steps (%.0f ms a step, of which the line %.1f ms)\n", wall / 1000.0, total, wall / total,
+                line_ms / total);
     if (steps_override != 0u || count[0] == 0 || count[1] == 0) return;  // a timing run: no bands
 
     std::array<double, 2> thrust{}, power{}, flux{};

@@ -447,10 +447,10 @@ TEST(RigidContact, TwoRunsAreBitEqualAndASnapshotMidTumbleRestoresTheSameDigest)
     EXPECT_EQ(spade::testing::state_digest(a), spade::testing::state_digest(b));
 }
 
-// A vehicle model with a shape: its body's row is written at spawn; a model without one is unchanged.
-TEST(RigidContact, AModelsShapeIsWrittenToItsBodyAtSpawn) {
+// A quadrotor-shaped model of 1 kg with the editor's usual 0.2 m proxy radius, named `name`.
+static spade::vehicles::ModelType proxied_quad(const char* name) {
     spade::vehicles::QuadrotorParams p;
-    p.name = "shaped";
+    p.name = name;
     p.mass = 1.0f;
     p.inertia_diag = glm::vec3(0.018f, 0.032f, 0.024f);
     p.arm_length = 0.19f;
@@ -466,7 +466,12 @@ TEST(RigidContact, AModelsShapeIsWrittenToItsBodyAtSpawn) {
     p.drag.area = 0.05f;
     p.drag.coeffs = glm::vec3(1.6f, 0.0f, 0.0f);
     p.imu.rate_divider = 1;
-    spade::vehicles::ModelType with_shape = spade::vehicles::make_quadrotor(p).value();
+    return spade::vehicles::make_quadrotor(p).value();
+}
+
+// A vehicle model with a shape: its body's row is written at spawn; a model without one is unchanged.
+TEST(RigidContact, AModelsShapeIsWrittenToItsBodyAtSpawn) {
+    spade::vehicles::ModelType with_shape = proxied_quad("shaped");
     spade::vehicles::ModelType plain = with_shape;
     plain.name = "plain";
     with_shape.shape = ph::box_shape(glm::vec3(0.2f, 0.05f, 0.2f));
@@ -490,6 +495,40 @@ TEST(RigidContact, AModelsShapeIsWrittenToItsBodyAtSpawn) {
     EXPECT_EQ(ra->kind, static_cast<uint32_t>(ph::ShapeKind::box));
     EXPECT_EQ(ra->count, 8u);
     EXPECT_EQ(rb->count, 0u) << "a model without a shape has none";
+}
+
+// L82d: a shape replaces the proxy sphere as well as the L9 set, so ONE ground response answers for a shaped body. The model's
+// proxy_radius (0.2 m here, the editor's usual) does not hold a thin box off the floor: the body's lane is the inert radius, and a
+// plate dropped tilted falls to rest on a face, its centre at about the half thickness (0.05 m), not frozen at 0.2 m. A model
+// without a shape keeps its radius (and its identity, test_model_registry.cpp).
+TEST(RigidContact, AShapedModelsProxySphereIsInertSoAThinBoxTumblesOntoAFace) {
+    spade::vehicles::ModelType shaped = proxied_quad("shaped");
+    spade::vehicles::ModelType plain = shaped;
+    plain.name = "plain";
+    shaped.shape = ph::box_shape(glm::vec3(0.2f, 0.05f, 0.2f));
+
+    Simulation sim = make(tumbling_set());
+    const auto shaped_id = sim.register_model(shaped);
+    const auto plain_id = sim.register_model(plain);
+    ASSERT_TRUE(shaped_id.has_value() && plain_id.has_value());
+    spade::VehicleSpawn at;
+    at.pos = glm::vec3(0.0f, 0.6f, 0.0f);
+    at.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 1.0f)));
+    const auto a = sim.spawn(0, *shaped_id, at);
+    at.pos = glm::vec3(3.0f, 2.0f, 0.0f);
+    at.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const auto b = sim.spawn(0, *plain_id, at);
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    ASSERT_TRUE(b.has_value()) << b.error().context;
+    ASSERT_TRUE(sim.flush_structural().has_value());
+
+    EXPECT_EQ(body(sim, a->body).proxy_radius, ph::kInertProxyRadius) << "a shaped model's lane is the inert radius";
+    EXPECT_EQ(body(sim, b->body).proxy_radius, 0.2f) << "a model without a shape keeps its own";
+
+    ASSERT_TRUE(sim.step(3000).has_value());
+    const BodyState end = body(sim, a->body);
+    EXPECT_LT(end.pos.y, 0.1f) << "frozen on the proxy sphere at y " << end.pos.y << "; it should rest on a face (about 0.05 m)";
+    EXPECT_GT(end.pos.y, 0.04f) << "the shape's points hold the body up";
 }
 
 // ---- the band's CPU ensemble (docs/design/test-docs/2026-11-11-l68-device-band.md) ---------------------------------------------------------

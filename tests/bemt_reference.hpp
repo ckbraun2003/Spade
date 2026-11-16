@@ -17,6 +17,7 @@
 #include <cmath>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "core/error.hpp"
@@ -34,7 +35,20 @@ struct BemtInput {
     bool tip_loss = false;  // Prandtl's
 };
 
+// One annulus of the solve (the diagnosis of the V2 power gap): the midpoint radius, the induced speed v, the axial speed ua = climb + v,
+// the section's speed wt, and the blades' dT/dr and dQ/dr (all blades) there.
+struct AnnulusLoad {
+    double r = 0.0;
+    double v = 0.0;
+    double ua = 0.0;
+    double wt = 0.0;
+    double beta = 0.0;  // rad
+    double dt_dr = 0.0;
+    double dq_dr = 0.0;
+};
+
 struct RotorLoads {
+    std::vector<AnnulusLoad> annulus;  // hub to tip
     float thrust = 0.0f;       // N, all blades
     float torque = 0.0f;       // N m about the axis
     float power = 0.0f;        // W, torque * omega
@@ -72,6 +86,7 @@ struct RotorLoads {
     double thrust = 0.0;
     double torque = 0.0;
     double weighted = 0.0;
+    std::vector<AnnulusLoad> annulus;
     for (uint32_t k = 0; k < in.annuli; ++k) {
         const double r = r0 + dr * (static_cast<double>(k) + 0.5);
         const float chord = static_cast<float>(interpolate(r, [](const af::BladeStation& s) { return s.chord; }));
@@ -110,8 +125,11 @@ struct RotorLoads {
         thrust += dt;
         torque += static_cast<double>(b.blades) * l.tangent * r * dr;
         weighted += v * dt;
+        annulus.push_back({r, v, in.climb + v, static_cast<double>(wt), beta, static_cast<double>(b.blades) * l.axial,
+                           static_cast<double>(b.blades) * l.tangent * r});
     }
     RotorLoads out;
+    out.annulus = std::move(annulus);
     out.thrust = static_cast<float>(thrust);
     out.torque = static_cast<float>(torque);
     out.power = static_cast<float>(torque * in.omega);

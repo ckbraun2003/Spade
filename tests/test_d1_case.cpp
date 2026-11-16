@@ -157,4 +157,17 @@ TEST(D1Case, TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign) {
     }
 }
 
+TEST(D1Case, AGridNoTallerThanKD1GridKeepsTheCentre) {
+    using spade::testing::d1_hold;
+    const af::GridShape gate{112, 80, 112, 0.004f};
+    EXPECT_EQ(d1_hold(gate), glm::vec3(0.0f)) << "a shorter grid was held at a negative y before";
+    EXPECT_EQ(d1_hold(kD1Grid), glm::vec3(0.0f));
+    const af::GridShape one_less{240, 176, 168, 0.004f};
+    EXPECT_EQ(d1_hold(one_less), glm::vec3(0.0f));
+    EXPECT_GT(d1_hold(spade::testing::kD1DeepGrid).y, 0.0f) << "the deep box still holds the drone off centre";
+    const auto q = spade::testing::d1_case(0.1, gate, false);
+    ASSERT_TRUE(q.has_value()) << q.error().context;
+    EXPECT_EQ(q->hold, glm::vec3(0.0f));
+}
+
 }  // namespace

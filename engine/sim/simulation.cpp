@@ -2745,8 +2745,10 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // radius disagrees with the world's (either direction) would otherwise be
     // validated against the wrong number, the same bug the collision passes
     // themselves had before this task.
+    // L82d: a model with a shape has the inert proxy (rigid_contact.hpp), so the checks and the lane below use it.
+    const float model_proxy_radius = model.shape.has_value() ? physics::kInertProxyRadius : model.proxy_radius;
     const float effective_radius =
-        physics::effective_proxy_radius(model.proxy_radius, config.contacts.proxy_radius);
+        physics::effective_proxy_radius(model_proxy_radius, config.contacts.proxy_radius);
 
     // MIRRORS sim/world_set.cpp's validate_grid_against_contacts() -- same
     // invariant (physics/grid.hpp's cell_size >= 2*radius footgun: the
@@ -2759,7 +2761,7 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // model overrides the default (proxy_radius != 0); the sentinel case
     // (0, i.e. "use the world's default") is already covered by the
     // world-level check that ran when this world was built.
-    if (model.proxy_radius != 0.0f && config.grid.cell_size < 2.0f * model.proxy_radius) {
+    if (model_proxy_radius != 0.0f && config.grid.cell_size < 2.0f * model_proxy_radius) {
         return std::unexpected(invalid("spawn(vehicle): grid.cell_size must be >= 2 * the model's "
                                        "proxy_radius (smaller silently misses contacts across cell "
                                        "boundaries)"));
@@ -2932,7 +2934,7 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
     // model's own 0.0f default, this writes 0 -- the sentinel that defers to
     // the world's ContactParams::proxy_radius, i.e. exactly what a model that
     // never customized its proxy produced before this field was consumed.
-    body_op.body_proxy_radius = model.proxy_radius;
+    body_op.body_proxy_radius = model_proxy_radius;  // L82d: the inert radius for a model with a shape
     // L10: the model's contact set when it has one, else 0 (the sphere).
     body_op.body_contact_set = contact_set_of(model_id);
     body_op.body.orient = start.orient;
