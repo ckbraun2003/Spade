@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -310,7 +311,7 @@ void toolbar(ed::EditorPanels& p) {
     // menu bar.
     ImGui::SameLine();
     if (ImGui::Button("Help")) ImGui::OpenPopup("help");
-    bool open_about = false;
+    bool open_about = std::exchange(p.about_request, false);
     if (ImGui::BeginPopup("help")) {
         if (ImGui::Selectable("User Guide")) p.user_guide_request = true;
         if (ImGui::Selectable("About Spade Editor")) open_about = true;
@@ -320,6 +321,7 @@ void toolbar(ed::EditorPanels& p) {
     if (ImGui::BeginPopupModal("About Spade Editor", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted(p.about.c_str());
         ui::gap();
+        if (std::exchange(p.about_dismiss, false)) ImGui::CloseCurrentPopup();
         if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }

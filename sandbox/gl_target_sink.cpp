@@ -820,6 +820,20 @@ bool GlTargetSink::should_close() const noexcept {
 #endif
 }
 
+bool GlTargetSink::wait_events(double timeout_s) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    if (!(timeout_s > 0.0)) return false;
+    const auto from = Clock::now();
+    glfwWaitEventsTimeout(timeout_s);
+    // GLFW does not say which ended the wait; an end well before the time is an event. The margin is the timer's
+    // granularity (Windows' is about 1 ms, and a wait can end a hair early).
+    return std::chrono::duration<double>(Clock::now() - from).count() < timeout_s - 0.005;
+#else
+    (void)timeout_s;
+    return false;
+#endif
+}
+
 void GlTargetSink::keep_open() noexcept {
 #if SPADE_SANDBOX_HAS_GL
     glfwSetWindowShouldClose(impl_->window, GLFW_FALSE);
@@ -1058,6 +1072,12 @@ void GlTargetSink::tap_frame() {
 void GlTargetSink::set_caption(std::string text) { impl_->caption = std::move(text); }
 void GlTargetSink::set_card(std::string text) { impl_->card = std::move(text); }
 void GlTargetSink::set_fixed_delta(float seconds) noexcept { impl_->fixed_dt = seconds > 0.0f ? seconds : 0.0f; }
+void GlTargetSink::set_vsync(bool on) noexcept {
+    impl_->options.vsync = on;  // the HUD's swap row says whether waiting is normal
+#if SPADE_SANDBOX_HAS_GL
+    glfwSwapInterval(on ? 1 : 0);
+#endif
+}
 void GlTargetSink::set_scripted_input(bool on) noexcept {
 #if SPADE_SANDBOX_HAS_GL
     impl_->scripted = on;

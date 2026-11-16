@@ -15,4 +15,8 @@ void show_error(const std::string& title, const std::string& body);
 // Opens `file` in the program the OS has for it; true when the OS took it.
 [[nodiscard]] bool open_in_default_app(const std::filesystem::path& file);
 
+// Milliseconds since this process was created (on Windows from its creation time, so the loader and the start-up
+// before main() count), for the editor's "first frame" PERF line (L74).
+[[nodiscard]] double process_age_ms();
+
 }  // namespace spade::sandbox::app

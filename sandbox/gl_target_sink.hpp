@@ -89,6 +89,11 @@ class GlTargetSink final : public TargetSink {
     // Takes back a close request (Esc, the close button): the editor asks about unsaved changes before it goes.
     void keep_open() noexcept;
 
+    // Sleeps in the window system until an event arrives or `timeout_s` passes (RENDER ON DEMAND, L74b: the idle
+    // editor's wait, idle_pacer.hpp). True when an event ended it, false when the time ran out. The events stay
+    // queued for the next poll().
+    [[nodiscard]] bool wait_events(double timeout_s) noexcept;
+
     // The framebuffer size in pixels. NOT the window size: on a HiDPI display
     // they differ, and rendering at window size then stretching is exactly the
     // blocky-viewport defect this estate already diagnosed once.
@@ -249,6 +254,10 @@ class GlTargetSink final : public TargetSink {
     // Above 0, delta_seconds() reports this instead of the wall clock, so a
     // scripted tour steps the same on any machine. 0 restores the clock.
     void set_fixed_delta(float seconds) noexcept;
+
+    // Turns the display wait on or off while the window is open (glfwSwapInterval). The live tour counts frames at
+    // a fixed step and runs with it off, except where a worker thread's wall time sets the length (L74b, part 7).
+    void set_vsync(bool on) noexcept;
 
     // A scripted run (the live tour): ImGui ignores the mouse (no hover, no
     // tooltip) and the session sees the cursor off the view, so a pointer

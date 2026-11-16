@@ -536,6 +536,131 @@ TEST(GpuAirflowStep, AStepWithoutSolidsMakesOneFenceWait) {
     }
 }
 
+// L74b: after a timing test's own steps (the ledger's lines come from those, untimed), `steps` more with the phase
+// timing on: each phase's mean per step as `PERF physics.diag_phase_<tag>_<phase> <ms> ms`, its calls per step as
+// `PERF physics.diag_phase_<tag>_<phase>_calls <n> calls`, and a timed step's wall time as `..._wall`. The timing is
+// turned off again.
+void perf_phases(ag::GpuFluid& gpu, std::span<const af::ActuatorDisc> discs, const char* tag, uint32_t steps) {
+    gpu.set_phase_timing(true);
+    std::vector<std::pair<std::string, std::pair<double, double>>> sums;  // name, (ms, calls)
+    double wall_ms = 0.0;
+    for (uint32_t step = 0; step < steps; ++step) {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (!gpu.step(discs).has_value()) break;
+        wall_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        for (const auto& p : gpu.phase_times()) {
+            auto it = std::find_if(sums.begin(), sums.end(), [&](const auto& s) { return s.first == p.name; });
+            if (it == sums.end()) it = sums.insert(sums.end(), {p.name, {0.0, 0.0}});
+            it->second.first += p.ms;
+            it->second.second += p.count;
+        }
+    }
+    gpu.set_phase_timing(false);
+    const std::string prefix = std::string("physics.diag_phase_") + tag + "_";
+    for (const auto& [name, v] : sums) {
+        spade::test::perf_line((prefix + name).c_str(), v.first / steps, "ms");
+        spade::test::perf_line((prefix + name + "_calls").c_str(), v.second / steps, "calls");
+    }
+    spade::test::perf_line((prefix + "wall").c_str(), wall_ms / steps, "ms");
+}
+
+// Can this device time compute work? (timestamps.hpp's two checks, as test_gpu_airflow_runner.cpp makes them.)
+[[nodiscard]] bool device_times_compute(const VulkanContext& ctx) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(ctx.physical_device(), &properties);
+    uint32_t family_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(ctx.physical_device(), &family_count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(family_count);
+    vkGetPhysicalDeviceQueueFamilyProperties(ctx.physical_device(), &family_count, families.data());
+    return properties.limits.timestampComputeAndGraphics == VK_TRUE && ctx.compute_queue_family() < families.size() &&
+           families[ctx.compute_queue_family()].timestampValidBits > 0;
+}
+
+// L74b's phase timing (GpuFluid::set_phase_timing): opt-in, and no bit of the flow moves: two fluids from the
+// same start, one timed, agree on u, v, w and p after every step; the timed one names its phases, with times
+// that are not negative and sum to no more than the step's wall time. (A device that cannot time compute work
+// leaves the chain phases out: then only the bits are checked.) On a device that can, the phases must be there:
+// an empty list is a failure, not a pass.
+TEST(GpuAirflowStep, PhaseTimingMovesNoBitAndAccountsForTheStepWithoutSolids) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Case c = open_box();
+    const af::MacGrid start = noisy(c, 0x57E9ull, 1.0f);
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    auto plain = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    auto timed = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    ASSERT_TRUE(timed.has_value()) << timed.error().context;
+    EXPECT_TRUE((*timed)->phase_times().empty()) << "nothing before the first timed step";
+    (*timed)->set_phase_timing(true);
+    af::MacGrid a = start, b = start;
+    for (int step = 0; step < 3; ++step) {
+        ASSERT_TRUE((*plain)->step(c.discs).has_value());
+        const auto t0 = std::chrono::steady_clock::now();
+        ASSERT_TRUE((*timed)->step(c.discs).has_value());
+        const double wall_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        ASSERT_TRUE((*plain)->read(a).has_value());
+        ASSERT_TRUE((*timed)->read(b).has_value());
+        EXPECT_TRUE(a.u == b.u && a.v == b.v && a.w == b.w && a.p == b.p) << "timing moved a bit at step " << step + 1;
+        const auto& phases = (*timed)->phase_times();
+        if (!device_times_compute(*ctx)) continue;  // the device cannot time compute work: only the bits
+        ASSERT_FALSE(phases.empty()) << "this device times compute work: the phases of step " << step + 1;
+        double sum = 0.0;
+        std::string names;
+        for (const auto& p : phases) {
+            EXPECT_GE(p.ms, 0.0) << p.name;
+            sum += p.ms;
+            names += p.name + " ";
+        }
+        EXPECT_LE(sum, wall_ms * 1.05 + 0.05) << "the phases are part of the step: " << names;
+        for (const char* want : {"advection", "gather", "projection"}) {
+            EXPECT_NE(names.find(want), std::string::npos) << want << " missing from: " << names;
+        }
+    }
+}
+
+// With solids the CG's host loop is timed by the wall clock: the solve's phases appear with their submit counts,
+// at least n_v iterations and one wait on the decision word; and no bit moves.
+TEST(GpuAirflowStep, PhaseTimingNamesTheCgsPhasesWithSolidsAndMovesNoBit) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Case c = sphere_box();
+    const af::MacGrid start = noisy(c, 0x57E9ull, 1.0f);
+    auto cpu = cpu_fluid(c, start);
+    ASSERT_TRUE(cpu.has_value());
+    auto plain = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    auto timed = ag::GpuFluid::create(*ctx, start, c.bc, c.cfg, solids_of(*cpu), 64u);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    ASSERT_TRUE(timed.has_value()) << timed.error().context;
+    (*timed)->set_phase_timing(true);
+    af::MacGrid a = start, b = start;
+    for (int step = 0; step < 2; ++step) {
+        ASSERT_TRUE((*plain)->step(c.discs).has_value());
+        ASSERT_TRUE((*timed)->step(c.discs).has_value());
+        ASSERT_TRUE((*plain)->read(a).has_value());
+        ASSERT_TRUE((*timed)->read(b).has_value());
+        EXPECT_TRUE(a.u == b.u && a.v == b.v && a.w == b.w && a.p == b.p) << "timing moved a bit at step " << step + 1;
+    }
+    const auto find = [&](const std::string& name) -> const ag::GpuFluid::PhaseTime* {
+        for (const auto& p : (*timed)->phase_times()) {
+            if (p.name == name) return &p;
+        }
+        return nullptr;
+    };
+    const auto* iterations = find("cg_iterations");
+    const auto* reads = find("cg_reads");
+    const auto* finish = find("cg_finish");
+    ASSERT_NE(iterations, nullptr) << "cg_iterations";
+    ASSERT_NE(reads, nullptr) << "cg_reads";
+    ASSERT_NE(finish, nullptr) << "cg_finish";
+    EXPECT_GE(iterations->count, c.cfg.n_v) << "at least the floor's iterations";
+    EXPECT_GE(reads->count, 1u) << "the host waits on the decision word at least once";
+    EXPECT_GT(iterations->ms, 0.0);
+}
+
 // Plan A's health (0fcb99f9) at every cycle count a run may set: the open, odd, periodic and closed (remove_mean)
 // domains, residual and announce equal to the CPU's bit for bit. run_both() compares them every step.
 TEST(GpuAirflowStep, PlanAHealthMatchesFluidStepAtEveryVCycleCount) {
@@ -864,6 +989,7 @@ TEST(GpuAirflowStep, StepTimeInTheD1Box) {
     std::printf("measure: GpuFluid step in the D1 box, 240x177x168 at 4 mm, 4 discs, n_v 2, 8 sweeps: %.3f ms\n", ms);
     // The D1 open box is a development reference (no solids, no website clip runs it): a diagnostic, the mean of kTimed steps.
     spade::test::perf_line("physics.diag_gpu_step_d1_open", ms, "ms");
+    perf_phases(**gpu, c.discs, "d1_open", static_cast<uint32_t>(kTimed));
 
     auto cpu = cpu_fluid(c, start);
     ASSERT_TRUE(cpu.has_value());
@@ -925,6 +1051,7 @@ TEST(GpuAirflowStep, StepTimeInTheD1BoxWithItsSolids) {
                 "mean of %d after %d); CG iterations by step: %s\n",
                 box->solids.run_line.c_str(), box->cfg.n_v, box->cfg.cg_cap, timed_ms / kTimed, kTimed, kWarm,
                 iterations.c_str());
+    perf_phases(**gpu, box->discs, "d1_solids", static_cast<uint32_t>(kTimed));
 }
 
 // The --gpu film's case (flow_movie's gpu_live.cpp, B7's G2) against the CPU,
@@ -1183,6 +1310,7 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
             spade::test::perf_line("physics.gpu_step_deep_peak_mem",
                                    static_cast<double>(ctx->memory_budget().usage) / (1024.0 * 1024.0), "MiB");
         }
+        if (deep) perf_phases(**gpu, box->discs, "deep", 10);  // after the memory line: the timing allocates a little
         std::printf("[ sgs     ] %ux%ux%u: pressure residual max %.3g over %u steps, %u unconverged (announced above 1e-4)\n",
                     box->grid.shape.nx, box->grid.shape.ny, box->grid.shape.nz, static_cast<double>(residual_max), kStepsRun,
                     unconverged);

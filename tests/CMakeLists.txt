@@ -192,6 +192,7 @@ add_executable(spade_tests
     test_render_flow_draw.cpp
     test_render_flow_line_style.cpp
     test_render_see_through.cpp
+    test_shadow_focus_fit.cpp
     test_render_flow_feed.cpp
     test_render_flow_field.cpp
     test_render_solid_drone.cpp
@@ -237,6 +238,7 @@ add_executable(spade_tests
     test_hover_download.cpp
     test_flow_movie_frame_check.cpp
     test_flow_movie_web.cpp
+    test_flow_movie_box_down.cpp
     # the D1 films' hold (L63): live_case.cpp compiled in from the tool
     test_flow_movie_live_case.cpp
     ../tools/flow_movie/live_case.cpp
@@ -518,6 +520,8 @@ if(SPADE_BUILD_SANDBOX)
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
+        # L74b: when the editor waits for an event and when it draws (sandbox/idle_pacer.hpp).
+        test_sandbox_idle_pacer.cpp
         # The editor (plans/2026-10-05-editor-plan.md), display-free: one
         # file per task's unit, sharing editor_test_support.hpp.
         test_editor_document.cpp
@@ -537,6 +541,8 @@ if(SPADE_BUILD_SANDBOX)
         test_editor_cli.cpp
         test_sandbox_app_paths.cpp
         test_sandbox_launcher.cpp
+        test_sandbox_bodies.cpp
+        test_sandbox_perf.cpp
         test_editor_sdf_edit.cpp
         test_editor_library.cpp
         test_editor_pick.cpp

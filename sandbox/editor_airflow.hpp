@@ -18,8 +18,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -44,6 +46,7 @@
 #include "editor_flight_readout.hpp"
 #include "editor_gizmo.hpp"
 #include "editor_panels.hpp"
+#include "perf_lines.hpp"
 #include "physics/airflow/solids.hpp"
 #include "scene/scene_file.hpp"
 #include "state/layout.hpp"
@@ -405,7 +408,9 @@ class AirflowRun {
     [[nodiscard]] static Result<std::unique_ptr<AirflowRun>> start(
         const scene::SceneDesc& s, const scene::SceneAirflowRegion& region,
         std::optional<analysis::ControlProgram> program = std::nullopt, const Prepare& prepare = {},
-        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed, float sgs_cs = 0.0f) {
+        const AirStarter& starter = cpu_air_starter(), AirLevel level = AirLevel::detailed, float sgs_cs = 0.0f,
+        bool measure = false) {
+
         const Result<detail::AirDrone> drone = detail::air_drone(s, region);
         if (!drone) return std::unexpected(drone.error());
         Result<AirCases> cases = air_cases(s, region, level);
@@ -417,7 +422,7 @@ class AirflowRun {
         const float top = airflow::speed_top(cases->body.model, region.density, 9.80665f);
         std::unique_ptr<AirflowRun> out(
             new AirflowRun(std::move(*started), drone->vehicle->name, drone->vehicle->start.pos, top,
-                           cases->body.resolved.domain.ambient, std::move(program), level, sgs_cs));
+                           cases->body.resolved.domain.ambient, std::move(program), level, sgs_cs, measure));
         AirflowRun* self = out.get();
         out->worker_ = std::jthread([self](std::stop_token stop) { self->work(stop); });
         return out;
@@ -425,11 +430,24 @@ class AirflowRun {
 
     AirflowRun(const AirflowRun&) = delete;
     AirflowRun& operator=(const AirflowRun&) = delete;
-    ~AirflowRun() { stop(); }
+    // A measuring run that was never asked for its lines prints them as it ends: the owner's, on stdout.
+    ~AirflowRun() {
+        for (const std::string& line : take_perf_lines()) std::puts(line.c_str());
+    }
 
     // Where the run's fluid steps: "GPU", or "CPU: " and why (its starter's).
     [[nodiscard]] const std::string& backend() const noexcept { return backend_; }
     [[nodiscard]] AirLevel level() const noexcept { return level_; }  // the level it flies (D10)
+
+    // The PERF lines of a run started with `measure` (L74, perf_lines.hpp): stops the run, hands over its four
+    // figures once, and keeps none after. Empty for a run not asked to measure.
+    [[nodiscard]] std::vector<std::string> take_perf_lines() {
+        stop();
+        if (!measure_) return {};
+        std::vector<std::string> out = perf_.lines();
+        perf_ = perf::AirPerf{};
+        return out;
+    }
 
     // The last frame handed over; none before the first publish.
     [[nodiscard]] std::shared_ptr<const AirFrame> latest() const {
@@ -453,9 +471,10 @@ class AirflowRun {
 
   private:
     AirflowRun(AirStart started, std::string vehicle, glm::vec3 at, float speed_top, glm::vec3 ambient,
-               std::optional<analysis::ControlProgram> program, AirLevel level, float sgs_cs)
+               std::optional<analysis::ControlProgram> program, AirLevel level, float sgs_cs, bool measure)
         : level_(level),
           sgs_cs_(sgs_cs),
+          measure_(measure),
           keep_(std::move(started.keep)),
           run_(std::move(started.run)),
           backend_(std::move(started.backend)),
@@ -487,19 +506,30 @@ class AirflowRun {
         const auto h_ns = static_cast<uint64_t>(std::llround(run_.step_s() * 1e9));
         constexpr uint64_t kNs = 1'000'000'000;
         constexpr uint64_t kFps = 30;
+        using Clock = std::chrono::steady_clock;
+        const auto ms_since = [](Clock::time_point t) {
+            return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+        };
         while (!stop.stop_requested()) {
+            const Clock::time_point frame_start = measure_ ? Clock::now() : Clock::time_point{};
             const analysis::Controls c = program_ ? analysis::controls_at(*program_, static_cast<float>(run_.state().t_s))
                                                   : pilot();
             const uint64_t end_ns = ((run_.state().frames + 1) * kNs + kFps / 2) / kFps;
             while ((run_.state().steps + 1) * h_ns < end_ns) {
                 if (stop.stop_requested()) return;
+                const Clock::time_point step_start = measure_ ? Clock::now() : Clock::time_point{};
                 if (const Result<void> stepped = run_.step(c); !stepped) return fail(stepped.error().context);
+                if (measure_) perf_.step(ms_since(step_start));
             }
+            const Clock::time_point advance_start = measure_ ? Clock::now() : Clock::time_point{};
             if (const Result<analysis::LiveFrame> f = run_.advance_frame(c, scratch_); !f) return fail(f.error().context);
+            const double advance_ms = measure_ ? ms_since(advance_start) : 0.0;
+            const Clock::time_point assemble_start = measure_ ? Clock::now() : Clock::time_point{};
             if (const std::string fault = air_frame_fault(scratch_, speed_top_, run_.state().frames); !fault.empty()) {
                 return fail(fault);
             }
             hand_over();
+            if (measure_) perf_.frame(advance_ms, ms_since(assemble_start), ms_since(frame_start));
         }
     }
 
@@ -554,6 +584,8 @@ class AirflowRun {
 
     AirLevel level_;
     float sgs_cs_;  // the subgrid viscosity asked for, 0 off
+    bool measure_;            // L74: time the steps and frames (perf_lines.hpp); the worker's alone until it stops
+    perf::AirPerf perf_;
     std::shared_ptr<void> keep_;  // the starter's: outlives run_
     analysis::LiveRun run_;       // the worker's alone once it starts
     std::string backend_;

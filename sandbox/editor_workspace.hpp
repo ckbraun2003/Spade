@@ -119,6 +119,9 @@ class EditorWorkspace {
     [[nodiscard]] const EditorRun* run() const noexcept { return run_ ? &*run_ : nullptr; }
     // Run air's (INT-15): the region's air on its worker; none when stopped.
     [[nodiscard]] const AirflowRun* air() const noexcept { return air_.get(); }
+    // True while something steps every frame: a Run that is not paused, or Run air. The window draws every frame
+    // then; otherwise it waits for an event (idle_pacer.hpp).
+    [[nodiscard]] bool animating() const noexcept { return (run_.has_value() && !paused_) || air_ != nullptr; }
     // Where Run air's fluid steps (slice 3): the window gives the GPU's
     // starter (editor_air_gpu.hpp); until given one, the CPU's.
     void set_air_starter(AirStarter starter) { air_starter_ = std::move(starter); }
@@ -615,7 +618,8 @@ class EditorWorkspace {
             return;
         }
         Result<std::unique_ptr<AirflowRun>> started = AirflowRun::start(
-            s, *region, std::nullopt, {}, air_starter_, panels_.air_level, panels_.air_turbulence ? kAirSgsCs : 0.0f);
+            s, *region, std::nullopt, {}, air_starter_, panels_.air_level, panels_.air_turbulence ? kAirSgsCs : 0.0f,
+            perf::enabled());
         if (!started) {
             panels_.status = started.error().context;
             return;
