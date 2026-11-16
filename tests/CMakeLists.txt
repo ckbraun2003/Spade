@@ -518,6 +518,8 @@ if(SPADE_BUILD_SANDBOX)
         # The UI conventions of the editor design's §13 (EDT-021): a source scan.
         test_sandbox_ui_conventions.cpp
         test_sandbox_viewport.cpp
+        # L74b: when the editor waits for an event and when it draws (sandbox/idle_pacer.hpp).
+        test_sandbox_idle_pacer.cpp
         # The editor (plans/2026-10-05-editor-plan.md), display-free: one
         # file per task's unit, sharing editor_test_support.hpp.
         test_editor_document.cpp
