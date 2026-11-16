@@ -2153,9 +2153,13 @@ int run_live_smoke(const TourOptions& options) {
     sink->set_card({});
 
     // Each chapter opens with a card naming it (the storyboard's captions).
+    const auto wall0 = std::chrono::steady_clock::now();
     const auto chapter = [&](std::string_view card) {
-        // Where the video stands as each chapter opens (60 rendered frames make a second of video): the per-chapter times.
-        smoke.note(std::format("chapter at {:.1f} s of video: {}", static_cast<double>(tour.frames()) / 60.0,
+        // Where the video stands as each chapter opens (60 rendered frames make a second of video), and how much wall
+        // time the run has taken: the per-chapter times.
+        smoke.note(std::format("chapter at {:.1f} s of video, {:.1f} s of wall time: {}",
+                               static_cast<double>(tour.frames()) / 60.0,
+                               std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count(),
                                card.substr(0, card.find('\n'))));
         sink->set_card(std::string(card));
         tour.pump(kChapterCardFrames, {}, blank);
