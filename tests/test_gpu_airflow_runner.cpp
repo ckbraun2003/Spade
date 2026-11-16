@@ -55,6 +55,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "airflow_actuator_gather.spv.gen.hpp"
+#include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_sample.spv.gen.hpp"
+#include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
 #include "airflow_add_one.spv.gen.hpp"
 #include "airflow_advection.spv.gen.hpp"
@@ -1818,6 +1821,10 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_pack_f16, true},
                               // B4's rotor discs (Rendering).
                               {gen::kSpvVariants_airflow_actuator_gather, false},
+                              // P4c's actuator line (Physics): the exact division and square root, no atomics.
+                              {gen::kSpvVariants_airflow_line_sample, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_line_load, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_line_spread, false, Estimates::some},
                               // B7's step (Rendering): one add a face.
                               {gen::kSpvVariants_airflow_add_increments, false, Estimates::none},
                               // 0fcb99f9 (Rendering): plan A's residual max-norm, the select-fold of

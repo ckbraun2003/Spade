@@ -17,18 +17,14 @@ namespace {
 constexpr float kPi = std::numbers::pi_v<float>;
 constexpr int kReach = 6;  // the kernel's half-width in cells: 3 eps with eps 2 dx
 constexpr int kMaxTaps = 2 * kReach + 1;
+static_assert(kMaxTaps == kLineTaps, "line.hpp's kLineTaps is the 6-cell support's 13 taps");
 
 Error refuse(std::string why) { return Error{Code::invalid_argument, std::move(why)}; }
 
 bool finite3(glm::vec3 v) noexcept { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
 
-// One axis of one component's stencil: the faces lo .. lo + n - 1 and their weights exp(-((x_i - pos) / eps)^2).
-struct AxisTaps {
-    int lo = 0;
-    int n = 0;
-    float sum = 0.0f;
-    std::array<float, kMaxTaps> w{};
-};
+using AxisTaps = LineAxisTaps;
+using Stencil = LineStencil;
 
 AxisTaps axis_taps(float pos, float dx, float offset, uint32_t count, float eps_cells) noexcept {
     AxisTaps t;
@@ -45,12 +41,6 @@ AxisTaps axis_taps(float pos, float dx, float offset, uint32_t count, float eps_
     }
     return t;
 }
-
-// The stencil of component c (0 u, 1 v, 2 w) at a point; sum is the weights' sum, the product of the axes' sums.
-struct Stencil {
-    std::array<AxisTaps, 3> ax;
-    float sum = 0.0f;
-};
 
 Stencil stencil_at(const GridShape& s, uint32_t c, glm::vec3 pos, float eps_cells) noexcept {
     const std::array<uint32_t, 3> n{s.nx + (c == 0 ? 1u : 0u), s.ny + (c == 1 ? 1u : 0u), s.nz + (c == 2 ? 1u : 0u)};
@@ -202,6 +192,10 @@ std::vector<LineElement> line_elements(const LineRotor& rotor, float dx, float h
         }
     }
     return out;
+}
+
+LineStencil line_stencil(const GridShape& shape, uint32_t component, glm::vec3 pos, float eps_cells) noexcept {
+    return stencil_at(shape, component, pos, eps_cells);
 }
 
 glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos, float eps_cells) noexcept {
