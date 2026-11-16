@@ -255,7 +255,17 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
         if (why) *why = w->panels().status;
         return std::nullopt;
     }
-    for (int i = 0; i < 300; ++i) w->advance(1.0f / 60.0f);
+    std::string trace;
+    for (int i = 0; i < 300; ++i) {
+        w->advance(1.0f / 60.0f);
+        if (i % 30 == 29) {
+            const auto s3 = w->run()->state_of(quad);
+            const glm::vec3 ub = glm::conjugate(s3->orient) * glm::vec3(0.0f, 1.0f, 0.0f);
+            trace += " [t" + std::to_string(i + 1) + " y " + std::to_string(s3->pos.y) + " |v| " +
+                     std::to_string(glm::length(s3->vel)) + " |w| " + std::to_string(glm::length(s3->omega)) + " up " +
+                     std::to_string(ub.x) + " " + std::to_string(ub.y) + " " + std::to_string(ub.z) + "]";
+        }
+    }
     if (why) *why = w->panels().status;  // a refused step pauses the run and says why here
     if (why) {
         const auto s2 = w->run()->state_of(quad);
@@ -263,7 +273,7 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
                 std::to_string(box->half_extents.y) + " " + std::to_string(box->half_extents.z) + " mass " +
                 std::to_string(model->body.mass) + " pos " + std::to_string(s2->pos.x) + " " + std::to_string(s2->pos.y) +
                 " " + std::to_string(s2->pos.z) + " vel " + std::to_string(s2->vel.x) + " " + std::to_string(s2->vel.y) +
-                " " + std::to_string(s2->vel.z);
+                " " + std::to_string(s2->vel.z) + trace;
     }
     return w->run()->state_of(quad);
 }
