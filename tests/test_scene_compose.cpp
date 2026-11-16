@@ -22,6 +22,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include "physics/rigid_contact.hpp"
 #include "scene/compose.hpp"
 #include "scene/scene_file.hpp"
 #include "sim/simulation.hpp"
@@ -825,6 +826,87 @@ TEST(SceneInstantiate, StartsReachSpawnAsTheSceneWroteThem) {
     ASSERT_TRUE(by_hand.flush_structural().has_value());
 
     EXPECT_EQ(spade::testing::state_digest(run->sim), spade::testing::state_digest(by_hand));
+}
+
+// L82: a model with a shape. instantiate() adds rigid_contact_module() to the standard set when some model has one, and only then.
+spade::vehicles::ModelType crate_model(std::string name) {
+    spade::vehicles::ModelType m = quad_model(std::move(name));
+    m.proxy_radius = 0.05f;  // inside the shape: the proxy sphere (rigid_contact.hpp) stays inert
+    m.shape = spade::physics::box_shape(glm::vec3(0.3f, 0.1f, 0.3f));
+    return m;
+}
+
+TEST(SceneInstantiate, AShapedModelBuildsTheTumblingSet) {
+    const spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.models.push_back(quad_model("plain"));
+    scene.models.push_back(crate_model("crate"));
+    scene.vehicles.push_back(vehicle("c", "crate", glm::vec3(0.0f, 2.0f, 0.0f)));
+    const ComposedScene composed = spade::scene::compose(scene, world).value();
+
+    spade::Result<spade::scene::SceneRun> run =
+        spade::scene::instantiate(composed, instance_of(composed.world), kDtNs, kSubsteps);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    const spade::Result<spade::physics::ShapeRow> row = run->sim.body_shape_row(run->vehicles[0].body);
+    ASSERT_TRUE(row.has_value()) << row.error().context;
+    EXPECT_EQ(row->kind, static_cast<uint32_t>(spade::physics::ShapeKind::box));
+    EXPECT_EQ(row->count, 8u);
+    // The module is in the set: the call that needs it is not refused.
+    EXPECT_TRUE(run->sim.set_body_shape(run->vehicles[0].body, spade::physics::sphere_shape(0.1f)).has_value());
+}
+
+TEST(SceneInstantiate, AScenesWithoutAShapeBuildsExactlyTheStandardSet) {
+    const spade::WorldDesc world = ground_world();
+    SceneDesc scene = scene_over(world);
+    scene.models.push_back(quad_model("plain"));
+    scene.vehicles.push_back(vehicle("q", "plain", glm::vec3(0.0f, 2.0f, 0.0f)));
+    const ComposedScene composed = spade::scene::compose(scene, world).value();
+
+    spade::Result<spade::scene::SceneRun> run =
+        spade::scene::instantiate(composed, instance_of(composed.world), kDtNs, kSubsteps);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    // No module, so the typed call is refused, naming it.
+    const spade::Result<void> refused = run->sim.set_body_shape(run->vehicles[0].body, spade::physics::sphere_shape(0.1f));
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_TRUE(contains(refused.error().context, "rigid_contact")) << refused.error().context;
+
+    // And the run is the standard set's, bit for bit: the same state as the same scene made by hand with the default module set.
+    spade::Simulation by_hand =
+        spade::Simulation::create(spade::WorldSetDesc{{instance_of(composed.world)}}, kDtNs, kSubsteps).value();
+    const spade::ModelTypeId id = by_hand.register_model(scene.models[0]).value();
+    ASSERT_TRUE(by_hand.spawn(0, id, scene.vehicles[0].start).has_value());
+    ASSERT_TRUE(by_hand.flush_structural().has_value());
+    ASSERT_TRUE(run->sim.step(50).has_value());
+    ASSERT_TRUE(by_hand.step(50).has_value());
+    EXPECT_EQ(spade::testing::state_digest(run->sim), spade::testing::state_digest(by_hand));
+}
+
+// The shape is not decoration: a crate dropped on a corner spins up (the angular response of L68), and the same model without its
+// shape does not (the linear contact has no torque).
+TEST(SceneInstantiate, ACrateDroppedOnACornerTumbles) {
+    const spade::WorldDesc world = ground_world();
+    const auto drop = [&](bool shaped) {
+        SceneDesc scene = scene_over(world);
+        spade::vehicles::ModelType m = crate_model("crate");
+        if (!shaped) m.shape.reset();
+        scene.models.push_back(m);
+        SceneVehicle v = vehicle("c", "crate", glm::vec3(0.0f, 0.6f, 0.0f));
+        v.start.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 1.0f)));
+        scene.vehicles.push_back(v);
+        const ComposedScene composed = spade::scene::compose(scene, world).value();
+        spade::Result<spade::scene::SceneRun> run =
+            spade::scene::instantiate(composed, instance_of(composed.world), kDtNs, kSubsteps);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        float most = 0.0f;
+        for (int i = 0; i < 100 && run; ++i) {
+            EXPECT_TRUE(run->sim.step(10).has_value());
+            most = std::max(most, glm::length(run->sim.body(run->vehicles[0].body).value()->omega_body));
+        }
+        return most;
+    };
+    EXPECT_GT(drop(true), 0.5f);
+    EXPECT_EQ(drop(false), 0.0f);
 }
 
 // Every model is registered in the models: section's order, used or not, so
