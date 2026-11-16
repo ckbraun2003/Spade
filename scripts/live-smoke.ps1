@@ -10,7 +10,8 @@
     The run writes to <OutRoot>\<UTC date>_<commit sha12>\:
       tour.mp4      the tour, 30 fps, with a title card at each end and one
                     opening each chapter
-      NN_<main>.png one still per chapter: 01_drone_box, 02_airflow, 03_editor
+      NN_<main>.png one still per chapter: 01_drone_box, 02_airflow, 03_editor,
+                    04_bodies, 05_batch
       editor_*.png  the editor's review stills
       journal.txt   every step, check and anomaly, as it happened, ending
                     with "END verdict=PASS|FAIL"
