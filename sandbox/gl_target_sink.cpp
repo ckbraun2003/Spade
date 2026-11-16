@@ -1058,6 +1058,12 @@ void GlTargetSink::tap_frame() {
 void GlTargetSink::set_caption(std::string text) { impl_->caption = std::move(text); }
 void GlTargetSink::set_card(std::string text) { impl_->card = std::move(text); }
 void GlTargetSink::set_fixed_delta(float seconds) noexcept { impl_->fixed_dt = seconds > 0.0f ? seconds : 0.0f; }
+void GlTargetSink::set_vsync(bool on) noexcept {
+    impl_->options.vsync = on;  // the HUD's swap row says whether waiting is normal
+#if SPADE_SANDBOX_HAS_GL
+    glfwSwapInterval(on ? 1 : 0);
+#endif
+}
 void GlTargetSink::set_scripted_input(bool on) noexcept {
 #if SPADE_SANDBOX_HAS_GL
     impl_->scripted = on;

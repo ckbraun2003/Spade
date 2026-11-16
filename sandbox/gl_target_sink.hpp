@@ -250,6 +250,10 @@ class GlTargetSink final : public TargetSink {
     // scripted tour steps the same on any machine. 0 restores the clock.
     void set_fixed_delta(float seconds) noexcept;
 
+    // Turns the display wait on or off while the window is open (glfwSwapInterval). The live tour counts frames at
+    // a fixed step and runs with it off, except where a worker thread's wall time sets the length (L74b, part 7).
+    void set_vsync(bool on) noexcept;
+
     // A scripted run (the live tour): ImGui ignores the mouse (no hover, no
     // tooltip) and the session sees the cursor off the view, so a pointer
     // left over the window reaches no still and no check. The thumbnails
