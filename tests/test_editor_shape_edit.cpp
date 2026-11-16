@@ -290,4 +290,65 @@ TEST(EditorShapeEdit, ARunWithoutAShapeBuildsTheStandardSetAsBefore) {
     ASSERT_NE(w->run(), nullptr) << w->panels().status;
 }
 
+// L82a Q1: the library's Crate (Core's: a 1 kg cube, 0.2 m across, with a box shape) is placed from the Library panel and
+// dropped from a tilt; it rests on a face, and two Runs are bit-equal.
+[[nodiscard]] std::optional<spade::FrameState> drop_the_crate(std::string* why) {
+    auto w = hover_workspace();
+    if (!w) return std::nullopt;
+    w->refresh_panels();
+    std::optional<std::size_t> crate;
+    for (std::size_t i = 0; i < w->panels().library.size(); ++i) {
+        if (w->panels().library[i].name == "Crate") crate = i;
+    }
+    if (!crate) {
+        if (why) *why = "the Library panel has no Crate";
+        return std::nullopt;
+    }
+    w->panels().armed = crate;
+    w->click(glm::vec3(2.0f, 5.0f, 2.0f), glm::vec3(0.0f, -1.0f, 0.0f));
+    const spade::scene::SceneDesc& s = w->documents().scene.desc();
+    if (s.vehicles.size() != 2u) {
+        if (why) *why = "the click placed no vehicle: " + w->panels().status;
+        return std::nullopt;
+    }
+    const std::string name = s.vehicles.back().name;
+    const auto* model = model_of(s, name);
+    if (model == nullptr || !model->shape || model->shape->kind != ShapeKind::box) {
+        if (why) *why = "the placed Crate has no box shape";
+        return std::nullopt;
+    }
+    spade::VehicleSpawn start = s.vehicles.back().start;
+    start.pos.y = 0.6f;
+    start.orient = glm::angleAxis(0.6f, glm::normalize(glm::vec3(1.0f, 0.0f, 0.4f)));
+    start.vel = glm::vec3(0.0f);
+    start.omega_body = glm::vec3(0.0f);
+    start.rotor_omega = 0.0f;
+    w->panels().pending.push_back(ed::SetVehicleStart{name, start});
+    w->apply_panels();
+    w->panels().commands.push_back(ed::Command::run);
+    w->apply_panels();
+    if (w->run() == nullptr) {
+        if (why) *why = w->panels().status;
+        return std::nullopt;
+    }
+    for (int i = 0; i < 300; ++i) w->advance(1.0f / 60.0f);
+    return w->run()->state_of(name);
+}
+
+TEST(EditorShapeEdit, ACratePlacedFromTheLibraryIsDroppedAndLandsOnAFaceBitEqualTwice) {
+    std::string why;
+    const std::optional<spade::FrameState> a = drop_the_crate(&why);
+    ASSERT_TRUE(a.has_value()) << why;
+    const glm::vec3 up_in_body = glm::conjugate(a->orient) * glm::vec3(0.0f, 1.0f, 0.0f);
+    const float aligned = std::max({std::fabs(up_in_body.x), std::fabs(up_in_body.y), std::fabs(up_in_body.z)});
+    EXPECT_GE(aligned, 0.99863f) << "up in the body frame: " << up_in_body.x << " " << up_in_body.y << " " << up_in_body.z;
+    EXPECT_LT(glm::length(a->vel), 0.05f);
+    EXPECT_LT(glm::length(a->omega), 0.2f);
+    EXPECT_LT(a->pos.y, 0.3f);
+    const std::optional<spade::FrameState> b = drop_the_crate(&why);
+    ASSERT_TRUE(b.has_value()) << why;
+    EXPECT_EQ(std::memcmp(&a->pos, &b->pos, sizeof a->pos), 0);
+    EXPECT_EQ(std::memcmp(&a->orient, &b->orient, sizeof a->orient), 0);
+}
+
 }  // namespace
