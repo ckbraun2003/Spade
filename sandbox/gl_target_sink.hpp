@@ -89,6 +89,11 @@ class GlTargetSink final : public TargetSink {
     // Takes back a close request (Esc, the close button): the editor asks about unsaved changes before it goes.
     void keep_open() noexcept;
 
+    // Sleeps in the window system until an event arrives or `timeout_s` passes (RENDER ON DEMAND, L74b: the idle
+    // editor's wait, idle_pacer.hpp). True when an event ended it, false when the time ran out. The events stay
+    // queued for the next poll().
+    [[nodiscard]] bool wait_events(double timeout_s) noexcept;
+
     // The framebuffer size in pixels. NOT the window size: on a HiDPI display
     // they differ, and rendering at window size then stretching is exactly the
     // blocky-viewport defect this estate already diagnosed once.

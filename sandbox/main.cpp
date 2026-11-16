@@ -58,6 +58,7 @@
 #include "drone_view.hpp"      // the drone sim box: stand, controller, panel (+ drone_sim.hpp)
 #include "editor_cli.hpp"      // --edit: the editor's command line, no window
 #include "editor_session.hpp"  // --editor: the editor's window
+#include "idle_pacer.hpp"      // when the editor's loop waits for an event and when it draws (L74b)
 #include "gl_target_sink.hpp"  // Plan C task C2 -- the window
 #include "live_tour.hpp"       // --live-smoke: the recorded tour (scripts/live-smoke.ps1)
 #include "orbit_camera.hpp"    // Plan C task C2 -- input, testable with no display
@@ -225,7 +226,13 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
                              [](const std::filesystem::path& guide) {
                                  return spade::sandbox::app::open_in_default_app(guide);
                              });
+    // RENDER ON DEMAND (L74b): an idle editor sleeps until an event or the heartbeat instead of drawing flat out
+    // (idle_pacer.hpp). A run, Run air or a held input draws every pass, as before.
+    spade::sandbox::IdlePacer pacer;
     for (;;) {
+        if (const double idle_s = pacer.wait_s(); idle_s > 0.0 && sink->wait_events(idle_s)) {
+            pacer.woken();
+        }
         const spade::sandbox::FrameInput in = sink->poll();
         // Esc or the close button: with unsaved changes the editor asks first (L73a); with none it quits as before.
         if (in.want_close || sink->should_close()) {
@@ -239,6 +246,7 @@ int run_windowed_editor(const std::filesystem::path& scene_file, uint32_t width,
             std::fprintf(stderr, "spade_sandbox: %s\n", drew.error().context.c_str());
             return 1;
         }
+        pacer.frame_done(in, session.animating());
     }
     print_exit_summary(*sink, width, height, vsync);
     return 0;
