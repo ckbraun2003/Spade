@@ -432,6 +432,133 @@ void model_param_rows(ed::EditorPanels& p, const std::string& vehicle, const veh
     }
 }
 
+// L82: the model's contact shape (L68). The shape lives on the MODEL, so the section edits the model this vehicle flies (a
+// model another vehicle shares is copied for this one first, EDT-019). Every change is one ed::SetModelShape; what the engine
+// or the editor refuses (a box on a turned design frame, a hull of more than 16 points) comes back in the status line.
+const char* shape_kind_name(physics::ShapeKind k) {
+    switch (k) {
+        case physics::ShapeKind::none: return "none";
+        case physics::ShapeKind::sphere: return "sphere";
+        case physics::ShapeKind::capsule: return "capsule";
+        case physics::ShapeKind::box: return "box";
+        case physics::ShapeKind::hull: return "hull";
+    }
+    return "none";
+}
+
+void collision_section(ed::EditorPanels& p, const std::string& vehicle, const vehicles::ModelType& m) {
+    using Kind = physics::ShapeKind;
+    if (!ui::section("Collision shape", false)) return;
+    ImGui::PushID("collision");
+    const Kind kind = m.shape ? m.shape->kind : Kind::none;
+    const auto queue = [&](std::optional<physics::ShapeDesc> s) {
+        p.pending.push_back(ed::SetModelShape{vehicle, std::move(s)});
+    };
+    const auto pick = [&](Kind k) {
+        if (k == Kind::none) {
+            queue(std::nullopt);
+        } else if (Result<physics::ShapeDesc> s = ed::shape_for_kind(m, k); s) {
+            queue(*s);
+        } else {
+            p.status = s.error().context;
+        }
+    };
+    if (ui::begin_properties("collision-kind")) {
+        ui::property_row("Shape");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##kind", shape_kind_name(kind))) {
+            for (const Kind k : {Kind::none, Kind::sphere, Kind::capsule, Kind::box, Kind::hull}) {
+                if (ImGui::Selectable(shape_kind_name(k), k == kind) && k != kind) pick(k);
+            }
+            ImGui::EndCombo();
+        }
+        ui::end_properties();
+    }
+    if (m.shape && kind != Kind::none) {
+        physics::ShapeDesc s = *m.shape;
+        bool changed = false;
+        float out[3] = {0.0f, 0.0f, 0.0f};
+        if (ui::begin_properties("collision-shape")) {
+            const auto number = [&](const char* label, const char* id, const float* now, int n, float* into,
+                                    const char* format) {
+                ui::property_row(label);
+                if (drag_floats(id, now, n, 0.001f, out, format)) {
+                    std::copy(out, out + n, into);
+                    changed = true;
+                }
+            };
+            switch (kind) {
+                case Kind::sphere: number("Radius (m)", "##radius", &m.shape->radius, 1, &s.radius, "%.4g"); break;
+                case Kind::capsule:
+                    number("End A (m)", "##a", &m.shape->a.x, 3, &s.a.x, "%.4g");
+                    number("End B (m)", "##b", &m.shape->b.x, 3, &s.b.x, "%.4g");
+                    number("Radius (m)", "##radius", &m.shape->radius, 1, &s.radius, "%.4g");
+                    break;
+                case Kind::box:
+                    number("Half extents (m)", "##half", &m.shape->half_extents.x, 3, &s.half_extents.x, "%.4g");
+                    number("Skin (m)", "##skin", &m.shape->radius, 1, &s.radius, "%.4g");
+                    break;
+                case Kind::hull:
+                    ui::property_row("Points");
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextDisabled("%zu, of at most %u", m.shape->points.size(), physics::kShapeMaxPoints);
+                    number("Skin (m)", "##skin", &m.shape->radius, 1, &s.radius, "%.4g");
+                    break;
+                case Kind::none: break;
+            }
+            // Friction and restitution: blank is the world's (the engine's negative sentinel), a number is this shape's.
+            const auto material = [&](const char* label, const char* id, float now, float& into, float fallback) {
+                ui::property_row(label);
+                ImGui::PushID(id);
+                bool world = now < 0.0f;
+                if (ImGui::Checkbox("the world's", &world)) {
+                    into = world ? -1.0f : fallback;
+                    changed = true;
+                }
+                if (!world) {
+                    ImGui::SameLine();
+                    float value = 0.0f;
+                    if (drag_floats("##value", &now, 1, 0.01f, &value, "%.3g")) {
+                        into = value;
+                        changed = true;
+                    }
+                }
+                ImGui::PopID();
+            };
+            material("Friction", "friction", m.shape->friction, s.friction, 0.5f);
+            material("Restitution", "restitution", m.shape->restitution, s.restitution, 0.2f);
+            ui::property_row("Iterations");
+            uint32_t iterations = 0;
+            if (drag_u32("##iterations", m.shape->iterations, iterations)) {
+                s.iterations = iterations;
+                changed = true;
+            }
+            ui::end_properties();
+        }
+        ImGui::PushID("collision-advanced");  // its own ids: the model's Advanced section has the same label
+        if (ui::section("Advanced", false) && ui::begin_properties("collision-advanced")) {
+            ui::property_row("Rest speed (m/s)");
+            if (drag_floats("##rest", &m.shape->rest_speed, 1, 0.001f, out, "%.4g")) {
+                s.rest_speed = out[0];
+                changed = true;
+            }
+            ui::end_properties();
+        }
+        ImGui::PopID();
+        if (kind == Kind::hull && ImGui::Button("Hull from model")) pick(Kind::hull);
+        if (const std::optional<glm::vec3> inertia = ed::inertia_from_box(m)) {
+            if (ImGui::Button("Inertia from box")) {
+                p.pending.push_back(ed::SetModelParam{vehicle, Element::model, 0, "body.inertia_diag", *inertia});
+            }
+        }
+        if (changed) queue(std::move(s));
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("Applies to this vehicle's model; another vehicle that flies the same model keeps its own.");
+    ImGui::PopTextWrapPos();
+    ImGui::PopID();
+}
+
 void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
     const vehicles::ModelType* model = nullptr;
     for (const vehicles::ModelType& m : p.scene->models) {
@@ -512,6 +639,7 @@ void inspect_vehicle(ed::EditorPanels& p, const scene::SceneVehicle& v) {
         model_param_rows(p, v.name, *model, Element::model, 0, Rows::common);
         ui::end_properties();
     }
+    collision_section(p, v.name, *model);
     // The parts and the IMU's noise are advanced, folded (§13).
     for (const Element e : {Element::rotor, Element::drag_body, Element::imu_mount}) {
         const std::size_t n = ed::detail::part_count(*model, e);
