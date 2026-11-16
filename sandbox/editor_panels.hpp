@@ -166,6 +166,9 @@ struct EditorPanels {
     // apply_panels() (set_user_guide()).
     std::string about;
     bool user_guide_request = false;
+    // The tour's hands on the About dialog (Help > About, and its Close button): the UI takes both each frame.
+    bool about_request = false;
+    bool about_dismiss = false;
 
     // ---- Written by the panels; the workspace applies and clears them.
     Selection selection;

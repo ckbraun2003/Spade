@@ -37,6 +37,8 @@
 #include "core/path_text.hpp"
 #include "render/raster_cpu.hpp"
 #include "render_parts/render_parts.hpp"
+#include "app_about.hpp"
+#include "bodies_session.hpp"
 #include "editor_session.hpp"
 #include "pilot_keys.hpp"
 #include "end_goal_checks.hpp"
@@ -47,6 +49,7 @@
 #include "scene/model_file.hpp"
 #include "scene_sessions.hpp"
 #include "sim/design_frame.hpp"
+#include "spade_version.hpp"  // Core's generated version: spade::version::kString
 #include "vehicles/model_identity.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
@@ -92,13 +95,12 @@ struct StepName {
     std::string_view main;
     std::string_view sub;
 };
-// Three chapters (INT-9, the storyboard plans/2026-10-13-live-tour-storyboard.md):
-// the drone box, its airflow, and the editor.
+// Five chapters (INT-9, the storyboard plans/2026-10-13-live-tour-storyboard.md; refurbished 2026-11-13, the audit):
+// the engine, the airflow, the editor, the bodies, and what is new in this batch.
 constexpr std::array kSteps = {
-    StepName{"drone_box", "open"},       StepName{"drone_box", "orbit"},
-    StepName{"drone_box", "attitude"},   StepName{"drone_box", "level"},
-    StepName{"drone_box", "throttle"},   StepName{"drone_box", "backend"},
-    StepName{"drone_box", "hud"},
+    // Chapter 1, the engine (the audit, 2026-11-13): the drone box in three steps, what it proves and no more.
+    StepName{"drone_box", "open"},       StepName{"drone_box", "attitude"},
+    StepName{"drone_box", "backend"},
     StepName{"airflow", "live"},
     StepName{"editor", "open"},          StepName{"editor", "picker"},
     StepName{"editor", "select"},        StepName{"editor", "place"},
@@ -108,10 +110,12 @@ constexpr std::array kSteps = {
     StepName{"editor", "views"},         StepName{"editor", "save"},
     StepName{"editor", "library"},       StepName{"editor", "add_drone"},
     StepName{"editor", "airflow"},       StepName{"editor", "add_objects"},
-    StepName{"editor", "fly"},
-    // Chapter 4, "new in this batch" (L64): its steps are THIS batch's, replaced at the next one.
-    StepName{"batch", "soft_shadows"},   StepName{"batch", "turbulence_air"},
-    StepName{"batch", "wind_change"},
+    StepName{"editor", "fly"},           StepName{"editor", "wind"},
+    // Chapter 4, the bodies: L68's contact tumbling, four shapes in a row.
+    StepName{"bodies", "row"},
+    // Chapter 5, "new in this batch" (L64): its steps are THIS batch's, replaced at the next one.
+    StepName{"batch", "app"},            StepName{"batch", "guide"},
+    StepName{"batch", "save_prompt"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared
@@ -130,7 +134,7 @@ constexpr std::array<std::string_view, 21> kSnapshots = {"editor_picker",   "edi
 
 // The main functions, in tour order. Each has one poster, numbered by its
 // place here, so a poster's name never depends on which steps ran.
-constexpr std::array<std::string_view, 4> kMains = {"drone_box", "airflow", "editor", "batch"};
+constexpr std::array<std::string_view, 5> kMains = {"drone_box", "airflow", "editor", "bodies", "batch"};
 
 // Tolerated anomalies, each with why. An entry here must fire on every run:
 // one that stops firing fails the run (it has expired, so delete it).
@@ -484,62 +488,39 @@ void drone_box(Tour& t, DroneSession& d) {
     const auto hold = [](FrameInput in) { return [in](int) { return in; }; };
     const auto idle = InputFn{};
 
+    // OPEN: the stand's readouts are live and the view sits beside the panel; then F1's own path (poll() calls
+    // toggle_help() on the key's press): the checks read whether the presented frames drew the HUD's stats line, not
+    // the flag (the key legend is a folded section, §13). The guide's still is the HUD drawn again.
     t.step("drone_box", "open", [&] {
-        t.pump(90, idle, draw);
+        t.pump(45, idle, draw);
         s.check(d.gpu_active(), "gpu-path", d.panel().render_path);
         s.check(d.panel().readouts.tick > 0u, "stepping", "tick " + std::to_string(d.panel().readouts.tick));
+        s.check(mean_rotor_omega(d.panel().readouts) > 0.0f, "rotors-turn",
+                "mean rotor speed " + fmt(mean_rotor_omega(d.panel().readouts)) + " rad/s");
         // §13: the scene renders only beside the Drone panel, not under it.
         const ViewportRect v = t.sink().viewport();
         const uint32_t whole = t.sink().framebuffer_width();
         s.check(v.x + v.width < whole && !v.empty(), "view-beside-panel",
                 "view " + std::to_string(v.width) + "x" + std::to_string(v.height) + " of " + std::to_string(whole));
-    });
-
-    t.step("drone_box", "orbit", [&] {
-        OrbitCamera& cam = d.camera();
-        const float yaw0 = cam.yaw;
-        FrameInput around;
-        around.move_right = 1.0f;
-        t.pump(150, hold(around), draw);
-        s.check(std::abs(cam.yaw - yaw0) > 3.0f, "around", "yaw " + fmt(yaw0) + " -> " + fmt(cam.yaw));
-
-        const float pitch0 = cam.pitch;
-        FrameInput over;
-        over.move_up = 1.0f;
-        t.pump(45, hold(over), draw);
-        s.check(cam.pitch > pitch0 + 0.3f, "over", "pitch " + fmt(pitch0) + " -> " + fmt(cam.pitch));
-        FrameInput under;
-        under.move_up = -1.0f;
-        t.pump(45, hold(under), draw);
-
-        FrameInput nearer;
-        nearer.move_forward = 1.0f;
-        t.pump(60, hold(nearer), draw);
-        s.check(cam.distance <= kDroneMinDistance + 1e-4f, "nearer-clamps",
-                "distance " + fmt(cam.distance) + ", minimum " + fmt(kDroneMinDistance));
-        FrameInput further;
-        further.move_forward = -1.0f;
-        t.pump(90, hold(further), draw);
-        s.check(cam.distance > 3.0f && cam.distance <= kDroneMaxDistance, "further",
-                "distance " + fmt(cam.distance));
-
-        const float yaw1 = cam.yaw;
-        FrameInput drag;
-        drag.orbit_dx = -4.0f;  // a mouse drag left, 4 px a frame
-        t.pump(60, hold(drag), draw);
-        s.check(cam.yaw > yaw1 + 1.0f, "drag", "yaw " + fmt(yaw1) + " -> " + fmt(cam.yaw));
-        // Back in to the view the tour started from, so the drone fills the
-        // frame for the steps that follow.
-        t.pump(40, hold(nearer), draw);
+        const auto drawn = [&t] { return std::string(t.sink().help_drawn() ? "drawn" : "not drawn"); };
+        const bool before = t.sink().help_drawn();
+        t.sink().toggle_help();
         t.pump(30, idle, draw);
+        s.check(before && !t.sink().help_drawn(), "hidden",
+                "HUD stats line " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
+        t.sink().toggle_help();
+        t.snapshot("drone_box_hud");  // the HUD drawn again, the backend named on it
+        t.pump(30, idle, draw);
+        s.check(t.sink().help_drawn(), "shown", "HUD stats line " + drawn());
     });
 
+    // ATTITUDE AND THROTTLE: the stand follows the keys' targets (pitch, roll), and the rotors speed up with the throttle.
     t.step("drone_box", "attitude", [&] {
         const auto attitude = [&d] { return attitude_from_quat(d.panel().readouts.orientation); };
         FrameInput nose;
         nose.attitude_pitch = 1.0f;
         t.pump(20, hold(nose), draw);
-        t.pump(60, idle, draw);
+        t.pump(40, idle, draw);
         const float target_pitch = d.drone().target.pitch;
         const float pitch = attitude().pitch;
         s.check(target_pitch > 0.3f && pitch * target_pitch > 0.0f && std::abs(pitch) > 0.5f * std::abs(target_pitch),
@@ -548,45 +529,22 @@ void drone_box(Tour& t, DroneSession& d) {
         FrameInput roll;
         roll.attitude_roll = 1.0f;
         t.pump(20, hold(roll), draw);
-        t.pump(60, idle, draw);
+        t.pump(40, idle, draw);
         const float target_roll = d.drone().target.roll;
         const float actual_roll = attitude().roll;
         s.check(target_roll > 0.3f && actual_roll * target_roll > 0.0f &&
                     std::abs(actual_roll) > 0.5f * std::abs(target_roll),
                 "roll-follows", "target " + fmt(target_roll) + ", actual " + fmt(actual_roll));
 
-        const float yaw0 = attitude().yaw;
-        FrameInput yaw;
-        yaw.attitude_yaw = 1.0f;
-        t.pump(40, hold(yaw), draw);
-        t.pump(80, idle, draw);
-        const float yaw1 = attitude().yaw;
-        s.check(std::abs(yaw1 - yaw0) > 0.5f, "yaw-follows",
-                "yaw " + fmt(yaw0) + " -> " + fmt(yaw1) + ", target " + fmt(d.drone().target.yaw));
-    });
-
-    t.step("drone_box", "level", [&] {
-        FrameInput r;
-        r.level_pressed = true;
-        t.pump(1, hold(r), draw);
-        s.check(d.drone().target.pitch == 0.0f && d.drone().target.roll == 0.0f, "target-levels",
-                "target pitch " + fmt(d.drone().target.pitch) + ", roll " + fmt(d.drone().target.roll));
-        t.pump(150, idle, draw);
-        const AttitudeTarget a = attitude_from_quat(d.panel().readouts.orientation);
-        s.check(std::abs(a.pitch) < 0.087f && std::abs(a.roll) < 0.087f, "drone-levels",
-                "pitch " + fmt(a.pitch) + ", roll " + fmt(a.roll) + " (within 5 degrees)");
-    });
-
-    t.step("drone_box", "throttle", [&] {
         const float omega0 = mean_rotor_omega(d.panel().readouts);
         d.panel().edited.throttle = 1.4f;
-        t.pump(120, idle, draw);
+        t.pump(60, idle, draw);
         t.poster("drone_box");
         const float omega1 = mean_rotor_omega(d.panel().readouts);
         s.check(omega1 > omega0 * 1.1f, "rotors-speed-up",
                 "mean rotor speed " + fmt(omega0) + " -> " + fmt(omega1) + " rad/s");
         d.panel().edited.throttle = 1.0f;
-        t.pump(60, idle, draw);
+        t.pump(20, idle, draw);
     });
 
     // The stand on Vulkan beside the live GL window and back (Core's translation lock, L34): the panel's rebuild
@@ -609,27 +567,11 @@ void drone_box(Tour& t, DroneSession& d) {
             s.check(sw.attitude_shift_rad <= 1e-6f && sw.rates_carried, "attitude-carried-to-" + name,
                     "shift " + std::format("{:.2e}", sw.attitude_shift_rad) + " rad, rates " +
                         (sw.rates_carried ? "bitwise equal" : "changed"));
-            t.pump(60, idle, draw);
+            t.pump(30, idle, draw);
             s.check(d.drone().readouts().tick > 0u, "stepping-on-" + name,
                     "tick " + std::to_string(d.drone().readouts().tick));
             s.check(stand_held(d.drone()), "held-on-" + name, "pos and vel bitwise zero");
         }
-    });
-
-    // F1's own path: poll() calls toggle_help() on the key's press. The checks
-    // read whether the presented frames drew the HUD's stats line, not the
-    // flag (the key legend is a folded section, §13).
-    t.step("drone_box", "hud", [&] {
-        const auto drawn = [&t] { return std::string(t.sink().help_drawn() ? "drawn" : "not drawn"); };
-        const bool before = t.sink().help_drawn();
-        t.sink().toggle_help();
-        t.pump(60, idle, draw);
-        s.check(before && !t.sink().help_drawn(), "hidden",
-                "HUD stats line " + std::string(before ? "drawn" : "not drawn") + " -> " + drawn());
-        t.sink().toggle_help();
-        t.snapshot("drone_box_hud");  // the HUD drawn again, the backend named on it
-        t.pump(60, idle, draw);
-        s.check(t.sink().help_drawn(), "shown", "HUD stats line " + drawn());
     });
 }
 
@@ -1443,7 +1385,8 @@ void editor_tour(Tour& t, const fs::path& assets) {
     // over the snapshot. Stopped and undone after.
     t.step("editor", "airflow", [&] {
         if (!open()) return;
-        constexpr uint64_t kAirFrames = 12;  // 0.4 s of air
+        // The third frame is the first with nu_t met (the Subgrid row is ticked below); five show the wake.
+        constexpr uint64_t kAirFrames = 5;  // 0.17 s of air
         const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
         arm("Phantom 3-class quad");
         click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));  // where editor.add_drone placed it
@@ -1452,6 +1395,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         w().panels().pending.push_back(editor::AddAirflowRegion{quad});
         w().apply_panels();
         if (!s.check(!scene_now().airflow.empty(), "region", w().panels().status)) return;
+        w().panels().air_turbulence = true;  // the Advanced row, ticked for the run: nu_t and Cs are checked below
         const auto from = std::chrono::steady_clock::now();  // the frames' wall time, for the record
         command(editor::Command::run_air);
         if (!s.check(w().air() != nullptr, "runs", w().panels().status)) return;
@@ -1504,8 +1448,31 @@ void editor_tour(Tour& t, const fs::path& assets) {
         t.snapshot("editor_airflow");
         then(20);  // the snapshot is the next frame drawn: the air still running
         t.sink().set_card({});
+        // The Subgrid turbulence row (L52/L54; the guide's still): on the GPU nu_t is met and the line names Cs; with
+        // no device the row is off and says so. The row is shown open, ticked, in the inspector's view.
+        frame = w().air() != nullptr ? w().air()->latest() : nullptr;
+        if (frame && w().air() != nullptr) {
+            const bool on_gpu = w().air()->backend() == "GPU";
+            const std::string expected_off = editor::turbulence_line(editor::kAirSgsCs, false, analysis::LiveSgs{});
+            const bool ok = on_gpu ? frame->sgs.nu_t_max > 0.0f && frame->turbulence_line.rfind("Cs 0.17", 0) == 0
+                                   : frame->turbulence_line == expected_off &&
+                                         w().air()->backend().find(editor::kAirTurbulenceNeedsTheGpu) !=
+                                             std::string::npos;
+            s.check(ok, "turbulence", (on_gpu ? "on the GPU: " : "no GPU, so off: ") + frame->turbulence_line);
+            s.check(!w().panels().turbulence_line.empty(), "row-line",
+                    "the panel shows: " + w().panels().turbulence_line);
+        }
+        w().panels().advanced_open = true;
+        then(5);
+        s.check(w().panels().turbulence_row_visible && w().panels().air_turbulence, "subgrid-row-visible",
+                w().panels().turbulence_row_visible ? "the Subgrid turbulence row is drawn in view, ticked"
+                                                    : "the row is scrolled out of the inspector's view");
+        t.snapshot("editor_subgrid");  // the row ticked and its line, without the title card
+        then(10);
         command(editor::Command::stop);
         session->camera() = before;
+        w().panels().air_turbulence = false;
+        w().panels().advanced_open.reset();
         command(editor::Command::undo);  // the region
         command(editor::Command::undo);  // the drone
         then(10);
@@ -1888,10 +1855,147 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(10);
     });
 
+
+    // The Run-mode wind (L46; L64 (c)): a Phantom climbing in Run; the panel's wind row set to 6 m/s along +x. The wind is
+    // the run's (recorded as an input), not the document's, and it moves the drone. The camera follows the drone every
+    // frame, so the drone and not only its shadow is in the picture while it drifts.
+    t.step("editor", "wind", [&] {
+        if (!open()) return;
+        const OrbitCamera camera_before = session->camera();
+        const glm::vec3 at = scene_now().vehicles.at(0).start.pos;
+        const std::size_t before = scene_now().vehicles.size();
+        arm("Phantom 3-class quad");
+        click_towards(glm::vec3(at.x, 0.0f, at.z + 1.5f));
+        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
+        const std::string quad = scene_now().vehicles.back().name;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, quad};
+        command(editor::Command::run);
+        const editor::PilotPanel& pilot = w().panels().pilot;
+        if (!s.check(w().run() != nullptr && pilot.vehicle == quad, "piloted",
+                     pilot.vehicle.empty() ? pilot.why_not : "flying " + pilot.vehicle)) {
+            command(editor::Command::stop);
+            command(editor::Command::undo);
+            return;
+        }
+        const auto body_now = [&]() -> std::optional<BodyState> {
+            const editor::EditorRun* run = w().run();
+            const std::optional<VehicleRef> ref = run != nullptr ? run->vehicle_ref(quad) : std::nullopt;
+            if (!ref) return std::nullopt;
+            const Result<const BodyState*> body = run->sim().body(ref->body);
+            if (!body) return std::nullopt;
+            return **body;
+        };
+        const auto body_vel = [&]() -> glm::vec3 {
+            const std::optional<BodyState> b = body_now();
+            return b ? b->vel : glm::vec3(0.0f);
+        };
+        session->camera().distance = 3.0f;
+        session->camera().yaw = 0.52f;
+        session->camera().pitch = 0.35f;
+        const DrawFn follow = [&](const FrameInput& in) -> Result<void> {
+            if (const std::optional<BodyState> b = body_now()) session->camera().target = b->pos;
+            return draw(in);
+        };
+        const auto fly = [&](int n, const FrameInput& keys) {
+            return t.pump(n, [keys](int) { return keys; }, follow);
+        };
+        FrameInput none;
+        FrameInput space;
+        space.arm_pressed = true;
+        FrameInput page_up;
+        page_up.throttle = 1.0f;
+        const glm::vec3 wind(6.0f, 0.0f, 0.0f);
+        const glm::vec3 document = w().documents().world.desc().environment.wind;
+        if (!fly(1, space) || !fly(30, none) || !fly(45, page_up)) return;
+        // Two windows of a second: the first without the wind is the drift's own (the climb's), the second with it.
+        const glm::vec3 v0 = body_vel();
+        if (!fly(60, none)) return;
+        const glm::vec3 v1 = body_vel();
+        w().panels().wind_request = wind;
+        w().apply_panels();
+        if (!fly(60, none)) return;
+        const glm::vec3 v2 = body_vel();
+        const editor::EditorRun* run = w().run();
+        s.check(run != nullptr && run->wind() == wind && run->wind_sets().size() == 1u &&
+                    run->wind_sets()[0].wind == wind && run->wind_sets()[0].tick <= run->tick(),
+                "wind-set",
+                run != nullptr ? std::format("wind {} {} {}, {} set recorded at tick {} of {}", run->wind().x, run->wind().y,
+                                             run->wind().z, run->wind_sets().size(),
+                                             run->wind_sets().empty() ? 0u : run->wind_sets()[0].tick, run->tick())
+                               : std::string("no run"));
+        s.check(w().panels().live_wind == wind, "row-shows-it",
+                std::format("the row holds {} {} {}", w().panels().live_wind.x, w().panels().live_wind.y,
+                            w().panels().live_wind.z));
+        s.check(w().documents().world.desc().environment.wind == document && !w().documents().world.dirty(),
+                "not-an-edit", "the world's own wind is as it was and nothing is unsaved");
+        // THE DRIFT THRESHOLD, fixed before it was measured: the second's change of velocity along the wind must be
+        // at least 10 times the previous second's (the drift the climb has on its own) and at least 0.05 m/s. At
+        // 6 m/s a body of the Phantom's size takes a drag of about 0.5 x 1.2 x 36 x 0.05 x 1 = 1 N on a mass of
+        // 1.2 kg: 0.9 m/s^2 for a second, 18 times the floor, which stands for a drag area 18 times smaller.
+        const float own = std::abs(v1.x - v0.x);
+        const float moved = v2.x - v1.x;
+        s.check(moved >= std::max(10.0f * own, 0.05f), "wind-moves-the-drone",
+                std::format("{:.3f} m/s along the wind in the second after the set, against {:.3f} m/s of its own "
+                            "drift the second before (at least {:.3f})",
+                            moved, own, std::max(10.0f * own, 0.05f)));
+        t.snapshot("editor_wind");  // the Wind now row at 6 0 0, the drone in the frame, without the title card
+        t.sink().set_card("a live wind in Run: set on the row, recorded, not saved.\nThe airflow keeps its start wind.");
+        if (!fly(30, none)) return;
+        t.sink().set_card({});
+        command(editor::Command::stop);
+        session->camera() = camera_before;
+        command(editor::Command::undo);
+        then(10);
+    });
+
     session.reset();  // detaches its panels while the window is still open
     std::error_code ec;
     fs::remove_all(work, ec);
     if (ec) s.note("the editor's work copy was not removed: " + ec.message());
+}
+
+// ---------------------------------------------------------------------------
+// MAIN FUNCTION 4: THE BODIES (the audit, 2026-11-13; sandbox/bodies_sim.hpp, L68's contact tumbling). A sphere thrown
+// along the ground, a cube dropped on a corner, a capsule and a drone-sized hull, each its own shape through Core's
+// contact, in one row. Each is judged by what its shape says it does after 8 s (at rest on a face or an edge, or still
+// rolling); the same row run again alone, without a window, ends in the same bytes.
+// ---------------------------------------------------------------------------
+void bodies_chapter(Tour& t) {
+    Smoke& s = t.smoke();
+    t.step("bodies", "row", [&] {
+        Result<std::unique_ptr<BodiesSession>> made = BodiesSession::create();
+        if (!s.check(made.has_value(), "starts", made ? "four shapes" : made.error().context)) return;
+        BodiesSession& b = **made;
+        b.attach(t.sink());
+        const DrawFn draw = [&b](const FrameInput&) { return b.frame(kDt); };
+        t.sink().set_card("Bodies\na sphere, a cube, a capsule and a drone-sized hull, each dropped on the ground:\n"
+                          "Core's contact, one shape each");
+        t.pump(45, {}, draw);
+        t.sink().set_card({});
+        // A check that cannot fail checks nothing: before the pieces have landed, the cube is not at rest on a face.
+        s.check(!b.sim().verdict(1).ok, "not-vacuous",
+                "the cube at " + std::to_string(b.sim().steps()) + " ms: " + b.sim().verdict(1).detail);
+        constexpr uint64_t kSettleSteps = 8000;  // 8 s of the sim, as the unit test judges it
+        while (b.sim().steps() < kSettleSteps && !t.stopped()) {
+            if (!t.pump(1, {}, draw)) return;
+        }
+        t.poster("bodies");
+        t.pump(30, {}, draw);
+        for (std::size_t i = 0; i < b.sim().pieces().size(); ++i) {
+            std::string name = b.sim().pieces()[i].name;
+            std::replace(name.begin(), name.end(), ' ', '-');
+            const bodies::Verdict v = b.sim().verdict(i);
+            s.check(v.ok, name, v.detail);
+        }
+        // The same row alone, to the same step: the same bytes (determinism, the project's law).
+        Result<bodies::BodiesSim> again = bodies::BodiesSim::create();
+        if (!s.check(again.has_value(), "again-starts", again ? "a second row" : again.error().context)) return;
+        const Result<void> stepped = again->step(static_cast<uint32_t>(b.sim().steps()));
+        s.check(stepped.has_value() && again->bytes() == b.sim().bytes(), "same-bytes",
+                stepped ? std::to_string(b.sim().bytes().size()) + " bytes after " +
+                              std::to_string(b.sim().steps()) + " ms, twice"
+                        : stepped.error().context);
+    });
 }
 
 // The batch chapter's steps (live_tour_batch.inc): a textual include, since the tour's classes are this file's.
@@ -2017,7 +2121,7 @@ int run_live_smoke(const TourOptions& options) {
         sink->set_card({});
     };
     if (drone && !tour.stopped()) {
-        chapter("1  The drone box\nthe drone held at the centre, flown by hand:\nattitude, thrust, the camera");
+        chapter("1  The engine\nthe drone on its stand: readouts, attitude, thrust,\nand the same state on the CPU and on Vulkan");
         (*drone)->attach(*sink);
         drone_box(tour, **drone);
     }
@@ -2029,8 +2133,12 @@ int run_live_smoke(const TourOptions& options) {
         airflow_chapter(tour, options.assets_dir, blank);
     }
     if (!tour.stopped()) {
-        chapter("3  The editor\nopen a scene, place, select, move, edit, undo, run, save");
+        chapter("3  The editor\nopen a scene, place, select, move, edit, undo, run, save;\nRun air, and a wind set in Run");
         editor_tour(tour, options.assets_dir);
+    }
+    if (!tour.stopped()) {
+        chapter("4  Bodies\nfour shapes through Core's contact: a sphere, a cube, a capsule, a drone-sized hull");
+        bodies_chapter(tour);
     }
     if (!tour.stopped()) {
         chapter(batch_card(options.label));
