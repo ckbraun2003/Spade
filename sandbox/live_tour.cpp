@@ -1856,7 +1856,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
     });
 
 
-    // The Run-mode wind (L46; L64 (c)): a Phantom climbing in Run; the panel's wind row set to 6 m/s along +x. The wind is
+    // The Run-mode wind (L46; L64 (c)): a Phantom climbing in Run; the panel's wind row set to 10 m/s along +x. The wind is
     // the run's (recorded as an input), not the document's, and it moves the drone. The camera follows the drone every
     // frame, so the drone and not only its shadow is in the picture while it drifts.
     t.step("editor", "wind", [&] {
@@ -1889,7 +1889,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
             const std::optional<BodyState> b = body_now();
             return b ? b->vel : glm::vec3(0.0f);
         };
-        session->camera().distance = 3.0f;
+        session->camera().distance = 2.0f;
         session->camera().yaw = 0.52f;
         session->camera().pitch = 0.35f;
         const DrawFn follow = [&](const FrameInput& in) -> Result<void> {
@@ -1904,7 +1904,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
         space.arm_pressed = true;
         FrameInput page_up;
         page_up.throttle = 1.0f;
-        const glm::vec3 wind(6.0f, 0.0f, 0.0f);
+        // 10 m/s and not 6: editor.world saved a 2 m/s wind into this world, so the drift of the second before the set
+        // is that wind's drag on the climb, and a drag goes as the square of the relative wind: 6 m/s against 2 is a
+        // ratio of 9, short of the check's 10 by design; 10 against 2 is 25.
+        const glm::vec3 wind(10.0f, 0.0f, 0.0f);
         const glm::vec3 document = w().documents().world.desc().environment.wind;
         if (!fly(1, space) || !fly(30, none) || !fly(45, page_up)) return;
         // Two windows of a second: the first without the wind is the drift's own (the climb's), the second with it.
@@ -1928,17 +1931,17 @@ void editor_tour(Tour& t, const fs::path& assets) {
                             w().panels().live_wind.z));
         s.check(w().documents().world.desc().environment.wind == document && !w().documents().world.dirty(),
                 "not-an-edit", "the world's own wind is as it was and nothing is unsaved");
-        // THE DRIFT THRESHOLD, fixed before it was measured: the second's change of velocity along the wind must be
-        // at least 10 times the previous second's (the drift the climb has on its own) and at least 0.05 m/s. At
-        // 6 m/s a body of the Phantom's size takes a drag of about 0.5 x 1.2 x 36 x 0.05 x 1 = 1 N on a mass of
-        // 1.2 kg: 0.9 m/s^2 for a second, 18 times the floor, which stands for a drag area 18 times smaller.
+        // THE DRIFT THRESHOLD, fixed before it was measured (L64 (c)) and not changed since: the second's change of
+        // velocity along the wind must be at least 10 times the previous second's (the drift the climb has on its own)
+        // and at least 0.05 m/s. At 6 m/s a body of the Phantom's size takes a drag of about 0.5 x 1.2 x 36 x 0.05 x 1 =
+        // 1 N on a mass of 1.2 kg: 0.9 m/s^2 for a second, 18 times the floor, which stands for a drag area 18 times smaller.
         const float own = std::abs(v1.x - v0.x);
         const float moved = v2.x - v1.x;
         s.check(moved >= std::max(10.0f * own, 0.05f), "wind-moves-the-drone",
                 std::format("{:.3f} m/s along the wind in the second after the set, against {:.3f} m/s of its own "
                             "drift the second before (at least {:.3f})",
                             moved, own, std::max(10.0f * own, 0.05f)));
-        t.snapshot("editor_wind");  // the Wind now row at 6 0 0, the drone in the frame, without the title card
+        t.snapshot("editor_wind");  // the Wind now row at 10 0 0, the drone in the frame, without the title card
         t.sink().set_card("a live wind in Run: set on the row, recorded, not saved.\nThe airflow keeps its start wind.");
         if (!fly(30, none)) return;
         t.sink().set_card({});

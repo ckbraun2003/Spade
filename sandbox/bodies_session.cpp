@@ -69,11 +69,12 @@ Result<std::unique_ptr<BodiesSession>> BodiesSession::create() {
     s->hull_mat_ = material(0.35f, 0.37f, 0.40f);     // the drone's grey
     s->rotor_mat_ = material(0.85f, 0.15f, 0.10f);    // the nose's red
 
-    // The row spans about 4 m of x: seen from a little above and ahead.
-    s->camera_.target = glm::vec3(-0.1f, 0.15f, 0.0f);
+    // The row spans about 3 m of x, and the sphere rolls on toward the camera: seen from above and ahead, the target a
+    // little in front of the row.
+    s->camera_.target = glm::vec3(-0.2f, 0.0f, 0.5f);
     s->camera_.yaw = 0.0f;
-    s->camera_.pitch = 0.32f;
-    s->camera_.distance = 5.2f;
+    s->camera_.pitch = 0.55f;
+    s->camera_.distance = 3.6f;
     s->draw_items();
     return s;
 }
