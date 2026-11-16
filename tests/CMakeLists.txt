@@ -415,6 +415,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_solids.cpp
         test_gpu_airflow_step.cpp
         test_gpu_airflow_line.cpp
+        test_gpu_airflow_line_v2b.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_lbm.cpp
