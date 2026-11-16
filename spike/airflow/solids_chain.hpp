@@ -527,7 +527,19 @@ struct GpuProjectionReport {
 // _v and _w and the solved p in airflow_pressure. Refused as run_solve() is.
 // The report's max-norms pass over a NaN, so a solve gone NaN reads converged:
 // GpuFluid's step reads the CG's r . z to find one (kNoSample).
+// OPT-IN DIAGNOSTIC (L74b): the host loop's wall time and call counts by phase, accumulated over one projection
+// (GpuFluid's phase timing). Each submit waits for its fence, so a submit's wall time is the device's plus the launch;
+// a read is a wait. `n` counts iterations for the iteration phase, submits or reads for the others.
+struct SolveTimes {
+    struct Phase {
+        double ms = 0.0;
+        uint32_t n = 0;
+    };
+    Phase setup, iterations, measure, restart, finish, reads;
+};
+
 [[nodiscard]] Result<GpuProjectionReport> project_with_solids(ChainRunner& runner, const SolveChainIds& ids,
-                                                              uint32_t floor, uint32_t cap);
+                                                              uint32_t floor, uint32_t cap,
+                                                              SolveTimes* times = nullptr);
 
 }  // namespace spade::airflow_gpu

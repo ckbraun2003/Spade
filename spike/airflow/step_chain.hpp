@@ -56,6 +56,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -138,6 +139,22 @@ public:
     // already on the device, makes one, the plan A health word coming from the chain's own readback.
     [[nodiscard]] uint64_t waits() const noexcept { return runner_ ? runner_->waits() : 0; }
 
+    // OPT-IN DIAGNOSTIC (L74b): the time of each phase of the LAST step(). On, the step chain carries a timestamp
+    // mark after each phase (a mark writes a device timestamp: no bit of the flow moves), and with solids the CG's
+    // host loop is timed by the wall clock per submit and read. A phase is {name, ms, count}: count = how many
+    // submits or reads it took (1 for a chain phase). The chain phases are, in order, those the step has ("bc",
+    // "advection", "gather", "increments", "sgs", "viscous", and without solids "projection"); with solids the CG's:
+    // "cg_setup", "cg_iterations", "cg_measure", "cg_restart", "cg_finish", and "cg_reads" (the host's waits on the
+    // decision word). Off (the default) the step is exactly what it was. A device that cannot time compute work
+    // leaves the chain phases out (the CG's wall times are still there).
+    struct PhaseTime {
+        std::string name;
+        double ms = 0.0;
+        uint32_t count = 0;
+    };
+    void set_phase_timing(bool on);
+    [[nodiscard]] const std::vector<PhaseTime>& phase_times() const noexcept { return phases_; }
+
 private:
     GpuFluid() = default;
     [[nodiscard]] Result<uint32_t> step_chain_for(uint32_t disc_count);
@@ -157,6 +174,9 @@ private:
     std::optional<uint32_t> wall_load_chain_;  // recorded on the first wall_load()
     physics::airflow::FluidHealth fault_{};    // check_regions()' at create(): returned by every step()
     uint32_t extrapolated_ = 0;                // the publish's extrapolated cells (extrapolated_cells())
+    bool phase_timing_ = false;
+    std::vector<PhaseTime> phases_;            // the last step's, when phase_timing_
+    std::array<std::vector<std::string>, kMaxDiscs + 1> phase_names_{};  // the marks' names, by disc count
 };
 
 }  // namespace spade::airflow_gpu
