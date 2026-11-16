@@ -240,6 +240,10 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
     }
     box->friction = 0.5f;
     box->restitution = 0.1f;
+    // The scene's model rests on a contact sphere of radius 0.2 (proxy_radius) that holds the body up with no torque, before any
+    // box face reaches the ground: a crate has none.
+    w->panels().pending.push_back(
+        ed::SetModelParam{quad, spade::vehicles::ModelIssue::Element::model, 0, "proxy_radius", 0.0f});
     w->panels().pending.push_back(ed::SetModelShape{quad, *box});
     spade::VehicleSpawn start = s.vehicles.at(0).start;
     start.pos.y = 0.6f;
