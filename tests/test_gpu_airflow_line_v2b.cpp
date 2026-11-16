@@ -57,8 +57,9 @@ uint32_t env_u32(const char* name, uint32_t fallback) {
     return v == nullptr ? fallback : static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
 }
 
-// The library's two measured props: the tune prop (SPADE_V2B_PROP unset or "apce": uiuc_apce_10x5, D 10 in) and the transfer prop
-// ("mit": uiuc_mit_5x4, D 5 in, 3 blades, measured at 6057 rpm).
+// The library's props the runs use: the tune prop (SPADE_V2B_PROP unset or "apce": uiuc_apce_10x5, D 10 in), the transfer prop
+// ("mit": uiuc_mit_5x4, D 5 in, 3 blades, measured at 6057 rpm), V3's stand-in ("v3": the 10x5 at D 9.4 in) and D1's blade
+// stand-in ("d1": triblade_6inch_scaled at D 0.1524 m; its reference is the chain's k_T w^2, given by SPADE_V2B_CT_E6).
 struct Chosen {
     const lp::Prop* prop = nullptr;
     double diameter = 0.0;
@@ -77,6 +78,8 @@ Chosen chosen_prop() {
     for (const lp::Prop& p : lp::kProps) {
         if (want == "apce" && std::string(p.id) == "uiuc_apce_10x5") return {&p, 10.0 * kInch};
         if (want == "mit" && std::string(p.id) == "uiuc_mit_5x4") return {&p, 5.0 * kInch};
+        if (want == "v3" && std::string(p.id) == "uiuc_apce_10x5") return {&p, 9.4 * kInch};
+        if (want == "d1" && std::string(p.id) == "triblade_6inch_scaled") return {&p, 0.1524};
     }
     return {};
 }
@@ -120,7 +123,7 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     const uint32_t n_sub = env_u32("SPADE_V2B_NSUB", 8);
     const uint32_t steps_override = env_u32("SPADE_V2B_STEPS", 0);
     const Chosen pick = chosen_prop();
-    ASSERT_NE(pick.prop, nullptr) << "SPADE_V2B_PROP is apce or mit";
+    ASSERT_NE(pick.prop, nullptr) << "SPADE_V2B_PROP is apce, mit, v3 or d1";
     const lp::Prop& prop = *pick.prop;
     const double kD = pick.diameter;
     const double rpm = static_cast<double>(env_u32("SPADE_V2B_RPM", static_cast<uint32_t>(prop.run_rpm)));
