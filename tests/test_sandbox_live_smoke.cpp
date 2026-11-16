@@ -406,7 +406,7 @@ TEST(LiveSmokeRecording, TheFfmpegCommandStreamsRawRgbaIntoAnH264File) {
 TEST(LiveSmokeCards, TheOpeningCardSaysWhatTheVideoShows) {
     using spade::sandbox::live::opening_card;
     EXPECT_EQ(opening_card("ebcc548a1b2c 2026-10-05"),
-              "spade sandbox -- live smoke\nebcc548a1b2c 2026-10-05\nverdict at the end");
+              "Spade Editor -- live smoke\nebcc548a1b2c 2026-10-05\nverdict at the end");
 }
 
 // A card's text is drawn a line at a time, centred, so a long line runs off
@@ -428,14 +428,14 @@ TEST(LiveSmokeCards, TheClosingCardCarriesTheVerdictAndItsCounts) {
     Verdict pass;
     pass.pass = true;
     EXPECT_EQ(closing_card("ebcc548a1b2c 2026-10-05", pass),
-              "spade sandbox -- live smoke\nebcc548a1b2c 2026-10-05\n"
+              "Spade Editor -- live smoke\nebcc548a1b2c 2026-10-05\n"
               "verdict PASS\nanomalies 0   known-open 0   unmarked 0   expired 0");
     Verdict fail;
     fail.anomalies = 2;
     fail.known_open_fired = 1;
     fail.unmarked = {"builder.place"};
     EXPECT_EQ(closing_card("x", fail),
-              "spade sandbox -- live smoke\nx\nverdict FAIL\nanomalies 2   known-open 1   unmarked 1   expired 0");
+              "Spade Editor -- live smoke\nx\nverdict FAIL\nanomalies 2   known-open 1   unmarked 1   expired 0");
 }
 
 // ===========================================================================
