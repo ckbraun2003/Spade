@@ -347,6 +347,8 @@ struct IndexRow {
                    LibraryKind::battery});
     out.push_back({"4S 1500 mAh (competition)", "batteries", "parts/comp_4s.battery.yaml",
                    LibraryKind::battery});
+    // L82d: the Crate, a box that can be dropped and tumbles (tests/test_library_crate.cpp).
+    out.push_back({"Crate", "bodies", "bodies/crate.model.yaml", LibraryKind::model});
     // The engine's test fixture, labelled plainly and last: its category is
     // last in Interface's order (L6; INT-14).
     out.push_back({"Reference quad (test fixture)", "test fixtures", "drones/reference_quad.model.yaml",
