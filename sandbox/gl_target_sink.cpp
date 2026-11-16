@@ -820,6 +820,20 @@ bool GlTargetSink::should_close() const noexcept {
 #endif
 }
 
+bool GlTargetSink::wait_events(double timeout_s) noexcept {
+#if SPADE_SANDBOX_HAS_GL
+    if (!(timeout_s > 0.0)) return false;
+    const auto from = Clock::now();
+    glfwWaitEventsTimeout(timeout_s);
+    // GLFW does not say which ended the wait; an end well before the time is an event. The margin is the timer's
+    // granularity (Windows' is about 1 ms, and a wait can end a hair early).
+    return std::chrono::duration<double>(Clock::now() - from).count() < timeout_s - 0.005;
+#else
+    (void)timeout_s;
+    return false;
+#endif
+}
+
 void GlTargetSink::keep_open() noexcept {
 #if SPADE_SANDBOX_HAS_GL
     glfwSetWindowShouldClose(impl_->window, GLFW_FALSE);
