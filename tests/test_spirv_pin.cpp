@@ -96,9 +96,9 @@ struct Row {
 };
 
 const Row kRows[] = {
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0xa7a28fa20e0349c8ull},
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xd5c906975cca98e8ull},
-    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 128, 0xd3d82509d193b228ull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0x4e277f29c0b7972aull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xf87449936054de8aull},
+    {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 128, 0xb443b6d75cfb914aull},
     // P4c: the actuator line's three kernels, recorded at the build that first compiled them (new kernels, not moved ones).
     {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 32, 0xa8b04616db337126ull},
     {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 64, 0x9d39dba38a0056c6ull},

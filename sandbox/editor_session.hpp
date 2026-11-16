@@ -52,6 +52,8 @@ class EditorSession {
     [[nodiscard]] editor::EditorWorkspace& workspace() noexcept { return *workspace_; }
     [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
     [[nodiscard]] bool gpu_active() const noexcept { return gpu_ != nullptr; }
+    // The loop draws every frame while this is true (a run or Run air steps), else on events and a heartbeat.
+    [[nodiscard]] bool animating() const noexcept { return workspace_->animating(); }
 
     // What the last frame did with the view's mode, for the tour's
     // editor.views (Test/Docs' modes_drawn()): applied through apply_view(),

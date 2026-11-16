@@ -18,6 +18,7 @@
 #include "contact_set_fakes.hpp"
 #include "core/error.hpp"
 #include "physics/contact_sets.hpp"
+#include "physics/rigid_contact.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
 #include "state/layout.hpp"
@@ -173,6 +174,26 @@ TEST(ContactSets, ALaterRegistrationLeavesEveryLaneAndTheSetItNames) {
     ASSERT_EQ(t[range + 1], 2.0f);
     EXPECT_EQ(t[first * kContactSetRowFloats], 2.0f);
     EXPECT_EQ(t[(first + 1) * kContactSetRowFloats + 1], 2.0f);
+}
+
+// L82 (the lead's ruling L82b): a model with a shape takes the shape's points as its ground response, not its L9 contact set. The
+// lane is written 0 at spawn, so static_contact.resolve (not edited) takes the proxy sphere for the body and rigid_contact.resolve
+// answers for the points; a model without a shape keeps its set.
+TEST(ContactSets, AShapedModelTakesItsShapeInsteadOfItsSet) {
+    spade::modules::ModuleSet set = standard_set_with<&build_a>();
+    set.push_back(spade::modules::rigid_contact_module());
+    Simulation sim = make(set);
+
+    spade::vehicles::ModelType shaped = quad_of_mass(2.0f);  // build_a gives a model of 2 kg or more a set
+    shaped.shape = spade::physics::box_shape(glm::vec3(0.3f, 0.1f, 0.3f));
+    const ModelTypeId shaped_id = sim.register_model(shaped).value();
+    const ModelTypeId plain_id = add(sim, 3.0f);  // 3 kg: a set, and no shape
+    const spade::VehicleRef a = put(sim, shaped_id, 0.0f);
+    const spade::VehicleRef b = put(sim, plain_id, 5.0f);
+    ASSERT_TRUE(sim.flush_structural().has_value());
+
+    EXPECT_EQ(lane(sim, a), 0u) << "the shaped model's set is not applied";
+    EXPECT_EQ(lane(sim, b), plain_id.value) << "a model without a shape keeps its set";
 }
 
 // ===========================================================================

@@ -240,10 +240,24 @@ def run_window(argv, cwd, env, hold_s, exit_timeout_s=30):
     return out, wall, peak_working_set_mb(proc), proc.returncode
 
 
+def gbench_json(out):
+    """The google-benchmark JSON object in a program's output (text before and after it is ignored)."""
+    start = out.index("{")
+    return json.JSONDecoder().raw_decode(out[start:].replace("Infinity", "1e999"))[0]
+
+
+def save_raw_gbench(ctx, name, out):
+    """Keeps the whole benchmark JSON of a measured run (both cpu_time and real_time), so a change of basis can be re-read without a rerun."""
+    if not ctx.get("raw_dir"):
+        return
+    os.makedirs(ctx["raw_dir"], exist_ok=True)
+    with open(os.path.join(ctx["raw_dir"], "%s-%s.gbench.json" % (ctx["run_id"], name)), "w", encoding="utf8") as f:
+        json.dump(gbench_json(out), f, indent=1)
+
+
 def gbench_values(out, basis, unit):
     """{benchmark name: [one value per repetition]} from google-benchmark JSON, in `unit`."""
-    start = out.index("{")
-    data = json.JSONDecoder().raw_decode(out[start:].replace("Infinity", "1e999"))[0]
+    data = gbench_json(out)
     values = {}
     for b in data["benchmarks"]:
         if b.get("run_type", "iteration") != "iteration":
@@ -312,6 +326,7 @@ def measure_metric(m, ctx, repeats, say):
     if kind == "gbench":
         # one process makes all repetitions, so a run is the whole invocation
         out, wall, peak, seen = one_run()
+        save_raw_gbench(ctx, m["name"], out)
         div = float(m.get("divisor", 1))  # an iteration that makes N steps is reported per step with "divisor": N
         for name, vals in gbench_values(out, m["basis"], m["unit"]).items():
             _, _, arg = name.partition("/")  # BM_StepPlainBodies/1000 -> <registry name>/1000
@@ -459,7 +474,8 @@ def cmd_measure(a):
     exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
     ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
            "smoke_out": os.path.join(REPO, "build-bench", "perf-smoke"),
-           "ticket": "perf-" + run_id}
+           "ticket": "perf-" + run_id, "run_id": run_id,
+           "raw_dir": os.path.abspath(a.raw_dir or os.path.dirname(os.path.abspath(a.out_json or a.ledger)))}
     env = environment(build_dir)
     queue_readings = []
     results, noisy = {}, 0
@@ -546,14 +562,25 @@ def cmd_table(a):
     floors = json.load(open(a.floors_file, encoding="utf8")) if os.path.exists(a.floors_file) else {}
     print("| Metric | Who waits, for what | Workload | Command | Unit | Owner | Kind | Class | Floor |")
     print("|---|---|---|---|---|---|---|---|---|")
-    for m in load_registry(a.registry):
-        own = [v for k, v in floors.items() if k == m["name"] or k.startswith(m["name"] + "/")]
-        f = max(own) if own else None
+    registry = load_registry(a.registry)
+    every_prefix = [p for r in registry for p in [r["name"]] + list(r.get("row_prefixes") or [])]
+    for m in registry:
+        # A metric's rows are the floors whose name starts with the metric's (or a registry "row_prefixes" entry), the next character
+        # one of / _ . ; the phase diagnostics (.diag_) are not rows. The table shows the largest row floor, "up to" when there are several.
+        prefixes = [m["name"]] + list(m.get("row_prefixes") or [])
+        own = [v for k, v in floors.items()
+               if ".diag_" not in k and any(k == p or (k.startswith(p) and k[len(p)] in "/_.") for p in prefixes)
+               and not any(len(q) > len(max(prefixes, key=len)) and k.startswith(q) for q in every_prefix)]
+        if own:
+            f = ("up to %.1f%%" if len(own) > 1 else "%.1f%%") % max(own)
+        elif m.get("class", "test") == "test" and not m.get("diagnostic"):
+            f = "pending the second window"
+        else:
+            f = "not measured"
         cmd = " ".join(["%s=%s" % (k, v) for k, v in (m.get("env") or {}).items() if v is not None] + m["command"])
         print("| `%s` | %s | %s | `%s` | %s | %s | %s | %s | %s |" % (
             m["name"], m.get("who_waits", ""), m.get("workload", ""), cmd.replace("|", "\\|"), m["unit"],
-            m.get("owner", ""), "diagnostic" if m.get("diagnostic") else "metric", m.get("class", "test"),
-            ("%.1f%%" % f) if f is not None else "not measured"))
+            m.get("owner", ""), "diagnostic" if m.get("diagnostic") else "metric", m.get("class", "test"), f))
 
 
 def main():
@@ -569,6 +596,7 @@ def main():
     p.add_argument("--env", default=os.path.join(HERE, "environment.csv"))
     p.add_argument("--floors-file", default=os.path.join(HERE, "floors.json"))
     p.add_argument("--out-json", help="write the raw values here (for --floors)")
+    p.add_argument("--raw-dir", help="where each benchmark run's whole JSON goes (default: next to --out-json, else next to the ledger)")
     p.add_argument("--idle-pct", type=float, default=5.0)
     p.add_argument("--idle-limit-s", type=int, default=600)
     p.add_argument("--dry-run", action="store_true")

@@ -49,6 +49,7 @@
 #include "core/error.hpp"
 #include "core/path_text.hpp"
 #include "reference_airframe.hpp"
+#include "physics/rigid_contact.hpp"
 #include "scene/model_file.hpp"
 #include "scene/scene_file.hpp"
 #include "unique_temp.hpp"
@@ -610,23 +611,83 @@ TEST(YamlTextDouble, RefusesWhatIsNotAFiniteDoubleByName) {
 }
 
 // ===========================================================================
+// L82: a model's contact shape (`collision`, model_version 2)
+// ===========================================================================
+//
+// model_version 2 reads the model block with scene version 6's key set (which adds `collision`, a model's contact shape,
+// physics::ShapeDesc). It is written only when the model has a shape, so every model file without one stays model_version 1, byte for
+// byte (TheCanonicalTextIsPinned, unedited, pins that).
+
+TEST(ModelFile, AContactShapeMakesItModelVersionTwo) {
+    const std::string pinned(kPinnedText);
+    const spade::Result<ModelFile> base = spade::scene::model_from_yaml(pinned);
+    ASSERT_OK(base);
+
+    ModelFile shaped = *base;
+    shaped.model.shape = spade::physics::box_shape(glm::vec3(0.5f, 0.25f, 0.125f), 0.0625f);
+    shaped.model.shape->friction = 0.4f;
+    shaped.model.shape->iterations = 8;
+    const spade::Result<std::string> text = spade::scene::model_to_yaml(shaped);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, "\nmodel_version: 2\n")) << *text;
+    EXPECT_TRUE(contains(*text, "schema version 2.")) << *text;
+    EXPECT_TRUE(contains(*text, "\n  collision:\n    kind: \"box\"\n")) << *text;
+    // The chain stays before it: propulsion, then collision, the model's last two keys.
+    EXPECT_LT(text->find("\n  propulsion:\n"), text->find("\n  collision:\n")) << *text;
+
+    const spade::Result<ModelFile> back = spade::scene::model_from_yaml(*text);
+    ASSERT_OK(back);
+    ASSERT_TRUE(back->model.shape.has_value());
+    EXPECT_EQ(back->model.shape->kind, spade::physics::ShapeKind::box);
+    EXPECT_EQ(bits(back->model.shape->friction), bits(0.4f));
+    EXPECT_EQ(back->model.shape->iterations, 8u);
+    const spade::Result<std::string> again = spade::scene::model_to_yaml(*back);
+    ASSERT_OK(again);
+    EXPECT_EQ(*again, *text);
+
+    // Without the shape, the file is model_version 1 again, the pinned text.
+    ModelFile bare = shaped;
+    bare.model.shape.reset();
+    const spade::Result<std::string> plain = spade::scene::model_to_yaml(bare);
+    ASSERT_OK(plain);
+    EXPECT_EQ(*plain, pinned);
+
+    // Version 1 does not know the key.
+    const spade::Result<ModelFile> v1 =
+        spade::scene::model_from_yaml(with(*text, "\nmodel_version: 2\n", "\nmodel_version: 1\n"));
+    ASSERT_FALSE(v1);
+    EXPECT_EQ(v1.error().code, spade::Code::invalid_argument);
+    EXPECT_TRUE(contains(v1.error().context, "unknown key 'collision' in model -- model schema v1 does not define it (line "))
+        << v1.error().context;
+
+    // A bad shape is refused by the model's own rule, in the writer and by name in the reader.
+    ModelFile bad = shaped;
+    bad.model.shape = spade::physics::sphere_shape(-1.0f);
+    EXPECT_TRUE(contains(why(spade::scene::validate_model_file(bad)), "collision: set_body_shape: "))
+        << why(spade::scene::validate_model_file(bad));
+    const spade::Result<ModelFile> unread = spade::scene::model_from_yaml(with(*text, "kind: \"box\"", "kind: \"cone\""));
+    ASSERT_FALSE(unread);
+    EXPECT_TRUE(contains(unread.error().context, "model.collision.kind: unknown shape kind 'cone'")) << unread.error().context;
+}
+
+// ===========================================================================
 // The version gate and the keys
 // ===========================================================================
 
 TEST(ModelFile, AnotherModelVersionIsASchemaMismatch) {
-    for (const char* version : {"2", "0"}) {
+    for (const char* version : {"3", "0"}) {
         SCOPED_TRACE(version);
         const spade::Result<ModelFile> r = spade::scene::model_from_yaml(
             with(std::string(kPinnedText), "\nmodel_version: 1\n", std::string("\nmodel_version: ") + version + "\n"));
         ASSERT_FALSE(r);
         EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
         EXPECT_TRUE(contains(r.error().context, std::string("model file is schema version ") + version +
-                                                    ", this build reads version 1 only"))
+                                                    ", this build reads versions 1 to 2"))
             << r.error().context;
     }
-    // A version-2 file's keys are not reported as unknown: the version comes first.
+    // A version-3 file's keys are not reported as unknown: the version comes first.
     const spade::Result<ModelFile> newer = spade::scene::model_from_yaml(
-        with(with(std::string(kPinnedText), "\nmodel_version: 1\n", "\nmodel_version: 2\n"), std::string(kModelKey),
+        with(with(std::string(kPinnedText), "\nmodel_version: 1\n", "\nmodel_version: 3\n"), std::string(kModelKey),
              "\nthrottle_curve: [0, 1]\nmodel:\n"));
     ASSERT_FALSE(newer);
     EXPECT_EQ(newer.error().code, spade::Code::schema_mismatch);

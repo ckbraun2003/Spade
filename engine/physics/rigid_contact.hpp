@@ -29,6 +29,14 @@
 //   hull     the host's points in the host's order, at most kShapeMaxPoints, radius = the skin (default 0).
 // A sphere ROLLS ON: there is no rolling resistance, so a sphere on a flat floor keeps its speed once omega r = v (a box or a capsule
 // stops). Body-body contact is not part of this pass.
+//
+// A SHAPED BODY'S OTHER GROUND RESPONSES (L82b, the lead's ruling). static_contact.resolve is not edited and still runs for every
+// body, so a shaped body has two more: its L9 CONTACT SET and its PROXY SPHERE. The set is replaced: a model with a shape gets
+// BodyState::contact_set 0 at spawn (Simulation::contact_set_of), so the shape's points are its ground contact, one response. The
+// proxy sphere (the model's proxy_radius, else the world's ContactParams::proxy_radius, centred on the centre of mass) is NOT
+// switched off, because that needs a kernel edit and moves the SpirvPin rows. It is inert while the shape's smallest half-extent
+// (the inscribed radius) exceeds it, which holds for any compact shape at the usual 0.1 m. A THIN shape (a plate, a board) wants a
+// small model proxy_radius, below its half thickness, or the sphere holds it off the floor.
 // ---------------------------------------------------------------------------
 
 namespace spade::physics {

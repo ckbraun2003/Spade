@@ -29,7 +29,8 @@ using yaml_text::path_text;
 
 // THE ONE MAPPING from a model version to the scene key set its model block
 // is read with (model_file.hpp): model_version 1 reads it as scene version 4
-// does, the newest, which carries everything (parts, mesh parts, the chain).
+// does, which carries everything (parts, mesh parts, the chain); model_version 2
+// as scene version 6 does, which adds `collision` (L82).
 // The key set stays that version's: a later scene version that adds a model
 // key is read by a new model_version, mapped here.
 //
@@ -37,21 +38,31 @@ using yaml_text::path_text;
 // to model_version 1's text: the chain moved from a top-level `propulsion:`
 // into the model block, as the model's own last key. No model file had been
 // committed in N1's layout; one is refused, its `propulsion` an unknown key.
-constexpr uint32_t kModelBlockSceneVersion = 4;
-static_assert(kModelFileVersion == 1, "one mapping per model version: map the new version's key set here");
-static_assert(kModelBlockSceneVersion <= kSceneFileVersion,
-              "this build reads the scene key set model_version 1 borrows");
+[[nodiscard]] constexpr uint32_t block_scene_version(uint32_t model_version) {
+    return model_version >= 2 ? 6u : 4u;
+}
+static_assert(kModelFileVersion == 2, "one mapping per model version: map the new version's key set here");
+static_assert(block_scene_version(kModelFileVersion) <= kSceneFileVersion,
+              "this build reads the scene key set the newest model_version borrows");
 
 // Every diagnostic blames the file's own schema (property 3), never the scene
 // schema whose key set the model block borrows.
-constexpr std::string_view kSchema = "model schema v1";
+constexpr std::string_view kSchemaV1 = "model schema v1";
+constexpr std::string_view kSchemaV2 = "model schema v2";
+[[nodiscard]] constexpr std::string_view schema_of(uint32_t model_version) {
+    return model_version >= 2 ? kSchemaV2 : kSchemaV1;
+}
+// The version a file is written as: the oldest that carries everything in it. A contact shape needs 2.
+[[nodiscard]] uint32_t written_version(const ModelFile& file) {
+    return file.model.shape ? 2u : 1u;
+}
 // What a sidecar's path is relative to, and the loader that knows it.
 constexpr std::string_view kKind = "model";
 // The top level's name in a diagnostic.
 constexpr std::string_view kTop = "model file";
 
-[[nodiscard]] detail::ModelBlockFormat block_format() {
-    return detail::ModelBlockFormat{kModelBlockSceneVersion, kSchema, kKind};
+[[nodiscard]] detail::ModelBlockFormat block_format(uint32_t model_version) {
+    return detail::ModelBlockFormat{block_scene_version(model_version), schema_of(model_version), kKind};
 }
 
 // ===========================================================================
@@ -101,9 +112,10 @@ constexpr std::string_view kPropulsionComment = R"YAML(#
     std::string out;
     out.reserve(4096);
     out += kHeaderRule;
-    out += "# Spade model file -- schema version " + dec(kModelFileVersion) + ".\n";
+    const uint32_t version = written_version(file);
+    out += "# Spade model file -- schema version " + dec(version) + ".\n";
     out += kFileHeader;
-    out += "\nmodel_version: " + dec(kModelFileVersion) + "\n";
+    out += "\nmodel_version: " + dec(version) + "\n";
 
     // The scene's per-model block, as a mapping, its chain the last key
     // (emit_model writes it when set).
@@ -129,22 +141,22 @@ constexpr std::string_view kPropulsionComment = R"YAML(#
     if (!version_node) return std::unexpected(version_node.error());
     const Result<uint32_t> version = parse_uint<uint32_t>(*version_node, "model_version");
     if (!version) return std::unexpected(version.error());
-    if (*version != kModelFileVersion) {
+    if (*version < kModelFileOldestVersion || *version > kModelFileVersion) {
         return std::unexpected(Error{Code::schema_mismatch, "model file is schema version " + dec(*version) +
-                                                                ", this build reads version " +
-                                                                dec(kModelFileVersion) + " only" +
-                                                                mark_of(*version_node)});
+                                                                ", this build reads versions " +
+                                                                dec(kModelFileOldestVersion) + " to " +
+                                                                dec(kModelFileVersion) + mark_of(*version_node)});
     }
 
     // The chain is the model block's (N5a): a top-level `propulsion` is unknown.
-    if (Result<void> r = yaml_text::check_map(root, kTop, {"model_version", "model"}, kSchema); !r) {
+    if (Result<void> r = yaml_text::check_map(root, kTop, {"model_version", "model"}, schema_of(*version)); !r) {
         return std::unexpected(r.error());
     }
 
     ModelFile out{};
     const Result<YAML::Node> model_node = field(root, "model", kTop);
     if (!model_node) return std::unexpected(model_node.error());
-    Result<vehicles::ModelType> model = detail::parse_model(*model_node, "model", block_format(), base_dir);
+    Result<vehicles::ModelType> model = detail::parse_model(*model_node, "model", block_format(*version), base_dir);
     if (!model) return std::unexpected(model.error());
     out.model = std::move(*model);
     return out;
@@ -171,7 +183,7 @@ constexpr std::string_view kPropulsionComment = R"YAML(#
 
 Result<void> validate_model_file(const ModelFile& file) {
     // The scene's per-model rules, the same function (TD-9).
-    if (Result<void> r = detail::validate_model(file.model, kSchema, kKind); !r) {
+    if (Result<void> r = detail::validate_model(file.model, schema_of(written_version(file)), kKind); !r) {
         return r;
     }
     return {};

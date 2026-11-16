@@ -15,6 +15,7 @@
 #include <string>
 #include <utility>
 
+#include "sim/module.hpp"  // standard_modules, rigid_contact_module
 #include "world/world_file.hpp"  // load_world_file
 
 namespace spade::scene {
@@ -283,7 +284,18 @@ Result<SceneRun> instantiate(const ComposedScene& scene, WorldInstanceDesc insta
     WorldSetDesc set{};
     set.worlds.push_back(std::move(instance));
 
-    Result<Simulation> created = Simulation::create(set, dt_ns, substeps, backend);
+    // L82: a model with a contact shape (ModelType::shape) needs rigid_contact_module(); the standard set holds none, and a
+    // spawn of a shaped model there is refused. So the module joins the set when some model has a shape, and only then: a scene
+    // without shapes builds exactly standard_modules(), bit for bit.
+    modules::ModuleSet module_set = modules::standard_modules();
+    for (const vehicles::ModelType& m : scene.models) {
+        if (m.shape) {
+            module_set.push_back(modules::rigid_contact_module());
+            break;
+        }
+    }
+
+    Result<Simulation> created = Simulation::create(set, dt_ns, substeps, backend, module_set);
     if (!created) {
         return std::unexpected(prefixed(created.error(), "instantiate: the simulation was not created: "));
     }

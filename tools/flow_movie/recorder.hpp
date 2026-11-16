@@ -36,6 +36,11 @@ class GlStage {
     // One frame at full flow quality: RGBA8, the top row first.
     [[nodiscard]] spade::Result<void> draw(const spade::render::RenderScene& scene,
                                            const spade::render::Camera& camera, std::vector<uint8_t>& rgba);
+    // The same draw left as GL returns it: bottom_first() is the picture, the BOTTOM row first, the alpha as the march left
+    // it. For a caller that folds the row flip and the alpha fill into its own pass (box_filter.hpp's box_down_flipped).
+    [[nodiscard]] spade::Result<void> draw_bottom_first(const spade::render::RenderScene& scene,
+                                                        const spade::render::Camera& camera);
+    [[nodiscard]] const std::vector<uint8_t>& bottom_first() const noexcept { return bottom_first_; }
     // Where the last draw() spent its seconds (the perf stopwatch): the scene's upload, the draw (submit and the GPU
     // finishing it), the read of the picture to memory, and the flip to top row first with the alpha fill.
     struct DrawTimes {

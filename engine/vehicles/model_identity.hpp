@@ -23,7 +23,11 @@
 //   the drag-body count, then each one's mode (u32), area, coeffs x y z,
 //     local_pos x y z, local_orient w x y z;
 //   the IMU-mount count, then each one's mount_pos x y z, mount_orient
-//     w x y z, rate_divider (u32), sigma_a, sigma_g, sigma_ba, sigma_bg.
+//     w x y z, rate_divider (u32), sigma_a, sigma_g, sigma_ba, sigma_bg;
+//   then, ONLY when the model has a contact shape (ModelType::shape, L82), the byte 0xFF, the 5 ASCII bytes "shape", the
+//     kind (u32), radius, a x y z, b x y z, half_extents x y z, the point count (u32) and each point x y z, friction,
+//     restitution, rest_speed, iterations (u32). A model without a shape folds nothing here, so its identity is what it was
+//     before shapes, and every stored identity of a shapeless registry still holds.
 // visual_ref is NOT folded: it is render data and never reaches the step (L5).
 // parts are NEVER folded here (CORE-7, as agreed with Interface and the lead
 // on 2026-10-12): this is the base identity, and it keeps this meaning, so a

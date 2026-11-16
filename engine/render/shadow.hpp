@@ -125,8 +125,23 @@ inline constexpr float kFocusShadowDepthBias = 0.005f;
 // fit_focus_shadow_map() is the same map's frame without its depth: `size`, `light_view_proj` and `depth_bias`, with
 // `depth` left empty and nothing rasterised, and the same answer for "no map". GL fits its focus map with it and
 // draws the casters itself, so the two paths share one fit.
+//
+// The fit skips the bodies that cannot move the footprint (L74b): each item's light-space extent is bounded from its
+// mesh's bounding box and ball (a margin 10x the rounding of the transform added), and only an item whose bound
+// reaches past the extremes found so far has its vertices transformed. The answer is BYTE-IDENTICAL to
+// fit_focus_shadow_map_exhaustive()'s, which transforms every vertex of every item: the extremes are a min and a max,
+// so a skipped item's every vertex lies strictly inside what the others set. A non-finite pose, mesh or bound takes the
+// exhaustive path. `stats`, when given, says how many vertices each way would transform and did.
+struct FocusFitStats {
+    uint64_t vertices_total = 0;        // the vertices of every item the fit considers (the exhaustive fit's count)
+    uint64_t vertices_transformed = 0;  // the vertices this fit transformed
+};
 [[nodiscard]] std::optional<ShadowMap> fit_focus_shadow_map(const RenderScene& scene, uint32_t size,
-                                                            float filter_texels, const ShadowMap& statics);
+                                                            float filter_texels, const ShadowMap& statics,
+                                                            FocusFitStats* stats = nullptr);
+// The original fit, every vertex of every item: the reference the skip fit is held to (tests), never faster.
+[[nodiscard]] std::optional<ShadowMap> fit_focus_shadow_map_exhaustive(const RenderScene& scene, uint32_t size,
+                                                                       float filter_texels, const ShadowMap& statics);
 [[nodiscard]] std::optional<ShadowMap> build_focus_shadow_map(const RenderScene& scene, uint32_t size,
                                                               float filter_texels, const ShadowMap& statics,
                                                               std::vector<float>* scratch = nullptr);

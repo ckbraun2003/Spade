@@ -490,12 +490,24 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     return self;
 }
 
+void GpuFluid::set_phase_timing(bool on) {
+    if (on != phase_timing_) step_chains_.fill(std::nullopt);  // re-recorded with (or without) its marks
+    phase_timing_ = on;
+    phases_.clear();
+}
+
 Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     if (step_chains_[disc_count]) return *step_chains_[disc_count];
     const af::GridShape& s = shape_;
     const uint32_t wg = workgroup_size_;
     const auto n = face_counts(s);
     std::vector<ChainCommand> chain;
+    std::vector<std::string> names;  // the marks' names (phase_timing_): a mark after each phase
+    const auto phase = [&](const char* name) {
+        if (!phase_timing_) return;
+        chain.push_back(ChainCommand{});
+        names.emplace_back(name);
+    };
     // apply_solid_velocities(g, solids, cfg.interior), after each
     // apply_velocity_boundaries() of the step.
     const auto solid_velocities = [&] {
@@ -503,25 +515,31 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     };
     append_velocity_bc(chain, s, wg);
     solid_velocities();
+    phase("bc");
     for (const uint32_t pass : {0u, 1u}) {
         for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(kAdvection, c, pass, n[c], 0u, wg));
     }
+    phase("advection");
     if (disc_count > 0u) {
         for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(kGather, c, 0u, n[c], disc_count, wg));
+        phase("gather");
     }
     chain.push_back(dispatch(kAddIncrements, 0u, 0u, n[0] + n[1] + n[2], 0u, wg));
     append_velocity_bc(chain, s, wg);
     solid_velocities();
+    phase("increments");
     if (cfg_.sgs_cs > 0.0f) {
         // fluid_step()'s hook: after the sources and the boundary passes, before the molecular diffusion.
         append_sgs(chain, s, wg);
         append_velocity_bc(chain, s, wg);
         solid_velocities();
+        phase("sgs");
     }
     if (cfg_.nu > 0.0f) {
         append_viscous(chain, s, af::periodic_axes(bc_), cfg_.visc_sweeps, wg);
         append_velocity_bc(chain, s, wg);
         solid_velocities();
+        phase("viscous");
     }
     // With solids the projection is project_with_solids()' own chains (step()).
     if (!solids_) {
@@ -534,6 +552,7 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
         const std::vector<ChainCommand> projection =
             projection_chain(layout_, s, af::face_kinds(bc_), cfg_.n_v, kProjection, wg, measure);
         chain.insert(chain.end(), projection.begin(), projection.end());
+        phase("projection");
     }
     // Without solids the chain ends with a readback of the scalars (plan A's health word); with solids the CG
     // loop reads them by read().
@@ -543,6 +562,7 @@ Result<uint32_t> GpuFluid::step_chain_for(uint32_t disc_count) {
     auto id = solids_ ? runner_->record(chain) : runner_->record(chain, std::span(&health_word, 1));
     if (!id) return std::unexpected(id.error());
     step_chains_[disc_count] = *id;
+    phase_names_[disc_count] = std::move(names);
     return *id;
 }
 
@@ -599,6 +619,17 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
     auto id = step_chain_for(static_cast<uint32_t>(discs.size()));
     if (!id) return std::unexpected(id.error());
     if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
+    phases_.clear();
+    if (phase_timing_) {
+        // The marks' durations of the chain just submitted (empty if the device cannot time compute work).
+        const Result<std::vector<uint64_t>> ns = runner_->durations_ns(*id);
+        const std::vector<std::string>& names = phase_names_[discs.size()];
+        if (ns && ns->size() == names.size()) {
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                phases_.push_back({names[i], static_cast<double>((*ns)[i]) * 1.0e-6, 1u});
+            }
+        }
+    }
     if (!solids_) {
         // Plan A's report as the CPU forms it (fluid_step.cpp): the residual after the cycles, announced
         // above its own mark. The chain copied the scalars into its readback region before its fence
@@ -617,8 +648,17 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) 
         add_sgs_health(h, scalars, cfg_.sgs_cs > 0.0f);
         return h;
     }
-    Result<GpuProjectionReport> projected = project_with_solids(*runner_, projection_, cfg_.n_v, cfg_.cg_cap);
+    SolveTimes solve_times;
+    Result<GpuProjectionReport> projected =
+        project_with_solids(*runner_, projection_, cfg_.n_v, cfg_.cg_cap, phase_timing_ ? &solve_times : nullptr);
     if (!projected) return std::unexpected(projected.error());
+    if (phase_timing_) {
+        const std::pair<const char*, SolveTimes::Phase> cg[] = {
+            {"cg_setup", solve_times.setup},     {"cg_iterations", solve_times.iterations},
+            {"cg_measure", solve_times.measure}, {"cg_restart", solve_times.restart},
+            {"cg_finish", solve_times.finish},   {"cg_reads", solve_times.reads}};
+        for (const auto& [name, phase] : cg) phases_.push_back({name, phase.ms, phase.n});
+    }
     // fluid_step()'s health from the CG's report, with solids.
     const af::ProjectionReport& rep = projected->report;
     // A non-finite flow, which the CPU's scan() names. The report can't show

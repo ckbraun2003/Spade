@@ -289,6 +289,42 @@ TEST(EditorAirflow, StopJoinsAndNothingIsHandedOverAfter) {
     (*run)->stop();
 }
 
+// L74: a run started to measure keeps the wall time of its steps, its publishes and its frames, and hands the four
+// PERF lines over once it has stopped; one not asked to measure keeps nothing, and a line is printed only by the
+// run's owner.
+TEST(EditorAirflow, AMeasuredRunHandsOverItsPerfLinesAndAnUnmeasuredOneHasNone) {
+    const spade::scene::SceneDesc s = with_reference_quad();
+    ASSERT_FALSE(s.airflow.empty());
+    Result<std::unique_ptr<ed::AirflowRun>> measured =
+        ed::AirflowRun::start(s, s.airflow.back(), std::nullopt, {}, ed::cpu_air_starter(), ed::AirLevel::detailed,
+                              0.0f, /*measure=*/true);
+    ASSERT_TRUE(measured.has_value()) << measured.error().context;
+    (*measured)->set_controls(kHalf);
+    ASSERT_NE(wait_for_frames(**measured, 2), nullptr);
+    (*measured)->stop();
+    const std::vector<std::string> lines = (*measured)->take_perf_lines();
+    ASSERT_EQ(lines.size(), 4u);
+    const char* const names[] = {"PERF interface.run_air_frame ", "PERF interface.diag_run_air_step ",
+                                 "PERF interface.diag_run_air_publish ", "PERF interface.diag_run_air_assemble "};
+    for (std::size_t i = 0; i < 4u; ++i) {
+        ASSERT_EQ(lines[i].rfind(names[i], 0), 0u) << lines[i];
+        EXPECT_EQ(lines[i].substr(lines[i].size() - 3), " ms") << lines[i];
+        const double value = std::stod(lines[i].substr(std::string(names[i]).size()));
+        EXPECT_TRUE(std::isfinite(value) && value >= 0.0) << lines[i];
+        if (i == 0u || i == 1u) {
+            EXPECT_GT(value, 0.0) << "a frame and a step took time: " << lines[i];
+        }
+    }
+    EXPECT_TRUE((*measured)->take_perf_lines().empty()) << "taken once: the owner's destructor prints nothing then";
+
+    Result<std::unique_ptr<ed::AirflowRun>> plain = ed::AirflowRun::start(s, s.airflow.back());
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    (*plain)->set_controls(kHalf);
+    ASSERT_NE(wait_for_frames(**plain, 1), nullptr);
+    (*plain)->stop();
+    EXPECT_TRUE((*plain)->take_perf_lines().empty()) << "not asked to measure: nothing kept";
+}
+
 // The hand-off (§9, the lead's two changes): a frame the window holds never
 // changes while the worker publishes on, and it outlives the run.
 TEST(EditorAirflow, AHeldFrameNeverChangesAndOutlivesTheRun) {
