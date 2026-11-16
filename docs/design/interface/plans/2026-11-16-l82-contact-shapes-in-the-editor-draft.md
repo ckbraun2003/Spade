@@ -35,4 +35,17 @@ Interface, 2026-11-16, for the lead. Asked after the smoke audit: L68's contact 
 - **Q7. Frames.** A model whose `design_to_principal` is a rotation permutes a box's half extents. First cut: refuse "box" with a message when the rotation is not axis-aligned.
 - **Q8. Backend.** The editor's Run steps the CPU backend; the shape pass on the device is banded against the CPU (L68). Nothing to do unless Run moves to the device.
 
-Size, after Core's half: inspector and commands 1.5 days, wireframe 1, Crate and library 0.5, tests 1.5, gates and review 1: about 5 working days. Held until the lead's word on Q1, Q2 and Q5.
+Size, after Core's half: inspector and commands 1.5 days, wireframe 1, Crate and library 0.5, tests 1.5, gates and review 1: about 5 working days.
+
+## Rulings (Spade, 2026-11-16, recorded as L82a; where they differ from the text above, this section wins)
+
+- **Q1: (a).** The shape lives on the model, plus a new Crate model used as a vehicle. No `bodies:` section now (YAGNI); it comes when a use needs it.
+- **Q2: Core first.** Core is assigned the scene version 6 `collision:` key (written only when a model has one, a version 5 scene byte-identical) and `instantiate()` adding `rigid_contact_module()` only when a model has a shape. Interface writes its half against Core's header while that lands.
+- **Q3:** the "Inertia from box" button, nothing automatic.
+- **Q4:** per model, with the inspector's note ("applies to every vehicle of this model"). No per-vehicle override (YAGNI).
+- **Q5:** Core rules this in its half, as L68's author. The lead's lean: for a body with a shape, the shape replaces its L9 contact set, so there is one ground response per body, documented. Until Core rules, the inspector says nothing about it.
+- **Q6:** "From model" builds the hull of up to 16 points from the parts' corners and rotor tips, refused by name if more are needed.
+- **Q7:** a box is refused, with a message, when the model's `design_to_principal` is not axis-aligned.
+- **Q8:** nothing now.
+
+Order: the lead merges this note to master, then the editor half starts (Core's header first, or against it while it lands).
