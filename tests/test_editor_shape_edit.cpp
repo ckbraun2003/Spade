@@ -256,6 +256,14 @@ TEST(EditorShapeEdit, AShapeSurvivesSavingAndReopeningTheScene) {
     }
     for (int i = 0; i < 300; ++i) w->advance(1.0f / 60.0f);
     if (why) *why = w->panels().status;  // a refused step pauses the run and says why here
+    if (why) {
+        const auto s2 = w->run()->state_of(quad);
+        *why += " | tick " + std::to_string(w->run()->tick()) + " box " + std::to_string(box->half_extents.x) + " " +
+                std::to_string(box->half_extents.y) + " " + std::to_string(box->half_extents.z) + " mass " +
+                std::to_string(model->body.mass) + " pos " + std::to_string(s2->pos.x) + " " + std::to_string(s2->pos.y) +
+                " " + std::to_string(s2->pos.z) + " vel " + std::to_string(s2->vel.x) + " " + std::to_string(s2->vel.y) +
+                " " + std::to_string(s2->vel.z);
+    }
     return w->run()->state_of(quad);
 }
 
