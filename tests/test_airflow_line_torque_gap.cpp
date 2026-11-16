@@ -240,7 +240,7 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
                 total, 30.0 * t_rv);
 
     struct Station {
-        double ua = 0.0, alpha = 0.0, dt = 0.0, dq = 0.0, r = 0.0, dr = 0.0;
+        double ua = 0.0, wt = 0.0, alpha = 0.0, dt = 0.0, dq = 0.0, r = 0.0, dr = 0.0;
         uint32_t n = 0;
     };
     std::vector<Station> st;
@@ -265,6 +265,7 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
                     const double beta = std::atan2(static_cast<double>(e.sin_beta), static_cast<double>(e.cos_beta));
                     Station& a = st[i];
                     a.ua += static_cast<double>(ua);
+                    a.wt += static_cast<double>(wt / (omega * e.r));
                     a.alpha += (beta - std::atan2(static_cast<double>(ua), static_cast<double>(wt))) * kRad;
                     a.dt += static_cast<double>(s.axial);
                     a.dq += static_cast<double>(s.tangent) * static_cast<double>(e.r);
@@ -290,11 +291,12 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
                                            .annuli = per, .tip_loss = true});
     ASSERT_TRUE(bm.has_value());
     ASSERT_EQ(bm->annulus.size(), per);
-    std::printf("torque-gap item 2 per station (the line: the mean over the last %u steps at the blades' own positions; "
-                "the BEMT: Prandtl, %u annuli); ua is the air's axial speed through the rotor (m/s), alpha the angle of "
-                "attack (deg), dT/dr and dQ/dr all blades (N/m, N m/m)\n",
+    std::printf("torque-gap item 2 per station (the line: the mean over the last %u steps at the blades' own "
+                "positions; the BEMT: Prandtl, %u annuli); ua is the air's axial speed through the rotor (m/s), "
+                "alpha the angle of attack (deg), dT/dr and dQ/dr all blades (N/m, N m/m)\n",
                 last_n, per);
-    std::printf("  r/R    ua_line ua_bemt   alpha_line alpha_bemt   dT/dr_line dT/dr_bemt   dQ/dr_line dQ/dr_bemt\n");
+    std::printf("  r/R    ua_line ua_bemt   alpha_line alpha_bemt   dT/dr_line dT/dr_bemt   dQ/dr_line dQ/dr_bemt   "
+                "wt_line/(omega r)\n");
     double sum_t = 0.0, sum_q = 0.0;
     for (uint32_t i = 0; i < per; ++i) {
         const Station& a = st[i];
@@ -303,9 +305,9 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
         const double dq = a.dq / m * blade.blades;
         const bt::AnnulusLoad& b = bm->annulus[i];
         const double alpha_b = (b.beta - std::atan2(b.ua, b.wt)) * kRad;
-        std::printf("  %.3f  %7.3f %7.3f   %9.2f %10.2f   %10.3f %10.3f   %10.5f %10.5f\n",
+        std::printf("  %.3f  %7.3f %7.3f   %9.2f %10.2f   %10.3f %10.3f   %10.5f %10.5f   %.4f\n",
                     a.r / m / static_cast<double>(radius), a.ua / m, b.ua, a.alpha / m, alpha_b, dt, b.dt_dr, dq,
-                    b.dq_dr);
+                    b.dq_dr, a.wt / m);
         sum_t += dt * a.dr;
         sum_q += dq * a.dr;
     }
