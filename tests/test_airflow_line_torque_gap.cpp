@@ -170,4 +170,142 @@ TEST(AirflowLineTorqueGap, BemtAndTheZeroInductionLoadAgainstUiuc) {
     }
 }
 
+uint32_t env_u32(const char* name, uint32_t fallback) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* v = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return v != nullptr ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : fallback;
+}
+
+// Item 2 (L72h, the lead's word): what the line's elements feel and load, per station, at the end of a settled CPU hover of the
+// UIUC 10x5 in the V2b box, against the BEMT's annulus at the same radius. Read-only: the line, its sampling and the polar are
+// the engine's, unchanged. The run is the CPU line (bit equal to the GPU's, tests/test_gpu_airflow_line.cpp); R/dx 16 keeps it
+// to minutes, the width held in mm (the gap's resolution dependence at a fixed width is 0.3-0.5 points, the 2026-11-16 record).
+// Opt-in: SPADE_TORQUE_GAP=1 and SPADE_TORQUE_GAP_EPS_MM10=<width in tenths of a mm> (R/dx SPADE_TORQUE_GAP_RDX, default 16).
+TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt) {
+    if (!opted_in()) GTEST_SKIP() << "opt-in: SPADE_TORQUE_GAP=1 and SPADE_TORQUE_GAP_EPS_MM10=120 (CPU, minutes)";
+    const double eps_mm = static_cast<double>(env_u32("SPADE_TORQUE_GAP_EPS_MM10", 0)) / 10.0;
+    if (eps_mm <= 0.0) GTEST_SKIP() << "set SPADE_TORQUE_GAP_EPS_MM10";
+    const uint32_t rdx = env_u32("SPADE_TORQUE_GAP_RDX", 16);
+    const lp::Prop* prop = nullptr;
+    for (const lp::Prop& p : lp::kProps) {
+        if (std::string(p.id) == "uiuc_apce_10x5") prop = &p;
+    }
+    ASSERT_NE(prop, nullptr);
+    const double d = 10.0 * kInch;
+    const double n_rev = prop->run_rpm / 60.0;
+    const float omega = static_cast<float>(2.0 * std::numbers::pi * n_rev);
+    const af::BladeShape blade = blade_of(*prop, d);
+    const af::PolarTable polar = af::estimated_polar();
+    const float radius = blade.radius;
+    const double area = std::numbers::pi * static_cast<double>(radius) * static_cast<double>(radius);
+    const double v_h = std::sqrt(prop->ct_static * static_cast<double>(kRho) * n_rev * n_rev * std::pow(d, 4) /
+                                 (2.0 * static_cast<double>(kRho) * area));
+    const double t_rv = static_cast<double>(radius) / v_h;
+
+    const float dx = radius / static_cast<float>(rdx);
+    const double eps_cells = eps_mm * 1.0e-3 / static_cast<double>(dx);
+    ASSERT_TRUE(eps_cells >= 1.0 && eps_cells <= 3.0) << eps_mm << " mm is " << eps_cells << " cells";
+    const auto cells = [&](double m) { return static_cast<uint32_t>(std::ceil(m / static_cast<double>(dx))); };
+    const af::GridShape shape{cells(5.25 * radius), cells(8.3 * radius), cells(5.25 * radius), dx};
+    const af::DomainBc bc;
+    auto grid = af::make_grid(shape, bc);
+    ASSERT_TRUE(grid.has_value());
+    af::FluidConfig cfg;
+    cfg.rho = kRho;
+    cfg.h = 0.00038f * dx / 0.004f;
+    auto scratch = af::make_fluid_scratch(*grid, bc, cfg);
+    ASSERT_TRUE(scratch.has_value());
+    af::LineRotor rotor;
+    rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx,
+                             static_cast<float>(shape.ny) * dx - 1.7f * radius,
+                             0.5f * static_cast<float>(shape.nz) * dx);
+    rotor.axis = glm::vec3(0.0f, 1.0f, 0.0f);
+    rotor.omega = omega;
+    rotor.blade = &blade;
+    rotor.polar = &polar;
+    rotor.eps_cells = static_cast<float>(eps_cells);
+    constexpr uint32_t kSub = 8;
+    const uint32_t total = static_cast<uint32_t>(std::ceil(30.0 * t_rv / static_cast<double>(cfg.h)));
+    std::printf("torque-gap item 2: 10x5, %.0f rpm, R/dx %u (dx %.3f mm), box %ux%ux%u, kernel %.1f mm = %.2f cells, "
+                "%u steps (30 R/v_h = %.3f s)\n",
+                prop->run_rpm, rdx, static_cast<double>(dx) * 1000.0, shape.nx, shape.ny, shape.nz, eps_mm, eps_cells,
+                total, 30.0 * t_rv);
+    double psi = 0.0;
+    double thrust_last = 0.0, torque_last = 0.0;
+    uint32_t last_n = 0;
+    for (uint32_t step = 0; step < total; ++step) {
+        rotor.psi = static_cast<float>(psi);
+        const auto rep = af::spread_line(rotor, *grid, kRho, cfg.h, kSub, scratch->du, scratch->dv, scratch->dw);
+        ASSERT_TRUE(rep.has_value());
+        const af::FluidHealth h = af::fluid_step(*grid, bc, cfg, *scratch);
+        ASSERT_EQ(h.fault, af::FluidFault::none) << af::describe(h, grid->shape);
+        psi = std::fmod(psi + static_cast<double>(omega) * cfg.h, 2.0 * std::numbers::pi);
+        if (step + total / 10u >= total) {  // the last 10% of the run: the report's mean
+            thrust_last += static_cast<double>(rep->thrust);
+            torque_last += static_cast<double>(rep->torque);
+            ++last_n;
+        }
+    }
+    rotor.psi = static_cast<float>(psi);
+
+    // The elements at 8 azimuths over one turn (blade passing averaged out): what each feels and loads at the end.
+    const float turn = 2.0f * static_cast<float>(std::numbers::pi) / omega;
+    const std::vector<af::LineElement> el = af::line_elements(rotor, dx, turn, kSub);
+    const uint32_t per = static_cast<uint32_t>(el.size()) / (kSub * blade.blades);
+    const auto bm = bt::bemt(bt::BemtInput{.blade = &blade, .polar = &polar, .omega = omega, .rho = kRho, .climb = 0.0f,
+                                           .annuli = per, .tip_loss = true});
+    ASSERT_TRUE(bm.has_value());
+    ASSERT_EQ(bm->annulus.size(), per);
+    constexpr double kRad = 180.0 / std::numbers::pi;
+    std::printf("torque-gap item 2 per station (the line: the mean over %u blade-azimuths; the BEMT: Prandtl, %u "
+                "annuli); ua is the air's axial speed through the rotor (m/s), alpha the angle of attack (deg), dT/dr "
+                "and dQ/dr all blades (N/m, N m/m)\n",
+                kSub * blade.blades, per);
+    std::printf("  r/R    ua_line ua_bemt   alpha_line alpha_bemt   dT/dr_line dT/dr_bemt   dQ/dr_line dQ/dr_bemt\n");
+    double sum_t = 0.0, sum_q = 0.0;
+    for (uint32_t i = 0; i < per; ++i) {
+        double ua = 0.0, alpha = 0.0, dt = 0.0, dq = 0.0, r = 0.0;
+        for (uint32_t k = 0; k < kSub * blade.blades; ++k) {
+            const af::LineElement& e = el[k * per + i];
+            const glm::vec3 air = af::line_sample(*grid, e.pos, rotor.eps_cells);
+            const float ua_e = -glm::dot(air, rotor.axis);
+            const float wt = omega * e.r - glm::dot(air, e.motion);
+            const af::SectionLoad s = af::section_load(polar, e.chord, e.sin_beta, e.cos_beta, ua_e, wt, kRho);
+            const double beta = std::atan2(static_cast<double>(e.sin_beta), static_cast<double>(e.cos_beta));
+            ua += static_cast<double>(ua_e);
+            alpha += (beta - std::atan2(static_cast<double>(ua_e), static_cast<double>(wt))) * kRad;
+            dt += static_cast<double>(s.axial);
+            dq += static_cast<double>(s.tangent) * static_cast<double>(e.r);
+            r += static_cast<double>(e.r);
+        }
+        const double m = static_cast<double>(kSub * blade.blades);
+        ua /= m;
+        alpha /= m;
+        dt = dt / m * blade.blades;
+        dq = dq / m * blade.blades;
+        r /= m;
+        const bt::AnnulusLoad& b = bm->annulus[i];
+        const double alpha_b = (b.beta - std::atan2(b.ua, b.wt)) * kRad;
+        std::printf("  %.3f  %7.3f %7.3f   %9.2f %10.2f   %10.3f %10.3f   %10.5f %10.5f\n",
+                    r / static_cast<double>(radius), ua, b.ua, alpha, alpha_b, dt, b.dt_dr, dq, b.dq_dr);
+        sum_t += dt * static_cast<double>(el[i].dr);
+        sum_q += dq * static_cast<double>(el[i].dr);
+    }
+    const double t_line = thrust_last / last_n;
+    const double q_line = torque_last / last_n;
+    std::printf("torque-gap item 2 totals: the elements' sum thrust %.4f N torque %.5f N m; the run's last-10%% report "
+                "thrust %.4f N torque %.5f N m; BEMT thrust %.4f N torque %.5f N m (line/BEMT %+.1f%% thrust, %+.1f%% "
+                "torque)\n",
+                sum_t, sum_q, t_line, q_line, static_cast<double>(bm->thrust), static_cast<double>(bm->torque),
+                100.0 * (t_line / static_cast<double>(bm->thrust) - 1.0),
+                100.0 * (q_line / static_cast<double>(bm->torque) - 1.0));
+    EXPECT_TRUE(std::isfinite(sum_t) && std::isfinite(sum_q));
+}
+
 }  // namespace
