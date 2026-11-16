@@ -199,6 +199,7 @@ using spade::Result;
         ed::SetModelParam{"hover_quad_0", Element::drag_body, 0, "coeffs", glm::vec3(0.5f, 0.6f, 0.7f)},
         ed::SetModelParam{"hover_quad_0", Element::rotor, 0, "local_orient",
                           glm::angleAxis(0.05f, glm::vec3(0.0f, 0.0f, 1.0f))},
+        ed::SetModelShape{"hover_quad_0", spade::physics::box_shape(glm::vec3(0.1f, 0.05f, 0.1f), 0.002f)},  // L82
         ed::AddMeshParts{"hover_quad_0", {staged_cube()}},
         ed::SetImportedPart{"hover_quad_0", "ring", true, 0.025f, glm::angleAxis(0.5f, glm::vec3(0.0f, 1.0f, 0.0f))},
         ed::AddAirflowRegion{"hover_quad_0"},

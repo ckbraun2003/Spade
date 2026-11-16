@@ -312,6 +312,31 @@ class EditorWorkspace {
         return std::nullopt;
     }
 
+    // L82: the selected vehicle's model, when it has a contact shape, and where the vehicle's DESIGN frame is: the run's state
+    // while one runs, else the scene's start. None for nothing, an asset, the scene or the world, or a model with no shape.
+    struct ShapeView {
+        const vehicles::ModelType* model = nullptr;
+        FrameState design;
+    };
+    [[nodiscard]] std::optional<ShapeView> selected_shape() const {
+        if (panels_.selection.kind != Selection::Kind::object) return std::nullopt;
+        const scene::SceneDesc& s = docs_.scene.desc();
+        const scene::SceneVehicle* v = find_vehicle(s, panels_.selection.name);
+        if (v == nullptr) return std::nullopt;
+        for (const vehicles::ModelType& m : s.models) {
+            if (m.name != v->model || !m.shape) continue;
+            ShapeView out;
+            out.model = &m;
+            out.design.pos = v->start.pos;
+            out.design.orient = v->start.orient;
+            if (run_) {
+                if (const std::optional<FrameState> now = run_->state_of(v->name)) out.design = *now;
+            }
+            return out;
+        }
+        return std::nullopt;
+    }
+
     [[nodiscard]] static const scene::SceneVehicle* find_vehicle(const scene::SceneDesc& s, std::string_view name) {
         for (const scene::SceneVehicle& v : s.vehicles) {
             if (v.name == name) return &v;

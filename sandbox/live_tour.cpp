@@ -114,8 +114,7 @@ constexpr std::array kSteps = {
     // Chapter 4, the bodies: L68's contact tumbling, four shapes in a row.
     StepName{"bodies", "row"},
     // Chapter 5, "new in this batch" (L64): its steps are THIS batch's, replaced at the next one.
-    StepName{"batch", "app"},            StepName{"batch", "guide"},
-    StepName{"batch", "save_prompt"},
+    StepName{"batch", "shapes"},
 };
 
 // The extra stills a run writes beside the posters (Tour::snapshot), declared

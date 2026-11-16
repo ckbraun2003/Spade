@@ -99,10 +99,14 @@ inline constexpr ImVec4 kWarning{0.95f, 0.71f, 0.29f, 1.00f};
 // z blue, the accent); the handle under the cursor or dragged in the warning
 // colour, as Unity marks it.
 [[nodiscard]] inline ImU32 axis_colour(int axis, bool hot) {
-    // 3: an airflow region's box (editor_airflow.hpp's kRegionLine), a pale grey.
-    static constexpr ImVec4 kAxes[4] = {
-        {0.89f, 0.32f, 0.29f, 1.00f}, {0.45f, 0.78f, 0.33f, 1.00f}, kAccent, {0.80f, 0.82f, 0.86f, 0.85f}};
-    return ImGui::ColorConvertFloat4ToU32(hot ? kWarning : kAxes[axis < 0 || axis > 3 ? 0 : axis]);
+    // 3: an airflow region's box (editor_airflow.hpp's kRegionLine), a pale grey; 4: a contact shape's wireframe
+    // (editor_shapes.hpp's kShapeLine), a cyan.
+    static constexpr ImVec4 kAxes[5] = {{0.89f, 0.32f, 0.29f, 1.00f},
+                                        {0.45f, 0.78f, 0.33f, 1.00f},
+                                        kAccent,
+                                        {0.80f, 0.82f, 0.86f, 0.85f},
+                                        {0.30f, 0.82f, 0.88f, 0.95f}};
+    return ImGui::ColorConvertFloat4ToU32(hot ? kWarning : kAxes[axis < 0 || axis > 4 ? 0 : axis]);
 }
 
 inline void apply_theme() {
