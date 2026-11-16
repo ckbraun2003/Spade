@@ -50,6 +50,9 @@ TEST(IdlePacer, AnEventDrawsTheSettleFramesAgain) {
 TEST(IdlePacer, AnimationNeverWaits) {
     IdlePacer pacer;
     ASSERT_EQ(frames_until_idle(pacer), 3);
+    // The click that started the run woke the loop out of the idle wait; that frame finds the run animating.
+    ASSERT_EQ(pacer.wait_s(), 0.25);
+    pacer.frame_done(FrameInput{}, /*animating=*/true);
     for (int i = 0; i < 500; ++i) {
         ASSERT_EQ(pacer.wait_s(), 0.0) << "frame " << i;
         pacer.frame_done(FrameInput{}, /*animating=*/true);
@@ -63,6 +66,8 @@ TEST(IdlePacer, AHeldInputNeverWaits) {
     ASSERT_EQ(frames_until_idle(pacer), 3);
     FrameInput drag;
     drag.orbit_dx = 4.0f;
+    ASSERT_EQ(pacer.wait_s(), 0.25);  // the first pixel of the drag woke the loop out of the idle wait
+    pacer.frame_done(drag, /*animating=*/false);
     for (int i = 0; i < 100; ++i) {
         ASSERT_EQ(pacer.wait_s(), 0.0) << "frame " << i;
         pacer.frame_done(drag, /*animating=*/false);
