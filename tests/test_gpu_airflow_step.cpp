@@ -536,6 +536,34 @@ TEST(GpuAirflowStep, AStepWithoutSolidsMakesOneFenceWait) {
     }
 }
 
+// L74b: after a timing test's own steps (the ledger's lines come from those, untimed), `steps` more with the phase
+// timing on: each phase's mean per step as `PERF physics.diag_phase_<tag>_<phase> <ms> ms`, its calls per step as
+// `PERF physics.diag_phase_<tag>_<phase>_calls <n> calls`, and a timed step's wall time as `..._wall`. The timing is
+// turned off again.
+void perf_phases(ag::GpuFluid& gpu, std::span<const af::ActuatorDisc> discs, const char* tag, uint32_t steps) {
+    gpu.set_phase_timing(true);
+    std::vector<std::pair<std::string, std::pair<double, double>>> sums;  // name, (ms, calls)
+    double wall_ms = 0.0;
+    for (uint32_t step = 0; step < steps; ++step) {
+        const auto t0 = std::chrono::steady_clock::now();
+        if (!gpu.step(discs).has_value()) break;
+        wall_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        for (const auto& p : gpu.phase_times()) {
+            auto it = std::find_if(sums.begin(), sums.end(), [&](const auto& s) { return s.first == p.name; });
+            if (it == sums.end()) it = sums.insert(sums.end(), {p.name, {0.0, 0.0}});
+            it->second.first += p.ms;
+            it->second.second += p.count;
+        }
+    }
+    gpu.set_phase_timing(false);
+    const std::string prefix = std::string("physics.diag_phase_") + tag + "_";
+    for (const auto& [name, v] : sums) {
+        spade::test::perf_line((prefix + name).c_str(), v.first / steps, "ms");
+        spade::test::perf_line((prefix + name + "_calls").c_str(), v.second / steps, "calls");
+    }
+    spade::test::perf_line((prefix + "wall").c_str(), wall_ms / steps, "ms");
+}
+
 // Can this device time compute work? (timestamps.hpp's two checks, as test_gpu_airflow_runner.cpp makes them.)
 [[nodiscard]] bool device_times_compute(const VulkanContext& ctx) {
     VkPhysicalDeviceProperties properties{};
@@ -961,6 +989,7 @@ TEST(GpuAirflowStep, StepTimeInTheD1Box) {
     std::printf("measure: GpuFluid step in the D1 box, 240x177x168 at 4 mm, 4 discs, n_v 2, 8 sweeps: %.3f ms\n", ms);
     // The D1 open box is a development reference (no solids, no website clip runs it): a diagnostic, the mean of kTimed steps.
     spade::test::perf_line("physics.diag_gpu_step_d1_open", ms, "ms");
+    perf_phases(**gpu, c.discs, "d1_open", static_cast<uint32_t>(kTimed));
 
     auto cpu = cpu_fluid(c, start);
     ASSERT_TRUE(cpu.has_value());
@@ -1022,6 +1051,7 @@ TEST(GpuAirflowStep, StepTimeInTheD1BoxWithItsSolids) {
                 "mean of %d after %d); CG iterations by step: %s\n",
                 box->solids.run_line.c_str(), box->cfg.n_v, box->cfg.cg_cap, timed_ms / kTimed, kTimed, kWarm,
                 iterations.c_str());
+    perf_phases(**gpu, box->discs, "d1_solids", static_cast<uint32_t>(kTimed));
 }
 
 // The --gpu film's case (flow_movie's gpu_live.cpp, B7's G2) against the CPU,
@@ -1280,6 +1310,7 @@ TEST(GpuAirflowStep, SubgridBoundAndCostInTheD1BoxWithItsSolids) {
             spade::test::perf_line("physics.gpu_step_deep_peak_mem",
                                    static_cast<double>(ctx->memory_budget().usage) / (1024.0 * 1024.0), "MiB");
         }
+        if (deep) perf_phases(**gpu, box->discs, "deep", 10);  // after the memory line: the timing allocates a little
         std::printf("[ sgs     ] %ux%ux%u: pressure residual max %.3g over %u steps, %u unconverged (announced above 1e-4)\n",
                     box->grid.shape.nx, box->grid.shape.ny, box->grid.shape.nz, static_cast<double>(residual_max), kStepsRun,
                     unconverged);
