@@ -19,10 +19,13 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -77,6 +80,27 @@ namespace detail {
                                          "design frame straight"});
     }
     return {};
+}
+
+// Bit for bit (so -0 and 0 differ and a NaN equals itself): "no change" must mean the saved file would not change, as
+// same_value() is for a model parameter.
+[[nodiscard]] inline bool same_shape(const std::optional<physics::ShapeDesc>& a, const std::optional<physics::ShapeDesc>& b) {
+    if (a.has_value() != b.has_value()) return false;
+    if (!a) return true;
+    const auto bits = [](float f) { return std::bit_cast<uint32_t>(f); };
+    const auto same3 = [&](const glm::vec3& x, const glm::vec3& y) {
+        return bits(x.x) == bits(y.x) && bits(x.y) == bits(y.y) && bits(x.z) == bits(y.z);
+    };
+    if (a->kind != b->kind || bits(a->radius) != bits(b->radius) || !same3(a->a, b->a) || !same3(a->b, b->b) ||
+        !same3(a->half_extents, b->half_extents) || a->points.size() != b->points.size() ||
+        bits(a->friction) != bits(b->friction) || bits(a->restitution) != bits(b->restitution) ||
+        bits(a->rest_speed) != bits(b->rest_speed) || a->iterations != b->iterations) {
+        return false;
+    }
+    for (std::size_t i = 0; i < a->points.size(); ++i) {
+        if (!same3(a->points[i], b->points[i])) return false;
+    }
+    return true;
 }
 
 // 1 / box_inv_inertia: the principal moments of a solid box of `mass`, kg m^2, about its centre.

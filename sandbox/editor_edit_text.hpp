@@ -774,6 +774,42 @@ inline Result<void> put_edit(Writer& w, const SetImportedPart& e) {
     w.kw("min-feature").f(e.min_feature).kw("rot").q(e.mount_orient);
     return {};
 }
+// L82. `set-model-shape <vehicle> none`, or the kind with its geometry, then friction and restitution (a number, or the word
+// "world" for the world's), rest-speed and iterations:
+//   sphere radius R | capsule a x y z b x y z radius R | box half x y z skin S | hull skin S points N x y z ...
+inline Result<void> put_edit(Writer& w, const SetModelShape& e) {
+    w.kw("set-model-shape").word(e.vehicle);
+    if (!e.shape || e.shape->kind == physics::ShapeKind::none) {
+        w.kw("none");
+        return {};
+    }
+    const physics::ShapeDesc& s = *e.shape;
+    for (const float material : {s.friction, s.restitution}) {
+        if (material < 0.0f && material != -1.0f) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "set-model-shape: a friction or restitution below zero other than the world's "
+                                         "(-1) has no text form"});
+        }
+    }
+    switch (s.kind) {
+        case physics::ShapeKind::none: break;
+        case physics::ShapeKind::sphere: w.kw("sphere").kw("radius").f(s.radius); break;
+        case physics::ShapeKind::capsule:
+            w.kw("capsule").kw("a").v3(s.a).kw("b").v3(s.b).kw("radius").f(s.radius);
+            break;
+        case physics::ShapeKind::box: w.kw("box").kw("half").v3(s.half_extents).kw("skin").f(s.radius); break;
+        case physics::ShapeKind::hull:
+            w.kw("hull").kw("skin").f(s.radius).kw("points").u(s.points.size());
+            for (const glm::vec3& p : s.points) w.v3(p);
+            break;
+    }
+    w.kw("friction");
+    s.friction < 0.0f ? w.kw("world") : w.f(s.friction);
+    w.kw("restitution");
+    s.restitution < 0.0f ? w.kw("world") : w.f(s.restitution);
+    w.kw("rest-speed").f(s.rest_speed).kw("iterations").u(s.iterations);
+    return {};
+}
 
 // ---- the world edits ----
 
@@ -891,7 +927,7 @@ inline Result<void> put_edit(Writer& w, const SetTerrainParams& e) {
 inline constexpr std::string_view kSceneVerbs =
     "a scene edit (add-asset, add-vehicle, add-model-file, add-object-file, remove, rename, duplicate, move, "
     "set-asset-pose, set-asset-material, set-collider-material, set-vehicle-start, add-material, repoint-world, "
-    "set-model-param, add-mesh-parts, set-imported-part, add-air-region or remove-air-region)";
+    "set-model-param, set-model-shape, add-mesh-parts, set-imported-part, add-air-region or remove-air-region)";
 inline constexpr std::string_view kWorldVerbs =
     "a world edit (rename, set-environment, set-capacities, add-material, set-material, set-lighting, add-spawn, "
     "set-spawn, remove-spawn, add-prop, set-prop, remove-prop, add-terrain, remove-terrain, repose-terrain or "
@@ -1005,6 +1041,57 @@ inline constexpr std::string_view kWorldVerbs =
         e.min_feature = r.f("its min_feature (m)");
         r.expect("rot");
         e.mount_orient = r.q("its mount's turn (w x y z)");
+        out = e;
+    } else if (verb == "set-model-shape") {
+        SetModelShape e;
+        e.vehicle = r.word("a vehicle name");
+        const std::string kind = r.word("none, sphere, capsule, box or hull");
+        if (kind != "none") {
+            physics::ShapeDesc s;
+            if (kind == "sphere") {
+                s.kind = physics::ShapeKind::sphere;
+                r.expect("radius");
+                s.radius = r.f("its radius (m)");
+            } else if (kind == "capsule") {
+                s.kind = physics::ShapeKind::capsule;
+                r.expect("a");
+                s.a = r.v3("an end (x y z)");
+                r.expect("b");
+                s.b = r.v3("the other end (x y z)");
+                r.expect("radius");
+                s.radius = r.f("its radius (m)");
+            } else if (kind == "box") {
+                s.kind = physics::ShapeKind::box;
+                r.expect("half");
+                s.half_extents = r.v3("its half extents (x y z)");
+                r.expect("skin");
+                s.radius = r.f("its skin (m)");
+            } else if (kind == "hull") {
+                s.kind = physics::ShapeKind::hull;
+                r.expect("skin");
+                s.radius = r.f("its skin (m)");
+                r.expect("points");
+                const std::size_t n = r.count("a count of points");
+                for (std::size_t i = 0; i < n && r.ok(); ++i) s.points.push_back(r.v3("a point (x y z)"));
+            } else {
+                r.reject("none, sphere, capsule, box or hull");
+            }
+            const auto material = [&](std::string_view word) {
+                r.expect(word);
+                if (r.next_is("world")) {
+                    r.expect("world");
+                    return -1.0f;
+                }
+                return r.f("a number, or the word world");
+            };
+            s.friction = material("friction");
+            s.restitution = material("restitution");
+            r.expect("rest-speed");
+            s.rest_speed = r.f("its rest speed (m/s)");
+            r.expect("iterations");
+            s.iterations = r.u32("its iterations");
+            e.shape = std::move(s);
+        }
         out = e;
     } else {
         r.reject(text::kSceneVerbs);

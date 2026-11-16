@@ -25,6 +25,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -38,6 +39,7 @@
 #include "editor_document.hpp"
 #include "editor_import.hpp"
 #include "editor_model_params.hpp"
+#include "editor_shapes.hpp"
 #include "scene/model_file.hpp"
 #include "scene/object_file.hpp"
 
@@ -145,11 +147,18 @@ struct AddAirflowRegion {
 struct RemoveAirflowRegion {
     std::string name;
 };
+// L82: the contact shape (L68) of the model a vehicle flies, or none to clear it (editor_shapes.hpp). A shape lives on
+// the model; one another vehicle shares is copied for this vehicle first, as SetModelParam's is (EDT-019). The engine's
+// refusals and a box on a turned design frame (Q7) are refused by name.
+struct SetModelShape {
+    std::string vehicle;
+    std::optional<physics::ShapeDesc> shape;
+};
 
 using SceneEdit = std::variant<AddAsset, AddVehicle, RemoveObject, RenameObject, DuplicateObject, MoveObject,
                                SetAssetPose, SetAssetMaterial, SetColliderMaterial, SetVehicleStart, AddMaterial,
                                RepointWorld, SetModelParam, AddModelFile, AddObjectFile, AddMeshParts,
-                               SetImportedPart, AddAirflowRegion, RemoveAirflowRegion>;
+                               SetImportedPart, AddAirflowRegion, RemoveAirflowRegion, SetModelShape>;
 
 namespace detail {
 
@@ -553,6 +562,23 @@ inline Result<bool> change(scene::SceneDesc& s, const SetImportedPart& e) {
     p.min_feature = e.min_feature;
     p.mount_orient = e.mount_orient;
     if (p.role == now->role && p.min_feature == now->min_feature && p.mount_orient == now->mount_orient) return false;
+    return commit_model(s, *v, std::move(edited), "the edit was not made");
+}
+
+inline Result<bool> change(scene::SceneDesc& s, const SetModelShape& e) {
+    const auto at = flown(s, e, "set the contact shape of");
+    if (!at) return std::unexpected(at.error());
+    const auto [v, m] = *at;
+    if (same_shape(m->shape, e.shape)) return false;
+    // ModelType::issues() does not read the shape: the engine's refusals and the editor's (Q7) are asked here.
+    if (e.shape) {
+        if (Result<void> ok = check_shape(*m, *e.shape); !ok) {
+            return std::unexpected(Error{ok.error().code, "set the contact shape of '" + e.vehicle + "': " +
+                                                              ok.error().context + "; the edit was not made"});
+        }
+    }
+    vehicles::ModelType edited = *m;
+    edited.shape = e.shape;
     return commit_model(s, *v, std::move(edited), "the edit was not made");
 }
 
