@@ -385,7 +385,7 @@ struct CaptionInput {
     std::string t = "# " + std::string(c.title) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
-    t += "- How rendered: tools/flow_movie, `" + in.command + "`, jobrun ticket " + in.ticket + "\n";
+    t += "- How rendered: tools/flow_movie, `" + in.command + "`, job ticket " + in.ticket + "\n";
     t += "- Shows: " + std::string(c.shows) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";

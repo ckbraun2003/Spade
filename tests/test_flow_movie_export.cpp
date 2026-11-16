@@ -301,6 +301,8 @@ TEST(FlowMovieExport, TheCaptionNamesWhatTheFileIsAndNeverClaimsMore) {
                              "has not been measured against a downwash record", "web-spade-export"}) {
         EXPECT_TRUE(has(hover, part)) << part;
     }
+    EXPECT_TRUE(has(hover, "job ticket web-spade-export")) << "the ticket is the jobs service's (O25)";
+    EXPECT_FALSE(has(hover, "jobrun")) << "the old runner's name is gone from the caption";
     EXPECT_FALSE(has(hover, "crosswind setting")) << "the headwind case makes no crosswind claim";
     EXPECT_FALSE(has(hover, "0.18 s")) << "no device claim for a CPU run";
     in.crosswind = true;

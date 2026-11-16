@@ -253,7 +253,7 @@ std::string export_caption_text(const ExportCaption& in) {
     std::string t = "# " + i.name + ": streamlines of the reference quad's wake, in the aircraft's body frame\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
-    t += "- How made: tools/flow_movie, `" + in.command + "`, jobrun ticket " + in.ticket + "\n";
+    t += "- How made: tools/flow_movie, `" + in.command + "`, job ticket " + in.ticket + "\n";
     t += "- Shows: " + std::to_string(r.lines) + " streamlines (" + std::to_string(r.points) +
          " points) of the air relative to the held aircraft, seeded in rings around each rotor disc, at one instant: "
          "frame " + std::to_string(i.frame) + ", step " + std::to_string(i.step) + ", t = " + t_s +

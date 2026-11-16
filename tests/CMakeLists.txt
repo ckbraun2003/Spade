@@ -797,6 +797,19 @@ set_tests_properties(SpadePython.StoreWarning PROPERTIES
     LABELS spade
     TIMEOUT 60)
 
+# cmake/SpadeVersion.cmake builds the version header from any project that includes it, as sandbox/standalone (the SL2b guard) does:
+# version_consumer_test.cmake writes a throwaway project outside the repository, builds spade_version_header and checks the header.
+# LABELS spade, as above.
+cmake_path(SET SPADE_VERSION_REPO_DIR NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(NAME SpadeVersion.IncludedFromAnotherProject
+    COMMAND "${CMAKE_COMMAND}" "-DREPO_DIR=${SPADE_VERSION_REPO_DIR}"
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/version-consumer"
+            "-DGENERATOR=${CMAKE_GENERATOR}" "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/version_consumer_test.cmake")
+set_tests_properties(SpadeVersion.IncludedFromAnotherProject PROPERTIES
+    LABELS spade
+    TIMEOUT 120)
+
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
 # throwaway bare repositories: every push without the owner's word refused, a
 # reader that closes early included, and the authorised one let through
