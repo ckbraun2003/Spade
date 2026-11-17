@@ -3,6 +3,8 @@
 // Synthetic fixtures for the geo map fetch's tests (L85, SP-5): TIFF and PNG bytes built by hand, and a fake network that
 // serves them. No test touches the real network.
 
+#include <miniz.h>
+
 #include <algorithm>
 #include <bit>
 #include <cstdint>
@@ -123,19 +125,54 @@ inline std::string make_png(uint32_t w, uint32_t h, int depth, int color, const 
     return s;
 }
 
+// A whole, valid 8-bit RGB PNG of `w * h` pixels (`rgb` is w * h * 3 bytes, rows top to bottom): every chunk with its CRC, filter type 0
+// on every row, the rows deflated by miniz. What decode_png reads, so what the fetch tool's whole-file check lets through.
+inline std::string make_rgb_png(uint32_t w, uint32_t h, const std::vector<uint8_t>& rgb) {
+    std::string raw;
+    for (uint32_t y = 0; y < h; ++y) {
+        raw.push_back('\0');
+        raw.append(reinterpret_cast<const char*>(rgb.data()) + static_cast<size_t>(y) * w * 3, static_cast<size_t>(w) * 3);
+    }
+    mz_ulong zlen = mz_compressBound(static_cast<mz_ulong>(raw.size()));
+    std::string z(zlen, '\0');
+    const int rc = mz_compress(reinterpret_cast<unsigned char*>(z.data()), &zlen, reinterpret_cast<const unsigned char*>(raw.data()),
+                               static_cast<mz_ulong>(raw.size()));
+    z.resize(rc == MZ_OK ? zlen : 0);
+    std::string s = "\x89PNG\r\n\x1a\n";
+    const auto be32 = [](std::string& out, uint32_t v) {
+        for (int i = 3; i >= 0; --i) out.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+    };
+    const auto chunk = [&](const char* type, const std::string& data) {
+        be32(s, static_cast<uint32_t>(data.size()));
+        const std::string body = std::string(type, 4) + data;
+        s += body;
+        be32(s, static_cast<uint32_t>(mz_crc32(MZ_CRC32_INIT, reinterpret_cast<const unsigned char*>(body.data()), body.size())));
+    };
+    std::string ihdr;
+    be32(ihdr, w);
+    be32(ihdr, h);
+    ihdr.push_back(8);  // 8-bit
+    ihdr.push_back(2);  // RGB
+    ihdr.append(3, '\0');  // deflate, filter method 0, not interlaced
+    chunk("IHDR", ihdr);
+    chunk("IDAT", z);
+    chunk("IEND", {});
+    return s;
+}
+
 // What the fake serves, and the request that matches it (side 40 m, a 10 m grid cell and a 20 m pixel: a 4 x 4 grid and a
 // 2 x 2 image).
 struct GeoFixture {
     std::string geoid = R"({"geoidModel":"GEOID18","latitude":40.005,"longitude":-112.995,"geoidHeight":-23.4})";
     std::string tiff;  // 4 x 4, height 1000 + 2 * column, so the middle of the grid is 1003 m
-    std::string png;   // 2 x 2 RGB
+    std::string png;   // 2 x 2 RGB, a whole valid PNG: pixels (10,20,30) (40,50,60) over (70,80,90) (100,110,120)
     GeoFixture() {
         std::vector<float> h(16);
         for (uint32_t r = 0; r < 4; ++r) {
             for (uint32_t c = 0; c < 4; ++c) h[r * 4 + c] = 1000.0f + 2.0f * static_cast<float>(c);
         }
         tiff = make_tiff(4, 4, h);
-        png = make_png(2, 2, 8, 2, "stand-in image data");
+        png = make_rgb_png(2, 2, {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120});
     }
 };
 

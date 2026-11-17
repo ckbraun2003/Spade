@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../tools/geo_fetch/area.hpp"
 #include "../tools/geo_fetch/cache_store.hpp"
 #include "../tools/geo_fetch/fetch.hpp"
 #include "geo_fixtures.hpp"
@@ -258,6 +259,9 @@ TEST(GeoFetch, EachUnusableAnswerIsAServiceErrorWithNothingStored) {
         {"png wrong size", "naip", [](GeoFixture& f) { f.png = make_png(3, 3, 8, 2, "x"); }, "3 x 3"},
         {"png has alpha", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 8, 6, "x"); }, "RGB"},
         {"png 16-bit", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 16, 2, "x"); }, "8-bit"},
+        // the whole file is read, not only its header (L85e part 2: decode_png)
+        {"png data cut short", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 8, 2, "x"); }, "png:"},
+        {"png data damaged", "naip", [](GeoFixture& f) { f.png[45] = static_cast<char>(f.png[45] ^ 0x55); }, "png:"},
         {"png is xml", "naip", [](GeoFixture& f) { f.png = "<?xml version=\"1.0\"?><Error/>"; }, "PNG"},
     };
     for (const BadAnswer& c : cases) {
@@ -282,6 +286,7 @@ TEST(GeoFetch, ARequestOutOfRangeIsRefusedWithoutAskingAnyone) {
         {"side over 1 km", [](FetchRequest& q) { q.side_m = 1001.0; }},  // REQ-G07
         {"side under 10 m", [](FetchRequest& q) { q.side_m = 9.0; }},
         {"latitude 91", [](FetchRequest& q) { q.lat_deg = 91.0; }},
+        {"latitude 89.5", [](FetchRequest& q) { q.lat_deg = 89.5; }},  // the geodesy's anchor limit is 89 (core/geodesy.hpp)
         {"longitude 181", [](FetchRequest& q) { q.lon_deg = 181.0; }},
         {"NaN latitude", [](FetchRequest& q) { q.lat_deg = std::numeric_limits<double>::quiet_NaN(); }},
         {"no cache root", [](FetchRequest& q) { q.cache_root.clear(); }},
@@ -303,6 +308,25 @@ TEST(GeoFetch, ARequestOutOfRangeIsRefusedWithoutAskingAnyone) {
         EXPECT_FALSE(r.message.empty()) << c.what;
         EXPECT_TRUE(rig.http.urls.empty()) << c.what;
     }
+}
+
+TEST(GeoFetch, AnAreaAcrossTheAntimeridianIsRefusedByNameBeforeAskingAnyone) {
+    Rig rig;
+    rig.env.area = [](double, double, double) { return Bbox{179.99, 52.0, -179.99, 52.01}; };
+    const FetchResult r = rig.run();
+    EXPECT_EQ(r.kind, FetchResultKind::refused);
+    EXPECT_NE(r.message.find("180"), std::string::npos) << r.message;
+    EXPECT_TRUE(rig.http.urls.empty());
+}
+
+TEST(GeoFetch, WithNoAreaFunctionTheBoxIsTheGeodesys) {
+    Rig rig;
+    rig.env.area = nullptr;
+    const FetchResult r = rig.run();
+    ASSERT_EQ(r.kind, FetchResultKind::fetched) << r.message;
+    const Bbox box = area_bbox(40.005, -112.995, 40.0);
+    EXPECT_EQ(rig.http.urls, (std::vector<std::string>{geoid_url(40.005, -112.995), elevation_url(box, 4, 4), image_url(box, 2, 2)}));
+    EXPECT_NEAR(box.north_deg - box.south_deg, 40.0 / 111000.0, 5e-6);  // not the zero box of a stub
 }
 
 TEST(GeoFetch, ACacheInsideAGitWorkTreeIsRefused) {  // REQ-G10

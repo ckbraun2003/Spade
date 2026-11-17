@@ -387,6 +387,7 @@ add_library(spade_mesh_import STATIC
     world/mesh_import/obj.cpp
     world/mesh_import/png.cpp
     world/mesh_import/stl.cpp
+    world/mesh_import/terrain_map.cpp
     world/mesh_import/threemf.cpp
     world/mesh_import/weld.cpp
     $<TARGET_OBJECTS:spade_threemf_deps>
