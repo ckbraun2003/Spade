@@ -116,6 +116,9 @@ struct LineSetup {
 // writes it into V's channel 3. Passive: with or without it, u, v, w and p are the same bits.
 struct DyeSetup {
     physics::airflow::DyeRelease release{};
+    // L86i: also release at the line's blade tips (dye.hpp's tip_points()/emit_tip_dye(), airflow_dye_tip): after the discs' release on a
+    // step with lines (step(discs, lines)); needs a LineSetup. A step without lines releases none.
+    std::optional<physics::airflow::TipRelease> tip{};
 };
 
 class GpuFluid {
