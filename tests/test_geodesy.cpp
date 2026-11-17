@@ -29,7 +29,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -336,27 +338,27 @@ const std::vector<geo::Geodetic>& pin_points() {
 
 [[nodiscard]] std::vector<Pin> read_pins() {
     std::vector<Pin> out;
-    const std::string path = std::string(SPADE_TESTS_DIR) + "/data/geodesy_bit_pins.txt";
-    std::FILE* f = std::fopen(path.c_str(), "r");
-    if (f == nullptr) return out;
-    char line[512];
-    while (std::fgets(line, sizeof(line), f) != nullptr) {
-        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
-        Pin p{};
-        unsigned long long e[3];
-        unsigned long long b[3];
-        if (std::sscanf(line, "%la %la %la %llx %llx %llx %llx %llx %llx", &p.g.lat_deg, &p.g.lon_deg, &p.g.height_m, &e[0], &e[1],
-                        &e[2], &b[0], &b[1], &b[2]) != 9) {
-            out.clear();
-            break;
+    std::ifstream in(std::string(SPADE_TESTS_DIR) + "/data/geodesy_bit_pins.txt");
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#' || line[0] == '\r') continue;
+        std::istringstream words(line);
+        std::string w[9];
+        for (std::string& s : w) {
+            if (!(words >> s)) {
+                return {};
+            }
         }
-        for (int i = 0; i < 3; ++i) {
-            p.ecef[i] = e[i];
-            p.back[i] = b[i];
+        Pin p{};
+        p.g.lat_deg = std::strtod(w[0].c_str(), nullptr);  // hex floats, exact
+        p.g.lon_deg = std::strtod(w[1].c_str(), nullptr);
+        p.g.height_m = std::strtod(w[2].c_str(), nullptr);
+        for (int k = 0; k < 3; ++k) {
+            p.ecef[k] = std::strtoull(w[3 + k].c_str(), nullptr, 16);
+            p.back[k] = std::strtoull(w[6 + k].c_str(), nullptr, 16);
         }
         out.push_back(p);
     }
-    std::fclose(f);
     return out;
 }
 
