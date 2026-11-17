@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <numeric>
 #include <map>
 #include <numbers>
 #include <span>
@@ -20,6 +21,7 @@
 
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "render/flow_lines.hpp"
 #include "render/flow_sample.hpp"
 
 namespace flow_movie {
@@ -248,5 +250,33 @@ private:
     double last_time_ = 0.0;
     bool region_done_ = false;
 };
+
+// The pool in a fixed other order: element i of the result is pool[(i s) mod N], s the integer nearest 0.618 N made coprime to N
+// (the golden-ratio stride, which spreads any short run over the whole pool). A pool built shell by shell would otherwise emit
+// the rotor shells for half its cycle and the far field for the rest. Same points, no RNG.
+[[nodiscard]] inline std::vector<glm::vec3> spread_pool(const std::vector<glm::vec3>& pool) {
+    const std::size_t n = pool.size();
+    if (n <= 2u) return pool;
+    std::size_t stride = static_cast<std::size_t>(std::llround(0.6180339887 * static_cast<double>(n)));
+    while (std::gcd(stride, n) != 1u) ++stride;
+    std::vector<glm::vec3> out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) out.push_back(pool[(i * stride) % n]);
+    return out;
+}
+
+// The field as drawn points: one per particle, bright blue-white where it was seeded, dimmer and bluer as it ages to max_age_s.
+[[nodiscard]] inline spade::render::FlowPoints particle_points(const ParticleField& field, float max_age_s, uint32_t size_px) {
+    spade::render::FlowPoints points;
+    points.size_px = size_px;
+    points.positions = field.position;
+    points.colours.reserve(field.position.size());
+    for (const float age : field.age) {
+        const float t = std::clamp(age / max_age_s, 0.0f, 1.0f);
+        const glm::vec3 c = glm::mix(glm::vec3(0.85f, 0.97f, 1.0f), glm::vec3(0.10f, 0.25f, 0.75f), t) * (1.0f - 0.5f * t);
+        points.colours.push_back(glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f)));
+    }
+    return points;
+}
 
 }  // namespace flow_movie
