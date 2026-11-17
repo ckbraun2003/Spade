@@ -246,6 +246,7 @@
 #include <vector>
 
 #include "core/error.hpp"
+#include "world/image8.hpp"
 #include "world/mesh.hpp"
 
 namespace spade {
@@ -286,5 +287,19 @@ struct MeshObject {
 
 // Reads a 3MF file: one object per build item of type model, in metres.
 [[nodiscard]] Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path);
+
+// Decodes a PNG (L85e; the geo terrain's aerial image, SP-4 and SP-5) to RGB8. 8-bit grey, RGB and RGBA, non-interlaced, all five
+// filters; grey is repeated to RGB and alpha is dropped; ancillary chunks (and a PLTE beside RGB) are ignored; every chunk's CRC is
+// checked. Rows run top to bottom, three bytes a pixel, no padding. Inflate is miniz's tinfl, compiled into this archive, and nothing
+// else is linked. Every refusal's message starts "png: ":
+//   unavailable -- a PNG this decoder does not read: 16-bit or any other bit depth than 8, palette (colour type 3), grey with alpha
+//     (4), interlaced; or a JPEG ("png: this is a JPEG").
+//   capacity_exceeded -- the header asks for more than kMaxPngPixels (32 Mi) pixels ("too large"), the guard against a size bomb,
+//     checked before anything is allocated and in 64-bit arithmetic, so a dimension that would overflow is refused the same way.
+//   invalid_argument -- not a PNG; truncated (no IEND, or a chunk running past the end); a bad CRC (the chunk named); a first chunk
+//     that is not IHDR; an unknown critical chunk (named); a zero width or height; a filter type above 4 (the row named); compressed
+//     data that is damaged or does not inflate to exactly the size the header gives.
+inline constexpr std::uint64_t kMaxPngPixels = 32ull * 1024ull * 1024ull;
+[[nodiscard]] Result<world::Image8> decode_png(std::span<const std::byte> bytes);
 
 }  // namespace spade

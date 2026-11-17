@@ -73,6 +73,8 @@ add_executable(spade_tests
     test_mesh_file.cpp
     # L85 geo G2 (SP-5): the map cache's file hash (world/sha256.hpp).
     test_sha256.cpp
+    # L85e: decode_png (world/mesh_import/png.cpp), the geo terrain's aerial image.
+    test_png_decode.cpp
     # The geo map cache's layout and georef (world/map_cache.hpp), and the fetch tool's pure parts (tools/geo_fetch, compiled in).
     test_map_cache.cpp
     test_geo_services.cpp
