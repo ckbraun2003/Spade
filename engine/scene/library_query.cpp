@@ -143,6 +143,10 @@ LibraryResult<std::string> entry_hash(const LibrarySet& set, const SetEntry& ent
         lines.emplace_back(rel, spade::sha256_hex(is_text_file(rel) ? fold_crlf(bytes) : bytes));
         return true;
     };
+    if (entry.in_store) {
+        // The content address is the proof: nothing is read, so the hash is the same with or without the store.
+        lines.emplace_back("store/" + entry.store_sha256 + "/" + entry.store_file, entry.store_sha256);
+    }
     if (!entry.rel_file.empty() && !add(entry.rel_file)) {
         return std::unexpected(make("io_error", "cannot read '" + entry.rel_file + "'", entry.root,
                                     (root->path / entry.rel_file).string(), entry.id, "file"));
@@ -266,7 +270,17 @@ LibraryResult<ListPage> list_entries(const LibrarySet& set, const ListFilter& fi
             page.warnings.push_back(h.error());
         }
         std::string why;
-        row.peek = peek_entry(e, &why);
+        std::error_code ec;
+        if (e.in_store && (e.file.empty() || !fs::exists(e.file, ec))) {
+            // A store file that is not there: a warning, and an empty peek (not a failed one).
+            page.warnings.push_back(make("store_file_missing",
+                                         e.file.empty() ? "no store was given, so '" + e.store_file + "' cannot be found"
+                                                        : "the store has no '" + e.store_file + "' at its address",
+                                         e.root, e.file.string(), e.id, "store"));
+            row.peek = EntryPeek{};
+        } else {
+            row.peek = peek_entry(e, &why);
+        }
         if (!row.peek.has_value()) {
             page.warnings.push_back(make("peek_failed", "cannot read '" + e.rel_file + "': " + why, e.root, e.file.string(),
                                          e.id, "file"));

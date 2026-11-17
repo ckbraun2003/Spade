@@ -152,6 +152,7 @@ add_executable(spade_tests
     test_library.cpp
     test_library_set.cpp
     test_library_query.cpp
+    test_library_store.cpp
     test_library_props.cpp
     test_library_sources.cpp
     test_model_sources.cpp

@@ -233,6 +233,7 @@ struct RootData {
     SetRoot info{};
     std::vector<SetEntry> entries{};
     std::vector<Alias> aliases{};
+    fs::path store{};  // the host's store (absolute) or empty
     // The full ids that entries and aliases name, for the existence pass.
     struct Ref {
         std::string target;
@@ -359,6 +360,50 @@ void check_rel(EntryReader& er, const std::string& key, const std::string& value
     }
 }
 
+bool valid_sha256(std::string_view s) {
+    return s.size() == 64 &&
+           std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool valid_store_file(std::string_view s) {
+    return !s.empty() && s != "." && s != ".." &&
+           std::none_of(s.begin(), s.end(), [](char c) { return c == '/' || c == '\\' || c == ':' || c == '\0'; });
+}
+
+// `store: {sha256, file}`: fills the entry's store fields when both are valid, and its resolved path when the host gave a store.
+void read_store(EntryReader& er, const YAML::Node& n, SetEntry& s, const fs::path& store) {
+    if (!n.IsMap()) {
+        er.bad("store", "store is a mapping of 'sha256' and 'file'");
+        return;
+    }
+    for (const auto& kv : n) {
+        std::string k;
+        if (!scalar(kv.first, k) || (k != "sha256" && k != "file")) {
+            er.bad("store." + (kv.first.IsScalar() ? kv.first.Scalar() : std::string("?")), "unknown key");
+        }
+    }
+    std::string sha;
+    std::string file;
+    const YAML::Node shan = n["sha256"];
+    const bool sha_ok = shan.IsDefined() && scalar(shan, sha) && valid_sha256(sha);
+    if (!sha_ok) {
+        er.bad("store.sha256", "sha256 is 64 lower-case hex digits of the file's exact bytes");
+    }
+    const YAML::Node filen = n["file"];
+    const bool file_ok = filen.IsDefined() && scalar(filen, file) && valid_store_file(file);
+    if (!file_ok) {
+        er.bad("store.file", "file is a plain file name: no '/', '\\', ':' or '..', and not empty");
+    }
+    if (sha_ok && file_ok) {
+        s.in_store = true;
+        s.store_sha256 = sha;
+        s.store_file = file;
+        if (!store.empty()) {
+            s.file = store / sha / file;
+        }
+    }
+}
+
 void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const YAML::Node& node, std::size_t i,
                 std::set<std::string>& ids, std::set<std::string>& names_by_kind) {
     EntryReader er{r, issues, index_path, "entries[" + std::to_string(i) + "]", {}};
@@ -368,7 +413,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
     }
     static const std::set<std::string> known = {"id",        "name",   "category",       "file",
                                                 "type",      "tags",   "thumbnail",      "requires",
-                                                "files",     "generated_from", "parts_map"};
+                                                "files",     "generated_from", "parts_map", "store"};
     for (const auto& kv : node) {
         std::string k;
         if (!scalar(kv.first, k) || known.count(k) == 0) {
@@ -467,9 +512,34 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
             canonical_json(partsn, s.parts_map_json);
         }
     }
-    if (!filen) {
+    auto check_ext = [&](const std::string& name, const std::string& field) {
+        bool ok = true;
+        if (s.kind == "model" || s.kind == "drone") {
+            ok = ends_with(name, ".model.yaml");
+        } else if (s.kind == "object") {
+            ok = ends_with(name, ".object.yaml");
+        } else if (s.kind == "part" && !s.part_kind.empty()) {
+            ok = ends_with(name, "." + s.part_kind + ".yaml");
+        } else if (s.kind == "world") {
+            ok = ends_with(name, ".world.yaml");
+        } else if (s.kind == "mesh") {
+            ok = ends_with(name, ".gltf") || ends_with(name, ".glb") || ends_with(name, ".spmesh");
+        }
+        if (!ok) {
+            er.bad(field, "the file's extension does not match the kind '" + s.kind + "'");
+        }
+    };
+    const YAML::Node storen = get("store");
+    if (storen && filen) {
+        er.bad("store", "give 'file' or 'store', not both");
+    } else if (storen) {
+        read_store(er, storen, s, r.store);
+        if (s.in_store) {
+            check_ext(s.store_file, "store.file");
+        }
+    } else if (!filen) {
         if (!(s.kind == "drone" && s.has_parts_map)) {
-            er.bad("file", s.kind == "drone" ? "a drone needs a 'file' or a 'parts_map'" : "missing key");
+            er.bad("file", s.kind == "drone" ? "a drone needs a 'file', a 'store' or a 'parts_map'" : "missing key");
         }
     } else if (!scalar(filen, s.rel_file)) {
         er.bad("file", "a file is a string");
@@ -477,22 +547,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
     } else {
         check_rel(er, "file", s.rel_file, s.file, true);
         if (!s.file.empty()) {
-            const std::string name = s.rel_file;
-            bool ok = true;
-            if (s.kind == "model" || s.kind == "drone") {
-                ok = ends_with(name, ".model.yaml");
-            } else if (s.kind == "object") {
-                ok = ends_with(name, ".object.yaml");
-            } else if (s.kind == "part" && !s.part_kind.empty()) {
-                ok = ends_with(name, "." + s.part_kind + ".yaml");
-            } else if (s.kind == "world") {
-                ok = ends_with(name, ".world.yaml");
-            } else if (s.kind == "mesh") {
-                ok = ends_with(name, ".gltf") || ends_with(name, ".glb") || ends_with(name, ".spmesh");
-            }
-            if (!ok) {
-                er.bad("file", "the file's extension does not match the kind '" + s.kind + "'");
-            }
+            check_ext(s.rel_file, "file");
         }
     }
 
@@ -714,8 +769,11 @@ void read_root(RootData& r, Issues& issues) {
 
 }  // namespace
 
-LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots) {
+LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots, const std::filesystem::path& store) {
     Issues issues;
+    if (!store.empty() && !store.is_absolute()) {
+        issues.push_back(make("relative_path", "the store path must be absolute", {}, store.string()));
+    }
     std::vector<RootData> data;
     std::set<std::string> names;
 
@@ -739,6 +797,7 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots)
         if (ok) {
             RootData r;
             r.spec = spec;
+            r.store = store;
             data.push_back(std::move(r));
         }
     }
@@ -847,6 +906,7 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots)
     }
     LibrarySet set;
     set.aliases = std::move(aliases);
+    set.store = store;
     for (RootData& r : data) {
         set.roots.push_back(std::move(r.info));
         for (SetEntry& e : r.entries) {

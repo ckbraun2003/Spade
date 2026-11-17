@@ -79,6 +79,12 @@ struct SetEntry {
     // The parts_map as canonical JSON (object keys sorted, no whitespace, numbers as the shortest decimal that
     // reads back), for the entry hash; empty without a parts_map. Its meaning is a later piece's (find).
     std::string parts_map_json{};
+    // A file in the local store (L88b), named by `store: {sha256, file}` INSTEAD of `file`: it lives at
+    // <store>/<sha256>/<file>. rel_file is empty then, and `file` is that resolved path when the host gave a store
+    // to open_libraries(), else empty. Nothing is read from the store when the set is opened.
+    bool in_store = false;
+    std::string store_sha256{};  // 64 lower-case hex of the file's exact bytes
+    std::string store_file{};    // a plain file name
 };
 
 // One opened root.
@@ -97,6 +103,7 @@ struct LibrarySet {
     std::vector<SetRoot> roots{};
     std::vector<SetEntry> entries{};
     std::map<std::string, std::string> aliases{};
+    std::filesystem::path store{};  // the host's local store, absolute; empty if none was given
 };
 
 // The newest root version this build reads.
@@ -113,6 +120,11 @@ inline constexpr uint32_t kLibrarySetVersion = 3;
 // depend on; in a root with no dependencies, any other root), bare_id (a
 // `requires` or alias target without "<root>:") and alias_conflict (an alias that
 // is also an id, or that two roots both define).
-[[nodiscard]] LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots);
+//
+// `store` is the host's local store folder (L88b), absolute, or empty for none: where an entry's `store:` file is looked
+// up. A relative one is refused (relative_path). An absent store, or one without a file an entry names, does not stop
+// the open: that is `store_file_missing`, reported when the entry is listed or found.
+[[nodiscard]] LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots,
+                                                       const std::filesystem::path& store = {});
 
 }  // namespace spade::scene
