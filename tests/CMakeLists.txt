@@ -117,6 +117,7 @@ add_executable(spade_tests
     test_airflow_ftz.cpp
     test_airflow_threads.cpp
     test_airflow_dye.cpp
+    test_airflow_tip_dye.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp

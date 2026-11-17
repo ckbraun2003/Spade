@@ -87,4 +87,12 @@ void emit_dye(std::span<float> dye, const GridShape& shape, std::span<const Actu
     emit_flushed(dye, shape, discs, h, release);
 }
 
+Result<void> check_tip_release(const TipRelease&) {
+    return std::unexpected(Error{Code::internal, "airflow tip dye: not written yet"});
+}
+
+std::vector<glm::vec3> tip_points(std::span<const LineRotor>, float, float, uint32_t, float) { return {}; }
+
+void emit_tip_dye(std::span<float>, const GridShape&, std::span<const glm::vec3>, float) noexcept {}
+
 }  // namespace spade::physics::airflow
