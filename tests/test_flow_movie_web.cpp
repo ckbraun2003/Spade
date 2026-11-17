@@ -525,4 +525,28 @@ TEST(FlowMovieWeb, AWebRunPrintsTheFramesMedianAndEachPhaseUnderTheLedgersNames)
     EXPECT_TRUE(web::web_perf_lines({}, 1.0).empty());  // no frames, no figures
 }
 
+// --sgs-cs X (Physics' ask, L86): a diagnostic run of a D1 clip at another Smagorinsky Cs (0 turns the term off), so a
+// still pair at one developed time shows Cameron what the term does. The default stays kD1WebSgsCs, and a run at any
+// other Cs keeps its frames in a folder of its own: it can never be mistaken for, or overwrite, the master's cache.
+TEST(FlowMovieWeb, TheSgsCsOptionIsParsedStrictlyAndNamesItsOwnCacheFolder) {
+    ASSERT_TRUE(web::parse_sgs_cs("0").has_value());
+    EXPECT_FLOAT_EQ(*web::parse_sgs_cs("0"), 0.0f);
+    EXPECT_FLOAT_EQ(*web::parse_sgs_cs("0.17"), 0.17f);
+    EXPECT_FLOAT_EQ(*web::parse_sgs_cs("0.25"), 0.25f);
+    EXPECT_FLOAT_EQ(*web::parse_sgs_cs("1"), 1.0f);
+    // Anything that is not one finite number from 0 to 1 is refused, whole: no trailing text, no blanks, no sign.
+    for (const char* bad : {"", " ", "-0.1", "-0", "+0.1", "nan", "inf", "1.5", "0.17x", " 0.2", "0.2 ", "1e-1", "abc", "0,17"}) {
+        EXPECT_FALSE(web::parse_sgs_cs(bad).has_value()) << "'" << bad << "'";
+    }
+    // The master's Cs names no folder suffix; any other Cs names its own.
+    EXPECT_EQ(web::sgs_cs_suffix(web::kD1WebSgsCs), "");
+    EXPECT_EQ(web::sgs_cs_suffix(0.0f), "-cs0");
+    EXPECT_EQ(web::sgs_cs_suffix(0.25f), "-cs0.25");
+    EXPECT_EQ(web::sgs_cs_suffix(0.1f), "-cs0.1");
+    EXPECT_NE(web::sgs_cs_suffix(0.0f), web::sgs_cs_suffix(0.1f));
+    // The option is for the D1 clips: S5 and S6 run the quad's CPU film, which has no subgrid term.
+    for (const char* id : {"S1", "S2", "S3", "S4", "S8"}) EXPECT_TRUE(web::sgs_cs_applies(*web::find_clip(id))) << id;
+    for (const char* id : {"S5", "S6"}) EXPECT_FALSE(web::sgs_cs_applies(*web::find_clip(id))) << id;
+}
+
 }  // namespace
