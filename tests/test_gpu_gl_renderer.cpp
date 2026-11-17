@@ -4475,4 +4475,91 @@ TEST_F(GpuGlRenderer, DISABLED_ShadowRecord) {
     glDeleteRenderbuffers(1, &depth);
 }
 
+// PER-POINT ALPHA AND ADDITIVE LIGHT on the capsule path (the lead, 2026-11-17; Cameron: "particle-y", "no dark strands"). GL's
+// flow-line program takes an alpha at each end of a segment (FlowPolyline::alphas, interpolated along it) and, with
+// FlowLineStyle::additive, adds the capsules as light: out = behind + colour a, depth-tested, no depth write. The CPU renderer
+// refuses both (test_render_flow_line_style.cpp), so these are not a parity band: each asserts the stated formula on a black
+// frame, where a pixel's level is the light's. 160 x 120, the camera 5 m back on +Z, capsules in the z = 0 plane.
+[[nodiscard]] RenderScene black_frame_scene() {
+    RenderScene scene = make_scene(make_single_triangle(false));
+    scene.statics.clear();
+    return scene;
+}
+
+[[nodiscard]] int level_at(const std::vector<uint8_t>& rgba, int x, int y_from_bottom) {
+    return rgba[(static_cast<size_t>(y_from_bottom) * kWidth + static_cast<size_t>(x)) * 4u];
+}
+
+[[nodiscard]] spade::render::FlowPolyline light_line(glm::vec3 a, glm::vec3 b, float grey, float alpha0 = -1.0f, float alpha1 = -1.0f) {
+    spade::render::FlowPolyline line{{a, b}, {glm::vec3(grey), glm::vec3(grey)}};
+    if (alpha0 >= 0.0f) line.alphas = {alpha0, alpha1};
+    return line;
+}
+
+TEST_F(GpuGlRenderer, AdditiveCapsulesAddTheirLightWhereTheyCrossAndOverBlendDoesNot) {
+    RenderScene scene = black_frame_scene();
+    scene.flow_polylines.push_back(light_line({-1.5f, 0.0f, 0.0f}, {1.5f, 0.0f, 0.0f}, 0.4f));
+    scene.flow_polylines.push_back(light_line({0.0f, -1.5f, 0.0f}, {0.0f, 1.5f, 0.0f}, 0.4f));
+    scene.flow_line_style = spade::render::FlowLineStyle{6.0f, 0.0f, 0.35f};
+    const int one = 102;  // 0.4 as a byte
+    {
+        scene.flow_line_style.additive = true;
+        const std::vector<uint8_t> frame = draw_and_read(scene);
+        ASSERT_EQ(frame.size(), kPixels * 4u);
+        EXPECT_NEAR(level_at(frame, 95, 60), one, 4) << "one capsule: its own light";
+        EXPECT_NEAR(level_at(frame, 80, 75), one, 4);
+        EXPECT_NEAR(level_at(frame, 80, 60), 2 * one, 6) << "two capsules: the sum";
+    }
+    {
+        scene.flow_line_style.additive = false;
+        const std::vector<uint8_t> frame = draw_and_read(scene);
+        ASSERT_EQ(frame.size(), kPixels * 4u);
+        EXPECT_NEAR(level_at(frame, 80, 60), one, 4) << "over-blend: the nearer capsule covers the other, no sum";
+    }
+}
+
+TEST_F(GpuGlRenderer, AlphasFadeACapsuleFromItsTailToItsHeadByTransparency) {
+    RenderScene scene = black_frame_scene();
+    scene.flow_polylines.push_back(light_line({-1.5f, 0.0f, 0.0f}, {1.5f, 0.0f, 0.0f}, 1.0f, 0.0f, 1.0f));
+    scene.flow_line_style = spade::render::FlowLineStyle{6.0f, 0.0f, 0.35f};
+    const std::vector<uint8_t> frame = draw_and_read(scene);
+    ASSERT_EQ(frame.size(), kPixels * 4u);
+    int lo = -1, hi = -1;
+    for (int x = 0; x < kWidth; ++x) {
+        if (level_at(frame, x, 60) > 8) {
+            if (lo < 0) lo = x;
+            hi = x;
+        }
+    }
+    ASSERT_GT(hi - lo, 20) << "the capsule reaches the frame";
+    for (int x = lo + 1; x <= hi; ++x) {
+        EXPECT_GE(level_at(frame, x, 60) + 2, level_at(frame, x - 1, 60)) << "never dimmer toward the head: column " << x;
+    }
+    EXPECT_NEAR(level_at(frame, (lo + hi) / 2, 60), 128, 28) << "half-way along, about half";
+    EXPECT_GE(level_at(frame, hi - 2, 60), 200) << "the head is the full colour";
+    EXPECT_LE(level_at(frame, lo + 2, 60), 60) << "the tail is nearly gone, not black-on-black: there is nothing behind it to hide in";
+}
+
+TEST_F(GpuGlRenderer, AdditiveLightBehindASurfaceIsHiddenAndAnAlphaScalesIt) {
+    RenderScene scene = make_scene(make_single_triangle(false));  // z = 1: nearer the camera than the capsule at z = 0
+    scene.materials[0].base_color = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+    scene.flow_polylines.push_back(light_line({-1.5f, 0.0f, 0.0f}, {1.5f, 0.0f, 0.0f}, 0.4f, 1.0f, 1.0f));
+    scene.flow_line_style = spade::render::FlowLineStyle{6.0f, 0.0f, 0.35f};
+    scene.flow_line_style.additive = true;
+    const std::vector<uint8_t> frame = draw_and_read(scene);
+    ASSERT_EQ(frame.size(), kPixels * 4u);
+    EXPECT_NEAR(level_at(frame, 70, 60), 102, 4) << "left of the triangle: the capsule's light on black";
+    EXPECT_NEAR(level_at(frame, 90, 60), 128, 4) << "behind the triangle: the triangle alone, the light does not show through";
+}
+
+TEST_F(GpuGlRenderer, AnAlphaScalesAnAdditiveCapsulesLight) {
+    RenderScene scene = black_frame_scene();
+    scene.flow_polylines.push_back(light_line({-1.5f, 0.0f, 0.0f}, {1.5f, 0.0f, 0.0f}, 0.8f, 0.5f, 0.5f));
+    scene.flow_line_style = spade::render::FlowLineStyle{6.0f, 0.0f, 0.35f};
+    scene.flow_line_style.additive = true;
+    const std::vector<uint8_t> frame = draw_and_read(scene);
+    ASSERT_EQ(frame.size(), kPixels * 4u);
+    EXPECT_NEAR(level_at(frame, 80, 60), 102, 4) << "0.8 at alpha 0.5 is 0.4";
+}
+
 }  // namespace
