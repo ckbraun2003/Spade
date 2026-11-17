@@ -647,3 +647,24 @@ TEST(FlowMovieWeb, EachDroneHasItsOwnFramingAndTheDefaultsIsTodays) {
 }
 
 }  // namespace
+
+// A DIAGNOSTIC CLIP SIZE (--clip-size WxH; the lead, 2026-11-17, a 3 s 1080p motion test of the particles): the web clips are
+// 3840x2160 masters, and a clip at another size is a diagnostic that must never pass for one. It is 16:9 (the framing is fitted
+// to that aspect), a whole multiple of 16 wide so the encoder takes it, and no larger than the master; its file is labelled with
+// its size, so it never takes a master's name; and delivery, which checks the size, refuses it.
+TEST(FlowMovieWeb, ADiagnosticClipSizeIsSixteenByNineNoLargerThanTheMasterAndNamedForItsSize) {
+    EXPECT_EQ(web::clip_size_refusal(1920u, 1080u), "");
+    EXPECT_EQ(web::clip_size_refusal(1280u, 720u), "");
+    EXPECT_EQ(web::clip_size_refusal(web::kWidth, web::kHeight), "") << "the master's own size is allowed";
+    for (const auto& [w, h] : std::vector<std::pair<uint32_t, uint32_t>>{{0u, 0u}, {1920u, 1081u}, {1000u, 563u}, {7680u, 4320u},
+                                                                          {1930u, 1086u}, {640u, 480u}, {16u, 0u}}) {
+        const std::string why = web::clip_size_refusal(w, h);
+        EXPECT_FALSE(why.empty()) << w << "x" << h;
+        EXPECT_NE(why.find("clip-size"), std::string::npos) << why;
+    }
+    EXPECT_EQ(web::clip_label(0u, 0u), "sim") << "no diagnostic size: the master's label";
+    EXPECT_EQ(web::clip_label(1920u, 1080u), "diag-1920x1080");
+    EXPECT_NE(web::web_file_name("S8", "rotor-wake-volume", web::clip_label(1920u, 1080u), "mp4"),
+              web::web_file_name("S8", "rotor-wake-volume", web::clip_label(0u, 0u), "mp4"));
+}
+

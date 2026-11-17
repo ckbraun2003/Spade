@@ -515,3 +515,97 @@ TEST(FlowMovieParticles, ADriverTakesASnapshotAsTheFieldThatShowsItsFrame) {
     EXPECT_EQ(driver.snapshot_at(199u), nullptr);
 }
 
+// THE LOOK'S NUMBERS, ON THE COMMAND LINE (--particle-look KEY=VALUE,...): a redraw from the snapshot takes seconds, so one job can
+// draw several variants of the look; each variant is a string. Keys: tail (seconds), min_len (metres: a slow streak is never
+// shorter), width and glow (pixels), strength (the glow's alpha), alpha (the head's, when full), fade_in (seconds), fast (m/s, the
+// warm end of the colour ramp). An empty string is the defaults; an unknown key, a value that is not a number, or one out of its
+// range is refused naming it.
+TEST(FlowMovieParticles, AParticleLookStringSetsTheNamedNumbersAndLeavesTheRest) {
+    const flow_movie::StreakLook defaults;
+    const auto none = flow_movie::parse_particle_look("");
+    ASSERT_TRUE(none.has_value()) << none.error().context;
+    EXPECT_EQ(none->tail_s, defaults.tail_s);
+    EXPECT_EQ(none->width_px, defaults.width_px);
+    const auto some = flow_movie::parse_particle_look("tail=0.004, width=1.5,alpha=0.5,glow=3,strength=0.2,min_len=0.01,fade_in=0.02,fast=8");
+    ASSERT_TRUE(some.has_value()) << some.error().context;
+    EXPECT_FLOAT_EQ(some->tail_s, 0.004f);
+    EXPECT_FLOAT_EQ(some->width_px, 1.5f);
+    EXPECT_FLOAT_EQ(some->peak_alpha, 0.5f);
+    EXPECT_FLOAT_EQ(some->glow_px, 3.0f);
+    EXPECT_FLOAT_EQ(some->glow_strength, 0.2f);
+    EXPECT_FLOAT_EQ(some->min_len_m, 0.01f);
+    EXPECT_FLOAT_EQ(some->fade_in_s, 0.02f);
+    EXPECT_FLOAT_EQ(some->fast_mps, 8.0f);
+    const auto one = flow_movie::parse_particle_look("width=3");
+    ASSERT_TRUE(one.has_value());
+    EXPECT_FLOAT_EQ(one->width_px, 3.0f);
+    EXPECT_EQ(one->tail_s, defaults.tail_s) << "the rest keep their defaults";
+}
+
+TEST(FlowMovieParticles, AParticleLookStringThatCannotBeRunIsRefusedByNameNotSkipped) {
+    for (const char* bad : {"colour=red", "width", "width=", "width=abc", "width=0.1", "width=100", "alpha=1.5", "alpha=-0.1", "tail=0",
+                            "tail=-1", "glow=-1", "strength=2", "fast=0", "fade_in=0", "min_len=-0.01", "width=2,,tail=0.004", "=3"}) {
+        const auto r = flow_movie::parse_particle_look(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("particle look"), std::string::npos) << bad << ": " << r.error().context;
+    }
+    const auto unknown = flow_movie::parse_particle_look("width=2,sparkle=3");
+    ASSERT_FALSE(unknown.has_value());
+    EXPECT_NE(unknown.error().context.find("sparkle"), std::string::npos) << "the key is named: " << unknown.error().context;
+}
+
+TEST(FlowMovieParticles, ASlowStreakIsAtLeastMinLenLongAlongItsVelocityAndAFastOneAndStillAirAreUnchanged) {
+    auto tail_of = [](float speed, float min_len) {
+        const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [speed](glm::vec3) { return glm::vec3(speed, 0.0f, 0.0f); });
+        flow_movie::ParticleField f;
+        f.position = {glm::vec3(0.0f)};
+        f.previous = f.position;
+        f.age = {0.2f};
+        flow_movie::StreakLook look;
+        look.tail_s = 0.005f;
+        look.min_len_m = min_len;
+        return flow_movie::particle_streaks(f, v, 0.5f, look).at(0).points.at(0);
+    };
+    EXPECT_NEAR(tail_of(1.0f, 0.0f).x, -0.005f, 1e-7f) << "no minimum: u times tail_s";
+    EXPECT_NEAR(tail_of(1.0f, 0.02f).x, -0.02f, 1e-7f) << "1 m/s for 5 ms is 5 mm: lengthened to the minimum, along the velocity";
+    EXPECT_NEAR(tail_of(10.0f, 0.02f).x, -0.05f, 1e-7f) << "a fast one is already longer";
+    EXPECT_EQ(tail_of(0.0f, 0.02f), glm::vec3(0.0f)) << "still air has no direction: a point";
+    EXPECT_NEAR(tail_of(-1.0f, 0.02f).x, 0.02f, 1e-7f) << "behind it, whichever way it goes";
+}
+
+// THE DRAWN STREAKS NEAR THE DRONE (the lead, 2026-11-17: "the streaks must not wash the drone; the drone must read clearly"): the
+// streak's alpha is dimmed by `dim` (0 to 1, off at 0) at the drone's centre, falling smoothly to nothing at `dim_r` metres from
+// it. Additive light in front of the airframe lifts its colour; dimmed, the body and the rotors read through.
+TEST(FlowMovieParticles, StreaksNearTheDroneAreDimmedByTheStatedAmountAndFarOnesAreNot) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    auto head_alpha = [&v](glm::vec3 at, float dim) {
+        flow_movie::ParticleField f;
+        f.position = {at};
+        f.previous = f.position;
+        f.age = {0.2f};
+        flow_movie::StreakLook look;
+        look.dim_centre = glm::vec3(0.0f);
+        look.dim_r = 0.2f;
+        look.dim = dim;
+        return flow_movie::particle_streaks(f, v, 0.5f, look).at(0).alphas.at(1);
+    };
+    const float full = head_alpha(glm::vec3(0.0f, 0.0f, 0.0f), 0.0f);
+    EXPECT_GT(full, 0.5f);
+    EXPECT_NEAR(head_alpha(glm::vec3(0.0f), 0.6f), full * 0.4f, 1e-6f) << "at the centre: 1 - dim";
+    EXPECT_NEAR(head_alpha(glm::vec3(0.25f, 0.0f, 0.0f), 0.6f), full, 1e-6f) << "past dim_r: untouched";
+    const float half_way = head_alpha(glm::vec3(0.1f, 0.0f, 0.0f), 0.6f);
+    EXPECT_GT(half_way, full * 0.4f);
+    EXPECT_LT(half_way, full) << "in between: smoothly";
+    EXPECT_NEAR(head_alpha(glm::vec3(0.0f), 0.0f), full, 1e-7f) << "dim 0 is off";
+}
+
+TEST(FlowMovieParticles, TheDimmingKeysAreInTheLookStringAndRangeChecked) {
+    const auto look = flow_movie::parse_particle_look("dim=0.7,dim_r=0.15");
+    ASSERT_TRUE(look.has_value()) << look.error().context;
+    EXPECT_FLOAT_EQ(look->dim, 0.7f);
+    EXPECT_FLOAT_EQ(look->dim_r, 0.15f);
+    EXPECT_FALSE(flow_movie::parse_particle_look("dim=1.5").has_value());
+    EXPECT_FALSE(flow_movie::parse_particle_look("dim=-0.1").has_value());
+    EXPECT_FALSE(flow_movie::parse_particle_look("dim_r=0").has_value());
+}
+
