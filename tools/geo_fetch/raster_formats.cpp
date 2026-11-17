@@ -98,8 +98,6 @@ Result<TiffGrid> read_tiff_f32(std::string_view bytes) {
     const uint32_t format = number(339, 1);
     const uint32_t rows_per_strip = number(278, height);
     if (!ok || width == 0 || height == 0) return bad("3dep: the TIFF has no usable width and height");
-    Entry tiles;
-    if (find(322, tiles) || find(324, tiles)) return bad("3dep: a tiled TIFF is not supported (strips only)");
     if (compression != 1) {
         return bad("3dep: the TIFF is compressed (code " + std::to_string(compression) + "); only uncompressed is read");
     }
@@ -109,6 +107,49 @@ Result<TiffGrid> read_tiff_f32(std::string_view bytes) {
     }
     if (static_cast<uint64_t>(width) * height > 16u * 1024u * 1024u) return bad("3dep: the TIFF is larger than 16 million samples");
 
+    TiffGrid g;
+    g.width = width;
+    g.height = height;
+
+    // Tiles (tags 322 to 325): what an ArcGIS ImageServer sends. Row-major, each tile tile_w x tile_h samples in full (the edge tiles
+    // are padded past the image), so each one is cropped to the image as it is copied.
+    Entry probe;
+    if (find(322, probe) || find(323, probe) || find(324, probe) || find(325, probe)) {
+        const uint32_t tile_w = number(322, 0);
+        const uint32_t tile_h = number(323, 0);
+        constexpr uint32_t kMaxTileSide = 4096;
+        if (!ok || tile_w == 0 || tile_h == 0 || tile_w > kMaxTileSide || tile_h > kMaxTileSide) {
+            return bad("3dep: the TIFF's tile size is missing or not usable (tile " + std::to_string(tile_w) + " x " + std::to_string(tile_h) + ")");
+        }
+        const uint64_t across = (static_cast<uint64_t>(width) + tile_w - 1) / tile_w;
+        const uint64_t down = (static_cast<uint64_t>(height) + tile_h - 1) / tile_h;
+        Entry to, tc;
+        std::vector<uint32_t> tile_offsets, tile_counts;
+        if (!find(324, to) || !values_of(r, to, tile_offsets) || !find(325, tc) || !values_of(r, tc, tile_counts)) {
+            return bad("3dep: the TIFF has no readable tile offsets and byte counts");
+        }
+        if (tile_offsets.size() != across * down || tile_counts.size() != across * down) {
+            return bad("3dep: the TIFF has " + std::to_string(tile_offsets.size()) + " tiles, " + std::to_string(across * down) + " expected for " +
+                       std::to_string(width) + " x " + std::to_string(height) + " in tiles of " + std::to_string(tile_w) + " x " + std::to_string(tile_h));
+        }
+        const uint64_t tile_bytes = static_cast<uint64_t>(tile_w) * tile_h * 4;
+        g.samples.assign(static_cast<std::size_t>(width) * height, 0.0f);
+        for (uint64_t t = 0; t < across * down; ++t) {
+            if (tile_counts[t] < tile_bytes || !r.has(tile_offsets[t], tile_bytes)) {
+                return bad("3dep: a tile of the TIFF is short or past the end of the data");
+            }
+            const uint64_t x0 = (t % across) * tile_w;
+            const uint64_t y0 = (t / across) * tile_h;
+            for (uint64_t row = 0; row < tile_h && y0 + row < height; ++row) {
+                for (uint64_t col = 0; col < tile_w && x0 + col < width; ++col) {
+                    g.samples[(y0 + row) * width + x0 + col] =
+                        std::bit_cast<float>(r.u32(tile_offsets[t] + 4 * (row * tile_w + col)));
+                }
+            }
+        }
+        return g;
+    }
+
     Entry eo, ec;
     std::vector<uint32_t> offsets, counts;
     if (!find(273, eo) || !values_of(r, eo, offsets) || !find(279, ec) || !values_of(r, ec, counts) || offsets.empty() ||
@@ -117,9 +158,6 @@ Result<TiffGrid> read_tiff_f32(std::string_view bytes) {
     }
     (void)rows_per_strip;  // the byte counts say how much each strip holds
 
-    TiffGrid g;
-    g.width = width;
-    g.height = height;
     g.samples.reserve(static_cast<std::size_t>(width) * height);
     for (std::size_t s = 0; s < offsets.size(); ++s) {
         if (counts[s] % 4 != 0 || !r.has(offsets[s], counts[s])) return bad("3dep: a strip of the TIFF is past the end of the data");

@@ -2,7 +2,7 @@
 # CMakeLists.txt, so CPack sees every target.
 #
 # WHAT IT MAKES. One CPack component, `editor`: spade_sandbox.exe (the editor), Interface's WIN32 launcher SpadeEditor.exe when its target
-# exists, assets/{library,scenes,worlds,fonts}, the licence and notices, the release docs, the user guide's HTML and PDF, and the MSVC
+# exists, spade_geo_fetch.exe (the map fetch the editor runs; L85e), assets/{library,scenes,worlds,fonts}, the licence and notices, the release docs, the user guide's HTML and PDF, and the MSVC
 # runtime app-local. Nothing else: no tests, no flow_movie, no SDK headers or libraries.
 #
 # EVERY RULE IS EXCLUDE_FROM_ALL. `cmake --install` with no component is the SDK install (the eleven library modules; sandbox/CMakeLists.txt
@@ -34,6 +34,11 @@ install(TARGETS spade_sandbox RUNTIME DESTINATION . ${_editor_install})
 set(_editor_exe "spade_sandbox")
 # What scripts/package.ps1 builds: the editor's executables, and nothing of the SDK or the tests.
 add_custom_target(spade_editor_files DEPENDS spade_sandbox)
+# The map fetch tool (tools/geo_fetch; L85e): the editor runs it beside itself. A console program, so a tester can also run it by hand.
+if(TARGET spade_geo_fetch)
+    add_dependencies(spade_editor_files spade_geo_fetch)
+    install(TARGETS spade_geo_fetch RUNTIME DESTINATION . ${_editor_install})
+endif()
 if(TARGET spade_editor_launcher)
     add_dependencies(spade_editor_files spade_editor_launcher)
     # Interface's WIN32 launcher (OUTPUT_NAME SpadeEditor): no console, output to %LOCALAPPDATA%\Spade\logs, arguments passed through.

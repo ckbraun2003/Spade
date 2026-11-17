@@ -1,7 +1,7 @@
 #pragma once
 
 // A decoded 8-bit RGB image: plain data. decode_png() (world/mesh_import.hpp) returns it and the terrain map holds one
-// (world/terrain_input.hpp). Rows run top to bottom, three bytes a pixel, no padding: rgb.size() == width * height * 3.
+// (world/terrain_input.hpp), which read_terrain_map() (world/terrain_map.hpp; defined in spade::mesh_import) fills. Rows run top to bottom, three bytes a pixel, no padding: rgb.size() == width * height * 3.
 
 #include <cstdint>
 #include <vector>

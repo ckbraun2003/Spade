@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // geo_fetch/fetch.hpp -- one map fetch, end to end (L85, SP-5; the design note, sections 2 to 5): check the cache, ask NGS for
 // the geoid height, 3DEP for the elevation, NAIP for the image, convert NAVD88 to ellipsoid heights, store the entry, trim the
-// cache. Everything outside it is injected (the network, the clock, the area's geodesy), so the tests run it on fixtures.
+// cache. Everything outside it is injected (the network, the clock, and a fixed area when a test wants one), so the tests run it on fixtures.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
@@ -48,6 +48,12 @@ struct FetchResult {
     std::uint64_t bytes = 0;  // the entry's size on disk
     double geoid_height_m = 0.0;
     double anchor_ellipsoid_height_m = 0.0;
+    // The summary of a hit or a fetch (from the entry's georef), and what this run downloaded (0 on a hit: nobody was asked).
+    std::string geoid_model;
+    std::uint32_t elevation_width = 0, elevation_height = 0;
+    std::uint32_t image_width = 0, image_height = 0;
+    double west_deg = 0.0, south_deg = 0.0, east_deg = 0.0, north_deg = 0.0;
+    std::uint64_t bytes_geoid = 0, bytes_elevation = 0, bytes_image = 0;
 };
 
 // The process exit code of a result (the table in fetch.hpp's enum).
@@ -64,7 +70,7 @@ struct ProgressEvent {
 
 struct FetchEnv {
     HttpClient& http;
-    std::function<Bbox(double lat_deg, double lon_deg, double side_m)> area;  // the box both layers cover (SP-1's geodesy)
+    std::function<Bbox(double lat_deg, double lon_deg, double side_m)> area;  // the box both layers cover; empty: area_bbox (the geodesy)
     std::function<std::string()> utc_now;                                    // "2026-11-17T01:23:45Z"
     std::function<void(int milliseconds)> sleep;                             // between a retry; may be a no-op
     std::function<void(const ProgressEvent&)> progress;                      // may be empty

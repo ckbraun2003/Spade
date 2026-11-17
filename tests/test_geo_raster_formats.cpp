@@ -70,11 +70,13 @@ TEST(GeoTiff, EachThingItDoesNotReadIsRefusedByName) {
     ASSERT_FALSE(r.has_value());
     EXPECT_NE(r.error().context.find("band"), std::string::npos) << r.error().context;
 
-    TiffOptions tiled;
-    tiled.tiled = true;
-    r = read_tiff_f32(make_tiff(4, 3, in, tiled));
+    TiffOptions tiled_compressed;  // a compressed tile is refused by its compression, not as a layout
+    tiled_compressed.tiled = true;
+    tiled_compressed.compression = 5;
+    r = read_tiff_f32(make_tiff(4, 3, in, tiled_compressed));
     ASSERT_FALSE(r.has_value());
-    EXPECT_NE(r.error().context.find("tile"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("compress"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find('5'), std::string::npos) << r.error().context;
 
     TiffOptions cut;
     cut.truncate = true;
@@ -82,6 +84,49 @@ TEST(GeoTiff, EachThingItDoesNotReadIsRefusedByName) {
 
     EXPECT_FALSE(read_tiff_f32("").has_value());
     EXPECT_FALSE(read_tiff_f32("<html>Service Unavailable</html>").has_value());
+}
+
+// What an ArcGIS ImageServer sends for format=tiff: uncompressed float32 in tiles (the live check, L85g, got 1024 x 1024 x 4 bytes of it
+// as 256-sample tiles padded over the edge).
+TEST(GeoTiff, ATiledTiffReadsBackSampleForSampleWithTheEdgeTilesCropped) {
+    const std::vector<float> in = ramp(20 * 18);
+    TiffOptions o;
+    o.tiled = true;
+    o.tile = 16;  // 20 x 18 is 2 x 2 tiles, the right and bottom ones mostly padding
+    const auto a = read_tiff_f32(make_tiff(20, 18, in, o));
+    ASSERT_TRUE(a.has_value()) << a.error().context;
+    EXPECT_EQ(a->width, 20u);
+    EXPECT_EQ(a->height, 18u);
+    EXPECT_EQ(a->samples, in);
+    o.big_endian = true;
+    o.tile = 7;  // a tile that does not divide the image either way
+    const auto b = read_tiff_f32(make_tiff(20, 18, in, o));
+    ASSERT_TRUE(b.has_value()) << b.error().context;
+    EXPECT_EQ(b->samples, in);
+    TiffOptions one;  // an image inside one tile
+    one.tiled = true;
+    const auto c = read_tiff_f32(make_tiff(4, 3, ramp(12), one));
+    ASSERT_TRUE(c.has_value()) << c.error().context;
+    EXPECT_EQ(c->samples, ramp(12));
+}
+
+TEST(GeoTiff, ATiledTiffThatIsCutShortOrMisdescribedIsRefused) {
+    const std::vector<float> in = ramp(20 * 18);
+    TiffOptions o;
+    o.tiled = true;
+    o.tile = 16;
+    o.truncate = true;
+    EXPECT_FALSE(read_tiff_f32(make_tiff(20, 18, in, o)).has_value());
+    // Four tiles are needed for 20 x 18 at 16; a tile size of 32 makes the file's four offsets too many for one tile.
+    o.truncate = false;
+    std::string bytes = make_tiff(20, 18, in, o);
+    const std::string needle("\x42\x01\x04\x00\x01\x00\x00\x00\x10\x00\x00\x00", 12);  // tag 322 (0x142), LONG, count 1, value 16
+    const std::size_t at = bytes.find(needle);
+    ASSERT_NE(at, std::string::npos);
+    bytes[at + 8] = 32;
+    const auto r = read_tiff_f32(bytes);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("tile"), std::string::npos) << r.error().context;
 }
 
 TEST(GeoPng, TheHeaderGivesSizeDepthAndColourType) {
