@@ -559,4 +559,16 @@ TEST(FlowMovieWeb, S1sCaptionSaysWhereTheStreamlinesAreSeededAndHowTheyAreTraced
     EXPECT_FLOAT_EQ(web::kWebSeedBelowHubM, 0.06f) << "the sentence and the seeds share one number";
 }
 
+// S2 is a soft volume of the wake's speed, in a push-in from the start-up (Cameron, 2026-11-17: the vortex surfaces "look like
+// playdoh"; S8's volume is the direction), so its caption and its file name say a volume, not vortex surfaces.
+TEST(FlowMovieWeb, S2IsAVolumeOfTheWakesSpeedNotVortexSurfaces) {
+    const web::Clip& s2 = *web::find_clip("S2");
+    const std::string shows(s2.shows);
+    EXPECT_NE(shows.find("volume"), std::string::npos) << shows;
+    EXPECT_EQ(shows.find("ortex surfaces"), std::string::npos) << shows;
+    EXPECT_EQ(shows.find("lambda2"), std::string::npos) << shows;
+    EXPECT_EQ(std::string(s2.short_name), "rotor-wake-start-up-volume");
+    EXPECT_EQ(std::string(s2.title).find("ortex"), std::string::npos) << s2.title;
+}
+
 }  // namespace

@@ -243,7 +243,7 @@ TEST(FlowMovieLook, TheOptionsAreParsedStrictly) {
 }
 
 // Which clips a look option may touch: refused by name, never silently ignored. The level, smoothing and cull belong to
-// the clips that draw vortex surfaces (S2, and S3 in the side wind); the mean flow to the D1 clips that read the velocity
+// the clip that draws vortex surfaces (S3, in the side wind); the mean flow to the D1 clips that read the velocity
 // (not S4's pressure coefficient); a cull needs the level that says what a piece is. S5 and S6 run the quad's CPU film.
 TEST(FlowMovieLook, AnOptionThatCannotApplyToAClipIsRefusedByNameAndAnyOtherIsNot) {
     flow_movie::Look level_only;
@@ -257,8 +257,11 @@ TEST(FlowMovieLook, AnOptionThatCannotApplyToAClipIsRefusedByNameAndAnyOtherIsNo
     flow_movie::Look cull_no_level;
     cull_no_level.min_cells = 27u;
 
-    EXPECT_EQ(flow_movie::look_refusal("S2", true, everything), "");
+    EXPECT_EQ(flow_movie::look_refusal("S3", true, everything), "");
     EXPECT_EQ(flow_movie::look_refusal("S3", true, level_only), "");
+    // S2 is a soft speed volume since Cameron's pick (2026-11-17): the vortex-surface options are not its own, the mean flow is.
+    EXPECT_EQ(flow_movie::look_refusal("S2", true, mean_only), "");
+    EXPECT_NE(flow_movie::look_refusal("S2", true, level_only).find("--l2-level"), std::string::npos);
     EXPECT_EQ(flow_movie::look_refusal("S1", true, mean_only), "");
     EXPECT_EQ(flow_movie::look_refusal("S8", true, mean_only), "");
     EXPECT_EQ(flow_movie::look_refusal("S1", true, flow_movie::Look{}), "") << "no option, nothing to refuse";
