@@ -52,6 +52,7 @@
 #include "airflow_dye_advect.spv.gen.hpp"
 #include "airflow_dye_publish.spv.gen.hpp"
 #include "airflow_dye_source.spv.gen.hpp"
+#include "airflow_dye_tip.spv.gen.hpp"
 #include "spike/airflow/publish_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -418,7 +419,10 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         }
         // With the tip correction the buffer holds, after the element records, the groups' (a group is at least an element).
         const uint64_t tip_words = line->tip_correction ? kTipHeaderWords + uint64_t{line->elements} * kTipStride : 0u;
-        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride + tip_words, BufferKind::resident);
+        // With the dye's tip release, then the point count and the points (four floats each; a point is at least an element's worth).
+        const uint64_t tip_dye_words = dye != nullptr && dye->tip ? 1u + 4u * uint64_t{line->elements} : 0u;
+        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride + tip_words + tip_dye_words,
+            BufferKind::resident);
         set(gen::kBinding_airflow_line_polar, 1u + 3u * uint64_t{line->polar->key.size()}, BufferKind::resident);
         set(gen::kBinding_airflow_line_vel, uint64_t{line->elements} * 4u, BufferKind::device_only);
         set(gen::kBinding_airflow_line_force, uint64_t{line->elements} * kLineForceStride, BufferKind::resident);
@@ -433,6 +437,14 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     // The passive dye (P10): placeholders for the bindings below it, its one buffer, its kernels after all the others.
     if (dye != nullptr) {
         if (Result<void> ok = af::check_dye_release(dye->release); !ok) return std::unexpected(ok.error());
+        if (dye->tip) {
+            if (Result<void> ok = af::check_tip_release(*dye->tip); !ok) return std::unexpected(ok.error());
+            if (line == nullptr) {
+                return std::unexpected(invalid("dye: a tip release releases at the line's blade tips and needs a LineSetup"));
+            }
+            self->tip_on_ = true;
+            self->tip_frac_ = dye->tip->tip_frac;
+        }
         for (uint32_t b = static_cast<uint32_t>(buffers.size()); b < gen::kBinding_airflow_dye; ++b) {
             buffers.push_back({"airflow_unused_" + std::to_string(b), 4u, BufferKind::device_only});
         }
@@ -442,6 +454,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         kernels.push_back(&gen::kSpvVariants_airflow_dye_advect);
         kernels.push_back(&gen::kSpvVariants_airflow_dye_source);
         kernels.push_back(&gen::kSpvVariants_airflow_dye_publish);
+        if (dye->tip) kernels.push_back(&gen::kSpvVariants_airflow_dye_tip);  // after the publish: no other pipeline moves
     }
 
     // Plan A's health word is read from each step chain's own readback of airflow_scalars: one 16-aligned
@@ -493,6 +506,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         image[0] = dye->release.rate * cfg.h;
         image[1] = dye->release.r_in;
         image[2] = dye->release.r_out;
+        image[3] = dye->tip ? dye->tip->gain : 0.0f;
         if (Result<void> ok = r.upload(gen::kBinding_airflow_dye, bytes(image)); !ok) return std::unexpected(ok.error());
         self->dye_on_ = true;
     }
@@ -536,6 +550,7 @@ void GpuFluid::set_phase_timing(bool on) {
     if (on != phase_timing_) {
         step_chains_.fill(std::nullopt);  // re-recorded with (or without) its marks
         dye_chains_.fill(std::nullopt);
+        dye_tip_chains_.fill(std::nullopt);
     }
     phase_timing_ = on;
     phases_.clear();
@@ -632,11 +647,19 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, 
     if (line_tip_) {  // the groups follow the element records in the one buffer
         records->elems.insert(records->elems.end(), records->tip.begin(), records->tip.end());
     }
+    if (tip_on_) {  // then the dye's release points: the count, and x, y, z and a spare each (airflow_dye_tip.slang)
+        const std::vector<glm::vec3> points = af::tip_points(lines, shape_.dx, cfg_.h, line_n_sub_, tip_frac_);
+        records->elems.push_back(static_cast<float>(points.size()));
+        for (const glm::vec3& p : points) {
+            records->elems.insert(records->elems.end(), {p.x, p.y, p.z, 0.0f});
+        }
+        tip_live_ = true;
+    }
     if (Result<void> ok = runner_->upload(gen::kBinding_airflow_line_elems, std::as_bytes(std::span(records->elems)));
         !ok) {
         return std::unexpected(ok.error());
     }
-    if (line_tip_) records->elems.resize(std::size_t{line_elements_} * kLineStride);  // line_reports() reads the elements
+    if (line_tip_ || tip_on_) records->elems.resize(std::size_t{line_elements_} * kLineStride);  // line_reports() reads the elements
     if (Result<void> ok = runner_->submit(line_chain_, 1); !ok) return std::unexpected(ok.error());
     const std::span<const std::byte> force = runner_->readback(line_chain_, 0);
     if (force.size() != std::size_t{line_elements_} * kLineForceStride * sizeof(float)) {
@@ -646,23 +669,27 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, 
     std::vector<float> force_floats(std::size_t{line_elements_} * kLineForceStride);
     std::memcpy(force_floats.data(), force.data(), force.size());
     line_reports_ = airflow_gpu::line_reports(*records, lines, force_floats);
-    return step(discs);
+    Result<af::FluidHealth> health = step(discs);
+    tip_live_ = false;  // the points are this step's: a later step without lines releases none
+    return health;
 }
 
 // The dye's chain for a step with `disc_count` discs: advect_scalar()'s two passes, then the release (which also copies the advected
 // field to the cell array). Recorded once a disc count, with a mark after it when the phases are timed.
-Result<uint32_t> GpuFluid::dye_chain_for(uint32_t disc_count) {
-    if (dye_chains_[disc_count]) return *dye_chains_[disc_count];
+Result<uint32_t> GpuFluid::dye_chain_for(uint32_t disc_count, bool with_tip) {
+    std::optional<uint32_t>& cached = with_tip ? dye_tip_chains_[disc_count] : dye_chains_[disc_count];
+    if (cached) return *cached;
     const uint32_t cells = shape_.nx * shape_.ny * shape_.nz;
     const uint32_t wg = workgroup_size_;
     std::vector<ChainCommand> chain;
     chain.push_back(dispatch(dye_pipeline_, 0u, 0u, cells, 0u, wg));
     chain.push_back(dispatch(dye_pipeline_, 0u, 1u, cells, 0u, wg));
     chain.push_back(dispatch(dye_pipeline_ + 1u, disc_count, 0u, cells, 0u, wg));
+    if (with_tip) chain.push_back(dispatch(dye_pipeline_ + 3u, line_elements_, line_tip_ ? 1u : 0u, cells, 0u, wg));
     if (phase_timing_) chain.push_back(ChainCommand{});
     auto id = runner_->record(chain);
     if (!id) return std::unexpected(id.error());
-    dye_chains_[disc_count] = *id;
+    cached = *id;
     return *id;
 }
 
@@ -671,7 +698,7 @@ Result<uint32_t> GpuFluid::dye_chain_for(uint32_t disc_count) {
 Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) {
     Result<af::FluidHealth> health = step_flow(discs);
     if (!health || !dye_on_ || health->fault != af::FluidFault::none) return health;
-    auto id = dye_chain_for(static_cast<uint32_t>(discs.size()));
+    auto id = dye_chain_for(static_cast<uint32_t>(discs.size()), tip_on_ && tip_live_);
     if (!id) return std::unexpected(id.error());
     if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
     if (phase_timing_) {

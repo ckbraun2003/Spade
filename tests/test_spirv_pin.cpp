@@ -25,6 +25,7 @@
 #include "airflow_line_tipcorr.spv.gen.hpp"
 #include "airflow_dye_advect.spv.gen.hpp"
 #include "airflow_dye_source.spv.gen.hpp"
+#include "airflow_dye_tip.spv.gen.hpp"
 #include "airflow_dye_publish.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
@@ -118,6 +119,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 32, 0xf1137aad6328daf9ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 64, 0x46dfa6765d69d259ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 128, 0x202ab6914ec57a19ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_tip, "airflow_dye_tip", 32, 0x2ebabab9183be89cull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_tip, "airflow_dye_tip", 64, 0xf79281624491c0fcull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_tip, "airflow_dye_tip", 128, 0xabcda4407aa6c4bcull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 32, 0x34cec21e31178564ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 64, 0xb74b46b23a7b0e44ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 128, 0x21b57c39973d7084ull},

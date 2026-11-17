@@ -109,6 +109,7 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_line_tipcorr NAN_PRESER
 # at the discs, and its channel in publish's V. A GpuFluid made with a DyeSetup carries them after the others.
 spade_slang_kernel_variants(spade_airflow_runner airflow_dye_advect NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_dye_source NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_dye_tip NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_dye_publish NAN_PRESERVE)
 
 # B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):

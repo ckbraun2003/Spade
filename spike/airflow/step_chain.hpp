@@ -202,7 +202,7 @@ public:
 private:
     GpuFluid() = default;
     [[nodiscard]] Result<uint32_t> step_chain_for(uint32_t disc_count);
-    [[nodiscard]] Result<uint32_t> dye_chain_for(uint32_t disc_count);
+    [[nodiscard]] Result<uint32_t> dye_chain_for(uint32_t disc_count, bool with_tip);
     [[nodiscard]] Result<physics::airflow::FluidHealth> step_flow(std::span<const physics::airflow::ActuatorDisc> discs);
 
     physics::airflow::GridShape shape_{};
@@ -231,6 +231,10 @@ private:
     bool dye_on_ = false;
     uint32_t dye_pipeline_ = 0;  // airflow_dye_advect's pipeline; source and publish follow it
     std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_chains_{};  // advect (two passes) and the release, by disc count
+    bool tip_on_ = false;        // DyeSetup::tip: the tip release's kernel follows the publish's pipeline
+    float tip_frac_ = 1.0f;
+    bool tip_live_ = false;      // this step has lines, so its tip points are in the elements buffer
+    std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_tip_chains_{};  // the same with the tip release after the discs'
     bool phase_timing_ = false;
     std::vector<PhaseTime> phases_;            // the last step's, when phase_timing_
     std::array<std::vector<std::string>, kMaxDiscs + 1> phase_names_{};  // the marks' names, by disc count
