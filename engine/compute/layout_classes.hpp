@@ -21,19 +21,20 @@
 
 namespace spade::compute {
 
-// Set 1's binding space: numbers 0..47 (28 in use, six new for the fluid module, six spare, eight reserved for the LBM twin).
+// Set 1's binding space: numbers 0..48 (28 in use, six new for the fluid module, six spare, eight reserved for the LBM twin, and 48
+// the passive dye's, P10: the list is append-only, so the space grew by one at its end).
 // The declared count (kAirflowDeclaredCount) is NOT the bound -- the numbers are sparse -- so a number inside the space
 // that bindings.slang declares nowhere is refused by kernel_layout() below, by name, when the layout is made.
-inline constexpr uint32_t kSet1BindingSlots = 48;
+inline constexpr uint32_t kSet1BindingSlots = 49;
 
 // Whether bindings.slang section F declares set-1 binding `b`: the airflow kernels' 0..27, then the stage 7 appendices declared
-// so far (airflow_points, airflow_config, airflow_centred, contact_shapes, the four airflow_line_*) and the LBM twin's lbm_f and lbm_u. A batch that declares another
+// so far (airflow_points, airflow_config, airflow_centred, contact_shapes, the four airflow_line_*) the LBM twin's lbm_f and lbm_u and the dye. A batch that declares another
 // binding adds it here, and the count assert below fails until it does.
 [[nodiscard]] constexpr bool is_declared_set1(uint32_t b) noexcept {
     return b <= kAirflowWallLoadBinding || b == kAirflowPointsBinding || b == kAirflowConfigBinding ||
            b == kAirflowCentredBinding || b == kContactShapesBinding ||
            (b >= kAirflowLineFirstBinding && b < kAirflowLineFirstBinding + kAirflowLineBufferCount) || b == kLbmFBinding ||
-           b == kLbmUBinding;
+           b == kLbmUBinding || b == kAirflowDyeBinding;
 }
 static_assert(
     [] {

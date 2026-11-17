@@ -34,6 +34,7 @@ struct PublishPush {
 void append_publish(std::vector<compute::ChainCommand>& out, const PublishPipelines& p, uint32_t cells,
                     uint32_t workgroup_size) {
     out.push_back(publish_dispatch(p.fields, cells, workgroup_size));
+    if (p.dye != kNoPublishDye) out.push_back(publish_dispatch(p.dye, cells, workgroup_size));
     out.push_back(publish_dispatch(p.pack, cells, workgroup_size));
 }
 
