@@ -85,7 +85,7 @@ void print_usage() {
     std::puts("  --out <path>          write the frame as a binary PPM (default: no file, render only)");
     std::puts("  --width/--height <n>  frame size (headless 320x180, window 1280x720)");
     std::puts("  --no-vsync            do not wait for the display refresh");
-    std::puts("  --live-smoke          tour the drone box, the airflow and the editor in the window,");
+    std::puts("  --live-smoke          tour the engine, the airflow, the editor, the bodies and what is new in the window,");
     std::puts("                        record tour.mp4, a PNG per chapter and journal.txt into");
     std::puts("                        --out <dir>; exit 0 PASS, 1 FAIL, 2 no verdict");
     std::puts("                        (scripts/live-smoke.ps1 runs it)");

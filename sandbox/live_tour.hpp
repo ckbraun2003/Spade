@@ -6,8 +6,9 @@
 // needs a display, so it is not a ctest; the verdict machinery it uses is
 // display-free and tested (live_smoke.hpp, tests/test_sandbox_live_smoke.cpp).
 //
-// The tour is three chapters, each a main function (drone_box, airflow,
-// editor) and a run of named sub-steps (INT-9; docs/design/interface/plans/
+// The tour is five chapters, each a main function (drone_box, airflow,
+// editor, bodies, batch: the engine, the airflow, the editor, Bodies and
+// "New in this batch") and a run of named sub-steps (INT-9; docs/design/interface/plans/
 // 2026-10-13-live-tour-storyboard.md). Every sub-step is a declared step in
 // the ledger, drives the scene through the same session frame a user does,
 // and checks what it did, so a partial failure names the step it happened in.
