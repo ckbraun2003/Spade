@@ -1365,7 +1365,10 @@ struct HeldPose {
                     return std::unexpected(spade::Error{spade::Code::internal, "the particle field is not at frame " +
                                                                                      std::to_string(hold->first + k)});
                 }
-                scene.flow_points = particle_points(*field, hold->max_age_s, 4u);
+                // Additive streaks: light on black, the capsule path (GL only), a 2 px core with a soft 5 px glow.
+                scene.flow_polylines = particle_streaks(*field, v, hold->max_age_s);
+                scene.flow_line_style = render::FlowLineStyle{2.0f, 5.0f, 0.30f};
+                scene.flow_line_style.additive = true;
                 return {};
             }});
         film.views.push_back(View{
@@ -2418,7 +2421,6 @@ struct WebFilming {
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
-                          : !opt.stream                           ? "--particles carries points through every frame in order: it needs --stream"
                           : opt.window_to > 0.0                   ? "--particles is not for a --window run"
                           : opt.particles_preview                 ? "--particles and --particles-preview are two looks: use one"
                                                                   : "";
@@ -2467,6 +2469,26 @@ struct WebFilming {
         film->particle_hold->first = first;
     }
     const fs::path cache = opt.out / "cache" / film->stem;
+    const auto snapshot_file = [&cache](uint32_t frame) {
+        char name[48];
+        std::snprintf(name, sizeof name, "particles-%05u.bin", frame);
+        return cache / name;
+    };
+    if (plan.particles && !opt.stream) {
+        // Not streamed, the points are not carried: a still is redrawn from a kept frame and the particle snapshot an earlier
+        // streamed run wrote beside it (--stream --keep-frames N --web-still).
+        const uint32_t frame = first + still_k;
+        if (!(opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, frame)) && fs::exists(snapshot_file(frame)))) {
+            std::fprintf(stderr,
+                         "flow_movie: --particles carries points through every frame in order, so it needs --stream, or --web-still "
+                         "--still-frame N redrawing a still from frame %u's kept frame and its particle snapshot, both in %s\n",
+                         frame, cache.generic_string().c_str());
+            return 2;
+        }
+        auto field = read_particle_field(snapshot_file(frame));
+        if (!field) return fail(field.error());
+        particles->add_snapshot(frame, std::move(*field));
+    }
     {
         StreamAsk ask;
         ask.stream = opt.stream;
@@ -2589,6 +2611,13 @@ struct WebFilming {
             }
         }
         // The still, from the frame the plan kept for it; then those frames go unless --keep-frames keeps them.
+        if (particles && wants_still) {  // the field at the still's frame, beside the kept frame, so a still is redrawn in seconds
+            if (const ParticleField* held = particles->snapshot_at(first + still_k)) {
+                if (auto wrote = write_particle_field(snapshot_file(first + still_k), *held); !wrote) return fail(wrote.error());
+                std::printf("flow_movie: web %s: the particle field at frame %u saved in %s\n", opt.web_id.c_str(), first + still_k,
+                            snapshot_file(first + still_k).generic_string().c_str());
+            }
+        }
         if (wants_still) {
             if (auto drew = filming.still(still_k, still_w, still_h, still_png); !drew) return fail(drew.error());
             std::printf("look-ring: the mean flow held at most %zu raw frames, %.2f GB\n", filming.look_state.peak_ring_frames,

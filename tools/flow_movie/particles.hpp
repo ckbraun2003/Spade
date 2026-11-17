@@ -5,10 +5,13 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <filesystem>
+#include <fstream>
 #include <numeric>
 #include <map>
 #include <numbers>
@@ -234,6 +237,15 @@ public:
         return {};
     }
 
+    // A field made earlier (a run's snapshot, read back) as the one that shows frame k.
+    void add_snapshot(uint32_t k, ParticleField field) { snapshots_[k] = std::move(field); }
+
+    // The copy kept at frame k, or nothing: what a run writes out beside its kept frame.
+    [[nodiscard]] const ParticleField* snapshot_at(uint32_t k) const {
+        const auto it = snapshots_.find(k);
+        return it == snapshots_.end() ? nullptr : &it->second;
+    }
+
     [[nodiscard]] const ParticleField* at(uint32_t k) const {
         if (const auto it = snapshots_.find(k); it != snapshots_.end()) return &it->second;
         if (next_ > 0u && k + 1u == next_) return &live_;
@@ -277,6 +289,110 @@ private:
         points.colours.push_back(glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f)));
     }
     return points;
+}
+
+// THE DRAWN STREAKS, for the GL capsule path with additive light (FlowLineStyle::additive, FlowPolyline::alphas). One two-point
+// polyline per particle the field holds and the volume has a velocity for: the tail is where the point was `tail_s` ago along
+// its own velocity (the streak is as long as the air is fast; still air is a point), the head is the point; alpha is nothing at the
+// tail and the head's alpha at the head; the colour is by speed, deep blue and dim when slow to warm white and bright at fast_mps
+// and over. A point is born invisible and fades in over fade_in_s and fades out over the last 0.4 of max_age_s, so recycling never
+// pops. A particle in no-data has no velocity and is left out; the order is the field's.
+struct StreakLook {
+    float tail_s = 0.0025f;   // how far back along the velocity the tail reaches, seconds
+    float width_px = 2.0f;
+    float fade_in_s = 0.04f;
+    float fast_mps = 10.0f;   // the speed at which the colour reaches its warm end
+    float peak_alpha = 0.9f;  // the head's alpha when full
+};
+
+[[nodiscard]] inline std::vector<spade::render::FlowPolyline> particle_streaks(const ParticleField& field,
+                                                                              const spade::FlowVolume& volume,
+                                                                              float max_age_s, const StreakLook& look = {}) {
+    const auto smoothstep = [](float e0, float e1, float x) {
+        const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    const spade::render::FlowSampler sampler = spade::render::make_flow_sampler(volume);
+    std::vector<spade::render::FlowPolyline> out;
+    out.reserve(field.position.size());
+    for (std::size_t i = 0; i < field.position.size(); ++i) {
+        const spade::render::FlowVelocity u = spade::render::sample_velocity(sampler, field.position[i]);
+        if (u.no_data) continue;
+        const float speed = glm::length(u.u);
+        const float s = std::clamp(speed / look.fast_mps, 0.0f, 1.0f);
+        const glm::vec3 colour = glm::clamp(
+            glm::mix(glm::vec3(0.15f, 0.35f, 1.0f), glm::vec3(1.0f, 0.93f, 0.80f), s) * (0.35f + 0.65f * s), glm::vec3(0.0f),
+            glm::vec3(1.0f));
+        const float age = field.age[i];
+        const float alpha = look.peak_alpha * smoothstep(0.0f, look.fade_in_s, age) *
+                            (1.0f - smoothstep(0.6f * max_age_s, max_age_s, age));
+        spade::render::FlowPolyline line;
+        line.points = {field.position[i] - u.u * look.tail_s, field.position[i]};
+        line.colours = {colour, colour};
+        line.alphas = {0.0f, alpha};
+        line.width_px = look.width_px;
+        out.push_back(std::move(line));
+    }
+    return out;
+}
+
+// THE SNAPSHOT FILE: the field at a frame, so a still is redrawn from it and the kept frame in seconds, not from an 11-minute
+// solve. Little-endian raw: the magic "SPPART1", u32 count, u32 frames, five u64 counters (emitted, dropped, left the region, no
+// data, aged), then the positions, the previous positions (3 floats each) and the ages. Exactly that size: a short or long file is
+// refused, never half-read.
+inline constexpr std::array<char, 8> kParticleMagic{'S', 'P', 'P', 'A', 'R', 'T', '1', '\0'};
+
+[[nodiscard]] inline spade::Result<void> write_particle_field(const std::filesystem::path& path, const ParticleField& field) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return std::unexpected(spade::Error{spade::Code::io_error, "particle snapshot: cannot write " + path.string()});
+    }
+    const auto put = [&out](const void* data, std::size_t bytes) { out.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes)); };
+    const auto count = static_cast<uint32_t>(field.position.size());
+    put(kParticleMagic.data(), kParticleMagic.size());
+    put(&count, sizeof count);
+    put(&field.frames, sizeof field.frames);
+    for (const uint64_t c : {field.emitted, field.dropped, field.retired_left_region, field.retired_no_data, field.retired_aged}) {
+        put(&c, sizeof c);
+    }
+    put(field.position.data(), field.position.size() * sizeof(glm::vec3));
+    put(field.previous.data(), field.previous.size() * sizeof(glm::vec3));
+    put(field.age.data(), field.age.size() * sizeof(float));
+    out.flush();
+    if (!out) return std::unexpected(spade::Error{spade::Code::io_error, "particle snapshot: a write to " + path.string() + " failed"});
+    return {};
+}
+
+[[nodiscard]] inline spade::Result<ParticleField> read_particle_field(const std::filesystem::path& path) {
+    const auto bad = [&path](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::io_error, "particle snapshot " + path.string() + ": " + why});
+    };
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in) return bad("cannot be opened");
+    const auto size = static_cast<std::uint64_t>(in.tellg());
+    in.seekg(0);
+    constexpr std::uint64_t kHeader = 8u + 4u + 4u + 5u * 8u;
+    if (size < kHeader) return bad("is truncated (a header is " + std::to_string(kHeader) + " bytes)");
+    std::array<char, 8> magic{};
+    in.read(magic.data(), magic.size());
+    if (magic != kParticleMagic) return bad("is not a particle snapshot (the magic is wrong)");
+    uint32_t count = 0;
+    ParticleField field;
+    in.read(reinterpret_cast<char*>(&count), sizeof count);
+    in.read(reinterpret_cast<char*>(&field.frames), sizeof field.frames);
+    uint64_t* counters[5] = {&field.emitted, &field.dropped, &field.retired_left_region, &field.retired_no_data, &field.retired_aged};
+    for (uint64_t* c : counters) in.read(reinterpret_cast<char*>(c), sizeof *c);
+    if (count > (1u << 24)) return bad("holds more than 2^24 points");
+    const std::uint64_t expect = kHeader + std::uint64_t{count} * (2u * sizeof(glm::vec3) + sizeof(float));
+    if (size != expect) return bad("is truncated or has trailing bytes: " + std::to_string(size) + " bytes, " + std::to_string(expect) + " expected for " + std::to_string(count) + " points");
+    field.position.resize(count);
+    field.previous.resize(count);
+    field.age.resize(count);
+    in.read(reinterpret_cast<char*>(field.position.data()), static_cast<std::streamsize>(count * sizeof(glm::vec3)));
+    in.read(reinterpret_cast<char*>(field.previous.data()), static_cast<std::streamsize>(count * sizeof(glm::vec3)));
+    in.read(reinterpret_cast<char*>(field.age.data()), static_cast<std::streamsize>(count * sizeof(float)));
+    if (!in) return bad("could not be read to its end");
+    return field;
 }
 
 }  // namespace flow_movie
