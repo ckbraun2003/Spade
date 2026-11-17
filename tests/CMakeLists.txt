@@ -280,9 +280,12 @@ add_executable(spade_tests
     # spade_part_import's parts (L88): the codes and JSON, the part frame, the unit guess and the cache key, compiled in from the tool.
     test_part_import_basics.cpp
     test_part_import_store.cpp
+    test_part_import_run.cpp
     ../tools/part_import/report.cpp
     ../tools/part_import/transform.cpp
     ../tools/part_import/store.cpp
+    ../tools/part_import/options.cpp
+    ../tools/part_import/run.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
