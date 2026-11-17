@@ -894,6 +894,22 @@ if(GIT_FOUND AND SPADE_SH)
         TIMEOUT 120)
 endif()
 
+# The installer test's record (scripts/package-test-record.ps1, written by scripts/package-test.ps1 beside each setup.exe tested): every field
+# the owner asked for is present for a pass, a fail and a run with no smoke, and the ledger row is one line with its nine cells. Only on
+# Windows, where the installer test itself runs; no install, no display, no GPU. LABELS spade, as above.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_PACKAGE_TEST_RECORD NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/package-test-record.ps1")
+        add_test(NAME PackageTest.RecordHasEveryField
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/package_test_record_test.ps1" "${SPADE_PACKAGE_TEST_RECORD}")
+        set_tests_properties(PackageTest.RecordHasEveryField PROPERTIES
+            LABELS spade
+            TIMEOUT 120)
+    endif()
+endif()
+
 include(GoogleTest)
 # WORKING_DIRECTORY is gtest_discover_tests()'s OWN top-level keyword, not a
 # PROPERTIES entry (S5 T9 ticket B, first of two root causes -- see
