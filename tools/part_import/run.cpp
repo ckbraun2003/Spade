@@ -121,6 +121,11 @@ int result(std::ostream& out, const std::string& mode, const Problem* problem, c
     return "[" + json_number(v.x) + "," + json_number(v.y) + "," + json_number(v.z) + "]";
 }
 
+// The converter's boxes are doubles and stay doubles (a float would put 1e-9 of noise on a box in metres).
+[[nodiscard]] std::string array3(const glm::dvec3& v) {
+    return "[" + json_number(v.x) + "," + json_number(v.y) + "," + json_number(v.z) + "]";
+}
+
 }  // namespace
 
 int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std::ostream& out, std::ostream& err) {
@@ -314,7 +319,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             list += JsonObject{}
                         .str("name", sol.name)
                         .str("gate", "not_checked")
-                        .raw("bbox", JsonObject{}.raw("min", array3(glm::vec3(lo))).raw("max", array3(glm::vec3(hi))).line())
+                        .raw("bbox", JsonObject{}.raw("min", array3(lo)).raw("max", array3(hi)).line())
                         .num("volume", sol.volume_m3 * scale * scale * scale)
                         .line();
         }
