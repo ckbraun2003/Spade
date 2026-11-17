@@ -26,6 +26,7 @@
 #include <glm/glm.hpp>
 
 #include "render/scene.hpp"
+#include "wake_fade.hpp"
 
 namespace flow_movie::web {
 
@@ -38,6 +39,13 @@ inline constexpr int kCrf = 15;          // the brief's 14 to 16
 // S1's streamlines start this far below each rotor's hub along its axis (main.cpp seeds them there); the clip's caption says
 // "6 cm below", pinned to this number by FlowMovieWeb.S1sCaptionSaysWhereTheStreamlinesAreSeeded...
 inline constexpr float kWebSeedBelowHubM = 0.06f;
+
+// S1's soft streamlines (Cameron, 2026-11-17): thin lines with a glow, each faded to black over its last kSoftLineFadeM at both
+// ends (look.hpp's fade_polyline_ends), not the 4 px tubes of S6. The caption's look line says so.
+inline constexpr float kSoftLineWidthPx = 1.5f;
+inline constexpr float kSoftLineGlowPx = 6.0f;
+inline constexpr float kSoftLineGlowStrength = 0.35f;
+inline constexpr float kSoftLineFadeM = 0.15f;
 
 // quad: the reference quad's discs on the CPU film at 1 cm (S5, S6). d1: D1, the parts in the flow, in a side wind
 // (S3, S4). d1_still: D1 in still air (S1, S2, S8). (S7, the Taylor-Green clip, was dropped by Cameron: L53.)
@@ -148,7 +156,8 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     static const std::array<Clip, 7> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad in hover: streamlines of the rotor wake",
          "Streamlines seeded 6 cm below each of four actuator discs (two rings of eight round each axis) and traced both "
-         "ways, round the reference quad's rigid parts, coloured by relative speed, in one slow orbit.",
+         "ways, round the reference quad's rigid parts, coloured by relative speed and drawn as thin glowing lines that "
+         "fade out toward their ends, in one slow orbit.",
          "d1-still", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true, 150},
         {"S2", "rotor-wake-start-up-volume", "Reference quad in hover: the rotor wake as a soft volume, from the start-up",
          "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a soft volume, held "
@@ -181,12 +190,54 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return nullptr;
 }
 
+// --sgs-cs is for the D1 clips: S5 and S6 run the reference quad's CPU film, which has no subgrid term.
+[[nodiscard]] inline bool sgs_cs_applies(const Clip& clip) { return clip.scene != Scene::quad; }
+
+// ---- the camera --------------------------------------------------------------------------------------
+
+// The point a D1 web camera aims at, `below_m` below the drone's centre of mass, in world coordinates (the COM is
+// the world origin: the live run holds it there). It is NOT the box's centre: the cameras aimed at that until L60,
+// when the box stopped being symmetric about the drone (a deeper floor, the drone 0.354 m below the top face), and
+// the centre moved 0.43 m off it. In the old box (0.354 m either side in y) the two are the same point.
+[[nodiscard]] inline glm::vec3 subject_point(float below_m = 0.0f) { return glm::vec3(0.0f, -below_m, 0.0f); }
+
+// The still-air D1 clips' framing (S1, S8, S2; the lead, L63: cameras closer, the floor out of frame). The subject is
+// a sphere about subject_point(kD1StillAimBelowM) that the 10% margin fits; the camera looks DOWN only 8 degrees, so
+// the box's floor face stays below the frame's bottom edge (a steeper look at the same size puts it back in: at the
+// old 20 degrees and a 0.55 m subject the floor topped out 17% up the frame).
+inline constexpr float kD1StillAimBelowM = 0.08f;
+inline constexpr float kD1StillSubjectM = 0.40f;    // S1 and S8: the airframe (about 0.3 m) and about 0.1 m of wake
+inline constexpr float kD1PushWideM = 0.45f;        // S2: from this subject radius ...
+inline constexpr float kD1PushCloseM = 0.30f;       // ... to this one (the airframe)
+inline constexpr float kD1StillElevationDeg = 8.0f;
+inline constexpr float kD1StillAzimuthDeg = 25.0f;  // where S1, S8 and S2 start
+
 // ---- the drone ----------------------------------------------------------------------------------------
 
 // A library drone the D1 web clips can film (--drone NAME; the lead, 2026-11-17: Cameron wants a real drone model, and no
 // caption or file name carries a brand). `library` is the internal name, the model file's stem, and is never printed in a
 // caption or a delivered name; `title_noun` and `the_noun` are what a title and a sentence call the drone, `description`
 // the caption's Drone line ("" for the reference quad, whose words are today's).
+// How a drone is framed in the still-air clips (S1, S8, S2): the subject sphere's radius the camera fits, how far below the drone's
+// centre it aims, S2's push-in from wide to close, and where the wake fades out (metres below the drone's centre, and the width of
+// the soft edge at the box's side faces). A fade of zero is none: the reference quad's frames are what they always were.
+struct Framing {
+    float subject_m;
+    float aim_below_m;
+    float push_wide_m;
+    float push_close_m;
+    float wake_fade_from_below_m;
+    float wake_fade_to_below_m;
+    float side_fade_m;
+    float wake_fade_top_from_above_m;  // the inflow haze above the rotors fades from here (above the centre) ...
+    float wake_fade_top_to_above_m;    // ... to nothing here; 0, 0 is none
+
+    [[nodiscard]] WakeFade fade() const noexcept {
+        return WakeFade{side_fade_m, -wake_fade_from_below_m, -wake_fade_to_below_m, wake_fade_top_from_above_m,
+                        wake_fade_top_to_above_m};
+    }
+};
+
 struct Drone {
     std::string_view library;
     const char* model_file;  // under SPADE_ASSETS_DIR
@@ -194,14 +245,20 @@ struct Drone {
     std::string_view title_noun;
     std::string_view the_noun;
     std::string_view description;
+    Framing framing;
 };
 
 [[nodiscard]] inline const std::array<Drone, 2>& drones() {
     static const std::array<Drone, 2> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
-         "the reference quad", ""},
+         "the reference quad", "",
+         Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}},
         {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
-         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)"},
+         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
+         // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
+         // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
+         // The slow inflow above the rotors fades out over the 9 cm above their plane, so the drone reads in front of it.
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.03f, 0.12f}},
     }};
     return table;
 }
@@ -244,28 +301,6 @@ struct Drone {
     swap("D1 quad", d.title_noun);
     return text;
 }
-
-// --sgs-cs is for the D1 clips: S5 and S6 run the reference quad's CPU film, which has no subgrid term.
-[[nodiscard]] inline bool sgs_cs_applies(const Clip& clip) { return clip.scene != Scene::quad; }
-
-// ---- the camera --------------------------------------------------------------------------------------
-
-// The point a D1 web camera aims at, `below_m` below the drone's centre of mass, in world coordinates (the COM is
-// the world origin: the live run holds it there). It is NOT the box's centre: the cameras aimed at that until L60,
-// when the box stopped being symmetric about the drone (a deeper floor, the drone 0.354 m below the top face), and
-// the centre moved 0.43 m off it. In the old box (0.354 m either side in y) the two are the same point.
-[[nodiscard]] inline glm::vec3 subject_point(float below_m = 0.0f) { return glm::vec3(0.0f, -below_m, 0.0f); }
-
-// The still-air D1 clips' framing (S1, S8, S2; the lead, L63: cameras closer, the floor out of frame). The subject is
-// a sphere about subject_point(kD1StillAimBelowM) that the 10% margin fits; the camera looks DOWN only 8 degrees, so
-// the box's floor face stays below the frame's bottom edge (a steeper look at the same size puts it back in: at the
-// old 20 degrees and a 0.55 m subject the floor topped out 17% up the frame).
-inline constexpr float kD1StillAimBelowM = 0.08f;
-inline constexpr float kD1StillSubjectM = 0.40f;    // S1 and S8: the airframe (about 0.3 m) and about 0.1 m of wake
-inline constexpr float kD1PushWideM = 0.45f;        // S2: from this subject radius ...
-inline constexpr float kD1PushCloseM = 0.30f;       // ... to this one (the airframe)
-inline constexpr float kD1StillElevationDeg = 8.0f;
-inline constexpr float kD1StillAzimuthDeg = 25.0f;  // where S1, S8 and S2 start
 
 // The deeper D1 box's floor face (Physics' plan A, L60/L63), world coordinates (the COM is the origin): 1.214 m below
 // the COM, the box ±0.48 m in x and ±0.336 m in z. No wall: the face is open, so what the solve shows there is an

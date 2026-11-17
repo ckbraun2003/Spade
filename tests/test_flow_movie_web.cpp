@@ -637,6 +637,9 @@ TEST(FlowMovieWeb, EachDroneHasItsOwnFramingAndTheDefaultsIsTodays) {
     EXPECT_TRUE(p.fade().on());
     EXPECT_LT(p.fade().floor_to_y, p.fade().floor_from_y) << "world y: the floor height is below the start";
     EXPECT_GT(p.side_fade_m, 0.0f) << "the box's side faces are not drawn as a cut";
+    EXPECT_GT(p.wake_fade_top_to_above_m, p.wake_fade_top_from_above_m) << "the inflow haze above the rotors fades going up";
+    EXPECT_GT(p.fade().ceiling_to_y, p.fade().ceiling_from_y);
+    EXPECT_FALSE(web::default_drone().framing.fade().ceiling_to_y > web::default_drone().framing.fade().ceiling_from_y);
 }
 
 }  // namespace

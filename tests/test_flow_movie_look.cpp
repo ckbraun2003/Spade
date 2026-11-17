@@ -297,7 +297,9 @@ TEST(FlowMovieLook, ASoftLineFadesToBlackAtBothEndsAndIsUntouchedInTheMiddle) {
     const float third = 3.0f / 9.0f - 2.0f / 27.0f;  // smoothstep(1/3) = 3t^2 - 2t^3
     EXPECT_NEAR(line.colours[1].x, third, 1e-6f);
     EXPECT_NEAR(line.colours[1].y, 0.5f * third, 1e-6f);
-    EXPECT_EQ(line.colours[1], line.colours[9]) << "the same fade at both ends";
+    for (int lane = 0; lane < 3; ++lane) {
+        EXPECT_NEAR(line.colours[1][lane], line.colours[9][lane], 1e-5f) << "the same fade at both ends, to the float's sum";
+    }
     const float two_thirds = 2.0f / 3.0f;  // 0.10 m from the end: smoothstep(2/3)
     EXPECT_NEAR(line.colours[2].x, two_thirds * two_thirds * (3.0f - 2.0f * two_thirds), 1e-5f);
 }
@@ -406,5 +408,23 @@ TEST(FlowMovieLook, TheFadeIsDeclaredInTheLooksSentence) {
     EXPECT_NE(note.find("0.1 m"), std::string::npos) << note;
     EXPECT_NE(note.find("0.55"), std::string::npos) << note;
     EXPECT_FALSE(flow_movie::Look{}.any());
+}
+
+// The slow inflow above the rotors' plane is a haze between the camera and the airframe: the fade can also take the wake out
+// above a height (full below ceiling_from_y, nothing at or above ceiling_to_y), so the drone reads in front of the wake it makes.
+TEST(FlowMovieLook, AWakeFadesOutAboveACeilingHeightToo) {
+    auto v = uniform_down_flow(12, 0.1f, glm::vec3(-0.6f, -1.2f, -0.6f));
+    flow_movie::WakeFade fade;
+    fade.ceiling_from_y = -0.4f;
+    fade.ceiling_to_y = -0.2f;
+    EXPECT_TRUE(fade.on()) << "a ceiling alone is a fade";
+    flow_movie::fade_wake_edges(v, fade);
+    EXPECT_FLOAT_EQ(speed_down(v, 6, 4, 6), 5.0f) << "y = -0.75: below the ceiling's start";
+    EXPECT_FLOAT_EQ(speed_down(v, 6, 11, 6), 0.0f) << "y = -0.05: above where it is gone";
+    const float t = (-0.25f - -0.4f) / 0.2f;  // the cell centre at y = -0.25 is 0.75 of the way up the fade
+    EXPECT_NEAR(speed_down(v, 6, 9, 6), 5.0f * (1.0f - t * t * (3.0f - 2.0f * t)), 5.0f * 2e-3f);
+    flow_movie::Look look;
+    look.fade = fade;
+    EXPECT_NE(flow_movie::look_note(look, 2.0).find("above"), std::string::npos) << "declared, not hidden";
 }
 

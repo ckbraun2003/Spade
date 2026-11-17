@@ -1326,7 +1326,8 @@ struct HeldPose {
                 return {};
             }});
         film.views.push_back(View{
-            "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, coloured by speed |u|, 0 to 12 m/s",
+            "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, thin and faded toward their ends, coloured by speed |u|, "
+            "0 to 12 m/s",
             [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
                              render::Camera& camera) -> spade::Result<void> {
                 frame_on_drone(v, k, n, camera);
@@ -1349,9 +1350,11 @@ struct HeldPose {
                 }
                 render::StreamlineOptions options;
                 options.max_steps = 1200;
+                const std::size_t first_line = scene.flow_polylines.size();
                 if (auto ok = add_streamlines(scene, v, seeds, options, web_colours); !ok) {
                     return std::unexpected(ok.error());
                 }
+                fade_polylines_from(scene, first_line, web::kSoftLineFadeM);  // S1 only draws this view's lines soft
                 return std::string();
             }});
     }
@@ -1459,6 +1462,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
 // 2026-11-10: line width as quads, coverage anti-aliasing and a glow, on black). The one-pixel line is a hairline
 // at 4K; the engine's default stays it, so only a view that asks gets this.
 constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
+constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kSoftLineGlowPx, web::kSoftLineGlowStrength};
 
 // `base`'s view with its polylines (the streamlines and the rims) drawn in `style`.
 [[nodiscard]] View with_line_style(const View& base, render::FlowLineStyle style) {
@@ -1534,22 +1538,23 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
         const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
-        const glm::vec3 still_aim = web::subject_point(web::kD1StillAimBelowM);
+        const web::Framing& framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        const glm::vec3 still_aim = web::subject_point(framing.aim_below_m);
         if (id == "S1") {
             view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
+                return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), web::kD1StillElevationDeg);
             }, false);
         } else if (id == "S8") {
             view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
+                return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              web::kD1StillElevationDeg);
             }, false);
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
             view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                const float wide = web::fit_distance(web::kD1PushWideM, kWebFov, kWebAspect, fit);
-                const float close = web::fit_distance(web::kD1PushCloseM, kWebFov, kWebAspect, fit);
+                const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
+                const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
                 return orbit(still_aim, web::push_in_distance(wide, close, k, n), web::kD1StillAzimuthDeg,
                              web::kD1StillElevationDeg);
             }, false);
@@ -1565,7 +1570,8 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
             }, true);
         }
     }
-    if (id == "S1" || id == "S6") view = with_line_style(view, kWebLineStyle);  // the clips that are lines
+    if (id == "S1") view = with_line_style(view, kWebSoftLineStyle);  // soft: thin, glowing, faded at the ends
+    if (id == "S6") view = with_line_style(view, kWebLineStyle);
     film.views.clear();
     film.views.push_back(std::move(view));
     film.stem = web_stem(group, plan);
@@ -2282,7 +2288,8 @@ struct WebFilming {
 
 // Films one website master: simulates (unless cached), draws its frames at 3840x2160 into <out>/web/<name>.mp4 and
 // its caption beside it, and, for the four that have one (or --web-still), a 5120x2880 PNG. Nothing leaves <out>.
-[[nodiscard]] int run_web(const Options& opt, GlStage& stage, const Encoder& encoder) {
+[[nodiscard]] int run_web(const Options& opt_in, GlStage& stage, const Encoder& encoder) {
+    Options opt = opt_in;  // the drone's framing sets the wake's fade (the volume clips' look), declared in the caption
     const web::Clip* clip = web::find_clip(opt.web_id);
     if (clip == nullptr) {
         std::fprintf(stderr, "flow_movie: --web %s is not one of the web clips S1 to S6 and S8\n", opt.web_id.c_str());
@@ -2310,6 +2317,7 @@ struct WebFilming {
                      opt.web_id.c_str());
         return 2;
     }
+    if (clip->id == "S2" || clip->id == "S8") opt.look.fade = drone->framing.fade();  // S1's lines are traced in the true flow
     WebPlan plan;
     plan.look = opt.look;
     plan.drone = drone;
