@@ -81,6 +81,10 @@ add_executable(spade_tests
     ../tools/geo_fetch/raster_formats.cpp
     test_geo_cache_store.cpp
     ../tools/geo_fetch/cache_store.cpp
+    test_geo_fetch.cpp
+    ../tools/geo_fetch/fetch.cpp
+    test_geo_cli.cpp
+    ../tools/geo_fetch/cli.cpp
     test_mesh_import.cpp
     test_state.cpp
     test_snapshot.cpp
