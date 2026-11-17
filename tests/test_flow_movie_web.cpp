@@ -549,4 +549,14 @@ TEST(FlowMovieWeb, TheSgsCsOptionIsParsedStrictlyAndNamesItsOwnCacheFolder) {
     for (const char* id : {"S5", "S6"}) EXPECT_FALSE(web::sgs_cs_applies(*web::find_clip(id))) << id;
 }
 
+// S1's caption says where the streamlines start, and says what the code does: seeded 6 cm BELOW each disc's hub (in two rings
+// of eight round the axis) and traced both ways. It once said "above each of four actuator discs", which the picture contradicts.
+TEST(FlowMovieWeb, S1sCaptionSaysWhereTheStreamlinesAreSeededAndHowTheyAreTraced) {
+    const std::string shows(web::find_clip("S1")->shows);
+    EXPECT_NE(shows.find("6 cm below"), std::string::npos) << shows;
+    EXPECT_NE(shows.find("both ways"), std::string::npos) << shows;
+    EXPECT_EQ(shows.find("above"), std::string::npos) << shows;
+    EXPECT_FLOAT_EQ(web::kWebSeedBelowHubM, 0.06f) << "the sentence and the seeds share one number";
+}
+
 }  // namespace
