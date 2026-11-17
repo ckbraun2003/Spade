@@ -71,6 +71,20 @@ private:
     std::vector<uint32_t> keep_;
 };
 
+// The frames a streamed run keeps until its solve is done: the --keep-frames list, and the frames its still reads (the
+// still's own and the mean window ending at it), each once, sorted. The still is drawn after the solve, from them.
+[[nodiscard]] inline std::vector<uint32_t> keep_with_still(std::vector<uint32_t> keep, std::optional<uint32_t> still,
+                                                           uint32_t mean_frames) {
+    if (still) {
+        const uint32_t m = std::max(mean_frames, 1u);
+        const uint32_t lo = *still + 1u > m ? *still + 1u - m : 0u;
+        for (uint32_t j = lo; j <= *still; ++j) keep.push_back(j);
+    }
+    std::sort(keep.begin(), keep.end());
+    keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+    return keep;
+}
+
 // --keep-frames text: whole frame numbers split by commas, no blanks, none empty; sorted, each once.
 [[nodiscard]] inline std::optional<std::vector<uint32_t>> parse_frame_list(std::string_view text) {
     if (text.empty()) return std::nullopt;

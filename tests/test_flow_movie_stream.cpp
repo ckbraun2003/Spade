@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -191,4 +192,23 @@ TEST(FlowMovieStream, ADiagnosticStillsNameSaysWhatItShows) {
     EXPECT_EQ(flow_movie::diag_still_name("S3", 7u, 0.25f, 1280u, 720u, level_only), "S3-f7-cs0.25-1280x720-l2-12.5.png");
     EXPECT_NE(flow_movie::diag_still_name("S2", 150u, 0.17f, 1920u, 1080u, none),
               flow_movie::diag_still_name("S2", 150u, 0.0f, 1920u, 1080u, none));
+}
+
+// A streamed clip that also draws a still draws it AFTER the solve (a stage made mid-solve ends the clip's GL context: a
+// GlStage's destructor calls glfwTerminate), so the still's frame, and the mean window it reads, must stay on disk until the
+// solve is done. keep_with_still() is the --keep-frames list plus those frames.
+TEST(FlowMovieStream, AStillsFrameAndItsMeanWindowStayOnDiskUntilTheSolveIsDone) {
+    EXPECT_EQ(flow_movie::keep_with_still({}, 300u, 1u), (std::vector<uint32_t>{300u}));
+    EXPECT_EQ(flow_movie::keep_with_still({150u}, 300u, 1u), (std::vector<uint32_t>{150u, 300u}));
+    EXPECT_EQ(flow_movie::keep_with_still({150u}, 300u, 3u), (std::vector<uint32_t>{150u, 298u, 299u, 300u}));
+    EXPECT_EQ(flow_movie::keep_with_still({299u}, 300u, 3u), (std::vector<uint32_t>{298u, 299u, 300u})) << "each frame once";
+    EXPECT_EQ(flow_movie::keep_with_still({}, 1u, 10u), (std::vector<uint32_t>{0u, 1u})) << "the window stops at frame 0";
+    EXPECT_EQ(flow_movie::keep_with_still({7u}, std::nullopt, 10u), (std::vector<uint32_t>{7u})) << "no still, nothing added";
+    // With them in the plan the frames outlive every draw, so the still can read them once the solve has ended.
+    const auto keep = flow_movie::keep_with_still({}, 200u, 3u);
+    const flow_movie::StreamPlan plan(range(150, 300), 3u, keep);  // a clip over 150 to 449, its still at 200
+    for (const uint32_t j : {198u, 199u, 200u}) {
+        EXPECT_FALSE(plan.spent(j, 449u)) << j;
+    }
+    EXPECT_TRUE(plan.spent(197u, 449u));
 }

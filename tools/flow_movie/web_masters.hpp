@@ -35,6 +35,10 @@ inline constexpr uint32_t kFps = 30;
 inline constexpr float kMargin = 0.10f;  // clear space on every side, a fraction of the frame
 inline constexpr int kCrf = 15;          // the brief's 14 to 16
 
+// S1's streamlines start this far below each rotor's hub along its axis (main.cpp seeds them there); the clip's caption says
+// "6 cm below", pinned to this number by FlowMovieWeb.S1sCaptionSaysWhereTheStreamlinesAreSeeded...
+inline constexpr float kWebSeedBelowHubM = 0.06f;
+
 // quad: the reference quad's discs on the CPU film at 1 cm (S5, S6). d1: D1, the parts in the flow, in a side wind
 // (S3, S4). d1_still: D1 in still air (S1, S2, S8). (S7, the Taylor-Green clip, was dropped by Cameron: L53.)
 enum class Scene : uint8_t { quad, d1, d1_still };
@@ -143,8 +147,8 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 [[nodiscard]] inline const std::array<Clip, 7>& web_clips() {
     static const std::array<Clip, 7> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad in hover: streamlines of the rotor wake",
-         "Streamlines seeded above each of four actuator discs round the reference quad's rigid parts, coloured by "
-         "relative speed, in one slow orbit.",
+         "Streamlines seeded 6 cm below each of four actuator discs (two rings of eight round each axis) and traced both "
+         "ways, round the reference quad's rigid parts, coloured by relative speed, in one slow orbit.",
          "d1-still", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true, 150},
         {"S2", "rotor-wake-vortex-surfaces", "Reference quad in hover: vortex surfaces from the start-up",
          "Vortex surfaces (lambda2) round the reference quad's rigid parts, held at hover in still air, from the "
