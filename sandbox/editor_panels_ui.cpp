@@ -503,7 +503,12 @@ void collision_section(ed::EditorPanels& p, const std::string& vehicle, const ve
                 case Kind::hull:
                     ui::property_row("Points");
                     ImGui::AlignTextToFramePadding();
-                    ImGui::TextDisabled("%zu, of at most %u", m.shape->points.size(), physics::kShapeMaxPoints);
+                    {
+                        char points[64];
+                        std::snprintf(points, sizeof points, "%zu, of at most %u", m.shape->points.size(),
+                                      static_cast<unsigned>(physics::kShapeMaxPoints));
+                        ui::cell_text(points, ui::Tone::dim);
+                    }
                     number("Skin (m)", "##skin", &m.shape->radius, 1, &s.radius, "%.4g");
                     break;
                 case Kind::none: break;
