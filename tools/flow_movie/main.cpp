@@ -2303,7 +2303,8 @@ struct WebFilming {
     plan.to_s = opt.window_to > 0.0
                     ? opt.window_to
                     : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame, group->step_s);
-    plan.grid = opt.grid;
+    // L63: the still-air clips run in their own, deeper box; the quad's clips (S5, S6) have no D1 grid at all.
+    plan.grid = clip->scene == web::Scene::quad ? opt.grid : std::optional(d1_web_grid(clip->scene == web::Scene::d1_still, opt.grid));
     // The clip draws its frames from the group's cache, from `first` on (a --window run spreads its own frames).
     const uint32_t first = opt.window_to > 0.0 ? 0u : clip->first_frame;
     if (first >= plan.frames) {

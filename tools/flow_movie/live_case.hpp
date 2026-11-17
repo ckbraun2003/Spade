@@ -116,6 +116,14 @@ using spade::testing::kD1Grid;
 // D1 in STILL AIR (the lead, 2026-11-10: "a hovering-quadrotor run"): the same case with the wind taken off, as
 // Physics' hover-download row sets it (flight kind hover, speed 0), the parts as solids and the throttle the
 // still-air hover. `grid` as d1_live_case().
+// The box a website D1 clip runs in: `requested` (--grid) when given; else the deeper box for the still-air clips (S1, S2,
+// S8: L63, the cameras' floor is 1.214 m under the drone), the shallow one for the side-wind clips (S3, S4).
+[[nodiscard]] inline spade::physics::airflow::GridShape d1_web_grid(
+    bool still_air, const std::optional<spade::physics::airflow::GridShape>& requested) {
+    if (requested) return *requested;
+    return still_air ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid;
+}
+
 [[nodiscard]] spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
                                                        float heading_deg, float step_s, float sgs_cs);
 
