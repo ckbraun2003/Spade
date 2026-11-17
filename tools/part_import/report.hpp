@@ -57,6 +57,7 @@ public:
     JsonObject& boolean(std::string_view key, bool value);
     JsonObject& null(std::string_view key);
     JsonObject& raw(std::string_view key, std::string_view json);  // a value already in JSON form: an array, an object
+    JsonObject& merge(const JsonObject& other);                   // the other object's keys after this one's
     [[nodiscard]] std::string line() const;                        // {"a":1,"b":"x"}, no newline
 
 private:

@@ -143,6 +143,13 @@ JsonObject& JsonObject::raw(std::string_view key, std::string_view json) {
     put(body_, key, std::string(json));
     return *this;
 }
+JsonObject& JsonObject::merge(const JsonObject& other) {
+    if (!other.body_.empty()) {
+        if (!body_.empty()) body_.push_back(',');
+        body_ += other.body_;
+    }
+    return *this;
+}
 std::string JsonObject::line() const { return "{" + body_ + "}"; }
 
 }  // namespace spade::partimport
