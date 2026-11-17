@@ -428,3 +428,20 @@ TEST(FlowMovieLook, AWakeFadesOutAboveACeilingHeightToo) {
     EXPECT_NE(flow_movie::look_note(look, 2.0).find("above"), std::string::npos) << "declared, not hidden";
 }
 
+// The drawing's per-frame field steps are one function (main.cpp's apply_look calls it after the mean flow): smoothing, the cull and the
+// wake's fade, in that order. The fade was once written, tested alone and never called: the stills drew the unfaded wake. A Look with
+// only a fade must change the volume through THIS function, and a Look with nothing must not.
+TEST(FlowMovieLook, TheFieldStepsOfALookIncludeTheFade) {
+    auto v = uniform_down_flow(12, 0.1f, glm::vec3(-0.6f, -1.2f, -0.6f));
+    const auto before = v;
+    flow_movie::Look nothing;
+    flow_movie::finish_look(nothing, v);
+    EXPECT_EQ(v.v, before.v);
+    flow_movie::Look fades;
+    fades.fade.side_m = 0.2f;
+    EXPECT_TRUE(fades.any());
+    flow_movie::finish_look(fades, v);
+    EXPECT_LT(speed_down(v, 0, 9, 6), 1.0f) << "the cell 0.05 m from the -x face is faded";
+    EXPECT_FLOAT_EQ(speed_down(v, 6, 9, 6), 5.0f) << "the middle is not";
+}
+
