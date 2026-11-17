@@ -230,6 +230,7 @@ private:
     uint32_t line_elements_ = 0;
     uint32_t line_n_sub_ = 1;
     bool line_tip_ = false;
+    uint32_t line_binned_pipeline_ = 0;  // airflow_line_spread_binned's, when binned
     uint32_t line_chain_ = 0;     // sample, load and the three spreads, the force read back
     physics::airflow::PolarTable line_polar_{};
     std::vector<physics::airflow::LineReport> line_reports_;
@@ -238,6 +239,9 @@ private:
     std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_chains_{};  // advect (two passes) and the release, by disc count
     bool tip_on_ = false;        // DyeSetup::tip: the tip release's kernel follows the publish's pipeline
     float tip_frac_ = 1.0f;
+    bool line_binned_ = false;   // LineSetup::binned: the spread by rotor boxes
+    uint32_t line_rotors_ = 0;
+    uint64_t line_ranges_at_ = 0;  // where the rotor boxes start in the elements buffer, in floats
     bool tip_live_ = false;      // this step has lines, so its tip points are in the elements buffer
     std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_tip_chains_{};  // the same with the tip release after the discs'
     bool phase_timing_ = false;

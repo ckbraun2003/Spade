@@ -212,7 +212,9 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     auto ctx = spade::compute::VulkanContext::create(
         spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
-    const ag::LineSetup line_setup{.polar = &prop->polar, .elements = elements, .n_sub = n_sub, .tip_correction = true};
+    const ag::LineSetup line_setup{.polar = &prop->polar, .elements = elements, .n_sub = n_sub, .tip_correction = true,
+                                 .binned = env_cstr("SPADE_LINE_STILLS_UNBINNED") == nullptr,
+                                 .rotors = static_cast<uint32_t>(ph.rows.size())};
     // The tips' release (the helices) and, with SPADE_LS_RING=1, the disc tip ring's as before; SPADE_TIP_GAIN is the tip release's gain.
     af::DyeRelease ring{};
     if (flow_still::env_cstr("SPADE_LS_RING") == nullptr) ring.rate = 0.0f;

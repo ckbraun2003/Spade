@@ -151,6 +151,32 @@ std::vector<af::LineReport> line_reports(const LineRecords& records, std::span<c
     return out;
 }
 
-std::vector<float> line_ranges(const LineRecords&) { return {}; }
+std::vector<float> line_ranges(const LineRecords& records) {
+    std::vector<float> out;
+    out.reserve(records.per_rotor.size() * kLineRangeWords);
+    uint32_t first = 0;
+    for (const uint32_t count : records.per_rotor) {
+        out.push_back(static_cast<float>(first));
+        out.push_back(static_cast<float>(count));
+        for (uint32_t c = 0; c < 3; ++c) {
+            float lo[3] = {0.0f, 0.0f, 0.0f};
+            float hi[3] = {0.0f, 0.0f, 0.0f};
+            for (uint32_t e = first; e < first + count; ++e) {
+                const float* comp = records.elems.data() + std::size_t{e} * kLineStride + kLineHeaderWords +
+                                    std::size_t{c} * kLineComponentWords;  // lo x, y, z, then n x, y, z
+                for (int a = 0; a < 3; ++a) {
+                    const float l = comp[a];
+                    const float h = comp[a] + comp[3 + a];
+                    lo[a] = e == first ? l : std::min(lo[a], l);
+                    hi[a] = e == first ? h : std::max(hi[a], h);
+                }
+            }
+            out.insert(out.end(), lo, lo + 3);
+            out.insert(out.end(), hi, hi + 3);
+        }
+        first += count;
+    }
+    return out;
+}
 
 }  // namespace spade::airflow_gpu
