@@ -93,6 +93,7 @@ add_executable(spade_tests
     test_rng_medium.cpp
     test_integrator.cpp
     test_contacts.cpp
+    test_no_body_contact.cpp
     test_grid.cpp
     test_forces.cpp
     test_airflow_grid.cpp
@@ -407,6 +408,7 @@ if(SPADE_VULKAN)
         test_gpu_module_schedule.cpp
         test_gpu_contact_sets.cpp
         test_gpu_contact_pass.cpp
+        test_gpu_no_body_contact.cpp
         test_gpu_translation_lock.cpp
         test_admit.cpp
         test_gpu_mirror_staging.cpp

@@ -80,6 +80,13 @@ namespace body_flags {
 // flags == 0 will silently never move.
 inline constexpr uint32_t active = 1u << 0;
 
+// Slot 1 (L87): this body takes no part in DYNAMIC contact, the body-body pairs. The grid build (grid.cpp and
+// grid_build.slang) does not list it, so it is neither tested against nor pushed by any other body, and no other body is
+// pushed by it. A bare body KAT holds on a path as a target is flown through by an interceptor. Static contact with the
+// world (contacts.cpp, rigid_contact), forces, the integrator and everything else read the body as before. Clear (the
+// default, every body today) is bit for bit what it was. Set by BodySpawn::no_body_contact.
+inline constexpr uint32_t no_body_contact = 1u << 1;
+
 }  // namespace body_flags
 
 // ---------------------------------------------------------------------------

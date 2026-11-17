@@ -227,9 +227,11 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_forces_drag_points, "forces_drag_points", 64, 0xdac2f0a5b0d69820ull},
     {&spade::compute::gen::kSpvVariants_forces_drag_points, "forces_drag_points", 128, 0x2bbcb95b5064d260ull},
     {&spade::compute::gen::kSpvVariants_fp32_math_probe, "fp32_math_probe", 64, 0x7925132bb5e42de4ull},
-    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 32, 0xd17ec7bac8ae24b9ull},
-    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 64, 0x30ec0aac95579959ull},
-    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 128, 0x399c70433a457099ull},
+    // L87: grid_build.slang skips a body flagged no_body_contact (one more bit test at the listing, matching grid.cpp);
+    // the three variants changed for that reason alone, and no other kernel did.
+    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 32, 0x01018001b786ad12ull},
+    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 64, 0x6be53a52b43d7c32ull},
+    {&spade::compute::gen::kSpvVariants_grid_build, "grid_build", 128, 0x37b3bf39d123ea72ull},
     {&spade::compute::gen::kSpvVariants_grid_sort, "grid_sort", 32, 0x642930fd030ae986ull},
     {&spade::compute::gen::kSpvVariants_grid_sort, "grid_sort", 64, 0x64e34942ac9d9de6ull},
     {&spade::compute::gen::kSpvVariants_grid_sort, "grid_sort", 128, 0x1908a33d8303d0a6ull},

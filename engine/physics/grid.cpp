@@ -353,6 +353,10 @@ uint32_t build_broad_phase(std::span<const BodyState> bodies,
     for (std::size_t i = 0; i < n; ++i) {
         const BodyState& body = bodies[i];
         if ((body.flags & body_flags::active) == 0u) continue;
+        // L87: a body flagged no_body_contact is not listed, so no pair has it as either member: it is neither tested
+        // against nor pushed, and pushes no one. grid_build.slang makes the same test. A clear flag (every body today)
+        // costs this one more bit test and changes nothing.
+        if ((body.flags & body_flags::no_body_contact) != 0u) continue;
 
         const uint32_t world = slot_to_world[i];
         if (world == kInvalidWorld) continue;

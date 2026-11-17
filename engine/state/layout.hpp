@@ -133,7 +133,7 @@ struct alignas(kStd430StructAlignment) BodyState {
     // value, so a plain body's slot and a part-less model's are unchanged.
     uint32_t contact_set;
     glm::vec3 inv_inertia_diag;  // body-frame 1/I diagonal, 1/(kg m^2)
-    uint32_t flags;              // per-body predicate bits (none assigned yet)
+    uint32_t flags;              // per-body predicate bits: physics/integrator.hpp body_flags (0 active, 1 no_body_contact)
     glm::vec3 force_acc;         // world-frame accumulated force, N
     float _p2;                   // std430 pad
     glm::vec3 torque_acc;        // BODY-frame accumulated torque, N m (see frames note above)
