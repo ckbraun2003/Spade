@@ -24,6 +24,7 @@
 #include "../tools/flow_movie/look.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "render/scene.hpp"
 
 namespace {
 
@@ -272,3 +273,58 @@ TEST(FlowMovieLook, AnOptionThatCannotApplyToAClipIsRefusedByNameAndAnyOtherIsNo
     EXPECT_NE(flow_movie::look_refusal("S5", false, mean_only), "") << "the quad's CPU film is not the D1 flow";
     EXPECT_NE(flow_movie::look_refusal("S2", true, cull_no_level).find("--min-cells"), std::string::npos);
 }
+
+// S1's soft streamlines (Cameron, 2026-11-17: "playdoh"; the streamlines should read as light, not tubes): thin lines with a
+// glow, each dimmed to black toward both of its ends along its length, so it fades into the black background instead of
+// stopping. A smoothstep of the arc length to the nearer end, over fade_m; a line shorter than twice fade_m never reaches full.
+namespace {
+spade::render::FlowPolyline straight_line(std::size_t points, float spacing) {
+    spade::render::FlowPolyline line;
+    for (std::size_t i = 0; i < points; ++i) {
+        line.points.emplace_back(spacing * static_cast<float>(i), 0.0f, 0.0f);
+        line.colours.emplace_back(1.0f, 0.5f, 0.25f);
+    }
+    return line;
+}
+}  // namespace
+
+TEST(FlowMovieLook, ASoftLineFadesToBlackAtBothEndsAndIsUntouchedInTheMiddle) {
+    auto line = straight_line(11, 0.05f);  // 0.5 m
+    flow_movie::fade_polyline_ends(line, 0.15f);
+    EXPECT_EQ(line.colours.front(), glm::vec3(0.0f));
+    EXPECT_EQ(line.colours.back(), glm::vec3(0.0f));
+    for (const std::size_t i : {3u, 4u, 5u, 6u, 7u}) EXPECT_EQ(line.colours[i], glm::vec3(1.0f, 0.5f, 0.25f)) << i;
+    const float third = 3.0f / 9.0f - 2.0f / 27.0f;  // smoothstep(1/3) = 3t^2 - 2t^3
+    EXPECT_NEAR(line.colours[1].x, third, 1e-6f);
+    EXPECT_NEAR(line.colours[1].y, 0.5f * third, 1e-6f);
+    EXPECT_EQ(line.colours[1], line.colours[9]) << "the same fade at both ends";
+    const float two_thirds = 2.0f / 3.0f;  // 0.10 m from the end: smoothstep(2/3)
+    EXPECT_NEAR(line.colours[2].x, two_thirds * two_thirds * (3.0f - 2.0f * two_thirds), 1e-5f);
+}
+
+TEST(FlowMovieLook, AShortSoftLineNeverReachesFullAndAZeroFadeChangesNothing) {
+    auto line = straight_line(5, 0.05f);  // 0.2 m, shorter than twice 0.15
+    flow_movie::fade_polyline_ends(line, 0.15f);
+    const float t = 0.1f / 0.15f;
+    EXPECT_NEAR(line.colours[2].x, t * t * (3.0f - 2.0f * t), 1e-5f);
+    EXPECT_LT(line.colours[2].x, 1.0f);
+    auto unchanged = straight_line(5, 0.05f);
+    flow_movie::fade_polyline_ends(unchanged, 0.0f);
+    EXPECT_EQ(unchanged.colours, straight_line(5, 0.05f).colours);
+    spade::render::FlowPolyline one;
+    one.points.emplace_back(0.0f, 0.0f, 0.0f);
+    one.colours.emplace_back(1.0f, 1.0f, 1.0f);
+    flow_movie::fade_polyline_ends(one, 0.15f);  // nothing to fade along: no crash, no change
+    EXPECT_EQ(one.colours.front(), glm::vec3(1.0f));
+}
+
+TEST(FlowMovieLook, OnlyTheLinesAddedByTheViewAreFaded) {
+    spade::render::RenderScene scene;
+    scene.flow_polylines.push_back(straight_line(11, 0.05f));  // a rim, say: drawn before the streamlines
+    const std::size_t from = scene.flow_polylines.size();
+    scene.flow_polylines.push_back(straight_line(11, 0.05f));
+    flow_movie::fade_polylines_from(scene, from, 0.15f);
+    EXPECT_EQ(scene.flow_polylines[0].colours.front(), glm::vec3(1.0f, 0.5f, 0.25f));
+    EXPECT_EQ(scene.flow_polylines[1].colours.front(), glm::vec3(0.0f));
+}
+
