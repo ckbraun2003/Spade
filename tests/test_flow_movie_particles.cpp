@@ -10,6 +10,7 @@
 //   FlowMovieParticles.TheSame*    the same frames, pool and options give the same state, bit for bit
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <vector>
@@ -250,5 +251,56 @@ TEST(FlowMovieParticles, ADriverWithAnOpenRegionKeepsPointsInsideTheVolumeLessOn
     ASSERT_TRUE(driver.advance(0u, v, 0.0));
     ASSERT_TRUE(driver.advance(1u, v, 0.02));  // 0.2 m on: x = 0.8
     EXPECT_EQ(driver.at(1u)->retired_left_region, 1u);
+}
+
+// A pool whose first half is the rotor shells and second half the far field would emit the shells for the first half of its
+// cycle and the far field for the second: spread_pool() permutes it by a fixed stride coprime to its length, so any run of
+// frames takes from both. Same points, deterministic, no RNG.
+TEST(FlowMovieParticles, ASpreadPoolHoldsTheSamePointsAndMixesTheGroupsInAnyShortRun) {
+    std::vector<glm::vec3> pool;
+    for (int i = 0; i < 1000; ++i) pool.emplace_back(0.0f, static_cast<float>(i), 0.0f);    // group A: y < 500
+    for (int i = 0; i < 1000; ++i) pool.emplace_back(1.0f, static_cast<float>(i), 0.0f);    // group B: x = 1
+    const auto spread = flow_movie::spread_pool(pool);
+    ASSERT_EQ(spread.size(), pool.size());
+    auto sorted = [](std::vector<glm::vec3> v) {
+        std::sort(v.begin(), v.end(), [](const glm::vec3& a, const glm::vec3& b) {
+            return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z);
+        });
+        return v;
+    };
+    EXPECT_EQ(sorted(spread), sorted(pool)) << "a permutation";
+    EXPECT_EQ(spread, flow_movie::spread_pool(pool)) << "deterministic";
+    for (std::size_t from = 0; from + 100u <= spread.size(); from += 100u) {
+        int b = 0;
+        for (std::size_t i = from; i < from + 100u; ++i) b += spread[i].x > 0.5f ? 1 : 0;
+        EXPECT_GE(b, 25) << "frames from " << from;
+        EXPECT_LE(b, 75) << "frames from " << from;
+    }
+    EXPECT_TRUE(flow_movie::spread_pool({}).empty());
+    EXPECT_EQ(flow_movie::spread_pool({glm::vec3(1.0f)}).size(), 1u);
+}
+
+// The drawn points: one per live particle, bright where it was seeded and dimmer and bluer as it ages, never outside [0, 1].
+TEST(FlowMovieParticles, DrawnPointsAreOnePerParticleBrightestWhenNewAndNeverOutsideZeroToOne) {
+    flow_movie::ParticleField f;
+    f.position = {glm::vec3(0.0f), glm::vec3(1.0f), glm::vec3(2.0f)};
+    f.previous = f.position;
+    f.age = {0.0f, 0.25f, 0.5f};
+    const spade::render::FlowPoints p = flow_movie::particle_points(f, 0.5f, 4u);
+    ASSERT_EQ(p.positions.size(), 3u);
+    ASSERT_EQ(p.colours.size(), 3u);
+    EXPECT_EQ(p.size_px, 4u);
+    EXPECT_EQ(p.positions[1], glm::vec3(1.0f));
+    auto brightness = [](glm::vec3 c) { return c.x + c.y + c.z; };
+    EXPECT_GT(brightness(p.colours[0]), brightness(p.colours[1]));
+    EXPECT_GT(brightness(p.colours[1]), brightness(p.colours[2]));
+    EXPECT_GT(p.colours[2].z, p.colours[2].x) << "an old point is blue";
+    for (const glm::vec3& c : p.colours) {
+        for (int a = 0; a < 3; ++a) {
+            EXPECT_GE(c[a], 0.0f);
+            EXPECT_LE(c[a], 1.0f);
+        }
+    }
+    EXPECT_TRUE(spade::render::validate_flow_points(p));
 }
 
