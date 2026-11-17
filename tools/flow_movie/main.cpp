@@ -59,6 +59,7 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <deque>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -79,6 +80,7 @@
 #include "gpu_live.hpp"
 #endif
 #include "live_case.hpp"
+#include "look.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
 #include "subnormal_scan.hpp"
@@ -453,6 +455,11 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
                     static_cast<unsigned long long>(run->state().steps), save.string().c_str());
     } else {
         mark_cache(cache, mark);
+    }
+    if (!lc.domain.empty()) {  // L86c: the resolved domain, in the log and beside the frames (a resume repeats the same line)
+        std::printf("[ %s ] %s\n", film.stem.c_str(), lc.domain.c_str());
+        std::ofstream named(cache / "domain.txt", std::ios::binary | std::ios::trunc);
+        named << lc.domain << '\n';
     }
     std::ofstream lines(cache / "run.txt", std::ios::binary | std::ios::trunc);
     for (const std::string& line : kept) lines << line << '\n';
@@ -1180,7 +1187,8 @@ struct HeldPose {
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions. `gpu`: its fluid
 // on GpuFluid with no parts in the flow (--gpu), which its card says first.
-[[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false) {
+[[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
+                                            const Look& look = {}) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1256,15 +1264,16 @@ struct HeldPose {
         colours_over(render::FlowQuantity::speed, render::ColourMapId::viridis, 0.0f, speed_top);
     film.views.push_back(View{
         "flow",
-        "lambda2 vortex surfaces at 1/" + fixed(1.0 / vortex_fraction, 0) +
-            " of the frame's deepest core, coloured by speed |u|, 0 to " + fixed(speed_top, 0) + " m/s",
-        [speed_colours, vortex_fraction](const spade::FlowVolume& v, uint32_t k, uint32_t n,
-                                         render::RenderScene& scene, render::Camera& camera) -> spade::Result<void> {
-            const float deepest = v.header.channel_min[spade::kFlowLambda2Hat];
-            if (deepest < kVortexFloor) {
+        (look.l2_level > 0.0f ? "lambda2 vortex surfaces at lambda2-hat = -" + fixed(look.l2_level, 0) + " 1/s"
+                              : "lambda2 vortex surfaces at 1/" + fixed(1.0 / vortex_fraction, 0) +
+                                    " of the frame's deepest core") +
+            ", coloured by speed |u|, 0 to " + fixed(speed_top, 0) + " m/s",
+        [speed_colours, vortex_fraction, look](const spade::FlowVolume& v, uint32_t k, uint32_t n,
+                                               render::RenderScene& scene, render::Camera& camera) -> spade::Result<void> {
+            if (const std::optional<float> level = vortex_iso(v, look, vortex_fraction, kVortexFloor)) {
                 render::IsoSurface iso;
                 iso.quantity = render::FlowQuantity::lambda2_hat;
-                iso.value = deepest * vortex_fraction;
+                iso.value = *level;
                 iso.colour_by = speed_colours;
                 scene.flow_layers.push_back(render::FlowLayer{&v, {}, {iso}});
             }
@@ -1395,6 +1404,7 @@ struct WebPlan {
     uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
+    Look look;                        // the look options (look.hpp): declared in the caption, never hidden
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1494,7 +1504,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
                                    static_cast<float>(web::kD1WebStepS), plan.sgs_cs);
         if (!lc) return std::unexpected(lc.error());
-        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false);
+        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
@@ -1548,17 +1558,58 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
 // Frame k of the cache, drawn through the film's one view for a clip of n frames: the scene on pure black, the
 // view's shot, the held drone's parts and what the view draws on them. `note` takes the view's legend line.
 
+// What the look options keep between frames: the raw frames the mean flow reads, oldest first.
+struct LookState {
+    Look look;
+    struct Held {
+        uint32_t index;
+        spade::FlowVolume volume;
+    };
+    std::deque<Held> ring;
+};
+
+// The look applied to frame k, already read into `volume`: the velocity averaged over the window ending at k, then
+// lambda2-hat smoothed, then its small pieces culled. The ring keeps the window's raw frames, so a clip read in order
+// reads each cached frame once; a jump (a still after the clip) reads the window again.
+[[nodiscard]] spade::Result<void> apply_look(LookState& state, const fs::path& cache, uint32_t first, uint32_t k,
+                                             spade::FlowVolume& volume) {
+    const Look& look = state.look;
+    if (look.mean_frames > 1u) {
+        const MeanWindow w = mean_window(k, look.mean_frames);
+        auto& ring = state.ring;
+        while (!ring.empty() && ring.front().index < w.first) ring.pop_front();
+        if (!ring.empty() && ring.back().index + 1u != k) ring.clear();
+        for (uint32_t next = ring.empty() ? w.first : ring.back().index + 1u; next < k; ++next) {
+            spade::FlowVolume past;
+            FrameLog scratch;
+            if (auto read = read_frame(cache, first + next, past, scratch); !read) return read;
+            ring.push_back(LookState::Held{next, std::move(past)});
+        }
+        ring.push_back(LookState::Held{k, volume});
+        std::vector<const spade::FlowVolume*> frames;
+        for (const LookState::Held& held : ring) frames.push_back(&held.volume);
+        if (auto mean = mean_velocity(volume, std::span<const spade::FlowVolume* const>(frames)); !mean) return mean;
+    }
+    if (look.l2_smooth) smooth_lambda2(volume);
+    if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
+    return {};
+}
+
 // `ss` is how many times larger than the frame `stage` is (1: the frame's own size): the scene's pixel widths are
 // scaled to match, the stage's picture is box-filtered down to the frame, and `draw_s` is the time of the large draw
 // (the lead, 2026-11-10: the web masters render at 2x).
 [[nodiscard]] spade::Result<void> draw_web_frame(const Film& film, const fs::path& cache, uint32_t first, uint32_t k,
                                                  uint32_t n, GlStage& stage, uint32_t ss, spade::FlowVolume& volume,
                                                  FrameLog& log, std::vector<uint8_t>& rgba, std::string& note,
-                                                 double& draw_s, web::FrameTimes* times = nullptr) {
+                                                 double& draw_s, web::FrameTimes* times = nullptr,
+                                                 LookState* look_state = nullptr) {
     using Clock = std::chrono::steady_clock;
     const auto since = [](Clock::time_point from) { return std::chrono::duration<double>(Clock::now() - from).count(); };
     auto lap = Clock::now();
     if (auto read = read_frame(cache, first + k, volume, log); !read) return read;
+    if (look_state != nullptr && look_state->look.any()) {
+        if (auto looked = apply_look(*look_state, cache, first, k, volume); !looked) return looked;
+    }
     if (times != nullptr) times->cache_read = since(lap);
     lap = Clock::now();
     const View& view = film.views.front();
@@ -1658,6 +1709,7 @@ struct Options {
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
+    Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
@@ -2046,7 +2098,12 @@ struct WebTimes {
                              "film, which has no subgrid term\n", opt.web_id.c_str());
         return 2;
     }
+    if (const std::string why = look_refusal(clip->id, web::sgs_cs_applies(*clip), opt.look); !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
     WebPlan plan;
+    plan.look = opt.look;
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
@@ -2100,6 +2157,7 @@ struct WebTimes {
     std::vector<uint8_t> rgba;
     std::string note;
     double draw_s = 0.0;
+    LookState look_state{opt.look, {}};
     if (!opt.web_still_only) {
         auto times = web_times(cache, first, n);
         if (!times) return fail(times.error());
@@ -2119,7 +2177,8 @@ struct WebTimes {
         for (uint32_t k = 0; k < n; ++k) {
             web::FrameTimes ft;
             const auto frame_start = std::chrono::steady_clock::now();
-            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s, &ft);
+            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s, &ft,
+                                           &look_state);
                 !drew) {
                 return fail(drew.error());
             }
@@ -2162,6 +2221,13 @@ struct WebTimes {
         in.screen_seconds = static_cast<double>(n) / static_cast<double>(web::kFps);
         in.sim_seconds = times->per_frame * static_cast<double>(n);
         in.extra = grid_line(*film);
+        if (film->run && !film->run->domain.empty()) {
+            in.extra += (in.extra.empty() ? "" : " ") + std::string("Resolved ") + film->run->domain + ".";
+        }
+        if (const std::string declared = look_note(opt.look, 1000.0 * times->per_frame);
+            !declared.empty()) {
+            in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
+        }
         if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
         std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
         caption << web::caption_text(in);
@@ -2174,7 +2240,9 @@ struct WebTimes {
         if (!big) return fail(big.error());
         const uint32_t k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
         const auto start = std::chrono::steady_clock::now();
-        if (auto drew = draw_web_frame(*film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s); !drew) {
+        if (auto drew = draw_web_frame(*film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s, nullptr,
+                                       &look_state);
+            !drew) {
             return fail(drew.error());
         }
         Encoder still_encoder = encoder;
@@ -2454,6 +2522,29 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
                 return 2;
             }
+        } else if (arg == "--l2-level") {
+            const std::optional<float> level = parse_l2_level(value());
+            if (!level) {
+                std::fprintf(stderr, "flow_movie: --l2-level takes one number above 0 and below 10000 (1/s), as 120\n");
+                return 2;
+            }
+            opt.look.l2_level = *level;
+        } else if (arg == "--l2-smooth") {
+            opt.look.l2_smooth = true;
+        } else if (arg == "--min-cells") {
+            const std::optional<uint32_t> cells = parse_count(value());
+            if (!cells) {
+                std::fprintf(stderr, "flow_movie: --min-cells takes a whole number of cells, as 27\n");
+                return 2;
+            }
+            opt.look.min_cells = *cells;
+        } else if (arg == "--mean-frames") {
+            const std::optional<uint32_t> frames = parse_count(value());
+            if (!frames || *frames == 0u) {
+                std::fprintf(stderr, "flow_movie: --mean-frames takes a whole number of frames above 0, as 10\n");
+                return 2;
+            }
+            opt.look.mean_frames = *frames;
         } else if (arg == "--window") {
             if (std::sscanf(value().c_str(), "%lf:%lf", &opt.window_from, &opt.window_to) != 2 ||
                 opt.window_to <= opt.window_from) {

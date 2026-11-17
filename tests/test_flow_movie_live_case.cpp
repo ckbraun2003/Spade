@@ -133,7 +133,9 @@ TEST(FlowMovieLiveCase, ASideWindClipSaysItsWindAndAStillClipWithAWindIsRefused)
     ASSERT_TRUE(side.has_value()) << side.error().context;
     const auto resolved = flow_movie::resolve_live(*side);
     ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
-    EXPECT_EQ(resolved->domain.ambient, glm::vec3(0.0f, 0.0f, 3.0f));  // heading 90: the air moves +z at 3 m/s
+    EXPECT_NEAR(resolved->domain.ambient.x, 0.0f, 1e-5f);  // heading 90: the air moves +z at 3 m/s (cos32 leaves ~3e-7)
+    EXPECT_NEAR(resolved->domain.ambient.y, 0.0f, 1e-5f);
+    EXPECT_NEAR(resolved->domain.ambient.z, 3.0f, 1e-5f);
     EXPECT_NE(side->domain.find("ambient (0, 0, 3) m/s"), std::string::npos) << side->domain;
     EXPECT_EQ(flow_movie::still_air_refusal(*resolved).empty(), false) << "the side wind is not still air";
     // The refusal names the wind it found.
