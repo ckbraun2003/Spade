@@ -82,7 +82,7 @@ namespace spade::airflow_gpu {
 // floats: [0-2] the centre in the grid's frame, [3] the reach, [4-6] the
 // axis, [7] the scale, [8] the swirl's scale, [9] 1 with swirl, [10] the
 // disc's point count (disc_spread()'s rings x angles, at most kDiscPoints;
-// the slots past it stay 0), from kDiscPointsAt room for kDiscPoints points
+// the slots past it stay 0), [11] the disc's radius (airflow_dye_source reads it; the gather kernel does not), from kDiscPointsAt room for kDiscPoints points
 // and from kDiscTangentsAt their tangents, three floats each. Derived from af::kDiscPoints, so a change of
 // the spread moves the layout with it; the slang module's hand-written copy
 // is pinned to this one by the GpuAirflowActuator parity tests.
