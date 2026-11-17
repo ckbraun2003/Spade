@@ -8,7 +8,7 @@
 // step, Cs 0.17, the quad's rigid parts as solids, the deep grid), the rows LiveRun holds at hover, one line a rotor from
 // vehicles::rotor_lines() with the part's blade and polar (scene::line_propeller()), the dye released at the rotors' discs (zero load:
 // the lines carry the force). Knobs: SPADE_LINE_STILLS_STEPS (default "300,700,1200,1800"), SPADE_LINE_STILLS_NSUB (8),
-// SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
+// SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
 // SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline).
 // ---------------------------------------------------------------------------
 
@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -221,12 +222,14 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                 static_cast<double>(prop->blade.radius), static_cast<double>(prop->blade.radius / shape.dx),
                 prop->fitted ? "yes" : "no", shape.nx, shape.ny, shape.nz, static_cast<double>(shape.dx) * 1000.0,
                 static_cast<double>(box.cfg.h) * 1000.0);
+    std::fflush(stdout);
 
     const std::vector<uint32_t> at = steps_from_env();
     const uint32_t last = at.empty() ? 0u : *std::max_element(at.begin(), at.end());
     const std::vector<flow_still::Look> looks = flow_still::dye_looks();
     const float dist = flow_still::env_float("SPADE_LS_DIST", 0.9f);
     const float aim = flow_still::env_float("SPADE_LS_AIM", -0.08f);
+    const char* views_wanted = env_cstr("SPADE_LS_VIEWS") != nullptr ? env_cstr("SPADE_LS_VIEWS") : "a";  // of a, b, c
     const auto t_start = std::chrono::steady_clock::now();
     spade::FlowVolume volume;
     for (uint32_t step = 1; step <= last; ++step) {
@@ -244,11 +247,13 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count(), thrust,
                     (*gpu)->line_reports().size());
+        std::fflush(stdout);
         const struct View {
             const char* name;
             float az, el, target_y;
         } views[] = {{"a", 25.0f, 8.0f, aim}, {"b", 25.0f, 8.0f, aim - 0.25f}, {"c", 90.0f, 2.0f, aim - 0.10f}};
         for (const View& v : views) {
+            if (std::strchr(views_wanted, v.name[0]) == nullptr) continue;
             const spade::render::Camera cam = flow_still::orbit(glm::vec3(0.0f, v.target_y, 0.0f), dist, v.az, v.el);
             for (const flow_still::Look& look : looks) {
                 const std::string path = (out / (std::string(discs_only ? "discs" : "lines") + "-s" + std::to_string(step) +
