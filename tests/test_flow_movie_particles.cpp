@@ -304,3 +304,122 @@ TEST(FlowMovieParticles, DrawnPointsAreOnePerParticleBrightestWhenNewAndNeverOut
     EXPECT_TRUE(spade::render::validate_flow_points(p));
 }
 
+// THE DRAWN STREAKS (the lead, 2026-11-17: "square dust isn't air"; Cameron: "particle-y"). One two-point polyline per particle
+// for the GL capsule path with additive light: from where the point was `tail_s` ago along its own velocity (so the streak is as
+// long as the air is fast), to where it is; alpha nothing at the tail, the head's alpha at the head; colour by speed, deep blue
+// and dim when slow, warm white and bright when fast. A point is born invisible and fades in, and fades out toward max age, so
+// recycling never pops.
+TEST(FlowMovieParticles, AStreakRunsBackFromTheHeadAlongTheVelocityAndFadesFromNothingAtItsTail) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    flow_movie::ParticleField f;
+    f.position = {glm::vec3(0.0f, 0.1f, 0.0f)};
+    f.previous = f.position;
+    f.age = {0.2f};
+    flow_movie::StreakLook look;
+    look.tail_s = 0.005f;
+    look.width_px = 3.0f;
+    const auto streaks = flow_movie::particle_streaks(f, v, 0.5f, look);
+    ASSERT_EQ(streaks.size(), 1u);
+    const spade::render::FlowPolyline& s = streaks[0];
+    ASSERT_EQ(s.points.size(), 2u);
+    EXPECT_NEAR(s.points[1].x, 0.0f, 1e-7f) << "the head is the point";
+    EXPECT_NEAR(s.points[0].x, -0.01f, 1e-6f) << "the tail: 2 m/s for 5 ms behind it";
+    EXPECT_NEAR(s.points[0].y, 0.1f, 1e-7f);
+    ASSERT_EQ(s.alphas.size(), 2u);
+    EXPECT_EQ(s.alphas[0], 0.0f) << "nothing at the tail";
+    EXPECT_GT(s.alphas[1], 0.5f);
+    EXPECT_LE(s.alphas[1], 1.0f);
+    EXPECT_EQ(s.width_px, 3.0f);
+    ASSERT_EQ(s.colours.size(), 2u);
+    EXPECT_EQ(s.colours[0], s.colours[1]);
+    EXPECT_TRUE(spade::render::validate_flow_polyline(s).has_value());
+}
+
+TEST(FlowMovieParticles, AStreakIsBluerAndDimmerSlowAndWarmerAndBrighterFastAndNeverOutsideZeroToOne) {
+    auto colour_at = [](float speed) {
+        const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [speed](glm::vec3) { return glm::vec3(speed, 0.0f, 0.0f); });
+        flow_movie::ParticleField f;
+        f.position = {glm::vec3(0.0f)};
+        f.previous = f.position;
+        f.age = {0.2f};
+        const auto streaks = flow_movie::particle_streaks(f, v, 0.5f);
+        return streaks.at(0).colours.at(1);
+    };
+    const glm::vec3 slow = colour_at(1.0f), fast = colour_at(10.0f), faster = colour_at(40.0f);
+    auto luma = [](glm::vec3 c) { return c.x + c.y + c.z; };
+    EXPECT_GT(luma(fast), luma(slow));
+    EXPECT_GT(fast.x / fast.z, slow.x / slow.z) << "warmer: more red against blue";
+    EXPECT_GT(slow.z, slow.x) << "slow is blue";
+    EXPECT_EQ(faster, fast) << "the ramp ends at fast_mps";
+    for (const glm::vec3 c : {slow, fast, faster}) {
+        for (int a = 0; a < 3; ++a) {
+            EXPECT_GE(c[a], 0.0f);
+            EXPECT_LE(c[a], 1.0f);
+        }
+    }
+}
+
+TEST(FlowMovieParticles, AStreakIsBornInvisibleFadesInAndFadesOutTowardMaxAgeSoRecyclingNeverPops) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    auto head_alpha = [&v](float age) {
+        flow_movie::ParticleField f;
+        f.position = {glm::vec3(0.0f)};
+        f.previous = f.position;
+        f.age = {age};
+        flow_movie::StreakLook look;
+        look.fade_in_s = 0.04f;
+        const auto streaks = flow_movie::particle_streaks(f, v, 0.5f, look);
+        return streaks.at(0).alphas.at(1);
+    };
+    EXPECT_EQ(head_alpha(0.0f), 0.0f);
+    EXPECT_GT(head_alpha(0.02f), 0.0f);
+    EXPECT_LT(head_alpha(0.02f), head_alpha(0.04f));
+    EXPECT_NEAR(head_alpha(0.04f), head_alpha(0.1f), 1e-6f) << "full from the fade-in on";
+    EXPECT_NEAR(head_alpha(0.1f), head_alpha(0.29f), 1e-6f) << "and until 0.6 of the maximum age";
+    EXPECT_GT(head_alpha(0.3f), head_alpha(0.4f));
+    EXPECT_GT(head_alpha(0.4f), head_alpha(0.49f));
+    EXPECT_NEAR(head_alpha(0.5f), 0.0f, 1e-7f) << "gone at the maximum age";
+}
+
+TEST(FlowMovieParticles, AStreakOfAParticleInNoDataIsLeftOutAndAStillOneIsAPointNotAHole) {
+    FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3 p) { return p.x < 0.0f ? glm::vec3(0.0f) : glm::vec3(2.0f, 0.0f, 0.0f); });
+    // the cells with x index 12 onward are a solid
+    for (uint32_t k = 0; k < 16u; ++k) {
+        for (uint32_t j = 0; j < 16u; ++j) {
+            for (uint32_t i = 12u; i < 16u; ++i) {
+                const std::size_t c = spade::flow_cell_index(v.header, i, j, k) * spade::kFlowHalvesPerCell;
+                for (std::size_t ch = 0; ch < 4; ++ch) v.v[c + ch] = fp16::kNoDataBits;
+                v.header.no_data += 4u;
+            }
+        }
+    }
+    flow_movie::ParticleField f;
+    f.position = {glm::vec3(-0.4f, 0.0f, 0.0f), glm::vec3(0.5f, 0.0f, 0.0f), glm::vec3(0.3f, 0.0f, 0.0f)};
+    f.previous = f.position;
+    f.age = {0.2f, 0.2f, 0.2f};
+    const auto streaks = flow_movie::particle_streaks(f, v, 0.5f);
+    ASSERT_EQ(streaks.size(), 2u) << "the one inside the solid has no velocity: no streak";
+    EXPECT_EQ(streaks[0].points[0], streaks[0].points[1]) << "no flow there: the streak is a point";
+    EXPECT_NEAR(streaks[1].points[0].x, 0.3f - 2.0f * flow_movie::StreakLook{}.tail_s, 1e-6f) << "the third, in the order given";
+}
+
+TEST(FlowMovieParticles, TheStreaksAreTheSameEveryTimeAndOnePerDrawnParticleInOrder) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3 p) { return glm::vec3(-3.0f * p.z, 0.4f, 3.0f * p.x); });
+    flow_movie::ParticleField f;
+    for (int i = 0; i < 40; ++i) {
+        f.position.emplace_back(0.03f * static_cast<float>(i) - 0.5f, 0.05f, 0.02f * static_cast<float>(i % 9) - 0.1f);
+        f.age.push_back(0.01f * static_cast<float>(i));
+    }
+    f.previous = f.position;
+    const auto a = flow_movie::particle_streaks(f, v, 0.5f);
+    const auto b = flow_movie::particle_streaks(f, v, 0.5f);
+    ASSERT_EQ(a.size(), 40u);
+    ASSERT_EQ(a.size(), b.size());
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        EXPECT_EQ(a[i].points, b[i].points);
+        EXPECT_EQ(a[i].alphas, b[i].alphas);
+        EXPECT_EQ(a[i].colours, b[i].colours);
+        EXPECT_EQ(a[i].points[1], f.position[i]) << "in the field's order";
+    }
+}
+
