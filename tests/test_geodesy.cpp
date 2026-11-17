@@ -291,9 +291,10 @@ TEST(Geodesy, AnAnchorsIdentityIsNeverZeroAndFollowsEveryFieldButNotTheSignOfZer
 }
 
 // ---------------------------------------------------------------------------
-// The bit pins. Each row: a geodetic point, the exact bits of geodetic_to_ecef (x, y, z), and the exact bits of ecef_to_geodetic of
-// that result (lat, lon, height). The table was written from MSVC's output (SPADE_GEODESY_PINS=1 prints rows in this form) and the
-// Linux gcc leg must match every bit. A mismatch is a portability failure, not a tolerance question.
+// The bit pins. tests/data/geodesy_bit_pins.txt holds one row per point: the geodetic point (hex floats), the exact bits of
+// geodetic_to_ecef (x, y, z), and the exact bits of ecef_to_geodetic of that result (lat, lon, height). The file was written from MSVC's
+// output (SPADE_GEODESY_PINS=1 prints rows in the file's form) and the Linux gcc leg must match every bit. A mismatch is a portability
+// failure, not a tolerance question. It is a data file so that re-pinning needs no rebuild, and a row that changed is a diff a reader sees.
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -333,28 +334,55 @@ const std::vector<geo::Geodetic>& pin_points() {
     return points;
 }
 
-const std::vector<Pin>& pins();  // the table below
+[[nodiscard]] std::vector<Pin> read_pins() {
+    std::vector<Pin> out;
+    const std::string path = std::string(SPADE_TESTS_DIR) + "/data/geodesy_bit_pins.txt";
+    std::FILE* f = std::fopen(path.c_str(), "r");
+    if (f == nullptr) return out;
+    char line[512];
+    while (std::fgets(line, sizeof(line), f) != nullptr) {
+        if (line[0] == '#' || line[0] == '\n' || line[0] == '\r') continue;
+        Pin p{};
+        unsigned long long e[3];
+        unsigned long long b[3];
+        if (std::sscanf(line, "%la %la %la %llx %llx %llx %llx %llx %llx", &p.g.lat_deg, &p.g.lon_deg, &p.g.height_m, &e[0], &e[1],
+                        &e[2], &b[0], &b[1], &b[2]) != 9) {
+            out.clear();
+            break;
+        }
+        for (int i = 0; i < 3; ++i) {
+            p.ecef[i] = e[i];
+            p.back[i] = b[i];
+        }
+        out.push_back(p);
+    }
+    std::fclose(f);
+    return out;
+}
 
 }  // namespace
 
 TEST(Geodesy, TheBitPatternsOfBothDirectionsAreThePinnedOnes) {
     if (print_pins_asked()) {
+        std::printf("# lat lon height (hex floats), then the bits of x y z, then the bits of lat lon height read back\n");
         for (const geo::Geodetic& g : pin_points()) {
             const geo::Ecef e = geo::geodetic_to_ecef(g);
             const geo::Geodetic b = geo::ecef_to_geodetic(e);
-            std::printf("    {{%a, %a, %a},\n     {0x%016llxull, 0x%016llxull, 0x%016llxull},\n     {0x%016llxull, 0x%016llxull, 0x%016llxull}},\n",
-                        g.lat_deg, g.lon_deg, g.height_m, static_cast<unsigned long long>(bits(e.x)),
-                        static_cast<unsigned long long>(bits(e.y)), static_cast<unsigned long long>(bits(e.z)),
-                        static_cast<unsigned long long>(bits(b.lat_deg)), static_cast<unsigned long long>(bits(b.lon_deg)),
-                        static_cast<unsigned long long>(bits(b.height_m)));
+            std::printf("%a %a %a %016llx %016llx %016llx %016llx %016llx %016llx\n", g.lat_deg, g.lon_deg, g.height_m,
+                        static_cast<unsigned long long>(bits(e.x)), static_cast<unsigned long long>(bits(e.y)),
+                        static_cast<unsigned long long>(bits(e.z)), static_cast<unsigned long long>(bits(b.lat_deg)),
+                        static_cast<unsigned long long>(bits(b.lon_deg)), static_cast<unsigned long long>(bits(b.height_m)));
         }
     }
-    const std::vector<Pin>& table = pins();
-    ASSERT_EQ(table.size(), pin_points().size()) << "the pin table is missing or out of step with the points";
+    const std::vector<Pin> table = read_pins();
+    ASSERT_EQ(table.size(), pin_points().size()) << "tests/data/geodesy_bit_pins.txt is missing, malformed or out of step with the points";
     for (std::size_t i = 0; i < table.size(); ++i) {
         const Pin& p = table[i];
-        ASSERT_EQ(bits(p.g.lat_deg), bits(pin_points()[i].lat_deg)) << "row " << i;
-        const geo::Ecef e = geo::geodetic_to_ecef(p.g);
+        const geo::Geodetic& in = pin_points()[i];
+        ASSERT_EQ(bits(p.g.lat_deg), bits(in.lat_deg)) << "row " << i;
+        ASSERT_EQ(bits(p.g.lon_deg), bits(in.lon_deg)) << "row " << i;
+        ASSERT_EQ(bits(p.g.height_m), bits(in.height_m)) << "row " << i;
+        const geo::Ecef e = geo::geodetic_to_ecef(in);
         EXPECT_EQ(bits(e.x), p.ecef[0]) << "row " << i << " x " << e.x;
         EXPECT_EQ(bits(e.y), p.ecef[1]) << "row " << i << " y " << e.y;
         EXPECT_EQ(bits(e.z), p.ecef[2]) << "row " << i << " z " << e.z;
@@ -364,13 +392,3 @@ TEST(Geodesy, TheBitPatternsOfBothDirectionsAreThePinnedOnes) {
         EXPECT_EQ(bits(b.height_m), p.back[2]) << "row " << i << " height " << b.height_m;
     }
 }
-
-namespace {
-
-// RED: the table is filled in the GREEN commit, from MSVC's output (SPADE_GEODESY_PINS=1).
-const std::vector<Pin>& pins() {
-    static const std::vector<Pin> table = {};
-    return table;
-}
-
-}  // namespace
