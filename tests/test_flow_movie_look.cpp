@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../tools/flow_movie/look.hpp"
+#include "../tools/flow_movie/particles.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
 #include "render/scene.hpp"

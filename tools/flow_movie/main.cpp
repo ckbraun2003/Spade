@@ -81,6 +81,7 @@
 #endif
 #include "live_case.hpp"
 #include "look.hpp"
+#include "particles.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
@@ -1326,6 +1327,42 @@ struct HeldPose {
                 return {};
             }});
         film.views.push_back(View{
+            "particles-preview", "tracers carried through this one frozen frame (a preview of the particle look, not time-accurate)",
+            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+                             render::Camera& camera) -> spade::Result<void> {
+                frame_on_drone(v, k, n, camera);
+                return {};
+            },
+            [run, pose](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                if (!pose->known) {
+                    return std::unexpected(spade::Error{spade::Code::internal, "the particle preview ran before a frame's held body was read"});
+                }
+                std::vector<PreviewRotor> rotors;
+                for (const spade::vehicles::RotorDesc& r : run->run_model.rotors) {
+                    rotors.push_back({pose->pos + pose->orient * r.local_pos,
+                                      glm::normalize(pose->orient * (r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f))), r.radius});
+                }
+                const PreviewBox box{glm::vec3(-0.42f, -0.05f, -0.28f), glm::vec3(0.42f, 0.40f, 0.28f)};
+                std::vector<render::TracerSource> sources;
+                for (const glm::vec3& seed : preview_seeds(rotors, box, 120u, 500u)) sources.push_back({seed, 0.005f});
+                render::TracerState state;
+                render::TracerOptions options;
+                options.capacity = 400000u;
+                options.max_age_s = 0.8f;
+                for (int step = 0; step < 600; ++step) {
+                    if (auto ok = render::advance_tracers(state, v, sources, 0.001f, options); !ok) return std::unexpected(ok.error());
+                }
+                render::FlowPoints points;
+                points.size_px = 4u;
+                for (std::size_t i = 0; i < state.positions.size(); ++i) {
+                    const float t = std::clamp(state.ages[i] / 0.8f, 0.0f, 1.0f);
+                    points.positions.push_back(state.positions[i]);
+                    points.colours.push_back(glm::mix(glm::vec3(0.65f, 0.92f, 1.0f), glm::vec3(0.12f, 0.28f, 0.75f), t));
+                }
+                scene.flow_points = std::move(points);
+                return std::string();
+            }});
+        film.views.push_back(View{
             "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, thin and faded toward their ends, coloured by speed |u|, "
             "0 to 12 m/s",
             [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
@@ -1429,6 +1466,7 @@ struct WebPlan {
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
+    bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1546,13 +1584,15 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+            view = with_camera(*view_named(film, plan.particles_preview ? "particles-preview" : "speed-volume"),
+                               [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              framing.elevation_deg);
             }, false);
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+            view = with_camera(*view_named(film, plan.particles_preview ? "particles-preview" : "speed-volume"),
+                               [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
                 return orbit(still_aim, web::push_in_distance(wide, close, k, n), web::kD1StillAzimuthDeg,
@@ -1741,6 +1781,7 @@ struct Options {
     // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
@@ -2013,6 +2054,9 @@ constexpr double kD1Seconds = 0.6;
     if (opt.web_frames > 0u) return stop("a clip filmed from a --web-frames cache is a timing run, not a master");
     if (opt.sgs_cs && *opt.sgs_cs != web::kD1WebSgsCs) {
         return stop("a clip filmed at another Smagorinsky Cs (--sgs-cs) is a diagnostic, not a master");
+    }
+    if (opt.particles_preview) {
+        return stop("a particle preview (--particles-preview) is a diagnostic, not a master");
     }
     const web::DeliveryGuard guard{opt.web_deliver};
     const fs::path spade_dir = opt.web_deliver / "spade";
@@ -2316,10 +2360,12 @@ struct WebFilming {
                      opt.web_id.c_str());
         return 2;
     }
-    if (clip->id == "S2" || clip->id == "S8") opt.look.fade = drone->framing.fade();  // S1's lines are traced in the true flow
+    // S1's lines and the particle preview are traced in the true flow: no fade for them.
+    if ((clip->id == "S2" || clip->id == "S8") && !opt.particles_preview) opt.look.fade = drone->framing.fade();
     WebPlan plan;
     plan.look = opt.look;
     plan.drone = drone;
+    plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
@@ -2775,6 +2821,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--drone") {
             opt.drone = value();
+        } else if (arg == "--particles-preview") {
+            opt.particles_preview = true;
         } else if (arg == "--stream") {
             opt.stream = true;
         } else if (arg == "--keep-frames") {
