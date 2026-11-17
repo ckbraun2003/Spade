@@ -1223,8 +1223,10 @@ struct HeldPose {
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions. `gpu`: its fluid
 // on GpuFluid with no parts in the flow (--gpu), which its card says first.
+// `particle_views`: the two particle views are web-only (--particles, --particles-preview on S2 and S8): an ordinary film draws every
+// view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
-                                            const Look& look = {}) {
+                                            const Look& look = {}, bool particle_views = false) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1355,7 +1357,7 @@ struct HeldPose {
                 frame_on_drone(v, k, n, camera);
                 return {};
             }});
-        film.views.push_back(View{
+        if (particle_views) film.views.push_back(View{
             "particles", "points carried through every stored frame, from the air above and round the rotors, through them and down",
             [frame_on_drone, hold = film.particle_hold](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                                          render::Camera& camera) -> spade::Result<void> {
@@ -1372,7 +1374,7 @@ struct HeldPose {
                 scene.flow_line_style.additive = true;
                 return {};
             }});
-        film.views.push_back(View{
+        if (particle_views) film.views.push_back(View{
             "particles-preview", "tracers carried through this one frozen frame (a preview of the particle look, not time-accurate)",
             [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
                              render::Camera& camera) -> spade::Result<void> {
@@ -1616,7 +1618,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
                                    static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
         if (!lc) return std::unexpected(lc.error());
-        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look);
+        auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
+                               plan.particles || plan.particles_preview);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
