@@ -248,6 +248,7 @@ add_library(spade_world STATIC
     world/mesh_shapes.cpp
     world/mesh_file.cpp
     world/sha256.cpp
+    world/map_cache.cpp
 )
 add_library(spade::world ALIAS spade_world)
 set_target_properties(spade_world PROPERTIES EXPORT_NAME world)
