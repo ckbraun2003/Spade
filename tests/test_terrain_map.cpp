@@ -108,11 +108,12 @@ TEST(TerrainMap, AnEntryTheToolWroteReadsBackInMetresFromTheAnchor) {
             EXPECT_NEAR(r->heights[row * 4 + col], 2.0 * col - 3.0, 2e-4) << row << "," << col;
         }
     }
-    // The box is the geodesy's, +-20 m of the anchor, east and north, rows north to south.
-    EXPECT_NEAR(r->extent.east_min, -20.0, 1e-3);
-    EXPECT_NEAR(r->extent.east_max, 20.0, 1e-3);
-    EXPECT_NEAR(r->extent.north_min, -20.0, 1e-3);
-    EXPECT_NEAR(r->extent.north_max, 20.0, 1e-3);
+    // The box is the geodesy's, +-20 m of the anchor, east and north, rows north to south. The tool asked for it at height 0 and the ground
+    // is about 980 m up, where the same degrees are 980 / 6.37e6 = 0.016 % longer: 3 mm at 20 m, so the tolerance is a centimetre.
+    EXPECT_NEAR(r->extent.east_min, -20.0, 1e-2);
+    EXPECT_NEAR(r->extent.east_max, 20.0, 1e-2);
+    EXPECT_NEAR(r->extent.north_min, -20.0, 1e-2);
+    EXPECT_NEAR(r->extent.north_max, 20.0, 1e-2);
     // The image, decoded: 2 x 2 RGB, top row first.
     EXPECT_EQ(r->image.width, 2u);
     EXPECT_EQ(r->image.height, 2u);
@@ -141,9 +142,9 @@ TEST(TerrainMap, TheExtentIsMeasuredFromTheCallersAnchorNotFromTheKey) {
     Cache c;
     const Result<world::TerrainInput> r = c.read(kLat + 4e-7, kLon, kSide);
     ASSERT_TRUE(r.has_value()) << r.error().context;
-    EXPECT_NEAR(r->extent.north_max, 20.0 - 0.0444, 3e-3);
-    EXPECT_NEAR(r->extent.north_min, -20.0 - 0.0444, 3e-3);
-    EXPECT_NEAR(r->extent.east_min, -20.0, 1e-3);
+    EXPECT_NEAR(r->extent.north_max, 20.0 - 0.0444, 1e-2);  // (a centimetre: the ground's height scales the degrees, as above)
+    EXPECT_NEAR(r->extent.north_min, -20.0 - 0.0444, 1e-2);
+    EXPECT_NEAR(r->extent.east_min, -20.0, 1e-2);
 }
 
 TEST(TerrainMap, NoEntryIsMapMissingNamingTheKeyAndTheDirectory) {

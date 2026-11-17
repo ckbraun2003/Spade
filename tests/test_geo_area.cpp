@@ -35,9 +35,9 @@ TEST(GeoArea, BonnevilleKilometreMatchesTheRadiiOfCurvatureWithinAMillimetre) {
     EXPECT_NEAR(b.south_deg, 40.76 - lat_span_deg(40.76, 500.0), 2 * kMm);
     EXPECT_NEAR(b.east_deg, -113.90 + lon_span_deg(40.76, 500.0), 2 * kMm);
     EXPECT_NEAR(b.west_deg, -113.90 - lon_span_deg(40.76, 500.0), 2 * kMm);
-    // The sizes a person knows: a kilometre is a little over 0.009 degrees of latitude and, at 40.76 north, about 0.0119 of longitude.
+    // The sizes a person knows: a kilometre is a little over 0.009 degrees of latitude and, at 40.76 north, about 0.01184 of longitude.
     EXPECT_NEAR(b.north_deg - b.south_deg, 0.00902, 2e-5);
-    EXPECT_NEAR(b.east_deg - b.west_deg, 0.01187, 2e-5);
+    EXPECT_NEAR(b.east_deg - b.west_deg, 0.01184, 2e-5);
 }
 
 TEST(GeoArea, TheBoxCornersRoundTripThroughTheGeodesyToPlusAndMinusHalfTheSide) {
@@ -71,7 +71,8 @@ TEST(GeoArea, TheBoxIsWiderInDegreesOfLongitudeTheFurtherFromTheEquator) {
     const double equator = area_bbox(0.0, 10.0, 1000.0).east_deg - area_bbox(0.0, 10.0, 1000.0).west_deg;
     const double mid = area_bbox(45.0, 10.0, 1000.0).east_deg - area_bbox(45.0, 10.0, 1000.0).west_deg;
     const double high = area_bbox(70.0, 10.0, 1000.0).east_deg - area_bbox(70.0, 10.0, 1000.0).west_deg;
-    EXPECT_NEAR(mid / equator, 1.0 / std::cos(45.0 / kDegPerRad), 2e-3);
+    // On the ellipsoid, not a sphere: the parallel's radius is N cos(lat), and N is 0.17 % larger at 45 degrees than at the equator.
+    EXPECT_NEAR(mid / equator, lon_span_deg(45.0, 1000.0) / lon_span_deg(0.0, 1000.0), 1e-6);
     EXPECT_GT(high, mid);
 }
 
