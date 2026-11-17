@@ -81,6 +81,7 @@
 #endif
 #include "live_case.hpp"
 #include "look.hpp"
+#include "stream_plan.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
 #include "subnormal_scan.hpp"
@@ -186,6 +187,15 @@ struct View {
     OnParts on_parts;
 };
 
+// A streamed run (--stream; stream_plan.hpp): what simulate_live asks of the run per frame. `wanted(k)`: write frame k at all
+// (a frame no draw reads is solved and dropped). `after(k, log)`: frame k is done (written if wanted): draw it, delete what
+// is spent. The solve stops after `last_frame`.
+struct StreamHooks {
+    std::function<bool(uint32_t)> wanted;
+    std::function<spade::Result<void>(uint32_t, const FrameLog&)> after;
+    uint32_t last_frame = 0;
+};
+
 struct Film {
     std::string stem;
     AirflowCase airflow;
@@ -221,6 +231,7 @@ struct Film {
     uint32_t steps_per_frame = 0;
     // A LiveRun film's fluid on GpuFluid WITH the parts in the flow (gpu_live.hpp: open_device_fluid()).
     bool device = false;
+    std::shared_ptr<StreamHooks> stream;  // --stream: set by run_web alone; null for every other film
 };
 
 [[nodiscard]] std::string fixed(double x, int decimals) {
@@ -492,8 +503,11 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         for (const float w : run->state().rotor_omega) live.push_back(w);
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         const FrameBound bound{.expected_speed = film.expected_speed, .solid_cells = run->solids().solid_cells};
-        if (auto wrote = write_frame(cache, k, volume, log, bound); !wrote) {
-            return std::unexpected(spade::Error{wrote.error().code, film.stem + ": " + wrote.error().context});
+        // A streamed run writes only the frames its plan needs: one no draw reads is solved and dropped.
+        if (!film.stream || film.stream->wanted(k)) {
+            if (auto wrote = write_frame(cache, k, volume, log, bound); !wrote) {
+                return std::unexpected(spade::Error{wrote.error().code, film.stem + ": " + wrote.error().context});
+            }
         }
         lines << frame->steps << '\t' << run->run_label() << '\n';
         char residual[32];
@@ -501,6 +515,12 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         convergence << frame->frame << ',' << fixed(frame->t_s, 6) << ',' << frame->steps << ',' << first << ','
                     << run->solids().unconverged_steps << ',' << residual << '\n';
         convergence.flush();
+        if (film.stream) {
+            if (auto done = film.stream->after(k, log); !done) {
+                return std::unexpected(spade::Error{done.error().code, film.stem + ": " + done.error().context});
+            }
+            if (k >= film.stream->last_frame) break;  // the plan's last frame: nothing after it is needed
+        }
         const double elapsed_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         const bool over_budget = (budget_s > 0.0 && elapsed_now >= budget_s) ||
                                  (frame_budget > 0u && k + 1u - first >= frame_budget);
@@ -1566,12 +1586,15 @@ struct LookState {
         spade::FlowVolume volume;
     };
     std::deque<Held> ring;
+    std::size_t peak_ring_frames = 0;  // the most raw frames the ring held at once
+    uint64_t peak_ring_bytes = 0;      // and their bytes (the halves of both textures): the mean flow's memory
 };
 
-// The look applied to frame k, already read into `volume`: the velocity averaged over the window ending at k, then
-// lambda2-hat smoothed, then its small pieces culled. The ring keeps the window's raw frames, so a clip read in order
-// reads each cached frame once; a jump (a still after the clip) reads the window again.
-[[nodiscard]] spade::Result<void> apply_look(LookState& state, const fs::path& cache, uint32_t first, uint32_t k,
+// The look applied to cache frame k, already read into `volume`: the velocity averaged over the window ending at k (the
+// cache's own frames, so a clip's first frame averages the ones before it), then lambda2-hat smoothed, then its small
+// pieces culled. The ring keeps the window's raw frames, so a clip read in order reads each cached frame once; a jump (a
+// still after the clip) reads the window again.
+[[nodiscard]] spade::Result<void> apply_look(LookState& state, const fs::path& cache, uint32_t k,
                                              spade::FlowVolume& volume) {
     const Look& look = state.look;
     if (look.mean_frames > 1u) {
@@ -1582,10 +1605,13 @@ struct LookState {
         for (uint32_t next = ring.empty() ? w.first : ring.back().index + 1u; next < k; ++next) {
             spade::FlowVolume past;
             FrameLog scratch;
-            if (auto read = read_frame(cache, first + next, past, scratch); !read) return read;
+            if (auto read = read_frame(cache, next, past, scratch); !read) return read;
             ring.push_back(LookState::Held{next, std::move(past)});
         }
         ring.push_back(LookState::Held{k, volume});
+        state.peak_ring_frames = std::max(state.peak_ring_frames, ring.size());
+        state.peak_ring_bytes = std::max<uint64_t>(
+            state.peak_ring_bytes, uint64_t{ring.size()} * (volume.v.size() + volume.s.size()) * sizeof(uint16_t));
         std::vector<const spade::FlowVolume*> frames;
         for (const LookState::Held& held : ring) frames.push_back(&held.volume);
         if (auto mean = mean_velocity(volume, std::span<const spade::FlowVolume* const>(frames)); !mean) return mean;
@@ -1608,7 +1634,7 @@ struct LookState {
     auto lap = Clock::now();
     if (auto read = read_frame(cache, first + k, volume, log); !read) return read;
     if (look_state != nullptr && look_state->look.any()) {
-        if (auto looked = apply_look(*look_state, cache, first, k, volume); !looked) return looked;
+        if (auto looked = apply_look(*look_state, cache, first + k, volume); !looked) return looked;
     }
     if (times != nullptr) times->cache_read = since(lap);
     lap = Clock::now();
@@ -1710,6 +1736,9 @@ struct Options {
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
+    bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
+    std::vector<uint32_t> keep_frames;  // --keep-frames A,B: frames a streamed run keeps on disk (the still pairs')
+    std::optional<std::pair<uint32_t, uint32_t>> still_size;  // --still-size WxH: a web still at another size (a diagnostic)
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
@@ -1855,6 +1884,24 @@ constexpr double kD1Seconds = 0.6;
     return fs::path(profile != nullptr ? profile : ".") / "Desktop" / "spade-videos" / date;
 }
 
+// The run's labels by step, from the cache's run.txt (each line "step<TAB>label"), for the captions.
+[[nodiscard]] spade::Result<void> load_run_labels(const Film& film, const fs::path& cache) {
+    if (!film.run_labels) return {};
+    film.run_labels->clear();
+    std::ifstream lines(cache / "run.txt", std::ios::binary);
+    for (std::string line; std::getline(lines, line);) {
+        const std::size_t tab = line.find('\t');
+        uint64_t step = 0;
+        const char* end = line.data() + (tab == std::string::npos ? 0u : tab);
+        if (tab == std::string::npos || std::from_chars(line.data(), end, step).ptr != end) {
+            return std::unexpected(spade::Error{spade::Code::io_error, (cache / "run.txt").string() +
+                                                                           ": a line is not a step and a label"});
+        }
+        (*film.run_labels)[step] = line.substr(tab + 1u);
+    }
+    return {};
+}
+
 // Simulates (unless cached), then renders its clips, or stills. nullopt: the
 // simulation stopped at its budget, to be continued by running again.
 [[nodiscard]] spade::Result<std::optional<std::vector<fs::path>>> run_film(const Film& film, const Options& opt,
@@ -1914,20 +1961,7 @@ constexpr double kD1Seconds = 0.6;
     } else {
         std::printf("[ %s ] using the %u cached frames in %s\n", film.stem.c_str(), film.frames, cache.string().c_str());
     }
-    if (film.run_labels) {
-        film.run_labels->clear();
-        std::ifstream lines(cache / "run.txt", std::ios::binary);
-        for (std::string line; std::getline(lines, line);) {
-            const std::size_t tab = line.find('\t');
-            uint64_t step = 0;
-            const char* end = line.data() + (tab == std::string::npos ? 0u : tab);
-            if (tab == std::string::npos || std::from_chars(line.data(), end, step).ptr != end) {
-                return std::unexpected(spade::Error{spade::Code::io_error, (cache / "run.txt").string() +
-                                                                               ": a line is not a step and a label"});
-            }
-            (*film.run_labels)[step] = line.substr(tab + 1u);
-        }
-    }
+    if (auto labelled = load_run_labels(film, cache); !labelled) return std::unexpected(labelled.error());
     if (opt.simulate_only) return std::optional<std::vector<fs::path>>{std::vector<fs::path>{}};
     if (opt.stills > 0u) {
         if (auto drew = render_stills(film, cache, stage, encoder, opt.out / "stills", opt.stills, opt.cpu, opt.view); !drew) {
@@ -2048,19 +2082,12 @@ constexpr double kD1Seconds = 0.6;
 
 // --- filming and delivering a website master -----------------------------------------------------------
 
-// The simulated time a clip of `n` frames shows and what it is: the frames' own times, never an index over 30.
+// The simulated time a clip of `n` frames shows and what it is: the frames' own times, never an index over 30. Read from
+// the first and the last frame the clip draws (their logs), so a streamed run, which has deleted them, needs no cache.
 struct WebTimes {
     double per_frame = 0.0;  // simulated time between frames, in the case's units
     uint64_t last_step = 0;
 };
-
-[[nodiscard]] spade::Result<WebTimes> web_times(const fs::path& cache, uint32_t from, uint32_t n) {
-    spade::FlowVolume volume;
-    FrameLog first, last;
-    if (auto a = read_frame(cache, from, volume, first); !a) return std::unexpected(a.error());
-    if (auto b = read_frame(cache, from + n - 1u, volume, last); !b) return std::unexpected(b.error());
-    return WebTimes{n > 1u ? (last.time - first.time) / static_cast<double>(n - 1u) : 0.0, last.step};
-}
 
 [[nodiscard]] std::string grid_line(const Film& film) {
     if (film.run) return film.run_labels && !film.run_labels->empty() ? "Run: " + film.run_labels->rbegin()->second : "";
@@ -2068,6 +2095,16 @@ struct WebTimes {
     return "Run: " + std::to_string(c.shape.nx) + "x" + std::to_string(c.shape.ny) + "x" + std::to_string(c.shape.nz) +
            " cells at " + fixed(c.shape.dx * 1000.0, 2) + " mm, step " + fixed(c.fluid.h * 1000.0, 3) + " ms, n_v " +
            std::to_string(c.fluid.n_v) + ".";
+}
+
+// Does the cache folder hold any frame file, in any numbering: a kept frame of an earlier streamed run is one.
+[[nodiscard]] bool has_frame_files(const fs::path& dir) {
+    std::error_code ec;
+    for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("frame-", 0) == 0 && it->path().extension() == ".bin") return true;
+    }
+    return false;
 }
 
 // The bytes of the files under `dir` (the cache's size, for the ledger's note).
@@ -2083,6 +2120,161 @@ struct WebTimes {
     }
     return total;
 }
+
+// One website clip being filmed, a frame at a time: the stage, the encoder's pipe, the frame's scratch and what the caption
+// needs. The ordinary run (the cache first, then the clip) and the streamed run (a frame as the solve writes it) draw through
+// this one object, so a streamed frame is the very draw of a cached one.
+struct WebFilming {
+    const Options& opt;
+    const web::Clip& clip;
+    const Film& film;
+    fs::path cache;
+    uint32_t first, n, ss;
+    GlStage& stage;
+    const Encoder& encoder;
+    fs::path work;
+    std::string base;
+
+    spade::FlowVolume volume;
+    FrameLog log;
+    std::vector<uint8_t> rgba;
+    std::string note;
+    double draw_s = 0.0;
+    LookState look_state;
+    std::unique_ptr<WebClip> webclip;
+    std::unique_ptr<GlStage> large;
+    double draw_total = 0.0, busy_s = 0.0;  // the draws' own time; and each frame's, draw and pipe together
+    std::vector<web::FrameTimes> perf;      // each frame's phases: the ledger's figures are their medians
+    double first_time = 0.0, last_time = 0.0;  // the simulated time of the clip's first and last frame
+    uint64_t last_step = 0;
+    uint32_t drawn = 0;
+
+    WebFilming(const Options& o, const web::Clip& c, const Film& f, fs::path cache_dir, uint32_t first_frame, uint32_t frames,
+               uint32_t supersample, GlStage& st, const Encoder& enc, fs::path work_dir, std::string base_name)
+        : opt(o), clip(c), film(f), cache(std::move(cache_dir)), first(first_frame), n(frames), ss(supersample), stage(st),
+          encoder(enc), work(std::move(work_dir)), base(std::move(base_name)), look_state{o.look, {}} {}
+
+    // Opens the clip's pipe (and the large stage when supersampling).
+    [[nodiscard]] spade::Result<void> begin() {
+        auto opened = WebClip::open(opt.ffmpeg, encoder.width, encoder.height, work / (base + "mp4"));
+        if (!opened) return std::unexpected(opened.error());
+        webclip = std::move(*opened);
+        if (ss > 1u) {
+            auto made = GlStage::create(encoder.width * ss, encoder.height * ss);
+            if (!made) return std::unexpected(made.error());
+            large = std::move(*made);
+        }
+        perf.reserve(n);
+        return {};
+    }
+
+    // The clip's frame k (0-based within the clip), drawn from the cache's frame first + k and added to the clip.
+    [[nodiscard]] spade::Result<void> clip_frame(uint32_t k) {
+        using Clock = std::chrono::steady_clock;
+        GlStage& frame_stage = large ? *large : stage;
+        web::FrameTimes ft;
+        const auto frame_start = Clock::now();
+        if (auto drew = draw_web_frame(film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s, &ft,
+                                       &look_state);
+            !drew) {
+            return drew;
+        }
+        draw_total += draw_s;
+        if (clip.id != "S5" && (k == 0u || k + 1u == n) && !corners_black(rgba, encoder.width, encoder.height)) {
+            return std::unexpected(spade::Error{spade::Code::internal,
+                                                "web " + opt.web_id + " frame " + std::to_string(k) +
+                                                    ": a corner is not pure black (0, 0, 0), or the subject runs to the "
+                                                    "frame's edge"});
+        }
+        const auto pipe_start = Clock::now();
+        if (auto added = webclip->add_frame(rgba); !added) return added;
+        const auto frame_end = Clock::now();
+        ft.pipe = std::chrono::duration<double>(frame_end - pipe_start).count();
+        ft.frame = std::chrono::duration<double>(frame_end - frame_start).count();
+        perf.push_back(ft);
+        busy_s += ft.frame;
+        if (k == 0u) first_time = log.time;
+        last_time = log.time;
+        last_step = log.step;
+        ++drawn;
+        if (k % 30u == 0u || k + 1u == n) {
+            std::printf("[ %s ] frame %u/%u, t %s, %.2f s a frame\n", opt.web_id.c_str(), k + 1u, n, fixed(log.time, 4).c_str(),
+                        busy_s / static_cast<double>(k + 1u));
+            std::fflush(stdout);
+        }
+        return {};
+    }
+
+    // Closes the clip: the timing lines, the caption beside it. `cache_note`: the line saying where the frames came from.
+    [[nodiscard]] spade::Result<void> finish_clip(const std::string& cache_note) {
+        const auto finish_start = std::chrono::steady_clock::now();
+        auto finished = webclip->finish();
+        if (!finished) return std::unexpected(finished.error());
+        const double through = busy_s;
+        const double with_encode =
+            through + std::chrono::duration<double>(std::chrono::steady_clock::now() - finish_start).count();
+        std::printf("web-timing: %s %ux%u, %u frames: draw %.3f s a frame (GL, read back), draw+pipe %.3f s a frame, "
+                    "through the encode %.3f s a frame, %.0f s in all\n",
+                    opt.web_id.c_str(), encoder.width, encoder.height, n, draw_total / n, through / n, with_encode / n,
+                    with_encode);
+        // The ledger's figures (Test/Docs' PERF.md): the median frame and each phase, and which cache they were drawn from.
+        for (const std::string& line : web::web_perf_lines(perf, with_encode - through)) std::printf("%s\n", line.c_str());
+        std::printf("%s\n", cache_note.c_str());
+        if (opt.look.mean_frames > 1u) {
+            std::printf("look-ring: the mean flow held at most %zu raw frames, %.2f GB, beside the frame being drawn\n",
+                        look_state.peak_ring_frames, static_cast<double>(look_state.peak_ring_bytes) / 1e9);
+        }
+        const WebTimes times{n > 1u ? (last_time - first_time) / static_cast<double>(n - 1u) : 0.0, last_step};
+        web::CaptionInput in;
+        in.clip = &clip;
+        in.commit = build_identity();
+        in.date_utc = utc_now();
+        in.command = opt.command_line;
+        in.ticket = opt.ticket.empty() ? "(run by hand, not queued)" : opt.ticket;
+        in.screen_seconds = static_cast<double>(n) / static_cast<double>(web::kFps);
+        in.sim_seconds = times.per_frame * static_cast<double>(n);
+        in.extra = grid_line(film);
+        if (film.run && !film.run->domain.empty()) {
+            in.extra += (in.extra.empty() ? "" : " ") + std::string("Resolved ") + film.run->domain + ".";
+        }
+        if (const std::string declared = look_note(opt.look, 1000.0 * times.per_frame); !declared.empty()) {
+            in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
+        }
+        if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
+        std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
+        caption << web::caption_text(in);
+        if (!caption) return std::unexpected(spade::Error{spade::Code::io_error, "writing " + (work / (base + "md")).string()});
+        std::printf("flow_movie: wrote %s and its caption\n", (work / (base + "mp4")).string().c_str());
+        return {};
+    }
+
+    // The still of the clip's frame k, `w` x `h`, to `png`.
+    [[nodiscard]] spade::Result<void> still(uint32_t k, uint32_t w, uint32_t h, const fs::path& png) {
+        auto big = GlStage::create(w * ss, h * ss);
+        if (!big) return std::unexpected(big.error());
+        const auto start = std::chrono::steady_clock::now();
+        if (auto drew = draw_web_frame(film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s, nullptr,
+                                       &look_state);
+            !drew) {
+            return drew;
+        }
+        Encoder still_encoder = encoder;
+        still_encoder.width = w;
+        still_encoder.height = h;
+        if (clip.id != "S5" && !corners_black(rgba, w, h)) {
+            return std::unexpected(spade::Error{spade::Code::internal,
+                                                "web " + opt.web_id + " still: a corner is not pure black (0, 0, 0)"});
+        }
+        std::error_code made;
+        fs::create_directories(png.parent_path(), made);  // a --web-still run has not made the folder the clip's mp4 would have
+        if (auto saved = save_png(still_encoder, rgba, png); !saved) return saved;
+        std::printf("web-timing: %s still %ux%u of frame %u: draw %.3f s, %.3f s with the PNG (%s)\n", opt.web_id.c_str(), w, h,
+                    k, draw_s, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
+                    (*big)->limits().c_str());
+        std::printf("flow_movie: wrote %s\n", png.string().c_str());
+        return {};
+    }
+};
 
 // Films one website master: simulates (unless cached), draws its frames at 3840x2160 into <out>/web/<name>.mp4 and
 // its caption beside it, and, for the four that have one (or --web-still), a 5120x2880 PNG. Nothing leaves <out>.
@@ -2129,6 +2321,22 @@ struct WebTimes {
 
     auto film = web_film(*clip, *group, plan);
     if (!film) return fail(film.error());
+    const fs::path cache = opt.out / "cache" / film->stem;
+    {
+        StreamAsk ask;
+        ask.stream = opt.stream;
+        ask.keep_given = !opt.keep_frames.empty();
+        ask.d1 = web::sgs_cs_applies(*clip);
+        ask.deliver = !opt.web_deliver.empty();
+        ask.export_lines = !opt.export_name.empty();
+        ask.simulate_only = opt.simulate_only;
+        ask.resimulate = opt.resimulate;
+        ask.frames_on_disk = has_frame_files(cache);
+        if (const std::string why = stream_refusal(ask); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+    }
     if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
     if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
         auto exported = run_film(*film, opt, stage, encoder);
@@ -2136,131 +2344,134 @@ struct WebTimes {
         return 0;
     }
 
-    // The cache: the simulation, from rest, over the window.
-    Options sim = opt;
-    sim.simulate_only = true;
-    sim.stills = 0;
-    sim.still_frame = -1;
-    sim.arm_pressure = false;
-    sim.probe_swirl = -1;
-    const auto sim_start = std::chrono::steady_clock::now();
-    auto simmed = run_film(*film, sim, stage, encoder);
-    if (!simmed) return fail(simmed.error());
-    if (!*simmed) return kExitIncomplete;
-    std::printf("flow_movie: web %s: simulation %.0f s\n", opt.web_id.c_str(),
-                std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
-    if (opt.simulate_only) return 0;  // the group's cache is all this run was for; a clip's own run draws from it
-    const fs::path cache = opt.out / "cache" / film->stem;
+    // The frames: the simulation, from rest, over the window, then the clip's draw from the cache; or, with --stream, the
+    // draw of each frame as the solve writes it, deleting what the clip no longer needs (stream_plan.hpp).
+    const bool wants_clip = !opt.web_still_only;
+    const bool wants_still = clip->still || opt.web_still_only;
+    const uint32_t still_k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
+    const auto [still_w, still_h] = opt.still_size.value_or(std::make_pair(web::kStillWidth, web::kStillHeight));
+    // A diagnostic still (another Cs or size) is named for what it shows and never takes a master's file name.
+    const bool diagnostic = opt.still_size.has_value() || plan.sgs_cs != web::kD1WebSgsCs;
+    const fs::path still_png = diagnostic ? opt.out / "web-diag" /
+                                                diag_still_name(opt.web_id, first + still_k, plan.sgs_cs, still_w, still_h,
+                                                                opt.look)
+                                          : work / (base + "png");
+    WebFilming filming(opt, *clip, *film, cache, first, n, ss, stage, encoder, work, base);
 
-    spade::FlowVolume volume;
-    FrameLog log;
-    std::vector<uint8_t> rgba;
-    std::string note;
-    double draw_s = 0.0;
-    LookState look_state{opt.look, {}};
-    if (!opt.web_still_only) {
-        auto times = web_times(cache, first, n);
-        if (!times) return fail(times.error());
-        auto webclip = WebClip::open(opt.ffmpeg, encoder.width, encoder.height, work / (base + "mp4"));
-        if (!webclip) return fail(webclip.error());
-        std::unique_ptr<GlStage> large;
-        if (ss > 1u) {
-            auto made = GlStage::create(encoder.width * ss, encoder.height * ss);
-            if (!made) return fail(made.error());
-            large = std::move(*made);
+    if (opt.stream) {
+        std::vector<uint32_t> draws;
+        if (wants_clip) {
+            for (uint32_t k = 0; k < n; ++k) draws.push_back(first + k);
         }
-        GlStage& frame_stage = large ? *large : stage;
-        double draw_total = 0.0;
-        std::vector<web::FrameTimes> perf;  // each frame's phases: the ledger's figures are their medians
-        perf.reserve(n);
-        const auto start = std::chrono::steady_clock::now();
-        for (uint32_t k = 0; k < n; ++k) {
-            web::FrameTimes ft;
-            const auto frame_start = std::chrono::steady_clock::now();
-            if (auto drew = draw_web_frame(*film, cache, first, k, n, frame_stage, ss, volume, log, rgba, note, draw_s, &ft,
-                                           &look_state);
-                !drew) {
-                return fail(drew.error());
+        if (wants_still) draws.push_back(first + still_k);
+        const StreamPlan stream_plan(draws, opt.look.mean_frames, opt.keep_frames);
+        if (stream_plan.last_frame() >= plan.frames) {
+            std::fprintf(stderr, "flow_movie: frame %u is past the solve's last frame, %u (--web-frames %u)\n",
+                         stream_plan.last_frame(), plan.frames - 1u, plan.frames);
+            return 2;
+        }
+        std::error_code ec;
+        if (opt.resimulate) fs::remove_all(cache, ec);
+        // The frames on disk now and the most there have been: the measured peak of the cache folder.
+        std::map<uint32_t, uint64_t> on_disk;
+        uint64_t live_bytes = 0, peak_bytes = 0;
+        std::size_t peak_frames = 0;
+        auto hooks = std::make_shared<StreamHooks>();
+        hooks->last_frame = stream_plan.last_frame();
+        hooks->wanted = [&stream_plan](uint32_t k) { return stream_plan.needed(k); };
+        hooks->after = [&](uint32_t k, const FrameLog&) -> spade::Result<void> {
+            if (stream_plan.needed(k)) {
+                std::error_code size_ec;
+                const uintmax_t bytes = fs::file_size(frame_file(cache, k), size_ec);
+                if (size_ec) {
+                    return std::unexpected(spade::Error{spade::Code::io_error, "frame " + std::to_string(k) + " is not on disk: " +
+                                                                                   size_ec.message()});
+                }
+                on_disk[k] = bytes;
+                live_bytes += bytes;
+                peak_bytes = std::max(peak_bytes, live_bytes);
+                peak_frames = std::max(peak_frames, on_disk.size());
             }
-            draw_total += draw_s;
-            if (clip->id != "S5" && (k == 0u || k + 1u == n) && !corners_black(rgba, encoder.width, encoder.height)) {
-                std::fprintf(stderr, "flow_movie: web %s frame %u: a corner is not pure black (0, 0, 0), or the subject "
-                                     "runs to the frame's edge\n", opt.web_id.c_str(), k);
-                return 1;
+            if (wants_clip && k >= first && k < first + n) {
+                if (auto drew = filming.clip_frame(k - first); !drew) return drew;
             }
-            const auto pipe_start = std::chrono::steady_clock::now();
-            if (auto added = (*webclip)->add_frame(rgba); !added) return fail(added.error());
-            const auto frame_end = std::chrono::steady_clock::now();
-            ft.pipe = std::chrono::duration<double>(frame_end - pipe_start).count();
-            ft.frame = std::chrono::duration<double>(frame_end - frame_start).count();
-            perf.push_back(ft);
-            if (k % 30u == 0u || k + 1u == n) {
-                std::printf("[ %s ] frame %u/%u, t %s, %.2f s a frame\n", opt.web_id.c_str(), k + 1u, n,
-                            fixed(log.time, 4).c_str(),
-                            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() / (k + 1u));
-                std::fflush(stdout);
+            if (wants_still && k == first + still_k) {
+                if (auto drew = filming.still(still_k, still_w, still_h, still_png); !drew) return drew;
             }
+            for (auto it = on_disk.begin(); it != on_disk.end();) {
+                if (stream_plan.spent(it->first, k)) {
+                    std::error_code gone;
+                    fs::remove(frame_file(cache, it->first), gone);
+                    live_bytes -= it->second;
+                    it = on_disk.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            return {};
+        };
+        film->stream = hooks;
+        if (wants_clip) {
+            if (auto opened = filming.begin(); !opened) return fail(opened.error());
         }
-        const double through = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        auto finished = (*webclip)->finish();
-        if (!finished) return fail(finished.error());
-        const double with_encode = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        std::printf("web-timing: %s %ux%u, %u frames: draw %.3f s a frame (GL, read back), draw+pipe %.3f s a frame, "
-                    "through the encode %.3f s a frame, %.0f s in all\n",
-                    opt.web_id.c_str(), encoder.width, encoder.height, n, draw_total / n, through / n, with_encode / n,
-                    with_encode);
-        // The ledger's figures (Test/Docs' PERF.md): the median frame and each phase, and which cache they were drawn from.
-        for (const std::string& line : web::web_perf_lines(perf, with_encode - through)) std::printf("%s\n", line.c_str());
-        std::printf("%s\n", web::web_cache_note(cache.generic_string(), cached_frames(cache), dir_bytes(cache)).c_str());
-        web::CaptionInput in;
-        in.clip = clip;
-        in.commit = build_identity();
-        in.date_utc = utc_now();
-        in.command = opt.command_line;
-        in.ticket = opt.ticket.empty() ? "(run by hand, not queued)" : opt.ticket;
-        in.screen_seconds = static_cast<double>(n) / static_cast<double>(web::kFps);
-        in.sim_seconds = times->per_frame * static_cast<double>(n);
-        in.extra = grid_line(*film);
-        if (film->run && !film->run->domain.empty()) {
-            in.extra += (in.extra.empty() ? "" : " ") + std::string("Resolved ") + film->run->domain + ".";
+        const auto sim_start = std::chrono::steady_clock::now();
+        const CacheMark mine{film_identity(*film), build_identity()};
+        auto simmed = simulate_live(*film, cache, mine, 0.0, 0u);
+        if (!simmed) return fail(simmed.error());
+        std::printf("flow_movie: web %s: simulation and draw %.0f s (streamed)\n", opt.web_id.c_str(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
+        const std::string stream_note =
+            "stream: the cache folder held at most " + fixed(static_cast<double>(peak_bytes) / 1e9, 2) + " GB (" +
+            std::to_string(peak_frames) + " frames at once); " + std::to_string(on_disk.size()) +
+            " frame(s) kept in " + cache.generic_string();
+        std::printf("flow_movie: web %s %s\n", opt.web_id.c_str(), stream_note.c_str());
+        if (wants_still && !wants_clip) {
+            std::printf("look-ring: the mean flow held at most %zu raw frames, %.2f GB\n", filming.look_state.peak_ring_frames,
+                        static_cast<double>(filming.look_state.peak_ring_bytes) / 1e9);
         }
-        if (const std::string declared = look_note(opt.look, 1000.0 * times->per_frame);
-            !declared.empty()) {
-            in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
+        if (auto labelled = load_run_labels(*film, cache); !labelled) return fail(labelled.error());
+        if (wants_clip) {
+            if (filming.drawn != n) {
+                return fail(spade::Error{spade::Code::internal, "web " + opt.web_id + ": the solve ended after " +
+                                                                    std::to_string(filming.drawn) + " of the clip's " +
+                                                                    std::to_string(n) + " frames"});
+            }
+            if (auto finished = filming.finish_clip(stream_note); !finished) return fail(finished.error());
         }
-        if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
-        std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
-        caption << web::caption_text(in);
-        if (!caption) return fail(spade::Error{spade::Code::io_error, "writing " + (work / (base + "md")).string()});
-        std::printf("flow_movie: wrote %s and its caption\n", (work / (base + "mp4")).string().c_str());
+        return 0;
     }
 
-    if (clip->still || opt.web_still_only) {
-        auto big = GlStage::create(web::kStillWidth * ss, web::kStillHeight * ss);
-        if (!big) return fail(big.error());
-        const uint32_t k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
-        const auto start = std::chrono::steady_clock::now();
-        if (auto drew = draw_web_frame(*film, cache, first, k, n, **big, ss, volume, log, rgba, note, draw_s, nullptr,
-                                       &look_state);
-            !drew) {
-            return fail(drew.error());
+    // Not streamed: a still from a frame an earlier streamed run kept needs no simulation, and the cache is not whole.
+    const bool kept_frame = opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, first + still_k));
+    if (kept_frame) {
+        std::printf("flow_movie: web %s: the still is drawn from frame %u, kept in %s; no simulation\n", opt.web_id.c_str(),
+                    first + still_k, cache.generic_string().c_str());
+    } else {
+        Options sim = opt;
+        sim.simulate_only = true;
+        sim.stills = 0;
+        sim.still_frame = -1;
+        sim.arm_pressure = false;
+        sim.probe_swirl = -1;
+        const auto sim_start = std::chrono::steady_clock::now();
+        auto simmed = run_film(*film, sim, stage, encoder);
+        if (!simmed) return fail(simmed.error());
+        if (!*simmed) return kExitIncomplete;
+        std::printf("flow_movie: web %s: simulation %.0f s\n", opt.web_id.c_str(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
+        if (opt.simulate_only) return 0;  // the group's cache is all this run was for; a clip's own run draws from it
+    }
+
+    if (wants_clip) {
+        if (auto opened = filming.begin(); !opened) return fail(opened.error());
+        for (uint32_t k = 0; k < n; ++k) {
+            if (auto drew = filming.clip_frame(k); !drew) return fail(drew.error());
         }
-        Encoder still_encoder = encoder;
-        still_encoder.width = web::kStillWidth;
-        still_encoder.height = web::kStillHeight;
-        if (clip->id != "S5" && !corners_black(rgba, web::kStillWidth, web::kStillHeight)) {
-            std::fprintf(stderr, "flow_movie: web %s still: a corner is not pure black (0, 0, 0)\n", opt.web_id.c_str());
-            return 1;
-        }
-        const fs::path png = work / (base + "png");
-        std::error_code made;
-        fs::create_directories(work, made);  // a --web-still run has not made the folder the clip's mp4 would have
-        if (auto saved = save_png(still_encoder, rgba, png); !saved) return fail(saved.error());
-        std::printf("web-timing: %s still %ux%u of frame %u: draw %.3f s, %.3f s with the PNG (%s)\n",
-                    opt.web_id.c_str(), web::kStillWidth, web::kStillHeight, k, draw_s,
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(),
-                    (*big)->limits().c_str());
-        std::printf("flow_movie: wrote %s\n", png.string().c_str());
+        const std::string cache_note = web::web_cache_note(cache.generic_string(), cached_frames(cache), dir_bytes(cache));
+        if (auto finished = filming.finish_clip(cache_note); !finished) return fail(finished.error());
+    }
+    if (wants_still) {
+        if (auto drew = filming.still(still_k, still_w, still_h, still_png); !drew) return fail(drew.error());
     }
     return 0;
 }
@@ -2520,6 +2731,21 @@ int main(int argc, char** argv) {
             opt.sgs_cs = web::parse_sgs_cs(value());
             if (!opt.sgs_cs) {
                 std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
+                return 2;
+            }
+        } else if (arg == "--stream") {
+            opt.stream = true;
+        } else if (arg == "--keep-frames") {
+            const auto frames = parse_frame_list(value());
+            if (!frames) {
+                std::fprintf(stderr, "flow_movie: --keep-frames takes whole frame numbers split by commas, as 150,300\n");
+                return 2;
+            }
+            opt.keep_frames = *frames;
+        } else if (arg == "--still-size") {
+            opt.still_size = parse_size(value());
+            if (!opt.still_size) {
+                std::fprintf(stderr, "flow_movie: --still-size takes WIDTHxHEIGHT from 64 to 16384, as 1920x1080\n");
                 return 2;
             }
         } else if (arg == "--l2-level") {
