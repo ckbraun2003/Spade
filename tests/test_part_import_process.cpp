@@ -29,9 +29,11 @@ using std::chrono::steady_clock;
     }                                                                                                  \
     static_assert(true)
 
+// Python's text streams turn LF into CRLF on Windows; the child is told not to, so the bytes the layer captured are the bytes written.
 [[nodiscard]] ProcessOptions py(const std::string& code) {
     ProcessOptions o;
-    o.argv = {"python", "-c", code};
+    o.argv = {"python", "-c",
+              "import sys\nsys.stdout.reconfigure(newline='\\n'); sys.stderr.reconfigure(newline='\\n')\n" + code};
     return o;
 }
 
@@ -80,8 +82,8 @@ TEST(PartImportProcess, EachStdoutLineIsHandedOverWhole) {
 
 TEST(PartImportProcess, ArgumentsWithSpacesAndQuotesArriveAsGiven) {
     NEED_PYTHON();
-    ProcessOptions o;
-    o.argv = {"python", "-c", "import sys; print('|'.join(sys.argv[1:]))", "a b", "say \"hi\"", "c:\\dir with space\\", ""};
+    ProcessOptions o = py("print('|'.join(sys.argv[1:]))");
+    for (const char* a : {"a b", "say \"hi\"", "c:\\dir with space\\", ""}) o.argv.emplace_back(a);
     const ProcessResult r = run_process(o);
     ASSERT_TRUE(r.started) << r.start_error;
     EXPECT_EQ(r.out, "a b|say \"hi\"|c:\\dir with space\\|\n");
