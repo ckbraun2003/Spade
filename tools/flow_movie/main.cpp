@@ -2365,7 +2365,12 @@ struct WebFilming {
             for (uint32_t k = 0; k < n; ++k) draws.push_back(first + k);
         }
         if (wants_still) draws.push_back(first + still_k);
-        const StreamPlan stream_plan(draws, opt.look.mean_frames, opt.keep_frames);
+        // The still is drawn AFTER the solve (a stage made mid-solve ends the clip's GL context: a GlStage's destructor calls
+        // glfwTerminate), so its frame and its mean window stay on disk until then.
+        const std::optional<uint32_t> still_frame =
+            wants_still ? std::optional<uint32_t>(first + still_k) : std::nullopt;
+        const StreamPlan stream_plan(draws, opt.look.mean_frames,
+                                     keep_with_still(opt.keep_frames, still_frame, opt.look.mean_frames));
         if (stream_plan.last_frame() >= plan.frames) {
             std::fprintf(stderr, "flow_movie: frame %u is past the solve's last frame, %u (--web-frames %u)\n",
                          stream_plan.last_frame(), plan.frames - 1u, plan.frames);
@@ -2396,9 +2401,6 @@ struct WebFilming {
             if (wants_clip && k >= first && k < first + n) {
                 if (auto drew = filming.clip_frame(k - first); !drew) return drew;
             }
-            if (wants_still && k == first + still_k) {
-                if (auto drew = filming.still(still_k, still_w, still_h, still_png); !drew) return drew;
-            }
             for (auto it = on_disk.begin(); it != on_disk.end();) {
                 if (stream_plan.spent(it->first, k)) {
                     std::error_code gone;
@@ -2421,24 +2423,37 @@ struct WebFilming {
         if (!simmed) return fail(simmed.error());
         std::printf("flow_movie: web %s: simulation and draw %.0f s (streamed)\n", opt.web_id.c_str(),
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start).count());
-        const std::string stream_note =
-            "stream: the cache folder held at most " + fixed(static_cast<double>(peak_bytes) / 1e9, 2) + " GB (" +
-            std::to_string(peak_frames) + " frames at once); " + std::to_string(on_disk.size()) +
-            " frame(s) kept in " + cache.generic_string();
-        std::printf("flow_movie: web %s %s\n", opt.web_id.c_str(), stream_note.c_str());
-        if (wants_still && !wants_clip) {
-            std::printf("look-ring: the mean flow held at most %zu raw frames, %.2f GB\n", filming.look_state.peak_ring_frames,
-                        static_cast<double>(filming.look_state.peak_ring_bytes) / 1e9);
-        }
         if (auto labelled = load_run_labels(*film, cache); !labelled) return fail(labelled.error());
+        const std::string peak_note = "the cache folder held at most " + fixed(static_cast<double>(peak_bytes) / 1e9, 2) +
+                                      " GB (" + std::to_string(peak_frames) + " frames at once)";
         if (wants_clip) {
             if (filming.drawn != n) {
                 return fail(spade::Error{spade::Code::internal, "web " + opt.web_id + ": the solve ended after " +
                                                                     std::to_string(filming.drawn) + " of the clip's " +
                                                                     std::to_string(n) + " frames"});
             }
-            if (auto finished = filming.finish_clip(stream_note); !finished) return fail(finished.error());
+            if (auto finished = filming.finish_clip("stream: " + peak_note + " in " + cache.generic_string());
+                !finished) {
+                return fail(finished.error());
+            }
         }
+        // The still, from the frame the plan kept for it; then those frames go unless --keep-frames keeps them.
+        if (wants_still) {
+            if (auto drew = filming.still(still_k, still_w, still_h, still_png); !drew) return fail(drew.error());
+            std::printf("look-ring: the mean flow held at most %zu raw frames, %.2f GB\n", filming.look_state.peak_ring_frames,
+                        static_cast<double>(filming.look_state.peak_ring_bytes) / 1e9);
+        }
+        for (auto it = on_disk.begin(); it != on_disk.end();) {
+            if (!std::binary_search(opt.keep_frames.begin(), opt.keep_frames.end(), it->first)) {
+                std::error_code gone;
+                fs::remove(frame_file(cache, it->first), gone);
+                it = on_disk.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        std::printf("flow_movie: web %s stream: %s; %zu frame(s) kept in %s\n", opt.web_id.c_str(), peak_note.c_str(),
+                    on_disk.size(), cache.generic_string().c_str());
         return 0;
     }
 
