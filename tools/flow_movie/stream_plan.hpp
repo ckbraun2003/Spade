@@ -154,4 +154,13 @@ struct StreamAsk {
     return {};
 }
 
+// The draws of a particle run: the clip's and every frame before its first (`first`), each once, sorted. The points are
+// carried through all of them in order, so the plan writes the warm-up frames too.
+[[nodiscard]] inline std::vector<uint32_t> with_warmup(std::vector<uint32_t> draws, uint32_t first) {
+    for (uint32_t j = 0; j < first; ++j) draws.push_back(j);
+    std::sort(draws.begin(), draws.end());
+    draws.erase(std::unique(draws.begin(), draws.end()), draws.end());
+    return draws;
+}
+
 }  // namespace flow_movie

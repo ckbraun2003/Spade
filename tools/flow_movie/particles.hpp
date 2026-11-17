@@ -4,12 +4,15 @@
 // system after it.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <map>
 #include <numbers>
 #include <span>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -182,5 +185,68 @@ struct ParticleField {
     ++field.frames;
     return {};
 }
+
+// The frames a particle run reads: the clip's draws and every frame before its first, in order, each once. The points are
+// carried through all of them (the inflow must already be drawn in when the clip starts), so the stream's plan writes them
+// and keeps each until its advance is done.
+//
+// The driver is the run's one particle field: advanced once per stored frame, in order, with the frame's simulated time.
+// `snapshot_frames` are the frames a still will be drawn from; the still is drawn after the solve, when the live field is long
+// past them, so a copy is kept as each of those frames is advanced. at(k) is the field that shows frame k: its copy, or the
+// live field while it is at k; nothing otherwise.
+class ParticleDriver {
+public:
+    ParticleDriver(ParticleOptions options, std::vector<uint32_t> snapshot_frames)
+        : options_(options), snapshot_frames_(std::move(snapshot_frames)) {}
+
+    void set_pool(std::vector<glm::vec3> pool) { pool_ = std::move(pool); }
+    [[nodiscard]] bool has_pool() const noexcept { return !pool_.empty(); }
+
+    // k must be the next frame (0 first), and time_s past the last frame's: the step is their difference (frame 0 moves
+    // nothing, there is nothing to move). A region left open is the first volume's box less one cell.
+    [[nodiscard]] spade::Result<void> advance(uint32_t k, const spade::FlowVolume& volume, double time_s) {
+        const auto bad = [](const std::string& why) {
+            return std::unexpected(spade::Error{spade::Code::invalid_argument, "particles: " + why});
+        };
+        if (k != next_) return bad("frame " + std::to_string(k) + " is not the next frame, " + std::to_string(next_));
+        if (pool_.empty()) return bad("no seed pool was set");
+        if (k > 0u && !(time_s > last_time_)) return bad("time must go forward between frames");
+        ParticleOptions o = options_;
+        if (!region_done_) {
+            if (o.region_lo.x <= -1.0e8f && o.region_hi.x >= 1.0e8f) {
+                const spade::FlowVolumeHeader& h = volume.header;
+                const glm::vec3 lo = h.origin + glm::vec3(h.cell);
+                const glm::vec3 hi = h.origin + glm::vec3(static_cast<float>(h.nx), static_cast<float>(h.ny),
+                                                          static_cast<float>(h.nz)) * h.cell - glm::vec3(h.cell);
+                options_.region_lo = lo;
+                options_.region_hi = hi;
+                o = options_;
+            }
+            region_done_ = true;
+        }
+        const float dt = k == 0u ? 1.0e-3f : static_cast<float>(time_s - last_time_);
+        if (auto stepped = advance_particles(live_, volume, pool_, dt, o); !stepped) return stepped;
+        if (std::find(snapshot_frames_.begin(), snapshot_frames_.end(), k) != snapshot_frames_.end()) snapshots_[k] = live_;
+        last_time_ = time_s;
+        ++next_;
+        return {};
+    }
+
+    [[nodiscard]] const ParticleField* at(uint32_t k) const {
+        if (const auto it = snapshots_.find(k); it != snapshots_.end()) return &it->second;
+        if (next_ > 0u && k + 1u == next_) return &live_;
+        return nullptr;
+    }
+
+private:
+    ParticleOptions options_;
+    std::vector<uint32_t> snapshot_frames_;
+    std::vector<glm::vec3> pool_;
+    ParticleField live_;
+    std::map<uint32_t, ParticleField> snapshots_;
+    uint32_t next_ = 0;
+    double last_time_ = 0.0;
+    bool region_done_ = false;
+};
 
 }  // namespace flow_movie
