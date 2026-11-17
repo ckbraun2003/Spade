@@ -87,6 +87,10 @@ add_executable(spade_tests
     ../tools/geo_fetch/fetch.cpp
     test_geo_cli.cpp
     ../tools/geo_fetch/cli.cpp
+    test_geo_area.cpp
+    ../tools/geo_fetch/area.cpp
+    # L85e part 2: the cache reader (world/terrain_map.hpp, in spade_mesh_import).
+    test_terrain_map.cpp
     test_mesh_import.cpp
     test_state.cpp
     test_snapshot.cpp
@@ -111,12 +115,14 @@ add_executable(spade_tests
     test_airflow_wall_load.cpp
     test_airflow_ftz.cpp
     test_airflow_threads.cpp
+    test_airflow_dye.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
     test_airflow_line.cpp
     test_airflow_line_v2.cpp
     test_airflow_line_torque_gap.cpp
+    test_airflow_line_tip.cpp
     # the quad film's own case, compiled in for AirflowSgsFilm (L52)
     ../tools/flow_movie/quad_case.cpp
     test_airflow_check_grid.cpp
@@ -455,6 +461,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_step.cpp
         test_gpu_airflow_line.cpp
         test_gpu_airflow_line_v2b.cpp
+        test_gpu_airflow_dye.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_lbm.cpp
@@ -859,6 +866,25 @@ add_test(NAME SpadeVersion.IncludedFromAnotherProject
 set_tests_properties(SpadeVersion.IncludedFromAnotherProject PROPERTIES
     LABELS spade
     TIMEOUT 120)
+
+# The fetch tool's executable, as built (L85e part 2): it starts, prints its usage, and refuses a cache inside a git work tree (the
+# build directory of a clone is one), all without the network. The library's behaviour is tested with a fake network in
+# test_geo_cli.cpp; this is only that the program itself is linked and runs. spade_tests depends on it so a test build makes it.
+# LABELS spade, as above.
+add_dependencies(spade_tests spade_geo_fetch)
+add_test(NAME GeoFetchExe.PrintsItsUsage COMMAND spade_geo_fetch --help)
+set_tests_properties(GeoFetchExe.PrintsItsUsage PROPERTIES
+    LABELS spade
+    TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "usage: spade_geo_fetch --lat <deg> --lon <deg>.*--check")
+if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export, a container mount) has no work tree to refuse
+    add_test(NAME GeoFetchExe.RefusesACacheInsideAGitWorkTree
+        COMMAND spade_geo_fetch --lat 40.76 --lon -113.90 --check --cache "${PROJECT_SOURCE_DIR}/geo_fetch_exe_cache")
+    set_tests_properties(GeoFetchExe.RefusesACacheInsideAGitWorkTree PROPERTIES
+        LABELS spade
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "refused: .*inside a git work tree")
+endif()
 
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
 # throwaway bare repositories: every push without the owner's word refused, a

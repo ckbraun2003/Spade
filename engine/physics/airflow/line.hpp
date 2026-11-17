@@ -60,6 +60,9 @@ struct LineRotor {
     // diagnostic knob for a sweep that holds the PHYSICAL width fixed across resolutions. The support stays 6 cells (a wider eps is
     // cut earlier than 3 eps). Refused outside [1, 3].
     float eps_cells = 2.0f;
+    // THE TIP/SMEARING CORRECTION (below), L72k's A1: ON by default since the flip commit (the polar fits of B1 are made with it
+    // on). Off is every bit as the line was before A1.
+    bool tip_correction = true;
 };
 
 // One element of one blade at one sub-azimuth.
@@ -103,6 +106,56 @@ struct LineStencil {
 
 // The air an element at `pos` feels: the kernel mean of the faces' velocities (THE KERNEL). `pos` must have its reach in the grid.
 [[nodiscard]] glm::vec3 line_sample(const MacGrid& grid, glm::vec3 pos, float eps_cells = 2.0f) noexcept;
+
+// ---------------------------------------------------------------------------
+// THE TIP/SMEARING CORRECTION (L72k, A1; .superpowers/sdd/2026-11-10-wake/a1-tip-design.md). Smearing the blade force over a Gaussian
+// kernel gives the TRAILED vorticity a viscous (Lamb-Oseen) core, so an element feels less trailed-vortex downwash than a lifting
+// line would: its angle of attack is too high at the tip. Meyer Forsting, Pirrung and Ramos-Garcia (Wind Energy Science 4, 369, 2019,
+// eqs 14-23; the fast variant 5, 349, 2020) add the missing part: at element s, du_s = sum over trailed filaments v of f * u~, u~ the
+// Biot-Savart velocity of the UNSMEARED filament, f = exp(-x^2 / eps^2) (eps this kernel's e-folding length, the same form as the
+// paper's) with x the element's distance from the filament perpendicular to it. A filament is shed between each pair of elements (and
+// at the root and the tip) with the circulation step along the blade, s (Gamma_(v-1) - Gamma_v) along its path, s the spin; Gamma =
+// L' / (rho W), L' the section's lift (axial cos(phi) + tangent sin(phi)), from the CORRECTED air: a damped fixed point. DEVIATION
+// (stated): Gamma is first filtered along the span by this kernel's own Gaussian (zero beyond the ends), the circulation the smeared
+// field itself carries: the unfiltered one has element-to-element modes the fixed point amplifies without bound.
+// DEVIATION from the paper, stated: its near-wake model (Pirrung's indicial functions) is replaced by DIRECT QUADRATURE of the
+// helical filaments: each follows the air back from the blade by the rotation `wake_angle` (pi / 2, the paper's near-wake length),
+// at its own radius, sinking along -axis by (max(ua, 0) / omega) per radian, as `segments` straight chords (graded: short at the
+// blade, theta_j = wake (j / n)^2), each by the closed form of
+// the straight filament (f is constant along a chord, so the quadrature error is the polyline's only); a hover wake is steady, so no
+// time history is kept. Filaments farther than 3 eps (radially) from the element are skipped (f < 1.3e-4). Not in: the shed/bound
+// part (the paper calls it negligible).
+// ---------------------------------------------------------------------------
+struct LineTipParams {
+    int segments = 12;       // straight chords per filament over the near wake
+    int iterations = 6;      // damped fixed-point passes
+    float relax = 0.0f;      // the damping; <= 0: min(0.5, 1 / (1 + pi c_max / (4 eps))), set by the chord against the core
+    float wake_angle = 0.5f * 3.14159265358979f;  // rad of blade rotation the filament follows
+};
+
+// f * (the Biot-Savart velocity of a straight filament from a to b of unit circulation, at p); eps_m the core's e-folding length in m
+// (<= 0: no core factor, the plain law). Zero where p lies on the filament's line.
+[[nodiscard]] glm::vec3 line_segment_induction(glm::vec3 p, glm::vec3 a, glm::vec3 b, float eps_m) noexcept;
+
+// What line_tip_correct() builds once for a rotor and its blade groups: the chords' angles and their cosines and sines, the Gaussian
+// that filters the circulation along the span (its half-width in elements, `reach`, and its sum), and the damping. The device twin
+// (spike/airflow/line_chain.hpp) is handed these very floats, so the two cannot differ in them.
+struct LineTipTables {
+    std::size_t per = 0;  // elements a blade (a group)
+    int reach = 0;
+    float eps_m = 0.0f;
+    float kern_sum = 0.0f;
+    float relax = 0.0f;
+    std::vector<float> th, ct, st;  // segments + 1 entries: the chord boundaries' angle, cos, sin
+    std::vector<float> kern;        // reach + 1 entries
+};
+[[nodiscard]] LineTipTables line_tip_tables(const LineRotor& rotor, std::span<const LineElement> elements, float dx,
+                                            const LineTipParams& params = {});
+
+// Corrects `air` (each element's sampled air, in line_elements' order) in place; returns the last pass's largest change (m/s).
+// A rotor that does not turn is left as it is.
+[[nodiscard]] float line_tip_correct(const LineRotor& rotor, std::span<const LineElement> elements, float dx, float rho,
+                                     std::span<glm::vec3> air, const LineTipParams& params = {});
 
 struct LineReport {
     float thrust = 0.0f;  // N along the axis, all blades, the mean over the sub-azimuths

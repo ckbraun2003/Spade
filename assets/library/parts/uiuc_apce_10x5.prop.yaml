@@ -39,6 +39,8 @@ prop:
     beta_deg: [32.76, 37.19, 33.54, 29.25, 25.64, 22.54, 20.27, 18.46, 17.05, 15.97, 14.87, 14.09, 13.39, 12.84, 12.25, 11.37, 10.19, 8.99]
     hub_cutout: 0.15
     airfoil: "unknown"
+    alpha_0_deg: -3.0645
+    cd_scale: 1.3514
 sources:
   diameter: {source: "nasa_ames_2016", grade: measured, note: "9.4 in"}
   pitch: {source: "retail_phantom3_parts", grade: retailer, note: "5.0 in, as UIUC's 10x5; the 9450's listings give 4.5 or 5.0 in"}
@@ -54,3 +56,5 @@ sources:
   blade.beta_deg: {source: "uiuc_propdb", grade: derived, note: "UIUC geometry at 9.4 in"}
   blade.hub_cutout: {source: "uiuc_propdb", grade: derived, note: "the first station"}
   blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}
+  blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870"}
+  blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870"}

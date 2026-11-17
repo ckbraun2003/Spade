@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "../tools/geo_fetch/area.hpp"
 #include "../tools/geo_fetch/cache_store.hpp"
 #include "../tools/geo_fetch/fetch.hpp"
 #include "geo_fixtures.hpp"
@@ -218,6 +219,123 @@ TEST(GeoFetch, AServiceThatKeepsFailingIsAServiceErrorNamingIt) {
     EXPECT_FALSE(fs::exists(rig.entry()));
 }
 
+// A refused answer is quoted, so a person can see what the service said (the first live check, L85f, got 59 bytes and no way to read them).
+[[nodiscard]] FetchResult run_with_answer(const char* host, int status, const std::string& body) {
+    Rig rig([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find(host) != std::string::npos) {
+            r.status = status;
+            r.body = body;
+        }
+        return r;
+    });
+    return rig.run();
+}
+
+TEST(GeoFetch, AnAnswerThatIsNoUseIsQuotedInTheErrorOfEachService) {
+    const FetchResult geoid = run_with_answer("geodesy", 200, R"({"error":"model 18 is not a geoid model"})");
+    EXPECT_EQ(geoid.kind, FetchResultKind::service_error);
+    EXPECT_EQ(geoid.service, "ngs");
+    EXPECT_NE(geoid.message.find("model 18 is not a geoid model"), std::string::npos) << geoid.message;
+
+    const FetchResult dem = run_with_answer("elevation", 200, "<html>ArcGIS: invalid bbox</html>");
+    EXPECT_EQ(dem.service, "3dep");
+    EXPECT_NE(dem.message.find("invalid bbox"), std::string::npos) << dem.message;
+
+    const FetchResult naip = run_with_answer("imagery", 200, R"({"error":{"code":400,"message":"Unable to complete operation."}})");
+    EXPECT_EQ(naip.service, "naip");
+    EXPECT_NE(naip.message.find("Unable to complete operation"), std::string::npos) << naip.message;
+
+    const FetchResult http = run_with_answer("geodesy", 400, "no such model");
+    EXPECT_EQ(http.service, "ngs");
+    EXPECT_NE(http.message.find("HTTP 400"), std::string::npos) << http.message;
+    EXPECT_NE(http.message.find("no such model"), std::string::npos) << http.message;
+}
+
+TEST(GeoFetch, AQuotedAnswerIsAtMost120BytesOfPrintableCharacters) {
+    const std::string body = std::string("\x01\x02", 2) + std::string(300, 'A') + "\r\n\x7f\xc3\xa9";
+    const FetchResult r = run_with_answer("geodesy", 200, body);
+    ASSERT_EQ(r.kind, FetchResultKind::service_error);
+    EXPECT_NE(r.message.find(".." + std::string(118, 'A')), std::string::npos) << r.message;  // 120 bytes: two dots and 118 A
+    EXPECT_EQ(r.message.find(std::string(119, 'A')), std::string::npos) << r.message;
+    for (const char c : r.message) {
+        EXPECT_TRUE(c >= 0x20 && c < 0x7f) << static_cast<int>(static_cast<unsigned char>(c));
+    }
+}
+
+// A tiled elevation answer (what an ArcGIS ImageServer sends, L85g) is the same grid: the stored heights are the strip fixture's.
+TEST(GeoFetch, ATiledElevationAnswerIsStoredLikeAStripOne) {
+    std::vector<float> h(16);
+    for (uint32_t i = 0; i < 16; ++i) h[i] = 1000.0f + 2.0f * static_cast<float>(i % 4);
+    GeoFixture tiled;
+    TiffOptions o;
+    o.tiled = true;
+    o.tile = 3;  // 4 x 4 is 2 x 2 tiles with the edge ones padded
+    tiled.tiff = make_tiff(4, 4, h, o);
+    Rig strips;
+    Rig tiles(FakeHttp::serve(tiled));
+    ASSERT_EQ(strips.run().kind, FetchResultKind::fetched);
+    const FetchResult r = tiles.run();
+    ASSERT_EQ(r.kind, FetchResultKind::fetched) << r.message;
+    EXPECT_EQ(slurp(tiles.entry() / "height.f32"), slurp(strips.entry() / "height.f32"));
+    EXPECT_FALSE(fs::exists(tiles.request.cache_root / "failed"));  // a good answer keeps nothing aside
+}
+
+// A refused answer's bytes are kept in <cache>/failed/<service>.bin, as received, so one failed run can be looked at without asking the
+// service again. The file is untrusted data that nothing reads back, and it is outside the cache's entries and its size limit.
+TEST(GeoFetch, ARefusedAnswersBytesAreKeptInTheCacheFailedFolder) {
+    struct Case {
+        const char* host;
+        int status;
+        std::string body;
+        const char* service;
+    };
+    const Case cases[] = {
+        {"geodesy", 200, "<html>nope</html>", "ngs"},
+        {"geodesy", 400, "no such model", "ngs"},
+        {"elevation", 200, "<html>ArcGIS busy</html>", "3dep"},
+        {"elevation", 200, std::string("II*\0\x08\0\0\0\xff\x01\x02", 11), "3dep"},  // binary, with a NUL
+        {"imagery", 200, R"({"error":"x"})", "naip"},
+        {"imagery", 200, make_png(2, 2, 8, 2, "x"), "naip"},  // a PNG header that decode_png refuses
+    };
+    for (const Case& c : cases) {
+        Rig rig([&](const std::string& url, int nth) {
+            HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+            if (url.find(c.host) != std::string::npos) {
+                r.status = c.status;
+                r.body = c.body;
+            }
+            return r;
+        });
+        const FetchResult r = rig.run();
+        EXPECT_EQ(r.kind, FetchResultKind::service_error) << c.service << " " << r.message;
+        EXPECT_EQ(r.service, c.service);
+        const fs::path kept = rig.request.cache_root / "failed" / (std::string(c.service) + ".bin");
+        ASSERT_TRUE(fs::exists(kept)) << kept.string();
+        EXPECT_EQ(slurp(kept), c.body) << c.service;
+        EXPECT_NE(r.message.find(kept.string()), std::string::npos) << r.message;  // the message says where
+        EXPECT_EQ(cache_size_bytes(rig.request.cache_root), 0u);                  // not an entry, not counted against the limit
+        EXPECT_FALSE(fs::exists(rig.entry()));
+    }
+}
+
+TEST(GeoFetch, ASecondRefusedAnswerReplacesTheKeptOne) {
+    Rig first([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find("geodesy") != std::string::npos) r.body = "first";
+        return r;
+    });
+    ASSERT_EQ(first.run().kind, FetchResultKind::service_error);
+    Rig second([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find("geodesy") != std::string::npos) r.body = "second";
+        return r;
+    });
+    second.request.cache_root = first.request.cache_root;
+    ASSERT_EQ(second.run().kind, FetchResultKind::service_error);
+    EXPECT_EQ(slurp(first.request.cache_root / "failed" / "ngs.bin"), "second");
+}
+
 // Each answer the tool cannot use is a service error naming the service, and nothing is stored.
 struct BadAnswer {
     const char* what;
@@ -258,6 +376,9 @@ TEST(GeoFetch, EachUnusableAnswerIsAServiceErrorWithNothingStored) {
         {"png wrong size", "naip", [](GeoFixture& f) { f.png = make_png(3, 3, 8, 2, "x"); }, "3 x 3"},
         {"png has alpha", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 8, 6, "x"); }, "RGB"},
         {"png 16-bit", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 16, 2, "x"); }, "8-bit"},
+        // the whole file is read, not only its header (L85e part 2: decode_png)
+        {"png data cut short", "naip", [](GeoFixture& f) { f.png = make_png(2, 2, 8, 2, "x"); }, "png:"},
+        {"png data damaged", "naip", [](GeoFixture& f) { f.png[45] = static_cast<char>(f.png[45] ^ 0x55); }, "png:"},
         {"png is xml", "naip", [](GeoFixture& f) { f.png = "<?xml version=\"1.0\"?><Error/>"; }, "PNG"},
     };
     for (const BadAnswer& c : cases) {
@@ -282,6 +403,7 @@ TEST(GeoFetch, ARequestOutOfRangeIsRefusedWithoutAskingAnyone) {
         {"side over 1 km", [](FetchRequest& q) { q.side_m = 1001.0; }},  // REQ-G07
         {"side under 10 m", [](FetchRequest& q) { q.side_m = 9.0; }},
         {"latitude 91", [](FetchRequest& q) { q.lat_deg = 91.0; }},
+        {"latitude 89.5", [](FetchRequest& q) { q.lat_deg = 89.5; }},  // the geodesy's anchor limit is 89 (core/geodesy.hpp)
         {"longitude 181", [](FetchRequest& q) { q.lon_deg = 181.0; }},
         {"NaN latitude", [](FetchRequest& q) { q.lat_deg = std::numeric_limits<double>::quiet_NaN(); }},
         {"no cache root", [](FetchRequest& q) { q.cache_root.clear(); }},
@@ -303,6 +425,25 @@ TEST(GeoFetch, ARequestOutOfRangeIsRefusedWithoutAskingAnyone) {
         EXPECT_FALSE(r.message.empty()) << c.what;
         EXPECT_TRUE(rig.http.urls.empty()) << c.what;
     }
+}
+
+TEST(GeoFetch, AnAreaAcrossTheAntimeridianIsRefusedByNameBeforeAskingAnyone) {
+    Rig rig;
+    rig.env.area = [](double, double, double) { return Bbox{179.99, 52.0, -179.99, 52.01}; };
+    const FetchResult r = rig.run();
+    EXPECT_EQ(r.kind, FetchResultKind::refused);
+    EXPECT_NE(r.message.find("180"), std::string::npos) << r.message;
+    EXPECT_TRUE(rig.http.urls.empty());
+}
+
+TEST(GeoFetch, WithNoAreaFunctionTheBoxIsTheGeodesys) {
+    Rig rig;
+    rig.env.area = nullptr;
+    const FetchResult r = rig.run();
+    ASSERT_EQ(r.kind, FetchResultKind::fetched) << r.message;
+    const Bbox box = area_bbox(40.005, -112.995, 40.0);
+    EXPECT_EQ(rig.http.urls, (std::vector<std::string>{geoid_url(40.005, -112.995), elevation_url(box, 4, 4), image_url(box, 2, 2)}));
+    EXPECT_NEAR(box.north_deg - box.south_deg, 40.0 / 111000.0, 5e-6);  // not the zero box of a stub
 }
 
 TEST(GeoFetch, ACacheInsideAGitWorkTreeIsRefused) {  // REQ-G10

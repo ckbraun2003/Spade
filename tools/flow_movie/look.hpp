@@ -30,6 +30,8 @@
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "render/scene.hpp"
+#include "wake_fade.hpp"
 
 namespace flow_movie {
 
@@ -38,8 +40,11 @@ struct Look {
     bool l2_smooth = false;
     uint32_t min_cells = 0;     // 0: no cull
     uint32_t mean_frames = 1;   // 1: the frame alone
+    WakeFade fade;              // the soft edge of a drawn wake: the drone's framing sets it (not an option)
 
-    [[nodiscard]] bool any() const noexcept { return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u; }
+    [[nodiscard]] bool any() const noexcept {
+        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on();
+    }
 };
 
 namespace look_detail {
@@ -176,6 +181,31 @@ inline uint32_t cull_small_vortices(spade::FlowVolume& v, float level, uint32_t 
     return removed;
 }
 
+// After the velocity halves were written: the header's finite range of u, v and w, its count of no-data halves (both textures)
+// and a new generation, so a cache of the old halves is not drawn.
+inline void refresh_velocity_range(spade::FlowVolume& out) {
+    const std::size_t cells = std::size_t{out.header.nx} * out.header.ny * out.header.nz;
+    for (std::size_t lane = 0; lane < 3u; ++lane) {
+        float lo = 0.0f, hi = 0.0f;
+        bool any = false;
+        for (std::size_t c = 0; c < cells; ++c) {
+            const uint16_t half = out.v[c * spade::kFlowHalvesPerCell + lane];
+            if (look_detail::no_data(half)) continue;
+            const float x = spade::fp16::to_f32(half);
+            lo = any ? std::min(lo, x) : x;
+            hi = any ? std::max(hi, x) : x;
+            any = true;
+        }
+        out.header.channel_min[lane] = lo;
+        out.header.channel_max[lane] = hi;
+    }
+    uint32_t missing = 0;
+    for (const uint16_t half : out.v) missing += look_detail::no_data(half) ? 1u : 0u;
+    for (const uint16_t half : out.s) missing += look_detail::no_data(half) ? 1u : 0u;
+    out.header.no_data = missing;
+    out.generation = spade::next_flow_generation();
+}
+
 // `out` = the last of `frames` with its velocity (u, v, w) the mean of all of them. A cell that is no-data in any frame is
 // no-data in the mean. Refused by name: no frames, and frames of different shapes. Every other channel is the last
 // frame's (the drawn one), and `out` may be that frame.
@@ -213,25 +243,7 @@ inline uint32_t cull_small_vortices(spade::FlowVolume& v, float level, uint32_t 
     for (std::size_t c = 0; c < cells; ++c) {
         for (std::size_t lane = 0; lane < 3u; ++lane) out.v[c * spade::kFlowHalvesPerCell + lane] = velocity[c * 3u + lane];
     }
-    for (std::size_t lane = 0; lane < 3u; ++lane) {
-        float lo = 0.0f, hi = 0.0f;
-        bool any = false;
-        for (std::size_t c = 0; c < cells; ++c) {
-            const uint16_t half = out.v[c * spade::kFlowHalvesPerCell + lane];
-            if (look_detail::no_data(half)) continue;
-            const float x = spade::fp16::to_f32(half);
-            lo = any ? std::min(lo, x) : x;
-            hi = any ? std::max(hi, x) : x;
-            any = true;
-        }
-        out.header.channel_min[lane] = lo;
-        out.header.channel_max[lane] = hi;
-    }
-    uint32_t missing = 0;  // the header's count of no-data halves, both textures
-    for (const uint16_t half : out.v) missing += look_detail::no_data(half) ? 1u : 0u;
-    for (const uint16_t half : out.s) missing += look_detail::no_data(half) ? 1u : 0u;
-    out.header.no_data = missing;
-    out.generation = spade::next_flow_generation();
+    refresh_velocity_range(out);
     return {};
 }
 
@@ -292,16 +304,16 @@ struct MeanWindow {
 }
 
 // Why a look option cannot apply to a clip ("" when it can, or when there is none). The level, the smoothing and the cull
-// belong to the clips that draw vortex surfaces (S2, and S3 in the side wind); the mean flow to the D1 clips that read the
+// belong to the clip that draws vortex surfaces (S3, in the side wind; S2 was one until Cameron's pick of the soft volume); the mean flow to the D1 clips that read the
 // velocity (not S4's C_p); a cull needs the level that says what a piece is. `d1`: the clip runs the D1 film (S5 and S6 run
 // the reference quad's CPU film).
 [[nodiscard]] inline std::string look_refusal(std::string_view clip_id, bool d1, const Look& look) {
     if (!look.any()) return {};
     const std::string id(clip_id);
     if (!d1) return "the look options are for the D1 clips (S1 to S4 and S8); " + id + " runs the reference quad's CPU film";
-    const bool vortex_clip = clip_id == "S2" || clip_id == "S3";
+    const bool vortex_clip = clip_id == "S3";
     if ((look.l2_level > 0.0f || look.l2_smooth || look.min_cells > 0u) && !vortex_clip) {
-        return "--l2-level, --l2-smooth and --min-cells are for the clips that draw vortex surfaces (S2 and S3); " + id +
+        return "--l2-level, --l2-smooth and --min-cells are for the clip that draws vortex surfaces (S3); " + id +
                " does not";
     }
     if (look.mean_frames > 1u && clip_id == "S4") {
@@ -311,6 +323,81 @@ struct MeanWindow {
         return "--min-cells needs --l2-level: a piece is the cells below one level";
     }
     return {};
+}
+
+// S1's soft streamlines: a polyline's colours dimmed to black toward both of its ends, by a smoothstep of the arc length to the
+// nearer end over `fade_m` metres, so the line dissolves into the black background instead of stopping (a line shorter than
+// twice `fade_m` never reaches full). Zero `fade_m`, or a line of fewer than two points, changes nothing.
+inline void fade_polyline_ends(spade::render::FlowPolyline& line, float fade_m) {
+    const std::size_t n = std::min(line.points.size(), line.colours.size());
+    if (!(fade_m > 0.0f) || n < 2u) return;
+    std::vector<float> arc(n, 0.0f);
+    for (std::size_t i = 1; i < n; ++i) {
+        const glm::vec3 d = line.points[i] - line.points[i - 1];
+        arc[i] = arc[i - 1] + std::sqrt(glm::dot(d, d));
+    }
+    const float total = arc[n - 1];
+    for (std::size_t i = 0; i < n; ++i) {
+        const float t = std::clamp(std::min(arc[i], total - arc[i]) / fade_m, 0.0f, 1.0f);
+        line.colours[i] *= t * t * (3.0f - 2.0f * t);
+    }
+}
+
+// The same for every polyline of `scene` from index `from` on (the lines a view added: the rims drawn before stay as they are).
+inline void fade_polylines_from(spade::render::RenderScene& scene, std::size_t from, float fade_m) {
+    for (std::size_t i = from; i < scene.flow_polylines.size(); ++i) fade_polyline_ends(scene.flow_polylines[i], fade_m);
+}
+
+// The wake's soft edge: u, v and w of every cell scaled by the fade of the side faces and of the height (see WakeFade); the dye,
+// a no-data half and the second texture are not touched. The header's velocity range is made again and the volume names new
+// content.
+inline void fade_wake_edges(spade::FlowVolume& v, const WakeFade& fade) {
+    if (!fade.on()) return;
+    const spade::FlowVolumeHeader& h = v.header;
+    const auto smooth = [](float t) {
+        t = std::clamp(t, 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    const auto side_factor = [&](uint32_t i, uint32_t n) {
+        if (!(fade.side_m > 0.0f)) return 1.0f;
+        const float from_low = (static_cast<float>(i) + 0.5f) * h.cell;
+        const float from_high = (static_cast<float>(n - i) - 0.5f) * h.cell;
+        return smooth(std::min(from_low, from_high) / fade.side_m);
+    };
+    std::vector<float> fx(h.nx), fy(h.ny), fz(h.nz);
+    for (uint32_t i = 0; i < h.nx; ++i) fx[i] = side_factor(i, h.nx);
+    for (uint32_t k = 0; k < h.nz; ++k) fz[k] = side_factor(k, h.nz);
+    for (uint32_t j = 0; j < h.ny; ++j) {
+        const float y = h.origin.y + (static_cast<float>(j) + 0.5f) * h.cell;
+        float f = 1.0f;
+        if (fade.floor_to_y < fade.floor_from_y) f *= 1.0f - smooth((fade.floor_from_y - y) / (fade.floor_from_y - fade.floor_to_y));
+        if (fade.ceiling_to_y > fade.ceiling_from_y) f *= 1.0f - smooth((y - fade.ceiling_from_y) / (fade.ceiling_to_y - fade.ceiling_from_y));
+        fy[j] = f;
+    }
+    for (uint32_t k = 0; k < h.nz; ++k) {
+        for (uint32_t j = 0; j < h.ny; ++j) {
+            const float fyz = fy[j] * fz[k];
+            for (uint32_t i = 0; i < h.nx; ++i) {
+                const float f = fyz * fx[i];
+                if (f >= 1.0f) continue;
+                const std::size_t base = spade::flow_cell_index(h, i, j, k) * spade::kFlowHalvesPerCell;
+                for (std::size_t lane = 0; lane < 3u; ++lane) {
+                    const uint16_t half = v.v[base + lane];
+                    if (look_detail::no_data(half)) continue;
+                    v.v[base + lane] = spade::fp16::from_f32(spade::fp16::to_f32(half) * f).bits;
+                }
+            }
+        }
+    }
+    refresh_velocity_range(v);
+}
+
+// What a look does to a frame's fields once its velocity is the mean (or the frame's own): lambda2-hat smoothed, its small
+// pieces culled, the wake faded at its edges, in that order. One function, so the drawing and its test cannot part ways.
+inline void finish_look(const Look& look, spade::FlowVolume& volume) {
+    if (look.l2_smooth) smooth_lambda2(volume);
+    if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
+    if (look.fade.on()) fade_wake_edges(volume, look.fade);
 }
 
 // The caption's sentence: what the look did, in plain words ("" when it did nothing).
@@ -325,6 +412,21 @@ struct MeanWindow {
     if (look.mean_frames > 1u) {
         add(std::format("velocity averaged over the {} frames ending at each (about {:g} ms of flow)", look.mean_frames,
                         frame_ms * look.mean_frames));
+    }
+    if (look.fade.on()) {
+        std::string where;
+        if (look.fade.side_m > 0.0f) {
+            where = std::format("over the last {:g} m before each side face of the box", look.fade.side_m);
+        }
+        if (look.fade.floor_to_y < look.fade.floor_from_y) {
+            where += std::format("{}below {:g} m and gone at {:g} m under the drone's centre", where.empty() ? "" : " and ",
+                                 -look.fade.floor_from_y, -look.fade.floor_to_y);
+        }
+        if (look.fade.ceiling_to_y > look.fade.ceiling_from_y) {
+            where += std::format("{}above {:g} m and gone at {:g} m over the drone's centre (the slow inflow above the rotors)",
+                                 where.empty() ? "" : " and ", look.fade.ceiling_from_y, look.fade.ceiling_to_y);
+        }
+        add("the wake fades out " + where + ", so the box's edges are not drawn");
     }
     return note;
 }

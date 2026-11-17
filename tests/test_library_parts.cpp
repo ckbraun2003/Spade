@@ -54,6 +54,7 @@
 
 #include "core/error.hpp"
 #include "core/path_text.hpp"
+#include "library_polar_fits.gen.hpp"
 #include "library_props.gen.hpp"
 #include "scene/library.hpp"
 #include "scene/library_sources.hpp"
@@ -81,6 +82,8 @@ using spade::scene::PartSources;
 using spade::scene::PropPart;
 using spade::scene::SourceRef;
 using spade::scene::SourceRegistry;
+using spade::test::library_polar_fits::Fit;
+using spade::test::library_polar_fits::kFits;
 using spade::test::library_props::kProps;
 using spade::test::library_props::Prop;
 using spade::vehicles::BlockShape;
@@ -299,6 +302,32 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     part.sources.push_back(FieldSource{"blade.airfoil", assumed(kAirfoil)});
 }
 
+// The line's polar for a prop that has a fit (tests/library_polar_fits.gen.hpp, L72k B1): both values on the blade, each cited
+// as a FITTED value of UIUC's static point with the conditions it holds under. A prop with no fit never calls this and keeps
+// the estimated polar.
+constexpr std::string_view kPolarRecord = "docs/design/physics/plans/2026-11-17-b1-polar-fits.md";
+
+[[nodiscard]] const Fit* fit_of(std::string_view id) {
+    const auto it = std::find_if(kFits.begin(), kFits.end(), [&](const Fit& f) { return f.id == id; });
+    return it == kFits.end() ? nullptr : &*it;
+}
+
+void set_polar(PropPart& part, std::string_view id) {
+    const Fit* fit = fit_of(id);
+    if (fit == nullptr || !part.blade) {
+        ADD_FAILURE() << "tests/library_polar_fits.gen.hpp has no fit for '" << id << "'";
+        return;
+    }
+    part.blade->alpha_0_deg = fit->alpha_0_deg;
+    part.blade->cd_scale = fit->cd_scale;
+    std::string note = "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (";
+    note += kPolarRecord;
+    note += "); valid only at the kernel width and resolution fitted and with the tip correction on: ";
+    note += fit->fit;
+    part.sources.push_back(FieldSource{"blade.alpha_0_deg", cite(Grade::fitted, kUiuc, note)});
+    part.sources.push_back(FieldSource{"blade.cd_scale", cite(Grade::fitted, kUiuc, note)});
+}
+
 [[nodiscard]] std::uint32_t blades_of(const Prop& p) { return static_cast<std::uint32_t>(p.blades); }
 
 [[nodiscard]] PropPart uiuc_apce_10x5() {
@@ -313,6 +342,7 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     set_estimated_inertia(part, kNasa);
     set_blade(part, p, cite(Grade::derived, kUiuc, "UIUC geometry at 9.4 in"),
               cite(Grade::derived, kUiuc, "the first station"));
+    set_polar(part, "uiuc_apce_10x5");
     return part;
 }
 
@@ -327,6 +357,7 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     set_estimated_inertia(part, kNasa);
     set_blade(part, p, cite(Grade::derived, kUiuc, "UIUC geometry at 9.6 in"),
               cite(Grade::derived, kUiuc, "the first station"));
+    set_polar(part, "uiuc_apce_9x4.5");
     return part;
 }
 
@@ -341,6 +372,7 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     set_estimated_inertia(part, kUiuc);
     set_blade(part, p, cite(Grade::measured, kUiuc, "UIUC geometry, resampled"),
               cite(Grade::measured, kUiuc, "the first station"));
+    set_polar(part, "uiuc_mit_5x4");
     return part;
 }
 
@@ -358,6 +390,7 @@ void set_blade(PropPart& part, const Prop& p, const SourceRef& stations, const S
     set_estimated_inertia(part, kUiuc);
     set_blade(part, p, cite(Grade::measured, kUiuc, "UIUC geometry"),
               cite(Grade::measured, kUiuc, "the first station"));
+    set_polar(part, "uiuc_cfnq_45t1");
     return part;
 }
 
@@ -846,6 +879,46 @@ TEST(LibraryParts, EachPropsTablesAreTheHeadersBitForBit) {
             EXPECT_EQ(ref->note, p.note) << field << ": the header's grade note, verbatim";
         }
     }
+}
+
+// The line's polar (L72k B1): the four fitted props carry the fits header's two values bit for bit, each cited as a fitted value
+// naming the record and the conditions (the tip correction on); every other prop has none, and the stand-in stays estimated.
+TEST(LibraryParts, OnlyTheFourFittedPropsCarryThePolarAndItIsTheFitsHeaders) {
+    const spade::Result<SourceRegistry> registry = library_sources();
+    ASSERT_OK(registry);
+    std::size_t with_polar = 0;
+    for (const Prop& p : kProps) {
+        SCOPED_TRACE(std::string(p.id));
+        const fs::path path = library_dir() / "parts" / (std::string(p.id) + ".prop.yaml");
+        const spade::Result<PartFile> file = sc::load_part_file(path, *registry);
+        ASSERT_OK(file);
+        const PropPart* prop = std::get_if<PropPart>(&*file);
+        ASSERT_NE(prop, nullptr);
+        ASSERT_TRUE(prop->blade.has_value());
+        const Fit* fit = fit_of(p.id);
+        if (fit == nullptr) {
+            EXPECT_FALSE(prop->blade->alpha_0_deg.has_value());
+            EXPECT_FALSE(prop->blade->cd_scale.has_value());
+            EXPECT_EQ(citation(prop->sources, "blade.alpha_0_deg"), nullptr);
+            continue;
+        }
+        ++with_polar;
+        ASSERT_TRUE(prop->blade->alpha_0_deg.has_value());
+        ASSERT_TRUE(prop->blade->cd_scale.has_value());
+        EXPECT_EQ(bits(*prop->blade->alpha_0_deg), bits(fit->alpha_0_deg));
+        EXPECT_EQ(bits(*prop->blade->cd_scale), bits(fit->cd_scale));
+        for (const char* field : {"blade.alpha_0_deg", "blade.cd_scale"}) {
+            const SourceRef* ref = citation(prop->sources, field);
+            ASSERT_NE(ref, nullptr) << field;
+            EXPECT_EQ(ref->source, kUiuc) << field;
+            EXPECT_EQ(sc::grade_name(ref->grade), sc::grade_name(Grade::fitted)) << field;
+            EXPECT_NE(ref->note.find(std::string(kPolarRecord)), std::string::npos) << field << ": names the record";
+            EXPECT_NE(ref->note.find("TIP CORRECTION ON"), std::string::npos) << field << ": names the condition";
+            EXPECT_NE(ref->note.find(std::string(fit->fit)), std::string::npos) << field << ": names the fit point";
+        }
+    }
+    EXPECT_EQ(with_polar, kFits.size()) << "every fit belongs to a library prop";
+    EXPECT_EQ(with_polar, 4u);
 }
 
 // A value the plan does not give is assumed, and the few the rulings grade

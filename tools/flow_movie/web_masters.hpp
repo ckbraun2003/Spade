@@ -26,6 +26,7 @@
 #include <glm/glm.hpp>
 
 #include "render/scene.hpp"
+#include "wake_fade.hpp"
 
 namespace flow_movie::web {
 
@@ -38,6 +39,13 @@ inline constexpr int kCrf = 15;          // the brief's 14 to 16
 // S1's streamlines start this far below each rotor's hub along its axis (main.cpp seeds them there); the clip's caption says
 // "6 cm below", pinned to this number by FlowMovieWeb.S1sCaptionSaysWhereTheStreamlinesAreSeeded...
 inline constexpr float kWebSeedBelowHubM = 0.06f;
+
+// S1's soft streamlines (Cameron, 2026-11-17): thin lines with a glow, each faded to black over its last kSoftLineFadeM at both
+// ends (look.hpp's fade_polyline_ends), not the 4 px tubes of S6. The caption's look line says so.
+inline constexpr float kSoftLineWidthPx = 1.5f;
+inline constexpr float kSoftLineGlowPx = 6.0f;
+inline constexpr float kSoftLineGlowStrength = 0.35f;
+inline constexpr float kSoftLineFadeM = 0.15f;
 
 // quad: the reference quad's discs on the CPU film at 1 cm (S5, S6). d1: D1, the parts in the flow, in a side wind
 // (S3, S4). d1_still: D1 in still air (S1, S2, S8). (S7, the Taylor-Green clip, was dropped by Cameron: L53.)
@@ -61,7 +69,7 @@ struct Clip {
     float range_hi = 0.0f;
     bool still = false;  // a 5120x2880 PNG as well
     // The first frame of the group's cache the clip draws: clips of a group that start at different times share one
-    // simulation (S2 from the group's frame 0, S1 and S8 from frame 150).
+    // simulation (S2 from the group's frame 30, S1 and S8 from frame 150).
     uint32_t first_frame = 0;
 
     [[nodiscard]] uint32_t frames() const noexcept { return static_cast<uint32_t>(std::lround(seconds * kFps)); }
@@ -148,12 +156,13 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     static const std::array<Clip, 7> table{{
         {"S1", "rotor-wake-streamlines", "Reference quad in hover: streamlines of the rotor wake",
          "Streamlines seeded 6 cm below each of four actuator discs (two rings of eight round each axis) and traced both "
-         "ways, round the reference quad's rigid parts, coloured by relative speed, in one slow orbit.",
+         "ways, round the reference quad's rigid parts, coloured by relative speed and drawn as thin glowing lines that "
+         "fade out toward their ends, in one slow orbit.",
          "d1-still", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true, 150},
-        {"S2", "rotor-wake-vortex-surfaces", "Reference quad in hover: vortex surfaces from the start-up",
-         "Vortex surfaces (lambda2) round the reference quad's rigid parts, held at hover in still air, from the "
-         "start-up roll-up into the developed column, in a slow push-in.",
-         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 0},
+        {"S2", "rotor-wake-start-up-volume", "Reference quad in hover: the rotor wake as a soft volume, from the start-up",
+         "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a soft volume, held "
+         "at hover in still air, from the start-up roll-up into the developed column, in a slow push-in.",
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 30},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
          "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},
@@ -202,6 +211,98 @@ inline constexpr float kD1PushWideM = 0.45f;        // S2: from this subject rad
 inline constexpr float kD1PushCloseM = 0.30f;       // ... to this one (the airframe)
 inline constexpr float kD1StillElevationDeg = 8.0f;
 inline constexpr float kD1StillAzimuthDeg = 25.0f;  // where S1, S8 and S2 start
+
+// ---- the drone ----------------------------------------------------------------------------------------
+
+// A library drone the D1 web clips can film (--drone NAME; the lead, 2026-11-17: Cameron wants a real drone model, and no
+// caption or file name carries a brand). `library` is the internal name, the model file's stem, and is never printed in a
+// caption or a delivered name; `title_noun` and `the_noun` are what a title and a sentence call the drone, `description`
+// the caption's Drone line ("" for the reference quad, whose words are today's).
+// How a drone is framed in the still-air clips (S1, S8, S2): the subject sphere's radius the camera fits, how far below the drone's
+// centre it aims, S2's push-in from wide to close, and where the wake fades out (metres below the drone's centre, and the width of
+// the soft edge at the box's side faces). A fade of zero is none: the reference quad's frames are what they always were.
+struct Framing {
+    float subject_m;
+    float aim_below_m;
+    float push_wide_m;
+    float push_close_m;
+    float wake_fade_from_below_m;
+    float wake_fade_to_below_m;
+    float side_fade_m;
+    float wake_fade_top_from_above_m;  // the inflow haze above the rotors fades from here (above the centre) ...
+    float wake_fade_top_to_above_m;    // ... to nothing here; 0, 0 is none
+    float elevation_deg;               // how far above the drone the camera looks down from
+
+    [[nodiscard]] WakeFade fade() const noexcept {
+        return WakeFade{side_fade_m, -wake_fade_from_below_m, -wake_fade_to_below_m, wake_fade_top_from_above_m,
+                        wake_fade_top_to_above_m};
+    }
+};
+
+struct Drone {
+    std::string_view library;
+    const char* model_file;  // under SPADE_ASSETS_DIR
+    std::string_view alias;  // what the caption's command line shows in place of the library name (--drone takes both)
+    std::string_view title_noun;
+    std::string_view the_noun;
+    std::string_view description;
+    Framing framing;
+};
+
+[[nodiscard]] inline const std::array<Drone, 2>& drones() {
+    static const std::array<Drone, 2> table{{
+        {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
+         "the reference quad", "",
+         Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
+        {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
+         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
+         // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
+         // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
+         // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
+         // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}},
+    }};
+    return table;
+}
+
+[[nodiscard]] inline const Drone& default_drone() { return drones().front(); }
+
+// The drone named `name`, by its library name or its alias ("" is the default); nullptr when there is none by that name.
+[[nodiscard]] inline const Drone* find_drone(std::string_view name) {
+    if (name.empty()) return &default_drone();
+    for (const Drone& d : drones()) {
+        if (d.library == name || d.alias == name) return &d;
+    }
+    return nullptr;
+}
+
+// The command line as a caption may show it: the drone's library name replaced by its alias.
+[[nodiscard]] inline std::string command_in_words(std::string command, const Drone& d) {
+    const std::string from(d.library);
+    for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
+        command.replace(at, from.size(), d.alias);
+    }
+    return command;
+}
+
+// A cache folder's suffix for a drone: none for the default (today's caches keep their names), "-<library>" else.
+[[nodiscard]] inline std::string drone_stem_suffix(const Drone& d) {
+    return &d == &default_drone() ? std::string() : "-" + std::string(d.library);
+}
+
+// `text` (a clip's title or sentences, written for the reference quad) in the drone's own words.
+[[nodiscard]] inline std::string in_words(std::string text, const Drone& d) {
+    const auto swap = [&text](const std::string& from, std::string_view to) {
+        for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) {
+            text.replace(at, from.size(), to);
+        }
+    };
+    if (&d == &default_drone()) return text;
+    swap("the reference quad", d.the_noun);
+    swap("Reference quad", d.title_noun);
+    swap("D1 quad", d.title_noun);
+    return text;
+}
 
 // The deeper D1 box's floor face (Physics' plan A, L60/L63), world coordinates (the COM is the origin): 1.214 m below
 // the COM, the box ±0.48 m in x and ±0.336 m in z. No wall: the face is open, so what the solve shows there is an
@@ -407,8 +508,12 @@ struct DeliveryGuard {
            " degrees and does not return to its start; the flow does not loop either.";
 }
 
+// A clip's title in the drone's words (the caption's heading and the manifest's description).
+[[nodiscard]] inline std::string clip_title(const Clip& c, const Drone& d) { return in_words(std::string(c.title), d); }
+
 struct CaptionInput {
     const Clip* clip = nullptr;
+    const Drone* drone = nullptr;  // null: the reference quad
     std::string commit;
     std::string date_utc;
     std::string command;
@@ -422,14 +527,16 @@ struct CaptionInput {
 // and the stand-in. It never claims more than the footage shows.
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
-    std::string t = "# " + std::string(c.title) + "\n\n";
+    const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
+    std::string t = "# " + clip_title(c, drone) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
-    t += "- How rendered: tools/flow_movie, `" + in.command + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + std::string(c.shows) + "\n";
+    t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
+    t += "- Shows: " + in_words(std::string(c.shows), drone) + "\n";
+    if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + standing_caveats(c) + "\n";
+    t += "- " + in_words(standing_caveats(c), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }

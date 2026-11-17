@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "bindings.gen.hpp"
+#include "compute/layout_classes.hpp"
 #include "compute/set_one_bindings.hpp"
 
 namespace gen = spade::compute::gen;
@@ -56,6 +57,7 @@ TEST(BindingsAirflow, AirflowBindingsAreTheConfirmedListFromZero) {
 //   airflow   0..27   the airflow kernels' (append-only list above)
 //   stage 7   28..39  module API stage 7's appendices: 28 to 33 named (28 points and 33 config declared, 29 to 32 not yet), 34 centred, 35 contact_shapes (L68), 36 to 39 airflow_line_* (P4c)
 //   lbm       40..47  the LBM tier's: lbm_f, lbm_u declared; lbm_flags (42, L2) reserved
+//   dye       48      the passive dye's one buffer (P10), appended past the LBM's range
 TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
     struct Owner {
         const char* name;
@@ -81,11 +83,12 @@ TEST(BindingsAirflow, EachOwnersDeclaredBindingsLieInItsOwnRange) {
           gen::kBinding_airflow_line_elems, gen::kBinding_airflow_line_polar, gen::kBinding_airflow_line_vel,
           gen::kBinding_airflow_line_force}},
         {"lbm", 40, 47, 2, {gen::kBinding_lbm_f, gen::kBinding_lbm_u}},
+        {"dye", 48, 48, 1, {gen::kBinding_airflow_dye}},
     };
     uint32_t total = 0;
     uint32_t previous_last = 0;
     for (const Owner& o : owners) {
-        EXPECT_LT(o.first, o.last) << o.name;
+        EXPECT_LE(o.first, o.last) << o.name;
         if (total != 0 || o.first != 0) {
             EXPECT_EQ(o.first, previous_last + 1) << o.name << ": ranges are consecutive";
         }
@@ -120,6 +123,16 @@ TEST(BindingsAirflow, TheActuatorLineBuffersAreSetOnesLastFourSpares) {
     EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_polar"), gen::kBinding_airflow_line_polar);
     EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_vel"), gen::kBinding_airflow_line_vel);
     EXPECT_EQ(spade::compute::set_one_binding_of("airflow_line_force"), gen::kBinding_airflow_line_force);
+}
+
+// P10: the dye's buffer is the number space's last, bound by name like the other appendices; the space grew by that one number.
+TEST(BindingsAirflow, TheDyeBufferIsTheNumberSpacesLastAndNamed) {
+    EXPECT_EQ(gen::kBinding_airflow_dye, 48u);
+    EXPECT_EQ(spade::compute::kAirflowDyeBinding, gen::kBinding_airflow_dye);
+    EXPECT_EQ(spade::compute::set_one_binding_of("airflow_dye"), gen::kBinding_airflow_dye);
+    EXPECT_EQ(spade::compute::kSet1BindingSlots, gen::kBinding_airflow_dye + 1u);
+    EXPECT_TRUE(spade::compute::is_declared_set1(gen::kBinding_airflow_dye));
+    EXPECT_FALSE(spade::compute::is_declared_set1(gen::kBinding_airflow_dye + 1u));
 }
 
 // Names are the contract (stage 7 plan, decision 2): the two stage 7 rows a batch D module binds by name resolve to the

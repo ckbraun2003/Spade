@@ -29,6 +29,8 @@ constexpr const char* kUsage =
     "  --json                     progress and the result as one JSON object a line\n"
     "  --help                     this text\n"
     "\n"
+    "A hit or a fetch prints a summary (geoid, grid, image, box, bytes received) before the result line. An answer the tool refuses is\n"
+    "kept as received in <cache>/failed/<service>.bin (ngs, 3dep, naip), outside the cache's entries; nothing reads it back.\n"
     "The last line of standard output names the result. Exit codes: 0 hit or fetched, 2 usage, 3 miss (--check),\n"
     "10 offline, 11 a service answered and the answer is no use, 12 the request was refused, 13 the cache is full.\n";
 
@@ -197,13 +199,32 @@ int run_cli(const std::vector<std::string>& args, CliEnv& env, std::ostream& out
         if (ok) {
             out << ",\"dir\":" << json_string(r.dir.string()) << ",\"bytes\":" << r.bytes
                 << ",\"geoid_height_m\":" << std::format("{}", r.geoid_height_m)
-                << ",\"anchor_ellipsoid_height_m\":" << std::format("{}", r.anchor_ellipsoid_height_m);
+                << ",\"anchor_ellipsoid_height_m\":" << std::format("{}", r.anchor_ellipsoid_height_m)
+                << ",\"geoid_model\":" << json_string(r.geoid_model) << ",\"elevation_width\":" << r.elevation_width
+                << ",\"elevation_height\":" << r.elevation_height << ",\"image_width\":" << r.image_width
+                << ",\"image_height\":" << r.image_height << ",\"west_deg\":" << std::format("{}", r.west_deg)
+                << ",\"south_deg\":" << std::format("{}", r.south_deg) << ",\"east_deg\":" << std::format("{}", r.east_deg)
+                << ",\"north_deg\":" << std::format("{}", r.north_deg) << ",\"bytes_geoid\":" << r.bytes_geoid
+                << ",\"bytes_elevation\":" << r.bytes_elevation << ",\"bytes_image\":" << r.bytes_image;
         } else {
             if (!r.service.empty()) out << ",\"service\":" << json_string(r.service);
             out << ",\"message\":" << json_string(r.message);
         }
         out << "}\n";
     } else if (ok) {
+        // What came back, on a few lines before the result line (which stays last).
+        out << "geoid height: " << r.geoid_model << ", N = " << std::format("{}", r.geoid_height_m) << " m\n"
+            << "elevation grid: " << r.elevation_width << " x " << r.elevation_height << " samples\n"
+            << "image size: " << r.image_width << " x " << r.image_height << " pixels\n"
+            << "box: west " << std::format("{}", r.west_deg) << " south " << std::format("{}", r.south_deg) << " east "
+            << std::format("{}", r.east_deg) << " north " << std::format("{}", r.north_deg) << " (WGS84 degrees)\n"
+            << "anchor ground: " << std::format("{}", r.anchor_ellipsoid_height_m) << " m above the WGS84 ellipsoid\n";
+        if (r.bytes_geoid + r.bytes_elevation + r.bytes_image == 0) {
+            out << "received: nothing (the entry was already in the cache)\n";
+        } else {
+            out << "received: geoid " << r.bytes_geoid << " bytes, elevation " << r.bytes_elevation << " bytes, image " << r.bytes_image
+                << " bytes\n";
+        }
         out << name_of(r.kind) << " " << r.key << " " << r.dir.string() << "\n";
     } else if (r.kind == FetchResultKind::miss) {
         out << "miss " << r.key << "\n";

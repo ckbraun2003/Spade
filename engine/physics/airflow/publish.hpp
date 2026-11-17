@@ -51,6 +51,9 @@ struct PublishInput {
     // The face apertures (SolidField::theta), per component; empty: every face
     // open. A difference never crosses a closed face (theta = 0).
     std::array<std::span<const float>, 3> theta{};
+    // P10 PROOF: the dye, one float per cell in cell order, published as V's 4th channel; empty: 0 (the channel's
+    // value until the solver carries the dye).
+    std::span<const float> dye{};
 };
 
 struct PublishCounts {

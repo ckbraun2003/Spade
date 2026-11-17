@@ -3,8 +3,10 @@
 // ---------------------------------------------------------------------------
 // geo_fetch/raster_formats.hpp -- the two answers' file formats, read just enough to check them and store them (L85, SP-5).
 //
-//   read_tiff_f32   3DEP's answer: a baseline TIFF of one band of float32, uncompressed, in strips. Anything else is refused
-//                   by name (a compressed answer says which compression, so the live check can tell what the service sends).
+//   read_tiff_f32   3DEP's answer: a baseline TIFF of one band of float32, uncompressed, in strips or in tiles (an ArcGIS
+//                   ImageServer sends tiles: tags 322 to 325, row-major, the edge tiles padded and cropped here). Anything else
+//                   is refused by name (a compressed answer says which compression, so the live check can tell what the service
+//                   sends).
 //   read_png_header NAIP's answer: the PNG's signature and IHDR, so the tool can check the size, the bit depth and that it is
 //                   RGB before it stores the file as received. The pixels are not decoded here (decode_png is Rendering's).
 // ---------------------------------------------------------------------------

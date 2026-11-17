@@ -33,7 +33,8 @@ inline constexpr uint32_t kAirflowLineFirstBinding = 36;  // the actuator line's
 inline constexpr uint32_t kAirflowLineBufferCount = 4;
 inline constexpr uint32_t kLbmFBinding = 40;
 inline constexpr uint32_t kLbmUBinding = 41;
-inline constexpr uint32_t kAirflowDeclaredCount = 38;   // bindings section F declares (gen::kBindingCount_airflow)
+inline constexpr uint32_t kAirflowDyeBinding = 48;  // the passive dye (P10; gen::kBinding_airflow_dye), the number space's end
+inline constexpr uint32_t kAirflowDeclaredCount = 39;   // bindings section F declares (gen::kBindingCount_airflow)
 
 struct SetOneBinding {
     std::string_view name;
@@ -78,7 +79,9 @@ struct SetOneBinding {
     X(airflow_line_elems, 36) \
     X(airflow_line_polar, 37) \
     X(airflow_line_vel, 38) \
-    X(airflow_line_force, 39)
+    X(airflow_line_force, 39) \
+    /* P10: the passive dye, one buffer past the LBM's range. */ \
+    X(airflow_dye, 48)
 
 inline constexpr SetOneBinding kSetOneBindings[] = {
 #define SPADE_SET_ONE_ROW(name, number) {#name, number},
@@ -87,7 +90,7 @@ inline constexpr SetOneBinding kSetOneBindings[] = {
 };
 
 // Section F's bindings 0 to airflow_wall_load come first, in binding order: entry i is binding i. The two appendices follow.
-static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1 + 3 + kAirflowLineBufferCount,
+static_assert(std::size(kSetOneBindings) == kAirflowWallLoadBinding + 1 + 3 + kAirflowLineBufferCount + 1,
               "kSetOneBindings lists bindings.slang section F's airflow bindings, 0 to airflow_wall_load, then points, centred, contact_shapes and the four airflow_line_*");
 static_assert(
     [] {
@@ -124,6 +127,7 @@ static_assert(kAirflowLineFirstBinding == gen::kBinding_airflow_line_elems &&
                   kAirflowLineFirstBinding + 2 == gen::kBinding_airflow_line_vel &&
                   kAirflowLineFirstBinding + 3 == gen::kBinding_airflow_line_force,
               "the actuator line's four buffers are bindings.slang's, contiguous from kAirflowLineFirstBinding");
+static_assert(kAirflowDyeBinding == gen::kBinding_airflow_dye, "the dye's binding is bindings.slang's");
 static_assert(kLbmFBinding == gen::kBinding_lbm_f && kLbmUBinding == gen::kBinding_lbm_u, "the LBM bindings are bindings.slang's");
 static_assert(kAirflowDeclaredCount == gen::kBindingCount_airflow, "the declared airflow binding count is bindings.slang's");
 #define SPADE_SET_ONE_ASSERT(name, number) \

@@ -37,8 +37,9 @@ struct GeoidAnswer {
     std::string model;      // "GEOID18"
 };
 
-// Reads the NGS answer: a JSON object with a number "geoidHeight" and, when present, a string "geoidModel" (which must name
-// GEOID18). Anything else is a schema_mismatch whose context says what was missing.
+// Reads the NGS answer: a JSON object with a number "geoidHeight" and a string "geoidModel", which must be GEOID18 (an answer that
+// names no model is refused: NGS answers a request with no model with another one). Anything else is a schema_mismatch whose context
+// says what was missing.
 [[nodiscard]] Result<GeoidAnswer> parse_geoid_json(std::string_view body);
 
 }  // namespace spade::geofetch

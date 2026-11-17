@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -624,6 +625,58 @@ TEST(PartFile, ShapesAndBladesAreChecked) {
     refused_blade([](BladeGeometry& b) { b.hub_cutout = 0.2; }, {"prop.blade.hub_cutout", "0.2", "0.15"});
     refused_blade([](BladeGeometry& b) { b.hub_cutout = -0.1; }, {"prop.blade.hub_cutout", "at least 0"});
     refused_blade([](BladeGeometry& b) { b.airfoil.clear(); }, {"prop.blade.airfoil", "must not be empty"});
+}
+
+// The blade's optional polar (L72k): both values or neither, each cited, finite, cd_scale above 0; it round-trips bit for bit, and a
+// text with only one of the two keys is refused. A blade without it is every file written before.
+TEST(PartFile, ABladesPolarIsBothOrNeitherCitedAndRoundTrips) {
+    PropPart p = a_prop();
+    p.blade->alpha_0_deg = -3.0645;
+    p.blade->cd_scale = kThird * 4.0;
+    p.sources = cite({"diameter", "pitch", "blades", "inertia", "ct_static", "cq_static", "ct_table", "cq_table", "mass",
+                      "blade.r_over_r", "blade.c_over_r", "blade.beta_deg", "blade.hub_cutout", "blade.airfoil",
+                      "blade.alpha_0_deg", "blade.cd_scale"});
+    const spade::Result<std::string> text = spade::scene::prop_to_yaml(p);
+    ASSERT_TRUE(text.has_value()) << text.error().context;
+    EXPECT_TRUE(contains(*text, "    alpha_0_deg: -3.0645\n")) << *text;
+    EXPECT_TRUE(contains(*text, "  blade.cd_scale: ")) << *text;
+    const spade::Result<PropPart> back = spade::scene::prop_from_yaml(*text);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    ASSERT_TRUE(back->blade->alpha_0_deg.has_value());
+    ASSERT_TRUE(back->blade->cd_scale.has_value());
+    EXPECT_EQ(bits(*back->blade->alpha_0_deg), bits(-3.0645));
+    EXPECT_EQ(bits(*back->blade->cd_scale), bits(kThird * 4.0));
+    const spade::Result<std::string> again = spade::scene::prop_to_yaml(*back);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_EQ(*again, *text);
+
+    // One without the other: refused on the way out and on the way in.
+    PropPart half = p;
+    half.blade->cd_scale.reset();
+    expect_refused(spade::scene::prop_to_yaml(half), Code::invalid_argument,
+                   {"prop.blade", "alpha_0_deg", "without cd_scale", "both or neither"});
+    std::string one_key = *text;
+    const std::size_t at = one_key.find("    cd_scale: ");
+    ASSERT_NE(at, std::string::npos);
+    one_key.erase(at, one_key.find('\n', at) - at + 1);
+    expect_refused(spade::scene::prop_from_yaml(one_key), Code::invalid_argument,
+                   {"prop.blade", "alpha_0_deg", "without cd_scale"});
+
+    // Values: finite, cd_scale above 0.
+    PropPart zero = p;
+    zero.blade->cd_scale = 0.0;
+    expect_refused(spade::scene::prop_to_yaml(zero), Code::invalid_argument, {"prop.blade.cd_scale", "above 0"});
+    PropPart nan = p;
+    nan.blade->alpha_0_deg = std::numeric_limits<double>::quiet_NaN();
+    expect_refused(spade::scene::prop_to_yaml(nan), Code::invalid_argument, {"prop.blade.alpha_0_deg"});
+
+    // The citations: present for both when the polar is, refused by path when one is missing, and none when there is no polar.
+    PropPart uncited = p;
+    uncited.sources.pop_back();
+    expect_refused(spade::scene::prop_to_yaml(uncited), Code::invalid_argument, {"blade.cd_scale"});
+    PropPart no_polar = a_prop();
+    no_polar.sources.push_back(FieldSource{"blade.alpha_0_deg", SourceRef{"", Grade::assumed, "x"}});
+    expect_refused(spade::scene::prop_to_yaml(no_polar), Code::invalid_argument, {"blade.alpha_0_deg"});
 }
 
 TEST(PartFile, APartHasNoMount) {

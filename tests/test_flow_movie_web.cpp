@@ -191,7 +191,8 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
     EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S2")->group);
     EXPECT_EQ(web::find_clip("S3")->group, web::find_clip("S4")->group);
     EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S3")->group);
-    EXPECT_EQ(web::find_clip("S2")->first_frame, 0u);
+    // S2 starts at frame 30 (the lead, 2026-11-17): the first 30 ms show the airframe alone, the wake not yet off the discs.
+    EXPECT_EQ(web::find_clip("S2")->first_frame, 30u);
     EXPECT_EQ(web::find_clip("S1")->first_frame, 150u);
     EXPECT_EQ(web::find_clip("S8")->first_frame, 150u);
     // Each clip's frames end inside its group's cache, and S1 and S8 end at its last frame.
@@ -556,7 +557,93 @@ TEST(FlowMovieWeb, S1sCaptionSaysWhereTheStreamlinesAreSeededAndHowTheyAreTraced
     EXPECT_NE(shows.find("6 cm below"), std::string::npos) << shows;
     EXPECT_NE(shows.find("both ways"), std::string::npos) << shows;
     EXPECT_EQ(shows.find("above"), std::string::npos) << shows;
+    EXPECT_NE(shows.find("fade out toward their ends"), std::string::npos) << "the soft look is declared: " << shows;
+    EXPECT_LE(web::kSoftLineWidthPx, 2.0f) << "thin, not a tube";
+    EXPECT_GT(web::kSoftLineGlowPx, web::kSoftLineWidthPx);
+    EXPECT_GT(web::kSoftLineFadeM, 0.0f);
     EXPECT_FLOAT_EQ(web::kWebSeedBelowHubM, 0.06f) << "the sentence and the seeds share one number";
+}
+
+// S2 is a soft volume of the wake's speed, in a push-in from the start-up (Cameron, 2026-11-17: the vortex surfaces "look like
+// playdoh"; S8's volume is the direction), so its caption and its file name say a volume, not vortex surfaces.
+TEST(FlowMovieWeb, S2IsAVolumeOfTheWakesSpeedNotVortexSurfaces) {
+    const web::Clip& s2 = *web::find_clip("S2");
+    const std::string shows(s2.shows);
+    EXPECT_NE(shows.find("volume"), std::string::npos) << shows;
+    EXPECT_EQ(shows.find("ortex surfaces"), std::string::npos) << shows;
+    EXPECT_EQ(shows.find("lambda2"), std::string::npos) << shows;
+    EXPECT_EQ(std::string(s2.short_name), "rotor-wake-start-up-volume");
+    EXPECT_EQ(std::string(s2.title).find("ortex"), std::string::npos) << s2.title;
+}
+
+// --drone takes a library drone by its internal name, and no caption, title or file name carries that name or a brand: the
+// clip says "a 1.3 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17). The default is the
+// reference quad, with today's words and today's cache names.
+TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
+    const web::Drone* drone = web::find_drone("phantom3_class");
+    ASSERT_NE(drone, nullptr);
+    EXPECT_EQ(web::find_drone("no_such_drone"), nullptr);
+    EXPECT_EQ(web::find_drone("camera-quadcopter"), drone) << "the caption's alias names the same drone";
+    EXPECT_EQ(std::string(web::default_drone().library), "reference_quad");
+    EXPECT_EQ(web::drone_stem_suffix(web::default_drone()), "") << "today's caches keep their names";
+    EXPECT_EQ(web::drone_stem_suffix(*drone), "-phantom3_class");
+    for (const char* id : {"S1", "S2", "S3", "S4", "S8"}) {
+        const web::Clip* clip = web::find_clip(id);
+        ASSERT_NE(clip, nullptr) << id;
+        web::CaptionInput in;
+        in.clip = clip;
+        in.drone = drone;
+        in.commit = "abc123def456";
+        in.date_utc = "2026-11-17 03:00 UTC";
+        in.command = std::string("flow_movie --web ") + id + " --drone phantom3_class";
+        in.ticket = "web-spade-test";
+        in.sim_seconds = 0.3;
+        in.screen_seconds = 10.0;
+        std::string text = web::caption_text(in);
+        std::string title(web::clip_title(*clip, *drone));
+        std::string lower = text + " " + title;
+        for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        EXPECT_EQ(lower.find("phantom"), std::string::npos) << id;
+        EXPECT_EQ(lower.find("dji"), std::string::npos) << id;
+        EXPECT_EQ(lower.find("reference quad"), std::string::npos) << id << ": " << text;
+        EXPECT_NE(text.find("a 1.3 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
+        EXPECT_NE(title.find("amera quadcopter"), std::string::npos) << title;
+    }
+    web::CaptionInput plain;
+    plain.clip = web::find_clip("S8");
+    plain.commit = "c";
+    plain.date_utc = "d";
+    plain.command = "x";
+    plain.ticket = "t";
+    plain.sim_seconds = 0.3;
+    plain.screen_seconds = 10.0;
+    EXPECT_NE(web::caption_text(plain).find("reference quad"), std::string::npos) << "no drone: today's caption";
+    EXPECT_EQ(web::clip_title(*plain.clip, web::default_drone()), std::string(plain.clip->title));
+}
+
+// A drone has its own framing (the lead, 2026-11-17): the reference quad's is today's constants and no fade, so its frames do not
+// move; the library quadcopter is larger, in the upper third of the frame, with its wake fading out before the frame's bottom.
+TEST(FlowMovieWeb, EachDroneHasItsOwnFramingAndTheDefaultsIsTodays) {
+    const web::Framing& d = web::default_drone().framing;
+    EXPECT_FLOAT_EQ(d.subject_m, web::kD1StillSubjectM);
+    EXPECT_FLOAT_EQ(d.aim_below_m, web::kD1StillAimBelowM);
+    EXPECT_FLOAT_EQ(d.push_wide_m, web::kD1PushWideM);
+    EXPECT_FLOAT_EQ(d.push_close_m, web::kD1PushCloseM);
+    EXPECT_FLOAT_EQ(d.elevation_deg, web::kD1StillElevationDeg);
+    EXPECT_FALSE(d.fade().on()) << "the reference quad's frames are today's";
+    const web::Framing& p = web::find_drone("phantom3_class")->framing;
+    EXPECT_LT(p.subject_m, d.subject_m) << "a tighter shot: the drone is bigger in the frame";
+    EXPECT_GT(p.elevation_deg, d.elevation_deg) << "looking down on it: the body is not hidden behind the wake of its near rotors";
+    EXPECT_LE(p.elevation_deg, 45.0f);
+    EXPECT_GT(p.aim_below_m, d.aim_below_m) << "aimed below the drone, so it sits in the upper third";
+    EXPECT_GT(p.wake_fade_to_below_m, p.wake_fade_from_below_m) << "the wake fades going down";
+    EXPECT_NEAR(p.wake_fade_to_below_m - p.wake_fade_from_below_m, 0.2f, 0.05f) << "over about the last 0.2 m";
+    EXPECT_TRUE(p.fade().on());
+    EXPECT_LT(p.fade().floor_to_y, p.fade().floor_from_y) << "world y: the floor height is below the start";
+    EXPECT_GT(p.side_fade_m, 0.0f) << "the box's side faces are not drawn as a cut";
+    EXPECT_GT(p.wake_fade_top_to_above_m, p.wake_fade_top_from_above_m) << "the inflow haze above the rotors fades going up";
+    EXPECT_GT(p.fade().ceiling_to_y, p.fade().ceiling_from_y);
+    EXPECT_FALSE(web::default_drone().framing.fade().ceiling_to_y > web::default_drone().framing.fade().ceiling_from_y);
 }
 
 }  // namespace

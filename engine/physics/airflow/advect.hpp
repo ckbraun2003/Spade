@@ -43,4 +43,22 @@ struct AdvectScratch {
 void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s,
                      WorkerPool* pool = nullptr) noexcept;
 
+// ---------------------------------------------------------------------------
+// P10 PROOF (prototype branch physics/dye-proof, not for master): a passive dye, one float per CELL, carried by the
+// air. The same scheme as the velocity: an RK2 backtrace of the cell centre through the face velocity (the faces
+// as `vel` holds them), semi-Lagrangian, and the MacCormack correction CLAMPED to the range of the eight cell values the
+// backtrace interpolated. So every new value lies inside [min, max] of the old field's departure stencil: no
+// negative, no new extremum, no ringing (a maximum principle; diffusive at the stencil scale, not conservative).
+// A backtrace that leaves the box clamps to the edge cell, as the velocity's does.
+// ---------------------------------------------------------------------------
+struct ScalarScratch {
+    std::vector<float> hat, lo, hi;  // the forward estimate and its stencil's range, per cell
+};
+
+[[nodiscard]] ScalarScratch make_scalar_scratch(const GridShape& shape);
+
+// `in` and `out` hold nx ny nz floats in cell order (i fastest); `out` is written whole, `in` only read.
+void advect_scalar(const MacGrid& vel, std::span<const float> in, std::span<float> out, const DomainBc& bc, float h,
+                   ScalarScratch& s) noexcept;
+
 }  // namespace spade::physics::airflow

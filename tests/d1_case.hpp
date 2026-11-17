@@ -75,6 +75,9 @@ struct PoweredQuadSetup {
     // Where the wind comes from, about +Y from the nose (Flight::heading_deg): 0 a headwind (air moving -x, the nose
     // on +X), + from the left (-Z, the air moving +z), - from the right. D1's record is heading 0.
     float heading_deg = 0.0f;
+    // The library's model file under SPADE_ASSETS_DIR: the reference quad unless another library drone is asked for (the
+    // lead, 2026-11-17, the website's clips). Every D1 test and film keeps the default.
+    const char* model_file = kLibraryQuad;
 };
 
 struct PoweredQuad {
@@ -93,11 +96,11 @@ struct PoweredQuad {
 };
 
 [[nodiscard]] inline Result<PoweredQuad> powered_library_quad(const PoweredQuadSetup& s) {
-    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / kLibraryQuad;
+    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / s.model_file;
     auto loaded = scene::load_model_file(file);
-    if (!loaded) return std::unexpected(Error{loaded.error().code, "the reference quad: " + loaded.error().context});
+    if (!loaded) return std::unexpected(Error{loaded.error().code, "the drone " + std::string(s.model_file) + ": " + loaded.error().context});
     if (!loaded->model.propulsion) {
-        return std::unexpected(Error{Code::invalid_argument, "the reference quad: " + path_text(file) +
+        return std::unexpected(Error{Code::invalid_argument, "the drone: " + path_text(file) +
                                                                  " has no propulsion chain, which a powered case "
                                                                  "flies on"});
     }
@@ -106,7 +109,7 @@ struct PoweredQuad {
     q.run_model = q.draw_model;
     if (!s.parts_in_flow) q.run_model.parts.clear();
     q.c.power = analysis::Power{.idle = 0.05f, .state_of_charge = 1.0f};
-    q.c.model = analysis::pin_model(std::string("assets/") + kLibraryQuad, q.run_model);
+    q.c.model = analysis::pin_model(std::string("assets/") + s.model_file, q.run_model);
     q.c.rotors.assign(q.run_model.rotors.size(), analysis::RotorSetup{});
     q.c.grid.box = s.box;
     q.c.grid.spacing = s.spacing;
@@ -133,7 +136,8 @@ struct PoweredQuad {
 // (kD1Grid; another grid for a measurement). Without `parts_in_flow`, the
 // parts are drawn only: B7's interim GPU film, until GpuFluid takes solids.
 [[nodiscard]] inline Result<PoweredQuad> d1_case(double seconds, const physics::airflow::GridShape& grid = kD1Grid,
-                                                 bool parts_in_flow = true, float heading_deg = 0.0f) {
+                                                 bool parts_in_flow = true, float heading_deg = 0.0f,
+                                                 const char* model_file = kLibraryQuad) {
     // The case's cube names the HORIZONTAL longest side (240 x 4 mm for both D1 boxes): the cube resolve() checks against the
     // solver's cap must stay a cube the cap holds, and 392^3 cells (kD1DeepGrid's height) is 6.3 GiB. resolve_with_grid() puts
     // the real grid over it.
@@ -144,7 +148,8 @@ struct PoweredQuad {
                                                    .step = kD1Step,
                                                    .parts_in_flow = parts_in_flow,
                                                    .hover_only = true,
-                                                   .heading_deg = heading_deg});
+                                                   .heading_deg = heading_deg,
+                                                   .model_file = model_file});
     if (!q) return q;
     q->grid = grid;
     q->hold = d1_hold(grid);
@@ -157,8 +162,9 @@ struct PoweredQuad {
 // every issue, and a grid past kGridByteCap.
 [[nodiscard]] inline Result<analysis::ResolvedCase> resolve_with_grid(
     const analysis::AnalysisCase& c, const vehicles::ModelType& run_model,
-    const std::optional<physics::airflow::GridShape>& grid, const glm::vec3& hold = glm::vec3(0.0f)) {
-    auto resolved = analysis::resolve(c, run_model);
+    const std::optional<physics::airflow::GridShape>& grid, const glm::vec3& hold = glm::vec3(0.0f),
+    analysis::ThinWalls thin = analysis::ThinWalls::refused) {
+    auto resolved = analysis::resolve(c, run_model, thin);
     if (!resolved) {
         std::string issues;
         for (const analysis::CaseIssue& i : resolved.error()) {

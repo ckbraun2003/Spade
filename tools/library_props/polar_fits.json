@@ -1,0 +1,29 @@
+{
+  "comment": "The actuator line's polar per library prop (L72k B1, docs/design/physics/plans/2026-11-17-b1-polar-fits.md): the estimated polar's two free parameters, fitted through the line WITH THE TIP CORRECTION ON so it reproduces the prop's UIUC static C_T and C_Q. Each fit holds only for the kernel width and resolution it was made at and with the tip correction on. A prop not listed here (triblade_6inch_scaled) has no fit and stays ESTIMATED. polar_fits.py turns this into tests/library_polar_fits.gen.hpp; the part files take their values from that header.",
+  "fits": [
+    {
+      "id": "uiuc_apce_10x5",
+      "alpha_0_deg": -3.0645,
+      "cd_scale": 1.3514,
+      "fit": "12 mm kernel (2.93 cells), R/dx 31, 5000 rpm, D 10 in; line C_T 0.09619 vs UIUC 0.09636, C_Q 0.005886 vs 0.005870"
+    },
+    {
+      "id": "uiuc_apce_9x4.5",
+      "alpha_0_deg": -2.512,
+      "cd_scale": 1.2907,
+      "fit": "12 mm kernel (2.94 cells), R/dx 28, 5008 rpm, D 9 in; line C_T 0.09816 vs UIUC 0.09818, C_Q 0.006146 vs 0.006129"
+    },
+    {
+      "id": "uiuc_mit_5x4",
+      "alpha_0_deg": -4.3344,
+      "cd_scale": 2.2885,
+      "fit": "12 mm kernel (2.83 cells), R/dx 15, 6057 rpm, D 5 in, 3 blades; line C_T 0.18089 vs UIUC 0.18147, C_Q 0.019029 vs 0.018924; a LARGE drag scale, a calibration to the static point and not a measured section"
+    },
+    {
+      "id": "uiuc_cfnq_45t1",
+      "alpha_0_deg": -0.506,
+      "cd_scale": 1.9354,
+      "fit": "6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"
+    }
+  ]
+}

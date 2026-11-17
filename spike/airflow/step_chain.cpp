@@ -48,6 +48,10 @@
 #include "airflow_line_load.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
+#include "airflow_line_tipcorr.spv.gen.hpp"
+#include "airflow_dye_advect.spv.gen.hpp"
+#include "airflow_dye_publish.spv.gen.hpp"
+#include "airflow_dye_source.spv.gen.hpp"
 #include "spike/airflow/publish_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -216,6 +220,7 @@ std::vector<float> disc_records(std::span<const af::ActuatorDisc> discs, const a
             r[4 + a] = discs[d].axis[static_cast<glm::length_t>(a)];
         }
         r[3] = sp.reach;
+        r[11] = discs[d].radius;  // the dye's release (airflow_dye_source.slang) reads it; the gather kernel does not
         r[7] = sp.scale;
         r[8] = sp.swirl_scale;
         r[9] = sp.swirl ? 1.0f : 0.0f;
@@ -233,7 +238,7 @@ std::vector<float> disc_records(std::span<const af::ActuatorDisc> discs, const a
 Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, const af::MacGrid& g,
                                                    const af::DomainBc& bc, const af::FluidConfig& cfg,
                                                    const af::SolidField* solids, uint32_t workgroup_size,
-                                                   const LineSetup* line) {
+                                                   const LineSetup* line, const DyeSetup* dye) {
     // A copy of make_fluid_scratch()'s refusals (fluid_step.cpp), the rule they
     // mirror, in its order and words: a change there is made here too, until
     // the two share one check.
@@ -411,7 +416,9 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         for (uint32_t b = static_cast<uint32_t>(buffers.size()); b <= gen::kBinding_airflow_line_force; ++b) {
             buffers.push_back({"airflow_unused_" + std::to_string(b), 4u, BufferKind::device_only});
         }
-        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride, BufferKind::resident);
+        // With the tip correction the buffer holds, after the element records, the groups' (a group is at least an element).
+        const uint64_t tip_words = line->tip_correction ? kTipHeaderWords + uint64_t{line->elements} * kTipStride : 0u;
+        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride + tip_words, BufferKind::resident);
         set(gen::kBinding_airflow_line_polar, 1u + 3u * uint64_t{line->polar->key.size()}, BufferKind::resident);
         set(gen::kBinding_airflow_line_vel, uint64_t{line->elements} * 4u, BufferKind::device_only);
         set(gen::kBinding_airflow_line_force, uint64_t{line->elements} * kLineForceStride, BufferKind::resident);
@@ -419,7 +426,22 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         kernels.push_back(&gen::kSpvVariants_airflow_line_sample);
         kernels.push_back(&gen::kSpvVariants_airflow_line_load);
         kernels.push_back(&gen::kSpvVariants_airflow_line_spread);
+        if (line->tip_correction) kernels.push_back(&gen::kSpvVariants_airflow_line_tipcorr);
         line_readback = (uint64_t{line->elements} * kLineForceStride * sizeof(float) + 15u) & ~uint64_t{15};
+    }
+
+    // The passive dye (P10): placeholders for the bindings below it, its one buffer, its kernels after all the others.
+    if (dye != nullptr) {
+        if (Result<void> ok = af::check_dye_release(dye->release); !ok) return std::unexpected(ok.error());
+        for (uint32_t b = static_cast<uint32_t>(buffers.size()); b < gen::kBinding_airflow_dye; ++b) {
+            buffers.push_back({"airflow_unused_" + std::to_string(b), 4u, BufferKind::device_only});
+        }
+        buffers.push_back({std::string(kAirflowDyeBuffer.name), 4u, kAirflowDyeBuffer.kind});
+        set(gen::kBinding_airflow_dye, kAirflowDyeHeaderFloats + 2u * cells, BufferKind::resident);
+        self->dye_pipeline_ = static_cast<uint32_t>(kernels.size());
+        kernels.push_back(&gen::kSpvVariants_airflow_dye_advect);
+        kernels.push_back(&gen::kSpvVariants_airflow_dye_source);
+        kernels.push_back(&gen::kSpvVariants_airflow_dye_publish);
     }
 
     // Plan A's health word is read from each step chain's own readback of airflow_scalars: one 16-aligned
@@ -465,10 +487,20 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     auto cleared = r.record(clear);
     if (!cleared) return std::unexpected(cleared.error());
     if (Result<void> ok = r.submit(*cleared, 1); !ok) return std::unexpected(ok.error());
+    if (dye != nullptr) {
+        // Header (k = rate * h as emit_dye() forms it, r_in, r_out), then clear air in both halves.
+        std::vector<float> image(kAirflowDyeHeaderFloats + 2u * cells, 0.0f);
+        image[0] = dye->release.rate * cfg.h;
+        image[1] = dye->release.r_in;
+        image[2] = dye->release.r_out;
+        if (Result<void> ok = r.upload(gen::kBinding_airflow_dye, bytes(image)); !ok) return std::unexpected(ok.error());
+        self->dye_on_ = true;
+    }
     if (line != nullptr) {
         self->line_on_ = true;
         self->line_elements_ = line->elements;
         self->line_n_sub_ = line->n_sub;
+        self->line_tip_ = line->tip_correction;
         self->line_polar_ = *line->polar;
         const std::vector<float> polar_floats = polar_records(*line->polar);
         if (Result<void> ok = r.upload(gen::kBinding_airflow_line_polar, bytes(polar_floats)); !ok) {
@@ -478,6 +510,16 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         const uint32_t p = self->line_pipeline_;
         std::vector<ChainCommand> chain;
         chain.push_back(dispatch(p, e, 0u, 3u * e, 0u, workgroup_size));
+        if (line->tip_correction) {
+            // One pass is three dispatches over the elements (airflow_line_tipcorr.slang's phases): the first pass's
+            // circulation saves the sampled air (phase 0), the others do not (phase 1).
+            const int passes = af::LineTipParams{}.iterations;
+            for (int pass = 0; pass < passes; ++pass) {
+                chain.push_back(dispatch(p + 3u, e, pass == 0 ? 0u : 1u, e, 0u, workgroup_size));
+                chain.push_back(dispatch(p + 3u, e, 2u, e, 0u, workgroup_size));
+                chain.push_back(dispatch(p + 3u, e, 3u, e, 0u, workgroup_size));
+            }
+        }
         chain.push_back(dispatch(p + 1u, e, 0u, e, 0u, workgroup_size));
         for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(p + 2u, c, e, n[c], 0u, workgroup_size));
         const ChainReadback force{.buffer = gen::kBinding_airflow_line_force,
@@ -491,7 +533,10 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
 }
 
 void GpuFluid::set_phase_timing(bool on) {
-    if (on != phase_timing_) step_chains_.fill(std::nullopt);  // re-recorded with (or without) its marks
+    if (on != phase_timing_) {
+        step_chains_.fill(std::nullopt);  // re-recorded with (or without) its marks
+        dye_chains_.fill(std::nullopt);
+    }
     phase_timing_ = on;
     phases_.clear();
 }
@@ -581,10 +626,17 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, 
         return std::unexpected(invalid("step: the rotors give " + std::to_string(records->elems.size() / kLineStride) +
                                        " line elements, the LineSetup says " + std::to_string(line_elements_)));
     }
+    if (!line_tip_ && records->tip.size() > kTipHeaderWords) {
+        return std::unexpected(invalid("step: a rotor's tip correction is on and the LineSetup was made without it"));
+    }
+    if (line_tip_) {  // the groups follow the element records in the one buffer
+        records->elems.insert(records->elems.end(), records->tip.begin(), records->tip.end());
+    }
     if (Result<void> ok = runner_->upload(gen::kBinding_airflow_line_elems, std::as_bytes(std::span(records->elems)));
         !ok) {
         return std::unexpected(ok.error());
     }
+    if (line_tip_) records->elems.resize(std::size_t{line_elements_} * kLineStride);  // line_reports() reads the elements
     if (Result<void> ok = runner_->submit(line_chain_, 1); !ok) return std::unexpected(ok.error());
     const std::span<const std::byte> force = runner_->readback(line_chain_, 0);
     if (force.size() != std::size_t{line_elements_} * kLineForceStride * sizeof(float)) {
@@ -597,7 +649,50 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, 
     return step(discs);
 }
 
+// The dye's chain for a step with `disc_count` discs: advect_scalar()'s two passes, then the release (which also copies the advected
+// field to the cell array). Recorded once a disc count, with a mark after it when the phases are timed.
+Result<uint32_t> GpuFluid::dye_chain_for(uint32_t disc_count) {
+    if (dye_chains_[disc_count]) return *dye_chains_[disc_count];
+    const uint32_t cells = shape_.nx * shape_.ny * shape_.nz;
+    const uint32_t wg = workgroup_size_;
+    std::vector<ChainCommand> chain;
+    chain.push_back(dispatch(dye_pipeline_, 0u, 0u, cells, 0u, wg));
+    chain.push_back(dispatch(dye_pipeline_, 0u, 1u, cells, 0u, wg));
+    chain.push_back(dispatch(dye_pipeline_ + 1u, disc_count, 0u, cells, 0u, wg));
+    if (phase_timing_) chain.push_back(ChainCommand{});
+    auto id = runner_->record(chain);
+    if (!id) return std::unexpected(id.error());
+    dye_chains_[disc_count] = *id;
+    return *id;
+}
+
+// The step, then the dye: the CPU advects the dye at the end of fluid_step() with its final velocity and the caller releases it
+// after (dye.hpp), so the dye chain runs after the step's chain and, with solids, after its projection.
 Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs) {
+    Result<af::FluidHealth> health = step_flow(discs);
+    if (!health || !dye_on_ || health->fault != af::FluidFault::none) return health;
+    auto id = dye_chain_for(static_cast<uint32_t>(discs.size()));
+    if (!id) return std::unexpected(id.error());
+    if (Result<void> ok = runner_->submit(*id, 1); !ok) return std::unexpected(ok.error());
+    if (phase_timing_) {
+        const Result<std::vector<uint64_t>> ns = runner_->durations_ns(*id);
+        if (ns && ns->size() == 1u) phases_.push_back({"dye", static_cast<double>((*ns)[0]) * 1.0e-6, 1u});
+    }
+    return health;
+}
+
+Result<void> GpuFluid::read_dye(std::span<float> out) const {
+    if (!dye_on_) return std::unexpected(invalid("read_dye(): this GpuFluid was created without a DyeSetup"));
+    const std::size_t cells = std::size_t{shape_.nx} * shape_.ny * shape_.nz;
+    if (out.size() != cells) return std::unexpected(invalid("read_dye() into " + std::to_string(out.size()) + " floats, the fluid has " +
+                                                            std::to_string(cells) + " cells"));
+    std::vector<float> image(kAirflowDyeHeaderFloats + 2u * cells);
+    if (Result<void> ok = runner_->read(gen::kBinding_airflow_dye, std::as_writable_bytes(std::span(image))); !ok) return ok;
+    std::copy_n(image.begin() + kAirflowDyeHeaderFloats, cells, out.begin());
+    return {};
+}
+
+Result<af::FluidHealth> GpuFluid::step_flow(std::span<const af::ActuatorDisc> discs) {
     if (discs.size() > kMaxDiscs) {
         return std::unexpected(Error{Code::capacity_exceeded, "GpuFluid: " + std::to_string(discs.size()) +
                                                                   " discs, past kMaxDiscs (" +
@@ -725,7 +820,9 @@ Result<void> GpuFluid::read(af::MacGrid& g) const {
 Result<void> GpuFluid::publish(glm::vec3 origin, FlowVolume& out) {
     if (!publish_chain_) {
         std::vector<ChainCommand> chain;
-        append_publish(chain, kPublish, shape_.nx * shape_.ny * shape_.nz, workgroup_size_);
+        PublishPipelines pipelines = kPublish;
+        if (dye_on_) pipelines.dye = dye_pipeline_ + 2u;  // airflow_dye_publish: channel 3 from the dye
+        append_publish(chain, pipelines, shape_.nx * shape_.ny * shape_.nz, workgroup_size_);
         auto id = runner_->record(chain);
         if (!id) return std::unexpected(id.error());
         publish_chain_ = *id;

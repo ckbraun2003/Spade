@@ -65,6 +65,7 @@
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
 #include "physics/airflow/actuator.hpp"
+#include "physics/airflow/dye.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/solids.hpp"
@@ -81,7 +82,7 @@ namespace spade::airflow_gpu {
 // floats: [0-2] the centre in the grid's frame, [3] the reach, [4-6] the
 // axis, [7] the scale, [8] the swirl's scale, [9] 1 with swirl, [10] the
 // disc's point count (disc_spread()'s rings x angles, at most kDiscPoints;
-// the slots past it stay 0), from kDiscPointsAt room for kDiscPoints points
+// the slots past it stay 0), [11] the disc's radius (airflow_dye_source reads it; the gather kernel does not), from kDiscPointsAt room for kDiscPoints points
 // and from kDiscTangentsAt their tangents, three floats each. Derived from af::kDiscPoints, so a change of
 // the spread moves the layout with it; the slang module's hand-written copy
 // is pinned to this one by the GpuAirflowActuator parity tests.
@@ -104,6 +105,17 @@ struct LineSetup {
     const physics::airflow::PolarTable* polar = nullptr;  // every rotor's polar: this table (its values are compared)
     uint32_t elements = 0;                                // all rotors' elements a step, every sub-azimuth counted
     uint32_t n_sub = 1;
+    // L72k's A1: the chain carries airflow_line_tipcorr (the tip/smearing correction, between the sample and the load) and the
+    // elements buffer the groups' records. A rotor with tip_correction on is refused by a GpuFluid made without it.
+    bool tip_correction = true;  // the rotors' default (LineRotor::tip_correction); a LineSetup must agree with them
+};
+
+// THE PASSIVE DYE (P10; physics/airflow/dye.hpp, the kernels airflow_dye_{advect,source,publish}): what a GpuFluid that carries a
+// dye is created with. After every step (and after the solids' projection) the dye is advected with the step's final velocity and
+// released at the step's discs, as fluid_step() advects the CPU's FluidScratch::dye and emit_dye() releases it; publish() then
+// writes it into V's channel 3. Passive: with or without it, u, v, w and p are the same bits.
+struct DyeSetup {
+    physics::airflow::DyeRelease release{};
 };
 
 class GpuFluid {
@@ -122,7 +134,8 @@ public:
                                                                   const physics::airflow::FluidConfig& cfg,
                                                                   const physics::airflow::SolidField* solids = nullptr,
                                                                   uint32_t workgroup_size = 64,
-                                                                  const LineSetup* line = nullptr);
+                                                                  const LineSetup* line = nullptr,
+                                                                  const DyeSetup* dye = nullptr);
 
     GpuFluid(const GpuFluid&) = delete;
     GpuFluid& operator=(const GpuFluid&) = delete;
@@ -142,6 +155,11 @@ public:
     [[nodiscard]] const std::vector<physics::airflow::LineReport>& line_reports() const noexcept {
         return line_reports_;
     }
+
+    // The dye, one float a cell in cell order, read into `out` (the fluid's cells, else invalid_argument); refused when the fluid was
+    // made without a DyeSetup.
+    [[nodiscard]] Result<void> read_dye(std::span<float> out) const;
+    [[nodiscard]] bool dye_enabled() const noexcept { return dye_on_; }
 
     // Reads u, v, w and p into `g`, whose shape must be the fluid's.
     [[nodiscard]] Result<void> read(physics::airflow::MacGrid& g) const;
@@ -181,6 +199,8 @@ public:
 private:
     GpuFluid() = default;
     [[nodiscard]] Result<uint32_t> step_chain_for(uint32_t disc_count);
+    [[nodiscard]] Result<uint32_t> dye_chain_for(uint32_t disc_count);
+    [[nodiscard]] Result<physics::airflow::FluidHealth> step_flow(std::span<const physics::airflow::ActuatorDisc> discs);
 
     physics::airflow::GridShape shape_{};
     physics::airflow::DomainBc bc_{};
@@ -201,9 +221,13 @@ private:
     uint32_t line_pipeline_ = 0;  // airflow_line_sample's pipeline; load and spread follow it
     uint32_t line_elements_ = 0;
     uint32_t line_n_sub_ = 1;
+    bool line_tip_ = false;
     uint32_t line_chain_ = 0;     // sample, load and the three spreads, the force read back
     physics::airflow::PolarTable line_polar_{};
     std::vector<physics::airflow::LineReport> line_reports_;
+    bool dye_on_ = false;
+    uint32_t dye_pipeline_ = 0;  // airflow_dye_advect's pipeline; source and publish follow it
+    std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_chains_{};  // advect (two passes) and the release, by disc count
     bool phase_timing_ = false;
     std::vector<PhaseTime> phases_;            // the last step's, when phase_timing_
     std::array<std::vector<std::string>, kMaxDiscs + 1> phase_names_{};  // the marks' names, by disc count
