@@ -212,3 +212,18 @@ TEST(FlowMovieStream, AStillsFrameAndItsMeanWindowStayOnDiskUntilTheSolveIsDone)
     }
     EXPECT_TRUE(plan.spent(197u, 449u));
 }
+
+// A particle look carries points through EVERY stored frame in order, the ones before the clip too (the inflow must already be
+// drawn in when the clip starts). with_warmup() adds the frames 0 .. first - 1 to a run's draws, so the plan writes them and
+// the solve keeps each until it is read.
+TEST(FlowMovieStream, AParticleRunReadsEveryFrameFromZeroSoTheWarmUpFramesAreInThePlan) {
+    const auto draws = flow_movie::with_warmup(range(150, 3), 150u);
+    EXPECT_EQ(draws.size(), 153u);
+    const flow_movie::StreamPlan plan(draws, 1u, {});
+    for (uint32_t j = 0; j < 153u; ++j) EXPECT_TRUE(plan.needed(j)) << j;
+    EXPECT_FALSE(plan.needed(153u));
+    EXPECT_TRUE(plan.spent(0u, 0u)) << "a warm-up frame goes once its own advance is done";
+    EXPECT_EQ(flow_movie::with_warmup(range(0, 3), 0u).size(), 3u) << "a clip from frame 0 has none";
+    EXPECT_EQ(flow_movie::with_warmup({152u, 150u, 150u}, 150u).size(), 152u) << "each frame once";
+}
+

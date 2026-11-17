@@ -197,3 +197,58 @@ TEST(FlowMovieParticles, TheSameFramesPoolAndOptionsGiveTheSameStateBitForBit) {
     EXPECT_EQ(a.age, b.age);
     EXPECT_EQ(a.retired_left_region, b.retired_left_region);
 }
+
+// The driver advances a field through frames IN ORDER (a stream hands them over once, 0 first), keeps a copy at the frames
+// a still will be drawn from (the still is drawn after the solve, when the live field is long past it), and says which field
+// shows frame k.
+TEST(FlowMovieParticles, ADriverAdvancesInOrderAndKeepsACopyAtTheFramesAStillReads) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    auto o = options();
+    o.per_frame = 2u;
+    flow_movie::ParticleDriver driver(o, {2u});
+    EXPECT_FALSE(driver.has_pool());
+    std::vector<glm::vec3> pool;
+    for (int i = 0; i < 8; ++i) pool.emplace_back(0.05f * static_cast<float>(i) - 0.2f, 0.0f, 0.0f);
+    driver.set_pool(pool);
+    EXPECT_TRUE(driver.has_pool());
+    EXPECT_FALSE(driver.advance(1u, v, 0.0)) << "frame 0 first";
+    for (uint32_t k = 0; k < 5u; ++k) ASSERT_TRUE(driver.advance(k, v, 0.01 * k)) << k;
+    EXPECT_FALSE(driver.advance(4u, v, 0.04)) << "a frame is advanced once";
+    ASSERT_NE(driver.at(2u), nullptr);
+    EXPECT_EQ(driver.at(2u)->frames, 3u) << "the copy is the field as frame 2 left it";
+    ASSERT_NE(driver.at(4u), nullptr);
+    EXPECT_EQ(driver.at(4u)->frames, 5u) << "the live field shows the last frame";
+    EXPECT_EQ(driver.at(3u), nullptr) << "neither a copy nor the live field's frame";
+    EXPECT_EQ(driver.at(9u), nullptr);
+}
+
+TEST(FlowMovieParticles, ADriverStepsByTheTimeBetweenFramesAndTheFirstFrameMovesNothing) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    auto o = options();
+    o.per_frame = 1u;
+    flow_movie::ParticleDriver driver(o, {});
+    driver.set_pool(std::vector<glm::vec3>{glm::vec3(0.0f)});
+    ASSERT_TRUE(driver.advance(0u, v, 0.100));
+    ASSERT_TRUE(driver.advance(1u, v, 0.105));  // 5 ms later: the first point moves by 2 m/s x 5 ms = 1 cm
+    ASSERT_NE(driver.at(1u), nullptr);
+    ASSERT_EQ(driver.at(1u)->position.size(), 2u);
+    EXPECT_NEAR(driver.at(1u)->position[0].x, 0.01f, 1e-6f);
+    EXPECT_NEAR(driver.at(1u)->position[1].x, 0.0f, 1e-9f) << "the new seed stays where it is";
+    EXPECT_FALSE(driver.advance(2u, v, 0.105)) << "time must go forward between frames";
+}
+
+// The region the points live in, when the options leave it open, is the first volume's box less one cell: a point at the
+// box's edge reads clamped air, not the flow.
+TEST(FlowMovieParticles, ADriverWithAnOpenRegionKeepsPointsInsideTheVolumeLessOneCell) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(10.0f, 0.0f, 0.0f); });
+    flow_movie::ParticleOptions o;  // the region left at its default (open)
+    o.capacity = 16u;
+    o.per_frame = 1u;
+    o.max_age_s = 5.0f;
+    flow_movie::ParticleDriver driver(o, {});
+    driver.set_pool(std::vector<glm::vec3>{glm::vec3(0.6f, 0.0f, 0.0f)});  // the box runs to x = 0.8; less a cell, 0.7
+    ASSERT_TRUE(driver.advance(0u, v, 0.0));
+    ASSERT_TRUE(driver.advance(1u, v, 0.02));  // 0.2 m on: x = 0.8
+    EXPECT_EQ(driver.at(1u)->retired_left_region, 1u);
+}
+
