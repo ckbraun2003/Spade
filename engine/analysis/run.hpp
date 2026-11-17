@@ -25,6 +25,11 @@
 
 namespace spade::analysis {
 
+// The numbers and the spellings are a contract: progress.yaml's `state:` holds the name (run.cpp's kStateNames), read_progress() gives the
+// value, and Kat's run list reads them (docs/design/interface/plans/2026-10-19-kat-builder-slice1-contract.md). Never renumber or rename.
+// `calibrating` (1) is RESERVED: nothing sets it today. The design gives it one meaning, the first-use benchmark behind the estimate
+// ("no estimate yet: calibrating", plans/2026-10-12-drone-builder-cfd-design.md, DBC-024, W2), and that is not built. read_progress()
+// accepts it, and a host that lists run states may show it.
 enum class RunState : uint32_t { queued = 0, calibrating = 1, running = 2, done = 3, refused = 4, faulted = 5, cancelled = 6 };
 
 // What a run computes: the airflow, or a dry run's stand-in step (no airflow,
