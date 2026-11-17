@@ -45,6 +45,8 @@ template <class T>
 
 }  // namespace
 
+fs::path frame_file(const fs::path& dir, uint32_t frame) { return frame_path(dir, frame); }
+
 spade::Result<void> write_frame(const fs::path& dir, uint32_t frame, const spade::FlowVolume& volume,
                                 const FrameLog& log, const FrameBound& bound) {
     if (const std::string why = frame_fault(volume, bound); !why.empty()) {

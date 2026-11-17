@@ -36,6 +36,8 @@ struct FrameLog {
                                               const FrameBound& bound);
 [[nodiscard]] spade::Result<void> read_frame(const std::filesystem::path& dir, uint32_t frame,
                                              spade::FlowVolume& volume, FrameLog& log);
+// The file frame `frame` is in (a streamed run deletes spent ones by name).
+[[nodiscard]] std::filesystem::path frame_file(const std::filesystem::path& dir, uint32_t frame);
 // How many frames the cache holds, counted from 0 without a gap.
 [[nodiscard]] uint32_t cached_frames(const std::filesystem::path& dir);
 
