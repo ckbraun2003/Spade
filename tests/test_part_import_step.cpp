@@ -144,8 +144,8 @@ TEST(PartImportStep, ProbeWithNothingFoundSaysWhereItLookedAndHowToInstall) {
     EXPECT_EQ(r.code(), "step_unavailable");
     EXPECT_FALSE(r.result.at("step").value("available", true));
     EXPECT_FALSE(r.result.at("step").at("searched").empty());
-    EXPECT_NE(r.result.value("advice", std::string()).find("pip install"), std::string::npos);
-    EXPECT_NE(r.result.value("advice", std::string()).find(".venv-step"), std::string::npos);
+    EXPECT_NE(r.result.at("step").value("install", std::string()).find("pip install"), std::string::npos);
+    EXPECT_NE(r.result.at("step").value("install", std::string()).find(".venv-step"), std::string::npos);
 }
 
 TEST(PartImportStep, ProbeWithoutOpenCascadeIsStepUnavailableAndSaysSo) {
@@ -239,7 +239,7 @@ TEST(PartImportStep, AnImportStoresTheSourceAndOneSidecarPerSolidWithTheDeflecti
         EXPECT_NE(loaded->provenance.source.find("part.step"), std::string::npos);
         EXPECT_NE(loaded->provenance.source.find(o.value("name", std::string())), std::string::npos);
     }
-    EXPECT_FALSE(r.result.at("objects")[0].value("cross_check", json::object()).is_null());
+    EXPECT_TRUE(r.result.at("objects")[0].contains("cross_check"));
 }
 
 TEST(PartImportStep, ASecondImportIsACacheHitThatDoesNotRunTheConverterAndANewDeflectionIsAMiss) {

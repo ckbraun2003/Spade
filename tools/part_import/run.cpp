@@ -5,6 +5,7 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <ostream>
 #include <span>
@@ -13,6 +14,7 @@
 
 #include "options.hpp"
 #include "report.hpp"
+#include "step.hpp"
 #include "store.hpp"
 #include "transform.hpp"
 #include "world/map_cache.hpp"
@@ -135,9 +137,36 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     const auto cancelled = [&] { return env.cancelled && env.cancelled(); };
 
     if (opts.mode == Mode::probe) {
-        // The process layer comes with the STEP route; until then the probe reports what it can see without running anything.
+        const ToolSearch found = find_step_tools(opts, env);
+        std::string searched = "[";
+        for (const std::string& where : found.searched) searched += (searched.size() > 1 ? "," : "") + json_quote(where);
+        searched += "]";
+        const auto unavailable = [&](const std::string& why, const std::string& python) {
+            JsonObject step;
+            step.boolean("available", false);
+            if (python.empty()) step.null("python"); else step.str("python", python);
+            step.raw("searched", searched).str("reason", why).str("install", step_install_text());
+            JsonObject payload;
+            payload.raw("step", step.line());
+            const Problem p{"step_unavailable", why};
+            return result(out, "probe", &p, payload);
+        };
+        if (!found.tools) return unavailable("no python with step_convert.py was found", "");
+        const ConverterOutcome c = run_converter(*found.tools, {"--probe"}, env);
+        if (c.killed) {
+            const Problem p{"cancelled", "cancelled while the converter ran"};
+            return result(out, "probe", &p, {});
+        }
+        if (!c.started || c.exit != 0) {
+            return unavailable(c.started ? "the converter did not answer --probe (exit " + std::to_string(c.exit) + "): " + c.err : c.start_error,
+                               found.tools->python);
+        }
+        const Expected<StepProbe> pr = parse_probe(c.out);
+        if (!pr) return unavailable(pr.error().message, found.tools->python);
+        if (!pr->ocp) return unavailable(pr->reason.empty() ? "OpenCASCADE is not installed for that python" : pr->reason, found.tools->python);
         JsonObject step;
-        step.boolean("available", false).null("python").str("reason", "the STEP converter is not looked for yet");
+        step.boolean("available", true).str("python", pr->python).str("python_path", found.tools->python);
+        step.str("occt", pr->occt).str("wheel", pr->wheel).str("converter", found.tools->converter.string());
         JsonObject payload;
         payload.raw("step", step.line());
         return result(out, "probe", nullptr, payload);
@@ -175,11 +204,22 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         if (!s) return fail(s.error());
         scale = *s;
     }
-    if (*format == "step") {
-        if (importing && !opts.deflection) {
-            return fail({"deflection_required", "a STEP import needs --deflection with a unit, for example 0.1mm"});
+    const bool is_step = *format == "step";
+    const bool fast_inspect = is_step && !importing && !opts.deep;
+    double deflection_m = 0.0, angle_rad = 0.0;
+    if (is_step) {
+        if (!fast_inspect && !opts.deflection) {
+            return fail({"deflection_required", std::string("a STEP ") + (importing ? "import" : "deep inspect") +
+                                                    " needs --deflection with a unit, for example 0.1mm"});
         }
-        return fail({"step_unavailable", "no STEP converter was found (OpenCASCADE through step_convert.py)"});
+        if (opts.deflection) {
+            const auto d = parse_length_m(*opts.deflection, "--deflection");
+            if (!d) return fail(d.error());
+            deflection_m = *d;
+        }
+        const auto a = parse_angle(opts.angle);
+        if (!a) return fail(a.error());
+        angle_rad = *a;
     }
     fs::path store;
     if (importing) {
@@ -194,6 +234,14 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             return fail({"store_in_git_tree", "the store " + store.string() + " is inside a git work tree"});
         }
     }
+
+    ToolSearch search;  // the converter is only needed when something must be converted: a cache hit runs without it
+    if (is_step) search = find_step_tools(opts, env);
+    const auto no_converter = [&]() {
+        std::string where;
+        for (const std::string& w : search.searched) where += (where.empty() ? "" : "; ") + w;
+        return Problem{"step_unavailable", "no STEP converter was found (python with step_convert.py); looked at: " + where};
+    };
 
     // ---- read ---------------------------------------------------------------------------------------------------------------
     if (cancelled()) return fail({"cancelled", "cancelled before the file was read"});
@@ -216,6 +264,12 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     key_in.axes = axes;
     key_in.scale = scale;
     key_in.object = opts.object.value_or(std::string());
+    if (is_step) {
+        key_in.converter = kStepConverterVersion;
+        key_in.tolerance_m = deflection_m;
+        key_in.angle_rad = angle_rad;
+    }
+    std::map<std::string, std::string> cross_by_name;  // object name -> its cross-check as JSON, for the objects the converter measured
     const std::string source_name = path.filename().string();
     const auto import_payload = [&](const EntryRecord& rec, bool cached) {
         JsonObject p;
@@ -224,19 +278,58 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         std::string objects;
         for (const SidecarRecord& s : rec.sidecars) {
             if (!objects.empty()) objects.push_back(',');
-            objects += JsonObject{}
-                           .str("name", s.object)
-                           .str("sidecar", (rec.dir / s.file).string())
-                           .str("content_hash", s.content_hash)
-                           .integer("triangles", s.triangles)
-                           .num("volume_m3", s.volume_m3)
-                           .line();
+            JsonObject o;
+            o.str("name", s.object).str("sidecar", (rec.dir / s.file).string()).str("content_hash", s.content_hash);
+            o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
+            if (const auto x = cross_by_name.find(s.object); x != cross_by_name.end()) o.raw("cross_check", x->second);
+            objects += o.line();
         }
         p.raw("objects", "[" + objects + "]");
         return p;
     };
     if (importing) {
         if (const auto hit = find_entry(store, sha, cache_key(key_in))) return result(out, "import", nullptr, import_payload(*hit, true));
+    }
+
+    // ---- a STEP's fast inspect: the converter's own solids, boxes and B-rep volumes; nothing is tessellated, so no gate ----------------
+    if (fast_inspect) {
+        if (!search.tools) return fail(no_converter(), base);
+        stage(out, "convert", "start");
+        const ConverterOutcome c = run_converter(*search.tools, {path.string(), "--inspect"}, env);
+        if (c.killed) return fail({"cancelled", "cancelled while the converter ran"}, base);
+        if (!c.started || c.exit != 0) return fail(converter_problem(c), base);
+        const Expected<StepInspect> info = parse_inspect(c.out);
+        if (!info) return fail(info.error(), base);
+        stage(out, "convert", "done");
+        std::string list;
+        for (const StepSolid& sol : info->solids) {
+            glm::dvec3 lo(1e300), hi(-1e300);
+            for (int corner = 0; corner < 8; ++corner) {
+                const glm::dvec3 p((corner & 1) ? sol.hi.x : sol.lo.x, (corner & 2) ? sol.hi.y : sol.lo.y, (corner & 4) ? sol.hi.z : sol.lo.z);
+                const glm::dvec3 q = apply_axes(axes, p) * scale;
+                lo = glm::min(lo, q);
+                hi = glm::max(hi, q);
+            }
+            if (!list.empty()) list.push_back(',');
+            list += JsonObject{}
+                        .str("name", sol.name)
+                        .str("gate", "not_checked")
+                        .raw("bbox", JsonObject{}.raw("min", array3(glm::vec3(lo))).raw("max", array3(glm::vec3(hi))).line())
+                        .num("volume", sol.volume_m3 * scale * scale * scale)
+                        .line();
+        }
+        JsonObject unit_json;
+        unit_json.str("declared", info->unit).str("used", info->unit).null("guess");
+        JsonObject payload = base;
+        payload.raw("unit", unit_json.line())
+            .str("measures_in", "m")
+            .str("frame", (axes.identity() && scale == 1.0) ? "file" : "part")
+            .str("gate", "not_checked")
+            .str("depth", "fast")
+            .str("occt", info->occt)
+            .str("wheel", info->wheel)
+            .raw("objects", "[" + list + "]");
+        return result(out, "inspect", nullptr, payload);
     }
 
     // ---- check: read the objects, pick, put them in the part frame ------------------------------------------------------------
@@ -246,8 +339,41 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     if (*format == "gltf" && gltf_has_external_uri(bytes)) {
         return fail({"external_buffers", "the glTF refers to files beside it, so it is not one self-contained file"}, refused);
     }
-    Expected<std::vector<MeshObject>> read = read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
-    if (!read) return fail(read.error(), refused);
+    std::optional<EmitReport> emitted;
+    const auto convert_step = [&]() -> Expected<std::vector<MeshObject>> {
+        if (!search.tools) return std::unexpected(no_converter());
+        std::error_code ec;
+        const fs::path work = fs::temp_directory_path(ec) / ("spade_part_import_" + env.token);
+        fs::remove_all(work, ec);
+        fs::create_directories(work, ec);
+        if (ec) return std::unexpected(Problem{"store_io", "cannot make the temporary directory " + work.string()});
+        struct Cleanup {
+            fs::path dir;
+            ~Cleanup() {
+                std::error_code e;
+                fs::remove_all(dir, e);
+            }
+        } cleanup{work};
+        const fs::path model = work / "model.3mf";
+        std::vector<std::string> a = {path.string(), "--emit-3mf", model.string(), "--deflection", *opts.deflection, "--angle", json_number(angle_rad)};
+        if (opts.object) {
+            a.push_back("--solid");
+            a.push_back(*opts.object);
+        }
+        stage(out, "convert", "start");
+        const ConverterOutcome c = run_converter(*search.tools, a, env);
+        if (c.killed) return std::unexpected(Problem{"cancelled", "cancelled while the converter ran"});
+        if (!c.started || (c.exit != 0 && c.exit != 5)) return std::unexpected(converter_problem(c));
+        Expected<EmitReport> report = parse_emit(c.out);
+        if (!report) return std::unexpected(report.error());
+        emitted = std::move(*report);
+        stage(out, "convert", "done");
+        Result<std::vector<MeshObject>> objs = read_3mf(model);
+        if (!objs) return std::unexpected(reader_problem(objs.error()));
+        return std::move(*objs);
+    };
+    Expected<std::vector<MeshObject>> read = is_step ? convert_step() : read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
+    if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
     std::vector<MeshObject> objects = std::move(*read);
     if (opts.object) {
         std::vector<MeshObject> picked;
@@ -261,6 +387,28 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         }
         objects = std::move(picked);
     }
+    std::vector<std::string> flagged_names;
+    std::string cross_list;
+    if (emitted) {
+        for (const CrossCheck& x : emitted->checks) {
+            const std::string one = JsonObject{}
+                                        .str("name", x.name)
+                                        .num("brep_volume", x.brep_volume)
+                                        .num("mesh_volume", x.mesh_volume)
+                                        .num("difference", x.difference)
+                                        .boolean("flagged", x.flagged)
+                                        .line();
+            cross_by_name[x.name] = one;
+            cross_list += (cross_list.empty() ? "" : ",") + one;
+            if (x.flagged) flagged_names.push_back(x.name);
+        }
+    }
+    const auto flagged_problem = [&]() {
+        std::string names;
+        for (const std::string& n : flagged_names) names += (names.empty() ? "" : ", ") + n;
+        return Problem{"cross_check_flagged", "the mesh volume differs from the B-rep's by more than 1% for " + names +
+                                                  "; use a smaller --deflection or --angle"};
+    };
     glm::vec3 file_lo(1e30f), file_hi(-1e30f);  // the objects' box in the file's own numbers, for the unit guess
     for (const MeshObject& o : objects) {
         for (const glm::vec3& p : o.mesh->positions()) {
@@ -280,7 +428,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     if (!importing) {
         std::optional<std::string> declared;
         if (*format == "glb" || *format == "gltf") declared = "m";
-        if (*format == "3mf" && !objects.empty()) declared = unit_text(objects.front().unit);
+        if ((*format == "3mf" || is_step) && !objects.empty()) declared = unit_text(objects.front().unit);
         const std::optional<std::string> used = declares_unit ? declared : (unit ? std::optional<std::string>(unit_text(*unit)) : std::nullopt);
         JsonObject unit_json;
         if (declared) unit_json.str("declared", *declared); else unit_json.null("declared");
@@ -315,8 +463,13 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             .str("measures_in", used ? "m" : "file")
             .str("frame", (axes.identity() && scale == 1.0) ? "file" : "part")
             .str("gate", "passed")
-            .str("depth", "full")
+            .str("depth", is_step ? "deep" : "full")
             .raw("objects", "[" + list + "]");
+        if (emitted) payload.raw("cross_check", "[" + cross_list + "]");
+        if (!flagged_names.empty()) {
+            const Problem p = flagged_problem();
+            return result(out, "inspect", &p, payload);
+        }
         return result(out, "inspect", nullptr, payload);
     }
 
@@ -325,11 +478,15 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     (void)remove_stale_temps(store, env.stale_after);
     std::vector<StoredObject> stored;
     for (const MeshObject& o : objects) {
-        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, 0.0}});
+        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m}});
     }
     const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token);
     if (!rec) return fail(rec.error(), base);
     stage(out, "write", "done");
+    if (!flagged_names.empty()) {
+        const Problem p = flagged_problem();
+        return result(out, "import", &p, import_payload(*rec, false));
+    }
     return result(out, "import", nullptr, import_payload(*rec, false));
 }
 

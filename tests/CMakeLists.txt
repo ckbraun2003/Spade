@@ -289,6 +289,7 @@ add_executable(spade_tests
     ../tools/part_import/options.cpp
     ../tools/part_import/run.cpp
     ../tools/part_import/process.cpp
+    ../tools/part_import/step.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs

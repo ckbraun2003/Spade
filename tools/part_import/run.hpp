@@ -20,6 +20,9 @@ namespace spade::partimport {
 
 // The version of the mesh readers' conversion: a part of every cache key, changed when what a reader writes into a sidecar changes.
 inline constexpr const char* kMeshConverterVersion = "mesh-1";
+// The same for a STEP import: the converter route (step_convert.py's --emit-3mf and the 3MF reader). OpenCASCADE's own version is not in the
+// key (it is not known before the converter runs); it is in the converter's answer.
+inline constexpr const char* kStepConverterVersion = "step-1";
 
 struct RunEnv {
     std::function<const char*(const char* name)> getenv;  // SPADE_PART_STORE, SPADE_STEP_PYTHON, SPADE_STEP_CONVERT
