@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <numbers>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -49,6 +50,7 @@
 
 #include "airflow_exact_device.hpp"
 #include "airflow_solid_shapes.hpp"
+#include "ke_share.hpp"
 #include "analysis/controls.hpp"
 #include "analysis/live_run.hpp"
 #include "../tools/flow_movie/cases.hpp"
@@ -1377,6 +1379,268 @@ TEST(GpuAirflowStep, TheAxisProfileUnderTheDroneAtThreeTimes) {
                             static_cast<double>(plane_min));
             }
             std::printf("[ axis    ]   front (deepest sampled plane below -0.5 m/s): %.2f m\n", static_cast<double>(front));
+            std::fflush(stdout);
+        }
+    }
+}
+
+// The near field of the discs for the smoothness measurement (Rendering's probe: lambda2 at the rim): over the cells
+// [i0, i1) x [j0, j1) x [k0, k1) (one cell of margin inside the grid) the cell-centre velocity's gradient by central
+// differences, lambda2 (the middle eigenvalue of S^2 + Omega^2), the strongest |omega|, where the deepest lambda2 is, and
+// how many of the cells under a sixth of it belong to a 6-connected piece no more than 8 cells across.
+struct NearField {
+    double ke_hi = 0.0;
+    float lambda2_min = 0.0f;
+    float omega_max = 0.0f;
+    int64_t at[3] = {0, 0, 0};  // cell of the deepest lambda2
+    uint64_t below = 0;         // cells under a sixth of it
+    uint64_t pieces = 0;
+    uint64_t in_small = 0;      // of those cells, the ones in a piece at most 8 cells across
+};
+
+[[nodiscard]] float middle_eigenvalue(const double a[3][3]) {
+    const double p1 = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
+    const double q = (a[0][0] + a[1][1] + a[2][2]) / 3.0;
+    if (p1 == 0.0) {
+        double d[3] = {a[0][0], a[1][1], a[2][2]};
+        std::sort(d, d + 3);
+        return static_cast<float>(d[1]);
+    }
+    const double p2 = (a[0][0] - q) * (a[0][0] - q) + (a[1][1] - q) * (a[1][1] - q) + (a[2][2] - q) * (a[2][2] - q) +
+                      2.0 * p1;
+    const double p = std::sqrt(p2 / 6.0);
+    double b[3][3];
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) b[r][c] = (a[r][c] - (r == c ? q : 0.0)) / p;
+    }
+    const double det = b[0][0] * (b[1][1] * b[2][2] - b[1][2] * b[2][1]) -
+                       b[0][1] * (b[1][0] * b[2][2] - b[1][2] * b[2][0]) +
+                       b[0][2] * (b[1][0] * b[2][1] - b[1][1] * b[2][0]);
+    const double phi = std::acos(std::min(1.0, std::max(-1.0, det / 2.0))) / 3.0;
+    const double e1 = q + 2.0 * p * std::cos(phi);
+    const double e3 = q + 2.0 * p * std::cos(phi + 2.0 * std::numbers::pi / 3.0);
+    return static_cast<float>(3.0 * q - e1 - e3);
+}
+
+[[nodiscard]] NearField near_field(const af::MacGrid& g, int64_t i0, int64_t i1, int64_t j0, int64_t j1, int64_t k0,
+                                   int64_t k1) {
+    const af::GridShape& s = g.shape;
+    const int64_t nx = i1 - i0, ny = j1 - j0, nz = k1 - k0;
+    const auto vel = [&](int64_t i, int64_t j, int64_t k) {
+        const uint32_t ui = static_cast<uint32_t>(i), uj = static_cast<uint32_t>(j), uk = static_cast<uint32_t>(k);
+        return std::array<double, 3>{0.5 * (g.u[af::u_index(s, ui, uj, uk)] + g.u[af::u_index(s, ui + 1u, uj, uk)]),
+                                     0.5 * (g.v[af::v_index(s, ui, uj, uk)] + g.v[af::v_index(s, ui, uj + 1u, uk)]),
+                                     0.5 * (g.w[af::w_index(s, ui, uj, uk)] + g.w[af::w_index(s, ui, uj, uk + 1u)])};
+    };
+    NearField out;
+    std::vector<float> lam(static_cast<std::size_t>(nx * ny * nz), 0.0f);
+    std::vector<float> block(static_cast<std::size_t>(nx * ny * nz) * 3u);
+    const double inv2dx = 1.0 / (2.0 * static_cast<double>(s.dx));
+    for (int64_t k = 0; k < nz; ++k) {
+        for (int64_t j = 0; j < ny; ++j) {
+            for (int64_t i = 0; i < nx; ++i) {
+                const int64_t gi = i0 + i, gj = j0 + j, gk = k0 + k;
+                const std::size_t at = static_cast<std::size_t>((k * ny + j) * nx + i);
+                const auto c = vel(gi, gj, gk);
+                for (std::size_t d = 0; d < 3u; ++d) block[at * 3u + d] = static_cast<float>(c[d]);
+                const auto xp = vel(gi + 1, gj, gk), xm = vel(gi - 1, gj, gk), yp = vel(gi, gj + 1, gk),
+                           ym = vel(gi, gj - 1, gk), zp = vel(gi, gj, gk + 1), zm = vel(gi, gj, gk - 1);
+                double gr[3][3];  // d u_r / d x_c
+                for (int r = 0; r < 3; ++r) {
+                    const auto rr = static_cast<std::size_t>(r);
+                    gr[r][0] = (xp[rr] - xm[rr]) * inv2dx;
+                    gr[r][1] = (yp[rr] - ym[rr]) * inv2dx;
+                    gr[r][2] = (zp[rr] - zm[rr]) * inv2dx;
+                }
+                double m[3][3];
+                for (int r = 0; r < 3; ++r) {
+                    for (int c2 = 0; c2 < 3; ++c2) {
+                        double acc = 0.0;
+                        for (int q = 0; q < 3; ++q) {
+                            const double s_rq = 0.5 * (gr[r][q] + gr[q][r]), o_rq = 0.5 * (gr[r][q] - gr[q][r]);
+                            const double s_qc = 0.5 * (gr[q][c2] + gr[c2][q]), o_qc = 0.5 * (gr[q][c2] - gr[c2][q]);
+                            acc += s_rq * s_qc + o_rq * o_qc;
+                        }
+                        m[r][c2] = acc;
+                    }
+                }
+                lam[at] = middle_eigenvalue(m);
+                const double wx = gr[2][1] - gr[1][2], wy = gr[0][2] - gr[2][0], wz = gr[1][0] - gr[0][1];
+                out.omega_max = std::max(out.omega_max, static_cast<float>(std::sqrt(wx * wx + wy * wy + wz * wz)));
+                if (lam[at] < out.lambda2_min) {
+                    out.lambda2_min = lam[at];
+                    out.at[0] = gi;
+                    out.at[1] = gj;
+                    out.at[2] = gk;
+                }
+            }
+        }
+    }
+    out.ke_hi = spade::test::ke_share_above(block, static_cast<uint32_t>(nz), static_cast<uint32_t>(ny),
+                                            static_cast<uint32_t>(nx), static_cast<double>(s.dx));
+    const float thr = out.lambda2_min / 6.0f;
+    std::vector<char> seen(lam.size(), 0);
+    std::vector<std::size_t> stack;
+    for (std::size_t start = 0; start < lam.size(); ++start) {
+        if (!(lam[start] < thr) || seen[start] != 0) continue;
+        int64_t lo[3] = {nx, ny, nz}, hi[3] = {-1, -1, -1};
+        uint64_t cells = 0;
+        stack.assign(1, start);
+        seen[start] = 1;
+        while (!stack.empty()) {
+            const std::size_t at = stack.back();
+            stack.pop_back();
+            ++cells;
+            const int64_t x = static_cast<int64_t>(at) % nx, y = (static_cast<int64_t>(at) / nx) % ny,
+                          z = static_cast<int64_t>(at) / (nx * ny);
+            const int64_t pos[3] = {x, y, z};
+            for (int d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], pos[d]);
+                hi[d] = std::max(hi[d], pos[d]);
+            }
+            const int64_t dxs[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+            for (const auto& dd : dxs) {
+                const int64_t X = x + dd[0], Y = y + dd[1], Z = z + dd[2];
+                if (X < 0 || Y < 0 || Z < 0 || X >= nx || Y >= ny || Z >= nz) continue;
+                const std::size_t n = static_cast<std::size_t>((Z * ny + Y) * nx + X);
+                if (seen[n] == 0 && lam[n] < thr) {
+                    seen[n] = 1;
+                    stack.push_back(n);
+                }
+            }
+        }
+        const int64_t side = std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]}) + 1;
+        ++out.pieces;
+        out.below += cells;
+        if (side <= 8) out.in_small += cells;
+    }
+    return out;
+}
+
+// L84's smoothness ask (the website's airflow), GPU only: the web clips' solve (D1's deep box at 4 mm with its parts in the
+// flow, still air (SPADE_WEB_SMOOTH_WIND=1 keeps the box's own 3 m/s crosswind), the rotors actuator discs, h 0.2 ms) from rest, with the Smagorinsky Cs 0.17 and with Cs 0, the same box
+// and discs. At a quarter of the steps and each after it, the grid-scale energy ke_hi (test_airflow_sgs.cpp's measure: the
+// share of the kinetic energy above k = pi / (2 dx), Hann-windowed, on the block 0.51 m across and 0.45 m tall under the
+// drone, from 0.12 m under the hubs, the cell-centre velocity), the fastest cell and its CFL, the pressure's residual and the
+// subgrid health. Opt-in with SPADE_WEB_SMOOTH_STEPS=<steps> (3000 is the clips' 0.60 s). Report only.
+TEST(GpuAirflowStep, TheWebBoxsGridScaleEnergyWithAndWithoutTheSubgridViscosity) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const uint32_t steps = env_count("SPADE_WEB_SMOOTH_STEPS");
+    if (steps == 0u) GTEST_SKIP() << "opt-in: SPADE_WEB_SMOOTH_STEPS=<steps> (3000 is 0.60 s; about 340 ms a step)";
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    constexpr uint32_t kBlockX = 128, kBlockY = 112, kBlockZ = 128;  // cells: 0.51 m, 0.45 m, 0.51 m at 4 mm
+    for (const float cs : {0.17f, 0.0f}) {
+        spade::Result<b7::B7Box> box = b7::d1_box(b7::BoxSolids::with, spade::testing::kD1DeepGrid);
+        ASSERT_TRUE(box.has_value()) << box.error().context;
+        box->cfg.h = 0.0002f;  // the web clips' step (web_masters.hpp kD1WebStepS)
+        box->cfg.sgs_cs = cs;
+        if (env_count("SPADE_WEB_SMOOTH_WIND") == 0u) {
+            // Still air, as the web clips S1, S2 and S8 (d1_still_air_live_case): the D1 box's own ambient is the 3 m/s
+            // crosswind of the film before it, so it is zeroed and the grid made again from rest.
+            box->bc.ambient = glm::vec3(0.0f);
+            auto still = af::make_grid(box->grid.shape, box->bc);
+            ASSERT_TRUE(still.has_value()) << still.error().context;
+            box->grid = std::move(*still);
+        }
+        auto gpu = ag::GpuFluid::create(*ctx, box->grid, box->bc, box->cfg, &box->solids);
+        ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
+        af::MacGrid read = box->grid;
+        const af::GridShape& s = read.shape;
+        const float dx = s.dx;
+        const auto ci = static_cast<int64_t>(box->about.x / dx);
+        const auto ck = static_cast<int64_t>(box->about.z / dx);
+        const auto j_hi = static_cast<int64_t>((box->about.y - 0.12f) / dx);
+        const int64_t i0 = ci - kBlockX / 2, k0 = ck - kBlockZ / 2, j0 = j_hi - kBlockY;
+        ASSERT_GE(i0, 0);
+        ASSERT_GE(k0, 0);
+        ASSERT_GE(j0, 0);
+        ASSERT_LE(i0 + kBlockX, static_cast<int64_t>(s.nx));
+        ASSERT_LE(k0 + kBlockZ, static_cast<int64_t>(s.nz));
+        std::printf("[ smooth  ] Cs %.2f: deep box %ux%ux%u at %.1f mm, h %.2f ms, discs (actuator), ambient (%g, %g, %g) m/s, "
+                    "faces open/open/open/open/open/open = %d; block cells x %lld.., y %lld.., z %lld..\n",
+                    static_cast<double>(cs), s.nx, s.ny, s.nz, static_cast<double>(dx) * 1000.0,
+                    static_cast<double>(box->cfg.h) * 1000.0, static_cast<double>(box->bc.ambient.x),
+                    static_cast<double>(box->bc.ambient.y), static_cast<double>(box->bc.ambient.z),
+                    static_cast<int>(std::count(box->bc.face.begin(), box->bc.face.end(), af::FaceBc::open)),
+                    static_cast<long long>(i0), static_cast<long long>(j0), static_cast<long long>(k0));
+        uint32_t capped_max = 0, limited_max = 0, unconverged = 0;
+        uint64_t capped_sum = 0, limited_sum = 0;
+        float nu_t_max = 0.0f, residual_max = 0.0f;
+        double ms_total = 0.0;
+        for (uint32_t step = 1; step <= steps; ++step) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const auto g = (*gpu)->step(box->discs);
+            ms_total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            ASSERT_TRUE(g.has_value()) << g.error().context;
+            ASSERT_EQ(g->fault, af::FluidFault::none);
+            capped_max = std::max(capped_max, g->sgs_capped_cells);
+            limited_max = std::max(limited_max, g->sgs_limited_faces);
+            capped_sum += g->sgs_capped_cells;
+            limited_sum += g->sgs_limited_faces;
+            nu_t_max = std::max(nu_t_max, g->sgs_nu_t_max);
+            residual_max = std::max(residual_max, g->pressure_residual);
+            unconverged += g->unconverged ? 1u : 0u;
+            if (step % (steps / 4u == 0u ? 1u : steps / 4u) != 0u && step != steps) continue;
+            ASSERT_TRUE((*gpu)->read(read).has_value());
+            std::vector<float> block(std::size_t{kBlockX} * kBlockY * kBlockZ * 3u);
+            float v_peak = 0.0f;
+            for (uint32_t z = 0; z < kBlockZ; ++z) {
+                for (uint32_t y = 0; y < kBlockY; ++y) {
+                    for (uint32_t x = 0; x < kBlockX; ++x) {
+                        const auto i = static_cast<uint32_t>(i0) + x, j = static_cast<uint32_t>(j0) + y,
+                                   k = static_cast<uint32_t>(k0) + z;
+                        const float u = 0.5f * (read.u[af::u_index(s, i, j, k)] + read.u[af::u_index(s, i + 1u, j, k)]);
+                        const float v = 0.5f * (read.v[af::v_index(s, i, j, k)] + read.v[af::v_index(s, i, j + 1u, k)]);
+                        const float w = 0.5f * (read.w[af::w_index(s, i, j, k)] + read.w[af::w_index(s, i, j, k + 1u)]);
+                        const std::size_t at = (std::size_t{z} * kBlockY + y) * kBlockX + x;
+                        block[at * 3u + 0u] = u;
+                        block[at * 3u + 1u] = v;
+                        block[at * 3u + 2u] = w;
+                        v_peak = std::max(v_peak, std::sqrt(u * u + v * v + w * w));
+                    }
+                }
+            }
+            const double ke_hi = spade::test::ke_share_above(block, kBlockZ, kBlockY, kBlockX, static_cast<double>(dx));
+            std::printf("[ smooth  ] Cs %.2f t = %.3f s (step %u): ke_hi %.4f; block's fastest cell %.2f m/s (CFL %.2f); "
+                        "pressure residual max %.3g, %u unconverged; nu_t max %.4g m2/s, capped cells max %u (mean %.2f), "
+                        "wall-limited faces max %u (mean %.1f); %.1f ms a step\n",
+                        static_cast<double>(cs), static_cast<double>(step) * static_cast<double>(box->cfg.h), step, ke_hi,
+                        static_cast<double>(v_peak), static_cast<double>(v_peak * box->cfg.h / dx),
+                        static_cast<double>(residual_max), unconverged, static_cast<double>(nu_t_max), capped_max,
+                        static_cast<double>(capped_sum) / step, limited_max, static_cast<double>(limited_sum) / step,
+                        ms_total / step);
+            {   // the near field of the discs (Rendering's rim probe): from 0.04 m over the disc plane to 0.10 m under it
+                const auto nj_hi = static_cast<int64_t>((box->discs.front().centre.y + 0.04f) / dx);
+                const auto nj_lo = static_cast<int64_t>((box->discs.front().centre.y - 0.10f) / dx);
+                const NearField nf = near_field(read, i0, i0 + kBlockX, nj_lo, nj_hi, k0, k0 + kBlockZ);
+                // where the deepest lambda2 is, against the nearest disc: radius over R and cells over its plane
+                float best_r = 1.0e9f;
+                float best_dy = 0.0f;
+                float radius = 1.0f;
+                for (const af::ActuatorDisc& d : box->discs) {
+                    const float ex = (static_cast<float>(nf.at[0]) + 0.5f) * dx - d.centre.x;
+                    const float ez = (static_cast<float>(nf.at[2]) + 0.5f) * dx - d.centre.z;
+                    const float rr = std::sqrt(ex * ex + ez * ez);
+                    if (rr < best_r) {
+                        best_r = rr;
+                        best_dy = ((static_cast<float>(nf.at[1]) + 0.5f) * dx - d.centre.y) / dx;
+                        radius = d.radius;
+                    }
+                }
+                std::printf("[ smooth  ] Cs %.2f t = %.3f s near field of the discs (block %lldx%lldx%lld cells): ke_hi %.4f; "
+                            "deepest lambda2 %.0f 1/s2 at r/R %.2f from the nearest disc axis, %.1f cells from its plane; "
+                            "peak |omega| %.0f 1/s; %llu cells under a sixth of the deepest in %llu pieces, %.0f%% of them "
+                            "in pieces 8 cells across or less\n",
+                            static_cast<double>(cs), static_cast<double>(step) * static_cast<double>(box->cfg.h),
+                            static_cast<long long>(kBlockX), static_cast<long long>(nj_hi - nj_lo),
+                            static_cast<long long>(kBlockZ), nf.ke_hi, static_cast<double>(nf.lambda2_min),
+                            static_cast<double>(best_r / radius), static_cast<double>(best_dy),
+                            static_cast<double>(nf.omega_max), static_cast<unsigned long long>(nf.below),
+                            static_cast<unsigned long long>(nf.pieces),
+                            nf.below == 0u ? 0.0
+                                           : 100.0 * static_cast<double>(nf.in_small) / static_cast<double>(nf.below));
+            }
             std::fflush(stdout);
         }
     }

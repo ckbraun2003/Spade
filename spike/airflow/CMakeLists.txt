@@ -102,6 +102,8 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_actuator_gather NAN_PRE
 spade_slang_kernel_variants(spade_airflow_runner airflow_line_sample NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_line_load NAN_PRESERVE)
 spade_slang_kernel_variants(spade_airflow_runner airflow_line_spread NAN_PRESERVE)
+# L72k's A1: the tip/smearing correction between the sample and the load (a GpuFluid made with LineSetup::tip_correction).
+spade_slang_kernel_variants(spade_airflow_runner airflow_line_tipcorr NAN_PRESERVE)
 
 # B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):
 # the swap and add_and_clear as one add a face

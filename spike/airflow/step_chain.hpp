@@ -104,6 +104,9 @@ struct LineSetup {
     const physics::airflow::PolarTable* polar = nullptr;  // every rotor's polar: this table (its values are compared)
     uint32_t elements = 0;                                // all rotors' elements a step, every sub-azimuth counted
     uint32_t n_sub = 1;
+    // L72k's A1: the chain carries airflow_line_tipcorr (the tip/smearing correction, between the sample and the load) and the
+    // elements buffer the groups' records. A rotor with tip_correction on is refused by a GpuFluid made without it.
+    bool tip_correction = true;  // the rotors' default (LineRotor::tip_correction); a LineSetup must agree with them
 };
 
 class GpuFluid {
@@ -201,6 +204,7 @@ private:
     uint32_t line_pipeline_ = 0;  // airflow_line_sample's pipeline; load and spread follow it
     uint32_t line_elements_ = 0;
     uint32_t line_n_sub_ = 1;
+    bool line_tip_ = false;
     uint32_t line_chain_ = 0;     // sample, load and the three spreads, the force read back
     physics::airflow::PolarTable line_polar_{};
     std::vector<physics::airflow::LineReport> line_reports_;

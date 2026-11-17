@@ -15,6 +15,8 @@ prop:
     beta_deg: [29.21, 26.737, 24.255, 22.505, 21.187, 19.917, 18.828, 17.896, 17.284, 16.874, 16.482, 16.034, 15.644, 15.206, 14.891, 15.176, 15.23, 13.154]
     hub_cutout: 0.15
     airfoil: "unknown"
+    alpha_0_deg: -0.506
+    cd_scale: 1.9354
 sources:
   diameter: {source: "uiuc_propdb", grade: measured, note: "1.85 in, UIUC's, as its coefficients were reduced; Luis & Le Ny give 0.04626"}
   pitch: {grade: assumed, note: "not known; identity only"}
@@ -30,3 +32,5 @@ sources:
   blade.beta_deg: {source: "uiuc_propdb", grade: measured, note: "UIUC geometry"}
   blade.hub_cutout: {source: "uiuc_propdb", grade: measured, note: "the first station"}
   blade.airfoil: {grade: assumed, note: "unknown for every prop (P-b); Physics picks the polar"}
+  blade.alpha_0_deg: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"}
+  blade.cd_scale: {source: "uiuc_propdb", grade: fitted, note: "fitted through the actuator line WITH THE TIP CORRECTION ON to UIUC's static C_T and C_Q (docs/design/physics/plans/2026-11-17-b1-polar-fits.md); valid only at the kernel width and resolution fitted and with the tip correction on: 6 mm kernel (2.55 cells), R/dx 10, 16582 rpm, D 47 mm; line C_T 0.15653 vs UIUC 0.15586, C_Q 0.016599 vs 0.016764; a static-only prop, one point, nothing held out"}

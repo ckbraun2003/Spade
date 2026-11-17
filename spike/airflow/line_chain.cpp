@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 #include "core/detail/flush_subnormals.hpp"
 
@@ -21,10 +22,62 @@ Result<LineRecords> line_records(std::span<const af::LineRotor> rotors, const af
     const float dx3 = shape.dx * shape.dx * shape.dx;
     const float share = 1.0f / static_cast<float>(n_sub);
     const float to_dv = h / (rho * dx3);
+    out.tip.assign(kTipHeaderWords, 0.0f);
+    const af::LineTipParams tip_params;
     for (const af::LineRotor& rotor : rotors) {
         const std::vector<af::LineElement> elements = af::line_elements(rotor, shape.dx, h, n_sub);
         out.per_rotor.push_back(static_cast<uint32_t>(elements.size()));
         const std::size_t first = out.elems.size();
+        std::size_t tip_per = 0;  // this rotor's blade size if it is tip-corrected (its groups' first number below)
+        const uint32_t tip_first_group = static_cast<uint32_t>((out.tip.size() - kTipHeaderWords) / kTipStride);
+        if (rotor.tip_correction && rotor.omega > 0.0f && !elements.empty()) {
+            const af::LineTipTables tb = af::line_tip_tables(rotor, elements, shape.dx, tip_params);
+            if (tb.per == 0 || tb.per > kTipMaxPer || tb.th.size() > kTipMaxSegments + 1 ||
+                tb.reach > static_cast<int>(kTipMaxReach)) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "line: the tip correction takes at most " + std::to_string(kTipMaxPer) +
+                                                 " elements a blade, " + std::to_string(kTipMaxSegments) +
+                                                 " chords and a span filter " + std::to_string(kTipMaxReach) +
+                                                 " elements wide (this rotor: " + std::to_string(tb.per) + ", " +
+                                                 std::to_string(tb.th.size() - 1) + ", " +
+                                                 std::to_string(tb.reach) + ")"});
+            }
+            tip_per = tb.per;
+            const uint32_t base_element = static_cast<uint32_t>(first / kLineStride);
+            for (std::size_t g0 = 0; g0 + tb.per <= elements.size(); g0 += tb.per) {
+                const af::LineElement& e0 = elements[g0];
+                const std::size_t at = out.tip.size();
+                out.tip.resize(at + kTipStride, 0.0f);
+                float* g = out.tip.data() + at;
+                const glm::vec3 d = (e0.pos - rotor.centre) / e0.r;
+                g[0] = static_cast<float>(base_element + g0);
+                g[1] = static_cast<float>(tb.per);
+                g[2] = static_cast<float>(tip_params.iterations);
+                g[3] = static_cast<float>(tb.th.size() - 1);
+                g[4] = static_cast<float>(tb.reach);
+                g[5] = rotor.spin;
+                g[6] = e0.dr;
+                g[7] = e0.r - 0.5f * e0.dr;
+                g[8] = tb.eps_m;
+                g[9] = tb.kern_sum;
+                g[10] = tb.relax;
+                g[11] = rotor.omega;
+                g[12] = rho;
+                for (uint32_t a = 0; a < 3; ++a) {
+                    const glm::length_t i = static_cast<glm::length_t>(a);
+                    g[16 + a] = rotor.centre[i];
+                    g[19 + a] = d[i];
+                    g[22 + a] = e0.motion[i];
+                    g[25 + a] = rotor.axis[i];
+                }
+                for (std::size_t j = 0; j < tb.th.size(); ++j) {
+                    g[32 + j] = tb.th[j];
+                    g[64 + j] = tb.ct[j];
+                    g[96 + j] = tb.st[j];
+                }
+                for (std::size_t m = 0; m < tb.kern.size(); ++m) g[128 + m] = tb.kern[m];
+            }
+        }
         out.elems.resize(first + elements.size() * kLineStride, 0.0f);
         for (std::size_t e = 0; e < elements.size(); ++e) {
             const af::LineElement& el = elements[e];
@@ -53,7 +106,14 @@ Result<LineRecords> line_records(std::span<const af::LineRotor> rotors, const af
                 comp[6] = st.sum;
             }
         }
+        // Each element of a whole blade knows its group (word 14: the group's number + 1) and its place in it (word 15).
+        for (std::size_t e = 0; tip_per > 0 && e / tip_per < (elements.size() / tip_per); ++e) {
+            float* r = out.elems.data() + first + e * kLineStride;
+            r[14] = static_cast<float>(tip_first_group + e / tip_per + 1u);
+            r[15] = static_cast<float>(e % tip_per);
+        }
     }
+    out.tip[0] = static_cast<float>((out.tip.size() - kTipHeaderWords) / kTipStride);
     return out;
 }
 

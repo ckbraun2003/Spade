@@ -148,6 +148,8 @@ constexpr PartKind kind_of() {
 }
 
 constexpr std::array<std::string_view, 5> kBladeKeys = {"r_over_r", "c_over_r", "beta_deg", "hub_cutout", "airfoil"};
+// The optional polar of a blade (part_file.hpp, POLAR): both keys or neither.
+constexpr std::array<std::string_view, 2> kBladePolarKeys = {"alpha_0_deg", "cd_scale"};
 
 // Every key of the block, cited or not.
 struct KeyList {
@@ -199,6 +201,9 @@ template <class Part>
     if constexpr (std::is_same_v<Part, PropPart>) {
         if (part.blade) {
             for (const std::string_view k : kBladeKeys) list.keys.push_back("blade." + std::string(k));
+            if (part.blade->alpha_0_deg || part.blade->cd_scale) {
+                for (const std::string_view k : kBladePolarKeys) list.keys.push_back("blade." + std::string(k));
+            }
         }
     }
     return list.keys;
@@ -313,6 +318,18 @@ struct FiniteCheck {
                                        " is above the first station's r/R " + format_double(b.r_over_r[0])));
     }
     if (b.airfoil.empty()) return std::unexpected(invalid(what + ".airfoil must not be empty"));
+    if (b.alpha_0_deg.has_value() != b.cd_scale.has_value()) {
+        return std::unexpected(invalid(what + " has " + (b.alpha_0_deg ? "alpha_0_deg" : "cd_scale") +
+                                       " without " + (b.alpha_0_deg ? "cd_scale" : "alpha_0_deg") +
+                                       ": the polar is both or neither"));
+    }
+    if (b.alpha_0_deg) {
+        if (Result<void> r = check_finite(what + ".alpha_0_deg", {*b.alpha_0_deg}); !r) return r;
+        if (Result<void> r = check_finite(what + ".cd_scale", {*b.cd_scale}); !r) return r;
+        if (!(*b.cd_scale > 0.0)) {
+            return std::unexpected(invalid(what + ".cd_scale must be above 0, found " + format_double(*b.cd_scale)));
+        }
+    }
     return {};
 }
 
@@ -447,6 +464,10 @@ template <class Part>
             out += "    beta_deg: " + double_list(b.beta_deg) + "\n";
             out += "    hub_cutout: " + format_double(b.hub_cutout) + "\n";
             out += "    airfoil: " + quote_yaml(b.airfoil) + "\n";
+            if (b.alpha_0_deg && b.cd_scale) {
+                out += "    alpha_0_deg: " + format_double(*b.alpha_0_deg) + "\n";
+                out += "    cd_scale: " + format_double(*b.cd_scale) + "\n";
+            }
         }
     }
     out += "sources:\n";
@@ -602,7 +623,9 @@ struct Reader {
 [[nodiscard]] Result<BladeGeometry> read_blade(const YAML::Node& node) {
     const std::string what = "prop.blade";
     if (node.IsNull()) return std::unexpected(at(node, what + " is null: leave the key out for none"));
-    if (Result<void> r = check_keys(node, what, std::vector<std::string>(kBladeKeys.begin(), kBladeKeys.end())); !r) {
+    std::vector<std::string> allowed(kBladeKeys.begin(), kBladeKeys.end());
+    allowed.insert(allowed.end(), kBladePolarKeys.begin(), kBladePolarKeys.end());
+    if (Result<void> r = check_keys(node, what, allowed); !r) {
         return std::unexpected(r.error());
     }
     BladeGeometry out{};
@@ -620,6 +643,12 @@ struct Reader {
     Result<std::string> airfoil = string_field(node, "airfoil", what);
     if (!airfoil) return std::unexpected(airfoil.error());
     out.airfoil = std::move(*airfoil);
+    for (const auto& [key, slot] : {std::pair{"alpha_0_deg", &out.alpha_0_deg}, std::pair{"cd_scale", &out.cd_scale}}) {
+        if (!node[key].IsDefined()) continue;
+        const Result<double> v = double_field(node, key, what);
+        if (!v) return std::unexpected(v.error());
+        *slot = *v;
+    }
     if (Result<void> r = check_blade(out); !r) {
         return std::unexpected(Error{r.error().code, r.error().context + mark_of(node)});
     }
