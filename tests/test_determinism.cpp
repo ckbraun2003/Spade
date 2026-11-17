@@ -1983,7 +1983,7 @@ TEST(ReplayConfig, EveryWorldRowCarriesTheRunsIdentityAndNothingElse) {
         // they are part of every blob and every digest -- so "they are zero" is
         // a layout contract, not a formality.
         EXPECT_EQ(rows[w]._pad, 0u) << "world " << w;
-        EXPECT_EQ(rows[w]._reserved0, 0u) << "world " << w;
+        EXPECT_EQ(rows[w].anchor_identity, 0u) << "world " << w << ": an anchor-less world's lane is 0";
         // The record is SET-WIDE: every world holds the identical bytes, which
         // is what lets restore() compare row 0 alone.
         EXPECT_EQ(std::memcmp(&rows[w], &rows[0], sizeof(spade::ReplayConfig)), 0) << "world " << w;
@@ -2280,7 +2280,7 @@ TEST(RestoreConfigCheck, RejectsAPayloadThatDiffersOutsideTheThreeNamedFields) {
         std::size_t byte;  // offset within the payload
     };
     const Case cases[] = {
-        {"a reserved lane in world 0's row", offsetof(spade::ReplayConfig, _reserved0)},
+        {"the anchor-identity lane of world 0's row, alone", offsetof(spade::ReplayConfig, anchor_identity)},
         {"world 1's dt_ns", sizeof(spade::ReplayConfig) + offsetof(spade::ReplayConfig, dt_ns)},
     };
 

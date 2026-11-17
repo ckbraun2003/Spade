@@ -908,7 +908,19 @@ Result<Simulation> Simulation::create(const WorldSetDesc& desc, uint64_t dt_ns, 
         row.substeps = substeps;
         row._pad = 0;
         row.config_hash = hash;
-        row._reserved0 = 0;
+        // The anchor's identity, 0 for a plain world (L85 SP-2): see ReplayConfig.
+        const std::optional<geo::Geodetic>& anchor = desc.worlds[w].world.anchor;
+        row.anchor_identity = anchor ? geo::anchor_identity(*anchor) : uint64_t{0};
+    }
+
+    // The anchors and their local frames, once (L85 SP-2, SP-3): configuration read at poll time, never state.
+    sim.anchors_.assign(layout->world_count, std::nullopt);
+    sim.geo_frames_.assign(layout->world_count, std::nullopt);
+    for (uint32_t w = 0; w < layout->world_count; ++w) {
+        if (const std::optional<geo::Geodetic>& anchor = desc.worlds[w].world.anchor) {
+            sim.anchors_[w] = geo::canonical_anchor(*anchor);
+            sim.geo_frames_[w] = geo::make_local_frame(*sim.anchors_[w]);
+        }
     }
 
     sim.views_.resize(layout->world_count);
@@ -3448,7 +3460,7 @@ Result<void> Simulation::check_replay_config(const SnapshotBlob& blob) const {
     // The three fields are 24 of the 32 bytes of ONE row, and restore() is
     // about to overwrite ALL of them, in every world. Accepting on a
     // field-wise comparison would mean restoring the remainder on trust: the
-    // two reserved lanes today, a fourth field the day `_reserved0` becomes
+    // the reserved `_pad` lane today, a further field the day one is added, and
     // real, and every world's row above index 0. Comparing the bytes closes
     // all three at once and needs no maintenance when a field is added -- the
     // opposite of a comment promising that a future author will remember to
@@ -3504,10 +3516,27 @@ Result<void> Simulation::check_replay_config(const SnapshotBlob& blob) const {
     // registered state and arrive with the blob) -- config_hash covers the
     // creating desc's seeds, so that pairing is refused fail-closed. The
     // diagnostic has to stay true of every case it prints on.
-    return std::unexpected(invalid("restore: blob was produced under a different (dt_ns, substeps, "
-                                   "config_hash) -- restoring it here could replay different physics. "
-                                   "Diverged: " +
-                                   diverged));
+    //
+    // THE ANCHOR, NAMED (L85 SP-2). A blob taken under another world anchor (or none) differs in config_hash, which folds the anchor,
+    // AND in the row's anchor-identity lane; the hash cannot say what differs, so the lane names it. Only when both differ: a lane
+    // that differs alone is a tampered blob and keeps the generic "reserved lane" text above.
+    std::string anchor_detail;
+    if (theirs.config_hash != mine.config_hash) {
+        const std::size_t rows = std::min(live->size(), section->payload.size() / sizeof(ReplayConfig));
+        for (std::size_t w = 0; w < rows && anchor_detail.empty(); ++w) {
+            ReplayConfig row{};
+            std::memcpy(&row, section->payload.data() + w * sizeof(ReplayConfig), sizeof(ReplayConfig));
+            if (row.anchor_identity != (*live)[w].anchor_identity) {
+                anchor_detail = "world " + std::to_string(w) + ": blob " + hex64(row.anchor_identity) + ", this simulation " +
+                                hex64((*live)[w].anchor_identity) + "; 0 means no anchor, and the identity is a hash of the three coordinates";
+            }
+        }
+    }
+    const std::string head =
+        anchor_detail.empty()
+            ? std::string("restore: blob was produced under a different (dt_ns, substeps, config_hash)")
+            : "restore: world anchor differs (" + anchor_detail + "); the blob was produced under a different (dt_ns, substeps, config_hash)";
+    return std::unexpected(invalid(head + " -- restoring it here could replay different physics. Diverged: " + diverged));
 }
 
 Result<void> Simulation::restore(const SnapshotBlob& blob) {
@@ -3932,15 +3961,36 @@ Result<GnssPoll> Simulation::poll_gnss(GnssSensorRef ref, sensors::SampleIndex s
     return poll_sensor(arenas_, gnss_id_, gnss_ring_id_, ref.slot, since_index, out, "poll_gnss");
 }
 
-Result<GnssPoll> Simulation::poll_gnss_geodetic(GnssSensorRef, sensors::SampleIndex, std::span<sensors::GnssFix>,
-                                                std::span<geo::Geodetic>) const {
-    // RED stub (L85 SP-3).
-    return std::unexpected(Error{Code::unavailable, "poll_gnss_geodetic: not built yet"});
+Result<GnssPoll> Simulation::poll_gnss_geodetic(GnssSensorRef ref, sensors::SampleIndex since_index,
+                                                std::span<sensors::GnssFix> out, std::span<geo::Geodetic> geodetic) const {
+    if (Result<void> valid = validate_gnss_ref(ref); !valid) {
+        return std::unexpected(valid.error());
+    }
+    if (ref.world_index >= geo_frames_.size() || !geo_frames_[ref.world_index]) {
+        return std::unexpected(Error{Code::unavailable, "poll_gnss_geodetic: world " + std::to_string(ref.world_index) +
+                                                            " has no anchor (WorldDesc::anchor), so its fixes have no coordinates; use poll_gnss"});
+    }
+    if (geodetic.size() < out.size()) {
+        return std::unexpected(invalid("poll_gnss_geodetic: geodetic holds " + std::to_string(geodetic.size()) + " elements and out holds " +
+                                       std::to_string(out.size()) + "; it needs at least as many"));
+    }
+    Result<GnssPoll> poll = poll_sensor(arenas_, gnss_id_, gnss_ring_id_, ref.slot, since_index, out, "poll_gnss");
+    if (!poll) {
+        return poll;
+    }
+    // THE SAME STORED POSITION, widened to double: nothing is drawn, nothing is written back (REQ-G19, REQ-G01b).
+    const geo::LocalFrame& frame = *geo_frames_[ref.world_index];
+    for (std::size_t i = 0; i < poll->samples.size(); ++i) {
+        const glm::vec3& p = poll->samples[i].position;
+        geodetic[i] = geo::world_to_geodetic(frame, glm::dvec3(static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z)));
+    }
+    return poll;
 }
 
-Result<std::optional<geo::Geodetic>> Simulation::world_anchor(uint32_t) const {
-    // RED stub (L85 SP-2).
-    return std::optional<geo::Geodetic>{};
+Result<std::optional<geo::Geodetic>> Simulation::world_anchor(uint32_t world_index) const {
+    const Result<uint32_t> world = checked_world(world_index);
+    if (!world) return std::unexpected(world.error());
+    return anchors_[world_index];
 }
 
 Result<const sensors::GnssSensorRow*> Simulation::gnss_sensor(GnssSensorRef ref) const {

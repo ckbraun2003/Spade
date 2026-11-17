@@ -337,6 +337,12 @@ Result<void> validate_material(const MaterialDesc& material, std::string_view la
 // ---------------------------------------------------------------------------
 
 Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
+    // The geodetic anchor, when there is one (L85 SP-2): finite and inside core/geodesy.hpp's limits.
+    if (desc.anchor) {
+        if (Result<void> anchor = geo::validate_anchor(*desc.anchor); !anchor) {
+            return std::unexpected(anchor.error());
+        }
+    }
     // Capacities: fixed at creation and never grown, so a zero is always an
     // authoring mistake rather than "unlimited".
     const Capacities& caps = desc.capacities;

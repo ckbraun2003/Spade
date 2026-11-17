@@ -58,11 +58,23 @@
 
 namespace spade {
 
-// The schema version this build WRITES. A file carrying a version this build
-// does not read at all (below kWorldFileMinReadVersion or above this) is
-// rejected rather than guessed at: version gating IS the upgrade path, which
-// is precisely why unknown keys are an error.
-inline constexpr uint32_t kWorldFileVersion = 2;
+// The highest schema version this build reads and writes. A file carrying a
+// version this build does not read at all (below kWorldFileMinReadVersion or
+// above this) is rejected rather than guessed at: version gating IS the upgrade
+// path, which is precisely why unknown keys are an error.
+//
+// VERSION 3 IS VERSION 2 PLUS OPTIONAL KEYS (L85 SP-2; the same pattern as the
+// scene file's v6): today only `anchor`, the world's geodetic anchor, and the
+// module API's planned keys (required module set, regions, objects) join it the
+// same way. The WRITER WRITES THE LOWEST VERSION THAT HOLDS THE WORLD: a world
+// with no v3 content is written as version 2, byte for byte as before, and a
+// world with an anchor as version 3. A build that reads only version 2 refuses a
+// version-3 file as schema_mismatch ("upgrade"), never by dropping its anchor.
+inline constexpr uint32_t kWorldFileVersion = 3;
+
+// The version a world with no version-3 content is written as, and the one the
+// diagnostics for shapes common to versions 2 and 3 name.
+inline constexpr uint32_t kWorldFileBaseVersion = 2;
 
 // The oldest schema version this build still READS, via an upgrade path: a
 // `world_version: 1` file loads successfully and its WorldDesc gains schema

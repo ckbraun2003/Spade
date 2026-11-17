@@ -514,6 +514,13 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
                 seed = fold_value(seed, r.hi.z);
             }
         }
+
+        // THE GEODETIC ANCHOR (L85 SP-2), only when there is one, after the regions: its identity (core/geodesy.hpp, FNV-1a over the
+        // three doubles' bits with -0.0 written as +0.0). A world without one folds exactly what it always did, so every committed
+        // hash, digest and snapshot of an anchor-less world is unchanged.
+        if (instance.world.anchor) {
+            seed = fold_value(seed, geo::anchor_identity(*instance.world.anchor));
+        }
     }
 
     return seed;

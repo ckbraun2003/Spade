@@ -184,7 +184,7 @@ TEST(WorldAnchorSimulation, TheSimulationReportsItsWorldsAnchor) {
     EXPECT_FALSE(none->has_value());
     const spade::Result<std::optional<geo::Geodetic>> past = anchored->world_anchor(1);
     ASSERT_FALSE(past.has_value());
-    EXPECT_EQ(past.error().code, spade::Code::not_found);
+    EXPECT_EQ(past.error().code, spade::Code::invalid_argument) << "as the other per-world accessors";
 }
 
 TEST(WorldAnchorSimulation, ABadAnchorIsRefusedAtCreate) {

@@ -86,16 +86,47 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 # =============================================================================
 )YAML";
 
+// The preamble for `version`: kFileHeader is the version-2 text (every anchor-less file is exactly it, byte for byte); a version-3
+// file says 3, and says that a world with an anchor is what makes this build write 3.
+[[nodiscard]] std::string header_for(uint32_t version) {
+    std::string header(kFileHeader);
+    if (version != kWorldFileBaseVersion) {
+        const auto replace_once = [&header](std::string_view from, std::string_view to) {
+            const std::size_t at = header.find(from);
+            assert(at != std::string::npos);
+            header.replace(at, from.size(), to);
+        };
+        replace_once("schema version 2.", "schema version 3.");
+        replace_once("WRITES version 2.", "WRITES version 2, or 3 for a world with an anchor.");
+    }
+    return header;
+}
+
 [[nodiscard]] std::string emit(const WorldDesc& world) {
+    // THE LOWEST VERSION THAT HOLDS THE WORLD (world_file.hpp): 3 only for a world with v3 content, today the anchor.
+    const uint32_t version = world.anchor ? kWorldFileVersion : kWorldFileBaseVersion;
     std::string out;
     out.reserve(4096);
-    out += kFileHeader;
+    out += header_for(version);
 
     out += "\nworld_version: ";
-    out += dec(kWorldFileVersion);
+    out += dec(version);
     out += "\nname: ";
     out += quote_yaml(world.name);
     out += '\n';
+
+    // --- anchor (schema v3, only when set) ---------------------------------
+    if (world.anchor) {
+        out +=
+            "\n"
+            "# The world's GEODETIC ANCHOR (schema version 3): the WGS84 latitude and longitude in degrees, and the\n"
+            "# height in metres above the ellipsoid, of world (0, 0, 0), with x east, y up and z south. Written only\n"
+            "# when the world has one. Doubles are spelt shortest-round-trip, so they read back bit for bit.\n"
+            "anchor:\n";
+        out += "  lat_deg: " + yaml_text::format_double(world.anchor->lat_deg) + "\n";
+        out += "  lon_deg: " + yaml_text::format_double(world.anchor->lon_deg) + "\n";
+        out += "  height_m: " + yaml_text::format_double(world.anchor->height_m) + "\n";
+    }
 
     // --- environment -------------------------------------------------------
     const Environment& env = world.environment;
@@ -326,8 +357,8 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 // yaml_text::check_map, blaming this file's schema.
 //
 // `version_for_message` names the schema version the unknown-key diagnostic
-// blames. It defaults to kWorldFileVersion (this build's current/write
-// version) because MOST nested shapes this function checks (environment,
+// blames. It defaults to kWorldFileBaseVersion (version 2, which version 3 extends only
+// by the anchor key) because MOST nested shapes this function checks (environment,
 // capacities, a spawn/transform/node entry, a materials/lighting/props
 // entry) are identical across every version this build reads -- a key
 // unknown there is unknown in EVERY such version, so the default is accurate
@@ -341,7 +372,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 // allowlist but was not passing it here).
 [[nodiscard]] Result<void> check_map(const YAML::Node& node, std::string_view what,
                                      std::initializer_list<std::string_view> allowed,
-                                     uint32_t version_for_message = kWorldFileVersion) {
+                                     uint32_t version_for_message = kWorldFileBaseVersion) {
     return yaml_text::check_map(node, what, allowed, "schema v" + dec(version_for_message));
 }
 
@@ -349,7 +380,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 // are identical across every version this build reads, so the current version
 // is accurate for them (the check_map note above).
 [[nodiscard]] std::string current_schema() {
-    return "schema v" + dec(kWorldFileVersion);
+    return "schema v" + dec(kWorldFileBaseVersion);
 }
 
 [[nodiscard]] Result<Environment> parse_environment(const YAML::Node& node) {
@@ -446,7 +477,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 // versions) would blame the wrong version here specifically.
 [[nodiscard]] Result<SdfProgram> parse_sdf(const YAML::Node& node, bool is_v1) {
     constexpr std::string_view kWhat = "world.sdf";
-    const uint32_t version = is_v1 ? kWorldFileMinReadVersion : kWorldFileVersion;
+    const uint32_t version = is_v1 ? kWorldFileMinReadVersion : kWorldFileBaseVersion;
     if (is_v1) {
         if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes"}, version); !r) {
             return std::unexpected(r.error());
@@ -610,6 +641,29 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     return props;
 }
 
+// The `anchor:` block of a version-3 file: exactly lat_deg, lon_deg and height_m, each a finite double. The limits are
+// validate_world_desc()'s, so the file and the builder refuse one world the same way.
+[[nodiscard]] Result<geo::Geodetic> parse_anchor(const YAML::Node& node) {
+    constexpr std::string_view kWhat = "world.anchor";
+    if (!node.IsMap()) {
+        return std::unexpected(at(node, "world.anchor must be a mapping with lat_deg, lon_deg and height_m"));
+    }
+    if (Result<void> r = check_map(node, kWhat, {"lat_deg", "lon_deg", "height_m"}, kWorldFileVersion); !r) {
+        return std::unexpected(r.error());
+    }
+    geo::Geodetic anchor;
+    const Result<double> lat = yaml_text::double_field(node, "lat_deg", kWhat);
+    if (!lat) return std::unexpected(lat.error());
+    const Result<double> lon = yaml_text::double_field(node, "lon_deg", kWhat);
+    if (!lon) return std::unexpected(lon.error());
+    const Result<double> height = yaml_text::double_field(node, "height_m", kWhat);
+    if (!height) return std::unexpected(height.error());
+    anchor.lat_deg = *lat;
+    anchor.lon_deg = *lon;
+    anchor.height_m = *height;
+    return anchor;
+}
+
 [[nodiscard]] Result<WorldDesc> parse_world(const YAML::Node& root) {
     if (!root.IsMap()) {
         return std::unexpected(
@@ -653,10 +707,19 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
             !r) {
             return std::unexpected(r.error());
         }
-    } else {
+    } else if (*version == kWorldFileBaseVersion) {
         if (Result<void> r = check_map(root, "world",
                                        {"world_version", "name", "environment", "capacities",
                                         "spawns", "sdf", "visuals", "materials", "lighting", "props"},
+                                       *version);
+            !r) {
+            return std::unexpected(r.error());
+        }
+    } else {
+        // Version 3: version 2 plus the optional keys (world_file.hpp), today `anchor`.
+        if (Result<void> r = check_map(root, "world",
+                                       {"world_version", "name", "environment", "capacities", "spawns", "sdf", "visuals",
+                                        "materials", "lighting", "props", "anchor"},
                                        *version);
             !r) {
             return std::unexpected(r.error());
@@ -668,6 +731,12 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     const Result<std::string> name = string_field(root, "name", "world");
     if (!name) return std::unexpected(name.error());
     world.name = *name;
+
+    if (*version >= 3 && yaml_text::has(root, "anchor")) {
+        const Result<geo::Geodetic> anchor = parse_anchor(root["anchor"]);
+        if (!anchor) return std::unexpected(anchor.error());
+        world.anchor = *anchor;
+    }
 
     const Result<YAML::Node> env_node = field(root, "environment", "world");
     if (!env_node) return std::unexpected(env_node.error());
@@ -753,7 +822,7 @@ Result<std::string> world_to_yaml(const WorldDesc& world) {
     // padding) is refused, not silently dropped -- yaml_text.hpp's
     // check_sdf_representable, which the scene file's validator shares.
     if (Result<void> r = yaml_text::check_sdf_representable(world.sdf, "world_to_yaml: SDF",
-                                                            "schema v" + dec(kWorldFileVersion));
+                                                            "schema v" + dec(world.anchor ? kWorldFileVersion : kWorldFileBaseVersion));
         !r) {
         return std::unexpected(r.error());
     }
