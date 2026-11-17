@@ -4532,7 +4532,9 @@ TEST_F(GpuGlRenderer, AlphasFadeACapsuleFromItsTailToItsHeadByTransparency) {
         }
     }
     ASSERT_GT(hi - lo, 20) << "the capsule reaches the frame";
-    for (int x = lo + 1; x <= hi; ++x) {
+    // Never dimmer toward the head, up to the round cap: the last 4 columns are the cap's own edge (3 px radius), where the
+    // coverage falls to nothing whatever the alpha is.
+    for (int x = lo + 1; x <= hi - 4; ++x) {
         EXPECT_GE(level_at(frame, x, 60) + 2, level_at(frame, x - 1, 60)) << "never dimmer toward the head: column " << x;
     }
     EXPECT_NEAR(level_at(frame, (lo + hi) / 2, 60), 128, 28) << "half-way along, about half";
