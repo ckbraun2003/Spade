@@ -177,8 +177,8 @@ TEST(TerrainMesh, AVertexLandsAtEastUpAndMinusNorth) {
     ASSERT_EQ(scene.meshes.size(), 1u);
     const MeshData& mesh = terrain_mesh(scene);
     ASSERT_EQ(mesh.positions.size(), 9u * 5u);
-    // Vertex (i = 3, j = 2): east = -40 + 3 x 10, north = 20 - 2 x 10, drawn at z = -north. Row j = 0 is the NORTH edge.
-    const glm::vec3 at = mesh.positions[2u * 9u + 3u];
+    // Vertex (i = 3, j = 1): east = -40 + 3 x 10, north = 20 - 1 x 10, drawn at z = -north. Row j = 0 is the NORTH edge.
+    const glm::vec3 at = mesh.positions[1u * 9u + 3u];
     EXPECT_NEAR(at.x, -10.0f, kTol);
     EXPECT_NEAR(at.z, -10.0f, kTol);
     EXPECT_NEAR(at.y, slope(-10.0, 10.0), kTol);  // 2.5: inside the first and last sample centres the plane is exact
@@ -275,7 +275,9 @@ TEST(TerrainMesh, TheStatsNameTheGapToTheSource) {
     EXPECT_GT(rough->max_gap_m, 0.3f);
     EXPECT_LT(rough->max_gap_m, 1.5f);
     // The lowest vertex is reported too (the ground rule's input).
-    EXPECT_LE(rough->lowest_y_m, 0.0f);
+    float lowest = std::numeric_limits<float>::infinity();
+    for (const glm::vec3& p : terrain_mesh(ripple).positions) lowest = std::min(lowest, p.y);
+    EXPECT_EQ(rough->lowest_y_m, lowest);
 }
 
 TEST(TerrainMesh, TheSameMapBuildsTheSameBytesAndNamesTheLabelAndTheMaterial) {

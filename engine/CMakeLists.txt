@@ -614,6 +614,7 @@ add_library(spade_render STATIC
     render/mesh_resolver.cpp
     render/segmentation.cpp
     render/flow_field.cpp
+    render/terrain.cpp
 )
 add_library(spade::render ALIAS spade_render)
 set_target_properties(spade_render PROPERTIES EXPORT_NAME render)

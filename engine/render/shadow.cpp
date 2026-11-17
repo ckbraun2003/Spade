@@ -272,8 +272,8 @@ void rasterize_shadow_casters(std::span<const MeshData> meshes, std::span<const 
     // iteration, matching raster_cpu.cpp's own render()/draw_mesh_item
     // discipline.
     for (const DrawItem& item : items) {
-        if (item.see_through) {
-            continue;  // RND-11: a see-through item receives shadows and never casts one.
+        if (item.see_through || !item.casts_shadow) {
+            continue;  // RND-11: a see-through item receives shadows and never casts one; the terrain the same.
         }
         if (item.mesh_index >= meshes.size()) {
             continue;  // kNoMesh, or an out-of-range slot -- nothing to cast.
@@ -350,7 +350,7 @@ void accumulate_item(const DrawItem& item, const std::vector<glm::vec3>& positio
 
 // Whether the fit looks at this item at all: a see-through item casts nothing (RND-11), so it has no footprint to fit.
 [[nodiscard]] bool fits_item(const RenderScene& scene, const DrawItem& item) {
-    return !item.see_through && item.mesh_index < scene.meshes.size();
+    return !item.see_through && item.casts_shadow && item.mesh_index < scene.meshes.size();
 }
 
 // The original: every vertex of every item, in the items' fixed order.
