@@ -56,7 +56,7 @@ and on refusal `{ "format": ..., "minor": 0, "op": "find", "ok": false, "refusal
 ```
 (`kind` and `index` follow `AirframeIssue`; `path` is the field path; `line` and `column` are present only for text that was parsed, else null.)
 
-Codes (all [slice] unless marked): `invalid_request` (unknown key, wrong type, missing key), `unknown_op`, `unsupported_format`, `relative_path`, `duplicate_root`, `root_unavailable` (folder or index absent or unreadable; `root`, `path`), `root_name_mismatch` (a v3 index's `name` differs from the name the host gave), `dependency_missing` (a `depends` name not among the opened roots), `dependency_cycle`, `foreign_root_reference` (an entry names a root it does not depend on; in `default`, any other root), `bad_index` (the index does not parse or breaks a rule; `issues` lists them), `root_not_loaded`, `bare_id`, `entry_not_found`, `wrong_kind`, `alias_conflict`, `hash_mismatch` (a WARNING in `find` and `list`; a refusal in `update_entry` and `remove_entry`), `peek_failed` (warning), `read_only_root`, `invalid_entry` (an entry or its file fails validation; `issues`), `still_required` (`remove_entry` when other entries `require` it; `issues` names them), `io_error`, `adjust_out_of_range` [shape], `compile_refused` [shape], `not_implemented` (an op the loaded library does not build yet; so a double and the real library agree on which calls exist).
+Codes (all [slice] unless marked): `open_failed` (the refusal of `open`; its `issues` hold one object per problem), `invalid_request` (unknown key, wrong type, missing key), `unknown_op`, `unsupported_format`, `relative_path`, `duplicate_root`, `root_unavailable` (the root's folder or index is absent or unreadable; `root`, `path`), `store_file_missing` (a file in the local store that an entry's record cites by sha256 is absent; `id`, `path`, and the hash in `field`; [shape] until the store resolver), `root_not_empty` (`create_root` into a folder that already has files; [shape]), `root_name_mismatch` (a v3 index's `name` differs from the name the host gave), `dependency_missing` (a `depends` name not among the opened roots), `dependency_cycle`, `foreign_root_reference` (an entry names a root it does not depend on; in `default`, any other root), `bad_index` (the index does not parse or breaks a rule; `issues` lists them), `root_not_loaded`, `bare_id`, `entry_not_found`, `wrong_kind`, `alias_conflict`, `hash_mismatch` (a WARNING in `find` and `list`; a refusal in `update_entry` and `remove_entry`), `peek_failed` (warning), `read_only_root`, `invalid_entry` (an entry or its file fails validation; `issues`), `still_required` (`remove_entry` when other entries `require` it; `issues` names them), `io_error`, `adjust_out_of_range` [shape], `compile_refused` [shape], `not_implemented` (an op the loaded library does not build yet; so a double and the real library agree on which calls exist).
 
 `open` refuses as `open_failed` with `issues` holding one refusal-shaped object per root problem; it never opens part of a set and never skips a root.
 
@@ -141,9 +141,9 @@ Order matters for `list`. `name` is `[a-z][a-z0-9_]*`; Spade knows only the name
   "file": "C:\\...\\motors\\fpv_2306.motor.yaml", "rel_file": "motors/fpv_2306.motor.yaml",
   "thumbnail": null, "requires": [], "files": [],
   "hash": "sha256:...", "generated_from": null,
-  "peek": { "mass_kg": 0.032, "provides": [], "limits": {}, "rotor_count": null, "world_version": null } }
+  "peek": { "mass_kg": 0.032, "provides": [], "limits": {}, "rotor_count": null, "world_version": null, "install_kinds": ["prop_hub"] } }
 ```
-`peek` has these four-plus keys for every kind (null where they do not apply): `mass_kg` (a part's mass or a model's total, from its header; null if the file declares none), `provides` (list) and `limits` (map) for a part (empty in the slice: those keys arrive with part_version 2), `rotor_count` for a model or drone, `world_version` for a world. A header that cannot be read gives `peek: null` and a `peek_failed` warning; the entry still lists. `hash` is cached per handle until `reload` or a write; a `hash_mismatch` warning is not raised by list.
+`peek` has these keys for every kind (null where they do not apply): `mass_kg` (a part's mass or a model's total, from its header; null if the file declares none), `provides` (list) and `limits` (map) for a part (empty in the slice: those keys arrive with part_version 2), `rotor_count` for a model or drone, `world_version` for a world, and `install_kinds` for a part: the sorted, de-duplicated list of the kinds of install point the part itself carries (`["motor", "battery"]` for a frame; `["prop_hub"]` for a motor), empty in the slice (install points arrive with part_version 2). A header that cannot be read gives `peek: null` and a `peek_failed` warning; the entry still lists. `hash` is cached per handle until `reload` or a write; a `hash_mismatch` warning is not raised by list.
 
 ### find [slice]
 ```json
@@ -156,10 +156,16 @@ Order matters for `list`. `name` is `[a-z][a-z0-9_]*`; Spade knows only the name
   "drone": { "frame": "design/1", "parts_map": [ <slot> ... ], "measured": null },   // null unless kind drone and requested
   "record": { ... } }                           // null unless requested: a part file's own mapping as JSON, key for key
 ```
-A hash that does not match gives `hash_matches: false` and a `hash_mismatch` warning; the entry still returns (KAT warns or refuses). A missing id: `entry_not_found` (`id`, `root`); a root that is not open: `root_not_loaded` (`root`, `id`) so the Problems row can name it. `record` is built for the four existing part kinds in the slice; other kinds give `record: null`. `measured` is reserved for the measured rotor block (null until that piece).
+`expect_hash` is the caller's pin (the `{id, hash}` KAT stores in a package manifest, not in `airframe.json`): `hash_matches` is the comparison of that pin with the entry's current hash, and `entry.hash` is the current one. A hash that does not match gives `hash_matches: false` and a `hash_mismatch` warning; the entry still returns (KAT warns or refuses). A missing id: `entry_not_found` (`id`, `root`); a root that is not open: `root_not_loaded` (`root`, `id`) so the Problems row can name it. `record` is built for the four existing part kinds in the slice; other kinds give `record: null`. `measured` is reserved for the measured rotor block (null until that piece).
 
 ### resolve [slice if cheap]
-`{ "alias": "mesh:drone/x500-body" }` -> `{ "id": "kat:mesh.drone.x500_body", "root": "kat" }`; `entry_not_found` if no table has it.
+`{ "alias": "mesh:drone/x500-body", "root": null }` -> `{ "id": "kat:mesh.drone.x500_body", "root": "kat" }`; `entry_not_found` if no table has it. Alias tables are PER ROOT, in each root's `library.yaml`, and an alias key is any non-empty string: it need not contain ':' (a world file's refs may not), so `gate-corridor` and `mesh:drone/x500-body` both work. `root` (a root name, or null) limits the lookup to that root's table. Keys are unique across the opened set (`alias_conflict` at open), so a lookup with `root: null` is never ambiguous.
+
+### hash_text [slice if cheap]
+`{ "text": "..." }` -> `{ "hash": "sha256:..." }`: the SHA-256 of the UTF-8 bytes of `text` exactly as given (no newline translation), for a host that pins a document it holds in memory.
+
+### create_root [shape]
+`{ "name": "user", "path": "C:\\Users\\me\\kat-library", "depends": ["default", "kat"], "writable": true }`. Creates the folder if it is absent, refuses a folder that has any file in it (`root_not_empty`), and writes a version 3 `library.yaml` (`name`, `depends`, `indexes: [index.yaml]`) and an empty `index.yaml` (`index_version: 1`, `entries: []`), atomically as `add_entry` does. The new root is added to the handle (last in order) and `result` is the same root object as `open`'s. A root named `default` is refused (`invalid_request`: that name is the one Spade ships); `depends` must name roots already open.
 
 ### validate [slice]
 ```json
@@ -219,7 +225,8 @@ Each validates the whole result first (`invalid_entry` with `issues`, nothing wr
                 "collision_radius": .., "rotors": [ { "pos": [..], "spin_dir": 1, "kappa": .., "thrust_per_motor": .., "tau": .., "omega_max": .. } ] },
   "report": { "stand_ins": [ { "part": "default:part.motor.x", "reason": "no geometry file" } ], "issues": [ <issue> ] } }
 ```
-`physical` is the compile's result in Spade's own names, in the numbers the host hands the simulator (float32 widened); KAT's package build maps it to its flat `airframe.json` keys and the pin test compares it. A refusal is `compile_refused` with every issue.
+`physical.imus` (left out of the sketch for length) is one `{ "pos": [x, y, z] }` per IMU, in the design frame measured from the centre of mass: an install point of kind `imu` reaches KAT's sensor descriptor as `mount_pos`, never as the model's `imu_mounts`.
+`physical` is the compile's result in Spade's own names, in the numbers the host hands the simulator (float32 widened); KAT's package build maps it to its flat `airframe.json` keys and the pin test compares it. A refusal is `compile_refused` with every issue. REQUIREMENTS for KAT's five measured drones (Spade Host, H4): the compile is fp32-exact against today's compiled values, sets no collision shape of its own and gives a zero centre-of-mass offset. The Spade host reads identity.name, mass, inertia, collision_radius, motor n, arm_x, arm_y, kappa, thrust_per_motor, tau and drag mode and coeff, and NOT omega_max (it assumes 3000 rad/s); `physical.rotors[].omega_max` still carries it for KAT's flat `airframe.json`. KAT pins the result at JSON level and per field.
 
 ### evaluate [shape] (G2)
 ```json
@@ -244,11 +251,16 @@ Each validates the whole result first (`invalid_entry` with `issues`, nothing wr
 A drone entry's `parts_map` is a list, in slot order, in the index (`library_version` 3), returned by `find` with `with: ["parts_map"]`:
 ```json
 { "slot": "motor_fl", "part": "default:part.motor.fpv_2306_1700kv", "hash": "sha256:...",
-  "install_point": "motor_fl",
-  "placement": { "pos": [0.09, 0.09, 0.0], "quat": [0.7071, 0, 0, 0.7071] },
+  "parent": "frame", "install_point": "motor_fl", "placement": null,
   "adjust": { "pos": [0, 0, 0], "yaw_deg": 0 }, "count": 1 }
+{ "slot": "prop_fl", "part": "default:part.prop.5x4", "hash": "sha256:...",
+  "parent": "motor_fl", "install_point": "prop_hub", "placement": null, "adjust": null, "count": 1 }
+{ "slot": "frame", "part": "kat:part.frame.x500", "hash": "sha256:...",
+  "parent": null, "install_point": null,
+  "placement": { "pos": [0, 0, 0], "quat": [1, 0, 0, 0] }, "adjust": null, "count": 1 }
 ```
-- `install_point` names a point on the PART that carries the slot's frame (a frame part), or null for a part placed by `placement` alone. `placement` is the part's pose in the drone's design frame as authored; `adjust` is the per-slot adjustment value (a small offset and a yaw, null for none).
+- A slot is placed in ONE of two ways, never both (`invalid_entry` if both or neither): by `parent` + `install_point` (a SLOTTED part: `parent` is the `slot` key of the part that carries the install point, `install_point` its name on that part), or by `placement` (a FREE part: a FULL pose in the drone's design frame, with `parent` null; the frame part itself is free). A slotted part's pose is derived by composing up the parent chain (`compose_placement`) and is never stored, so it cannot disagree. `adjust` is the per-slot adjustment value (a small offset and a yaw, null for none), applied at the install point.
+- PROPS attach to the MOTOR part's `prop_hub` install point (KAT's ruling; Spade's part model agrees): a prop slot has `parent` = the motor's slot and `install_point` = `prop_hub`. The motor part carries the `prop_hub` point and the spin sign (`spin` on a motor only, as Spec B fixes); the prop's own record gives its hub origin.
 - The allowed RANGE of an adjustment is a property of the frame part's install point (`adjust: {pos_min, pos_max, yaw_deg: [min, max]}` in its part record, a [shape] until the install-point piece), not of the drone; `compose_placement` takes it as `adjust_range`. The slice stores and returns `adjust` untouched.
 - `hash` pins the part as KAT's saved map does; `find` of the drone does not check it (the parts' own `find` does).
 - `frame` is `"design/1"`: the frame of section 0.
@@ -259,7 +271,11 @@ A drone entry's `parts_map` is a list, in slot order, in the index (`library_ver
 
 Golden exchanges: S4 commits `tests/data/library_contract/*.json`, a request and its exact response per call (every refusal code the slice can raise), as data. Spade's tests replay them against the real library, and KAT's test-double replays the same files, so the two cannot drift.
 
-## 7. Points for the lead
+## 7. Revision 2 of this document (KAT's builder notes)
+
+Added, from KAT's builder spec and Spade Host: `create_root` (1), `install_kinds` in the list peek (2), the pin semantics of `find`'s `expect_hash` (3), the parts-map placement rule (4, 8: a slot is slotted by `parent` + `install_point` or free by a full-pose `placement`; props attach to the motor's `prop_hub`), `root_unavailable` and `store_file_missing` as two codes (5), `hash_text` (7), per-root alias tables with plain keys (H1), and the compile requirements for the measured drones and IMU mounts (H4, H6). `mesh_file_info` stays marked [slice if cheap] and is now in the slice (H5). `evaluate`'s partials (6) were already in section 4.
+
+## 8. Points for the lead
 
 1. Frame (section 0): I state the contract's frame as KAT's descriptor frame, per Spec B A5; `AirframeSpec`'s own comments say "design frame" and I have not re-read whether its hub thrust axis is +Y or +Z there. S4's compile piece converts and pins it with a test; KAT should treat section 0 as the contract.
 2. A drone's `parts_map` lives in the index entry (so one atomic `add_entry` writes it); a drone may have no model file until `compile` is built. Alternative: a `*.drone.yaml` file beside the index (Spec B round 2 cut that builder, so I did not).
