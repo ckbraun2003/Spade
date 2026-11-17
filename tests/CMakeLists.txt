@@ -279,6 +279,7 @@ add_executable(spade_tests
     ../tools/mesh_pack/mesh_pack.cpp
     # spade_part_import's parts (L88): the codes and JSON, the part frame, the unit guess and the cache key, compiled in from the tool.
     test_part_import_basics.cpp
+    test_part_import_store.cpp
     ../tools/part_import/report.cpp
     ../tools/part_import/transform.cpp
     ../tools/part_import/store.cpp
