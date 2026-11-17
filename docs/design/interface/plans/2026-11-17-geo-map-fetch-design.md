@@ -8,12 +8,12 @@ Two parts, split so that the engine never sees the network (L85).
 
 | Part | Where | Does |
 |---|---|---|
-| **Cache reader** | engine side, with Rendering's terrain loader (SP-4) | Reads an entry from the cache directory. A missing or incomplete entry comes back as a named result (`map_missing`, with the area's key and the directory it looked in). No network code, no writes. About 100 lines plus the georef parse. |
+| **Cache reader** | engine side, `engine/geo/map_cache.hpp` (a place to settle with Core, Q6) | Reads an entry from the cache directory. A missing or incomplete entry comes back as a named result (`map_missing`, with the area's key and the directory it looked in); an entry whose files do not match their hashes is `map_invalid`. No network code, no writes. |
 | **Fetch tool** | `tools/geo_fetch/` (outside `engine/`), a static library `spade_geo_fetch_lib` and the executable `spade_geo_fetch` | Checks the cache, and on a miss asks the three services, converts, writes the entry, enforces the cache's size limit. The only code in Spade that opens a socket. |
 
 A host or the editor runs `spade_geo_fetch` as a child process on demand and reads its progress lines (section 3). The tool is built with the sandbox target group and installed beside the editor; it is not in `spade_core` or any installed engine library. Tests call the library with a fake transport.
 
-Who writes the reader: it is Rendering's file by SP-4's ownership. I write the layout and the georef spec (section 4) and the tool. If the lead prefers, I write the reader too: it is the same parse.
+Who writes what (agreed with Rendering, 2026-11-17; their note is branch `rendering/g2-terrain-design`, `docs/design/rendering/plans/2026-11-17-geo-terrain-design.md`, "The cache format"): **I write the reader and the tool**, Rendering writes the terrain mesh (SP-4) and defines `TerrainInput` in `render/terrain.hpp`. The reader returns a `TerrainInput`-shaped result: float32 heights `nx * ny`, rows north to south, **already in metres from the anchor** (the reader subtracts `anchor_ground.ellipsoid_height_m`), the RGB8 image `w * h`, rows north to south, and the extent `east_min`, `east_max`, `north_min`, `north_max` in metres from the anchor, the outer edges of both rasters. The extent comes from `bbox_deg` through SP-1's ENU at the anchor: take the four corners, `east_min` and `east_max` are the means of the two west and the two east corners' east, north likewise (the skew over 1 km is about 0.15 m). The image is decoded by `decode_png(bytes) -> Result<Image8>`, which Rendering proposes as their own 8-bit reader over miniz's inflate in `world/mesh_import/` (pending the lead's word); no stb_image. Until it lands the reader is written against that signature. The reader checks the two sha256 hashes (section 4) and a mismatch is the named `map_invalid`, which the host handles as plain ground, as `map_missing`.
 
 ## 2. Command line
 
@@ -122,14 +122,19 @@ geoid:
   height_m: -23.412        # N at the anchor; ellipsoid height = NAVD88 height + N
 anchor_ground:
   ellipsoid_height_m: 1262.7   # the elevation at the anchor (bilinear) + N
+sha256:                      # of the files as stored, lower-case hex
+  height_f32: <64 hex>
+  image_png: <64 hex>
 sources:
-  elevation: USGS 3DEP
-  image: USGS NAIP
-  geoid: NOAA NGS
+  elevation: { name: USGS 3DEP, url: <the request URL as sent>, retrieved_utc: 2026-11-17T01:23:45Z }
+  image:     { name: USGS NAIP, url: <...>, retrieved_utc: <...>, acquired: <date, or absent> }
+  geoid:     { name: NOAA NGS,  url: <...>, retrieved_utc: <...> }
 fetched_utc: 2026-11-17T01:23:45Z
 ```
 
 **What the pixel grid means.** Both layers are pixel-is-area: sample `(i, j)` is the middle of its cell, so its centre is at `west + (j + 0.5) * (east - west) / width` degrees of longitude and `north - (i + 0.5) * (north - south) / height` of latitude. `bbox_deg` is where the layer's outer edges are. The layers are regular in longitude and latitude (EPSG:4326), which at 1 km is regular in the local east and north to under a millimetre. The two layers have different sizes; both cover the same `bbox_deg`. To place a sample on the scene's plane the reader uses SP-1 (ENU at the anchor), so the tool and the engine share one geodesy: the tool computes `bbox_deg` from the anchor and `side_m` with SP-1's function (north and east offsets of `side/2` to latitude and longitude). Until SP-1 lands the tool uses the WGS84 radii of curvature in six lines of its own and a test pins both to agree within 1 mm.
+
+**Hashes and provenance** (added at Rendering's request, from the lead's brief for this phase: sources, URLs, dates and sha256). The tool hashes `height.f32` and `image.png` as written. The reader hashes what it reads and a mismatch is `map_invalid` (a damaged or hand-edited entry, treated as plain ground with the reason shown). `acquired` is the image's capture date if the service gives one; the plain `exportImage` answer does not, so it is absent unless the live check finds a way to ask (a separate `identify` call for the point's NAIP footprint attributes is the candidate; it would be one more request and is not assumed). The SHA-256 is a small portable implementation (about 80 lines) in `engine/geo/sha256.hpp`, shared by the reader and the tool and tested against the FIPS 180-4 vectors.
 
 **Atomic and incomplete entries.** The tool writes into `<root>/v1/.tmp-<pid>-<key>/`, then renames the directory to `<key>`. A directory with no `georef.yaml` is a miss and is deleted by the next fetch of that key. Two fetches of the same area at once: the second rename fails, the second tool deletes its temp directory and reports `hit`.
 
@@ -215,6 +220,8 @@ All through the fake `HttpClient`; no test touches the network or the user's rea
 | `--check` | a miss with no requests, exit 3 |
 | progress | the JSON lines parse, the stages come in order, the last line is the result |
 | determinism | the same fake inputs give byte-equal `height.f32`, `image.png` and `georef.yaml` (apart from `fetched_utc`, which the test pins through an injected clock) |
+| reader | a fixture entry reads back as heights in metres from the anchor, the image and the extent; a missing entry is `map_missing`; an entry with a flipped byte is `map_invalid`; the reader never writes (the directory is read-only in the test) |
+| sha256 | the FIPS 180-4 vectors ("abc", the empty string, the million-a) |
 | host guard | the list of host strings in the tool is exactly the three |
 | bbox | `bbox_deg` from the SP-1 function and from the tool's own formula agree within 1 mm (when SP-1 is in) |
 
@@ -224,7 +231,7 @@ The two pieces that touch the OS (WinHTTP, libcurl) have no unit test: a thin fi
 
 ## 9. Order of work and what I need
 
-1. This note reviewed. Rendering (SP-4) agrees the layout and georef (sections 4 and 5): it is their reader.
+1. This note reviewed. Rendering (SP-4) has agreed the layout and georef (sections 4 and 5) and asked for the hashes and provenance, in.
 2. The library with the fake transport and the tests above (RED, then GREEN), the CLI and progress.
 3. The two HTTP files.
 4. The live check, when the lead says.
@@ -235,6 +242,8 @@ Dependencies and questions for the lead:
 - **Q2.** The Linux libcurl `dlopen` route (section 6): approved?
 - **Q3.** The NAD83(2011) against WGS84 offset (section 5): accepted and recorded, or does the owner want it corrected?
 - **Q4.** Where does `spade_geo_fetch` install: beside the sandbox executable. Packaging is Interface's; I take that as yes unless told otherwise.
+- **Q6.** Placement: the reader and `sha256.hpp` in `engine/geo/` (the SP-1 geodesy is Core's and I assume it lands there too). Is `engine/geo/` right, and is the reader mine to put there?
+- **Q7.** `decode_png` is Rendering's proposal (world/mesh_import, pending your word). My reader needs it: say so when you decide.
 - **Q5.** No new third-party library, so `THIRD_PARTY_NOTICES.md` is unchanged. `miniz` (already there) inflates the PNG and a Deflate TIFF.
 
-Size: library and tests 2.5 days, HTTP files 1, CLI and progress 0.5, scripts and gates 0.5, review 1: about 5 working days, plus the live check.
+Size: reader and sha256 1 day, library and tests 2.5 days, HTTP files 1, CLI and progress 0.5, scripts and gates 0.5, review 1: about 6 working days, plus the live check.
