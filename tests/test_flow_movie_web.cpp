@@ -628,9 +628,12 @@ TEST(FlowMovieWeb, EachDroneHasItsOwnFramingAndTheDefaultsIsTodays) {
     EXPECT_FLOAT_EQ(d.aim_below_m, web::kD1StillAimBelowM);
     EXPECT_FLOAT_EQ(d.push_wide_m, web::kD1PushWideM);
     EXPECT_FLOAT_EQ(d.push_close_m, web::kD1PushCloseM);
+    EXPECT_FLOAT_EQ(d.elevation_deg, web::kD1StillElevationDeg);
     EXPECT_FALSE(d.fade().on()) << "the reference quad's frames are today's";
     const web::Framing& p = web::find_drone("phantom3_class")->framing;
     EXPECT_LT(p.subject_m, d.subject_m) << "a tighter shot: the drone is bigger in the frame";
+    EXPECT_GT(p.elevation_deg, d.elevation_deg) << "looking down on it: the body is not hidden behind the wake of its near rotors";
+    EXPECT_LE(p.elevation_deg, 45.0f);
     EXPECT_GT(p.aim_below_m, d.aim_below_m) << "aimed below the drone, so it sits in the upper third";
     EXPECT_GT(p.wake_fade_to_below_m, p.wake_fade_from_below_m) << "the wake fades going down";
     EXPECT_NEAR(p.wake_fade_to_below_m - p.wake_fade_from_below_m, 0.2f, 0.05f) << "over about the last 0.2 m";
