@@ -1326,7 +1326,7 @@ struct HeldPose {
                 return {};
             }});
         film.views.push_back(View{
-            "streamlines", "streamlines seeded above each rotor, coloured by speed |u|, 0 to 12 m/s",
+            "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, coloured by speed |u|, 0 to 12 m/s",
             [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
                              render::Camera& camera) -> spade::Result<void> {
                 frame_on_drone(v, k, n, camera);
@@ -1342,7 +1342,7 @@ struct HeldPose {
                     const glm::vec3 hub = pose->pos + pose->orient * r.local_pos;
                     const glm::vec3 axis = glm::normalize(pose->orient * (r.local_orient * glm::vec3(0.0f, 1.0f, 0.0f)));
                     for (const float ring : {0.35f, 0.75f}) {
-                        for (const glm::vec3& s : render::seed_ring(hub - axis * 0.06f, axis, ring * r.radius, 8)) {
+                        for (const glm::vec3& s : render::seed_ring(hub - axis * web::kWebSeedBelowHubM, axis, ring * r.radius, 8)) {
                             seeds.push_back(s);
                         }
                     }
