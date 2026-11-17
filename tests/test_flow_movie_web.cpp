@@ -191,7 +191,8 @@ TEST(FlowMovieWeb, EveryClipDrawsFromAGroupThatHoldsItsFramesAndTheGroupsAreTheW
     EXPECT_EQ(web::find_clip("S1")->group, web::find_clip("S2")->group);
     EXPECT_EQ(web::find_clip("S3")->group, web::find_clip("S4")->group);
     EXPECT_NE(web::find_clip("S1")->group, web::find_clip("S3")->group);
-    EXPECT_EQ(web::find_clip("S2")->first_frame, 0u);
+    // S2 starts at frame 30 (the lead, 2026-11-17): the first 30 ms show the airframe alone, the wake not yet off the discs.
+    EXPECT_EQ(web::find_clip("S2")->first_frame, 30u);
     EXPECT_EQ(web::find_clip("S1")->first_frame, 150u);
     EXPECT_EQ(web::find_clip("S8")->first_frame, 150u);
     // Each clip's frames end inside its group's cache, and S1 and S8 end at its last frame.
