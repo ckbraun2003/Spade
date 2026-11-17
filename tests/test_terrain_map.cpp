@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -301,6 +303,68 @@ TEST(TerrainMap, TheHeaderNamesItsLinkTargetAndPullsInNeitherMeshImportNorMiniz)
     EXPECT_NE(header.find("terrain_input.hpp"), std::string::npos);
     const std::string image8 = slurp(fs::path(SPADE_ENGINE_DIR) / "world" / "image8.hpp");
     EXPECT_NE(image8.find("read_terrain_map"), std::string::npos);
+}
+
+// ---- the real entry ------------------------------------------------------------------------------------------------------------
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)  // std::getenv: read once, on the test's thread, before anything else runs
+#endif
+[[nodiscard]] const char* real_env(const char* name) { return std::getenv(name); }
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+// The map the live check fetched (L85g: Bonneville, 40.76 -113.90, 1 km, 3DEP and NAIP and NGS), read by the reader as the engine would.
+// It needs the real cache: SPADE_MAP_CACHE names it, else the tool's default root. Without the entry the test SKIPS, naming how to make
+// it (a skip is not a pass). The numbers are what the live check recorded: a 1000 x 1000 grid at 1 m, a 1667 x 1667 image, heights over
+// the flats within a metre from the 1st to the 99th percentile (1.54 m max to min: a few outliers, not the surface).
+TEST(TerrainMapReal, TheBonnevilleEntryTheLiveCheckWroteReadsBackAsMetresFromTheAnchor) {
+    constexpr double kBonnevilleLat = 40.76;
+    constexpr double kBonnevilleLon = -113.90;
+    constexpr double kBonnevilleSide = 1000.0;
+#if defined(_WIN32)
+    constexpr MapPlatform kPlatform = MapPlatform::windows;
+#else
+    constexpr MapPlatform kPlatform = MapPlatform::posix;
+#endif
+    const char* named = real_env("SPADE_MAP_CACHE");
+    const fs::path root = (named != nullptr && *named != '\0') ? fs::path(named) : default_map_cache_root(real_env, kPlatform);
+    const std::string key = map_key(kBonnevilleLat, kBonnevilleLon, kBonnevilleSide);
+    if (root.empty() || !fs::is_regular_file(map_entry_dir(root, key) / "georef.yaml")) {
+        GTEST_SKIP() << "no Bonneville map (" << key << ") in the cache '" << root.string()
+                     << "': run spade_geo_fetch --lat 40.76 --lon -113.90 --side 1000 --cache <dir>, then set SPADE_MAP_CACHE to <dir>";
+    }
+    const Result<world::TerrainInput> r = read_terrain_map(root, kBonnevilleLat, kBonnevilleLon, kBonnevilleSide);
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    EXPECT_EQ(r->nx, 1000u);
+    EXPECT_EQ(r->ny, 1000u);
+    ASSERT_EQ(r->heights.size(), 1000u * 1000u);
+    EXPECT_EQ(r->image.width, 1667u);
+    EXPECT_EQ(r->image.height, 1667u);
+    ASSERT_EQ(r->image.rgb.size(), 1667u * 1667u * 3u);
+    // The box is 1 km square about the anchor; read at the ground's height (about 1267 m up) it is 0.02 % longer than at the ellipsoid.
+    EXPECT_NEAR(r->extent.east_min, -500.0, 0.5);
+    EXPECT_NEAR(r->extent.east_max, 500.0, 0.5);
+    EXPECT_NEAR(r->extent.north_min, -500.0, 0.5);
+    EXPECT_NEAR(r->extent.north_max, 500.0, 0.5);
+    // Heights are metres above the anchor's ground: finite, and the ground at the anchor is the grid's middle.
+    bool all_finite = true;
+    for (const float h : r->heights) all_finite = all_finite && std::isfinite(h);
+    ASSERT_TRUE(all_finite);
+    EXPECT_NEAR(r->heights[500u * 1000u + 500u], 0.0f, 1.0f);
+    std::vector<float> sorted = r->heights;
+    std::sort(sorted.begin(), sorted.end());
+    const float p1 = sorted[sorted.size() / 100];
+    const float p99 = sorted[sorted.size() - 1 - sorted.size() / 100];
+    EXPECT_LT(p99 - p1, 1.0f) << "the flats' 1st to 99th percentile spread";
+    // The image is a picture, not a flat colour.
+    bool varies = false;
+    for (std::size_t i = 3; i + 2 < r->image.rgb.size() && !varies; i += 3) {
+        varies = r->image.rgb[i] != r->image.rgb[0] || r->image.rgb[i + 1] != r->image.rgb[1] || r->image.rgb[i + 2] != r->image.rgb[2];
+    }
+    EXPECT_TRUE(varies);
 }
 
 }  // namespace
