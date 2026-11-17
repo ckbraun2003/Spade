@@ -1,10 +1,312 @@
 #include "fetch.hpp"
 
+#include <bit>
+#include <cmath>
+#include <cstring>
+#include <format>
+#include <fstream>
+#include <iterator>
+#include <limits>
+#include <system_error>
+#include <vector>
+
+#include "cache_store.hpp"
+#include "raster_formats.hpp"
+#include "world/map_cache.hpp"
+#include "world/sha256.hpp"
+
 namespace spade::geofetch {
 
-// RED: stubs.
-int exit_code_of(FetchResultKind) { return 99; }
-const char* name_of(FetchResultKind) { return ""; }
-FetchResult fetch_map(const FetchRequest&, const FetchEnv&) { return {}; }
+namespace {
+
+namespace fs = std::filesystem;
+
+constexpr std::uint32_t kMaxGridSide = 1024;   // the elevation grid, samples a side
+constexpr std::uint32_t kMaxImageSide = 4096;  // the image, pixels a side
+constexpr int kRetryAfterMs = 2000;
+
+[[nodiscard]] FetchResult failure(FetchResultKind kind, std::string message, std::string service = {}) {
+    FetchResult r;
+    r.kind = kind;
+    r.message = std::move(message);
+    r.service = std::move(service);
+    return r;
+}
+
+void emit(const FetchEnv& env, const std::string& stage, ProgressEvent::State state, std::uint64_t received = 0,
+          std::uint64_t total = 0) {
+    if (env.progress) env.progress(ProgressEvent{stage, state, received, total});
+}
+
+[[nodiscard]] const char* label_of(const std::string& service) {
+    if (service == "ngs") return "NOAA NGS";
+    if (service == "3dep") return "USGS 3DEP";
+    return "USGS NAIP";
+}
+
+// The number of cells that cover `side` with cells of `cell` metres, rounded up; 0 when it is not a sane number.
+[[nodiscard]] std::uint32_t cells_over(double side, double cell) {
+    if (!(cell > 0.0) || !std::isfinite(cell) || !(side > 0.0)) return 0;
+    const double n = side / cell;
+    if (!(n < 1.0e6)) return 0;
+    auto whole = static_cast<std::uint32_t>(n);
+    if (static_cast<double>(whole) < n) ++whole;
+    return whole;
+}
+
+[[nodiscard]] std::uint64_t dir_bytes(const fs::path& dir) {
+    std::uint64_t total = 0;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_regular_file(e2)) total += it->file_size(e2);
+    }
+    return total;
+}
+
+[[nodiscard]] std::string slurp(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// One download, with the retry rule: a timeout or a 5xx is asked once more after two seconds; offline is not retried.
+struct Download {
+    bool ok = false;
+    std::string body;
+    std::string retrieved_utc;
+    FetchResult failed;
+};
+
+[[nodiscard]] Download download(const FetchEnv& env, const std::string& stage, const std::string& service, const std::string& url,
+                                int timeout_s) {
+    Download d;
+    emit(env, stage, ProgressEvent::State::start);
+    HttpResponse resp;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        resp = env.http.get(url, timeout_s, [&](std::uint64_t received, std::uint64_t total) {
+            emit(env, stage, ProgressEvent::State::bytes, received, total);
+        });
+        if (resp.error == HttpError::none && resp.status == 200) {
+            d.ok = true;
+            d.body = std::move(resp.body);
+            d.retrieved_utc = env.utc_now ? env.utc_now() : std::string();
+            emit(env, stage, ProgressEvent::State::done);
+            return d;
+        }
+        const bool retryable = resp.error == HttpError::timeout || (resp.error == HttpError::none && resp.status >= 500);
+        if (attempt == 0 && retryable) {
+            if (env.sleep) env.sleep(kRetryAfterMs);
+            continue;
+        }
+        break;
+    }
+    const std::string who = label_of(service);
+    switch (resp.error) {
+        case HttpError::offline:
+            d.failed = failure(FetchResultKind::offline, "cannot reach " + who + ": " + resp.detail);
+            break;
+        case HttpError::no_http_layer: d.failed = failure(FetchResultKind::offline, resp.detail); break;
+        case HttpError::timeout:
+            d.failed = failure(FetchResultKind::service_error, service + ": no answer in time (" + resp.detail + ")", service);
+            break;
+        case HttpError::tls:
+            d.failed = failure(FetchResultKind::service_error, service + ": the secure connection was refused (" + resp.detail + ")", service);
+            break;
+        case HttpError::too_large:
+            d.failed = failure(FetchResultKind::service_error, service + ": the answer is larger than the cap", service);
+            break;
+        case HttpError::none:
+            d.failed = failure(FetchResultKind::service_error, service + ": HTTP " + std::to_string(resp.status), service);
+            break;
+    }
+    return d;
+}
+
+void put_le32(std::string& out, float v) {
+    const auto bits = std::bit_cast<std::uint32_t>(v);
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((bits >> (8 * i)) & 0xff));
+}
+
+[[nodiscard]] FetchResult result_from_georef(const MapGeoref& g, const fs::path& dir, FetchResultKind kind) {
+    FetchResult r;
+    r.kind = kind;
+    r.key = g.key;
+    r.dir = dir;
+    r.bytes = dir_bytes(dir);
+    r.geoid_height_m = g.geoid_height_m;
+    r.anchor_ellipsoid_height_m = g.anchor_ground_ellipsoid_height_m;
+    return r;
+}
+
+constexpr const char* kDatumNote =
+    "Heights are NAVD88 plus the GEOID18 geoid height, whose ellipsoid is NAD83(2011), not WGS84: they can differ from WGS84 "
+    "heights by 1 to 2 m, and the services' EPSG:4326 coordinates are NAD83 underneath, so the image can sit 1 to 2 m off WGS84. "
+    "Recorded, not corrected.";
+
+}  // namespace
+
+int exit_code_of(FetchResultKind kind) {
+    switch (kind) {
+        case FetchResultKind::hit:
+        case FetchResultKind::fetched: return 0;
+        case FetchResultKind::miss: return 3;
+        case FetchResultKind::offline: return 10;
+        case FetchResultKind::service_error: return 11;
+        case FetchResultKind::refused: return 12;
+        case FetchResultKind::cache_full: return 13;
+    }
+    return 12;
+}
+
+const char* name_of(FetchResultKind kind) {
+    switch (kind) {
+        case FetchResultKind::hit: return "hit";
+        case FetchResultKind::fetched: return "fetched";
+        case FetchResultKind::miss: return "miss";
+        case FetchResultKind::offline: return "offline";
+        case FetchResultKind::service_error: return "service_error";
+        case FetchResultKind::refused: return "refused";
+        case FetchResultKind::cache_full: return "cache_full";
+    }
+    return "refused";
+}
+
+FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
+    // ---- the request itself ------------------------------------------------------------------------------------------
+    if (!(q.lat_deg >= -90.0 && q.lat_deg <= 90.0)) return failure(FetchResultKind::refused, "the latitude must be between -90 and 90 degrees");
+    if (!(q.lon_deg >= -180.0 && q.lon_deg <= 180.0)) return failure(FetchResultKind::refused, "the longitude must be between -180 and 180 degrees");
+    if (!(q.side_m >= kMapMinSideM && q.side_m <= kMapMaxSideM)) {
+        return failure(FetchResultKind::refused, std::format("the side must be between {} and {} m (1 km at most)", kMapMinSideM, kMapMaxSideM));
+    }
+    const std::uint32_t dem_n = cells_over(q.side_m, q.dem_cell_m);
+    const std::uint32_t image_n = cells_over(q.side_m, q.image_cell_m);
+    if (dem_n < 2 || dem_n > kMaxGridSide) {
+        return failure(FetchResultKind::refused, std::format("the elevation grid would be {} samples a side; 2 to {} are allowed", dem_n, kMaxGridSide));
+    }
+    if (image_n < 2 || image_n > kMaxImageSide) {
+        return failure(FetchResultKind::refused, std::format("the image would be {} pixels a side; 2 to {} are allowed", image_n, kMaxImageSide));
+    }
+    if (q.cache_root.empty()) {
+        return failure(FetchResultKind::refused, "no cache directory: use --cache, or set SPADE_MAP_CACHE");
+    }
+    if (inside_git_work_tree(q.cache_root)) {
+        return failure(FetchResultKind::refused,
+                       "the cache directory " + q.cache_root.string() + " is inside a git work tree; a map is never committed");
+    }
+
+    // ---- the cache -----------------------------------------------------------------------------------------------------
+    const std::string key = map_key(q.lat_deg, q.lon_deg, q.side_m);
+    const fs::path dir = map_entry_dir(q.cache_root, key);
+    if (entry_complete(dir) && !q.refresh) {
+        const Result<MapGeoref> g = parse_georef(slurp(dir / "georef.yaml"));
+        if (g) return result_from_georef(*g, dir, FetchResultKind::hit);
+        // a damaged georef: the entry is refetched below, and replaced
+    }
+    if (q.check_only) {
+        FetchResult r = failure(FetchResultKind::miss, "not in the cache");
+        r.key = key;
+        return r;
+    }
+
+    // ---- the network -----------------------------------------------------------------------------------------------------
+    const Bbox box = env.area(q.lat_deg, q.lon_deg, q.side_m);
+
+    Download geoid_dl = download(env, "geoid", "ngs", geoid_url(q.lat_deg, q.lon_deg), q.timeout_s);
+    if (!geoid_dl.ok) return geoid_dl.failed;
+    const Result<GeoidAnswer> geoid = parse_geoid_json(geoid_dl.body);
+    if (!geoid) return failure(FetchResultKind::service_error, geoid.error().context, "ngs");
+    const double n_geoid = geoid->height_m;
+
+    const std::string elevation_request = elevation_url(box, dem_n, dem_n);
+    Download dem_dl = download(env, "elevation", "3dep", elevation_request, q.timeout_s);
+    if (!dem_dl.ok) return dem_dl.failed;
+    const Result<TiffGrid> tiff = read_tiff_f32(dem_dl.body);
+    if (!tiff) return failure(FetchResultKind::service_error, tiff.error().context, "3dep");
+    if (tiff->width != dem_n || tiff->height != dem_n) {
+        return failure(FetchResultKind::service_error,
+                       std::format("3dep: the TIFF is {} x {}, {} x {} was asked", tiff->width, tiff->height, dem_n, dem_n), "3dep");
+    }
+    std::size_t bad_samples = 0;
+    for (const float v : tiff->samples) {
+        if (!std::isfinite(v) || v < -1000.0f || v > 10000.0f) ++bad_samples;
+    }
+    if (bad_samples != 0) {
+        return failure(FetchResultKind::service_error,
+                       std::format("3dep: the answer holds {} no-data or impossible heights", bad_samples), "3dep");
+    }
+
+    const std::string image_request = image_url(box, image_n, image_n);
+    Download img_dl = download(env, "image", "naip", image_request, q.timeout_s);
+    if (!img_dl.ok) return img_dl.failed;
+    const Result<PngHeader> png = read_png_header(img_dl.body);
+    if (!png) return failure(FetchResultKind::service_error, png.error().context, "naip");
+    if (png->width != image_n || png->height != image_n) {
+        return failure(FetchResultKind::service_error,
+                       std::format("naip: the PNG is {} x {}, {} x {} was asked", png->width, png->height, image_n, image_n), "naip");
+    }
+    if (png->bit_depth != 8 || png->color_type != 2) {
+        return failure(FetchResultKind::service_error,
+                       std::format("naip: the PNG is not 8-bit RGB (colour type {}, {} bits)", png->color_type, png->bit_depth), "naip");
+    }
+
+    // ---- NAVD88 to the ellipsoid: h = H + N, in double, stored as float32 -----------------------------------------------------
+    std::string heights;
+    heights.reserve(tiff->samples.size() * 4);
+    for (const float v : tiff->samples) put_le32(heights, static_cast<float>(static_cast<double>(v) + n_geoid));
+
+    // The ground at the anchor: the grid sampled there (bilinear, pixel-is-area), plus N.
+    const auto at = [&](std::uint32_t row, std::uint32_t col) { return static_cast<double>(tiff->samples[row * dem_n + col]); };
+    const auto clamp_index = [&](double v) { return v < 0.0 ? 0.0 : (v > static_cast<double>(dem_n - 1) ? static_cast<double>(dem_n - 1) : v); };
+    const double u = clamp_index((q.lon_deg - box.west_deg) / (box.east_deg - box.west_deg) * dem_n - 0.5);
+    const double v = clamp_index((box.north_deg - q.lat_deg) / (box.north_deg - box.south_deg) * dem_n - 0.5);
+    const auto c0 = static_cast<std::uint32_t>(u);
+    const auto r0 = static_cast<std::uint32_t>(v);
+    const std::uint32_t c1 = c0 + 1 < dem_n ? c0 + 1 : c0;
+    const std::uint32_t r1 = r0 + 1 < dem_n ? r0 + 1 : r0;
+    const double fc = u - static_cast<double>(c0);
+    const double fr = v - static_cast<double>(r0);
+    const double top = at(r0, c0) * (1.0 - fc) + at(r0, c1) * fc;
+    const double bottom = at(r1, c0) * (1.0 - fc) + at(r1, c1) * fc;
+    const double ground = top * (1.0 - fr) + bottom * fr + n_geoid;
+
+    // ---- the georef, the size check, the store ----------------------------------------------------------------------------------
+    emit(env, "store", ProgressEvent::State::start);
+    MapGeoref g;
+    g.key = key;
+    g.anchor_lat_deg = q.lat_deg;
+    g.anchor_lon_deg = q.lon_deg;
+    g.side_m = q.side_m;
+    g.west_deg = box.west_deg;
+    g.south_deg = box.south_deg;
+    g.east_deg = box.east_deg;
+    g.north_deg = box.north_deg;
+    g.elevation = {"height.f32", dem_n, dem_n, q.side_m / dem_n};
+    g.image = {"image.png", image_n, image_n, q.side_m / image_n};
+    g.geoid_model = geoid->model;
+    g.geoid_height_m = n_geoid;
+    g.anchor_ground_ellipsoid_height_m = ground;
+    g.elevation_source = {"USGS 3DEP", elevation_request, dem_dl.retrieved_utc, {}};
+    g.image_source = {"USGS NAIP", image_request, img_dl.retrieved_utc, {}};
+    g.geoid_source = {"NOAA NGS", geoid_url(q.lat_deg, q.lon_deg), geoid_dl.retrieved_utc, {}};
+    g.datum_note = kDatumNote;
+    g.fetched_utc = env.utc_now ? env.utc_now() : std::string();
+    g.height_sha256 = sha256_hex(heights);
+    g.image_sha256 = sha256_hex(img_dl.body);
+
+    const std::uint64_t entry_bytes = heights.size() + img_dl.body.size() + serialize_georef(g).size();
+    if (entry_bytes > q.cache_limit_bytes) {
+        return failure(FetchResultKind::cache_full,
+                       std::format("one map entry is {} bytes and the cache limit is {} bytes", entry_bytes, q.cache_limit_bytes));
+    }
+    std::error_code ec;
+    if (fs::exists(dir, ec)) fs::remove_all(dir, ec);  // a refresh, or a damaged entry: the new one replaces it
+    const Result<StoredEntry> stored = store_entry(q.cache_root, g, heights, img_dl.body, env.tmp_token);
+    if (!stored) return failure(FetchResultKind::refused, "cannot write the cache: " + stored.error().context);
+    (void)trim_cache(q.cache_root, q.cache_limit_bytes, key);
+    emit(env, "store", ProgressEvent::State::done);
+
+    FetchResult r = result_from_georef(g, stored->dir, FetchResultKind::fetched);
+    return r;
+}
 
 }  // namespace spade::geofetch
