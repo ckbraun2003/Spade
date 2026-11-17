@@ -445,3 +445,41 @@ TEST(FlowMovieLook, TheFieldStepsOfALookIncludeTheFade) {
     EXPECT_FLOAT_EQ(speed_down(v, 6, 9, 6), 5.0f) << "the middle is not";
 }
 
+// The particle PREVIEW's seeds (Cameron, 2026-11-17: "the airflow needs to surround the drone blades", "it can feel particle-y"):
+// a deterministic hashed fill of the shell above and round each rotor, where air is drawn in, and of a far-field box round the
+// drone. No RNG: the same inputs give the same seeds. Rotors are (hub, axis, radius); the axis points the way thrust points,
+// so "above" is along it.
+TEST(FlowMovieLook, ThePreviewSeedsFillTheInflowShellAboveEachRotorAndAFarFieldBoxAndAreTheSameEveryTime) {
+    std::vector<flow_movie::PreviewRotor> rotors;
+    for (const float x : {-0.125f, 0.125f}) {
+        for (const float z : {-0.125f, 0.125f}) rotors.push_back({glm::vec3(x, 0.026f, z), glm::vec3(0.0f, 1.0f, 0.0f), 0.119f});
+    }
+    const flow_movie::PreviewBox box{glm::vec3(-0.45f, -0.05f, -0.30f), glm::vec3(0.45f, 0.40f, 0.30f)};
+    const auto a = flow_movie::preview_seeds(rotors, box, 150u, 400u);
+    const auto b = flow_movie::preview_seeds(rotors, box, 150u, 400u);
+    ASSERT_EQ(a.size(), 4u * 150u + 400u);
+    EXPECT_EQ(a, b) << "deterministic";
+    for (std::size_t r = 0; r < 4u; ++r) {
+        for (std::size_t i = 0; i < 150u; ++i) {
+            const glm::vec3 p = a[r * 150u + i];
+            EXPECT_GT(p.y, rotors[r].hub.y) << "above the rotor's plane";
+            EXPECT_LT(p.y, rotors[r].hub.y + 0.35f);
+            const glm::vec3 d = p - rotors[r].hub;
+            EXPECT_LE(std::sqrt(d.x * d.x + d.z * d.z), 2.0f * rotors[r].radius + 1e-5f) << "within two radii of the axis";
+        }
+    }
+    for (std::size_t i = 4u * 150u; i < a.size(); ++i) {
+        EXPECT_GE(a[i].x, box.lo.x);
+        EXPECT_LE(a[i].x, box.hi.x);
+        EXPECT_GE(a[i].y, box.lo.y);
+        EXPECT_LE(a[i].y, box.hi.y);
+        EXPECT_GE(a[i].z, box.lo.z);
+        EXPECT_LE(a[i].z, box.hi.z);
+    }
+    std::vector<glm::vec3> sorted = a;
+    std::sort(sorted.begin(), sorted.end(), [](const glm::vec3& l, const glm::vec3& r) {
+        return l.x != r.x ? l.x < r.x : (l.y != r.y ? l.y < r.y : l.z < r.z);
+    });
+    EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end()) << "no two seeds are the same point";
+}
+
