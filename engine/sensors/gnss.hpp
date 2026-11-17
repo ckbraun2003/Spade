@@ -42,19 +42,31 @@
 // correlation time where the IMU has a random-walk step.
 //
 // ---------------------------------------------------------------------------
-// §1 FRAME, AND THE SIMPLIFICATION THAT IS STATED RATHER THAN IMPLIED
+// §1 FRAME, AND WHAT THE FIX DOES AND DOES NOT KNOW ABOUT THE EARTH
 //
 // A fix is reported in the WORLD frame -- metres, right-handed, Y-up, the same
-// frame world files use -- and NOT in geodetic coordinates. This engine has no
-// earth model, no datum and no projection, and inventing one here would put a
-// second definition of "where things are" into a simulator that already has
-// one.
+// frame world files use -- and that is what the ring holds: GnssFix's position is
+// an fp32 LOCAL-TANGENT-PLANE position, and the receiver has no earth model of
+// its own. Inventing one here would put a second definition of "where things are"
+// into a simulator that already has one.
 //
-// So this is a LOCAL-TANGENT-PLANE receiver: it reports the antenna's position
-// in the world it is flying in. A consumer that needs latitude and longitude
-// owns the datum and the origin, because only the consumer knows which patch of
-// earth the world is standing in. That is a real limitation and it belongs to
-// whoever wires this to a flight stack; it is not a defect of the fix.
+// SINCE L85 A WORLD MAY HAVE AN ANCHOR (world/builder.hpp, WorldDesc::anchor): the
+// WGS84 latitude, longitude and ellipsoid height of world (0, 0, 0), with x east,
+// y up and z south. For such a world Simulation::poll_gnss_geodetic() returns,
+// beside each fix, its coordinates as DOUBLES (degrees, degrees, metres above the
+// ellipsoid), converted AT POLL TIME from that fix's stored, noisy position by
+// core/geodesy.hpp. So the metres and the coordinates of one fix come from the same
+// position (REQ-G19), nothing is drawn from the noise stream (REQ-G01b), and the
+// ring, the fix and the Slang twin are unchanged. The conversion is exact from the
+// tangent-plane point, so the plane leaves the ellipsoid by about 8 cm per km (a
+// point on the flat world 1 km out reports a height 8 cm up), and an fp32 position
+// resolves about 0.06 mm at 1 km; both are far below the receiver's own noise. A
+// world WITHOUT an anchor reports no coordinates: the call is refused as
+// `unavailable`, never zeros, because zero coordinates are a real place.
+//
+// The datum of a world with an anchor is therefore the world's own. For a world
+// without one a consumer that needs latitude and longitude still owns the datum
+// and the origin, as before.
 //
 // ---------------------------------------------------------------------------
 // §2 THE ERROR MODEL, AND WHY IT IS NOT THE IMU'S

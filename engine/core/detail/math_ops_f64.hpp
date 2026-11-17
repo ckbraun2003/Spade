@@ -54,6 +54,19 @@ namespace spade::math {
 // ---------------------------------------------------------------------------
 [[nodiscard]] double atan2_arith(double y, double x) noexcept;
 
+// ---------------------------------------------------------------------------
+// sin and cos of an angle given in DEGREES, in double, from + - * / only (L85 SP-1; core/geodesy.hpp's kernel).
+//
+// METHOD. The angle is reduced by whole quadrants: k = the integer nearest deg / 90, r = deg - 90 k, EXACT for |deg| <= 1e6 (90 k is an
+// integer and the ulp of deg is at most 1). r (|r| <= about 45) is turned to radians, theta = r * (pi / 180), as a Dekker product with a
+// pinned hi + lo pair for pi / 180 (hex literals, computed to 300 bits). sin and cos of theta_hi are Taylor series by nested division
+// through theta^27 and theta^26 (|theta| <= pi / 4 + 1e-9, so the next term is below 1e-18), and theta_lo is put back to first order.
+// The quadrant is put back last. Within 2 ulp of a faithful libm (tests/test_geodesy.cpp measures it against std::sin and std::cos).
+//
+// EXACT at the multiples of 90: sin and cos return exactly 0 and +-1 there. A NaN, an infinity or |deg| > 1e6 gives NaN for both.
+// ---------------------------------------------------------------------------
+void sincos_deg_arith(double deg, double& s, double& c) noexcept;
+
 // The angle between a and b, in [0, pi]: atan2_arith(|a x b|, a . b), the
 // cross and dot products spelt left to right. Well conditioned at every
 // angle, unlike an acos of the normalised dot product.

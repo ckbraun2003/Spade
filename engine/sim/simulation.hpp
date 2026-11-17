@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,6 +19,7 @@
 #include "compute/grid_entry.hpp"
 #include "compute/step_params.hpp"
 #include "core/error.hpp"
+#include "core/geodesy.hpp"
 #include "core/time.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
@@ -461,9 +463,10 @@ struct GnssSensorSpawn {
 // 32 BYTES, std430-safe, laid out with the same battery discipline as
 // physics::ContactParams: every byte belongs to a named field, so the record
 // hashes and compares byte-wise with nothing left to reason about. `_pad` and
-// `_reserved0` are that discipline, not decoration -- `_pad` keeps
-// `config_hash` on its natural 8-byte boundary, and `_reserved0` is the growth
-// slot a version-2 field takes without moving anything.
+// `anchor_identity` are that discipline, not decoration -- `_pad` keeps
+// `config_hash` on its natural 8-byte boundary, and `anchor_identity` is the
+// growth slot a version-2 field took without moving anything (L85 SP-2: the
+// world anchor's identity, 0 for a world without one).
 //
 // WHY THE HASH AND NOT THE DESC ITSELF. Storing the WorldSetDesc would mean
 // serializing SDF programs into every blob -- unbounded, and a format to
@@ -477,7 +480,8 @@ struct ReplayConfig {
     uint32_t substeps;     // Simulation::substeps() -- substeps per step
     uint32_t _pad;         // keeps config_hash 8-byte aligned; must stay 0
     uint64_t config_hash;  // config_hash(WorldSetDesc) -- see sim/world_set.hpp
-    uint64_t _reserved0;   // reserved for versioned growth; must stay 0
+    uint64_t anchor_identity;  // this world's anchor identity (geo::anchor_identity, L85 SP-2): 0 when it has none, so an anchor-less
+                               // row is byte-identical to what it always was. A restore under another anchor differs here, by name.
 };
 
 // The layout battery, in physics/contacts.hpp's style and for its stated
@@ -501,7 +505,7 @@ static_assert(offsetof(ReplayConfig, dt_ns) == 0);
 static_assert(offsetof(ReplayConfig, substeps) == 8);
 static_assert(offsetof(ReplayConfig, _pad) == 12);
 static_assert(offsetof(ReplayConfig, config_hash) == 16);
-static_assert(offsetof(ReplayConfig, _reserved0) == 24);
+static_assert(offsetof(ReplayConfig, anchor_identity) == 24);
 static_assert(offsetof(ReplayConfig, dt_ns) % 8 == 0, "uint64 needs 8-byte alignment in std430 too");
 static_assert(offsetof(ReplayConfig, config_hash) % 8 == 0, "uint64 needs 8-byte alignment in std430 too");
 // Named fields account for every byte: no IMPLICIT padding anywhere in
@@ -509,7 +513,7 @@ static_assert(offsetof(ReplayConfig, config_hash) % 8 == 0, "uint64 needs 8-byte
 // compiler padding, and a byte-wise comparison of two rows -- which is what a
 // snapshot restore performs -- could differ on bytes no field owns.
 static_assert(sizeof(ReplayConfig::dt_ns) + sizeof(ReplayConfig::substeps) + sizeof(ReplayConfig::_pad) +
-                      sizeof(ReplayConfig::config_hash) + sizeof(ReplayConfig::_reserved0) ==
+                      sizeof(ReplayConfig::config_hash) + sizeof(ReplayConfig::anchor_identity) ==
                   sizeof(ReplayConfig),
               "ReplayConfig has implicit padding: every byte must belong to a named field");
 
@@ -691,6 +695,9 @@ public:
 
     // --- shape and time ---------------------------------------------------
     [[nodiscard]] uint32_t world_count() const noexcept { return layout_.world_count; }
+    // The geodetic anchor world `world_index` was created with (WorldDesc::anchor), or an empty optional for a plain world (L85 SP-2).
+    // invalid_argument for an index past world_count(), as the other per-world accessors.
+    [[nodiscard]] Result<std::optional<geo::Geodetic>> world_anchor(uint32_t world_index) const;
     [[nodiscard]] Tick tick() const noexcept { return tick_; }
     // The behaviors this Simulation runs, or nullptr for none (the default,
     // and what every golden-corpus scenario uses). NOT OWNED: the caller keeps
@@ -1814,6 +1821,15 @@ public:
     [[nodiscard]] Result<GnssPoll> poll_gnss(GnssSensorRef ref, sensors::SampleIndex since_index,
                                              std::span<sensors::GnssFix> out) const;
 
+    // poll_gnss plus the WGS84 coordinates of each fix (L85 SP-3): geodetic[i] is the latitude and longitude in degrees and the height in
+    // metres above the ellipsoid of out[i], for the n fixes the poll returns, converted from the fix's stored (noisy) position by the
+    // world's anchor. Nothing is drawn from the noise stream and the ring is not touched. `geodetic` must hold at least out.size()
+    // elements (invalid_argument). unavailable, naming the missing anchor, when this receiver's world has none: a plain world never
+    // reports coordinates, so zeros cannot be mistaken for a place.
+    [[nodiscard]] Result<GnssPoll> poll_gnss_geodetic(GnssSensorRef ref, sensors::SampleIndex since_index,
+                                                      std::span<sensors::GnssFix> out,
+                                                      std::span<geo::Geodetic> geodetic) const;
+
     // This receiver's table row -- its lever arm, its configured sigmas, its
     // two derived coefficients, and its live bias/phase/stream/cursor state.
     // Read-only: the row is written by the structural queue and by the
@@ -2209,6 +2225,10 @@ private:
     ArrayId<vehicles::RotorRow> rotors_id_{};
     ArrayId<sensors::GnssSensorRow> gnss_id_{};
     ArrayId<sensors::GnssFix> gnss_ring_id_{};
+    // The world anchors and their local frames (L85 SP-2, SP-3): configuration set once by create() from WorldDesc::anchor, one slot per
+    // world, empty for a plain world. Never state: not in the arenas and not in a snapshot (ReplayConfig carries the identity).
+    std::vector<std::optional<geo::Geodetic>> anchors_;
+    std::vector<std::optional<geo::LocalFrame>> geo_frames_;
 
     Tick tick_{};
     uint64_t dt_ns_ = 0;

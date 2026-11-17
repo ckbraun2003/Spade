@@ -313,6 +313,75 @@ double atan2_arith(double y, double x) noexcept {
     return y_negative ? -angle : angle;
 }
 
+// ===========================================================================
+// sincos_deg_arith
+// ===========================================================================
+
+namespace {
+
+// pi / 180 as hi + lo: hi is the double nearest, lo the double nearest the remainder, computed to 300 bits.
+constexpr double kDegToRadHi = 0x1.1df46a2529d39p-6;
+constexpr double kDegToRadLo = 0x1.5c1d8becdd291p-62;
+
+// The largest |deg| the reduction takes: past it 90 k is no longer exact against the ulp of deg (and no caller is near it).
+constexpr double kSincosDomain = 1.0e6;
+
+// Nested-division Taylor series on |theta| <= pi / 4 + 1e-9 (t = theta^2):
+//   sin = theta (1 - t/(2*3) (1 - t/(4*5) (... (1 - t/(26*27)))))     the next term is below 1e-19
+//   cos = 1 - t/(1*2) (1 - t/(3*4) (... (1 - t/(25*26))))             the next term is below 1e-19
+// Every divisor is an exact small integer, so each step is one correctly rounded multiply and divide.
+constexpr int kSincosFactors = 13;
+
+}  // namespace
+
+void sincos_deg_arith(double deg, double& s, double& c) noexcept {
+    const double magnitude = deg < 0.0 ? -deg : deg;
+    if (!(magnitude <= kSincosDomain)) {  // a NaN fails this too
+        s = std::numeric_limits<double>::quiet_NaN();
+        c = s;
+        return;
+    }
+    const double k = std::floor(deg * (1.0 / 90.0) + 0.5);  // the quadrant count, an exact integer
+    const double r = deg - k * 90.0;                         // exact, |r| <= about 45
+    const Pair theta = two_product(r, kDegToRadHi);         // theta = r * (pi / 180) as theta.hi + theta.lo + r * lo
+    const double th = theta.hi;
+    const double tl = theta.lo + r * kDegToRadLo;
+    const double t = th * th;
+
+    double ss = 1.0;
+    for (int j = kSincosFactors; j >= 1; --j) {
+        const double two_j = 2.0 * static_cast<double>(j);
+        ss = 1.0 - (ss * t) / (two_j * (two_j + 1.0));
+    }
+    double cc = 1.0;
+    for (int j = kSincosFactors; j >= 1; --j) {
+        const double two_j = 2.0 * static_cast<double>(j);
+        cc = 1.0 - (cc * t) / ((two_j - 1.0) * two_j);
+    }
+    const double s0 = th * ss;
+    const double sin_r = s0 + tl * cc;  // theta_lo, to first order
+    const double cos_r = cc - tl * s0;
+
+    switch (static_cast<int>(static_cast<long long>(k) & 3)) {
+        case 0:
+            s = sin_r;
+            c = cos_r;
+            break;
+        case 1:
+            s = cos_r;
+            c = -sin_r;
+            break;
+        case 2:
+            s = -sin_r;
+            c = -cos_r;
+            break;
+        default:
+            s = -cos_r;
+            c = sin_r;
+            break;
+    }
+}
+
 double corner_angle(const glm::dvec3& a, const glm::dvec3& b) noexcept {
     const glm::dvec3 c = cross(a, b);
     return atan2_arith(std::sqrt(dot(c, c)), dot(a, b));

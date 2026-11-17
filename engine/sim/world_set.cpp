@@ -251,6 +251,13 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
             return std::unexpected(invalid(at + "environment.air_density must be >= 0"));
         }
 
+        // The geodetic anchor, when there is one (L85 SP-2): the same rule validate_world_desc() applies, for a hand-built desc.
+        if (instance.world.anchor) {
+            if (Result<void> r = geo::validate_anchor(*instance.world.anchor); !r) {
+                return std::unexpected(Error{r.error().code, at + r.error().context});
+            }
+        }
+
         if (Result<void> r = validate_contacts(instance.contacts, i); !r) {
             return std::unexpected(r.error());
         }
@@ -393,15 +400,18 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 // LightingDesc 64, no debug surcharge since it holds no container) = 384;
 // from the NEW release value, 320 + 8 containers (the five pre-existing plus
 // the three new ones) * 8 bytes = 384.
+//
+// UPDATED (L85 SP-2): `anchor`, a std::optional<geo::Geodetic> (three doubles and the engaged flag, 32 bytes, no container of its
+// own), joined the end of WorldDesc, and IS in config_hash's fold, only when set (below): 320 + 32 = 352 and 384 + 32 = 416.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 384,
+static_assert(sizeof(WorldDesc) == 416,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 320,
+static_assert(sizeof(WorldDesc) == 352,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "
@@ -510,6 +520,13 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
                 seed = fold_value(seed, r.hi.y);
                 seed = fold_value(seed, r.hi.z);
             }
+        }
+
+        // THE GEODETIC ANCHOR (L85 SP-2), only when there is one, after the regions: its identity (core/geodesy.hpp, FNV-1a over the
+        // three doubles' bits with -0.0 written as +0.0). A world without one folds exactly what it always did, so every committed
+        // hash, digest and snapshot of an anchor-less world is unchanged.
+        if (instance.world.anchor) {
+            seed = fold_value(seed, geo::anchor_identity(*instance.world.anchor));
         }
     }
 

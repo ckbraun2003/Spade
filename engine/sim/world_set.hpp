@@ -307,6 +307,7 @@ struct WorldSetLayout {
 //       fold       DrydenParams raw bytes  (32)
 //       fold       ContactParams raw bytes (32)
 //       fold       GridParams raw bytes    (16)
+//       fold, ONLY WHEN THE WORLD HAS A GEODETIC ANCHOR (L85 SP-2), after the regions: u64 geo::anchor_identity(anchor)
 //
 // EVERY VARIABLE-LENGTH RUN IS LENGTH-PREFIXED -- the name and both SDF vectors
 // -- for the reason state/snapshot.hpp's schema hash gives for its own names:

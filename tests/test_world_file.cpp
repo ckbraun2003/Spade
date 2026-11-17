@@ -1027,29 +1027,30 @@ TEST(WorldFileRejects, EmptyDocument) {
 // caller may answer by upgrading instead. state/snapshot.cpp says the same
 // sentence about a versioned blob with the same code; one engine, one answer.
 //
-// version 3 (not 2) IS THE MISMATCH HERE, schema v2's own upgrade path
+// version 4 (not 3 or 2) IS THE MISMATCH HERE, schema v2's own upgrade path
 // (kWorldFileMinReadVersion) is what made "world_version: 2" a version this
 // build reads -- that is exactly what WorldFile.HandAuthoredV2DocumentLoads
-// and the v1-upgrade tests below pin. Version 3 is a genuinely unsupported
-// future version, the same role 2 played before this task.
+// and the v1-upgrade tests below pin. Version 3 (v2 plus the optional anchor
+// key, L85 SP-2) became a version this build reads as well, so version 4 is
+// now the genuinely unsupported future version, the same role 3 played before.
 TEST(WorldFileRejects, WrongSchemaVersionNamingBoth) {
     const spade::Result<WorldDesc> world =
-        spade::world_from_yaml(replace_first(kMinimalWorld, "world_version: 1", "world_version: 3"));
+        spade::world_from_yaml(replace_first(kMinimalWorld, "world_version: 1", "world_version: 4"));
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(contains(why(world), "version 3")) << why(world);
-    EXPECT_TRUE(contains(why(world), "versions 1-2")) << why(world);
+    EXPECT_TRUE(contains(why(world), "version 4")) << why(world);
+    EXPECT_TRUE(contains(why(world), "versions 1-3")) << why(world);
     EXPECT_TRUE(contains(why(world), "line")) << why(world);
 }
 
 TEST(WorldFileRejects, AFutureVersionIsReportedAsAVersionNotAsUnknownKeys) {
-    // A v3 file is full of keys v1/v2 do not know. "unknown key 'thermals'" is
+    // A v4 file is full of keys v1-v3 do not know. "unknown key 'thermals'" is
     // a true but useless answer; the version check has to come first.
-    const std::string v3 =
-        replace_first(replace_first(kMinimalWorld, "world_version: 1", "world_version: 3"),
+    const std::string v4 =
+        replace_first(replace_first(kMinimalWorld, "world_version: 1", "world_version: 4"),
                       "name: \"minimal\"", "name: \"minimal\"\nthermals: {model: \"bubble\"}");
-    const spade::Result<WorldDesc> world = spade::world_from_yaml(v3);
+    const spade::Result<WorldDesc> world = spade::world_from_yaml(v4);
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(contains(why(world), "schema version 3")) << why(world);
+    EXPECT_TRUE(contains(why(world), "schema version 4")) << why(world);
     EXPECT_FALSE(contains(why(world), "unknown key")) << why(world);
 }
 
@@ -1062,8 +1063,8 @@ TEST(WorldFileRejects, AVersionMismatchKeepsItsCodeThroughTheFileLayer) {
     {
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         ASSERT_TRUE(out.good());
-        const std::string v3 = replace_first(kMinimalWorld, "world_version: 1", "world_version: 3");
-        out.write(v3.data(), static_cast<std::streamsize>(v3.size()));
+        const std::string v4 = replace_first(kMinimalWorld, "world_version: 1", "world_version: 4");
+        out.write(v4.data(), static_cast<std::streamsize>(v4.size()));
     }
     const spade::Result<WorldDesc> world = spade::load_world_file(path);
     EXPECT_EQ(code_of(world), code(spade::Code::schema_mismatch));

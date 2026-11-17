@@ -34,6 +34,7 @@
 #include <glm/vec4.hpp>
 
 #include "core/error.hpp"
+#include "core/geodesy.hpp"
 #include "world/sdf.hpp"
 
 namespace spade {
@@ -238,6 +239,13 @@ struct WorldDesc {
     std::vector<MaterialDesc> materials;
     LightingDesc lighting{};
     std::vector<PropDesc> props;
+
+    // The world's geodetic ANCHOR (L85 SP-2): the WGS84 latitude, longitude and ellipsoid height of world (0, 0, 0), with the axes x east,
+    // y up, z south. Empty (every world today) means a plain world: nothing about it changes, in its file, its config_hash or its
+    // snapshots. A set anchor is world configuration, validated by validate_world_desc() (core/geodesy.hpp's limits), written to the
+    // world file as `anchor:` (schema version 3, only when set), folded into config_hash and into ReplayConfig's anchor identity only
+    // when set, and read back by Simulation::world_anchor() and poll_gnss_geodetic().
+    std::optional<geo::Geodetic> anchor;
 
     // Spawn names are unique in a validated WorldDesc, so this is unambiguous.
     // Returns nullptr when there is no such spawn point.

@@ -459,7 +459,7 @@ struct ReplayConfig {
     uint  substeps;     // substeps per step
     uint  _pad;         // keeps config_hash 8-byte aligned; must stay 0
     uint2 config_hash;  // config_hash(WorldSetDesc)
-    uint2 _reserved0;   // reserved for versioned growth; must stay 0
+    uint2 anchor_identity;  // the world's geodetic anchor identity (L85 SP-2): 0 without an anchor
 };
 
 // ---------------------------------------------------------------------------
