@@ -52,7 +52,8 @@ inline constexpr uint32_t kTipHeaderWords = 16;
 inline constexpr uint32_t kTipStride = 160;
 inline constexpr uint32_t kTipMaxSegments = 31;  // the tables' 32-float rows
 inline constexpr uint32_t kTipMaxReach = 31;
-inline constexpr uint32_t kTipMaxPer = 128;  // the kernel's workgroup-shared arrays
+// The host's bound on a blade's elements; the kernel keeps no per-blade array (one thread an element).
+inline constexpr uint32_t kTipMaxPer = 128;
 
 struct LineRecords {
     std::vector<float> elems;          // kLineStride floats an element, every rotor's elements in order
