@@ -202,6 +202,7 @@ struct StreamHooks {
 // first cache frame; the view reads it when it draws.
 struct ParticleHold {
     std::shared_ptr<ParticleDriver> driver;
+    StreakLook look;  // --particle-look: how the streaks are drawn
     uint32_t first = 0;
     float max_age_s = 0.5f;
 };
@@ -1366,8 +1367,8 @@ struct HeldPose {
                                                                                      std::to_string(hold->first + k)});
                 }
                 // Additive streaks: light on black, the capsule path (GL only), a 2 px core with a soft 5 px glow.
-                scene.flow_polylines = particle_streaks(*field, v, hold->max_age_s);
-                scene.flow_line_style = render::FlowLineStyle{2.0f, 5.0f, 0.30f};
+                scene.flow_polylines = particle_streaks(*field, v, hold->max_age_s, hold->look);
+                scene.flow_line_style = render::FlowLineStyle{hold->look.width_px, hold->look.glow_px, hold->look.glow_strength};
                 scene.flow_line_style.additive = true;
                 return {};
             }});
@@ -1833,6 +1834,8 @@ struct Options {
     // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
+    std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
@@ -2448,7 +2451,8 @@ struct WebFilming {
     }
     const uint32_t n = std::min(clip->frames(), plan.frames - first);
     const uint32_t ss = opt.supersample > 0u ? std::min(opt.supersample, 4u) : 2u;  // rendered at ss x, filtered down
-    const std::string base = web::web_file_name(clip->id, clip->short_name, "sim", "");
+    const std::string base = web::web_file_name(clip->id, clip->short_name,
+                                                web::clip_label(opt.clip_size ? opt.clip_size->first : 0u, opt.clip_size ? opt.clip_size->second : 0u), "");
     const fs::path work = opt.out / "web";
     std::printf("flow_movie: web %s \"%s\": %u frames of %u, window %g..%g, frame %ux%u (%s)\n", opt.web_id.c_str(),
                 std::string(clip->title).c_str(), n, plan.frames, plan.from_s, plan.to_s, encoder.width, encoder.height,
@@ -2467,6 +2471,13 @@ struct WebFilming {
         particles = std::make_shared<ParticleDriver>(popt, std::vector<uint32_t>{first + still_k});
         film->particle_hold->driver = particles;
         film->particle_hold->first = first;
+        auto look = parse_particle_look(opt.particle_look);
+        if (!look) return fail(look.error());
+        film->particle_hold->look = *look;
+        film->particle_hold->look.dim_centre = glm::vec3(0.0f, 0.004f, 0.0f);  // the held drone, at the still-air box's centre
+    } else if (!opt.particle_look.empty()) {
+        std::fprintf(stderr, "flow_movie: --particle-look is for --particles\n");
+        return 2;
     }
     const fs::path cache = opt.out / "cache" / film->stem;
     const auto snapshot_file = [&cache](uint32_t frame) {
@@ -2950,6 +2961,18 @@ int main(int argc, char** argv) {
             opt.particles_preview = true;
         } else if (arg == "--particles") {
             opt.particles = true;
+        } else if (arg == "--particle-look") {
+            opt.particle_look = value();
+        } else if (arg == "--clip-size") {
+            opt.clip_size = parse_size(value());
+            if (!opt.clip_size) {
+                std::fprintf(stderr, "flow_movie: --clip-size takes WIDTHxHEIGHT, as 1920x1080\n");
+                return 2;
+            }
+            if (const std::string why = web::clip_size_refusal(opt.clip_size->first, opt.clip_size->second); !why.empty()) {
+                std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+                return 2;
+            }
         } else if (arg == "--stream") {
             opt.stream = true;
         } else if (arg == "--keep-frames") {
@@ -3036,6 +3059,10 @@ int main(int argc, char** argv) {
     if (!opt.web_id.empty() || !opt.synthetic_still.empty()) {
         encoder.width = web::kWidth;
         encoder.height = web::kHeight;
+        if (opt.clip_size && !opt.web_id.empty()) {  // a diagnostic clip (web_masters.hpp's clip_size_refusal passed)
+            encoder.width = opt.clip_size->first;
+            encoder.height = opt.clip_size->second;
+        }
     }
 
     if (auto ok = check_ffmpeg(encoder); !ok) return fail(ok.error());

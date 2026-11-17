@@ -417,6 +417,23 @@ inline constexpr float kBoxHalfX = 0.48f, kBoxHalfZ = 0.336f;
     return std::string(id) + "_" + std::string(short_name) + "_" + std::string(label) + "." + std::string(ext);
 }
 
+// A DIAGNOSTIC CLIP SIZE (--clip-size WxH): the web clips are kWidth x kHeight masters; a clip at another size is a diagnostic that
+// must never pass for one. 16:9 (the framing is fitted to that aspect), a whole multiple of 16 wide so the encoder takes it, and
+// no larger than the master. "" when it will do, else why not. Its file is labelled with its size (clip_label), and delivery,
+// which checks the size, refuses it.
+[[nodiscard]] inline std::string clip_size_refusal(uint32_t w, uint32_t h) {
+    if (w == 0u || h == 0u) return "--clip-size needs a width and a height above 0";
+    if (uint64_t{h} * 16u != uint64_t{w} * 9u) return "--clip-size must be 16:9 (the framing is fitted to it), as 1920x1080";
+    if (w % 16u != 0u) return "--clip-size's width must be a multiple of 16";
+    if (w > kWidth || h > kHeight) return "--clip-size is a diagnostic: no larger than the master, " + std::to_string(kWidth) + "x" + std::to_string(kHeight);
+    return {};
+}
+
+// The label of a clip's file name: "sim" for a master, "diag-WxH" for a clip at another size (0, 0: the master's).
+[[nodiscard]] inline std::string clip_label(uint32_t w, uint32_t h) {
+    return w == 0u && h == 0u ? std::string("sim") : "diag-" + std::to_string(w) + "x" + std::to_string(h);
+}
+
 [[nodiscard]] inline std::string manifest_line(const std::string& file, uint32_t width, uint32_t height, double seconds,
                                                const std::string& label, const std::string& description) {
     char secs[32];

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,8 @@
 #include <span>
 #include <utility>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -303,6 +306,14 @@ struct StreakLook {
     float fade_in_s = 0.04f;
     float fast_mps = 10.0f;   // the speed at which the colour reaches its warm end
     float peak_alpha = 0.9f;  // the head's alpha when full
+    float min_len_m = 0.0f;   // a slow streak is never shorter than this (0: u times tail_s, as it was)
+    float glow_px = 5.0f;     // the capsules' glow (the scene's line style)
+    float glow_strength = 0.30f;
+    // Streaks near the drone are dimmed so the airframe reads through the light: alpha x (1 - dim) at dim_centre, smoothly back to
+    // untouched at dim_r metres. dim 0 is off.
+    glm::vec3 dim_centre{0.0f};
+    float dim_r = 0.15f;
+    float dim = 0.0f;
 };
 
 [[nodiscard]] inline std::vector<spade::render::FlowPolyline> particle_streaks(const ParticleField& field,
@@ -324,10 +335,15 @@ struct StreakLook {
             glm::mix(glm::vec3(0.15f, 0.35f, 1.0f), glm::vec3(1.0f, 0.93f, 0.80f), s) * (0.35f + 0.65f * s), glm::vec3(0.0f),
             glm::vec3(1.0f));
         const float age = field.age[i];
-        const float alpha = look.peak_alpha * smoothstep(0.0f, look.fade_in_s, age) *
-                            (1.0f - smoothstep(0.6f * max_age_s, max_age_s, age));
+        float alpha = look.peak_alpha * smoothstep(0.0f, look.fade_in_s, age) *
+                      (1.0f - smoothstep(0.6f * max_age_s, max_age_s, age));
+        if (look.dim > 0.0f) {
+            alpha *= 1.0f - look.dim * (1.0f - smoothstep(0.0f, look.dim_r, glm::length(field.position[i] - look.dim_centre)));
+        }
         spade::render::FlowPolyline line;
-        line.points = {field.position[i] - u.u * look.tail_s, field.position[i]};
+        glm::vec3 reach = u.u * look.tail_s;  // from the head back to the tail
+        if (look.min_len_m > 0.0f && speed > 1.0e-6f) reach = (u.u / speed) * std::max(speed * look.tail_s, look.min_len_m);
+        line.points = {field.position[i] - reach, field.position[i]};
         line.colours = {colour, colour};
         line.alphas = {0.0f, alpha};
         line.width_px = look.width_px;
@@ -393,6 +409,63 @@ inline constexpr std::array<char, 8> kParticleMagic{'S', 'P', 'P', 'A', 'R', 'T'
     in.read(reinterpret_cast<char*>(field.age.data()), static_cast<std::streamsize>(count * sizeof(float)));
     if (!in) return bad("could not be read to its end");
     return field;
+}
+
+// THE LOOK ON THE COMMAND LINE: "key=value,key=value" over StreakLook's defaults (--particle-look). A redraw from the snapshot takes
+// seconds, so one job draws several variants. Keys: tail (s, > 0), min_len (m, 0 up), width (px, 0.5 to 64), glow (px, 0 to 64),
+// strength (0 to 1), alpha (0 to 1), fade_in (s, > 0), fast (m/s, > 0), dim (0 to 1), dim_r (m, > 0). Empty: the defaults. An
+// unknown key, no '=', an empty key or value, a value that is not a finite number, or one out of its range: refused, naming it.
+[[nodiscard]] inline spade::Result<StreakLook> parse_particle_look(std::string_view text) {
+    const auto bad = [](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "particle look: " + why});
+    };
+    const auto trim = [](std::string_view v) {
+        while (!v.empty() && (v.front() == ' ' || v.front() == '\t')) v.remove_prefix(1);
+        while (!v.empty() && (v.back() == ' ' || v.back() == '\t')) v.remove_suffix(1);
+        return v;
+    };
+    StreakLook look;
+    if (trim(text).empty()) return look;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t comma = text.find(',', at);
+        const std::string_view item = trim(text.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at));
+        at = comma == std::string_view::npos ? text.size() + 1u : comma + 1u;
+        if (item.empty()) return bad("an empty item (a stray comma)");
+        const std::size_t eq = item.find('=');
+        if (eq == std::string_view::npos) return bad("'" + std::string(item) + "' has no '=': write key=value");
+        const std::string key(trim(item.substr(0, eq)));
+        const std::string_view value = trim(item.substr(eq + 1u));
+        if (key.empty()) return bad("an empty key in '" + std::string(item) + "'");
+        if (value.empty()) return bad("'" + key + "' has no value");
+        float number = 0.0f;
+        const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (ec != std::errc{} || end != value.data() + value.size() || !std::isfinite(number)) {
+            return bad("'" + key + "' is not a number: '" + std::string(value) + "'");
+        }
+        struct Row {
+            const char* key;
+            float* slot;
+            float lo, hi;
+            bool lo_open;  // the low end itself is refused
+        };
+        const Row rows[] = {{"tail", &look.tail_s, 0.0f, 1.0f, true},          {"min_len", &look.min_len_m, 0.0f, 1.0f, false},
+                            {"width", &look.width_px, 0.5f, 64.0f, false},     {"glow", &look.glow_px, 0.0f, 64.0f, false},
+                            {"strength", &look.glow_strength, 0.0f, 1.0f, false}, {"alpha", &look.peak_alpha, 0.0f, 1.0f, false},
+                            {"fade_in", &look.fade_in_s, 0.0f, 10.0f, true},   {"fast", &look.fast_mps, 0.0f, 1000.0f, true},
+                            {"dim", &look.dim, 0.0f, 1.0f, false},             {"dim_r", &look.dim_r, 0.0f, 10.0f, true}};
+        const Row* row = nullptr;
+        for (const Row& r : rows) {
+            if (key == r.key) row = &r;
+        }
+        if (row == nullptr) return bad("unknown key '" + key + "' (tail min_len width glow strength alpha fade_in fast dim dim_r)");
+        if (number < row->lo || number > row->hi || (row->lo_open && number <= row->lo)) {
+            return bad("'" + key + "' = " + std::string(value) + " is out of its range (" + (row->lo_open ? "above " : "") +
+                       std::to_string(row->lo) + " to " + std::to_string(row->hi) + ")");
+        }
+        *row->slot = number;
+    }
+    return look;
 }
 
 }  // namespace flow_movie
