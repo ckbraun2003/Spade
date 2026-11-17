@@ -1440,6 +1440,9 @@ struct HeldPose {
                     return std::unexpected(ok.error());
                 }
                 fade_polylines_from(scene, first_line, web::kSoftLineFadeM);  // S1 only draws this view's lines soft
+                // The fade is in the lines' alphas, which need a capsule: the view carries the soft capsule style itself, so a film
+                // that draws it (the ordinary case film too) never meets alphas on a hairline.
+                scene.flow_line_style = render::FlowLineStyle{web::kSoftLineWidthPx, web::kSoftLineGlowPx, web::kSoftLineGlowStrength, true};
                 return std::string();
             }});
     }
