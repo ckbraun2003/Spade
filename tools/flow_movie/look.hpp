@@ -292,16 +292,16 @@ struct MeanWindow {
 }
 
 // Why a look option cannot apply to a clip ("" when it can, or when there is none). The level, the smoothing and the cull
-// belong to the clips that draw vortex surfaces (S2, and S3 in the side wind); the mean flow to the D1 clips that read the
+// belong to the clip that draws vortex surfaces (S3, in the side wind; S2 was one until Cameron's pick of the soft volume); the mean flow to the D1 clips that read the
 // velocity (not S4's C_p); a cull needs the level that says what a piece is. `d1`: the clip runs the D1 film (S5 and S6 run
 // the reference quad's CPU film).
 [[nodiscard]] inline std::string look_refusal(std::string_view clip_id, bool d1, const Look& look) {
     if (!look.any()) return {};
     const std::string id(clip_id);
     if (!d1) return "the look options are for the D1 clips (S1 to S4 and S8); " + id + " runs the reference quad's CPU film";
-    const bool vortex_clip = clip_id == "S2" || clip_id == "S3";
+    const bool vortex_clip = clip_id == "S3";
     if ((look.l2_level > 0.0f || look.l2_smooth || look.min_cells > 0u) && !vortex_clip) {
-        return "--l2-level, --l2-smooth and --min-cells are for the clips that draw vortex surfaces (S2 and S3); " + id +
+        return "--l2-level, --l2-smooth and --min-cells are for the clip that draws vortex surfaces (S3); " + id +
                " does not";
     }
     if (look.mean_frames > 1u && clip_id == "S4") {

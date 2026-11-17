@@ -150,9 +150,9 @@ inline constexpr float kD1WebSgsCs = 0.17f;
          "Streamlines seeded 6 cm below each of four actuator discs (two rings of eight round each axis) and traced both "
          "ways, round the reference quad's rigid parts, coloured by relative speed, in one slow orbit.",
          "d1-still", Scene::d1_still, Quantity::speed, Camera::loop_orbit, 15.0, 360.0f, 0.0f, 12.0f, true, 150},
-        {"S2", "rotor-wake-vortex-surfaces", "Reference quad in hover: vortex surfaces from the start-up",
-         "Vortex surfaces (lambda2) round the reference quad's rigid parts, held at hover in still air, from the "
-         "start-up roll-up into the developed column, in a slow push-in.",
+        {"S2", "rotor-wake-start-up-volume", "Reference quad in hover: the rotor wake as a soft volume, from the start-up",
+         "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a soft volume, held "
+         "at hover in still air, from the start-up roll-up into the developed column, in a slow push-in.",
          "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 0},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
