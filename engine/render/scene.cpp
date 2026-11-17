@@ -357,6 +357,7 @@ Result<RenderScene> scene_from_world(const WorldDesc& world, std::span<const Nam
                     // material 0 unless overridden.
                     .material = material_override != kNoMaterial ? material_override : 0u,
                     .label = label,  // its mesh item's: one name for one floor
+                    .item = static_cast<uint32_t>(scene.statics.size() - 1u),  // pushed just above
                 });
             }
         } else {

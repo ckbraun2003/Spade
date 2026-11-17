@@ -522,6 +522,9 @@ struct GroundPlane {
     float offset = 0.0f;
     uint32_t material = 0;
     uint32_t label = kNoLabel;  // its plane node's, as its mesh item's: "ground" by default
+    // The index into RenderScene::statics of this plane's own bounded mesh item, or kNoMesh (a hand-built record). The
+    // geo terrain (render/terrain.hpp) moves the item with the record when it lowers the render floor under a map.
+    uint32_t item = kNoMesh;
 };
 
 struct DrawItem {
@@ -558,6 +561,11 @@ struct DrawItem {
     //   * an item a CSG subtree marches (CsgSubtree::draw_item) cannot be see-through: render() refuses it by name;
     //   * a flow volume composites over a see-through item even when the item is nearer (known limit).
     bool see_through = false;
+
+    // Whether the sun's shadow maps take this item's triangles as occluders. True, the default, is every item there
+    // was: no existing frame moves. The geo terrain (render/terrain.hpp) sets it false: it receives the drone's shadow
+    // and casts none. A see-through item never casts, whatever this says (RND-11).
+    bool casts_shadow = true;
 };
 
 // A CSG subtree the raster ray-marches instead of drawing its mesh.
