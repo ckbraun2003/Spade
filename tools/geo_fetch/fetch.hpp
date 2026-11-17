@@ -48,6 +48,12 @@ struct FetchResult {
     std::uint64_t bytes = 0;  // the entry's size on disk
     double geoid_height_m = 0.0;
     double anchor_ellipsoid_height_m = 0.0;
+    // The summary of a hit or a fetch (from the entry's georef), and what this run downloaded (0 on a hit: nobody was asked).
+    std::string geoid_model;
+    std::uint32_t elevation_width = 0, elevation_height = 0;
+    std::uint32_t image_width = 0, image_height = 0;
+    double west_deg = 0.0, south_deg = 0.0, east_deg = 0.0, north_deg = 0.0;
+    std::uint64_t bytes_geoid = 0, bytes_elevation = 0, bytes_image = 0;
 };
 
 // The process exit code of a result (the table in fetch.hpp's enum).

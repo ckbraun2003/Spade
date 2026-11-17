@@ -1,5 +1,6 @@
 #include "fetch.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstring>
@@ -62,6 +63,24 @@ void emit(const FetchEnv& env, const std::string& stage, ProgressEvent::State st
     return q + "\")";
 }
 
+// The raw bytes of an answer the tool refused, kept in <cache>/failed/<service>.bin (the next refusal of that service replaces it), so a
+// person can look at what a service sent without asking again. Untrusted data: nothing reads it back, and it is outside the cache's
+// entries and their size limit. Returns " (the raw answer is in <path>)", or "" when there is nothing to keep or it cannot be written.
+[[nodiscard]] std::string keep_failed(const fs::path& root, const std::string& service, const std::string& body) {
+    constexpr std::size_t kMaxKeptBytes = 16u * 1024u * 1024u;
+    if (body.empty() || root.empty()) return {};
+    std::error_code ec;
+    const fs::path dir = root / "failed";
+    fs::create_directories(dir, ec);
+    if (ec) return {};
+    const fs::path file = dir / (service + ".bin");
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(body.data(), static_cast<std::streamsize>(std::min(body.size(), kMaxKeptBytes)));
+    out.close();
+    if (!out) return {};
+    return " (the raw answer is in " + file.string() + ")";
+}
+
 // The number of cells that cover `side` with cells of `cell` metres, rounded up; 0 when it is not a sane number.
 [[nodiscard]] std::uint32_t cells_over(double side, double cell) {
     if (!(cell > 0.0) || !std::isfinite(cell) || !(side > 0.0)) return 0;
@@ -95,8 +114,8 @@ struct Download {
     FetchResult failed;
 };
 
-[[nodiscard]] Download download(const FetchEnv& env, const std::string& stage, const std::string& service, const std::string& url,
-                                int timeout_s) {
+[[nodiscard]] Download download(const FetchEnv& env, const fs::path& cache_root, const std::string& stage, const std::string& service,
+                                const std::string& url, int timeout_s) {
     Download d;
     emit(env, stage, ProgressEvent::State::start);
     HttpResponse resp;
@@ -134,7 +153,9 @@ struct Download {
             d.failed = failure(FetchResultKind::service_error, service + ": the answer is larger than the cap", service);
             break;
         case HttpError::none:
-            d.failed = failure(FetchResultKind::service_error, service + ": HTTP " + std::to_string(resp.status) + answer_begins(resp.body), service);
+            d.failed = failure(FetchResultKind::service_error, service + ": HTTP " + std::to_string(resp.status) + answer_begins(resp.body) +
+                                                              keep_failed(cache_root, service, resp.body),
+                                   service);
             break;
     }
     return d;
@@ -153,6 +174,15 @@ void put_le32(std::string& out, float v) {
     r.bytes = dir_bytes(dir);
     r.geoid_height_m = g.geoid_height_m;
     r.anchor_ellipsoid_height_m = g.anchor_ground_ellipsoid_height_m;
+    r.geoid_model = g.geoid_model;
+    r.elevation_width = g.elevation.width;
+    r.elevation_height = g.elevation.height;
+    r.image_width = g.image.width;
+    r.image_height = g.image.height;
+    r.west_deg = g.west_deg;
+    r.south_deg = g.south_deg;
+    r.east_deg = g.east_deg;
+    r.north_deg = g.north_deg;
     return r;
 }
 
@@ -235,47 +265,50 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
         return failure(FetchResultKind::refused, "the area crosses the 180th meridian, which is not supported");
     }
 
-    Download geoid_dl = download(env, "geoid", "ngs", geoid_url(q.lat_deg, q.lon_deg), q.timeout_s);
+    // An answer the tool refuses is a service_error naming the service; its raw bytes go to <cache>/failed/<service>.bin, and the message
+    // says so. `quote` adds the answer's first bytes to the message, for an answer that is not the format it should be.
+    const auto refuse = [&](const std::string& service, std::string message, const Download& dl, bool quote) {
+        if (quote) message += answer_begins(dl.body);
+        return failure(FetchResultKind::service_error, message + keep_failed(q.cache_root, service, dl.body), service);
+    };
+
+    Download geoid_dl = download(env, q.cache_root, "geoid", "ngs", geoid_url(q.lat_deg, q.lon_deg), q.timeout_s);
     if (!geoid_dl.ok) return geoid_dl.failed;
     const Result<GeoidAnswer> geoid = parse_geoid_json(geoid_dl.body);
-    if (!geoid) return failure(FetchResultKind::service_error, geoid.error().context + answer_begins(geoid_dl.body), "ngs");
+    if (!geoid) return refuse("ngs", geoid.error().context, geoid_dl, true);
     const double n_geoid = geoid->height_m;
 
     const std::string elevation_request = elevation_url(box, dem_n, dem_n);
-    Download dem_dl = download(env, "elevation", "3dep", elevation_request, q.timeout_s);
+    Download dem_dl = download(env, q.cache_root, "elevation", "3dep", elevation_request, q.timeout_s);
     if (!dem_dl.ok) return dem_dl.failed;
     const Result<TiffGrid> tiff = read_tiff_f32(dem_dl.body);
-    if (!tiff) return failure(FetchResultKind::service_error, tiff.error().context + answer_begins(dem_dl.body), "3dep");
+    if (!tiff) return refuse("3dep", tiff.error().context, dem_dl, true);
     if (tiff->width != dem_n || tiff->height != dem_n) {
-        return failure(FetchResultKind::service_error,
-                       std::format("3dep: the TIFF is {} x {}, {} x {} was asked", tiff->width, tiff->height, dem_n, dem_n), "3dep");
+        return refuse("3dep", std::format("3dep: the TIFF is {} x {}, {} x {} was asked", tiff->width, tiff->height, dem_n, dem_n), dem_dl, false);
     }
     std::size_t bad_samples = 0;
     for (const float v : tiff->samples) {
         if (!std::isfinite(v) || v < -1000.0f || v > 10000.0f) ++bad_samples;
     }
     if (bad_samples != 0) {
-        return failure(FetchResultKind::service_error,
-                       std::format("3dep: the answer holds {} no-data or impossible heights", bad_samples), "3dep");
+        return refuse("3dep", std::format("3dep: the answer holds {} no-data or impossible heights", bad_samples), dem_dl, false);
     }
 
     const std::string image_request = image_url(box, image_n, image_n);
-    Download img_dl = download(env, "image", "naip", image_request, q.timeout_s);
+    Download img_dl = download(env, q.cache_root, "image", "naip", image_request, q.timeout_s);
     if (!img_dl.ok) return img_dl.failed;
     const Result<PngHeader> png = read_png_header(img_dl.body);
-    if (!png) return failure(FetchResultKind::service_error, png.error().context + answer_begins(img_dl.body), "naip");
+    if (!png) return refuse("naip", png.error().context, img_dl, true);
     if (png->width != image_n || png->height != image_n) {
-        return failure(FetchResultKind::service_error,
-                       std::format("naip: the PNG is {} x {}, {} x {} was asked", png->width, png->height, image_n, image_n), "naip");
+        return refuse("naip", std::format("naip: the PNG is {} x {}, {} x {} was asked", png->width, png->height, image_n, image_n), img_dl, false);
     }
     if (png->bit_depth != 8 || png->color_type != 2) {
-        return failure(FetchResultKind::service_error,
-                       std::format("naip: the PNG is not 8-bit RGB (colour type {}, {} bits)", png->color_type, png->bit_depth), "naip");
+        return refuse("naip", std::format("naip: the PNG is not 8-bit RGB (colour type {}, {} bits)", png->color_type, png->bit_depth), img_dl, false);
     }
 
     // The whole file, not only its header: a PNG that decode_png refuses is not stored, so the reader never meets one the tool kept.
     const Result<world::Image8> decoded = decode_png(std::as_bytes(std::span<const char>(img_dl.body)));
-    if (!decoded) return failure(FetchResultKind::service_error, "naip: the PNG cannot be read: " + decoded.error().context, "naip");
+    if (!decoded) return refuse("naip", "naip: the PNG cannot be read: " + decoded.error().context, img_dl, false);
 
     // ---- NAVD88 to the ellipsoid: h = H + N, in double, stored as float32 -----------------------------------------------------
     std::string heights;
@@ -334,6 +367,9 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     emit(env, "store", ProgressEvent::State::done);
 
     FetchResult r = result_from_georef(g, stored->dir, FetchResultKind::fetched);
+    r.bytes_geoid = geoid_dl.body.size();
+    r.bytes_elevation = dem_dl.body.size();
+    r.bytes_image = img_dl.body.size();
     return r;
 }
 
