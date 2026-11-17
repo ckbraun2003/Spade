@@ -256,7 +256,11 @@ TEST(PartImportKey, TheTextAndTheKeyArePinned) {
     b.axes = parse_axes("-y,x,z").value();
     b.scale = 0.001;
     b.object = "arm_left";
-    EXPECT_EQ(cache_key(b), "f35be0a647de9509");
+    // std::format's shortest text for 0.0001 is "1e-04" (scientific when it is the shorter), the same on every conforming library.
+    EXPECT_EQ(cache_key_text(b),
+              "spade-part-import-key-1;converter=step-OCCT 7.9.3 cadquery-ocp 7.9.3.1.1;tolerance=1e-04;angle=0.5;unit=;axes=-y,x,z;"
+              "scale=0.001;object=arm_left");
+    EXPECT_EQ(cache_key(b), "639d06e111787791");
 }
 
 TEST(PartImportKey, EachInputChangesTheKeyAndTheSameInputsGiveTheSame) {
