@@ -40,7 +40,7 @@ inline constexpr int kCrf = 15;          // the brief's 14 to 16
 // "6 cm below", pinned to this number by FlowMovieWeb.S1sCaptionSaysWhereTheStreamlinesAreSeeded...
 inline constexpr float kWebSeedBelowHubM = 0.06f;
 
-// S1's soft streamlines (Cameron, 2026-11-17): thin lines with a glow, each faded to black over its last kSoftLineFadeM at both
+// S1's soft streamlines (Cameron, 2026-11-17): thin additive lines with a glow, each faded out (by alpha) over its last kSoftLineFadeM at both
 // ends (look.hpp's fade_polyline_ends), not the 4 px tubes of S6. The caption's look line says so.
 inline constexpr float kSoftLineWidthPx = 1.5f;
 inline constexpr float kSoftLineGlowPx = 6.0f;

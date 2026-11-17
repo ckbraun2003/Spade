@@ -1547,7 +1547,8 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
 // 2026-11-10: line width as quads, coverage anti-aliasing and a glow, on black). The one-pixel line is a hairline
 // at 4K; the engine's default stays it, so only a view that asks gets this.
 constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
-constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kSoftLineGlowPx, web::kSoftLineGlowStrength};
+// Additive: the strands are light that fades by alpha, overlapping ones add, and the drone behind them is not darkened.
+constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kSoftLineGlowPx, web::kSoftLineGlowStrength, true};
 
 // `base`'s view with its polylines (the streamlines and the rims) drawn in `style`.
 [[nodiscard]] View with_line_style(const View& base, render::FlowLineStyle style) {
