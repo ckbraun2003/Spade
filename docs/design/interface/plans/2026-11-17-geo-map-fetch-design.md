@@ -227,7 +227,15 @@ All through the fake `HttpClient`; no test touches the network or the user's rea
 
 The two pieces that touch the OS (WinHTTP, libcurl) have no unit test: a thin file each, compiled by the build and by gcc-check.
 
-**The live check.** One command (`spade_geo_fetch --lat 40.76 --lon -113.90 --side 1000 --cache <temp dir>`, run by `scripts/geo-live-check.ps1`), never in ctest, never in a gate, and run only when the lead says so for each run (L85). It does V4's check: the image is the size asked, the elevation spread over the flats is under 1 m, the geoid height is in range. It also checks the TIFF compression, the shifted-bbox cell edge, the NAIP band count and the NGS sign in section 7, and writes what it found into this note.
+**The live check.** One command (`spade_geo_fetch --lat 40.76 --lon -113.90 --side 1000 --cache <a directory outside every git tree>`), never in ctest, never in a gate, and run only when the lead says so for each run (L85). It does V4's check: the image is the size asked, the elevation spread over the flats is under 1 m, the geoid height is in range. The spread is **the 1st-to-99th percentile range of the grid's heights, not max minus min**: a few outlier samples at the extremes (a vehicle track, a post, a grid artefact) must not fail the check, and a service that sent a tilted or wrong surface still does. It also checks the TIFF compression, the shifted-bbox cell edge, the NAIP band count and the NGS sign in section 7.
+
+**What the live checks found** (L85f and L85g, 2026-11-17, Bonneville 40.76 -113.90, a 1 km side, run by hand with the built `spade_geo_fetch`; the lead granted each run):
+- NGS: `model` is a numeric ID, 14 for GEOID18; `model=18` is no ID and got a 59-byte error answer (section 7 now says 14). The answer names `geoidModel`; longitude is negative west as sent. N at Bonneville is -18.226 m, GEOID18.
+- 3DEP: the answer is an uncompressed float32 TIFF in 256-sample tiles padded over the edge (1024 x 1024 x 4 bytes of pixels, 4,195,640 bytes for a 1000 x 1000 grid), not strips: the reader takes both layouts. A 1000 x 1000 grid at 1 m is served as asked.
+- NAIP: an 8-bit RGB PNG, 1667 x 1667, 2,258,225 bytes, decoded whole by `decode_png`.
+- Georef box against the radii of curvature written out independently: within 1.8e-9 degrees (0.2 mm), so the V5 check passes.
+- Heights, ellipsoid metres over the 1 km square: 1266.78 to 1268.32 (max minus min 1.54 m), mean 1266.99, standard deviation 0.12 m, 1st-to-99th percentile range 0.82 m. V4's under-1 m passes as a percentile range; max minus min does not, which is why the check is written as one.
+- The run took 15 s and received 6.45 MB (208 bytes of geoid, 4.20 MB of elevation, 2.26 MB of image).
 
 ## 9. Order of work and what I need
 
