@@ -81,6 +81,7 @@
 #endif
 #include "live_case.hpp"
 #include "look.hpp"
+#include "part_materials.hpp"
 #include "particles.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
@@ -232,6 +233,8 @@ struct Film {
     // The particle look (--particles): the seed pool from a frame's log (the held drone's rotors), and the run's state.
     std::function<std::vector<glm::vec3>(const FrameLog&)> particle_pool;
     std::shared_ptr<ParticleHold> particle_hold;
+    // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
+    bool role_materials = false;
     bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
     // The website masters (web_masters.hpp). The frames are spread over this simulated window from rest, frame k
     // ending at web::frame_end_step() (0, 0: the film's own spread over t_end); a LiveRun film then steps
@@ -1730,7 +1733,13 @@ struct LookState {
     render::Camera camera;
     if (auto shot = view.shot(volume, k, n, scene, camera); !shot) return shot;
     if (film.decorate) {
+        const std::size_t first_part_item = scene.statics.size();
         if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
+        if (film.role_materials && film.run) {
+            std::vector<std::pair<std::string, std::string>> roles;
+            for (const spade::vehicles::PartDesc& part : film.run->draw_model.parts) roles.emplace_back(part.name, part.role);
+            (void)apply_role_materials(scene, first_part_item, roles);
+        }
     }
     note.clear();
     if (view.on_parts) {
@@ -2446,6 +2455,7 @@ struct WebFilming {
     const uint32_t still_k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
     auto film = web_film(*clip, *group, plan);
     if (!film) return fail(film.error());
+    film->role_materials = drone != &web::default_drone();
     std::shared_ptr<ParticleDriver> particles;
     if (plan.particles) {
         ParticleOptions popt;
@@ -2498,7 +2508,7 @@ struct WebFilming {
             for (uint32_t k = 0; k < n; ++k) draws.push_back(first + k);
         }
         if (wants_still) draws.push_back(first + still_k);
-        if (particles) draws = with_warmup(std::move(draws), first);  // the points are carried through every frame from 0
+        if (particles) draws = with_every_frame(draws);  // the points are carried through every frame, 0 to the last draw
         // The still is drawn AFTER the solve (a stage made mid-solve ends the clip's GL context: a GlStage's destructor calls
         // glfwTerminate), so its frame and its mean window stay on disk until then.
         const std::optional<uint32_t> still_frame =
@@ -2604,6 +2614,21 @@ struct WebFilming {
         std::printf("flow_movie: web %s: the still is drawn from frame %u, kept in %s; no simulation\n", opt.web_id.c_str(),
                     first + still_k, cache.generic_string().c_str());
     } else {
+        if (plan.grid) {  // the D1 clips: 253 MB a frame in the deep box
+            const uint32_t cached = cached_frames(cache);
+            fs::path on = opt.out;
+            while (!on.empty() && !fs::exists(on) && on.has_parent_path() && on.parent_path() != on) on = on.parent_path();
+            std::error_code space_ec;
+            const fs::space_info space = fs::space(on.empty() ? fs::path(".") : on, space_ec);
+            if (!space_ec) {
+                const std::string why = disk_refusal(plan.frames > cached ? plan.frames - cached : 0u,
+                                                     frame_bytes(plan.grid->nx, plan.grid->ny, plan.grid->nz), space.available);
+                if (!why.empty()) {
+                    std::fprintf(stderr, "flow_movie: web %s: %s\n", opt.web_id.c_str(), why.c_str());
+                    return 2;
+                }
+            }
+        }
         Options sim = opt;
         sim.simulate_only = true;
         sim.stills = 0;
