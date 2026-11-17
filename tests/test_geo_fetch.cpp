@@ -263,6 +263,79 @@ TEST(GeoFetch, AQuotedAnswerIsAtMost120BytesOfPrintableCharacters) {
     }
 }
 
+// A tiled elevation answer (what an ArcGIS ImageServer sends, L85g) is the same grid: the stored heights are the strip fixture's.
+TEST(GeoFetch, ATiledElevationAnswerIsStoredLikeAStripOne) {
+    std::vector<float> h(16);
+    for (uint32_t i = 0; i < 16; ++i) h[i] = 1000.0f + 2.0f * static_cast<float>(i % 4);
+    GeoFixture tiled;
+    TiffOptions o;
+    o.tiled = true;
+    o.tile = 3;  // 4 x 4 is 2 x 2 tiles with the edge ones padded
+    tiled.tiff = make_tiff(4, 4, h, o);
+    Rig strips;
+    Rig tiles(FakeHttp::serve(tiled));
+    ASSERT_EQ(strips.run().kind, FetchResultKind::fetched);
+    const FetchResult r = tiles.run();
+    ASSERT_EQ(r.kind, FetchResultKind::fetched) << r.message;
+    EXPECT_EQ(slurp(tiles.entry() / "height.f32"), slurp(strips.entry() / "height.f32"));
+    EXPECT_FALSE(fs::exists(tiles.request.cache_root / "failed"));  // a good answer keeps nothing aside
+}
+
+// A refused answer's bytes are kept in <cache>/failed/<service>.bin, as received, so one failed run can be looked at without asking the
+// service again. The file is untrusted data that nothing reads back, and it is outside the cache's entries and its size limit.
+TEST(GeoFetch, ARefusedAnswersBytesAreKeptInTheCacheFailedFolder) {
+    struct Case {
+        const char* host;
+        int status;
+        std::string body;
+        const char* service;
+    };
+    const Case cases[] = {
+        {"geodesy", 200, "<html>nope</html>", "ngs"},
+        {"geodesy", 400, "no such model", "ngs"},
+        {"elevation", 200, "<html>ArcGIS busy</html>", "3dep"},
+        {"elevation", 200, std::string("II*\0\x08\0\0\0\xff\x01\x02", 11), "3dep"},  // binary, with a NUL
+        {"imagery", 200, R"({"error":"x"})", "naip"},
+        {"imagery", 200, make_png(2, 2, 8, 2, "x"), "naip"},  // a PNG header that decode_png refuses
+    };
+    for (const Case& c : cases) {
+        Rig rig([&](const std::string& url, int nth) {
+            HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+            if (url.find(c.host) != std::string::npos) {
+                r.status = c.status;
+                r.body = c.body;
+            }
+            return r;
+        });
+        const FetchResult r = rig.run();
+        EXPECT_EQ(r.kind, FetchResultKind::service_error) << c.service << " " << r.message;
+        EXPECT_EQ(r.service, c.service);
+        const fs::path kept = rig.request.cache_root / "failed" / (std::string(c.service) + ".bin");
+        ASSERT_TRUE(fs::exists(kept)) << kept.string();
+        EXPECT_EQ(slurp(kept), c.body) << c.service;
+        EXPECT_NE(r.message.find(kept.string()), std::string::npos) << r.message;  // the message says where
+        EXPECT_EQ(cache_size_bytes(rig.request.cache_root), 0u);                  // not an entry, not counted against the limit
+        EXPECT_FALSE(fs::exists(rig.entry()));
+    }
+}
+
+TEST(GeoFetch, ASecondRefusedAnswerReplacesTheKeptOne) {
+    Rig first([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find("geodesy") != std::string::npos) r.body = "first";
+        return r;
+    });
+    ASSERT_EQ(first.run().kind, FetchResultKind::service_error);
+    Rig second([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find("geodesy") != std::string::npos) r.body = "second";
+        return r;
+    });
+    second.request.cache_root = first.request.cache_root;
+    ASSERT_EQ(second.run().kind, FetchResultKind::service_error);
+    EXPECT_EQ(slurp(first.request.cache_root / "failed" / "ngs.bin"), "second");
+}
+
 // Each answer the tool cannot use is a service error naming the service, and nothing is stored.
 struct BadAnswer {
     const char* what;

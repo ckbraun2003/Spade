@@ -78,6 +78,67 @@ TEST(GeoCli, AFetchPrintsTheStagesAndEndsWithTheResultLine) {
     EXPECT_NE(all.find("done"), std::string::npos);
 }
 
+// The summary of a run, so a live check reads off one screen what came back (L85g): the geoid height and model, the grid and the image,
+// the box, and the bytes each service sent. It comes before the result line, which stays last.
+TEST(GeoCli, AFetchPrintsASummaryBeforeTheResultLine) {
+    CliRig rig;
+    ASSERT_EQ(rig.run(rig.base()), 0) << rig.err.str();
+    const GeoFixture f;
+    const auto lines = rig.lines();
+    ASSERT_GE(lines.size(), 6u);
+    EXPECT_TRUE(starts_with(lines.back(), "fetched ")) << lines.back();
+    const auto find_line = [&](const std::string& prefix) {
+        for (const std::string& l : lines) {
+            if (starts_with(l, prefix)) return l;
+        }
+        return std::string();
+    };
+    const std::string geoid = find_line("geoid height:");
+    EXPECT_NE(geoid.find("GEOID18"), std::string::npos) << geoid;
+    EXPECT_NE(geoid.find("-23.4"), std::string::npos) << geoid;
+    EXPECT_NE(find_line("elevation grid:").find("4 x 4"), std::string::npos) << find_line("elevation grid:");
+    EXPECT_NE(find_line("image size:").find("2 x 2"), std::string::npos) << find_line("image size:");
+    const std::string box = find_line("box:");
+    EXPECT_NE(box.find("-113"), std::string::npos) << box;
+    EXPECT_NE(box.find("40.01"), std::string::npos) << box;
+    const std::string got = find_line("received:");
+    EXPECT_NE(got.find("geoid " + std::to_string(f.geoid.size()) + " bytes"), std::string::npos) << got;
+    EXPECT_NE(got.find("elevation " + std::to_string(f.tiff.size()) + " bytes"), std::string::npos) << got;
+    EXPECT_NE(got.find("image " + std::to_string(f.png.size()) + " bytes"), std::string::npos) << got;
+    // the same summary on a hit, which asked nobody
+    ASSERT_EQ(rig.run(rig.base()), 0);
+    EXPECT_NE(rig.out.str().find("geoid height:"), std::string::npos) << rig.out.str();
+    EXPECT_NE(rig.out.str().find("received: nothing"), std::string::npos) << rig.out.str();
+}
+
+TEST(GeoCli, TheJsonResultCarriesTheSameSummary) {
+    CliRig rig;
+    auto args = rig.base();
+    args.push_back("--json");
+    ASSERT_EQ(rig.run(args), 0) << rig.err.str();
+    const GeoFixture f;
+    const std::string last = rig.last();
+    EXPECT_NE(last.find("\"geoid_model\":\"GEOID18\""), std::string::npos) << last;
+    EXPECT_NE(last.find("\"elevation_width\":4,\"elevation_height\":4"), std::string::npos) << last;
+    EXPECT_NE(last.find("\"image_width\":2,\"image_height\":2"), std::string::npos) << last;
+    EXPECT_NE(last.find("\"west_deg\":-113"), std::string::npos) << last;
+    EXPECT_NE(last.find("\"north_deg\":40.01"), std::string::npos) << last;
+    EXPECT_NE(last.find("\"bytes_geoid\":" + std::to_string(f.geoid.size())), std::string::npos) << last;
+    EXPECT_NE(last.find("\"bytes_elevation\":" + std::to_string(f.tiff.size())), std::string::npos) << last;
+    EXPECT_NE(last.find("\"bytes_image\":" + std::to_string(f.png.size())), std::string::npos) << last;
+}
+
+TEST(GeoCli, AFailedRunSaysWhereTheAnswerWasKept) {
+    CliRig rig([](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find("geodesy") != std::string::npos) r.body = "<html>nope</html>";
+        return r;
+    });
+    EXPECT_EQ(rig.run(rig.base()), 11);
+    EXPECT_NE(rig.last().find("ngs.bin"), std::string::npos) << rig.last();
+    EXPECT_TRUE(fs::exists(rig.tmp.path() / "maps" / "failed" / "ngs.bin"));
+}
+
 TEST(GeoCli, JsonGivesOneObjectALineAndTheResultLast) {
     CliRig rig;
     auto args = rig.base();
