@@ -59,6 +59,8 @@ TEST(FlowMovieMaterials, TheTableKnowsTheRolesTheAirframesUseAndEachColourIsInRa
     EXPECT_GT(luma(*flow_movie::role_colour("body")), luma(*flow_movie::role_colour("battery")) + 0.2f)
         << "the shell is pale, the battery darker";
     EXPECT_GT(luma(*flow_movie::role_colour("motor")), luma(*flow_movie::role_colour("prop"))) << "metal over carbon";
+    // The website clips are on black (the lead, 2026-11-17): a near-black blade vanished against it, so all four props read as a mid grey.
+    EXPECT_GE(luma(*flow_movie::role_colour("prop")), 0.30f) << "a blade must show against a black background";
     EXPECT_LT(luma(*flow_movie::role_colour("camera")), 0.12f) << "the camera is near-black";
 }
 
