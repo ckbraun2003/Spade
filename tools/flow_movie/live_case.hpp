@@ -47,7 +47,19 @@ struct LiveCase {
     // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
     // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.
     float sgs_cs = 0.0f;
+    // L86c: the resolved domain named in words (domain_line()), for a still-air clip's log, run header and caption:
+    // the ambient wind, each face, the grid, h and Cs. Empty for a film that does not name it. Not in identity.
+    std::string domain;
 };
+
+// The resolved case's domain in one line: "domain: ambient (0, 0, 0) m/s; faces x- open, ...; 240 x 392 x 168 cells at
+// 4 mm; step 0.2 ms; Cs 0.17", so a stray wind cannot slip into a clip unseen (Physics' harness box once carried D1's own
+// 3 m/s ambient without saying so).
+[[nodiscard]] std::string domain_line(const spade::analysis::ResolvedCase& r, float step_s, float sgs_cs);
+
+// "" when the resolved case's ambient is zero (still air); else a sentence naming the wind it found, for a clip that
+// is meant to be in still air.
+[[nodiscard]] std::string still_air_refusal(const spade::analysis::ResolvedCase& r);
 
 // The fastest the case's air is expected to move, m/s, at least 1: the
 // speed colours' top when the film sets one; else momentum theory's 2 v_h at

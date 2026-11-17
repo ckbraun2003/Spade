@@ -107,3 +107,59 @@ TEST(FlowMovieLiveCase, TheCachesMarkNamesTheHoldOnlyWhenThereIsOne) {
     ASSERT_TRUE(web_deep.has_value()) << web_deep.error().context;
     EXPECT_NE(web_deep->identity.find("hold"), std::string::npos) << web_deep->identity;
 }
+
+// L86c (the lead, from Physics' harness box that carried D1's own 3 m/s ambient without saying so): a still-air clip's
+// log, run header and caption name the ambient, the faces, the grid, h and Cs, so a stray wind cannot slip in, and a still
+// clip whose resolved case has any wind is refused by name.
+TEST(FlowMovieLiveCase, TheStillAirClipsResolvedDomainHasNoWindAndItsLineSaysSo) {
+    const auto lc = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f);
+    ASSERT_TRUE(lc.has_value()) << lc.error().context;
+    const auto resolved = flow_movie::resolve_live(*lc);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    EXPECT_EQ(resolved->domain.ambient, glm::vec3(0.0f)) << "still air: no ambient wind";
+    EXPECT_EQ(flow_movie::still_air_refusal(*resolved), "");
+    const std::string line = flow_movie::domain_line(*resolved, 0.0002f, 0.17f);
+    EXPECT_NE(line.find("ambient (0, 0, 0) m/s"), std::string::npos) << line;
+    EXPECT_NE(line.find("x- open, x+ open, y- open, y+ open, z- open, z+ open"), std::string::npos) << line;
+    EXPECT_NE(line.find("240 x 392 x 168 cells at 4 mm"), std::string::npos) << line;
+    EXPECT_NE(line.find("step 0.2 ms"), std::string::npos) << line;
+    EXPECT_NE(line.find("Cs 0.17"), std::string::npos) << line;
+    EXPECT_NE(lc->domain.find("ambient (0, 0, 0) m/s"), std::string::npos) << "the case carries it for the caption";
+    EXPECT_NE(lc->notes.find("ambient (0, 0, 0) m/s"), std::string::npos) << lc->notes;
+}
+
+TEST(FlowMovieLiveCase, ASideWindClipSaysItsWindAndAStillClipWithAWindIsRefused) {
+    const auto side = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 90.0f, 0.0002f, 0.17f);
+    ASSERT_TRUE(side.has_value()) << side.error().context;
+    const auto resolved = flow_movie::resolve_live(*side);
+    ASSERT_TRUE(resolved.has_value()) << resolved.error().context;
+    EXPECT_NEAR(resolved->domain.ambient.x, 0.0f, 1e-5f);  // heading 90: the air moves +z at 3 m/s (cos32 leaves ~3e-7)
+    EXPECT_NEAR(resolved->domain.ambient.y, 0.0f, 1e-5f);
+    EXPECT_NEAR(resolved->domain.ambient.z, 3.0f, 1e-5f);
+    EXPECT_NE(side->domain.find("ambient (0, 0, 3) m/s"), std::string::npos) << side->domain;
+    EXPECT_EQ(flow_movie::still_air_refusal(*resolved).empty(), false) << "the side wind is not still air";
+    // The refusal names the wind it found.
+    spade::analysis::ResolvedCase windy = *resolved;
+    windy.domain.ambient = glm::vec3(-3.0f, 0.0f, 0.0f);  // Physics' harness box carried this
+    const std::string why = flow_movie::still_air_refusal(windy);
+    EXPECT_NE(why.find("(-3, 0, 0) m/s"), std::string::npos) << why;
+    EXPECT_NE(why.find("still"), std::string::npos) << why;
+}
+
+// The hover throttle is the same in still air and in D1's 3 m/s case: the trim finds the hover from the drone's mass, the
+// air's density and the charge (analysis/live_run.cpp's hover_point), never from the case's wind. So S1, S8 and S2 hover at
+// the still-air trim whatever d1_case() set its wind to when it trimmed (a characterization: green from the start).
+TEST(FlowMovieLiveCase, TheHoverTrimDoesNotDependOnTheCasesWind) {
+    const auto windy = spade::testing::d1_case(0.01, kD1Grid);  // flight.kind hover_in_wind, 3 m/s
+    ASSERT_TRUE(windy.has_value()) << windy.error().context;
+    ASSERT_EQ(windy->c.flight.speed, 3.0f);
+    const auto still = flow_movie::d1_still_air_live_case(0.01, kD1Grid);
+    ASSERT_TRUE(still.has_value()) << still.error().context;
+    ASSERT_EQ(still->c.flight.speed, 0.0f);
+    const auto in_still = spade::analysis::showcase_trim(still->c, still->run_model);
+    ASSERT_TRUE(in_still.has_value()) << in_still.error().context;
+    EXPECT_EQ(windy->trim.hover, in_still->hover) << "the same hover throttle, bit for bit";
+    EXPECT_EQ(windy->trim.climb, in_still->climb);
+    ASSERT_EQ(still->program.points.size(), 1u);
+    EXPECT_EQ(still->program.points.front().controls.throttle, in_still->hover) << "the film flies the still-air trim";
+}

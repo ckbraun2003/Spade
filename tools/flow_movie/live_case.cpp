@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <format>
 #include <numbers>
 #include <string>
 #include <utility>
@@ -111,6 +112,36 @@ float expected_speed(const LiveCase& lc) {
 
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
     return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold);
+}
+
+namespace {
+// A component under a ten-thousandth of a metre a second prints as 0: heading 90's cos32 leaves 3e-7 m/s on an axis that is
+// not in the wind, and "-0" or "3.4e-07" in a caption would read as a wind that is not there. A real wind prints as it is.
+[[nodiscard]] float shown(float x) { return std::abs(x) < 1e-4f ? 0.0f : x; }
+
+[[nodiscard]] std::string vec_text(const glm::vec3& v) {
+    return std::format("({:g}, {:g}, {:g})", shown(v.x), shown(v.y), shown(v.z));
+}
+}  // namespace
+
+std::string domain_line(const an::ResolvedCase& r, float step_s, float sgs_cs) {
+    namespace af = spade::physics::airflow;
+    static constexpr const char* kSide[6] = {"x-", "x+", "y-", "y+", "z-", "z+"};
+    std::string faces;
+    for (std::size_t s = 0; s < 6; ++s) {
+        const af::FaceBc bc = r.domain.face[s];
+        const char* name = bc == af::FaceBc::open ? "open" : bc == af::FaceBc::wall ? "wall" : "periodic";
+        faces += std::format("{}{} {}", s == 0 ? "" : ", ", kSide[s], name);
+    }
+    return std::format("domain: ambient {} m/s; faces {}; {} x {} x {} cells at {:.3g} mm; step {:.3g} ms; Cs {:g}",
+                       vec_text(r.domain.ambient), faces, r.base.nx, r.base.ny, r.base.nz,
+                       static_cast<double>(r.base.dx) * 1000.0, static_cast<double>(step_s) * 1000.0, sgs_cs);
+}
+
+std::string still_air_refusal(const an::ResolvedCase& r) {
+    if (r.domain.ambient == glm::vec3(0.0f)) return {};
+    return "a still-air clip resolved with an ambient wind of " + vec_text(r.domain.ambient) +
+           " m/s: still air is (0, 0, 0), and a side-wind clip has its own name";
 }
 
 spade::Result<LiveCase> live_case_from_files(const fs::path& case_file, const fs::path& controls_file, double seconds) {
@@ -262,6 +293,16 @@ spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::a
     std::snprintf(line, sizeof line, "; step %.2g ms with a Smagorinsky subgrid viscosity, Cs %.2f",
                   static_cast<double>(step_s) * 1000.0, static_cast<double>(sgs_cs));
     made->notes += line;
+    // L86c: the resolved domain, named; a still-air clip with any wind in it is refused, not filmed.
+    const auto resolved = resolve_live(*made);
+    if (!resolved) return std::unexpected(resolved.error());
+    if (heading_deg == 0.0f) {
+        if (const std::string why = still_air_refusal(*resolved); !why.empty()) {
+            return std::unexpected(spade::Error{spade::Code::invalid_argument, why});
+        }
+    }
+    made->domain = domain_line(*resolved, step_s, sgs_cs);
+    made->notes += "; " + made->domain;
     auto id = identity_of(*made);
     if (!id) return std::unexpected(id.error());
     made->identity = std::move(*id);
