@@ -43,6 +43,15 @@ class Handle {
     }
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
+    Handle(Handle&& other) noexcept : h_(other.h_) { other.h_ = nullptr; }
+    Handle& operator=(Handle&& other) noexcept {
+        if (this != &other) {
+            if (h_ != nullptr) WinHttpCloseHandle(h_);
+            h_ = other.h_;
+            other.h_ = nullptr;
+        }
+        return *this;
+    }
     [[nodiscard]] HINTERNET get() const { return h_; }
     [[nodiscard]] explicit operator bool() const { return h_ != nullptr; }
 
@@ -94,7 +103,9 @@ class WinHttpClient final : public HttpClient {
         const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
         const std::wstring object(parts.lpszUrlPath, parts.dwUrlPathLength + parts.dwExtraInfoLength);
 
-        const std::wstring agent = widen(std::string("spade-geo-fetch/") + spade::version::kString);
+        std::string agent_name = "spade-geo-fetch/";
+        agent_name.append(spade::version::kString);
+        const std::wstring agent = widen(agent_name);
         Handle session(WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                                    WINHTTP_NO_PROXY_BYPASS, 0));
         if (!session) {  // before Windows 8.1 there is no automatic proxy mode
