@@ -328,3 +328,83 @@ TEST(FlowMovieLook, OnlyTheLinesAddedByTheViewAreFaded) {
     EXPECT_EQ(scene.flow_polylines[1].colours.front(), glm::vec3(0.0f));
 }
 
+// The soft edge of a drawn wake (the lead, 2026-11-17: the wake fades out before the frame's bottom edge, and a wake that meets
+// the box's side face does not show the face as a straight cut): the velocity scaled by a smoothstep of the distance to the box's
+// side faces (x and z) over side_m, and by a smoothstep of the height from floor_from_y (full) down to floor_to_y (nothing). The
+// dye channel, a no-data half and every other channel are left alone; the header's velocity range is made again.
+namespace {
+spade::FlowVolume uniform_down_flow(uint32_t n, float cell, glm::vec3 origin) {
+    spade::FlowVolume v;
+    v.header.origin = origin;
+    v.header.cell = cell;
+    v.header.nx = v.header.ny = v.header.nz = n;
+    const std::size_t cells = std::size_t{n} * n * n;
+    v.v.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    v.s.assign(cells * spade::kFlowHalvesPerCell, 0u);
+    for (std::size_t c = 0; c < cells; ++c) {
+        v.v[c * spade::kFlowHalvesPerCell + 1] = spade::fp16::from_f32(-5.0f).bits;  // v: 5 m/s down
+        v.v[c * spade::kFlowHalvesPerCell + 3] = spade::fp16::from_f32(0.75f).bits;  // the dye
+    }
+    return v;
+}
+float speed_down(const spade::FlowVolume& v, uint32_t i, uint32_t j, uint32_t k) {
+    return -spade::fp16::to_f32(v.v[spade::flow_cell_index(v.header, i, j, k) * spade::kFlowHalvesPerCell + 1]);
+}
+}  // namespace
+
+TEST(FlowMovieLook, AWakeFadesOutOverTheSideFacesAndBelowTheFloorHeightAndNothingElseMoves) {
+    auto v = uniform_down_flow(12, 0.1f, glm::vec3(-0.6f, -1.2f, -0.6f));  // a 1.2 m cube: y from -1.2 to 0
+    const auto before = v;
+    flow_movie::WakeFade fade;
+    fade.side_m = 0.2f;          // two cells
+    fade.floor_from_y = -0.6f;   // full above this
+    fade.floor_to_y = -1.0f;     // nothing at or below this
+    flow_movie::fade_wake_edges(v, fade);
+    EXPECT_FLOAT_EQ(speed_down(v, 6, 9, 6), 5.0f) << "the middle of the side faces, above the fade: untouched";
+    const float smooth_quarter = 0.25f * 0.25f * (3.0f - 2.0f * 0.25f);  // 0.05 m from a face of a 0.2 m fade
+    EXPECT_NEAR(speed_down(v, 0, 9, 6), 5.0f * smooth_quarter, 5.0f * 2e-3f) << "a cell centre 0.05 m from the -x face";
+    EXPECT_NEAR(speed_down(v, 6, 9, 11), 5.0f * smooth_quarter, 5.0f * 2e-3f) << "and from the +z face";
+    EXPECT_NEAR(speed_down(v, 0, 9, 0), 5.0f * smooth_quarter * smooth_quarter, 5.0f * 2e-3f) << "a corner takes both";
+    EXPECT_FLOAT_EQ(speed_down(v, 6, 0, 6), 0.0f) << "below floor_to_y: nothing";
+    const float t = (-0.6f - -0.75f) / 0.4f;  // the cell centre at y = -0.75 is 0.375 of the way down the fade
+    EXPECT_NEAR(speed_down(v, 6, 4, 6), 5.0f * (1.0f - t * t * (3.0f - 2.0f * t)), 5.0f * 2e-3f);
+    for (std::size_t c = 0; c < std::size_t{12} * 12 * 12; ++c) {
+        EXPECT_EQ(v.v[c * spade::kFlowHalvesPerCell + 3], before.v[c * spade::kFlowHalvesPerCell + 3]) << "the dye";
+        EXPECT_EQ(v.v[c * spade::kFlowHalvesPerCell + 0], before.v[c * spade::kFlowHalvesPerCell + 0]) << "u was zero";
+    }
+    EXPECT_EQ(v.s, before.s) << "the second texture is not touched";
+    EXPECT_NE(v.generation, before.generation) << "a write names new content";
+    EXPECT_LE(v.header.channel_max[1], 0.0f) << "the velocity range is made again";
+    EXPECT_GE(v.header.channel_min[1], -5.001f);
+
+    auto unchanged = before;
+    flow_movie::fade_wake_edges(unchanged, flow_movie::WakeFade{});
+    EXPECT_EQ(unchanged.v, before.v) << "no fade asked, nothing changes";
+    EXPECT_FALSE(flow_movie::WakeFade{}.on());
+    EXPECT_TRUE(fade.on());
+}
+
+TEST(FlowMovieLook, ANoDataHalfStaysNoDataUnderTheFade) {
+    auto v = uniform_down_flow(8, 0.1f, glm::vec3(-0.4f, -0.8f, -0.4f));
+    const std::size_t cell = spade::flow_cell_index(v.header, 0, 4, 4);
+    v.v[cell * spade::kFlowHalvesPerCell + 1] = spade::fp16::kNoDataBits;
+    flow_movie::WakeFade fade;
+    fade.side_m = 0.2f;
+    flow_movie::fade_wake_edges(v, fade);
+    EXPECT_EQ(v.v[cell * spade::kFlowHalvesPerCell + 1], spade::fp16::kNoDataBits);
+}
+
+// The look line declares the fade, never hides it.
+TEST(FlowMovieLook, TheFadeIsDeclaredInTheLooksSentence) {
+    flow_movie::Look look;
+    look.fade.side_m = 0.1f;
+    look.fade.floor_from_y = -0.33f;
+    look.fade.floor_to_y = -0.55f;
+    EXPECT_TRUE(look.any());
+    const std::string note = flow_movie::look_note(look, 2.0);
+    EXPECT_NE(note.find("fades"), std::string::npos) << note;
+    EXPECT_NE(note.find("0.1 m"), std::string::npos) << note;
+    EXPECT_NE(note.find("0.55"), std::string::npos) << note;
+    EXPECT_FALSE(flow_movie::Look{}.any());
+}
+
