@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,6 +19,7 @@
 #include "compute/grid_entry.hpp"
 #include "compute/step_params.hpp"
 #include "core/error.hpp"
+#include "core/geodesy.hpp"
 #include "core/time.hpp"
 #include "physics/forces.hpp"
 #include "physics/grid.hpp"
@@ -688,6 +690,9 @@ public:
 
     // --- shape and time ---------------------------------------------------
     [[nodiscard]] uint32_t world_count() const noexcept { return layout_.world_count; }
+    // The geodetic anchor world `world_index` was created with (WorldDesc::anchor), or an empty optional for a plain world (L85 SP-2).
+    // not_found for an index past world_count().
+    [[nodiscard]] Result<std::optional<geo::Geodetic>> world_anchor(uint32_t world_index) const;
     [[nodiscard]] Tick tick() const noexcept { return tick_; }
     // The behaviors this Simulation runs, or nullptr for none (the default,
     // and what every golden-corpus scenario uses). NOT OWNED: the caller keeps
@@ -1810,6 +1815,15 @@ public:
     // ---------------------------------------------------------------------
     [[nodiscard]] Result<GnssPoll> poll_gnss(GnssSensorRef ref, sensors::SampleIndex since_index,
                                              std::span<sensors::GnssFix> out) const;
+
+    // poll_gnss plus the WGS84 coordinates of each fix (L85 SP-3): geodetic[i] is the latitude and longitude in degrees and the height in
+    // metres above the ellipsoid of out[i], for the n fixes the poll returns, converted from the fix's stored (noisy) position by the
+    // world's anchor. Nothing is drawn from the noise stream and the ring is not touched. `geodetic` must hold at least out.size()
+    // elements (invalid_argument). unavailable, naming the missing anchor, when this receiver's world has none: a plain world never
+    // reports coordinates, so zeros cannot be mistaken for a place.
+    [[nodiscard]] Result<GnssPoll> poll_gnss_geodetic(GnssSensorRef ref, sensors::SampleIndex since_index,
+                                                      std::span<sensors::GnssFix> out,
+                                                      std::span<geo::Geodetic> geodetic) const;
 
     // This receiver's table row -- its lever arm, its configured sigmas, its
     // two derived coefficients, and its live bias/phase/stream/cursor state.

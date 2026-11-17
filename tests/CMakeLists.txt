@@ -129,6 +129,8 @@ add_executable(spade_tests
     test_object_file.cpp
     test_library_crate.cpp
     test_geodesy.cpp
+    test_world_anchor.cpp
+    test_gnss_geodetic.cpp
     test_library_quad.cpp
     test_library.cpp
     test_library_props.cpp

@@ -3932,6 +3932,17 @@ Result<GnssPoll> Simulation::poll_gnss(GnssSensorRef ref, sensors::SampleIndex s
     return poll_sensor(arenas_, gnss_id_, gnss_ring_id_, ref.slot, since_index, out, "poll_gnss");
 }
 
+Result<GnssPoll> Simulation::poll_gnss_geodetic(GnssSensorRef, sensors::SampleIndex, std::span<sensors::GnssFix>,
+                                                std::span<geo::Geodetic>) const {
+    // RED stub (L85 SP-3).
+    return std::unexpected(Error{Code::unavailable, "poll_gnss_geodetic: not built yet"});
+}
+
+Result<std::optional<geo::Geodetic>> Simulation::world_anchor(uint32_t) const {
+    // RED stub (L85 SP-2).
+    return std::optional<geo::Geodetic>{};
+}
+
 Result<const sensors::GnssSensorRow*> Simulation::gnss_sensor(GnssSensorRef ref) const {
     if (Result<void> valid = validate_gnss_ref(ref); !valid) {
         return std::unexpected(valid.error());
