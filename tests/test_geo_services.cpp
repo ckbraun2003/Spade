@@ -36,7 +36,9 @@ TEST(GeoServices, TheImageRequestAsksForNaipAnRgbPngOverTheArea) {
 }
 
 TEST(GeoServices, TheGeoidRequestAsksNgsForGeoid18AtTheAnchor) {
-    EXPECT_EQ(geoid_url(40.76, -113.9), "https://geodesy.noaa.gov/api/geoid/ght?lat=40.760000000&lon=-113.900000000&model=18");
+    // model is NGS's numeric ID, not the year: 14 is GEOID18 (https://geodesy.noaa.gov/web_services/geoid.shtml); 18 is no ID, and the
+    // first live check (L85f) got an error answer for it.
+    EXPECT_EQ(geoid_url(40.76, -113.9), "https://geodesy.noaa.gov/api/geoid/ght?lat=40.760000000&lon=-113.900000000&model=14");
 }
 
 TEST(GeoServices, EveryUrlNamesOneOfTheThreeHosts) {
@@ -83,11 +85,13 @@ TEST(GeoServices, TheGeoidAnswerGivesTheHeightAndTheModel) {
     EXPECT_EQ(r->model, "GEOID18");
 }
 
-TEST(GeoServices, TheGeoidAnswerWithoutAModelKeyIsTakenAsGeoid18) {
+TEST(GeoServices, TheGeoidAnswerWithoutAModelKeyIsRefusedByName) {
+    // NGS's own page shows GEOID12B for a request with no model, so an answer that does not say GEOID18 is not taken as it.
     const auto r = parse_geoid_json(R"({ "geoidHeight" : -24.5 })");
-    ASSERT_TRUE(r.has_value()) << r.error().context;
-    EXPECT_EQ(r->height_m, -24.5);
-    EXPECT_EQ(r->model, "GEOID18");
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().code, spade::Code::schema_mismatch);
+    EXPECT_NE(r.error().context.find("geoidModel"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("GEOID18"), std::string::npos) << r.error().context;
 }
 
 TEST(GeoServices, AGeoidAnswerThatIsNotUsableIsNamed) {

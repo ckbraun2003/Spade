@@ -219,6 +219,50 @@ TEST(GeoFetch, AServiceThatKeepsFailingIsAServiceErrorNamingIt) {
     EXPECT_FALSE(fs::exists(rig.entry()));
 }
 
+// A refused answer is quoted, so a person can see what the service said (the first live check, L85f, got 59 bytes and no way to read them).
+[[nodiscard]] FetchResult run_with_answer(const char* host, int status, const std::string& body) {
+    Rig rig([&](const std::string& url, int nth) {
+        HttpResponse r = FakeHttp::serve(GeoFixture{})(url, nth);
+        if (url.find(host) != std::string::npos) {
+            r.status = status;
+            r.body = body;
+        }
+        return r;
+    });
+    return rig.run();
+}
+
+TEST(GeoFetch, AnAnswerThatIsNoUseIsQuotedInTheErrorOfEachService) {
+    const FetchResult geoid = run_with_answer("geodesy", 200, R"({"error":"model 18 is not a geoid model"})");
+    EXPECT_EQ(geoid.kind, FetchResultKind::service_error);
+    EXPECT_EQ(geoid.service, "ngs");
+    EXPECT_NE(geoid.message.find("model 18 is not a geoid model"), std::string::npos) << geoid.message;
+
+    const FetchResult dem = run_with_answer("elevation", 200, "<html>ArcGIS: invalid bbox</html>");
+    EXPECT_EQ(dem.service, "3dep");
+    EXPECT_NE(dem.message.find("invalid bbox"), std::string::npos) << dem.message;
+
+    const FetchResult naip = run_with_answer("imagery", 200, R"({"error":{"code":400,"message":"Unable to complete operation."}})");
+    EXPECT_EQ(naip.service, "naip");
+    EXPECT_NE(naip.message.find("Unable to complete operation"), std::string::npos) << naip.message;
+
+    const FetchResult http = run_with_answer("geodesy", 400, "no such model");
+    EXPECT_EQ(http.service, "ngs");
+    EXPECT_NE(http.message.find("HTTP 400"), std::string::npos) << http.message;
+    EXPECT_NE(http.message.find("no such model"), std::string::npos) << http.message;
+}
+
+TEST(GeoFetch, AQuotedAnswerIsAtMost120BytesOfPrintableCharacters) {
+    const std::string body = std::string("\x01\x02", 2) + std::string(300, 'A') + "\r\n\x7f\xc3\xa9";
+    const FetchResult r = run_with_answer("geodesy", 200, body);
+    ASSERT_EQ(r.kind, FetchResultKind::service_error);
+    EXPECT_NE(r.message.find(".." + std::string(118, 'A')), std::string::npos) << r.message;  // 120 bytes: two dots and 118 A
+    EXPECT_EQ(r.message.find(std::string(119, 'A')), std::string::npos) << r.message;
+    for (const char c : r.message) {
+        EXPECT_TRUE(c >= 0x20 && c < 0x7f) << static_cast<int>(static_cast<unsigned char>(c));
+    }
+}
+
 // Each answer the tool cannot use is a service error naming the service, and nothing is stored.
 struct BadAnswer {
     const char* what;
