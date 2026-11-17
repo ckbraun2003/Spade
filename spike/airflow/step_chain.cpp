@@ -411,6 +411,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
             line->polar->cd.size() != line->polar->key.size()) {
             return std::unexpected(invalid("line: a polar of 2 to kAirflowLinePolarCapacity points is needed"));
         }
+        if (line->binned) return std::unexpected(invalid("line: the binned spread is not written yet"));
         if (line->elements == 0u || line->elements > kAirflowLineMaxElements || line->n_sub == 0u) {
             return std::unexpected(invalid("line: elements must be 1 to kAirflowLineMaxElements and n_sub at least 1"));
         }

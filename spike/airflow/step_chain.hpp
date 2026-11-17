@@ -108,6 +108,11 @@ struct LineSetup {
     // L72k's A1: the chain carries airflow_line_tipcorr (the tip/smearing correction, between the sample and the load) and the
     // elements buffer the groups' records. A rotor with tip_correction on is refused by a GpuFluid made without it.
     bool tip_correction = true;  // the rotors' default (LineRotor::tip_correction); a LineSetup must agree with them
+    // L86i: the spread by rotor boxes (airflow_line_spread_binned): a face visits only the rotors whose stencil box holds it, so the
+    // cost is the rotors' faces x their elements, not the grid's faces x all elements (the deep box: 380 ms a step less). The bits are the
+    // unbinned kernel's. `rotors` is the count of rotors every step gives, at least 1; each step's lines must be that many.
+    bool binned = false;
+    uint32_t rotors = 0;
 };
 
 // THE PASSIVE DYE (P10; physics/airflow/dye.hpp, the kernels airflow_dye_{advect,source,publish}): what a GpuFluid that carries a

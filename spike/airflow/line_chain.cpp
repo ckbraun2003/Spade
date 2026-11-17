@@ -151,4 +151,6 @@ std::vector<af::LineReport> line_reports(const LineRecords& records, std::span<c
     return out;
 }
 
+std::vector<float> line_ranges(const LineRecords&) { return {}; }
+
 }  // namespace spade::airflow_gpu

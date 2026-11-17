@@ -9,7 +9,8 @@
 // vehicles::rotor_lines() with the part's blade and polar (scene::line_propeller()), the dye released at the rotors' discs (zero load:
 // the lines carry the force). Knobs: SPADE_LINE_STILLS_STEPS (default "300,700,1200,1800"), SPADE_LINE_STILLS_NSUB (8),
 // SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
-// SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline).
+// SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline),
+// SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -25,6 +26,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,6 +46,7 @@
 #include "scene/model_file.hpp"
 #include "scene/part_file.hpp"
 #include "scene/prop_line.hpp"
+#include "spike/airflow/line_chain.hpp"
 #include "spike/airflow/step_chain.hpp"
 #include "vehicles/rotor_discs.hpp"
 #include "vehicles/rotor_lines.hpp"
@@ -210,7 +213,12 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value()) << ctx.error().context;
     const ag::LineSetup line_setup{.polar = &prop->polar, .elements = elements, .n_sub = n_sub, .tip_correction = true};
-    const ag::DyeSetup dye_setup{af::DyeRelease{}};
+    // The tips' release (the helices) and, with SPADE_LS_RING=1, the disc tip ring's as before; SPADE_TIP_GAIN is the tip release's gain.
+    af::DyeRelease ring{};
+    if (flow_still::env_cstr("SPADE_LS_RING") == nullptr) ring.rate = 0.0f;
+    const af::TipRelease tip{.gain = flow_still::env_float("SPADE_TIP_GAIN", 4.0f),
+                             .tip_frac = flow_still::env_float("SPADE_TIP_FRAC", 1.0f)};
+    const ag::DyeSetup dye_setup{ring, discs_only ? std::nullopt : std::optional<af::TipRelease>(tip)};
     auto gpu = ag::GpuFluid::create(**ctx, box.grid, box.bc, box.cfg, &box.solids, 64u,
                                     discs_only ? nullptr : &line_setup, &dye_setup);
     ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
@@ -232,9 +240,25 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     const char* views_wanted = env_cstr("SPADE_LS_VIEWS") != nullptr ? env_cstr("SPADE_LS_VIEWS") : "a";  // of a, b, c
     const auto t_start = std::chrono::steady_clock::now();
     spade::FlowVolume volume;
+    double step_s = 0.0;
+    uint32_t steps_timed = 0;
     for (uint32_t step = 1; step <= last; ++step) {
         for (std::size_t i = 0; i < lines.size(); ++i) lines[i].psi = psi[i];
+        const auto t_step = std::chrono::steady_clock::now();
         const auto health = discs_only ? (*gpu)->step(box.discs) : (*gpu)->step(dye_discs, lines);
+        step_s += std::chrono::duration<double>(std::chrono::steady_clock::now() - t_step).count();
+        ++steps_timed;
+        if (step == 20 && !discs_only) {  // where a line step's time goes: the host's packing alone, 5 times
+            const auto t_pack = std::chrono::steady_clock::now();
+            for (int rep = 0; rep < 5; ++rep) {
+                const auto records = ag::line_records(lines, shape, box.cfg.rho, box.cfg.h, n_sub);
+                ASSERT_TRUE(records.has_value());
+            }
+            std::printf("[ lines   ] line_records() alone: %.1f ms a step; the whole step %.1f ms so far\n",
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_pack).count() / 5.0,
+                        step_s / static_cast<double>(steps_timed) * 1000.0);
+            std::fflush(stdout);
+        }
         ASSERT_TRUE(health.has_value()) << "step " << step << ": " << health.error().context;
         ASSERT_EQ(health->fault, af::FluidFault::none) << "step " << step;
         for (float& a : psi) a = std::fmod(a + omega * box.cfg.h, kTwoPi);
@@ -243,7 +267,8 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         double thrust = 0.0;
         for (const af::LineReport& r : (*gpu)->line_reports()) thrust += static_cast<double>(r.thrust);
         ASSERT_TRUE((*gpu)->publish(box.origin, volume).has_value());
-        std::printf("[ lines   ] step %u (%.3f s), wall %.0f s: lines' thrust %.3f N in all (%zu reports)\n", step,
+        std::printf("[ lines   ] solve %.0f ms a step; step %u (%.3f s), wall %.0f s: lines' thrust %.3f N in all (%zu reports)\n",
+                    step_s / static_cast<double>(steps_timed) * 1000.0, step,
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count(), thrust,
                     (*gpu)->line_reports().size());
