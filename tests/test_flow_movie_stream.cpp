@@ -83,7 +83,9 @@ TEST(FlowMovieStream, AStillOnlyRunDrawsTwoFramesAndKeepsThem) {
     EXPECT_FALSE(plan.spent(150u, 300u));
     EXPECT_EQ(plan.last_frame(), 300u);
     for (uint32_t j = 0; j < 400u; ++j) {
-        if (j != 150u && j != 300u) EXPECT_FALSE(plan.needed(j)) << j;
+        if (j != 150u && j != 300u) {
+            EXPECT_FALSE(plan.needed(j)) << j;
+        }
     }
 }
 
@@ -170,4 +172,23 @@ TEST(FlowMovieStream, ARequestThatCannotStreamIsRefusedByName) {
     again.frames_on_disk = true;
     again.resimulate = true;
     EXPECT_EQ(flow_movie::stream_refusal(again), "") << "--resimulate clears the folder, so frames on disk are no obstacle";
+}
+
+// A diagnostic still (another Cs, another size) never takes a master's file name: the pairs the lead looks at are named for
+// the clip, the frame, the Cs, the size and the look, so two of them cannot overwrite one another or a delivered still.
+TEST(FlowMovieStream, ADiagnosticStillsNameSaysWhatItShows) {
+    flow_movie::Look none;
+    EXPECT_EQ(flow_movie::diag_still_name("S2", 150u, 0.17f, 1920u, 1080u, none), "S2-f150-cs0.17-1920x1080.png");
+    EXPECT_EQ(flow_movie::diag_still_name("S2", 300u, 0.0f, 1920u, 1080u, none), "S2-f300-cs0-1920x1080.png");
+    flow_movie::Look look;
+    look.l2_level = 120.0f;
+    look.l2_smooth = true;
+    look.min_cells = 27u;
+    look.mean_frames = 10u;
+    EXPECT_EQ(flow_movie::diag_still_name("S2", 300u, 0.0f, 1920u, 1080u, look), "S2-f300-cs0-1920x1080-l2-120-smooth-cull27-mean10.png");
+    flow_movie::Look level_only;
+    level_only.l2_level = 12.5f;
+    EXPECT_EQ(flow_movie::diag_still_name("S3", 7u, 0.25f, 1280u, 720u, level_only), "S3-f7-cs0.25-1280x720-l2-12.5.png");
+    EXPECT_NE(flow_movie::diag_still_name("S2", 150u, 0.17f, 1920u, 1080u, none),
+              flow_movie::diag_still_name("S2", 150u, 0.0f, 1920u, 1080u, none));
 }
