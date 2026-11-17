@@ -163,3 +163,17 @@ TEST(FlowMovieLiveCase, TheHoverTrimDoesNotDependOnTheCasesWind) {
     ASSERT_EQ(still->program.points.size(), 1u);
     EXPECT_EQ(still->program.points.front().controls.throttle, in_still->hover) << "the film flies the still-air trim";
 }
+
+// L63 made the deeper box the still-air clips' own (S1, S2, S8: the cameras' floor is 1.214 m under the drone), so a master
+// run without --grid must not fall back to the shallow box and show the floor (the lead, 2026-11-17). The side-wind clips
+// (S3, S4) keep the shallow box; an explicit --grid is always what it says.
+TEST(FlowMovieLiveCase, TheStillAirClipsDefaultToTheDeepBoxAndAnExplicitGridWins) {
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt).ny, kD1DeepGrid.ny);
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt).nx, kD1DeepGrid.nx);
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt).nz, kD1DeepGrid.nz);
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt).dx, kD1DeepGrid.dx);
+    EXPECT_EQ(flow_movie::d1_web_grid(false, std::nullopt).ny, kD1Grid.ny) << "the side wind keeps the shallow box";
+    const spade::physics::airflow::GridShape small{112, 80, 112, 0.004f};
+    EXPECT_EQ(flow_movie::d1_web_grid(true, small).ny, 80u) << "--grid wins on a still-air clip";
+    EXPECT_EQ(flow_movie::d1_web_grid(false, small).ny, 80u) << "--grid wins on a side-wind clip";
+}
