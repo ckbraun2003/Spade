@@ -536,3 +536,12 @@ import layouts;
 // per-kernel subset layouts of stage 7's design (decision 1).
 [[vk::binding(40, 1)]] RWStructuredBuffer<float> lbm_f;
 [[vk::binding(41, 1)]] RWStructuredBuffer<float> lbm_u;
+
+// THE PASSIVE DYE (P10; owner Physics, the airflow_dye_{advect,source,publish} kernels). One buffer, past the LBM's range
+// (the list is append-only: the number space's end, kSet1BindingSlots in compute/layout_classes.hpp, moves to 49 with it).
+//   [0, 4)           the release's parameters, host-written once: k = rate * h, r_in, r_out, 0 (physics/airflow/dye.hpp)
+//   [4, 4 + cells)   the dye, cur: one float a cell, cell order, in [0, 1]
+//   [4 + cells, ..)  the same count again, next: airflow_dye_advect writes it, airflow_dye_source adds the release and
+//                    writes cur
+// Bound only by a runner made with a dye; no other kernel names it, so no existing kernel's layout or bits move.
+[[vk::binding(48, 1)]] RWStructuredBuffer<float> airflow_dye;

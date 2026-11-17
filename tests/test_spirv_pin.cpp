@@ -23,6 +23,9 @@
 #include "airflow_actuator_gather.spv.gen.hpp"
 #include "airflow_line_load.spv.gen.hpp"
 #include "airflow_line_tipcorr.spv.gen.hpp"
+#include "airflow_dye_advect.spv.gen.hpp"
+#include "airflow_dye_source.spv.gen.hpp"
+#include "airflow_dye_publish.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
@@ -108,6 +111,16 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 32, 0x06b05fe82c6f498eull},
     {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 64, 0x9c9d26bf1009a4eeull},
     {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 128, 0x1341a512de277c2eull},
+    // P10: the passive dye's three kernels, new (recorded at the build that first compiled them).
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 32, 0x86541c0b815bd2f5ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 64, 0xc700bd4948fab8d5ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 128, 0x9ca7f7e87c93f415ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 32, 0xf1137aad6328daf9ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 64, 0x46dfa6765d69d259ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 128, 0x202ab6914ec57a19ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 32, 0x34cec21e31178564ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 64, 0xb74b46b23a7b0e44ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_publish, "airflow_dye_publish", 128, 0x21b57c39973d7084ull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 32, 0xfc4bbca18bcd96cdull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 64, 0x09d39026c7b4df6dull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 128, 0xd28935fd2777492dull},

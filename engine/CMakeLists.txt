@@ -765,6 +765,7 @@ add_library(spade_physics STATIC
     physics/airflow/regions.cpp
     physics/airflow/projection.cpp
     physics/airflow/advect.cpp
+    physics/airflow/dye.cpp
     physics/airflow/reduce.cpp
     physics/airflow/viscous.cpp
     physics/airflow/sgs.cpp

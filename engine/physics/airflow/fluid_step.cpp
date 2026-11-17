@@ -261,6 +261,15 @@ Result<void> attach_solid_field(FluidScratch& s, const MacGrid& g, const DomainB
     return {};
 }
 
+Result<void> enable_dye(FluidScratch& s, const MacGrid& g) {
+    if (!s.dye.empty()) return std::unexpected(Error{Code::invalid_argument, "airflow dye: already enabled"});
+    const std::size_t cells = std::size_t{g.shape.nx} * g.shape.ny * g.shape.nz;
+    s.dye.assign(cells, 0.0f);
+    s.dye_next.assign(cells, 0.0f);
+    s.dye_scratch = make_scalar_scratch(g.shape);
+    return {};
+}
+
 namespace {
 
 // fluid_step()'s body, run under its wrapper's scope: every float op of the
@@ -313,6 +322,10 @@ SPADE_NOINLINE FluidHealth step_flushed(MacGrid& g, const DomainBc& bc, const Fl
         project(g, bc, cfg.rho, cfg.h, cfg.n_v, s.projection, solid ? &s.solids : nullptr, solid ? &s.regions : nullptr,
                 cfg.cg_cap, s.pool.get());
     s.health = scan(g);
+    if (s.health.fault == FluidFault::none && !s.dye.empty()) {  // P10: the dye rides the step's final velocity
+        advect_scalar(g, s.dye, s.dye_next, bc, cfg.h, s.dye_scratch);
+        s.dye.swap(s.dye_next);
+    }
     if (s.health.fault == FluidFault::none) {
         s.health.pressure_residual = rep.residual;
         s.health.pressure_iterations = rep.iterations;

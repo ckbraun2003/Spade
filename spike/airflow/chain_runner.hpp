@@ -161,6 +161,12 @@ static_assert(
 static_assert(compute::kAirflowLineFirstBinding > kAirflowSetBuffers.back().binding,
               "the line's buffers lie past the airflow list, which stays 0 to 27");
 
+// THE PASSIVE DYE'S BUFFER (P10), binding 48, past the LBM's range: a runner made with a dye lists kAirflowSetBuffers, a placeholder for
+// each binding up to it that it does not use (the line's four sit at 36 to 39), then this. What it holds is bindings.slang's note at
+// airflow_dye. Resident: the host writes its header and zeros once and the tests read it back; the step chain never crosses it.
+inline constexpr AirflowSetBuffer kAirflowDyeBuffer{"airflow_dye", compute::gen::kBinding_airflow_dye, BufferKind::resident};
+inline constexpr uint32_t kAirflowDyeHeaderFloats = 4;
+
 // The line's capacities as a runner is sized for D1 at R/dx 38: 4 rotors x 3 blades x 64 elements x 8 sub-azimuths records a step,
 // and 1024 polar samples. The caller's own capacities (GpuFluid's create parameters, Physics) may be smaller; these are the most a
 // host asks of the runner today. 0 elements means no line.

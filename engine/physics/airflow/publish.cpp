@@ -29,6 +29,7 @@ struct Context {
     float inv_dx;
     std::array<bool, 3> periodic;
     std::array<std::span<const float>, 3> theta;  // empty: every face open
+    std::span<const float> dye;                   // empty: 0 (P10 proof)
 };
 
 // Whether the face of component a at coordinate f along a, in the line
@@ -104,7 +105,8 @@ struct Context {
     }
     const float Q = 0.25f * w2 - 0.5f * s2;
     const float q_hat = Q >= 0.0f ? std::sqrt(Q) : -std::sqrt(-Q);
-    return {centred(x, 0, i, j, k), centred(x, 1, i, j, k), centred(x, 2, i, j, k), 0.0f,
+    return {centred(x, 0, i, j, k), centred(x, 1, i, j, k), centred(x, 2, i, j, k),
+            x.dye.empty() ? 0.0f : x.dye[cell_index(x.g.shape, i, j, k)],
             x.g.p[cell_index(x.g.shape, i, j, k)], std::sqrt(w2), q_hat, lambda2_hat(G)};
 }
 
@@ -226,7 +228,11 @@ SPADE_NOINLINE Result<PublishCounts> publish_flushed(const MacGrid& g, const Pub
                                              std::to_string(faces)});
         }
     }
-    const Context x{g, 1.0f / s.dx, in.periodic, in.theta};
+    if (!in.dye.empty() && in.dye.size() != cells) {
+        return std::unexpected(Error{Code::invalid_argument, "publish: the dye holds " + std::to_string(in.dye.size()) +
+                                                                 " cells, not " + std::to_string(cells)});
+    }
+    const Context x{g, 1.0f / s.dx, in.periodic, in.theta, in.dye};
     const auto is_solid = [&](uint32_t i, uint32_t j, uint32_t k) {
         return !in.solid.empty() && in.solid[cell_index(s, i, j, k)] != 0u;
     };

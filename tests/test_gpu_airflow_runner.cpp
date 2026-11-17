@@ -57,6 +57,9 @@
 #include "airflow_actuator_gather.spv.gen.hpp"
 #include "airflow_line_load.spv.gen.hpp"
 #include "airflow_line_tipcorr.spv.gen.hpp"
+#include "airflow_dye_advect.spv.gen.hpp"
+#include "airflow_dye_publish.spv.gen.hpp"
+#include "airflow_dye_source.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
@@ -1828,6 +1831,11 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_line_spread, false, Estimates::some},
                               // L72k's A1, the tip/smearing correction: the same exact division and square root, fp32_math's exp32.
                               {gen::kSpvVariants_airflow_line_tipcorr, false, Estimates::some},
+                              // P10's passive dye (Physics): the advection's periodic wrap divides with div32_ftz, the release's
+                              // kernel takes its square roots through sqrt32_ftz, the publish adds and multiplies only. No atomics.
+                              {gen::kSpvVariants_airflow_dye_advect, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_dye_source, false, Estimates::some},
+                              {gen::kSpvVariants_airflow_dye_publish, false, Estimates::none},
                               // B7's step (Rendering): one add a face.
                               {gen::kSpvVariants_airflow_add_increments, false, Estimates::none},
                               // 0fcb99f9 (Rendering): plan A's residual max-norm, the select-fold of

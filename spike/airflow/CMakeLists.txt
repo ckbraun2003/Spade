@@ -105,6 +105,12 @@ spade_slang_kernel_variants(spade_airflow_runner airflow_line_spread NAN_PRESERV
 # L72k's A1: the tip/smearing correction between the sample and the load (a GpuFluid made with LineSetup::tip_correction).
 spade_slang_kernel_variants(spade_airflow_runner airflow_line_tipcorr NAN_PRESERVE)
 
+# P10's passive dye (physics/airflow/dye.hpp, advect.hpp's advect_scalar; tests/test_gpu_airflow_dye.cpp): its advection, the release
+# at the discs, and its channel in publish's V. A GpuFluid made with a DyeSetup carries them after the others.
+spade_slang_kernel_variants(spade_airflow_runner airflow_dye_advect NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_dye_source NAN_PRESERVE)
+spade_slang_kernel_variants(spade_airflow_runner airflow_dye_publish NAN_PRESERVE)
+
 # B7's GPU step (spike/airflow/step_chain.hpp; the lead's grant, 2026-10-27):
 # the swap and add_and_clear as one add a face
 # (tests/test_gpu_airflow_step.cpp).

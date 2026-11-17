@@ -33,12 +33,16 @@
 namespace spade::airflow_gpu {
 
 // The publish kernels' pipelines in the runner (RunnerDesc::kernels).
+inline constexpr uint32_t kNoPublishDye = 0xFFFFFFFFu;
+
 struct PublishPipelines {
     uint32_t fields = 0;
     uint32_t pack = 0;
+    // P10: airflow_dye_publish, run between the fields and the pack, writing channel 3; kNoPublishDye (no dye) leaves the chain as it was.
+    uint32_t dye = kNoPublishDye;
 };
 
-// publish_fields then pack_f16, one invocation a cell, both pushes {0, 0,
+// publish_fields, [dye_publish,] then pack_f16, one invocation a cell, both pushes {0, 0,
 // cells, 0} by the airflow push convention. The fields write their fp32
 // channels into airflow_advect, the advection's scratch, which is dead
 // between the step's chain and this one.
