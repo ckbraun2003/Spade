@@ -69,7 +69,7 @@ struct Clip {
     float range_hi = 0.0f;
     bool still = false;  // a 5120x2880 PNG as well
     // The first frame of the group's cache the clip draws: clips of a group that start at different times share one
-    // simulation (S2 from the group's frame 0, S1 and S8 from frame 150).
+    // simulation (S2 from the group's frame 30, S1 and S8 from frame 150).
     uint32_t first_frame = 0;
 
     [[nodiscard]] uint32_t frames() const noexcept { return static_cast<uint32_t>(std::lround(seconds * kFps)); }
@@ -162,7 +162,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
         {"S2", "rotor-wake-start-up-volume", "Reference quad in hover: the rotor wake as a soft volume, from the start-up",
          "Relative speed of the wake of four actuator discs round the reference quad's rigid parts as a soft volume, held "
          "at hover in still air, from the start-up roll-up into the developed column, in a slow push-in.",
-         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 0},
+         "d1-still", Scene::d1_still, Quantity::speed, Camera::push_in, 12.0, 0.0f, 0.0f, 12.0f, false, 30},
         {"S3", "d1-crosswind-vortex-surfaces", "D1 quad in a crosswind: vortex surfaces",
          "Vortex surfaces around the reference quad's rigid parts, held at hover in a crosswind, in a slow half orbit.",
          "d1-crosswind", Scene::d1, Quantity::speed, Camera::half_orbit, 12.0, 180.0f, 0.0f, 0.0f, true},
