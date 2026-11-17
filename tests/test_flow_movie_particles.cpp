@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "../tools/flow_movie/particles.hpp"
@@ -421,5 +423,95 @@ TEST(FlowMovieParticles, TheStreaksAreTheSameEveryTimeAndOnePerDrawnParticleInOr
         EXPECT_EQ(a[i].colours, b[i].colours);
         EXPECT_EQ(a[i].points[1], f.position[i]) << "in the field's order";
     }
+}
+
+// THE PARTICLE SNAPSHOT (the lead's "days of looks work", 2026-11-17): a live run costs 11 GPU-minutes to carry the points to the
+// still's frame, and every change of look (width, glow, colour, count) would pay it again. The field at the still's frame is small
+// (about 25,000 points), so the run saves it beside the kept frame and a still is then redrawn from the two in seconds.
+// A file of the field's three arrays and counters; a bad one is refused by name, never half-read.
+namespace {
+[[nodiscard]] std::filesystem::path snapshot_path(const char* name) {
+    return std::filesystem::temp_directory_path() / (std::string("spade_particle_snapshot_") + name + ".bin");
+}
+}  // namespace
+
+TEST(FlowMovieParticles, ASnapshotWrittenAndReadBackIsTheSameFieldBitForBit) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3 p) { return glm::vec3(-3.0f * p.z, 0.4f, 3.0f * p.x); });
+    std::vector<glm::vec3> pool;
+    for (int i = 0; i < 30; ++i) pool.emplace_back(0.03f * static_cast<float>(i) - 0.4f, 0.0f, 0.02f * static_cast<float>(i % 5));
+    flow_movie::ParticleField f;
+    auto o = options();
+    o.per_frame = 4u;
+    o.capacity = 50u;
+    for (int frame = 0; frame < 25; ++frame) ASSERT_TRUE(flow_movie::advance_particles(f, v, pool, 0.004f, o));
+    ASSERT_GT(f.position.size(), 10u);
+    ASSERT_GT(f.dropped + f.retired_left_region + f.retired_aged + f.retired_no_data, 0u) << "counters worth keeping";
+    const auto path = snapshot_path("roundtrip");
+    ASSERT_TRUE(flow_movie::write_particle_field(path, f).has_value());
+    const auto back = flow_movie::read_particle_field(path);
+    ASSERT_TRUE(back.has_value()) << back.error().context;
+    EXPECT_EQ(back->position, f.position);
+    EXPECT_EQ(back->previous, f.previous);
+    EXPECT_EQ(back->age, f.age);
+    EXPECT_EQ(back->frames, f.frames);
+    EXPECT_EQ(back->emitted, f.emitted);
+    EXPECT_EQ(back->dropped, f.dropped);
+    EXPECT_EQ(back->retired_left_region, f.retired_left_region);
+    EXPECT_EQ(back->retired_no_data, f.retired_no_data);
+    EXPECT_EQ(back->retired_aged, f.retired_aged);
+    std::filesystem::remove(path);
+}
+
+TEST(FlowMovieParticles, AnEmptyFieldRoundTripsAndABadSnapshotIsRefusedByNameNeverHalfRead) {
+    const auto path = snapshot_path("bad");
+    const flow_movie::ParticleField empty;
+    ASSERT_TRUE(flow_movie::write_particle_field(path, empty).has_value());
+    const auto none = flow_movie::read_particle_field(path);
+    ASSERT_TRUE(none.has_value());
+    EXPECT_TRUE(none->position.empty());
+
+    flow_movie::ParticleField f;
+    f.position = {glm::vec3(1.0f), glm::vec3(2.0f)};
+    f.previous = f.position;
+    f.age = {0.1f, 0.2f};
+    ASSERT_TRUE(flow_movie::write_particle_field(path, f).has_value());
+    std::ifstream in(path, std::ios::binary);
+    const std::string whole((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    ASSERT_GT(whole.size(), 40u);
+    auto write_bytes = [&path](const std::string& bytes) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    };
+    write_bytes(whole.substr(0, whole.size() - 3));
+    auto truncated = flow_movie::read_particle_field(path);
+    ASSERT_FALSE(truncated.has_value());
+    EXPECT_NE(truncated.error().context.find("particle"), std::string::npos) << truncated.error().context;
+    std::string wrong = whole;
+    wrong[0] = 'X';
+    write_bytes(wrong);
+    auto magic = flow_movie::read_particle_field(path);
+    ASSERT_FALSE(magic.has_value());
+    EXPECT_NE(magic.error().context.find("not a particle snapshot"), std::string::npos) << magic.error().context;
+    write_bytes(whole + "extra");
+    EXPECT_FALSE(flow_movie::read_particle_field(path).has_value()) << "trailing bytes: not the file that was written";
+    std::filesystem::remove(path);
+    EXPECT_FALSE(flow_movie::read_particle_field(path).has_value()) << "a missing file";
+}
+
+TEST(FlowMovieParticles, ADriverTakesASnapshotAsTheFieldThatShowsItsFrame) {
+    flow_movie::ParticleOptions o = options();
+    flow_movie::ParticleDriver driver(o, {});
+    flow_movie::ParticleField f;
+    f.position = {glm::vec3(0.1f)};
+    f.previous = f.position;
+    f.age = {0.1f};
+    f.frames = 201u;
+    EXPECT_EQ(driver.at(200u), nullptr);
+    driver.add_snapshot(200u, f);
+    ASSERT_NE(driver.at(200u), nullptr);
+    EXPECT_EQ(driver.at(200u)->position, f.position);
+    ASSERT_TRUE(driver.snapshot_at(200u) != nullptr) << "and it can be written out";
+    EXPECT_EQ(driver.snapshot_at(199u), nullptr);
 }
 
