@@ -313,6 +313,12 @@ double atan2_arith(double y, double x) noexcept {
     return y_negative ? -angle : angle;
 }
 
+// RED stub (L85 SP-1): replaced in the GREEN commit.
+void sincos_deg_arith(double, double& s, double& c) noexcept {
+    s = 0.0;
+    c = 0.0;
+}
+
 double corner_angle(const glm::dvec3& a, const glm::dvec3& b) noexcept {
     const glm::dvec3 c = cross(a, b);
     return atan2_arith(std::sqrt(dot(c, c)), dot(a, b));

@@ -112,6 +112,7 @@ add_library(spade_core STATIC
     core/math_ops.cpp
     core/fp32_math.cpp
     core/detail/math_ops_f64.cpp
+    core/geodesy.cpp
     core/lambda2.cpp
     core/build_identity.cpp
 )
