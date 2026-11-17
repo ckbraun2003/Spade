@@ -117,6 +117,7 @@ add_executable(spade_tests
     test_airflow_line.cpp
     test_airflow_line_v2.cpp
     test_airflow_line_torque_gap.cpp
+    test_airflow_line_tip.cpp
     # the quad film's own case, compiled in for AirflowSgsFilm (L52)
     ../tools/flow_movie/quad_case.cpp
     test_airflow_check_grid.cpp

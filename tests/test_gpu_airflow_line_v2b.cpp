@@ -17,11 +17,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -33,6 +35,7 @@
 #include "physics/airflow/blade.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/line.hpp"
+#include "ke_share.hpp"
 #include "spike/airflow/line_chain.hpp"
 #include "spike/airflow/step_chain.hpp"
 
@@ -55,6 +58,83 @@ uint32_t env_u32(const char* name, uint32_t fallback) {
 #pragma warning(pop)
 #endif
     return v == nullptr ? fallback : static_cast<uint32_t>(std::strtoul(v, nullptr, 10));
+}
+
+double env_double(const char* name, double fallback) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* v = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return v == nullptr ? fallback : std::strtod(v, nullptr);
+}
+
+// L84's smoothness check: the grid-scale energy under the rotor and a slice still of speed and of the out-of-plane vorticity
+// (SPADE_V2B_CS100 sets the subgrid Cs times 100; SPADE_V2B_SLICE=<path prefix> writes <prefix>-speed.ppm and -vort.ppm).
+const char* env_cstr(const char* name) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+// A cell-centre velocity from the faces.
+struct CellVel {
+    float u, v, w;
+};
+
+CellVel cell_velocity(const af::MacGrid& g, uint32_t i, uint32_t j, uint32_t k) {
+    const af::GridShape& s = g.shape;
+    return {0.5f * (g.u[af::u_index(s, i, j, k)] + g.u[af::u_index(s, i + 1u, j, k)]),
+            0.5f * (g.v[af::v_index(s, i, j, k)] + g.v[af::v_index(s, i, j + 1u, k)]),
+            0.5f * (g.w[af::w_index(s, i, j, k)] + g.w[af::w_index(s, i, j, k + 1u)])};
+}
+
+// A blue-to-yellow ramp over t in [0, 1].
+void ramp(float t, unsigned char* rgb) {
+    t = std::min(1.0f, std::max(0.0f, t));
+    rgb[0] = static_cast<unsigned char>(255.0f * std::min(1.0f, 1.6f * t));
+    rgb[1] = static_cast<unsigned char>(255.0f * std::min(1.0f, 1.2f * t));
+    rgb[2] = static_cast<unsigned char>(255.0f * std::min(1.0f, std::max(0.0f, 0.55f + 0.9f * t - 1.4f * t * t)));
+}
+
+// The vertical plane through the rotor's axis (z = k), x across and y up, magnified `zoom` times: speed over 0..vmax and
+// |omega_z| over 0..vort_max, two binary PPMs.
+void write_slices(const af::MacGrid& g, uint32_t k, float vmax, float vort_max, uint32_t zoom,
+                  const std::string& prefix) {
+    const af::GridShape& s = g.shape;
+    const uint32_t wpx = s.nx * zoom, hpx = s.ny * zoom;
+    std::vector<unsigned char> speed(std::size_t{wpx} * hpx * 3u), vort(std::size_t{wpx} * hpx * 3u);
+    for (uint32_t py = 0; py < hpx; ++py) {
+        const uint32_t j = s.ny - 1u - py / zoom;  // y up
+        for (uint32_t px = 0; px < wpx; ++px) {
+            const uint32_t i = px / zoom;
+            const CellVel c = cell_velocity(g, i, j, k);
+            float vz = 0.0f;
+            if (i > 0u && i + 1u < s.nx && j > 0u && j + 1u < s.ny) {
+                const CellVel xp = cell_velocity(g, i + 1u, j, k), xm = cell_velocity(g, i - 1u, j, k);
+                const CellVel yp = cell_velocity(g, i, j + 1u, k), ym = cell_velocity(g, i, j - 1u, k);
+                vz = ((xp.v - xm.v) - (yp.u - ym.u)) / (2.0f * s.dx);
+            }
+            const std::size_t at = (std::size_t{py} * wpx + px) * 3u;
+            ramp(std::sqrt(c.u * c.u + c.v * c.v + c.w * c.w) / vmax, &speed[at]);
+            ramp(std::abs(vz) / vort_max, &vort[at]);
+        }
+    }
+    const auto save = [&](const std::string& name, const std::vector<unsigned char>& pixels) {
+        std::ofstream f(name, std::ios::binary);
+        f << "P6" << '\n' << wpx << ' ' << hpx << '\n' << "255" << '\n';
+        f.write(reinterpret_cast<const char*>(pixels.data()), static_cast<std::streamsize>(pixels.size()));
+    };
+    save(prefix + "-speed.ppm", speed);
+    save(prefix + "-vort.ppm", vort);
 }
 
 // The library's props the runs use: the tune prop (SPADE_V2B_PROP unset or "apce": uiuc_apce_10x5, D 10 in), the transfer prop
@@ -80,6 +160,9 @@ Chosen chosen_prop() {
         if (want == "mit" && std::string(p.id) == "uiuc_mit_5x4") return {&p, 5.0 * kInch};
         if (want == "v3" && std::string(p.id) == "uiuc_apce_10x5") return {&p, 9.4 * kInch};
         if (want == "d1" && std::string(p.id) == "triblade_6inch_scaled") return {&p, 0.1524};
+        // L72k's B1, the polar fits: the other props with a static point (the run's D is UIUC's, the geometry is per R)
+        if (want == "apce9" && std::string(p.id) == "uiuc_apce_9x4.5") return {&p, 9.0 * kInch};
+        if (want == "cf" && std::string(p.id) == "uiuc_cfnq_45t1") return {&p, 0.04699};
     }
     return {};
 }
@@ -123,7 +206,7 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     const uint32_t n_sub = env_u32("SPADE_V2B_NSUB", 8);
     const uint32_t steps_override = env_u32("SPADE_V2B_STEPS", 0);
     const Chosen pick = chosen_prop();
-    ASSERT_NE(pick.prop, nullptr) << "SPADE_V2B_PROP is apce, mit, v3 or d1";
+    ASSERT_NE(pick.prop, nullptr) << "SPADE_V2B_PROP is apce, mit, v3, d1, apce9 or cf";
     const lp::Prop& prop = *pick.prop;
     const double kD = pick.diameter;
     const double rpm = static_cast<double>(env_u32("SPADE_V2B_RPM", static_cast<uint32_t>(prop.run_rpm)));
@@ -135,7 +218,12 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     const double eps_mm = chord_share > 0.0 ? chord_share * chord_mm
                                             : static_cast<double>(env_u32("SPADE_V2B_EPS_MM10", 0)) / 10.0;
     ASSERT_GT(eps_mm, 0.0) << "set SPADE_V2B_EPS_MM10 (80 is 8.0 mm) or SPADE_V2B_EPS_CHORD100";
-    const af::PolarTable polar = af::estimated_polar();
+    // L72k's B1: the estimated polar's two free parameters, SPADE_V2B_ALPHA0 (degrees, default -3) and SPADE_V2B_CDSCALE (1).
+    const af::EstimatedPolarShape shape_fit{static_cast<float>(env_double("SPADE_V2B_ALPHA0", -3.0)),
+                                            static_cast<float>(env_double("SPADE_V2B_CDSCALE", 1.0))};
+    const af::PolarTable polar = af::estimated_polar(shape_fit);
+    std::printf("V2b polar alpha_0 %.4f deg, cd_scale %.4f\n", static_cast<double>(shape_fit.alpha0_deg),
+                static_cast<double>(shape_fit.cd_scale));
     const double radius = 0.5 * kD;
     const double n_rev = rpm / 60.0;
     const float omega = static_cast<float>(2.0 * std::numbers::pi * n_rev);
@@ -161,6 +249,7 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     ASSERT_TRUE(grid.has_value()) << grid.error().context;
     af::FluidConfig cfg;
     cfg.rho = kRho;
+    cfg.sgs_cs = static_cast<float>(env_u32("SPADE_V2B_CS100", 0)) / 100.0f;  // L84: the subgrid viscosity, 0 off
     cfg.h = 0.00038f * dx / 0.004f;
 
     af::LineRotor rotor;
@@ -172,6 +261,7 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     rotor.blade = &blade;
     rotor.polar = &polar;
     rotor.eps_cells = static_cast<float>(eps_cells);
+    rotor.tip_correction = env_u32("SPADE_V2B_TIP", 1) != 0;  // L72k's A1, the tip/smearing correction
     const std::vector<af::LineRotor> probe{rotor};
     const auto records = ag::line_records(probe, shape, kRho, cfg.h, n_sub);
     ASSERT_TRUE(records.has_value()) << records.error().context;
@@ -179,7 +269,10 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     auto ctx = spade::compute::VulkanContext::create(
         spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
     ASSERT_TRUE(ctx.has_value());
-    const ag::LineSetup setup{.polar = &polar, .elements = records->per_rotor[0], .n_sub = n_sub};
+    const ag::LineSetup setup{.polar = &polar,
+                              .elements = records->per_rotor[0],
+                              .n_sub = n_sub,
+                              .tip_correction = rotor.tip_correction};
     auto gpu = ag::GpuFluid::create(**ctx, *grid, bc, cfg, nullptr, 64u, &setup);
     ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
 
@@ -194,10 +287,11 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
                 std::string(prop.id).c_str(), kD, blade.blades, chord_mm, eps_mm / chord_mm);
     std::printf("V2b setup: R/dx %u (dx %.3f mm), box %ux%ux%u = %.2f M cells, h %.3f ms, n_sub %u, %u elements, "
                 "%u steps (40 R/v_h = %.3f s); %.0f rpm; kernel eps %.2f mm = %.2f cells; UIUC static C_T %.5f "
-                "C_Q %.6f (T %.4f N), v_h %.3f m/s\n",
+                "C_Q %.6f (T %.4f N), v_h %.3f m/s; tip correction %s\n",
                 rdx, static_cast<double>(dx) * 1000.0, shape.nx, shape.ny, shape.nz,
                 static_cast<double>(shape.nx) * shape.ny * shape.nz / 1.0e6, static_cast<double>(cfg.h) * 1000.0, n_sub,
-                setup.elements, total, 40.0 * t_rv, rpm, eps_mm, eps_cells, ct_uiuc, cq_uiuc, ct_uiuc * dim_t, v_h);
+                setup.elements, total, 40.0 * t_rv, rpm, eps_mm, eps_cells, ct_uiuc, cq_uiuc, ct_uiuc * dim_t, v_h,
+                rotor.tip_correction ? "ON" : "off");
 
     std::array<double, 2> thrust_sum{}, torque_sum{};
     std::array<uint32_t, 2> count{};
@@ -228,6 +322,44 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
         }
     }
     std::printf("V2b wall: %.1f s over %u steps (%.0f ms a step)\n", wall / 1000.0, total, wall / total);
+    if (cfg.sgs_cs > 0.0f || env_u32("SPADE_V2B_KEHI", 0) != 0u) {
+        // The grid-scale energy under the rotor at the end of the run: the block 2.4 R across, from 0.4 R under the disc down
+        // 2.2 R, the cell-centre velocity (test_airflow_sgs.cpp's ke_hi, tests/ke_share.hpp)
+        af::MacGrid read = *grid;
+        ASSERT_TRUE((*gpu)->read(read).has_value());
+        const auto half = static_cast<uint32_t>(std::lround(1.2 * rdx));
+        const auto nyb = static_cast<uint32_t>(std::lround(2.2 * rdx));
+        const auto ci = static_cast<uint32_t>(rotor.centre.x / dx), ck = static_cast<uint32_t>(rotor.centre.z / dx);
+        const auto top = static_cast<uint32_t>((rotor.centre.y - 0.4f * static_cast<float>(radius)) / dx);
+        ASSERT_GE(ci, half);
+        ASSERT_GE(top, nyb);
+        std::vector<float> block(std::size_t{2u * half} * nyb * 2u * half * 3u);
+        float peak = 0.0f;
+        for (uint32_t z = 0; z < 2u * half; ++z) {
+            for (uint32_t y = 0; y < nyb; ++y) {
+                for (uint32_t x = 0; x < 2u * half; ++x) {
+                    const CellVel c = cell_velocity(read, ci - half + x, top - nyb + y, ck - half + z);
+                    const std::size_t at = (std::size_t{z} * nyb + y) * (2u * half) + x;
+                    block[at * 3u] = c.u;
+                    block[at * 3u + 1u] = c.v;
+                    block[at * 3u + 2u] = c.w;
+                    peak = std::max(peak, std::sqrt(c.u * c.u + c.v * c.v + c.w * c.w));
+                }
+            }
+        }
+        const double ke_hi = spade::test::ke_share_above(block, 2u * half, nyb, 2u * half, static_cast<double>(dx));
+        std::printf("V2b smooth: Cs %.2f, ke_hi %.4f on the block %ux%ux%u cells under the rotor; its fastest "
+                    "cell %.2f m/s\n",
+                    static_cast<double>(cfg.sgs_cs), ke_hi, 2u * half, nyb, 2u * half, static_cast<double>(peak));
+        const char* slice = env_cstr("SPADE_V2B_SLICE");
+        if (slice != nullptr) {
+            write_slices(read, ck, 1.4f * static_cast<float>(v_h),
+                         12.0f * static_cast<float>(v_h) / static_cast<float>(radius), 4u, slice);
+            std::printf("V2b slices written: %s-speed.ppm, %s-vort.ppm (%ux%u, speed 0..%.1f m/s, "
+                        "|omega_z| 0..%.0f 1/s)\n",
+                        slice, slice, read.shape.nx * 4u, read.shape.ny * 4u, 1.4 * v_h, 12.0 * v_h / radius);
+        }
+    }
     if (steps_override != 0u || count[0] == 0 || count[1] == 0) return;
 
     const std::array<double, 2> thrust{thrust_sum[0] / count[0], thrust_sum[1] / count[1]};

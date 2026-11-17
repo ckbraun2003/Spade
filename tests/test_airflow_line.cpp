@@ -49,6 +49,9 @@ af::LineRotor rotor_of(const af::BladeShape& blade, const af::PolarTable& polar)
     r.blade = &blade;
     r.polar = &polar;
     r.omega = 400.0f;
+    // The base line's analytic sums and conservation laws: the FLAG-OFF pins. The tip correction (default ON since L72k's flip)
+    // changes the load through the corrected air, so these tests hold it off; tests/test_airflow_line_tip.cpp has its own.
+    r.tip_correction = false;
     return r;
 }
 

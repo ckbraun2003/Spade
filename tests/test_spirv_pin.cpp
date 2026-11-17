@@ -22,6 +22,7 @@
 #include "compute/spirv_variants.hpp"
 #include "airflow_actuator_gather.spv.gen.hpp"
 #include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_tipcorr.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
@@ -103,6 +104,10 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 32, 0xa8b04616db337126ull},
     {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 64, 0x9d39dba38a0056c6ull},
     {&spade::compute::gen::kSpvVariants_airflow_line_load, "airflow_line_load", 128, 0xeeb393910fbda186ull},
+    // L72k A1: the tip/smearing correction kernel, new (recorded at the build that first compiled it).
+    {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 32, 0x06b05fe82c6f498eull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 64, 0x9c9d26bf1009a4eeull},
+    {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 128, 0x1341a512de277c2eull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 32, 0xfc4bbca18bcd96cdull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 64, 0x09d39026c7b4df6dull},
     {&spade::compute::gen::kSpvVariants_airflow_line_sample, "airflow_line_sample", 128, 0xd28935fd2777492dull},

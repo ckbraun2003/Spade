@@ -56,6 +56,7 @@
 
 #include "airflow_actuator_gather.spv.gen.hpp"
 #include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_tipcorr.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
 #include "airflow_add_increments.spv.gen.hpp"
@@ -1825,6 +1826,8 @@ TEST(AirflowRunnerSpirv, KernelsHoldTheDeterminismRules) {
                               {gen::kSpvVariants_airflow_line_sample, false, Estimates::some},
                               {gen::kSpvVariants_airflow_line_load, false, Estimates::some},
                               {gen::kSpvVariants_airflow_line_spread, false, Estimates::some},
+                              // L72k's A1, the tip/smearing correction: the same exact division and square root, fp32_math's exp32.
+                              {gen::kSpvVariants_airflow_line_tipcorr, false, Estimates::some},
                               // B7's step (Rendering): one add a face.
                               {gen::kSpvVariants_airflow_add_increments, false, Estimates::none},
                               // 0fcb99f9 (Rendering): plan A's residual max-norm, the select-fold of

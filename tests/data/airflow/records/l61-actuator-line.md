@@ -144,3 +144,29 @@ R/dx 19) and does not close to the BEMT inside the kernel's six-cell support; th
 17.183 W). The tip correction gains 1.5 points of power at R/dx 19 and 1.0 at 25 (it shrinks with eps_LES, which shrinks with the grid) and cannot remove the trend; its du is positive where the loading peaks (+2 m/s at r/R 0.875-0.925) and
 negative at the root and the outermost element (-0.1 to -1.2 m/s) in every discretisation tried, a property of the loading and not of the scheme. It was removed from the engine before the merge (YAGNI; the code is at the tag physics/l72-tip-correction-334d28ef, with the design note tip-correction-design.md). The width is therefore a model parameter, to be chosen against
 measured data (UIUC's static point) and not against the BEMT, which is itself an estimate: the rule is fixed in `.superpowers/sdd/2026-11-10-wake/line-width-choice-rule.md` before any measured-data run.
+
+L72k flip (2026-11-17): the tip/smearing correction is ON by default. The V2 case of the R/dx 19 block above, run again with it on (the same box, polar and eps 2 dx); the other L61 blocks above are the flag-off line and stand as measured.
+
+```text
+=== validation record: L72k flip, V2 one rotor hovering, the actuator line at R/dx 19 with the tip correction ON, D1's rotor ===
+commit: 8eafee71 (physics/line-tip, the flip trial; tip_correction default on)
+date: 2026-11-17
+path: CPU reference, MSVC, release (engine/physics/airflow/line.cpp with line_tip_correct, fluid_step, estimated polar, n_sub 8)
+config: as the R/dx 19 block above (triblade_6inch_scaled stations at R 0.0762 m, 3 blades, 801 rad/s, box 100x158x100, dx 4.01 mm, 1188 steps of 0.381 ms, 433 s wall), tip correction on
+measure: line thrust = 1.9904 N (windows 1.9904, 1.9926 N; differ 0.11%: settled)
+reference: BEMT with Prandtl tip loss (tests/bemt_reference.hpp) 2.0285 N, the line -1.8% (flag off +1.2%)
+tolerance: within 10% (V2, Test/Docs 2026-11-11 bands note, fixed before the first run)
+verdict: within
+measure: line power (torque x omega) = 17.570 W
+reference: BEMT with Prandtl tip loss 19.771 W, the line -11.1% (flag off -13.1%)
+tolerance: within 15% (V2, Test/Docs 2026-11-11 bands note, fixed before the first run)
+verdict: within
+measure: momentum flux through the plane 1.5 R below, over the line's own thrust = 1.054
+reference: steady momentum theory, centre 1 (rho sum w^2 dA of the downward cells; Test/Docs bands note)
+tolerance: within 10% (V2, Test/Docs 2026-11-11 bands note, fixed before the first run)
+verdict: within
+measure: figure of merit T^1.5 / (sqrt(2 rho A) P) = 0.757
+reference: none (report only; flag off 0.810, UIUC static value 0.573)
+tolerance: none (report only)
+verdict: report only
+```

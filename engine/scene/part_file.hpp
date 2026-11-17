@@ -56,6 +56,16 @@
 // section (its polar is the actuator line's, Physics'). The blade count is the
 // propeller's own `blades`, written once.
 //
+// POLAR (optional, within BLADE, L72k): `alpha_0_deg` and `cd_scale`, the
+// actuator line's polar for THIS propeller, the estimated polar's two free
+// parameters (the zero-lift angle in degrees and the factor on the section's
+// drag) fitted so the line reproduces the propeller's measured static C_T and
+// C_Q. Both or neither; both finite and cd_scale above 0. A blade without them
+// uses the estimated polar. The values hold only under the conditions their
+// citation's note names (the line's tip correction on, the kernel width and
+// resolution they were fitted at): they are a calibration, not a measured
+// section.
+//
 // NO MOUNT. An ESC's and a battery's mount is where a drone places them, so it
 // is the drone's (L5), not the part's: the text has no mount, the emitter
 // writes none, and the reader leaves the identity.
@@ -64,7 +74,8 @@
 // except the identity strings `stator` and `protocol`; `shape` cites as one,
 // since its kind and size are one description. So the cited fields are the
 // block's keys, less those two, plus `shape` when the part has one and the
-// five blade keys when it has a blade. `sources` holds exactly those, no more
+// five blade keys when it has a blade, plus "blade.alpha_0_deg" and
+// "blade.cd_scale" when the blade has a polar. `sources` holds exactly those, no more
 // and no fewer: a field without a citation is refused by its path, and so is
 // a citation of a field the part does not have, or of an identity string
 // ("the motor's field 'stator' takes no citation"). In a citation, `source` is
@@ -124,6 +135,8 @@ struct BladeGeometry {
     std::vector<double> beta_deg{};
     double hub_cutout = 0.0;  // r/R
     std::string airfoil{};
+    std::optional<double> alpha_0_deg{};  // the line's polar for this propeller (POLAR above); both or neither
+    std::optional<double> cd_scale{};
 };
 
 struct MotorPart {

@@ -48,6 +48,7 @@
 #include "airflow_line_load.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
+#include "airflow_line_tipcorr.spv.gen.hpp"
 #include "spike/airflow/publish_chain.hpp"
 #include "spike/airflow/solids_chain.hpp"
 
@@ -411,7 +412,9 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         for (uint32_t b = static_cast<uint32_t>(buffers.size()); b <= gen::kBinding_airflow_line_force; ++b) {
             buffers.push_back({"airflow_unused_" + std::to_string(b), 4u, BufferKind::device_only});
         }
-        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride, BufferKind::resident);
+        // With the tip correction the buffer holds, after the element records, the groups' (a group is at least an element).
+        const uint64_t tip_words = line->tip_correction ? kTipHeaderWords + uint64_t{line->elements} * kTipStride : 0u;
+        set(gen::kBinding_airflow_line_elems, uint64_t{line->elements} * kLineStride + tip_words, BufferKind::resident);
         set(gen::kBinding_airflow_line_polar, 1u + 3u * uint64_t{line->polar->key.size()}, BufferKind::resident);
         set(gen::kBinding_airflow_line_vel, uint64_t{line->elements} * 4u, BufferKind::device_only);
         set(gen::kBinding_airflow_line_force, uint64_t{line->elements} * kLineForceStride, BufferKind::resident);
@@ -419,6 +422,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         kernels.push_back(&gen::kSpvVariants_airflow_line_sample);
         kernels.push_back(&gen::kSpvVariants_airflow_line_load);
         kernels.push_back(&gen::kSpvVariants_airflow_line_spread);
+        if (line->tip_correction) kernels.push_back(&gen::kSpvVariants_airflow_line_tipcorr);
         line_readback = (uint64_t{line->elements} * kLineForceStride * sizeof(float) + 15u) & ~uint64_t{15};
     }
 
@@ -469,6 +473,7 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         self->line_on_ = true;
         self->line_elements_ = line->elements;
         self->line_n_sub_ = line->n_sub;
+        self->line_tip_ = line->tip_correction;
         self->line_polar_ = *line->polar;
         const std::vector<float> polar_floats = polar_records(*line->polar);
         if (Result<void> ok = r.upload(gen::kBinding_airflow_line_polar, bytes(polar_floats)); !ok) {
@@ -478,6 +483,16 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
         const uint32_t p = self->line_pipeline_;
         std::vector<ChainCommand> chain;
         chain.push_back(dispatch(p, e, 0u, 3u * e, 0u, workgroup_size));
+        if (line->tip_correction) {
+            // One pass is three dispatches over the elements (airflow_line_tipcorr.slang's phases): the first pass's
+            // circulation saves the sampled air (phase 0), the others do not (phase 1).
+            const int passes = af::LineTipParams{}.iterations;
+            for (int pass = 0; pass < passes; ++pass) {
+                chain.push_back(dispatch(p + 3u, e, pass == 0 ? 0u : 1u, e, 0u, workgroup_size));
+                chain.push_back(dispatch(p + 3u, e, 2u, e, 0u, workgroup_size));
+                chain.push_back(dispatch(p + 3u, e, 3u, e, 0u, workgroup_size));
+            }
+        }
         chain.push_back(dispatch(p + 1u, e, 0u, e, 0u, workgroup_size));
         for (uint32_t c = 0; c < 3; ++c) chain.push_back(dispatch(p + 2u, c, e, n[c], 0u, workgroup_size));
         const ChainReadback force{.buffer = gen::kBinding_airflow_line_force,
@@ -581,10 +596,17 @@ Result<af::FluidHealth> GpuFluid::step(std::span<const af::ActuatorDisc> discs, 
         return std::unexpected(invalid("step: the rotors give " + std::to_string(records->elems.size() / kLineStride) +
                                        " line elements, the LineSetup says " + std::to_string(line_elements_)));
     }
+    if (!line_tip_ && records->tip.size() > kTipHeaderWords) {
+        return std::unexpected(invalid("step: a rotor's tip correction is on and the LineSetup was made without it"));
+    }
+    if (line_tip_) {  // the groups follow the element records in the one buffer
+        records->elems.insert(records->elems.end(), records->tip.begin(), records->tip.end());
+    }
     if (Result<void> ok = runner_->upload(gen::kBinding_airflow_line_elems, std::as_bytes(std::span(records->elems)));
         !ok) {
         return std::unexpected(ok.error());
     }
+    if (line_tip_) records->elems.resize(std::size_t{line_elements_} * kLineStride);  // line_reports() reads the elements
     if (Result<void> ok = runner_->submit(line_chain_, 1); !ok) return std::unexpected(ok.error());
     const std::span<const std::byte> force = runner_->readback(line_chain_, 0);
     if (force.size() != std::size_t{line_elements_} * kLineForceStride * sizeof(float)) {

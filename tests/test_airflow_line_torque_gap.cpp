@@ -232,12 +232,13 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
     rotor.blade = &blade;
     rotor.polar = &polar;
     rotor.eps_cells = static_cast<float>(eps_cells);
+    rotor.tip_correction = env_u32("SPADE_TORQUE_GAP_TIP", 0) != 0;  // L72k's A1, the tip/smearing correction
     constexpr uint32_t kSub = 8;
     const uint32_t total = static_cast<uint32_t>(std::ceil(30.0 * t_rv / static_cast<double>(cfg.h)));
     std::printf("torque-gap item 2: 10x5, %.0f rpm, R/dx %u (dx %.3f mm), box %ux%ux%u, kernel %.1f mm = %.2f cells, "
-                "%u steps (30 R/v_h = %.3f s)\n",
+                "%u steps (30 R/v_h = %.3f s), tip correction %s\n",
                 prop->run_rpm, rdx, static_cast<double>(dx) * 1000.0, shape.nx, shape.ny, shape.nz, eps_mm, eps_cells,
-                total, 30.0 * t_rv);
+                total, 30.0 * t_rv, rotor.tip_correction ? "ON" : "off");
 
     struct Station {
         double ua = 0.0, wt = 0.0, alpha = 0.0, dt = 0.0, dq = 0.0, r = 0.0, dr = 0.0;
@@ -255,10 +256,13 @@ TEST(AirflowLineTorqueGap, SampledInflowAndAngleOfAttackPerStationAgainstTheBemt
             const std::vector<af::LineElement> el = af::line_elements(rotor, dx, cfg.h, kSub);
             const uint32_t per = static_cast<uint32_t>(el.size()) / (kSub * blade.blades);
             if (st.empty()) st.resize(per);
+            std::vector<glm::vec3> airs(el.size());
+            for (std::size_t n = 0; n < el.size(); ++n) airs[n] = af::line_sample(*grid, el[n].pos, rotor.eps_cells);
+            if (rotor.tip_correction) (void)af::line_tip_correct(rotor, el, dx, kRho, airs);  // what spread_line() will use
             for (uint32_t k = 0; k < kSub * blade.blades; ++k) {
                 for (uint32_t i = 0; i < per; ++i) {
                     const af::LineElement& e = el[k * per + i];
-                    const glm::vec3 air = af::line_sample(*grid, e.pos, rotor.eps_cells);
+                    const glm::vec3 air = airs[k * per + i];
                     const float ua = -glm::dot(air, rotor.axis);
                     const float wt = omega * e.r - glm::dot(air, e.motion);
                     const af::SectionLoad s = af::section_load(polar, e.chord, e.sin_beta, e.cos_beta, ua, wt, kRho);

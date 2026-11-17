@@ -12,10 +12,17 @@
 // THE ELEMENT RECORD, kLineStride floats, in the CPU's order (rotor, sub-azimuth, blade, element; a rotor's own call
 // order):
 //   [0-2] the rotor's axis   [3-5] the element's motion   [6] chord   [7] sin beta   [8] cos beta   [9] r
-//   [10] dr * share (share = 1 / n_sub)   [11] omega   [12] h / (rho dx^3)   [13] rho   [14-15] spare
+//   [10] dr * share (share = 1 / n_sub)   [11] omega   [12] h / (rho dx^3)   [13] rho   [14] its tip group + 1 (0: none)   [15] its place in the blade
 //   then, for component c = 0, 1, 2 at kLineHeaderWords + c * kLineComponentWords:
 //   [0-2] lo of axes x, y, z (a float, exact)   [3-5] n, the taps of each axis
 //   [6] S, the product of the axes' weight sums   [7 + kLineTaps * a + t] the weight of tap t of axis a.
+// THE TIP CORRECTION'S GROUPS (L72k's A1; airflow_line_tipcorr), in the same buffer after the element records, from word
+// elements * kLineStride: kTipHeaderWords floats (word 0 the group count, a float, exact), then kTipStride floats a group (a blade at
+// a sub-azimuth of a rotor whose tip_correction is on and that turns), in the CPU's order:
+//   [0] first element (global)  [1] per (elements a blade)  [2] iterations  [3] segments  [4] reach  [5] spin  [6] dr  [7] r_in
+//   [8] eps_m  [9] kern sum  [10] relax  [11] omega  [12] rho   [16-18] centre  [19-21] d, the blade's direction  [22-24] the motion
+//   [25-27] the axis   [32 + j] th_j   [64 + j] cos th_j   [96 + j] sin th_j (j <= segments)   [128 + m] the span filter, m <= reach
+// The tables are line_tip_tables()'s own floats (physics/airflow/line.hpp): the kernel computes none of them.
 // THE POLAR (airflow_line_polar): [0] n (a float, exact), then the n diamond keys, the n C_l, the n C_d (the CPU's own
 // arrays).
 // THE FORCE (airflow_line_force), kLineForceStride floats an element: [0-2] the force on the air, already x dr * share;
@@ -41,9 +48,15 @@ inline constexpr uint32_t kLineHeaderWords = 16;
 inline constexpr uint32_t kLineComponentWords = 7 + 3 * kLineTaps;
 inline constexpr uint32_t kLineStride = kLineHeaderWords + 3 * kLineComponentWords;
 inline constexpr uint32_t kLineForceStride = 8;
+inline constexpr uint32_t kTipHeaderWords = 16;
+inline constexpr uint32_t kTipStride = 160;
+inline constexpr uint32_t kTipMaxSegments = 31;  // the tables' 32-float rows
+inline constexpr uint32_t kTipMaxReach = 31;
+inline constexpr uint32_t kTipMaxPer = 128;  // the kernel's workgroup-shared arrays
 
 struct LineRecords {
     std::vector<float> elems;          // kLineStride floats an element, every rotor's elements in order
+    std::vector<float> tip;            // the tip correction's header and groups (kTipHeaderWords + groups * kTipStride)
     std::vector<uint32_t> per_rotor;   // each rotor's element count
 };
 

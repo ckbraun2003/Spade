@@ -33,6 +33,7 @@
 
 #include "airflow_exact_device.hpp"
 #include "airflow_line_load.spv.gen.hpp"
+#include "airflow_line_tipcorr.spv.gen.hpp"
 #include "airflow_line_sample.spv.gen.hpp"
 #include "airflow_line_spread.spv.gen.hpp"
 #include "compute/backend.hpp"
@@ -256,6 +257,7 @@ TEST(GpuAirflowLine, PackedRecordsRunThroughTheKernelsAsSpreadLineBitForBit) {
         a.omega = 400.0f;
         a.psi = 0.3f;
         a.eps_cells = eps;
+        a.tip_correction = false;  // the three base kernels written out: the flag-off pin (the tip kernel has its own test)
         af::LineRotor b;  // left hand, the axis tilted in the x-y plane
         b.centre = glm::vec3(0.105f, 0.103f, 0.106f);
         b.axis = glm::vec3(0.6f, 0.8f, 0.0f);
@@ -266,6 +268,7 @@ TEST(GpuAirflowLine, PackedRecordsRunThroughTheKernelsAsSpreadLineBitForBit) {
         b.omega = 250.0f;
         b.psi = 1.1f;
         b.eps_cells = eps;
+        b.tip_correction = false;
         const std::vector<af::LineRotor> rotors{a, b};
 
         // The CPU: the rotors' own calls, one after the other onto the same increments.
@@ -362,7 +365,9 @@ template <typename T>
 
 }  // namespace
 
-TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
+// The kernels on the device against spread_line(), with the rotors' tip correction off or on (L72k's A1: airflow_line_tipcorr
+// between the sample and the load, its phases recorded as GpuFluid does).
+static void kernels_match_spread_line(bool tip) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -385,6 +390,7 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
             a.omega = 400.0f;
             a.psi = 0.3f;
             a.eps_cells = eps;
+            a.tip_correction = tip;
             af::LineRotor b;
             b.centre = glm::vec3(0.105f, 0.103f, 0.106f);
             b.axis = glm::vec3(0.6f, 0.8f, 0.0f);
@@ -395,6 +401,7 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
             b.omega = 250.0f;
             b.psi = 1.1f;
             b.eps_cells = eps;
+            b.tip_correction = tip;
             const std::vector<af::LineRotor> rotors{a, b};
 
             // The increments start as something (the discs', say): the line adds to it.
@@ -407,11 +414,22 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
             std::vector<float> du(start.begin(), start.begin() + faces[0]);
             std::vector<float> dv(start.begin() + faces[0], start.begin() + faces[0] + faces[1]);
             std::vector<float> dw(start.begin() + faces[0] + faces[1], start.end());
+            std::vector<float> du0 = du;  // the same increments with the correction off: the tip run must differ from it
+            std::vector<float> dv0 = dv;
+            std::vector<float> dw0 = dw;
             std::vector<af::LineReport> want;
             for (const af::LineRotor& r : rotors) {
                 const auto rep = af::spread_line(r, grid, kRho, kH, n_sub, du, dv, dw);
                 ASSERT_TRUE(rep.has_value()) << rep.error().context;
                 want.push_back(*rep);
+                af::LineRotor plain = r;
+                plain.tip_correction = false;
+                ASSERT_TRUE(af::spread_line(plain, grid, kRho, kH, n_sub, du0, dv0, dw0).has_value());
+            }
+            if (tip) {
+                std::size_t moved = 0;
+                for (std::size_t i = 0; i < du.size(); ++i) moved += du[i] != du0[i] ? 1u : 0u;
+                EXPECT_GT(moved, 0u) << "the correction changes the increments: not vacuous";
             }
 
             const auto records = ag::line_records(rotors, s, kRho, kH, n_sub);
@@ -434,17 +452,19 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
             buffers[gen::kBinding_airflow_v] = {"airflow_v", grid.v.size() * 4u, BufferKind::staged};
             buffers[gen::kBinding_airflow_w] = {"airflow_w", grid.w.size() * 4u, BufferKind::staged};
             buffers[gen::kBinding_airflow_increments] = {"airflow_increments", start.size() * 4u, BufferKind::staged};
-            buffers[gen::kBinding_airflow_line_elems] = {"airflow_line_elems", records->elems.size() * 4u,
-                                                         BufferKind::staged};
+            std::vector<float> elems = records->elems;  // with the correction, the groups' records follow the elements'
+            if (tip) elems.insert(elems.end(), records->tip.begin(), records->tip.end());
+            buffers[gen::kBinding_airflow_line_elems] = {"airflow_line_elems", elems.size() * 4u, BufferKind::staged};
             buffers[gen::kBinding_airflow_line_polar] = {"airflow_line_polar", polar_floats.size() * 4u,
                                                          BufferKind::staged};
             buffers[gen::kBinding_airflow_line_vel] = {"airflow_line_vel", std::size_t{count} * 4u * 4u,
                                                        BufferKind::device_only};
             const uint64_t force_bytes = std::size_t{count} * ag::kLineForceStride * 4u;
             buffers[gen::kBinding_airflow_line_force] = {"airflow_line_force", force_bytes, BufferKind::staged};
-            const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_line_sample,
-                                                      &gen::kSpvVariants_airflow_line_load,
-                                                      &gen::kSpvVariants_airflow_line_spread};
+            std::vector<const SpirvVariantSet*> kernels{&gen::kSpvVariants_airflow_line_sample,
+                                                        &gen::kSpvVariants_airflow_line_load,
+                                                        &gen::kSpvVariants_airflow_line_spread};
+            if (tip) kernels.push_back(&gen::kSpvVariants_airflow_line_tipcorr);
             auto runner = ChainRunner::create(*ctx, spade::airflow_gpu::RunnerDesc{.buffers = buffers,
                                                                                    .kernels = kernels,
                                                                                    .push_bytes = sizeof(LinePush),
@@ -456,10 +476,17 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
             ASSERT_TRUE(r.upload(gen::kBinding_airflow_v, bytes_of(grid.v)).has_value());
             ASSERT_TRUE(r.upload(gen::kBinding_airflow_w, bytes_of(grid.w)).has_value());
             ASSERT_TRUE(r.upload(gen::kBinding_airflow_increments, bytes_of(start)).has_value());
-            ASSERT_TRUE(r.upload(gen::kBinding_airflow_line_elems, bytes_of(records->elems)).has_value());
+            ASSERT_TRUE(r.upload(gen::kBinding_airflow_line_elems, bytes_of(elems)).has_value());
             ASSERT_TRUE(r.upload(gen::kBinding_airflow_line_polar, bytes_of(polar_floats)).has_value());
             std::vector<ChainCommand> chain;
             chain.push_back(dispatch_of(0, LinePush{count, 0u, 3u * count, 0u}, kWorkgroup));
+            if (tip) {  // the phases of airflow_line_tipcorr.slang: 0, 2, 3, then 1, 2, 3 for each further pass
+                for (int pass = 0; pass < af::LineTipParams{}.iterations; ++pass) {
+                    chain.push_back(dispatch_of(3, LinePush{count, pass == 0 ? 0u : 1u, count, 0u}, kWorkgroup));
+                    chain.push_back(dispatch_of(3, LinePush{count, 2u, count, 0u}, kWorkgroup));
+                    chain.push_back(dispatch_of(3, LinePush{count, 3u, count, 0u}, kWorkgroup));
+                }
+            }
             chain.push_back(dispatch_of(1, LinePush{count, 0u, count, 0u}, kWorkgroup));
             for (uint32_t c = 0; c < 3; ++c) {
                 chain.push_back(dispatch_of(2, LinePush{c, count, faces[c], 0u}, kWorkgroup));
@@ -486,9 +513,9 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
                     worst = std::max(worst, std::fabs(out[i] - cpu[i]));
                 }
             }
-            std::printf("measure: line on the device, n_sub %u eps %.1f cells, %u elements: %zu of %u faces differ, "
+            std::printf("measure: line on the device%s, n_sub %u eps %.1f cells, %u elements: %zu of %u faces differ, "
                         "worst %.3g (relative to the largest increment %.3g: %.3g)\n",
-                        n_sub, static_cast<double>(eps), count, differing, total, static_cast<double>(worst),
+                        tip ? " with the tip correction" : "", n_sub, static_cast<double>(eps), count, differing, total, static_cast<double>(worst),
                         static_cast<double>(scale), static_cast<double>(scale > 0.0f ? worst / scale : 0.0f));
             EXPECT_GT(scale, 0.0f) << "not vacuous";
             if (bit_equal) {
@@ -513,10 +540,15 @@ TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) {
     }
 }
 
+TEST(GpuAirflowLine, TheKernelsOnTheDeviceMatchSpreadLine) { kernels_match_spread_line(false); }
+
+// L72k's A1: the same, the rotors' tip correction on. The corrected air is the CPU's, bit for bit, and so is everything after it.
+TEST(GpuAirflowLine, TheTipCorrectionOnTheDeviceMatchesSpreadLine) { kernels_match_spread_line(true); }
+
 // The whole path: GpuFluid::step(discs, lines) against the CPU's spread_line(), spread_actuator() and fluid_step(),
 // three steps with the rotor turning (psi advances by omega h a step) and a disc beside it. The line is added to the
-// increments first, the disc after it, on both sides.
-TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) {
+// increments first, the disc after it, on both sides. With `tip`, the rotor's tip correction is on and the LineSetup says so.
+static void fluid_steps_a_line(bool tip) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
     ASSERT_NE(ctx, nullptr);
@@ -533,6 +565,7 @@ TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) {
     rotor.polar = &polar;
     rotor.omega = 400.0f;
     rotor.psi = 0.3f;
+    rotor.tip_correction = tip;
     const std::vector<af::ActuatorDisc> discs{af::ActuatorDisc{
         .centre = {0.07f, 0.104f, 0.104f},
         .axis = {0.0f, -1.0f, 0.0f},
@@ -555,7 +588,7 @@ TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) {
     const std::vector<af::LineRotor> first{rotor};
     const auto probe = ag::line_records(first, shape, kRho, kH, n_sub);
     ASSERT_TRUE(probe.has_value()) << probe.error().context;
-    const ag::LineSetup setup{.polar = &polar, .elements = probe->per_rotor[0], .n_sub = n_sub};
+    const ag::LineSetup setup{.polar = &polar, .elements = probe->per_rotor[0], .n_sub = n_sub, .tip_correction = tip};
     auto gpu = ag::GpuFluid::create(*ctx, start, bc, cfg, nullptr, 64u, &setup);
     ASSERT_TRUE(gpu.has_value()) << gpu.error().context;
     EXPECT_TRUE((*gpu)->line_reports().empty());
@@ -613,4 +646,15 @@ TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) {
     changed.polar = &other;
     const std::vector<af::LineRotor> changed_polar{changed};
     EXPECT_FALSE((*gpu)->step(discs, changed_polar).has_value()) << "a polar that is not the setup's";
+    if (tip) {
+        const ag::LineSetup bare{.polar = &polar, .elements = probe->per_rotor[0], .n_sub = n_sub, .tip_correction = false};
+        auto no_tip = ag::GpuFluid::create(*ctx, start, bc, cfg, nullptr, 64u, &bare);
+        ASSERT_TRUE(no_tip.has_value()) << no_tip.error().context;
+        EXPECT_FALSE((*no_tip)->step(discs, one).has_value()) << "a tip-corrected rotor on a LineSetup without it";
+    }
 }
+
+TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) { fluid_steps_a_line(false); }
+
+// L72k's A1: the whole path with the tip correction on, three steps, every face and cell of u, v, w and p the CPU's bit for bit.
+TEST(GpuAirflowLine, TheFluidStepsATipCorrectedLineAndMatchesTheCpu) { fluid_steps_a_line(true); }

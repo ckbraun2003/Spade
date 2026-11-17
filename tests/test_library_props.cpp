@@ -9,6 +9,10 @@
 //     in the source tree now. Editing either without re-running the tool
 //     fails here, naming the file (the lead, 2026-10-22). The tool's own
 //     tests are tools/library_props/test_resample_uiuc.py, run by hand.
+//   - THE POLAR FITS ARE THEIR TOOL'S OWN (L72k B1): tests/library_polar_fits.gen.hpp
+//     stamps the FNV-1a 64 of tools/library_props/polar_fits.py and
+//     polar_fits.json the same way; every fit names a prop of kProps once,
+//     with finite numbers, cd_scale above 0, and the conditions it holds under.
 //   - EVERY TABLE STARTS AT ITS STATIC POINT: J = 0 holds ct_static and
 //     cq_static (above 0), then J = k/20 for k = 1, 2, ..., every value
 //     finite; a static-only prop has no tables.
@@ -28,6 +32,7 @@
 #include <string>
 #include <string_view>
 
+#include "library_polar_fits.gen.hpp"
 #include "library_props.gen.hpp"
 #include "scene/model_sources.hpp"
 
@@ -66,6 +71,42 @@ TEST(LibraryProps, TheHeaderIsTheToolsOwn) {
         EXPECT_EQ(now, s.stamped) << "tools/library_props/" << s.file
                                   << " changed since tests/library_props.gen.hpp was generated: re-run "
                                      "resample_uiuc.py (and its tests) and commit the header with it";
+    }
+}
+
+TEST(LibraryProps, ThePolarFitsHeaderIsItsToolsOwn) {
+    struct Stamp {
+        const char* file;
+        std::uint64_t stamped;
+    };
+    for (const Stamp s : {Stamp{"polar_fits.py", spade::test::library_polar_fits::kToolHash},
+                          Stamp{"polar_fits.json", spade::test::library_polar_fits::kFitsHash}}) {
+        std::uint64_t now = 0;
+        ASSERT_TRUE(fnv1a64_of(tool_dir() / s.file, now)) << "cannot read " << (tool_dir() / s.file).string();
+        EXPECT_EQ(now, s.stamped) << "tools/library_props/" << s.file
+                                  << " changed since tests/library_polar_fits.gen.hpp was generated: re-run "
+                                     "polar_fits.py and commit the header (and the part files) with it";
+    }
+}
+
+TEST(LibraryProps, EveryPolarFitNamesAPropOnceAndStatesItsConditions) {
+    using spade::test::library_polar_fits::Fit;
+    using spade::test::library_polar_fits::kFits;
+    for (std::size_t i = 0; i < kFits.size(); ++i) {
+        const Fit& f = kFits[i];
+        SCOPED_TRACE(std::string(f.id));
+        std::size_t named = 0;
+        for (const Prop& p : kProps) named += p.id == f.id ? 1u : 0u;
+        EXPECT_EQ(named, 1u) << "a fit belongs to exactly one library prop";
+        for (std::size_t j = 0; j < i; ++j) EXPECT_NE(kFits[j].id, f.id) << "listed twice";
+        EXPECT_TRUE(std::isfinite(f.alpha_0_deg));
+        EXPECT_TRUE(std::isfinite(f.cd_scale));
+        EXPECT_GT(f.cd_scale, 0.0);
+        EXPECT_FALSE(f.fit.empty()) << "the fit point and the match are part of the value";
+    }
+    for (const Prop& p : kProps) {
+        if (p.id != "triblade_6inch_scaled") continue;
+        for (const Fit& f : kFits) EXPECT_NE(f.id, p.id) << "the stand-in has no data of its own and stays estimated";
     }
 }
 
