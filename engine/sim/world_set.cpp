@@ -393,15 +393,18 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 // LightingDesc 64, no debug surcharge since it holds no container) = 384;
 // from the NEW release value, 320 + 8 containers (the five pre-existing plus
 // the three new ones) * 8 bytes = 384.
+//
+// UPDATED (L85 SP-2): `anchor`, a std::optional<geo::Geodetic> (three doubles and the engaged flag, 32 bytes, no container of its
+// own), joined the end of WorldDesc, and IS in config_hash's fold, only when set (below): 320 + 32 = 352 and 384 + 32 = 416.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 384,
+static_assert(sizeof(WorldDesc) == 416,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 320,
+static_assert(sizeof(WorldDesc) == 352,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "
