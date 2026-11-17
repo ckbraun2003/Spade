@@ -9,6 +9,7 @@
       2  the file list: the editor, assets, licence, notices, release docs, the guide; no tests, no flow_movie, no SDK files
       3  the shortcuts: Spade Editor, Spade Drone Box and Spade User Guide in the Start menu; Spade Editor on the desktop
       4  `spade_sandbox.exe --version` from the install folder prints the version the setup.exe's name carries
+         (and `spade_geo_fetch.exe` starts there: --help exits 0, and --check on an empty cache is a miss, exit 3, with no network)
       5  the live smoke from the install folder (`--live-smoke --assets <install>\assets`): exit 0 and the journal ends END verdict=PASS
          (needs a display and the GPU; -SkipSmoke leaves it out)
       6  uninstall silently: the folder, the Start-menu folder, both shortcuts and the HKCU entry are gone, and %LOCALAPPDATA%\Spade holds
@@ -97,7 +98,7 @@ $keys = @(UninstallKeys)
 Check 'uninstaller registered under HKCU only (per-user, no administrator)' ($keys.Count -eq 1 -and $keys[0] -like '*HKEY_CURRENT_USER*') "($($keys -join '; '))"
 
 # ---- 2 file list ----------------------------------------------------------------------------------------------------------------------
-$must = 'spade_sandbox.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
+$must = 'spade_sandbox.exe', 'spade_geo_fetch.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
         'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'docs\user-guide\index.html', 'unins000.exe'
 $missing = @($must | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dir $_)) })
 Check 'installed files present' ($missing.Count -eq 0) "(missing: $($missing -join ', '))"
@@ -134,6 +135,15 @@ Check 'desktop: Spade Editor' (Test-Path -LiteralPath $deskLink)
 $exe = Join-Path $dir 'spade_sandbox.exe'
 $v = Run $exe @('--version') $dir
 Check "--version prints $expectVersion" ($v.Code -eq 0 -and $v.Output -like "*$expectVersion*") "(exit $($v.Code): '$($v.Output)')"
+
+# ---- 4b the map fetch tool starts from the install folder, and with no network and an empty cache says miss (exit 3) -----------------------
+$geoExe = Join-Path $dir 'spade_geo_fetch.exe'
+$geoHelp = Run $geoExe @('--help') $dir
+Check 'spade_geo_fetch --help exits 0 and prints its usage' ($geoHelp.Code -eq 0 -and $geoHelp.Output -like '*usage: spade_geo_fetch*') "(exit $($geoHelp.Code): '$($geoHelp.Output)')"
+$geoCache = Join-Path $env:TEMP "spade-geo-check-$PID"
+$geoCheck = Run $geoExe @('--lat', '40.76', '--lon', '-113.90', '--check', '--cache', $geoCache) $dir
+Check 'spade_geo_fetch --check on an empty cache is a miss (exit 3), without the network' ($geoCheck.Code -eq 3 -and $geoCheck.Output -like '*miss*') "(exit $($geoCheck.Code): '$($geoCheck.Output)')"
+Remove-Item -LiteralPath $geoCache -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- 5 live smoke from the install folder ---------------------------------------------------------------------------------------------
 if ($SkipSmoke) {

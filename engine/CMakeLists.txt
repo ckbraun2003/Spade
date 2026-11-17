@@ -362,7 +362,7 @@ install(DIRECTORY world/ DESTINATION include/world FILES_MATCHING PATTERN "*.hpp
 # (the nlohmann note there): no nlohmann type crosses mesh_import.hpp, and it
 # is header-only, so no consumer needs it on a link line.
 #
-# miniz and pugixml (3MF's ZIP and XML; L15) are compiled INTO this archive,
+# miniz and pugixml (3MF's ZIP and XML; L15) are compiled INTO this archive, miniz also for the PNG decoder's inflate (decode_png; L85e),
 # as volk.c is into spade_compute (the volk note there): spade_threemf_deps is
 # an OBJECT library of their sources, without spade_warnings (vendored code is
 # not held to Spade's -Werror), whose objects join this target's own. An

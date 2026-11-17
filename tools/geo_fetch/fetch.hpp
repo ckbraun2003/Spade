@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // geo_fetch/fetch.hpp -- one map fetch, end to end (L85, SP-5; the design note, sections 2 to 5): check the cache, ask NGS for
 // the geoid height, 3DEP for the elevation, NAIP for the image, convert NAVD88 to ellipsoid heights, store the entry, trim the
-// cache. Everything outside it is injected (the network, the clock, the area's geodesy), so the tests run it on fixtures.
+// cache. Everything outside it is injected (the network, the clock, and a fixed area when a test wants one), so the tests run it on fixtures.
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
@@ -64,7 +64,7 @@ struct ProgressEvent {
 
 struct FetchEnv {
     HttpClient& http;
-    std::function<Bbox(double lat_deg, double lon_deg, double side_m)> area;  // the box both layers cover (SP-1's geodesy)
+    std::function<Bbox(double lat_deg, double lon_deg, double side_m)> area;  // the box both layers cover; empty: area_bbox (the geodesy)
     std::function<std::string()> utc_now;                                    // "2026-11-17T01:23:45Z"
     std::function<void(int milliseconds)> sleep;                             // between a retry; may be a no-op
     std::function<void(const ProgressEvent&)> progress;                      // may be empty

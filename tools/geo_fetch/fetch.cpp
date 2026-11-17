@@ -7,12 +7,16 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <span>
 #include <system_error>
 #include <vector>
 
+#include "area.hpp"
 #include "cache_store.hpp"
+#include "core/geodesy.hpp"
 #include "raster_formats.hpp"
 #include "world/map_cache.hpp"
+#include "world/mesh_import.hpp"
 #include "world/sha256.hpp"
 
 namespace spade::geofetch {
@@ -173,8 +177,11 @@ const char* name_of(FetchResultKind kind) {
 
 FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     // ---- the request itself ------------------------------------------------------------------------------------------
-    if (!(q.lat_deg >= -90.0 && q.lat_deg <= 90.0)) return failure(FetchResultKind::refused, "the latitude must be between -90 and 90 degrees");
-    if (!(q.lon_deg >= -180.0 && q.lon_deg <= 180.0)) return failure(FetchResultKind::refused, "the longitude must be between -180 and 180 degrees");
+    // The anchor the engine would accept (core/geodesy.hpp: latitude within 89, east is undefined at a pole): a map the engine could
+    // not be anchored to is not fetched.
+    if (const Result<void> anchor = geo::validate_anchor({q.lat_deg, q.lon_deg, 0.0}); !anchor) {
+        return failure(FetchResultKind::refused, anchor.error().context);
+    }
     if (!(q.side_m >= kMapMinSideM && q.side_m <= kMapMaxSideM)) {
         return failure(FetchResultKind::refused, std::format("the side must be between {} and {} m (1 km at most)", kMapMinSideM, kMapMaxSideM));
     }
@@ -209,7 +216,10 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     }
 
     // ---- the network -----------------------------------------------------------------------------------------------------
-    const Bbox box = env.area(q.lat_deg, q.lon_deg, q.side_m);
+    const Bbox box = env.area ? env.area(q.lat_deg, q.lon_deg, q.side_m) : area_bbox(q.lat_deg, q.lon_deg, q.side_m);
+    if (!(box.west_deg < box.east_deg && box.south_deg < box.north_deg)) {
+        return failure(FetchResultKind::refused, "the area crosses the 180th meridian, which is not supported");
+    }
 
     Download geoid_dl = download(env, "geoid", "ngs", geoid_url(q.lat_deg, q.lon_deg), q.timeout_s);
     if (!geoid_dl.ok) return geoid_dl.failed;
@@ -248,6 +258,10 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
         return failure(FetchResultKind::service_error,
                        std::format("naip: the PNG is not 8-bit RGB (colour type {}, {} bits)", png->color_type, png->bit_depth), "naip");
     }
+
+    // The whole file, not only its header: a PNG that decode_png refuses is not stored, so the reader never meets one the tool kept.
+    const Result<world::Image8> decoded = decode_png(std::as_bytes(std::span<const char>(img_dl.body)));
+    if (!decoded) return failure(FetchResultKind::service_error, "naip: the PNG cannot be read: " + decoded.error().context, "naip");
 
     // ---- NAVD88 to the ellipsoid: h = H + N, in double, stored as float32 -----------------------------------------------------
     std::string heights;
