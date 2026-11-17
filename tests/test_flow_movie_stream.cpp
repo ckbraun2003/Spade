@@ -213,18 +213,24 @@ TEST(FlowMovieStream, AStillsFrameAndItsMeanWindowStayOnDiskUntilTheSolveIsDone)
     EXPECT_TRUE(plan.spent(197u, 449u));
 }
 
-// A particle look carries points through EVERY stored frame in order, the ones before the clip too (the inflow must already be
-// drawn in when the clip starts). with_warmup() adds the frames 0 .. first - 1 to a run's draws, so the plan writes them and
-// the solve keeps each until it is read.
-TEST(FlowMovieStream, AParticleRunReadsEveryFrameFromZeroSoTheWarmUpFramesAreInThePlan) {
-    const auto draws = flow_movie::with_warmup(range(150, 3), 150u);
-    EXPECT_EQ(draws.size(), 153u);
-    const flow_movie::StreamPlan plan(draws, 1u, {});
+// A particle look carries points through EVERY stored frame in order, the ones before the clip and the ones between the clip
+// and its still too (a still of frame 200 under a clip that starts at 150 still needs 150 to 199: the points at 200 are the
+// ones carried from 0). with_every_frame() makes each frame from 0 to the last draw a draw, so the plan writes it and keeps it
+// until its advance is done. (The first version added only the frames before the clip, and a still-only run, which draws
+// frame 200 alone, was refused at frame 150: "frame 200 is not the next frame".)
+TEST(FlowMovieStream, AParticleRunReadsEveryFrameFromZeroToItsLastDraw) {
+    const auto clip = flow_movie::with_every_frame(range(150, 3));
+    EXPECT_EQ(clip.size(), 153u);
+    const flow_movie::StreamPlan plan(clip, 1u, {});
     for (uint32_t j = 0; j < 153u; ++j) EXPECT_TRUE(plan.needed(j)) << j;
     EXPECT_FALSE(plan.needed(153u));
-    EXPECT_TRUE(plan.spent(0u, 0u)) << "a warm-up frame goes once its own advance is done";
-    EXPECT_EQ(flow_movie::with_warmup(range(0, 3), 0u).size(), 3u) << "a clip from frame 0 has none";
-    EXPECT_EQ(flow_movie::with_warmup({152u, 150u, 150u}, 150u).size(), 152u) << "each frame once";
+    EXPECT_TRUE(plan.spent(0u, 0u)) << "a frame goes once its own advance is done";
+    const auto still_only = flow_movie::with_every_frame({200u});
+    EXPECT_EQ(still_only.size(), 201u) << "the frames between the warm-up and the still are in it";
+    for (uint32_t j = 0; j <= 200u; ++j) EXPECT_EQ(still_only[j], j) << "in order, each once";
+    EXPECT_EQ(flow_movie::with_every_frame({5u, 2u, 2u, 9u}).size(), 10u) << "0 to the largest, each once";
+    EXPECT_TRUE(flow_movie::with_every_frame({}).empty()) << "no draw, no frame";
+    EXPECT_EQ(flow_movie::with_every_frame({0u}), (std::vector<uint32_t>{0u}));
 }
 
 // The disk guard (the lead, 2026-11-17: the drive fell to 3.5 GB free when a non-streamed run asked for a frame that was not
