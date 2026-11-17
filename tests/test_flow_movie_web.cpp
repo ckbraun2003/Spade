@@ -571,4 +571,50 @@ TEST(FlowMovieWeb, S2IsAVolumeOfTheWakesSpeedNotVortexSurfaces) {
     EXPECT_EQ(std::string(s2.title).find("ortex"), std::string::npos) << s2.title;
 }
 
+// --drone takes a library drone by its internal name, and no caption, title or file name carries that name or a brand: the
+// clip says "a 1.3 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17). The default is the
+// reference quad, with today's words and today's cache names.
+TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
+    const web::Drone* drone = web::find_drone("phantom3_class");
+    ASSERT_NE(drone, nullptr);
+    EXPECT_EQ(web::find_drone("no_such_drone"), nullptr);
+    EXPECT_EQ(std::string(web::default_drone().library), "reference_quad");
+    EXPECT_EQ(web::drone_stem_suffix(web::default_drone()), "") << "today's caches keep their names";
+    EXPECT_EQ(web::drone_stem_suffix(*drone), "-phantom3_class");
+    for (const char* id : {"S1", "S2", "S3", "S4", "S8"}) {
+        const web::Clip* clip = web::find_clip(id);
+        ASSERT_NE(clip, nullptr) << id;
+        web::CaptionInput in;
+        in.clip = clip;
+        in.drone = drone;
+        in.commit = "abc123def456";
+        in.date_utc = "2026-11-17 03:00 UTC";
+        in.command = std::string("flow_movie --web ") + id + " --drone phantom3_class";
+        in.ticket = "web-spade-test";
+        in.sim_seconds = 0.3;
+        in.screen_seconds = 10.0;
+        std::string text = web::caption_text(in);
+        std::string title(web::clip_title(*clip, *drone));
+        const std::string command_free = text.substr(0, text.find("- How rendered:")) +
+                                         text.substr(text.find('\n', text.find("- How rendered:")));
+        std::string lower = command_free + " " + title;
+        for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        EXPECT_EQ(lower.find("phantom"), std::string::npos) << id;
+        EXPECT_EQ(lower.find("dji"), std::string::npos) << id;
+        EXPECT_EQ(lower.find("reference quad"), std::string::npos) << id << ": " << command_free;
+        EXPECT_NE(text.find("a 1.3 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
+        EXPECT_NE(title.find("amera quadcopter"), std::string::npos) << title;
+    }
+    web::CaptionInput plain;
+    plain.clip = web::find_clip("S8");
+    plain.commit = "c";
+    plain.date_utc = "d";
+    plain.command = "x";
+    plain.ticket = "t";
+    plain.sim_seconds = 0.3;
+    plain.screen_seconds = 10.0;
+    EXPECT_NE(web::caption_text(plain).find("reference quad"), std::string::npos) << "no drone: today's caption";
+    EXPECT_EQ(web::clip_title(*plain.clip, web::default_drone()), std::string(plain.clip->title));
+}
+
 }  // namespace

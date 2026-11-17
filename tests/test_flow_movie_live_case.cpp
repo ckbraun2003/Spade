@@ -177,3 +177,42 @@ TEST(FlowMovieLiveCase, TheStillAirClipsDefaultToTheDeepBoxAndAnExplicitGridWins
     EXPECT_EQ(flow_movie::d1_web_grid(true, small).ny, 80u) << "--grid wins on a still-air clip";
     EXPECT_EQ(flow_movie::d1_web_grid(false, small).ny, 80u) << "--grid wins on a side-wind clip";
 }
+
+// The model-file parameter of D1's builder (the lead, 2026-11-17: Cameron wants a real drone model in the web clips). The
+// default is today's reference quad, so every existing D1 film and test is the film it was; another library drone is built
+// the same way, its parts in the flow, held at its own hover throttle.
+TEST(FlowMovieLiveCase, TheDefaultD1CaseIsTheReferenceQuadAndAnotherLibraryDroneIsBuiltTheSameWay) {
+    const auto plain = spade::testing::d1_case(0.01, kD1Grid);
+    const auto named = spade::testing::d1_case(0.01, kD1Grid, true, 0.0f, spade::testing::kLibraryQuad);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    ASSERT_TRUE(named.has_value()) << named.error().context;
+    EXPECT_EQ(plain->c.model.file, named->c.model.file) << "the default is the reference quad";
+    EXPECT_NE(plain->c.model.file.find("reference_quad"), std::string::npos) << plain->c.model.file;
+    EXPECT_EQ(plain->trim.hover, named->trim.hover);
+    EXPECT_EQ(plain->run_model.rotors.size(), named->run_model.rotors.size());
+
+    const auto phantom =
+        spade::testing::d1_case(0.01, kD1Grid, true, 0.0f, "library/drones/phantom3_class.model.yaml");
+    ASSERT_TRUE(phantom.has_value()) << phantom.error().context;
+    EXPECT_NE(phantom->c.model.file.find("phantom3_class"), std::string::npos) << phantom->c.model.file;
+    EXPECT_EQ(phantom->run_model.rotors.size(), 4u);
+    EXPECT_NEAR(phantom->run_model.rotors.front().radius, 0.1194f, 1e-4f);
+    EXPECT_FALSE(phantom->run_model.parts.empty()) << "the parts are in the flow";
+    EXPECT_GT(phantom->trim.hover, 0.0f);
+    EXPECT_LT(phantom->trim.hover, 1.0f);
+    EXPECT_NE(phantom->trim.hover, plain->trim.hover) << "a 1.28 kg drone hovers at its own throttle";
+}
+
+TEST(FlowMovieLiveCase, TheWebCaseTakesTheDroneAndANamelessFileIsRefused) {
+    const auto phantom = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f,
+                                                      "library/drones/phantom3_class.model.yaml");
+    ASSERT_TRUE(phantom.has_value()) << phantom.error().context;
+    EXPECT_EQ(phantom->run_model.rotors.size(), 4u);
+    EXPECT_NE(phantom->identity.find("phantom3_class"), std::string::npos) << "the cache's mark names the drone";
+    const auto plain = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f);
+    ASSERT_TRUE(plain.has_value()) << plain.error().context;
+    EXPECT_EQ(plain->identity.find("phantom3_class"), std::string::npos);
+    const auto missing = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f,
+                                                      "library/drones/no_such_drone.model.yaml");
+    EXPECT_FALSE(missing.has_value());
+}
