@@ -57,3 +57,7 @@ In `spade_tests`, in-process (`run_part_import(args, env, out, err)` on a tempor
 ## 8. Order of work
 
 1. This note. 2. Axes, scale, key, unit guess, JSON writer (pure functions). 3. `--inspect` and `--import` for the mesh formats, the store, the codes, `--probe`. 4. The process layer, cancel and the STEP route; `step_convert.py`'s `--inspect`, `--emit-3mf`, `--json`. 5. The collecting readers, and the gate kinds when Core's `make_mesh_diagnosed` lands. 6. Install beside the editor with `step_convert.py`, `package-test`, `consumers.md`. Each is RED then GREEN on `interface/part-import`.
+
+## 9. Status
+
+Built on `interface/part-import`: the pure functions (codes, JSON, axes, scale, unit guess, cache key), the store, the in-process tool (`run_part_import`) for STL, OBJ, glb and 3MF, the child-process layer, the STEP route against `tests/fake_step_convert.py`, `step_convert.py`'s `--probe`, `--inspect` and `--emit-3mf`, the program (`main.cpp`, Ctrl+C as the cancel flag) and the editor install. Not built yet: the collecting readers (one gate result per object in `--inspect`) and Core's `make_mesh_diagnosed` kinds (both change the same four `make_mesh` call sites in `engine/world/mesh_import/`, so they go in together when Core's lands); a flagged STEP import is not remembered by the store. The real converter's new modes have not been run (no OpenCASCADE on the build machine).
