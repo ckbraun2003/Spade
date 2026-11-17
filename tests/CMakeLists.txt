@@ -71,6 +71,8 @@ add_executable(spade_tests
     test_mesh_mass.cpp
     test_mesh_shapes.cpp
     test_mesh_file.cpp
+    # L85 geo G2 (SP-5): the map cache's file hash (world/sha256.hpp).
+    test_sha256.cpp
     test_mesh_import.cpp
     test_state.cpp
     test_snapshot.cpp
