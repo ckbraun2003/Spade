@@ -75,6 +75,32 @@ TEST(AnalysisRunProgress, RoundTripsThroughItsFile) {
     EXPECT_EQ(back->message, p.message);
 }
 
+// The numbers and spellings are a contract with Kat's run list (run.hpp): every state, `calibrating` (reserved, nothing sets it) too,
+// keeps its value and its text in the file, and reads back as itself.
+TEST(AnalysisRunProgress, EveryStateKeepsItsNumberAndItsSpelling) {
+    struct Row {
+        an::RunState state;
+        uint32_t value;
+        const char* text;
+    };
+    const Row rows[] = {{an::RunState::queued, 0, "queued"},   {an::RunState::calibrating, 1, "calibrating"},
+                        {an::RunState::running, 2, "running"}, {an::RunState::done, 3, "done"},
+                        {an::RunState::refused, 4, "refused"}, {an::RunState::faulted, 5, "faulted"},
+                        {an::RunState::cancelled, 6, "cancelled"}};
+    for (const Row& row : rows) {
+        EXPECT_EQ(static_cast<uint32_t>(row.state), row.value) << row.text;
+        const spade::test::TempDir dir(std::string("state_") + row.text);
+        an::RunProgress p;
+        p.state = row.state;
+        ASSERT_TRUE(an::write_progress(dir.path(), p).has_value()) << row.text;
+        EXPECT_NE(read_all(dir.path() / "progress.yaml").find(std::string("state: \"") + row.text + "\""), std::string::npos)
+            << row.text;
+        const spade::Result<an::RunProgress> back = an::read_progress(dir.path());
+        ASSERT_TRUE(back.has_value()) << row.text << ": " << back.error().context;
+        EXPECT_EQ(back->state, row.state) << row.text;
+    }
+}
+
 TEST(AnalysisRunProgress, AMissingFileIsAnIoError) {
     const spade::test::TempDir dir("noprogress");
     const spade::Result<an::RunProgress> p = an::read_progress(dir.path());
