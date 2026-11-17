@@ -1394,6 +1394,7 @@ struct WebPlan {
     double from_s = 0.0, to_s = 0.0;
     uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
+    float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1444,6 +1445,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     char window[64];
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
+    stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
     return stem;
 }
 
@@ -1490,7 +1492,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
               // a crosswind (heading 90: the air moves +z)
         const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
-                                   static_cast<float>(web::kD1WebStepS), web::kD1WebSgsCs);
+                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs);
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false);
         if (!made) return std::unexpected(made.error());
@@ -1655,6 +1657,7 @@ struct Options {
     // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
     bool web_still_only = false;   // --web-still: the 5120x2880 PNG only (any clip)
     fs::path web_deliver;          // --web-deliver RAW: check and copy the filmed files to RAW/spade, and MANIFEST.md
@@ -1914,6 +1917,9 @@ constexpr double kD1Seconds = 0.6;
         return 1;
     };
     if (opt.web_frames > 0u) return stop("a clip filmed from a --web-frames cache is a timing run, not a master");
+    if (opt.sgs_cs && *opt.sgs_cs != web::kD1WebSgsCs) {
+        return stop("a clip filmed at another Smagorinsky Cs (--sgs-cs) is a diagnostic, not a master");
+    }
     const web::DeliveryGuard guard{opt.web_deliver};
     const fs::path spade_dir = opt.web_deliver / "spade";
     const fs::path manifest = opt.web_deliver / "MANIFEST.md";
@@ -2035,7 +2041,13 @@ struct WebTimes {
         return 2;
     }
     const web::Group* group = web::find_group(clip->group);
+    if (opt.sgs_cs && !web::sgs_cs_applies(*clip)) {
+        std::fprintf(stderr, "flow_movie: --sgs-cs is for the D1 clips (S1 to S4 and S8); %s runs the reference quad's CPU "
+                             "film, which has no subgrid term\n", opt.web_id.c_str());
+        return 2;
+    }
     WebPlan plan;
+    plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
     plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
@@ -2436,6 +2448,12 @@ int main(int argc, char** argv) {
             opt.video = "web";
         } else if (arg == "--web-frames") {
             opt.web_frames = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--sgs-cs") {
+            opt.sgs_cs = web::parse_sgs_cs(value());
+            if (!opt.sgs_cs) {
+                std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
+                return 2;
+            }
         } else if (arg == "--window") {
             if (std::sscanf(value().c_str(), "%lf:%lf", &opt.window_from, &opt.window_to) != 2 ||
                 opt.window_to <= opt.window_from) {
