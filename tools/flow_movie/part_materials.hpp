@@ -36,7 +36,7 @@ inline constexpr std::array<RoleLook, 14> kRoleLooks{{
     {"plate", {0.10f, 0.10f, 0.12f}},    // frame plates: dark carbon
     {"arm", {0.22f, 0.23f, 0.26f}},      // arms: dark grey
     {"motor", {0.55f, 0.56f, 0.60f}},    // motors: brushed metal, a mid-grey
-    {"prop", {0.08f, 0.08f, 0.10f}},     // blades: dark carbon
+    {"prop", {0.42f, 0.43f, 0.46f}},     // blades: a mid grey, so they show against the clips' black
     {"battery", {0.16f, 0.20f, 0.28f}},  // the pack: darker blue-grey
     {"strap", {0.03f, 0.03f, 0.035f}},   // the battery strap: black rubber
     {"camera", {0.05f, 0.05f, 0.06f}},   // near-black
