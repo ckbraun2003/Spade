@@ -277,6 +277,11 @@ add_executable(spade_tests
     # as the recorder's cache is above.
     test_mesh_pack.cpp
     ../tools/mesh_pack/mesh_pack.cpp
+    # spade_part_import's parts (L88): the codes and JSON, the part frame, the unit guess and the cache key, compiled in from the tool.
+    test_part_import_basics.cpp
+    ../tools/part_import/report.cpp
+    ../tools/part_import/transform.cpp
+    ../tools/part_import/store.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
