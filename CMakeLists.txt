@@ -141,6 +141,9 @@ add_subdirectory(tools/analysis_runner)
 # D, Task S1; not installed, L23 5).
 add_subdirectory(tools/mesh_pack)
 
+# The map fetch tool (L85, SP-5): a separate tool outside engine/, the only code that opens a socket. Build-tree only for now.
+add_subdirectory(tools/geo_fetch)
+
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.
 if(SPADE_BUILD_SANDBOX)

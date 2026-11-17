@@ -71,6 +71,20 @@ add_executable(spade_tests
     test_mesh_mass.cpp
     test_mesh_shapes.cpp
     test_mesh_file.cpp
+    # L85 geo G2 (SP-5): the map cache's file hash (world/sha256.hpp).
+    test_sha256.cpp
+    # The geo map cache's layout and georef (world/map_cache.hpp), and the fetch tool's pure parts (tools/geo_fetch, compiled in).
+    test_map_cache.cpp
+    test_geo_services.cpp
+    ../tools/geo_fetch/geo_services.cpp
+    test_geo_raster_formats.cpp
+    ../tools/geo_fetch/raster_formats.cpp
+    test_geo_cache_store.cpp
+    ../tools/geo_fetch/cache_store.cpp
+    test_geo_fetch.cpp
+    ../tools/geo_fetch/fetch.cpp
+    test_geo_cli.cpp
+    ../tools/geo_fetch/cli.cpp
     test_mesh_import.cpp
     test_state.cpp
     test_snapshot.cpp
