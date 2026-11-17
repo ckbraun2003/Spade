@@ -370,6 +370,9 @@ struct BodySpawn {
     glm::vec3 omega_body{0.0f};
     float mass = 1.0f;
     glm::vec3 inv_inertia_diag{1.0f};
+    // L87: the body takes no part in dynamic (body-body) contact: no other body is tested against it or pushed by it
+    // (physics::body_flags::no_body_contact). Static contact with the world is unchanged. Off by default.
+    bool no_body_contact = false;
 };
 
 // One drag element's parameters. `body_slot` is not here -- it comes from the

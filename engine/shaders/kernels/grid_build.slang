@@ -80,6 +80,8 @@ import bindings;
 
 static const uint kInvalidWorld = 0xFFFFFFFFu;
 static const uint kBodyFlagActive = 1u;
+// physics/integrator.hpp's body_flags::no_body_contact (L87): the body is not listed in the grid, as grid.cpp does not.
+static const uint kBodyFlagNoBodyContact = 2u;
 
 // physics/grid.hpp's kMaxCellCoord. 2e9 rather than INT32_MAX for the two
 // reasons stated there: it keeps the float->int conversion defined, and it
@@ -130,7 +132,7 @@ void grid_build(uint3 tid : SV_DispatchThreadID) {
         if (slot < pass_params.world_count * pass_params.body_capacity) {
             // grid.cpp:372 -- the bit test first. An inert slot costs this and
             // nothing else.
-            if ((bodies[slot].flags & kBodyFlagActive) != 0u) {
+            if ((bodies[slot].flags & kBodyFlagActive) != 0u && (bodies[slot].flags & kBodyFlagNoBodyContact) == 0u) {
                 // grid.cpp:375-376 -- a freed slot takes no part even if
                 // something left its flag set.
                 const uint world = bodies_slot_to_world[slot];

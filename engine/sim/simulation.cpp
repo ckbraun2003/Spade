@@ -2064,7 +2064,8 @@ Result<void> Simulation::apply_op(const StructuralOp& op) {
             // active-high precisely so a zeroed slot is inert, which makes
             // setting it the spawn path's non-negotiable job
             // (physics/integrator.hpp).
-            b.flags = physics::body_flags::active;
+            b.flags = physics::body_flags::active |
+                      (op.body.no_body_contact ? physics::body_flags::no_body_contact : 0u);  // L87
             return {};
         }
 
