@@ -886,6 +886,24 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export
         PASS_REGULAR_EXPRESSION "refused: .*inside a git work tree")
 endif()
 
+# The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
+# Python. The library's behaviour is tested in-process (test_part_import_run.cpp); this is only that the program is linked and runs.
+# LABELS spade, as above.
+add_dependencies(spade_tests spade_part_import)
+add_test(NAME PartImportExe.PrintsItsUsage COMMAND spade_part_import --help)
+set_tests_properties(PartImportExe.PrintsItsUsage PROPERTIES
+    LABELS spade
+    TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "usage: spade_part_import --probe.*--inspect <file>.*--import <file>")
+if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export, a container mount) has no work tree to refuse
+    add_test(NAME PartImportExe.RefusesAStoreInsideAGitWorkTree
+        COMMAND spade_part_import --import nothing.stl --unit mm --store "${PROJECT_SOURCE_DIR}/part_import_exe_store")
+    set_tests_properties(PartImportExe.RefusesAStoreInsideAGitWorkTree PROPERTIES
+        LABELS spade
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "store_in_git_tree")
+endif()
+
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
 # throwaway bare repositories: every push without the owner's word refused, a
 # reader that closes early included, and the authorised one let through

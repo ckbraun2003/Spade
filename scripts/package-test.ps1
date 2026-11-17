@@ -98,7 +98,7 @@ $keys = @(UninstallKeys)
 Check 'uninstaller registered under HKCU only (per-user, no administrator)' ($keys.Count -eq 1 -and $keys[0] -like '*HKEY_CURRENT_USER*') "($($keys -join '; '))"
 
 # ---- 2 file list ----------------------------------------------------------------------------------------------------------------------
-$must = 'spade_sandbox.exe', 'spade_geo_fetch.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
+$must = 'spade_sandbox.exe', 'spade_geo_fetch.exe', 'spade_part_import.exe', 'step_convert.py', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', 'INSTALL.md', 'RELEASE_NOTES.md', 'SYSTEM_REQUIREMENTS.md',
         'assets\library', 'assets\scenes', 'assets\worlds', 'assets\fonts\Inter-Regular.ttf', 'docs\user-guide\index.html', 'unins000.exe'
 $missing = @($must | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dir $_)) })
 Check 'installed files present' ($missing.Count -eq 0) "(missing: $($missing -join ', '))"
@@ -144,6 +144,13 @@ $geoCache = Join-Path $env:TEMP "spade-geo-check-$PID"
 $geoCheck = Run $geoExe @('--lat', '40.76', '--lon', '-113.90', '--check', '--cache', $geoCache) $dir
 Check 'spade_geo_fetch --check on an empty cache is a miss (exit 3), without the network' ($geoCheck.Code -eq 3 -and $geoCheck.Output -like '*miss*') "(exit $($geoCheck.Code): '$($geoCheck.Output)')"
 Remove-Item -LiteralPath $geoCache -Recurse -Force -ErrorAction SilentlyContinue
+
+# ---- 4c the part import tool starts from the install folder; with no python venv beside it, --probe says STEP is unavailable (exit 3) ----------
+$piExe = Join-Path $dir 'spade_part_import.exe'
+$piHelp = Run $piExe @('--help') $dir
+Check 'spade_part_import --help exits 0 and prints its usage' ($piHelp.Code -eq 0 -and $piHelp.Output -like '*usage: spade_part_import*') "(exit $($piHelp.Code): '$($piHelp.Output)')"
+$piProbe = Run $piExe @('--probe') $dir
+Check 'spade_part_import --probe answers one JSON result line (exit 0 with a converter, exit 3 without one)' (($piProbe.Code -eq 0 -or $piProbe.Code -eq 3) -and $piProbe.Output -like '*"event":"result"*') "(exit $($piProbe.Code): '$($piProbe.Output)')"
 
 # ---- 5 live smoke from the install folder ---------------------------------------------------------------------------------------------
 if ($SkipSmoke) {

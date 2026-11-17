@@ -4,3 +4,8 @@
 add_library(spade_part_import_lib STATIC report.cpp transform.cpp store.cpp options.cpp run.cpp process.cpp step.cpp)
 target_link_libraries(spade_part_import_lib PUBLIC spade::mesh_import spade::world PRIVATE nlohmann_json::nlohmann_json spade_warnings)
 target_compile_features(spade_part_import_lib PUBLIC cxx_std_23)
+
+# The program (L88): a console tool, run by the editor and by hand. step_convert.py ships beside it (packaging/Packaging.cmake);
+# OpenCASCADE is never linked or shipped.
+add_executable(spade_part_import main.cpp)
+target_link_libraries(spade_part_import PRIVATE spade_part_import_lib spade_warnings)
