@@ -456,6 +456,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line_stills.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
+        test_gpu_live_lines.cpp
         test_gpu_lbm.cpp
     )
 endif()

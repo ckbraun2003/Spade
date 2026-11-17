@@ -96,9 +96,11 @@ class GpuLiveFluid final : public analysis::LiveFluid {
 // turns the subgrid eddy viscosity on in the config the device is made from
 // (L52/L54: LiveRun's own config has none, so a host hands it here, as
 // flow_movie does); 0, the default, leaves the run's config as it is.
+// `dye` (L86i) carries the passive dye (DyeSetup: the discs' ring, and with lines the blade tips'), published into the volume's channel 3.
 [[nodiscard]] inline analysis::LiveFluidMaker gpu_live_fluid(compute::VulkanContext& ctx,
-                                                             uint32_t workgroup_size = 64, float sgs_cs = 0.0f) {
-    return [&ctx, workgroup_size, sgs_cs](
+                                                             uint32_t workgroup_size = 64, float sgs_cs = 0.0f,
+                                                             std::optional<DyeSetup> dye = std::nullopt) {
+    return [&ctx, workgroup_size, sgs_cs, dye](
                const analysis::LiveFluidStart& s) -> Result<std::unique_ptr<analysis::LiveFluid>> {
         auto config = s.config;
         if (sgs_cs > 0.0f) config.sgs_cs = sgs_cs;

@@ -362,7 +362,8 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
 }
 
 Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                               const LiveFluidMaker& fluid) {
+                               const LiveFluidMaker& fluid, const LiveLines* lines) {
+    if (lines != nullptr) return std::unexpected(Error{Code::invalid_argument, "live lines: not written yet"});
     const AnalysisCase& c = resolved.spec;
     const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
