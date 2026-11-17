@@ -7,10 +7,17 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <numbers>
+#include <span>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
+
+#include "core/error.hpp"
+#include "core/flow_volume.hpp"
+#include "render/flow_sample.hpp"
 
 namespace flow_movie {
 
@@ -64,6 +71,116 @@ namespace particles_detail {
                          box.lo.z + (box.hi.z - box.lo.z) * unit(k, 6));
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The particle field: points the stored frames carry (Cameron, 2026-11-17: the air drawn in above and round the rotors, through
+// them and down, as particles). One advance_particles() call is one stored frame: every live point moves by one midpoint (RK2)
+// step of dt through that frame's velocity, those that must go are retired by reason, and the frame's slice of a fixed seed
+// pool is emitted. A point keeps where it was a frame ago, so a draw can streak it. No RNG and no clock: the same frames, pool
+// and options give the same field, bit for bit.
+//
+// A point RETIRES, counted by reason, when a step ends outside the region (the box the look keeps), when either stage meets
+// no-data, or past max_age_s. Capacity is fixed: an emission past it is dropped and counted, never a silent grow.
+// ---------------------------------------------------------------------------------------------------------------------------
+struct ParticleOptions {
+    uint32_t capacity = 100000u;        // live points, 1 to 2^24
+    float max_age_s = 0.5f;             // > 0
+    uint32_t per_frame = 0u;            // seeds emitted a frame, from the pool in order, wrapping
+    glm::vec3 region_lo{-1.0e9f};       // a point whose step ends outside [lo, hi] is retired
+    glm::vec3 region_hi{1.0e9f};
+};
+
+struct ParticleField {
+    std::vector<glm::vec3> position;
+    std::vector<glm::vec3> previous;  // where the point was a frame ago; the seed itself for a new point (no streak)
+    std::vector<float> age;           // seconds since emission
+    uint32_t frames = 0;              // frames advanced so far
+    uint64_t emitted = 0;             // seeds taken from the pool so far, the dropped ones too: the schedule is the pool's
+    uint64_t dropped = 0;
+    uint64_t retired_left_region = 0;
+    uint64_t retired_no_data = 0;
+    uint64_t retired_aged = 0;
+};
+
+// invalid_argument, by name, before any change: a volume that fails validate_flow_volume(), dt not finite and > 0, a capacity
+// outside 1 to 2^24, max_age_s not finite and > 0, a region that is not finite and lo <= hi, per_frame > 0 with an empty pool,
+// a pool point that is not finite, or a field whose arrays disagree in length or exceed the capacity.
+[[nodiscard]] inline spade::Result<void> advance_particles(ParticleField& field, const spade::FlowVolume& volume,
+                                                           std::span<const glm::vec3> pool, float dt,
+                                                           const ParticleOptions& options) {
+    const auto bad = [](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "particles: " + why});
+    };
+    if (auto valid = spade::validate_flow_volume(volume); !valid) return std::unexpected(valid.error());
+    if (!std::isfinite(dt) || dt <= 0.0f) return bad("dt must be finite and > 0");
+    if (options.capacity < 1u || options.capacity > (1u << 24)) return bad("capacity must be 1 to 2^24");
+    if (!std::isfinite(options.max_age_s) || options.max_age_s <= 0.0f) return bad("max_age_s must be finite and > 0");
+    for (int a = 0; a < 3; ++a) {
+        if (!std::isfinite(options.region_lo[a]) || !std::isfinite(options.region_hi[a]) ||
+            options.region_lo[a] > options.region_hi[a]) {
+            return bad("the region must be finite with lo <= hi");
+        }
+    }
+    if (options.per_frame > 0u && pool.empty()) return bad("per_frame > 0 needs a non-empty seed pool");
+    for (const glm::vec3& p : pool) {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return bad("a seed is not finite");
+    }
+    if (field.previous.size() != field.position.size() || field.age.size() != field.position.size() ||
+        field.position.size() > options.capacity) {
+        return bad("the field's arrays disagree in length or exceed the capacity");
+    }
+
+    const spade::render::FlowSampler sampler = spade::render::make_flow_sampler(volume);
+    const auto inside = [&](glm::vec3 p) {
+        return p.x >= options.region_lo.x && p.x <= options.region_hi.x && p.y >= options.region_lo.y &&
+               p.y <= options.region_hi.y && p.z >= options.region_lo.z && p.z <= options.region_hi.z;
+    };
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < field.position.size(); ++i) {
+        const glm::vec3 p = field.position[i];
+        const spade::render::FlowVelocity k1 = spade::render::sample_velocity(sampler, p);
+        if (k1.no_data) {
+            ++field.retired_no_data;
+            continue;
+        }
+        const spade::render::FlowVelocity k2 = spade::render::sample_velocity(sampler, p + k1.u * (0.5f * dt));
+        if (k2.no_data) {
+            ++field.retired_no_data;
+            continue;
+        }
+        const glm::vec3 next = p + k2.u * dt;
+        const float age = field.age[i] + dt;
+        if (!inside(next)) {
+            ++field.retired_left_region;
+            continue;
+        }
+        if (age > options.max_age_s) {
+            ++field.retired_aged;
+            continue;
+        }
+        field.position[kept] = next;
+        field.previous[kept] = p;
+        field.age[kept] = age;
+        ++kept;
+    }
+    field.position.resize(kept);
+    field.previous.resize(kept);
+    field.age.resize(kept);
+
+    for (uint32_t i = 0; i < options.per_frame; ++i) {
+        const glm::vec3 seed = pool[static_cast<std::size_t>(field.emitted % pool.size())];
+        ++field.emitted;
+        if (field.position.size() >= options.capacity) {
+            ++field.dropped;
+            continue;
+        }
+        field.position.push_back(seed);
+        field.previous.push_back(seed);
+        field.age.push_back(0.0f);
+    }
+    ++field.frames;
+    return {};
 }
 
 }  // namespace flow_movie
