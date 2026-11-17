@@ -251,6 +251,13 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
             return std::unexpected(invalid(at + "environment.air_density must be >= 0"));
         }
 
+        // The geodetic anchor, when there is one (L85 SP-2): the same rule validate_world_desc() applies, for a hand-built desc.
+        if (instance.world.anchor) {
+            if (Result<void> r = geo::validate_anchor(*instance.world.anchor); !r) {
+                return std::unexpected(Error{r.error().code, at + r.error().context});
+            }
+        }
+
         if (Result<void> r = validate_contacts(instance.contacts, i); !r) {
             return std::unexpected(r.error());
         }

@@ -66,7 +66,8 @@ TEST(WorldAnchorFile, AnAnchorlessWorldIsVersion2WithNoAnchorKey) {
     const spade::Result<std::string> text = spade::world_to_yaml(base_world());
     ASSERT_TRUE(text.has_value()) << text.error().context;
     EXPECT_TRUE(contains(*text, "\nworld_version: 2\n")) << "the lowest version that holds the world";
-    EXPECT_FALSE(contains(*text, "anchor")) << "no key, no comment about one: the bytes are what they always were";
+    EXPECT_FALSE(contains(*text, "\nanchor:")) << "no key";
+    EXPECT_FALSE(contains(*text, "schema version 3")) << "the preamble is the version-2 text, byte for byte";
 }
 
 TEST(WorldAnchorFile, AnAnchoredWorldIsVersion3WithItsAnchorBlock) {

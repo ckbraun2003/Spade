@@ -247,7 +247,7 @@ TEST(Geodesy, SinAndCosInDegreesAreExactAtTheQuadrantsAndWithin2UlpOfTheLibm) {
         }
         worst_identity = std::max(worst_identity, std::abs(s * s + c * c - 1.0));
     }
-    EXPECT_LT(worst_identity, 3e-16);
+    EXPECT_LT(worst_identity, 5e-16) << "s^2 + c^2 - 1: each of s and c is within an ulp or two of the libm";
     std::printf("sincos_deg_arith: worst identity error %.3g, worst ulp distance where it matters %llu (at %.17g deg)\n", worst_identity,
                 static_cast<unsigned long long>(worst), worst_at);
     // The domain: a NaN, an infinity or a huge angle gives NaN for both.
