@@ -1326,7 +1326,8 @@ struct HeldPose {
                 return {};
             }});
         film.views.push_back(View{
-            "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, coloured by speed |u|, 0 to 12 m/s",
+            "streamlines", "streamlines seeded 6 cm below each rotor and traced both ways, thin and faded toward their ends, coloured by speed |u|, "
+            "0 to 12 m/s",
             [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
                              render::Camera& camera) -> spade::Result<void> {
                 frame_on_drone(v, k, n, camera);
@@ -1349,9 +1350,11 @@ struct HeldPose {
                 }
                 render::StreamlineOptions options;
                 options.max_steps = 1200;
+                const std::size_t first_line = scene.flow_polylines.size();
                 if (auto ok = add_streamlines(scene, v, seeds, options, web_colours); !ok) {
                     return std::unexpected(ok.error());
                 }
+                fade_polylines_from(scene, first_line, web::kSoftLineFadeM);  // S1 only draws this view's lines soft
                 return std::string();
             }});
     }
@@ -1425,6 +1428,7 @@ struct WebPlan {
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
+    const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1458,6 +1462,7 @@ using Aim = std::function<render::Camera(const spade::FlowVolume&, uint32_t fram
 // 2026-11-10: line width as quads, coverage anti-aliasing and a glow, on black). The one-pixel line is a hairline
 // at 4K; the engine's default stays it, so only a view that asks gets this.
 constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
+constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kSoftLineGlowPx, web::kSoftLineGlowStrength};
 
 // `base`'s view with its polylines (the streamlines and the rims) drawn in `style`.
 [[nodiscard]] View with_line_style(const View& base, render::FlowLineStyle style) {
@@ -1476,6 +1481,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
+    stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
     return stem;
 }
 
@@ -1522,7 +1528,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
               // a crosswind (heading 90: the air moves +z)
         const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
-                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs);
+                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look);
         if (!made) return std::unexpected(made.error());
@@ -1532,24 +1538,25 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
         const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
-        const glm::vec3 still_aim = web::subject_point(web::kD1StillAimBelowM);
+        const web::Framing& framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        const glm::vec3 still_aim = web::subject_point(framing.aim_below_m);
         if (id == "S1") {
             view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
-                             web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), web::kD1StillElevationDeg);
+                return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
+                             web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
             view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                return orbit(still_aim, web::fit_distance(web::kD1StillSubjectM, kWebFov, kWebAspect, fit),
+                return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
-                             web::kD1StillElevationDeg);
+                             framing.elevation_deg);
             }, false);
-        } else if (id == "S2") {
-            view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
-                const float wide = web::fit_distance(web::kD1PushWideM, kWebFov, kWebAspect, fit);
-                const float close = web::fit_distance(web::kD1PushCloseM, kWebFov, kWebAspect, fit);
+        } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
+            view = with_camera(*view_named(film, "speed-volume"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
+                const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
+                const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
                 return orbit(still_aim, web::push_in_distance(wide, close, k, n), web::kD1StillAzimuthDeg,
-                             web::kD1StillElevationDeg);
+                             framing.elevation_deg);
             }, false);
         } else if (id == "S3") {
             view = with_camera(*view_named(film, "flow"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
@@ -1563,7 +1570,8 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
             }, true);
         }
     }
-    if (id == "S1" || id == "S6") view = with_line_style(view, kWebLineStyle);  // the clips that are lines
+    if (id == "S1") view = with_line_style(view, kWebSoftLineStyle);  // soft: thin, glowing, faded at the ends
+    if (id == "S6") view = with_line_style(view, kWebLineStyle);
     film.views.clear();
     film.views.push_back(std::move(view));
     film.stem = web_stem(group, plan);
@@ -1616,8 +1624,7 @@ struct LookState {
         for (const LookState::Held& held : ring) frames.push_back(&held.volume);
         if (auto mean = mean_velocity(volume, std::span<const spade::FlowVolume* const>(frames)); !mean) return mean;
     }
-    if (look.l2_smooth) smooth_lambda2(volume);
-    if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
+    finish_look(look, volume);
     return {};
 }
 
@@ -1734,6 +1741,7 @@ struct Options {
     // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
@@ -2028,7 +2036,7 @@ constexpr double kD1Seconds = 0.6;
                         " frames, h264, yuv420p, no audio");
         }
         items.push_back({base + "mp4", info->width, info->height, static_cast<double>(info->frames) / web::kFps,
-                         std::string(clip.title)});
+                         web::clip_title(clip, *web::find_drone(opt.drone))});
     }
     if (clip.still) {
         const fs::path png = work / (base + "png");
@@ -2038,7 +2046,7 @@ constexpr double kD1Seconds = 0.6;
             return stop(png.string() + " is " + std::to_string(info->width) + "x" + std::to_string(info->height) +
                         ", not 5120x2880");
         }
-        items.push_back({base + "png", info->width, info->height, 0.0, std::string(clip.title) + " (still)"});
+        items.push_back({base + "png", info->width, info->height, 0.0, web::clip_title(clip, *web::find_drone(opt.drone)) + " (still)"});
     }
     const fs::path caption = work / (base + "md");
     if (!fs::exists(caption)) return stop(caption.string() + " does not exist");
@@ -2227,6 +2235,7 @@ struct WebFilming {
         const WebTimes times{n > 1u ? (last_time - first_time) / static_cast<double>(n - 1u) : 0.0, last_step};
         web::CaptionInput in;
         in.clip = &clip;
+        in.drone = web::find_drone(opt.drone);
         in.commit = build_identity();
         in.date_utc = utc_now();
         in.command = opt.command_line;
@@ -2278,7 +2287,8 @@ struct WebFilming {
 
 // Films one website master: simulates (unless cached), draws its frames at 3840x2160 into <out>/web/<name>.mp4 and
 // its caption beside it, and, for the four that have one (or --web-still), a 5120x2880 PNG. Nothing leaves <out>.
-[[nodiscard]] int run_web(const Options& opt, GlStage& stage, const Encoder& encoder) {
+[[nodiscard]] int run_web(const Options& opt_in, GlStage& stage, const Encoder& encoder) {
+    Options opt = opt_in;  // the drone's framing sets the wake's fade (the volume clips' look), declared in the caption
     const web::Clip* clip = web::find_clip(opt.web_id);
     if (clip == nullptr) {
         std::fprintf(stderr, "flow_movie: --web %s is not one of the web clips S1 to S6 and S8\n", opt.web_id.c_str());
@@ -2294,8 +2304,22 @@ struct WebFilming {
         std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
         return 2;
     }
+    const web::Drone* drone = web::find_drone(opt.drone);
+    if (drone == nullptr) {
+        std::string names;
+        for (const web::Drone& d : web::drones()) names += (names.empty() ? "" : ", ") + std::string(d.library);
+        std::fprintf(stderr, "flow_movie: --drone %s is not a drone of the web clips (%s)\n", opt.drone.c_str(), names.c_str());
+        return 2;
+    }
+    if (drone != &web::default_drone() && !web::sgs_cs_applies(*clip)) {
+        std::fprintf(stderr, "flow_movie: --drone is for the D1 clips (S1 to S4 and S8); %s runs the reference quad's discs\n",
+                     opt.web_id.c_str());
+        return 2;
+    }
+    if (clip->id == "S2" || clip->id == "S8") opt.look.fade = drone->framing.fade();  // S1's lines are traced in the true flow
     WebPlan plan;
     plan.look = opt.look;
+    plan.drone = drone;
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
@@ -2749,6 +2773,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
                 return 2;
             }
+        } else if (arg == "--drone") {
+            opt.drone = value();
         } else if (arg == "--stream") {
             opt.stream = true;
         } else if (arg == "--keep-frames") {
