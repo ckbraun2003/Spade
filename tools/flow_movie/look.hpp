@@ -392,6 +392,14 @@ inline void fade_wake_edges(spade::FlowVolume& v, const WakeFade& fade) {
     refresh_velocity_range(v);
 }
 
+// What a look does to a frame's fields once its velocity is the mean (or the frame's own): lambda2-hat smoothed, its small
+// pieces culled, the wake faded at its edges, in that order. One function, so the drawing and its test cannot part ways.
+inline void finish_look(const Look& look, spade::FlowVolume& volume) {
+    if (look.l2_smooth) smooth_lambda2(volume);
+    if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
+    if (look.fade.on()) fade_wake_edges(volume, look.fade);
+}
+
 // The caption's sentence: what the look did, in plain words ("" when it did nothing).
 [[nodiscard]] inline std::string look_note(const Look& look, double frame_ms) {
     std::string note;

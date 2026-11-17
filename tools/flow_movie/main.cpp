@@ -1624,8 +1624,7 @@ struct LookState {
         for (const LookState::Held& held : ring) frames.push_back(&held.volume);
         if (auto mean = mean_velocity(volume, std::span<const spade::FlowVolume* const>(frames)); !mean) return mean;
     }
-    if (look.l2_smooth) smooth_lambda2(volume);
-    if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
+    finish_look(look, volume);
     return {};
 }
 

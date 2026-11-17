@@ -258,9 +258,9 @@ struct Drone {
          "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
          // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
-         // The slow inflow above the rotors fades out over the 9 cm above their plane, so the drone reads in front of it; seen
+         // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
-         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.03f, 0.12f, 25.0f}},
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}},
     }};
     return table;
 }
