@@ -231,6 +231,7 @@ struct Framing {
     float side_fade_m;
     float wake_fade_top_from_above_m;  // the inflow haze above the rotors fades from here (above the centre) ...
     float wake_fade_top_to_above_m;    // ... to nothing here; 0, 0 is none
+    float elevation_deg;               // how far above the drone the camera looks down from
 
     [[nodiscard]] WakeFade fade() const noexcept {
         return WakeFade{side_fade_m, -wake_fade_from_below_m, -wake_fade_to_below_m, wake_fade_top_from_above_m,
@@ -252,13 +253,14 @@ struct Drone {
     static const std::array<Drone, 2> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
          "the reference quad", "",
-         Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}},
+         Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
         {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
          "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
          // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
-         // The slow inflow above the rotors fades out over the 9 cm above their plane, so the drone reads in front of it.
-         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.03f, 0.12f}},
+         // The slow inflow above the rotors fades out over the 9 cm above their plane, so the drone reads in front of it; seen
+         // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.03f, 0.12f, 25.0f}},
     }};
     return table;
 }
