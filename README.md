@@ -63,9 +63,9 @@ The first build fetches its dependencies. `scripts\test.ps1` is the gate: green 
 
 ## Run
 
-`build-ninja\release\bin\spade_sandbox.exe` with no arguments opens the editor on `assets/scenes/hover.scene.yaml` (the assets folder beside the program, else `./assets`; `--assets <dir>` names one). `--window` opens the drone sim box instead: a quadrotor held in place while the air moves around it, with an air-velocity view (`V`) and a physics panel. `--headless` renders one frame with no window. `--help` lists the rest.
+`build-ninja\release\bin\spade_sandbox.exe` with no arguments opens the editor on `assets/scenes/hover.scene.yaml` (the assets folder beside the program, else `./assets`; `--assets <dir>` names one). `--window` opens the drone sim box instead: a quadrotor held in place on a test stand, flown in attitude through the engine's rotor model, with a panel for the wind, the air's density and the readouts (there is no air-velocity view here: the old `V` heatmap was a synthetic field and is retired). The air is shown in the editor: select a drone, click **Add airflow region** in the Inspector, then **Run air**, and lines and swirl shapes appear around the drone, with a key in the 3D view; see `docs/user-guide/run-air.md`. `--headless` renders one frame with no window. `--help` lists the rest.
 
-`scripts\demo.ps1 -Scene <name>` builds if needed and launches a scene: `sandbox` or `sandbox-builder` in the sandbox, or one of the viewer scenes `drop`, `bounce`, `shower`, `gate`, `hover`, `wind`, `flight`, `swarm`.
+`scripts\demo.ps1 -Scene <name>` builds if needed and launches a scene: `sandbox` in the sandbox, or one of the viewer scenes `drop`, `bounce`, `shower`, `gate`, `hover`, `wind`, `flight`, `swarm`.
 
 ## Layout
 
