@@ -241,3 +241,31 @@ TEST(FlowMovieLook, TheOptionsAreParsedStrictly) {
         EXPECT_FALSE(flow_movie::parse_count(bad).has_value()) << "'" << bad << "'";
     }
 }
+
+// Which clips a look option may touch: refused by name, never silently ignored. The level, smoothing and cull belong to
+// the clips that draw vortex surfaces (S2, and S3 in the side wind); the mean flow to the D1 clips that read the velocity
+// (not S4's pressure coefficient); a cull needs the level that says what a piece is. S5 and S6 run the quad's CPU film.
+TEST(FlowMovieLook, AnOptionThatCannotApplyToAClipIsRefusedByNameAndAnyOtherIsNot) {
+    flow_movie::Look level_only;
+    level_only.l2_level = 120.0f;
+    flow_movie::Look everything = level_only;
+    everything.l2_smooth = true;
+    everything.min_cells = 27u;
+    everything.mean_frames = 10u;
+    flow_movie::Look mean_only;
+    mean_only.mean_frames = 10u;
+    flow_movie::Look cull_no_level;
+    cull_no_level.min_cells = 27u;
+
+    EXPECT_EQ(flow_movie::look_refusal("S2", true, everything), "");
+    EXPECT_EQ(flow_movie::look_refusal("S3", true, level_only), "");
+    EXPECT_EQ(flow_movie::look_refusal("S1", true, mean_only), "");
+    EXPECT_EQ(flow_movie::look_refusal("S8", true, mean_only), "");
+    EXPECT_EQ(flow_movie::look_refusal("S1", true, flow_movie::Look{}), "") << "no option, nothing to refuse";
+    EXPECT_EQ(flow_movie::look_refusal("S5", false, flow_movie::Look{}), "");
+    EXPECT_NE(flow_movie::look_refusal("S1", true, level_only).find("--l2-level"), std::string::npos);  // S1 draws lines
+    EXPECT_NE(flow_movie::look_refusal("S8", true, everything), "");
+    EXPECT_NE(flow_movie::look_refusal("S4", true, mean_only), "") << "S4 draws C_p, which the mean flow does not touch";
+    EXPECT_NE(flow_movie::look_refusal("S5", false, mean_only), "") << "the quad's CPU film is not the D1 flow";
+    EXPECT_NE(flow_movie::look_refusal("S2", true, cull_no_level).find("--min-cells"), std::string::npos);
+}
