@@ -208,10 +208,9 @@ TEST(FlowMovieLiveCase, TheWebCaseTakesTheDroneAndANamelessFileIsRefused) {
                                                       "library/drones/phantom3_class.model.yaml");
     ASSERT_TRUE(phantom.has_value()) << phantom.error().context;
     EXPECT_EQ(phantom->run_model.rotors.size(), 4u);
-    EXPECT_NE(phantom->identity.find("phantom3_class"), std::string::npos) << "the cache's mark names the drone";
     const auto plain = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f);
     ASSERT_TRUE(plain.has_value()) << plain.error().context;
-    EXPECT_EQ(plain->identity.find("phantom3_class"), std::string::npos);
+    EXPECT_NE(phantom->identity, plain->identity) << "the cache's mark tells the two drones apart (model and parts hashes)";
     const auto missing = flow_movie::d1_web_live_case(0.01, kD1DeepGrid, 0.0f, 0.0002f, 0.17f,
                                                       "library/drones/no_such_drone.model.yaml");
     EXPECT_FALSE(missing.has_value());

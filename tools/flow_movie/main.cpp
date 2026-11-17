@@ -1425,6 +1425,7 @@ struct WebPlan {
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
+    const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1476,6 +1477,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
+    stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
     return stem;
 }
 
@@ -1522,7 +1524,7 @@ constexpr render::FlowLineStyle kWebLineStyle{4.0f, 10.0f, 0.3f};
               // a crosswind (heading 90: the air moves +z)
         const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
-                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs);
+                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look);
         if (!made) return std::unexpected(made.error());
@@ -1734,6 +1736,7 @@ struct Options {
     // --web S1..S6, S8: a website master (web_masters.hpp), at 3840x2160 into <out>/web.
     std::string web_id;
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
+    std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
@@ -2028,7 +2031,7 @@ constexpr double kD1Seconds = 0.6;
                         " frames, h264, yuv420p, no audio");
         }
         items.push_back({base + "mp4", info->width, info->height, static_cast<double>(info->frames) / web::kFps,
-                         std::string(clip.title)});
+                         web::clip_title(clip, *web::find_drone(opt.drone))});
     }
     if (clip.still) {
         const fs::path png = work / (base + "png");
@@ -2038,7 +2041,7 @@ constexpr double kD1Seconds = 0.6;
             return stop(png.string() + " is " + std::to_string(info->width) + "x" + std::to_string(info->height) +
                         ", not 5120x2880");
         }
-        items.push_back({base + "png", info->width, info->height, 0.0, std::string(clip.title) + " (still)"});
+        items.push_back({base + "png", info->width, info->height, 0.0, web::clip_title(clip, *web::find_drone(opt.drone)) + " (still)"});
     }
     const fs::path caption = work / (base + "md");
     if (!fs::exists(caption)) return stop(caption.string() + " does not exist");
@@ -2227,6 +2230,7 @@ struct WebFilming {
         const WebTimes times{n > 1u ? (last_time - first_time) / static_cast<double>(n - 1u) : 0.0, last_step};
         web::CaptionInput in;
         in.clip = &clip;
+        in.drone = web::find_drone(opt.drone);
         in.commit = build_identity();
         in.date_utc = utc_now();
         in.command = opt.command_line;
@@ -2294,8 +2298,21 @@ struct WebFilming {
         std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
         return 2;
     }
+    const web::Drone* drone = web::find_drone(opt.drone);
+    if (drone == nullptr) {
+        std::string names;
+        for (const web::Drone& d : web::drones()) names += (names.empty() ? "" : ", ") + std::string(d.library);
+        std::fprintf(stderr, "flow_movie: --drone %s is not a drone of the web clips (%s)\n", opt.drone.c_str(), names.c_str());
+        return 2;
+    }
+    if (drone != &web::default_drone() && !web::sgs_cs_applies(*clip)) {
+        std::fprintf(stderr, "flow_movie: --drone is for the D1 clips (S1 to S4 and S8); %s runs the reference quad's discs\n",
+                     opt.web_id.c_str());
+        return 2;
+    }
     WebPlan plan;
     plan.look = opt.look;
+    plan.drone = drone;
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
@@ -2749,6 +2766,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
                 return 2;
             }
+        } else if (arg == "--drone") {
+            opt.drone = value();
         } else if (arg == "--stream") {
             opt.stream = true;
         } else if (arg == "--keep-frames") {

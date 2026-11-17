@@ -181,6 +181,70 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return nullptr;
 }
 
+// ---- the drone ----------------------------------------------------------------------------------------
+
+// A library drone the D1 web clips can film (--drone NAME; the lead, 2026-11-17: Cameron wants a real drone model, and no
+// caption or file name carries a brand). `library` is the internal name, the model file's stem, and is never printed in a
+// caption or a delivered name; `title_noun` and `the_noun` are what a title and a sentence call the drone, `description`
+// the caption's Drone line ("" for the reference quad, whose words are today's).
+struct Drone {
+    std::string_view library;
+    const char* model_file;  // under SPADE_ASSETS_DIR
+    std::string_view alias;  // what the caption's command line shows in place of the library name (--drone takes both)
+    std::string_view title_noun;
+    std::string_view the_noun;
+    std::string_view description;
+};
+
+[[nodiscard]] inline const std::array<Drone, 2>& drones() {
+    static const std::array<Drone, 2> table{{
+        {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
+         "the reference quad", ""},
+        {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
+         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)"},
+    }};
+    return table;
+}
+
+[[nodiscard]] inline const Drone& default_drone() { return drones().front(); }
+
+// The drone named `name`, by its library name or its alias ("" is the default); nullptr when there is none by that name.
+[[nodiscard]] inline const Drone* find_drone(std::string_view name) {
+    if (name.empty()) return &default_drone();
+    for (const Drone& d : drones()) {
+        if (d.library == name || d.alias == name) return &d;
+    }
+    return nullptr;
+}
+
+// The command line as a caption may show it: the drone's library name replaced by its alias.
+[[nodiscard]] inline std::string command_in_words(std::string command, const Drone& d) {
+    const std::string from(d.library);
+    for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
+        command.replace(at, from.size(), d.alias);
+    }
+    return command;
+}
+
+// A cache folder's suffix for a drone: none for the default (today's caches keep their names), "-<library>" else.
+[[nodiscard]] inline std::string drone_stem_suffix(const Drone& d) {
+    return &d == &default_drone() ? std::string() : "-" + std::string(d.library);
+}
+
+// `text` (a clip's title or sentences, written for the reference quad) in the drone's own words.
+[[nodiscard]] inline std::string in_words(std::string text, const Drone& d) {
+    const auto swap = [&text](const std::string& from, std::string_view to) {
+        for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size())) {
+            text.replace(at, from.size(), to);
+        }
+    };
+    if (&d == &default_drone()) return text;
+    swap("the reference quad", d.the_noun);
+    swap("Reference quad", d.title_noun);
+    swap("D1 quad", d.title_noun);
+    return text;
+}
+
 // --sgs-cs is for the D1 clips: S5 and S6 run the reference quad's CPU film, which has no subgrid term.
 [[nodiscard]] inline bool sgs_cs_applies(const Clip& clip) { return clip.scene != Scene::quad; }
 
@@ -407,8 +471,12 @@ struct DeliveryGuard {
            " degrees and does not return to its start; the flow does not loop either.";
 }
 
+// A clip's title in the drone's words (the caption's heading and the manifest's description).
+[[nodiscard]] inline std::string clip_title(const Clip& c, const Drone& d) { return in_words(std::string(c.title), d); }
+
 struct CaptionInput {
     const Clip* clip = nullptr;
+    const Drone* drone = nullptr;  // null: the reference quad
     std::string commit;
     std::string date_utc;
     std::string command;
@@ -422,14 +490,16 @@ struct CaptionInput {
 // and the stand-in. It never claims more than the footage shows.
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
-    std::string t = "# " + std::string(c.title) + "\n\n";
+    const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
+    std::string t = "# " + clip_title(c, drone) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
-    t += "- How rendered: tools/flow_movie, `" + in.command + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + std::string(c.shows) + "\n";
+    t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
+    t += "- Shows: " + in_words(std::string(c.shows), drone) + "\n";
+    if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + standing_caveats(c) + "\n";
+    t += "- " + in_words(standing_caveats(c), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }

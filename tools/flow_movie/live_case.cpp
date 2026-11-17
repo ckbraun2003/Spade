@@ -111,7 +111,10 @@ float expected_speed(const LiveCase& lc) {
 }
 
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
-    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold);
+    // The live run answers for a part the finest cell cannot hold (a prop blade, a sheet): drawn only, named (P-1). The
+    // reference quad has none, so its resolve is what it was.
+    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold,
+                                             spade::analysis::ThinWalls::drawn_by_the_live_run);
 }
 
 namespace {
@@ -249,28 +252,29 @@ spade::Result<LiveCase> smoke_live_case(double seconds) {
 }
 
 spade::Result<LiveCase> d1_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
-                                     bool parts_in_flow, float heading_deg) {
+                                     bool parts_in_flow, float heading_deg, const char* model_file) {
     if (!parts_in_flow) {
-        return film_of(spade::testing::d1_case(seconds, grid, false), seconds, true, "D1 hover preview, no parts",
+        return film_of(spade::testing::d1_case(seconds, grid, false, 0.0f, model_file), seconds, true, "D1 hover preview, no parts",
                        "NO PARTS: the airframe is drawn but not in the flow, which meets only the rotors' discs; held "
                        "at hover, not flying; the rotors are actuator discs, not blades; idle 5 % and the charge are "
                        "the film's own (chain pin)");
     }
     if (heading_deg != 0.0f) {
-        return film_of(spade::testing::d1_case(seconds, grid, true, heading_deg), seconds, true,
+        return film_of(spade::testing::d1_case(seconds, grid, true, heading_deg, model_file), seconds, true,
                        "D1 hover preview, crosswind",
                        "a crosswind setting supported but not validated; held at hover, not flying, at the still-air "
                        "throttle (the rotors ignore the wind); the rotors are actuator discs, not blades; the "
                        "airframe's parts are solids in the flow at 4 mm; idle 5 % and the charge are the film's own "
                        "(chain pin)");
     }
-    return film_of(spade::testing::d1_case(seconds, grid), seconds, true, "D1 hover preview",
+    return film_of(spade::testing::d1_case(seconds, grid, true, 0.0f, model_file), seconds, true, "D1 hover preview",
                    "held at hover, not flying; the rotors are actuator discs, not blades; the airframe's parts are "
                    "solids in the flow at 4 mm; idle 5 % and the charge are the film's own (chain pin)");
 }
 
-spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::physics::airflow::GridShape& grid) {
-    auto q = spade::testing::d1_case(seconds, grid);
+spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
+                                               const char* model_file) {
+    auto q = spade::testing::d1_case(seconds, grid, true, 0.0f, model_file);
     if (q) {
         q->c.flight.kind = spade::analysis::FlightKind::hover;  // still air: no wind to carry or to bend the wake
         q->c.flight.speed = 0.0f;
@@ -281,10 +285,11 @@ spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::phys
 }
 
 spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
-                                         float heading_deg, float step_s, float sgs_cs) {
+                                         float heading_deg, float step_s, float sgs_cs, const char* model_file) {
     // The website masters' D1 (the lead, 2026-11-10, L54): the parts in the flow, held at hover, at the film's step
     // and with the L52 subgrid viscosity (0.2 ms and Cs 0.17 in web_masters.hpp). Heading 0: still air; else the side wind, as before.
-    auto made = heading_deg == 0.0f ? d1_still_air_live_case(seconds, grid) : d1_live_case(seconds, grid, true, heading_deg);
+    auto made = heading_deg == 0.0f ? d1_still_air_live_case(seconds, grid, model_file)
+                                    : d1_live_case(seconds, grid, true, heading_deg, model_file);
     if (!made) return made;
     made->c.time.step = step_s;
     made->sgs_cs = sgs_cs;
