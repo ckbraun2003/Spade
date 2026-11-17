@@ -14,9 +14,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <charconv>
+#include <format>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -84,6 +88,35 @@ inline constexpr double kLiveStepS = 0.0005;
 inline constexpr double kD1WebStepS = 0.0002;
 inline constexpr float kD1WebSgsCs = 0.17f;
 
+// --sgs-cs X (Physics' ask, L86): a diagnostic run of a D1 clip at another Smagorinsky Cs, 0 turning the term off, so a
+// still pair at one developed time shows what the term does. One finite number from 0 to 1, whole: no sign, no blanks,
+// no exponent, no trailing text. nullopt otherwise.
+[[nodiscard]] inline std::optional<float> parse_sgs_cs(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    bool digit = false, point = false;
+    for (const char c : text) {
+        if (c >= '0' && c <= '9') {
+            digit = true;
+        } else if (c == '.' && !point) {
+            point = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!digit) return std::nullopt;
+    float value = 0.0f;
+    const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
+    if (!(value >= 0.0f && value <= 1.0f)) return std::nullopt;
+    return value;
+}
+
+// The folder suffix of a run at `cs`: none at the master's Cs, else "-cs<cs>". A run at another Cs keeps its frames in a
+// folder of its own, so it can never be mistaken for, or overwrite, the master's cache.
+[[nodiscard]] inline std::string sgs_cs_suffix(float cs) {
+    return cs == kD1WebSgsCs ? std::string() : std::format("-cs{:g}", cs);
+}
+
 // The windows. The quad's (S5, S6; 0.5 ms a step): developed wake 0.9 to 1.35 s at 2 steps a frame (Physics: the
 // box's open faces past 1.5 s are unmeasured). D1's (0.2 ms a step): ONE still-air run from rest, 5 steps (1 ms) a
 // frame, 600 frames to 0.60 s: S2 draws frames 0 to 359 (the start-up roll-up, to 0.36 s), S1 and S8 frames 150 to
@@ -143,6 +176,9 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     }
     return nullptr;
 }
+
+// --sgs-cs is for the D1 clips: S5 and S6 run the reference quad's CPU film, which has no subgrid term.
+[[nodiscard]] inline bool sgs_cs_applies(const Clip& clip) { return clip.scene != Scene::quad; }
 
 // ---- the camera --------------------------------------------------------------------------------------
 
