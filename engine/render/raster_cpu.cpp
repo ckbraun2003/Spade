@@ -2223,6 +2223,15 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (Result<void> valid = validate_flow_line_style(scene.flow_line_style); !valid) {
         return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
+    for (size_t i = 0; i < scene.flow_polylines.size(); ++i) {
+        if (Result<void> valid = validate_flow_line_draw(scene.flow_polylines[i], scene.flow_line_style); !valid) {
+            return std::unexpected(
+                Error{valid.error().code, "render: flow polyline " + std::to_string(i) + ": " + valid.error().context});
+        }
+    }
+    if (const std::string why = flow_lines_gl_only_reason(scene.flow_polylines, scene.flow_line_style); !why.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, "render: " + why});
+    }
     if (scene.flow_surface_colouring) {
         if (Result<void> valid = validate_flow_surface_colouring(*scene.flow_surface_colouring); !valid) {
             return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
