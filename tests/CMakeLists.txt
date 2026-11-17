@@ -282,6 +282,7 @@ add_executable(spade_tests
     test_part_import_store.cpp
     test_part_import_run.cpp
     test_part_import_process.cpp
+    test_part_import_step.cpp
     ../tools/part_import/report.cpp
     ../tools/part_import/transform.cpp
     ../tools/part_import/store.cpp
