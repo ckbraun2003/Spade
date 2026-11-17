@@ -43,7 +43,7 @@ Rule: a part kind with no Spade physics is geometry, mass and install points onl
 - Step 1 (expand the frame into primitives) goes: the frame is one imported part.
 - Step 3: the compiler passes each part's `mass_properties` to Spade's composite (`airframe_composite`, the one implementation); a part with none keeps density x volume. The model file keeps carrying the compiled mass, centre of mass and inertia, as today.
 - Step 8 (the visual): each part's sidecar, named in the model file by path and content hash, as today.
-- What Spade's model file takes from it: a part list (name, role, mount, sidecar ref and hash, `min_feature`), unchanged in shape. What the library takes: part files (version 2 where used) and drone records that list their parts and slots by id. No new model-file keys are needed; the drone's parts list is a Core-side input to the compile (an `AirframeSpec`), and a small tool can build a model file from a `*.drone.yaml` parts list (section 6, item 5).
+- What Spade's model file takes from it: a part list (name, role, mount, sidecar ref and hash, `min_feature`), unchanged in shape. What the library takes: part files (version 2 where used). No new model-file keys are needed. A library drone stays a model file; the demo's is written the way the library ones are today (by a test, or by hand from the records). The step from a parts list to a model file is Kat's compiler (Spec B section 7), not a Spade tool.
 - Byte-identical rule for existing drones: a part without the new blocks compiles to the same bits as today; a test pins it.
 
 ## 4. The format
@@ -53,6 +53,7 @@ Unchanged and complete: glTF/glb, binary STL, OBJ and 3MF through `spade::mesh_i
 ## 5. L88b mechanics
 
 - A local part store, a folder outside git, named by an environment variable (`SPADE_PART_STORE`) with a per-user default. Layout: `<store>/<sha256>/<original file name>`, and the converted sidecar beside it. The store is content-addressed, so a record cannot silently point at a different file.
+- The converted sidecar is cached in the store, keyed by the source's sha256, the converter's version and the tessellation tolerance; it is rebuilt only on a miss (the conversion itself is Interface's `spade_part_import`).
 - The repo holds only records: part files naming `geometry.source.sha256` and the spec-sheet numbers (facts), and the source record. No third-party geometry or sidecar is committed.
 - Resolution: the record's sha256 finds the file; a changed or missing file is refused by name (`unavailable`, naming the hash and the store path), never substituted.
 - Tests that need real parts skip, with a named reason, when the store or the file is absent. The CI default is the generated meshes: a part with `geometry.fallback: generated:<shape>` builds from Spade's existing generators (a rounded box, a capped tube, a bell, a prop), so a clean checkout still builds, flies and renders a plain drone. The result with the store is the same physics (spec-sheet mass properties) and a better look.
@@ -60,7 +61,7 @@ Unchanged and complete: glTF/glb, binary STL, OBJ and 3MF through `spade::mesh_i
 
 ## 6. Engine work, owners and days (working days, before queue waits)
 
-Core (me): 1. part file version 2: geometry, mass properties, install points, source record, material name, with tests and the version rule: 3. 2. Declared mass properties through `PartGeometrySpec` and the compile (override, validity, the byte-identical pin for existing records): 2.5. 3. Install points and slot placement in the compile: 1.5. 4. New part kinds (frame, fc, companion, camera, radio, gnss), geometry, mass and install points only: 2. 5. The part store resolver, the skip-without-store tests, the generated fallback, and a `*.drone.yaml` parts-list builder: 3. 6. The demo model and library records (record-only, no third-party file), consumers.md and decisions lines: 1.5. Total about 13 days, calendar about three weeks with 30 to 60 minute gate waits.
+Core (me), in the lead's order (demo first): 1. part file version 2: geometry, mass properties, source record, material name, with tests and the version rule: 3. 2. Declared mass properties through `PartGeometrySpec` and the compile (override, validity, the byte-identical pin for existing records): 2.5. 3. The part store resolver, the sidecar cache, the generated fallback and skip-without-store test support: 2.5. 4. New part kinds (frame, fc, companion, camera, radio, gnss), geometry, mass and install-point fields only: 2. 5. Install points and slot placement in the compile: 1.5. 6. The demo model and library records (record-only, no third-party file; the model written by a test or by hand), consumers.md and decisions lines: 1.5. Total 13 working days (13.5 before the cut: the `*.drone.yaml` builder's 1.5 days are out, and the cache, the skip support and the order add 1), calendar about three weeks with 30 to 60 minute gate waits. No code starts until Kat's Editor and Components have answered.
 Interface (`mesh_import`, asked directly): a `spade_part_import` command: any format to the store (sha256, unit and axes flags, the STEP venv documented, the gate's refusals passed through), 3 days; a gate check of each demo source (does it make a clean solid), 1 day.
 Rendering: role to material (their display-only table, already started), 1 to 2 days; loading a sidecar from the store in `--drone` and the editor, 1.5 days; named materials after L88a.
 Physics: nothing now. L88a (materials for CFD and pressure or tension) is theirs later and joins `material`.
@@ -70,8 +71,11 @@ Kat: the slot and airframe asset, the compiler's calls and the builder UI; not s
 
 An X500-class research quad: a Pixhawk-class flight controller plus a Raspberry Pi or a Jetson, a camera and a radio. Candidate public CAD sources, from memory and each to be checked before any fetch (Spade's word, then a licence read recorded in `sources.yaml`): PX4's `PX4-gazebo-models` x500 (Kat already draws its meshes, pinned at commit e5997f45; likely visual meshes that may not pass the solid gate); the Holybro X500 frame and the Pixhawk boards' published STEP or drawings from the vendor or the Pixhawk open-hardware pages; Raspberry Pi's published mechanical files (STEP) for a Pi board and its camera module; NVIDIA's Jetson carrier-board mechanical files; an ExpressLRS receiver's open hardware files; a community CC0 or CC-BY model from a public CAD site for anything missing. None of these has been opened, and none is assumed to be redistributable.
 
-## Questions for the lead
+## Lead's answers (2026-11-17)
 
-1. `part_version: 2` for the new blocks (this proposal), or optional keys inside version 1 as for L72k (CORE-11)? I recommend version 2: third-party records are authored outside the build, and CORE-11 says to bump then.
-2. May a sidecar converted from a store file be cached in the store only (this proposal), or must it be rebuilt in memory each run? Caching is faster and stays outside git.
-3. Is the licence recorded but not enforced (this proposal), or should Spade refuse a record whose licence id is not on a list?
+(a) `part_version: 2` for the new blocks: Kat's authored catalogue parts will carry them, which is CORE-10's own trigger.
+(b) The converted sidecar is cached in the store, keyed by the source sha256 plus the converter version and the tolerance; rebuilt only on a miss.
+(c) The licence is recorded only. Nothing ships under L88b. Anything published, such as the website, gets its licence read before it goes out, and Cameron decides.
+CUT (YAGNI; the builder is Kat's): the `*.drone.yaml` parts-list builder. A library drone stays a model file; the parts-list-to-model step is Kat's compiler.
+ORDER, demo first: part file v2, declared mass with the byte-identical pin, the store resolver with the generated fallback and skip-without-store, new kinds, install points and slot placement.
+No code until Kat's Editor and Components have answered.
