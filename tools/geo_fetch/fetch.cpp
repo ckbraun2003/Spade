@@ -48,6 +48,20 @@ void emit(const FetchEnv& env, const std::string& stage, ProgressEvent::State st
     return "USGS NAIP";
 }
 
+// What a service said, for the error of an answer the tool refused: its first 120 bytes with anything but printable ASCII shown as a dot
+// (a body can hold any byte, and the message goes to a terminal or a log). Empty for an empty body.
+[[nodiscard]] std::string quoted(const std::string& body) {
+    constexpr std::size_t kQuoteBytes = 120;
+    if (body.empty()) return {};
+    std::string q = " (the answer begins: \"";
+    for (std::size_t i = 0; i < body.size() && i < kQuoteBytes; ++i) {
+        const auto c = static_cast<unsigned char>(body[i]);
+        q.push_back(c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '.');
+    }
+    if (body.size() > kQuoteBytes) q += "...";
+    return q + "\")";
+}
+
 // The number of cells that cover `side` with cells of `cell` metres, rounded up; 0 when it is not a sane number.
 [[nodiscard]] std::uint32_t cells_over(double side, double cell) {
     if (!(cell > 0.0) || !std::isfinite(cell) || !(side > 0.0)) return 0;
@@ -120,7 +134,7 @@ struct Download {
             d.failed = failure(FetchResultKind::service_error, service + ": the answer is larger than the cap", service);
             break;
         case HttpError::none:
-            d.failed = failure(FetchResultKind::service_error, service + ": HTTP " + std::to_string(resp.status), service);
+            d.failed = failure(FetchResultKind::service_error, service + ": HTTP " + std::to_string(resp.status) + quoted(resp.body), service);
             break;
     }
     return d;
@@ -224,14 +238,14 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     Download geoid_dl = download(env, "geoid", "ngs", geoid_url(q.lat_deg, q.lon_deg), q.timeout_s);
     if (!geoid_dl.ok) return geoid_dl.failed;
     const Result<GeoidAnswer> geoid = parse_geoid_json(geoid_dl.body);
-    if (!geoid) return failure(FetchResultKind::service_error, geoid.error().context, "ngs");
+    if (!geoid) return failure(FetchResultKind::service_error, geoid.error().context + quoted(geoid_dl.body), "ngs");
     const double n_geoid = geoid->height_m;
 
     const std::string elevation_request = elevation_url(box, dem_n, dem_n);
     Download dem_dl = download(env, "elevation", "3dep", elevation_request, q.timeout_s);
     if (!dem_dl.ok) return dem_dl.failed;
     const Result<TiffGrid> tiff = read_tiff_f32(dem_dl.body);
-    if (!tiff) return failure(FetchResultKind::service_error, tiff.error().context, "3dep");
+    if (!tiff) return failure(FetchResultKind::service_error, tiff.error().context + quoted(dem_dl.body), "3dep");
     if (tiff->width != dem_n || tiff->height != dem_n) {
         return failure(FetchResultKind::service_error,
                        std::format("3dep: the TIFF is {} x {}, {} x {} was asked", tiff->width, tiff->height, dem_n, dem_n), "3dep");
@@ -249,7 +263,7 @@ FetchResult fetch_map(const FetchRequest& q, const FetchEnv& env) {
     Download img_dl = download(env, "image", "naip", image_request, q.timeout_s);
     if (!img_dl.ok) return img_dl.failed;
     const Result<PngHeader> png = read_png_header(img_dl.body);
-    if (!png) return failure(FetchResultKind::service_error, png.error().context, "naip");
+    if (!png) return failure(FetchResultKind::service_error, png.error().context + quoted(img_dl.body), "naip");
     if (png->width != image_n || png->height != image_n) {
         return failure(FetchResultKind::service_error,
                        std::format("naip: the PNG is {} x {}, {} x {} was asked", png->width, png->height, image_n, image_n), "naip");

@@ -197,10 +197,10 @@ Answer expected: an 8-bit RGB PNG of `size` pixels. The tool checks the PNG sign
 **NOAA NGS geoid height**, the NGS geodetic toolkit's web service:
 
 ```
-GET https://geodesy.noaa.gov/api/geoid/ght?lat=<deg>&lon=<deg>&model=18
+GET https://geodesy.noaa.gov/api/geoid/ght?lat=<deg>&lon=<deg>&model=14
 ```
 
-Answer expected: JSON with a number `geoidHeight` in metres and the model name. **Unverified:** the sign convention for `lon` (the toolkit may want west as negative, as sent, or as positive degrees west) and the exact JSON key. The live check for Bonneville expects `N` between -35 and -10 m (an unambiguous wrong-sign catch: the wrong longitude sign puts the point in China, where N is about +20 m or more of the opposite sign) and the tool refuses an answer whose model is not GEOID18.
+`model` is NGS's numeric ID, not the year: 14 is GEOID18 (https://geodesy.noaa.gov/web_services/geoid.shtml, last modified 2020-02-21). The first draft sent `model=18`, which is no ID; the first live check (L85f, 2026-11-17) got a 59-byte answer with no `geoidHeight`, and the tool then did not show it, so every refused answer is now quoted (the first 120 bytes, printable only). Longitude is negative west, as sent. The answer's keys are `geoidModel`, `station`, `lat`, `latDms`, `lon`, `lonDms`, `geoidHeight` (metres) and `error`. The page's own sample shows GEOID12B for a request with no model, so the tool sends the model and refuses an answer whose `geoidModel` is not `GEOID18`, or is missing. The live check for Bonneville expects `N` between -35 and -10 m (an unambiguous wrong-sign catch: the wrong longitude sign puts the point in China, where N is about +20 m or more of the opposite sign).
 
 Sources outside these three are not in the tool, and a guard test lists every host string in `tools/geo_fetch/` and fails on any other (REQ-G08, REQ-G09). The three services are US-government public data: no logo or credit line is asked.
 
