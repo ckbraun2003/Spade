@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "../tools/flow_movie/look.hpp"
@@ -47,7 +48,7 @@ namespace fp16 = spade::fp16;
 
 void set_l2(FlowVolume& v, uint32_t i, uint32_t j, uint32_t k, float value) {
     v.s[at(v, i, j, k) * spade::kFlowHalvesPerCell + (spade::kFlowLambda2Hat % spade::kFlowHalvesPerCell)] =
-        fp16::from_f32(value);
+        fp16::from_f32(value).bits;
 }
 
 [[nodiscard]] uint16_t l2_bits(const FlowVolume& v, uint32_t i, uint32_t j, uint32_t k) {
@@ -57,7 +58,7 @@ void set_l2(FlowVolume& v, uint32_t i, uint32_t j, uint32_t k, float value) {
 [[nodiscard]] float l2(const FlowVolume& v, uint32_t i, uint32_t j, uint32_t k) { return fp16::to_f32(l2_bits(v, i, j, k)); }
 
 void set_u(FlowVolume& v, uint32_t i, uint32_t j, uint32_t k, float u) {
-    v.v[at(v, i, j, k) * spade::kFlowHalvesPerCell + spade::kFlowU] = fp16::from_f32(u);
+    v.v[at(v, i, j, k) * spade::kFlowHalvesPerCell + spade::kFlowU] = fp16::from_f32(u).bits;
 }
 
 [[nodiscard]] float u_of(const FlowVolume& v, uint32_t i, uint32_t j, uint32_t k) {
@@ -187,4 +188,56 @@ TEST(FlowMovieLook, TheMeanWindowIsTheFramesEndingAtTheDrawnOneAndStopsAtTheFirs
     EXPECT_EQ(flow_movie::mean_window(7u, 1u).first, 7u);
     EXPECT_EQ(flow_movie::mean_window(7u, 1u).count, 1u);
     EXPECT_EQ(flow_movie::mean_window(7u, 0u).count, 1u) << "0 is the frame alone";
+}
+
+// --l2-level: ONE absolute level for the clip. A frame draws a surface at -L when its deepest core is below -L, and none
+// otherwise; with no level the case's own rule stands (the deepest core times the fraction, only past the floor).
+TEST(FlowMovieLook, TheVortexLevelIsOneAbsoluteValueWhenAskedAndTheFramesOwnOtherwise) {
+    FlowVolume v = blank(4, 4, 4);
+    v.header.channel_min[spade::kFlowLambda2Hat] = -600.0f;
+    flow_movie::Look fixed_level;
+    fixed_level.l2_level = 120.0f;
+    ASSERT_TRUE(flow_movie::vortex_iso(v, fixed_level, 1.0f / 6.0f, -5.0f).has_value());
+    EXPECT_EQ(*flow_movie::vortex_iso(v, fixed_level, 1.0f / 6.0f, -5.0f), -120.0f);
+    v.header.channel_min[spade::kFlowLambda2Hat] = -900.0f;  // the rim's core deepens: the level does not move
+    EXPECT_EQ(*flow_movie::vortex_iso(v, fixed_level, 1.0f / 6.0f, -5.0f), -120.0f);
+    v.header.channel_min[spade::kFlowLambda2Hat] = -100.0f;   // nothing below -120: no surface this frame
+    EXPECT_FALSE(flow_movie::vortex_iso(v, fixed_level, 1.0f / 6.0f, -5.0f).has_value());
+    const flow_movie::Look none;
+    v.header.channel_min[spade::kFlowLambda2Hat] = -600.0f;
+    EXPECT_FLOAT_EQ(*flow_movie::vortex_iso(v, none, 1.0f / 6.0f, -5.0f), -100.0f);  // the case's own: deepest / 6
+    v.header.channel_min[spade::kFlowLambda2Hat] = -3.0f;                             // under the floor: noise
+    EXPECT_FALSE(flow_movie::vortex_iso(v, none, 1.0f / 6.0f, -5.0f).has_value());
+}
+
+// The caption says what the look did, and nothing when it did nothing.
+TEST(FlowMovieLook, TheCaptionNamesEachChoiceAndSaysNothingWhenThereIsNone) {
+    EXPECT_EQ(flow_movie::look_note(flow_movie::Look{}, 1.0), "");
+    EXPECT_FALSE(flow_movie::Look{}.any());
+    flow_movie::Look look;
+    look.l2_level = 120.0f;
+    look.l2_smooth = true;
+    look.min_cells = 27u;
+    look.mean_frames = 10u;
+    EXPECT_TRUE(look.any());
+    const std::string note = flow_movie::look_note(look, 1.0);
+    EXPECT_NE(note.find("lambda2-hat = -120 1/s"), std::string::npos) << note;
+    EXPECT_NE(note.find("smoothed over one cell"), std::string::npos) << note;
+    EXPECT_NE(note.find("under 27 cells"), std::string::npos) << note;
+    EXPECT_NE(note.find("10 frames"), std::string::npos) << note;
+    EXPECT_NE(note.find("10 ms"), std::string::npos) << note;  // 10 frames of 1 ms
+}
+
+// The options' text: whole numbers and positive values only, refused by name otherwise.
+TEST(FlowMovieLook, TheOptionsAreParsedStrictly) {
+    EXPECT_FLOAT_EQ(*flow_movie::parse_l2_level("120"), 120.0f);
+    EXPECT_FLOAT_EQ(*flow_movie::parse_l2_level("12.5"), 12.5f);
+    for (const char* bad : {"", "0", "-5", "+5", "nan", "inf", "1e2", "12x", " 5", "5 ", "abc", "100000"}) {
+        EXPECT_FALSE(flow_movie::parse_l2_level(bad).has_value()) << "'" << bad << "'";
+    }
+    EXPECT_EQ(*flow_movie::parse_count("27"), 27u);
+    EXPECT_EQ(*flow_movie::parse_count("0"), 0u);
+    for (const char* bad : {"", "-1", "+1", "2.5", "1e1", "27x", " 3", "99999999999"}) {
+        EXPECT_FALSE(flow_movie::parse_count(bad).has_value()) << "'" << bad << "'";
+    }
 }
