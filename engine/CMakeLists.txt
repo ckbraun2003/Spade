@@ -1035,6 +1035,7 @@ add_library(spade_scene STATIC
     scene/compose.cpp
     scene/library.cpp
     scene/library_set.cpp
+    scene/library_query.cpp
     scene/library_sources.cpp
     scene/model_file.cpp
     scene/model_sources.cpp

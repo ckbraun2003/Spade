@@ -75,7 +75,10 @@ struct SetEntry {
     std::vector<std::string> files{};         // companion files, relative, as written
     std::string generated_recipe{};           // generated_from.recipe; empty for none
     std::string generated_hash{};             // generated_from.hash; empty for none
-    bool has_parts_map = false;               // a drone entry that carries a parts_map (read by a later piece)
+    bool has_parts_map = false;               // a drone entry that carries a parts_map
+    // The parts_map as canonical JSON (object keys sorted, no whitespace, numbers as the shortest decimal that
+    // reads back), for the entry hash; empty without a parts_map. Its meaning is a later piece's (find).
+    std::string parts_map_json{};
 };
 
 // One opened root.

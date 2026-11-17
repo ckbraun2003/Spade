@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -116,6 +119,107 @@ std::string path_problem(std::string_view file, std::string_view what) {
 
 bool ends_with(std::string_view s, std::string_view suffix) {
     return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
+}
+
+// ----- canonical JSON of a YAML node: the parts_map the entry hash covers -------------------------------------------
+void json_string(std::string& out, const std::string& s) {
+    static const char* hex = "0123456789abcdef";
+    out += '"';
+    for (const char c : s) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += hex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += hex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    out += '"';
+}
+
+// Object keys sorted bytewise, no whitespace; a quoted scalar is a string; a plain one is null, a bool, an integer,
+// a finite number (the shortest decimal that reads back) or a string.
+void canonical_json(const YAML::Node& n, std::string& out) {
+    switch (n.Type()) {
+        case YAML::NodeType::Null:
+        case YAML::NodeType::Undefined:
+            out += "null";
+            return;
+        case YAML::NodeType::Scalar: {
+            const std::string& s = n.Scalar();
+            if (n.Tag() != "!") {
+                if (s == "true" || s == "false") {
+                    out += s;
+                    return;
+                }
+                const char* first = s.data();
+                const char* last = s.data() + s.size();
+                std::int64_t i = 0;
+                if (const auto r = std::from_chars(first, last, i); r.ec == std::errc() && r.ptr == last) {
+                    out += std::to_string(i);
+                    return;
+                }
+                double d = 0.0;
+                if (const auto r = std::from_chars(first, last, d);
+                    r.ec == std::errc() && r.ptr == last && std::isfinite(d)) {
+                    char buf[40];
+                    const auto w = std::to_chars(buf, buf + sizeof(buf), d);
+                    out.append(buf, w.ptr);
+                    return;
+                }
+            }
+            json_string(out, s);
+            return;
+        }
+        case YAML::NodeType::Sequence: {
+            out += '[';
+            bool first = true;
+            for (const YAML::Node& item : n) {
+                out += first ? "" : ",";
+                first = false;
+                canonical_json(item, out);
+            }
+            out += ']';
+            return;
+        }
+        case YAML::NodeType::Map: {
+            // Sort the keys, then look each up: a YAML::Node assigns by value, so nodes must not be sorted themselves.
+            std::vector<std::string> keys;
+            for (const auto& kv : n) {
+                keys.push_back(kv.first.IsScalar() ? kv.first.Scalar() : std::string());
+            }
+            std::sort(keys.begin(), keys.end());
+            out += '{';
+            bool first = true;
+            for (const std::string& key : keys) {
+                out += first ? "" : ",";
+                first = false;
+                json_string(out, key);
+                out += ':';
+                canonical_json(n[key], out);
+            }
+            out += '}';
+            return;
+        }
+    }
 }
 
 struct Alias {
@@ -360,6 +464,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
             er.bad("parts_map", "only a drone entry has a parts_map");
         } else {
             s.has_parts_map = true;
+            canonical_json(partsn, s.parts_map_json);
         }
     }
     if (!filen) {
