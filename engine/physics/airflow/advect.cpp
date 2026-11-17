@@ -160,6 +160,68 @@ AdvectScratch make_advect_scratch(const GridShape& shape) {
     return s;
 }
 
+ScalarScratch make_scalar_scratch(const GridShape& shape) {
+    const std::size_t cells = std::size_t{shape.nx} * shape.ny * shape.nz;
+    ScalarScratch s;
+    s.hat.assign(cells, 0.0f);
+    s.lo.assign(cells, 0.0f);
+    s.hi.assign(cells, 0.0f);
+    return s;
+}
+
+namespace {
+
+// A cell-centred scalar's sample at x: every axis against the centres. sample_on()'s strides for a field of n cells a
+// side are component 2's (nx, ny), the one that is centred in x and y.
+template <bool kRange>
+SPADE_AIRFLOW_HOT Sample sample_centred(const Geometry& g, const float* field, glm::vec3 x) noexcept {
+    const auto axis = [&](uint32_t a) {
+        return locate(x[static_cast<glm::length_t>(a)] * g.inv_dx - 0.5f, g.n[a], g.n[a], g.periodic[a]);
+    };
+    return sample_on<kRange>(g, 2u, field, axis(0), axis(1), axis(2));
+}
+
+}  // namespace
+
+void advect_scalar(const MacGrid& vel_grid, std::span<const float> in, std::span<float> out, const DomainBc& bc,
+                   float h, ScalarScratch& s) noexcept {
+    const GridShape& shape = vel_grid.shape;
+    const float half_h = 0.5f * h;
+    const Velocity vel = velocity_sampler(vel_grid, bc);
+    const auto back_trace = [&](glm::vec3 x) {
+        const glm::vec3 mid = x - half_h * vel.at(x);
+        return x - h * vel.at(mid);
+    };
+    const auto forward_trace = [&](glm::vec3 x) {
+        const glm::vec3 mid = x + half_h * vel.at(x);
+        return x + h * vel.at(mid);
+    };
+    const auto each_cell = [&](const auto& visit) {
+        std::size_t idx = 0;
+        for (uint32_t k = 0; k < shape.nz; ++k) {
+            for (uint32_t j = 0; j < shape.ny; ++j) {
+                for (uint32_t i = 0; i < shape.nx; ++i, ++idx) {
+                    const glm::vec3 x((static_cast<float>(i) + 0.5f) * shape.dx, (static_cast<float>(j) + 0.5f) * shape.dx,
+                                      (static_cast<float>(k) + 0.5f) * shape.dx);
+                    visit(idx, x);
+                }
+            }
+        }
+    };
+    each_cell([&](std::size_t idx, glm::vec3 x) {
+        const Sample f = sample_centred<true>(vel.geo, in.data(), back_trace(x));
+        s.hat[idx] = f.value;
+        s.lo[idx] = f.lo;
+        s.hi[idx] = f.hi;
+    });
+    each_cell([&](std::size_t idx, glm::vec3 x) {
+        const float back = sample_centred<false>(vel.geo, s.hat.data(), forward_trace(x)).value;
+        float v = s.hat[idx] + 0.5f * (in[idx] - back);
+        v = v < s.lo[idx] ? s.lo[idx] : (v > s.hi[idx] ? s.hi[idx] : v);
+        out[idx] = v;
+    });
+}
+
 void advect_velocity(const MacGrid& in, MacGrid& out, const DomainBc& bc, float h, AdvectScratch& s,
                      WorkerPool* pool) noexcept {
     const float half_h = 0.5f * h;

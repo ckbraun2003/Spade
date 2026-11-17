@@ -114,7 +114,16 @@ struct FluidScratch {
     std::array<std::vector<float>, 2> rhs_uv;  // u's and v's viscous right sides on the pool (w's in rhs)
     SpreadCache spread;                        // spread_actuators()' kept weights, a disc each
     SgsScratch sgs;  // sized by make_fluid_scratch() when sgs_cs > 0, else at the first step that asks for it
+    // P10 (dye.hpp): the passive dye, one float a cell; empty until enable_dye(). Once it holds a field, every step advects it at
+    // its end with the step's own final velocity. It never touches the flow: velocity and pressure are the same bits with it on.
+    std::vector<float> dye;
+    std::vector<float> dye_next;
+    ScalarScratch dye_scratch;
 };
+
+// Sizes the scratch's dye for `g` (clear air: all 0) and its advection's scratch. A host call: it allocates. Refused
+// (invalid_argument) before the scratch changes when the field is already there.
+[[nodiscard]] Result<void> enable_dye(FluidScratch& s, const MacGrid& g);
 
 // The step's discs into the scratch's increments, as spread_actuator() adds
 // them disc by disc, from the scratch's kept weights (actuator.hpp; L18).
