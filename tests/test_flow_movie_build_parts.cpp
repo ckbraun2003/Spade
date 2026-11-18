@@ -570,3 +570,75 @@ TEST(FlowMovieBuildParts, HiddenMaterialsLeaveTheirPrimitivesOutByTheirLastWordA
     EXPECT_TRUE(flow_movie::hide_materials(m, names, {}).has_value()) << "nothing to hide: nothing to do";
 }
 
+// CORE'S MEASURED TABLE (tools/flow_movie/data/x500_build/parts.yaml, core/x500-pose-table) as it is written, three things the loader had to learn:
+// (1) `kind: mass_only`, a mass carrier that is not a drawing of anything: accepted, and nothing drawn for it; (2) its material names (`pcb`,
+// `aluminium`, `carbon`, `lipo_wrap`) beside the loader's own: the same presets, the shorter names; (3) ONE top-level `hide_materials: [..]`
+// (a glTF material's whole path or its last word) applying to the table's frame, since the frame is the part whose mesh carries the block.
+TEST(FlowMovieBuildParts, ACoreMassOnlyPartIsAcceptedAndNothingIsDrawnForIt) {
+    const std::string entry =
+        "  - name: electronics_misc\n    kind: mass_only\n    mass_kg: 0.175\n    material: plastic_black\n"
+        "    pose: {position: [0, 0.0113, 0], orientation: [1, 0, 0, 0]}\n    box: [0.07, 0.016, 0.07]\n";
+    const auto parts = flow_movie::parse_build_parts(table(entry));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    ASSERT_EQ(parts->size(), 1u);
+    EXPECT_EQ((*parts)[0].kind, "mass_only");
+    spade::render::RenderScene scene;
+    const auto drawn = flow_movie::add_build_parts(scene, *parts, fresh_store("mass_only"), glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(drawn.has_value()) << drawn.error().context;
+    EXPECT_TRUE(scene.meshes.empty());
+    EXPECT_TRUE(scene.statics.empty());
+    EXPECT_TRUE(scene.materials.empty());
+}
+
+TEST(FlowMovieBuildParts, CoresMaterialNamesAreTheLoadersPresetsUnderShorterNames) {
+    const auto same = [](const char* core, const char* ours) {
+        const auto a = flow_movie::real_material(core);
+        const auto b = flow_movie::real_material(ours);
+        ASSERT_TRUE(a.has_value()) << core;
+        ASSERT_TRUE(b.has_value()) << ours;
+        EXPECT_EQ(a->base_color, b->base_color) << core << " is " << ours;
+    };
+    same("pcb", "pcb_green");
+    same("aluminium", "aluminium_bare");
+    same("carbon", "carbon_fibre");
+    const auto wrap = flow_movie::real_material("lipo_wrap");
+    ASSERT_TRUE(wrap.has_value());
+    for (const char* other : {"carbon_fibre", "plastic_black", "pcb_green", "rubber_black"}) {
+        EXPECT_NE(wrap->base_color, flow_movie::real_material(other)->base_color) << "a battery wrap is its own colour, not " << other;
+    }
+    EXPECT_GT(wrap->base_color.b, wrap->base_color.r) << "a blue wrap";
+    EXPECT_FALSE(flow_movie::real_material("unobtainium").has_value());
+}
+
+TEST(FlowMovieBuildParts, ATopLevelHideMaterialsAppliesToTheFrameByWholePathOrLastWord) {
+    const std::string pose = "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n";
+    const std::string text = "hide_materials: [drone/x500-body/autopilot]\nparts:\n"
+                             "  - name: x500_frame\n    kind: frame\n    mass_kg: 1.0\n" + pose + "    box: [1, 1, 1]\n"
+                             "  - name: battery\n    kind: battery\n    mass_kg: 0.4\n" + pose + "    box: [1, 1, 1]\n";
+    const auto parts = flow_movie::parse_build_parts(text);
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    EXPECT_EQ((*parts)[0].hide_materials, (std::vector<std::string>{"drone/x500-body/autopilot"})) << "the frame carries it";
+    EXPECT_TRUE((*parts)[1].hide_materials.empty()) << "no other part does";
+    EXPECT_FALSE(flow_movie::parse_build_parts("hide_materials: autopilot\nparts:\n" + text.substr(text.find("  - name"))).has_value()) << "a list";
+    EXPECT_FALSE(flow_movie::parse_build_parts("hide_material: [x]\nparts:\n" + text.substr(text.find("  - name"))).has_value()) << "other top keys are still refused";
+
+    spade::render::MeshData m;
+    for (int sub = 0; sub < 2; ++sub) {
+        const float x = static_cast<float>(sub);
+        m.positions.insert(m.positions.end(), {{x, 0.0f, 0.0f}, {x + 0.5f, 0.0f, 0.0f}, {x, 0.5f, 0.0f}});
+        m.normals.insert(m.normals.end(), 3u, glm::vec3(0.0f, 0.0f, 1.0f));
+        const auto base = static_cast<uint32_t>(3 * sub);
+        m.indices.insert(m.indices.end(), {base, base + 1u, base + 2u});
+        m.submesh_first_index.push_back(base);
+        m.submesh_index_count.push_back(3u);
+        m.submesh_material.push_back(static_cast<uint32_t>(sub));
+    }
+    const std::vector<std::string> names{"drone/x500-body/arms", "drone/x500-body/autopilot"};
+    spade::render::MeshData by_path = m;
+    ASSERT_TRUE(flow_movie::hide_materials(by_path, names, {"drone/x500-body/autopilot"}).has_value());
+    EXPECT_EQ(by_path.submesh_material, (std::vector<uint32_t>{0u})) << "the whole path hides it";
+    spade::render::MeshData wrong_path = m;
+    EXPECT_FALSE(flow_movie::hide_materials(wrong_path, names, {"other/x500-body/autopilot"}).has_value()) << "a different path matches nothing";
+    EXPECT_EQ(wrong_path.submesh_material.size(), 2u) << "left as it was";
+}
+
