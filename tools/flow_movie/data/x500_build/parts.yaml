@@ -1,0 +1,196 @@
+# The X500 build for the website clips: where each part sits on the frame. Written by hand from measurements; the library entries (L88l) will be pinned equal to this table by a test.
+#
+# FRAME. One frame for every position: the PX4 x500 body mesh as the part store holds it (x500-body.gltf, drawing-only). Y up, +X forward, +Z right (starboard), origin = the vehicle's
+# centre of mass, metres, orientation quaternions [w, x, y, z]. The library's design frame is Z up, +X forward, +Y left; an entry converts a table point (X, Y, Z) to (X, -Z, Y).
+# Rotors: the vehicle's rotor order and spins are Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml): rotor 0 front-right (spin 1), 1 front-left (-1), 2 rear-left (1),
+# 3 rear-right (-1); spin 1 is the clockwise file, so the file names follow KAT's rotor_visuals. Each rotor mesh is modelled at its own origin, hub on its y axis, so the pose is the hub.
+#
+# HOW IT WAS MEASURED. Surfaces read off x500-body.gltf (horizontal faces and component boxes), the parts' own bounding boxes read from the stored .spmesh files (the part frame),
+# the pose chosen so the part's box sits on the named surface. pose_grade: measured = placed on a surface read from the frame mesh, assumed = a layout choice the frame leaves open.
+#   top plate 148 x 148 x 2 mm, y 0.023..0.025;  damper deck 66 x 66 mm, y 0.0328..0.0343 on four rubber dampers (kept: the 6C sits on them);  front plate 67.5 x 81 mm, x 0.0918..0.1593,
+#   y -0.0004;  battery tray 100 x 40 x 1 mm, y -0.0466..-0.0456 under the lower plate;  built-in Pixhawk-4-class block (material drone/x500-body/autopilot) hidden when the 6C is drawn.
+# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The sum is 1.64 kg; it is nobody's take-off weight, and it is not tuned to KAT's Gazebo 2.0643 kg.
+
+hide_materials: [drone/x500-body/autopilot]
+
+parts:
+  - name: x500_frame
+    kind: frame
+    mass_kg: 0.610
+    mass_grade: published
+    mass_source: Holybro X500 V2 kit page https://holybro.com/products/px4-development-kit-x500-v2 (the bare frame kit, no motors, ESCs or electronics)
+    pose_grade: measured
+    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: adb4814f38a4045ad8fa15b89fe4cadfd9e7a396085c931a59f9bc19b1a45403, file: x500-body.gltf}}
+
+  - name: pixhawk_6c
+    kind: controller
+    mass_kg: 0.0346
+    mass_grade: published
+    mass_source: "Holybro docs, Pixhawk 6C technical specification page, \"Weight (Plastic Case): 34.6g\"; model Pixhawk6C-3D-CAD.stp (Holybro docs, Pixhawk 6C download page)"
+    pose_grade: measured
+    # on the damper deck, centred on it; the file's +X along the vehicle's +X (the case does not say which end is the front)
+    pose: {position: [0.0005, 0.0402, 0.0004], orientation: [1, 0, 0, 0]}
+    material: plastic_black
+    objects:
+      - {store_ref: {sha256: 6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb, file: PCB-PIXHAWK6C-F1.spmesh}, material: pcb}
+      - {store_ref: {sha256: b46e9195617796641e590131d93d13bd4f88a790693080820b352f0da3cf4756, file: MIANKE-PIXHAWK6C-LV-C1.spmesh}}
+      - {store_ref: {sha256: 0b3807d1ea295a84b5293d23b74430ba3a5d3188a689dee54f554e466a260d32, file: DIKE-PIXHAWK6C-LV-C1.spmesh}}
+      - {store_ref: {sha256: 278c17f49e9442bee9db096b6735dafd1febf13b4bec15ee63e3562fd7256c4e, file: IMU-PIXHAWK6C.spmesh}, material: pcb}
+
+  - name: gps_m8n_m9n_v1
+    kind: gps
+    mass_kg: 0.032
+    mass_grade: published
+    mass_source: "Holybro docs, M8N/M9N/M10 standard GPS overview page, \"Weight (V1): 32g\"; model GPS-M8N-M9N-full_asm.stp (Holybro docs, standard GPS download page)"
+    pose_grade: assumed
+    # on the mast's top, file +X forward; the shell only (the PCB and small parts are left out)
+    pose: {position: [-0.0577, 0.171, -0.0405], orientation: [1, 0, 0, 0]}
+    material: plastic_black
+    objects:
+      - {store_ref: {sha256: 22e4fe75e90d026b30469a1f9fafe72817473bd421cf3e405b12a9dd55b25d27, file: GPS-V5-SK-C1.spmesh}}
+      - {store_ref: {sha256: c046eb15dd6db641431fd570085e8339e2dd6200849490f3d21e4b0d82daf7c9, file: GPS-V5-XK-C1.spmesh}}
+
+  - name: raspberry_pi_5
+    kind: computer
+    mass_kg: 0.045
+    mass_grade: retailer
+    mass_source: "desertcart.sg listing 45 g; ghacks says Raspberry Pi publishes no weight; HiFiBerry lists 62 g (likely packaged)"
+    pose_grade: assumed
+    # on the front plate, board flat (the file is z up: x -> +Z, y -> +X, z -> +Y), ports to starboard, the lowest solder pin on the plate
+    pose: {position: [0.0982, 0.001, -0.044], orientation: [0.5, -0.5, -0.5, -0.5]}
+    material: pcb
+    objects:
+      - {store_ref: {sha256: 7e031388b64c748d5cfdabf83dca2d1a08bfc18cc5de7c1d3e691d9f957270d9, file: OBJ12.spmesh}}
+      - {store_ref: {sha256: f494280926fa6c407968c5bb978cd49fd90fe9c632c7f754f212c702da31455c, file: OBJ1936.spmesh}, material: aluminium}
+      - {store_ref: {sha256: 45cb69b8b566d99b2484a8f726cc7e9b1a34a8c43b30d53064d5b65aee0001c1, file: OBJ1938.spmesh}, material: aluminium}
+      - {store_ref: {sha256: 212f56bfd003feebd82f38ae2e948c4e5997dc7578221d0937a09c34dc139f54, file: OBJ3526.spmesh}}
+      - {store_ref: {sha256: 17a6ddd1a61db68976a2f478cc4606b3bf16047148a364d2592ba2ec00018bdf, file: OBJ3532.spmesh}}
+      - {store_ref: {sha256: 0920615ceb2a41ced33c41a5e1dc24e4f0fffbf65efad046ceb6f8f0e9c09f3c, file: OBJ3634.spmesh}}
+      - {store_ref: {sha256: ad1d005b72c487a37901a5a2287f6ba8652b586068bb4cffa737fae02c0fa2f8, file: OBJ3640.spmesh}}
+      - {store_ref: {sha256: 0f2c7a6a9d29b58d386adc8f0260bc6b7bbbe30a64ef8a682a6c5e5220e95557, file: OBJ3734.spmesh}, material: aluminium}
+      - {store_ref: {sha256: 8dd7cae262f69d3e5996cf0c1b8f52370dc8b0b775c146eae9ae37b19e9bf248, file: OBJ3742.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 3edb8d2b9b8dc663ab061b4f3f983e549fb83df6d3a381b9bb1e5cfc9ee29d16, file: OBJ4356.spmesh}, material: aluminium}
+      - {store_ref: {sha256: cf3fb4625ac6ceb06a5a0f3da9efd820307f4f3f53dd78753436ea431ba5b36a, file: OBJ4358.spmesh}, material: aluminium}
+      - {store_ref: {sha256: a453741db902b3a286148a136d54f4d78da336ab06bdea6b15a9c8dcb274898b, file: OBJ4366.spmesh}}
+      - {store_ref: {sha256: 552fcd33894a8dd282876d33a7d4ed75ffffde4a55707f88a1f1b74a176323c4, file: OBJ5006.spmesh}}
+      - {store_ref: {sha256: d4a5ffd33ecee5f77e7792f8cc06fd07ea505369e74ef53d49092128a4413584, file: OBJ5142.spmesh}}
+      - {store_ref: {sha256: e3ec63431cc620cb5379c77e0687387433742bdc245b7dac8f3a5a52f59e8959, file: OBJ5144.spmesh}}
+      - {store_ref: {sha256: 402ce5b3cce3e42d07058212bcde21df52517b69c9c5babd9a3d8151dc49c378, file: OBJ8534.spmesh}}
+      - {store_ref: {sha256: 2c20b0afb4fb5767b6dc2b3545d1aa9d4a07addf7ecdf5997fbc6735038164c2, file: OBJ8536.spmesh}}
+      - {store_ref: {sha256: 1c67333986945f3eabf754755710da4a3a0a54718af01cec0646e17262579d86, file: OBJ8572.spmesh}}
+
+  - name: camera_module_3
+    kind: camera
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "Raspberry Pi publishes no mass for the Camera Module 3; 4 g is an assumed figure"
+    pose_grade: assumed
+    # standing on the front plate just ahead of the Pi, lens forward (file x -> +Z, z -> -X; the lens housing is file -z), 5 mm over the plate edge
+    pose: {position: [0.1568, -0.0004, -0.0119], orientation: [0.7071068, 0, -0.7071068, 0]}
+    material: pcb
+    objects:
+      - {store_ref: {sha256: 8bdf6c1b1316c3e742e74733e8d23f5e79d75e29ce04f7094fa9d0e339974baa, file: Dielectric.spmesh}}
+      - {store_ref: {sha256: 9e7c82466d157d146fa94f0f66fad9324b75d41a3555d6d0ee05b4ee261aa5e0, file: U4_3.spmesh}}
+      - {store_ref: {sha256: b0bd973f942d6790a11f95426610512180e82d7beb8f893035f16b1a5028d22d, file: U4_6.spmesh}}
+      - {store_ref: {sha256: c801287e8939cd6f60840e885c6b4fb2f031409584b732aad1bd927947e60ac4, file: U4_7.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 4eeea849eb668984e6918fa5451ae4647af05faa639944741434b0d1bd65e635, file: U12.spmesh}}
+      - {store_ref: {sha256: 9893fca68b39a86669350063e7e723a312e29816021a8e15d97e36f7966f1588, file: J1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: c84c1f2c61f0aeba58f6d3e6d5c62c77a12fea093069eae6c3036733edc3b91b, file: X1.spmesh}}
+
+  - name: lipo_4s_5200
+    kind: battery
+    mass_kg: 0.4365
+    mass_grade: retailer
+    mass_source: Grepow product listing, Tattu G-Tech 5200 mAh 4S (133 x 45 x 33.5 mm, 436.5 g)
+    pose_grade: assumed
+    # under the tray, long axis along +X, centred; its top face on the tray's underside (y -0.0466); clear of the legs and the metal brackets
+    pose: {position: [0, -0.0634, 0], orientation: [1, 0, 0, 0]}
+    material: lipo_wrap
+    box: [0.133, 0.0335, 0.045]
+
+  - name: sik_radio_v3
+    kind: radio
+    mass_kg: 0.0235
+    mass_grade: published
+    mass_source: Holybro docs, SiK Telemetry Radio V3 specification page (28 x 53 x 10.7 mm, 23.5 g with antenna)
+    pose_grade: assumed
+    # on the top plate behind the controller, starboard side, long side along Z
+    pose: {position: [-0.0577, 0.0304, 0.0405], orientation: [1, 0, 0, 0]}
+    material: plastic_black
+    box: [0.028, 0.0107, 0.053]
+
+  - name: gps_mast
+    kind: mast
+    mass_kg: 0.0063
+    mass_grade: assumed
+    mass_source: carbon tube 10 mm OD, 8 mm ID, 140 mm at 1600 kg/m3 (the 140 mm length is a retailer's listing for the Holybro GPS mount's tube); the diameters are assumed
+    pose_grade: assumed
+    # standing on the top plate, behind the controller, port side; the GPS puck sits on its top
+    pose: {position: [-0.0577, 0.095, -0.0405], orientation: [1, 0, 0, 0]}
+    material: carbon
+    cylinder: {radius: 0.005, length: 0.14}
+
+  - name: electronics_misc
+    kind: mass_only
+    mass_kg: 0.175
+    mass_grade: assumed
+    mass_source: 4 ESCs at 25 g (a 20 A to 30 A ESC with leads), a power module 25 g, wiring 30 g, fasteners 20 g; none is in the parts above
+    pose_grade: assumed
+    # a mass carrier between the plates, inside the corner standoffs; not a drawing of anything
+    pose: {position: [0, 0.0113, 0], orientation: [1, 0, 0, 0]}
+    material: plastic_black
+    box: [0.07, 0.016, 0.07]
+
+  - name: rotor_front_right
+    kind: rotor
+    rotor: 0
+    spin: 1
+    radius: 0.127
+    mass_kg: 0.068
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: measured
+    pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: 61121917c65405f022d19087def8a03b341ef3f76013f6fbe384b3f19ee6b7ac, file: x500-rotor-front-cw.gltf}}
+
+  - name: rotor_front_left
+    kind: rotor
+    rotor: 1
+    spin: -1
+    radius: 0.127
+    mass_kg: 0.068
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: measured
+    pose: {position: [0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: 46fd2683c9cc3125978f4e4addc3f6d571dbadfcc9db29457be50030b9d7ee07, file: x500-rotor-front-ccw.gltf}}
+
+  - name: rotor_rear_left
+    kind: rotor
+    rotor: 2
+    spin: 1
+    radius: 0.127
+    mass_kg: 0.068
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: measured
+    pose: {position: [-0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: d7c1722992864c1972f5c960cdf2d04cec3ce847346bd5c11ec441cd29c40d39, file: x500-rotor-rear-cw.gltf}}
+
+  - name: rotor_rear_right
+    kind: rotor
+    rotor: 3
+    spin: -1
+    radius: 0.127
+    mass_kg: 0.068
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: measured
+    pose: {position: [-0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: 9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7, file: x500-rotor-rear-ccw.gltf}}
