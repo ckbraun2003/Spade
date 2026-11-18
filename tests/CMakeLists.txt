@@ -166,6 +166,7 @@ add_executable(spade_tests
     test_library_find.cpp
     test_library_place.cpp
     test_library_resolve.cpp
+    test_library_part_meshes.cpp
     test_library_validate.cpp
     test_library_props.cpp
     test_library_sources.cpp

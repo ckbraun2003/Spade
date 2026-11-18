@@ -25,12 +25,14 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "scene/library_set.hpp"
+#include "world/mesh.hpp"
 
 namespace spade::scene {
 
@@ -112,5 +114,20 @@ struct ResolveResult {
 // hash_text (L88l): "sha256:" and the 64 lower-case hex of the SHA-256 of `text`'s bytes exactly as given (no newline translation),
 // for a host that pins a document it holds in memory.
 [[nodiscard]] std::string hash_text(std::string_view text);
+
+// One object of a part's solid, read from the store (L88l): the part record's `meshes` entry and its mesh, rebuilt by load_mesh_file() (a sidecar's
+// bytes are never trusted), in the part's own frame, metres.
+struct PartMeshObject {
+    std::string sha256{};  // the store folder
+    std::string file{};    // the store file
+    bool visual = false;   // role: visual (drawn only)
+    std::shared_ptr<const TriangleMesh> mesh{};
+};
+
+// A part's objects, in the order its record lists them, each read from `<store>/<sha256>/<file>` (so Rendering draws compose_placement x part_meshes).
+// An empty list is a part that has only shapes. Refused: bare_id, root_not_loaded, entry_not_found as find_entry; invalid_entry (the entry is not a part,
+// or its record's blocks do not read: the message is the reader's), store_file_missing (field store: no store was given, or the store lacks that file; the
+// object's file in path), invalid_entry again (path: the file is no readable .spmesh). Nothing else is read; with no store, `list` and `find` still work.
+[[nodiscard]] LibraryResult<std::vector<PartMeshObject>> part_meshes(const LibrarySet& set, std::string_view id);
 
 }  // namespace spade::scene

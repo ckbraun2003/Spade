@@ -11,6 +11,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "scene/part_blocks.hpp"
+#include "world/mesh_file.hpp"
 #include "world/sha256.hpp"
 
 #include <charconv>
@@ -388,5 +390,41 @@ LibraryResult<ResolveResult> resolve_alias(const LibrarySet& set, std::string_vi
 }
 
 std::string hash_text(std::string_view text) { return "sha256:" + spade::sha256_hex(text); }
+
+LibraryResult<std::vector<PartMeshObject>> part_meshes(const LibrarySet& set, std::string_view id) {
+    LibraryResult<FindResult> found = find_entry(set, id, {});
+    if (!found) {
+        return std::unexpected(found.error());
+    }
+    const SetEntry& entry = *found->entry;
+    if (entry.kind != "part" || entry.file.empty()) {
+        return std::unexpected(make("invalid_entry", "only a part entry has meshes", entry.root, {}, entry.id));
+    }
+    std::string text;
+    if (!read_bytes(entry.file, text)) {
+        return std::unexpected(make("io_error", "the part's record cannot be read", entry.root, entry.file.generic_string(), entry.id));
+    }
+    const Result<PartBlocks> blocks = read_part_blocks(text);
+    if (!blocks) {
+        return std::unexpected(make("invalid_entry", blocks.error().context, entry.root, entry.file.generic_string(), entry.id));
+    }
+    std::vector<PartMeshObject> out;
+    for (const PartMesh& m : blocks->meshes) {
+        if (set.store.empty()) {
+            return std::unexpected(make("store_file_missing", "no store was given, so '" + m.file + "' cannot be found", entry.root, {}, entry.id, "store"));
+        }
+        const fs::path file = set.store / m.sha256 / m.file;
+        std::error_code ec;
+        if (!fs::exists(file, ec)) {
+            return std::unexpected(make("store_file_missing", "the store has no '" + m.file + "' at its address", entry.root, file.generic_string(), entry.id, "store"));
+        }
+        Result<LoadedMesh> loaded = load_mesh_file(file);
+        if (!loaded) {
+            return std::unexpected(make("invalid_entry", "'" + m.file + "' does not read as a mesh: " + loaded.error().context, entry.root, file.generic_string(), entry.id));
+        }
+        out.push_back(PartMeshObject{m.sha256, m.file, m.visual, loaded->mesh});
+    }
+    return out;
+}
 
 }  // namespace spade::scene
