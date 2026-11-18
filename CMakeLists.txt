@@ -144,6 +144,9 @@ add_subdirectory(tools/mesh_pack)
 # The map fetch tool (L85, SP-5): a separate tool outside engine/, the only code that opens a socket. Build-tree only for now.
 add_subdirectory(tools/geo_fetch)
 
+# The part import tool (L88, L88b; Spec B revision 2): a CAD file to the local part store, over spade::mesh_import and step_convert.
+add_subdirectory(tools/part_import)
+
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.
 if(SPADE_BUILD_SANDBOX)

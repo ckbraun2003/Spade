@@ -11,6 +11,17 @@ item's transform), and runs spade_mesh_pack on it, so every mesh passes Spade's 
 sidecar exists. OpenCASCADE is LGPL-2.1 with an exception; this script runs as its own process and Spade never links,
 loads or ships it.
 
+THE MODES spade_part_import USES (L88; it runs this script as its own process and reads one JSON object from standard output):
+
+    step_convert.py --probe                      {"ocp": bool, "python", "occt", "wheel", "reason"}; always exit 0
+    step_convert.py IN.step --inspect            {"unit", "occt", "wheel", "solids": [{"name", "volume", "bbox_min", "bbox_max"}]}
+                                                 in the file's unit, placements applied; nothing is tessellated
+    step_convert.py IN.step --emit-3mf OUT.3mf --deflection D [--angle A] [--solid NAME]...
+                                                 the core-specification 3MF only (no packer, no sidecars), and
+                                                 {"unit", "occt", "wheel", "cross_check": [{"name", "brep_volume",
+                                                 "mesh_volume", "difference"}], "flagged": [names]}; exit 0, or 5 when a
+                                                 solid is flagged (the 3MF is written all the same)
+
 THE DEFLECTION IS REQUIRED. It is the chord error of the curved faces, a geometric choice that depends on the part and
 on the grid it will meet (docs: d at most a tenth of the smallest feature that matters). It takes a unit suffix
 (m, mm, cm, um, in, ft); a bare number is refused, so a unit is never guessed. It is recorded in each sidecar as
@@ -373,9 +384,77 @@ def find_packer(given):
     return candidate
 
 
+def say(obj):
+    """One JSON object on standard output, one line: what spade_part_import reads."""
+    import json
+
+    sys.stdout.write(json.dumps(obj) + "\n")
+
+
+def probe():
+    """Is OpenCASCADE importable here, and which versions. Always exit 0: the answer is in the JSON."""
+    answer = {"ocp": False, "python": ".".join(str(v) for v in sys.version_info[:3]), "occt": "", "wheel": "", "reason": ""}
+    try:
+        import_ocp()
+        answer["occt"], answer["wheel"] = ocp_versions()
+        answer["ocp"] = True
+    except Refusal as r:
+        answer["reason"] = r.message
+    except Exception as e:  # noqa: BLE001 -- a broken install is an answer, not a crash
+        answer["reason"] = "OCP is not installed (" + str(e) + ")"
+    say(answer)
+    return 0
+
+
+def inspect_solids(path, wanted):
+    """The solids of the STEP with name, B-rep volume and box (placements applied), in the file's unit. Nothing is meshed."""
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepGProp import BRepGProp
+    from OCP.Bnd import Bnd_Box
+    from OCP.GProp import GProp_GProps
+
+    import_ocp()
+    unit = file_length_unit(path)
+    solids = []
+    for name, solid, location in read_solids(path, unit, wanted):
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solid, props)
+        box = Bnd_Box()
+        BRepBndLib.Add_s(solid.Moved(location), box, False)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        solids.append({"name": name, "volume": props.Mass(), "bbox_min": [x0, y0, z0], "bbox_max": [x1, y1, z1]})
+    occt, wheel = ocp_versions()
+    say({"unit": unit, "occt": occt, "wheel": wheel, "solids": solids})
+    return 0
+
+
+def emit_3mf(path, out, deflection_text, angle, wanted):
+    """The 3MF of the STEP at `out` and the cross-check as JSON. Exit 5 when a solid is flagged; the 3MF is written either way."""
+    d_value, d_unit = parse_length(deflection_text, "--deflection")
+    import_ocp()
+    unit = file_length_unit(path)
+    deflection = d_value * UNITS[d_unit][0] / UNITS[unit][0]  # in the file's unit
+    parts = read_parts(path, unit, deflection, angle, wanted)
+    checks, flagged = [], []
+    for part in parts:
+        volume = mesh_volume(part.vertices, part.triangles)
+        difference = abs(volume - part.brep_volume) / abs(part.brep_volume) if part.brep_volume else math.inf
+        if difference > CROSS_CHECK_LIMIT or volume <= 0.0:
+            flagged.append(part.name)
+        checks.append({"name": part.name, "brep_volume": part.brep_volume, "mesh_volume": volume,
+                       "difference": difference if math.isfinite(difference) else 1.0})
+    write_3mf(out, parts, UNITS[unit][1])
+    occt, wheel = ocp_versions()
+    say({"unit": unit, "occt": occt, "wheel": wheel, "cross_check": checks, "flagged": flagged})
+    return 5 if flagged else 0
+
+
 def run(argv):
     parser = argparse.ArgumentParser(prog="step_convert.py", add_help=False)
     parser.add_argument("input", nargs="?")
+    parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--emit-3mf", dest="emit_3mf")
     parser.add_argument("--out")
     parser.add_argument("--deflection")
     parser.add_argument("--angle", default="0.5")
@@ -385,8 +464,24 @@ def run(argv):
     args, extra = parser.parse_known_args(argv)
     if extra:
         raise Refusal(2, "unknown argument '" + extra[0] + "'")
+    if args.probe:
+        return probe()
     if not args.input:
         raise Refusal(2, "no input file")
+    if args.inspect or args.emit_3mf:
+        if not os.path.isfile(args.input):
+            raise Refusal(1, f"cannot read '{args.input}'")
+        if args.inspect:
+            return inspect_solids(args.input, set(args.solid))
+        if not args.deflection:
+            raise Refusal(2, "--deflection is required (for example 0.1mm): the chord error is a choice, with no default")
+        try:
+            angle = float(args.angle)
+        except ValueError:
+            raise Refusal(2, f"--angle '{args.angle}' is not a number of radians") from None
+        if not math.isfinite(angle) or angle <= 0.0:
+            raise Refusal(2, "--angle must be finite and above zero")
+        return emit_3mf(args.input, args.emit_3mf, args.deflection, angle, set(args.solid))
     if not args.out:
         raise Refusal(2, "--out DIR is required")
     if not args.deflection:

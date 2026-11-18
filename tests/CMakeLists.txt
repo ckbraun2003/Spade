@@ -291,6 +291,20 @@ add_executable(spade_tests
     # as the recorder's cache is above.
     test_mesh_pack.cpp
     ../tools/mesh_pack/mesh_pack.cpp
+    # spade_part_import's parts (L88): the codes and JSON, the part frame, the unit guess and the cache key, compiled in from the tool.
+    test_part_import_basics.cpp
+    test_part_import_store.cpp
+    test_part_import_run.cpp
+    test_part_import_process.cpp
+    test_part_import_step.cpp
+    test_mesh_import_objects.cpp
+    ../tools/part_import/report.cpp
+    ../tools/part_import/transform.cpp
+    ../tools/part_import/store.cpp
+    ../tools/part_import/options.cpp
+    ../tools/part_import/run.cpp
+    ../tools/part_import/process.cpp
+    ../tools/part_import/step.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
@@ -883,6 +897,24 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export
         LABELS spade
         TIMEOUT 60
         PASS_REGULAR_EXPRESSION "refused: .*inside a git work tree")
+endif()
+
+# The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
+# Python. The library's behaviour is tested in-process (test_part_import_run.cpp); this is only that the program is linked and runs.
+# LABELS spade, as above.
+add_dependencies(spade_tests spade_part_import)
+add_test(NAME PartImportExe.PrintsItsUsage COMMAND spade_part_import --help)
+set_tests_properties(PartImportExe.PrintsItsUsage PROPERTIES
+    LABELS spade
+    TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "usage: spade_part_import --probe.*--inspect <file>.*--import <file>")
+if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export, a container mount) has no work tree to refuse
+    add_test(NAME PartImportExe.RefusesAStoreInsideAGitWorkTree
+        COMMAND spade_part_import --import nothing.stl --unit mm --store "${PROJECT_SOURCE_DIR}/part_import_exe_store")
+    set_tests_properties(PartImportExe.RefusesAStoreInsideAGitWorkTree PROPERTIES
+        LABELS spade
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "store_in_git_tree")
 endif()
 
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against

@@ -38,6 +38,7 @@
 #include <pugixml.hpp>
 
 #include "core/path_text.hpp"
+#include "world/mesh_import/outcome.hpp"
 #include "world/detail/weld.hpp"
 
 namespace spade {
@@ -409,7 +410,8 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
     }
 }
 
-[[nodiscard]] Result<std::vector<MeshObject>> read(const std::filesystem::path& path, const std::string& file) {
+[[nodiscard]] Result<std::vector<MeshObject>> read(const std::filesystem::path& path, const std::string& file,
+                                                   std::vector<MeshObjectOutcome>* collect) {
     const auto refuse = [&file](const Error& e) { return std::unexpected(Error{e.code, file + ": " + e.context}); };
 
     std::vector<unsigned char> bytes;
@@ -511,24 +513,42 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
         gather(table, found->second, *transform, positions, indices);
         const MeshInput input = detail::weld_exact(positions, indices, *unit);
         auto built = make_mesh(input, file + ": object '" + o.name + "'");
+        if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is, and on to the next object
+            detail::record_outcome(*collect, o.name, *unit, built);
+            continue;
+        }
         if (!built) return std::unexpected(built.error());
         out.push_back(MeshObject{o.name, std::move(*built), *unit});
     }
-    if (out.empty()) return in_part(fail(Code::invalid_argument, "no build item of type model"));
+    if (out.empty() && (collect == nullptr || collect->empty())) return in_part(fail(Code::invalid_argument, "no build item of type model"));
     return out;
 }
 
 }  // namespace
 
-Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path) {
+namespace {
+
+[[nodiscard]] Result<std::vector<MeshObject>> threemf_entry(const std::filesystem::path& path,
+                                                            std::vector<MeshObjectOutcome>* collect) {
     const std::string file = path_text(path);
     try {
-        return read(path, file);
+        return read(path, file, collect);
     } catch (const std::bad_alloc&) {
         return std::unexpected(Error{Code::capacity_exceeded, file + ": out of memory reading it"});
     } catch (const std::exception& e) {
         return std::unexpected(Error{Code::internal, file + ": unexpected failure: " + e.what()});
     }
+}
+
+}  // namespace
+
+Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path) { return threemf_entry(path, nullptr); }
+
+Result<std::vector<MeshObjectOutcome>> read_3mf_objects(const std::filesystem::path& path) {
+    std::vector<MeshObjectOutcome> all;
+    const Result<std::vector<MeshObject>> r = threemf_entry(path, &all);
+    if (!r) return std::unexpected(r.error());
+    return all;
 }
 
 }  // namespace spade

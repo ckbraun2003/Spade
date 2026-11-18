@@ -32,6 +32,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/path_text.hpp"
+#include "world/mesh_import/outcome.hpp"
 #include "core/utf8.hpp"
 #include "world/detail/weld.hpp"
 
@@ -193,7 +194,7 @@ class Reader {
         : file_(std::move(file)), unit_(unit), o_names_(stem), g_names_(stem) {}
 
     [[nodiscard]] Result<void> line(std::string_view text);
-    [[nodiscard]] Result<std::vector<MeshObject>> objects() const;
+    [[nodiscard]] Result<std::vector<MeshObject>> objects(std::vector<MeshObjectOutcome>* collect) const;
     [[nodiscard]] uint64_t line_number() const noexcept { return line_; }
 
   private:
@@ -393,7 +394,7 @@ Result<void> Reader::face() {
     return {};
 }
 
-Result<std::vector<MeshObject>> Reader::objects() const {
+Result<std::vector<MeshObject>> Reader::objects(std::vector<MeshObjectOutcome>* collect) const {
     const auto refuse = [this](Code code, const std::string& detail) {
         return std::unexpected(Error{code, file_ + ": " + detail});
     };
@@ -451,6 +452,10 @@ Result<std::vector<MeshObject>> Reader::objects() const {
         const std::string& name = names.name(slots[k]);
         const MeshInput input = detail::weld_exact(positions, indices, unit_);
         auto built = make_mesh(input, file_ + ": object '" + name + "'");
+        if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is, and on to the next object
+            detail::record_outcome(*collect, name, unit_, built);
+            continue;
+        }
         if (!built) return std::unexpected(built.error());
         out.push_back(MeshObject{name, std::move(*built), unit_});
     }
@@ -458,7 +463,7 @@ Result<std::vector<MeshObject>> Reader::objects() const {
 }
 
 [[nodiscard]] Result<std::vector<MeshObject>> read(const std::filesystem::path& path, const std::string& file,
-                                                   MeshUnit unit) {
+                                                   MeshUnit unit, std::vector<MeshObjectOutcome>* collect) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return std::unexpected(Error{Code::io_error, file + ": cannot read it"});
     Reader reader(file, path_text(path.stem()), unit);
@@ -469,23 +474,37 @@ Result<std::vector<MeshObject>> Reader::objects() const {
         return std::unexpected(
             Error{Code::io_error, file + ": cannot read it past line " + num(reader.line_number())});
     }
-    return reader.objects();
+    return reader.objects(collect);
 }
 
 }  // namespace
 
-Result<std::vector<MeshObject>> read_obj(const std::filesystem::path& path, MeshUnit unit) {
+namespace {
+
+[[nodiscard]] Result<std::vector<MeshObject>> obj_entry(const std::filesystem::path& path, MeshUnit unit,
+                                                        std::vector<MeshObjectOutcome>* collect) {
     const std::string file = path_text(path);
     try {
         if (const std::string problem = detail::unit_problem(unit); !problem.empty()) {
             return std::unexpected(Error{Code::invalid_argument, file + ": " + problem});
         }
-        return read(path, file, unit);
+        return read(path, file, unit, collect);
     } catch (const std::bad_alloc&) {
         return std::unexpected(Error{Code::capacity_exceeded, file + ": out of memory reading it"});
     } catch (const std::exception& e) {
         return std::unexpected(Error{Code::internal, file + ": unexpected failure: " + e.what()});
     }
+}
+
+}  // namespace
+
+Result<std::vector<MeshObject>> read_obj(const std::filesystem::path& path, MeshUnit unit) { return obj_entry(path, unit, nullptr); }
+
+Result<std::vector<MeshObjectOutcome>> read_obj_objects(const std::filesystem::path& path, MeshUnit unit) {
+    std::vector<MeshObjectOutcome> all;
+    const Result<std::vector<MeshObject>> r = obj_entry(path, unit, &all);
+    if (!r) return std::unexpected(r.error());
+    return all;
 }
 
 }  // namespace spade
