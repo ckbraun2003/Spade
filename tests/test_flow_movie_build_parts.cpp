@@ -986,6 +986,11 @@ TEST(FlowMovieBuildParts, ATurningRotorWithAChordTableIsOneSeeThroughDiscNotACop
     EXPECT_NE(flow_movie::parse_prop_blur("mode=sampled").value().sampled, flow_movie::parse_prop_blur("mode=disc").value().sampled);
     EXPECT_FALSE(flow_movie::parse_prop_blur("mode=smear").has_value());
     EXPECT_FALSE(flow_movie::parse_prop_blur("opacity=0").has_value());
+    EXPECT_GT(flow_movie::PropBlur{}.opacity, 1.0f) << "the look default is a gain: the physical average (1) is nearly invisible over the cloud";
+    // the opacity is a GAIN on the solidity (a real prop over one shutter is faint; the look may want it stronger), alpha capped at 1 in the disc
+    ASSERT_TRUE(flow_movie::parse_prop_blur("opacity=3").has_value());
+    EXPECT_FLOAT_EQ(flow_movie::parse_prop_blur("opacity=3").value().opacity, 3.0f);
+    EXPECT_FALSE(flow_movie::parse_prop_blur("opacity=11").has_value());
     fs::remove_all(store);
 }
 

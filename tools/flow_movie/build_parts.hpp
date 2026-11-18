@@ -464,9 +464,9 @@ struct PropBlur {
     uint32_t samples = 24u;    // copies of the blade over the shutter
     double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
-    float tint = 0.5f;         // the copies' grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
+    float tint = 0.65f;        // the copies' and the disc's grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
     bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
-    float opacity = 1.0f;      // the disc's: its alpha at each radius is the blade's solidity there times this
+    float opacity = 6.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
@@ -509,7 +509,7 @@ struct PropBlur {
             if (!(number >= 1.0 && number <= 128.0 && number == std::floor(number))) return bad_blur("samples must be a whole number from 1 to 128");
             blur.samples = static_cast<uint32_t>(number);
         } else if (key == "opacity") {
-            if (!(number > 0.0 && number <= 1.0)) return bad_blur("opacity must be above 0 and at most 1");
+            if (!(number > 0.0 && number <= 10.0)) return bad_blur("opacity is a gain on the blade solidity: above 0 and at most 10");
             blur.opacity = static_cast<float>(number);
         } else if (key == "tint") {
             if (!(number > 0.0 && number <= 1.0)) return bad_blur("tint must be above 0 and at most 1");
