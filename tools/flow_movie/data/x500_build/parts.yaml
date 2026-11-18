@@ -3,7 +3,8 @@
 # FRAME. One frame for every position: the PX4 x500 body mesh as the part store holds it (x500-body.gltf, drawing-only). Y up, +X forward, +Z right (starboard), origin = the vehicle's
 # centre of mass, metres, orientation quaternions [w, x, y, z]. The library's design frame is Z up, +X forward, +Y left; an entry converts a table point (X, Y, Z) to (X, -Z, Y).
 # Rotors: the vehicle's rotor order and spins are Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml): rotor 0 front-right (spin 1), 1 front-left (-1), 2 rear-left (1),
-# 3 rear-right (-1); spin 1 is the clockwise file, so the file names follow KAT's rotor_visuals. Each rotor mesh is modelled at its own origin, hub on its y axis, so the pose is the hub.
+# 3 rear-right (-1). spin +1 is the engine's spin_dir: counter-clockwise seen from above (vehicles/rotor.hpp, consumers.md L7a), so a +1 rotor takes the *-ccw file, whose blades lift turning
+# counter-clockwise (Rendering measured the blade pitch), and a -1 rotor the *-cw file. Each rotor mesh is modelled at its own origin, hub on its y axis, so the pose is the hub.
 #
 # HOW IT WAS MEASURED. Surfaces read off x500-body.gltf (horizontal faces and component boxes), the parts' own bounding boxes read from the stored .spmesh files (the part frame),
 # the pose chosen so the part's box sits on the named surface. pose_grade: measured = placed on a surface read from the frame mesh, assumed = a layout choice the frame leaves open.
@@ -154,7 +155,7 @@ parts:
     pose_grade: measured
     pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
     objects:
-      - {store_ref: {sha256: 61121917c65405f022d19087def8a03b341ef3f76013f6fbe384b3f19ee6b7ac, file: x500-rotor-front-cw.gltf}}
+      - {store_ref: {sha256: 46fd2683c9cc3125978f4e4addc3f6d571dbadfcc9db29457be50030b9d7ee07, file: x500-rotor-front-ccw.gltf}}
 
   - name: rotor_front_left
     kind: rotor
@@ -167,7 +168,7 @@ parts:
     pose_grade: measured
     pose: {position: [0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
     objects:
-      - {store_ref: {sha256: 46fd2683c9cc3125978f4e4addc3f6d571dbadfcc9db29457be50030b9d7ee07, file: x500-rotor-front-ccw.gltf}}
+      - {store_ref: {sha256: 61121917c65405f022d19087def8a03b341ef3f76013f6fbe384b3f19ee6b7ac, file: x500-rotor-front-cw.gltf}}
 
   - name: rotor_rear_left
     kind: rotor
@@ -180,7 +181,7 @@ parts:
     pose_grade: measured
     pose: {position: [-0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
     objects:
-      - {store_ref: {sha256: d7c1722992864c1972f5c960cdf2d04cec3ce847346bd5c11ec441cd29c40d39, file: x500-rotor-rear-cw.gltf}}
+      - {store_ref: {sha256: 9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7, file: x500-rotor-rear-ccw.gltf}}
 
   - name: rotor_rear_right
     kind: rotor
@@ -193,4 +194,4 @@ parts:
     pose_grade: measured
     pose: {position: [-0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
     objects:
-      - {store_ref: {sha256: 9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7, file: x500-rotor-rear-ccw.gltf}}
+      - {store_ref: {sha256: d7c1722992864c1972f5c960cdf2d04cec3ce847346bd5c11ec441cd29c40d39, file: x500-rotor-rear-cw.gltf}}
