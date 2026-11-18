@@ -3105,8 +3105,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--elevation") {
             opt.elevation = web::parse_elevation_deg(value());
             if (!opt.elevation) {
-                std::fprintf(stderr, "flow_movie: --elevation takes one number above 0 and at most 85 (degrees above the drone), as 55
-");
+                std::fprintf(stderr, "flow_movie: --elevation takes one number above 0 and at most 85 (degrees above the drone), as 55\n");
                 return 2;
             }
         } else if (arg == "--sgs-cs") {
