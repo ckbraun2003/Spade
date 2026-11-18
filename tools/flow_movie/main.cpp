@@ -2547,9 +2547,12 @@ struct WebFilming {
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
         if (q->thin_r > 0.0f) {  // the cloud thinned round the held drone (at the world origin, 4 mm up as the box holds it)
-            plan.look.thin.centre = glm::vec3(0.0f, drone->body_y_m, 0.0f);
-            plan.look.thin.radius = q->thin_r;
-            plan.look.thin.floor = q->thin_floor;
+            // The film's draw path reads opt.look (LookState), not the plan's copy: set both, or the thinning never reaches a frame.
+            for (Look* look : {&opt.look, &plan.look}) {
+                look->thin.centre = glm::vec3(0.0f, drone->body_y_m, 0.0f);
+                look->thin.radius = q->thin_r;
+                look->thin.floor = q->thin_floor;
+            }
         }
     } else if (!opt.q_look.empty()) {
         std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
