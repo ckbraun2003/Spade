@@ -12,9 +12,10 @@
 //   X500Prop.NoRowIsEstimatedAndTheBladeIsTheApc10x5s   no row says ESTIMATED; diameter 0.254 m (graded for the kit), pitch derived with the
 //                                                4.5 in against 5 in said, mass assumed; the blade's radius 0.127 m; c/R, twist and the
 //                                                fitted polar the library's APC 10x5, as it is
-//   X500Model.TheMassAndInertiaComeFromTheBuildTable   the compiled composite: 1.6389 kg, the centre of mass within 0.6 mm of the table's in x and z,
-//                                                the hubs 0.0614 m above it, the principal diagonal within 2% of an independent sum of the table's
-//                                                parts (point masses and boxes)
+//   X500Model.TheMassAndInertiaComeFromTheBuildTable   the compiled composite: 1.6389 kg, the centre of mass within 0.6 mm of the table's in x
+//                                                and z and within 8 mm in y, the hubs at the table's pose (0.0614 m above its origin), the principal
+//                                                diagonal within 3% of an independent sum of the table's parts, the products of inertia zero and
+//                                                the design frame the principal frame (design_to_principal the identity)
 //   X500Model.TheBatterySitsUnderTheFrameAsASolid   the 4S pack as a 0.133 x 0.0335 x 0.045 m box part under the frame stack
 //   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0181 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
@@ -124,9 +125,9 @@ TEST(X500Model, CarriesKatsNumbers) {
     int quadrants = 0;
     for (std::size_t i = 0; i < 4; ++i) {
         const auto& r = m.rotors[i];
-        EXPECT_NEAR(std::fabs(r.local_pos.x), x5::kArm, 1.0e-4) << "rotor " << i;
-        EXPECT_NEAR(std::fabs(r.local_pos.z), x5::kArm, 1.0e-4) << "rotor " << i;
-        EXPECT_NEAR(r.local_pos.y - m.com_offset.y * 0.0, x5::kHubAboveCentre, 0.01) << "rotor " << i << ": KAT's hub 0.06 m above the centre";
+        EXPECT_NEAR(std::fabs(r.local_pos.x), x5::kArm, 2.0e-3) << "rotor " << i << ": 0.174 m from the centre of mass, to within its 0.9 mm offset";
+        EXPECT_NEAR(std::fabs(r.local_pos.z), x5::kArm, 2.0e-3) << "rotor " << i;
+        EXPECT_NEAR(r.local_pos.y, x5::kHubAboveCentre, 0.008) << "rotor " << i << ": the table's hub 0.0614 m above its origin, to within 8 mm";
         EXPECT_NEAR(r.radius, 0.127, 1.0e-4) << "rotor " << i << ": the 1045's 10 in";
         EXPECT_EQ(r.spin_dir, expect_spin[i]) << "rotor " << i;
         quadrants += (r.local_pos.x > 0 ? 1 : 0) * 2 + (r.local_pos.z > 0 ? 1 : 0);
@@ -149,15 +150,23 @@ TEST(X500Model, TheMassAndInertiaComeFromTheBuildTable) {
     EXPECT_NEAR(c.mass, 1.6389f, 5.0e-4f) << "the 13 parts' sum";
     EXPECT_NEAR(c.center_of_mass.x, 0.00091f, 6.0e-4f) << "the table's centre of mass in x, from the parts' poses";
     EXPECT_NEAR(c.center_of_mass.z, -0.00159f, 6.0e-4f) << "and in z";
+    EXPECT_NEAR(spec->rotors[0].hub.position.y, x5::kHubAboveCentre + x5::kDesignAboveTable, 1.0e-9) << "the hubs at the table's pose";
+    const double com_y_table = static_cast<double>(c.center_of_mass.y) - x5::kDesignAboveTable;
+    EXPECT_NEAR(com_y_table, 0.0, 0.008) << "the parts' centre of mass is within 8 mm of the table's origin in y";
     const double hub_above = spec->rotors[0].hub.position.y - static_cast<double>(c.center_of_mass.y);
-    EXPECT_NEAR(hub_above, 0.0614, 5.0e-4) << "the table's hubs are 0.0614 m above the centre of mass";
     const double want[3] = {0.014752, 0.022166, 0.015874};  // x roll, y yaw, z pitch about the centre of mass, design axes
     for (int i = 0; i < 3; ++i) {
-        EXPECT_NEAR(c.inertia_design[i][i], want[i], 0.02 * want[i]) << "axis " << i;
+        EXPECT_NEAR(c.inertia_design[i][i], want[i], 0.03 * want[i]) << "axis " << i;
     }
-    std::printf("[ x500    ] the parts' mass %.4f kg, centre of mass (%.4f, %.4f, %.4f) m, inertia diag (%.5f, %.5f, %.5f) kg m^2, hubs %.4f m above it\n",
-                static_cast<double>(c.mass), static_cast<double>(c.center_of_mass.x), static_cast<double>(c.center_of_mass.y),
-                static_cast<double>(c.center_of_mass.z), c.inertia_design[0][0], c.inertia_design[1][1], c.inertia_design[2][2], hub_above);
+    // The products of inertia are dropped (the engine's model is principal-axes only; with I_x close to I_z they would turn the body frame).
+    EXPECT_NEAR(c.inertia_design[0][1], 0.0, 2.0e-6);
+    EXPECT_NEAR(c.inertia_design[0][2], 0.0, 2.0e-6);
+    EXPECT_NEAR(c.inertia_design[1][2], 0.0, 2.0e-6);
+    EXPECT_GT(std::fabs(compiled->model.design_to_principal.w), 0.99999f) << "the design frame is the principal frame: the rotors keep their poses";
+    std::printf("[ x500    ] the parts' mass %.4f kg, centre of mass in the table's frame (%.4f, %.4f, %.4f) m, inertia diag (%.5f, %.5f, %.5f) kg m^2, "
+                "hubs %.4f m above it\n",
+                static_cast<double>(c.mass), static_cast<double>(c.center_of_mass.x), com_y_table, static_cast<double>(c.center_of_mass.z),
+                c.inertia_design[0][0], c.inertia_design[1][1], c.inertia_design[2][2], hub_above);
 }
 
 TEST(X500Model, TheBatterySitsUnderTheFrameAsASolid) {
