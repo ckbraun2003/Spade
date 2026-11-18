@@ -103,6 +103,7 @@ namespace {
                        .str("content_hash", s.content_hash)
                        .integer("triangles", s.triangles)
                        .num("volume_m3", s.volume_m3)
+                       .raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line())
                        .line();
     }
     return JsonObject{}
@@ -115,6 +116,30 @@ namespace {
                .raw("objects", "[" + objects + "]")
                .line() +
            "\n";
+}
+
+// A sidecar as a store file of its own: <store>/<sha256>/<file>, written whole by one rename. One that is already there with the bytes
+// its address says is kept; a missing or changed one is (re)written. True when it was written.
+Expected<bool> place_store_file(const fs::path& store, const std::string& sha256, const std::string& file, const std::string& bytes,
+                                std::string_view token) {
+    const fs::path dir = store / sha256;
+    const fs::path target = dir / file;
+    std::error_code ec;
+    if (fs::is_regular_file(target, ec) && sha256_hex(read_text(target)) == sha256) return false;
+    fs::create_directories(dir, ec);
+    if (ec) return std::unexpected(io_problem("cannot create " + dir.string(), ec));
+    const fs::path tmp = dir / (".tmp-" + std::string(token) + "-ref-" + file);
+    if (!write_text(tmp, bytes)) {
+        fs::remove(tmp, ec);
+        return std::unexpected(io_problem("cannot write " + target.string(), {}));
+    }
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code ignore;
+        fs::remove(tmp, ignore);
+        return std::unexpected(io_problem("cannot place " + target.string(), ec));
+    }
+    return true;
 }
 
 }  // namespace
@@ -143,6 +168,11 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
             s.triangles = o.at("triangles").get<std::uint32_t>();
             s.volume_m3 = o.at("volume_m3").get<double>();
             if (s.file.empty() || fs::path(s.file).filename().string() != s.file || s.file == "..") return std::nullopt;
+            const nlohmann::json& ref = o.at("store_ref");
+            s.store_sha256 = ref.at("sha256").get<std::string>();
+            if (ref.at("file").get<std::string>() != s.file || s.store_sha256.size() != 64) return std::nullopt;
+            // The sidecar as a store file of its own: there, and the bytes its address says.
+            if (sha256_hex(read_text(store / s.store_sha256 / s.file)) != s.store_sha256) return std::nullopt;
             std::uint64_t expected = 0;
             const auto parsed = std::from_chars(s.content_hash.data(), s.content_hash.data() + s.content_hash.size(), expected, 16);
             if (parsed.ec != std::errc() || parsed.ptr != s.content_hash.data() + s.content_hash.size()) return std::nullopt;
@@ -215,8 +245,13 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
         if (const auto saved = save_mesh_file(tmp / file, *objects[i].mesh, objects[i].provenance); !saved) {
             return cleanup_and_fail(Problem{"store_io", saved.error().context});
         }
+        const std::string sidecar_bytes = read_text(tmp / file);
+        const std::string sidecar_sha = sha256_hex(sidecar_bytes);
+        if (const Expected<bool> placed = place_store_file(store, sidecar_sha, file, sidecar_bytes, token); !placed) {
+            return cleanup_and_fail(placed.error());
+        }
         rec.sidecars.push_back({objects[i].name, file, hex16(objects[i].mesh->content_hash()), objects[i].mesh->triangle_count(),
-                                objects[i].mesh->mass_properties().volume});
+                                objects[i].mesh->mass_properties().volume, sidecar_sha});
     }
     if (!write_text(tmp / "import.json", record_json(rec))) return cleanup_and_fail(io_problem("cannot write import.json", {}));
     fs::rename(tmp, dir, ec);

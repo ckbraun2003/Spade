@@ -286,6 +286,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             JsonObject o;
             o.str("name", s.object).str("sidecar", (rec.dir / s.file).string()).str("content_hash", s.content_hash);
             o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
+            o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
             if (const auto x = cross_by_name.find(s.object); x != cross_by_name.end()) o.raw("cross_check", x->second);
             objects += o.line();
         }

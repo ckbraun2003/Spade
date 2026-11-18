@@ -60,4 +60,6 @@ In `spade_tests`, in-process (`run_part_import(args, env, out, err)` on a tempor
 
 ## 9. Status
 
+Added at the lead's go (2026-11-17, after Core's S3d contract): each sidecar is also a store file of its own, `<store>/<sha256 of the sidecar>/<object>.spmesh` (atomic temp + rename, kept when already there with the right bytes), named by `store_ref: {sha256, file}` per object in the result line and in `import.json`; `find_entry` checks that file's bytes against its address.
+
 Built on `interface/part-import`: the pure functions (codes, JSON, axes, scale, unit guess, cache key), the store, the in-process tool (`run_part_import`) for STL, OBJ, glb and 3MF, the child-process layer, the STEP route against `tests/fake_step_convert.py`, `step_convert.py`'s `--probe`, `--inspect` and `--emit-3mf`, the program (`main.cpp`, Ctrl+C as the cancel flag) and the editor install. Not built yet: the collecting readers (one gate result per object in `--inspect`) and Core's `make_mesh_diagnosed` kinds (both change the same four `make_mesh` call sites in `engine/world/mesh_import/`, so they go in together when Core's lands); a flagged STEP import is not remembered by the store. The real converter's new modes have not been run (no OpenCASCADE on the build machine).
