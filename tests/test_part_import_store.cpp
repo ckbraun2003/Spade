@@ -201,6 +201,59 @@ TEST(PartImportStore, TwoObjectsWithTheSameNameGetTwoSidecars) {
     EXPECT_EQ(rec->sidecars[2].file, "HUB-2.spmesh");
 }
 
+// ---- a sidecar as a store file of its own (the library contract's "Store files": <store>/<sha256>/<file>, sha256 of that file's bytes) -----------
+
+TEST(PartImportStore, EachSidecarIsAlsoAStoreFileOfItsOwnAddressedByItsOwnBytes) {
+    StoreRig rig;
+    const auto rec = rig.write();
+    ASSERT_TRUE(rec.has_value()) << rec.error().message;
+    ASSERT_EQ(rec->sidecars.size(), 2u);
+    const auto j = nlohmann::json::parse(read_file(rec->dir / "import.json"));
+    for (std::size_t i = 0; i < 2; ++i) {
+        const std::string bytes = read_file(rec->dir / rec->sidecars[i].file);
+        const std::string sha = sha256_hex(bytes);
+        EXPECT_EQ(rec->sidecars[i].store_sha256, sha);
+        EXPECT_EQ(read_file(rig.store / sha / rec->sidecars[i].file), bytes) << "the content-addressed copy";
+        EXPECT_NE(sha, rig.sha());
+        EXPECT_EQ(j.at("objects")[i].at("store_ref").at("sha256"), sha);
+        EXPECT_EQ(j.at("objects")[i].at("store_ref").at("file"), rec->sidecars[i].file);
+    }
+    const auto found = find_entry(rig.store, rig.sha(), rig.key());
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->sidecars[0].store_sha256, rec->sidecars[0].store_sha256);
+    EXPECT_EQ(*found, *rec);
+}
+
+TEST(PartImportStore, AnEntryWhoseStoreFileIsMissingOrChangedIsNotFoundAndIsWrittenAgain) {
+    StoreRig rig;
+    const auto rec = rig.write();
+    ASSERT_TRUE(rec.has_value()) << rec.error().message;
+    const fs::path addressed = rig.store / rec->sidecars[0].store_sha256 / rec->sidecars[0].file;
+    const std::string bytes = read_file(addressed);
+    fs::remove(addressed);
+    EXPECT_FALSE(find_entry(rig.store, rig.sha(), rig.key()).has_value()) << "a missing store file";
+    ASSERT_TRUE(rig.write("t2").has_value());
+    EXPECT_EQ(read_file(addressed), bytes) << "written again";
+    EXPECT_TRUE(find_entry(rig.store, rig.sha(), rig.key()).has_value());
+    write_file(addressed, "not the sidecar");
+    EXPECT_FALSE(find_entry(rig.store, rig.sha(), rig.key()).has_value()) << "a changed store file";
+    ASSERT_TRUE(rig.write("t3").has_value());
+    EXPECT_EQ(read_file(addressed), bytes) << "the changed one replaced";
+}
+
+TEST(PartImportStore, NoTemporaryIsLeftInAnyStoreFolder) {
+    StoreRig rig;
+    ASSERT_TRUE(rig.write().has_value());
+    int folders = 0;
+    for (const auto& d : fs::directory_iterator(rig.store)) {
+        ++folders;
+        for (const auto& e : fs::directory_iterator(d.path())) {
+            EXPECT_NE(e.path().filename().string().rfind(".tmp-", 0), 0u) << e.path().string();
+        }
+    }
+    EXPECT_EQ(folders, 3) << "the source's folder and one folder a sidecar";
+}
+
 TEST(PartImportStore, AStorePathThatIsAFileIsStoreIo) {
     StoreRig rig;
     write_file(rig.store, "a file where the store should be");

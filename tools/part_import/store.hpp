@@ -58,6 +58,9 @@ struct SidecarRecord {
     std::string content_hash;  // the mesh's 64-bit content hash, 16 hex digits
     std::uint32_t triangles = 0;
     double volume_m3 = 0.0;
+    // The sidecar is also a store file of its own, <store>/<store_sha256>/<file>: the SHA-256 of ITS bytes, so a record can name it as
+    // store: {sha256, file} (the library contract's "Store files"). Empty until the store writes it.
+    std::string store_sha256;
     bool operator==(const SidecarRecord&) const = default;
 };
 // An entry: the record import.json holds.

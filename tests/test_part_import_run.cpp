@@ -361,6 +361,11 @@ TEST(PartImportImport, AnStlGoesToTheStoreAsASidecarWithItsProvenanceAndTheSourc
     char hex[17];
     std::snprintf(hex, sizeof hex, "%016llx", static_cast<unsigned long long>(loaded->mesh->content_hash()));
     EXPECT_EQ(o.value("content_hash", std::string()), hex);
+    // the sidecar is also a store file of its own, named by store_ref
+    ASSERT_TRUE(o.contains("store_ref")) << o.dump();
+    const fs::path addressed = rig.store() / o.at("store_ref").value("sha256", std::string()) / o.at("store_ref").value("file", std::string());
+    EXPECT_EQ(o.at("store_ref").value("sha256", std::string()), sha256_hex(read_file(fs::path(o.value("sidecar", std::string())))));
+    EXPECT_TRUE(load_mesh_file(addressed).has_value());
     std::set<std::string> stages;
     for (const json& l : r.lines) {
         if (l.value("event", std::string()) == "stage") stages.insert(l.value("stage", std::string()));
@@ -382,6 +387,7 @@ TEST(PartImportImport, ASecondRunIsACacheHitAndEachOptionThatChangesASidecarIsAM
     const Out again = run({});
     ASSERT_EQ(again.exit, 0) << again.out;
     EXPECT_TRUE(again.result.value("cached", false));
+    EXPECT_EQ(again.result.at("objects")[0].at("store_ref"), first.result.at("objects")[0].at("store_ref"));
     EXPECT_EQ(again.result.value("key", std::string()), first.result.value("key", std::string()));
     EXPECT_EQ(again.result.at("objects")[0].value("content_hash", std::string()), first.result.at("objects")[0].value("content_hash", std::string()));
     std::set<std::string> keys = {first.result.value("key", std::string())};
