@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -73,6 +74,7 @@ struct BuildPart {
     std::string material;  // a real_material() name; "": the kind's colour
     int rotor = -1;        // kind rotor: the index of its omega in the logged rotor speeds
     int spin = 0;          // kind rotor: +1 or -1, the sense the blade turns
+    std::vector<std::string> hide_materials;  // glTF materials (last word) whose primitives are not drawn
     float radius_m = 0.0f; // kind rotor: the simulated rotor's radius the drawn prop is scaled to (0: the file's own)
 };
 
@@ -254,7 +256,7 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
             if (part.name.empty()) return bad("a part has no name");
             const std::string who = "part '" + part.name + "'";
             if (!names.insert(part.name).second) return bad(who + " is listed twice");
-            if (const auto key = build_detail::unknown_key(entry, {"name", "kind", "mass_kg", "material", "rotor", "spin", "radius", "pose", "objects", "box", "cylinder"})) {
+            if (const auto key = build_detail::unknown_key(entry, {"name", "kind", "mass_kg", "mass_grade", "mass_source", "pose_grade", "hide_materials", "material", "rotor", "spin", "radius", "pose", "objects", "box", "cylinder"})) {
                 return bad(who + ": unknown key '" + *key + "'");
             }
             part.kind = entry["kind"] ? entry["kind"].as<std::string>() : std::string();
@@ -262,6 +264,17 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
             if (entry["mass_kg"]) {
                 part.mass_kg = entry["mass_kg"].as<double>();
                 if (!(std::isfinite(part.mass_kg) && part.mass_kg >= 0.0)) return bad(who + ": mass_kg is not a finite number from 0 up");
+            }
+            if (entry["hide_materials"]) {
+                if (!entry["hide_materials"].IsSequence()) return bad(who + ": hide_materials is a list of material names");
+                for (const auto& h : entry["hide_materials"]) {
+                    if (!h.IsScalar()) return bad(who + ": hide_materials has an item that is not a name");
+                    const std::string word = h.as<std::string>();
+                    if (word.empty() || (std::isdigit(static_cast<unsigned char>(word.front())) != 0 && word.find_first_not_of("0123456789") == std::string::npos)) {
+                        return bad(who + ": hide_materials item '" + word + "' is not a material name");
+                    }
+                    part.hide_materials.push_back(word);
+                }
             }
             if (entry["material"]) {
                 part.material = entry["material"].as<std::string>();
@@ -475,6 +488,40 @@ struct BuildDraw {
     PropBlur blur{};
 };
 
+// The primitives of `mesh` whose glTF material (names[the submesh's material]) ends in one of `hide` are left out of the drawing: their indices
+// and submesh entries go, the palette and the vertices stay. Each name must match a primitive: one that matches nothing is refused naming
+// it (a typo must not leave the block drawn), the mesh left as it was. Nothing to hide: nothing done.
+[[nodiscard]] inline spade::Result<void> hide_materials(spade::render::MeshData& mesh, const std::vector<std::string>& names,
+                                                        const std::vector<std::string>& hide) {
+    if (hide.empty()) return {};
+    for (const std::string& word : hide) {
+        bool found = false;
+        for (std::size_t s = 0; s < mesh.submesh_material.size(); ++s) {
+            const uint32_t m = mesh.submesh_material[s];
+            found = found || (m < names.size() && last_word(names[m]) == word);
+        }
+        if (!found) {
+            return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: hide_materials '" + word + "' matches no primitive of the mesh"});
+        }
+    }
+    std::vector<uint32_t> indices, first, count, material;
+    for (std::size_t s = 0; s < mesh.submesh_first_index.size() && s < mesh.submesh_index_count.size() && s < mesh.submesh_material.size(); ++s) {
+        const uint32_t m = mesh.submesh_material[s];
+        const bool hidden = m < names.size() && std::find(hide.begin(), hide.end(), std::string(last_word(names[m]))) != hide.end();
+        if (hidden) continue;
+        first.push_back(static_cast<uint32_t>(indices.size()));
+        count.push_back(mesh.submesh_index_count[s]);
+        material.push_back(m);
+        const auto begin = mesh.indices.begin() + mesh.submesh_first_index[s];
+        indices.insert(indices.end(), begin, begin + mesh.submesh_index_count[s]);
+    }
+    mesh.indices = std::move(indices);
+    mesh.submesh_first_index = std::move(first);
+    mesh.submesh_index_count = std::move(count);
+    mesh.submesh_material = std::move(material);
+    return {};
+}
+
 // The `prop` primitive of `mesh` scaled radially (x and z, about the y axis through the hub) so its blade tip is at `radius`: the
 // submeshes whose glTF material (names[the submesh's material]) ends in `prop`; everything else, and the blade's thickness, as drawn.
 // Refused, the mesh left as it was: a radius not above 0, no prop primitive, a prop with no extent.
@@ -562,6 +609,10 @@ struct BuildDraw {
                     if (!loaded) return fail(part, "object " + file.string(), loaded.error());
                     mesh = std::move(*loaded);
                     if (auto read = gltf_material_names(file); read && read->size() == mesh.source_materials.size()) names = std::move(*read);
+                    if (!part.hide_materials.empty()) {
+                        if (names.empty()) return fail(part, "object " + file.string(), spade::Error{spade::Code::invalid_argument, "its material names are needed to hide primitives"});
+                        if (auto hidden = hide_materials(mesh, names, part.hide_materials); !hidden) return fail(part, "object " + file.string(), hidden.error());
+                    }
                     for (std::size_t i = 0; i < names.size(); ++i) {  // real materials, keyed on the names
                         const std::string chosen = !object.material.empty() ? object.material : !part.material.empty() ? part.material : std::string();
                         const auto mapped = !chosen.empty() ? std::optional<std::string>(chosen) : real_material_for_gltf(names[i]);

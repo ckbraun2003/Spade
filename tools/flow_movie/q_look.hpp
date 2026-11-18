@@ -31,7 +31,7 @@ struct QLook {
     std::array<float, 3> opacity{0.95f, 0.60f, 0.30f};  // each in (0, 1]
     float vorticity_max = 0.5f;                        // the map's top: this fraction of the frame's largest |omega|, in (0, 1]
     // The cloud (--nasa-cloud): the density at the top of the range in 1/m (above 0, at most 1000), the fraction of the range below which
-    // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius as a multiple of the drone's own size (Framing::subject_m; 0 off, at most 2), the factor at its centre.
+    // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius as a multiple of the drone's own reach (Drone::reach_m; 0 off, at most 2), the factor at its centre.
     float sigma = 30.0f;
     float onset = 0.15f;
     float thin_r = 0.0f;

@@ -250,6 +250,7 @@ struct Drone {
     std::string_view description;
     Framing framing;
     float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
+    float reach_m = 0.30f;    // the farthest rotor tip from the vertical axis (the cloud's thinning radius is a multiple of it)
 };
 
 [[nodiscard]] inline const std::array<Drone, 3>& drones() {
@@ -263,12 +264,12 @@ struct Drone {
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
          // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
-         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}},
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}, 0.004f, 0.2963f},  // its proxy radius
         // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
          "the open-source quadcopter", "a 2 kg open-source quadcopter with 13 inch rotors (published dimensions; the propeller is estimated)",
-         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f},
+         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
     }};
     return table;
 }
@@ -330,7 +331,7 @@ struct Drone {
     if (fade_applies) look.fade = drone.framing.fade();
     if (q != nullptr && q->thin_r > 0.0f) {
         look.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
-        look.thin.radius = q->thin_r * drone.framing.subject_m;  // a multiple of the drone's own size: one value fits every drone
+        look.thin.radius = q->thin_r * drone.reach_m;  // a multiple of the drone's own reach: one value fits every drone
         look.thin.floor = q->thin_floor;
     }
     return look;
