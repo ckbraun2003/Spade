@@ -41,6 +41,7 @@ struct CloudThin {
     glm::vec3 centre{0.0f};
     float radius = 0.0f;
     float floor = 0.3f;
+    [[nodiscard]] bool operator==(const CloudThin&) const noexcept = default;
     [[nodiscard]] bool on() const noexcept { return radius > 0.0f; }
 };
 
@@ -51,6 +52,9 @@ struct Look {
     uint32_t mean_frames = 1;   // 1: the frame alone
     WakeFade fade;              // the soft edge of a drawn wake: the drone's framing sets it (not an option)
     CloudThin thin;             // the vorticity thinned near the drone (--q-look): the cloud look's
+
+    // Every field, so a test compares a look whole and a field added later is covered without editing it.
+    [[nodiscard]] bool operator==(const Look&) const noexcept = default;
 
     [[nodiscard]] bool any() const noexcept {
         return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on();

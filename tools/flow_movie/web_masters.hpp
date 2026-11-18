@@ -25,6 +25,8 @@
 
 #include <glm/glm.hpp>
 
+#include "look.hpp"
+#include "q_look.hpp"
 #include "render/scene.hpp"
 #include "wake_fade.hpp"
 
@@ -311,6 +313,21 @@ struct Drone {
         }
     }
     return command;
+}
+
+// A WEB RUN'S LOOK, made ONCE (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy while the film's look state read
+// the options' copy and it never reached a frame): the options' look whole, plus the drone's wake fade where it applies (S2 and S8 without
+// a particle or nasa look), plus the nasa cloud's thinning round the held body (the drone's own height) when `q` asks for one. main
+// assigns this one value to opt.look (the film's look state) and plan.look (the film's setup), so the two cannot differ.
+[[nodiscard]] inline Look web_look(Look from_options, const Drone& drone, bool fade_applies, const QLook* q) {
+    Look look = from_options;
+    if (fade_applies) look.fade = drone.framing.fade();
+    if (q != nullptr && q->thin_r > 0.0f) {
+        look.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
+        look.thin.radius = q->thin_r;
+        look.thin.floor = q->thin_floor;
+    }
+    return look;
 }
 
 // --loop-blend S (Oversight via the lead, 2026-11-17: the site loops each clip and the flow does not repeat): the clip renders E extra

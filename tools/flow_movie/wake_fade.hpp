@@ -15,6 +15,7 @@ struct WakeFade {
     float ceiling_from_y = 0.0f;
     float ceiling_to_y = 0.0f;
 
+    [[nodiscard]] bool operator==(const WakeFade&) const noexcept = default;
     [[nodiscard]] bool on() const noexcept {
         return side_m > 0.0f || floor_to_y < floor_from_y || ceiling_to_y > ceiling_from_y;
     }

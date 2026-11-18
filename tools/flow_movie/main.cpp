@@ -2502,9 +2502,7 @@ struct WebFilming {
         return 2;
     }
     // S1's lines and the particle preview are traced in the true flow: no fade for them.
-    if ((clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles && !opt.nasa) opt.look.fade = drone->framing.fade();
     WebPlan plan;
-    plan.look = opt.look;
     plan.drone = drone;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     if (!opt.build_parts.empty() || !opt.part_store.empty()) {
@@ -2546,14 +2544,6 @@ struct WebFilming {
         if (!q) return fail(q.error());
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
-        if (q->thin_r > 0.0f) {  // the cloud thinned round the held drone (at the world origin, 4 mm up as the box holds it)
-            // The film's draw path reads opt.look (LookState), not the plan's copy: set both, or the thinning never reaches a frame.
-            for (Look* look : {&opt.look, &plan.look}) {
-                look->thin.centre = glm::vec3(0.0f, drone->body_y_m, 0.0f);
-                look->thin.radius = q->thin_r;
-                look->thin.floor = q->thin_floor;
-            }
-        }
     } else if (!opt.q_look.empty()) {
         std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
         return 2;
@@ -2595,6 +2585,12 @@ struct WebFilming {
                 stage.limits().c_str());
 
     const uint32_t still_k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
+    // The run's look, made once and given to BOTH places that read it: opt.look (the film's look state) and plan.look (the film's setup).
+    // S1's lines and the particle preview are traced in the true flow: no fade for them.
+    opt.look = web::web_look(opt.look, *drone,
+                             (clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles && !opt.nasa,
+                             plan.nasa ? &*plan.nasa : nullptr);
+    plan.look = opt.look;
     auto film = web_film(*clip, *group, plan);
     if (!film) return fail(film.error());
     film->role_materials = drone != &web::default_drone();
