@@ -17,7 +17,7 @@
   What it takes from the output: <Out>\site\ (the HTML guide) and <Out>\Spade-Editor-User-Guide-<version>.pdf.
 
 .PARAMETER Out     Build folder (default: <repo>\build-userguide, ignored by git).
-.PARAMETER Shots   A live-smoke run folder (Desktop\spade-smoke\<run>) whose *.png are the guide's pictures.
+.PARAMETER Shots   A live-smoke run folder (<repo>\build-smoke\<run>, or the -OutRoot the smoke was given) whose *.png are the guide's pictures.
 .PARAMETER NoFetch Stop rather than download the tools when the venv is missing.
 .PARAMETER Python  The Python that makes the venv (default: python on the path).
 #>
