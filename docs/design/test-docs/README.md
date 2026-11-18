@@ -25,6 +25,7 @@ Test/Docs owns how Spade is verified and documented: the test harness, golden-co
 | build, test, or change a script | `02-build-and-gate.md` |
 | test an installer, or read how one came out | `scripts/package-test.ps1`; each run is a row in `installer-ledger.md` |
 | write or move a doc | `03-documentation.md` |
+| read how fast Vulkan stepping is against the CPU on this machine | `records/2026-11-18-cpu-vs-vulkan-rtx3060ti.md` |
 
 ## Series
 
