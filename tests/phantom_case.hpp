@@ -6,6 +6,7 @@
 // L86i: the lines' run on the deep box and on the 2 mm near field (tests/d1_case.hpp's kD1NearGrid).
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -30,7 +31,8 @@ inline constexpr const char* kLibraryPhantom = "library/drones/phantom3_class.mo
 
 // A model file as a still-air D1 case on `grid`: `pin` names it in the case (the phantom's is its library path).
 [[nodiscard]] inline Result<PhantomCase> still_air_case(const std::filesystem::path& file, const std::string& pin,
-                                                        const physics::airflow::GridShape& grid, float step_s = 0.0002f) {
+                                                        const physics::airflow::GridShape& grid, float step_s = 0.0002f,
+                                                        std::optional<glm::vec3> hold = std::nullopt) {
     auto loaded = scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
     if (!loaded->model.propulsion) {
@@ -58,7 +60,7 @@ inline constexpr const char* kLibraryPhantom = "library/drones/phantom3_class.mo
         for (const analysis::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
         return std::unexpected(Error{Code::invalid_argument, "the case does not resolve: " + issues});
     }
-    resolved->hold_from_centre = d1_hold(grid);
+    resolved->hold_from_centre = hold ? *hold : d1_hold(grid);
     resolved->base = grid;
     resolved->base_bytes = physics::airflow::fluid_bytes(resolved->base, resolved->domain);
     out.resolved = std::move(*resolved);

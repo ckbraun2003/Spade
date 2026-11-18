@@ -62,9 +62,10 @@ inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 inline constexpr physics::airflow::GridShape kD1NearGrid{272, 232, 272, 0.002f};
 
 // L86k (the lead, 2026-11-17): the X500's R 0.173 m rotors at +-0.174 m reach 0.174 + 0.173 + 6 dx from the axis, 0.365 m at 3 mm, so the
-// box is 0.80 m wide; at 3 mm that is 267 x 217 x 267 = 15.5 M cells (0.80 x 0.65 x 0.80 m), 3.3 GiB by the engine's 212 B a cell, under
-// kGridByteCap. d1_hold() puts the drone 0.0624 m above the centre (ny - 177 = 40 rows, 20 x 3 mm = 0.06 m): 0.27 m of open air above and
-// 0.38 m of wake below the hubs.
+// box is 0.80 m wide; at 3 mm that is 267 x 217 x 267 = 15.5 M cells (0.80 x 0.65 x 0.80 m), 3.056 GiB of the engine's grid cap and about
+// 3.6 GB of the device runner's (both 4 GiB). d1_hold() alone leaves the rotor centres 0.1905 m under the top face (88.5 cells below it,
+// less the hubs' 0.075 m), 0.5 mm short of the line's kernel reach (R + 6 dx = 0.191 m): the live run refused it. d1_x500_hold() lowers the
+// drone 24 rows, 0.072 m, so the hubs are 0.2625 m under the top face (1.5 R of open air above them) and 0.39 m of wake is below.
 inline constexpr physics::airflow::GridShape kD1X500Grid{267, 217, 267, 0.003f};
 
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
@@ -75,6 +76,11 @@ inline constexpr physics::airflow::GridShape kD1X500Grid{267, 217, 267, 0.003f};
 [[nodiscard]] inline glm::vec3 d1_hold(const physics::airflow::GridShape& grid) noexcept {
     if (grid.ny <= kD1Grid.ny) return glm::vec3(0.0f);
     return glm::vec3(0.0f, 0.5f * (static_cast<float>(grid.ny) - static_cast<float>(kD1Grid.ny)) * grid.dx, 0.0f);
+}
+
+// The X500's hold (L86k): d1_hold(kD1X500Grid), 24 rows (0.072 m) lower, a whole number of rows so the drone keeps its cell alignment.
+[[nodiscard]] inline glm::vec3 d1_x500_hold() noexcept {
+    return d1_hold(kD1X500Grid) - glm::vec3(0.0f, 24.0f * kD1X500Grid.dx, 0.0f);
 }
 inline constexpr float kD1Step = 0.00038f;  // s
 

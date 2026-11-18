@@ -192,4 +192,23 @@ TEST(AirflowX500, TheThreeMillimetreGridIsWithinTheCapWithItsSolids) {
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
 }
 
+// The line's kernel reaches R + 6 dx from a rotor's centre (the live run refuses a rotor whose reach leaves the grid): the rotors' centres
+// are 88.5 cells under the top face by d1_hold() less the hub height, 0.5 mm short at 3 mm; d1_x500_hold() leaves 1.5 R of open air above.
+TEST(AirflowX500, TheRotorsReachStaysInsideTheBoxWithRoomAbove) {
+    const spade::physics::airflow::GridShape grid = spade::testing::kD1X500Grid;
+    const auto file = sc::load_model_file(x5::data_dir() / x5::kModelFile);
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    const auto& r = file->model.rotors.front();
+    const float hub_above_origin = r.local_pos.y + file->model.com_offset.y;
+    const float height = static_cast<float>(grid.ny) * grid.dx;
+    const float top_margin = 0.5f * height - spade::testing::d1_x500_hold().y - hub_above_origin;
+    const float reach = static_cast<float>(r.radius) + 6.0f * grid.dx;
+    std::printf("[ x500    ] the rotors' centres are %.4f m under the top face (reach %.4f m, 1.5 R = %.4f m)\n",
+                static_cast<double>(top_margin), static_cast<double>(reach), static_cast<double>(1.5f * r.radius));
+    EXPECT_GE(top_margin, reach + 0.04f) << "the kernel's reach and 4 cells of room";
+    EXPECT_GE(top_margin, 1.4f * static_cast<float>(r.radius)) << "open air above the rotors, as the phantom's box has";
+    const float below = 0.5f * height + spade::testing::d1_x500_hold().y + hub_above_origin;
+    EXPECT_GE(below, 0.3f) << "wake below the hubs";
+}
+
 }  // namespace

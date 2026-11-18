@@ -87,7 +87,7 @@ struct Phantom {
 };
 
 [[nodiscard]] spade::Result<Phantom> phantom_box(const std::filesystem::path& file, const std::string& pin,
-                                                 const af::GridShape& grid) {
+                                                 const af::GridShape& grid, const glm::vec3& hold) {
     auto loaded = spade::scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
     if (!loaded->model.propulsion) {
@@ -113,7 +113,7 @@ struct Phantom {
         for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
         return std::unexpected(spade::Error{spade::Code::invalid_argument, "the case does not resolve: " + issues});
     }
-    resolved->hold_from_centre = spade::testing::d1_hold(grid);
+    resolved->hold_from_centre = hold;
     resolved->base = grid;
     resolved->base_bytes = af::fluid_bytes(resolved->base, resolved->domain);
     const af::GridShape& shape = resolved->base;
@@ -187,7 +187,8 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     const std::string model_rel = model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml";
     const std::filesystem::path model_path =
         x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kModelFile : std::filesystem::path(SPADE_ASSETS_DIR) / model_rel;
-    auto made = phantom_box(model_path, x500 ? std::string("x500") : "assets/" + model_rel, grid);
+    auto made = phantom_box(model_path, x500 ? std::string("x500") : "assets/" + model_rel, grid,
+                            x500 ? spade::testing::d1_x500_hold() : spade::testing::d1_hold(grid));
     ASSERT_TRUE(made.has_value()) << made.error().context;
     Phantom& ph = *made;
     b7::B7Box& box = ph.box;
