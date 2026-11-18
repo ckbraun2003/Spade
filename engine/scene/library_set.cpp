@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -118,6 +121,107 @@ bool ends_with(std::string_view s, std::string_view suffix) {
     return s.size() >= suffix.size() && s.substr(s.size() - suffix.size()) == suffix;
 }
 
+// ----- canonical JSON of a YAML node: the parts_map the entry hash covers -------------------------------------------
+void json_string(std::string& out, const std::string& s) {
+    static const char* hex = "0123456789abcdef";
+    out += '"';
+    for (const char c : s) {
+        switch (c) {
+            case '"':
+                out += "\\\"";
+                break;
+            case '\\':
+                out += "\\\\";
+                break;
+            case '\n':
+                out += "\\n";
+                break;
+            case '\r':
+                out += "\\r";
+                break;
+            case '\t':
+                out += "\\t";
+                break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += hex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+                    out += hex[static_cast<unsigned char>(c) & 0xF];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    out += '"';
+}
+
+// Object keys sorted bytewise, no whitespace; a quoted scalar is a string; a plain one is null, a bool, an integer,
+// a finite number (the shortest decimal that reads back) or a string.
+void canonical_json(const YAML::Node& n, std::string& out) {
+    switch (n.Type()) {
+        case YAML::NodeType::Null:
+        case YAML::NodeType::Undefined:
+            out += "null";
+            return;
+        case YAML::NodeType::Scalar: {
+            const std::string& s = n.Scalar();
+            if (n.Tag() != "!") {
+                if (s == "true" || s == "false") {
+                    out += s;
+                    return;
+                }
+                const char* first = s.data();
+                const char* last = s.data() + s.size();
+                std::int64_t i = 0;
+                if (const auto r = std::from_chars(first, last, i); r.ec == std::errc() && r.ptr == last) {
+                    out += std::to_string(i);
+                    return;
+                }
+                double d = 0.0;
+                if (const auto r = std::from_chars(first, last, d);
+                    r.ec == std::errc() && r.ptr == last && std::isfinite(d)) {
+                    char buf[40];
+                    const auto w = std::to_chars(buf, buf + sizeof(buf), d);
+                    out.append(buf, w.ptr);
+                    return;
+                }
+            }
+            json_string(out, s);
+            return;
+        }
+        case YAML::NodeType::Sequence: {
+            out += '[';
+            bool first = true;
+            for (const YAML::Node& item : n) {
+                out += first ? "" : ",";
+                first = false;
+                canonical_json(item, out);
+            }
+            out += ']';
+            return;
+        }
+        case YAML::NodeType::Map: {
+            // Sort the keys, then look each up: a YAML::Node assigns by value, so nodes must not be sorted themselves.
+            std::vector<std::string> keys;
+            for (const auto& kv : n) {
+                keys.push_back(kv.first.IsScalar() ? kv.first.Scalar() : std::string());
+            }
+            std::sort(keys.begin(), keys.end());
+            out += '{';
+            bool first = true;
+            for (const std::string& key : keys) {
+                out += first ? "" : ",";
+                first = false;
+                json_string(out, key);
+                out += ':';
+                canonical_json(n[key], out);
+            }
+            out += '}';
+            return;
+        }
+    }
+}
+
 struct Alias {
     std::string key;
     std::string target;
@@ -129,6 +233,7 @@ struct RootData {
     SetRoot info{};
     std::vector<SetEntry> entries{};
     std::vector<Alias> aliases{};
+    fs::path store{};  // the host's store (absolute) or empty
     // The full ids that entries and aliases name, for the existence pass.
     struct Ref {
         std::string target;
@@ -255,6 +360,250 @@ void check_rel(EntryReader& er, const std::string& key, const std::string& value
     }
 }
 
+// A child of a mapping, defined and not null; an undefined node otherwise (never throws).
+YAML::Node opt(const YAML::Node& n, const char* key) {
+    const YAML::Node v = n[key];
+    return v.IsDefined() && !v.IsNull() ? YAML::Node(v) : YAML::Node(YAML::NodeType::Undefined);
+}
+
+bool number(const YAML::Node& n, double& out) {
+    if (!n.IsScalar()) {
+        return false;
+    }
+    const std::string& s = n.Scalar();
+    const auto r = std::from_chars(s.data(), s.data() + s.size(), out);
+    return r.ec == std::errc() && r.ptr == s.data() + s.size() && std::isfinite(out);
+}
+
+bool numbers(const YAML::Node& n, std::size_t count, double* out) {
+    if (!n.IsSequence() || n.size() != count) {
+        return false;
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        if (!number(n[i], out[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool valid_pin(std::string_view s) {
+    if (s.size() != 7 + 64 || s.substr(0, 7) != "sha256:") {
+        return false;
+    }
+    return std::all_of(s.begin() + 7, s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+// A drone's parts_map (the contract's section 5): every slot a part, and either SLOTTED (parent + install_point,
+// optionally an adjustment) or FREE (a full-pose placement); slot names unique; parents are slots and never loop.
+void read_parts_map(EntryReader& er, RootData& r, const YAML::Node& n, const fs::path& index_path, SetEntry& s) {
+    static const std::set<std::string> known = {"slot", "part", "hash", "parent", "install_point", "placement", "adjust", "count"};
+    std::set<std::string> slots;
+    std::vector<PartsMapSlot> out;
+    std::vector<std::size_t> origin;  // out[k] was parts_map[origin[k]]
+    for (std::size_t j = 0; j < n.size(); ++j) {
+        const std::string base = "parts_map[" + std::to_string(j) + "]";
+        const YAML::Node item = n[j];
+        if (!item.IsMap()) {
+            er.bad(base, "a slot is a mapping");
+            continue;
+        }
+        for (const auto& kv : item) {
+            std::string k;
+            if (!scalar(kv.first, k) || known.count(k) == 0) {
+                er.bad(base + "." + (kv.first.IsScalar() ? kv.first.Scalar() : std::string("?")), "unknown key");
+            }
+        }
+        PartsMapSlot slot;
+        if (std::string name; !scalar(opt(item, "slot"), name) || name.empty()) {
+            er.bad(base + ".slot", "a slot has a non-empty 'slot' name");
+        } else if (!slots.insert(name).second) {
+            er.bad(base + ".slot", "the slot name is used by an earlier slot");
+        } else {
+            slot.slot = name;
+        }
+        if (std::string part; !scalar(opt(item, "part"), part) || part.empty()) {
+            er.bad(base + ".part", "a slot names its part by full id");
+        } else {
+            slot.part = part;
+            r.refs.push_back({part, index_path.string(), er.field + "." + base + ".part", s.id});
+        }
+        if (const YAML::Node h = opt(item, "hash")) {
+            if (std::string hs; !scalar(h, hs) || !valid_pin(hs)) {
+                er.bad(base + ".hash", "a hash is 'sha256:' and 64 lower-case hex digits, or null");
+            } else {
+                slot.hash = hs;
+            }
+        }
+        const YAML::Node parent = opt(item, "parent");
+        const YAML::Node ip = opt(item, "install_point");
+        if (parent && !scalar(parent, slot.parent)) {
+            er.bad(base + ".parent", "a parent is a slot name");
+            slot.parent.clear();
+        }
+        if (ip && !scalar(ip, slot.install_point)) {
+            er.bad(base + ".install_point", "an install point is a name");
+            slot.install_point.clear();
+        }
+        if (const YAML::Node pl = opt(item, "placement")) {
+            static const std::set<std::string> pk = {"pos", "quat"};
+            SetPose pose;
+            bool ok = pl.IsMap();
+            if (!ok) {
+                er.bad(base + ".placement", "a placement is a mapping of 'pos' and 'quat'");
+            } else {
+                for (const auto& kv : pl) {
+                    if (!kv.first.IsScalar() || pk.count(kv.first.Scalar()) == 0) {
+                        er.bad(base + ".placement." + (kv.first.IsScalar() ? kv.first.Scalar() : std::string("?")),
+                               "unknown key");
+                        ok = false;
+                    }
+                }
+                if (!numbers(opt(pl, "pos"), 3, pose.pos.data())) {
+                    er.bad(base + ".placement.pos", "pos is three finite numbers (metres)");
+                    ok = false;
+                }
+                if (!numbers(opt(pl, "quat"), 4, pose.quat.data())) {
+                    er.bad(base + ".placement.quat", "quat is four finite numbers [w, x, y, z]");
+                    ok = false;
+                } else {
+                    double n2 = 0.0;
+                    for (const double q : pose.quat) {
+                        n2 += q * q;
+                    }
+                    if (n2 < 1.0 - 2e-6 || n2 > 1.0 + 2e-6) {
+                        er.bad(base + ".placement.quat", "quat must be a unit quaternion");
+                        ok = false;
+                    }
+                }
+            }
+            if (ok) {
+                slot.placement = pose;
+            }
+        }
+        if (const YAML::Node ad = opt(item, "adjust")) {
+            static const std::set<std::string> ak = {"pos", "yaw_deg", "pitch_deg", "roll_deg"};
+            SetAdjust adj;
+            bool ok = ad.IsMap();
+            if (!ok) {
+                er.bad(base + ".adjust", "an adjustment is a mapping");
+            } else {
+                for (const auto& kv : ad) {
+                    if (!kv.first.IsScalar() || ak.count(kv.first.Scalar()) == 0) {
+                        er.bad(base + ".adjust." + (kv.first.IsScalar() ? kv.first.Scalar() : std::string("?")), "unknown key");
+                        ok = false;
+                    }
+                }
+                if (const YAML::Node p = opt(ad, "pos"); p && !numbers(p, 3, adj.pos.data())) {
+                    er.bad(base + ".adjust.pos", "pos is three finite numbers (metres)");
+                    ok = false;
+                }
+                const std::pair<const char*, double*> angles[] = {
+                    {"yaw_deg", &adj.yaw_deg}, {"pitch_deg", &adj.pitch_deg}, {"roll_deg", &adj.roll_deg}};
+                for (const auto& [key, dst] : angles) {
+                    if (const YAML::Node a = opt(ad, key); a && !number(a, *dst)) {
+                        er.bad(base + ".adjust." + key, "an angle is a finite number of degrees");
+                        ok = false;
+                    }
+                }
+            }
+            if (ok) {
+                slot.adjust = adj;
+            }
+        }
+        if (const YAML::Node c = opt(item, "count")) {
+            double v = 0.0;
+            if (!number(c, v) || v < 1.0 || v != static_cast<double>(static_cast<uint32_t>(v))) {
+                er.bad(base + ".count", "count is a whole number, 1 or more");
+            } else {
+                slot.count = static_cast<uint32_t>(v);
+            }
+        }
+        const bool slotted = !slot.parent.empty() && !slot.install_point.empty();
+        const bool has_placement = slot.placement.has_value() || opt(item, "placement");
+        if (has_placement && (parent || ip)) {
+            er.bad(base + ".placement", "give either parent + install_point or placement, not both");
+        } else if (!slotted && !has_placement) {
+            er.bad(base, "a slot is slotted (parent + install_point) or free (placement)");
+        }
+        if (!slotted && opt(item, "adjust")) {
+            er.bad(base + ".adjust", "an adjustment goes with a slotted slot");
+        }
+        origin.push_back(j);
+        out.push_back(std::move(slot));
+    }
+    // Parents are slots, and the chain up from every slot ends.
+    for (std::size_t k = 0; k < out.size(); ++k) {
+        if (out[k].parent.empty()) {
+            continue;
+        }
+        const std::string base = "parts_map[" + std::to_string(origin[k]) + "]";
+        if (slots.count(out[k].parent) == 0) {
+            er.bad(base + ".parent", "'" + out[k].parent + "' is not a slot of this parts_map");
+            continue;
+        }
+        std::string cursor = out[k].parent;
+        std::size_t steps = 0;
+        bool loops = false;
+        while (!cursor.empty() && !loops) {
+            if (cursor == out[k].slot || ++steps > out.size()) {
+                loops = true;
+                break;
+            }
+            const auto it = std::find_if(out.begin(), out.end(), [&](const PartsMapSlot& p) { return p.slot == cursor; });
+            cursor = it == out.end() ? std::string() : it->parent;
+        }
+        if (loops) {
+            er.bad(base + ".parent", "the parent chain loops back to this slot");
+        }
+    }
+    s.parts_map = std::move(out);
+}
+
+bool valid_sha256(std::string_view s) {
+    return s.size() == 64 &&
+           std::all_of(s.begin(), s.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
+
+bool valid_store_file(std::string_view s) {
+    return !s.empty() && s != "." && s != ".." &&
+           std::none_of(s.begin(), s.end(), [](char c) { return c == '/' || c == '\\' || c == ':' || c == '\0'; });
+}
+
+// `store: {sha256, file}`: fills the entry's store fields when both are valid, and its resolved path when the host gave a store.
+void read_store(EntryReader& er, const YAML::Node& n, SetEntry& s, const fs::path& store) {
+    if (!n.IsMap()) {
+        er.bad("store", "store is a mapping of 'sha256' and 'file'");
+        return;
+    }
+    for (const auto& kv : n) {
+        std::string k;
+        if (!scalar(kv.first, k) || (k != "sha256" && k != "file")) {
+            er.bad("store." + (kv.first.IsScalar() ? kv.first.Scalar() : std::string("?")), "unknown key");
+        }
+    }
+    std::string sha;
+    std::string file;
+    const YAML::Node shan = n["sha256"];
+    const bool sha_ok = shan.IsDefined() && scalar(shan, sha) && valid_sha256(sha);
+    if (!sha_ok) {
+        er.bad("store.sha256", "sha256 is 64 lower-case hex digits of the file's exact bytes");
+    }
+    const YAML::Node filen = n["file"];
+    const bool file_ok = filen.IsDefined() && scalar(filen, file) && valid_store_file(file);
+    if (!file_ok) {
+        er.bad("store.file", "file is a plain file name: no '/', '\\', ':' or '..', and not empty");
+    }
+    if (sha_ok && file_ok) {
+        s.in_store = true;
+        s.store_sha256 = sha;
+        s.store_file = file;
+        if (!store.empty()) {
+            s.file = store / sha / file;
+        }
+    }
+}
+
 void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const YAML::Node& node, std::size_t i,
                 std::set<std::string>& ids, std::set<std::string>& names_by_kind) {
     EntryReader er{r, issues, index_path, "entries[" + std::to_string(i) + "]", {}};
@@ -264,7 +613,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
     }
     static const std::set<std::string> known = {"id",        "name",   "category",       "file",
                                                 "type",      "tags",   "thumbnail",      "requires",
-                                                "files",     "generated_from", "parts_map"};
+                                                "files",     "generated_from", "parts_map", "store"};
     for (const auto& kv : node) {
         std::string k;
         if (!scalar(kv.first, k) || known.count(k) == 0) {
@@ -360,11 +709,38 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
             er.bad("parts_map", "only a drone entry has a parts_map");
         } else {
             s.has_parts_map = true;
+            canonical_json(partsn, s.parts_map_json);
+            read_parts_map(er, r, partsn, index_path, s);
         }
     }
-    if (!filen) {
+    auto check_ext = [&](const std::string& name, const std::string& field) {
+        bool ok = true;
+        if (s.kind == "model" || s.kind == "drone") {
+            ok = ends_with(name, ".model.yaml");
+        } else if (s.kind == "object") {
+            ok = ends_with(name, ".object.yaml");
+        } else if (s.kind == "part" && !s.part_kind.empty()) {
+            ok = ends_with(name, "." + s.part_kind + ".yaml");
+        } else if (s.kind == "world") {
+            ok = ends_with(name, ".world.yaml");
+        } else if (s.kind == "mesh") {
+            ok = ends_with(name, ".gltf") || ends_with(name, ".glb") || ends_with(name, ".spmesh");
+        }
+        if (!ok) {
+            er.bad(field, "the file's extension does not match the kind '" + s.kind + "'");
+        }
+    };
+    const YAML::Node storen = get("store");
+    if (storen && filen) {
+        er.bad("store", "give 'file' or 'store', not both");
+    } else if (storen) {
+        read_store(er, storen, s, r.store);
+        if (s.in_store) {
+            check_ext(s.store_file, "store.file");
+        }
+    } else if (!filen) {
         if (!(s.kind == "drone" && s.has_parts_map)) {
-            er.bad("file", s.kind == "drone" ? "a drone needs a 'file' or a 'parts_map'" : "missing key");
+            er.bad("file", s.kind == "drone" ? "a drone needs a 'file', a 'store' or a 'parts_map'" : "missing key");
         }
     } else if (!scalar(filen, s.rel_file)) {
         er.bad("file", "a file is a string");
@@ -372,22 +748,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
     } else {
         check_rel(er, "file", s.rel_file, s.file, true);
         if (!s.file.empty()) {
-            const std::string name = s.rel_file;
-            bool ok = true;
-            if (s.kind == "model" || s.kind == "drone") {
-                ok = ends_with(name, ".model.yaml");
-            } else if (s.kind == "object") {
-                ok = ends_with(name, ".object.yaml");
-            } else if (s.kind == "part" && !s.part_kind.empty()) {
-                ok = ends_with(name, "." + s.part_kind + ".yaml");
-            } else if (s.kind == "world") {
-                ok = ends_with(name, ".world.yaml");
-            } else if (s.kind == "mesh") {
-                ok = ends_with(name, ".gltf") || ends_with(name, ".glb") || ends_with(name, ".spmesh");
-            }
-            if (!ok) {
-                er.bad("file", "the file's extension does not match the kind '" + s.kind + "'");
-            }
+            check_ext(s.rel_file, "file");
         }
     }
 
@@ -609,8 +970,11 @@ void read_root(RootData& r, Issues& issues) {
 
 }  // namespace
 
-LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots) {
+LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots, const std::filesystem::path& store) {
     Issues issues;
+    if (!store.empty() && !store.is_absolute()) {
+        issues.push_back(make("relative_path", "the store path must be absolute", {}, store.string()));
+    }
     std::vector<RootData> data;
     std::set<std::string> names;
 
@@ -634,8 +998,17 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots)
         if (ok) {
             RootData r;
             r.spec = spec;
+            r.store = store;
             data.push_back(std::move(r));
         }
+    }
+
+    if (!issues.empty()) {
+        // The request itself is wrong: refused before any file is read, the first problem's code at the top and every
+        // request problem in `issues`.
+        LibraryRefusal top = make(issues.front().code, issues.front().message, issues.front().root, issues.front().path);
+        top.issues = std::move(issues);
+        return std::unexpected(std::move(top));
     }
 
     for (RootData& r : data) {
@@ -742,6 +1115,7 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots)
     }
     LibrarySet set;
     set.aliases = std::move(aliases);
+    set.store = store;
     for (RootData& r : data) {
         set.roots.push_back(std::move(r.info));
         for (SetEntry& e : r.entries) {
@@ -749,6 +1123,19 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots)
         }
     }
     return set;
+}
+
+LibraryResult<std::string> yaml_file_to_canonical_json(const fs::path& file) {
+    YAML::Node doc;
+    try {
+        doc = YAML::LoadFile(file.string());
+    } catch (const std::exception& e) {
+        return std::unexpected(make("io_error", std::string("cannot read '") + file.string() + "': " + e.what(), {},
+                                    file.string()));
+    }
+    std::string out;
+    canonical_json(doc, out);
+    return out;
 }
 
 }  // namespace spade::scene

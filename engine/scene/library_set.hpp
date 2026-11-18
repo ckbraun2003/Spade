@@ -23,10 +23,12 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -55,6 +57,34 @@ struct LibraryRootSpec {
     bool writable = false;
 };
 
+// A pose in the drone's design frame (+X forward, +Y left, +Z up; metres): a position and a unit quaternion [w, x, y, z].
+struct SetPose {
+    std::array<double, 3> pos{};
+    std::array<double, 4> quat{1.0, 0.0, 0.0, 0.0};
+};
+
+// A per-slot adjustment, applied in the install point's own frame: a position offset and rotations in degrees, right-handed
+// about the frame's axes (yaw about +Z, pitch about +Y, roll about +X), composed as Rz(yaw) * Ry(pitch) * Rx(roll).
+struct SetAdjust {
+    std::array<double, 3> pos{};
+    double yaw_deg = 0.0;
+    double pitch_deg = 0.0;
+    double roll_deg = 0.0;
+};
+
+// One slot of a drone's parts_map (the contract's section 5): a part, and where it goes -- SLOTTED (a parent slot's
+// install point, its pose derived) or FREE (a full pose), never both.
+struct PartsMapSlot {
+    std::string slot{};
+    std::string part{};          // a full id
+    std::string hash{};          // "sha256:<64 hex>", or empty for none
+    std::string parent{};        // the slot key of the part that carries the install point; empty for a free slot
+    std::string install_point{}; // its name on that part; empty for a free slot
+    std::optional<SetPose> placement{};  // a free slot's full pose
+    std::optional<SetAdjust> adjust{};   // a slotted slot's adjustment
+    uint32_t count = 1;
+};
+
 // One entry of an opened set, as its index spells it, with its full id.
 struct SetEntry {
     std::string id{};        // "<root>:<local_id>"
@@ -75,7 +105,17 @@ struct SetEntry {
     std::vector<std::string> files{};         // companion files, relative, as written
     std::string generated_recipe{};           // generated_from.recipe; empty for none
     std::string generated_hash{};             // generated_from.hash; empty for none
-    bool has_parts_map = false;               // a drone entry that carries a parts_map (read by a later piece)
+    bool has_parts_map = false;               // a drone entry that carries a parts_map
+    // The parts_map as canonical JSON (object keys sorted, no whitespace, numbers as the shortest decimal that
+    // reads back), for the entry hash; empty without a parts_map. Its meaning is a later piece's (find).
+    std::string parts_map_json{};
+    std::vector<PartsMapSlot> parts_map{};  // the same parts_map, structured and validated
+    // A file in the local store (L88b), named by `store: {sha256, file}` INSTEAD of `file`: it lives at
+    // <store>/<sha256>/<file>. rel_file is empty then, and `file` is that resolved path when the host gave a store
+    // to open_libraries(), else empty. Nothing is read from the store when the set is opened.
+    bool in_store = false;
+    std::string store_sha256{};  // 64 lower-case hex of the file's exact bytes
+    std::string store_file{};    // a plain file name
 };
 
 // One opened root.
@@ -94,7 +134,12 @@ struct LibrarySet {
     std::vector<SetRoot> roots{};
     std::vector<SetEntry> entries{};
     std::map<std::string, std::string> aliases{};
+    std::filesystem::path store{};  // the host's local store, absolute; empty if none was given
 };
+
+// A YAML file as canonical JSON (object keys sorted, no whitespace, numbers as the shortest decimal that reads back):
+// what a part's record is in find. io_error if the file cannot be read or parsed.
+[[nodiscard]] LibraryResult<std::string> yaml_file_to_canonical_json(const std::filesystem::path& file);
 
 // The newest root version this build reads.
 inline constexpr uint32_t kLibrarySetVersion = 3;
@@ -110,6 +155,11 @@ inline constexpr uint32_t kLibrarySetVersion = 3;
 // depend on; in a root with no dependencies, any other root), bare_id (a
 // `requires` or alias target without "<root>:") and alias_conflict (an alias that
 // is also an id, or that two roots both define).
-[[nodiscard]] LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots);
+//
+// `store` is the host's local store folder (L88b), absolute, or empty for none: where an entry's `store:` file is looked
+// up. A relative one is refused (relative_path). An absent store, or one without a file an entry names, does not stop
+// the open: that is `store_file_missing`, reported when the entry is listed or found.
+[[nodiscard]] LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots,
+                                                       const std::filesystem::path& store = {});
 
 }  // namespace spade::scene

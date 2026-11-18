@@ -27,7 +27,7 @@ void spade_lib_close(spade_lib* h);
 void spade_lib_free (char* response_json);   // frees any response_json, from open or call
 ```
 
-- Return value: `0` the call was answered with `ok: true`; `1` it was answered with `ok: false` (a refusal object is in the response); `2` ABI misuse (a null argument, a null or closed handle): no response is produced and `*response_json` is null. Every response is a NUL-terminated string the caller frees with `spade_lib_free`.
+- Return value: `0` the call was answered with `ok: true`; `1` it was answered with `ok: false` (a refusal object is in the response); `2` ABI misuse (a null argument, a null handle): when `response_json` is non-null it is set to an `invalid_request` refusal ("no library is open", `ok: false`), so a call before `open` answers `invalid_request` for `list`, `find` and every other op; with a null `response_json` nothing is produced. A handle after `spade_lib_close` is dangling and any use is undefined: the ABI cannot detect it (a host or test double that tracks its own closed state answers `invalid_request`, the same refusal). Every response is a NUL-terminated string the caller frees with `spade_lib_free`.
 - **Threads.** On one handle the read ops (`list`, `find`, `resolve`, `validate`, `mesh_file_info`, `compile`, `evaluate`, `compose_placement`) may run concurrently from any threads. `add_entry`, `update_entry`, `remove_entry` and `reload` take the handle exclusively; a read in flight sees the index wholly before or wholly after a write, never in the middle. `spade_lib_close` must not race any other call on the handle.
 - **Locating the library.** The host passes the full path to `spade_library` to DynLib; Spade looks nowhere else. There is no environment variable inside the library. The CLI `spade_library` takes the same `op` and request JSON (`spade_library <op> --request <file>|-`, roots in the request) and prints the same response; the SDK uses it.
 
@@ -58,7 +58,7 @@ and on refusal `{ "format": ..., "minor": 0, "op": "find", "ok": false, "refusal
 
 Codes (all [slice] unless marked): `open_failed` (the refusal of `open`; its `issues` hold one object per problem), `invalid_request` (unknown key, wrong type, missing key), `unknown_op`, `unsupported_format`, `relative_path`, `duplicate_root`, `root_unavailable` (the root's folder or index is absent or unreadable; `root`, `path`), `store_file_missing` (a file in the local store that an entry's record cites by sha256 is absent; `id`, `path`, and the hash in `field`; [shape] until the store resolver), `root_not_empty` (`create_root` into a folder that already has files; [shape]), `root_name_mismatch` (a v3 index's `name` differs from the name the host gave), `dependency_missing` (a `depends` name not among the opened roots), `dependency_cycle`, `foreign_root_reference` (an entry names a root it does not depend on; in `default`, any other root), `bad_index` (the index does not parse or breaks a rule; `issues` lists them), `root_not_loaded`, `bare_id`, `entry_not_found`, `wrong_kind`, `alias_conflict`, `hash_mismatch` (a WARNING in `find` and `list`; a refusal in `update_entry` and `remove_entry`), `peek_failed` (warning), `read_only_root`, `invalid_entry` (an entry or its file fails validation; `issues`), `still_required` (`remove_entry` when other entries `require` it; `issues` names them), `io_error`, `adjust_out_of_range` [shape], `compile_refused` [shape], `not_implemented` (an op the loaded library does not build yet; so a double and the real library agree on which calls exist).
 
-`open` refuses as `open_failed` with `issues` holding one refusal-shaped object per root problem; it never opens part of a set and never skips a root.
+`open` refuses in two ways, and never opens part of a set or skips a root. A REQUEST problem (checked first, before any file is read): a root name that is not `[a-z][a-z0-9_]*` (`invalid_request`), a root given twice (`duplicate_root`), a root path or the store that is empty or not absolute (`relative_path`): the refusal's top-level `code`, `root` and `path` are the FIRST problem's, and `issues` lists every request problem. A problem in what is READ (`root_unavailable`, `root_name_mismatch`, `bad_index`, `dependency_missing`, `dependency_cycle`, `foreign_root_reference`, `bare_id`, `alias_conflict`): top-level `open_failed`, with `issues` holding one refusal-shaped object per problem.
 
 ## 3. The v3 index and entry layout (what S1 reads) [slice]
 
@@ -87,6 +87,7 @@ entries:
     name: x500                        # required; display; unique per kind, ignoring case
     category: Drones                  # required (may be "")
     file: drones/x500.model.yaml      # relative, forward slashes, no '..'; may be omitted for a drone with a parts map only
+    store: null                       # INSTEAD of `file`: {sha256: "<64 hex>", file: x500.glb}, a file in the local store (below)
     type: null                        # OPAQUE kinds: a string KAT chose; then the id prefix is free except a Spade kind name
     tags: [quad, 5inch]
     thumbnail: thumbnails/x500.png    # optional
@@ -99,7 +100,9 @@ Unknown, missing and duplicate keys are errors, as in a scene file (`bad_index`)
 
 **Kinds.** An entry's kind is the first segment of its id, one of `model`, `object`, `part`, `drone`, `world`, `mesh`, or an entry has `type:` and is OPAQUE (kind `opaque`; Spade lists, finds and hashes it and never reads its file or interprets the type). The file extension must agree where it decides a kind (`kind_mismatch` is a `bad_index` issue): `model` and `drone` are `*.model.yaml` (a `drone` may instead have only a `parts_map`), `object` `*.object.yaml`, `part` one of the four part extensions (`part_kind` = motor, prop, esc, battery; others arrive with the new part kinds), `world` `*.world.yaml`, `mesh` `*.gltf`, `*.glb` or `*.spmesh` (listed, found and hashed; not validated in the slice).
 
-**The hash** of an entry is SHA-256 over text lines `"<rel path>\t<sha256 hex of that file's bytes>\n"`, for its `file` and each of `files`, sorted by relative path bytewise, plus, for a drone with a `parts_map`, the line `"parts_map\t<sha256 hex of its canonical JSON>\n"` (keys sorted, no whitespace). It is computed by Spade, never written in the index, and is not transitive (a drone's hash does not change when a part's file does; KAT's saved map stores each part's own `{id, hash}`).
+**Store files (L88b).** A third-party file (the PX4 x500, the Bitcraze Crazyflie, a mesh made from them) is not committed to any root; it lives in the box's local STORE, `<store>/<sha256>/<file>`: one store per machine, shared by every root, content-addressed. An entry names such a file with `store: {sha256: "<64 hex>", file: "x500_frame.glb"}` INSTEAD of `file` (exactly one of the two, except a drone with a `parts_map`, which needs neither). `sha256` is 64 lower-case hex of the file's exact bytes and `file` is a plain file name (no '/', no '\', no '..', not empty); the extension of `file` decides the kind exactly as for `file`. The RECORD (the entry, its citations and licence) stays in the root; only the bytes are in the store. Companions (`files`) stay in the root. The host gives the store's absolute path at `open` (`store`, below); Spade never searches for it and reads no environment variable. An absent store, or a store without the file, does NOT stop `open` (a CI machine has no store): the entry lists with `store_file_missing` as a WARNING in `list` and as the refusal of `find`, its `file` null and its peek empty. Its hash is NOT read from disk: its line in the hash is `"store/<sha256>/<file>\t<sha256>\n"` with the declared sha256 (the content address is the proof), so the hash is the same on a machine with the store and on one without; `validate` with `verify_store: true` re-hashes the bytes and refuses a mismatch (`hash_mismatch`). A store folder `<store>/<sha256>/` may hold more than the named file (the import tool's cache directories, `import.json`, `.tmp-*` folders): the reader looks a file up by `<sha256>/<file>` only, never lists a store folder, and ignores everything it did not ask for. Store entries are built right after S3a (S3d); until then an index with `store:` is refused as an unknown key.
+
+**The hash** of an entry is SHA-256 over text lines `"<rel path>\t<sha256 hex of that file's content>\n"`, for its `file` and each of `files`, sorted by relative path bytewise, plus, for a drone with a `parts_map`, the line `"parts_map\t<sha256 hex of its canonical JSON>\n"` (keys sorted, no whitespace). A file's CONTENT is its bytes, except that for a TEXT file every CR LF pair is read as LF: text files are those whose extension, ASCII case-folded, is `.yaml`, `.yml`, `.json`, `.gltf`, `.md`, `.txt` or `.csv` (a fixed list); `.glb`, `.bin`, `.png`, `.spmesh` and every other extension are hashed exactly as they are. Only CR LF pairs are folded (a lone CR stays), and a file is never refused for its line endings, so a Windows checkout with autocrlf hashes the same as an LF one. It is computed by Spade, never written in the index, and is not transitive (a drone's hash does not change when a part's file does; KAT's saved map stores each part's own `{id, hash}`).
 
 **Aliases.** The tables of all opened roots are merged. A key that is also an id, or that two roots both define, is `alias_conflict` at open. An alias must name an entry that exists (`bad_index` otherwise).
 
@@ -112,12 +115,13 @@ Every request is a JSON object; the keys below are all of them (others are refus
 ```json
 { "roots": [ { "name": "default", "path": "C:\\spade\\share\\spade\\assets\\library", "writable": false },
              { "name": "kat",     "path": "C:\\kat\\library", "writable": false },
-             { "name": "user",    "path": "C:\\Users\\me\\kat-library", "writable": true } ] }
+             { "name": "user",    "path": "C:\\Users\\me\\kat-library", "writable": true } ],
+  "store": "C:\\parts\\part-store" }
 ```
-Order matters for `list`. `name` is `[a-z][a-z0-9_]*`; Spade knows only the name `default` (it is the root Spade ships; nothing else is special). `writable` is the host's setting; a write to a root not marked is `read_only_root`. `result`:
+`store` is optional (null: no store) and must be an absolute path (`relative_path` otherwise); it is where `store:` entries' files are looked up. Order matters for `list`. `name` is `[a-z][a-z0-9_]*`; Spade knows only the name `default` (it is the root Spade ships; nothing else is special). `writable` is the host's setting; a write to a root not marked is `read_only_root`. `result`:
 ```json
 { "roots": [ { "name": "kat", "path": "C:\\kat\\library", "library_version": 3, "depends": ["default"],
-               "entries": 94, "writable": false } ], "entry_count": 190 }
+               "entries": 94, "writable": false } ], "entry_count": 190, "store": "C:\\parts\\part-store" }
 ```
 
 ### reload [slice if cheap]
@@ -139,11 +143,11 @@ Order matters for `list`. `name` is `[a-z][a-z0-9_]*`; Spade knows only the name
   "kind": "part", "part_kind": "motor", "type": null,
   "name": "FPV 2306 1700 kV", "category": "Motors", "tags": ["fpv"],
   "file": "C:\\...\\motors\\fpv_2306.motor.yaml", "rel_file": "motors/fpv_2306.motor.yaml",
-  "thumbnail": null, "requires": [], "files": [],
+  "thumbnail": null, "requires": [], "files": [], "store_file": null,
   "hash": "sha256:...", "generated_from": null,
   "peek": { "mass_kg": 0.032, "provides": [], "limits": {}, "rotor_count": null, "world_version": null, "install_kinds": ["prop_hub"] } }
 ```
-`peek` has these keys for every kind (null where they do not apply): `mass_kg` (a part's mass or a model's total, from its header; null if the file declares none), `provides` (list) and `limits` (map) for a part (empty in the slice: those keys arrive with part_version 2), `rotor_count` for a model or drone, `world_version` for a world, and `install_kinds` for a part: the sorted, de-duplicated list of the kinds of install point the part itself carries (`["motor", "battery"]` for a frame; `["prop_hub"]` for a motor), empty in the slice (install points arrive with part_version 2). A header that cannot be read gives `peek: null` and a `peek_failed` warning; the entry still lists. `hash` is cached per handle until `reload` or a write; a `hash_mismatch` warning is not raised by list.
+`store_file` is null for an entry whose file is in the root, and for a store entry `{ "sha256": "...", "file": "x500_frame.glb", "path": "C:\\parts\\part-store\\<sha256>\\x500_frame.glb", "present": true }` (`path` is null when no store was given; `present` is false when the file is missing); for a store entry `rel_file` is null and `file` is that resolved path, or null when it is absent. `peek` has these keys for every kind (null where they do not apply): `mass_kg` (a part's mass or a model's total, from its header; null if the file declares none), `provides` (list) and `limits` (map) for a part (empty in the slice: those keys arrive with part_version 2), `rotor_count` for a model or drone, `world_version` for a world, and `install_kinds` for a part: the sorted, de-duplicated list of the kinds of install point the part itself carries (`["motor", "battery"]` for a frame; `["prop_hub"]` for a motor), empty in the slice (install points arrive with part_version 2). A header that cannot be read gives `peek: null` and a `peek_failed` warning; the entry still lists. `hash` is cached per handle until `reload` or a write; a `hash_mismatch` warning is not raised by list.
 
 ### find [slice]
 ```json
@@ -204,11 +208,11 @@ Each validates the whole result first (`invalid_entry` with `issues`, nothing wr
 { "items": [ { "key": "motor_fl",
                "parent": { "pos": [0,0,0], "quat": [1,0,0,0] },          // null: identity (the frame part in the drone)
                "install_point": { "pos": [0.09,0.09,0], "quat": [1,0,0,0] },   // in the parent part's frame
-               "adjust": { "pos": [0,0,0.002], "yaw_deg": 0 },           // null: none
-               "adjust_range": { "pos_min": [..], "pos_max": [..], "yaw_deg": [-5, 5] },   // null: unchecked
+               "adjust": { "pos": [0,0,0.002], "yaw_deg": 0, "pitch_deg": -10, "roll_deg": 0 },   // null: none
+               "adjust_range": { "pos_min": [..], "pos_max": [..], "yaw_deg": [-5, 5], "pitch_deg": [-10, 60], "roll_deg": [0, 0] },   // null: unchecked
                "part_to_mount": null } ] }                               // the placed part's own offset, null: identity
 ```
-`result`: `{ "items": [ { "key": "motor_fl", "pose": {pos, quat}, "refusal": null } ... ] }` in request order (G3d: an array). pose = parent · install_point · adjust · part_to_mount (quaternion product in that order, normalised, `w >= 0`). A bad item has `pose: null` and its own refusal (`adjust_out_of_range`, `invalid_request`); the call is still `ok: true`, so one bad slot does not hide the others. The call is pure and needs no open library, but takes a handle for symmetry.
+`result`: `{ "items": [ { "key": "motor_fl", "pose": {pos, quat}, "refusal": null } ... ] }` in request order (G3d: an array). pose = parent · install_point · adjust · part_to_mount (a product of poses in that order, normalised, `w >= 0`): the ADJUSTMENT acts in the install point's own frame, after the install point's pose (so a camera's tilt turns about the mount's own axes). An adjustment is a position offset `pos` (metres) and three rotations in degrees, right-handed about the install point's axes (+X forward, +Y left, +Z up), composed as `Rz(yaw_deg) · Ry(pitch_deg) · Rx(roll_deg)`: yaw about +Z, then pitch about +Y, then roll about +X, each about the axes of the frame produced so far (intrinsic). A positive angle is a right-handed turn about its axis, so a positive pitch tips +X toward -Z; KAT converts its editor's names and signs. All four keys are always present in a result; an input may omit angles (0) and `pos` (zero). A bad item has `pose: null` and its own refusal (`adjust_out_of_range`, `invalid_request`); the call is still `ok: true`, so one bad slot does not hide the others. The call is pure and needs no open library, but takes a handle for symmetry.
 
 ### compile [shape]
 ```json
@@ -252,16 +256,16 @@ A drone entry's `parts_map` is a list, in slot order, in the index (`library_ver
 ```json
 { "slot": "motor_fl", "part": "default:part.motor.fpv_2306_1700kv", "hash": "sha256:...",
   "parent": "frame", "install_point": "motor_fl", "placement": null,
-  "adjust": { "pos": [0, 0, 0], "yaw_deg": 0 }, "count": 1 }
+  "adjust": { "pos": [0, 0, 0], "yaw_deg": 0, "pitch_deg": 0, "roll_deg": 0 }, "count": 1 }
 { "slot": "prop_fl", "part": "default:part.prop.5x4", "hash": "sha256:...",
   "parent": "motor_fl", "install_point": "prop_hub", "placement": null, "adjust": null, "count": 1 }
 { "slot": "frame", "part": "kat:part.frame.x500", "hash": "sha256:...",
   "parent": null, "install_point": null,
   "placement": { "pos": [0, 0, 0], "quat": [1, 0, 0, 0] }, "adjust": null, "count": 1 }
 ```
-- A slot is placed in ONE of two ways, never both (`invalid_entry` if both or neither): by `parent` + `install_point` (a SLOTTED part: `parent` is the `slot` key of the part that carries the install point, `install_point` its name on that part), or by `placement` (a FREE part: a FULL pose in the drone's design frame, with `parent` null; the frame part itself is free). A slotted part's pose is derived by composing up the parent chain (`compose_placement`) and is never stored, so it cannot disagree. `adjust` is the per-slot adjustment value (a small offset and a yaw, null for none), applied at the install point.
+- A slot is placed in ONE of two ways, never both (`invalid_entry` if both or neither): by `parent` + `install_point` (a SLOTTED part: `parent` is the `slot` key of the part that carries the install point, `install_point` its name on that part), or by `placement` (a FREE part: a FULL pose in the drone's design frame, with `parent` null; the frame part itself is free). A slotted part's pose is derived by composing up the parent chain (`compose_placement`) and is never stored, so it cannot disagree. `adjust` is the per-slot adjustment value (`pos` and `yaw_deg`, `pitch_deg`, `roll_deg`, as in `compose_placement`; null for none), applied at the install point.
 - PROPS attach to the MOTOR part's `prop_hub` install point (KAT's ruling; Spade's part model agrees): a prop slot has `parent` = the motor's slot and `install_point` = `prop_hub`. The motor part carries the `prop_hub` point and the spin sign (`spin` on a motor only, as Spec B fixes); the prop's own record gives its hub origin.
-- The allowed RANGE of an adjustment is a property of the frame part's install point (`adjust: {pos_min, pos_max, yaw_deg: [min, max]}` in its part record, a [shape] until the install-point piece), not of the drone; `compose_placement` takes it as `adjust_range`. The slice stores and returns `adjust` untouched.
+- The allowed RANGE of an adjustment is a property of the frame part's install point (`adjust: {pos_min, pos_max, yaw_deg: [min, max], pitch_deg: [min, max], roll_deg: [min, max]}` in its part record, a [shape] until the install-point piece), not of the drone; `compose_placement` takes it as `adjust_range`. The slice reads, validates the form of, stores and returns `adjust` (a drone's `adjust` is `{pos, yaw_deg, pitch_deg, roll_deg}`, finite numbers; unknown keys are refused); the range check is `compose_placement`'s.
 - `hash` pins the part as KAT's saved map does; `find` of the drone does not check it (the parts' own `find` does).
 - `frame` is `"design/1"`: the frame of section 0.
 

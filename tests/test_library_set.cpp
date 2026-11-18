@@ -171,18 +171,20 @@ TEST(LibrarySet, RootsAndEntriesKeepTheHostsOrder) {
 TEST(LibrarySet, ARefusalIsOpenFailedWithOneIssuePerProblemAndNothingIsOpenedPartly) {
     const fs::path base = fresh("collect");
     v2_root(base / "good");
+    v2_root(base / "bad");
+    put(base / "bad/library.yaml", "library_version: 9\nentries: []\n");
     const auto set = open({{"good", base / "good", false},
                            {"gone", base / "gone", false},
-                           {"rel", fs::path("relative/dir"), false}});
+                           {"bad", base / "bad", false}});
     ASSERT_FALSE(set.has_value());
     EXPECT_EQ(set.error().code, "open_failed");
     const sc::LibraryRefusal* gone = issue(set.error(), "root_unavailable");
     ASSERT_NE(gone, nullptr);
     EXPECT_EQ(gone->root, "gone");
     EXPECT_EQ(gone->path, (base / "gone").string());
-    const sc::LibraryRefusal* rel = issue(set.error(), "relative_path");
-    ASSERT_NE(rel, nullptr);
-    EXPECT_EQ(rel->root, "rel");
+    const sc::LibraryRefusal* bad = issue(set.error(), "bad_index");
+    ASSERT_NE(bad, nullptr);
+    EXPECT_EQ(bad->root, "bad");
     EXPECT_EQ(set.error().issues.size(), 2u);  // the good root contributes none
 }
 
