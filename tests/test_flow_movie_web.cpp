@@ -872,15 +872,21 @@ TEST(FlowMovieWeb, AWebRunsLookKeepsEveryOptionTheCommandLineSetAndAddsOnlyTheFa
     EXPECT_EQ(web::web_look(set, drone, true, nullptr), faded);
 
     // the nasa look with a thinning: the held body's centre (the drone's own height), the radius and the floor; the rest as set
+    // thin_r is a multiple of the drone's own size (Framing::subject_m): the X500 is twice the camera quadcopter's size, so the same
+    // 0.65 thins a radius twice as large (the lead, 2026-11-18)
     flow_movie::QLook q;
-    q.thin_r = 0.22f;
+    q.thin_r = 0.65f;
     q.thin_floor = 0.05f;
     flow_movie::Look thinned = set;
     thinned.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
-    thinned.thin.radius = 0.22f;
+    thinned.thin.radius = 0.65f * drone.framing.subject_m;
     thinned.thin.floor = 0.05f;
     EXPECT_EQ(web::web_look(set, drone, false, &q), thinned);
     EXPECT_NEAR(web::web_look(set, drone, false, &q).thin.centre.y, 0.014f, 1e-7f) << "the X500's body is 0.014 m up in its box";
+    const web::Drone& small = *web::find_drone("phantom3_class");
+    EXPECT_NEAR(web::web_look(set, small, false, &q).thin.radius, 0.65f * small.framing.subject_m, 1e-7f);
+    EXPECT_GT(web::web_look(set, drone, false, &q).thin.radius, 1.5f * web::web_look(set, small, false, &q).thin.radius)
+        << "the bigger drone's thinned ball is bigger";
 
     // a nasa look without a thinning leaves the thinning off
     const flow_movie::QLook none;

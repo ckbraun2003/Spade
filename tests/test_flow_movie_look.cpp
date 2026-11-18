@@ -595,11 +595,15 @@ TEST(FlowMovieQLook, TheCloudsDensityOnsetAndThinningAreNamedInTheLookString) {
     EXPECT_FLOAT_EQ(look->onset, 0.3f);
     EXPECT_FLOAT_EQ(look->thin_r, 0.15f);
     EXPECT_FLOAT_EQ(look->thin_floor, 0.2f);
-    for (const char* bad : {"sigma=0", "sigma=2000", "onset=1", "onset=-0.1", "thin_r=-1", "thin_r=2", "thin_floor=1.5", "thin_floor=-0.1"}) {
+    for (const char* bad : {"sigma=0", "sigma=2000", "onset=1", "onset=-0.1", "thin_r=-1", "thin_r=3", "thin_floor=1.5", "thin_floor=-0.1"}) {
         const auto r = flow_movie::parse_q_look(bad);
         ASSERT_FALSE(r.has_value()) << bad;
         EXPECT_NE(r.error().context.find("q look"), std::string::npos) << bad << ": " << r.error().context;
     }
+    // thin_r is a multiple of the drone's own size (Framing::subject_m), so one value fits every drone: up to 2 of it
+    const auto wide = flow_movie::parse_q_look("thin_r=1.5");
+    ASSERT_TRUE(wide.has_value()) << wide.error().context;
+    EXPECT_FLOAT_EQ(wide->thin_r, 1.5f);
     flow_movie::QLook dense;
     dense.sigma = 80.0f;
     dense.onset = 0.4f;
