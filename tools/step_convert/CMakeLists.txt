@@ -27,6 +27,7 @@ set(_step_cases
     test_a_suffixed_name_that_meets_a_real_name_is_refused_naming_both
     test_the_position_weld_is_watertight_and_matches_occts_shared_edge_count
     test_the_files_own_unit_is_kept
+    test_a_conversion_based_unit_named_for_its_length_is_read
     test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written
     test_a_file_that_is_not_step_is_refused_by_name
     test_a_named_solid_can_be_picked_and_an_unknown_one_is_a_usage_error)

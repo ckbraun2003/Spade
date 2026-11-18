@@ -286,6 +286,32 @@ class StepConvert(unittest.TestCase):
             self.assertAlmostEqual(bounds(positions)[0][1], 0.1, delta=1e-8)  # ten centimetres
             self.assertAlmostEqual(volume(positions, triangles), 1e-3, delta=1e-8)
 
+    def test_a_conversion_based_unit_named_for_its_length_is_read(self):
+        # Raspberry Pi's Camera Module 3 STEP (Spatial InterOp) declares its unit as
+        #   CONVERSION_BASED_UNIT('MILLIMETRE', #n) LENGTH_UNIT() NAMED_UNIT(#m)
+        # not as an SI_UNIT: the name is the unit, spelled either way, and several of them in one file are the same unit.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("step_convert_under_test", CONVERT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cases = {"MILLIMETRE": "mm", "MILLIMETER": "mm", "CENTIMETRE": "cm", "CENTIMETER": "cm", "METRE": "m", "METER": "m",
+                 "MICROMETRE": "um", "MICROMETER": "um", "MICRON": "um", "INCH": "in", "FOOT": "ft"}
+        with tempfile.TemporaryDirectory() as work:
+            for name, unit in cases.items():
+                path = os.path.join(work, f"{name}.stp")
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("ISO-10303-21;\nDATA;\n"
+                            f"#8816= (CONVERSION_BASED_UNIT('{name}',#22444)LENGTH_UNIT()NAMED_UNIT(#22447));\n"
+                            f"#22926= (CONVERSION_BASED_UNIT('{name}',#39826)LENGTH_UNIT()NAMED_UNIT(#39829));\n"
+                            "#8817= (NAMED_UNIT(#22449)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\nENDSEC;\nEND-ISO-10303-21;\n")
+                self.assertEqual(module.file_length_unit(path), unit, name)
+            odd = os.path.join(work, "odd.stp")
+            with open(odd, "w", encoding="utf-8", newline="\n") as f:
+                f.write("DATA;\n#1= (CONVERSION_BASED_UNIT('FURLONG',#2)LENGTH_UNIT()NAMED_UNIT(#3));\nENDSEC;\n")
+            with self.assertRaises(module.Refusal) as refused:
+                module.file_length_unit(odd)
+            self.assertIn("FURLONG", refused.exception.message)
+
     def test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written(self):
         with tempfile.TemporaryDirectory() as out:
             run = self.convert("holed_cylinder.step", out, "--deflection", "3mm", "--angle", "1.2", expect=5)
@@ -312,7 +338,8 @@ class StepConvert(unittest.TestCase):
             self.assertIn("Nope", run.stderr)
 
 
-NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found"}
+NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found",
+                 "test_a_conversion_based_unit_named_for_its_length_is_read"}
 
 
 def main():
