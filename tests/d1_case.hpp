@@ -52,10 +52,12 @@ inline constexpr physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
 inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 
 // L86i, option A (the lead, 2026-11-17): the website's NASA-style look needs the blades' helices (pitch about 27 mm) resolved, so a uniform
-// 2 mm CROPPED near field: 0.6 x 0.56 x 0.6 m, 300 x 280 x 300 = 25.2 M cells. The phantom's rotors (R 0.1194 m, at +-0.1245, +-0.1257 m) and
-// their kernel reach (R + 6 dx) sit inside it; d1_hold() puts the drone 0.103 m above the centre, so 0.177 m of open air is above the
-// drone for the inflow and 0.383 m of wake below it. ny - 177 is odd, so the drone keeps its y cell centre as in the 4 mm boxes.
-inline constexpr physics::airflow::GridShape kD1NearGrid{300, 280, 300, 0.002f};
+// 2 mm CROPPED near field: 0.56 x 0.50 x 0.56 m, 280 x 250 x 280 = 19.6 M cells. 300 x 280 x 300 (25.2 M cells) measured 5,341,050,984 bytes
+// of grid, scratch and solids (212 B a cell) against kGridByteCap's 4,294,967,296, so this is the largest box of that shape under the cap
+// (3.87 GiB). The phantom's rotors (R 0.1194 m, at +-0.1245, +-0.1257 m) have their kernel reach (R + 6 dx) 0.2555 m from the axis, inside
+// the 0.28 m half width; d1_hold() puts the drone 0.073 m above the centre: 0.177 m of open air above it for the inflow, 0.323 m of wake below.
+// ny - 177 is odd, so the drone keeps its y cell centre as in the 4 mm boxes.
+inline constexpr physics::airflow::GridShape kD1NearGrid{280, 250, 280, 0.002f};
 
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
 // as far below the top face as kD1Grid holds it (0.354 m, 88.5 cells), so +y above the centre by half the extra rows.

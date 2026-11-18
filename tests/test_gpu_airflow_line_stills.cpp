@@ -84,8 +84,7 @@ struct Phantom {
     float weight_n = 0.0f;
 };
 
-[[nodiscard]] spade::Result<Phantom> phantom_box(const char* model_file) {
-    const af::GridShape grid = spade::testing::kD1DeepGrid;
+[[nodiscard]] spade::Result<Phantom> phantom_box(const char* model_file, const af::GridShape& grid) {
     const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / model_file;
     auto loaded = spade::scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
@@ -178,7 +177,9 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                                ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_NSUB"), nullptr, 10))
                                : 8u;
 
-    auto made = phantom_box(model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml");
+    // SPADE_LS_GRID=near: the 2 mm cropped near field (tests/d1_case.hpp's kD1NearGrid); else the 4 mm deep box.
+    const af::GridShape grid = env_cstr("SPADE_LS_GRID") != nullptr ? spade::testing::kD1NearGrid : spade::testing::kD1DeepGrid;
+    auto made = phantom_box(model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml", grid);
     ASSERT_TRUE(made.has_value()) << made.error().context;
     Phantom& ph = *made;
     b7::B7Box& box = ph.box;
