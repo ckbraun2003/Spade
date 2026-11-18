@@ -38,6 +38,7 @@
 #include "compute/vulkan/context.hpp"
 #include "d1_case.hpp"
 #include "flow_still.hpp"
+#include "../tools/flow_movie/cache.hpp"
 #include "x500_model.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
@@ -277,6 +278,32 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         double thrust = 0.0;
         for (const af::LineReport& r : (*gpu)->line_reports()) thrust += static_cast<double>(r.thrust);
         ASSERT_TRUE((*gpu)->publish(box.origin, volume).has_value());
+        // SPADE_LINE_STILLS_CACHE=<dir>: the published frame in flow_movie's cache format as frame SPADE_LINE_STILLS_CACHE_FRAME (200, the
+        // d1-still group's S8 f200: step (200 + 1) * 5 = 1005, so list that step in SPADE_LINE_STILLS_STEPS), for Rendering's look.
+        if (const char* cache_dir = env_cstr("SPADE_LINE_STILLS_CACHE"); cache_dir != nullptr) {
+            const uint32_t frame = env_cstr("SPADE_LINE_STILLS_CACHE_FRAME") != nullptr
+                                       ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_CACHE_FRAME"), nullptr, 10))
+                                       : 200u;
+            if (step == (frame + 1u) * 5u) {
+                std::filesystem::create_directories(cache_dir);
+                double lines_thrust = 0.0;
+                for (const af::LineReport& r : (*gpu)->line_reports()) lines_thrust += static_cast<double>(r.thrust);
+                // Rendering's layout (flow_movie's reader): the held body's position, its quaternion w x y z, each rotor's omega, then the lines' thrust.
+                std::vector<double> live{static_cast<double>(ph.body.pos.x), static_cast<double>(ph.body.pos.y), static_cast<double>(ph.body.pos.z),
+                                         static_cast<double>(ph.body.orient.w), static_cast<double>(ph.body.orient.x),
+                                         static_cast<double>(ph.body.orient.y), static_cast<double>(ph.body.orient.z)};
+                for (const vh::RotorRow& r : ph.rows) live.push_back(static_cast<double>(r.omega));
+                live.resize(11, 0.0);
+                live.push_back(lines_thrust);
+                const flow_movie::FrameLog log{step, static_cast<double>(step) * static_cast<double>(box.cfg.h), live};
+                const uint32_t solid = static_cast<uint32_t>(std::count_if(box.solid_cells.begin(), box.solid_cells.end(), [](uint8_t m) { return m != 0u; }));
+                const flow_movie::FrameBound bound{12.0f, solid};
+                const auto written = flow_movie::write_frame(cache_dir, frame, volume, log, bound);
+                ASSERT_TRUE(written.has_value()) << written.error().context;
+                std::printf("[ lines   ] frame %u written to %s (step %u)\n", frame, cache_dir, step);
+                std::fflush(stdout);
+            }
+        }
         std::printf("[ lines   ] solve %.0f ms a step; step %u (%.3f s), wall %.0f s: lines' thrust %.3f N in all (%zu reports)\n",
                     step_s / static_cast<double>(steps_timed) * 1000.0, step,
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),
