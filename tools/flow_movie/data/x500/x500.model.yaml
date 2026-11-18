@@ -35,26 +35,26 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [2.10086169e-19, 0.0135969603, -2.10086169e-19]
-  body: {mass: 2.06430006, inertia_diag: [0.0216666665, 0.0399999991, 0.0216666665]}
-  proxy_radius: 0.419073164
+  com_offset: [0.000913808064, -0.0048055402, -0.00159445975]
+  body: {mass: 1.63890004, inertia_diag: [0.014648228, 0.0225854814, 0.0157697946]}
+  proxy_radius: 0.373073161
   rotors:
-    - {local_pos: [0.173999995, 0.0614030398, 0.173999995], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.124918818, radius: 0.172999993, thrust_coeff: 4.28507119e-05, torque_coeff: 9.03222201e-07}
-    - {local_pos: [0.173999995, 0.0614030398, -0.173999995], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.124918818, radius: 0.172999993, thrust_coeff: 4.28507119e-05, torque_coeff: 9.03222201e-07}
-    - {local_pos: [-0.173999995, 0.0614030398, -0.173999995], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.124918818, radius: 0.172999993, thrust_coeff: 4.28507119e-05, torque_coeff: 9.03222201e-07}
-    - {local_pos: [-0.173999995, 0.0614030398, 0.173999995], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.124918818, radius: 0.172999993, thrust_coeff: 4.28507119e-05, torque_coeff: 9.03222201e-07}
+    - {local_pos: [0.173086196, 0.0662055388, 0.175594464], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0760718137, radius: 0.127000004, thrust_coeff: 1.2444817e-05, torque_coeff: 1.9256737e-07}
+    - {local_pos: [0.173086196, 0.0662055388, -0.172405541], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0760718137, radius: 0.127000004, thrust_coeff: 1.2444817e-05, torque_coeff: 1.9256737e-07}
+    - {local_pos: [-0.174913809, 0.0662055388, -0.172405541], local_orient: [1, 0, 0, 0], spin_dir: 1, tau: 0.0760718137, radius: 0.127000004, thrust_coeff: 1.2444817e-05, torque_coeff: 1.9256737e-07}
+    - {local_pos: [-0.174913809, 0.0662055388, 0.175594464], local_orient: [1, 0, 0, 0], spin_dir: -1, tau: 0.0760718137, radius: 0.127000004, thrust_coeff: 1.2444817e-05, torque_coeff: 1.9256737e-07}
   drag_bodies:
-    - {mode: "componentwise", area: 0, coeffs: [0.0186355393, 0.0339080058, 0.0204730406], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
+    - {mode: "componentwise", area: 0, coeffs: [0.0201928206, 0.0335772559, 0.0219984706], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [-2.10086169e-19, -0.0135969603, 2.10086169e-19], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [-0.000913808064, 0.0048055402, 0.00159445975], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [-2.10086169e-19, -0.0135969603, 2.10086169e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.000913808064, -0.0012944598, 0.00159445975], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
-      min_feature: 0.0649999976
+      min_feature: 0.0808999985
       shape:
         sdf:
           transforms:
@@ -65,12 +65,12 @@ model:
                                0, 0, 0, 1]
               scale: 1
           nodes:
-            - {prim: box, transform: 0, params: [0.075000003, 0.0324999988, 0.075000003, 0]}
+            - {prim: box, transform: 0, params: [0.075000003, 0.0404499993, 0.075000003, 0]}
     - name: "arm[0]"
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0869999975, -0.0135969603, 0.0869999975], orientation: [0.707106769, 0.5, 0, -0.5]}
+      mount: {position: [0.0860861912, -0.00879445951, 0.088594459], orientation: [0.707106769, 0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -88,7 +88,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0869999975, -0.0135969603, -0.0869999975], orientation: [0.707106769, -0.5, 0, -0.5]}
+      mount: {position: [0.0860861912, -0.00879445951, -0.0854055434], orientation: [0.707106769, -0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -106,7 +106,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0869999975, -0.0135969603, -0.0869999975], orientation: [0.707106769, -0.5, 0, 0.5]}
+      mount: {position: [-0.0879138112, -0.00879445951, -0.0854055434], orientation: [0.707106769, -0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -124,7 +124,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0869999975, -0.0135969603, 0.0869999975], orientation: [0.707106769, 0.5, 0, 0.5]}
+      mount: {position: [-0.0879138112, -0.00879445951, 0.088594459], orientation: [0.707106769, 0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -142,7 +142,7 @@ model:
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.173999995, 0.0494030379, 0.173999995], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.173086196, 0.0542055406, 0.175594464], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
@@ -160,7 +160,7 @@ model:
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [0.173999995, 0.0494030379, -0.173999995], orientation: [1, 0, 0, 0]}
+      mount: {position: [0.173086196, 0.0542055406, -0.172405541], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
@@ -178,7 +178,7 @@ model:
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.173999995, 0.0494030379, -0.173999995], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.174913809, 0.0542055406, -0.172405541], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
@@ -196,7 +196,7 @@ model:
       role: "motor"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.173999995, 0.0494030379, 0.173999995], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.174913809, 0.0542055406, 0.175594464], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0240000002
       shape:
@@ -214,7 +214,7 @@ model:
       role: "esc"
       attach: "body"
       rotor: 0
-      mount: {position: [-2.10086169e-19, -0.0135969603, 2.10086169e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.000913808064, 0.0161055401, 0.00159445975], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.00800000038
       shape:
@@ -232,9 +232,9 @@ model:
       role: "battery"
       attach: "body"
       rotor: 0
-      mount: {position: [-2.10086169e-19, -0.0135969603, 2.10086169e-19], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.000913808064, -0.0585944615, 0.00159445975], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
-      min_feature: 0.0299999993
+      min_feature: 0.0335000008
       shape:
         sdf:
           transforms:
@@ -245,7 +245,7 @@ model:
                                0, 0, 0, 1]
               scale: 1
           nodes:
-            - {prim: box, transform: 0, params: [0.0724999979, 0.0149999997, 0.0225000009, 0]}
+            - {prim: box, transform: 0, params: [0.0665000007, 0.0167500004, 0.0225000009, 0]}
   propulsion:
     kv: 96.342174710087
     resistance: 0.126
@@ -255,17 +255,17 @@ model:
     esc_current_total_max: 0
     pole_pairs: 7
     inductance: 0
-    diameter: 0.346
+    diameter: 0.254
     table:
       j_min: 0
       j_max: 0.550000012
       ct: [0.0963556767, 0.0955714881, 0.0947872996, 0.0940031111, 0.0932189226, 0.0924347416, 0.0915905461, 0.0904763117, 0.0893620774, 0.0880687535, 0.0862978473, 0.0845269412, 0.0823907405, 0.07961528, 0.0768398121, 0.0736187473, 0.0698629618, 0.0661071762, 0.0623665936, 0.0586386845, 0.0549107753, 0.051737573, 0.0488813482, 0.0460251234, 0.0432184376, 0.0404303297, 0.0376422219, 0.0347185172, 0.0317646787, 0.0288108382, 0.0258860942, 0.0229642596, 0.020042425]
       cq: [0.00586999534, 0.00589947402, 0.00592895271, 0.00595843093, 0.00598790962, 0.00601738784, 0.00604838831, 0.00608623726, 0.00612408621, 0.00615531765, 0.00616890052, 0.0061824834, 0.00617587473, 0.00613393076, 0.00609198725, 0.00600441871, 0.00586210098, 0.00571978325, 0.00555123668, 0.00536083244, 0.00517042819, 0.00500030024, 0.00484175887, 0.0046832175, 0.00451589562, 0.00434528105, 0.00417466648, 0.00398040516, 0.00378088863, 0.00358137209, 0.00337692164, 0.00317197782, 0.002967034]
-    cells_series: 3
+    cells_series: 4
     cells_parallel: 1
     cell_resistance: 0.008
     cell_cutoff_voltage: 3.3
     pack_polarization_resistance: 0
-    pack_current_max: 40.8
-    ocv_table: [3.29999995, 3.34687495, 3.39374995, 3.44062495, 3.48749995, 3.53437495, 3.58124995, 3.609375, 3.625, 3.640625, 3.65625, 3.671875, 3.6875, 3.703125, 3.71875, 3.734375, 3.75, 3.77083325, 3.79166675, 3.8125, 3.83333325, 3.85416675, 3.875, 3.89583325, 3.91666675, 3.9375, 3.96562505, 4.00468731, 4.04374981, 4.08281231, 4.12187481, 4.16093731, 4.19999981]
+    pack_current_max: 67.2
+    ocv_table: [3.29999995, 3.3515625, 3.40312505, 3.4546876, 3.5062499, 3.55781245, 3.609375, 3.6421876, 3.6624999, 3.68281245, 3.703125, 3.72343755, 3.7437501, 3.7640624, 3.78437495, 3.8046875, 3.82500005, 3.85052085, 3.87604165, 3.90156245, 3.92708325, 3.95260406, 3.9781251, 4.0036459, 4.0291667, 4.0546875, 4.0875001, 4.1312499, 4.17500019, 4.21875, 4.26249981, 4.3062501, 4.3499999]
     motors_on_bus: 4
