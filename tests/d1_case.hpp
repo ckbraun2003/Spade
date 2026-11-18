@@ -51,6 +51,23 @@ inline constexpr physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
 // 303.5 cells (1.214 m) below it: 240 x 392 x 168, 15.8 M cells. Where the drone sits in the box is d1_hold().
 inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 
+// L86i, option A (the lead, 2026-11-17): the website's NASA-style look needs the blades' helices (pitch about 27 mm) resolved, so a uniform
+// 2 mm CROPPED near field: 0.544 x 0.464 x 0.544 m, 272 x 232 x 272 = 17.2 M cells. Two caps bound it, both measured on the phantom:
+// kGridByteCap (4 GiB of grid, scratch and solids, 212 B a cell: 300 x 280 x 300 asked 5,341,050,984 bytes, 280 x 250 x 280 passes at
+// 3.870 GiB) and the device runner's VRAM cap (4 GiB with the staging, compute::vram_cap: 280 x 250 x 280 asked 4,307,788,776 on the device
+// plus 295,092,000 staging, 4,602,985,224 in all, 234.6 B a cell, and was refused; this box asks ~4.03 GB). The phantom's rotors (R 0.1194 m, at
+// +-0.1245, +-0.1257 m) have their kernel reach (R + 6 dx) 0.2555 m from the axis, inside the 0.272 m half width; d1_hold() puts the drone
+// 0.055 m above the centre: 0.177 m of open air above it for the inflow, 0.287 m of wake below. ny - 177 is odd, so the drone keeps its y
+// cell centre as in the 4 mm boxes.
+inline constexpr physics::airflow::GridShape kD1NearGrid{272, 232, 272, 0.002f};
+
+// L86k (the lead, 2026-11-17): the X500's R 0.173 m rotors at +-0.174 m reach 0.174 + 0.173 + 6 dx from the axis, 0.365 m at 3 mm, so the
+// box is 0.80 m wide; at 3 mm that is 267 x 217 x 267 = 15.5 M cells (0.80 x 0.65 x 0.80 m), 3.056 GiB of the engine's grid cap and about
+// 3.6 GB of the device runner's (both 4 GiB). d1_hold() alone leaves the rotor centres 0.1905 m under the top face (88.5 cells below it,
+// less the hubs' 0.075 m), 0.5 mm short of the line's kernel reach (R + 6 dx = 0.191 m): the live run refused it. d1_x500_hold() lowers the
+// drone 24 rows, 0.072 m, so the hubs are 0.2625 m under the top face (1.5 R of open air above them) and 0.39 m of wake is below.
+inline constexpr physics::airflow::GridShape kD1X500Grid{267, 217, 267, 0.003f};
+
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
 // as far below the top face as kD1Grid holds it (0.354 m, 88.5 cells), so +y above the centre by half the extra rows.
 // Zero for kD1Grid, exactly. kD1DeepGrid's is 107.5 cells, 0.43 m: the drone keeps its cell alignment (an x and z
@@ -59,6 +76,11 @@ inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 [[nodiscard]] inline glm::vec3 d1_hold(const physics::airflow::GridShape& grid) noexcept {
     if (grid.ny <= kD1Grid.ny) return glm::vec3(0.0f);
     return glm::vec3(0.0f, 0.5f * (static_cast<float>(grid.ny) - static_cast<float>(kD1Grid.ny)) * grid.dx, 0.0f);
+}
+
+// The X500's hold (L86k): d1_hold(kD1X500Grid), 24 rows (0.072 m) lower, a whole number of rows so the drone keeps its cell alignment.
+[[nodiscard]] inline glm::vec3 d1_x500_hold() noexcept {
+    return d1_hold(kD1X500Grid) - glm::vec3(0.0f, 24.0f * kD1X500Grid.dx, 0.0f);
 }
 inline constexpr float kD1Step = 0.00038f;  // s
 
