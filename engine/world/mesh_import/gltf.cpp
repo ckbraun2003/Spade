@@ -854,4 +854,9 @@ Result<std::vector<MeshObject>> read_gltf_bytes(std::span<const std::byte> bytes
     return run("(glTF bytes)", base_dir, bytes);
 }
 
+// RED stub (L88 collecting readers): not built yet.
+Result<std::vector<MeshObjectOutcome>> read_gltf_bytes_objects(std::span<const std::byte>, const std::filesystem::path&) {
+    return std::unexpected(Error{Code::internal, "the collecting reader is not built"});
+}
+
 }  // namespace spade

@@ -139,4 +139,9 @@ Result<std::vector<MeshObject>> read_stl(const std::filesystem::path& path, Mesh
     }
 }
 
+// RED stub (L88 collecting readers): not built yet.
+Result<std::vector<MeshObjectOutcome>> read_stl_objects(const std::filesystem::path&, MeshUnit) {
+    return std::unexpected(Error{Code::internal, "the collecting reader is not built"});
+}
+
 }  // namespace spade

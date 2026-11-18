@@ -88,7 +88,7 @@ inline void write_file(const std::filesystem::path& path, std::string_view bytes
 }
 
 // The cube of side `s` as a GLB with one node named `node_name`: positions and indices in the BIN chunk, metres by the specification.
-[[nodiscard]] inline std::string cube_glb(float s = 1.0f, std::string_view node_name = "cube") {
+[[nodiscard]] inline std::string cube_glb(float s = 1.0f, std::string_view node_name = "cube", std::size_t faces = 12) {
     std::string bin;
     const auto f32 = [&bin](float v) {
         const auto bits = std::bit_cast<uint32_t>(v);
@@ -103,15 +103,17 @@ inline void write_file(const std::filesystem::path& path, std::string_view bytes
         f32(c.y);
         f32(c.z);
     }
-    for (const auto& t : kCube) {
-        for (const uint32_t i : t) u32(i);
+    for (std::size_t f = 0; f < faces; ++f) {
+        for (const uint32_t i : kCube[f]) u32(i);
     }
+    const std::string index_count = std::to_string(3 * faces), index_bytes = std::to_string(12 * faces),
+                      buffer_bytes = std::to_string(96 + 12 * faces);
     std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":")" + std::string(node_name) +
                        R"(","mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],)"
                        R"("accessors":[{"bufferView":0,"componentType":5126,"count":8,"type":"VEC3"},)"
-                       R"({"bufferView":1,"componentType":5125,"count":36,"type":"SCALAR"}],)"
-                       R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},{"buffer":0,"byteOffset":96,"byteLength":144}],)"
-                       R"("buffers":[{"byteLength":240}]})";
+                       R"({"bufferView":1,"componentType":5125,"count":)" + index_count + R"(,"type":"SCALAR"}],)"
+                       R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},{"buffer":0,"byteOffset":96,"byteLength":)" +
+                       index_bytes + R"(}],)" R"("buffers":[{"byteLength":)" + buffer_bytes + R"(}]})";
     while (json.size() % 4 != 0) json += ' ';
     std::string out = "glTF";
     const auto le32 = [&out](uint32_t v) {

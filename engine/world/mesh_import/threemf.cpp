@@ -531,4 +531,9 @@ Result<std::vector<MeshObject>> read_3mf(const std::filesystem::path& path) {
     }
 }
 
+// RED stub (L88 collecting readers): not built yet.
+Result<std::vector<MeshObjectOutcome>> read_3mf_objects(const std::filesystem::path&) {
+    return std::unexpected(Error{Code::internal, "the collecting reader is not built"});
+}
+
 }  // namespace spade

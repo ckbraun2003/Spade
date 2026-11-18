@@ -271,6 +271,23 @@ struct MeshObject {
     MeshUnit unit = MeshUnit::unspecified;
 };
 
+// THE COLLECTING MODE (L88, spade_part_import's --inspect): the same readers, but a file whose objects do not all pass the mesh gate
+// (make_mesh) is not one refusal of the first bad object: every object of the file is reported, each with its mesh or its own gate refusal,
+// in the order the plain reader would build them. A problem with the FILE (not the format, a damaged chunk, an accessor out of range, no
+// object at all) is still one error, the plain reader's own, unchanged. The plain readers are unchanged: for a file whose objects all pass,
+// these give the plain reader's objects (name, unit, the same mesh) and for one that does not, the plain reader's error is the first
+// outcome's refusal.
+struct MeshObjectOutcome {
+    std::string name;
+    MeshUnit unit = MeshUnit::unspecified;
+    Result<std::shared_ptr<const TriangleMesh>> mesh;  // the object's mesh, or make_mesh()'s refusal of it
+};
+[[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_gltf_bytes_objects(std::span<const std::byte> bytes,
+                                                                             const std::filesystem::path& base_dir);
+[[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_stl_objects(const std::filesystem::path& path, MeshUnit unit);
+[[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_obj_objects(const std::filesystem::path& path, MeshUnit unit);
+[[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_3mf_objects(const std::filesystem::path& path);
+
 // Reads a .gltf or .glb file. External buffers resolve against its directory.
 [[nodiscard]] Result<std::vector<MeshObject>> read_gltf(const std::filesystem::path& path);
 
