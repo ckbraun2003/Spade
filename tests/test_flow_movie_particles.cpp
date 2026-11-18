@@ -20,6 +20,7 @@
 #include "../tools/flow_movie/particles.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
+#include "unique_temp.hpp"
 
 namespace {
 
@@ -431,7 +432,7 @@ TEST(FlowMovieParticles, TheStreaksAreTheSameEveryTimeAndOnePerDrawnParticleInOr
 // A file of the field's three arrays and counters; a bad one is refused by name, never half-read.
 namespace {
 [[nodiscard]] std::filesystem::path snapshot_path(const char* name) {
-    return std::filesystem::temp_directory_path() / (std::string("spade_particle_snapshot_") + name + ".bin");
+    return spade::test::unique_temp_path(std::string("particle_snapshot_") + name + ".bin");  // TestHygiene: temp paths come from unique_temp.hpp
 }
 }  // namespace
 
