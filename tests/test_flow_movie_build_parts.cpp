@@ -497,3 +497,21 @@ TEST(FlowMovieBuildParts, ThePropPrimitiveIsScaledRadiallyAboutTheHubAndTheBellI
     EXPECT_FALSE(flow_movie::scale_prop_radially(none, {"a/prop", "a/bell"}, 0.0f).has_value());
 }
 
+// --prop-blur alpha=0.4,samples=32,shutter=0.0167: the blade blur's three numbers on the command line (the first still's blur was not
+// visible: its alpha and its samples are tuned by looking, so they are options, not constants). Empty: the defaults.
+TEST(FlowMovieBuildParts, ThePropBlurOptionSetsAlphaSamplesAndShutterAndRefusesTheRest) {
+    const auto defaults = flow_movie::parse_prop_blur("");
+    ASSERT_TRUE(defaults.has_value()) << defaults.error().context;
+    EXPECT_EQ(defaults->samples, flow_movie::PropBlur{}.samples);
+    EXPECT_FLOAT_EQ(defaults->alpha, flow_movie::PropBlur{}.alpha);
+    const auto set = flow_movie::parse_prop_blur("alpha=0.4,samples=32,shutter=0.02");
+    ASSERT_TRUE(set.has_value()) << set.error().context;
+    EXPECT_FLOAT_EQ(set->alpha, 0.4f);
+    EXPECT_EQ(set->samples, 32u);
+    EXPECT_DOUBLE_EQ(set->shutter_s, 0.02);
+    for (const char* bad : {"alpha=0", "alpha=1.5", "samples=0", "samples=500", "samples=2.5", "shutter=0", "shutter=1", "colour=red", "alpha", "alpha=x", "alpha=0.4,"}) {
+        const auto r = flow_movie::parse_prop_blur(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("prop blur"), std::string::npos) << bad << ": " << r.error().context;
+    }
+}

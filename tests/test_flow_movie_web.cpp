@@ -899,3 +899,26 @@ TEST(FlowMovieWeb, AWebRunsLookKeepsEveryOptionTheCommandLineSetAndAddsOnlyTheFa
     EXPECT_EQ(web::web_look(own, drone, false, nullptr), own);
 }
 
+// THE WAKE FADE IN THE CLOUD LOOK (the lead, 2026-11-18: the flat cut at the box's top and sides): the soft edge of a drawn wake is for S2
+// and S8, and for the nasa CLOUD look (a soft volume); not for S1, the particle looks, or the nasa Q SURFACES (a faded surface vanishes).
+TEST(FlowMovieWeb, TheWakeFadeAppliesToTheCloudLookAndNotToTheQSurfacesOrTheParticles) {
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, false, false)) << "the plain S8";
+    EXPECT_TRUE(web::web_fade_applies("S2", false, false, false, false));
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, true, true)) << "the nasa cloud";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, true, false)) << "the nasa Q surfaces";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, true, false, false)) << "the particles";
+    EXPECT_FALSE(web::web_fade_applies("S8", true, false, false, false)) << "the particle preview";
+    EXPECT_FALSE(web::web_fade_applies("S1", false, false, false, false));
+    EXPECT_FALSE(web::web_fade_applies("S1", false, false, true, true));
+}
+
+// THE X500's SHOT (the lead, 2026-11-18): the drone fills about a third of the height, looked down on at about 20 degrees, the wake's bell in frame.
+TEST(FlowMovieWeb, TheOpenSourceQuadcoptersShotIsTightAndLooksDownAboutTwentyDegrees) {
+    const web::Framing& x = web::find_drone("x500")->framing;
+    EXPECT_NEAR(x.elevation_deg, 20.0f, 0.5f);
+    EXPECT_GE(x.subject_m, 0.36f);
+    EXPECT_LE(x.subject_m, 0.46f);
+    EXPECT_GT(x.aim_below_m, 0.0f);
+    EXPECT_GT(x.wake_fade_to_below_m, x.wake_fade_from_below_m) << "the wake fades going down, above the box's floor";
+    EXPECT_LT(x.wake_fade_to_below_m, 0.31f) << "the X500's box floor is 0.3135 m below the origin";
+}
