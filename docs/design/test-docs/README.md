@@ -23,6 +23,7 @@ Test/Docs owns how Spade is verified and documented: the test harness, golden-co
 | add a kernel | `01-verification.md` "SPIR-V scanner" |
 | report a test count or a timing | `TD-8` and `07-status.md` |
 | build, test, or change a script | `02-build-and-gate.md` |
+| test an installer, or read how one came out | `scripts/package-test.ps1`; each run is a row in `installer-ledger.md` |
 | write or move a doc | `03-documentation.md` |
 
 ## Series
