@@ -800,3 +800,46 @@ TEST(FlowMovieWeb, ALoopBlendedCaptionNamesTheMethod) {
     EXPECT_NE(said.find("1 s"), std::string::npos) << said;
 }
 
+// THE OPEN-SOURCE QUADCOPTER (the lead, 2026-11-18, L86k/L88l): the website clips' drone is the X500's flow model (Physics' tool data,
+// tools/flow_movie/data/x500, not the default library), named "x500" on the command line and in no caption: the clip says "an open-source
+// quadcopter". It is a 13-inch-rotor drone, so its shot is wider than the camera quadcopter's; its model file is reachable from the assets
+// directory like the library's; and the parts-build options (--build-parts, --part-store) are words in a caption, never paths.
+TEST(FlowMovieWeb, TheOpenSourceQuadcopterIsADroneOfTheClipsWhoseWordsNameNoBrand) {
+    const web::Drone* drone = web::find_drone("x500");
+    ASSERT_NE(drone, nullptr);
+    EXPECT_EQ(web::find_drone("open-source-quadcopter"), drone) << "the caption's alias names the same drone";
+    EXPECT_EQ(web::drone_stem_suffix(*drone), "-x500");
+    for (const std::string& words : {std::string(drone->alias), std::string(drone->title_noun), std::string(drone->the_noun),
+                                     std::string(drone->description)}) {
+        for (const char* brand : {"x500", "X500", "PX4", "px4", "Holybro", "holybro", "KAT", "Pixhawk", "UIUC", "APC"}) {
+            EXPECT_EQ(words.find(brand), std::string::npos) << "'" << words << "' carries " << brand;
+        }
+    }
+    EXPECT_NE(std::string(drone->title_noun).find("quadcopter"), std::string::npos);
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / drone->model_file))
+        << "the model file is found from the assets directory: " << drone->model_file;
+    const web::Framing& x = drone->framing;
+    const web::Framing& p = web::find_drone("phantom3_class")->framing;
+    EXPECT_GT(x.subject_m, p.subject_m) << "13-inch rotors reach 0.35 m from the axis: a wider shot";
+    EXPECT_GT(x.push_close_m, p.push_close_m);
+    EXPECT_GT(x.push_wide_m, x.push_close_m);
+    EXPECT_LE(x.elevation_deg, 45.0f);
+}
+
+TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
+    const web::Drone& drone = *web::find_drone("x500");
+    const std::string said = web::command_in_words(
+        "flow_movie --web S8 --drone x500 --build-parts C:/Users/Cameron/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
+        "\"C:/Users/Cameron/Desktop/Projects/part-store\" --nasa-cloud",
+        drone);
+    EXPECT_EQ(said.find("x500"), std::string::npos) << said;
+    EXPECT_EQ(said.find("KAT"), std::string::npos) << said;
+    EXPECT_EQ(said.find("part-store\""), std::string::npos) << said;
+    EXPECT_EQ(said.find("Cameron"), std::string::npos) << said;
+    EXPECT_NE(said.find("--drone open-source-quadcopter"), std::string::npos) << said;
+    EXPECT_NE(said.find("--build-parts open-source-quadcopter-parts-table"), std::string::npos) << said;
+    EXPECT_NE(said.find("--part-store part-store"), std::string::npos) << said;
+    EXPECT_NE(said.find("--nasa-cloud"), std::string::npos) << "the rest of the command is kept: " << said;
+    EXPECT_EQ(web::command_in_words("flow_movie --web S8 --build-parts", drone), "flow_movie --web S8 --build-parts") << "no value: left alone";
+}
+
