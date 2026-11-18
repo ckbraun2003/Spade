@@ -68,6 +68,11 @@ UNITS = {
     "ft": (0.3048, "foot", "FT"),
 }
 SI_PREFIX = {"$": "m", "MILLI": "mm", "CENTI": "cm", "MICRO": "um"}
+# The units a CONVERSION_BASED_UNIT may name (either spelling): the name is the unit, its conversion factor is the unit itself.
+CONVERSION_UNIT_NAMES = {
+    "INCH": "in", "FOOT": "ft", "METRE": "m", "METER": "m", "MILLIMETRE": "mm", "MILLIMETER": "mm",
+    "CENTIMETRE": "cm", "CENTIMETER": "cm", "MICROMETRE": "um", "MICROMETER": "um", "MICRON": "um",
+}
 CROSS_CHECK_LIMIT = 0.01
 STITCH_FRACTION = 1e-6
 
@@ -109,8 +114,8 @@ def file_length_unit(path):
         found.add(SI_PREFIX[prefix])
     for m in re.finditer(r"CONVERSION_BASED_UNIT\(\s*'([A-Za-z ]+)'", text):
         name = m.group(1).strip().upper()
-        if name in ("INCH", "FOOT"):
-            found.add("in" if name == "INCH" else "ft")
+        if name in CONVERSION_UNIT_NAMES:  # Spatial InterOp's exports say MILLIMETRE this way rather than with an SI_UNIT
+            found.add(CONVERSION_UNIT_NAMES[name])
         elif name not in ("DEGREE", "RADIAN"):
             raise Refusal(3, f"{os.path.basename(path)}: the unit '{name}' is not read (m, mm, cm, um, in, ft)")
     if len(found) != 1:
