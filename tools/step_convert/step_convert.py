@@ -55,6 +55,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import struct
 import zipfile
 from xml.sax.saxutils import quoteattr
 
@@ -219,6 +220,41 @@ def tessellate(solid, deflection, angle, name):
     return stitch.vertices, triangles
 
 
+def weld_to_stored_precision(vertices, triangles, scale, transform=None):
+    """The mesh with every vertex that is the same point once stored merged into the first of them.
+
+    The part files store float32 metres, and the engine's gate refuses a vertex at the position of an earlier one. Two
+    tessellation vertices a few nanometres apart (the stitcher's grid is finer than a float32 at a few centimetres) are
+    different doubles but one stored point, so merging exactly those changes nothing that is stored: it is no repair. A
+    pair that is still two points when stored is left alone. `scale` is metres per file unit; `transform` is the 3MF
+    12-number placement applied before the rounding, as the engine applies it. Triangles that become a line are dropped."""
+    def stored(p):
+        x, y, z = p
+        if transform is not None:
+            m = transform
+            x, y, z = (x * m[0] + y * m[3] + z * m[6] + m[9], x * m[1] + y * m[4] + z * m[7] + m[10],
+                       x * m[2] + y * m[5] + z * m[8] + m[11])
+        return tuple(struct.unpack("f", struct.pack("f", c * scale))[0] for c in (x, y, z))
+
+    first = {}
+    remap = []
+    kept = []
+    for p in vertices:
+        key = stored(p)
+        if key not in first:
+            first[key] = len(kept)
+            kept.append(p)
+        remap.append(first[key])
+    if len(kept) == len(vertices):
+        return vertices, triangles
+    welded = []
+    for a, b, c in triangles:
+        a, b, c = remap[a], remap[b], remap[c]
+        if a != b and b != c and a != c:
+            welded.append((a, b, c))
+    return kept, welded
+
+
 def name_of(label):
     from OCP.TDataStd import TDataStd_Name
 
@@ -350,9 +386,11 @@ def read_parts(path, unit, deflection, angle, wanted, skipped=None):
     parts = []
     for name, solid, location in read_solids(path, unit, wanted, skipped):
         vertices, triangles = tessellate(solid, deflection, angle, name)
+        placement = transform_of(location)
+        vertices, triangles = weld_to_stored_precision(vertices, triangles, UNITS[unit][0], placement)
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(solid, props)
-        parts.append(Part(name, vertices, triangles, transform_of(location), props.Mass()))
+        parts.append(Part(name, vertices, triangles, placement, props.Mass()))
     return parts
 
 
