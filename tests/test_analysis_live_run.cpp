@@ -1123,7 +1123,10 @@ TEST(AnalysisLiveRun, TheSolidsHealthLineSaysHowLooseThePressureWas) {
 // The ball body's frame (17 steps) with its solves held to k iterations,
 // measured 2026-11-04: at 4, 2 loose steps (up to 2.93e-5) and none
 // unconverged; at 3, 16 unconverged and the last, at 9.94e-5, loose; at the
-// CG's floor of 8, none of either.
+// CG's floor of 8, none of either. At 3 since L90 (2026-11-18: an outlet's faces
+// are left to the projection and the advection reads the ambient past them,
+// so the pressure problem the CG sees at the open faces is different): 6
+// unconverged and 11 loose, the loosest at 9.4e-5; 4 and 8 are as measured.
 TEST(AnalysisLiveRun, ALooseSolveIsCountedBesideTheUnconverged) {
     const Powered p = with_ball_body(0.1f, 0.2f);
     const auto held_to = [&](uint32_t k) {
@@ -1145,10 +1148,10 @@ TEST(AnalysisLiveRun, ALooseSolveIsCountedBesideTheUnconverged) {
               "pressure loose on 2 steps (max|r|/max|b| up to 2.9e-5; a healthy solve ends near 2e-6)");
     const an::LiveRun three = held_to(3);
     if (::testing::Test::HasFatalFailure()) return;
-    EXPECT_EQ(three.solids().unconverged_steps, 16u);
-    EXPECT_EQ(three.solids().loose_steps, 1u);
+    EXPECT_EQ(three.solids().unconverged_steps, 6u);
+    EXPECT_EQ(three.solids().loose_steps, 11u);
     EXPECT_EQ(three.solids().unconverged_steps + three.solids().loose_steps, three.state().steps);
-    EXPECT_NE(three.pressure_line().find("; pressure loose on 1 step (max|r|/max|b| up to 9.9e-5; a healthy solve"),
+    EXPECT_NE(three.pressure_line().find("; pressure loose on 11 steps (max|r|/max|b| up to 9.4e-5; a healthy solve"),
               std::string::npos)
         << three.pressure_line();
     const an::LiveRun eight = held_to(8);

@@ -11,9 +11,13 @@
 //   * fixed_velocity: a wall, or an open face the ambient flows in through.
 //     Its normal velocity is prescribed; the pressure is Neumann there.
 //   * pressure_outlet: an open face the ambient does not flow in through
-//     (still air included). p = 0 on the face; the normal velocity is copied
-//     from the neighbouring face, then corrected by the projection; flow into
-//     the box through it is refused (it takes the ambient's normal velocity).
+//     (still air included). p = 0 on the face; the normal velocity is the
+//     projection's, and apply_velocity_boundaries() leaves it alone. Flow into
+//     the box through it is taken, as the air a rotor draws in must come in, and
+//     the advection reads the ambient past the face (advect.cpp). (L90; until
+//     then the face took a copy of its neighbour and refused inflow, once a
+//     step, which wiped the entrainment and made a box hold a smaller share of
+//     an impulse the smaller h was.)
 //   * periodic: the last face copies the first.
 // Tangential velocities have no stored boundary value: the viscous step and
 // the sampler supply them (viscous.hpp, advect.hpp).

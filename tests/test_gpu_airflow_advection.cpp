@@ -47,6 +47,7 @@
 #include "core/detail/flush_subnormals.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/advect.hpp"
+#include "physics/airflow/boundaries.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "spike/airflow/chain_runner.hpp"
 
@@ -207,22 +208,30 @@ template <class T>
     const std::array<bool, 3> periodic = af::periodic_axes(bc);
     // airflow_params, Physics' draft: dims, grid {dx, 1/dx, h}, periodic,
     // offsets_advect {hat, lo, hi, faces_total}.
-    const std::vector<uint32_t> params = {in.shape.nx,
-                                          in.shape.ny,
-                                          in.shape.nz,
-                                          0u,
-                                          bits(in.shape.dx),
-                                          bits(1.0f / in.shape.dx),
-                                          bits(kStepS),
-                                          0u,
-                                          periodic[0] ? 1u : 0u,
-                                          periodic[1] ? 1u : 0u,
-                                          periodic[2] ? 1u : 0u,
-                                          0u,
-                                          0u,
-                                          static_cast<uint32_t>(total),
-                                          static_cast<uint32_t>(2u * total),
-                                          static_cast<uint32_t>(total)};
+    std::vector<uint32_t> params = {in.shape.nx,
+                                    in.shape.ny,
+                                    in.shape.nz,
+                                    0u,
+                                    bits(in.shape.dx),
+                                    bits(1.0f / in.shape.dx),
+                                    bits(kStepS),
+                                    0u,
+                                    periodic[0] ? 1u : 0u,
+                                    periodic[1] ? 1u : 0u,
+                                    periodic[2] ? 1u : 0u,
+                                    0u,
+                                    0u,
+                                    static_cast<uint32_t>(total),
+                                    static_cast<uint32_t>(2u * total),
+                                    static_cast<uint32_t>(total)};
+    // L90: the advection reads an ambient ghost past an outlet face, so the kernel reads the face kinds (words 18-23) and the ambient (word
+    // 27's face block, +19), as the chain's params carry them (airflow_params_layout.slang).
+    constexpr uint32_t kFaceBlockAt = 40;
+    params.resize(kFaceBlockAt + 22u, 0u);
+    const std::array<af::FaceKind, 6> kinds = af::face_kinds(bc);
+    for (uint32_t s = 0; s < 6; ++s) params[18u + s] = static_cast<uint32_t>(kinds[s]);
+    params[27] = kFaceBlockAt;
+    for (uint32_t c = 0; c < 3; ++c) params[kFaceBlockAt + 19u + c] = bits(bc.ambient[static_cast<glm::length_t>(c)]);
     const RunnerBuffer buffers[kBufferCount] = {
         {"airflow_params", params.size() * 4u, BufferKind::staged},
         {"airflow_u", n[0] * 4u, BufferKind::resident},

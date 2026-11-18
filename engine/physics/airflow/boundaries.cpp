@@ -25,14 +25,18 @@ float fixed_normal_velocity(const DomainBc& bc, Side side) noexcept {
 namespace {
 
 // One axis' normal faces. `at(q, a, b)` addresses the component's array with q
-// along the axis (0..n) and (a, b) across it.
+// along the axis (0..n) and (a, b) across it. A pressure outlet's faces are not
+// written (L90): the projection's p = 0 on the face sets what crosses it, and
+// the advection reads the ambient past it (advect.cpp). Until L90 the faces took
+// a copy of their neighbour and refused inflow, once a step and with no factor
+// of h, which wiped the air a rotor draws in: a box held a smaller share of an
+// impulse the smaller h was; copying without the refusal let backflow grow.
 template <class At>
 void apply_axis(const DomainBc& bc, uint32_t axis, uint32_t n, uint32_t m1, uint32_t m2, At at) noexcept {
     const auto lo = static_cast<Side>(2u * axis);
     const auto hi = static_cast<Side>(2u * axis + 1u);
     const FaceKind klo = face_kind(bc, lo);
     const FaceKind khi = face_kind(bc, hi);
-    const float amb = bc.ambient[static_cast<glm::length_t>(axis)];
     for (uint32_t b = 0; b < m2; ++b) {
         for (uint32_t a = 0; a < m1; ++a) {
             if (klo == FaceKind::periodic) {
@@ -41,18 +45,8 @@ void apply_axis(const DomainBc& bc, uint32_t axis, uint32_t n, uint32_t m1, uint
             }
             if (klo == FaceKind::fixed_velocity) {
                 at(0, a, b) = fixed_normal_velocity(bc, lo);
-            } else {
-                float copy = at(1, a, b);
-                if (copy > 0.0f) copy = amb;  // into the box through the minus face: refused
-                at(0, a, b) = copy;
-            }
-            if (khi == FaceKind::fixed_velocity) {
-                at(n, a, b) = fixed_normal_velocity(bc, hi);
-            } else {
-                float copy = at(n - 1u, a, b);
-                if (copy < 0.0f) copy = amb;  // into the box through the plus face: refused
-                at(n, a, b) = copy;
-            }
+            }  // else an outlet: its face is left as the projection set it (L90)
+            if (khi == FaceKind::fixed_velocity) at(n, a, b) = fixed_normal_velocity(bc, hi);
         }
     }
 }

@@ -112,12 +112,15 @@ struct Config {
         bc.wall_velocity[kYPlus] = glm::vec3(1.0f, 0.0f, 0.0f);
         out.push_back({"cavity slab 16x16x1", {16, 16, 1, 1.0f / 16.0f}, bc, 0.01f, 0.0f, 0x65010bddcee0e195ull});
     }
-    out.push_back({"open 9x7x5 (odd sizes)", {9, 7, 5, 0.1f}, DomainBc{}, 0.01f, 0.0f, 0xb3b2e6318b608bbaull});
-    out.push_back({"open 16x12x16, disc", {16, 12, 16, 0.05f}, DomainBc{}, 0.0f, 3.0f, 0x77d0cf5b91536b69ull});
+    // L90 (2026-11-18): the five configurations with an open face (every one that is not periodic or walled) were re-pinned: an outlet's faces are
+    // left to the projection and the advection reads an ambient ghost past them (boundaries.cpp, advect.cpp; was a copy of the neighbour with inflow
+    // refused). The periodic, walled and cavity digests above are unchanged: those faces are bit-identical.
+    out.push_back({"open 9x7x5 (odd sizes)", {9, 7, 5, 0.1f}, DomainBc{}, 0.01f, 0.0f, 0x56707cc190cd8e1dull});
+    out.push_back({"open 16x12x16, disc", {16, 12, 16, 0.05f}, DomainBc{}, 0.0f, 3.0f, 0x747a9a1e77bf9740ull});
     {
         DomainBc bc;  // a wind: inflow where it enters, outlets elsewhere
         bc.ambient = glm::vec3(0.8f, -0.2f, 0.3f);
-        out.push_back({"wind 12x10x8", {12, 10, 8, 0.1f}, bc, 0.01f, 0.0f, 0xaddf3b286bfb16c3ull});
+        out.push_back({"wind 12x10x8", {12, 10, 8, 0.1f}, bc, 0.01f, 0.0f, 0x6ce704702b0a9ba7ull});
     }
     {
         DomainBc bc;  // the drone box: a rolling-road floor under a wind, periodic in z
@@ -126,12 +129,12 @@ struct Config {
         bc.wall_velocity[kYMinus] = glm::vec3(1.0f, 0.0f, 0.0f);
         bc.face[kZMinus] = FaceBc::periodic;
         bc.face[kZPlus] = FaceBc::periodic;
-        out.push_back({"floor under wind 12x8x8, disc", {12, 8, 8, 0.1f}, bc, 0.01f, 2.0f, 0x7920c38ea12394a1ull});
+        out.push_back({"floor under wind 12x8x8, disc", {12, 8, 8, 0.1f}, bc, 0.01f, 2.0f, 0x03de1fb4e13e3e72ull});
     }
     {
         DomainBc bc;
         bc.face = {FaceBc::periodic, FaceBc::periodic, FaceBc::wall, FaceBc::open, FaceBc::wall, FaceBc::wall};
-        out.push_back({"one-cell x 1x8x8", {1, 8, 8, 0.1f}, bc, 0.01f, 0.0f, 0xb40e6662a0c95d54ull});
+        out.push_back({"one-cell x 1x8x8", {1, 8, 8, 0.1f}, bc, 0.01f, 0.0f, 0xf9055fa7b35de410ull});
     }
     return out;
 }
