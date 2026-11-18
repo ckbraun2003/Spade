@@ -1550,6 +1550,7 @@ struct WebPlan {
     std::string build_parts;                          // --build-parts: Core's parts table drawn over the held body (presentation only)
     std::string part_store;                           // --part-store: the store the table's objects are read from
     PropBlur prop_blur;                               // --prop-blur: the rotors' blade blur
+    std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
@@ -1706,7 +1707,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
         const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
-        const web::Framing& framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        web::Framing framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        if (plan.elevation) framing.elevation_deg = *plan.elevation;  // --elevation: a close-up from higher up
         const glm::vec3 still_aim = web::subject_point(framing.aim_below_m);
         if (id == "S1") {
             view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
@@ -1931,6 +1933,7 @@ struct Options {
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
+    std::optional<float> elevation;  // --elevation DEG: the camera's elevation for a web still, in place of the drone's (web::parse_elevation_deg)
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
@@ -2203,6 +2206,7 @@ constexpr double kD1Seconds = 0.6;
     if (opt.sgs_cs && *opt.sgs_cs != web::kD1WebSgsCs) {
         return stop("a clip filmed at another Smagorinsky Cs (--sgs-cs) is a diagnostic, not a master");
     }
+    if (opt.elevation) return stop("a camera elevation (--elevation) is for stills, not a master");
     if (opt.particles_preview) {
         return stop("a particle preview (--particles-preview) is a diagnostic, not a master");
     }
@@ -2570,6 +2574,7 @@ struct WebFilming {
         plan.particles = true;
     }
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
+    plan.elevation = opt.elevation;
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
     plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
@@ -3097,6 +3102,13 @@ int main(int argc, char** argv) {
             opt.video = "web";
         } else if (arg == "--web-frames") {
             opt.web_frames = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--elevation") {
+            opt.elevation = web::parse_elevation_deg(value());
+            if (!opt.elevation) {
+                std::fprintf(stderr, "flow_movie: --elevation takes one number above 0 and at most 85 (degrees above the drone), as 55
+");
+                return 2;
+            }
         } else if (arg == "--sgs-cs") {
             opt.sgs_cs = web::parse_sgs_cs(value());
             if (!opt.sgs_cs) {

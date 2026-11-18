@@ -125,6 +125,29 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return value;
 }
 
+// --elevation DEG: how far above the drone the still's camera looks down from, in place of the drone's own framing (the X500's 20): a close-up of the
+// top plate's boards wants a higher camera. One whole number above 0 and at most 85 (straight overhead has no "up" for the orbit): no sign, no
+// blanks, no exponent, no trailing text. nullopt otherwise.
+[[nodiscard]] inline std::optional<float> parse_elevation_deg(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    bool digit = false, point = false;
+    for (const char c : text) {
+        if (c >= '0' && c <= '9') {
+            digit = true;
+        } else if (c == '.' && !point) {
+            point = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!digit) return std::nullopt;
+    float value = 0.0f;
+    const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
+    if (!(value > 0.0f && value <= 85.0f)) return std::nullopt;
+    return value;
+}
+
 // The folder suffix of a run at `cs`: none at the master's Cs, else "-cs<cs>". A run at another Cs keeps its frames in a
 // folder of its own, so it can never be mistaken for, or overwrite, the master's cache.
 [[nodiscard]] inline std::string sgs_cs_suffix(float cs) {
