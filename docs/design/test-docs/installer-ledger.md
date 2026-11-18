@@ -7,3 +7,4 @@ The stills, the tour video and the full log stay beside the setup.exe in the bui
 | Tested (UTC) | Setup | sha256 (12) | Size | Result | Live smoke | Windows; GPU, driver | Job ticket | Record |
 |---|---|---|---|---|---|---|---|---|
 | 2026-11-17 21:02Z | `Spade-Editor-0.1.0-6f356be-setup` | `4d858df55fea` | 8.9 MB | **FAIL** 18/21 | END verdict=PASS | Microsoft Windows 10 Home 10.0.19045 (build 19045); NVIDIA GeForce RTX 3060 Ti, 572.83 (nvidia-smi: name, driver) | spade-testdocs-installer-6f356be-r4 | [record](installer-records/Spade-Editor-0.1.0-6f356be-setup.test.md) |
+| 2026-11-18 02:58Z | `Spade-Editor-0.1.0-eb870a9-setup` | `a213b7a4a95f` | 9.1 MB | **PASS** 21/21 | END verdict=PASS | Microsoft Windows 10 Home 10.0.19045 (build 19045); NVIDIA GeForce RTX 3060 Ti, 572.83 (nvidia-smi: name, driver) | spade-testdocs-installer-eb870a9 | [record](installer-records/Spade-Editor-0.1.0-eb870a9-setup.test.md) |
