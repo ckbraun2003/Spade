@@ -1,0 +1,37 @@
+{
+ "description": "an entry that has no file (a drone with a parts map)",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "mesh_file_info",
+ "request": {
+  "id": "kat:drone.quad"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "mesh_file_info",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "id",
+   "issues": []
+  }
+ }
+}

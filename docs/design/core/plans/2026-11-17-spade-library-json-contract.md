@@ -186,7 +186,7 @@ Every request is a JSON object; the keys below are all of them (others are refus
   "bbox_min": [-0.1, -0.1, -0.03], "bbox_max": [0.1, 0.1, 0.03],
   "volume_m3": 0.000052, "unit": "m", "sha256": "sha256:...", "solid": true }
 ```
-(`container` is spmesh, 3mf, gltf, stl or obj; `unit` null where the file declares none; `volume_m3` and `solid` null for a presentation glTF that is not a closed solid.)
+(`container` is spmesh, 3mf, gltf, stl or obj; `unit` null where the file declares none; `volume_m3` and `solid` null for a presentation glTF that is not a closed solid, whose `triangles`, `vertices` and box still come from the render loader's positions. Exactly one of `path` (absolute) and `id` (an entry with a `file`) is given. A binary STL or OBJ declares no unit, so the request carries `unit` (m, mm, cm, um, in, ft) or it is refused `invalid_request` with `unit` in `field`; the result's `unit` is then that one. A file that fails its reader is `invalid_entry` with the reader's message as the one issue; an extension that is none of the five is `invalid_request`, field `path`.)
 
 ### add_entry, update_entry, remove_entry [shape]
 ```json
