@@ -24,7 +24,7 @@
   "context": {
     "date": "2026-11-16T07:34:56-05:00",
     "host_name": "DESKTOP-1SG90PU",
-    "executable": "C:\\Users\\Cameron\\Desktop\\Projects\\spade-wt\\test-docs\\build-ninja\\release\\bin\\spade_bench.exe",
+    "executable": "%USERPROFILE%\\Desktop\\Projects\\spade-wt\\test-docs\\build-ninja\\release\\bin\\spade_bench.exe",
     "num_cpus": 16,
     "mhz_per_cpu": 3600,
     "caches": [

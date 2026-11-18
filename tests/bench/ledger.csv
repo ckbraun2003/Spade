@@ -34,7 +34,7 @@ date,sha,metric,unit,median,min,max,n,notes
 2026-11-16,da7a37bd,rendering.puppet_frame_128_shadows_on,ms,10.657,10.584,10.889,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0
 2026-11-16,da7a37bd,rendering.puppet_frame_1_shadows_off,ms,0.645,0.628,0.771,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0
 2026-11-16,da7a37bd,rendering.puppet_frame_1_shadows_on,ms,0.899,0.874,1.027,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0
-2026-11-16,da7a37bd,rendering.web_frame_4k,s,0.4524,0.4497,0.4621,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0;web_cache=C:/Users/Cameron/Desktop/spade-videos/perf-web-s1-30/cache/web-d1-still-0-0.18-180f_180_frames_20553588651_bytes
+2026-11-16,da7a37bd,rendering.web_frame_4k,s,0.4524,0.4497,0.4621,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0;web_cache=%USERPROFILE%/Desktop/spade-videos/perf-web-s1-30/cache/web-d1-still-0-0.18-180f_180_frames_20553588651_bytes
 2026-11-16,da7a37bd,core.step_quad_worlds_gpu/1,ms,0.143812,0.141094,0.148701,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0
 2026-11-16,da7a37bd,core.step_quad_worlds_gpu/16,ms,0.175639,0.175191,0.177511,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0
 2026-11-16,da7a37bd,core.step_quad_worlds_gpu/4,ms,0.151926,0.151243,0.153384,5,run=2026-11-16_da7a37b;basis=real_time;noisy=0

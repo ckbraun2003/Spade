@@ -30,7 +30,9 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-VANTAGE = r"C:\Users\Cameron\Desktop\Vantage\vantage.py"  # the jobs service: `job status` lists the slots (the old jobrun.py is a shim to it)
+HOME = os.path.expanduser("~")
+# The jobs service: `job status` lists the slots. VANTAGE_PY names it; the default is <home>\Desktop\Vantage\vantage.py.
+VANTAGE = os.environ.get("VANTAGE_PY") or os.path.join(HOME, "Desktop", "Vantage", "vantage.py")
 LEDGER_HEADER = ["date", "sha", "metric", "unit", "median", "min", "max", "n", "notes"]
 ENV_HEADER = ["run", "sha", "harness_sha", "tree", "build_type", "compiler", "gpu", "gpu_driver", "power_plan", "free_phys_gb", "free_commit_gb",
               "cpu", "logical_cpus", "idle_cpu_pct", "queue", "noisy", "metrics"]
@@ -425,13 +427,23 @@ def summary(values):
 
 # ---- the ledger ---------------------------------------------------------------------------------------------------
 
+def public(text, home=None):
+    """A cell for the committed ledger and environment files (the repo is public): the user's home folder written as %USERPROFILE%.
+    Either slash, any case, whole folder names only (C:\\Users\\ada does not match C:\\Users\\adam)."""
+    home = HOME if home is None else home
+    parts = [p for p in re.split(r"[\\/]+", home) if p]
+    if not parts or not isinstance(text, str):
+        return text
+    return re.sub("(?i)" + r"[\\/]+".join(re.escape(p) for p in parts) + r"(?![\w~-])", lambda _: "%USERPROFILE%", text)
+
+
 def append_rows(path, header, rows):
     new = not os.path.exists(path) or os.path.getsize(path) == 0
     with open(path, "a", encoding="utf8", newline="") as f:
         w = csv.writer(f, lineterminator="\n")
         if new:
             w.writerow(header)
-        w.writerows(rows)
+        w.writerows([[public(c) for c in row] for row in rows])
 
 
 def git(tree, *args):
@@ -472,7 +484,7 @@ def cmd_measure(a):
     today = datetime.date.today().isoformat()
     run_id = "%s_%s" % (today, sha[:7])
     exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
-    ctx = {"repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
+    ctx = {"home": HOME.replace("\\", "/"), "repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
            "smoke_out": os.path.join(REPO, "build-bench", "perf-smoke"),
            "ticket": "perf-" + run_id, "run_id": run_id,
            "raw_dir": os.path.abspath(a.raw_dir or os.path.dirname(os.path.abspath(a.out_json or a.ledger)))}
