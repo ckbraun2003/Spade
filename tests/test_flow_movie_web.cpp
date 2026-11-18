@@ -743,3 +743,60 @@ TEST(FlowMovieWeb, ACacheDirIsOnlyForAStillOnlyRedrawOfAFrameThatIsThere) {
     EXPECT_NE(web::cache_dir_refusal("D", true, true, false).find("never simulates"), std::string::npos);
 }
 
+// --loop-blend S (Oversight via the lead, 2026-11-17: the site loops each clip and the flow does not repeat, so S8 jumped every 10 s):
+// the clip renders E = round(S x 30) frames PAST its end; its first E frames are a crossfade from the continuation (frame N + j) to
+// the clip's own start (frame j), so the last frame N - 1 runs into a head that begins as frame N would have, and ends as frame E, the
+// frame after the blend. The weight of the start in frame j is a smoothstep of (j + 1) / (E + 1): strictly between 0 and 1, rising,
+// 0.5 in the middle. The caption names the method.
+TEST(FlowMovieWeb, ALoopBlendIsAWholeNumberOfFramesLessThanHalfTheClipAndRendersThatManyExtra) {
+    EXPECT_EQ(web::loop_blend_frames(1.0, 300u), 30u);
+    EXPECT_EQ(web::loop_blend_frames(0.5, 300u), 15u);
+    EXPECT_EQ(web::loop_blend_frames(0.0, 300u), 0u) << "off";
+    EXPECT_EQ(web::loop_blend_refusal(1.0, 300u), "");
+    EXPECT_EQ(web::loop_blend_refusal(0.0, 300u), "");
+    for (const auto& [seconds, frames] : std::vector<std::pair<double, uint32_t>>{{-1.0, 300u}, {5.1, 300u}, {10.0, 300u}, {0.01, 300u}, {1.0, 40u}}) {
+        const std::string why = web::loop_blend_refusal(seconds, frames);
+        EXPECT_NE(why.find("--loop-blend"), std::string::npos) << seconds << " of " << frames << ": " << why;
+    }
+    EXPECT_EQ(web::loop_blend_total_frames(300u, 30u), 330u) << "the clip's frames and the blend's extra";
+    EXPECT_EQ(web::loop_blend_total_frames(300u, 0u), 300u);
+}
+
+TEST(FlowMovieWeb, TheLoopBlendWeightRisesStrictlyFromNearNothingToNearOneAndIsHalfInTheMiddle) {
+    const uint32_t e = 30;
+    float previous = 0.0f;
+    for (uint32_t j = 0; j < e; ++j) {
+        const float w = web::loop_blend_weight(j, e);
+        EXPECT_GT(w, 0.0f) << j;
+        EXPECT_LT(w, 1.0f) << j;
+        EXPECT_GT(w, previous) << "strictly rising at " << j;
+        previous = w;
+    }
+    EXPECT_LT(web::loop_blend_weight(0, e), 0.01f) << "the first blended frame is almost the continuation";
+    EXPECT_GT(web::loop_blend_weight(e - 1, e), 0.99f) << "the last is almost the start";
+    EXPECT_NEAR(web::loop_blend_weight(14, 29), 0.5f, 0.02f) << "the middle of an odd count";
+    EXPECT_NEAR(web::loop_blend_weight(0, 1), 0.5f, 1e-6f) << "one frame: halfway";
+}
+
+TEST(FlowMovieWeb, ABlendedPixelIsTheWeightedMixRoundedAndWeightsOfZeroAndOneKeepTheEnds) {
+    const std::vector<uint8_t> tail = {0, 100, 200, 255, 10, 20, 30, 255};   // two RGBA pixels
+    const std::vector<uint8_t> head = {100, 200, 0, 255, 250, 20, 30, 255};
+    auto mixed = web::blend_rgba(tail, head, 0.25f);
+    ASSERT_EQ(mixed.size(), tail.size());
+    EXPECT_EQ(mixed[0], 25) << "0.75 x 0 + 0.25 x 100";
+    EXPECT_EQ(mixed[1], 125);
+    EXPECT_EQ(mixed[2], 150);
+    EXPECT_EQ(mixed[3], 255) << "alpha is kept";
+    EXPECT_EQ(mixed[4], 70);
+    EXPECT_EQ(web::blend_rgba(tail, head, 0.0f), tail);
+    EXPECT_EQ(web::blend_rgba(tail, head, 1.0f), head);
+    EXPECT_TRUE(web::blend_rgba(tail, std::vector<uint8_t>{1, 2, 3}, 0.5f).empty()) << "frames of different sizes are not blended";
+}
+
+TEST(FlowMovieWeb, ALoopBlendedCaptionNamesTheMethod) {
+    EXPECT_EQ(web::loop_blend_caption(0u), "");
+    const std::string said = web::loop_blend_caption(30u);
+    EXPECT_NE(said.find("crossfade"), std::string::npos) << said;
+    EXPECT_NE(said.find("1 s"), std::string::npos) << said;
+}
+
