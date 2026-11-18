@@ -932,3 +932,16 @@ TEST(FlowMovieWeb, ADronesReachIsItsFarthestRotorTipFromTheAxis) {
     EXPECT_GT(web::find_drone("x500")->reach_m, web::find_drone("phantom3_class")->reach_m);
 }
 
+// THE CAMERA'S ELEVATION (--elevation DEG, the web stills): the X500 shot looks down 20 degrees; a close-up of the boards on the top plate
+// (which way the controller, the computer and the GPS face) needs a higher camera. One number, whole, above 0 and at most 85 (a camera
+// straight overhead has no "up" for the orbit); nothing else is a camera.
+TEST(FlowMovieWeb, TheCameraElevationOptionTakesOneNumberAboveZeroAndAtMost85) {
+    ASSERT_TRUE(web::parse_elevation_deg("20").has_value());
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("20"), 20.0f);
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("62.5"), 62.5f);
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("85"), 85.0f);
+    for (const char* bad : {"", "0", "-5", "86", "90", "1e1", "20deg", " 20", "twenty", "."}) {
+        EXPECT_FALSE(web::parse_elevation_deg(bad).has_value()) << "'" << bad << "'";
+    }
+}
+
