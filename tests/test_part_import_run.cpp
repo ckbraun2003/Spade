@@ -420,6 +420,40 @@ TEST(PartImportImport, TheGateIsRunOnThePickedObjectsOnlyAndARefusalIsMeshRefuse
     EXPECT_EQ(r.result.at("objects")[0].value("name", std::string()), "c");
 }
 
+TEST(PartImportImport, SeveralObjectsCanBePickedAndAreStoredAsOneEntryWhateverTheOrderOfThePicks) {
+    Rig rig;
+    const std::string bytes = three_mf({cube_object(1, "a", 10.0), cube_object(2, "b", 10.0, 40.0, 11), cube_object(3, "c", 10.0, 80.0)});
+    const fs::path in = rig.put("three.3mf", bytes);
+    // b is the open one: picking a and c leaves it alone
+    Out r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a", "--object", "c"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_FALSE(r.result.value("cached", true));
+    ASSERT_EQ(r.result.at("objects").size(), 2u);
+    EXPECT_EQ(r.result.at("objects")[0].value("name", std::string()), "a");
+    EXPECT_EQ(r.result.at("objects")[1].value("name", std::string()), "c");
+    // the same picks in the other order, and a name twice, are the same entry: a cache hit
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "c", "--object", "a", "--object", "c"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_TRUE(r.result.value("cached", false));
+    EXPECT_EQ(r.result.at("objects").size(), 2u);
+    // one pick is its own entry, not a hit of the pair
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_FALSE(r.result.value("cached", true));
+    EXPECT_EQ(r.result.at("objects").size(), 1u);
+    // a refused one among the picks refuses the import; an unknown name is object_not_found
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a", "--object", "b"}));
+    EXPECT_EQ(r.exit, 4) << r.out;
+    EXPECT_EQ(r.code(), "mesh_refused");
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a", "--object", "nothing"}));
+    EXPECT_EQ(r.code(), "object_not_found");
+    EXPECT_NE(r.result.value("message", std::string()).find("nothing"), std::string::npos);
+    // an inspect takes the same list
+    r = rig.run(A({"--inspect", in.string(), "--object", "a", "--object", "c"}));
+    EXPECT_EQ(r.exit, 0) << r.out;
+    EXPECT_EQ(r.result.at("objects").size(), 2u);
+}
+
 TEST(PartImportInspect, AxesAndScaleShowThePartFrame) {
     Rig rig;
     const Out r = rig.run(A({"--inspect", rig.put("cube.glb", cube_glb(2.0f)).string(), "--axes", "-y,x,z", "--scale", "0.5"}));

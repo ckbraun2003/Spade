@@ -221,6 +221,27 @@ TEST(PartImportStep, APartWithNoSolidIsListedAsSkippedWithItsCodeAndTheRestIsRea
     EXPECT_EQ(deep.result.at("objects").size(), 2u);  // the solids only: the skipped one is not an object of the gate
 }
 
+TEST(PartImportStep, SeveralSolidsPickedAreAskedOfTheConverterTogetherAndAnImportResultNamesTheSkippedOnes) {
+    NEED_PYTHON();
+    const EnvGuard mode("FAKE_STEP_MODE", "sheet");
+    StepRig rig;
+    const Out r = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm",
+                                              "--object", "arm", "--object", "hub"}));
+    ASSERT_EQ(r.exit, 0) << r.result.dump();
+    EXPECT_EQ(r.result.at("objects").size(), 2u);
+    ASSERT_TRUE(r.result.contains("skipped")) << r.result.dump();
+    ASSERT_EQ(r.result.at("skipped").size(), 1u);
+    EXPECT_EQ(r.result.at("skipped")[0].value("name", std::string()), "cover");
+    EXPECT_EQ(r.result.at("skipped")[0].value("code", std::string()), "no_solid");
+    // the skipped part is part of the entry: a cache hit says it too
+    const Out again = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm",
+                                                  "--object", "hub", "--object", "arm"}));
+    ASSERT_EQ(again.exit, 0) << again.result.dump();
+    EXPECT_TRUE(again.result.value("cached", false));
+    ASSERT_TRUE(again.result.contains("skipped")) << again.result.dump();
+    EXPECT_EQ(again.result.at("skipped").size(), 1u);
+}
+
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
     NEED_PYTHON();
     StepRig rig;
