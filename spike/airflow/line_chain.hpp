@@ -67,6 +67,12 @@ struct LineRecords {
                                                const physics::airflow::GridShape& shape, float rho, float h,
                                                uint32_t n_sub);
 
+// THE ROTOR BOXES (L86i; airflow_line_spread_binned), kLineRangeWords floats a rotor: [0] the rotor's first element (global), [1] its element
+// count, then for component c = 0, 1, 2 at 2 + 6 c: the lo (x, y, z) of the faces its elements' stencils reach, then the hi (exclusive).
+// All floats, exact integers. A rotor with no elements has count 0.
+inline constexpr uint32_t kLineRangeWords = 20;
+[[nodiscard]] std::vector<float> line_ranges(const LineRecords& records);
+
 // airflow_line_polar's floats for a polar.
 [[nodiscard]] std::vector<float> polar_records(const physics::airflow::PolarTable& polar);
 

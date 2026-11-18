@@ -21,6 +21,7 @@
 #include "core/rng.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/grid_io.hpp"
+#include "physics/airflow/line.hpp"
 #include "physics/airflow/mac_grid.hpp"
 #include "physics/airflow/publish.hpp"
 #include "physics/blade_azimuth.hpp"
@@ -34,6 +35,7 @@
 #include "vehicles/part_pose.hpp"
 #include "vehicles/propulsion_flags.hpp"
 #include "vehicles/rotor_discs.hpp"
+#include "vehicles/rotor_lines.hpp"
 #include "world/builder.hpp"
 
 namespace spade::analysis {
@@ -307,7 +309,12 @@ struct LiveRun::Impl {
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
     uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
+    // Declared before the device: the device borrows the lines' blade and polar (LineSetup::polar), so it must be destroyed first.
+    std::optional<LiveLines> lines;     // the rotors as actuator lines (L86j), start()'s copy
     std::unique_ptr<LiveFluid> device;  // the fluid, when start() was handed one; null: the CPU's, above
+    std::vector<af::LineRotor> line_rotors;  // their lines this step
+    std::vector<af::ActuatorDisc> line_discs;  // their discs with no load: the dye's release
+    std::vector<float> psi_start;              // the blade azimuths as the step began (the line's own psi)
 };
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -362,7 +369,25 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
 }
 
 Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                               const LiveFluidMaker& fluid) {
+                               const LiveFluidMaker& fluid, const LiveLines* lines) {
+    if (lines != nullptr) {
+        const auto refuse = [](const std::string& why) {
+            return std::unexpected(Error{Code::invalid_argument, "live lines: " + why});
+        };
+        if (!fluid) {
+            return refuse("the rotors as actuator lines are stepped by the fluid's device: start() needs a LiveFluidMaker (the CPU run "
+                          "steps discs)");
+        }
+        if (model.rotors.empty()) return refuse("the model has no rotors");
+        if (lines->n_sub == 0) return refuse("n_sub must be at least 1");
+        if (const Result<void> b = af::check_blade(lines->blade); !b) return refuse("the blade: " + b.error().context);
+        for (std::size_t i = 0; i < model.rotors.size(); ++i) {
+            if (!(std::fabs(model.rotors[i].radius - lines->blade.radius) <= 1.0e-4f)) {
+                return refuse(std::format("rotor {}'s radius {:.5g} m is not the blade's {:.5g} m: every rotor turns this one propeller",
+                                          i, model.rotors[i].radius, lines->blade.radius));
+            }
+        }
+    }
     const AnalysisCase& c = resolved.spec;
     const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
@@ -612,6 +637,12 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->rows.resize(model.rotors.size());
     impl->psi.assign(model.rotors.size(), 0.0f);
     impl->discs.resize(model.rotors.size());
+    if (lines != nullptr) {
+        impl->lines = *lines;
+        impl->line_rotors.resize(model.rotors.size());
+        impl->line_discs.resize(model.rotors.size());
+        impl->psi_start.assign(model.rotors.size(), 0.0f);
+    }
     impl->q_bd = glm::normalize(model.design_to_principal);
     const Result<const BodyState*> spawned = impl->sim->body(impl->vehicle.body);
     if (!spawned) return std::unexpected(spawned.error());
@@ -621,11 +652,35 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->held.orient = at_rest.orient;
     impl->held.vel = at_rest.vel;
     impl->held.omega_body = at_rest.omega;
+    // The lines at the held body, at rest: each checked as the device checks them, and their elements counted (fixed for the run).
+    uint32_t line_elements = 0;
+    if (impl->lines) {
+        std::vector<vehicles::RotorRow> start_rows(model.rotors.size());
+        for (uint32_t i = 0; i < start_rows.size(); ++i) {
+            const Result<const vehicles::RotorRow*> row = impl->sim->rotor(impl->vehicle, i);
+            if (!row) return std::unexpected(row.error());
+            start_rows[i] = **row;
+        }
+        if (Result<void> made = vehicles::rotor_lines(start_rows, impl->held, impl->psi_start, impl->grid_origin, resolved.base,
+                                                      impl->lines->blade, impl->lines->polar, impl->line_rotors);
+            !made) {
+            return std::unexpected(Error{made.error().code, "live lines: " + made.error().context});
+        }
+        for (std::size_t i = 0; i < impl->line_rotors.size(); ++i) {
+            if (Result<void> ok = af::check_line(impl->line_rotors[i], resolved.base, impl->fluid.rho, impl->fluid.h, impl->lines->n_sub);
+                !ok) {
+                return std::unexpected(Error{ok.error().code, std::format("live lines: rotor {}: {}", i, ok.error().context)});
+            }
+            line_elements += static_cast<uint32_t>(
+                af::line_elements(impl->line_rotors[i], resolved.base.dx, impl->fluid.h, impl->lines->n_sub).size());
+        }
+    }
     // The fluid's device, from the run's own first fields (B7's seam).
     if (fluid) {
         const af::SolidField* field = impl->solids.any ? &impl->scratch.solids : nullptr;
-        Result<std::unique_ptr<LiveFluid>> device =
-            fluid(LiveFluidStart{impl->grid, resolved.domain, impl->fluid, field});
+        Result<std::unique_ptr<LiveFluid>> device = fluid(LiveFluidStart{
+            impl->grid, resolved.domain, impl->fluid, field, impl->lines ? &*impl->lines : nullptr, line_elements,
+            impl->lines ? static_cast<uint32_t>(model.rotors.size()) : 0u});
         if (!device) {
             return std::unexpected(Error{device.error().code, "the fluid's device: " + device.error().context});
         }
@@ -697,6 +752,7 @@ Result<void> LiveRun::step(const Controls& controls) {
         r.rows[i] = **row;
         r.state.rotor_omega[i] = (*row)->omega;
     }
+    if (r.lines) r.psi_start = r.psi;  // a line's own psi: the azimuth as the step begins
     // The blade azimuths by P11's rule, with the rows as the step left them.
     // Drawn only: a refused rotor holds, and the step goes on.
     if (!physics::advance_blade_azimuths(r.psi, r.rows, r.fluid.h) && r.azimuth_refused.empty()) {
@@ -715,7 +771,20 @@ Result<void> LiveRun::step(const Controls& controls) {
     // itself, or here on the CPU.
     af::FluidHealth health;
     if (r.device) {
-        const Result<af::FluidHealth> on_device = r.device->step(r.discs);
+        if (r.lines) {  // the lines carry the force; the discs go with no load, for the dye's release
+            if (Result<void> l = vehicles::rotor_lines(r.rows, r.held, r.psi_start, r.grid_origin, r.resolved.base, r.lines->blade,
+                                                       r.lines->polar, r.line_rotors);
+                !l) {
+                r.fault = "the rotors' lines were refused at step " + std::to_string(r.state.steps + 1) + ": " + l.error().context;
+                return std::unexpected(Error{l.error().code, r.fault});
+            }
+            r.line_discs = r.discs;
+            for (af::ActuatorDisc& d : r.line_discs) {
+                d.thrust = 0.0f;
+                d.torque = 0.0f;
+            }
+        }
+        const Result<af::FluidHealth> on_device = r.lines ? r.device->step(r.line_discs, r.line_rotors) : r.device->step(r.discs);
         if (!on_device) {
             r.fault = "the fluid's device failed at step " + std::to_string(r.state.steps + 1) + ": " +
                       on_device.error().context;
@@ -833,7 +902,10 @@ std::string LiveRun::run_label() const {
     const std::vector<ResolvedRotor>& rotors = r.resolved.rotors;
     const bool one_model = std::all_of(rotors.begin(), rotors.end(),
                                        [&](const ResolvedRotor& x) { return x.model == rotors.front().model; });
-    out += rotors.empty() ? "no rotors" : one_model ? std::string(rotor_model_name(rotors.front().model)) : "mixed rotors";
+    out += rotors.empty()  ? "no rotors"
+           : r.lines       ? "actuator line"
+           : one_model     ? std::string(rotor_model_name(rotors.front().model))
+                           : "mixed rotors";
     out += " \xc2\xb7 ";  // a middle dot
     out += g.nx == g.ny && g.ny == g.nz ? std::format("{}\xc2\xb3", g.nx)  // a superscript three
                                         : std::format("{}x{}x{}", g.nx, g.ny, g.nz);
@@ -1063,6 +1135,11 @@ const ControlProgram& LiveRun::recorded_controls() const noexcept { return impl_
 
 Result<void> LiveRun::save(const std::filesystem::path& file) const {
     const Impl& r = *impl_;
+    if (r.lines) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "a run with the rotors as actuator lines isn't saved: the save holds no lines, so its restore "
+                                     "would fly discs"});
+    }
     if (!r.fault.empty()) {
         return std::unexpected(Error{Code::invalid_argument,
                                      "a faulted run isn't saved (" + r.fault + "); its last good save is the one before"});

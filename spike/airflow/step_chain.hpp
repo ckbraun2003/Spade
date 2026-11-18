@@ -108,6 +108,11 @@ struct LineSetup {
     // L72k's A1: the chain carries airflow_line_tipcorr (the tip/smearing correction, between the sample and the load) and the
     // elements buffer the groups' records. A rotor with tip_correction on is refused by a GpuFluid made without it.
     bool tip_correction = true;  // the rotors' default (LineRotor::tip_correction); a LineSetup must agree with them
+    // L86i: the spread by rotor boxes (airflow_line_spread_binned): a face visits only the rotors whose stencil box holds it, so the
+    // cost is the rotors' faces x their elements, not the grid's faces x all elements (the deep box: 380 ms a step less). The bits are the
+    // unbinned kernel's. `rotors` is the count of rotors every step gives, at least 1; each step's lines must be that many.
+    bool binned = false;
+    uint32_t rotors = 0;
 };
 
 // THE PASSIVE DYE (P10; physics/airflow/dye.hpp, the kernels airflow_dye_{advect,source,publish}): what a GpuFluid that carries a
@@ -116,6 +121,9 @@ struct LineSetup {
 // writes it into V's channel 3. Passive: with or without it, u, v, w and p are the same bits.
 struct DyeSetup {
     physics::airflow::DyeRelease release{};
+    // L86i: also release at the line's blade tips (dye.hpp's tip_points()/emit_tip_dye(), airflow_dye_tip): after the discs' release on a
+    // step with lines (step(discs, lines)); needs a LineSetup. A step without lines releases none.
+    std::optional<physics::airflow::TipRelease> tip{};
 };
 
 class GpuFluid {
@@ -199,7 +207,7 @@ public:
 private:
     GpuFluid() = default;
     [[nodiscard]] Result<uint32_t> step_chain_for(uint32_t disc_count);
-    [[nodiscard]] Result<uint32_t> dye_chain_for(uint32_t disc_count);
+    [[nodiscard]] Result<uint32_t> dye_chain_for(uint32_t disc_count, bool with_tip);
     [[nodiscard]] Result<physics::airflow::FluidHealth> step_flow(std::span<const physics::airflow::ActuatorDisc> discs);
 
     physics::airflow::GridShape shape_{};
@@ -222,12 +230,20 @@ private:
     uint32_t line_elements_ = 0;
     uint32_t line_n_sub_ = 1;
     bool line_tip_ = false;
+    uint32_t line_binned_pipeline_ = 0;  // airflow_line_spread_binned's, when binned
     uint32_t line_chain_ = 0;     // sample, load and the three spreads, the force read back
     physics::airflow::PolarTable line_polar_{};
     std::vector<physics::airflow::LineReport> line_reports_;
     bool dye_on_ = false;
     uint32_t dye_pipeline_ = 0;  // airflow_dye_advect's pipeline; source and publish follow it
     std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_chains_{};  // advect (two passes) and the release, by disc count
+    bool tip_on_ = false;        // DyeSetup::tip: the tip release's kernel follows the publish's pipeline
+    float tip_frac_ = 1.0f;
+    bool line_binned_ = false;   // LineSetup::binned: the spread by rotor boxes
+    uint32_t line_rotors_ = 0;
+    uint64_t line_ranges_at_ = 0;  // where the rotor boxes start in the elements buffer, in floats
+    bool tip_live_ = false;      // this step has lines, so its tip points are in the elements buffer
+    std::array<std::optional<uint32_t>, kMaxDiscs + 1> dye_tip_chains_{};  // the same with the tip release after the discs'
     bool phase_timing_ = false;
     std::vector<PhaseTime> phases_;            // the last step's, when phase_timing_
     std::array<std::vector<std::string>, kMaxDiscs + 1> phase_names_{};  // the marks' names, by disc count

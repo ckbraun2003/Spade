@@ -108,6 +108,7 @@ add_executable(spade_tests
     test_airflow_dense_disc.cpp
     test_airflow_publish.cpp
     test_rotor_discs.cpp
+    test_rotor_lines.cpp
     test_airflow_grid_io.cpp
     test_airflow_solids.cpp
     test_airflow_solids_solve.cpp
@@ -116,6 +117,7 @@ add_executable(spade_tests
     test_airflow_ftz.cpp
     test_airflow_threads.cpp
     test_airflow_dye.cpp
+    test_airflow_tip_dye.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
@@ -453,8 +455,12 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line.cpp
         test_gpu_airflow_line_v2b.cpp
         test_gpu_airflow_dye.cpp
+        test_gpu_airflow_tip_dye.cpp
+        test_gpu_airflow_line_binned.cpp
+        test_gpu_airflow_line_stills.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
+        test_gpu_live_lines.cpp
         test_gpu_lbm.cpp
     )
 endif()

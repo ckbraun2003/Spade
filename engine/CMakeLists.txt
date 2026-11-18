@@ -774,6 +774,7 @@ add_library(spade_physics STATIC
     physics/airflow/publish.cpp
     physics/airflow/actuator.cpp
     physics/airflow/rotor_discs.cpp
+    physics/airflow/rotor_lines.cpp
     physics/airflow/blade.cpp
     physics/airflow/line.cpp
     physics/airflow/wall_load.cpp
@@ -963,6 +964,7 @@ add_library(spade_vehicles STATIC
     vehicles/rotor.cpp
     vehicles/rotor_wake.cpp
     vehicles/rotor_discs.cpp
+    vehicles/rotor_lines.cpp
     vehicles/airflow_solids.cpp
     vehicles/model_type.cpp
     vehicles/model_part.cpp
@@ -1043,6 +1045,7 @@ add_library(spade_scene STATIC
     scene/model_sources.cpp
     scene/object_file.cpp
     scene/part_file.cpp
+    scene/prop_line.cpp
     scene/scene_file.cpp
 )
 add_library(spade::scene ALIAS spade_scene)

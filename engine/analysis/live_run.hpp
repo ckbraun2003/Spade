@@ -80,7 +80,9 @@
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
 #include "physics/airflow/actuator.hpp"
+#include "physics/airflow/blade.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/line.hpp"
 #include "physics/airflow/publish.hpp"
 #include "state/layout.hpp"  // BodyState
 #include "vehicles/model_type.hpp"
@@ -270,6 +272,17 @@ struct LiveFrame {
 // spreads them and steps, and publishes each frame. It starts from the CPU's
 // own fields, faces, config and solids, so a device that steps as
 // fluid_step() does flies the CPU's run to the bit.
+//
+// THE ROTORS AS ACTUATOR LINES (L86i; the lead's grant L86j, 2026-11-17): with a LiveLines, start() makes the rotors' blades the air's
+// forcing instead of the discs (physics/airflow/line.hpp): one line a rotor, from vehicles::rotor_lines() at the held body and the
+// blade azimuths, stepped by the device through step(discs, lines). Every rotor of the model turns this one propeller (its radius
+// is the blade's). The discs still go to the device, with no load (thrust and torque 0), for the dye's release.
+struct LiveLines {
+    physics::airflow::BladeShape blade;
+    physics::airflow::PolarTable polar;
+    uint32_t n_sub = 8;  // the line's sub-azimuths a step
+};
+
 class LiveFluid {
   public:
     virtual ~LiveFluid() = default;
@@ -278,6 +291,12 @@ class LiveFluid {
     // didn't run.
     [[nodiscard]] virtual Result<physics::airflow::FluidHealth> step(
         std::span<const physics::airflow::ActuatorDisc> discs) = 0;
+    // The step with the rotors' lines as well (L86i): a device that has none refuses, naming it, and steps nothing.
+    [[nodiscard]] virtual Result<physics::airflow::FluidHealth> step(
+        std::span<const physics::airflow::ActuatorDisc> discs, std::span<const physics::airflow::LineRotor> lines) {
+        if (!lines.empty()) return std::unexpected(Error{Code::invalid_argument, "this fluid has no actuator lines"});
+        return step(discs);
+    }
     // The fluid now, as publish_render_volume() gives it, into `out`.
     [[nodiscard]] virtual Result<void> publish(const physics::airflow::PublishInput& in, FlowVolume& out) = 0;
     // u, v, w and p now, into `g`, a grid of the run's shape: what save() writes.
@@ -290,6 +309,9 @@ struct LiveFluidStart {
     const physics::airflow::DomainBc& domain;     // the box's faces
     const physics::airflow::FluidConfig& config;  // rho, nu, h and the pressure's
     const physics::airflow::SolidField* solids;   // the parts in the air; null without
+    const LiveLines* lines = nullptr;             // the rotors as lines (L86i); null: discs
+    uint32_t line_elements = 0;                   // all rotors' elements a step, every sub-azimuth counted (with lines)
+    uint32_t line_rotors = 0;                     // the rotors, one line each (with lines)
 };
 using LiveFluidMaker = std::function<Result<std::unique_ptr<LiveFluid>>(const LiveFluidStart&)>;
 
@@ -304,7 +326,7 @@ class LiveRun {
     // refusal refuses the run: "the fluid's device: " and why. A host that
     // would rather fly on the CPU starts again without it.
     [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                                               const LiveFluidMaker& fluid = {});
+                                               const LiveFluidMaker& fluid = {}, const LiveLines* lines = nullptr);
 
     LiveRun(LiveRun&&) noexcept;
     LiveRun& operator=(LiveRun&&) noexcept;
