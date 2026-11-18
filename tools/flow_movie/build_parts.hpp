@@ -462,6 +462,7 @@ struct PropBlur {
     uint32_t samples = 24u;    // copies of the blade over the shutter
     double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
     float alpha = 0.18f;       // each copy's opacity
+    float tint = 0.5f;         // the copies' grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
@@ -493,11 +494,14 @@ struct PropBlur {
         } else if (key == "samples") {
             if (!(number >= 1.0 && number <= 128.0 && number == std::floor(number))) return bad_blur("samples must be a whole number from 1 to 128");
             blur.samples = static_cast<uint32_t>(number);
+        } else if (key == "tint") {
+            if (!(number > 0.0 && number <= 1.0)) return bad_blur("tint must be above 0 and at most 1");
+            blur.tint = static_cast<float>(number);
         } else if (key == "shutter") {
             if (!(number > 0.0 && number < 0.1)) return bad_blur("shutter is in seconds, above 0 and under 0.1");
             blur.shutter_s = number;
         } else {
-            return bad_blur("unknown key '" + key + "' (alpha samples shutter)");
+            return bad_blur("unknown key '" + key + "' (alpha samples shutter tint)");
         }
     }
     return blur;
@@ -657,7 +661,10 @@ struct BuildDraw {
                 if (part.kind == "rotor" && omega > 0.0 && draw_options.blur.samples > 0u) {
                     // the blade spread over the shutter: the prop's materials at the blur's alpha (every one for a mesh without names)
                     for (std::size_t i = 0; i < mesh.source_materials.size(); ++i) {
-                        if (names.empty() || last_word(names[i]) == "prop") mesh.source_materials[i].base_color.a = draw_options.blur.alpha;
+                        if (names.empty() || last_word(names[i]) == "prop") {
+                            const float g = draw_options.blur.tint;
+                            mesh.source_materials[i].base_color = glm::vec4(g, g, std::min(1.0f, g * 1.06f), draw_options.blur.alpha);
+                        }
                     }
                     const std::vector<double> angles = prop_blur_angles(omega, part.spin, draw_options.blur.shutter_s, draw_options.blur.samples);
                     const std::size_t first_item = scene.statics.size();
