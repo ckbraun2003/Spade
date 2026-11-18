@@ -411,6 +411,7 @@ TEST(FlowMovieBuildParts, ASpinningRotorIsManySeeThroughCopiesOfOneMeshAndAStopp
         "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n"));
     ASSERT_TRUE(parts.has_value()) << parts.error().context;
     flow_movie::BuildDraw draw;
+    draw.blur.sampled = true;
     draw.blur.samples = 8u;
     draw.blur.alpha = 0.2f;
     const std::array<double, 4> omega{0.0, 343.667, 343.667, 343.667};
@@ -766,6 +767,7 @@ TEST(FlowMovieBuildParts, ATurningRotorFromARealGltfDarkensADiscAndAFrozenOneOnl
         "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n"
         "    objects:\n      - store_ref: {sha256: " + kSha + ", file: rotor.gltf}\n";
     flow_movie::BuildDraw turning;
+    turning.blur.sampled = true;
     turning.blur.samples = 48u;
     turning.blur.alpha = 0.9f;
     const std::array<double, 1> omega{343.667};
@@ -805,6 +807,7 @@ TEST(FlowMovieBuildParts, TheBlurTintIsAPaleGreyOptionAndTheSpreadBladeShowsOver
     const auto parts = flow_movie::parse_build_parts("parts:\n" + entry);
     ASSERT_TRUE(parts.has_value()) << parts.error().context;
     flow_movie::BuildDraw turning;
+    turning.blur.sampled = true;
     const std::array<double, 1> omega{343.667};
     turning.omega = omega;
     spade::render::RenderScene scene;
@@ -818,5 +821,232 @@ TEST(FlowMovieBuildParts, TheBlurTintIsAPaleGreyOptionAndTheSpreadBladeShowsOver
     EXPECT_GT(spread, 150u) << "the blur is a disc of light over a black sky";
     EXPECT_GT(spread, 4u * (frozen + 10u)) << "and a frozen black blade is nearly nothing there: " << spread << " vs " << frozen;
     fs::remove_all(store);
+}
+
+// THE TURNING PROPELLER AS A DISC (the lead, 2026-11-18: the 48-copy blur read as a white daisy from above; a real prop seen over a shutter is a
+// smooth translucent disc). The time average of a blade turning is a disc whose coverage at radius r is the blade's SOLIDITY there,
+// sigma(r) = B c(r) / (2 pi r), from the prop part's own chord table (blade.c_over_r at blade.r_over_r, B = prop.blades): the same UIUC data
+// the physics reads. Drawn as concentric rings, each one flat colour at alpha = sigma(r) x the blade's opacity: no angular structure at all.
+namespace {
+
+flow_movie::BladeChord uiuc_10x5() {
+    flow_movie::BladeChord c;
+    c.blades = 2u;
+    c.r_over_r = {0.15f, 0.2f, 0.25f, 0.3f, 0.35f, 0.4f, 0.45f, 0.5f, 0.55f, 0.6f, 0.65f, 0.7f, 0.75f, 0.8f, 0.85f, 0.9f, 0.95f, 1.0f};
+    c.c_over_r = {0.13f, 0.149f, 0.173f, 0.189f, 0.197f, 0.201f, 0.2f, 0.194f, 0.186f, 0.174f, 0.16f, 0.145f, 0.128f, 0.112f, 0.096f, 0.081f, 0.061f, 0.041f};
+    c.hub_cutout = 0.15f;
+    return c;
+}
+
+constexpr double kTwoPi = 6.283185307179586;
+
+// A rotor part's rasterised luminance (sum of the channels over three) from straight above, over a BLACK sky, 240 x 240, the disc's hub at the
+// centre; the pixel radius of the blade tip (R = 0.127 m) is returned beside it.
+struct TopView {
+    std::vector<float> luma;
+    float tip_px = 0.0f;
+};
+
+TopView top_view(const std::string& rotor_entry, const flow_movie::BuildDraw& draw, const fs::path& store) {
+    TopView view;
+    const auto parts = flow_movie::parse_build_parts("parts:\n" + rotor_entry);
+    EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
+    if (!parts) return view;
+    spade::render::RenderScene scene;
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+    const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), draw);
+    EXPECT_TRUE(added.has_value()) << (added ? "" : added.error().context);
+    if (!added) return view;
+    constexpr uint32_t kN = 240;
+    spade::render::Camera camera;
+    const glm::vec3 eye(0.0f, 0.35f, 0.0f);
+    const glm::mat4 look = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 0.0f, -1.0f));
+    camera.position = eye;
+    camera.orientation = glm::quat_cast(glm::mat3(glm::inverse(look)));
+    std::vector<uint8_t> px(static_cast<std::size_t>(kN) * kN * 4u, 0xABu);
+    spade::render::RenderTarget target{.pixels = std::span<uint8_t>(px), .width = kN, .height = kN, .stride = kN * 4u};
+    spade::render::RenderOptions options;
+    options.overlays = false;
+    const auto rendered = spade::render::render(scene, camera, options, target);
+    EXPECT_TRUE(rendered.has_value()) << (rendered ? "" : rendered.error().context);
+    if (!rendered) return view;
+    view.luma.resize(static_cast<std::size_t>(kN) * kN);
+    for (std::size_t i = 0; i < view.luma.size(); ++i) {
+        view.luma[i] = (static_cast<float>(px[4u * i]) + px[4u * i + 1u] + px[4u * i + 2u]) / 3.0f;
+    }
+    const double f = 1.0 / std::tan(static_cast<double>(camera.fov_y_radians) * 0.5);
+    view.tip_px = static_cast<float>(f * 0.127 / 0.35 * (kN * 0.5));
+    return view;
+}
+
+// The mean luminance of the 3 x 3 pixels at `frac` of the tip radius, azimuth `az` (radians) round the hub.
+float luma_at(const TopView& v, float frac, double az) {
+    constexpr int kN = 240;
+    const double r = static_cast<double>(frac) * static_cast<double>(v.tip_px);
+    const int cx = static_cast<int>(std::lround(kN * 0.5 + r * std::cos(az)));
+    const int cy = static_cast<int>(std::lround(kN * 0.5 + r * std::sin(az)));
+    float sum = 0.0f;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) sum += v.luma[static_cast<std::size_t>(cy + dy) * kN + static_cast<std::size_t>(cx + dx)];
+    }
+    return sum / 9.0f;
+}
+
+}  // namespace
+
+TEST(FlowMovieBuildParts, TheSolidityOfADiscIsTheBladeCoverageAtThatRadiusFromTheChordTable) {
+    const flow_movie::BladeChord chord = uiuc_10x5();
+    const auto sigma = [](double b, double c, double r) { return static_cast<float>(b * c / (kTwoPi * r)); };
+    EXPECT_NEAR(flow_movie::blade_solidity(chord, 0.5f), sigma(2.0, 0.194, 0.5), 1e-4f);
+    EXPECT_NEAR(flow_movie::blade_solidity(chord, 0.75f), sigma(2.0, 0.128, 0.75), 1e-4f);
+    EXPECT_NEAR(flow_movie::blade_solidity(chord, 0.95f), sigma(2.0, 0.061, 0.95), 1e-4f);
+    EXPECT_NEAR(flow_movie::blade_solidity(chord, 0.525f), sigma(2.0, 0.5 * (0.194 + 0.186), 0.525), 1e-4f) << "c/R is linear between the stations";
+    EXPECT_FLOAT_EQ(flow_movie::blade_solidity(chord, 0.05f), 0.0f) << "inside the hub";
+    EXPECT_FLOAT_EQ(flow_movie::blade_solidity(chord, 1.2f), 0.0f) << "past the tip";
+    flow_movie::BladeChord three = chord;
+    three.blades = 3u;
+    EXPECT_NEAR(flow_movie::blade_solidity(three, 0.5f), 1.5f * flow_movie::blade_solidity(chord, 0.5f), 1e-5f) << "B blades";
+}
+
+TEST(FlowMovieBuildParts, TheChordTableIsReadFromThePropPartFileTheX500Uses) {
+    const auto chord = flow_movie::read_blade_chord(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/parts/x500_10in_apc10x5.prop.yaml");
+    ASSERT_TRUE(chord.has_value()) << chord.error().context;
+    EXPECT_EQ(chord->blades, 2u);
+    ASSERT_EQ(chord->r_over_r.size(), 18u);
+    ASSERT_EQ(chord->c_over_r.size(), 18u);
+    EXPECT_FLOAT_EQ(chord->hub_cutout, 0.15f);
+    EXPECT_FLOAT_EQ(chord->c_over_r[7], 0.194f);
+    EXPECT_FALSE(flow_movie::read_blade_chord(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500_build/parts.yaml").has_value()) << "a table is not a prop part";
+    EXPECT_FALSE(flow_movie::read_blade_chord(fs::path(SPADE_REPO_DIR) / "no/such/prop.yaml").has_value());
+}
+
+TEST(FlowMovieBuildParts, TheDiscMeshIsConcentricRingsWhoseAlphaFollowsTheSolidityWithNoAngularStructure) {
+    const flow_movie::BladeChord chord = uiuc_10x5();
+    constexpr uint32_t kBands = 24, kSegments = 64;
+    const float radius = 0.127f, plane_y = 0.011f, opacity = 0.8f, tint = 0.5f;
+    const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, radius, plane_y, opacity, tint, kBands, kSegments);
+    ASSERT_EQ(mesh.source_materials.size(), kBands) << "one material, one alpha, per ring";
+    ASSERT_EQ(mesh.submesh_index_count.size(), kBands);
+    const float width = (1.0f - chord.hub_cutout) / static_cast<float>(kBands);
+    for (const uint32_t band : {2u, 11u, 21u}) {  // three radii
+        const float lo = chord.hub_cutout + width * static_cast<float>(band);
+        const float mid = lo + 0.5f * width;
+        EXPECT_NEAR(mesh.source_materials[band].base_color.a, flow_movie::blade_solidity(chord, mid) * opacity, 2e-3f) << "band " << band;
+        EXPECT_NEAR(mesh.source_materials[band].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
+        // its triangles lie in the annulus [lo, lo + width] of the radius, flat at the blade plane
+        const uint32_t first = mesh.submesh_first_index[band];
+        for (uint32_t i = first; i < first + mesh.submesh_index_count[band]; ++i) {
+            const glm::vec3 v = mesh.positions[mesh.indices[i]];
+            const float r = std::hypot(v.x, v.z) / radius;
+            EXPECT_GE(r, lo - 1e-4f) << "band " << band;
+            EXPECT_LE(r, lo + width + 1e-4f) << "band " << band;
+            EXPECT_FLOAT_EQ(v.y, plane_y);
+        }
+        // evenly spaced round the ring: no angular structure (every vertex at a whole multiple of 2 pi / segments)
+        for (uint32_t i = first; i < first + mesh.submesh_index_count[band]; ++i) {
+            const glm::vec3 v = mesh.positions[mesh.indices[i]];
+            const double steps = std::atan2(static_cast<double>(v.z), static_cast<double>(v.x)) / kTwoPi * kSegments;
+            EXPECT_NEAR(steps, std::round(steps), 2e-3) << "band " << band;
+        }
+        EXPECT_EQ(mesh.submesh_index_count[band], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings (a disc seen from either side)";
+    }
+    EXPECT_GT(mesh.source_materials.front().base_color.a, mesh.source_materials.back().base_color.a) << "denser at the root than at the tip";
+}
+
+TEST(FlowMovieBuildParts, ATurningRotorWithAChordTableIsOneSeeThroughDiscNotACopyPerSample) {
+    const fs::path store = fresh_store("disc");
+    save_rotor_gltf(store / kSha / "rotor.gltf", 0.127f);
+    const std::string entry =
+        "  - name: rotor_fr\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n    radius: 0.127\n"
+        "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: rotor.gltf}\n";
+    const auto parts = flow_movie::parse_build_parts("parts:\n" + entry);
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    const std::array<double, 1> omega{343.667};
+    flow_movie::BuildDraw disc;  // the default blur is the disc
+    disc.omega = omega;
+    EXPECT_FALSE(disc.blur.sampled);
+    {  // a turning rotor with no chord table: refused, saying what is missing (never the sampled blur by stealth)
+        spade::render::RenderScene scene;
+        const auto refused = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), disc);
+        ASSERT_FALSE(refused.has_value());
+        EXPECT_NE(refused.error().context.find("chord"), std::string::npos) << refused.error().context;
+        EXPECT_NE(refused.error().context.find("--lines"), std::string::npos) << refused.error().context;
+        EXPECT_TRUE(scene.statics.empty()) << "left as it was";
+    }
+    disc.chord = uiuc_10x5();
+    spade::render::RenderScene scene;
+    const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), disc);
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    std::size_t see_through = 0, solid = 0;
+    for (const auto& item : scene.statics) (item.see_through ? see_through : solid) += 1u;
+    EXPECT_EQ(see_through, 1u) << "one disc";
+    EXPECT_EQ(solid, 1u) << "the bell stays solid; the blade primitive is the disc now";
+    EXPECT_NE(flow_movie::parse_prop_blur("mode=sampled").value().sampled, flow_movie::parse_prop_blur("mode=disc").value().sampled);
+    EXPECT_FALSE(flow_movie::parse_prop_blur("mode=smear").has_value());
+    EXPECT_FALSE(flow_movie::parse_prop_blur("opacity=0").has_value());
+    fs::remove_all(store);
+}
+
+TEST(FlowMovieBuildParts, TheDiscRastersWithNoAngularStructureAndBrighterWhereTheBladeIsDenser) {
+    const fs::path store = fresh_store("disc_raster");
+    save_rotor_gltf(store / kSha / "rotor.gltf", 0.127f);
+    const std::string entry =
+        "  - name: rotor_fr\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n    radius: 0.127\n"
+        "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: rotor.gltf}\n";
+    flow_movie::BuildDraw disc;
+    const std::array<double, 1> omega{343.667};
+    disc.omega = omega;
+    disc.chord = uiuc_10x5();
+    disc.blur.opacity = 1.0f;
+    const TopView view = top_view(entry, disc, store);
+    ASSERT_FALSE(view.luma.empty());
+    const float inner = 0.35f, middle = 0.6f, outer = 0.9f;  // fractions of the tip radius
+    double means[3] = {0.0, 0.0, 0.0};
+    const float fractions[3] = {inner, middle, outer};
+    for (int k = 0; k < 3; ++k) {
+        float lo = 1e9f, hi = -1e9f;
+        for (int a = 0; a < 16; ++a) {
+            const float l = luma_at(view, fractions[k], kTwoPi * a / 16.0 + 0.1);
+            lo = std::min(lo, l);
+            hi = std::max(hi, l);
+            means[k] += l / 16.0;
+        }
+        EXPECT_LE(hi - lo, 0.10f * static_cast<float>(means[k]) + 2.0f) << "no angular structure at " << fractions[k] << " of the radius: " << lo << ".." << hi;
+        EXPECT_GT(means[k], 4.0) << "the disc is there at " << fractions[k];
+    }
+    EXPECT_GT(means[0], 1.15 * means[1]) << "denser (brighter) nearer the root";
+    EXPECT_GT(means[1], 1.15 * means[2]) << "and denser in the middle than near the tip";
+    fs::remove_all(store);
+}
+
+// THE 6C'S PCB SEEN THROUGH ITS VENTS (the lead, 2026-11-18): the case's top has 17 real slots and the PCB below shows in them, but the renderer has no
+// occlusion, so a flat bright pcb green reads as outside light. The interior is drawn in shadow: a near-black green preset, chosen.
+TEST(FlowMovieBuildParts, ThePcbInShadowIsANearBlackGreenBelowThePcbGreen) {
+    const auto shadow = flow_movie::real_material("pcb_in_shadow");
+    ASSERT_TRUE(shadow.has_value());
+    const auto green = flow_movie::real_material("pcb_green");
+    ASSERT_TRUE(green.has_value());
+    EXPECT_LT(shadow->base_color.g, 0.5f * green->base_color.g);
+    EXPECT_LT(shadow->base_color.r, 0.03f);
+    EXPECT_LT(shadow->base_color.g, 0.06f);
+    EXPECT_GT(shadow->base_color.g, shadow->base_color.r) << "still green";
+    std::ifstream in(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500_build/parts.yaml", std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto table = flow_movie::parse_build_parts(text);
+    ASSERT_TRUE(table.has_value()) << table.error().context;
+    bool seen = false;
+    for (const auto& part : *table) {
+        if (part.name != "pixhawk_6c") continue;
+        for (const auto& object : part.objects) {
+            if (object.file == "PCB-PIXHAWK6C-F1.spmesh") {
+                seen = true;
+                EXPECT_EQ(object.material, "pcb_in_shadow");
+            }
+        }
+    }
+    EXPECT_TRUE(seen) << "the 6C's PCB object is in the table";
 }
 
