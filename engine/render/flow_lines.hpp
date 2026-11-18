@@ -136,6 +136,11 @@ struct FlowPolyline {
     // width, and 0 there is the one-pixel line, byte for byte; above 0 it is drawn as a capsule of this width
     // (FlowLineStyle, below) on both backends, whatever the scene's width. The glow stays the scene's.
     float width_px = 0.0f;  // 0, or 0.5 to 64
+    // PER-POINT ALPHA (the lead, 2026-11-17; GL only). Empty: every point is opaque, byte for byte as before. Else one
+    // per point, each 0 to 1: the capsule's coverage and glow are multiplied by the alpha interpolated along each segment,
+    // so a streak fades from tail to head and a streamline fades by transparency, not toward black. It needs a capsule
+    // (an effective width above 0). The CPU renderer refuses it by name.
+    std::vector<float> alphas{};
 };
 
 struct FlowPoints {
@@ -158,6 +163,9 @@ struct FlowLineStyle {
     float width_px = 0.0f;        // 0 is off, else 0.5 to 64
     float glow_px = 0.0f;         // 0 to 64; round the capsules only
     float glow_strength = 0.35f;  // 0 to 1: the halo's alpha at the edge
+    // ADDITIVE (GL only; the lead, 2026-11-17): the capsules are LIGHT, out = behind + colour a, in any order, depth-tested and
+    // writing no depth, so overlapping streaks add as sparks and smoke do. Off by default: the over-blend above, byte for byte.
+    bool additive = false;
 
     [[nodiscard]] bool operator==(const FlowLineStyle&) const = default;
     [[nodiscard]] bool on() const noexcept { return width_px > 0.0f; }
@@ -182,6 +190,13 @@ struct FlowLineStyle {
 // finite, a colour outside [0, 1], a polyline width that is not finite, negative or 0.5 to 64, or (points) a
 // size outside 1 to 16.
 [[nodiscard]] Result<void> validate_flow_polyline(const FlowPolyline& line);
+
+// validate_flow_polyline(), and: alphas need a capsule, so a polyline with alphas whose effective width (its own, else the
+// style's) is 0 is refused, naming the width.
+[[nodiscard]] Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style);
+
+// Why the CPU renderer cannot draw these lines: additive blending or per-point alpha is GL's alone. "" when it can.
+[[nodiscard]] std::string flow_lines_gl_only_reason(std::span<const FlowPolyline> lines, const FlowLineStyle& style);
 [[nodiscard]] Result<void> validate_flow_points(const FlowPoints& points);
 
 // A streamline coloured by its speeds through `by_speed`'s colours.

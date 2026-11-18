@@ -299,3 +299,71 @@ TEST(RenderFlowLineStyle, ABadStyleIsRefusedByNameBeforeAnyPixel) {
 }
 
 }  // namespace
+
+// PER-POINT ALPHA AND ADDITIVE BLENDING (the lead, 2026-11-17; Cameron: "it can feel particle-y", "no dark strands"). Two
+// optional looks of the capsule path, both OFF by default and both GL-only: a polyline's `alphas` (one per point, the
+// capsule's coverage and glow are multiplied by the alpha interpolated along the segment, so a streak fades from its tail to
+// its head and a streamline fades by transparency instead of toward black), and the style's `additive` (out = behind +
+// colour a, in any order, no depth write, still depth-tested: overlapping light adds, as smoke and sparks do). The CPU
+// renderer is the reference for everything else and refuses these by name; GL's tests are in test_gpu_gl_renderer.cpp.
+TEST(RenderFlowLineStyle, ADefaultStyleIsNotAdditiveAndAPolylineHasNoAlphas) {
+    const FlowLineStyle style;
+    EXPECT_FALSE(style.additive);
+    const FlowPolyline line;
+    EXPECT_TRUE(line.alphas.empty());
+    FlowLineStyle other = style;
+    other.additive = true;
+    EXPECT_FALSE(style == other) << "additive is part of the style's identity";
+    EXPECT_FALSE(other.on()) << "additive alone draws nothing: a width turns the capsules on";
+    EXPECT_TRUE(spade::render::validate_flow_line_style(other).has_value());
+}
+
+TEST(RenderFlowLineStyle, AlphasAreOnePerPointInZeroToOneAndAnythingElseIsRefusedByName) {
+    FlowPolyline line = horizontal(kRed);
+    line.alphas = {0.25f, 1.0f};
+    EXPECT_TRUE(spade::render::validate_flow_polyline(line).has_value());
+    line.alphas = {0.0f, 0.0f};
+    EXPECT_TRUE(spade::render::validate_flow_polyline(line).has_value()) << "0 is a point that is not drawn";
+    line.alphas = {0.5f};
+    auto r = spade::render::validate_flow_polyline(line);
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("alpha"), std::string::npos) << r.error().context;
+    line.alphas = {0.5f, 1.5f};
+    EXPECT_FALSE(spade::render::validate_flow_polyline(line).has_value());
+    line.alphas = {-0.1f, 0.5f};
+    EXPECT_FALSE(spade::render::validate_flow_polyline(line).has_value());
+    line.alphas = {0.5f, std::numeric_limits<float>::quiet_NaN()};
+    EXPECT_FALSE(spade::render::validate_flow_polyline(line).has_value());
+}
+
+TEST(RenderFlowLineStyle, AlphasNeedACapsuleSoAWidthOfItsOwnOrTheScenesIsRequired) {
+    FlowPolyline line = horizontal(kRed);
+    line.alphas = {0.5f, 1.0f};
+    auto r = spade::render::validate_flow_line_draw(line, FlowLineStyle{});
+    ASSERT_FALSE(r.has_value()) << "width 0 is the one-pixel line";
+    EXPECT_NE(r.error().context.find("width"), std::string::npos) << r.error().context;
+    EXPECT_TRUE(spade::render::validate_flow_line_draw(line, FlowLineStyle{3.0f, 0.0f, 0.35f}).has_value()) << "the scene's width";
+    line.width_px = 2.0f;
+    EXPECT_TRUE(spade::render::validate_flow_line_draw(line, FlowLineStyle{}).has_value()) << "its own";
+    FlowPolyline plain = horizontal(kRed);
+    EXPECT_TRUE(spade::render::validate_flow_line_draw(plain, FlowLineStyle{}).has_value()) << "no alphas, no rule";
+}
+
+TEST(RenderFlowLineStyle, TheCpuRendererRefusesAdditiveAndAlphasByNameAndDrawsNoLine) {
+    FlowLineStyle style{3.0f, 0.0f, 0.35f};
+    style.additive = true;
+    spade::Result<void> result;
+    (void)draw(styled(style, horizontal(kGreen)), &result);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().context.find("GL"), std::string::npos) << result.error().context;
+    EXPECT_NE(result.error().context.find("additive"), std::string::npos) << result.error().context;
+    FlowPolyline faded = horizontal(kGreen);
+    faded.alphas = {0.2f, 0.9f};
+    (void)draw(styled(FlowLineStyle{3.0f, 0.0f, 0.35f}, faded), &result);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().context.find("alpha"), std::string::npos) << result.error().context;
+    // and a scene with neither is exactly what it was
+    (void)draw(styled(FlowLineStyle{3.0f, 0.0f, 0.35f}, horizontal(kGreen)), &result);
+    EXPECT_TRUE(result.has_value());
+}
+

@@ -341,7 +341,38 @@ Result<void> validate_flow_polyline(const FlowPolyline& line) {
     if (line.width_px != 0.0f && !(line.width_px >= 0.5f && line.width_px <= 64.0f)) {
         return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width is not 0 or 0.5 to 64 pixels"});
     }
+    if (!line.alphas.empty()) {
+        if (line.alphas.size() != line.points.size()) {
+            return std::unexpected(Error{Code::invalid_argument, "flow polyline: alphas must be empty or one per point"});
+        }
+        for (const float a : line.alphas) {
+            if (!std::isfinite(a) || a < 0.0f || a > 1.0f) {
+                return std::unexpected(Error{Code::invalid_argument, "flow polyline: an alpha is not finite or not 0 to 1"});
+            }
+        }
+    }
     return check_coloured(line.points, line.colours, "flow polyline");
+}
+
+Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style) {
+    if (Result<void> valid = validate_flow_polyline(line); !valid) return valid;
+    if (!line.alphas.empty() && effective_width_px(line, style) <= 0.0f) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "flow polyline: alphas need a capsule, so a width of its own or the scene's style width"});
+    }
+    return {};
+}
+
+std::string flow_lines_gl_only_reason(std::span<const FlowPolyline> lines, const FlowLineStyle& style) {
+    if (style.additive) {
+        return "flow lines: additive blending is drawn by the GL backend only; the CPU renderer refuses it";
+    }
+    for (const FlowPolyline& line : lines) {
+        if (!line.alphas.empty()) {
+            return "flow lines: per-point alpha is drawn by the GL backend only; the CPU renderer refuses it";
+        }
+    }
+    return {};
 }
 
 Result<void> validate_flow_line_style(const FlowLineStyle& style) {

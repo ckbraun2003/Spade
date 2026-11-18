@@ -212,3 +212,56 @@ TEST(FlowMovieStream, AStillsFrameAndItsMeanWindowStayOnDiskUntilTheSolveIsDone)
     }
     EXPECT_TRUE(plan.spent(197u, 449u));
 }
+
+// A particle look carries points through EVERY stored frame in order, the ones before the clip and the ones between the clip
+// and its still too (a still of frame 200 under a clip that starts at 150 still needs 150 to 199: the points at 200 are the
+// ones carried from 0). with_every_frame() makes each frame from 0 to the last draw a draw, so the plan writes it and keeps it
+// until its advance is done. (The first version added only the frames before the clip, and a still-only run, which draws
+// frame 200 alone, was refused at frame 150: "frame 200 is not the next frame".)
+TEST(FlowMovieStream, AParticleRunReadsEveryFrameFromZeroToItsLastDraw) {
+    const auto clip = flow_movie::with_every_frame(range(150, 3));
+    EXPECT_EQ(clip.size(), 153u);
+    const flow_movie::StreamPlan plan(clip, 1u, {});
+    for (uint32_t j = 0; j < 153u; ++j) EXPECT_TRUE(plan.needed(j)) << j;
+    EXPECT_FALSE(plan.needed(153u));
+    EXPECT_TRUE(plan.spent(0u, 0u)) << "a frame goes once its own advance is done";
+    const auto still_only = flow_movie::with_every_frame({200u});
+    EXPECT_EQ(still_only.size(), 201u) << "the frames between the warm-up and the still are in it";
+    for (uint32_t j = 0; j <= 200u; ++j) EXPECT_EQ(still_only[j], j) << "in order, each once";
+    EXPECT_EQ(flow_movie::with_every_frame({5u, 2u, 2u, 9u}).size(), 10u) << "0 to the largest, each once";
+    EXPECT_TRUE(flow_movie::with_every_frame({}).empty()) << "no draw, no frame";
+    EXPECT_EQ(flow_movie::with_every_frame({0u}), (std::vector<uint32_t>{0u}));
+}
+
+// The disk guard (the lead, 2026-11-17: the drive fell to 3.5 GB free when a non-streamed run asked for a frame that was not
+// kept and so simulated and wrote the whole 600-frame cache, 152 GB). A non-streamed run refuses, naming --stream, when the
+// frames it would still write would leave under 20 GB free.
+TEST(FlowMovieStream, AFrameOfTheDeepBoxIsAbout253MegabytesOnDisk) {
+    const uint64_t bytes = flow_movie::frame_bytes(240u, 392u, 168u);
+    EXPECT_GE(bytes, 252887040u) << "16 bytes a cell: u, v, w, dye and the four scalars, as halves";
+    EXPECT_LE(bytes, 252900000u) << "and a small header";
+}
+
+TEST(FlowMovieStream, ANonStreamedRunThatWouldLeaveUnderTwentyGigabytesFreeIsRefusedNamingStream) {
+    constexpr uint64_t GB = 1000000000ull;
+    const uint64_t frame = 253000000ull;
+    const std::string why = flow_movie::disk_refusal(600u, frame, 45u * GB);  // the afternoon's: 152 GB onto 45 GB free
+    EXPECT_FALSE(why.empty());
+    EXPECT_NE(why.find("--stream"), std::string::npos) << why;
+    EXPECT_NE(why.find("152"), std::string::npos) << "the projected size, in GB: " << why;
+    EXPECT_NE(why.find("45"), std::string::npos) << "and what is free: " << why;
+    EXPECT_EQ(flow_movie::disk_refusal(100u, frame, 100u * GB), "") << "25 GB onto 100 GB free leaves 75";
+    EXPECT_EQ(flow_movie::disk_refusal(0u, frame, 1u * GB), "") << "nothing to write is never refused";
+}
+
+TEST(FlowMovieStream, TheDiskGuardsFloorIsExactAndNeverUnderflows) {
+    constexpr uint64_t GB = 1000000000ull;
+    const uint64_t frame = 250000000ull;
+    // 40 frames = 10 GB: 30 GB free leaves exactly the 20 GB floor (allowed); one byte less does not.
+    EXPECT_EQ(flow_movie::disk_refusal(40u, frame, 30u * GB), "");
+    EXPECT_FALSE(flow_movie::disk_refusal(40u, frame, 30u * GB - 1u).empty());
+    EXPECT_FALSE(flow_movie::disk_refusal(1000u, frame, 5u * GB).empty()) << "more than is free: no unsigned wrap";
+    EXPECT_EQ(flow_movie::disk_refusal(1u, frame, 40u * GB, 10u * GB), "") << "the floor is a parameter";
+    EXPECT_FALSE(flow_movie::disk_refusal(1u, frame, 40u * GB, 40u * GB).empty());
+}
+

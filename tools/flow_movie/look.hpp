@@ -325,9 +325,11 @@ struct MeanWindow {
     return {};
 }
 
-// S1's soft streamlines: a polyline's colours dimmed to black toward both of its ends, by a smoothstep of the arc length to the
-// nearer end over `fade_m` metres, so the line dissolves into the black background instead of stopping (a line shorter than
-// twice `fade_m` never reaches full). Zero `fade_m`, or a line of fewer than two points, changes nothing.
+// S1's soft streamlines: a polyline's ALPHAS fall to nothing toward both of its ends, by a smoothstep of the arc length to the
+// nearer end over `fade_m` metres, so the line dissolves instead of stopping (a line shorter than twice `fade_m` never reaches
+// full). The colours are left alone: a line dimmed toward black darkens what is behind it, the drone among it; one of lower alpha
+// lets it show (the lead, 2026-11-17). Zero `fade_m`, or a line of fewer than two points, changes nothing. Needs the line drawn as
+// a capsule (the scene's line style), as the soft S1 view does.
 inline void fade_polyline_ends(spade::render::FlowPolyline& line, float fade_m) {
     const std::size_t n = std::min(line.points.size(), line.colours.size());
     if (!(fade_m > 0.0f) || n < 2u) return;
@@ -337,9 +339,10 @@ inline void fade_polyline_ends(spade::render::FlowPolyline& line, float fade_m) 
         arc[i] = arc[i - 1] + std::sqrt(glm::dot(d, d));
     }
     const float total = arc[n - 1];
+    line.alphas.assign(line.points.size(), 1.0f);
     for (std::size_t i = 0; i < n; ++i) {
         const float t = std::clamp(std::min(arc[i], total - arc[i]) / fade_m, 0.0f, 1.0f);
-        line.colours[i] *= t * t * (3.0f - 2.0f * t);
+        line.alphas[i] = t * t * (3.0f - 2.0f * t);
     }
 }
 

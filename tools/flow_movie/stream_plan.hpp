@@ -154,4 +154,40 @@ struct StreamAsk {
     return {};
 }
 
+// The draws of a particle run: the clip's and still's, and every frame from 0 to the last of them, each once, sorted. The points
+// are carried through all of them in order, so the plan writes the frames before the clip and the ones between the clip and its
+// still too (a frame no draw reads is solved and dropped, and a missing frame would end the carry).
+[[nodiscard]] inline std::vector<uint32_t> with_every_frame(const std::vector<uint32_t>& draws) {
+    std::vector<uint32_t> all;
+    if (draws.empty()) return all;
+    const uint32_t last = *std::max_element(draws.begin(), draws.end());
+    all.reserve(last + 1u);
+    for (uint32_t j = 0; j <= last; ++j) all.push_back(j);
+    return all;
+}
+
+// THE DISK GUARD (the lead, 2026-11-17). A non-streamed run writes every frame of its solve, 253 MB a frame in the deep box: a
+// frame it should not have asked for once simulated and wrote 152 GB onto a drive with 45 GB free, taking it to 3.5 GB and
+// close to failing every job on the machine. It refuses first, by name, when what it would still write leaves under the floor.
+inline constexpr uint64_t kDiskFloorBytes = 20000000000ull;  // 20 GB
+
+// A cached frame's size: 16 bytes a cell (u, v, w, dye and the four scalar channels, as halves) and a small header.
+[[nodiscard]] inline uint64_t frame_bytes(uint32_t nx, uint32_t ny, uint32_t nz) {
+    return uint64_t{nx} * ny * nz * 16u + 4096u;
+}
+
+// "" when `frames_to_write` frames of `bytes_per_frame` leave at least `floor_bytes` of `free_bytes`; else why not, naming
+// --stream, which keeps only the frames the clip still needs.
+[[nodiscard]] inline std::string disk_refusal(uint64_t frames_to_write, uint64_t bytes_per_frame, uint64_t free_bytes,
+                                              uint64_t floor_bytes = kDiskFloorBytes) {
+    if (frames_to_write == 0u) return {};
+    const uint64_t need = frames_to_write * bytes_per_frame;
+    if (free_bytes >= need && free_bytes - need >= floor_bytes) return {};
+    return std::format(
+        "a run without --stream would write {} more frame(s) of {:.2f} GB, {:.0f} GB in all, and the drive has {:.0f} GB free: "
+        "that would leave under {:.0f} GB. Use --stream (it keeps only the frames the clip still needs), or free the space",
+        frames_to_write, static_cast<double>(bytes_per_frame) / 1e9, static_cast<double>(need) / 1e9,
+        static_cast<double>(free_bytes) / 1e9, static_cast<double>(floor_bytes) / 1e9);
+}
+
 }  // namespace flow_movie

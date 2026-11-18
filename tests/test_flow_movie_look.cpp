@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../tools/flow_movie/look.hpp"
+#include "../tools/flow_movie/particles.hpp"
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
 #include "render/scene.hpp"
@@ -275,8 +276,10 @@ TEST(FlowMovieLook, AnOptionThatCannotApplyToAClipIsRefusedByNameAndAnyOtherIsNo
 }
 
 // S1's soft streamlines (Cameron, 2026-11-17: "playdoh"; the streamlines should read as light, not tubes): thin lines with a
-// glow, each dimmed to black toward both of its ends along its length, so it fades into the black background instead of
-// stopping. A smoothstep of the arc length to the nearer end, over fade_m; a line shorter than twice fade_m never reaches full.
+// glow, each fading out toward both of its ends along its length, so it dissolves instead of stopping. The fade is in the line's
+// ALPHAS (the lead, 2026-11-17: "by alpha, additive, not toward black"): a line dimmed to black darkens whatever is behind it,
+// the drone's body among it; a line of lower alpha lets that show. A smoothstep of the arc length to the nearer end, over fade_m;
+// a line shorter than twice fade_m never reaches full. The colours are not touched.
 namespace {
 spade::render::FlowPolyline straight_line(std::size_t points, float spacing) {
     spade::render::FlowPolyline line;
@@ -288,36 +291,37 @@ spade::render::FlowPolyline straight_line(std::size_t points, float spacing) {
 }
 }  // namespace
 
-TEST(FlowMovieLook, ASoftLineFadesToBlackAtBothEndsAndIsUntouchedInTheMiddle) {
+TEST(FlowMovieLook, ASoftLineFadesOutByAlphaAtBothEndsKeepsItsColoursAndIsFullInTheMiddle) {
     auto line = straight_line(11, 0.05f);  // 0.5 m
     flow_movie::fade_polyline_ends(line, 0.15f);
-    EXPECT_EQ(line.colours.front(), glm::vec3(0.0f));
-    EXPECT_EQ(line.colours.back(), glm::vec3(0.0f));
-    for (const std::size_t i : {3u, 4u, 5u, 6u, 7u}) EXPECT_EQ(line.colours[i], glm::vec3(1.0f, 0.5f, 0.25f)) << i;
+    ASSERT_EQ(line.alphas.size(), line.points.size()) << "one alpha a point";
+    EXPECT_EQ(line.alphas.front(), 0.0f);
+    EXPECT_EQ(line.alphas.back(), 0.0f);
+    for (const std::size_t i : {3u, 4u, 5u, 6u, 7u}) EXPECT_EQ(line.alphas[i], 1.0f) << i;
     const float third = 3.0f / 9.0f - 2.0f / 27.0f;  // smoothstep(1/3) = 3t^2 - 2t^3
-    EXPECT_NEAR(line.colours[1].x, third, 1e-6f);
-    EXPECT_NEAR(line.colours[1].y, 0.5f * third, 1e-6f);
-    for (int lane = 0; lane < 3; ++lane) {
-        EXPECT_NEAR(line.colours[1][lane], line.colours[9][lane], 1e-5f) << "the same fade at both ends, to the float's sum";
-    }
+    EXPECT_NEAR(line.alphas[1], third, 1e-6f);
+    EXPECT_NEAR(line.alphas[1], line.alphas[9], 1e-5f) << "the same fade at both ends, to the float's sum";
     const float two_thirds = 2.0f / 3.0f;  // 0.10 m from the end: smoothstep(2/3)
-    EXPECT_NEAR(line.colours[2].x, two_thirds * two_thirds * (3.0f - 2.0f * two_thirds), 1e-5f);
+    EXPECT_NEAR(line.alphas[2], two_thirds * two_thirds * (3.0f - 2.0f * two_thirds), 1e-5f);
+    EXPECT_EQ(line.colours, straight_line(11, 0.05f).colours) << "the colours are not dimmed: the line fades, it does not darken";
 }
 
 TEST(FlowMovieLook, AShortSoftLineNeverReachesFullAndAZeroFadeChangesNothing) {
     auto line = straight_line(5, 0.05f);  // 0.2 m, shorter than twice 0.15
     flow_movie::fade_polyline_ends(line, 0.15f);
     const float t = 0.1f / 0.15f;
-    EXPECT_NEAR(line.colours[2].x, t * t * (3.0f - 2.0f * t), 1e-5f);
-    EXPECT_LT(line.colours[2].x, 1.0f);
+    EXPECT_NEAR(line.alphas[2], t * t * (3.0f - 2.0f * t), 1e-5f);
+    EXPECT_LT(line.alphas[2], 1.0f);
     auto unchanged = straight_line(5, 0.05f);
     flow_movie::fade_polyline_ends(unchanged, 0.0f);
+    EXPECT_TRUE(unchanged.alphas.empty()) << "no fade: no alphas, so the line draws as it always did";
     EXPECT_EQ(unchanged.colours, straight_line(5, 0.05f).colours);
     spade::render::FlowPolyline one;
     one.points.emplace_back(0.0f, 0.0f, 0.0f);
     one.colours.emplace_back(1.0f, 1.0f, 1.0f);
     flow_movie::fade_polyline_ends(one, 0.15f);  // nothing to fade along: no crash, no change
     EXPECT_EQ(one.colours.front(), glm::vec3(1.0f));
+    EXPECT_TRUE(one.alphas.empty());
 }
 
 TEST(FlowMovieLook, OnlyTheLinesAddedByTheViewAreFaded) {
@@ -326,8 +330,10 @@ TEST(FlowMovieLook, OnlyTheLinesAddedByTheViewAreFaded) {
     const std::size_t from = scene.flow_polylines.size();
     scene.flow_polylines.push_back(straight_line(11, 0.05f));
     flow_movie::fade_polylines_from(scene, from, 0.15f);
-    EXPECT_EQ(scene.flow_polylines[0].colours.front(), glm::vec3(1.0f, 0.5f, 0.25f));
-    EXPECT_EQ(scene.flow_polylines[1].colours.front(), glm::vec3(0.0f));
+    EXPECT_TRUE(scene.flow_polylines[0].alphas.empty()) << "the rim drawn before is not faded";
+    ASSERT_FALSE(scene.flow_polylines[1].alphas.empty());
+    EXPECT_EQ(scene.flow_polylines[1].alphas.front(), 0.0f);
+    EXPECT_EQ(scene.flow_polylines[1].colours.front(), glm::vec3(1.0f, 0.5f, 0.25f)) << "faded by alpha, not toward black";
 }
 
 // The soft edge of a drawn wake (the lead, 2026-11-17: the wake fades out before the frame's bottom edge, and a wake that meets
@@ -443,5 +449,43 @@ TEST(FlowMovieLook, TheFieldStepsOfALookIncludeTheFade) {
     flow_movie::finish_look(fades, v);
     EXPECT_LT(speed_down(v, 0, 9, 6), 1.0f) << "the cell 0.05 m from the -x face is faded";
     EXPECT_FLOAT_EQ(speed_down(v, 6, 9, 6), 5.0f) << "the middle is not";
+}
+
+// The particle PREVIEW's seeds (Cameron, 2026-11-17: "the airflow needs to surround the drone blades", "it can feel particle-y"):
+// a deterministic hashed fill of the shell above and round each rotor, where air is drawn in, and of a far-field box round the
+// drone. No RNG: the same inputs give the same seeds. Rotors are (hub, axis, radius); the axis points the way thrust points,
+// so "above" is along it.
+TEST(FlowMovieLook, ThePreviewSeedsFillTheInflowShellAboveEachRotorAndAFarFieldBoxAndAreTheSameEveryTime) {
+    std::vector<flow_movie::PreviewRotor> rotors;
+    for (const float x : {-0.125f, 0.125f}) {
+        for (const float z : {-0.125f, 0.125f}) rotors.push_back({glm::vec3(x, 0.026f, z), glm::vec3(0.0f, 1.0f, 0.0f), 0.119f});
+    }
+    const flow_movie::PreviewBox box{glm::vec3(-0.45f, -0.05f, -0.30f), glm::vec3(0.45f, 0.40f, 0.30f)};
+    const auto a = flow_movie::preview_seeds(rotors, box, 150u, 400u);
+    const auto b = flow_movie::preview_seeds(rotors, box, 150u, 400u);
+    ASSERT_EQ(a.size(), 4u * 150u + 400u);
+    EXPECT_EQ(a, b) << "deterministic";
+    for (std::size_t r = 0; r < 4u; ++r) {
+        for (std::size_t i = 0; i < 150u; ++i) {
+            const glm::vec3 p = a[r * 150u + i];
+            EXPECT_GT(p.y, rotors[r].hub.y) << "above the rotor's plane";
+            EXPECT_LT(p.y, rotors[r].hub.y + 0.35f);
+            const glm::vec3 d = p - rotors[r].hub;
+            EXPECT_LE(std::sqrt(d.x * d.x + d.z * d.z), 2.0f * rotors[r].radius + 1e-5f) << "within two radii of the axis";
+        }
+    }
+    for (std::size_t i = 4u * 150u; i < a.size(); ++i) {
+        EXPECT_GE(a[i].x, box.lo.x);
+        EXPECT_LE(a[i].x, box.hi.x);
+        EXPECT_GE(a[i].y, box.lo.y);
+        EXPECT_LE(a[i].y, box.hi.y);
+        EXPECT_GE(a[i].z, box.lo.z);
+        EXPECT_LE(a[i].z, box.hi.z);
+    }
+    std::vector<glm::vec3> sorted = a;
+    std::sort(sorted.begin(), sorted.end(), [](const glm::vec3& l, const glm::vec3& r) {
+        return l.x != r.x ? l.x < r.x : (l.y != r.y ? l.y < r.y : l.z < r.z);
+    });
+    EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end()) << "no two seeds are the same point";
 }
 
