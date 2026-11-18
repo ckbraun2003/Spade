@@ -316,14 +316,88 @@ class StepConvert(unittest.TestCase):
                     f.write("ISO-10303-21;\nDATA;\n"
                             f"#8816= (CONVERSION_BASED_UNIT('{name}',#22444)LENGTH_UNIT()NAMED_UNIT(#22447));\n"
                             f"#22926= (CONVERSION_BASED_UNIT('{name}',#39826)LENGTH_UNIT()NAMED_UNIT(#39829));\n"
-                            "#8817= (NAMED_UNIT(#22449)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\nENDSEC;\nEND-ISO-10303-21;\n")
+                            "#8817= (NAMED_UNIT(#22449)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\n"
+                            "#9000=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#8816,#8817))REPRESENTATION_CONTEXT('a','3D'));\n"
+                            "#9001=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#22926,#8817))REPRESENTATION_CONTEXT('b','3D'));\n"
+                            "ENDSEC;\nEND-ISO-10303-21;\n")
                 self.assertEqual(module.file_length_unit(path), unit, name)
             odd = os.path.join(work, "odd.stp")
             with open(odd, "w", encoding="utf-8", newline="\n") as f:
-                f.write("DATA;\n#1= (CONVERSION_BASED_UNIT('FURLONG',#2)LENGTH_UNIT()NAMED_UNIT(#3));\nENDSEC;\n")
+                f.write("DATA;\n#1= (CONVERSION_BASED_UNIT('FURLONG',#2)LENGTH_UNIT()NAMED_UNIT(#3));\n"
+                        "#9=(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNIT_ASSIGNED_CONTEXT((#1))REPRESENTATION_CONTEXT('a','3D'));\nENDSEC;\n")
             with self.assertRaises(module.Refusal) as refused:
                 module.file_length_unit(odd)
             self.assertIn("FURLONG", refused.exception.message)
+
+    def module_under_test(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("step_convert_under_test", CONVERT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def step_with_units(work, name, units, contexts, extra=""):
+        """A tiny STEP text file: the length units {entity id: SI_UNIT text}, one geometric context per tuple of unit ids."""
+        lines = ["ISO-10303-21;", "DATA;"]
+        for uid, text in units.items():
+            lines.append(f"#{uid}=( LENGTH_UNIT() NAMED_UNIT(*) {text} );")
+        lines.append("#99=( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($,.RADIAN.) );")
+        for k, ids in enumerate(contexts):
+            refs = ",".join(f"#{i}" for i in ids) + ("," if ids else "") + "#99"
+            lines.append(f"#{200 + k}=( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNIT_ASSIGNED_CONTEXT(({refs})) "
+                         "REPRESENTATION_CONTEXT('','3D') );")
+        lines += [extra, "ENDSEC;", "END-ISO-10303-21;", ""]
+        path = os.path.join(work, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines))
+        return path
+
+    def test_a_length_unit_used_only_in_derived_units_is_ignored(self):
+        # Holybro's X500 V2 kit frame names SI millimetre in all 50 of its geometric contexts and SI metre only inside
+        # DERIVED_UNIT_ELEMENT(#m, -3.) (a density unit). The unit is the contexts' unit: nothing is guessed, and this file is mm.
+        module = self.module_under_test()
+        mm, metre = "SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT($,.METRE.)"
+        with tempfile.TemporaryDirectory() as work:
+            path = self.step_with_units(work, "kit.stp", {1: mm, 2: metre}, [(1,), (1,)], "#300=DERIVED_UNIT_ELEMENT(#2,-3.);")
+            self.assertEqual(module.file_length_unit(path), "mm")
+
+    def test_contexts_that_disagree_or_state_no_length_unit_are_refused_and_an_all_metre_file_is_metre(self):
+        module = self.module_under_test()
+        mm, metre = "SI_UNIT(.MILLI.,.METRE.)", "SI_UNIT($,.METRE.)"
+        with tempfile.TemporaryDirectory() as work:
+            def refusal(name, units, contexts, extra=""):
+                with self.assertRaises(module.Refusal, msg=name) as refused:
+                    module.file_length_unit(self.step_with_units(work, name + ".stp", units, contexts, extra))
+                self.assertEqual(refused.exception.code, 3, name)
+                return refused.exception.message
+
+            self.assertIn("more than one", refusal("two_contexts", {1: mm, 2: metre}, [(1,), (2,)]))
+            self.assertIn("more than one", refusal("one_context", {1: mm, 2: metre}, [(1, 2)]))
+            self.assertIn("no length unit", refusal("no_context", {1: mm}, []))
+            self.assertIn("no length unit", refusal("context_without_length", {1: mm}, [()]))
+            self.assertIn("is not read", refusal("unread_prefix", {1: "SI_UNIT(.KILO.,.METRE.)"}, [(1,)]))
+            # an unread unit that no context uses is not the file's unit
+            self.assertEqual(module.file_length_unit(self.step_with_units(work, "stray.stp", {1: mm, 2: "SI_UNIT(.KILO.,.METRE.)"}, [(1,)])), "mm")
+            # a file whose contexts are all metre is metre, however many contexts
+            self.assertEqual(module.file_length_unit(self.step_with_units(work, "metre.stp", {1: metre, 2: metre}, [(1,), (2,)])), "m")
+
+    def test_a_file_that_also_names_metre_in_a_derived_unit_converts_as_millimetres(self):
+        with open(os.path.join(FIXTURES, "cube_10mm.step"), encoding="utf-8") as f:
+            text = f.read()
+        unit_line = "#3=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.));"
+        self.assertIn(unit_line, text)
+        with tempfile.TemporaryDirectory() as work:
+            both = os.path.join(work, "cube_two_units.step")
+            with open(both, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text.replace(unit_line, unit_line + "\n#9001=(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT($,.METRE.));\n"
+                                                                "#9002=DERIVED_UNIT_ELEMENT(#9001,-3.);"))
+            out = os.path.join(work, "out")
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, both, "--out", out, "--deflection", "0.05mm", "--pack", PACK],
+                                 capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            positions, triangles, unit, tolerance, _ = self.sidecar(out, "Cube")
+            self.assertAlmostEqual(bounds(positions)[0][1], 0.01, delta=1e-8)  # ten millimetres, not ten metres
 
     def test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused(self):
         # Raspberry Pi's Pi 5 STEP holds surface-only parts beside its solids; one of them refused the whole file.
@@ -402,7 +476,9 @@ class StepConvert(unittest.TestCase):
 NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found",
                  "test_help_is_a_request_so_it_prints_the_usage_on_stdout_and_exits_zero",
                  "test_a_conversion_based_unit_named_for_its_length_is_read",
-                 "test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others"}
+                 "test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others",
+                 "test_a_length_unit_used_only_in_derived_units_is_ignored",
+                 "test_contexts_that_disagree_or_state_no_length_unit_are_refused_and_an_all_metre_file_is_metre"}
 
 
 def main():
