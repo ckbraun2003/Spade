@@ -30,6 +30,12 @@ struct QLook {
     std::array<float, 3> level{0.50f, 0.25f, 0.10f};   // fractions of the frame's largest q_hat, strictly falling, each in (0, 1]
     std::array<float, 3> opacity{0.95f, 0.60f, 0.30f};  // each in (0, 1]
     float vorticity_max = 0.5f;                        // the map's top: this fraction of the frame's largest |omega|, in (0, 1]
+    // The cloud (--nasa-cloud): the density at the top of the range in 1/m (above 0, at most 1000), the fraction of the range below which
+    // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius in m (0 off, at most 1), the factor at its centre.
+    float sigma = 30.0f;
+    float onset = 0.15f;
+    float thin_r = 0.0f;
+    float thin_floor = 0.3f;
 };
 
 // The ladder's iso-surfaces, highest level first; none when the frame has no Q above zero or no vorticity to colour by.
@@ -61,7 +67,7 @@ struct QLook {
     const float vort_max = v.header.channel_max[spade::kFlowVorticity];
     if (!(std::isfinite(vort_max) && vort_max > 0.0f)) return std::nullopt;
     return spade::render::volume_transfer(spade::render::FlowQuantity::vorticity, spade::render::ColourMapId::blue_magenta,
-                                          vort_max * look.vorticity_max, 0.15f, 30.0f);
+                                          vort_max * look.vorticity_max, look.onset, look.sigma);
 }
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3
@@ -103,8 +109,20 @@ struct QLook {
         else if (key == "o2") slot = &look.opacity[1];
         else if (key == "o3") slot = &look.opacity[2];
         else if (key == "vmax") slot = &look.vorticity_max;
-        if (slot == nullptr) return bad("unknown key '" + key + "' (l1 l2 l3 o1 o2 o3 vmax)");
-        if (!(number > 0.0f && number <= 1.0f)) return bad("'" + key + "' = " + std::string(value) + " is out of its range (above 0, at most 1)");
+        else if (key == "sigma") slot = &look.sigma;
+        else if (key == "onset") slot = &look.onset;
+        else if (key == "thin_r") slot = &look.thin_r;
+        else if (key == "thin_floor") slot = &look.thin_floor;
+        if (slot == nullptr) return bad("unknown key '" + key + "' (l1 l2 l3 o1 o2 o3 vmax sigma onset thin_r thin_floor)");
+        const bool inclusive_zero = key == "onset" || key == "thin_r" || key == "thin_floor";
+        const float top = key == "sigma" ? 1000.0f : 1.0f;
+        const bool onset_open = key == "onset";  // 0 up to, not including, 1
+        const bool in_range = onset_open ? (number >= 0.0f && number < 1.0f)
+                                         : (inclusive_zero ? (number >= 0.0f && number <= top) : (number > 0.0f && number <= top));
+        if (!in_range) {
+            return bad("'" + key + "' = " + std::string(value) + " is out of its range (" + (inclusive_zero ? "0 up to " : "above 0, at most ") +
+                       (onset_open ? std::string("but not 1") : std::to_string(top)) + ")");
+        }
         *slot = number;
     }
     if (!(look.level[0] > look.level[1] && look.level[1] > look.level[2])) {

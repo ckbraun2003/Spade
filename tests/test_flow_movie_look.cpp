@@ -627,7 +627,7 @@ TEST(FlowMovieLook, TheVorticityIsThinnedNearTheDroneAndNothingElseChanges) {
     EXPECT_FALSE(flow_movie::CloudThin{}.on());
     flow_movie::thin_vorticity(v, thin);
     const auto at = [&v](uint32_t i, uint32_t j, uint32_t k) {
-        return spade::fp16::to_f32(spade::fp16::from_bits(v.s[spade::flow_cell_index(v.header, i, j, k) * spade::kFlowHalvesPerCell + 1]));
+        return spade::fp16::to_f32(v.s[spade::flow_cell_index(v.header, i, j, k) * spade::kFlowHalvesPerCell + 1]);
     };
     EXPECT_NEAR(at(8, 8, 8), 30.0f, 0.1f) << "at the centre: the floor";
     EXPECT_NEAR(at(0, 0, 0), 100.0f, 0.1f) << "far from it: untouched";
@@ -649,7 +649,7 @@ TEST(FlowMovieLook, TheVorticityIsThinnedNearTheDroneAndNothingElseChanges) {
     EXPECT_NE(flow_movie::look_note(look, 1.0).find("thinned"), std::string::npos);
     spade::FlowVolume w = before;
     flow_movie::finish_look(look, w);
-    EXPECT_NEAR(spade::fp16::to_f32(spade::fp16::from_bits(w.s[spade::flow_cell_index(w.header, 8, 8, 8) * spade::kFlowHalvesPerCell + 1])), 30.0f, 0.1f)
+    EXPECT_NEAR(spade::fp16::to_f32(w.s[spade::flow_cell_index(w.header, 8, 8, 8) * spade::kFlowHalvesPerCell + 1]), 30.0f, 0.1f)
         << "finish_look thins";
 }
 

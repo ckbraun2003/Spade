@@ -2510,6 +2510,11 @@ struct WebFilming {
         if (!q) return fail(q.error());
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
+        if (q->thin_r > 0.0f) {  // the cloud thinned round the held drone (at the world origin, 4 mm up as the box holds it)
+            plan.look.thin.centre = glm::vec3(0.0f, 0.004f, 0.0f);
+            plan.look.thin.radius = q->thin_r;
+            plan.look.thin.floor = q->thin_floor;
+        }
     } else if (!opt.q_look.empty()) {
         std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
         return 2;
