@@ -28,18 +28,19 @@ struct PhantomCase {
 
 inline constexpr const char* kLibraryPhantom = "library/drones/phantom3_class.model.yaml";
 
-[[nodiscard]] inline Result<PhantomCase> phantom_case(const physics::airflow::GridShape& grid, float step_s = 0.0002f) {
-    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / kLibraryPhantom;
+// A model file as a still-air D1 case on `grid`: `pin` names it in the case (the phantom's is its library path).
+[[nodiscard]] inline Result<PhantomCase> still_air_case(const std::filesystem::path& file, const std::string& pin,
+                                                        const physics::airflow::GridShape& grid, float step_s = 0.0002f) {
     auto loaded = scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
     if (!loaded->model.propulsion) {
-        return std::unexpected(Error{Code::invalid_argument, "the phantom has no propulsion chain"});
+        return std::unexpected(Error{Code::invalid_argument, pin + " has no propulsion chain"});
     }
     PhantomCase out;
     out.model = std::move(loaded->model);
     analysis::AnalysisCase c;
     c.power = analysis::Power{.idle = 0.05f, .state_of_charge = 1.0f};
-    c.model = analysis::pin_model(std::string("assets/") + kLibraryPhantom, out.model);
+    c.model = analysis::pin_model(pin, out.model);
     c.rotors.assign(out.model.rotors.size(), analysis::RotorSetup{});
     // The case's cube names the horizontal longest side; resolve_with_grid()'s own grid replaces it (tests/d1_case.hpp).
     c.grid.box = grid.dx * static_cast<float>(std::max(grid.nx, grid.nz));
@@ -62,6 +63,11 @@ inline constexpr const char* kLibraryPhantom = "library/drones/phantom3_class.mo
     resolved->base_bytes = physics::airflow::fluid_bytes(resolved->base, resolved->domain);
     out.resolved = std::move(*resolved);
     return out;
+}
+
+[[nodiscard]] inline Result<PhantomCase> phantom_case(const physics::airflow::GridShape& grid, float step_s = 0.0002f) {
+    return still_air_case(std::filesystem::path(SPADE_ASSETS_DIR) / kLibraryPhantom, std::string("assets/") + kLibraryPhantom, grid,
+                          step_s);
 }
 
 }  // namespace spade::testing
