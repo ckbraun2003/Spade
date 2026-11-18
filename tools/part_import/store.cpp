@@ -23,6 +23,11 @@ std::string cache_key_text(const KeyInputs& in) {
            ";object=" + in.object;
 }
 
+std::string colour_json(const std::optional<SurfaceColour>& colour) {
+    if (!colour) return "null";
+    return "[" + std::to_string(colour->rgb[0]) + "," + std::to_string(colour->rgb[1]) + "," + std::to_string(colour->rgb[2]) + "]";
+}
+
 std::string cache_key(const KeyInputs& in) { return sha256_hex(cache_key_text(in)).substr(0, 16); }
 
 namespace {
@@ -108,10 +113,11 @@ namespace {
         o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
         o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
         if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
+        o.raw("colour", colour_json(s.colour)).integer("colours", colour_count(s.colour));
         objects += o.line();
     }
     return JsonObject{}
-               .integer("import_version", 1)
+               .integer("import_version", 2)
                .str("sha256", r.sha256)
                .str("key", r.key)
                .str("key_text", r.key_text)
@@ -156,7 +162,7 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
     const nlohmann::json j = nlohmann::json::parse(read_text(dir / "import.json"), nullptr, false);
     if (j.is_discarded() || !j.is_object()) return std::nullopt;
     try {
-        if (j.at("import_version").get<int>() != 1) return std::nullopt;
+        if (j.at("import_version").get<int>() != 2) return std::nullopt;
         EntryRecord r;
         r.sha256 = j.at("sha256").get<std::string>();
         r.key = j.at("key").get<std::string>();
@@ -181,6 +187,17 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
             const nlohmann::json& ref = o.at("store_ref");
             s.store_sha256 = ref.at("sha256").get<std::string>();
             if (const auto x = o.find("cross_check"); x != o.end() && x->is_object()) s.cross_check_json = x->dump();
+            if (const nlohmann::json& c = o.at("colour"); !c.is_null()) {
+                if (!c.is_array() || c.size() != 3) return std::nullopt;
+                SurfaceColour colour;
+                for (std::size_t k = 0; k < 3; ++k) {
+                    const int v = c[k].get<int>();
+                    if (v < 0 || v > 255) return std::nullopt;
+                    colour.rgb[k] = static_cast<std::uint8_t>(v);
+                }
+                colour.colours = o.at("colours").get<std::uint32_t>();
+                s.colour = colour;
+            }
             if (ref.at("file").get<std::string>() != s.file || s.store_sha256.size() != 64) return std::nullopt;
             // The sidecar as a store file of its own: there, and the bytes its address says.
             if (sha256_hex(read_text(store / s.store_sha256 / s.file)) != s.store_sha256) return std::nullopt;
@@ -270,7 +287,7 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
             cross = parsed.dump();
         }
         rec.sidecars.push_back({objects[i].name, file, hex16(objects[i].mesh->content_hash()), objects[i].mesh->triangle_count(),
-                                objects[i].mesh->mass_properties().volume, sidecar_sha, cross});
+                                objects[i].mesh->mass_properties().volume, sidecar_sha, cross, objects[i].colour});
     }
     if (!write_text(tmp / "import.json", record_json(rec))) return cleanup_and_fail(io_problem("cannot write import.json", {}));
     fs::rename(tmp, dir, ec);
