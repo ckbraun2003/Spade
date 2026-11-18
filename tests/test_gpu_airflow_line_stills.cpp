@@ -259,6 +259,7 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         uint64_t iterations = 0;
         uint32_t steps = 0, capped = 0, unconverged = 0, stalled = 0;
     } pstats;
+    double impulse = 0.0;  // N s: the sum over steps of h times the thrust the rotors put in (the lines' report, or the discs' fixed thrust)
 
     const std::vector<uint32_t> at = steps_from_env();
     const uint32_t last = at.empty() ? 0u : *std::max_element(at.begin(), at.end());
@@ -295,6 +296,15 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         pstats.capped += health->capped ? 1u : 0u;
         pstats.unconverged += health->unconverged ? 1u : 0u;
         pstats.stalled += health->stalled ? 1u : 0u;
+        if (diag) {
+            double step_thrust = 0.0;
+            if (discs_only) {
+                for (const af::ActuatorDisc& d : box.discs) step_thrust += static_cast<double>(d.thrust);
+            } else {
+                for (const af::LineReport& r : (*gpu)->line_reports()) step_thrust += static_cast<double>(r.thrust);
+            }
+            impulse += step_thrust * static_cast<double>(box.cfg.h);
+        }
         for (float& a : psi) a = std::fmod(a + omega * box.cfg.h, kTwoPi);
         if (std::find(at.begin(), at.end(), step) == at.end()) continue;
 
@@ -343,6 +353,48 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                         pstats.unconverged, pstats.stalled);
             pstats = {};
             const spade::FlowVolumeHeader& hd = volume.header;
+            {  // THE CLOSED ACCOUNT: the whole box's vertical momentum against the impulse put in so far, and the air through rotor 0's disc.
+                double down = 0.0, lateral_x = 0.0, lateral_z = 0.0;
+                for (uint32_t k = 0; k < hd.nz; ++k) {
+                    for (uint32_t j = 0; j < hd.ny; ++j) {
+                        for (uint32_t i = 0; i < hd.nx; ++i) {
+                            const std::size_t cell = spade::flow_cell_index(hd, i, j, k);
+                            const float u = spade::fp16::to_f32(spade::flow_half(volume, cell, spade::kFlowU));
+                            const float w = spade::fp16::to_f32(spade::flow_half(volume, cell, spade::kFlowV));
+                            const float z = spade::fp16::to_f32(spade::flow_half(volume, cell, spade::kFlowW));
+                            if (std::isnan(w)) continue;
+                            down += -static_cast<double>(w);
+                            lateral_x += static_cast<double>(u);
+                            lateral_z += static_cast<double>(z);
+                        }
+                    }
+                }
+                const double dv = static_cast<double>(hd.cell) * hd.cell * hd.cell * static_cast<double>(box.cfg.rho);
+                std::printf("[ diag    ] step %u (%.3f s): box momentum down %.5f kg m/s against the impulse put in %.5f N s: ratio %.4f (sideways x %.5f, z %.5f)\n",
+                            step, static_cast<double>(step) * static_cast<double>(box.cfg.h), down * dv, impulse, impulse > 0.0 ? down * dv / impulse : 0.0,
+                            lateral_x * dv, lateral_z * dv);
+                for (const float drop : {0.0125f, 0.05f}) {
+                    const int j = static_cast<int>(std::floor((lines[0].centre.y - drop) / hd.cell));
+                    if (j < 0 || j >= static_cast<int>(hd.ny)) continue;
+                    double sum = 0.0;
+                    uint32_t n = 0;
+                    const float r_max = 0.9f * static_cast<float>(prop->blade.radius);
+                    for (uint32_t k = 0; k < hd.nz; ++k) {
+                        for (uint32_t i = 0; i < hd.nx; ++i) {
+                            const float dx = (static_cast<float>(i) + 0.5f) * hd.cell - lines[0].centre.x;
+                            const float dz = (static_cast<float>(k) + 0.5f) * hd.cell - lines[0].centre.z;
+                            if (dx * dx + dz * dz > r_max * r_max) continue;
+                            const float w = spade::fp16::to_f32(
+                                spade::flow_half(volume, spade::flow_cell_index(hd, i, static_cast<uint32_t>(j), k), spade::kFlowV));
+                            if (std::isnan(w)) continue;
+                            sum += -static_cast<double>(w);
+                            ++n;
+                        }
+                    }
+                    std::printf("[ diag    ] step %u: mean downward air in rotor 0's disc column %.4f m under the hub: %.3f m/s (%u cells)\n", step,
+                                static_cast<double>(drop), n != 0u ? sum / n : 0.0, n);
+                }
+            }
             for (const float drop : {0.05f, 0.10f, 0.20f, 0.30f}) {
                 const int j = static_cast<int>(std::floor((lines[0].centre.y - drop) / hd.cell));
                 if (j < 0 || j >= static_cast<int>(hd.ny)) continue;
