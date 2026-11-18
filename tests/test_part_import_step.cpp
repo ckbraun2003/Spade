@@ -199,6 +199,28 @@ TEST(PartImportStep, AFastInspectListsTheSolidsWithTheirBoxAndBrepVolumeAndCheck
     EXPECT_EQ(r.result.value("measures_in", std::string()), "m");
 }
 
+TEST(PartImportStep, APartWithNoSolidIsListedAsSkippedWithItsCodeAndTheRestIsRead) {
+    NEED_PYTHON();
+    const EnvGuard mode("FAKE_STEP_MODE", "sheet");
+    StepRig rig;
+    const Out fast = rig.run(rig.with_converter({"--inspect", rig.step_file().string()}));
+    EXPECT_EQ(fast.exit, 0) << fast.result.dump();
+    const auto& objects = fast.result.at("objects");
+    ASSERT_EQ(objects.size(), 3u) << fast.result.dump();  // arm, hub and the skipped cover
+    EXPECT_EQ(objects[0].value("name", std::string()), "arm");
+    EXPECT_EQ(objects[2].value("name", std::string()), "cover");
+    EXPECT_EQ(objects[2].value("code", std::string()), "no_solid");
+    EXPECT_FALSE(objects[2].value("ok", true));
+    EXPECT_FALSE(objects[2].value("message", std::string()).empty());
+    const Out deep = rig.run(rig.with_converter({"--inspect", rig.step_file().string(), "--deep", "--deflection", "0.1mm"}));
+    EXPECT_EQ(deep.exit, 0) << deep.result.dump();
+    ASSERT_TRUE(deep.result.contains("skipped")) << deep.result.dump();
+    ASSERT_EQ(deep.result.at("skipped").size(), 1u);
+    EXPECT_EQ(deep.result.at("skipped")[0].value("name", std::string()), "cover");
+    EXPECT_EQ(deep.result.at("skipped")[0].value("code", std::string()), "no_solid");
+    EXPECT_EQ(deep.result.at("objects").size(), 2u);  // the solids only: the skipped one is not an object of the gate
+}
+
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
     NEED_PYTHON();
     StepRig rig;
