@@ -102,28 +102,39 @@ def parse_length(text, flag):
 
 
 def file_length_unit(path):
-    """The length unit the Part 21 text declares, or a refusal: the STEP must name exactly one."""
+    """The length unit of the STEP's geometric representation contexts (GLOBAL_UNIT_ASSIGNED_CONTEXT), or a refusal.
+
+    The unit is what the file's contexts name, never a guess. A length unit declared elsewhere, for instance inside a derived unit
+    (a density in kg per cubic metre), is not the geometry's unit and is ignored; contexts that name different length units
+    refuse, and so does a file whose contexts name none."""
     with open(path, "rb") as f:
         text = f.read().decode("latin-1")
-    found = set()
-    si_length = r"LENGTH_UNIT\(\)\s*NAMED_UNIT\(\*\)\s*SI_UNIT\(\s*(\.[A-Z]+\.|\$)\s*,\s*\.METRE\.\s*\)"
-    for m in re.finditer(si_length, text):
-        prefix = m.group(1).strip(".")
-        if prefix not in SI_PREFIX:
-            raise Refusal(3, f"{os.path.basename(path)}: the length unit prefix '{prefix}' is not read "
-                             f"(m, mm, cm, um, in, ft)")
-        found.add(SI_PREFIX[prefix])
-    for m in re.finditer(r"CONVERSION_BASED_UNIT\(\s*'([A-Za-z ]+)'", text):
-        name = m.group(1).strip().upper()
-        if name in CONVERSION_UNIT_NAMES:  # Spatial InterOp's exports say MILLIMETRE this way rather than with an SI_UNIT
-            found.add(CONVERSION_UNIT_NAMES[name])
-        elif name not in ("DEGREE", "RADIAN"):
-            raise Refusal(3, f"{os.path.basename(path)}: the unit '{name}' is not read (m, mm, cm, um, in, ft)")
-    if len(found) != 1:
-        raise Refusal(3, f"{os.path.basename(path)}: {'no length unit' if not found else 'more than one length unit'}"
-                         f" is declared{'' if not found else ' (' + ', '.join(sorted(found)) + ')'}; "
+    base = os.path.basename(path)
+    declared = {}  # entity id -> the unit key, or None with the reason it is not read
+    for m in re.finditer(r"#(\d+)\s*=\s*\(([^;]*?LENGTH_UNIT\(\)[^;]*?)\)\s*;", text):
+        body = m.group(2)
+        si = re.search(r"SI_UNIT\(\s*(\.[A-Z]+\.|\$)\s*,\s*\.METRE\.\s*\)", body)
+        conversion = re.search(r"CONVERSION_BASED_UNIT\(\s*'([A-Za-z ]+)'", body)
+        if si:
+            prefix = si.group(1).strip(".")
+            declared[m.group(1)] = (SI_PREFIX.get(prefix), f"{base}: the length unit prefix '{prefix}' is not read "
+                                                           f"(m, mm, cm, um, in, ft)")
+        elif conversion:  # Spatial InterOp's exports say MILLIMETRE this way rather than with an SI_UNIT
+            name = conversion.group(1).strip().upper()
+            declared[m.group(1)] = (CONVERSION_UNIT_NAMES.get(name), f"{base}: the unit '{name}' is not read (m, mm, cm, um, in, ft)")
+    used = set()  # the length units the contexts name
+    for context in re.finditer(r"GLOBAL_UNIT_ASSIGNED_CONTEXT\(\s*\(([^)]*)\)", text):
+        for ref in re.findall(r"#(\d+)", context.group(1)):
+            if ref in declared:
+                unit, why = declared[ref]
+                if unit is None:
+                    raise Refusal(3, why)
+                used.add(unit)
+    if len(used) != 1:
+        raise Refusal(3, f"{base}: {'no length unit' if not used else 'more than one length unit'}"
+                         f" is named by the geometric representation contexts{'' if not used else ' (' + ', '.join(sorted(used)) + ')'}; "
                          f"a unit is never guessed")
-    return found.pop()
+    return next(iter(used))
 
 
 def import_ocp():
