@@ -921,37 +921,63 @@ TEST(FlowMovieBuildParts, TheChordTableIsReadFromThePropPartFileTheX500Uses) {
     EXPECT_FALSE(flow_movie::read_blade_chord(fs::path(SPADE_REPO_DIR) / "no/such/prop.yaml").has_value());
 }
 
-TEST(FlowMovieBuildParts, TheDiscMeshIsConcentricRingsWhoseAlphaFollowsTheSolidityWithNoAngularStructure) {
-    const flow_movie::BladeChord chord = uiuc_10x5();
-    constexpr uint32_t kBands = 24, kSegments = 64;
-    const float radius = 0.127f, plane_y = 0.011f, opacity = 0.8f, tint = 0.5f;
-    const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, radius, plane_y, opacity, tint, kBands, kSegments);
-    ASSERT_EQ(mesh.source_materials.size(), kBands) << "one material, one alpha, per ring";
-    ASSERT_EQ(mesh.submesh_index_count.size(), kBands);
-    const float width = (1.0f - chord.hub_cutout) / static_cast<float>(kBands);
-    for (const uint32_t band : {2u, 11u, 21u}) {  // three radii
-        const float lo = chord.hub_cutout + width * static_cast<float>(band);
-        const float mid = lo + 0.5f * width;
-        EXPECT_NEAR(mesh.source_materials[band].base_color.a, flow_movie::blade_solidity(chord, mid) * opacity, 2e-3f) << "band " << band;
-        EXPECT_NEAR(mesh.source_materials[band].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
-        // its triangles lie in the annulus [lo, lo + width] of the radius, flat at the blade plane
-        const uint32_t first = mesh.submesh_first_index[band];
-        for (uint32_t i = first; i < first + mesh.submesh_index_count[band]; ++i) {
-            const glm::vec3 v = mesh.positions[mesh.indices[i]];
-            const float r = std::hypot(v.x, v.z) / radius;
-            EXPECT_GE(r, lo - 1e-4f) << "band " << band;
-            EXPECT_LE(r, lo + width + 1e-4f) << "band " << band;
-            EXPECT_FLOAT_EQ(v.y, plane_y);
-        }
-        // evenly spaced round the ring: no angular structure (every vertex at a whole multiple of 2 pi / segments)
-        for (uint32_t i = first; i < first + mesh.submesh_index_count[band]; ++i) {
-            const glm::vec3 v = mesh.positions[mesh.indices[i]];
-            const double steps = std::atan2(static_cast<double>(v.z), static_cast<double>(v.x)) / kTwoPi * kSegments;
-            EXPECT_NEAR(steps, std::round(steps), 2e-3) << "band " << band;
-        }
-        EXPECT_EQ(mesh.submesh_index_count[band], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings (a disc seen from either side)";
+namespace {
+
+// A ring's radial extent (as a fraction of the radius) from its triangles' vertices.
+struct RingExtent {
+    float lo = 1e9f, hi = -1e9f;
+};
+RingExtent ring_extent(const spade::render::MeshData& mesh, std::size_t ring, float radius) {
+    RingExtent e;
+    const uint32_t first = mesh.submesh_first_index[ring];
+    for (uint32_t i = first; i < first + mesh.submesh_index_count[ring]; ++i) {
+        const glm::vec3 v = mesh.positions[mesh.indices[i]];
+        const float r = std::hypot(v.x, v.z) / radius;
+        e.lo = std::min(e.lo, r);
+        e.hi = std::max(e.hi, r);
     }
-    EXPECT_GT(mesh.source_materials.front().base_color.a, mesh.source_materials.back().base_color.a) << "denser at the root than at the tip";
+    return e;
+}
+
+}  // namespace
+
+TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidityContinuouslyWithNoAngularStructure) {
+    const flow_movie::BladeChord chord = uiuc_10x5();
+    constexpr uint32_t kSegments = 64;
+    const float radius = 0.127f, plane_y = 0.011f, tint = 0.5f, max_step = 0.02f;
+    for (const float opacity : {1.0f, 6.0f}) {
+        const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, radius, plane_y, opacity, tint, max_step, kSegments);
+        const std::size_t rings = mesh.source_materials.size();
+        ASSERT_EQ(mesh.submesh_index_count.size(), rings) << "one material, one alpha, per ring";
+        EXPECT_GE(rings, 20u) << "the rings are as many as the alpha's change needs: opacity " << opacity;
+        EXPECT_LE(rings, 400u);
+        EXPECT_NEAR(ring_extent(mesh, 0u, radius).lo, chord.hub_cutout, 1e-4f) << "from the hub cutout";
+        EXPECT_NEAR(ring_extent(mesh, rings - 1u, radius).hi, 1.0f, 1e-4f) << "to the tip";
+        for (std::size_t i = 0; i < rings; ++i) {
+            const RingExtent e = ring_extent(mesh, i, radius);
+            if (i + 1u < rings) {
+                EXPECT_NEAR(ring_extent(mesh, i + 1u, radius).lo, e.hi, 1e-4f) << "no gap and no overlap at ring " << i;
+                // CONTINUOUS: the alpha of one ring and the next differ by no more than the step asked for (no step at the edge)
+                EXPECT_LE(std::fabs(mesh.source_materials[i + 1u].base_color.a - mesh.source_materials[i].base_color.a), 1.5f * max_step)
+                    << "a step at the edge of ring " << i << " (opacity " << opacity << ")";
+            }
+            const float mid = 0.5f * (e.lo + e.hi);
+            EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity), 2e-3f) << "ring " << i;
+            EXPECT_NEAR(mesh.source_materials[i].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
+            EXPECT_EQ(mesh.submesh_index_count[i], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings";
+        }
+        // three radii of the first ring's neighbourhood: flat at the blade plane, evenly spaced round (no angular structure)
+        for (const std::size_t ring : {std::size_t{0}, rings / 2u, rings - 1u}) {
+            const uint32_t first = mesh.submesh_first_index[ring];
+            for (uint32_t i = first; i < first + mesh.submesh_index_count[ring]; ++i) {
+                const glm::vec3 v = mesh.positions[mesh.indices[i]];
+                EXPECT_FLOAT_EQ(v.y, plane_y);
+                const double steps = std::atan2(static_cast<double>(v.z), static_cast<double>(v.x)) / kTwoPi * kSegments;
+                EXPECT_NEAR(steps, std::round(steps), 2e-3) << "ring " << ring;
+            }
+        }
+        EXPECT_GT(mesh.source_materials.front().base_color.a, mesh.source_materials.back().base_color.a) << "denser at the root than at the tip";
+    }
 }
 
 TEST(FlowMovieBuildParts, ATurningRotorWithAChordTableIsOneSeeThroughDiscNotACopyPerSample) {
@@ -1053,5 +1079,54 @@ TEST(FlowMovieBuildParts, ThePcbInShadowIsANearBlackGreenBelowThePcbGreen) {
         }
     }
     EXPECT_TRUE(seen) << "the 6C's PCB object is in the table";
+}
+
+// THE --lines FILE TO THE DISC (the lead: main.cpp's chord wiring was exercised only by stills): the chord a draw gets is a pure choice now,
+// and the disc it makes follows THAT file's chord table.
+TEST(FlowMovieBuildParts, TheChordADrawGetsComesFromTheLinesFileOnlyForADiscWithParts) {
+    const fs::path lines = fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/parts/x500_10in_apc10x5.prop.yaml";
+    flow_movie::PropBlur disc;
+    const auto got = flow_movie::chord_for_draw(disc, true, lines);
+    ASSERT_TRUE(got.has_value()) << got.error().context;
+    ASSERT_TRUE(got->has_value());
+    EXPECT_EQ((*got)->blades, 2u);
+    EXPECT_FLOAT_EQ((*got)->c_over_r[7], 0.194f);
+    flow_movie::PropBlur sampled;
+    sampled.sampled = true;
+    const auto none_for_sampled = flow_movie::chord_for_draw(sampled, true, lines);
+    ASSERT_TRUE(none_for_sampled.has_value());
+    EXPECT_FALSE(none_for_sampled->has_value()) << "the sampled blur needs no chord";
+    const auto none_without_parts = flow_movie::chord_for_draw(disc, false, lines);
+    ASSERT_TRUE(none_without_parts.has_value());
+    EXPECT_FALSE(none_without_parts->has_value());
+    const auto none_without_lines = flow_movie::chord_for_draw(disc, true, fs::path());
+    ASSERT_TRUE(none_without_lines.has_value());
+    EXPECT_FALSE(none_without_lines->has_value()) << "no --lines: no chord (a turning rotor is then refused, naming --lines)";
+    const auto unreadable = flow_movie::chord_for_draw(disc, true, fs::path(SPADE_REPO_DIR) / "no/such.prop.yaml");
+    ASSERT_FALSE(unreadable.has_value());
+    EXPECT_NE(unreadable.error().context.find("--lines"), std::string::npos) << unreadable.error().context;
+
+    // the disc of that file's chord: its ring alphas are that file's solidity (the real table's, not the test's)
+    const flow_movie::BladeChord chord = **got;
+    const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, 0.127f, 0.0f, 1.0f, 0.5f, 0.02f, 32u);
+    for (const std::size_t ring : {std::size_t{1}, mesh.source_materials.size() / 2u, mesh.source_materials.size() - 2u}) {
+        const RingExtent e = ring_extent(mesh, ring, 0.127f);
+        EXPECT_NEAR(mesh.source_materials[ring].base_color.a, flow_movie::blade_solidity(chord, 0.5f * (e.lo + e.hi)), 2e-3f) << ring;
+    }
+}
+
+// THE CLIP RECORD NAMES WHAT THE PICTURE DOES NOT SHOW AS IT IS (the lead, 2026-11-18): the rotor discs are drawn at a gain, so the record says so.
+TEST(FlowMovieBuildParts, TheRecordSaysHowTheRotorDiscsAreDrawn) {
+    flow_movie::PropBlur gain;  // the defaults: a gain of 6
+    EXPECT_EQ(flow_movie::prop_blur_note(gain), "rotor discs drawn at 6 times the blades' time-averaged coverage so they show over the air");
+    flow_movie::PropBlur exact;
+    exact.opacity = 1.0f;
+    EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn at the blades' time-averaged coverage");
+    flow_movie::PropBlur sampled;
+    sampled.sampled = true;
+    sampled.samples = 24u;
+    const std::string copies = flow_movie::prop_blur_note(sampled);
+    EXPECT_NE(copies.find("24 copies"), std::string::npos) << copies;
+    EXPECT_EQ(copies.find("times"), std::string::npos) << "no gain is claimed for the sampled blur: " << copies;
 }
 

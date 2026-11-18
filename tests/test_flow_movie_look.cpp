@@ -657,3 +657,12 @@ TEST(FlowMovieLook, TheVorticityIsThinnedNearTheDroneAndNothingElseChanges) {
         << "finish_look thins";
 }
 
+// THE THINNING IS A PRESENTATION CHOICE THAT HIDES AIR NEAR THE DRONE, so the record says it in plain words (the lead, 2026-11-18).
+TEST(FlowMovieLook, TheRecordSaysTheAirNearTheDroneIsDrawnThinnedAndTheFieldIsUnchanged) {
+    flow_movie::Look look;
+    look.thin.radius = 0.7461f;
+    look.thin.floor = 0.0f;
+    const std::string note = flow_movie::look_note(look, 1.0);
+    EXPECT_NE(note.find("the air within 0.75 m of the drone is drawn thinned so the drone shows; the field is unchanged"), std::string::npos) << note;
+}
+
