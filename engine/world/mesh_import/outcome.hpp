@@ -1,8 +1,8 @@
 #pragma once
 
-// world/detail/outcome.hpp -- what a reader in its collecting mode does at the one place it builds an object's mesh (L88): it keeps the
+// world/mesh_import/outcome.hpp -- what a reader in its collecting mode does at the one place it builds an object's mesh (L88): it keeps the
 // object's outcome, the mesh or make_mesh()'s refusal of it, and goes on to the next object instead of stopping. Internal to
-// spade::mesh_import; world/detail/ is never installed.
+// spade::mesh_import (it lives with the readers: no file outside world/mesh_import/ may include the reader headers).
 
 #include <memory>
 #include <string>

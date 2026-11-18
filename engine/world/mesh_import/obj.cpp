@@ -32,7 +32,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/path_text.hpp"
-#include "world/detail/outcome.hpp"
+#include "world/mesh_import/outcome.hpp"
 #include "core/utf8.hpp"
 #include "world/detail/weld.hpp"
 
