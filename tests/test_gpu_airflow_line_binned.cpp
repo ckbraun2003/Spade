@@ -191,7 +191,9 @@ TEST(GpuAirflowLineBinned, TheBinnedStepIsTheCpusAndTheUnbinnedsBitForBit) {
         }
         for (af::LineRotor& r : rig.rotors) r.psi = std::fmod(r.psi + r.omega * kH, 6.28318530718f);
     }
-    if (bit_equal) EXPECT_EQ(total, 0u);
+    if (bit_equal) {
+        EXPECT_EQ(total, 0u);
+    }
 }
 
 TEST(GpuAirflowLineBinned, RefusesABinnedSetupItCannotMake) {
