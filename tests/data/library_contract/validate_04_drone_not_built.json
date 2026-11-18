@@ -1,0 +1,38 @@
+{
+ "description": "validate as drone is [shape]",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "validate",
+ "request": {
+  "as": "drone",
+  "text": ""
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "validate",
+  "ok": false,
+  "refusal": {
+   "code": "not_implemented",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "as",
+   "issues": []
+  }
+ }
+}

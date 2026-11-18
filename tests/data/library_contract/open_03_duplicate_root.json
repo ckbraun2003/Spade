@@ -1,0 +1,45 @@
+{
+ "description": "a root given twice",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "duplicate_root",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "duplicate_root",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "the root 'default' is given twice",
+     "path": "$FIXTURES/roots/default",
+     "root": "default",
+     "severity": "error"
+    }
+   ],
+   "message": "the root 'default' is given twice",
+   "path": "$FIXTURES/roots/default",
+   "root": "default",
+   "severity": "error"
+  }
+ }
+}

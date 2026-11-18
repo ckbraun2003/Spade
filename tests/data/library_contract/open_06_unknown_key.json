@@ -1,0 +1,26 @@
+{
+ "description": "an unknown key in the request is refused by name",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [],
+  "extra": 1
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "open",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "extra",
+   "issues": []
+  }
+ }
+}

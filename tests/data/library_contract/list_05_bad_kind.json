@@ -1,0 +1,37 @@
+{
+ "description": "a kind that is not one of the seven",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "list",
+ "request": {
+  "kind": "widget"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "list",
+  "refusal": {
+   "code": "invalid_request",
+   "field": "kind",
+   "id": null,
+   "issues": [],
+   "message": "kind must be model, object, part, drone, world, mesh or opaque, got 'widget'",
+   "path": null,
+   "root": null,
+   "severity": "error"
+  }
+ }
+}

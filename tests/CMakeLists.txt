@@ -311,6 +311,11 @@ add_executable(spade_tests
     ../tools/part_import/run.cpp
     ../tools/part_import/process.cpp
     ../tools/part_import/step.cpp
+    # spade_library's JSON calls and C ABI (L88l, S4), compiled in from the tool: the tests drive the ABI's functions and replay the golden
+    # exchanges in tests/data/library_contract.
+    test_library_c.cpp
+    ../tools/library_c/library_json.cpp
+    ../tools/library_c/c_api.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs

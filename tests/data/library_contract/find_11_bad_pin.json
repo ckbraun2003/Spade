@@ -1,0 +1,38 @@
+{
+ "description": "a pin that is not sha256 and 64 hex",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "default:part.motor.fpv_2306",
+  "expect_hash": "abc"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "find",
+  "refusal": {
+   "code": "invalid_request",
+   "field": "expect_hash",
+   "id": "default:part.motor.fpv_2306",
+   "issues": [],
+   "message": "expect_hash is 'sha256:' and 64 lower-case hex digits",
+   "path": null,
+   "root": null,
+   "severity": "error"
+  }
+ }
+}

@@ -1,0 +1,8 @@
+library_version: 3
+name: kat
+depends: [default]
+aliases:
+  gate-corridor: "kat:drone.quad"
+  legacy-motor: "default:part.motor.fpv_2306"
+indexes:
+  - index.yaml

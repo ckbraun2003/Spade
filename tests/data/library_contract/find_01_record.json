@@ -1,0 +1,76 @@
+{
+ "description": "a part with its record as canonical JSON",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "default:part.motor.fpv_2306",
+  "with": [
+   "record"
+  ]
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "find",
+  "ok": true,
+  "result": {
+   "entry": {
+    "id": "default:part.motor.fpv_2306",
+    "root": "default",
+    "local_id": "part.motor.fpv_2306",
+    "kind": "part",
+    "part_kind": "motor",
+    "type": null,
+    "name": "FPV 2306",
+    "category": "Motors",
+    "tags": [
+     "fpv"
+    ],
+    "file": "$FIXTURES/roots/default/motors/fpv_2306.motor.yaml",
+    "rel_file": "motors/fpv_2306.motor.yaml",
+    "thumbnail": null,
+    "requires": [],
+    "files": [],
+    "store_file": null,
+    "hash": "sha256:c416e6d1d47ef39f6ccc40d213e750ae73b2d44ebaf51fb643b002448a268993",
+    "generated_from": null,
+    "peek": {
+     "mass_kg": 0.032,
+     "provides": [],
+     "limits": {},
+     "rotor_count": null,
+     "world_version": null,
+     "install_kinds": []
+    }
+   },
+   "hash_matches": null,
+   "drone": null,
+   "record": {
+    "part_version": 1,
+    "motor": {
+     "kv": 1700,
+     "mass": 0.032
+    },
+    "sources": [
+     {
+      "id": "s1"
+     }
+    ]
+   }
+  },
+  "warnings": []
+ }
+}

@@ -1,0 +1,50 @@
+{
+ "description": "two roots and a store",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "open",
+  "ok": true,
+  "result": {
+   "roots": [
+    {
+     "name": "default",
+     "path": "$FIXTURES/roots/default",
+     "library_version": 3,
+     "depends": [],
+     "entries": 3,
+     "writable": false
+    },
+    {
+     "name": "kat",
+     "path": "$FIXTURES/roots/kat",
+     "library_version": 3,
+     "depends": [
+      "default"
+     ],
+     "entries": 2,
+     "writable": false
+    }
+   ],
+   "entry_count": 5,
+   "store": "$FIXTURES/store"
+  },
+  "warnings": []
+ }
+}
