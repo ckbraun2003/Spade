@@ -324,7 +324,7 @@ struct Drone {
     if (fade_applies) look.fade = drone.framing.fade();
     if (q != nullptr && q->thin_r > 0.0f) {
         look.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
-        look.thin.radius = q->thin_r;
+        look.thin.radius = q->thin_r * drone.framing.subject_m;  // a multiple of the drone's own size: one value fits every drone
         look.thin.floor = q->thin_floor;
     }
     return look;

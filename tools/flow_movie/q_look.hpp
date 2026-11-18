@@ -31,7 +31,7 @@ struct QLook {
     std::array<float, 3> opacity{0.95f, 0.60f, 0.30f};  // each in (0, 1]
     float vorticity_max = 0.5f;                        // the map's top: this fraction of the frame's largest |omega|, in (0, 1]
     // The cloud (--nasa-cloud): the density at the top of the range in 1/m (above 0, at most 1000), the fraction of the range below which
-    // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius in m (0 off, at most 1), the factor at its centre.
+    // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius as a multiple of the drone's own size (Framing::subject_m; 0 off, at most 2), the factor at its centre.
     float sigma = 30.0f;
     float onset = 0.15f;
     float thin_r = 0.0f;
@@ -115,7 +115,7 @@ struct QLook {
         else if (key == "thin_floor") slot = &look.thin_floor;
         if (slot == nullptr) return bad("unknown key '" + key + "' (l1 l2 l3 o1 o2 o3 vmax sigma onset thin_r thin_floor)");
         const bool inclusive_zero = key == "onset" || key == "thin_r" || key == "thin_floor";
-        const float top = key == "sigma" ? 1000.0f : 1.0f;
+        const float top = key == "sigma" ? 1000.0f : key == "thin_r" ? 2.0f : 1.0f;
         const bool onset_open = key == "onset";  // 0 up to, not including, 1
         const bool in_range = onset_open ? (number >= 0.0f && number < 1.0f)
                                          : (inclusive_zero ? (number >= 0.0f && number <= top) : (number > 0.0f && number <= top));
