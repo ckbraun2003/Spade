@@ -20,6 +20,7 @@
 #include "../tools/flow_movie/build_parts.hpp"
 #include "render/mesh_resolver.hpp"
 #include "render/scene.hpp"
+#include "unique_temp.hpp"
 #include "world/builder.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
@@ -37,8 +38,7 @@ const std::string kBoxEntry =
     "    box: [0.10, 0.03, 0.04]\n";
 
 fs::path fresh_store(const char* name) {
-    const fs::path root = fs::temp_directory_path() / (std::string("spade_build_parts_") + name);
-    fs::remove_all(root);
+    const fs::path root = spade::test::unique_temp_dir(std::string("build_parts_") + name);  // TestHygiene: temp paths come from unique_temp.hpp
     fs::create_directories(root / kSha);
     return root;
 }
