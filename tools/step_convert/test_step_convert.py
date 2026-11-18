@@ -149,6 +149,19 @@ class StepConvert(unittest.TestCase):
         self.assertEqual(run.returncode, 2, run.stderr)
         self.assertIn("spade_mesh_pack", run.stderr)
 
+    def test_help_is_a_request_so_it_prints_the_usage_on_stdout_and_exits_zero(self):
+        for flag in ("--help", "-h"):
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, flag], capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(run.stderr, "", "help writes nothing to standard error")
+            self.assertIn("step_convert.py", run.stdout)
+            self.assertIn("EXIT CODES", run.stdout)
+        # a usage ERROR keeps standard error and exit 2
+        bad = subprocess.run([PYTHON, "-B", "-I", CONVERT, "--no-such-option"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(bad.returncode, 2)
+        self.assertEqual(bad.stdout, "")
+        self.assertIn("step_convert:", bad.stderr)
+
     # -- the conversions: OCP needed ------------------------------------------------------------------------------
 
     def test_a_cube_is_closed_exact_and_carries_its_provenance(self):
@@ -387,6 +400,7 @@ class StepConvert(unittest.TestCase):
 
 
 NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found",
+                 "test_help_is_a_request_so_it_prints_the_usage_on_stdout_and_exits_zero",
                  "test_a_conversion_based_unit_named_for_its_length_is_read",
                  "test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others"}
 

@@ -20,6 +20,7 @@ endif()
 set(_step_cases
     test_a_deflection_is_required_and_needs_a_unit
     test_the_packer_must_be_found
+    test_help_is_a_request_so_it_prints_the_usage_on_stdout_and_exits_zero
     test_a_cube_is_closed_exact_and_carries_its_provenance
     test_a_cylinder_with_a_hole_is_genus_one_and_within_the_deflection_bound
     test_an_assembly_is_placed_by_its_transforms
