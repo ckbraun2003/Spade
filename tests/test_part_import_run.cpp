@@ -51,7 +51,7 @@ struct Rig {
         };
         env.exe_dir = tmp.path() / "exe";
         env.cancelled = [this] { return cancel; };
-        env.token = "t1";
+        env.token = test::unique_token();
     }
     [[nodiscard]] fs::path store() const { return tmp.path() / "store"; }
     [[nodiscard]] fs::path put(const std::string& name, std::string_view bytes) const {

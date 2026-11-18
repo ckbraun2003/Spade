@@ -82,7 +82,7 @@ struct StepRig {
         env.getenv = [](const char*) -> const char* { return nullptr; };
         env.exe_dir = tmp.path() / "exe";
         env.cancelled = [this] { return cancel.load(); };
-        env.token = "s1";
+        env.token = test::unique_token();
     }
     [[nodiscard]] fs::path store() const { return tmp.path() / "store"; }
     [[nodiscard]] fs::path step_file() const {

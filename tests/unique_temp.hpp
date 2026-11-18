@@ -51,7 +51,8 @@ namespace spade::test {
 // A token no other call, in this process or another, returns: "<process id>_<n>". For a name a tool builds a temp folder from (an
 // environment's `token`), where a literal in a test would be one folder shared by every process running that test.
 [[nodiscard]] inline std::string unique_token() {
-    return "t";  // RED: a stand-in, the same in every call and process
+    static std::atomic<uint64_t> counter{0};
+    return std::to_string(process_id()) + "_" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed));
 }
 
 // A new, empty folder at a unique_temp_path(). The caller removes it; TempDir
