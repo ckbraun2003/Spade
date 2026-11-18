@@ -43,6 +43,29 @@ namespace {
     return std::nullopt;
 }
 
+// What the tool says about a file it does not read: the format's name where it is known, and what to convert to.
+[[nodiscard]] std::string unsupported_format_message(const fs::path& path) {
+    static const std::pair<const char*, const char*> kKnown[] = {
+        {".dae", "COLLADA"},   {".fbx", "FBX"},      {".blend", "a Blender file"}, {".ply", "PLY"},     {".3ds", "3ds (3D Studio)"},
+        {".iges", "IGES"},     {".igs", "IGES"},     {".skp", "a SketchUp file"},  {".usd", "USD"},     {".usda", "USD"},
+        {".usdc", "USD"},      {".usdz", "USD"},     {".x3d", "X3D"},              {".wrl", "VRML"},    {".dxf", "DXF"},
+        {".amf", "AMF"},       {".off", "OFF"},      {".x", "DirectX .x"},         {".max", "a 3ds Max file"}, {".ma", "a Maya file"},
+        {".mb", "a Maya file"}, {".c4d", "a Cinema 4D file"}, {".sldprt", "a SolidWorks part"}, {".ipt", "an Inventor part"},
+        {".prt", "a CAD part (NX, Creo)"}, {".3dm", "Rhino 3dm"}, {".dwg", "DWG"},
+    };
+    const std::string ext = lower(path.extension().string());
+    const std::string convert = "convert it to glb, OBJ, STL, 3MF or STEP";
+    const std::string file = "'" + path.string() + "'";
+    for (const auto& [e, name] : kKnown) {
+        if (ext == e) return file + " is " + name + " (" + ext + "), which this tool does not read; " + convert;
+    }
+    if (ext.empty()) {
+        return file + " has no extension, so its format is unknown; this tool reads STEP, 3MF, glTF, glb, STL and OBJ (by extension); " + convert;
+    }
+    return file + " has the extension '" + ext + "', which is not a format this tool reads (STEP, 3MF, glTF, glb, STL and OBJ, by extension); " +
+           convert;
+}
+
 [[nodiscard]] const char* unit_text(MeshUnit u) {
     switch (u) {
         case MeshUnit::metre: return "m";
@@ -205,7 +228,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     const fs::path path(opts.file);
     const std::optional<std::string> format = format_of(path);
     if (!format) {
-        return fail({"format_unknown", "'" + opts.file + "' is not a STEP, 3MF, glTF, glb, STL or OBJ file (by its extension)"});
+        return fail({"format_unknown", unsupported_format_message(path)});
     }
     const bool declares_unit = *format != "stl" && *format != "obj";
     std::optional<MeshUnit> unit;
