@@ -158,6 +158,16 @@ struct Candidates {
     return to_candidates(std::move(r));
 }
 
+// A part the converter left out because it holds no solid (a surface or a shell): named, with a code, never a gate refusal.
+[[nodiscard]] std::string skipped_object(const std::string& name) {
+    return JsonObject{}
+        .str("name", name)
+        .boolean("ok", false)
+        .str("code", "no_solid")
+        .str("message", "'" + name + "' holds no solid (a surface, shell or wire), so it is left out; the rest of the file is read")
+        .line();
+}
+
 // The flagged cross-check as a problem: the converter's mesh volume and the B-rep's differ by more than 1% for these objects.
 [[nodiscard]] Problem flagged_problem_for(const std::vector<std::string>& flagged_names) {
     std::string names;
@@ -386,6 +396,10 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
                         .num("volume", sol.volume_m3 * scale * scale * scale)
                         .line();
         }
+        for (const std::string& name : info->skipped) {
+            if (!list.empty()) list.push_back(',');
+            list += skipped_object(name);
+        }
         JsonObject unit_json;
         unit_json.str("declared", info->unit).str("used", info->unit).null("guess");
         JsonObject payload = base;
@@ -550,6 +564,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             .str("depth", is_step ? "deep" : "full")
             .raw("objects", "[" + list + "]");
         if (emitted) payload.raw("cross_check", "[" + cross_list + "]");
+        if (emitted && !emitted->skipped.empty()) {
+            std::string skipped_list;
+            for (const std::string& name : emitted->skipped) skipped_list += (skipped_list.empty() ? "" : ",") + skipped_object(name);
+            payload.raw("skipped", "[" + skipped_list + "]");
+        }
         if (refused_count > 0) return result(out, "inspect", &gate_problem, payload);
         if (!flagged_names.empty()) {
             const Problem p = flagged_problem();

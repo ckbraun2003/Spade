@@ -165,6 +165,18 @@ Expected<StepProbe> parse_probe(const std::string& json_text) {
     return p;
 }
 
+// The converter's optional "skipped" list: the names of the parts it left out because they hold no solid.
+static std::vector<std::string> skipped_names(const json& answer) {
+    std::vector<std::string> names;
+    if (const auto s = answer.find("skipped"); s != answer.end() && s->is_array()) {
+        for (const json& e : *s) {
+            const std::string name = e.is_object() ? text_of(e, "name") : std::string();
+            if (!name.empty()) names.push_back(name);
+        }
+    }
+    return names;
+}
+
 Expected<StepInspect> parse_inspect(const std::string& json_text) {
     const Expected<json> j = parse_object(json_text);
     if (!j) return std::unexpected(j.error());
@@ -189,6 +201,7 @@ Expected<StepInspect> parse_inspect(const std::string& json_text) {
         o.hi *= u;
         r.solids.push_back(std::move(o));
     }
+    r.skipped = skipped_names(*j);
     return r;
 }
 
@@ -196,6 +209,7 @@ Expected<EmitReport> parse_emit(const std::string& json_text) {
     const Expected<json> j = parse_object(json_text);
     if (!j) return std::unexpected(j.error());
     EmitReport r;
+    r.skipped = skipped_names(*j);
     r.unit = text_of(*j, "unit");
     r.occt = text_of(*j, "occt");
     r.wheel = text_of(*j, "wheel");
