@@ -276,7 +276,8 @@ struct MeshObject {
 // in the order the plain reader would build them. A problem with the FILE (not the format, a damaged chunk, an accessor out of range, no
 // object at all) is still one error, the plain reader's own, unchanged. The plain readers are unchanged: for a file whose objects all pass,
 // these give the plain reader's objects (name, unit, the same mesh) and for one that does not, the plain reader's error is the first
-// outcome's refusal.
+// outcome's refusal. (These read every object, so a problem with the file found AFTER an earlier object's refusal is the one error; the
+// plain reader would have stopped at the refusal.)
 struct MeshObjectOutcome {
     std::string name;
     MeshUnit unit = MeshUnit::unspecified;

@@ -28,6 +28,7 @@
 #include <glm/vec3.hpp>
 
 #include "core/path_text.hpp"
+#include "world/detail/outcome.hpp"
 #include "world/detail/weld.hpp"
 
 namespace spade {
@@ -50,7 +51,7 @@ constexpr uint64_t kFacetsPerBlock = 4096;
 }
 
 [[nodiscard]] Result<std::vector<MeshObject>> read(const std::filesystem::path& path, const std::string& file,
-                                                   MeshUnit unit) {
+                                                   MeshUnit unit, std::vector<MeshObjectOutcome>* collect) {
     const auto fail = [&file](Code code, const std::string& detail) {
         return std::unexpected(Error{code, file + ": " + detail});
     };
@@ -117,6 +118,10 @@ constexpr uint64_t kFacetsPerBlock = 4096;
     std::string name = path_text(path.stem());
     const MeshInput input = detail::weld_exact(positions, indices, unit);
     auto built = make_mesh(input, file + ": object '" + name + "'");
+    if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is
+        detail::record_outcome(*collect, name, unit, built);
+        return std::vector<MeshObject>{};
+    }
     if (!built) return std::unexpected(built.error());
     std::vector<MeshObject> out;
     out.push_back(MeshObject{std::move(name), std::move(*built), unit});
@@ -125,13 +130,16 @@ constexpr uint64_t kFacetsPerBlock = 4096;
 
 }  // namespace
 
-Result<std::vector<MeshObject>> read_stl(const std::filesystem::path& path, MeshUnit unit) {
+namespace {
+
+[[nodiscard]] Result<std::vector<MeshObject>> stl_entry(const std::filesystem::path& path, MeshUnit unit,
+                                                        std::vector<MeshObjectOutcome>* collect) {
     const std::string file = path_text(path);
     try {
         if (const std::string problem = detail::unit_problem(unit); !problem.empty()) {
             return std::unexpected(Error{Code::invalid_argument, file + ": " + problem});
         }
-        return read(path, file, unit);
+        return read(path, file, unit, collect);
     } catch (const std::bad_alloc&) {
         return std::unexpected(Error{Code::capacity_exceeded, file + ": out of memory reading it"});
     } catch (const std::exception& e) {
@@ -139,9 +147,15 @@ Result<std::vector<MeshObject>> read_stl(const std::filesystem::path& path, Mesh
     }
 }
 
-// RED stub (L88 collecting readers): not built yet.
-Result<std::vector<MeshObjectOutcome>> read_stl_objects(const std::filesystem::path&, MeshUnit) {
-    return std::unexpected(Error{Code::internal, "the collecting reader is not built"});
+}  // namespace
+
+Result<std::vector<MeshObject>> read_stl(const std::filesystem::path& path, MeshUnit unit) { return stl_entry(path, unit, nullptr); }
+
+Result<std::vector<MeshObjectOutcome>> read_stl_objects(const std::filesystem::path& path, MeshUnit unit) {
+    std::vector<MeshObjectOutcome> all;
+    const Result<std::vector<MeshObject>> r = stl_entry(path, unit, &all);
+    if (!r) return std::unexpected(r.error());
+    return all;
 }
 
 }  // namespace spade
