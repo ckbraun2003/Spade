@@ -1094,7 +1094,7 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots,
     }
     // Aliases: merged; a key that is an id, or defined twice, is a conflict.
     std::map<std::string, std::string> aliases;
-    for (const RootData& r : data) {
+    for (RootData& r : data) {
         for (const Alias& a : r.aliases) {
             if (exists.count(a.key) != 0) {
                 issues.push_back(make("alias_conflict", "the alias '" + a.key + "' is also an id", r.spec.name, a.path, a.key,
@@ -1102,6 +1102,8 @@ LibraryResult<LibrarySet> open_libraries(std::span<const LibraryRootSpec> roots,
             } else if (!aliases.emplace(a.key, a.target).second) {
                 issues.push_back(make("alias_conflict", "the alias '" + a.key + "' is defined twice", r.spec.name, a.path,
                                       a.key, "aliases." + a.key));
+            } else {
+                r.info.aliases[a.key] = a.target;
             }
         }
     }

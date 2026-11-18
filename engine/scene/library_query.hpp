@@ -99,4 +99,18 @@ struct FindResult {
 // The entry's peek: nullopt when its file cannot be read or parsed (the reason in *why, when given).
 [[nodiscard]] std::optional<EntryPeek> peek_entry(const SetEntry& entry, std::string* why = nullptr);
 
+// resolve (L88l): an alias to its full id, read from the opened set's alias tables (one per root, in each root's library.yaml); the
+// alias is any non-empty string. `root`, when not empty, limits the lookup to that root's own table. The result's `root` is the
+// resolved id's own root, which need not be the table's. Refused: invalid_request (an empty alias; field alias), root_not_loaded
+// (`root` is not open; field root), entry_not_found (no table has it; field alias). An id is not an alias.
+struct ResolveResult {
+    std::string id{};
+    std::string root{};
+};
+[[nodiscard]] LibraryResult<ResolveResult> resolve_alias(const LibrarySet& set, std::string_view alias, std::string_view root = {});
+
+// hash_text (L88l): "sha256:" and the 64 lower-case hex of the SHA-256 of `text`'s bytes exactly as given (no newline translation),
+// for a host that pins a document it holds in memory.
+[[nodiscard]] std::string hash_text(std::string_view text);
+
 }  // namespace spade::scene
