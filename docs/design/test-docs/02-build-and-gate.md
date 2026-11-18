@@ -49,7 +49,7 @@ Cameron decided this on 2026-10-21, by AskUserQuestion to the lead (backlog, `34
 
 Per-branch debug chunks are dropped.
 
-**At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke. The lead posts the smoke as `C:\Users\Cameron\Desktop\Projects\Videos\Smoke\Spade\<UTC time>_batch-<n>-live-smoke.mp4` with its caption, gets `check_video.py` PASS, then sends a push notification. `Videos\CATEGORIES.md` holds the rules for every posted video (Cameron, 2026-10-21; both leads agreed); `Videos\check_video.py` checks and encodes them. A branch's smoke is not posted; its MP4 stays in `spade-smoke\`.
+**At the lead's batch gate:** the debug suite in chunks, the `-NoSeed` leg, and the live smoke. The lead posts the smoke as `%USERPROFILE%\Desktop\Projects\Videos\Smoke\Spade\<UTC time>_batch-<n>-live-smoke.mp4` with its caption, gets `check_video.py` PASS, then sends a push notification. `Videos\CATEGORIES.md` holds the rules for every posted video (Cameron, 2026-10-21; both leads agreed); `Videos\check_video.py` checks and encodes them. A branch's smoke is not posted; its MP4 stays in `spade-smoke\`.
 
 The debug chunks run at `-j 1`: the gate passes no `-j` and leaves `CTEST_PARALLEL_LEVEL` unset, so each index chunk (`-I 1,440` to `-I 2641,4000`, `-L spade -LE gpu`) runs serially, and the load beside it is jobrun's other heavy slot (the lead, 2026-11-03). Time a debug test the same way: `-j 1`, noting what the other slot ran.
 
@@ -152,17 +152,19 @@ scripts/gcc-check.sh --compile tests/test_example.cpp engine/render/example.cpp
   - **The call:** run python directly, not inside PowerShell:
 
     ```text
-    python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --heavy --heavy-class <build|test|gpu> [--floor-gb 8] --limit-s <N> [--expect-s <E>] [--wait-max-s <S>] --ticket <tree>-<realm>-<what>-<sha> --log <FILE> -- <command>
+    python <vantage.py> job run --class <build|test|gpu> --ticket <tree>-<realm>-<what>-<sha> --cwd <dir> --expect-s <E> --limit-s <N> [--wait-max-s <S>] --log <abs log> -- <command>
     ```
+
+    `<vantage.py>` is `%USERPROFILE%\Desktop\Vantage\vantage.py`; `~/.claude/agent-tree/JOBS.md` is the reference. It replaced `jobrun.py`, which is now a shim to it, and the `--heavy` and `--heavy-class` flags.
 
   - **What v2 adds** (live 2026-10-21; Cameron ran the install):
     - **`--expect-s`:** the run time you expect, which defaults to `--limit-s`. A job expected to take over 900 s is LONG, and only one long job runs at a time.
     - **The quick lane:** a job with `--expect-s` of 90 or less and `--limit-s` of 180 or less.
     - **`--ticket <tree>-<realm>-<what>-<sha>`:** says whose job it is and what it does, for example `spade-testdocs-leg-1a2b3c4`. Never start a ticket with the class (`gpu-`, `cc-`) or with only the realm (`testdocs-`). A retry uses the same ticket, so it keeps its place instead of adding a second entry.
-    - **`--queue-status`** shows each job's size and its working directory, as well as who holds the queue and who waits.
+    - **`job status`** shows each job's size and its working directory, as well as who holds the queue and who waits.
 
   - **No duplicate jobs** (Cameron, 2026-10-21, via the lead). The monitor marks a job as DUP when its command and folder match another job's.
-    - Before you queue a job, run `python C:/Users/Cameron/Desktop/Projects/kat-wt/_handoff/tools/jobrun.py --queue-status`.
+    - Before you queue a job, run `python <vantage.py> job status`.
     - Don't queue a command that is already running or waiting from the same folder. Wait for that run instead.
     - If another realm has the same test queued at the same commit, use that run's result. Ask the lead if you can't get it.
     - If a job you no longer need is still waiting, stop it before you queue a new version.
