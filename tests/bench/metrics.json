@@ -200,7 +200,7 @@
     "180",
     "--keep-cache",
     "--out",
-    "C:/Users/Cameron/Desktop/spade-videos/perf-web-s1-30",
+    "{home}/Desktop/spade-videos/perf-web-s1-30",
     "--ticket",
     "{ticket}"
    ]

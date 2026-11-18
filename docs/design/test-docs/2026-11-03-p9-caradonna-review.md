@@ -6,7 +6,7 @@ Test/Docs, 2026-11-03. Plan: `2026-11-03-p9-rotor-data-plan.md` (the lead's ruli
 
 - NASA TM-81232 (USAAVRADCOM TR-81-A-23), September 1981. NTRS 19820004169, accession 82N12042, read once from `https://ntrs.nasa.gov/api/citations/19820004169/downloads/19820004169.pdf`.
 - 60 pages, 2,334,139 bytes, SHA-256 `16c14789a5f65892b4ffb4e3628872723195c930f96680068ead7375e57208d2`.
-- The local copy is outside the repo, at `C:/Users/Cameron/Desktop/projects/spade/.agents/refs/caradonna1981/19820004169.pdf`, with the page renders this reading used beside it.
+- The local copy is outside the repo, at `<main checkout>/.agents/refs/caradonna1981/19820004169.pdf`, with the page renders this reading used beside it.
 
 ## What was read
 
