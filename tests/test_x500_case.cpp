@@ -16,6 +16,10 @@
 //                                                and z and within 8 mm in y, the hubs at the table's pose (0.0614 m above its origin), the principal
 //                                                diagonal within 3% of an independent sum of the table's parts, the products of inertia zero and
 //                                                the design frame the principal frame (design_to_principal the identity)
+//   X500Model.TheFilesComOffsetIsTheCentreOfMassInTheTablesFrame   the design frame IS the table's frame (the hubs 0.0614 m above its
+//                                                origin, in the file too), so the model file's `com_offset` is the parts' centre of mass in the table's
+//                                                frame, the one value a drawing of the table shifts by (Rendering: the table's origin sits at
+//                                                -com_offset from the body)
 //   X500Model.TheBatterySitsUnderTheFrameAsASolid   the 4S pack as a 0.133 x 0.0335 x 0.045 m box part under the frame stack
 //   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0181 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
@@ -150,8 +154,8 @@ TEST(X500Model, TheMassAndInertiaComeFromTheBuildTable) {
     EXPECT_NEAR(c.mass, 1.6389f, 5.0e-4f) << "the 13 parts' sum";
     EXPECT_NEAR(c.center_of_mass.x, 0.00091f, 6.0e-4f) << "the table's centre of mass in x, from the parts' poses";
     EXPECT_NEAR(c.center_of_mass.z, -0.00159f, 6.0e-4f) << "and in z";
-    EXPECT_NEAR(spec->rotors[0].hub.position.y, x5::kHubAboveCentre + x5::kDesignAboveTable, 1.0e-9) << "the hubs at the table's pose";
-    const double com_y_table = static_cast<double>(c.center_of_mass.y) - x5::kDesignAboveTable;
+    EXPECT_NEAR(spec->rotors[0].hub.position.y, 0.0614, 1.0e-9) << "the hubs at the table's pose: the design frame is the table's frame";
+    const double com_y_table = static_cast<double>(c.center_of_mass.y);
     EXPECT_NEAR(com_y_table, 0.0, 0.008) << "the parts' centre of mass is within 8 mm of the table's origin in y";
     const double hub_above = spec->rotors[0].hub.position.y - static_cast<double>(c.center_of_mass.y);
     const double want[3] = {0.014752, 0.022166, 0.015874};  // x roll, y yaw, z pitch about the centre of mass, design axes
@@ -167,6 +171,25 @@ TEST(X500Model, TheMassAndInertiaComeFromTheBuildTable) {
                 "hubs %.4f m above it\n",
                 static_cast<double>(c.mass), static_cast<double>(c.center_of_mass.x), com_y_table, static_cast<double>(c.center_of_mass.z),
                 c.inertia_design[0][0], c.inertia_design[1][1], c.inertia_design[2][2], hub_above);
+}
+
+// The design frame is the table's frame, so the compiled model's com_offset (the centre of mass from the design origin, design frame) is the
+// centre of mass in the table's frame: one named value in the file, nothing copied by hand.
+TEST(X500Model, TheFilesComOffsetIsTheCentreOfMassInTheTablesFrame) {
+    const auto file = sc::load_model_file(x5::data_dir() / x5::kModelFile);
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    const spade::vehicles::ModelType& m = file->model;
+    EXPECT_NEAR(m.com_offset.x, 0.00091f, 6.0e-4f);
+    EXPECT_NEAR(m.com_offset.y, 0.0f, 0.008f) << "within 8 mm of the table's origin in y";
+    EXPECT_NEAR(m.com_offset.z, -0.00159f, 6.0e-4f);
+    ASSERT_EQ(m.rotors.size(), 4u);
+    for (const auto& r : m.rotors) {
+        EXPECT_NEAR(r.local_pos.y + m.com_offset.y, 0.0614f, 1.0e-4f) << "each hub 0.0614 m above the table's origin, in the file";
+    }
+    EXPECT_NEAR(m.rotors[0].local_pos.x + m.com_offset.x, 0.174f, 1.0e-4f) << "and at the table's x and z";
+    EXPECT_NEAR(m.rotors[0].local_pos.z + m.com_offset.z, 0.174f, 1.0e-4f);
+    std::printf("[ x500    ] model.com_offset (the parts' centre of mass in the table's frame): (%.5f, %.5f, %.5f) m\n",
+                static_cast<double>(m.com_offset.x), static_cast<double>(m.com_offset.y), static_cast<double>(m.com_offset.z));
 }
 
 TEST(X500Model, TheBatterySitsUnderTheFrameAsASolid) {
@@ -294,6 +317,8 @@ TEST(AirflowX500, TheRotorsReachStaysInsideTheBoxWithRoomAbove) {
     const auto& r = file->model.rotors.front();
     EXPECT_NEAR(r.radius, 0.127, 1.0e-4);
     const float hub_above_origin = r.local_pos.y + file->model.com_offset.y;
+    EXPECT_NEAR(spade::testing::d1_x500_hold().y, 0.075f - 13.0f * spade::testing::kD1X500Grid.dx, 1.0e-6f)
+        << "the drone lowered 13 rows: the design origin is the table's, the hubs 0.0614 m above it";
     const float height = static_cast<float>(grid.ny) * grid.dx;
     const float top_margin = 0.5f * height - spade::testing::d1_x500_hold().y - hub_above_origin;
     const float reach = static_cast<float>(r.radius) + 6.0f * grid.dx;
