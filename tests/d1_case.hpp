@@ -52,12 +52,14 @@ inline constexpr physics::airflow::GridShape kD1Grid{240, 177, 168, 0.004f};
 inline constexpr physics::airflow::GridShape kD1DeepGrid{240, 392, 168, 0.004f};
 
 // L86i, option A (the lead, 2026-11-17): the website's NASA-style look needs the blades' helices (pitch about 27 mm) resolved, so a uniform
-// 2 mm CROPPED near field: 0.56 x 0.50 x 0.56 m, 280 x 250 x 280 = 19.6 M cells. 300 x 280 x 300 (25.2 M cells) measured 5,341,050,984 bytes
-// of grid, scratch and solids (212 B a cell) against kGridByteCap's 4,294,967,296, so this is the largest box of that shape under the cap
-// (3.87 GiB). The phantom's rotors (R 0.1194 m, at +-0.1245, +-0.1257 m) have their kernel reach (R + 6 dx) 0.2555 m from the axis, inside
-// the 0.28 m half width; d1_hold() puts the drone 0.073 m above the centre: 0.177 m of open air above it for the inflow, 0.323 m of wake below.
-// ny - 177 is odd, so the drone keeps its y cell centre as in the 4 mm boxes.
-inline constexpr physics::airflow::GridShape kD1NearGrid{280, 250, 280, 0.002f};
+// 2 mm CROPPED near field: 0.544 x 0.464 x 0.544 m, 272 x 232 x 272 = 17.2 M cells. Two caps bound it, both measured on the phantom:
+// kGridByteCap (4 GiB of grid, scratch and solids, 212 B a cell: 300 x 280 x 300 asked 5,341,050,984 bytes, 280 x 250 x 280 passes at
+// 3.870 GiB) and the device runner's VRAM cap (4 GiB with the staging, compute::vram_cap: 280 x 250 x 280 asked 4,307,788,776 on the device
+// plus 295,092,000 staging, 4,602,985,224 in all, 234.6 B a cell, and was refused; this box asks ~4.03 GB). The phantom's rotors (R 0.1194 m, at
+// +-0.1245, +-0.1257 m) have their kernel reach (R + 6 dx) 0.2555 m from the axis, inside the 0.272 m half width; d1_hold() puts the drone
+// 0.055 m above the centre: 0.177 m of open air above it for the inflow, 0.287 m of wake below. ny - 177 is odd, so the drone keeps its y
+// cell centre as in the 4 mm boxes.
+inline constexpr physics::airflow::GridShape kD1NearGrid{272, 232, 272, 0.002f};
 
 // L86k (the lead, 2026-11-17): the X500's R 0.173 m rotors at +-0.174 m reach 0.174 + 0.173 + 6 dx from the axis, 0.365 m at 3 mm, so the
 // box is 0.80 m wide; at 3 mm that is 267 x 217 x 267 = 15.5 M cells (0.80 x 0.65 x 0.80 m), 3.3 GiB by the engine's 212 B a cell, under

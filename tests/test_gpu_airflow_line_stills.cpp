@@ -38,6 +38,7 @@
 #include "compute/vulkan/context.hpp"
 #include "d1_case.hpp"
 #include "flow_still.hpp"
+#include "x500_model.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/dye.hpp"
@@ -84,8 +85,8 @@ struct Phantom {
     float weight_n = 0.0f;
 };
 
-[[nodiscard]] spade::Result<Phantom> phantom_box(const char* model_file, const af::GridShape& grid) {
-    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / model_file;
+[[nodiscard]] spade::Result<Phantom> phantom_box(const std::filesystem::path& file, const std::string& pin,
+                                                 const af::GridShape& grid) {
     auto loaded = spade::scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
     if (!loaded->model.propulsion) {
@@ -94,7 +95,7 @@ struct Phantom {
     spade::vehicles::ModelType model = std::move(loaded->model);
     an::AnalysisCase c;
     c.power = an::Power{.idle = 0.05f, .state_of_charge = 1.0f};
-    c.model = an::pin_model(std::string("assets/") + model_file, model);
+    c.model = an::pin_model(pin, model);
     c.rotors.assign(model.rotors.size(), an::RotorSetup{});
     c.grid.box = grid.dx * static_cast<float>(std::max(grid.nx, grid.nz));
     c.grid.spacing = grid.dx;
@@ -178,16 +179,22 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                                : 8u;
 
     // SPADE_LS_GRID=near: the 2 mm cropped near field (tests/d1_case.hpp's kD1NearGrid); else the 4 mm deep box.
-    const af::GridShape grid = env_cstr("SPADE_LS_GRID") != nullptr ? spade::testing::kD1NearGrid : spade::testing::kD1DeepGrid;
-    auto made = phantom_box(model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml", grid);
+    // SPADE_LS_DRONE=x500 (L86k): the X500 (tools/flow_movie/data/x500) with its estimated 13-inch prop on kD1X500Grid, 3 mm.
+    const bool x500 = env_cstr("SPADE_LS_DRONE") != nullptr && std::string(env_cstr("SPADE_LS_DRONE")) == "x500";
+    af::GridShape grid = env_cstr("SPADE_LS_GRID") != nullptr ? spade::testing::kD1NearGrid : spade::testing::kD1DeepGrid;
+    if (x500) grid = spade::testing::kD1X500Grid;
+    const std::string model_rel = model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml";
+    const std::filesystem::path model_path =
+        x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kModelFile : std::filesystem::path(SPADE_ASSETS_DIR) / model_rel;
+    auto made = phantom_box(model_path, x500 ? std::string("x500") : "assets/" + model_rel, grid);
     ASSERT_TRUE(made.has_value()) << made.error().context;
     Phantom& ph = *made;
     b7::B7Box& box = ph.box;
     const af::GridShape shape = box.grid.shape;
 
-    // The prop: the library's APC 10x5 (phantom3_class's), its blade and B1's fitted polar.
-    const std::filesystem::path prop_file =
-        std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
+    // The prop: the library's APC 10x5 (phantom3_class's), its blade and B1's fitted polar; the X500's is that scaled, graded estimated.
+    const std::filesystem::path prop_file = x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kPropFile
+                                                 : std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
     auto part = spade::scene::prop_from_yaml(read_text(prop_file));
     ASSERT_TRUE(part.has_value()) << part.error().context;
     auto prop = spade::scene::line_propeller(*part);

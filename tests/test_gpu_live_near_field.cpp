@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // test_gpu_live_near_field.cpp -- L86i, option A (the lead, 2026-11-17): the camera quadcopter on a UNIFORM 2 mm CROPPED NEAR FIELD,
-// tests/d1_case.hpp's kD1NearGrid (280 x 250 x 280 = 19.6 M cells, 0.56 x 0.50 x 0.56 m: the drone 0.177 m below the top face and
-// 0.32 m of wake below it), its rotors as actuator lines and the dye at the blade tips, on the device through LiveRun.
+// tests/d1_case.hpp's kD1NearGrid (272 x 232 x 272 = 17.2 M cells, 0.544 x 0.464 x 0.544 m: the drone 0.177 m below the top face and
+// 0.29 m of wake below it), its rotors as actuator lines and the dye at the blade tips, on the device through LiveRun.
 //
 //   AirflowNearField.TheTwoMillimetreGridIsWithinTheCapWithItsSolids   check_grid(kD1NearGrid, the case's faces, with solids): measured
 //                                                                      bytes against kGridByteCap, printed; kGridByteCap is spec law
@@ -33,6 +33,7 @@
 #include "flow_still.hpp"
 #include "gpu_skip.hpp"
 #include "phantom_case.hpp"
+#include "x500_model.hpp"
 #include "physics/airflow/dye.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
@@ -70,11 +71,15 @@ TEST(AirflowNearField, TheTwoMillimetreGridIsWithinTheCapWithItsSolids) {
 TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
     if (env_cstr("SPADE_NEAR_FIELD") == nullptr) GTEST_SKIP() << "opt-in: SPADE_NEAR_FIELD=1 (GPU, minutes)";
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    const af::GridShape grid = spade::testing::kD1NearGrid;
-    const auto made = spade::testing::phantom_case(grid);
+    // SPADE_NEAR_DRONE=x500 (L86k): the X500 on its 3 mm grid with its estimated 13-inch prop; else the phantom on the 2 mm near field.
+    const bool x500 = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "x500";
+    const af::GridShape grid = x500 ? spade::testing::kD1X500Grid : spade::testing::kD1NearGrid;
+    const auto made = x500 ? spade::testing::still_air_case(spade::testing::x500::data_dir() / spade::testing::x500::kModelFile, "x500", grid)
+                           : spade::testing::phantom_case(grid);
     ASSERT_TRUE(made.has_value()) << made.error().context;
 
-    const std::filesystem::path prop_file = std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
+    const std::filesystem::path prop_file = x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kPropFile
+                                                 : std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
     std::ifstream in(prop_file, std::ios::binary);
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const auto part = spade::scene::prop_from_yaml(text);

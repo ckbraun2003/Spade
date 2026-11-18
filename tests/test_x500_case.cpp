@@ -92,8 +92,13 @@ TEST(X500Model, TheFilesAreTheBuildersOutput) {
     }
     ASSERT_TRUE(fs::exists(model)) << model.string() << " is missing: regenerate with SPADE_X500_WRITE=1";
     ASSERT_TRUE(fs::exists(prop)) << prop.string() << " is missing: regenerate with SPADE_X500_WRITE=1";
-    EXPECT_EQ(read_all(model), texts->model) << "x500.model.yaml is stale: regenerate with SPADE_X500_WRITE=1";
-    EXPECT_EQ(read_all(prop), texts->prop) << "the prop part file is stale: regenerate with SPADE_X500_WRITE=1";
+    // Line endings aside: a checkout with core.autocrlf gives the files CRLF.
+    const auto lf = [](std::string s) {
+        std::erase(s, '\r');
+        return s;
+    };
+    EXPECT_EQ(lf(read_all(model)), texts->model) << "x500.model.yaml is stale: regenerate with SPADE_X500_WRITE=1";
+    EXPECT_EQ(lf(read_all(prop)), texts->prop) << "the prop part file is stale: regenerate with SPADE_X500_WRITE=1";
 }
 
 TEST(X500Model, CarriesKatsNumbers) {
