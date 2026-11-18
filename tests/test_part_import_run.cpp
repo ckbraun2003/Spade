@@ -361,7 +361,7 @@ TEST(PartImportInspect, EveryObjectOfAFileGetsItsOwnGateResult) {
     EXPECT_EQ(r.exit, 4) << r.out;
     EXPECT_FALSE(r.ok());
     EXPECT_EQ(r.result.value("gate", std::string()), "refused");
-    EXPECT_EQ(r.code(), "mesh_refused");
+    EXPECT_EQ(r.code(), "not_closed");
     ASSERT_EQ(r.result.at("objects").size(), 3u) << r.out;
     const std::vector<bool> expected_ok = {true, false, true};
     for (std::size_t i = 0; i < 3; ++i) {
@@ -370,7 +370,7 @@ TEST(PartImportInspect, EveryObjectOfAFileGetsItsOwnGateResult) {
         if (expected_ok[i]) {
             EXPECT_EQ(o.value("triangles", 0), 12);
         } else {
-            EXPECT_EQ(o.value("code", std::string()), "mesh_refused");
+            EXPECT_EQ(o.value("code", std::string()), "not_closed");
             EXPECT_FALSE(o.value("message", std::string()).empty());
             EXPECT_FALSE(o.contains("triangles"));
         }
@@ -399,25 +399,61 @@ TEST(PartImportInspect, EveryObjectOfAFileGetsItsOwnGateResult) {
     EXPECT_TRUE(o.result.at("objects")[1].value("ok", false));
 }
 
-TEST(PartImportImport, TheGateIsRunOnThePickedObjectsOnlyAndARefusalIsMeshRefusedWithNothingStored) {
+TEST(PartImportImport, TheGateIsRunOnThePickedObjectsOnlyAndARefusalIsItsKindWithNothingStored) {
     Rig rig;
     const std::string bytes = three_mf({cube_object(1, "a", 10.0), cube_object(2, "b", 10.0, 40.0, 11), cube_object(3, "c", 10.0, 80.0)});
     const fs::path in = rig.put("three.3mf", bytes);
     // all of it: refused, naming the object, and nothing stored
     Out r = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
     EXPECT_EQ(r.exit, 4) << r.out;
-    EXPECT_EQ(r.code(), "mesh_refused");
+    EXPECT_EQ(r.code(), "not_closed");
     EXPECT_NE(r.result.value("message", std::string()).find("b"), std::string::npos);
     EXPECT_FALSE(fs::exists(rig.store() / sha256_hex(bytes)));
     // the refused one picked: the same
     r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "b"}));
     EXPECT_EQ(r.exit, 4) << r.out;
-    EXPECT_EQ(r.code(), "mesh_refused");
+    EXPECT_EQ(r.code(), "not_closed");
     // a good one picked: stored, the open sibling does not stop it
     r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "c"}));
     ASSERT_EQ(r.exit, 0) << r.out;
     ASSERT_EQ(r.result.at("objects").size(), 1u);
     EXPECT_EQ(r.result.at("objects")[0].value("name", std::string()), "c");
+}
+
+// A cube turned inside out, then an open one: the file's code is the first refused object's kind, and every object has its own.
+TEST(PartImportInspect, EachRefusedObjectHasItsOwnKindAndTheFileTakesTheFirst) {
+    Rig rig;
+    std::string obj;
+    uint32_t base = 0;
+    for (const auto& [name, faces] : {std::pair<const char*, std::size_t>{"turned", 12}, {"open", 11}}) {
+        obj += std::string("o ") + name + "\n";
+        for (uint32_t v = 0; v < 8; ++v) {
+            const glm::vec3 c = corner(v, 1.0f);
+            obj += "v " + std::to_string(c.x + static_cast<float>(base)) + " " + std::to_string(c.y) + " " + std::to_string(c.z) + "\n";
+        }
+        for (std::size_t i = 0; i < faces; ++i) {
+            const bool turn = std::string(name) == "turned";
+            obj += "f " + std::to_string(kCube[i][0] + 1 + base) + " " + std::to_string(kCube[i][turn ? 2 : 1] + 1 + base) + " " +
+                   std::to_string(kCube[i][turn ? 1 : 2] + 1 + base) + "\n";
+        }
+        base += 8;
+    }
+    const fs::path in = rig.put("kinds.obj", obj);
+    const Out r = rig.run(A({"--inspect", in.string(), "--unit", "m"}));
+    EXPECT_EQ(r.exit, 4) << r.out;
+    EXPECT_EQ(r.code(), "inside_out");
+    ASSERT_EQ(r.result.at("objects").size(), 2u) << r.out;
+    EXPECT_EQ(r.result.at("objects")[0].value("code", std::string()), "inside_out");
+    EXPECT_EQ(r.result.at("objects")[1].value("code", std::string()), "not_closed");
+    EXPECT_NE(r.result.value("message", std::string()).find("1 more"), std::string::npos) << r.out;
+    // the import is refused with the same code and stores nothing
+    const Out i = rig.run(A({"--import", in.string(), "--unit", "m", "--store", rig.store().string()}));
+    EXPECT_EQ(i.exit, 4) << i.out;
+    EXPECT_EQ(i.code(), "inside_out");
+    EXPECT_FALSE(fs::exists(rig.store() / sha256_hex(obj)));
+    // the open one alone is its own kind
+    const Out o = rig.run(A({"--import", in.string(), "--unit", "m", "--store", rig.store().string(), "--object", "open"}));
+    EXPECT_EQ(o.code(), "not_closed");
 }
 
 TEST(PartImportImport, SeveralObjectsCanBePickedAndAreStoredAsOneEntryWhateverTheOrderOfThePicks) {
@@ -444,7 +480,7 @@ TEST(PartImportImport, SeveralObjectsCanBePickedAndAreStoredAsOneEntryWhateverTh
     // a refused one among the picks refuses the import; an unknown name is object_not_found
     r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a", "--object", "b"}));
     EXPECT_EQ(r.exit, 4) << r.out;
-    EXPECT_EQ(r.code(), "mesh_refused");
+    EXPECT_EQ(r.code(), "not_closed");
     r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "a", "--object", "nothing"}));
     EXPECT_EQ(r.code(), "object_not_found");
     EXPECT_NE(r.result.value("message", std::string()).find("nothing"), std::string::npos);

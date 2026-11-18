@@ -32,9 +32,10 @@ TEST(PartImportCodes, EveryCodeOfTheDesignNoteHasItsExitCodeAndAdvice) {
         {"format_unknown", 3}, {"format_unavailable", 3}, {"external_buffers", 3}, {"step_unavailable", 3}, {"converter_failed", 3},
         {"file_invalid", 4}, {"mesh_refused", 4},
         // make_mesh_diagnosed's kinds (Core), the names its refusal_name() gives
-        {"empty", 4}, {"bad_indices", 4}, {"non_finite", 4}, {"unit_invalid", 4}, {"coincident_vertices", 4}, {"degenerate_triangle", 4},
-        {"duplicate_triangle", 4}, {"not_closed", 4}, {"not_manifold", 4}, {"inconsistent_winding", 4}, {"inside_out", 4},
-        {"self_intersecting", 4}, {"shells_not_nested", 4}, {"too_large", 4}, {"too_many_shells", 4},
+        {"unit_unspecified", 4}, {"unit_invalid", 4}, {"empty", 4}, {"bad_index_count", 4}, {"too_large", 4}, {"index_out_of_range", 4},
+        {"non_finite", 4}, {"non_finite_scaled", 4}, {"unreferenced_vertex", 4}, {"coincident_vertices", 4}, {"repeated_index", 4},
+        {"degenerate_triangle", 4}, {"duplicate_triangle", 4}, {"not_closed", 4}, {"not_manifold", 4}, {"inconsistent_winding", 4},
+        {"not_manifold_vertex", 4}, {"inside_out", 4}, {"too_many_shells", 4}, {"self_intersecting", 4}, {"shells_not_nested", 4},
         {"cancelled", 5},
         {"cross_check_flagged", 6},
     };
@@ -49,6 +50,24 @@ TEST(PartImportCodes, EveryCodeOfTheDesignNoteHasItsExitCodeAndAdvice) {
             EXPECT_FALSE(info.advice.empty()) << code << " has no advice";
         }
     }
+}
+
+// Core owns the kinds and their spellings; this tool's table must hold every one, so a kind Core adds without a row here fails.
+TEST(PartImportCodes, EveryKindOfTheGateHasItsCodeWithExit4AndAdvice) {
+    const std::vector<std::string_view> spellings = {
+        "unit_unspecified", "unit_invalid", "empty", "bad_index_count", "too_large", "index_out_of_range", "non_finite",
+        "non_finite_scaled", "unreferenced_vertex", "coincident_vertices", "repeated_index", "degenerate_triangle",
+        "duplicate_triangle", "not_closed", "not_manifold", "inconsistent_winding", "not_manifold_vertex", "inside_out",
+        "too_many_shells", "self_intersecting", "shells_not_nested"};
+    for (std::size_t k = 0; k < spellings.size(); ++k) {
+        const MeshRefusal kind = static_cast<MeshRefusal>(k);
+        EXPECT_EQ(std::string_view(refusal_name(kind)), spellings[k]) << k;
+        const CodeInfo& info = code_info(refusal_name(kind));
+        EXPECT_EQ(info.code, std::string_view(refusal_name(kind))) << k;
+        EXPECT_EQ(info.exit, 4) << refusal_name(kind);
+        EXPECT_FALSE(info.advice.empty()) << refusal_name(kind);
+    }
+    EXPECT_EQ(static_cast<std::size_t>(MeshRefusal::shells_not_nested) + 1, spellings.size());
 }
 
 TEST(PartImportCodes, AStringThatIsNoCodeIsTheInternalOne) {

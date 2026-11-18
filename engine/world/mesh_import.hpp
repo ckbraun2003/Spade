@@ -241,6 +241,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -282,6 +283,7 @@ struct MeshObjectOutcome {
     std::string name;
     MeshUnit unit = MeshUnit::unspecified;
     Result<std::shared_ptr<const TriangleMesh>> mesh;  // the object's mesh, or make_mesh()'s refusal of it
+    std::optional<MeshRefusal> kind{};                 // which refusal, when `mesh` is one (make_mesh_diagnosed's kind); empty otherwise
 };
 [[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_gltf_bytes_objects(std::span<const std::byte> bytes,
                                                                              const std::filesystem::path& base_dir);

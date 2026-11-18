@@ -77,6 +77,8 @@ TEST(MeshImportObjects, AnOpenStlIsOneRefusedOutcomeWithThePlainReadersError) {
     EXPECT_EQ((*all)[0].name, "open");
     ASSERT_FALSE((*all)[0].mesh.has_value());
     EXPECT_EQ((*all)[0].mesh.error(), plain.error());
+    ASSERT_TRUE((*all)[0].kind.has_value());
+    EXPECT_EQ(*(*all)[0].kind, MeshRefusal::not_closed);
 }
 
 TEST(MeshImportObjects, AnObjWithOneOpenObjectReportsBothInOrder) {
@@ -92,6 +94,9 @@ TEST(MeshImportObjects, AnObjWithOneOpenObjectReportsBothInOrder) {
     EXPECT_EQ((*all)[1].name, "second");
     ASSERT_FALSE((*all)[1].mesh.has_value());
     EXPECT_EQ((*all)[1].mesh.error(), plain.error());
+    EXPECT_FALSE((*all)[0].kind.has_value());
+    ASSERT_TRUE((*all)[1].kind.has_value());
+    EXPECT_EQ(*(*all)[1].kind, MeshRefusal::not_closed);
     // the other way round: the plain reader's error is the FIRST refusal
     const fs::path q = f.put("two2.obj", two_object_obj(11, 12));
     const auto plain2 = read_obj(q, MeshUnit::metre);
@@ -101,6 +106,9 @@ TEST(MeshImportObjects, AnObjWithOneOpenObjectReportsBothInOrder) {
     ASSERT_FALSE((*all2)[0].mesh.has_value());
     EXPECT_EQ((*all2)[0].mesh.error(), plain2.error());
     EXPECT_TRUE((*all2)[1].mesh.has_value());
+    ASSERT_TRUE((*all2)[0].kind.has_value());
+    EXPECT_EQ(*(*all2)[0].kind, MeshRefusal::not_closed);
+    EXPECT_FALSE((*all2)[1].kind.has_value());
 }
 
 TEST(MeshImportObjects, A3mfWithTheMiddleObjectOpenReportsAllThree) {
@@ -119,6 +127,10 @@ TEST(MeshImportObjects, A3mfWithTheMiddleObjectOpenReportsAllThree) {
     EXPECT_EQ((*all)[1].mesh.error(), plain.error());
     EXPECT_TRUE((*all)[2].mesh.has_value());
     EXPECT_EQ((*all)[0].unit, MeshUnit::millimetre);
+    EXPECT_FALSE((*all)[0].kind.has_value());
+    ASSERT_TRUE((*all)[1].kind.has_value());
+    EXPECT_EQ(*(*all)[1].kind, MeshRefusal::not_closed);
+    EXPECT_FALSE((*all)[2].kind.has_value());
 }
 
 TEST(MeshImportObjects, A3mfThatPassesGivesThePlainReadersObjects) {
@@ -158,6 +170,37 @@ TEST(MeshImportObjects, AGlbThatPassesOrIsOpenIsReportedLikeTheOthers) {
     EXPECT_EQ((*all_open)[0].name, "frame");
     ASSERT_FALSE((*all_open)[0].mesh.has_value());
     EXPECT_EQ((*all_open)[0].mesh.error(), plain_open.error());
+    EXPECT_FALSE((*all_good)[0].kind.has_value());
+    ASSERT_TRUE((*all_open)[0].kind.has_value());
+    EXPECT_EQ(*(*all_open)[0].kind, MeshRefusal::not_closed);
+}
+
+// A cube whose faces are all turned round: closed and consistent, but inside out.
+[[nodiscard]] std::string inside_out_cube_obj(const char* name) {
+    std::string t = std::string("o ") + name + "\n";
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::vec3 c = corner(v, 1.0f);
+        t += "v " + std::to_string(c.x) + " " + std::to_string(c.y) + " " + std::to_string(c.z) + "\n";
+    }
+    for (const auto& tri : kCube) {
+        t += "f " + std::to_string(tri[0] + 1) + " " + std::to_string(tri[2] + 1) + " " + std::to_string(tri[1] + 1) + "\n";
+    }
+    return t;
+}
+
+TEST(MeshImportObjects, EachObjectNamesItsOwnKindWhateverItIs) {
+    Files f;
+    const fs::path p = f.put("turned.obj", inside_out_cube_obj("turned"));
+    const auto all = read_obj_objects(p, MeshUnit::metre);
+    ASSERT_TRUE(all.has_value()) << all.error().context;
+    ASSERT_EQ(all->size(), 1u);
+    ASSERT_FALSE((*all)[0].mesh.has_value());
+    ASSERT_TRUE((*all)[0].kind.has_value());
+    EXPECT_EQ(*(*all)[0].kind, MeshRefusal::inside_out);
+    // the plain reader still gives the bare Error, the same bytes
+    const auto plain = read_obj(p, MeshUnit::metre);
+    ASSERT_FALSE(plain.has_value());
+    EXPECT_EQ((*all)[0].mesh.error(), plain.error());
 }
 
 TEST(MeshImportObjects, AProblemWithTheFileIsStillOneErrorTheSameAsThePlainReaders) {
