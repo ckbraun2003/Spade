@@ -17,8 +17,9 @@ namespace spade::detail {
 
 using DiagnosedMesh = std::expected<std::shared_ptr<const TriangleMesh>, MeshDiagnosis>;
 
-inline void record_outcome(std::vector<MeshObjectOutcome>& into, std::string name, MeshUnit unit, const DiagnosedMesh& built) {
-    MeshObjectOutcome o{std::move(name), unit, {}, std::nullopt};
+inline void record_outcome(std::vector<MeshObjectOutcome>& into, std::string name, MeshUnit unit, const DiagnosedMesh& built,
+                           std::optional<SurfaceColour> colour = std::nullopt) {
+    MeshObjectOutcome o{std::move(name), unit, {}, colour, std::nullopt};
     if (built) {
         o.mesh = *built;
     } else {
