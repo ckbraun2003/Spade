@@ -1,7 +1,9 @@
 // ---------------------------------------------------------------------------
 // test_x500_case.cpp -- L86k (the lead, 2026-11-17): the website clips' X500, a flow model built from KAT's x500.airframe.json and
 // kept with the clips' tool data (tools/flow_movie/data/x500/). L86p (the lead, 2026-11-18): the kit's propeller is the 1045 (10 x 4.5 in),
-// R 0.127 m, the library's measured UIUC APC 10x5 blade at 10 in graded derived, no scaled estimate (tests/x500_model.hpp).
+// R 0.127 m, the library's measured UIUC APC 10x5 blade at 10 in graded derived, no scaled estimate (tests/x500_model.hpp). Its mass, centre
+// of mass and inertia are Core's parts table's (tools/flow_movie/data/x500_build/parts.yaml, core/x500-pose-table 1031a020; the lead, 2026-11-18):
+// 13 parts, 1.6389 kg, not the Gazebo model's 2.0643 kg.
 //
 //   X500Model.TheFilesAreTheBuildersOutput       the model file and the prop part file are the builder's text, byte for byte; with
 //                                                SPADE_X500_WRITE set the test writes them instead
@@ -10,7 +12,11 @@
 //   X500Prop.NoRowIsEstimatedAndTheBladeIsTheApc10x5s   no row says ESTIMATED; diameter 0.254 m (graded for the kit), pitch derived with the
 //                                                4.5 in against 5 in said, mass assumed; the blade's radius 0.127 m; c/R, twist and the
 //                                                fitted polar the library's APC 10x5, as it is
-//   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 5.0610 N:
+//   X500Model.TheMassAndInertiaComeFromTheBuildTable   the compiled composite: 1.6389 kg, the centre of mass within 0.6 mm of the table's in x and z,
+//                                                the hubs 0.0614 m above it, the principal diagonal within 2% of an independent sum of the table's
+//                                                parts (point masses and boxes)
+//   X500Model.TheBatterySitsUnderTheFrameAsASolid   the 4S pack as a 0.133 x 0.0335 x 0.045 m box part under the frame stack
+//   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0181 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
 //   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   266 x 237 x 266 at 2.5 mm; check_grid(kD1X500Grid, the case's
 //                                                faces, with solids); the device runner's 4 GiB at 234.6 B a cell
@@ -113,7 +119,7 @@ TEST(X500Model, CarriesKatsNumbers) {
     const spade::vehicles::ModelType& m = file->model;
     ASSERT_EQ(m.rotors.size(), 4u);
     double mass = m.body.mass;
-    EXPECT_NEAR(mass, x5::kMass, 1.0e-4) << "the body's mass is KAT's 2.0643 kg (a rotor's own mass is in it)";
+    EXPECT_NEAR(mass, 1.6389, 5.0e-4) << "the body's mass is the build table's 1.6389 kg (a rotor's own mass is in it), not KAT's 2.0643";
     const double expect_spin[4] = {+1.0, -1.0, +1.0, -1.0};  // front-right, front-left, rear-left, rear-right: PX4's X, as basic_quad lays it
     int quadrants = 0;
     for (std::size_t i = 0; i < 4; ++i) {
@@ -128,6 +134,55 @@ TEST(X500Model, CarriesKatsNumbers) {
     EXPECT_EQ(quadrants, 0 + 1 + 2 + 3) << "the four rotors are in the four quadrants";
     ASSERT_TRUE(m.propulsion.has_value());
     EXPECT_NEAR(m.propulsion->diameter, 0.254, 1.0e-6) << "the chain's propeller is the 10-inch";
+}
+
+// The build table's parts (Core, parts.yaml at 1031a020), summed independently here: point masses, boxes for the frame stack, the pack, the
+// ESCs and the misc carrier, thin tubes for the arms, cylinders for the motors. tests/p5_inertia.py-style numbers, kept as literals.
+TEST(X500Model, TheMassAndInertiaComeFromTheBuildTable) {
+    const auto prop = x5::prop_part();
+    ASSERT_TRUE(prop.has_value()) << prop.error().context;
+    const auto spec = x5::airframe(*prop);
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    const auto compiled = spade::vehicles::compile_airframe(*spec);
+    ASSERT_TRUE(compiled.has_value()) << compiled.error().context;
+    const auto& c = compiled->inertia;
+    EXPECT_NEAR(c.mass, 1.6389f, 5.0e-4f) << "the 13 parts' sum";
+    EXPECT_NEAR(c.center_of_mass.x, 0.00091f, 6.0e-4f) << "the table's centre of mass in x, from the parts' poses";
+    EXPECT_NEAR(c.center_of_mass.z, -0.00159f, 6.0e-4f) << "and in z";
+    const double hub_above = spec->rotors[0].hub.position.y - static_cast<double>(c.center_of_mass.y);
+    EXPECT_NEAR(hub_above, 0.0614, 5.0e-4) << "the table's hubs are 0.0614 m above the centre of mass";
+    const double want[3] = {0.014752, 0.022166, 0.015874};  // x roll, y yaw, z pitch about the centre of mass, design axes
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(c.inertia_design[i][i], want[i], 0.02 * want[i]) << "axis " << i;
+    }
+    std::printf("[ x500    ] the parts' mass %.4f kg, centre of mass (%.4f, %.4f, %.4f) m, inertia diag (%.5f, %.5f, %.5f) kg m^2, hubs %.4f m above it\n",
+                static_cast<double>(c.mass), static_cast<double>(c.center_of_mass.x), static_cast<double>(c.center_of_mass.y),
+                static_cast<double>(c.center_of_mass.z), c.inertia_design[0][0], c.inertia_design[1][1], c.inertia_design[2][2], hub_above);
+}
+
+TEST(X500Model, TheBatterySitsUnderTheFrameAsASolid) {
+    const auto file = sc::load_model_file(x5::data_dir() / x5::kModelFile);
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    const spade::vehicles::PartDesc* pack = nullptr;
+    const spade::vehicles::PartDesc* body = nullptr;
+    for (const auto& part : file->model.parts) {
+        if (part.name == "battery") pack = &part;
+        if (part.name == "body") body = &part;
+    }
+    ASSERT_TRUE(pack != nullptr) << "the pack is a part of the model";
+    ASSERT_TRUE(body != nullptr);
+    const auto box = spade::vehicles::part_bounds(*pack);
+    ASSERT_TRUE(box.has_value()) << box.error().context;
+    EXPECT_NEAR(box->max.x - box->min.x, 0.133f, 1.0e-3f);
+    EXPECT_NEAR(box->max.y - box->min.y, 0.0335f, 1.0e-3f);
+    EXPECT_NEAR(box->max.z - box->min.z, 0.045f, 1.0e-3f);
+    const auto stack = spade::vehicles::part_bounds(*body);
+    ASSERT_TRUE(stack.has_value()) << stack.error().context;
+    const float pack_top = pack->mount_pos.y + box->max.y;
+    const float stack_bottom = body->mount_pos.y + stack->min.y;
+    EXPECT_LE(pack_top, stack_bottom + 1.0e-3f) << "under the frame stack, not inside it";
+    EXPECT_GE(pack_top, stack_bottom - 2.0e-3f) << "touching it (the table's tray), no gap in the flow";
+    EXPECT_NEAR(stack->max.y - stack->min.y, 0.0809f, 1.0e-3f) << "the stack from the tray's underside to the damper deck's top";
 }
 
 TEST(X500Prop, NoRowIsEstimatedAndTheBladeIsTheApc10x5s) {
@@ -169,7 +224,7 @@ TEST(X500Balance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
     ASSERT_TRUE(part.has_value()) << part.error().context;
     const auto prop = sc::line_propeller(*part);
     ASSERT_TRUE(prop.has_value()) << prop.error().context;
-    const float target = static_cast<float>(x5::kMass * 9.80665 / 4.0);
+    const float target = static_cast<float>(1.6389 * 9.80665 / 4.0);  // the build table's 1.6389 kg: W/4 = 4.0181 N
     const auto omega = x5::balance_omega(prop->blade, prop->polar, target);
     ASSERT_TRUE(omega.has_value()) << omega.error().context;
     spade::testing::BemtInput in;
@@ -179,7 +234,7 @@ TEST(X500Balance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
     in.tip_loss = true;
     const auto loads = spade::testing::bemt(in);
     ASSERT_TRUE(loads.has_value()) << loads.error().context;
-    EXPECT_NEAR(loads->thrust, target, 0.001f * target) << "a quarter of the weight, 5.0610 N";
+    EXPECT_NEAR(loads->thrust, target, 0.001f * target) << "a quarter of the weight, 4.0181 N";
     // The chain's own static-thrust speed: ct_static rho n^2 D^4 = W/4.
     const double chain_n = std::sqrt(static_cast<double>(target) / (part->block.ct_static * 1.225 * std::pow(x5::kDiameter, 4)));
     const double chain_omega = 2.0 * 3.14159265358979 * chain_n;
@@ -188,8 +243,15 @@ TEST(X500Balance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
                 static_cast<double>(target), static_cast<double>(*omega), static_cast<double>(*omega) * 60.0 / 6.283185307,
                 static_cast<double>(loads->torque), chain_omega, chain_omega * 60.0 / 6.283185307,
                 static_cast<double>(*omega) / chain_omega);
-    EXPECT_GT(*omega, 560.0f);
-    EXPECT_LT(*omega, 720.0f) << "a 10-inch prop holds this weight near 6100 rpm (KAT's Gazebo 642 rad/s is in this band)";
+    EXPECT_GT(*omega, 520.0f);
+    EXPECT_LT(*omega, 620.0f) << "a 10-inch prop holds 1.6389 kg near 5450 rpm";
+    // The model's own hover speed: the chain's fit for a quarter of the model's weight, against the same BEMT balance.
+    const auto file = sc::load_model_file(x5::data_dir() / x5::kModelFile);
+    ASSERT_TRUE(file.has_value()) << file.error().context;
+    EXPECT_NEAR(file->model.body.mass, 1.6389, 5.0e-4) << "the model file carries the build table's mass";
+    const double model_n = std::sqrt(file->model.body.mass * 9.80665 / 4.0 / (part->block.ct_static * 1.225 * std::pow(x5::kDiameter, 4)));
+    EXPECT_NEAR(2.0 * 3.14159265358979 * model_n, static_cast<double>(*omega), 0.02 * static_cast<double>(*omega))
+        << "the chain's static-thrust speed for the model's own weight is within 2% of the BEMT balance";
 }
 
 TEST(AirflowX500, TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids) {
