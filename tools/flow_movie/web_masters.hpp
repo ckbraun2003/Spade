@@ -247,10 +247,11 @@ struct Drone {
     std::string_view the_noun;
     std::string_view description;
     Framing framing;
+    float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
 };
 
-[[nodiscard]] inline const std::array<Drone, 2>& drones() {
-    static const std::array<Drone, 2> table{{
+[[nodiscard]] inline const std::array<Drone, 3>& drones() {
+    static const std::array<Drone, 3> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
@@ -261,6 +262,11 @@ struct Drone {
          // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
          Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}},
+        // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
+        // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
+        {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
+         "the open-source quadcopter", "a 2 kg open-source quadcopter with 13 inch rotors (published dimensions; the propeller is estimated)",
+         Framing{0.62f, 0.28f, 0.90f, 0.62f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 25.0f}, 0.014f},
     }};
     return table;
 }
@@ -277,7 +283,7 @@ struct Drone {
 }
 
 // The command line as a caption may show it: the drone's library name replaced by its alias.
-// The file arguments of --visual-mesh and --lines are replaced by plain words too (a model's name, a propeller maker and a vendor's
+// The file arguments of --visual-mesh, --lines, --build-parts and --part-store are replaced by plain words too (a model's name, a propeller maker and a vendor's
 // folder are brands, and captions name none; Oversight, 2026-11-17): the value after the flag, quoted or not, is the word.
 [[nodiscard]] inline std::string command_in_words(std::string command, const Drone& d) {
     const std::string from(d.library);
@@ -285,7 +291,9 @@ struct Drone {
         command.replace(at, from.size(), d.alias);
     }
     const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", "open-source-quadcopter-model"},
-                                                                   {"--lines", "measured-propeller-polar"}};
+                                                                   {"--lines", "measured-propeller-polar"},
+                                                                   {"--build-parts", "open-source-quadcopter-parts-table"},
+                                                                   {"--part-store", "part-store"}};
     for (const auto& [flag, word] : files) {
         const std::string key = std::string(flag) + " ";
         for (std::size_t at = command.find(key); at != std::string::npos; at = command.find(key, at + key.size() + word.size())) {

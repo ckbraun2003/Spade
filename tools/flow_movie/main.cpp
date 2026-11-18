@@ -86,6 +86,7 @@
 #include "part_materials.hpp"
 #include "particles.hpp"
 #include "q_look.hpp"
+#include "build_parts.hpp"
 #include "visual_mesh.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
@@ -1546,6 +1547,8 @@ struct WebPlan {
     bool particles = false;                           // S2 and S8: points carried through every stored frame
     bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
     std::string visual_mesh;                          // --visual-mesh: a glTF drawn in place of the model's parts (presentation only)
+    std::string build_parts;                          // --build-parts: Core's parts table drawn over the held body (presentation only)
+    std::string part_store;                           // --part-store: the store the table's objects are read from
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
@@ -1657,17 +1660,36 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
-        if (!plan.visual_mesh.empty()) {
-            auto loaded = render::load_gltf(plan.visual_mesh);
-            if (!loaded) return std::unexpected(spade::Error{loaded.error().code, "--visual-mesh " + plan.visual_mesh + ": " + loaded.error().context});
-            film.decorate = [mesh = std::make_shared<const render::MeshData>(std::move(*loaded))](
-                                const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
-                if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
-                const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
-                const glm::quat orient(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]), static_cast<float>(log.live[5]),
-                                       static_cast<float>(log.live[6]));
-                return add_visual_mesh(scene, *mesh, pos, orient);
-            };
+        {   // what is drawn over the held body, presentation only: the visual mesh and/or the parts build, at the logged pose
+            std::shared_ptr<const render::MeshData> visual;
+            if (!plan.visual_mesh.empty()) {
+                auto loaded = render::load_gltf(plan.visual_mesh);
+                if (!loaded) return std::unexpected(spade::Error{loaded.error().code, "--visual-mesh " + plan.visual_mesh + ": " + loaded.error().context});
+                visual = std::make_shared<const render::MeshData>(std::move(*loaded));
+            }
+            std::shared_ptr<const std::vector<BuildPart>> build;
+            if (!plan.build_parts.empty()) {
+                std::ifstream in(plan.build_parts, std::ios::binary);
+                if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "--build-parts " + plan.build_parts + ": cannot be read"});
+                const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                auto parts = parse_build_parts(text);
+                if (!parts) return std::unexpected(spade::Error{parts.error().code, "--build-parts " + plan.build_parts + ": " + parts.error().context});
+                build = std::make_shared<const std::vector<BuildPart>>(std::move(*parts));
+            }
+            if (visual || build) {
+                film.decorate = [visual, build, store = std::filesystem::path(plan.part_store)](
+                                    const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+                    if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
+                    const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
+                    const glm::quat orient(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]), static_cast<float>(log.live[5]),
+                                           static_cast<float>(log.live[6]));
+                    if (visual) {
+                        if (auto r = add_visual_mesh(scene, *visual, pos, orient); !r) return r;
+                    }
+                    if (build) return add_build_parts(scene, *build, store, pos, orient);
+                    return {};
+                };
+            }
         }
         if (!plan.lines.empty()) {
             auto lines = live_lines_from_prop_file(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines, 8u);
@@ -1891,6 +1913,8 @@ struct Options {
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
+    std::string build_parts;         // --build-parts FILE: the real-parts drone's table (build_parts.hpp), drawn at the held body's pose over the flow
+    std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
     bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
@@ -2483,6 +2507,18 @@ struct WebFilming {
     plan.look = opt.look;
     plan.drone = drone;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
+    if (!opt.build_parts.empty() || !opt.part_store.empty()) {
+        if (!web::sgs_cs_applies(*clip)) {
+            std::fprintf(stderr, "flow_movie: --build-parts is for the D1 clips (S1 to S4 and S8)\n");
+            return 2;
+        }
+        if (opt.build_parts.empty()) {
+            std::fprintf(stderr, "flow_movie: --part-store needs --build-parts\n");
+            return 2;
+        }
+        plan.build_parts = opt.build_parts;
+        plan.part_store = opt.part_store;
+    }
     if (!opt.visual_mesh.empty()) {
         if (!web::sgs_cs_applies(*clip)) {
             std::fprintf(stderr, "flow_movie: --visual-mesh is for the D1 clips (S1 to S4 and S8)\n");
@@ -2511,7 +2547,7 @@ struct WebFilming {
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
         if (q->thin_r > 0.0f) {  // the cloud thinned round the held drone (at the world origin, 4 mm up as the box holds it)
-            plan.look.thin.centre = glm::vec3(0.0f, 0.004f, 0.0f);
+            plan.look.thin.centre = glm::vec3(0.0f, drone->body_y_m, 0.0f);
             plan.look.thin.radius = q->thin_r;
             plan.look.thin.floor = q->thin_floor;
         }
@@ -3064,6 +3100,10 @@ int main(int argc, char** argv) {
             opt.particles_preview = true;
         } else if (arg == "--visual-mesh") {
             opt.visual_mesh = value();
+        } else if (arg == "--build-parts") {
+            opt.build_parts = value();
+        } else if (arg == "--part-store") {
+            opt.part_store = value();
         } else if (arg == "--lines") {
             opt.lines_prop = value();
         } else if (arg == "--nasa") {

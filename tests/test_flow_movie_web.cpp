@@ -827,7 +827,9 @@ TEST(FlowMovieWeb, TheOpenSourceQuadcopterIsADroneOfTheClipsWhoseWordsNameNoBran
 }
 
 TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
-    const web::Drone& drone = *web::find_drone("x500");
+    const web::Drone* found = web::find_drone("x500");
+    ASSERT_NE(found, nullptr);
+    const web::Drone& drone = *found;
     const std::string said = web::command_in_words(
         "flow_movie --web S8 --drone x500 --build-parts C:/Users/Cameron/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
         "\"C:/Users/Cameron/Desktop/Projects/part-store\" --nasa-cloud",
