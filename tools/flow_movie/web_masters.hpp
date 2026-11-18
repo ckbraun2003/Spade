@@ -277,12 +277,45 @@ struct Drone {
 }
 
 // The command line as a caption may show it: the drone's library name replaced by its alias.
+// The file arguments of --visual-mesh and --lines are replaced by plain words too (a model's name, a propeller maker and a vendor's
+// folder are brands, and captions name none; Oversight, 2026-11-17): the value after the flag, quoted or not, is the word.
 [[nodiscard]] inline std::string command_in_words(std::string command, const Drone& d) {
     const std::string from(d.library);
     for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
         command.replace(at, from.size(), d.alias);
     }
+    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", "open-source-quadcopter-model"},
+                                                                   {"--lines", "measured-propeller-polar"}};
+    for (const auto& [flag, word] : files) {
+        const std::string key = std::string(flag) + " ";
+        for (std::size_t at = command.find(key); at != std::string::npos; at = command.find(key, at + key.size() + word.size())) {
+            const std::size_t start = at + key.size();
+            if (start >= command.size() || command.compare(start, 2, "--") == 0) continue;  // no value: left alone
+            std::size_t end = 0;
+            if (command[start] == '"') {
+                const std::size_t close = command.find('"', start + 1);
+                end = close == std::string::npos ? command.size() : close + 1;
+            } else {
+                const std::size_t space = command.find(' ', start);
+                end = space == std::string::npos ? command.size() : space;
+            }
+            command.replace(start, end - start, word);
+        }
+    }
     return command;
+}
+
+// --cache-dir DIR: a still redrawn from a frame another run wrote. The run reads DIR instead of its own cache folder and never
+// simulates or writes there, so it is refused unless it is a --web-still redraw of a named still (--still-frame N) whose frame file is
+// already in DIR. "" when it will do (and when there is no --cache-dir), else why not, naming the missing piece.
+[[nodiscard]] inline std::string cache_dir_refusal(std::string_view dir, bool still_only, bool has_still_frame, bool frame_present) {
+    if (dir.empty()) return {};
+    if (!still_only) return "--cache-dir is for a --web-still redraw: it reads a frame another run wrote and never simulates";
+    if (!has_still_frame) return "--cache-dir needs --still-frame N, the frame to redraw";
+    if (!frame_present) {
+        return "--cache-dir " + std::string(dir) + ": the frame is not there; a run with --cache-dir never simulates or writes in it";
+    }
+    return {};
 }
 
 // A cache folder's suffix for a drone: none for the default (today's caches keep their names), "-<library>" else.

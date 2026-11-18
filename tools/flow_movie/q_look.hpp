@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -19,6 +20,7 @@
 
 #include "core/error.hpp"
 #include "core/flow_volume.hpp"
+#include "render/flow_look.hpp"
 #include "render/flow_render.hpp"
 #include "render/transfer_function.hpp"
 
@@ -51,6 +53,15 @@ struct QLook {
         isos.push_back(std::move(iso));
     }
     return isos;
+}
+
+// THE CLOUD (Cameron: "fluffy cloud-like air"): |omega| as a soft volume on the same map and over the same range, no surfaces; none
+// when the frame has no vorticity. No absorption below an onset of the range, up to a modest density at its top.
+[[nodiscard]] inline std::optional<spade::render::TransferFunction> vorticity_cloud(const spade::FlowVolume& v, const QLook& look) {
+    const float vort_max = v.header.channel_max[spade::kFlowVorticity];
+    if (!(std::isfinite(vort_max) && vort_max > 0.0f)) return std::nullopt;
+    return spade::render::volume_transfer(spade::render::FlowQuantity::vorticity, spade::render::ColourMapId::blue_magenta,
+                                          vort_max * look.vorticity_max, 0.15f, 30.0f);
 }
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3

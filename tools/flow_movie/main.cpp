@@ -1364,6 +1364,14 @@ struct HeldPose {
                 return {};
             }});
         if (nasa_look) {
+            film.views.push_back(View{
+                "vorticity-cloud", "vorticity magnitude as a soft cloud (blue low to magenta high), no surfaces",
+                [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                                 render::Camera& camera) -> spade::Result<void> {
+                    frame_on_drone(v, k, n, camera);
+                    if (auto tf = vorticity_cloud(v, q)) scene.flow_layers.push_back(render::FlowLayer{&v, {*tf}, {}});
+                    return {};
+                }});
             // NASA Ames' multirotor look: Q-criterion surfaces (a ladder of three levels) coloured by vorticity, blue to magenta.
             film.views.push_back(View{
                 "nasa", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
@@ -1539,6 +1547,7 @@ struct WebPlan {
     bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
     std::string visual_mesh;                          // --visual-mesh: a glTF drawn in place of the model's parts (presentation only)
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
+    bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
@@ -1677,14 +1686,14 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.nasa ? "nasa" : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              framing.elevation_deg);
             }, plan.particles);  // the streaks are polylines the view's shot makes: kept (with_camera clears them otherwise)
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, plan.nasa ? "nasa" : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
@@ -1884,6 +1893,8 @@ struct Options {
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
+    bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
+    std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
     bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
     std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
@@ -2498,6 +2509,7 @@ struct WebFilming {
         auto q = parse_q_look(opt.q_look);
         if (!q) return fail(q.error());
         plan.nasa = *q;
+        plan.cloud = opt.nasa_cloud;
     } else if (!opt.q_look.empty()) {
         std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
         return 2;
@@ -2559,7 +2571,13 @@ struct WebFilming {
         std::fprintf(stderr, "flow_movie: --particle-look is for --particles\n");
         return 2;
     }
-    const fs::path cache = opt.out / "cache" / film->stem;
+    const fs::path cache = opt.cache_dir.empty() ? opt.out / "cache" / film->stem : fs::path(opt.cache_dir);
+    if (const std::string why = web::cache_dir_refusal(opt.cache_dir, opt.web_still_only, opt.still_frame >= 0,
+                                                       fs::exists(frame_file(cache, first + still_k)));
+        !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
     const auto snapshot_file = [&cache](uint32_t frame) {
         char name[48];
         std::snprintf(name, sizeof name, "particles-%05u.bin", frame);
@@ -3045,6 +3063,11 @@ int main(int argc, char** argv) {
             opt.lines_prop = value();
         } else if (arg == "--nasa") {
             opt.nasa = true;
+        } else if (arg == "--nasa-cloud") {
+            opt.nasa = true;
+            opt.nasa_cloud = true;
+        } else if (arg == "--cache-dir") {
+            opt.cache_dir = value();
         } else if (arg == "--q-look") {
             opt.q_look = value();
         } else if (arg == "--particles") {
