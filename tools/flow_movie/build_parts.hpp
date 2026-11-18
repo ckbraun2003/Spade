@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +32,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -428,6 +430,45 @@ struct PropBlur {
     double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
     float alpha = 0.18f;       // each copy's opacity
 };
+
+// "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
+// in seconds in (0, 0.1). Empty: the defaults. Refused, prefixed "prop blur:": an unknown key, no '=', a value that is not a number, one out of range.
+[[nodiscard]] inline spade::Result<PropBlur> parse_prop_blur(std::string_view text) {
+    const auto bad_blur = [](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "prop blur: " + why});
+    };
+    PropBlur blur;
+    if (text.empty()) return blur;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t comma = text.find(',', at);
+        const std::string item(text.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at));
+        at = comma == std::string_view::npos ? text.size() + 1u : comma + 1u;
+        if (item.empty()) return bad_blur("an empty item (a stray comma)");
+        const std::size_t eq = item.find('=');
+        if (eq == std::string::npos) return bad_blur("'" + item + "' has no '=': write key=value");
+        const std::string key = item.substr(0, eq);
+        const std::string value = item.substr(eq + 1u);
+        double number = 0.0;
+        const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (value.empty() || ec != std::errc{} || end != value.data() + value.size() || !std::isfinite(number)) {
+            return bad_blur("'" + key + "' is not a number: '" + value + "'");
+        }
+        if (key == "alpha") {
+            if (!(number > 0.0 && number <= 1.0)) return bad_blur("alpha must be above 0 and at most 1");
+            blur.alpha = static_cast<float>(number);
+        } else if (key == "samples") {
+            if (!(number >= 1.0 && number <= 128.0 && number == std::floor(number))) return bad_blur("samples must be a whole number from 1 to 128");
+            blur.samples = static_cast<uint32_t>(number);
+        } else if (key == "shutter") {
+            if (!(number > 0.0 && number < 0.1)) return bad_blur("shutter is in seconds, above 0 and under 0.1");
+            blur.shutter_s = number;
+        } else {
+            return bad_blur("unknown key '" + key + "' (alpha samples shutter)");
+        }
+    }
+    return blur;
+}
 
 struct BuildDraw {
     std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen

@@ -268,7 +268,7 @@ struct Drone {
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
          "the open-source quadcopter", "a 2 kg open-source quadcopter with 13 inch rotors (published dimensions; the propeller is estimated)",
-         Framing{0.62f, 0.28f, 0.90f, 0.62f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 25.0f}, 0.014f},
+         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f},
     }};
     return table;
 }
@@ -313,6 +313,12 @@ struct Drone {
         }
     }
     return command;
+}
+
+// Whether a web run draws the drone's wake fade (the soft edge of a drawn wake, hiding the box's cut): S2 and S8, in the plain looks and
+// the nasa CLOUD (a soft volume); not for S1's lines, the particle looks, nor the nasa Q SURFACES (a faded surface vanishes).
+[[nodiscard]] inline bool web_fade_applies(std::string_view clip_id, bool particles_preview, bool particles, bool nasa, bool nasa_cloud) {
+    return (clip_id == "S2" || clip_id == "S8") && !particles_preview && !particles && (!nasa || nasa_cloud);
 }
 
 // A WEB RUN'S LOOK, made ONCE (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy while the film's look state read

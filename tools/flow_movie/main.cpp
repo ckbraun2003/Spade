@@ -1549,6 +1549,7 @@ struct WebPlan {
     std::string visual_mesh;                          // --visual-mesh: a glTF drawn in place of the model's parts (presentation only)
     std::string build_parts;                          // --build-parts: Core's parts table drawn over the held body (presentation only)
     std::string part_store;                           // --part-store: the store the table's objects are read from
+    PropBlur prop_blur;                               // --prop-blur: the rotors' blade blur
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
@@ -1677,7 +1678,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 build = std::make_shared<const std::vector<BuildPart>>(std::move(*parts));
             }
             if (visual || build) {
-                film.decorate = [visual, build, store = std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1688,6 +1689,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                     }
                     if (build) {
                         BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
+                        draw.blur = blur;
                         draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
                         return add_build_parts(scene, *build, store, pos, orient, draw);
                     }
@@ -1918,6 +1920,7 @@ struct Options {
     std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
     std::string build_parts;         // --build-parts FILE: the real-parts drone's table (build_parts.hpp), drawn at the held body's pose over the flow
+    std::string prop_blur;           // --prop-blur alpha=..,samples=..,shutter=..: the rotors' blade blur (build_parts.hpp)
     std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
@@ -2520,6 +2523,9 @@ struct WebFilming {
         }
         plan.build_parts = opt.build_parts;
         plan.part_store = opt.part_store;
+        auto blur = parse_prop_blur(opt.prop_blur);
+        if (!blur) return fail(blur.error());
+        plan.prop_blur = *blur;
     }
     if (!opt.visual_mesh.empty()) {
         if (!web::sgs_cs_applies(*clip)) {
@@ -2592,7 +2598,7 @@ struct WebFilming {
     // The run's look, made once and given to BOTH places that read it: opt.look (the film's look state) and plan.look (the film's setup).
     // S1's lines and the particle preview are traced in the true flow: no fade for them.
     opt.look = web::web_look(opt.look, *drone,
-                             (clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles && !opt.nasa,
+                             web::web_fade_applies(clip->id, opt.particles_preview, opt.particles, opt.nasa, opt.nasa_cloud),
                              plan.nasa ? &*plan.nasa : nullptr);
     plan.look = opt.look;
     auto film = web_film(*clip, *group, plan);
@@ -3105,6 +3111,8 @@ int main(int argc, char** argv) {
             opt.visual_mesh = value();
         } else if (arg == "--build-parts") {
             opt.build_parts = value();
+        } else if (arg == "--prop-blur") {
+            opt.prop_blur = value();
         } else if (arg == "--part-store") {
             opt.part_store = value();
         } else if (arg == "--lines") {
