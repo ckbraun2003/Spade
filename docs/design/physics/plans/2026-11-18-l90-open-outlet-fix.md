@@ -13,7 +13,7 @@ Deleting the refusal alone is not enough: the advection's `locate()` clamps a ba
 ## The fix (both parts)
 
 1. Outlet faces are left as the projection sets them. `boundaries.cpp` and `airflow_velocity_bc.slang` write only periodic and fixed-velocity faces.
-2. The advection reads an ambient ghost past an outlet. A back-traced point below the first face (or above the last) of an outlet axis takes the ambient value, linearly blended with the edge sample over one cell. `advect.cpp`, `airflow_advection.slang` and the velocity sampler of `airflow_dye_advect.slang`.
+2. The advection reads an ambient ghost past an outlet. A ghost sample of the ambient sits one cell past each outlet face: a back-traced point between the face's sample and the ghost blends linearly between them, and a point beyond the ghost reads the ambient. `advect.cpp`, `airflow_advection.slang` and the velocity sampler of `airflow_dye_advect.slang`.
 3. The dye's own scalar sampling keeps the edge clamp (`sample_centred`, `centred_axis`): the dye has no ambient value to read, and the clamp is what lets a plume leave.
 
 ## Evidence
