@@ -30,6 +30,7 @@
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "../tools/flow_movie/lines.hpp"
 
 namespace {
 
@@ -666,5 +667,40 @@ TEST(FlowMovieWeb, ADiagnosticClipSizeIsSixteenByNineNoLargerThanTheMasterAndNam
     EXPECT_EQ(web::clip_label(1920u, 1080u), "diag-1920x1080");
     EXPECT_NE(web::web_file_name("S8", "rotor-wake-volume", web::clip_label(1920u, 1080u), "mp4"),
               web::web_file_name("S8", "rotor-wake-volume", web::clip_label(0u, 0u), "mp4"));
+}
+
+// --lines (the lead, 2026-11-17; Physics' web-lines): the rotors of a web D1 clip as ACTUATOR LINES, one per blade, in place of discs.
+// The blade and its polar come from a prop part file under the assets (library/parts/*.prop.yaml, scene::line_propeller); a line run
+// is another simulation, so its cache folder has its own name (a lines cache must never be read as a disc cache or the reverse).
+TEST(FlowMovieWeb, ALinesRunKeepsItsOwnCacheFolderAndOnlyTheD1ClipsTakeLines) {
+    EXPECT_EQ(web::lines_stem_suffix(false), "");
+    EXPECT_EQ(web::lines_stem_suffix(true), "-lines");
+    EXPECT_EQ(web::lines_refusal(true), "");
+    const std::string why = web::lines_refusal(false);
+    EXPECT_NE(why.find("--lines"), std::string::npos) << why;
+    EXPECT_NE(why.find("D1"), std::string::npos) << why;
+}
+
+TEST(FlowMovieWeb, APropPartFileIsTheLinesBladeAndARefusedFileIsNamed) {
+    const std::filesystem::path assets(SPADE_ASSETS_DIR);
+    const auto lines = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_apce_10x5.prop.yaml", 8u);
+    ASSERT_TRUE(lines.has_value()) << lines.error().context;
+    EXPECT_EQ(lines->blade.blades, 2u);
+    EXPECT_NEAR(lines->blade.radius, 0.127f, 0.002f) << "a 10 inch propeller";
+    EXPECT_EQ(lines->n_sub, 8u);
+    EXPECT_FALSE(lines->blade.stations.empty());
+    const auto other = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_mit_5x4.prop.yaml", 4u);
+    ASSERT_TRUE(other.has_value()) << other.error().context;
+    EXPECT_EQ(other->n_sub, 4u);
+    EXPECT_LT(other->blade.radius, lines->blade.radius) << "the 5 inch one is smaller";
+    const auto missing = flow_movie::live_lines_from_prop_file(assets / "library/parts/no_such.prop.yaml", 8u);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_NE(missing.error().context.find("no_such.prop.yaml"), std::string::npos) << missing.error().context;
+    const auto motor = flow_movie::live_lines_from_prop_file(assets / "library/parts/iris_920kv.motor.yaml", 8u);
+    ASSERT_FALSE(motor.has_value()) << "a motor is not a propeller";
+    EXPECT_NE(motor.error().context.find("iris_920kv.motor.yaml"), std::string::npos) << motor.error().context;
+    const auto no_sub = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_apce_10x5.prop.yaml", 0u);
+    ASSERT_FALSE(no_sub.has_value());
+    EXPECT_NE(no_sub.error().context.find("n_sub"), std::string::npos) << no_sub.error().context;
 }
 

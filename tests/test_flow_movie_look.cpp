@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
 #include "render/scene.hpp"
+#include "../tools/flow_movie/q_look.hpp"
 
 namespace {
 
@@ -487,5 +489,69 @@ TEST(FlowMovieLook, ThePreviewSeedsFillTheInflowShellAboveEachRotorAndAFarFieldB
         return l.x != r.x ? l.x < r.x : (l.y != r.y ? l.y < r.y : l.z < r.z);
     });
     EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end()) << "no two seeds are the same point";
+}
+
+// THE NASA LOOK (the lead, 2026-11-17: Cameron wants the multirotor flow figures of NASA Ames, OVERFLOW: Q-criterion iso-surfaces
+// coloured by vorticity magnitude, blue low to magenta high, crisp thin tubes and sheets): the published frame's q_hat channel is
+// sqrt(Q) with its sign, so an iso level L on it is Q = L^2. A LADDER of three levels, each a fraction of the frame's largest q_hat
+// (the thin cores at the top, the sheets low), each its own opacity (the cores near solid, the outer sheets see-through), all coloured
+// by the vorticity channel on the blue-to-magenta map between 0 and a fraction of the frame's largest |omega|.
+namespace {
+spade::FlowVolume volume_with_ranges(float q_max, float vort_max) {
+    spade::FlowVolume v;
+    v.header.channel_max[spade::kFlowQHat] = q_max;
+    v.header.channel_min[spade::kFlowQHat] = -q_max;
+    v.header.channel_max[spade::kFlowVorticity] = vort_max;
+    return v;
+}
+}  // namespace
+
+TEST(FlowMovieQLook, TheLadderIsThreeLevelsAsFractionsOfTheFramesLargestQHatColouredByVorticity) {
+    const flow_movie::QLook look;
+    const auto isos = flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_EQ(isos.size(), 3u);
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(isos[i].quantity, spade::render::FlowQuantity::q_hat) << i;
+        EXPECT_NEAR(isos[i].value, 10.0f * look.level[i], 1e-5f) << i;
+        EXPECT_FLOAT_EQ(isos[i].opacity, look.opacity[i]) << i;
+        ASSERT_TRUE(isos[i].colour_by.has_value()) << i;
+        EXPECT_EQ(isos[i].colour_by->quantity, spade::render::FlowQuantity::vorticity) << i;
+        EXPECT_EQ(isos[i].colour_by->colours, spade::render::ColourMapId::blue_magenta) << i;
+        EXPECT_FALSE(isos[i].colour_by->auto_range) << "a fixed range: the colours mean the same in every frame of a clip";
+        EXPECT_FLOAT_EQ(isos[i].colour_by->range_min, 0.0f) << i;
+        EXPECT_NEAR(isos[i].colour_by->range_max, 200.0f * look.vorticity_max, 1e-4f) << i;
+    }
+    EXPECT_GT(isos[0].value, isos[1].value);
+    EXPECT_GT(isos[1].value, isos[2].value) << "the highest level first";
+    EXPECT_GT(isos[0].opacity, isos[2].opacity) << "the cores are the most solid";
+}
+
+TEST(FlowMovieQLook, AFrameWithNoVorticityToShowGivesNoSurfaces) {
+    const flow_movie::QLook look;
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(0.0f, 200.0f), look).empty()) << "no q_hat above zero";
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(-1.0f, 200.0f), look).empty());
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(10.0f, 0.0f), look).empty()) << "no vorticity range to colour by";
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(std::numeric_limits<float>::quiet_NaN(), 200.0f), look).empty());
+}
+
+TEST(FlowMovieQLook, TheQLookStringSetsTheNamedNumbersAndRefusesWhatCannotBeDrawnByName) {
+    const auto none = flow_movie::parse_q_look("");
+    ASSERT_TRUE(none.has_value()) << none.error().context;
+    const flow_movie::QLook defaults;
+    EXPECT_EQ(none->level, defaults.level);
+    const auto some = flow_movie::parse_q_look("l1=0.6, l2=0.3,l3=0.05,o1=1,o2=0.5,o3=0.2,vmax=0.8");
+    ASSERT_TRUE(some.has_value()) << some.error().context;
+    EXPECT_FLOAT_EQ(some->level[0], 0.6f);
+    EXPECT_FLOAT_EQ(some->level[2], 0.05f);
+    EXPECT_FLOAT_EQ(some->opacity[0], 1.0f);
+    EXPECT_FLOAT_EQ(some->opacity[2], 0.2f);
+    EXPECT_FLOAT_EQ(some->vorticity_max, 0.8f);
+    for (const char* bad : {"colour=red", "l1", "l1=", "l1=abc", "l1=0", "l1=1.5", "o1=0", "o2=1.1", "vmax=0", "vmax=2", "l1=0.2,l2=0.3",
+                            "l2=0.05", "l1=0.2,,l2=0.1", "=1"}) {
+        const auto r = flow_movie::parse_q_look(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("q look"), std::string::npos) << bad << ": " << r.error().context;
+    }
+    EXPECT_NE(flow_movie::parse_q_look("sparkle=1").error().context.find("sparkle"), std::string::npos);
 }
 
