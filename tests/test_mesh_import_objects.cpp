@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -243,6 +245,143 @@ TEST(MeshImportObjects, AProblemWithTheFileIsStillOneErrorTheSameAsThePlainReade
     ASSERT_FALSE(plain_unit.has_value());
     ASSERT_FALSE(objects_unit.has_value());
     EXPECT_EQ(objects_unit.error(), plain_unit.error());
+}
+
+// ---- colour: the colour a file gives an object (sRGB 0..255), beside the mesh ------------------------------------------------------
+
+[[nodiscard]] std::string material_factor(const char* rgba) {
+    return std::string(R"({"pbrMetallicRoughness":{"baseColorFactor":[)") + rgba + "]}}";
+}
+
+[[nodiscard]] std::optional<SurfaceColour> glb_colour(const std::string& materials, int a, int b, std::size_t split) {
+    const std::string glb = cube_glb_two_materials(materials, a, b, split);
+    const auto all = read_gltf_bytes_objects(as_bytes(glb), fs::path());
+    EXPECT_TRUE(all.has_value()) << (all.has_value() ? "" : all.error().context);
+    if (!all.has_value() || all->size() != 1) {
+        ADD_FAILURE() << "one object expected";
+        return std::nullopt;
+    }
+    EXPECT_TRUE((*all)[0].mesh.has_value()) << "the colour never refuses a mesh";
+    return (*all)[0].colour;
+}
+
+TEST(MeshImportColour, AGlbMaterialFactorIsLinearAndComesOutAsSrgbRoundedToTheNearestInteger) {
+    // 0.1 -> 89.04 (rounds down), 0.5 -> 187.5 + 0.02 (rounds up), 0.2158605 is the linear value of sRGB 128
+    const auto c = glb_colour("[" + material_factor("0.1,0.5,0.2158605,1.0") + "]", 0, 0, 6);
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->rgb, (std::array<uint8_t, 3>{89, 188, 128}));
+    EXPECT_EQ(c->colours, 1u);
+    const auto ends = glb_colour("[" + material_factor("0.0,1.0,0.0031308,1.0") + "]", 0, 0, 6);
+    ASSERT_TRUE(ends.has_value());
+    EXPECT_EQ(ends->rgb[0], 0);
+    EXPECT_EQ(ends->rgb[1], 255);
+    EXPECT_EQ(ends->rgb[2], 10);  // the linear segment's end: 12.92 * 0.0031308 * 255 = 10.31
+}
+
+TEST(MeshImportColour, AnObjectWithTwoMaterialsTakesTheLargerAreaAndCountsBothAndATieTakesTheLowestRgb) {
+    const std::string two = "[" + material_factor("1,0,0,1") + "," + material_factor("0,0,1,1") + "]";
+    const auto red_most = glb_colour(two, 0, 1, 8);
+    ASSERT_TRUE(red_most.has_value());
+    EXPECT_EQ(red_most->rgb, (std::array<uint8_t, 3>{255, 0, 0}));
+    EXPECT_EQ(red_most->colours, 2u);
+    const auto blue_most = glb_colour(two, 0, 1, 4);
+    ASSERT_TRUE(blue_most.has_value());
+    EXPECT_EQ(blue_most->rgb, (std::array<uint8_t, 3>{0, 0, 255}));
+    EXPECT_EQ(blue_most->colours, 2u);
+    const auto tie = glb_colour(two, 0, 1, 6);
+    ASSERT_TRUE(tie.has_value());
+    EXPECT_EQ(tie->rgb, (std::array<uint8_t, 3>{0, 0, 255})) << "a tie goes to the lowest (r, g, b)";
+}
+
+TEST(MeshImportColour, AMaterialWithNoFactorIsWhiteNoMaterialIsNoneAndAnUncolouredPrimitiveCountsForNothing) {
+    const auto white = glb_colour("[{}]", 0, 0, 6);
+    ASSERT_TRUE(white.has_value());
+    EXPECT_EQ(white->rgb, (std::array<uint8_t, 3>{255, 255, 255}));
+    EXPECT_FALSE(glb_colour("[{}]", -1, -1, 6).has_value());
+    EXPECT_FALSE(glb_colour("", -1, -1, 6).has_value());
+    const auto half = glb_colour("[" + material_factor("1,0,0,1") + "]", 0, -1, 4);
+    ASSERT_TRUE(half.has_value());
+    EXPECT_EQ(half->rgb, (std::array<uint8_t, 3>{255, 0, 0})) << "the uncoloured 8 triangles do not outweigh the coloured 4";
+    EXPECT_EQ(half->colours, 1u);
+}
+
+TEST(MeshImportColour, ABadGlbMaterialGivesNoColourAndDoesNotRefuseTheMesh) {
+    EXPECT_FALSE(glb_colour(R"([{"pbrMetallicRoughness":{"baseColorFactor":"red"}}])", 0, 0, 6).has_value());
+    EXPECT_FALSE(glb_colour(R"([{"pbrMetallicRoughness":{"baseColorFactor":[1,0]}}])", 0, 0, 6).has_value());
+    EXPECT_FALSE(glb_colour("[{}]", 5, 5, 6).has_value()) << "a material index past the array";
+}
+
+[[nodiscard]] std::string painted_cube_object(uint32_t id, std::string_view name, std::string_view object_attributes, const std::vector<int>& p1) {
+    std::string s = "<object id=\"" + std::to_string(id) + "\" name=\"" + std::string(name) + "\" " + std::string(object_attributes) +
+                    "><mesh><vertices>";
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::vec3 c = corner(v);
+        s += "<vertex x=\"" + std::to_string(c.x) + "\" y=\"" + std::to_string(c.y) + "\" z=\"" + std::to_string(c.z) + "\"/>";
+    }
+    s += "</vertices><triangles>";
+    for (std::size_t i = 0; i < 12; ++i) {
+        s += "<triangle v1=\"" + std::to_string(kCube[i][0]) + "\" v2=\"" + std::to_string(kCube[i][1]) + "\" v3=\"" +
+             std::to_string(kCube[i][2]) + "\"" + (p1.empty() ? "" : " p1=\"" + std::to_string(p1[i]) + "\"") + "/>";
+    }
+    return s + "</triangles></mesh></object>";
+}
+
+[[nodiscard]] std::optional<SurfaceColour> three_mf_colour(const std::string& resources, const std::string& root, const std::string& object) {
+    Files f;
+    const fs::path p = f.put("c.3mf", three_mf({object}, root, resources));
+    const auto all = read_3mf_objects(p);
+    EXPECT_TRUE(all.has_value()) << (all.has_value() ? "" : all.error().context);
+    if (!all.has_value() || all->size() != 1) {
+        ADD_FAILURE() << "one object expected";
+        return std::nullopt;
+    }
+    EXPECT_TRUE((*all)[0].mesh.has_value());
+    return (*all)[0].colour;
+}
+
+TEST(MeshImportColour, A3mfObjectTakesItsBasematerialsColourWithTheAlphaIgnored) {
+    const std::string bases = R"(<basematerials id="10"><base name="a" displaycolor="#112233FF"/><base name="b" displaycolor="#FF8000"/></basematerials>)";
+    const auto c = three_mf_colour(bases, R"(unit="millimeter")", painted_cube_object(1, "a", R"(pid="10" pindex="1")", {}));
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->rgb, (std::array<uint8_t, 3>{255, 128, 0}));
+    EXPECT_EQ(c->colours, 1u);
+    EXPECT_FALSE(three_mf_colour(bases, R"(unit="millimeter")", painted_cube_object(1, "a", "", {})).has_value());
+}
+
+TEST(MeshImportColour, A3mfObjectWithPerTriangleColoursTakesTheLargerAreaAndCountsBoth) {
+    const std::string bases = R"(<basematerials id="10"><base name="a" displaycolor="#112233"/><base name="b" displaycolor="#445566"/></basematerials>)";
+    const std::vector<int> mostly_a = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1};
+    const auto c = three_mf_colour(bases, R"(unit="millimeter")", painted_cube_object(1, "a", R"(pid="10")", mostly_a));
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->rgb, (std::array<uint8_t, 3>{17, 34, 51}));
+    EXPECT_EQ(c->colours, 2u);
+    const std::vector<int> mostly_b = {1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0};
+    const auto d = three_mf_colour(bases, R"(unit="millimeter")", painted_cube_object(1, "a", R"(pid="10")", mostly_b));
+    ASSERT_TRUE(d.has_value());
+    EXPECT_EQ(d->rgb, (std::array<uint8_t, 3>{68, 85, 102}));
+    EXPECT_EQ(d->colours, 2u);
+}
+
+TEST(MeshImportColour, A3mfColorgroupColourIsReadToo) {
+    const std::string group = R"(<m:colorgroup id="11"><m:color color="#AABBCCDD"/></m:colorgroup>)";
+    const auto c = three_mf_colour(group, R"(unit="millimeter" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02")",
+                                   painted_cube_object(1, "a", R"(pid="11" pindex="0")", {}));
+    ASSERT_TRUE(c.has_value());
+    EXPECT_EQ(c->rgb, (std::array<uint8_t, 3>{170, 187, 204}));
+}
+
+TEST(MeshImportColour, StlAndObjCarryNoColour) {
+    Files f;
+    const auto stl = read_stl_objects(f.put("cube.stl", cube_stl(1.0f)), MeshUnit::metre);
+    ASSERT_TRUE(stl.has_value());
+    ASSERT_EQ(stl->size(), 1u);
+    EXPECT_TRUE((*stl)[0].mesh.has_value());
+    EXPECT_FALSE((*stl)[0].colour.has_value());
+    const auto obj = read_obj_objects(f.put("cube.obj", cube_obj()), MeshUnit::metre);
+    ASSERT_TRUE(obj.has_value());
+    ASSERT_EQ(obj->size(), 1u);
+    EXPECT_TRUE((*obj)[0].mesh.has_value());
+    EXPECT_FALSE((*obj)[0].colour.has_value());
 }
 
 }  // namespace

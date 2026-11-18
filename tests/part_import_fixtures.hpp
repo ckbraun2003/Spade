@@ -130,6 +130,55 @@ inline void write_file(const std::filesystem::path& path, std::string_view bytes
     return out;
 }
 
+// The cube as a GLB of two primitives, the first over its first `split` triangles and the second over the rest, each naming the material
+// index given (-1: none); `materials` is the JSON of the "materials" array ("" for none).
+[[nodiscard]] inline std::string cube_glb_two_materials(std::string_view materials, int material_a, int material_b, std::size_t split) {
+    std::string bin;
+    const auto f32 = [&bin](float v) {
+        const auto bits = std::bit_cast<uint32_t>(v);
+        for (int k = 0; k < 4; ++k) bin += static_cast<char>((bits >> (8 * k)) & 0xFFu);
+    };
+    const auto u32 = [&bin](uint32_t v) {
+        for (int k = 0; k < 4; ++k) bin += static_cast<char>((v >> (8 * k)) & 0xFFu);
+    };
+    for (uint32_t v = 0; v < 8; ++v) {
+        const glm::vec3 c = corner(v, 1.0f);
+        f32(c.x);
+        f32(c.y);
+        f32(c.z);
+    }
+    for (std::size_t f = 0; f < 12; ++f) {
+        for (const uint32_t i : kCube[f]) u32(i);
+    }
+    const auto prim = [](int accessor, int material) {
+        return std::string(R"({"attributes":{"POSITION":0},"indices":)") + std::to_string(accessor) +
+               (material >= 0 ? R"(,"material":)" + std::to_string(material) : std::string()) + "}";
+    };
+    std::string json = R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"cube","mesh":0}],)"
+                       R"("meshes":[{"primitives":[)" + prim(1, material_a) + "," + prim(2, material_b) + "]}]," +
+                       (materials.empty() ? std::string() : R"("materials":)" + std::string(materials) + ",") +
+                       R"("accessors":[{"bufferView":0,"componentType":5126,"count":8,"type":"VEC3"},)"
+                       R"({"bufferView":1,"componentType":5125,"count":)" + std::to_string(3 * split) + R"(,"type":"SCALAR"},)"
+                       R"({"bufferView":2,"componentType":5125,"count":)" + std::to_string(3 * (12 - split)) + R"(,"type":"SCALAR"}],)"
+                       R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},{"buffer":0,"byteOffset":96,"byteLength":)" +
+                       std::to_string(12 * split) + R"(},{"buffer":0,"byteOffset":)" + std::to_string(96 + 12 * split) +
+                       R"(,"byteLength":)" + std::to_string(12 * (12 - split)) + R"(}],"buffers":[{"byteLength":)" + std::to_string(96 + 144) + R"(}]})";
+    while (json.size() % 4 != 0) json += ' ';
+    std::string out = "glTF";
+    const auto le32 = [&out](uint32_t v) {
+        for (int k = 0; k < 4; ++k) out += static_cast<char>((v >> (8 * k)) & 0xFFu);
+    };
+    le32(2);
+    le32(static_cast<uint32_t>(12 + 8 + json.size() + 8 + bin.size()));
+    le32(static_cast<uint32_t>(json.size()));
+    out += "JSON";
+    out += json;
+    le32(static_cast<uint32_t>(bin.size()));
+    out += std::string("BIN\0", 4);
+    out += bin;
+    return out;
+}
+
 // A .gltf (JSON) that names a buffer file beside it: it needs a base directory, so the tool refuses it as not self-contained.
 [[nodiscard]] inline std::string gltf_with_external_buffer() {
     return R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"cube","mesh":0}],)"
@@ -154,8 +203,9 @@ inline void write_file(const std::filesystem::path& path, std::string_view bytes
 }
 
 // A 3MF package whose model holds `objects` (each built as an item, in order) under the root attributes `root`.
-[[nodiscard]] inline std::string three_mf(const std::vector<std::string>& objects, std::string_view root = R"(unit="millimeter")") {
-    std::string resources;
+[[nodiscard]] inline std::string three_mf(const std::vector<std::string>& objects, std::string_view root = R"(unit="millimeter")",
+                                          std::string_view resources_before_objects = "") {
+    std::string resources(resources_before_objects);
     std::string build;
     for (std::size_t i = 0; i < objects.size(); ++i) {
         resources += objects[i];
