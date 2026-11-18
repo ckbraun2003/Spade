@@ -84,7 +84,7 @@ def occt_vertex_counts(step_path, deflection_mm, angle=0.5):
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
 
     counts = {}
-    for name, solid, _ in sc.read_solids(step_path, "mm", set()):
+    for name, solid, _, _colour in sc.read_solids(step_path, "mm", set()):
         sc.tessellate(solid, deflection_mm, angle, name)  # meshes `solid` in place, as the converter does
         vertices = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(solid, TopAbs_VERTEX, vertices)
@@ -366,10 +366,10 @@ class StepConvert(unittest.TestCase):
             self.assertEqual(inspected, ([255, 0, 0], 2))
             self.assertEqual(emitted, inspected)
             # the solid's own colour covers the faces nothing else colours: grey on four faces beats red on two
-            over = coloured_cube(work, [(162, (0.5, 0.5, 0.5)), (60, (1.0, 0.0, 0.0)), (92, (1.0, 0.0, 0.0))], "over.step")
+            over = coloured_cube(work, [(162, (0.502, 0.502, 0.502)), (60, (1.0, 0.0, 0.0)), (92, (1.0, 0.0, 0.0))], "over.step")
             inspected, _ = self.colours_of(over)
             self.assertEqual(inspected[1], 2)
-            self.assertEqual(inspected[0], [128, 128, 128], "0.5 as sRGB 0..1 is 127.5 and rounds to the nearest integer, up")
+            self.assertEqual(inspected[0], [128, 128, 128], "0.502 as sRGB 0..1 is 128.01, rounded to the nearest integer")
 
     def test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused(self):
         # Raspberry Pi's Pi 5 STEP holds surface-only parts beside its solids; one of them refused the whole file.

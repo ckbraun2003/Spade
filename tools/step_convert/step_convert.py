@@ -14,13 +14,19 @@ loads or ships it.
 THE MODES spade_part_import USES (L88; it runs this script as its own process and reads one JSON object from standard output):
 
     step_convert.py --probe                      {"ocp": bool, "python", "occt", "wheel", "reason"}; always exit 0
-    step_convert.py IN.step --inspect            {"unit", "occt", "wheel", "solids": [{"name", "volume", "bbox_min", "bbox_max"}]}
-                                                 in the file's unit, placements applied; nothing is tessellated
+    step_convert.py IN.step --inspect            {"unit", "occt", "wheel", "solids": [{"name", "volume", "bbox_min", "bbox_max",
+                                                 "colour", "colours"}]} in the file's unit, placements applied; nothing is tessellated
     step_convert.py IN.step --emit-3mf OUT.3mf --deflection D [--angle A] [--solid NAME]...
                                                  the core-specification 3MF only (no packer, no sidecars), and
                                                  {"unit", "occt", "wheel", "cross_check": [{"name", "brep_volume",
-                                                 "mesh_volume", "difference"}], "flagged": [names]}; exit 0, or 5 when a
-                                                 solid is flagged (the 3MF is written all the same)
+                                                 "mesh_volume", "difference"}], "colours": [{"name", "colour", "colours"}],
+                                                 "flagged": [names]}; exit 0, or 5 when a solid is flagged (the 3MF is
+                                                 written all the same)
+
+THE COLOUR. `colour` is [r, g, b], sRGB 0..255 as the STEP's COLOUR_RGB styles give it to the solid or to its faces (the solid's
+own colour covers the faces nothing else colours), or null when the file gives the solid none; `colours` is how many distinct
+colours it carries. A solid of several colours is given the one covering the most face area (the lowest [r, g, b] on a tie);
+faces with no colour count for nothing. It is only reported: the 3MF and the sidecars carry no colour.
 
 THE DEFLECTION IS REQUIRED. It is the chord error of the curved faces, a geometric choice that depends on the part and
 on the grid it will meet (docs: d at most a tenth of the smallest feature that matters). It takes a unit suffix
@@ -142,8 +148,9 @@ def ocp_versions():
 class Part:
     """One solid instance: a name, its mesh in the part's own frame, the placement and the B-rep volume."""
 
-    def __init__(self, name, vertices, triangles, transform, brep_volume):
+    def __init__(self, name, vertices, triangles, transform, brep_volume, colour=(None, 0)):
         self.name = name
+        self.colour = colour  # ([r, g, b] or None, how many distinct colours)
         self.vertices = vertices
         self.triangles = triangles
         self.transform = transform  # 12 numbers, the 3MF row-vector form
@@ -277,10 +284,10 @@ def unique_names(base, found):
     follows. Names that are already unique are untouched. If a suffixed name lands on another entry's name the
     result would not be unique, and nothing is guessed: the two are named in a refusal."""
     count = {}
-    for name, _, _ in found:
+    for name, *_ in found:
         count[name] = count.get(name, 0) + 1
     seen, owner, out = {}, {}, []
-    for name, solid, location in found:
+    for name, solid, location, *rest in found:
         if count[name] > 1:
             seen[name] = seen.get(name, 0) + 1
             new = f"{name}_{seen[name]}"
@@ -290,13 +297,68 @@ def unique_names(base, found):
             raise Refusal(3, f"{base}: the names '{owner[new]}' and '{name}' both come out as '{new}' (a name used "
                              "more than once is suffixed _1, _2, ...); rename one in the CAD")
         owner[new] = name
-        out.append((new, solid, location))
+        out.append((new, solid, location, *rest))
     return out
 
 
+def srgb_byte(x):
+    """A 0..1 channel as 0..255, rounded to the nearest integer (a half goes up)."""
+    return min(255, max(0, int(x * 255.0 + 0.5)))
+
+
+def colour_of_shape(palette, shape):
+    """(r, g, b) 0..255 the colour tool holds for `shape` (surface, else generic, else curve), or None."""
+    from OCP.Quantity import Quantity_Color, Quantity_TOC_sRGB
+    from OCP.XCAFDoc import XCAFDoc_ColorType
+
+    for kind in (XCAFDoc_ColorType.XCAFDoc_ColorSurf, XCAFDoc_ColorType.XCAFDoc_ColorGen, XCAFDoc_ColorType.XCAFDoc_ColorCurv):
+        c = Quantity_Color()
+        try:
+            hit = palette.GetColor(shape, kind, c)
+        except TypeError:  # a shape the tool does not know
+            hit = False
+        if hit:
+            r, g, b = c.Values(Quantity_TOC_sRGB)  # STEP colours are sRGB; OpenCASCADE keeps them linear
+            return (srgb_byte(r), srgb_byte(g), srgb_byte(b))
+    return None
+
+
+def colour_of_solid(palette, solid, part_shape, part_label):
+    """([r, g, b] or None, n): the colour the STEP gives `solid`. The solid's own colour (else its part's) covers the faces
+    nothing else colours; the colour covering the most face area wins, the lowest (r, g, b) on a tie; n is how many distinct
+    colours there are. A solid whose faces carry no colour of their own is one colour: no area is measured."""
+    from OCP.BRepGProp import BRepGProp
+    from OCP.GProp import GProp_GProps
+    from OCP.TopAbs import TopAbs_FACE
+    from OCP.TopExp import TopExp_Explorer
+    from OCP.TopoDS import TopoDS
+
+    whole = colour_of_shape(palette, solid) or colour_of_shape(palette, part_shape) or colour_of_shape(palette, part_label)
+    faces = []
+    explorer = TopExp_Explorer(solid, TopAbs_FACE)
+    while explorer.More():
+        face = TopoDS.Face_s(explorer.Current())
+        faces.append((face, colour_of_shape(palette, face)))
+        explorer.Next()
+    if not any(own for _, own in faces):
+        return (list(whole), 1) if whole else (None, 0)
+    area = {}
+    for face, own in faces:
+        c = own or whole
+        if c is None:
+            continue
+        props = GProp_GProps()
+        BRepGProp.SurfaceProperties_s(face, props)
+        area[c] = area.get(c, 0.0) + props.Mass()
+    if not area:
+        return None, 0
+    best = min(area, key=lambda c: (-area[c], c))
+    return list(best), len(area)
+
+
 def read_solids(path, unit, wanted, skipped=None):
-    """[(name, solid, location)] for every solid instance of the STEP: the solid in its own frame, and where the
-    assembly puts it. `wanted`, if not empty, names the ones to keep. A part with no solid (a shell, surface or wire) is a
+    """[(name, solid, location, colour)] for every solid instance of the STEP: the solid in its own frame, where the
+    assembly puts it, and the colour the file gives it (colour_of_solid).  `wanted`, if not empty, names the ones to keep. A part with no solid (a shell, surface or wire) is a
     refusal of the file unless `skipped` is a list: then its name is appended there and the rest is read."""
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
@@ -318,6 +380,7 @@ def read_solids(path, unit, wanted, skipped=None):
     if not Interface_Static.SetCVal_s("xstep.cascade.unit", UNITS[unit][2]):
         raise Refusal(1, f"OpenCASCADE would not take the unit {UNITS[unit][2]}")
     reader.SetNameMode(True)
+    reader.SetColorMode(True)
     base = os.path.basename(path)
     if reader.ReadFile(path) != IFSelect_RetDone:
         raise Refusal(3, f"{base}: not a STEP file OpenCASCADE reads")
@@ -325,6 +388,7 @@ def read_solids(path, unit, wanted, skipped=None):
         raise Refusal(3, f"{base}: OpenCASCADE could not transfer the STEP's shapes")
 
     shapes = XCAFDoc_DocumentTool.ShapeTool_s(doc.Main())
+    palette = XCAFDoc_DocumentTool.ColorTool_s(doc.Main())
     roots = TDF_LabelSequence()
     shapes.GetFreeShapes(roots)
     found = []
@@ -343,7 +407,8 @@ def read_solids(path, unit, wanted, skipped=None):
             skipped.append(label_name)
             return
         for k, solid in enumerate(solids):
-            found.append((label_name if len(solids) == 1 else f"{label_name}_{k + 1}", solid, location))
+            colour = colour_of_solid(palette, solid, shape, label)
+            found.append((label_name if len(solids) == 1 else f"{label_name}_{k + 1}", solid, location, colour))
 
     def walk(label, location, instance_name):
         if XCAFDoc_ShapeTool.IsAssembly_s(label):
@@ -384,13 +449,13 @@ def read_parts(path, unit, deflection, angle, wanted, skipped=None):
     from OCP.GProp import GProp_GProps
 
     parts = []
-    for name, solid, location in read_solids(path, unit, wanted, skipped):
+    for name, solid, location, colour in read_solids(path, unit, wanted, skipped):
         vertices, triangles = tessellate(solid, deflection, angle, name)
         placement = transform_of(location)
         vertices, triangles = weld_to_stored_precision(vertices, triangles, UNITS[unit][0], placement)
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(solid, props)
-        parts.append(Part(name, vertices, triangles, placement, props.Mass()))
+        parts.append(Part(name, vertices, triangles, placement, props.Mass(), colour))
     return parts
 
 
@@ -469,13 +534,14 @@ def inspect_solids(path, wanted):
     unit = file_length_unit(path)
     solids = []
     skipped = []
-    for name, solid, location in read_solids(path, unit, wanted, skipped):
+    for name, solid, location, colour in read_solids(path, unit, wanted, skipped):
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(solid, props)
         box = Bnd_Box()
         BRepBndLib.Add_s(solid.Moved(location), box, False)
         x0, y0, z0, x1, y1, z1 = box.Get()
-        solids.append({"name": name, "volume": props.Mass(), "bbox_min": [x0, y0, z0], "bbox_max": [x1, y1, z1]})
+        solids.append({"name": name, "volume": props.Mass(), "bbox_min": [x0, y0, z0], "bbox_max": [x1, y1, z1],
+                       "colour": colour[0], "colours": colour[1]})
     occt, wheel = ocp_versions()
     say({"unit": unit, "occt": occt, "wheel": wheel, "solids": solids, "skipped": no_solid_entries(skipped)})
     return 0
@@ -499,8 +565,9 @@ def emit_3mf(path, out, deflection_text, angle, wanted):
                        "difference": difference if math.isfinite(difference) else 1.0})
     write_3mf(out, parts, UNITS[unit][1])
     occt, wheel = ocp_versions()
-    say({"unit": unit, "occt": occt, "wheel": wheel, "cross_check": checks, "flagged": flagged,
-         "skipped": no_solid_entries(skipped)})
+    say({"unit": unit, "occt": occt, "wheel": wheel, "cross_check": checks,
+         "colours": [{"name": p.name, "colour": p.colour[0], "colours": p.colour[1]} for p in parts],
+         "flagged": flagged, "skipped": no_solid_entries(skipped)})
     return 5 if flagged else 0
 
 
