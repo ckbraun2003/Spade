@@ -290,6 +290,13 @@ struct Drone {
     return &d == &default_drone() ? std::string() : "-" + std::string(d.library);
 }
 
+// --lines (the rotors as actuator lines): a lines run is another simulation, so its cache folder has its own name ("-lines"); and
+// only the D1 clips take lines (S5 and S6 are the reference quad's discs on the CPU film). "" when it applies, else why not.
+[[nodiscard]] inline std::string lines_stem_suffix(bool lines) { return lines ? "-lines" : ""; }
+[[nodiscard]] inline std::string lines_refusal(bool d1) {
+    return d1 ? std::string() : "--lines is for the D1 clips (S1 to S4 and S8): S5 and S6 run the reference quad's discs on the CPU";
+}
+
 // `text` (a clip's title or sentences, written for the reference quad) in the drone's own words.
 [[nodiscard]] inline std::string in_words(std::string text, const Drone& d) {
     const auto swap = [&text](const std::string& from, std::string_view to) {

@@ -80,9 +80,11 @@
 #include "gpu_live.hpp"
 #endif
 #include "live_case.hpp"
+#include "lines.hpp"
 #include "look.hpp"
 #include "part_materials.hpp"
 #include "particles.hpp"
+#include "q_look.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
@@ -234,6 +236,7 @@ struct Film {
     // The particle look (--particles): the seed pool from a frame's log (the held drone's rotors), and the run's state.
     std::function<std::vector<glm::vec3>(const FrameLog&)> particle_pool;
     std::shared_ptr<ParticleHold> particle_hold;
+    std::shared_ptr<const spade::analysis::LiveLines> lines;  // --lines: the rotors as actuator lines (a device film)
     // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
     bool role_materials = false;
     bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
@@ -459,10 +462,10 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
             spade::physics::airflow::FluidConfig config = s.config;
             config.sgs_cs = cs;
-            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids});
+            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids, s.lines, s.line_elements, s.line_rotors});
         };
     }
-    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker)
+    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker, film.lines.get())
                : resuming  ? an::LiveRun::restore(save, *resolved, lc.run_model)
                            : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
@@ -1226,7 +1229,8 @@ struct HeldPose {
 // `particle_views`: the two particle views are web-only (--particles, --particles-preview on S2 and S8): an ordinary film draws every
 // view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
-                                            const Look& look = {}, bool particle_views = false) {
+                                            const Look& look = {}, bool particle_views = false,
+                                            const std::optional<QLook>& nasa_look = std::nullopt) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1357,6 +1361,18 @@ struct HeldPose {
                 frame_on_drone(v, k, n, camera);
                 return {};
             }});
+        if (nasa_look) {
+            // NASA Ames' multirotor look: Q-criterion surfaces (a ladder of three levels) coloured by vorticity, blue to magenta.
+            film.views.push_back(View{
+                "nasa", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
+                [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                                 render::Camera& camera) -> spade::Result<void> {
+                    frame_on_drone(v, k, n, camera);
+                    std::vector<render::IsoSurface> isos = q_isos(v, q);
+                    if (!isos.empty()) scene.flow_layers.push_back(render::FlowLayer{&v, {}, std::move(isos)});
+                    return {};
+                }});
+        }
         if (particle_views) film.views.push_back(View{
             "particles", "points carried through every stored frame, from the air above and round the rotors, through them and down",
             [frame_on_drone, hold = film.particle_hold](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
@@ -1519,6 +1535,8 @@ struct WebPlan {
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
     bool particles = false;                           // S2 and S8: points carried through every stored frame
     bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
+    std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
+    std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1573,6 +1591,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
     stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
+    stem += web::lines_stem_suffix(!plan.lines.empty());  // and one with the rotors as lines
     return stem;
 }
 
@@ -1622,10 +1641,15 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview);
+                               plan.particles || plan.particles_preview, plan.nasa);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
+        if (!plan.lines.empty()) {
+            auto lines = live_lines_from_prop_file(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines, 8u);
+            if (!lines) return std::unexpected(lines.error());
+            film.lines = std::make_shared<const spade::analysis::LiveLines>(std::move(*lines));
+        }
         // S1, S8 and S2 are framed closer, looking down 8 degrees, so the deeper box's floor stays out of frame (L63;
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
@@ -1638,14 +1662,14 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? "nasa" : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              framing.elevation_deg);
             }, plan.particles);  // the streaks are polylines the view's shot makes: kept (with_camera clears them otherwise)
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? "nasa" : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
@@ -1843,6 +1867,9 @@ struct Options {
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
+    std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
+    bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
+    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
@@ -2424,11 +2451,34 @@ struct WebFilming {
         return 2;
     }
     // S1's lines and the particle preview are traced in the true flow: no fade for them.
-    if ((clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles) opt.look.fade = drone->framing.fade();
+    if ((clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles && !opt.nasa) opt.look.fade = drone->framing.fade();
     WebPlan plan;
     plan.look = opt.look;
     plan.drone = drone;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
+    if (!opt.lines_prop.empty()) {
+        if (const std::string why = web::lines_refusal(web::sgs_cs_applies(*clip)); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+        plan.lines = opt.lines_prop;
+    }
+    if (opt.nasa) {
+        const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--nasa is for S2 and S8"
+                          : opt.window_to > 0.0                   ? "--nasa is not for a --window run"
+                          : opt.particles || opt.particles_preview ? "--nasa and the particle looks are different looks: use one"
+                                                                  : "";
+        if (*why != '\0') {
+            std::fprintf(stderr, "flow_movie: %s\n", why);
+            return 2;
+        }
+        auto q = parse_q_look(opt.q_look);
+        if (!q) return fail(q.error());
+        plan.nasa = *q;
+    } else if (!opt.q_look.empty()) {
+        std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
+        return 2;
+    }
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
                           : opt.window_to > 0.0                   ? "--particles is not for a --window run"
@@ -2966,6 +3016,12 @@ int main(int argc, char** argv) {
             opt.drone = value();
         } else if (arg == "--particles-preview") {
             opt.particles_preview = true;
+        } else if (arg == "--lines") {
+            opt.lines_prop = value();
+        } else if (arg == "--nasa") {
+            opt.nasa = true;
+        } else if (arg == "--q-look") {
+            opt.q_look = value();
         } else if (arg == "--particles") {
             opt.particles = true;
         } else if (arg == "--particle-look") {
