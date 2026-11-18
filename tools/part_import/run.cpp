@@ -104,15 +104,35 @@ int result(std::ostream& out, const std::string& mode, const Problem* problem, c
     return false;
 }
 
-[[nodiscard]] Expected<std::vector<MeshObject>> read_objects(const std::string& format, const fs::path& path, const std::string& bytes,
-                                                             MeshUnit unit) {
-    Result<std::vector<MeshObject>> r = std::unexpected(Error{Code::internal, "no reader"});
-    if (format == "stl") r = read_stl(path, unit);
-    if (format == "obj") r = read_obj(path, unit);
-    if (format == "glb" || format == "gltf") r = read_gltf_bytes(std::as_bytes(std::span<const char>(bytes)), fs::path());
-    if (format == "3mf") r = read_3mf(path);
+// The objects of a file in the order the reader builds them. A refused object (make_mesh's refusal) has a null mesh and its message in
+// `refusal` (parallel to `objects`); everything else about the file is one problem.
+struct Candidates {
+    std::vector<MeshObject> objects;
+    std::vector<std::optional<std::string>> refusal;
+};
+
+[[nodiscard]] Expected<Candidates> to_candidates(Result<std::vector<MeshObjectOutcome>> r) {
     if (!r) return std::unexpected(reader_problem(r.error()));
-    return std::move(*r);
+    Candidates c;
+    for (MeshObjectOutcome& o : *r) {
+        if (o.mesh) {
+            c.objects.push_back(MeshObject{o.name, std::move(*o.mesh), o.unit});
+            c.refusal.emplace_back(std::nullopt);
+        } else {
+            c.objects.push_back(MeshObject{o.name, nullptr, o.unit});
+            c.refusal.emplace_back(o.mesh.error().context);
+        }
+    }
+    return c;
+}
+
+[[nodiscard]] Expected<Candidates> read_objects(const std::string& format, const fs::path& path, const std::string& bytes, MeshUnit unit) {
+    Result<std::vector<MeshObjectOutcome>> r = std::unexpected(Error{Code::internal, "no reader"});
+    if (format == "stl") r = read_stl_objects(path, unit);
+    if (format == "obj") r = read_obj_objects(path, unit);
+    if (format == "glb" || format == "gltf") r = read_gltf_bytes_objects(std::as_bytes(std::span<const char>(bytes)), fs::path());
+    if (format == "3mf") r = read_3mf_objects(path);
+    return to_candidates(std::move(r));
 }
 
 [[nodiscard]] std::string hex16(std::uint64_t v) { return std::format("{:016x}", v); }
@@ -346,7 +366,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         return fail({"external_buffers", "the glTF refers to files beside it, so it is not one self-contained file"}, refused);
     }
     std::optional<EmitReport> emitted;
-    const auto convert_step = [&]() -> Expected<std::vector<MeshObject>> {
+    const auto convert_step = [&]() -> Expected<Candidates> {
         if (!search.tools) return std::unexpected(no_converter());
         std::error_code ec;
         const fs::path work = fs::temp_directory_path(ec) / ("spade_part_import_" + env.token);
@@ -374,17 +394,19 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         if (!report) return std::unexpected(report.error());
         emitted = std::move(*report);
         stage(out, "convert", "done");
-        Result<std::vector<MeshObject>> objs = read_3mf(model);
-        if (!objs) return std::unexpected(reader_problem(objs.error()));
-        return std::move(*objs);
+        return to_candidates(read_3mf_objects(model));
     };
-    Expected<std::vector<MeshObject>> read = is_step ? convert_step() : read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
+    Expected<Candidates> read = is_step ? convert_step() : read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
     if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
-    std::vector<MeshObject> objects = std::move(*read);
+    std::vector<MeshObject> objects = std::move(read->objects);
+    std::vector<std::optional<std::string>> refusal = std::move(read->refusal);
     if (opts.object) {
         std::vector<MeshObject> picked;
-        for (const MeshObject& o : objects) {
-            if (o.name == *opts.object) picked.push_back(o);
+        std::vector<std::optional<std::string>> picked_refusal;
+        for (std::size_t k = 0; k < objects.size(); ++k) {
+            if (objects[k].name != *opts.object) continue;
+            picked.push_back(objects[k]);
+            picked_refusal.push_back(refusal[k]);
         }
         if (picked.empty()) {
             std::string names;
@@ -392,7 +414,19 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             return fail({"object_not_found", "the file has no object named '" + *opts.object + "'; it has " + names}, base);
         }
         objects = std::move(picked);
+        refusal = std::move(picked_refusal);
     }
+    std::size_t refused_count = 0;
+    std::string first_refusal;
+    for (const std::optional<std::string>& r : refusal) {
+        if (!r) continue;
+        if (refused_count++ == 0) first_refusal = *r;
+    }
+    // The gate's refusal, until make_mesh_diagnosed names its kinds: `mesh_refused`, the first object's message, the count when several.
+    const Problem gate_problem{"mesh_refused", refused_count > 1 ? first_refusal + " (and " + std::to_string(refused_count - 1) +
+                                                                       " more objects refused)"
+                                                                 : first_refusal};
+    if (importing && refused_count > 0) return fail(gate_problem, refused);
     std::vector<std::string> flagged_names;
     std::string cross_list;
     if (emitted) {
@@ -417,12 +451,14 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     };
     glm::vec3 file_lo(1e30f), file_hi(-1e30f);  // the objects' box in the file's own numbers, for the unit guess
     for (const MeshObject& o : objects) {
+        if (!o.mesh) continue;
         for (const glm::vec3& p : o.mesh->positions()) {
             file_lo = glm::min(file_lo, p);
             file_hi = glm::max(file_hi, p);
         }
     }
     for (MeshObject& o : objects) {
+        if (!o.mesh) continue;
         auto moved = transform_mesh(o.mesh, axes, scale);
         if (!moved) return fail(moved.error(), refused);
         o.mesh = *moved;
@@ -446,13 +482,18 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             unit_json.null("guess");
         }
         std::string list;
-        for (const MeshObject& o : objects) {
+        for (std::size_t k = 0; k < objects.size(); ++k) {
+            const MeshObject& o = objects[k];
+            if (!list.empty()) list.push_back(',');
+            if (refusal[k]) {  // this object did not pass the gate
+                list += JsonObject{}.str("name", o.name).boolean("ok", false).str("code", gate_problem.code).str("message", *refusal[k]).line();
+                continue;
+            }
             glm::vec3 lo(1e30f), hi(-1e30f);
             for (const glm::vec3& p : o.mesh->positions()) {
                 lo = glm::min(lo, p);
                 hi = glm::max(hi, p);
             }
-            if (!list.empty()) list.push_back(',');
             list += JsonObject{}
                         .str("name", o.name)
                         .boolean("ok", true)
@@ -468,10 +509,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         payload.raw("unit", unit_json.line())
             .str("measures_in", used ? "m" : "file")
             .str("frame", (axes.identity() && scale == 1.0) ? "file" : "part")
-            .str("gate", "passed")
+            .str("gate", refused_count > 0 ? "refused" : "passed")
             .str("depth", is_step ? "deep" : "full")
             .raw("objects", "[" + list + "]");
         if (emitted) payload.raw("cross_check", "[" + cross_list + "]");
+        if (refused_count > 0) return result(out, "inspect", &gate_problem, payload);
         if (!flagged_names.empty()) {
             const Problem p = flagged_problem();
             return result(out, "inspect", &p, payload);
