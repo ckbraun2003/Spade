@@ -93,6 +93,12 @@ namespace {
     return static_cast<bool>(out);
 }
 
+[[nodiscard]] std::string skipped_json(const std::vector<std::string>& names) {
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ",") + JsonObject{}.str("name", n).line();
+    return "[" + list + "]";
+}
+
 [[nodiscard]] std::string record_json(const EntryRecord& r) {
     std::string objects;
     for (const SidecarRecord& s : r.sidecars) {
@@ -112,6 +118,7 @@ namespace {
                .str("converter", r.converter)
                .str("source", r.source_name)
                .raw("objects", "[" + objects + "]")
+               .raw("skipped", skipped_json(r.skipped))
                .line() +
            "\n";
 }
@@ -156,6 +163,11 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
         r.key_text = j.at("key_text").get<std::string>();
         r.converter = j.at("converter").get<std::string>();
         r.source_name = j.at("source").get<std::string>();
+        if (const auto sk = j.find("skipped"); sk != j.end() && sk->is_array()) {
+            for (const nlohmann::json& e : *sk) {
+                if (e.is_object() && e.contains("name") && e.at("name").is_string()) r.skipped.push_back(e.at("name").get<std::string>());
+            }
+        }
         r.dir = dir;
         if (r.sha256 != sha256 || r.key != key) return std::nullopt;
         for (const nlohmann::json& o : j.at("objects")) {
@@ -186,7 +198,8 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
 }
 
 Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source_bytes, std::string_view source_name,
-                                  const KeyInputs& inputs, std::span<const StoredObject> objects, std::string_view token) {
+                                  const KeyInputs& inputs, std::span<const StoredObject> objects, std::string_view token,
+                                  std::span<const std::string> skipped) {
     const std::string sha = sha256_hex(source_bytes);
     const std::string key = cache_key(inputs);
     const fs::path sha_dir = store / sha;
@@ -235,6 +248,7 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
     rec.key_text = cache_key_text(inputs);
     rec.converter = inputs.converter;
     rec.source_name = safe_source;
+    rec.skipped.assign(skipped.begin(), skipped.end());
     rec.dir = dir;
     std::vector<std::string> names;
     for (const StoredObject& o : objects) names.push_back(o.name);

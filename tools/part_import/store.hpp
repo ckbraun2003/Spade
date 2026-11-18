@@ -75,6 +75,7 @@ struct EntryRecord {
     std::string converter;
     std::string source_name;  // the source file's name, as stored beside the entry
     std::vector<SidecarRecord> sidecars;
+    std::vector<std::string> skipped;  // parts the converter left out because they hold no solid (STEP), named so a cache hit says so too
     std::filesystem::path dir;  // <store>/<sha256>/<key>; not part of import.json
     bool operator==(const EntryRecord&) const = default;
 };
@@ -86,7 +87,8 @@ struct EntryRecord {
 // entry exists whole or not at all. An incomplete directory at the key is replaced; a complete one is kept. Code on failure: store_io.
 [[nodiscard]] Expected<EntryRecord> write_entry(const std::filesystem::path& store, std::string_view source_bytes,
                                                 std::string_view source_name, const KeyInputs& inputs,
-                                                std::span<const StoredObject> objects, std::string_view token);
+                                                std::span<const StoredObject> objects, std::string_view token,
+                                                std::span<const std::string> skipped = {});
 
 // The complete entry for this source and key, or nothing: import.json must be there and read, name this key, and every sidecar it lists
 // must load with the content hash it records.

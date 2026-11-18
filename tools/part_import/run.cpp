@@ -329,7 +329,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     key_in.unit = (declares_unit || !opts.unit) ? std::string() : *opts.unit;
     key_in.axes = axes;
     key_in.scale = scale;
-    key_in.object = opts.object.value_or(std::string());
+    {  // the picks name the entry whatever the order they were given in (one pick: its own name, as before)
+        std::vector<std::string> sorted = opts.objects;
+        std::sort(sorted.begin(), sorted.end());
+        for (const std::string& n : sorted) key_in.object += (key_in.object.empty() ? "" : "\x1f") + n;
+    }
     if (is_step) {
         key_in.converter = kStepConverterVersion;
         key_in.tolerance_m = deflection_m;
@@ -352,6 +356,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             objects += o.line();
         }
         p.raw("objects", "[" + objects + "]");
+        if (!rec.skipped.empty()) {
+            std::string skipped_list;
+            for (const std::string& name : rec.skipped) skipped_list += (skipped_list.empty() ? "" : ",") + skipped_object(name);
+            p.raw("skipped", "[" + skipped_list + "]");
+        }
         return p;
     };
     if (importing) {
@@ -438,9 +447,9 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         } cleanup{work};
         const fs::path model = work / "model.3mf";
         std::vector<std::string> a = {path.string(), "--emit-3mf", model.string(), "--deflection", *opts.deflection, "--angle", json_number(angle_rad)};
-        if (opts.object) {
+        for (const std::string& pick : opts.objects) {
             a.push_back("--solid");
-            a.push_back(*opts.object);
+            a.push_back(pick);
         }
         stage(out, "convert", "start");
         const ConverterOutcome c = run_converter(*search.tools, a, env);
@@ -456,18 +465,20 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
     std::vector<MeshObject> objects = std::move(read->objects);
     std::vector<std::optional<std::string>> refusal = std::move(read->refusal);
-    if (opts.object) {
+    if (!opts.objects.empty()) {
         std::vector<MeshObject> picked;
         std::vector<std::optional<std::string>> picked_refusal;
         for (std::size_t k = 0; k < objects.size(); ++k) {
-            if (objects[k].name != *opts.object) continue;
+            if (std::find(opts.objects.begin(), opts.objects.end(), objects[k].name) == opts.objects.end()) continue;
             picked.push_back(objects[k]);
             picked_refusal.push_back(refusal[k]);
         }
-        if (picked.empty()) {
+        for (const std::string& pick : opts.objects) {
+            const bool found = std::any_of(objects.begin(), objects.end(), [&](const MeshObject& o) { return o.name == pick; });
+            if (found) continue;
             std::string names;
             for (const MeshObject& o : objects) names += (names.empty() ? "'" : ", '") + o.name + "'";
-            return fail({"object_not_found", "the file has no object named '" + *opts.object + "'; it has " + names}, base);
+            return fail({"object_not_found", "the file has no object named '" + pick + "'; it has " + names}, base);
         }
         objects = std::move(picked);
         refusal = std::move(picked_refusal);
@@ -586,7 +597,8 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m},
                           cross == cross_by_name.end() ? std::string() : cross->second});
     }
-    const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token);
+    const std::vector<std::string> no_solid = emitted ? emitted->skipped : std::vector<std::string>();
+    const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token, no_solid);
     if (!rec) return fail(rec.error(), base);
     stage(out, "write", "done");
     if (!flagged_names.empty()) {

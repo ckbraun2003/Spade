@@ -1,5 +1,7 @@
 #include "options.hpp"
 
+#include <algorithm>
+
 namespace spade::partimport {
 
 namespace {
@@ -45,7 +47,12 @@ Expected<Options> parse_options(const std::vector<std::string>& args) {
         } else if (a == "--scale") {
             p = value(o.scale);
         } else if (a == "--object") {
-            p = value(o.object);
+            if (i + 1 >= args.size()) {
+                p = usage(a + " needs a value");
+            } else {
+                const std::string& name = args[++i];
+                if (std::find(o.objects.begin(), o.objects.end(), name) == o.objects.end()) o.objects.push_back(name);
+            }
         } else if (a == "--deflection") {
             p = value(o.deflection);
         } else if (a == "--angle") {
@@ -67,8 +74,8 @@ Expected<Options> parse_options(const std::vector<std::string>& args) {
 
 const char* usage_text() {
     return "usage: spade_part_import --probe\n"
-           "       spade_part_import --inspect <file> [--unit U] [--axes SPEC] [--scale S] [--object NAME] [--deep --deflection LEN]\n"
-           "       spade_part_import --import <file> --store <dir> [--unit U] [--axes SPEC] [--scale S] [--object NAME]\n"
+           "       spade_part_import --inspect <file> [--unit U] [--axes SPEC] [--scale S] [--object NAME]... [--deep --deflection LEN]\n"
+           "       spade_part_import --import <file> --store <dir> [--unit U] [--axes SPEC] [--scale S] [--object NAME]...\n"
            "                         [--deflection LEN] [--angle RAD]\n"
            "\n"
            "  --probe            is the STEP converter usable (python, OpenCASCADE, versions), and how to install it when not\n"
@@ -78,7 +85,7 @@ const char* usage_text() {
            "  --unit U           m, mm, cm, um, in or ft: required for STL and OBJ on import; refused for the formats that declare theirs\n"
            "  --axes SPEC        three comma-separated source axes, each with an optional minus, for example -y,x,z: a rotation, not a mirror\n"
            "  --scale S          multiplies every position once, after the unit and the axes\n"
-           "  --object NAME      one object of a file that holds several\n"
+           "  --object NAME      one object of a file that holds several; repeat it to pick several (one entry, in any order)\n"
            "  STEP only: --deflection LEN (a length with a unit, no default), --angle RAD (default 0.5), --deep (inspect: tessellate\n"
            "             and run the gate), --step-python PATH, --step-convert PATH\n"
            "\n"
