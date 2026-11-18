@@ -454,7 +454,8 @@ inline void finish_look(const Look& look, spade::FlowVolume& volume) {
                         frame_ms * look.mean_frames));
     }
     if (look.thin.on()) {
-        add(std::format("vorticity thinned to {:g} of its value at the drone, back to full {:g} m out", look.thin.floor, look.thin.radius));
+        add(std::format("the air within {:.2f} m of the drone is drawn thinned so the drone shows; the field is unchanged (the vorticity drawn at {:g} of its value at the drone, full again at that radius)",
+                        look.thin.radius, look.thin.floor));
     }
     if (look.fade.on()) {
         std::string where;

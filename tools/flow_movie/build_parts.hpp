@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <numbers>
@@ -576,19 +577,27 @@ struct BladeChord {
     return static_cast<float>(chord.blades) * c / (2.0f * std::numbers::pi_v<float> * x);
 }
 
-// The time-averaged disc of a turning propeller: `bands` concentric rings from the hub cutout to the tip, each one flat tint at alpha = the
-// solidity at its middle radius times `opacity` (at most 1), `segments` evenly round, both windings (seen from either side), flat at y = plane_y.
-// One submesh and one material per ring; nothing varies with the angle.
+// The time-averaged disc of a turning propeller: concentric rings from the hub cutout to the tip, each one flat tint at alpha = the solidity at its
+// middle radius times `opacity` (capped at 1), `segments` evenly round, both windings (seen from either side), flat at y = plane_y. The rings are as
+// narrow as the alpha's change needs: a ring's two edges differ in alpha by at most `max_alpha_step` (and no ring is wider than 4% of the radius or
+// narrower than 0.15%), so there is no visible step between one ring and the next. One submesh and one material per ring; nothing varies with the angle.
 [[nodiscard]] inline spade::render::MeshData rotor_disc_mesh(const BladeChord& chord, float radius_m, float plane_y, float opacity, float tint,
-                                                           uint32_t bands, uint32_t segments) {
+                                                           float max_alpha_step, uint32_t segments) {
     spade::render::MeshData m;
-    const float width = (1.0f - chord.hub_cutout) / static_cast<float>(bands);
-    for (uint32_t b = 0; b < bands; ++b) {
-        const float lo = chord.hub_cutout + width * static_cast<float>(b);
-        const float hi = lo + width;
-        const float alpha = std::min(1.0f, blade_solidity(chord, lo + 0.5f * width) * opacity);
+    const auto alpha_at = [&](float x) { return std::min(1.0f, blade_solidity(chord, x) * opacity); };
+    constexpr float kWidestRing = 0.04f, kNarrowestRing = 0.0015f;
+    std::vector<float> edges{chord.hub_cutout};
+    while (edges.back() < 1.0f - 1e-6f) {
+        const float x = edges.back();
+        float w = kWidestRing;
+        while (w > kNarrowestRing && std::fabs(alpha_at(std::min(1.0f, x + w)) - alpha_at(x)) > max_alpha_step) w *= 0.8f;
+        edges.push_back(std::min(1.0f, x + w));
+    }
+    for (std::size_t b = 0; b + 1u < edges.size(); ++b) {
+        const float lo = edges[b];
+        const float hi = edges[b + 1u];
         spade::render::Material material;
-        material.base_color = glm::vec4(tint, tint, std::min(1.0f, tint * 1.06f), alpha);
+        material.base_color = glm::vec4(tint, tint, std::min(1.0f, tint * 1.06f), alpha_at(0.5f * (lo + hi)));
         m.source_materials.push_back(material);
         const auto first = static_cast<uint32_t>(m.indices.size());
         for (const float side : {1.0f, -1.0f}) {
@@ -610,9 +619,28 @@ struct BladeChord {
         }
         m.submesh_first_index.push_back(first);
         m.submesh_index_count.push_back(static_cast<uint32_t>(m.indices.size()) - first);
-        m.submesh_material.push_back(b);
+        m.submesh_material.push_back(static_cast<uint32_t>(b));
     }
     return m;
+}
+
+// The chord a draw gets: the prop part file's (--lines) when there are parts and the blur is the disc; none otherwise (a turning rotor is then
+// refused, naming --lines). An unreadable file is an error naming --lines.
+[[nodiscard]] inline spade::Result<std::optional<BladeChord>> chord_for_draw(const PropBlur& blur, bool has_parts, const std::filesystem::path& lines_file) {
+    if (!has_parts || blur.sampled || lines_file.empty()) return std::optional<BladeChord>{};
+    auto read = read_blade_chord(lines_file);
+    if (!read) return std::unexpected(spade::Error{read.error().code, "--lines (the rotors' disc): " + read.error().context});
+    return std::optional<BladeChord>(std::move(*read));
+}
+
+// The clip record's sentence on how the turning rotors are drawn: the disc at the blades' time-averaged coverage (times a gain, when it is not 1),
+// or the sampled blur's copies.
+[[nodiscard]] inline std::string prop_blur_note(const PropBlur& blur) {
+    if (blur.sampled) {
+        return std::format("each rotor's blade drawn as {} copies spread over a {:g} s shutter so the turning shows", blur.samples, blur.shutter_s);
+    }
+    if (blur.opacity == 1.0f) return "rotor discs drawn at the blades' time-averaged coverage";
+    return std::format("rotor discs drawn at {:g} times the blades' time-averaged coverage so they show over the air", static_cast<double>(blur.opacity));
 }
 
 struct BuildDraw {
@@ -809,8 +837,9 @@ struct PropExtent {
                     if (!mesh.submesh_index_count.empty()) {
                         if (auto r = draw(std::move(mesh), pos, orient, what); !r) return r;
                     }
-                    constexpr uint32_t kBands = 32u, kSegments = 96u;
-                    spade::render::MeshData ring = rotor_disc_mesh(*draw_options.chord, radius, extent->plane_y, draw_options.blur.opacity, draw_options.blur.tint, kBands, kSegments);
+                    constexpr uint32_t kSegments = 96u;
+                    constexpr float kAlphaStep = 0.01f;  // between one ring and the next: not a visible step
+                    spade::render::MeshData ring = rotor_disc_mesh(*draw_options.chord, radius, extent->plane_y, draw_options.blur.opacity, draw_options.blur.tint, kAlphaStep, kSegments);
                     if (auto r = draw(std::move(ring), pos, orient, what); !r) return r;
                     scene.statics.back().see_through = true;
                 } else if (part.kind == "rotor" && omega > 0.0 && draw_options.blur.samples > 0u) {

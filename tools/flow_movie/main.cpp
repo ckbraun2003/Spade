@@ -1680,10 +1680,10 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
             }
             // the turning rotors' disc is made from the prop part's own chord table: the --lines file (the one the physics reads)
             std::optional<BladeChord> chord;
-            if (build && !plan.lines.empty() && !plan.prop_blur.sampled) {
-                auto read = read_blade_chord(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines);
-                if (!read) return std::unexpected(spade::Error{read.error().code, "--lines (the rotors' disc): " + read.error().context});
-                chord = std::move(*read);
+            {
+                auto got = chord_for_draw(plan.prop_blur, build != nullptr, plan.lines.empty() ? std::filesystem::path() : std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines);
+                if (!got) return std::unexpected(got.error());
+                chord = std::move(*got);
             }
             if (visual || build) {
                 film.decorate = [visual, build, chord, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
@@ -2452,6 +2452,9 @@ struct WebFilming {
         }
         if (const std::string declared = look_note(opt.look, 1000.0 * times.per_frame); !declared.empty()) {
             in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
+        }
+        if (!opt.build_parts.empty()) {
+            if (const auto blur = parse_prop_blur(opt.prop_blur)) in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + prop_blur_note(*blur) + ".";
         }
         if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
         std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
