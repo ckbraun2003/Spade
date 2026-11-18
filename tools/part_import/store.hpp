@@ -17,6 +17,7 @@
 
 #include "transform.hpp"
 #include "world/mesh_file.hpp"
+#include "world/mesh_import.hpp"
 
 namespace spade::partimport {
 
@@ -52,6 +53,7 @@ struct StoredObject {
     std::shared_ptr<const TriangleMesh> mesh;
     MeshProvenance provenance;
     std::string cross_check_json{};  // optional: a JSON object kept in import.json (see SidecarRecord)
+    std::optional<SurfaceColour> colour{};  // the colour the source file gives the object, kept beside the sidecar in import.json (never in it)
 };
 struct SidecarRecord {
     std::string object;
@@ -65,6 +67,7 @@ struct SidecarRecord {
     // The converter's cross-check of this object as one JSON object (STEP imports), or empty: kept so a cache hit reports it, and a
     // flagged object is flagged every time, not only on the run that made it.
     std::string cross_check_json{};
+    std::optional<SurfaceColour> colour{};  // as StoredObject::colour; read back by find_entry
     bool operator==(const SidecarRecord&) const = default;
 };
 // An entry: the record import.json holds.

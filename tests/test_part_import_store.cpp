@@ -109,7 +109,7 @@ TEST(PartImportStore, ImportJsonSaysWhatTheEntryIs) {
     const auto rec = rig.write();
     ASSERT_TRUE(rec.has_value()) << rec.error().message;
     const auto j = nlohmann::json::parse(read_file(rec->dir / "import.json"));
-    EXPECT_EQ(j.at("import_version"), 1);
+    EXPECT_EQ(j.at("import_version"), 2) << "rev 2: the entry carries each object's colour";
     EXPECT_EQ(j.at("sha256"), rig.sha());
     EXPECT_EQ(j.at("key"), rig.key());
     EXPECT_EQ(j.at("key_text"), cache_key_text(rig.inputs));
@@ -291,6 +291,53 @@ TEST(PartImportStore, StaleTemporariesGoAndFreshOnesStay) {
     EXPECT_TRUE(fs::exists(sha / ".tmp-new-key"));
     EXPECT_TRUE(fs::exists(sha / "keep"));
     EXPECT_EQ(remove_stale_temps(tmp.path() / "no-such-store", std::chrono::hours(1)), 0u);
+}
+
+// ---- colour --------------------------------------------------------------------------------------------------------------------
+
+TEST(PartImportStore, ImportJsonKeepsEachObjectsColourOrNullBesideTheSidecarAndAFoundEntryReadsItBack) {
+    StoreRig rig;
+    rig.objects[0].colour = SurfaceColour{{10, 20, 30}, 2};
+    const auto rec = rig.write();
+    ASSERT_TRUE(rec.has_value()) << rec.error().message;
+    const auto j = nlohmann::json::parse(read_file(rec->dir / "import.json"));
+    EXPECT_EQ(j.at("objects")[0].at("colour"), (nlohmann::json::array({10, 20, 30})));
+    EXPECT_EQ(j.at("objects")[0].at("colours"), 2);
+    EXPECT_TRUE(j.at("objects")[1].at("colour").is_null());
+    EXPECT_EQ(j.at("objects")[1].at("colours"), 0);
+    const auto found = find_entry(rig.store, rig.sha(), rig.key());
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(found->sidecars[0].colour, (std::optional<SurfaceColour>(SurfaceColour{{10, 20, 30}, 2})));
+    EXPECT_FALSE(found->sidecars[1].colour.has_value());
+    EXPECT_EQ(*found, *rec);
+}
+
+TEST(PartImportStore, AnEntryWrittenBeforeColourIsNotAHitAndIsRewrittenAtTheSameKeyWithTheSameStoreRefs) {
+    StoreRig rig;
+    rig.objects[0].colour = SurfaceColour{{10, 20, 30}, 1};
+    const auto first = rig.write();
+    ASSERT_TRUE(first.has_value()) << first.error().message;
+    // make it what rev 1 wrote: the version, and no colour fields
+    const fs::path file = first->dir / "import.json";
+    auto j = nlohmann::json::parse(read_file(file));
+    j["import_version"] = 1;
+    for (auto& o : j["objects"]) {
+        o.erase("colour");
+        o.erase("colours");
+    }
+    write_file(file, j.dump());
+    EXPECT_FALSE(find_entry(rig.store, rig.sha(), rig.key()).has_value()) << "an entry with no colour fields would lie: it is not a hit";
+    const auto again = rig.write("t2");
+    ASSERT_TRUE(again.has_value()) << again.error().message;
+    EXPECT_EQ(again->key, first->key);
+    ASSERT_EQ(again->sidecars.size(), first->sidecars.size());
+    for (std::size_t i = 0; i < again->sidecars.size(); ++i) {
+        EXPECT_EQ(again->sidecars[i].store_sha256, first->sidecars[i].store_sha256) << "the sidecar bytes, so their store_refs, do not move";
+        EXPECT_EQ(again->sidecars[i].content_hash, first->sidecars[i].content_hash);
+    }
+    EXPECT_EQ(again->sidecars[0].colour, (std::optional<SurfaceColour>(SurfaceColour{{10, 20, 30}, 1})));
+    EXPECT_EQ(nlohmann::json::parse(read_file(file)).at("import_version"), 2);
+    EXPECT_TRUE(find_entry(rig.store, rig.sha(), rig.key()).has_value());
 }
 
 }  // namespace
