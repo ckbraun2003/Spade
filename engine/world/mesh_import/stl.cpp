@@ -117,12 +117,12 @@ constexpr uint64_t kFacetsPerBlock = 4096;
     std::iota(indices.begin(), indices.end(), uint32_t{0});
     std::string name = path_text(path.stem());
     const MeshInput input = detail::weld_exact(positions, indices, unit);
-    auto built = make_mesh(input, file + ": object '" + name + "'");
+    auto built = make_mesh_diagnosed(input, file + ": object '" + name + "'");
     if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is
         detail::record_outcome(*collect, name, unit, built);
         return std::vector<MeshObject>{};
     }
-    if (!built) return std::unexpected(built.error());
+    if (!built) return std::unexpected(built.error().error);
     std::vector<MeshObject> out;
     out.push_back(MeshObject{std::move(name), std::move(*built), unit});
     return out;

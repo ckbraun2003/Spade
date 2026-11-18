@@ -669,12 +669,12 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
     }
 
     const MeshInput input = detail::weld_exact(positions, indices, MeshUnit::metre);
-    auto built = make_mesh(input, file_ + ": " + prefix);
+    auto built = make_mesh_diagnosed(input, file_ + ": " + prefix);
     if (collect_ != nullptr) {  // the collecting mode: the outcome, whatever it is (the object returned here is dropped by the caller)
         detail::record_outcome(*collect_, name, MeshUnit::metre, built);
         return MeshObject{std::move(name), built ? *built : std::shared_ptr<const TriangleMesh>(), MeshUnit::metre};
     }
-    if (!built) return std::unexpected(built.error());
+    if (!built) return std::unexpected(built.error().error);
     return MeshObject{std::move(name), std::move(*built), MeshUnit::metre};
 }
 

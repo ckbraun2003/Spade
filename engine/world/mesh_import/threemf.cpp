@@ -512,12 +512,12 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
         indices.reserve(static_cast<std::size_t>(3 * o.triangles));
         gather(table, found->second, *transform, positions, indices);
         const MeshInput input = detail::weld_exact(positions, indices, *unit);
-        auto built = make_mesh(input, file + ": object '" + o.name + "'");
+        auto built = make_mesh_diagnosed(input, file + ": object '" + o.name + "'");
         if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is, and on to the next object
             detail::record_outcome(*collect, o.name, *unit, built);
             continue;
         }
-        if (!built) return std::unexpected(built.error());
+        if (!built) return std::unexpected(built.error().error);
         out.push_back(MeshObject{o.name, std::move(*built), *unit});
     }
     if (out.empty() && (collect == nullptr || collect->empty())) return in_part(fail(Code::invalid_argument, "no build item of type model"));

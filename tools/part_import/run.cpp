@@ -127,11 +127,17 @@ int result(std::ostream& out, const std::string& mode, const Problem* problem, c
     return false;
 }
 
-// The objects of a file in the order the reader builds them. A refused object (make_mesh's refusal) has a null mesh and its message in
+// One object the gate refused: make_mesh's message and the kind's name (make_mesh_diagnosed's refusal_name(), the stable code).
+struct GateRefusal {
+    std::string message;
+    std::string code;
+};
+
+// The objects of a file in the order the reader builds them. A refused object (make_mesh's refusal) has a null mesh and its refusal in
 // `refusal` (parallel to `objects`); everything else about the file is one problem.
 struct Candidates {
     std::vector<MeshObject> objects;
-    std::vector<std::optional<std::string>> refusal;
+    std::vector<std::optional<GateRefusal>> refusal;
 };
 
 [[nodiscard]] Expected<Candidates> to_candidates(Result<std::vector<MeshObjectOutcome>> r) {
@@ -143,7 +149,7 @@ struct Candidates {
             c.refusal.emplace_back(std::nullopt);
         } else {
             c.objects.push_back(MeshObject{o.name, nullptr, o.unit});
-            c.refusal.emplace_back(o.mesh.error().context);
+            c.refusal.emplace_back(GateRefusal{o.mesh.error().context, o.kind ? refusal_name(*o.kind) : "mesh_refused"});
         }
     }
     return c;
@@ -464,10 +470,10 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     Expected<Candidates> read = is_step ? convert_step() : read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
     if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
     std::vector<MeshObject> objects = std::move(read->objects);
-    std::vector<std::optional<std::string>> refusal = std::move(read->refusal);
+    std::vector<std::optional<GateRefusal>> refusal = std::move(read->refusal);
     if (!opts.objects.empty()) {
         std::vector<MeshObject> picked;
-        std::vector<std::optional<std::string>> picked_refusal;
+        std::vector<std::optional<GateRefusal>> picked_refusal;
         for (std::size_t k = 0; k < objects.size(); ++k) {
             if (std::find(opts.objects.begin(), opts.objects.end(), objects[k].name) == opts.objects.end()) continue;
             picked.push_back(objects[k]);
@@ -484,15 +490,15 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         refusal = std::move(picked_refusal);
     }
     std::size_t refused_count = 0;
-    std::string first_refusal;
-    for (const std::optional<std::string>& r : refusal) {
+    GateRefusal first_refusal;
+    for (const std::optional<GateRefusal>& r : refusal) {
         if (!r) continue;
         if (refused_count++ == 0) first_refusal = *r;
     }
-    // The gate's refusal, until make_mesh_diagnosed names its kinds: `mesh_refused`, the first object's message, the count when several.
-    const Problem gate_problem{"mesh_refused", refused_count > 1 ? first_refusal + " (and " + std::to_string(refused_count - 1) +
-                                                                       " more objects refused)"
-                                                                 : first_refusal};
+    // The gate's refusal: the first refused object's kind as the code and its message, the count when several.
+    const Problem gate_problem{first_refusal.code, refused_count > 1 ? first_refusal.message + " (and " + std::to_string(refused_count - 1) +
+                                                                           " more objects refused)"
+                                                                     : first_refusal.message};
     if (importing && refused_count > 0) return fail(gate_problem, refused);
     std::vector<std::string> flagged_names;
     std::string cross_list;
@@ -548,7 +554,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             const MeshObject& o = objects[k];
             if (!list.empty()) list.push_back(',');
             if (refusal[k]) {  // this object did not pass the gate
-                list += JsonObject{}.str("name", o.name).boolean("ok", false).str("code", gate_problem.code).str("message", *refusal[k]).line();
+                list += JsonObject{}.str("name", o.name).boolean("ok", false).str("code", refusal[k]->code).str("message", refusal[k]->message).line();
                 continue;
             }
             glm::vec3 lo(1e30f), hi(-1e30f);
