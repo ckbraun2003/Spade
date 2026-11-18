@@ -110,8 +110,8 @@ Expected<std::shared_ptr<const TriangleMesh>> transform_mesh(const std::shared_p
         in.positions.push_back(scale == 1.0 ? q : q * scale);
     }
     in.indices.assign(mesh->indices().begin(), mesh->indices().end());
-    auto built = make_mesh(in, "the part frame");
-    if (!built.has_value()) return std::unexpected(Problem{"mesh_refused", built.error().context});
+    auto built = make_mesh_diagnosed(in, "the part frame");
+    if (!built.has_value()) return std::unexpected(Problem{refusal_name(built.error().kind), built.error().error.context});
     return *built;
 }
 

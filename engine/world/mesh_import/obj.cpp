@@ -451,12 +451,12 @@ Result<std::vector<MeshObject>> Reader::objects(std::vector<MeshObjectOutcome>* 
         }
         const std::string& name = names.name(slots[k]);
         const MeshInput input = detail::weld_exact(positions, indices, unit_);
-        auto built = make_mesh(input, file_ + ": object '" + name + "'");
+        auto built = make_mesh_diagnosed(input, file_ + ": object '" + name + "'");
         if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is, and on to the next object
             detail::record_outcome(*collect, name, unit_, built);
             continue;
         }
-        if (!built) return std::unexpected(built.error());
+        if (!built) return std::unexpected(built.error().error);
         out.push_back(MeshObject{name, std::move(*built), unit_});
     }
     return out;

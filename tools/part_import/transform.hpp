@@ -39,7 +39,7 @@ struct Axes {
 [[nodiscard]] glm::dvec3 apply_axes(const Axes& axes, const glm::dvec3& p);
 
 // The mesh in the part frame: its positions through the axes and the scale, rebuilt by make_mesh() (unit metre). The same mesh
-// (pointer) when the axes are the identity and the scale is 1. A refusal is `mesh_refused`, with make_mesh()'s message.
+// (pointer) when the axes are the identity and the scale is 1. A refusal is the gate's kind (refusal_name()), with make_mesh()'s message.
 [[nodiscard]] Expected<std::shared_ptr<const TriangleMesh>> transform_mesh(const std::shared_ptr<const TriangleMesh>& mesh,
                                                                           const Axes& axes, double scale);
 
