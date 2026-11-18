@@ -608,7 +608,7 @@ TEST(FlowMovieQLook, TheCloudsDensityOnsetAndThinningAreNamedInTheLookString) {
     EXPECT_FLOAT_EQ(tf->extinction.back().sigma, 80.0f) << "the density at the top of the range";
     bool clear_below = false;
     for (const auto& point : tf->extinction) {
-        if (point.value < 0.4f * tf->range_max && point.sigma == 0.0f) clear_below = true;
+        if (std::abs(point.value - 0.4f * tf->range_max) < 1e-3f * tf->range_max && point.sigma == 0.0f) clear_below = true;  // the onset is the last clear point
     }
     EXPECT_TRUE(clear_below) << "no absorption below the onset";
 }
