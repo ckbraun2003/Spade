@@ -305,6 +305,54 @@ struct Drone {
     return command;
 }
 
+// --loop-blend S (Oversight via the lead, 2026-11-17: the site loops each clip and the flow does not repeat): the clip renders E extra
+// frames past its end and its first E frames are a crossfade from the continuation (frame N + j) to its own start (frame j). E is S x
+// 30 rounded; the blend must be under half the clip, and a non-zero S that rounds to no frame is refused rather than ignored.
+[[nodiscard]] inline uint32_t loop_blend_frames(double seconds, uint32_t clip_frames) {
+    (void)clip_frames;
+    return seconds > 0.0 ? static_cast<uint32_t>(std::lround(seconds * kFps)) : 0u;
+}
+[[nodiscard]] inline std::string loop_blend_refusal(double seconds, uint32_t clip_frames) {
+    if (seconds == 0.0) return {};
+    if (!(seconds > 0.0)) return "--loop-blend takes a length in seconds above 0 (0 is off)";
+    const uint32_t e = loop_blend_frames(seconds, clip_frames);
+    if (e == 0u) return "--loop-blend rounds to no frame at " + std::to_string(static_cast<int>(kFps)) + " fps: give at least 0.02 s";
+    if (2u * e >= clip_frames) return "--loop-blend must be under half the clip (" + std::to_string(clip_frames) + " frames): " + std::to_string(e) + " is not";
+    return {};
+}
+[[nodiscard]] inline uint32_t loop_blend_total_frames(uint32_t clip_frames, uint32_t blend_frames) { return clip_frames + blend_frames; }
+
+// The start's weight in the blended frame j of E: a smoothstep of (j + 1) / (E + 1), so the first is almost the continuation and the last
+// almost the start (strictly between 0 and 1, rising).
+[[nodiscard]] inline float loop_blend_weight(uint32_t j, uint32_t blend_frames) {
+    const float x = static_cast<float>(j + 1u) / static_cast<float>(blend_frames + 1u);
+    return x * x * (3.0f - 2.0f * x);
+}
+
+// (1 - w) x tail + w x head, per byte, rounded; alpha (every fourth byte) is the tail's. Frames of different sizes give nothing.
+[[nodiscard]] inline std::vector<uint8_t> blend_rgba(const std::vector<uint8_t>& tail, const std::vector<uint8_t>& head, float w) {
+    if (tail.size() != head.size()) return {};
+    std::vector<uint8_t> out(tail.size());
+    for (std::size_t i = 0; i < tail.size(); ++i) {
+        if (i % 4u == 3u) {
+            out[i] = tail[i];
+            continue;
+        }
+        const float v = (1.0f - w) * static_cast<float>(tail[i]) + w * static_cast<float>(head[i]);
+        out[i] = static_cast<uint8_t>(std::lround(std::min(std::max(v, 0.0f), 255.0f)));
+    }
+    return out;
+}
+
+// The caption's sentence naming the method; "" without a blend.
+[[nodiscard]] inline std::string loop_blend_caption(uint32_t blend_frames) {
+    if (blend_frames == 0u) return {};
+    char length[32];
+    std::snprintf(length, sizeof length, "%g s", static_cast<double>(blend_frames) / static_cast<double>(kFps));
+    return std::string("Made to loop: its first ") + length +
+           " is a crossfade from the flow's continuation past the end into the clip's own start, so the flow does not jump when the clip repeats.";
+}
+
 // --cache-dir DIR: a still redrawn from a frame another run wrote. The run reads DIR instead of its own cache folder and never
 // simulates or writes there, so it is refused unless it is a --web-still redraw of a named still (--still-frame N) whose frame file is
 // already in DIR. "" when it will do (and when there is no --cache-dir), else why not, naming the missing piece.
