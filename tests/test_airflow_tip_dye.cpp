@@ -141,14 +141,13 @@ TEST(AirflowTipDye, TheDyeStaysInZeroToOneAndOnlyRises) {
     const af::GridShape shape{16, 16, 16, 0.01f};
     std::vector<float> dye(std::size_t{16} * 16 * 16, 0.25f);
     const std::vector<glm::vec3> pts{{0.08f, 0.08f, 0.08f}, {0.081f, 0.079f, 0.0805f}, {0.0f, 0.0f, 0.0f}, {-0.2f, 0.5f, 0.1f}};
-    std::vector<float> before = dye;
     for (int round = 0; round < 3; ++round) {
+        const std::vector<float> before = dye;  // a fresh copy each round: gcc 13's -Werror=stringop-overflow misreads a copy-assign
         af::emit_tip_dye(dye, shape, pts, 40.0f);
         for (std::size_t i = 0; i < dye.size(); ++i) {
             EXPECT_GE(dye[i], before[i]) << "only rises: " << i;
             EXPECT_LE(dye[i], 1.0f) << "never above 1: " << i;
         }
-        before = dye;
     }
     EXPECT_EQ(dye[0 + 16 * (0 + 16 * 15)], 0.25f) << "a cell far from every point is as it was";
     EXPECT_GT(dye[8 + 16 * (8 + 16 * 8)], 0.9f) << "the cell at the points is nearly full";
