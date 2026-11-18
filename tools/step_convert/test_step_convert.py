@@ -312,6 +312,29 @@ class StepConvert(unittest.TestCase):
                 module.file_length_unit(odd)
             self.assertIn("FURLONG", refused.exception.message)
 
+    def test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused(self):
+        # Raspberry Pi's Pi 5 STEP holds surface-only parts beside its solids; one of them refused the whole file.
+        both = os.path.join(FIXTURES, "solid_and_sheet.step")
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, both, "--inspect"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        answer = json.loads(run.stdout)
+        self.assertEqual(len(answer["solids"]), 1)
+        self.assertEqual(len(answer["skipped"]), 1)
+        self.assertEqual(answer["skipped"][0]["code"], "no_solid")
+        self.assertTrue(answer["skipped"][0]["name"])
+        with tempfile.TemporaryDirectory() as work:
+            out = os.path.join(work, "model.3mf")
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, both, "--emit-3mf", out, "--deflection", "0.5mm"],
+                                 capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            emitted = json.loads(run.stdout)
+            self.assertEqual(len(emitted["cross_check"]), 1)
+            self.assertEqual([s["code"] for s in emitted["skipped"]], ["no_solid"])
+        only = os.path.join(FIXTURES, "sheet_only.step")
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, only, "--inspect"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.returncode, 3, run.stdout)
+        self.assertIn("no solid", run.stderr)
+
     def test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written(self):
         with tempfile.TemporaryDirectory() as out:
             run = self.convert("holed_cylinder.step", out, "--deflection", "3mm", "--angle", "1.2", expect=5)
