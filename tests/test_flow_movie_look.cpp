@@ -555,3 +555,27 @@ TEST(FlowMovieQLook, TheQLookStringSetsTheNamedNumbersAndRefusesWhatCannotBeDraw
     EXPECT_NE(flow_movie::parse_q_look("sparkle=1").error().context.find("sparkle"), std::string::npos);
 }
 
+// THE CLOUD (the lead, 2026-11-17: Cameron also asked for "fluffy cloud-like air"): the same vorticity colours as a soft VOLUME, no
+// surfaces: |omega| on the blue-to-magenta map over 0 .. vorticity_max x the frame's largest |omega| (the ladder's own ceiling),
+// absorbing from an onset of the range up to a modest sigma at its top, so the strongest air is the densest and the weak air a haze.
+TEST(FlowMovieQLook, TheCloudIsVorticityOnTheBlueMagentaMapOverTheLaddersRangeAndGetsDenserWithIt) {
+    const flow_movie::QLook look;
+    const auto tf = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_TRUE(tf.has_value());
+    EXPECT_EQ(tf->quantity, spade::render::FlowQuantity::vorticity);
+    EXPECT_EQ(tf->colours, spade::render::ColourMapId::blue_magenta);
+    EXPECT_FALSE(tf->auto_range);
+    EXPECT_FLOAT_EQ(tf->range_min, 0.0f);
+    EXPECT_NEAR(tf->range_max, 200.0f * look.vorticity_max, 1e-4f);
+    ASSERT_GE(tf->extinction.size(), 2u);
+    EXPECT_EQ(tf->extinction.front().sigma, 0.0f) << "no absorption in the weakest air: a haze, not a wall";
+    EXPECT_GT(tf->extinction.back().sigma, 0.0f);
+    EXPECT_LE(tf->extinction.back().sigma, 60.0f) << "soft: the densest air is still see-through at a few centimetres";
+    for (std::size_t i = 1; i < tf->extinction.size(); ++i) {
+        EXPECT_GE(tf->extinction[i].sigma, tf->extinction[i - 1].sigma) << "denser with vorticity, " << i;
+    }
+    EXPECT_TRUE(spade::render::validate_transfer_function(*tf).has_value());
+    EXPECT_FALSE(flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 0.0f), look).has_value()) << "no vorticity to show";
+    EXPECT_FALSE(flow_movie::vorticity_cloud(volume_with_ranges(10.0f, std::numeric_limits<float>::infinity()), look).has_value());
+}
+

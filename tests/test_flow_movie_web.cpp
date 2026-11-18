@@ -726,3 +726,20 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile)
     EXPECT_EQ(web::command_in_words("flow_movie --lines", web::default_drone()), "flow_movie --lines") << "a flag with no value is left alone";
 }
 
+// --cache-dir DIR (a still redrawn from a frame someone else's run wrote, as Physics' 2 mm frame): the web run reads DIR instead of its
+// own cache folder and must never simulate or write there. So it is refused unless the run is a still-only redraw of a named still
+// (--web-still, --still-frame N) whose frame file is already in DIR; each missing piece is named.
+TEST(FlowMovieWeb, ACacheDirIsOnlyForAStillOnlyRedrawOfAFrameThatIsThere) {
+    EXPECT_EQ(web::cache_dir_refusal("", true, true, true), "") << "no --cache-dir: nothing to refuse";
+    EXPECT_EQ(web::cache_dir_refusal("", false, false, false), "");
+    EXPECT_EQ(web::cache_dir_refusal("D", true, true, true), "");
+    for (const std::string& why : {web::cache_dir_refusal("D", false, true, true), web::cache_dir_refusal("D", true, false, true),
+                                   web::cache_dir_refusal("D", true, true, false)}) {
+        EXPECT_NE(why.find("--cache-dir"), std::string::npos) << why;
+    }
+    EXPECT_NE(web::cache_dir_refusal("D", false, true, true).find("--web-still"), std::string::npos);
+    EXPECT_NE(web::cache_dir_refusal("D", true, false, true).find("--still-frame"), std::string::npos);
+    EXPECT_NE(web::cache_dir_refusal("D", true, true, false).find("D"), std::string::npos) << "the folder is named";
+    EXPECT_NE(web::cache_dir_refusal("D", true, true, false).find("never simulates"), std::string::npos);
+}
+
