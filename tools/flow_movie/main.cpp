@@ -81,10 +81,12 @@
 #endif
 #include "live_case.hpp"
 #include "lines.hpp"
+#include "render/gltf.hpp"
 #include "look.hpp"
 #include "part_materials.hpp"
 #include "particles.hpp"
 #include "q_look.hpp"
+#include "visual_mesh.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
@@ -1535,6 +1537,7 @@ struct WebPlan {
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
     bool particles = false;                           // S2 and S8: points carried through every stored frame
     bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
+    std::string visual_mesh;                          // --visual-mesh: a glTF drawn in place of the model's parts (presentation only)
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
@@ -1645,6 +1648,18 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
+        if (!plan.visual_mesh.empty()) {
+            auto loaded = render::load_gltf(plan.visual_mesh);
+            if (!loaded) return std::unexpected(spade::Error{loaded.error().code, "--visual-mesh " + plan.visual_mesh + ": " + loaded.error().context});
+            film.decorate = [mesh = std::make_shared<const render::MeshData>(std::move(*loaded))](
+                                const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+                if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
+                const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
+                const glm::quat orient(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]), static_cast<float>(log.live[5]),
+                                       static_cast<float>(log.live[6]));
+                return add_visual_mesh(scene, *mesh, pos, orient);
+            };
+        }
         if (!plan.lines.empty()) {
             auto lines = live_lines_from_prop_file(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines, 8u);
             if (!lines) return std::unexpected(lines.error());
@@ -1867,6 +1882,7 @@ struct Options {
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
+    std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
     bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
     std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
@@ -2456,6 +2472,13 @@ struct WebFilming {
     plan.look = opt.look;
     plan.drone = drone;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
+    if (!opt.visual_mesh.empty()) {
+        if (!web::sgs_cs_applies(*clip)) {
+            std::fprintf(stderr, "flow_movie: --visual-mesh is for the D1 clips (S1 to S4 and S8)\n");
+            return 2;
+        }
+        plan.visual_mesh = opt.visual_mesh;
+    }
     if (!opt.lines_prop.empty()) {
         if (const std::string why = web::lines_refusal(web::sgs_cs_applies(*clip)); !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
@@ -3016,6 +3039,8 @@ int main(int argc, char** argv) {
             opt.drone = value();
         } else if (arg == "--particles-preview") {
             opt.particles_preview = true;
+        } else if (arg == "--visual-mesh") {
+            opt.visual_mesh = value();
         } else if (arg == "--lines") {
             opt.lines_prop = value();
         } else if (arg == "--nasa") {
