@@ -5,8 +5,8 @@
 //   X500BuildTable.ARotorTakesTheFileWhoseBladesLiftTurningTheEnginesWay   spin_dir +1 is counter-clockwise seen from above
 //                                                (vehicles/rotor.hpp, consumers.md L7a): a +1 rotor takes the *-ccw file, a -1 rotor
 //                                                the *-cw file; a front file sits at +X, a rear file at -X
-//   X500BuildTable.TheRotorsAreTheModelsRotors   the four rotors are the model's, in its order: the hub (x and z to 1e-5, the
-//                                                height to 2 mm) and the spin_dir
+//   X500BuildTable.TheRotorsAreTheModelsRotors   the four rotors are the model's, in its order: the hub less the model's
+//                                                com_offset (the model is in the body frame; to 1e-5) and the spin_dir
 //   X500BuildTable.TheFrameHidesItsBuiltInAutopilotThroughOneTopLevelKey   Rendering reads `hide_materials` at the top level
 // ---------------------------------------------------------------------------
 
@@ -69,15 +69,21 @@ TEST(X500BuildTable, ARotorTakesTheFileWhoseBladesLiftTurningTheEnginesWay) {
 
 TEST(X500BuildTable, TheRotorsAreTheModelsRotors) {
     const std::vector<Rotor> rotors = table_rotors();
-    const YAML::Node model = YAML::LoadFile(kModel)["model"]["rotors"];
+    const YAML::Node whole = YAML::LoadFile(kModel)["model"];
+    const YAML::Node model = whole["rotors"];
+    // The model's rotor local_pos is in its body frame, whose origin is the centre of mass; the table's hubs are in the design frame, so
+    // local_pos = hub - com_offset (design_to_principal is the identity).
+    const YAML::Node com = whole["com_offset"];
+    ASSERT_EQ(com.size(), 3u);
+    ASSERT_EQ(whole["design_to_principal"][0].as<double>(), 1.0);
     ASSERT_EQ(model.size(), 4u);
     ASSERT_EQ(rotors.size(), 4u);
     for (const Rotor& r : rotors) {
         const YAML::Node m = model[static_cast<std::size_t>(r.index)];
         const YAML::Node pos = m["local_pos"];
-        EXPECT_NEAR(r.x, pos[0].as<double>(), 1e-5) << "rotor " << r.index;
-        EXPECT_NEAR(r.y, pos[1].as<double>(), 2e-3) << "rotor " << r.index;
-        EXPECT_NEAR(r.z, pos[2].as<double>(), 1e-5) << "rotor " << r.index;
+        EXPECT_NEAR(r.x - com[0].as<double>(), pos[0].as<double>(), 1e-5) << "rotor " << r.index;
+        EXPECT_NEAR(r.y - com[1].as<double>(), pos[1].as<double>(), 1e-5) << "rotor " << r.index;
+        EXPECT_NEAR(r.z - com[2].as<double>(), pos[2].as<double>(), 1e-5) << "rotor " << r.index;
         EXPECT_EQ(r.spin, m["spin_dir"].as<int>()) << "rotor " << r.index;
     }
 }
