@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+#include "../tools/flow_movie/look.hpp"
+#include "../tools/flow_movie/q_look.hpp"
 #include "../tools/flow_movie/sgs_note.hpp"
 #include "../tools/flow_movie/web_masters.hpp"
 #include "render/raster_cpu.hpp"
@@ -843,5 +845,51 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
     EXPECT_NE(said.find("--part-store part-store"), std::string::npos) << said;
     EXPECT_NE(said.find("--nasa-cloud"), std::string::npos) << "the rest of the command is kept: " << said;
     EXPECT_EQ(web::command_in_words("flow_movie --web S8 --build-parts", drone), "flow_movie --web S8 --build-parts") << "no value: left alone";
+}
+
+// THE SEAM (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy of the look while the film's look state read the
+// options' copy, and never reached a frame): a web run's look is made ONCE, by web_look(), and main assigns that one value to both
+// opt.look (the film's look state) and plan.look (the film's setup). So what a look option says on the command line is what a frame is
+// drawn with, for every field of Look: web_look keeps every one the options set (compared whole, so a field added later is covered
+// without editing this test), adds the drone's wake fade only where it applies, and adds the cloud's thinning round the held body
+// only when the nasa look asks for it.
+TEST(FlowMovieWeb, AWebRunsLookKeepsEveryOptionTheCommandLineSetAndAddsOnlyTheFadeAndTheThinning) {
+    const web::Drone& drone = *web::find_drone("x500");
+    flow_movie::Look set;
+    set.l2_level = 3.5f;
+    set.l2_smooth = true;
+    set.min_cells = 7u;
+    set.mean_frames = 4u;
+    ASSERT_TRUE(set.any());
+
+    // nothing applies: the options' look, whole
+    EXPECT_EQ(web::web_look(set, drone, false, nullptr), set);
+
+    // the fade applies (S2 and S8 without a particle or nasa look): the drone's fade and nothing else changes
+    flow_movie::Look faded = set;
+    faded.fade = drone.framing.fade();
+    ASSERT_TRUE(faded.fade.on());
+    EXPECT_EQ(web::web_look(set, drone, true, nullptr), faded);
+
+    // the nasa look with a thinning: the held body's centre (the drone's own height), the radius and the floor; the rest as set
+    flow_movie::QLook q;
+    q.thin_r = 0.22f;
+    q.thin_floor = 0.05f;
+    flow_movie::Look thinned = set;
+    thinned.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
+    thinned.thin.radius = 0.22f;
+    thinned.thin.floor = 0.05f;
+    EXPECT_EQ(web::web_look(set, drone, false, &q), thinned);
+    EXPECT_NEAR(web::web_look(set, drone, false, &q).thin.centre.y, 0.014f, 1e-7f) << "the X500's body is 0.014 m up in its box";
+
+    // a nasa look without a thinning leaves the thinning off
+    const flow_movie::QLook none;
+    EXPECT_EQ(web::web_look(set, drone, false, &none), set);
+    EXPECT_FALSE(web::web_look(set, drone, false, &none).thin.on());
+
+    // an option's own fade is not undone by a run that adds none
+    flow_movie::Look own = set;
+    own.fade = drone.framing.fade();
+    EXPECT_EQ(web::web_look(own, drone, false, nullptr), own);
 }
 
