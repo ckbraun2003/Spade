@@ -833,13 +833,13 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
     ASSERT_NE(found, nullptr);
     const web::Drone& drone = *found;
     const std::string said = web::command_in_words(
-        "flow_movie --web S8 --drone x500 --build-parts C:/Users/Cameron/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
-        "\"C:/Users/Cameron/Desktop/Projects/part-store\" --nasa-cloud",
+        "flow_movie --web S8 --drone x500 --build-parts C:/Users/someone/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
+        "\"C:/Users/someone/Desktop/Projects/part-store\" --nasa-cloud",
         drone);
     EXPECT_EQ(said.find("x500"), std::string::npos) << said;
     EXPECT_EQ(said.find("KAT"), std::string::npos) << said;
     EXPECT_EQ(said.find("part-store\""), std::string::npos) << said;
-    EXPECT_EQ(said.find("Cameron"), std::string::npos) << said;
+    EXPECT_EQ(said.find("someone"), std::string::npos) << said;
     EXPECT_NE(said.find("--drone open-source-quadcopter"), std::string::npos) << said;
     EXPECT_NE(said.find("--build-parts open-source-quadcopter-parts-table"), std::string::npos) << said;
     EXPECT_NE(said.find("--part-store part-store"), std::string::npos) << said;
