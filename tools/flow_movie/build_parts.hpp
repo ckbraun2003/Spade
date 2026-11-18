@@ -80,7 +80,8 @@ struct BuildPart {
 
 namespace build_detail {
 
-inline constexpr std::array<std::string_view, 9> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast", "rotor"};
+// "mass_only": a mass carrier for the physics, not a drawing of anything (accepted, nothing drawn)
+inline constexpr std::array<std::string_view, 10> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast", "rotor", "mass_only"};
 
 [[nodiscard]] inline std::unexpected<spade::Error> bad(const std::string& why) {
     return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: " + why});
@@ -185,6 +186,11 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
         m.base_color = glm::vec4(r, g, b, 1.0f);
         return m;
     };
+    // Core's table writes the shorter names: pcb, aluminium, carbon (the presets below) and lipo_wrap (a LiPo pack's blue shrink wrap)
+    if (name == "pcb") name = "pcb_green";
+    if (name == "aluminium") name = "aluminium_bare";
+    if (name == "carbon") name = "carbon_fibre";
+    if (name == "lipo_wrap") return make(0.04f, 0.08f, 0.26f);
     if (name == "carbon_fibre") return make(0.025f, 0.027f, 0.032f);
     if (name == "aluminium_bare") return make(0.70f, 0.71f, 0.73f);
     if (name == "aluminium_anodised") return make(0.11f, 0.12f, 0.15f);
@@ -244,7 +250,18 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
     }
     try {
         if (!root || !root.IsMap() || !root["parts"]) return bad("the table has no `parts` list");
-        if (const auto key = build_detail::unknown_key(root, {"parts"})) return bad("unknown key '" + *key + "' at the top (only `parts`)");
+        if (const auto key = build_detail::unknown_key(root, {"parts", "hide_materials"})) {
+            return bad("unknown key '" + *key + "' at the top (only `parts` and `hide_materials`)");
+        }
+        // one top-level hide_materials: glTF materials (whole path or last word) left out of the frame's drawing (its mesh carries the block)
+        std::vector<std::string> frame_hides;
+        if (root["hide_materials"]) {
+            if (!root["hide_materials"].IsSequence()) return bad("the top-level hide_materials is a list of material names");
+            for (const auto& h : root["hide_materials"]) {
+                if (!h.IsScalar() || h.as<std::string>().empty()) return bad("the top-level hide_materials has an item that is not a name");
+                frame_hides.push_back(h.as<std::string>());
+            }
+        }
         const YAML::Node list = root["parts"];
         if (!list.IsSequence() || list.size() == 0u) return bad("the table has no parts");
         std::vector<BuildPart> parts;
@@ -362,6 +379,9 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
                 }
             }
             parts.push_back(std::move(part));
+        }
+        for (BuildPart& part : parts) {
+            if (part.kind == "frame") part.hide_materials.insert(part.hide_materials.end(), frame_hides.begin(), frame_hides.end());
         }
         return parts;
     } catch (const YAML::Exception& e) {
@@ -498,7 +518,7 @@ struct BuildDraw {
         bool found = false;
         for (std::size_t s = 0; s < mesh.submesh_material.size(); ++s) {
             const uint32_t m = mesh.submesh_material[s];
-            found = found || (m < names.size() && last_word(names[m]) == word);
+            found = found || (m < names.size() && (names[m] == word || last_word(names[m]) == word));
         }
         if (!found) {
             return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: hide_materials '" + word + "' matches no primitive of the mesh"});
@@ -507,7 +527,8 @@ struct BuildDraw {
     std::vector<uint32_t> indices, first, count, material;
     for (std::size_t s = 0; s < mesh.submesh_first_index.size() && s < mesh.submesh_index_count.size() && s < mesh.submesh_material.size(); ++s) {
         const uint32_t m = mesh.submesh_material[s];
-        const bool hidden = m < names.size() && std::find(hide.begin(), hide.end(), std::string(last_word(names[m]))) != hide.end();
+        const bool hidden = m < names.size() && (std::find(hide.begin(), hide.end(), names[m]) != hide.end() ||
+                                                 std::find(hide.begin(), hide.end(), std::string(last_word(names[m]))) != hide.end());
         if (hidden) continue;
         first.push_back(static_cast<uint32_t>(indices.size()));
         count.push_back(mesh.submesh_index_count[s]);
@@ -583,6 +604,7 @@ struct BuildDraw {
         return m;
     };
     for (const BuildPart& part : parts) {
+        if (part.kind == "mass_only") continue;  // a mass carrier, not a drawing
         const glm::vec3 base_pos = body_position + body_orient * part.position;
         const glm::quat base_orient = body_orient * part.orientation;
         const auto draw = [&](spade::render::MeshData m, glm::vec3 pos, glm::quat orient, const std::string& what) -> spade::Result<void> {
