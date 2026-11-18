@@ -35,7 +35,7 @@ model:
   param_schema_id: 1
   visual_ref: ""
   design_to_principal: [1, 0, 0, 0]
-  com_offset: [0.000913808064, 0.00879446045, -0.00159445975]
+  com_offset: [0.000913808064, -0.0048055402, -0.00159445975]
   body: {mass: 1.63890004, inertia_diag: [0.014648228, 0.0225854814, 0.0157697946]}
   proxy_radius: 0.373073161
   rotors:
@@ -46,13 +46,13 @@ model:
   drag_bodies:
     - {mode: "componentwise", area: 0, coeffs: [0.0201928206, 0.0335772559, 0.0219984706], local_pos: [0, 0, 0], local_orient: [1, 0, 0, 0]}
   imu_mounts:
-    - {mount_pos: [-0.000913808064, -0.00879446045, 0.00159445975], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
+    - {mount_pos: [-0.000913808064, 0.0048055402, 0.00159445975], mount_orient: [1, 0, 0, 0], rate_divider: 1, sigma_a: 0, sigma_g: 0, sigma_ba: 0, sigma_bg: 0}
   parts:
     - name: "body"
       role: "body"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.000913808064, -0.0012944605, 0.00159445975], orientation: [1, 0, 0, 0]}
+      mount: {position: [-0.000913808064, -0.0012944598, 0.00159445975], orientation: [1, 0, 0, 0]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0808999985
       shape:
@@ -70,7 +70,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0860861912, -0.00879446045, 0.088594459], orientation: [0.707106769, 0.5, 0, -0.5]}
+      mount: {position: [0.0860861912, -0.00879445951, 0.088594459], orientation: [0.707106769, 0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -88,7 +88,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [0.0860861912, -0.00879446045, -0.0854055434], orientation: [0.707106769, -0.5, 0, -0.5]}
+      mount: {position: [0.0860861912, -0.00879445951, -0.0854055434], orientation: [0.707106769, -0.5, 0, -0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -106,7 +106,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0879138112, -0.00879446045, -0.0854055434], orientation: [0.707106769, -0.5, 0, 0.5]}
+      mount: {position: [-0.0879138112, -0.00879445951, -0.0854055434], orientation: [0.707106769, -0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:
@@ -124,7 +124,7 @@ model:
       role: "arm"
       attach: "body"
       rotor: 0
-      mount: {position: [-0.0879138112, -0.00879446045, 0.088594459], orientation: [0.707106769, 0.5, 0, 0.5]}
+      mount: {position: [-0.0879138112, -0.00879445951, 0.088594459], orientation: [0.707106769, 0.5, 0, 0.5]}
       surface: {kind: "wall", inv_permeability: 0, inertial_coeff: 0}
       min_feature: 0.0160000008
       shape:

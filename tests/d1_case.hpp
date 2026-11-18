@@ -64,9 +64,10 @@ inline constexpr physics::airflow::GridShape kD1NearGrid{272, 232, 272, 0.002f};
 // L86k, L86p (the lead, 2026-11-17 and -18): the X500's R 0.127 m rotors (the kit's 1045) at +-0.174 m reach 0.174 + 0.127 + 6 dx from the axis,
 // 0.316 m at 2.5 mm; with the phantom's 0.0165 m past it the box is 0.665 m wide, 266 x 237 x 266 = 16.8 M cells at 2.5 mm (0.665 x 0.5925 x 0.665 m;
 // 2 mm would be 32 M, past the 18.3 M the device runner's 4 GiB allows at 234.6 B a cell; 2.4 mm 18.9 M, past it too). The engine's grid is
-// 212 B a cell (3.3 GiB of 4) and the runner's about 3.7 GiB. d1_hold() alone leaves the rotor centres 0.146 m under the top face (88.5 cells
-// below it, less the hubs' 0.075 m), short of 1.5 R and of the kernel's reach plus 4 cells; d1_x500_hold() lowers the drone 18 rows, 0.045 m, so the
-// hubs are 0.1913 m (1.5 R, the bell) under the top face and 0.401 m of wake is below them.
+// 212 B a cell (3.3 GiB of 4) and the runner's about 3.7 GiB. d1_hold() alone leaves the rotor centres 0.160 m under the top face (88.5 cells
+// below it, less the hubs' 0.0614 m: the design frame is the table's, the hubs 0.0614 m above its origin), short of 1.5 R and of the kernel's reach
+// plus 4 cells; d1_x500_hold() lowers the drone 13 rows, 0.0325 m, so the hubs are 0.1924 m (1.5 R, the bell) under the top face and 0.400 m of
+// wake is below them.
 inline constexpr physics::airflow::GridShape kD1X500Grid{266, 237, 266, 0.0025f};
 
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
@@ -79,9 +80,9 @@ inline constexpr physics::airflow::GridShape kD1X500Grid{266, 237, 266, 0.0025f}
     return glm::vec3(0.0f, 0.5f * (static_cast<float>(grid.ny) - static_cast<float>(kD1Grid.ny)) * grid.dx, 0.0f);
 }
 
-// The X500's hold (L86k, L86p): d1_hold(kD1X500Grid), 18 rows (0.045 m) lower, a whole number of rows so the drone keeps its cell alignment.
+// The X500's hold (L86k, L86p): d1_hold(kD1X500Grid), 13 rows (0.0325 m) lower, a whole number of rows so the drone keeps its cell alignment.
 [[nodiscard]] inline glm::vec3 d1_x500_hold() noexcept {
-    return d1_hold(kD1X500Grid) - glm::vec3(0.0f, 18.0f * kD1X500Grid.dx, 0.0f);
+    return d1_hold(kD1X500Grid) - glm::vec3(0.0f, 13.0f * kD1X500Grid.dx, 0.0f);
 }
 inline constexpr float kD1Step = 0.00038f;  // s
 

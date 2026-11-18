@@ -13,13 +13,14 @@
 // MASS, CENTRE OF MASS AND INERTIA (L88l, the lead, 2026-11-18) are Core's build table's: tools/flow_movie/data/x500_build/parts.yaml on
 // core/x500-pose-table, commit 1031a020d44c8412d19ef1d29321b5641598e87f: 13 parts, 1.6389 kg, each with its own mass grade there (the frame
 // 0.610 kg published, the pack 0.4365 kg retailer, the misc carrier 0.175 kg assumed, ...). Here each part is a record at its table pose
-// (the table's frame is Y up, +X forward, +Z right, origin its centre of mass: the engine's design frame, shifted kDesignAboveTable in y so the
-// arms keep basic_quad's y = 0 plane): the frame is a box (the plate stack from the tray's underside to the damper deck's top) and four arm
+// (the table's frame is Y up, +X forward, +Z right, origin where the table puts its centre of mass: it IS the engine's design frame here, so the
+// model file's com_offset is the parts' centre of mass in the table's frame): the frame is a box (the plate stack from the tray's underside to the damper deck's top) and four arm
 // tubes, the motors and propellers are the blocks, the pack a box under the stack (a solid in the flow), the ESC block a box in it, and the
 // controller, Pi, camera, radio, GPS, mast and the misc carrier ONE tensor record (no solid) at their common centre of mass. Every solid and the
 // hubs sit at the table's poses, exactly. The compile's composite gives the centre of mass and the inertia, which are the table's parts' own:
 // the centre of mass comes out a few millimetres from the table's origin (the table says the origin IS the centre of mass; its parts' sum says
-// otherwise), which a drawing of the table must allow for (notes: centre_of_mass).
+// otherwise): the model file's `com_offset` is that point, in the table's frame, and a drawing of the table on the model's body origin shifts the
+// table by -com_offset (notes: centre_of_mass).
 //
 // PRODUCTS OF INERTIA. The engine's model is principal-axes only: the compile turns the design frame to the composite's principal axes, and
 // this tensor is nearly isotropic in x and z (I_x 0.0145, I_z 0.0156), so the parts' own products (xy 3.8e-4, xz 1.6e-4, yz 2.3e-4 kg m^2,
@@ -32,7 +33,7 @@
 // the sim's, not the kit's. So R is 0.127 m and the blade is the library's UIUC APC 10x5 (measured geometry, C_T and C_Q tables) at UIUC's own
 // 10 in; the library's part applies it at 9.4 in (NASA's rotor), so only the diameter (and the mass-derived inertia) differ. Graded derived: the
 // 5 in pitch against the kit's 4.5 in is said in the notes. Its hover speed is the speed the grid-free blade-element-momentum solve gives for a
-// quarter of the weight (test_x500_case.cpp), ~6100 rpm; the line's thrust at the chain's own speed is checked against the same quarter.
+// quarter of the weight (test_x500_case.cpp), ~5450 rpm at the table's mass; the line's thrust at the chain's own speed is checked against the same quarter.
 // ---------------------------------------------------------------------------
 
 #include <array>
@@ -61,7 +62,7 @@ namespace spade::testing::x500 {
 inline constexpr const char* kKatCommit = "c3350dcd2790bbdccdb9b4c3768143c14a1ecf3b";  // KAT: the last change to x500.airframe.json
 inline constexpr double kMass = 1.6389;                                                // kg, the build table's 13 parts (Core, 1031a020)
 inline constexpr const char* kTableCommit = "1031a020d44c8412d19ef1d29321b5641598e87f";  // core/x500-pose-table: x500_build/parts.yaml
-inline constexpr double kDesignAboveTable = 0.0136;                                    // m, design y = table y + this (the arms' plane is design y = 0)
+inline constexpr double kArmAxisBelowOrigin = 0.0136;                                  // m, the arm tubes' axes under the table's origin (assumed; KAT's 15 mm)
 inline constexpr double kArm = 0.174;                                                  // m, KAT's motor.arm_x and arm_y
 inline constexpr double kDiameter = 0.254;                                             // m, the kit's 1045: 10 in tip to tip
 inline constexpr double kHubAboveCentre = 0.0614;                                      // m, the table's hubs above its origin (its centre of mass)
@@ -96,10 +97,10 @@ kat:
 licence: "the PX4 x500 model is BSD-3-Clause; KAT's records hold the text"
 inputs:
   mass: {value: 1.6389, unit: kg, grade: derived, note: "the sum of the build table's 13 parts' masses, each graded there (frame published, pack retailer, misc and rotors assumed); it replaces the Gazebo model's 2.0643 kg"}
-  centre_of_mass: {value: "see the X500Model printout (table frame, m)", grade: derived, note: "the compile's sum over the parts at the table's poses, not tuned and not the table's origin: the table calls its origin the centre of mass, its parts' sum puts it a few millimetres off (forward, low, to port), where the model puts the frame stack's mass at the plates' middle (6 mm under the origin) and the arm tubes 13.6 mm under it. Every solid and the hubs sit at the table's poses exactly, so a drawing of the table on this model's body origin is shifted by that offset"}
+  centre_of_mass: {value: "model.com_offset in x500.model.yaml (the table's frame, m)", grade: derived, note: "the compile's sum over the parts at the table's poses, not tuned and not the table's origin: the table calls its origin the centre of mass, its parts' sum puts it a few millimetres off (forward, low, to port), where the model puts the frame stack's mass at the plates' middle (6 mm under the origin) and the arm tubes 13.6 mm under it. The model's design frame IS the table's frame and every solid and the hubs sit at the table's poses exactly, so com_offset is that point: a drawing of the table on this model's body origin shifts the table by -com_offset, the one value, read from the file"}
   inertia: {value: "see x500.model.yaml's body.inertia", unit: kg m^2, grade: derived, note: "the diagonal of the airframe compile's composite of the same parts, about the centre of mass: point masses for the controller, Pi, camera, radio, GPS and mast and a box for the misc carrier (0.07 x 0.016 x 0.07 m), lumped in one tensor record; boxes for the frame stack (0.15 x 0.0809 x 0.15 m), the pack and the ESC block; thin tubes for the four arms (8 mm radius, 0.10 kg/m, 0.0984 kg in all, the rest of the frame's 0.610 kg in the stack); the motors as cylinders. The products of inertia (xy 3.8e-4, xz 1.6e-4, yz 2.3e-4 kg m^2) are dropped: the engine's model is principal-axes only, and with I_x and I_z this close they would turn the body frame by degrees. An independent hand sum agrees within 3%"}
   rotors: {value: "(+-0.174, +-0.174) m", grade: assumed, note: "KAT's motor.arm_x and arm_y, and the build table's hubs; PX4's X layout: front-right and rear-left counter-clockwise (spin_dir +1), front-left and rear-right clockwise (-1)"}
-  hub_height: {value: "0.0614 m above the table's origin", grade: assumed, note: "the build table's hub pose, exactly; the compiled centre of mass is a few millimetres from that origin, so the hubs are that much further from it"}
+  hub_height: {value: "0.0614 m above the table's origin", grade: assumed, note: "the build table's hub pose, exactly (the design frame is the table's frame); the compiled centre of mass is a few millimetres from that origin, so the hubs are that much further from it"}
   rotor_radius: {value: 0.127, unit: m, grade: derived, note: "the kit's 1045 propeller (10 x 4.5 in; Holybro's X500 V2 kit page and KAT's x500.airframe.json evidence, '1045 propellers'): 10 in = 0.254 m, halved; it is the propeller part's diameter / 2. The 13-inch 1345 STL in PX4's Gazebo model is the sim's prop, not the kit's"}
   body: {value: "box 0.15 x 0.0809 x 0.15 m, 0.5116 kg", grade: derived, note: "the plate stack from the tray's underside (y -0.0466) to the damper deck's top (0.0343) of the build table's frame, a proxy solid for the flow; its mass is the frame's 0.610 kg less the four arm tubes' 0.0984 kg"}
   arms: {value: "tubes of 8 mm radius, 0.10 kg/m", grade: assumed, note: "Holybro's 16 mm carbon arm tubes; proxy solids"}
@@ -109,7 +110,7 @@ inputs:
   propeller: {value: "parts/x500_10in_apc10x5.prop.yaml", grade: derived, note: "the library's UIUC APC 10x5 blade (measured geometry, C_T and C_Q tables) used at UIUC's own 10 in, the kit's 1045 size; the pitch is UIUC's 5 in against the kit's 4.5 in; the library's part applies the same tables at 9.4 in. PX4's Gazebo thrust constants (642 rad/s to hover) are the sim's"}
 checks:
   balance: "the grid-free blade-element-momentum solve (tests/bemt_reference.hpp) for a quarter of the weight, 4.0181 N: see X500Balance's printout"
-  box: "266 x 237 x 266 at 2.5 mm, the drone lowered 18 rows (tests/d1_case.hpp d1_x500_hold()): the rotors' centres 0.1913 m (1.5 R) under the top face, 0.401 m of wake below, 0.0165 m past the kernel's reach at the sides"
+  box: "266 x 237 x 266 at 2.5 mm, the drone lowered 13 rows (tests/d1_case.hpp d1_x500_hold()): the rotors' centres 0.1924 m (1.5 R) under the top face, 0.400 m of wake below, 0.0174 m past the kernel's reach at the sides"
 not_carried: "landing legs, the camera and GPS mounts, the wiring, the propellers' hubs and the motors' bells as solids; the controller, Pi, camera, radio, GPS and mast are one point-mass tensor record, not solids (they sit inside the stack's top or above the hub plane, and the GPS mast does not matter to the downwash); the frame's plates are one box, with no gaps between them"
 )NOTES";
 }
@@ -155,7 +156,7 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
 
 // The avionics as ONE tensor record (see PRODUCTS OF INERTIA): the table's 6C, GPS, Pi, camera, radio, mast and the misc carrier (0.147 kg beside the
 // ESC block's 0.028), at their common centre of mass, with their own tensor about it less `cancel` (a symmetric matrix; zero for the true one).
-// Table frame in, design frame out (y + kDesignAboveTable).
+// The design frame is the table's frame.
 [[nodiscard]] inline vehicles::PartInertia avionics_record(const glm::dmat3& cancel, double esc_mass) {
     struct Item {
         double mass;
@@ -191,7 +192,7 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
     }
     vehicles::PartInertia rec;
     rec.mass = mass;
-    rec.position = glm::dvec3(centre.x, centre.y + kDesignAboveTable, centre.z);
+    rec.position = centre;
     rec.shape = vehicles::PartShape::tensor;
     rec.tensor = tensor - cancel;
     rec.geometry.name = "avionics";
@@ -225,14 +226,13 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
     const double arm_length = std::sqrt(2.0 * kArm * kArm);
     constexpr double kArmPerMetre = 0.10;  // kg/m, Holybro's 16 mm carbon tubes (assumed)
     constexpr double kFrameMass = 0.610;   // kg, the kit's bare frame (Holybro kit page, published)
-    const double d = kDesignAboveTable;
 
     const auto make = [&](const glm::dmat3& cancel) -> Result<vehicles::AirframeSpec> {
         vehicles::BasicQuadParams p;
         p.name = "x500";
         p.half_span_x = kArm;
         p.half_span_z = kArm;
-        p.hub_height = kHubAboveCentre + d;  // the table's hub pose, exactly
+        p.hub_height = kHubAboveCentre;  // the table's hub pose, exactly
         p.body_size = glm::dvec3(0.15, 0.0809, 0.15);  // the plate stack: tray underside (table y -0.0466) to the damper deck's top (0.0343)
         p.body_mass = kFrameMass - 4.0 * kArmPerMetre * arm_length;
         p.arm_radius = 0.008;  // the X500's 16 mm carbon tubes
@@ -240,14 +240,15 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
         p.motor = motor->block;
         p.prop = prop.block;
         p.esc = esc->block;
-        p.esc.mount.position = glm::dvec3(0.0, 0.0113 + d, 0.0);  // with the misc carrier, between the plates
+        p.esc.mount.position = glm::dvec3(0.0, 0.0113, 0.0);  // with the misc carrier, between the plates
         p.battery = battery->block;
         p.battery.mass = kPackMass;
-        p.battery.mount.position = glm::dvec3(0.0, -0.0634 + d, 0.0);  // the pack's centre; its top face on the tray's underside
+        p.battery.mount.position = glm::dvec3(0.0, -0.0634, 0.0);  // the pack's centre; its top face on the tray's underside
         p.battery.shape = vehicles::BlockShape{vehicles::PartShape::box, glm::dvec3(0.133, 0.0335, 0.045), glm::dmat3(0.0)};
         auto spec = vehicles::basic_quad_airframe(p);
         if (!spec) return spec;
-        spec->parts[0].position = glm::dvec3(0.0, -0.0061 + d, 0.0);  // the stack's middle: (-0.0466 + 0.0343) / 2 in the table's y
+        spec->parts[0].position = glm::dvec3(0.0, -0.0061, 0.0);  // the stack's middle: (-0.0466 + 0.0343) / 2 in the table's y
+        for (std::size_t k = 1; k <= 4; ++k) spec->parts[k].position.y = -kArmAxisBelowOrigin;  // basic_quad's arms are in y = 0: lower them
         spec->parts.push_back(avionics_record(cancel, esc->block.mass));
         return spec;
     };
