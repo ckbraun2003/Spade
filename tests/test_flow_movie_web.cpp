@@ -704,3 +704,25 @@ TEST(FlowMovieWeb, APropPartFileIsTheLinesBladeAndARefusedFileIsNamed) {
     EXPECT_NE(no_sub.error().context.find("n_sub"), std::string::npos) << no_sub.error().context;
 }
 
+// CAPTIONS NAME NO BRANDS (Oversight, 2026-11-17, via the lead): the command a caption shows has --visual-mesh's and --lines' file
+// arguments replaced by plain words, so neither a model's name, a propeller maker nor a path under a vendor's folder is printed; every
+// other word of the command stays as it was. The source, the licence and the copyright notice belong in the clip's .md record.
+TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile) {
+    const std::string command =
+        "flow_movie --web S8 --drone phantom3_class --lines library/parts/uiuc_apce_10x5.prop.yaml "
+        "--visual-mesh C:/Users/Someone/KAT/content/meshes/drone/x500.gltf --nasa --q-look l1=0.5";
+    const std::string shown = web::command_in_words(command, web::default_drone());
+    for (const char* brand : {"x500", "X500", "apce", "uiuc", "UIUC", "KAT", "gltf", "Someone"}) {
+        EXPECT_EQ(shown.find(brand), std::string::npos) << brand << " in: " << shown;
+    }
+    EXPECT_NE(shown.find("--visual-mesh open-source-quadcopter-model"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--lines measured-propeller-polar"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--web S8"), std::string::npos) << "the rest of the command is as given";
+    EXPECT_NE(shown.find("--nasa --q-look l1=0.5"), std::string::npos) << shown;
+    const std::string quoted = web::command_in_words("flow_movie --visual-mesh \"C:/a b/x500.gltf\" --nasa", web::default_drone());
+    EXPECT_EQ(quoted.find("x500"), std::string::npos) << quoted;
+    EXPECT_EQ(quoted.find("a b"), std::string::npos) << "a quoted path with a space is replaced whole: " << quoted;
+    EXPECT_NE(quoted.find("--nasa"), std::string::npos) << quoted;
+    EXPECT_EQ(web::command_in_words("flow_movie --lines", web::default_drone()), "flow_movie --lines") << "a flag with no value is left alone";
+}
+
