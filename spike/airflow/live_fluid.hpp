@@ -55,6 +55,13 @@ class GpuLiveFluid final : public analysis::LiveFluid {
         return fluid_->step(discs);
     }
 
+    [[nodiscard]] Result<physics::airflow::FluidHealth> step(std::span<const physics::airflow::ActuatorDisc> discs,
+                                                             std::span<const physics::airflow::LineRotor> lines) override {
+        if (!dead_.empty()) return std::unexpected(Error{Code::internal, dead_});
+        if (lines.empty()) return fluid_->step(discs);
+        return fluid_->step(discs, lines);
+    }
+
     [[nodiscard]] Result<void> publish(const physics::airflow::PublishInput& in, FlowVolume& out) override {
         if (!dead_.empty()) return std::unexpected(Error{Code::internal, dead_});
         if (Result<void> p = fluid_->publish(in.origin, out); !p) return p;
@@ -96,14 +103,23 @@ class GpuLiveFluid final : public analysis::LiveFluid {
 // turns the subgrid eddy viscosity on in the config the device is made from
 // (L52/L54: LiveRun's own config has none, so a host hands it here, as
 // flow_movie does); 0, the default, leaves the run's config as it is.
+// `dye` (L86i) carries the passive dye (DyeSetup: the discs' ring, and with lines the blade tips'), published into the volume's channel 3.
 [[nodiscard]] inline analysis::LiveFluidMaker gpu_live_fluid(compute::VulkanContext& ctx,
-                                                             uint32_t workgroup_size = 64, float sgs_cs = 0.0f) {
-    return [&ctx, workgroup_size, sgs_cs](
+                                                             uint32_t workgroup_size = 64, float sgs_cs = 0.0f,
+                                                             std::optional<DyeSetup> dye = std::nullopt) {
+    return [&ctx, workgroup_size, sgs_cs, dye](
                const analysis::LiveFluidStart& s) -> Result<std::unique_ptr<analysis::LiveFluid>> {
         auto config = s.config;
         if (sgs_cs > 0.0f) config.sgs_cs = sgs_cs;
+        // The rotors as lines (L86j): every step's lines are LiveRun's, one a rotor, binned by rotor; the tip correction as the lines'.
+        std::optional<LineSetup> line;
+        if (s.lines != nullptr) {
+            line = LineSetup{.polar = &s.lines->polar, .elements = s.line_elements, .n_sub = s.lines->n_sub,
+                             .tip_correction = true, .binned = true, .rotors = s.line_rotors};
+        }
         Result<std::unique_ptr<GpuFluid>> fluid =
-            GpuFluid::create(ctx, s.grid, s.domain, config, s.solids, workgroup_size);
+            GpuFluid::create(ctx, s.grid, s.domain, config, s.solids, workgroup_size, line ? &*line : nullptr,
+                             dye ? &*dye : nullptr);
         if (!fluid) return std::unexpected(fluid.error());
         return std::make_unique<GpuLiveFluid>(std::move(*fluid));
     };
