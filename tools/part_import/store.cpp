@@ -93,18 +93,22 @@ namespace {
     return static_cast<bool>(out);
 }
 
+[[nodiscard]] std::string skipped_json(const std::vector<std::string>& names) {
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ",") + JsonObject{}.str("name", n).line();
+    return "[" + list + "]";
+}
+
 [[nodiscard]] std::string record_json(const EntryRecord& r) {
     std::string objects;
     for (const SidecarRecord& s : r.sidecars) {
         if (!objects.empty()) objects.push_back(',');
-        objects += JsonObject{}
-                       .str("object", s.object)
-                       .str("file", s.file)
-                       .str("content_hash", s.content_hash)
-                       .integer("triangles", s.triangles)
-                       .num("volume_m3", s.volume_m3)
-                       .raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line())
-                       .line();
+        JsonObject o;
+        o.str("object", s.object).str("file", s.file).str("content_hash", s.content_hash);
+        o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
+        o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
+        if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
+        objects += o.line();
     }
     return JsonObject{}
                .integer("import_version", 1)
@@ -114,6 +118,7 @@ namespace {
                .str("converter", r.converter)
                .str("source", r.source_name)
                .raw("objects", "[" + objects + "]")
+               .raw("skipped", skipped_json(r.skipped))
                .line() +
            "\n";
 }
@@ -158,6 +163,11 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
         r.key_text = j.at("key_text").get<std::string>();
         r.converter = j.at("converter").get<std::string>();
         r.source_name = j.at("source").get<std::string>();
+        if (const auto sk = j.find("skipped"); sk != j.end() && sk->is_array()) {
+            for (const nlohmann::json& e : *sk) {
+                if (e.is_object() && e.contains("name") && e.at("name").is_string()) r.skipped.push_back(e.at("name").get<std::string>());
+            }
+        }
         r.dir = dir;
         if (r.sha256 != sha256 || r.key != key) return std::nullopt;
         for (const nlohmann::json& o : j.at("objects")) {
@@ -170,6 +180,7 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
             if (s.file.empty() || fs::path(s.file).filename().string() != s.file || s.file == "..") return std::nullopt;
             const nlohmann::json& ref = o.at("store_ref");
             s.store_sha256 = ref.at("sha256").get<std::string>();
+            if (const auto x = o.find("cross_check"); x != o.end() && x->is_object()) s.cross_check_json = x->dump();
             if (ref.at("file").get<std::string>() != s.file || s.store_sha256.size() != 64) return std::nullopt;
             // The sidecar as a store file of its own: there, and the bytes its address says.
             if (sha256_hex(read_text(store / s.store_sha256 / s.file)) != s.store_sha256) return std::nullopt;
@@ -187,7 +198,8 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
 }
 
 Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source_bytes, std::string_view source_name,
-                                  const KeyInputs& inputs, std::span<const StoredObject> objects, std::string_view token) {
+                                  const KeyInputs& inputs, std::span<const StoredObject> objects, std::string_view token,
+                                  std::span<const std::string> skipped) {
     const std::string sha = sha256_hex(source_bytes);
     const std::string key = cache_key(inputs);
     const fs::path sha_dir = store / sha;
@@ -236,6 +248,7 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
     rec.key_text = cache_key_text(inputs);
     rec.converter = inputs.converter;
     rec.source_name = safe_source;
+    rec.skipped.assign(skipped.begin(), skipped.end());
     rec.dir = dir;
     std::vector<std::string> names;
     for (const StoredObject& o : objects) names.push_back(o.name);
@@ -250,8 +263,14 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
         if (const Expected<bool> placed = place_store_file(store, sidecar_sha, file, sidecar_bytes, token); !placed) {
             return cleanup_and_fail(placed.error());
         }
+        std::string cross = objects[i].cross_check_json;
+        if (!cross.empty()) {  // kept in its canonical form, the one a later find_entry reads back
+            const nlohmann::json parsed = nlohmann::json::parse(cross, nullptr, false);
+            if (!parsed.is_object()) return cleanup_and_fail(Problem{"internal", "the cross-check of '" + objects[i].name + "' is not a JSON object"});
+            cross = parsed.dump();
+        }
         rec.sidecars.push_back({objects[i].name, file, hex16(objects[i].mesh->content_hash()), objects[i].mesh->triangle_count(),
-                                objects[i].mesh->mass_properties().volume, sidecar_sha});
+                                objects[i].mesh->mass_properties().volume, sidecar_sha, cross});
     }
     if (!write_text(tmp / "import.json", record_json(rec))) return cleanup_and_fail(io_problem("cannot write import.json", {}));
     fs::rename(tmp, dir, ec);

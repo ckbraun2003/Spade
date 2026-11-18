@@ -199,6 +199,49 @@ TEST(PartImportStep, AFastInspectListsTheSolidsWithTheirBoxAndBrepVolumeAndCheck
     EXPECT_EQ(r.result.value("measures_in", std::string()), "m");
 }
 
+TEST(PartImportStep, APartWithNoSolidIsListedAsSkippedWithItsCodeAndTheRestIsRead) {
+    NEED_PYTHON();
+    const EnvGuard mode("FAKE_STEP_MODE", "sheet");
+    StepRig rig;
+    const Out fast = rig.run(rig.with_converter({"--inspect", rig.step_file().string()}));
+    EXPECT_EQ(fast.exit, 0) << fast.result.dump();
+    const auto& objects = fast.result.at("objects");
+    ASSERT_EQ(objects.size(), 3u) << fast.result.dump();  // arm, hub and the skipped cover
+    EXPECT_EQ(objects[0].value("name", std::string()), "arm");
+    EXPECT_EQ(objects[2].value("name", std::string()), "cover");
+    EXPECT_EQ(objects[2].value("code", std::string()), "no_solid");
+    EXPECT_FALSE(objects[2].value("ok", true));
+    EXPECT_FALSE(objects[2].value("message", std::string()).empty());
+    const Out deep = rig.run(rig.with_converter({"--inspect", rig.step_file().string(), "--deep", "--deflection", "0.1mm"}));
+    EXPECT_EQ(deep.exit, 0) << deep.result.dump();
+    ASSERT_TRUE(deep.result.contains("skipped")) << deep.result.dump();
+    ASSERT_EQ(deep.result.at("skipped").size(), 1u);
+    EXPECT_EQ(deep.result.at("skipped")[0].value("name", std::string()), "cover");
+    EXPECT_EQ(deep.result.at("skipped")[0].value("code", std::string()), "no_solid");
+    EXPECT_EQ(deep.result.at("objects").size(), 2u);  // the solids only: the skipped one is not an object of the gate
+}
+
+TEST(PartImportStep, SeveralSolidsPickedAreAskedOfTheConverterTogetherAndAnImportResultNamesTheSkippedOnes) {
+    NEED_PYTHON();
+    const EnvGuard mode("FAKE_STEP_MODE", "sheet");
+    StepRig rig;
+    const Out r = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm",
+                                              "--object", "arm", "--object", "hub"}));
+    ASSERT_EQ(r.exit, 0) << r.result.dump();
+    EXPECT_EQ(r.result.at("objects").size(), 2u);
+    ASSERT_TRUE(r.result.contains("skipped")) << r.result.dump();
+    ASSERT_EQ(r.result.at("skipped").size(), 1u);
+    EXPECT_EQ(r.result.at("skipped")[0].value("name", std::string()), "cover");
+    EXPECT_EQ(r.result.at("skipped")[0].value("code", std::string()), "no_solid");
+    // the skipped part is part of the entry: a cache hit says it too
+    const Out again = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm",
+                                                  "--object", "hub", "--object", "arm"}));
+    ASSERT_EQ(again.exit, 0) << again.result.dump();
+    EXPECT_TRUE(again.result.value("cached", false));
+    ASSERT_TRUE(again.result.contains("skipped")) << again.result.dump();
+    EXPECT_EQ(again.result.at("skipped").size(), 1u);
+}
+
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
     NEED_PYTHON();
     StepRig rig;
@@ -286,6 +329,8 @@ TEST(PartImportStep, AFlaggedCrossCheckIsWrittenAllTheSameWithExitSix) {
     NEED_PYTHON();
     const EnvGuard mode("FAKE_STEP_MODE", "flag");
     StepRig rig;
+    const fs::path log = rig.tmp.path() / "calls.log";
+    const EnvGuard guard("FAKE_STEP_LOG", log.string());
     const Out r = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
     EXPECT_EQ(r.exit, 6);
     EXPECT_FALSE(r.result.value("ok", true));
@@ -294,6 +339,17 @@ TEST(PartImportStep, AFlaggedCrossCheckIsWrittenAllTheSameWithExitSix) {
     ASSERT_EQ(r.result.at("objects").size(), 2u);
     EXPECT_TRUE(fs::is_regular_file(fs::path(r.result.at("objects")[0].value("sidecar", std::string()))));
     EXPECT_EQ(r.result.at("objects")[0].at("cross_check").value("flagged", false), true);
+    // the next run is a cache hit and is flagged the same: the flag is kept with the entry, and the converter does not run again
+    const Out again = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
+    EXPECT_EQ(again.exit, 6) << again.result.dump();
+    EXPECT_TRUE(again.result.value("cached", false));
+    EXPECT_FALSE(again.result.value("ok", true));
+    EXPECT_EQ(again.code(), "cross_check_flagged");
+    EXPECT_NE(again.result.value("message", std::string()).find("arm"), std::string::npos);
+    ASSERT_EQ(again.result.at("objects").size(), 2u);
+    EXPECT_EQ(again.result.at("objects")[0].at("cross_check").value("flagged", false), true);
+    EXPECT_EQ(again.result.at("objects")[1].at("cross_check").value("flagged", true), false);
+    EXPECT_EQ(rig.converter_runs(log), 1) << "a cache hit ran the converter";
 }
 
 TEST(PartImportStep, TheConvertersOwnRefusalsAndFailuresKeepTheirMeaningAndStoreNothing) {

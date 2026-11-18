@@ -68,6 +68,7 @@ struct StepSolid {
 struct StepInspect {
     std::string unit, occt, wheel;
     std::vector<StepSolid> solids;
+    std::vector<std::string> skipped;  // parts with no solid (a surface or a shell), left out by the converter
 };
 [[nodiscard]] Expected<StepInspect> parse_inspect(const std::string& json_text);
 
@@ -79,6 +80,7 @@ struct CrossCheck {
 struct EmitReport {
     std::string unit, occt, wheel;
     std::vector<CrossCheck> checks;
+    std::vector<std::string> skipped;  // parts with no solid, left out by the converter
 };
 [[nodiscard]] Expected<EmitReport> parse_emit(const std::string& json_text);
 

@@ -18,7 +18,8 @@ enum class Mode { none, probe, inspect, import };
 struct Options {
     Mode mode = Mode::none;
     std::string file;  // inspect and import
-    std::optional<std::string> store, unit, axes, scale, object;
+    std::optional<std::string> store, unit, axes, scale;
+    std::vector<std::string> objects;  // --object, repeatable: the picks, in the order given, a name twice kept once
     std::optional<std::string> deflection, angle, step_python, step_convert;  // STEP
     bool deep = false;                                                        // STEP inspect: tessellate and gate
     bool help = false;

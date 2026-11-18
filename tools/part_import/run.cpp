@@ -43,6 +43,29 @@ namespace {
     return std::nullopt;
 }
 
+// What the tool says about a file it does not read: the format's name where it is known, and what to convert to.
+[[nodiscard]] std::string unsupported_format_message(const fs::path& path) {
+    static const std::pair<const char*, const char*> kKnown[] = {
+        {".dae", "COLLADA"},   {".fbx", "FBX"},      {".blend", "a Blender file"}, {".ply", "PLY"},     {".3ds", "3ds (3D Studio)"},
+        {".iges", "IGES"},     {".igs", "IGES"},     {".skp", "a SketchUp file"},  {".usd", "USD"},     {".usda", "USD"},
+        {".usdc", "USD"},      {".usdz", "USD"},     {".x3d", "X3D"},              {".wrl", "VRML"},    {".dxf", "DXF"},
+        {".amf", "AMF"},       {".off", "OFF"},      {".x", "DirectX .x"},         {".max", "a 3ds Max file"}, {".ma", "a Maya file"},
+        {".mb", "a Maya file"}, {".c4d", "a Cinema 4D file"}, {".sldprt", "a SolidWorks part"}, {".ipt", "an Inventor part"},
+        {".prt", "a CAD part (NX, Creo)"}, {".3dm", "Rhino 3dm"}, {".dwg", "DWG"},
+    };
+    const std::string ext = lower(path.extension().string());
+    const std::string convert = "convert it to glb, OBJ, STL, 3MF or STEP";
+    const std::string file = "'" + path.string() + "'";
+    for (const auto& [e, name] : kKnown) {
+        if (ext == e) return file + " is " + name + " (" + ext + "), which this tool does not read; " + convert;
+    }
+    if (ext.empty()) {
+        return file + " has no extension, so its format is unknown; this tool reads STEP, 3MF, glTF, glb, STL and OBJ (by extension); " + convert;
+    }
+    return file + " has the extension '" + ext + "', which is not a format this tool reads (STEP, 3MF, glTF, glb, STL and OBJ, by extension); " +
+           convert;
+}
+
 [[nodiscard]] const char* unit_text(MeshUnit u) {
     switch (u) {
         case MeshUnit::metre: return "m";
@@ -135,6 +158,24 @@ struct Candidates {
     return to_candidates(std::move(r));
 }
 
+// A part the converter left out because it holds no solid (a surface or a shell): named, with a code, never a gate refusal.
+[[nodiscard]] std::string skipped_object(const std::string& name) {
+    return JsonObject{}
+        .str("name", name)
+        .boolean("ok", false)
+        .str("code", "no_solid")
+        .str("message", "'" + name + "' holds no solid (a surface, shell or wire), so it is left out; the rest of the file is read")
+        .line();
+}
+
+// The flagged cross-check as a problem: the converter's mesh volume and the B-rep's differ by more than 1% for these objects.
+[[nodiscard]] Problem flagged_problem_for(const std::vector<std::string>& flagged_names) {
+    std::string names;
+    for (const std::string& n : flagged_names) names += (names.empty() ? "" : ", ") + n;
+    return Problem{"cross_check_flagged", "the mesh volume differs from the B-rep's by more than 1% for " + names +
+                                              "; use a smaller --deflection or --angle"};
+}
+
 [[nodiscard]] std::string hex16(std::uint64_t v) { return std::format("{:016x}", v); }
 
 [[nodiscard]] std::string array3(const glm::vec3& v) {
@@ -205,7 +246,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     const fs::path path(opts.file);
     const std::optional<std::string> format = format_of(path);
     if (!format) {
-        return fail({"format_unknown", "'" + opts.file + "' is not a STEP, 3MF, glTF, glb, STL or OBJ file (by its extension)"});
+        return fail({"format_unknown", unsupported_format_message(path)});
     }
     const bool declares_unit = *format != "stl" && *format != "obj";
     std::optional<MeshUnit> unit;
@@ -288,7 +329,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     key_in.unit = (declares_unit || !opts.unit) ? std::string() : *opts.unit;
     key_in.axes = axes;
     key_in.scale = scale;
-    key_in.object = opts.object.value_or(std::string());
+    {  // the picks name the entry whatever the order they were given in (one pick: its own name, as before)
+        std::vector<std::string> sorted = opts.objects;
+        std::sort(sorted.begin(), sorted.end());
+        for (const std::string& n : sorted) key_in.object += (key_in.object.empty() ? "" : "\x1f") + n;
+    }
     if (is_step) {
         key_in.converter = kStepConverterVersion;
         key_in.tolerance_m = deflection_m;
@@ -307,14 +352,30 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             o.str("name", s.object).str("sidecar", (rec.dir / s.file).string()).str("content_hash", s.content_hash);
             o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
             o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
-            if (const auto x = cross_by_name.find(s.object); x != cross_by_name.end()) o.raw("cross_check", x->second);
+            if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
             objects += o.line();
         }
         p.raw("objects", "[" + objects + "]");
+        if (!rec.skipped.empty()) {
+            std::string skipped_list;
+            for (const std::string& name : rec.skipped) skipped_list += (skipped_list.empty() ? "" : ",") + skipped_object(name);
+            p.raw("skipped", "[" + skipped_list + "]");
+        }
         return p;
     };
     if (importing) {
-        if (const auto hit = find_entry(store, sha, cache_key(key_in))) return result(out, "import", nullptr, import_payload(*hit, true));
+        if (const auto hit = find_entry(store, sha, cache_key(key_in))) {
+            std::vector<std::string> flagged_on_hit;  // the flag was kept with the entry: a flagged import is flagged every time
+            for (const SidecarRecord& s : hit->sidecars) {
+                const nlohmann::json x = nlohmann::json::parse(s.cross_check_json.empty() ? "null" : s.cross_check_json, nullptr, false);
+                if (x.is_object() && x.value("flagged", false)) flagged_on_hit.push_back(s.object);
+            }
+            if (!flagged_on_hit.empty()) {
+                const Problem p = flagged_problem_for(flagged_on_hit);
+                return result(out, "import", &p, import_payload(*hit, true));
+            }
+            return result(out, "import", nullptr, import_payload(*hit, true));
+        }
     }
 
     // ---- a STEP's fast inspect: the converter's own solids, boxes and B-rep volumes; nothing is tessellated, so no gate ----------------
@@ -343,6 +404,10 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
                         .raw("bbox", JsonObject{}.raw("min", array3(lo)).raw("max", array3(hi)).line())
                         .num("volume", sol.volume_m3 * scale * scale * scale)
                         .line();
+        }
+        for (const std::string& name : info->skipped) {
+            if (!list.empty()) list.push_back(',');
+            list += skipped_object(name);
         }
         JsonObject unit_json;
         unit_json.str("declared", info->unit).str("used", info->unit).null("guess");
@@ -382,9 +447,9 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         } cleanup{work};
         const fs::path model = work / "model.3mf";
         std::vector<std::string> a = {path.string(), "--emit-3mf", model.string(), "--deflection", *opts.deflection, "--angle", json_number(angle_rad)};
-        if (opts.object) {
+        for (const std::string& pick : opts.objects) {
             a.push_back("--solid");
-            a.push_back(*opts.object);
+            a.push_back(pick);
         }
         stage(out, "convert", "start");
         const ConverterOutcome c = run_converter(*search.tools, a, env);
@@ -400,18 +465,20 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
     std::vector<MeshObject> objects = std::move(read->objects);
     std::vector<std::optional<std::string>> refusal = std::move(read->refusal);
-    if (opts.object) {
+    if (!opts.objects.empty()) {
         std::vector<MeshObject> picked;
         std::vector<std::optional<std::string>> picked_refusal;
         for (std::size_t k = 0; k < objects.size(); ++k) {
-            if (objects[k].name != *opts.object) continue;
+            if (std::find(opts.objects.begin(), opts.objects.end(), objects[k].name) == opts.objects.end()) continue;
             picked.push_back(objects[k]);
             picked_refusal.push_back(refusal[k]);
         }
-        if (picked.empty()) {
+        for (const std::string& pick : opts.objects) {
+            const bool found = std::any_of(objects.begin(), objects.end(), [&](const MeshObject& o) { return o.name == pick; });
+            if (found) continue;
             std::string names;
             for (const MeshObject& o : objects) names += (names.empty() ? "'" : ", '") + o.name + "'";
-            return fail({"object_not_found", "the file has no object named '" + *opts.object + "'; it has " + names}, base);
+            return fail({"object_not_found", "the file has no object named '" + pick + "'; it has " + names}, base);
         }
         objects = std::move(picked);
         refusal = std::move(picked_refusal);
@@ -443,12 +510,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             if (x.flagged) flagged_names.push_back(x.name);
         }
     }
-    const auto flagged_problem = [&]() {
-        std::string names;
-        for (const std::string& n : flagged_names) names += (names.empty() ? "" : ", ") + n;
-        return Problem{"cross_check_flagged", "the mesh volume differs from the B-rep's by more than 1% for " + names +
-                                                  "; use a smaller --deflection or --angle"};
-    };
+    const auto flagged_problem = [&]() { return flagged_problem_for(flagged_names); };
     glm::vec3 file_lo(1e30f), file_hi(-1e30f);  // the objects' box in the file's own numbers, for the unit guess
     for (const MeshObject& o : objects) {
         if (!o.mesh) continue;
@@ -513,6 +575,11 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             .str("depth", is_step ? "deep" : "full")
             .raw("objects", "[" + list + "]");
         if (emitted) payload.raw("cross_check", "[" + cross_list + "]");
+        if (emitted && !emitted->skipped.empty()) {
+            std::string skipped_list;
+            for (const std::string& name : emitted->skipped) skipped_list += (skipped_list.empty() ? "" : ",") + skipped_object(name);
+            payload.raw("skipped", "[" + skipped_list + "]");
+        }
         if (refused_count > 0) return result(out, "inspect", &gate_problem, payload);
         if (!flagged_names.empty()) {
             const Problem p = flagged_problem();
@@ -526,9 +593,12 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     (void)remove_stale_temps(store, env.stale_after);
     std::vector<StoredObject> stored;
     for (const MeshObject& o : objects) {
-        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m}});
+        const auto cross = cross_by_name.find(o.name);
+        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m},
+                          cross == cross_by_name.end() ? std::string() : cross->second});
     }
-    const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token);
+    const std::vector<std::string> no_solid = emitted ? emitted->skipped : std::vector<std::string>();
+    const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token, no_solid);
     if (!rec) return fail(rec.error(), base);
     stage(out, "write", "done");
     if (!flagged_names.empty()) {
