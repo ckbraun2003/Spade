@@ -73,7 +73,7 @@ Fixture make_fixture(const std::string& name) {
             "  - id: gates.corridor\n    name: Corridor gates\n    category: Gates\n    type: some.gate_set.v5\n"
             "    file: worlds/corridor.gates.json\n"
             "  - id: drone.mapped\n    name: Mapped\n    category: Drones\n    parts_map:\n"
-            "      - {slot: frame, part: \"a:part.motor.fpv\", hash: null, parent: null, count: 1}\n");
+            "      - {slot: frame, part: \"a:part.motor.fpv\", hash: null, placement: {pos: [0, 0, 0], quat: [1, 0, 0, 0]}, count: 1}\n");
     put(a / "drones/quad.model.yaml",
         "model_version: 1\nmodel:\n  name: \"quad\"\n  body: {mass: 0.6, inertia_diag: [1, 2, 3]}\n"
         "  rotors:\n    - {spin_dir: 1}\n    - {spin_dir: -1}\n    - {spin_dir: 1}\n    - {spin_dir: -1}\n");
@@ -291,7 +291,7 @@ TEST(LibraryQuery, APartsMapIsPartOfTheHashAsItsCanonicalJson) {
     }
     ASSERT_NE(mapped, nullptr);
     // Keys sorted, no whitespace, null kept, numbers shortest.
-    EXPECT_EQ(mapped->parts_map_json, R"([{"count":1,"hash":null,"parent":null,"part":"a:part.motor.fpv","slot":"frame"}])");
+    EXPECT_EQ(mapped->parts_map_json, R"([{"count":1,"hash":null,"part":"a:part.motor.fpv","placement":{"pos":[0,0,0],"quat":[1,0,0,0]},"slot":"frame"}])");
     const std::string expected =
         "sha256:" + spade::sha256_hex("parts_map\t" + spade::sha256_hex(mapped->parts_map_json) + "\n");
     const auto h = sc::entry_hash(f.set, *mapped);

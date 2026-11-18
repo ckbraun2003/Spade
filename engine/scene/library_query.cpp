@@ -128,6 +128,72 @@ bool accepts(const SetEntry& e, const ListFilter& f, const std::string& text_low
 
 }  // namespace
 
+LibraryResult<FindResult> find_entry(const LibrarySet& set, std::string_view id, const FindOptions& options) {
+    const std::string full(id);
+    const std::size_t colon = full.find(':');
+    if (colon == std::string::npos) {
+        return std::unexpected(make("bare_id", "'" + full + "' is not a full id: say '<root>:<id>'", {}, {}, full));
+    }
+    const std::string root = full.substr(0, colon);
+    if (find_root(set, root) == nullptr) {
+        return std::unexpected(make("root_not_loaded", "root '" + root + "' is not loaded", root, {}, full));
+    }
+    const SetEntry* entry = nullptr;
+    for (const SetEntry& e : set.entries) {
+        if (e.id == full) {
+            entry = &e;
+            break;
+        }
+    }
+    if (entry == nullptr) {
+        return std::unexpected(make("entry_not_found", "root '" + root + "' has no entry '" + full + "'", root, {}, full));
+    }
+    if (options.expect_hash.has_value()) {
+        const std::string& pin = *options.expect_hash;
+        const bool ok = pin.size() == 7 + 64 && pin.compare(0, 7, "sha256:") == 0 &&
+                        std::all_of(pin.begin() + 7, pin.end(),
+                                    [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+        if (!ok) {
+            return std::unexpected(make("invalid_request", "expect_hash is 'sha256:' and 64 lower-case hex digits", {}, {},
+                                        full, "expect_hash"));
+        }
+    }
+    if (entry->in_store) {
+        std::error_code ec;
+        if (entry->file.empty() || !fs::exists(entry->file, ec)) {
+            return std::unexpected(make("store_file_missing",
+                                        entry->file.empty() ? "no store was given, so '" + entry->store_file + "' cannot be found"
+                                                            : "the store has no '" + entry->store_file + "' at its address",
+                                        root, entry->file.string(), full, "store"));
+        }
+    }
+    LibraryResult<std::string> h = entry_hash(set, *entry);
+    if (!h) {
+        return std::unexpected(h.error());
+    }
+    FindResult result;
+    result.entry = entry;
+    result.hash = *h;
+    if (options.expect_hash.has_value()) {
+        result.hash_matches = *options.expect_hash == result.hash;
+        if (!*result.hash_matches) {
+            result.warnings.push_back(make("hash_mismatch", "the entry's hash is " + result.hash + ", not the pinned " + *options.expect_hash,
+                                           root, {}, full));
+        }
+    }
+    if (options.with_record && entry->kind == "part" && !entry->file.empty()) {
+        LibraryResult<std::string> json = yaml_file_to_canonical_json(entry->file);
+        if (!json) {
+            LibraryRefusal why = json.error();
+            why.id = full;
+            why.root = root;
+            return std::unexpected(std::move(why));
+        }
+        result.record_json = *json;
+    }
+    return result;
+}
+
 LibraryResult<std::string> entry_hash(const LibrarySet& set, const SetEntry& entry) {
     const SetRoot* root = find_root(set, entry.root);
     if (root == nullptr) {

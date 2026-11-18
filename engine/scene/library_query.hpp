@@ -27,6 +27,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "scene/library_set.hpp"
@@ -68,6 +69,25 @@ struct ListPage {
     // Per-entry problems that do not stop the list: "peek_failed" and "io_error", each with the entry's id and path.
     std::vector<LibraryRefusal> warnings{};
 };
+
+struct FindOptions {
+    std::optional<std::string> expect_hash{};  // the caller's pin, "sha256:<64 hex>"
+    bool with_record = false;                  // a part's file as canonical JSON
+};
+
+struct FindResult {
+    const SetEntry* entry = nullptr;      // points into the LibrarySet passed to find_entry()
+    std::string hash{};                   // the entry's current hash
+    std::optional<bool> hash_matches{};   // the pin against `hash`; none when no pin was given
+    std::string record_json{};            // a part file's own mapping as canonical JSON, when asked; else empty
+    std::vector<LibraryRefusal> warnings{};  // "hash_mismatch" when a pin was given and differs
+};
+
+// One entry by full id. Refused: bare_id, root_not_loaded (the id's root is not open), entry_not_found, invalid_request
+// (an expect_hash that is not "sha256:" and 64 lower-case hex), store_file_missing (a store entry whose file is absent;
+// `path` is where it looked), io_error (a file that cannot be read for the hash). A hash that differs from the pin is a
+// warning, not a refusal: the entry still returns.
+[[nodiscard]] LibraryResult<FindResult> find_entry(const LibrarySet& set, std::string_view id, const FindOptions& options);
 
 // The set's entries, filtered and paged. Refused: root_not_loaded (a filter root that is not open) and
 // invalid_request (a kind that is not one of the seven).
