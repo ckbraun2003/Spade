@@ -125,6 +125,13 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return value;
 }
 
+// The default working folder (--out unset): <profile>/Desktop/Projects/Videos/Footage/Spade/<date> (Cameron, O74: all videos live under
+// Projects/Videos). A posted or kept film goes wherever --out names; this is only the default. No profile: relative to the working directory.
+[[nodiscard]] inline std::filesystem::path default_out_dir(std::string_view profile, std::string_view date) {
+    return std::filesystem::path(profile.empty() ? std::string(".") : std::string(profile)) / "Desktop" / "Projects" / "Videos" / "Footage" / "Spade" /
+           std::filesystem::path(std::string(date));
+}
+
 // --elevation DEG: how far above the drone the still's camera looks down from, in place of the drone's own framing (the X500's 20): a close-up of the
 // top plate's boards wants a higher camera. One whole number above 0 and at most 85 (straight overhead has no "up" for the orbit): no sign, no
 // blanks, no exponent, no trailing text. nullopt otherwise.
