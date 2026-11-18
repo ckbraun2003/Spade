@@ -128,6 +128,7 @@
 // ---------------------------------------------------------------------------
 
 #include <cstdint>
+#include <expected>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -185,6 +186,45 @@ struct MeshMassProperties {
 // message: "<name>: 3 open edges, first (4, 9) (9, 12) ...".
 [[nodiscard]] Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input,
                                                                     std::string_view name);
+
+// WHICH refusal make_mesh() gave: one kind per distinct refusal site, in the order make_mesh() reaches
+// them (it stops at the first). refusal_name() spells a kind, snake_case; the spellings are another tool's
+// stable codes (spade_part_import's gate refusal), so they never change.
+enum class MeshRefusal : uint8_t {
+    unit_unspecified,      // the unit was not declared
+    unit_invalid,          // a value that is not a MeshUnit
+    empty,                 // no triangles
+    bad_index_count,       // indices not a multiple of 3
+    too_large,             // more than kMaxMeshTriangles triangles (capacity_exceeded)
+    index_out_of_range,    // an index past the vertex count
+    non_finite,            // an input position that is not finite
+    non_finite_scaled,     // not finite after scaling to fp32 metres
+    unreferenced_vertex,   // a vertex no triangle uses
+    coincident_vertices,   // two vertices at one position (weld first)
+    repeated_index,        // a triangle that repeats an index
+    degenerate_triangle,   // a triangle of (near) zero area
+    duplicate_triangle,    // the same triangle twice, either way round
+    not_closed,            // an open edge
+    not_manifold,          // an edge with three or more triangles
+    inconsistent_winding,  // an edge two triangles traverse the same way
+    not_manifold_vertex,   // a vertex with more than one fan of triangles
+    inside_out,            // the total signed volume is not positive
+    too_many_shells,       // more than kMaxMeshShells shells (capacity_exceeded)
+    self_intersecting,     // a pair of triangles that cross
+    shells_not_nested,     // a shell whose winding number is not 0 or 1 somewhere
+};
+
+[[nodiscard]] const char* refusal_name(MeshRefusal kind);
+
+// make_mesh()'s refusal and its kind. `error` is the bytes make_mesh() returns.
+struct MeshDiagnosis {
+    Error error;
+    MeshRefusal kind;
+};
+
+// make_mesh() that says which refusal it gave. make_mesh() is this with the kind dropped.
+[[nodiscard]] std::expected<std::shared_ptr<const TriangleMesh>, MeshDiagnosis> make_mesh_diagnosed(
+    const MeshInput& input, std::string_view name);
 
 // The most shells a mesh may hold: the nesting check is O(shells^2) queries.
 inline constexpr uint32_t kMaxMeshShells = 4096;
@@ -251,6 +291,8 @@ public:
 private:
     friend Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input,
                                                                  std::string_view name);
+    friend std::expected<std::shared_ptr<const TriangleMesh>, MeshDiagnosis> make_mesh_diagnosed(
+        const MeshInput& input, std::string_view name);
     friend MeshSample mesh_sample(const TriangleMesh& mesh, glm::vec3 p) noexcept;
     friend float mesh_box_distance2(const TriangleMesh& mesh, glm::vec3 p) noexcept;
     TriangleMesh() = default;
