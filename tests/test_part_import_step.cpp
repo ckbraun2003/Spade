@@ -242,6 +242,14 @@ TEST(PartImportStep, SeveralSolidsPickedAreAskedOfTheConverterTogetherAndAnImpor
     EXPECT_EQ(again.result.at("skipped").size(), 1u);
 }
 
+TEST(PartImportStep, TwoRigsNeverShareATokenSoNeverAConvertersWorkFolder) {
+    // run.cpp makes <temp>/spade_part_import_<token> and removes it before and after the convert: a shared token let one process delete
+    // another's model.3mf mid-convert
+    const StepRig a, b;
+    EXPECT_NE(a.env.token, b.env.token);
+    EXPECT_EQ(a.env.token.rfind(std::to_string(test::process_id()) + "_", 0), 0u) << a.env.token;
+}
+
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
     NEED_PYTHON();
     StepRig rig;

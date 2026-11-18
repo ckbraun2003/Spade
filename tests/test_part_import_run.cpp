@@ -95,6 +95,13 @@ void expect_json_lines_discipline(const Out& r) {
 
 // ---- usage ---------------------------------------------------------------------------------------------------------------------
 
+TEST(PartImportRun, TwoRigsNeverShareATokenSoNeverAWorkFolder) {
+    // env.token names the tool's work folder in the temp folder: a literal would be one folder for every process running these tests
+    const Rig a, b;
+    EXPECT_NE(a.env.token, b.env.token);
+    EXPECT_EQ(a.env.token.rfind(std::to_string(test::process_id()) + "_", 0), 0u) << a.env.token;
+}
+
 TEST(PartImportRun, ACommandLineThatIsNoModeIsAUsageProblemWithOnlyTheResultLineOnStandardOut) {
     Rig rig;
     const std::vector<std::vector<std::string>> bad = {A({}),
