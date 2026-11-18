@@ -88,7 +88,8 @@ TEST(X500Model, TheFilesAreTheBuildersOutput) {
         ASSERT_FALSE(ec) << ec.message();
         std::ofstream(model, std::ios::binary | std::ios::trunc) << texts->model;
         std::ofstream(prop, std::ios::binary | std::ios::trunc) << texts->prop;
-        GTEST_SKIP() << "wrote " << model.string() << " and " << prop.string();
+        std::ofstream(x5::data_dir() / x5::kNotesFile, std::ios::binary | std::ios::trunc) << x5::notes_text();
+        GTEST_SKIP() << "wrote " << model.string() << ", " << prop.string() << " and the notes";
     }
     ASSERT_TRUE(fs::exists(model)) << model.string() << " is missing: regenerate with SPADE_X500_WRITE=1";
     ASSERT_TRUE(fs::exists(prop)) << prop.string() << " is missing: regenerate with SPADE_X500_WRITE=1";
@@ -99,6 +100,8 @@ TEST(X500Model, TheFilesAreTheBuildersOutput) {
     };
     EXPECT_EQ(lf(read_all(model)), texts->model) << "x500.model.yaml is stale: regenerate with SPADE_X500_WRITE=1";
     EXPECT_EQ(lf(read_all(prop)), texts->prop) << "the prop part file is stale: regenerate with SPADE_X500_WRITE=1";
+    EXPECT_EQ(lf(read_all(x5::data_dir() / x5::kNotesFile)), x5::notes_text())
+        << "x500.notes.yaml is stale or missing: regenerate with SPADE_X500_WRITE=1";
 }
 
 TEST(X500Model, CarriesKatsNumbers) {

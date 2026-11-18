@@ -51,10 +51,44 @@ inline constexpr double kHubAboveCentre = 0.06;                                 
 inline constexpr double kPropMass = 0.017;                                             // kg, assumed (a 13-inch moulded prop)
 
 [[nodiscard]] inline std::filesystem::path data_dir() {
-    return std::filesystem::path(SPADE_REPO_DIR) / "tools" / "flow_movie" / "data" / "x500";
+    return std::filesystem::path(SPADE_ASSETS_DIR).parent_path() / "tools" / "flow_movie" / "data" / "x500";  // assets/ is in the repo root
 }
 inline constexpr const char* kModelFile = "x500.model.yaml";
 inline constexpr const char* kPropFile = "parts/x500_13in_estimated.prop.yaml";
+inline constexpr const char* kNotesFile = "x500.notes.yaml";
+
+// Where each number of x500.model.yaml came from (the lead, 2026-11-17: name the PX4 and KAT sources in the model's sources). Plain text
+// the generator writes beside the model; tests/test_x500_case.cpp compares it. The grades are the library's words.
+[[nodiscard]] inline std::string notes_text() {
+    return std::string(R"NOTES(# The website clips' flow model of the PX4 X500: where each number came from.
+# Written by tests/x500_model.hpp notes_text() and compared by tests/test_x500_case.cpp (SPADE_X500_WRITE=1 regenerates it). Grades are
+# the library's: measured, published, retailer, derived, fitted, assumed. Anything not carried is listed at the end.
+model: "x500.model.yaml"
+prop: "parts/x500_13in_estimated.prop.yaml"
+built_by: "tests/x500_model.hpp airframe(): vehicles::basic_quad_airframe() at KAT's layout, mass and inertia"
+kat:
+  file: "content/airframes/x500.airframe.json"
+  commit: ")NOTES") + kKatCommit + R"NOTES("
+  note: "KAT's own provenance for it: PX4-gazebo-models commit e5997f455e33ec071c7c677fc59a65781de496a4 (x500_base/model.sdf), the Holybro X500 V2 pages (opened 2026-11-10); confidence low"
+licence: "the PX4 x500 model is BSD-3-Clause; KAT's records hold the text"
+inputs:
+  mass: {value: 2.0643, unit: kg, grade: assumed, note: "KAT's mass: the Gazebo model's own sum, a 2.0 kg base plus four 0.016077 kg rotors; no take-off weight is published for the Holybro X500 V2"}
+  inertia: {value: [0.0216667, 0.0216667, 0.04], unit: kg m^2, grade: assumed, note: "KAT's inertia (x roll, y pitch, z yaw about the centre of mass, thrust along +z), met by basic_quad's remainder part"}
+  rotors: {value: "(+-0.174, +-0.174) m", grade: assumed, note: "KAT's motor.arm_x and arm_y; PX4's X layout: front-right and rear-left counter-clockwise, front-left and rear-right clockwise"}
+  hub_height: {value: "0.06 m above the centre of mass", grade: assumed, note: "KAT's rotor_visuals hub_m; the model's hubs come out 0.0614 m above it (the fit's centre of mass)"}
+  rotor_radius: {value: 0.173, unit: m, grade: assumed, note: "the 13-inch propeller, 0.346 m tip to tip in PX4's STL; it is the propeller part's diameter / 2"}
+  body: {value: "box 0.15 x 0.065 x 0.15 m, 0.60 kg", grade: assumed, note: "the electronics stack of x500-body.gltf's extents; a proxy solid for the flow"}
+  arms: {value: "tubes of 8 mm radius, 0.10 kg/m", grade: assumed, note: "Holybro's 16 mm carbon arm tubes; proxy solids"}
+  motor: {value: "the library's iris_920kv", grade: assumed, note: "the X500's 2216 KV920, a stand-in of the same class"}
+  esc_battery: {value: "the library's iris_4x20a and iris_3s_5100", grade: assumed, note: "stand-ins; the chain only fixes the hover throttle, and the rotors turn at the speed the propeller part gives for a quarter of the weight"}
+  propeller: {value: "parts/x500_13in_estimated.prop.yaml", grade: assumed, note: "ESTIMATED: the library's UIUC APC 10x5 geometry and non-dimensional tables scaled to 0.346 m; PX4 publishes no blade data and its Gazebo thrust constants (k_T 1.23e-5 N s^2/rad^2, 642 rad/s to hover) are 3 to 4 times weaker than a real 13-inch propeller's"}
+checks:
+  balance: "the grid-free blade-element-momentum solve (tests/bemt_reference.hpp) for a quarter of the weight, 5.0610 N: 344.9 rad/s (3294 rpm); the chain's own static-thrust speed 343.7 rad/s (3282 rpm), 0.4% apart"
+  line_thrust: "the actuator lines at 343.7 rad/s on the 3 mm grid: 20.87 N in all at 0.1 s, 20.07 N at 0.2 s, against the weight 20.244 N (0.9% under at 0.2 s)"
+  box: "267 x 217 x 267 at 3 mm, the drone lowered 24 rows (tests/d1_case.hpp d1_x500_hold()): the rotors' centres 0.2625 m (1.5 R) under the top face, 0.39 m of wake below"
+not_carried: "landing legs, the camera and GPS mounts, the wiring, the propellers' hubs and the motors' bells as solids; the mass is the Gazebo model's, to be replaced by the parts' datasheet masses (L88l)"
+)NOTES";
+}
 
 [[nodiscard]] inline scene::SourceRef estimated(std::string note) {
     return scene::SourceRef{{}, scene::Grade::assumed, "ESTIMATED: " + std::move(note)};
