@@ -101,6 +101,8 @@ struct Row {
     uint64_t hash;
 };
 
+// L90 (2026-11-18): airflow_advection and airflow_dye_advect (the velocity sampler reads an ambient ghost past an outlet face) and
+// airflow_velocity_bc (an outlet's faces are left to the projection) changed bytes on purpose; their nine rows are the new compile's.
 const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 32, 0x4e277f29c0b7972aull},
     {&spade::compute::gen::kSpvVariants_airflow_actuator_gather, "airflow_actuator_gather", 64, 0xf87449936054de8aull},
@@ -114,9 +116,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 64, 0x9c9d26bf1009a4eeull},
     {&spade::compute::gen::kSpvVariants_airflow_line_tipcorr, "airflow_line_tipcorr", 128, 0x1341a512de277c2eull},
     // P10: the passive dye's three kernels, new (recorded at the build that first compiled them).
-    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 32, 0x86541c0b815bd2f5ull},
-    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 64, 0xc700bd4948fab8d5ull},
-    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 128, 0x9ca7f7e87c93f415ull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 32, 0x0e12bc9b0e388f8aull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 64, 0x2e85bd84a1a9496aull},
+    {&spade::compute::gen::kSpvVariants_airflow_dye_advect, "airflow_dye_advect", 128, 0xb53c69a655fe942aull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 32, 0xf1137aad6328daf9ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 64, 0x46dfa6765d69d259ull},
     {&spade::compute::gen::kSpvVariants_airflow_dye_source, "airflow_dye_source", 128, 0x202ab6914ec57a19ull},
@@ -141,9 +143,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_add_one, "airflow_add_one", 32, 0x6cdff9ab96d5e17eull},
     {&spade::compute::gen::kSpvVariants_airflow_add_one, "airflow_add_one", 64, 0x3355e3a7176ab35eull},
     {&spade::compute::gen::kSpvVariants_airflow_add_one, "airflow_add_one", 128, 0xf262343195c0a71eull},
-    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 32, 0xbc7598c557052777ull},
-    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 64, 0x0c917296f6d3d597ull},
-    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 128, 0x582bf6d9bcb66ad7ull},
+    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 32, 0xbd952d77e96e847eull},
+    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 64, 0x54a8430c266500deull},
+    {&spade::compute::gen::kSpvVariants_airflow_advection, "airflow_advection", 128, 0x12c7f8c23175681eull},
     {&spade::compute::gen::kSpvVariants_airflow_copy, "airflow_copy", 32, 0xafbbcbf43729c891ull},
     {&spade::compute::gen::kSpvVariants_airflow_copy, "airflow_copy", 64, 0xccb64e62782a14b1ull},
     {&spade::compute::gen::kSpvVariants_airflow_copy, "airflow_copy", 128, 0x26ed6c0f4f2ed3f1ull},
@@ -213,9 +215,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_airflow_tile_sum_probe, "airflow_tile_sum_probe", 32, 0x2aff03562872d667ull},
     {&spade::compute::gen::kSpvVariants_airflow_tile_sum_probe, "airflow_tile_sum_probe", 64, 0xaeb76ba4cc08ab07ull},
     {&spade::compute::gen::kSpvVariants_airflow_tile_sum_probe, "airflow_tile_sum_probe", 128, 0x16540778f89ca247ull},
-    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 32, 0xac0879646e4dda97ull},
-    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 64, 0xf297575041486f77ull},
-    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 128, 0x6f5bea9b6a12cbb7ull},
+    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 32, 0x2ac488dd74cd0f20ull},
+    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 64, 0x80dfdea5ee554f00ull},
+    {&spade::compute::gen::kSpvVariants_airflow_velocity_bc, "airflow_velocity_bc", 128, 0x280201bc292a0e40ull},
     {&spade::compute::gen::kSpvVariants_airflow_viscous, "airflow_viscous", 32, 0x05ecc24794ebb3edull},
     {&spade::compute::gen::kSpvVariants_airflow_viscous, "airflow_viscous", 64, 0xd3d020721b22a8cdull},
     {&spade::compute::gen::kSpvVariants_airflow_viscous, "airflow_viscous", 128, 0xf8e92b6d34ea508dull},
