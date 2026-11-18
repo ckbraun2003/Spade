@@ -872,20 +872,20 @@ TEST(FlowMovieWeb, AWebRunsLookKeepsEveryOptionTheCommandLineSetAndAddsOnlyTheFa
     EXPECT_EQ(web::web_look(set, drone, true, nullptr), faded);
 
     // the nasa look with a thinning: the held body's centre (the drone's own height), the radius and the floor; the rest as set
-    // thin_r is a multiple of the drone's own size (Framing::subject_m): the X500 is twice the camera quadcopter's size, so the same
-    // 0.65 thins a radius twice as large (the lead, 2026-11-18)
+    // thin_r is a multiple of the drone's own reach (Drone::reach_m, the farthest point of its rotors from the axis): the X500 reaches
+    // 0.37 m and the camera quadcopter 0.30, so the same 0.74 thins a larger ball (the lead, 2026-11-18)
     flow_movie::QLook q;
-    q.thin_r = 0.65f;
+    q.thin_r = 0.74f;
     q.thin_floor = 0.05f;
     flow_movie::Look thinned = set;
     thinned.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
-    thinned.thin.radius = 0.65f * drone.framing.subject_m;
+    thinned.thin.radius = 0.74f * drone.reach_m;
     thinned.thin.floor = 0.05f;
     EXPECT_EQ(web::web_look(set, drone, false, &q), thinned);
     EXPECT_NEAR(web::web_look(set, drone, false, &q).thin.centre.y, 0.014f, 1e-7f) << "the X500's body is 0.014 m up in its box";
     const web::Drone& small = *web::find_drone("phantom3_class");
-    EXPECT_NEAR(web::web_look(set, small, false, &q).thin.radius, 0.65f * small.framing.subject_m, 1e-7f);
-    EXPECT_GT(web::web_look(set, drone, false, &q).thin.radius, 1.5f * web::web_look(set, small, false, &q).thin.radius)
+    EXPECT_NEAR(web::web_look(set, small, false, &q).thin.radius, 0.74f * small.reach_m, 1e-7f);
+    EXPECT_GT(web::web_look(set, drone, false, &q).thin.radius, 1.2f * web::web_look(set, small, false, &q).thin.radius)
         << "the bigger drone's thinned ball is bigger";
 
     // a nasa look without a thinning leaves the thinning off
@@ -922,3 +922,13 @@ TEST(FlowMovieWeb, TheOpenSourceQuadcoptersShotIsTightAndLooksDownAboutTwentyDeg
     EXPECT_GT(x.wake_fade_to_below_m, x.wake_fade_from_below_m) << "the wake fades going down, above the box's floor";
     EXPECT_LT(x.wake_fade_to_below_m, 0.31f) << "the X500's box floor is 0.3135 m below the origin";
 }
+
+// A drone's REACH (the thinning radius is a multiple of it): the farthest point of its rotors from the vertical axis through its centre,
+// a rotor's hub distance plus its radius; the model's own proxy radius for the camera quadcopter (0.2963 m), the X500's 10 inch rotors
+// (R 0.127 m) at 0.174 m on each axis: 0.2461 + 0.127.
+TEST(FlowMovieWeb, ADronesReachIsItsFarthestRotorTipFromTheAxis) {
+    EXPECT_NEAR(web::find_drone("phantom3_class")->reach_m, 0.2963f, 2e-3f);
+    EXPECT_NEAR(web::find_drone("x500")->reach_m, 0.373f, 2e-3f);
+    EXPECT_GT(web::find_drone("x500")->reach_m, web::find_drone("phantom3_class")->reach_m);
+}
+

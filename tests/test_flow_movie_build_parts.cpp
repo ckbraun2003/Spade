@@ -515,3 +515,58 @@ TEST(FlowMovieBuildParts, ThePropBlurOptionSetsAlphaSamplesAndShutterAndRefusesT
         EXPECT_NE(r.error().context.find("prop blur"), std::string::npos) << bad << ": " << r.error().context;
     }
 }
+
+// CORE'S RECORD KEYS AND hide_materials (the lead, 2026-11-18): `mass_grade`, `mass_source` and `pose_grade` are records for Physics and the
+// notes: accepted and ignored. `hide_materials: [..]` on an entry names glTF materials (by their last word) whose primitives are NOT drawn:
+// the X500 frame mesh carries a built-in Pixhawk-4-class `autopilot` block where Core puts the real 6C, its rubber dampers kept. Unknown
+// keys are still refused.
+TEST(FlowMovieBuildParts, CoresRecordKeysAreAcceptedAndHideMaterialsIsRead) {
+    const std::string pose = "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n";
+    const auto parts = flow_movie::parse_build_parts(table(
+        "  - name: frame\n    kind: frame\n    mass_kg: 1.2\n    mass_grade: assumed\n    mass_source: a catalogue\n    pose_grade: measured\n"
+        "    hide_materials: [autopilot, antenna_holder]\n" + pose +
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: body.gltf}\n"));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    EXPECT_EQ((*parts)[0].hide_materials, (std::vector<std::string>{"autopilot", "antenna_holder"}));
+    EXPECT_EQ((*parts)[0].name, "frame");
+    for (const std::string& text : {
+             table("  - name: p\n    kind: battery\n    mass_kg: 0.1\n    hide_materials: autopilot\n" + pose + "    box: [1, 1, 1]\n"),
+             table("  - name: p\n    kind: battery\n    mass_kg: 0.1\n    hide_materials: [1]\n" + pose + "    box: [1, 1, 1]\n"),
+             table("  - name: p\n    kind: battery\n    mass_kg: 0.1\n    pose_grades: x\n" + pose + "    box: [1, 1, 1]\n")}) {
+        const auto r = flow_movie::parse_build_parts(text);
+        ASSERT_FALSE(r.has_value()) << text;
+        EXPECT_NE(r.error().context.find("build parts"), std::string::npos) << r.error().context;
+    }
+}
+
+TEST(FlowMovieBuildParts, HiddenMaterialsLeaveTheirPrimitivesOutByTheirLastWordAndNothingElseMoves) {
+    spade::render::MeshData m;
+    for (int sub = 0; sub < 3; ++sub) {
+        const float x = static_cast<float>(sub);
+        m.positions.insert(m.positions.end(), {{x, 0.0f, 0.0f}, {x + 0.5f, 0.0f, 0.0f}, {x, 0.5f, 0.0f}});
+        m.normals.insert(m.normals.end(), 3u, glm::vec3(0.0f, 0.0f, 1.0f));
+        const auto base = static_cast<uint32_t>(3 * sub);
+        m.indices.insert(m.indices.end(), {base, base + 1u, base + 2u});
+        m.submesh_first_index.push_back(static_cast<uint32_t>(3 * sub));
+        m.submesh_index_count.push_back(3u);
+        m.submesh_material.push_back(static_cast<uint32_t>(sub));
+    }
+    const std::vector<std::string> names{"a/arms", "a/autopilot", "a/autopilot_rubber"};
+    const auto done = flow_movie::hide_materials(m, names, {"autopilot"});
+    ASSERT_TRUE(done.has_value()) << done.error().context;
+    ASSERT_EQ(m.submesh_first_index.size(), 2u) << "the autopilot is gone, not the rubber (the last word must match whole)";
+    EXPECT_EQ(m.submesh_material, (std::vector<uint32_t>{0u, 2u})) << "the others keep their palette entries";
+    EXPECT_EQ(m.submesh_first_index, (std::vector<uint32_t>{0u, 3u})) << "contiguous again";
+    EXPECT_EQ(m.submesh_index_count, (std::vector<uint32_t>{3u, 3u}));
+    EXPECT_EQ(m.indices.size(), 6u);
+    for (const uint32_t i : m.indices) EXPECT_LT(i, m.positions.size());
+    for (const uint32_t i : m.indices) EXPECT_NE(m.positions[i].x, 1.0f) << "no vertex of the hidden primitive is drawn (it sat at x 1)";
+
+    spade::render::MeshData before = m;
+    const auto missing = flow_movie::hide_materials(m, names, {"toaster"});
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_NE(missing.error().context.find("toaster"), std::string::npos) << missing.error().context;
+    EXPECT_EQ(m.indices, before.indices) << "left as it was";
+    EXPECT_TRUE(flow_movie::hide_materials(m, names, {}).has_value()) << "nothing to hide: nothing to do";
+}
+
