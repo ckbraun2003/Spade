@@ -92,7 +92,7 @@ struct SetEntry {
     std::string local_id{};  // "part.motor.fpv_2306", "drone.x500", "world.gate_corridor"
     // model, object, part, drone, world, mesh, or opaque (an entry with `type`).
     std::string kind{};
-    std::string part_kind{};  // motor, prop, esc, battery for a part; else empty
+    std::string part_kind{};  // motor, prop, esc, battery, frame, payload for a part; else empty
     std::string type{};       // an opaque entry's declared type; else empty
     std::string name{};
     std::string category{};

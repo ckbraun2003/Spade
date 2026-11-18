@@ -405,4 +405,33 @@ TEST(LibrarySet, TheRepositorysDefaultLibraryOpensWithDerivedIdsForEveryEntry) {
     EXPECT_EQ(std::adjacent_find(ids.begin(), ids.end()), ids.end());
 }
 
+// L88l: a frame and a payload (avionics, camera, computer, radio, mast) are part kinds beside motor, prop, esc and battery.
+TEST(LibrarySet, AFrameAndAPayloadArePartKinds) {
+    const std::string index =
+        "  - id: part.frame.x500_frame\n    name: x500 frame\n    category: Parts\n    file: parts/x500_frame.frame.yaml\n"
+        "  - id: part.payload.pixhawk_6c\n    name: Pixhawk 6C\n    category: Parts\n    file: parts/pixhawk_6c.payload.yaml\n";
+    const fs::path dir = v3_root(fresh("l88l_kinds"), "l88l", "", "", index);
+    put(dir / "parts/x500_frame.frame.yaml", "x\n");
+    put(dir / "parts/pixhawk_6c.payload.yaml", "x\n");
+    const auto set = open({{"l88l", dir, false}});
+    ASSERT_TRUE(set.has_value()) << set.error().message;
+    const sc::SetEntry* frame = entry(*set, "l88l:part.frame.x500_frame");
+    ASSERT_NE(frame, nullptr);
+    EXPECT_EQ(frame->kind, "part");
+    EXPECT_EQ(frame->part_kind, "frame");
+    const sc::SetEntry* payload = entry(*set, "l88l:part.payload.pixhawk_6c");
+    ASSERT_NE(payload, nullptr);
+    EXPECT_EQ(payload->part_kind, "payload");
+
+    // the file's suffix is the kind's: a payload in a .frame.yaml is refused by its file
+    const fs::path bad = v3_root(fresh("l88l_kinds_bad"), "l88lbad", "", "",
+                                 "  - id: part.payload.x\n    name: x\n    category: Parts\n    file: parts/x.frame.yaml\n");
+    put(bad / "parts/x.frame.yaml", "x\n");
+    const auto refused = open({{"l88lbad", bad, false}});
+    ASSERT_FALSE(refused.has_value());
+    const sc::LibraryRefusal* i = issue(refused.error(), "bad_index");
+    ASSERT_NE(i, nullptr) << refused.error().message;
+    EXPECT_EQ(i->field, "entries[0].file");
+}
+
 }  // namespace
