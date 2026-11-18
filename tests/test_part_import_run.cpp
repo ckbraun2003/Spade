@@ -206,6 +206,38 @@ TEST(PartImportRun, AFileThatIsMissingOrOfAnUnknownTypeOrNotSelfContainedIsNamed
     EXPECT_FALSE(fs::exists(rig.store()));
 }
 
+TEST(PartImportRun, AnUnsupportedExtensionNamesItsFormatWhereKnownAndSaysWhatToConvertTo) {
+    Rig rig;
+    const std::pair<const char*, const char*> known[] = {
+        {"frame.dae", "COLLADA"}, {"FRAME.DAE", "COLLADA"}, {"a.fbx", "FBX"},    {"a.blend", "Blender"}, {"a.ply", "PLY"},
+        {"a.3ds", "3ds"},         {"a.iges", "IGES"},       {"a.igs", "IGES"},   {"a.skp", "SketchUp"},  {"a.usdz", "USD"},
+        {"a.x3d", "X3D"},         {"a.dxf", "DXF"},         {"a.amf", "AMF"},    {"a.off", "OFF"},
+    };
+    for (const auto& [file, name] : known) {
+        const Out r = rig.run(A({"--inspect", (rig.tmp.path() / "in" / file).string()}));
+        EXPECT_EQ(r.exit, 3) << file;
+        EXPECT_EQ(r.code(), "format_unknown") << file;
+        const std::string message = r.result.value("message", std::string());
+        EXPECT_NE(message.find(name), std::string::npos) << file << ": " << message;
+        EXPECT_NE(message.find("convert"), std::string::npos) << file << ": " << message;
+        for (const char* target : {"glb", "OBJ", "STL", "3MF", "STEP"}) {
+            EXPECT_NE(message.find(target), std::string::npos) << file << " should say " << target << ": " << message;
+        }
+    }
+    // an extension nobody here knows still says what is read, and to convert
+    const Out unknown = rig.run(A({"--inspect", (rig.tmp.path() / "in" / "a.xyz").string()}));
+    EXPECT_EQ(unknown.exit, 3);
+    EXPECT_EQ(unknown.code(), "format_unknown");
+    EXPECT_NE(unknown.result.value("message", std::string()).find("convert"), std::string::npos) << unknown.out;
+    EXPECT_NE(unknown.result.value("message", std::string()).find(".xyz"), std::string::npos) << unknown.out;
+    // no extension at all
+    const Out bare = rig.run(A({"--inspect", (rig.tmp.path() / "in" / "noextension").string()}));
+    EXPECT_EQ(bare.code(), "format_unknown");
+    // a supported one is not touched by this
+    const Out ok = rig.run(A({"--inspect", rig.put("cube.stl", cube_stl(1.0f)).string(), "--unit", "m"}));
+    EXPECT_EQ(ok.exit, 0) << ok.out;
+}
+
 TEST(PartImportRun, AStepFileWithNoConverterIsStepUnavailable) {
     Rig rig;
     const Out r = rig.run(A({"--inspect", rig.put("part.step", "ISO-10303-21;").string()}));
