@@ -686,7 +686,7 @@ TEST(FlowMovieWeb, APropPartFileIsTheLinesBladeAndARefusedFileIsNamed) {
     const auto lines = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_apce_10x5.prop.yaml", 8u);
     ASSERT_TRUE(lines.has_value()) << lines.error().context;
     EXPECT_EQ(lines->blade.blades, 2u);
-    EXPECT_NEAR(lines->blade.radius, 0.127f, 0.002f) << "a 10 inch propeller";
+    EXPECT_NEAR(lines->blade.radius, 0.1194f, 0.002f) << "the file's geometry is UIUC's at 9.4 in (the 10x5 is the nominal size), so R = 0.1194 m";
     EXPECT_EQ(lines->n_sub, 8u);
     EXPECT_FALSE(lines->blade.stations.empty());
     const auto other = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_mit_5x4.prop.yaml", 4u);
