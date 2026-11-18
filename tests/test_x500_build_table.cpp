@@ -1,13 +1,17 @@
 // ---------------------------------------------------------------------------
-// test_x500_build_table.cpp -- L88l: the X500 build's pose table (tools/flow_movie/data/x500_build/parts.yaml) against the engine's
-// rotor convention and Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml).
+// test_x500_build_table.cpp -- L88l, L88s: the X500 build's pose table (tools/flow_movie/data/x500_build/parts.yaml), on the Holybro kit's own CAD,
+// against the engine's rotor convention and Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml).
 //
 //   X500BuildTable.ARotorTakesTheFileWhoseBladesLiftTurningTheEnginesWay   spin_dir +1 is counter-clockwise seen from above
 //                                                (vehicles/rotor.hpp, consumers.md L7a): a +1 rotor takes the *-ccw file, a -1 rotor
 //                                                the *-cw file; a front file sits at +X, a rear file at -X
-//   X500BuildTable.TheRotorsAreTheModelsRotors   the four rotors are the model's, in its order: the hub less the model's
-//                                                com_offset (the model is in the body frame; to 1e-5) and the spin_dir
-//   X500BuildTable.TheFrameHidesItsBuiltInAutopilotThroughOneTopLevelKey   Rendering reads `hide_materials` at the top level
+//   X500BuildTable.TheHubsAreOnTheKitsMotorAxes   the four rotors keep the model's order and spin_dir and the model's signs; each hub is
+//                                                +-0.1774 m on x and on z (the kit's 501.8 mm motor-to-motor diagonal), 0.063 m up
+//   X500BuildTable.TheFrameIsTheKitsOwnCadAndTheMotorsAreTheKitsMotors   61 kit objects in the frame (no drawing-only glTF), the 4 kit
+//                                                motors one entry each, every kit object posed by the one turn of the file to the design frame
+//   X500BuildTable.EachRotorHidesItsOwnBell   a rotor entry's own `hide_materials` names its glTF's bell (59 mm across; the kit's motor is
+//                                                drawn instead); the top-level key (the frame's) is gone
+//   X500BuildTable.EveryEntryCarriesItsMassAndItsGrades   mass_kg, mass_grade, mass_source and pose_grade on every entry; the sum is 1.6326 kg
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -67,32 +71,99 @@ TEST(X500BuildTable, ARotorTakesTheFileWhoseBladesLiftTurningTheEnginesWay) {
     EXPECT_EQ(seen, (std::set<int>{0, 1, 2, 3}));
 }
 
-TEST(X500BuildTable, TheRotorsAreTheModelsRotors) {
+TEST(X500BuildTable, TheHubsAreOnTheKitsMotorAxes) {
     const std::vector<Rotor> rotors = table_rotors();
-    const YAML::Node whole = YAML::LoadFile(kModel)["model"];
-    const YAML::Node model = whole["rotors"];
-    // The model's rotor local_pos is in its body frame, whose origin is the centre of mass; the table's hubs are in the design frame, so
-    // local_pos = hub - com_offset (design_to_principal is the identity).
-    const YAML::Node com = whole["com_offset"];
-    ASSERT_EQ(com.size(), 3u);
-    ASSERT_EQ(whole["design_to_principal"][0].as<double>(), 1.0);
+    const YAML::Node model = YAML::LoadFile(kModel)["model"]["rotors"];
     ASSERT_EQ(model.size(), 4u);
     ASSERT_EQ(rotors.size(), 4u);
     for (const Rotor& r : rotors) {
         const YAML::Node m = model[static_cast<std::size_t>(r.index)];
         const YAML::Node pos = m["local_pos"];
-        EXPECT_NEAR(r.x - com[0].as<double>(), pos[0].as<double>(), 1e-5) << "rotor " << r.index;
-        EXPECT_NEAR(r.y - com[1].as<double>(), pos[1].as<double>(), 1e-5) << "rotor " << r.index;
-        EXPECT_NEAR(r.z - com[2].as<double>(), pos[2].as<double>(), 1e-5) << "rotor " << r.index;
+        // the model's order, spin and sides (its magnitudes follow the kit once Physics moves its rotors)
         EXPECT_EQ(r.spin, m["spin_dir"].as<int>()) << "rotor " << r.index;
+        EXPECT_EQ(r.x > 0.0, pos[0].as<double>() > 0.0) << "rotor " << r.index;
+        EXPECT_EQ(r.z > 0.0, pos[2].as<double>() > 0.0) << "rotor " << r.index;
+        // the kit's motor axes: +-177.4 mm on each axis, 501.8 mm motor to motor
+        EXPECT_NEAR(std::fabs(r.x), 0.1774, 1e-6) << "rotor " << r.index;
+        EXPECT_NEAR(std::fabs(r.z), 0.1774, 1e-6) << "rotor " << r.index;
+        // the can top (0.052) plus 0.011 m: the rotor glTF's origin stands 11 mm over its own bell's top
+        EXPECT_NEAR(r.y, 0.063, 1e-6) << "rotor " << r.index;
     }
+    EXPECT_NEAR(std::hypot(2 * 0.1774, 2 * 0.1774), 0.5018, 1e-4);
 }
 
-TEST(X500BuildTable, TheFrameHidesItsBuiltInAutopilotThroughOneTopLevelKey) {
+TEST(X500BuildTable, TheFrameIsTheKitsOwnCadAndTheMotorsAreTheKitsMotors) {
     const YAML::Node doc = YAML::LoadFile(kTable);
-    ASSERT_TRUE(doc["hide_materials"].IsSequence());
-    ASSERT_EQ(doc["hide_materials"].size(), 1u);
-    EXPECT_EQ(doc["hide_materials"][0].as<std::string>(), "drone/x500-body/autopilot");
+    int frames = 0;
+    int motors = 0;
+    std::set<std::string> motor_files;
+    for (const YAML::Node& part : doc["parts"]) {
+        const std::string kind = part["kind"].as<std::string>();
+        const YAML::Node listed = part["objects"];
+        if (listed) {
+            for (const YAML::Node& object : listed) {
+                const std::string file = object["store_ref"]["file"].as<std::string>();
+                EXPECT_EQ(file.find("x500-body"), std::string::npos) << "the drawing-only PX4 mesh is retired: " << file;
+                EXPECT_EQ(object["store_ref"]["sha256"].as<std::string>().size(), 64u) << file;
+            }
+        }
+        if (kind != "frame" && kind != "motor") continue;
+        // every kit object is posed by the one turn of the file (forward at its -X) to the design frame (forward at +X)
+        const YAML::Node pose = part["pose"];
+        for (int i = 0; i < 3; ++i) EXPECT_EQ(pose["position"][i].as<double>(), 0.0) << part["name"].as<std::string>();
+        const double q[4] = {0.0, 0.0, 1.0, 0.0};
+        for (int i = 0; i < 4; ++i) EXPECT_EQ(pose["orientation"][i].as<double>(), q[i]) << part["name"].as<std::string>();
+        if (kind == "frame") {
+            ++frames;
+            EXPECT_EQ(part["objects"].size(), 61u) << "the kit's plates, arm tubes, mounts, clamps, base plates, landing gear, GPS stand and tray";
+            for (const YAML::Node& object : part["objects"]) {
+                EXPECT_TRUE(object["store_ref"]["file"].as<std::string>().ends_with(".spmesh"));
+            }
+        } else {
+            ++motors;
+            ASSERT_EQ(part["objects"].size(), 1u);
+            motor_files.insert(part["objects"][0]["store_ref"]["file"].as<std::string>());
+        }
+    }
+    EXPECT_EQ(frames, 1);
+    EXPECT_EQ(motors, 4);
+    EXPECT_EQ(motor_files.size(), 4u) << "four motors, four kit objects";
+    for (const std::string& file : motor_files) EXPECT_EQ(file.rfind("DJ-2216-KV880_1_", 0), 0u) << file;
+}
+
+TEST(X500BuildTable, EachRotorHidesItsOwnBell) {
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    // Rendering applies a top-level hide_materials to the frame only; a rotor entry's own list hides that rotor's bell (the glTF's 59 mm bell,
+    // where the kit's 28.7 mm motor is drawn).
+    EXPECT_FALSE(doc["hide_materials"]) << "the frame hides nothing: the PX4 mesh and its autopilot block are gone";
+    int seen = 0;
+    for (const YAML::Node& part : doc["parts"]) {
+        if (part["kind"].as<std::string>() != "rotor") continue;
+        const std::string file = part["objects"][0]["store_ref"]["file"].as<std::string>();
+        const std::string want = "drone/" + file.substr(0, file.size() - std::string(".gltf").size()) + "/bell";
+        const YAML::Node hide = part["hide_materials"];
+        ASSERT_TRUE(hide.IsSequence()) << file;
+        ASSERT_EQ(hide.size(), 1u) << file;
+        EXPECT_EQ(hide[0].as<std::string>(), want);
+        ++seen;
+    }
+    EXPECT_EQ(seen, 4);
+}
+
+TEST(X500BuildTable, EveryEntryCarriesItsMassAndItsGrades) {
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    const std::set<std::string> mass_grades = {"measured", "published", "retailer", "derived", "assumed"};
+    const std::set<std::string> pose_grades = {"measured", "derived", "assumed"};
+    double sum = 0.0;
+    for (const YAML::Node& part : doc["parts"]) {
+        const std::string name = part["name"].as<std::string>();
+        EXPECT_GT(part["mass_kg"].as<double>(), 0.0) << name;
+        EXPECT_EQ(mass_grades.count(part["mass_grade"].as<std::string>()), 1u) << name;
+        EXPECT_FALSE(part["mass_source"].as<std::string>().empty()) << name;
+        EXPECT_EQ(pose_grades.count(part["pose_grade"].as<std::string>()), 1u) << name;
+        sum += part["mass_kg"].as<double>();
+    }
+    EXPECT_NEAR(sum, 1.6326, 1e-4);
 }
 
 }  // namespace
