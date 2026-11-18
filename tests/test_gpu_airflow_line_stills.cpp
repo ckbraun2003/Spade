@@ -180,7 +180,7 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                                : 8u;
 
     // SPADE_LS_GRID=near: the 2 mm cropped near field (tests/d1_case.hpp's kD1NearGrid); else the 4 mm deep box.
-    // SPADE_LS_DRONE=x500 (L86k): the X500 (tools/flow_movie/data/x500) with its estimated 13-inch prop on kD1X500Grid, 3 mm.
+    // SPADE_LS_DRONE=x500 (L86k): the X500 (tools/flow_movie/data/x500) with the kit's 10-inch prop on kD1X500Grid, 2.5 mm.
     const bool x500 = env_cstr("SPADE_LS_DRONE") != nullptr && std::string(env_cstr("SPADE_LS_DRONE")) == "x500";
     af::GridShape grid = env_cstr("SPADE_LS_GRID") != nullptr ? spade::testing::kD1NearGrid : spade::testing::kD1DeepGrid;
     if (x500) grid = spade::testing::kD1X500Grid;

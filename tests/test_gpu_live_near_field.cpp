@@ -71,7 +71,7 @@ TEST(AirflowNearField, TheTwoMillimetreGridIsWithinTheCapWithItsSolids) {
 TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
     if (env_cstr("SPADE_NEAR_FIELD") == nullptr) GTEST_SKIP() << "opt-in: SPADE_NEAR_FIELD=1 (GPU, minutes)";
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    // SPADE_NEAR_DRONE=x500 (L86k): the X500 on its 3 mm grid with its estimated 13-inch prop; else the phantom on the 2 mm near field.
+    // SPADE_NEAR_DRONE=x500 (L86k): the X500 on its 2.5 mm grid with the kit's 10-inch prop; else the phantom on the 2 mm near field.
     const bool x500 = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "x500";
     const af::GridShape grid = x500 ? spade::testing::kD1X500Grid : spade::testing::kD1NearGrid;
     const auto made = x500 ? spade::testing::still_air_case(spade::testing::x500::data_dir() / spade::testing::x500::kModelFile, "x500", grid, 0.0002f,

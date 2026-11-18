@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 // x500_model.hpp -- the website clips' flow model of the PX4 X500 (L86k, the lead, 2026-11-17): built from KAT's
 // content/airframes/x500.airframe.json (at KAT's commit c3350dcd2790bbdccdb9b4c3768143c14a1ecf3b), not the default library's. The
-// generator writes tools/flow_movie/data/x500/ (x500.model.yaml, parts/x500_13in_estimated.prop.yaml and x500.notes.yaml's text);
+// generator writes tools/flow_movie/data/x500/ (x500.model.yaml, parts/x500_10in_apc10x5.prop.yaml and x500.notes.yaml's text);
 // tests/test_x500_case.cpp checks the files against this builder and, with SPADE_X500_WRITE set, writes them.
 //
 // WHAT IS KAT'S (x500.airframe.json, read 2026-11-17): mass 2.0643 kg and inertia (0.02167, 0.02167, 0.04) kg m^2 (x roll, y pitch, z yaw
@@ -12,12 +12,13 @@
 // x500-body.gltf's extents say. Its own provenance grades the mass ASSUMED (the PX4-gazebo-models sum, base 2.0 kg plus four 0.016077 kg
 // rotor links; no take-off weight is published for the Holybro X500 V2), confidence low.
 //
-// WHAT IS NOT KAT'S, and estimated: the propeller. PX4's X500 constants are the Gazebo sim's (thrust_per_motor 13.06 N at 1032 rad/s: k_T
-// 1.23e-5 N s^2/rad^2, 3 to 4 times weaker than a real 13-inch's), and no blade data is published. So the blade is the library's UIUC APC
-// 10x5 (assets/library/parts/uiuc_apce_10x5.prop.yaml) scaled to the X500's 0.346 m diameter: c/R, twist and the fitted polar kept, the
-// advance-ratio tables kept (they are non-dimensional), the mass assumed 0.017 kg. Every row says so (grade assumed, "ESTIMATED"). Its
-// hover speed is the speed its own thrust tables give for a quarter of the weight, ~3300 rpm; the line's thrust at that speed is
-// checked against the same quarter (test_x500_case.cpp).
+// THE PROPELLER (L86p, the lead, 2026-11-18, correcting L86k): the real X500 V2 kit ships 1045 propellers (10 x 4.5 in; Holybro's kit page,
+// docs.holybro.com/drone-development-kit/px4-development-kit-x500v2, and KAT's own x500.airframe.json evidence "500 mm wheelbase, 2216 KV920,
+// 1045 propellers"); the 13-inch 1345 STL is the Gazebo sim's prop, whose thrust constants (k_T 1.23e-5 N s^2/rad^2, 642 rad/s to hover) are
+// the sim's, not the kit's. So R is 0.127 m and the blade is the library's UIUC APC 10x5 (measured geometry, C_T and C_Q tables) at UIUC's own
+// 10 in; the library's part applies it at 9.4 in (NASA's rotor), so only the diameter (and the mass-derived inertia) differ. Graded derived: the
+// 5 in pitch against the kit's 4.5 in is said in the notes. Its hover speed is the speed the grid-free blade-element-momentum solve gives for a
+// quarter of the weight (test_x500_case.cpp), ~6100 rpm; the line's thrust at the chain's own speed is checked against the same quarter.
 // ---------------------------------------------------------------------------
 
 #include <array>
@@ -46,25 +47,25 @@ namespace spade::testing::x500 {
 inline constexpr const char* kKatCommit = "c3350dcd2790bbdccdb9b4c3768143c14a1ecf3b";  // KAT: the last change to x500.airframe.json
 inline constexpr double kMass = 2.0643;                                                // kg, KAT's (the Gazebo model's sum)
 inline constexpr double kArm = 0.174;                                                  // m, KAT's motor.arm_x and arm_y
-inline constexpr double kDiameter = 0.346;                                             // m, the STL's tip to tip (PX4's 13-inch)
+inline constexpr double kDiameter = 0.254;                                             // m, the kit's 1045: 10 in tip to tip
 inline constexpr double kHubAboveCentre = 0.06;                                        // m, KAT's rotor_visuals hub_m y
-inline constexpr double kPropMass = 0.017;                                             // kg, assumed (a 13-inch moulded prop)
+inline constexpr double kPropMass = 0.013;                                             // kg, the library's APC 10x5 (assumed, a typical 9-10 in moulded prop)
 
 [[nodiscard]] inline std::filesystem::path data_dir() {
     return std::filesystem::path(SPADE_ASSETS_DIR).parent_path() / "tools" / "flow_movie" / "data" / "x500";  // assets/ is in the repo root
 }
 inline constexpr const char* kModelFile = "x500.model.yaml";
-inline constexpr const char* kPropFile = "parts/x500_13in_estimated.prop.yaml";
+inline constexpr const char* kPropFile = "parts/x500_10in_apc10x5.prop.yaml";
 inline constexpr const char* kNotesFile = "x500.notes.yaml";
 
 // Where each number of x500.model.yaml came from (the lead, 2026-11-17: name the PX4 and KAT sources in the model's sources). Plain text
 // the generator writes beside the model; tests/test_x500_case.cpp compares it. The grades are the library's words.
 [[nodiscard]] inline std::string notes_text() {
-    return std::string(R"NOTES(# The website clips' flow model of the PX4 X500: where each number came from.
+    return std::string(R"NOTES(# The website clips' flow model of an open-source quadcopter (the PX4 X500 kit): where each number came from.
 # Written by tests/x500_model.hpp notes_text() and compared by tests/test_x500_case.cpp (SPADE_X500_WRITE=1 regenerates it). Grades are
 # the library's: measured, published, retailer, derived, fitted, assumed. Anything not carried is listed at the end.
 model: "x500.model.yaml"
-prop: "parts/x500_13in_estimated.prop.yaml"
+prop: "parts/x500_10in_apc10x5.prop.yaml"
 built_by: "tests/x500_model.hpp airframe(): vehicles::basic_quad_airframe() at KAT's layout, mass and inertia"
 kat:
   file: "content/airframes/x500.airframe.json"
@@ -76,16 +77,15 @@ inputs:
   inertia: {value: [0.0216667, 0.0216667, 0.04], unit: kg m^2, grade: assumed, note: "KAT's inertia (x roll, y pitch, z yaw about the centre of mass, thrust along +z), met by basic_quad's remainder part"}
   rotors: {value: "(+-0.174, +-0.174) m", grade: assumed, note: "KAT's motor.arm_x and arm_y; PX4's X layout: front-right and rear-left counter-clockwise, front-left and rear-right clockwise"}
   hub_height: {value: "0.06 m above the centre of mass", grade: assumed, note: "KAT's rotor_visuals hub_m; the model's hubs come out 0.0614 m above it (the fit's centre of mass)"}
-  rotor_radius: {value: 0.173, unit: m, grade: assumed, note: "the 13-inch propeller, 0.346 m tip to tip in PX4's STL; it is the propeller part's diameter / 2"}
+  rotor_radius: {value: 0.127, unit: m, grade: derived, note: "the kit's 1045 propeller (10 x 4.5 in; Holybro's X500 V2 kit page and KAT's x500.airframe.json evidence, '1045 propellers'): 10 in = 0.254 m, halved; it is the propeller part's diameter / 2. The 13-inch 1345 STL in PX4's Gazebo model is the sim's prop, not the kit's"}
   body: {value: "box 0.15 x 0.065 x 0.15 m, 0.60 kg", grade: assumed, note: "the electronics stack of x500-body.gltf's extents; a proxy solid for the flow"}
   arms: {value: "tubes of 8 mm radius, 0.10 kg/m", grade: assumed, note: "Holybro's 16 mm carbon arm tubes; proxy solids"}
   motor: {value: "the library's iris_920kv", grade: assumed, note: "the X500's 2216 KV920, a stand-in of the same class"}
   esc_battery: {value: "the library's iris_4x20a and iris_3s_5100", grade: assumed, note: "stand-ins; the chain only fixes the hover throttle, and the rotors turn at the speed the propeller part gives for a quarter of the weight"}
-  propeller: {value: "parts/x500_13in_estimated.prop.yaml", grade: assumed, note: "ESTIMATED: the library's UIUC APC 10x5 geometry and non-dimensional tables scaled to 0.346 m; PX4 publishes no blade data and its Gazebo thrust constants (k_T 1.23e-5 N s^2/rad^2, 642 rad/s to hover) are 3 to 4 times weaker than a real 13-inch propeller's"}
+  propeller: {value: "parts/x500_10in_apc10x5.prop.yaml", grade: derived, note: "the library's UIUC APC 10x5 blade (measured geometry, C_T and C_Q tables) used at UIUC's own 10 in, the kit's 1045 size; the pitch is UIUC's 5 in against the kit's 4.5 in; the library's part applies the same tables at 9.4 in. PX4's Gazebo thrust constants (642 rad/s to hover) are the sim's"}
 checks:
-  balance: "the grid-free blade-element-momentum solve (tests/bemt_reference.hpp) for a quarter of the weight, 5.0610 N: 344.9 rad/s (3294 rpm); the chain's own static-thrust speed 343.7 rad/s (3282 rpm), 0.4% apart"
-  line_thrust: "the actuator lines at 343.7 rad/s on the 3 mm grid: 20.87 N in all at 0.1 s, 20.07 N at 0.2 s, against the weight 20.244 N (0.9% under at 0.2 s)"
-  box: "267 x 217 x 267 at 3 mm, the drone lowered 24 rows (tests/d1_case.hpp d1_x500_hold()): the rotors' centres 0.2625 m (1.5 R) under the top face, 0.39 m of wake below"
+  balance: "the grid-free blade-element-momentum solve (tests/bemt_reference.hpp) for a quarter of the weight, 5.0610 N: see X500Balance's printout"
+  box: "266 x 237 x 266 at 2.5 mm, the drone lowered 18 rows (tests/d1_case.hpp d1_x500_hold()): the rotors' centres 0.1913 m (1.5 R) under the top face, 0.401 m of wake below, 0.0165 m past the kernel's reach at the sides"
 not_carried: "landing legs, the camera and GPS mounts, the wiring, the propellers' hubs and the motors' bells as solids; the mass is the Gazebo model's, to be replaced by the parts' datasheet masses (L88l)"
 )NOTES";
 }
@@ -94,7 +94,9 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
     return scene::SourceRef{{}, scene::Grade::assumed, "ESTIMATED: " + std::move(note)};
 }
 
-// The propeller: the library's APC 10x5, scaled to the X500's diameter and graded estimated.
+// The propeller: the library's UIUC APC 10x5 at the kit's 10 in (R 0.127 m). Its blade and tables are the library's, as they are; the rows whose value
+// changed (diameter, inertia) say so, and the pitch row says the 5 in against the kit's 4.5 in. The rows the library's part grades from UIUC at
+// "9.4 in" keep their grade and source, with the X500's use said after them.
 [[nodiscard]] inline Result<scene::PropPart> prop_part() {
     const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
     std::ifstream in(file, std::ios::binary);
@@ -104,23 +106,30 @@ not_carried: "landing legs, the camera and GPS mounts, the wiring, the propeller
     if (!base) return std::unexpected(base.error());
     scene::PropPart p = *base;
     p.block.diameter = kDiameter;
-    p.block.pitch = 0.127 * (kDiameter / base->block.diameter);  // identity only: the 10x5's 5 in pitch, scaled
     p.block.mass = kPropMass;
     p.block.inertia = kPropMass * kDiameter * kDiameter / 12.0;
     p.block.shape.reset();
-    const std::string how =
-        "the library's UIUC APC 10x5 geometry and non-dimensional tables scaled to the X500's 0.346 m (PX4's 13-inch); PX4 publishes no "
-        "blade data and its Gazebo thrust constants are not a 13-inch propeller's (k_T 3 to 4 times weaker), so this stands in";
-    p.sources.clear();
-    for (const char* field : {"diameter", "pitch", "blades", "inertia", "ct_static", "cq_static", "ct_table", "cq_table", "mass",
-                              "blade.r_over_r", "blade.c_over_r", "blade.beta_deg", "blade.hub_cutout", "blade.airfoil",
-                              "blade.alpha_0_deg", "blade.cd_scale"}) {
-        p.sources.push_back(scene::FieldSource{field, estimated(std::string(field) + ": " + how)});
+    const std::string used =
+        " [the X500: used at UIUC's own 10 in, the kit's 1045 size; the library's part applies it at 9.4 in (NASA's rotor)]";
+    const auto derived = [](std::string note) { return scene::SourceRef{"uiuc_propdb", scene::Grade::derived, std::move(note)}; };
+    for (scene::FieldSource& s : p.sources) {
+        if (s.field == "diameter") {
+            s.ref = derived("derived: UIUC's APC Thin Electric 10x5 is a 10 in propeller; the X500 V2 kit's propeller is the 1045, 10 in (Holybro's kit page; "
+                            "KAT's x500.airframe.json evidence), so R is 0.127 m");
+        } else if (s.field == "pitch") {
+            s.ref = derived("derived: 5.0 in as UIUC's 10x5; the kit's 1045 is 4.5 in (Holybro's kit page), so the blade's pitch is 11% above the kit's");
+        } else if (s.field == "inertia") {
+            s.ref = derived("derived: m D^2 / 12 from this file's mass and the 10 in diameter");
+        } else if (s.field == "blades" || s.field == "mass" || s.field == "blade.airfoil") {
+            // as the library grades them
+        } else {
+            s.ref.note += used;
+        }
     }
     return p;
 }
 
-// The model: a basic quad at KAT's layout, mass and inertia, with the estimated propeller and the library's 920 KV motor class (the
+// The model: a basic quad at KAT's layout, mass and inertia, with the 10-inch propeller and the library's 920 KV motor class (the
 // X500's 2216 KV920), the Iris class's ESC and 3S pack.
 [[nodiscard]] inline Result<vehicles::AirframeSpec> airframe(const scene::PropPart& prop) {
     namespace sc = scene;
