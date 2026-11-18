@@ -28,7 +28,8 @@ target_compile_features(flow_movie PRIVATE cxx_std_23)
 # Interface's one reader (TD-9).
 target_link_libraries(flow_movie PRIVATE
     spade::core spade::physics spade::render spade::render_gl spade::analysis spade::scene spade::render_parts
-    spade::vehicles glfw glad)
+    spade::vehicles glfw glad
+    yaml-cpp::yaml-cpp)  # build_parts.hpp reads Core's parts table
 # GLFW_INCLUDE_NONE: glad declares GL, and glfw3.h must not pull in <GL/gl.h>.
 # SPADE_TESTS_DIR, the tests' name, which the gcc check defines too: the V1
 # records sit under tests/.
