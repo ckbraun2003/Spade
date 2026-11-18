@@ -247,7 +247,7 @@ struct RootData {
 
 using Issues = std::vector<LibraryRefusal>;
 
-constexpr std::array<std::string_view, 4> kPartKinds = {"motor", "prop", "esc", "battery"};
+constexpr std::array<std::string_view, 6> kPartKinds = {"motor", "prop", "esc", "battery", "frame", "payload"};
 
 bool is_part_kind(std::string_view s) {
     return std::find(kPartKinds.begin(), kPartKinds.end(), s) != kPartKinds.end();
@@ -685,7 +685,7 @@ void read_entry(RootData& r, Issues& issues, const fs::path& index_path, const Y
             s.kind = first;
             if (first == "part") {
                 if (!is_part_kind(second)) {
-                    er.bad("id", "a part id is 'part.<motor|prop|esc|battery>.<name>'");
+                    er.bad("id", "a part id is 'part.<motor|prop|esc|battery|frame|payload>.<name>'");
                 } else {
                     s.part_kind = second;
                 }

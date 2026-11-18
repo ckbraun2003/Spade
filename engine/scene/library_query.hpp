@@ -48,7 +48,7 @@ struct EntryPeek {
 struct ListFilter {
     std::vector<std::string> roots{};  // names; empty: every opened root. A name not opened is root_not_loaded.
     std::string kind{};                // empty, or model|object|part|drone|world|mesh|opaque
-    std::string part_kind{};           // empty, or motor|prop|esc|battery (any lower-case name is accepted)
+    std::string part_kind{};           // empty, or motor|prop|esc|battery|frame|payload (any lower-case name is accepted)
     std::string type{};                // empty, or an opaque entry's exact type string
     std::string text{};                // empty, or an ASCII case-folded substring of name, category or a tag
     std::vector<std::string> tags{};   // every tag listed must be on the entry
