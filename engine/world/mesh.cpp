@@ -317,7 +317,7 @@ struct EdgeUse {
 
 // Open, then non-manifold, then misoriented: the first kind present is the
 // refusal. When none is, every edge has exactly two uses, adjacent in `uses`.
-[[nodiscard]] Detail check_edges(const std::vector<EdgeUse>& uses) {
+[[nodiscard]] Detail check_edges(const std::vector<EdgeUse>& uses, MeshRefusal& kind) {
     Offenders open;
     Offenders crowded;
     Offenders misoriented;
@@ -335,11 +335,16 @@ struct EdgeUse {
         }
         i = j;
     }
-    if (Detail d = open.detail("open edge", "open edges")) return d;
-    if (Detail d = crowded.detail("non-manifold edge (three or more triangles)",
-                                  "non-manifold edges (three or more triangles)")) {
+    if (Detail d = open.detail("open edge", "open edges")) {
+        kind = MeshRefusal::not_closed;
         return d;
     }
+    if (Detail d = crowded.detail("non-manifold edge (three or more triangles)",
+                                  "non-manifold edges (three or more triangles)")) {
+        kind = MeshRefusal::not_manifold;
+        return d;
+    }
+    kind = MeshRefusal::inconsistent_winding;
     return misoriented.detail("misoriented edge (two triangles traverse it in the same direction)",
                               "misoriented edges (two triangles traverse them in the same direction)");
 }
@@ -866,43 +871,92 @@ double mesh_unit_scale(MeshUnit unit) noexcept {
     return 0.0;
 }
 
+const char* refusal_name(MeshRefusal kind) {
+    switch (kind) {
+        case MeshRefusal::unit_unspecified: return "unit_unspecified";
+        case MeshRefusal::unit_invalid: return "unit_invalid";
+        case MeshRefusal::empty: return "empty";
+        case MeshRefusal::bad_index_count: return "bad_index_count";
+        case MeshRefusal::too_large: return "too_large";
+        case MeshRefusal::index_out_of_range: return "index_out_of_range";
+        case MeshRefusal::non_finite: return "non_finite";
+        case MeshRefusal::non_finite_scaled: return "non_finite_scaled";
+        case MeshRefusal::unreferenced_vertex: return "unreferenced_vertex";
+        case MeshRefusal::coincident_vertices: return "coincident_vertices";
+        case MeshRefusal::repeated_index: return "repeated_index";
+        case MeshRefusal::degenerate_triangle: return "degenerate_triangle";
+        case MeshRefusal::duplicate_triangle: return "duplicate_triangle";
+        case MeshRefusal::not_closed: return "not_closed";
+        case MeshRefusal::not_manifold: return "not_manifold";
+        case MeshRefusal::inconsistent_winding: return "inconsistent_winding";
+        case MeshRefusal::not_manifold_vertex: return "not_manifold_vertex";
+        case MeshRefusal::inside_out: return "inside_out";
+        case MeshRefusal::too_many_shells: return "too_many_shells";
+        case MeshRefusal::self_intersecting: return "self_intersecting";
+        case MeshRefusal::shells_not_nested: return "shells_not_nested";
+    }
+    return "";
+}
+
 Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input, std::string_view name) {
-    const auto refuse = [name](Code code, std::string_view detail) {
+    auto built = make_mesh_diagnosed(input, name);
+    if (!built) {
+        return std::unexpected(std::move(built.error().error));
+    }
+    return *std::move(built);
+}
+
+std::expected<std::shared_ptr<const TriangleMesh>, MeshDiagnosis> make_mesh_diagnosed(const MeshInput& input,
+                                                                                    std::string_view name) {
+    const auto refuse = [name](MeshRefusal kind, Code code, std::string_view detail) {
         std::string context(name);
         context += ": ";
         context += detail;
-        return std::unexpected(Error{code, std::move(context)});
+        return std::unexpected(MeshDiagnosis{Error{code, std::move(context)}, kind});
     };
 
     const double scale = mesh_unit_scale(input.unit);
     if (scale == 0.0) {
         if (input.unit == MeshUnit::unspecified) {
-            return refuse(Code::invalid_argument,
+            return refuse(MeshRefusal::unit_unspecified, Code::invalid_argument,
                           "the unit is unspecified (declare the unit the positions are in)");
         }
-        return refuse(Code::invalid_argument,
+        return refuse(MeshRefusal::unit_invalid, Code::invalid_argument,
                       "unit " + std::to_string(static_cast<uint32_t>(input.unit)) + " is not a MeshUnit");
     }
 
     const std::vector<uint32_t>& idx = input.indices;
-    if (idx.empty()) return refuse(Code::invalid_argument, "no triangles");
+    if (idx.empty()) return refuse(MeshRefusal::empty, Code::invalid_argument, "no triangles");
     if (idx.size() % 3 != 0) {
-        return refuse(Code::invalid_argument, std::to_string(idx.size()) + " indices, not a multiple of 3");
+        return refuse(MeshRefusal::bad_index_count, Code::invalid_argument,
+                      std::to_string(idx.size()) + " indices, not a multiple of 3");
     }
     const std::size_t triangle_count = idx.size() / 3;
     if (triangle_count > kMaxMeshTriangles) {
-        return refuse(Code::capacity_exceeded, std::to_string(triangle_count) + " triangles, more than the " +
+        return refuse(MeshRefusal::too_large, Code::capacity_exceeded, std::to_string(triangle_count) + " triangles, more than the " +
                                                    std::to_string(kMaxMeshTriangles) + " a mesh may hold");
     }
 
     const std::size_t vertex_count = input.positions.size();
-    if (Detail d = check_index_range(idx, vertex_count)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_input_finite(input.positions)) return refuse(Code::invalid_argument, *d);
+    if (Detail d = check_index_range(idx, vertex_count)) {
+        return refuse(MeshRefusal::index_out_of_range, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_input_finite(input.positions)) {
+        return refuse(MeshRefusal::non_finite, Code::invalid_argument, *d);
+    }
     std::vector<glm::vec3> positions = to_metres(input.positions, scale);
-    if (Detail d = check_scaled_finite(positions)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_referenced(idx, vertex_count)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_coincident(positions)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_repeated_index(idx)) return refuse(Code::invalid_argument, *d);
+    if (Detail d = check_scaled_finite(positions)) {
+        return refuse(MeshRefusal::non_finite_scaled, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_referenced(idx, vertex_count)) {
+        return refuse(MeshRefusal::unreferenced_vertex, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_coincident(positions)) {
+        return refuse(MeshRefusal::coincident_vertices, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_repeated_index(idx)) {
+        return refuse(MeshRefusal::repeated_index, Code::invalid_argument, *d);
+    }
 
     // The bounds, in double. Every vertex is referenced, so each counts.
     glm::dvec3 lo = widen(positions[0]);
@@ -913,24 +967,37 @@ Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input, st
         hi = {std::max(hi.x, q.x), std::max(hi.y, q.y), std::max(hi.z, q.z)};
     }
 
-    if (Detail d = check_degenerate(positions, idx, lo, hi)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_duplicate_triangles(idx)) return refuse(Code::invalid_argument, *d);
+    if (Detail d = check_degenerate(positions, idx, lo, hi)) {
+        return refuse(MeshRefusal::degenerate_triangle, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_duplicate_triangles(idx)) {
+        return refuse(MeshRefusal::duplicate_triangle, Code::invalid_argument, *d);
+    }
     const std::vector<EdgeUse> uses = edge_uses(idx);
-    if (Detail d = check_edges(uses)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_fans(idx, uses, vertex_count)) return refuse(Code::invalid_argument, *d);
-    if (Detail d = check_volume(positions, idx, lo, hi)) return refuse(Code::invalid_argument, *d);
+    MeshRefusal edge_kind = MeshRefusal::not_closed;
+    if (Detail d = check_edges(uses, edge_kind)) {
+        return refuse(edge_kind, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_fans(idx, uses, vertex_count)) {
+        return refuse(MeshRefusal::not_manifold_vertex, Code::invalid_argument, *d);
+    }
+    if (Detail d = check_volume(positions, idx, lo, hi)) {
+        return refuse(MeshRefusal::inside_out, Code::invalid_argument, *d);
+    }
 
     uint32_t shell_count = 0;
     std::vector<uint32_t> triangle_shell = label_shells(uses, triangle_count, shell_count);
     if (shell_count > kMaxMeshShells) {
-        return refuse(Code::capacity_exceeded, std::to_string(shell_count) + " shells, more than the " +
+        return refuse(MeshRefusal::too_many_shells, Code::capacity_exceeded, std::to_string(shell_count) + " shells, more than the " +
                                                    std::to_string(kMaxMeshShells) + " a mesh may hold");
     }
 
     // The geometric half (Task B2): derive, then refuse what breaks the sign.
     Pseudonormals normals = derive_pseudonormals(positions, idx, uses);
     Bvh bvh = build_bvh(positions, idx, triangle_shell, shell_count);
-    if (Detail d = check_self_intersection(positions, idx, bvh)) return refuse(Code::invalid_argument, *d);
+    if (Detail d = check_self_intersection(positions, idx, bvh)) {
+        return refuse(MeshRefusal::self_intersecting, Code::invalid_argument, *d);
+    }
 
     std::shared_ptr<TriangleMesh> mesh(new TriangleMesh());
     mesh->triangle_shell_ = std::move(triangle_shell);
@@ -951,7 +1018,7 @@ Result<std::shared_ptr<const TriangleMesh>> make_mesh(const MeshInput& input, st
     const auto distance_in_shell = [&built](glm::vec3 x, uint32_t s) { return built.query(x, s).distance; };
     if (Detail d = check_nesting(built.positions_, built.indices_, built.triangle_shell_, shell_count,
                                  built.triangle_nodes_, built.shell_root_, lo, hi, distance_in_shell)) {
-        return refuse(Code::invalid_argument, *d);
+        return refuse(MeshRefusal::shells_not_nested, Code::invalid_argument, *d);
     }
     // Accepted: its mass properties, once, by the one function (mesh.hpp,
     // THE MASS PROPERTIES). It reads the positions and indices alone.

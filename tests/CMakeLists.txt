@@ -67,6 +67,7 @@ add_executable(spade_tests
     test_fatal_report.cpp
     test_sdf.cpp
     test_mesh.cpp
+    test_mesh_diagnosed.cpp
     test_mesh_field.cpp
     test_mesh_mass.cpp
     test_mesh_shapes.cpp
