@@ -79,6 +79,46 @@ Expect $case (Has $row 'END verdict=PASS') 'smoke cell'
 $header = ($InstallLedgerHeader -split "`n" | Where-Object { $_ -like '|*' } | Select-Object -First 1)
 Expect $case (($header -split '\|').Count -eq 11) 'the ledger header has nine columns'
 
+# The copy for the public repo: no home folder. A made-up user, so the test does not depend on the machine it runs on.
+$case = 'public copy'
+$folders = @{ USERPROFILE = 'C:\Users\Ada'; LOCALAPPDATA = 'C:\Users\Ada\AppData\Local'; APPDATA = 'C:\Users\Ada\AppData\Roaming' }
+$raw = @(
+    'Setup path | C:\Users\Ada\Desktop\Projects\spade-wt\core-2\build-package\x-setup.exe',
+    'log C:\Users\Ada\AppData\Local\Temp\spade-install-test-1\install.log)',
+    'Start menu: C:\Users\Ada\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Spade Editor',
+    'json {"p":"C:\\Users\\Ada\\AppData\\Local\\Temp\\spade-install-test-1\\Spade Editor\\.venv-step/bin/python","q":"C:\\Users\\Ada\\Desktop\\x"}',
+    'forward c:/users/ada/AppData/Local/Temp/z and lower-case c:\users\ada\desktop',
+    'a neighbour C:\Users\Adam\Desktop and C:\Users\Ada-2\Desktop are another user',
+    'nothing under C:\Program Files\Spade Editor'
+) -join "`n"
+$pub = ConvertTo-PublicRecord $raw $folders
+Expect $case (-not ($pub -match '(?i)users[\\/]+ada(?![\w-])')) "a home folder is left: $pub"
+Expect $case (Has $pub 'Setup path | %USERPROFILE%\Desktop\Projects\spade-wt\core-2\build-package\x-setup.exe') 'profile folder'
+Expect $case (Has $pub 'log %LOCALAPPDATA%\Temp\spade-install-test-1\install.log)') 'local app data, not %USERPROFILE%\AppData\Local'
+Expect $case (Has $pub 'Start menu: %APPDATA%\Microsoft\Windows\Start Menu\Programs\Spade Editor') 'roaming app data'
+Expect $case (Has $pub '"p":"%LOCALAPPDATA%\\Temp\\spade-install-test-1\\Spade Editor\\.venv-step/bin/python","q":"%USERPROFILE%\\Desktop\\x"') 'doubled backslashes keep their form'
+Expect $case (Has $pub 'forward %LOCALAPPDATA%/Temp/z and lower-case %USERPROFILE%\desktop') 'forward slashes and any case'
+Expect $case (Has $pub 'C:\Users\Adam\Desktop and C:\Users\Ada-2\Desktop') 'a longer folder name is left alone'
+Expect $case (Has $pub 'nothing under C:\Program Files\Spade Editor') 'a folder outside the profile is left alone'
+Expect $case ((ConvertTo-PublicRecord $raw @{}) -eq $raw) 'no folders given: text unchanged'
+
+# A whole record through it, with this machine's own folders as the paths: none of them survives, and the rest of the record does.
+$mine = @($env:USERPROFILE, $env:LOCALAPPDATA, $env:APPDATA) | Where-Object { $_ }
+if ($mine.Count -eq 3) {
+    $fx = Fixture $true $false $false
+    $fx.SetupPath = Join-Path $env:USERPROFILE 'Desktop\spade\build-package\Spade-Editor-0.1.0-abcdef0-setup.exe'
+    $fx.LogPath = Join-Path $env:USERPROFILE 'Desktop\spade\build-package\Spade-Editor-0.1.0-abcdef0-setup.test.log'
+    $fx.Checks = @([pscustomobject]@{ Name = 'install exits 0'; Ok = $true; Detail = "(log $(Join-Path $env:LOCALAPPDATA 'Temp\spade-install-test-1\install.log'))" },
+                   [pscustomobject]@{ Name = 'Start menu'; Ok = $true; Detail = (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Spade Editor') })
+    $rec = New-InstallTestRecord $fx
+    $pubRec = ConvertTo-PublicRecord $rec
+    Expect 'public record' (Has $rec $env:USERPROFILE) 'the fixture should print the profile folder before the conversion'
+    foreach ($f in $mine) { Expect 'public record' (-not $pubRec.Contains($f)) "still prints $f" }
+    Expect 'public record' (Has $pubRec '%USERPROFILE%\Desktop\spade\build-package\Spade-Editor-0.1.0-abcdef0-setup.exe') 'setup path'
+    Expect 'public record' (Has $pubRec '%LOCALAPPDATA%\Temp\spade-install-test-1\install.log') 'check detail'
+    Expect 'public record' (Has $pubRec '**Result: PASS** (2 of 2 checks passed)') 'the rest of the record is intact'
+}
+
 if ($problems.Count -eq 0) { Write-Host 'package_test_record_test: all cases hold'; exit 0 }
 foreach ($p in $problems) { Write-Host "package_test_record_test: FAIL $p" }
 exit 1
