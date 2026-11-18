@@ -461,7 +461,7 @@ inline void quad(spade::render::MeshData& m, glm::vec3 a, glm::vec3 b, glm::vec3
 struct PropBlur {
     uint32_t samples = 24u;    // copies of the blade over the shutter
     double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
-    float alpha = 0.18f;       // each copy's opacity
+    float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.5f;         // the copies' grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
 };
 

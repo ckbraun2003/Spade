@@ -648,7 +648,7 @@ TEST(FlowMovieBuildParts, ATopLevelHideMaterialsAppliesToTheFrameByWholePathOrLa
 
 // THE SEAM THE FIRST X500 STILLS FELL THROUGH (the lead, 2026-11-18: the spread blade was not visible in the frame): a rotor drawn from a
 // REAL glTF (a prop primitive and a bell, two materials named drone/<file>/prop and /bell, one mesh, as KAT's rotor files are) through the
-// whole path (names, real materials, the radial scale, the blur copies) and then RASTERISED, not only counted. A black blade over a pale sky:
+// whole path (names, real materials, the radial scale, the blur copies) and then RASTERISED, not only counted. A blade over a pale sky:
 // a turning rotor must darken a DISC of pixels, many times what the same blade frozen does; a frozen one is a solid blade; the blur's alpha
 // is the blade's, the bell stays opaque.
 namespace {
@@ -721,7 +721,7 @@ uint32_t dark_pixels(const std::string& rotor_entry, const flow_movie::BuildDraw
     EXPECT_TRUE(rendered.has_value()) << (rendered ? "" : rendered.error().context);
     uint32_t dark = 0;
     for (std::size_t i = 0; i < px.size(); i += 4u) {
-        if (static_cast<int>(px[i]) + px[i + 1] + px[i + 2] < 3 * 110) ++dark;
+        if (static_cast<int>(px[i]) + px[i + 1] + px[i + 2] < 3 * 190) ++dark;  // under the pale sky (230): the black blade or the grey haze
     }
     return dark;
 }
