@@ -309,8 +309,9 @@ struct LiveRun::Impl {
     LiveRun::TestIncrementNudge test_nudge = nullptr;  // a test's, never saved
     void* test_nudge_context = nullptr;
     uint32_t test_max_iterations = 0;  // a test's solids CG limit, 0 for unset; never saved
+    // Declared before the device: the device borrows the lines' blade and polar (LineSetup::polar), so it must be destroyed first.
+    std::optional<LiveLines> lines;     // the rotors as actuator lines (L86j), start()'s copy
     std::unique_ptr<LiveFluid> device;  // the fluid, when start() was handed one; null: the CPU's, above
-    std::optional<LiveLines> lines;     // the rotors as actuator lines (L86j), start()'s copy; the device borrows its blade and polar
     std::vector<af::LineRotor> line_rotors;  // their lines this step
     std::vector<af::ActuatorDisc> line_discs;  // their discs with no load: the dye's release
     std::vector<float> psi_start;              // the blade azimuths as the step began (the line's own psi)
@@ -774,7 +775,8 @@ Result<void> LiveRun::step(const Controls& controls) {
             if (Result<void> l = vehicles::rotor_lines(r.rows, r.held, r.psi_start, r.grid_origin, r.resolved.base, r.lines->blade,
                                                        r.lines->polar, r.line_rotors);
                 !l) {
-                return std::unexpected(l.error());
+                r.fault = "the rotors' lines were refused at step " + std::to_string(r.state.steps + 1) + ": " + l.error().context;
+                return std::unexpected(Error{l.error().code, r.fault});
             }
             r.line_discs = r.discs;
             for (af::ActuatorDisc& d : r.line_discs) {

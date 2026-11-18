@@ -67,6 +67,7 @@ add_executable(spade_tests
     test_fatal_report.cpp
     test_sdf.cpp
     test_mesh.cpp
+    test_mesh_diagnosed.cpp
     test_mesh_field.cpp
     test_mesh_mass.cpp
     test_mesh_shapes.cpp
@@ -118,6 +119,9 @@ add_executable(spade_tests
     test_airflow_threads.cpp
     test_airflow_dye.cpp
     test_airflow_tip_dye.cpp
+    test_gpu_live_near_field.cpp
+    test_x500_build_table.cpp
+    test_x500_case.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
@@ -158,9 +162,16 @@ add_executable(spade_tests
     test_gnss_geodetic.cpp
     test_library_quad.cpp
     test_library.cpp
+    test_library_set.cpp
+    test_library_query.cpp
+    test_library_store.cpp
+    test_library_find.cpp
+    test_library_place.cpp
+    test_library_validate.cpp
     test_library_props.cpp
     test_library_sources.cpp
     test_model_sources.cpp
+    test_part_blocks.cpp
     test_part_file.cpp
     test_library_parts.cpp
     test_library_drones.cpp
@@ -288,6 +299,20 @@ add_executable(spade_tests
     # as the recorder's cache is above.
     test_mesh_pack.cpp
     ../tools/mesh_pack/mesh_pack.cpp
+    # spade_part_import's parts (L88): the codes and JSON, the part frame, the unit guess and the cache key, compiled in from the tool.
+    test_part_import_basics.cpp
+    test_part_import_store.cpp
+    test_part_import_run.cpp
+    test_part_import_process.cpp
+    test_part_import_step.cpp
+    test_mesh_import_objects.cpp
+    ../tools/part_import/report.cpp
+    ../tools/part_import/transform.cpp
+    ../tools/part_import/store.cpp
+    ../tools/part_import/options.cpp
+    ../tools/part_import/run.cpp
+    ../tools/part_import/process.cpp
+    ../tools/part_import/step.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
@@ -882,6 +907,24 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export
         PASS_REGULAR_EXPRESSION "refused: .*inside a git work tree")
 endif()
 
+# The part import tool's executable, as built (L88): it starts, prints its usage, and refuses a store inside a git work tree, all without
+# Python. The library's behaviour is tested in-process (test_part_import_run.cpp); this is only that the program is linked and runs.
+# LABELS spade, as above.
+add_dependencies(spade_tests spade_part_import)
+add_test(NAME PartImportExe.PrintsItsUsage COMMAND spade_part_import --help)
+set_tests_properties(PartImportExe.PrintsItsUsage PROPERTIES
+    LABELS spade
+    TIMEOUT 60
+    PASS_REGULAR_EXPRESSION "usage: spade_part_import --probe.*--inspect <file>.*--import <file>")
+if(EXISTS "${PROJECT_SOURCE_DIR}/.git")  # a source tree with no .git (an export, a container mount) has no work tree to refuse
+    add_test(NAME PartImportExe.RefusesAStoreInsideAGitWorkTree
+        COMMAND spade_part_import --import nothing.stl --unit mm --store "${PROJECT_SOURCE_DIR}/part_import_exe_store")
+    set_tests_properties(PartImportExe.RefusesAStoreInsideAGitWorkTree PROPERTIES
+        LABELS spade
+        TIMEOUT 60
+        PASS_REGULAR_EXPRESSION "store_in_git_tree")
+endif()
+
 # The pre-push guard (scripts/pre-push-guard.sh), the tracked copy, against
 # throwaway bare repositories: every push without the owner's word refused, a
 # reader that closes early included, and the authorised one let through
@@ -901,6 +944,22 @@ if(GIT_FOUND AND SPADE_SH)
     set_tests_properties(PushGuard.RefusesEveryPushWithoutTheOwnersWord PROPERTIES
         LABELS spade
         TIMEOUT 120)
+endif()
+
+# The installer test's record (scripts/package-test-record.ps1, written by scripts/package-test.ps1 beside each setup.exe tested): every field
+# the owner asked for is present for a pass, a fail and a run with no smoke, and the ledger row is one line with its nine cells. Only on
+# Windows, where the installer test itself runs; no install, no display, no GPU. LABELS spade, as above.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_PACKAGE_TEST_RECORD NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/package-test-record.ps1")
+        add_test(NAME PackageTest.RecordHasEveryField
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/package_test_record_test.ps1" "${SPADE_PACKAGE_TEST_RECORD}")
+        set_tests_properties(PackageTest.RecordHasEveryField PROPERTIES
+            LABELS spade
+            TIMEOUT 120)
+    endif()
 endif()
 
 include(GoogleTest)

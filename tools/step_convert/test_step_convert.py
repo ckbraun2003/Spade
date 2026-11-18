@@ -286,6 +286,80 @@ class StepConvert(unittest.TestCase):
             self.assertAlmostEqual(bounds(positions)[0][1], 0.1, delta=1e-8)  # ten centimetres
             self.assertAlmostEqual(volume(positions, triangles), 1e-3, delta=1e-8)
 
+    def test_a_conversion_based_unit_named_for_its_length_is_read(self):
+        # Raspberry Pi's Camera Module 3 STEP (Spatial InterOp) declares its unit as
+        #   CONVERSION_BASED_UNIT('MILLIMETRE', #n) LENGTH_UNIT() NAMED_UNIT(#m)
+        # not as an SI_UNIT: the name is the unit, spelled either way, and several of them in one file are the same unit.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("step_convert_under_test", CONVERT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        cases = {"MILLIMETRE": "mm", "MILLIMETER": "mm", "CENTIMETRE": "cm", "CENTIMETER": "cm", "METRE": "m", "METER": "m",
+                 "MICROMETRE": "um", "MICROMETER": "um", "MICRON": "um", "INCH": "in", "FOOT": "ft"}
+        with tempfile.TemporaryDirectory() as work:
+            for name, unit in cases.items():
+                path = os.path.join(work, f"{name}.stp")
+                with open(path, "w", encoding="utf-8", newline="\n") as f:
+                    f.write("ISO-10303-21;\nDATA;\n"
+                            f"#8816= (CONVERSION_BASED_UNIT('{name}',#22444)LENGTH_UNIT()NAMED_UNIT(#22447));\n"
+                            f"#22926= (CONVERSION_BASED_UNIT('{name}',#39826)LENGTH_UNIT()NAMED_UNIT(#39829));\n"
+                            "#8817= (NAMED_UNIT(#22449)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.));\nENDSEC;\nEND-ISO-10303-21;\n")
+                self.assertEqual(module.file_length_unit(path), unit, name)
+            odd = os.path.join(work, "odd.stp")
+            with open(odd, "w", encoding="utf-8", newline="\n") as f:
+                f.write("DATA;\n#1= (CONVERSION_BASED_UNIT('FURLONG',#2)LENGTH_UNIT()NAMED_UNIT(#3));\nENDSEC;\n")
+            with self.assertRaises(module.Refusal) as refused:
+                module.file_length_unit(odd)
+            self.assertIn("FURLONG", refused.exception.message)
+
+    def test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused(self):
+        # Raspberry Pi's Pi 5 STEP holds surface-only parts beside its solids; one of them refused the whole file.
+        both = os.path.join(FIXTURES, "solid_and_sheet.step")
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, both, "--inspect"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        answer = json.loads(run.stdout)
+        self.assertEqual(len(answer["solids"]), 1)
+        self.assertEqual(len(answer["skipped"]), 1)
+        self.assertEqual(answer["skipped"][0]["code"], "no_solid")
+        self.assertTrue(answer["skipped"][0]["name"])
+        with tempfile.TemporaryDirectory() as work:
+            out = os.path.join(work, "model.3mf")
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, both, "--emit-3mf", out, "--deflection", "0.5mm"],
+                                 capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            emitted = json.loads(run.stdout)
+            self.assertEqual(len(emitted["cross_check"]), 1)
+            self.assertEqual([s["code"] for s in emitted["skipped"]], ["no_solid"])
+        only = os.path.join(FIXTURES, "sheet_only.step")
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, only, "--inspect"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.returncode, 3, run.stdout)
+        self.assertIn("no solid", run.stderr)
+
+    def test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others(self):
+        # The part files store float32 metres. Two tessellation vertices 1.7e-6 mm apart (Raspberry Pi's Camera Module 3, part
+        # U4_4, at about 17 mm) are different doubles, farther apart than the stitcher's grid, but the same stored point, and the
+        # engine's gate refuses a mesh with a vertex at the position of an earlier one. Merging exactly those is no repair:
+        # the stored mesh is identical. A pair that is still two points when stored is left alone.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("step_convert_weld_under_test", CONVERT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        mm = 1e-3
+        vertices = [(15.186532263558, 16.934930453429, -4.92), (15.186532263582057, 16.93493215249767, -4.92),
+                    (15.0, 16.0, -4.92), (15.0, 16.0, -4.91), (14.0, 16.0, -4.92)]
+        triangles = [(0, 2, 3), (1, 3, 4), (0, 1, 4), (0, 2, 1)]
+        out_vertices, out_triangles = module.weld_to_stored_precision(vertices, triangles, mm)
+        self.assertEqual(len(out_vertices), 4)
+        self.assertEqual(out_vertices[0], vertices[0])  # the first of a merged pair is the one kept
+        self.assertEqual(out_triangles, [(0, 1, 2), (0, 2, 3)])  # (0,1,4) became a line and (0,2,1) too: both dropped
+        far = [(0.0, 0.0, 0.0), (0.001, 0.0, 0.0), (0.0, 1.0, 0.0)]  # a micrometre apart is still two stored points
+        same, tris = module.weld_to_stored_precision(far, [(0, 1, 2)], mm)
+        self.assertEqual((same, tris), (far, [(0, 1, 2)]))
+        # a part's placement is applied before the points are rounded, because that is what is stored
+        shifted_vertices, shifted = module.weld_to_stored_precision(vertices[:2], [(0, 1, 1)], mm,
+                                                                    [1, 0, 0, 0, 1, 0, 0, 0, 1, 1000.0, 0.0, 0.0])
+        self.assertEqual(len(shifted_vertices), 1)
+
     def test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written(self):
         with tempfile.TemporaryDirectory() as out:
             run = self.convert("holed_cylinder.step", out, "--deflection", "3mm", "--angle", "1.2", expect=5)
@@ -312,7 +386,9 @@ class StepConvert(unittest.TestCase):
             self.assertIn("Nope", run.stderr)
 
 
-NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found"}
+NO_OCP_NEEDED = {"test_a_deflection_is_required_and_needs_a_unit", "test_the_packer_must_be_found",
+                 "test_a_conversion_based_unit_named_for_its_length_is_read",
+                 "test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others"}
 
 
 def main():

@@ -1038,10 +1038,15 @@ install(DIRECTORY vehicles/ DESTINATION include/vehicles FILES_MATCHING PATTERN 
 add_library(spade_scene STATIC
     scene/compose.cpp
     scene/library.cpp
+    scene/library_set.cpp
+    scene/library_place.cpp
+    scene/library_query.cpp
+    scene/library_validate.cpp
     scene/library_sources.cpp
     scene/model_file.cpp
     scene/model_sources.cpp
     scene/object_file.cpp
+    scene/part_blocks.cpp
     scene/part_file.cpp
     scene/prop_line.cpp
     scene/scene_file.cpp

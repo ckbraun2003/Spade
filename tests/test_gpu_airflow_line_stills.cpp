@@ -8,7 +8,7 @@
 // step, Cs 0.17, the quad's rigid parts as solids, the deep grid), the rows LiveRun holds at hover, one line a rotor from
 // vehicles::rotor_lines() with the part's blade and polar (scene::line_propeller()), the dye released at the rotors' discs (zero load:
 // the lines carry the force). Knobs: SPADE_LINE_STILLS_STEPS (default "300,700,1200,1800"), SPADE_LINE_STILLS_NSUB (8),
-// SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
+// SPADE_LS_STEP (the time step, s; 0.0002), SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
 // SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline),
 // SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1).
 // ---------------------------------------------------------------------------
@@ -38,6 +38,8 @@
 #include "compute/vulkan/context.hpp"
 #include "d1_case.hpp"
 #include "flow_still.hpp"
+#include "../tools/flow_movie/cache.hpp"
+#include "x500_model.hpp"
 #include "gpu_skip.hpp"
 #include "physics/airflow/actuator.hpp"
 #include "physics/airflow/dye.hpp"
@@ -84,9 +86,8 @@ struct Phantom {
     float weight_n = 0.0f;
 };
 
-[[nodiscard]] spade::Result<Phantom> phantom_box(const char* model_file) {
-    const af::GridShape grid = spade::testing::kD1DeepGrid;
-    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / model_file;
+[[nodiscard]] spade::Result<Phantom> phantom_box(const std::filesystem::path& file, const std::string& pin,
+                                                 const af::GridShape& grid, const glm::vec3& hold) {
     auto loaded = spade::scene::load_model_file(file);
     if (!loaded) return std::unexpected(loaded.error());
     if (!loaded->model.propulsion) {
@@ -95,12 +96,12 @@ struct Phantom {
     spade::vehicles::ModelType model = std::move(loaded->model);
     an::AnalysisCase c;
     c.power = an::Power{.idle = 0.05f, .state_of_charge = 1.0f};
-    c.model = an::pin_model(std::string("assets/") + model_file, model);
+    c.model = an::pin_model(pin, model);
     c.rotors.assign(model.rotors.size(), an::RotorSetup{});
     c.grid.box = grid.dx * static_cast<float>(std::max(grid.nx, grid.nz));
     c.grid.spacing = grid.dx;
     c.time.duration = 1.0f;
-    c.time.step = 0.0002f;
+    c.time.step = flow_still::env_float("SPADE_LS_STEP", 0.0002f);  // L86p: 0.0001 for the step-size probe
     c.flight.kind = an::FlightKind::hover;  // still air
     c.flight.speed = 0.0f;
     auto trim = an::showcase_trim(c, model);
@@ -112,7 +113,7 @@ struct Phantom {
         for (const an::CaseIssue& i : resolved.error()) issues += (issues.empty() ? "" : "; ") + i.field + ": " + i.message;
         return std::unexpected(spade::Error{spade::Code::invalid_argument, "the case does not resolve: " + issues});
     }
-    resolved->hold_from_centre = spade::testing::d1_hold(grid);
+    resolved->hold_from_centre = hold;
     resolved->base = grid;
     resolved->base_bytes = af::fluid_bytes(resolved->base, resolved->domain);
     const af::GridShape& shape = resolved->base;
@@ -178,15 +179,24 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                                ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_NSUB"), nullptr, 10))
                                : 8u;
 
-    auto made = phantom_box(model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml");
+    // SPADE_LS_GRID=near: the 2 mm cropped near field (tests/d1_case.hpp's kD1NearGrid); else the 4 mm deep box.
+    // SPADE_LS_DRONE=x500 (L86k): the X500 (tools/flow_movie/data/x500) with the kit's 10-inch prop on kD1X500Grid, 2.5 mm.
+    const bool x500 = env_cstr("SPADE_LS_DRONE") != nullptr && std::string(env_cstr("SPADE_LS_DRONE")) == "x500";
+    af::GridShape grid = env_cstr("SPADE_LS_GRID") != nullptr ? spade::testing::kD1NearGrid : spade::testing::kD1DeepGrid;
+    if (x500) grid = spade::testing::kD1X500Grid;
+    const std::string model_rel = model_env != nullptr ? model_env : "library/drones/phantom3_class.model.yaml";
+    const std::filesystem::path model_path =
+        x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kModelFile : std::filesystem::path(SPADE_ASSETS_DIR) / model_rel;
+    auto made = phantom_box(model_path, x500 ? std::string("x500") : "assets/" + model_rel, grid,
+                            x500 ? spade::testing::d1_x500_hold() : spade::testing::d1_hold(grid));
     ASSERT_TRUE(made.has_value()) << made.error().context;
     Phantom& ph = *made;
     b7::B7Box& box = ph.box;
     const af::GridShape shape = box.grid.shape;
 
-    // The prop: the library's APC 10x5 (phantom3_class's), its blade and B1's fitted polar.
-    const std::filesystem::path prop_file =
-        std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
+    // The prop: the library's APC 10x5 (phantom3_class's), its blade and B1's fitted polar; the X500's is that scaled, graded estimated.
+    const std::filesystem::path prop_file = x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kPropFile
+                                                 : std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
     auto part = spade::scene::prop_from_yaml(read_text(prop_file));
     ASSERT_TRUE(part.has_value()) << part.error().context;
     auto prop = spade::scene::line_propeller(*part);
@@ -269,6 +279,34 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         double thrust = 0.0;
         for (const af::LineReport& r : (*gpu)->line_reports()) thrust += static_cast<double>(r.thrust);
         ASSERT_TRUE((*gpu)->publish(box.origin, volume).has_value());
+        // SPADE_LINE_STILLS_CACHE=<dir>: the published frame in flow_movie's cache format as frame SPADE_LINE_STILLS_CACHE_FRAME (200, the
+        // d1-still group's S8 f200: step (200 + 1) * 5 = 1005, so list that step in SPADE_LINE_STILLS_STEPS), for Rendering's look.
+        if (const char* cache_dir = env_cstr("SPADE_LINE_STILLS_CACHE"); cache_dir != nullptr) {
+            const uint32_t frame = env_cstr("SPADE_LINE_STILLS_CACHE_FRAME") != nullptr
+                                       ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_CACHE_FRAME"), nullptr, 10))
+                                       : 200u;
+            // The d1-still group's frame f is at t = (f + 1) * 5 * 0.2 ms; with SPADE_LS_STEP at 0.1 ms that is twice the steps.
+            const uint32_t per = static_cast<uint32_t>(std::lround(0.0002 / static_cast<double>(box.cfg.h)));
+            if (step == (frame + 1u) * 5u * per) {
+                std::filesystem::create_directories(cache_dir);
+                double lines_thrust = 0.0;
+                for (const af::LineReport& r : (*gpu)->line_reports()) lines_thrust += static_cast<double>(r.thrust);
+                // Rendering's layout (flow_movie's reader): the held body's position, its quaternion w x y z, each rotor's omega, then the lines' thrust.
+                std::vector<double> live{static_cast<double>(ph.body.pos.x), static_cast<double>(ph.body.pos.y), static_cast<double>(ph.body.pos.z),
+                                         static_cast<double>(ph.body.orient.w), static_cast<double>(ph.body.orient.x),
+                                         static_cast<double>(ph.body.orient.y), static_cast<double>(ph.body.orient.z)};
+                for (const vh::RotorRow& r : ph.rows) live.push_back(static_cast<double>(r.omega));
+                live.resize(11, 0.0);
+                live.push_back(lines_thrust);
+                const flow_movie::FrameLog log{step, static_cast<double>(step) * static_cast<double>(box.cfg.h), live};
+                const uint32_t solid = static_cast<uint32_t>(std::count_if(box.solid_cells.begin(), box.solid_cells.end(), [](uint8_t m) { return m != 0u; }));
+                const flow_movie::FrameBound bound{12.0f, solid};
+                const auto written = flow_movie::write_frame(cache_dir, frame, volume, log, bound);
+                ASSERT_TRUE(written.has_value()) << written.error().context;
+                std::printf("[ lines   ] frame %u written to %s (step %u)\n", frame, cache_dir, step);
+                std::fflush(stdout);
+            }
+        }
         std::printf("[ lines   ] solve %.0f ms a step; step %u (%.3f s), wall %.0f s: lines' thrust %.3f N in all (%zu reports)\n",
                     step_s / static_cast<double>(steps_timed) * 1000.0, step,
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),

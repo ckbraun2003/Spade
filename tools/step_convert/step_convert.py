@@ -11,6 +11,17 @@ item's transform), and runs spade_mesh_pack on it, so every mesh passes Spade's 
 sidecar exists. OpenCASCADE is LGPL-2.1 with an exception; this script runs as its own process and Spade never links,
 loads or ships it.
 
+THE MODES spade_part_import USES (L88; it runs this script as its own process and reads one JSON object from standard output):
+
+    step_convert.py --probe                      {"ocp": bool, "python", "occt", "wheel", "reason"}; always exit 0
+    step_convert.py IN.step --inspect            {"unit", "occt", "wheel", "solids": [{"name", "volume", "bbox_min", "bbox_max"}]}
+                                                 in the file's unit, placements applied; nothing is tessellated
+    step_convert.py IN.step --emit-3mf OUT.3mf --deflection D [--angle A] [--solid NAME]...
+                                                 the core-specification 3MF only (no packer, no sidecars), and
+                                                 {"unit", "occt", "wheel", "cross_check": [{"name", "brep_volume",
+                                                 "mesh_volume", "difference"}], "flagged": [names]}; exit 0, or 5 when a
+                                                 solid is flagged (the 3MF is written all the same)
+
 THE DEFLECTION IS REQUIRED. It is the chord error of the curved faces, a geometric choice that depends on the part and
 on the grid it will meet (docs: d at most a tenth of the smallest feature that matters). It takes a unit suffix
 (m, mm, cm, um, in, ft); a bare number is refused, so a unit is never guessed. It is recorded in each sidecar as
@@ -44,6 +55,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import struct
 import zipfile
 from xml.sax.saxutils import quoteattr
 
@@ -57,6 +69,11 @@ UNITS = {
     "ft": (0.3048, "foot", "FT"),
 }
 SI_PREFIX = {"$": "m", "MILLI": "mm", "CENTI": "cm", "MICRO": "um"}
+# The units a CONVERSION_BASED_UNIT may name (either spelling): the name is the unit, its conversion factor is the unit itself.
+CONVERSION_UNIT_NAMES = {
+    "INCH": "in", "FOOT": "ft", "METRE": "m", "METER": "m", "MILLIMETRE": "mm", "MILLIMETER": "mm",
+    "CENTIMETRE": "cm", "CENTIMETER": "cm", "MICROMETRE": "um", "MICROMETER": "um", "MICRON": "um",
+}
 CROSS_CHECK_LIMIT = 0.01
 STITCH_FRACTION = 1e-6
 
@@ -98,8 +115,8 @@ def file_length_unit(path):
         found.add(SI_PREFIX[prefix])
     for m in re.finditer(r"CONVERSION_BASED_UNIT\(\s*'([A-Za-z ]+)'", text):
         name = m.group(1).strip().upper()
-        if name in ("INCH", "FOOT"):
-            found.add("in" if name == "INCH" else "ft")
+        if name in CONVERSION_UNIT_NAMES:  # Spatial InterOp's exports say MILLIMETRE this way rather than with an SI_UNIT
+            found.add(CONVERSION_UNIT_NAMES[name])
         elif name not in ("DEGREE", "RADIAN"):
             raise Refusal(3, f"{os.path.basename(path)}: the unit '{name}' is not read (m, mm, cm, um, in, ft)")
     if len(found) != 1:
@@ -203,6 +220,41 @@ def tessellate(solid, deflection, angle, name):
     return stitch.vertices, triangles
 
 
+def weld_to_stored_precision(vertices, triangles, scale, transform=None):
+    """The mesh with every vertex that is the same point once stored merged into the first of them.
+
+    The part files store float32 metres, and the engine's gate refuses a vertex at the position of an earlier one. Two
+    tessellation vertices a few nanometres apart (the stitcher's grid is finer than a float32 at a few centimetres) are
+    different doubles but one stored point, so merging exactly those changes nothing that is stored: it is no repair. A
+    pair that is still two points when stored is left alone. `scale` is metres per file unit; `transform` is the 3MF
+    12-number placement applied before the rounding, as the engine applies it. Triangles that become a line are dropped."""
+    def stored(p):
+        x, y, z = p
+        if transform is not None:
+            m = transform
+            x, y, z = (x * m[0] + y * m[3] + z * m[6] + m[9], x * m[1] + y * m[4] + z * m[7] + m[10],
+                       x * m[2] + y * m[5] + z * m[8] + m[11])
+        return tuple(struct.unpack("f", struct.pack("f", c * scale))[0] for c in (x, y, z))
+
+    first = {}
+    remap = []
+    kept = []
+    for p in vertices:
+        key = stored(p)
+        if key not in first:
+            first[key] = len(kept)
+            kept.append(p)
+        remap.append(first[key])
+    if len(kept) == len(vertices):
+        return vertices, triangles
+    welded = []
+    for a, b, c in triangles:
+        a, b, c = remap[a], remap[b], remap[c]
+        if a != b and b != c and a != c:
+            welded.append((a, b, c))
+    return kept, welded
+
+
 def name_of(label):
     from OCP.TDataStd import TDataStd_Name
 
@@ -242,9 +294,10 @@ def unique_names(base, found):
     return out
 
 
-def read_solids(path, unit, wanted):
+def read_solids(path, unit, wanted, skipped=None):
     """[(name, solid, location)] for every solid instance of the STEP: the solid in its own frame, and where the
-    assembly puts it. `wanted`, if not empty, names the ones to keep."""
+    assembly puts it. `wanted`, if not empty, names the ones to keep. A part with no solid (a shell, surface or wire) is a
+    refusal of the file unless `skipped` is a list: then its name is appended there and the rest is read."""
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.Interface import Interface_Static
     from OCP.STEPCAFControl import STEPCAFControl_Reader
@@ -285,7 +338,10 @@ def read_solids(path, unit, wanted):
             explorer.Next()
         label_name = instance_name or name_of(label) or "solid"
         if not solids:
-            raise Refusal(3, f"{label_name}: no solid (shells, surfaces and wires are not read)")
+            if skipped is None:
+                raise Refusal(3, f"{label_name}: no solid (shells, surfaces and wires are not read)")
+            skipped.append(label_name)
+            return
         for k, solid in enumerate(solids):
             found.append((label_name if len(solids) == 1 else f"{label_name}_{k + 1}", solid, location))
 
@@ -317,17 +373,24 @@ def read_solids(path, unit, wanted):
     return found
 
 
-def read_parts(path, unit, deflection, angle, wanted):
+def no_solid_entries(names):
+    """The parts left out because they hold no solid, as the answers list them."""
+    return [{"name": n, "code": "no_solid"} for n in names]
+
+
+def read_parts(path, unit, deflection, angle, wanted, skipped=None):
     """The solid instances of the STEP, each meshed and measured. `deflection` is in the file's unit."""
     from OCP.BRepGProp import BRepGProp
     from OCP.GProp import GProp_GProps
 
     parts = []
-    for name, solid, location in read_solids(path, unit, wanted):
+    for name, solid, location in read_solids(path, unit, wanted, skipped):
         vertices, triangles = tessellate(solid, deflection, angle, name)
+        placement = transform_of(location)
+        vertices, triangles = weld_to_stored_precision(vertices, triangles, UNITS[unit][0], placement)
         props = GProp_GProps()
         BRepGProp.VolumeProperties_s(solid, props)
-        parts.append(Part(name, vertices, triangles, transform_of(location), props.Mass()))
+        parts.append(Part(name, vertices, triangles, placement, props.Mass()))
     return parts
 
 
@@ -373,9 +436,80 @@ def find_packer(given):
     return candidate
 
 
+def say(obj):
+    """One JSON object on standard output, one line: what spade_part_import reads."""
+    import json
+
+    sys.stdout.write(json.dumps(obj) + "\n")
+
+
+def probe():
+    """Is OpenCASCADE importable here, and which versions. Always exit 0: the answer is in the JSON."""
+    answer = {"ocp": False, "python": ".".join(str(v) for v in sys.version_info[:3]), "occt": "", "wheel": "", "reason": ""}
+    try:
+        import_ocp()
+        answer["occt"], answer["wheel"] = ocp_versions()
+        answer["ocp"] = True
+    except Refusal as r:
+        answer["reason"] = r.message
+    except Exception as e:  # noqa: BLE001 -- a broken install is an answer, not a crash
+        answer["reason"] = "OCP is not installed (" + str(e) + ")"
+    say(answer)
+    return 0
+
+
+def inspect_solids(path, wanted):
+    """The solids of the STEP with name, B-rep volume and box (placements applied), in the file's unit. Nothing is meshed."""
+    from OCP.BRepBndLib import BRepBndLib
+    from OCP.BRepGProp import BRepGProp
+    from OCP.Bnd import Bnd_Box
+    from OCP.GProp import GProp_GProps
+
+    import_ocp()
+    unit = file_length_unit(path)
+    solids = []
+    skipped = []
+    for name, solid, location in read_solids(path, unit, wanted, skipped):
+        props = GProp_GProps()
+        BRepGProp.VolumeProperties_s(solid, props)
+        box = Bnd_Box()
+        BRepBndLib.Add_s(solid.Moved(location), box, False)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        solids.append({"name": name, "volume": props.Mass(), "bbox_min": [x0, y0, z0], "bbox_max": [x1, y1, z1]})
+    occt, wheel = ocp_versions()
+    say({"unit": unit, "occt": occt, "wheel": wheel, "solids": solids, "skipped": no_solid_entries(skipped)})
+    return 0
+
+
+def emit_3mf(path, out, deflection_text, angle, wanted):
+    """The 3MF of the STEP at `out` and the cross-check as JSON. Exit 5 when a solid is flagged; the 3MF is written either way."""
+    d_value, d_unit = parse_length(deflection_text, "--deflection")
+    import_ocp()
+    unit = file_length_unit(path)
+    deflection = d_value * UNITS[d_unit][0] / UNITS[unit][0]  # in the file's unit
+    skipped = []
+    parts = read_parts(path, unit, deflection, angle, wanted, skipped)
+    checks, flagged = [], []
+    for part in parts:
+        volume = mesh_volume(part.vertices, part.triangles)
+        difference = abs(volume - part.brep_volume) / abs(part.brep_volume) if part.brep_volume else math.inf
+        if difference > CROSS_CHECK_LIMIT or volume <= 0.0:
+            flagged.append(part.name)
+        checks.append({"name": part.name, "brep_volume": part.brep_volume, "mesh_volume": volume,
+                       "difference": difference if math.isfinite(difference) else 1.0})
+    write_3mf(out, parts, UNITS[unit][1])
+    occt, wheel = ocp_versions()
+    say({"unit": unit, "occt": occt, "wheel": wheel, "cross_check": checks, "flagged": flagged,
+         "skipped": no_solid_entries(skipped)})
+    return 5 if flagged else 0
+
+
 def run(argv):
     parser = argparse.ArgumentParser(prog="step_convert.py", add_help=False)
     parser.add_argument("input", nargs="?")
+    parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--emit-3mf", dest="emit_3mf")
     parser.add_argument("--out")
     parser.add_argument("--deflection")
     parser.add_argument("--angle", default="0.5")
@@ -385,8 +519,24 @@ def run(argv):
     args, extra = parser.parse_known_args(argv)
     if extra:
         raise Refusal(2, "unknown argument '" + extra[0] + "'")
+    if args.probe:
+        return probe()
     if not args.input:
         raise Refusal(2, "no input file")
+    if args.inspect or args.emit_3mf:
+        if not os.path.isfile(args.input):
+            raise Refusal(1, f"cannot read '{args.input}'")
+        if args.inspect:
+            return inspect_solids(args.input, set(args.solid))
+        if not args.deflection:
+            raise Refusal(2, "--deflection is required (for example 0.1mm): the chord error is a choice, with no default")
+        try:
+            angle = float(args.angle)
+        except ValueError:
+            raise Refusal(2, f"--angle '{args.angle}' is not a number of radians") from None
+        if not math.isfinite(angle) or angle <= 0.0:
+            raise Refusal(2, "--angle must be finite and above zero")
+        return emit_3mf(args.input, args.emit_3mf, args.deflection, angle, set(args.solid))
     if not args.out:
         raise Refusal(2, "--out DIR is required")
     if not args.deflection:

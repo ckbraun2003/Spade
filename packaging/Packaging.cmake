@@ -39,6 +39,13 @@ if(TARGET spade_geo_fetch)
     add_dependencies(spade_editor_files spade_geo_fetch)
     install(TARGETS spade_geo_fetch RUNTIME DESTINATION . ${_editor_install})
 endif()
+# The part import tool (tools/part_import; L88): the editor runs it beside itself. step_convert.py ships beside it, the STEP route's
+# script (python and OpenCASCADE are the user's own install: spade_part_import --probe says how; they are never bundled).
+if(TARGET spade_part_import)
+    add_dependencies(spade_editor_files spade_part_import)
+    install(TARGETS spade_part_import RUNTIME DESTINATION . ${_editor_install})
+    install(FILES "${PROJECT_SOURCE_DIR}/tools/step_convert/step_convert.py" DESTINATION . ${_editor_install})
+endif()
 if(TARGET spade_editor_launcher)
     add_dependencies(spade_editor_files spade_editor_launcher)
     # Interface's WIN32 launcher (OUTPUT_NAME SpadeEditor): no console, output to %LOCALAPPDATA%\Spade\logs, arguments passed through.

@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/path_text.hpp"
+#include "world/mesh_import/outcome.hpp"
 #include "world/detail/weld.hpp"
 
 namespace spade {
@@ -208,7 +209,8 @@ constexpr Affine kIdentity{{{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}, {0.0, 0.
 
 class Reader {
 public:
-    Reader(std::string file, std::filesystem::path base_dir) : file_(std::move(file)), base_dir_(std::move(base_dir)) {}
+    Reader(std::string file, std::filesystem::path base_dir, std::vector<MeshObjectOutcome>* collect = nullptr)
+        : file_(std::move(file)), base_dir_(std::move(base_dir)), collect_(collect) {}
 
     [[nodiscard]] Result<std::vector<MeshObject>> read(std::span<const std::byte> bytes);
 
@@ -292,6 +294,7 @@ private:
 
     std::string file_;
     std::filesystem::path base_dir_;
+    std::vector<MeshObjectOutcome>* collect_ = nullptr;
     Json root_;
     bool glb_ = false;
     std::optional<std::span<const std::byte>> bin_;
@@ -666,8 +669,12 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
     }
 
     const MeshInput input = detail::weld_exact(positions, indices, MeshUnit::metre);
-    auto built = make_mesh(input, file_ + ": " + prefix);
-    if (!built) return std::unexpected(built.error());
+    auto built = make_mesh_diagnosed(input, file_ + ": " + prefix);
+    if (collect_ != nullptr) {  // the collecting mode: the outcome, whatever it is (the object returned here is dropped by the caller)
+        detail::record_outcome(*collect_, name, MeshUnit::metre, built);
+        return MeshObject{std::move(name), built ? *built : std::shared_ptr<const TriangleMesh>(), MeshUnit::metre};
+    }
+    if (!built) return std::unexpected(built.error().error);
     return MeshObject{std::move(name), std::move(*built), MeshUnit::metre};
 }
 
@@ -821,9 +828,10 @@ Result<std::pair<std::span<const std::byte>, uint64_t>> Reader::buffer(uint64_t 
 // Runs a Reader, turning the exceptions a JSON library or an allocation can
 // throw into Results: none crosses a Spade API.
 [[nodiscard]] Result<std::vector<MeshObject>> run(const std::string& file, const std::filesystem::path& base_dir,
-                                                  std::span<const std::byte> bytes) {
+                                                  std::span<const std::byte> bytes,
+                                                  std::vector<MeshObjectOutcome>* collect = nullptr) {
     try {
-        Reader reader(file, base_dir);
+        Reader reader(file, base_dir, collect);
         return reader.read(bytes);
     } catch (const nlohmann::json::exception& e) {
         return std::unexpected(Error{Code::invalid_argument, file + ": " + e.what()});
@@ -852,6 +860,14 @@ Result<std::vector<MeshObject>> read_gltf(const std::filesystem::path& path) {
 Result<std::vector<MeshObject>> read_gltf_bytes(std::span<const std::byte> bytes,
                                                 const std::filesystem::path& base_dir) {
     return run("(glTF bytes)", base_dir, bytes);
+}
+
+Result<std::vector<MeshObjectOutcome>> read_gltf_bytes_objects(std::span<const std::byte> bytes,
+                                                               const std::filesystem::path& base_dir) {
+    std::vector<MeshObjectOutcome> all;
+    const Result<std::vector<MeshObject>> r = run("(glTF bytes)", base_dir, bytes, &all);
+    if (!r) return std::unexpected(r.error());
+    return all;
 }
 
 }  // namespace spade
