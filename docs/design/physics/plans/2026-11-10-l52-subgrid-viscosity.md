@@ -7,7 +7,7 @@ Decided by Cameron, 2026-11-10, after the L48 wake probes. Code: `engine/physics
 
 The air step has no viscosity worth the name at the grid (nu = 1.5e-5 m^2/s acts over 1.4 um; a cell is 4 to 10 mm), and
 the advection clamp only damps what it must. A wake's energy therefore piles up at the grid scale and grows with time.
-The L48 probes (physics/wake-probe, never merged; `C:/Users/Cameron/wake-out/*/analysis.json`) measured it:
+The L48 probes (physics/wake-probe, never merged; `docs/design/physics/records/data/2026-11-10-wake/*/analysis.json`) measured it:
 
 | run (quad hover, 0.6 s unless noted) | ke_hi | filtered/raw vorticity | clamp fire |
 |---|---|---|---|
