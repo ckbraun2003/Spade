@@ -505,16 +505,18 @@ def emit_3mf(path, out, deflection_text, angle, wanted):
 
 
 def run(argv):
-    parser = argparse.ArgumentParser(prog="step_convert.py", add_help=False)
-    parser.add_argument("input", nargs="?")
-    parser.add_argument("--probe", action="store_true")
-    parser.add_argument("--inspect", action="store_true")
-    parser.add_argument("--emit-3mf", dest="emit_3mf")
-    parser.add_argument("--out")
-    parser.add_argument("--deflection")
-    parser.add_argument("--angle", default="0.5")
-    parser.add_argument("--solid", action="append", default=[])
-    parser.add_argument("--pack")
+    # --help / -h is argparse's own: the usage and this file's description on standard output, exit 0 (a request, not an error).
+    parser = argparse.ArgumentParser(prog="step_convert.py", description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("input", nargs="?", help="the STEP file")
+    parser.add_argument("--probe", action="store_true", help="say whether OpenCASCADE can be used, as JSON; reads nothing")
+    parser.add_argument("--inspect", action="store_true", help="list the solids and what is skipped, as JSON; writes nothing")
+    parser.add_argument("--emit-3mf", dest="emit_3mf", help="tessellate and write one 3MF here (needs --deflection)")
+    parser.add_argument("--out", help="the directory the .spmesh sidecars are written to")
+    parser.add_argument("--deflection", help="chord error with a unit, for example 0.1mm; no default")
+    parser.add_argument("--angle", default="0.5", help="angular deflection in radians (default 0.5)")
+    parser.add_argument("--solid", action="append", default=[], help="keep only this solid; repeat it to keep several")
+    parser.add_argument("--pack", help="the spade_mesh_pack program")
     parser.error = lambda message: (_ for _ in ()).throw(Refusal(2, message))  # noqa: E731
     args, extra = parser.parse_known_args(argv)
     if extra:

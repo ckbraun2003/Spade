@@ -12,7 +12,7 @@ Interface, 2026-11-17. The lead's GO, with KAT's rulings: `--inspect` writes not
 | `--inspect <file>` | the format, the file's sha256, its objects (name, triangles, bbox, volume, gate result each), the unit (declared, or a guess for STL and OBJ) | nothing |
 | `--import <file> --store <dir>` | everything `--inspect` knows, then the file into the store and one `.spmesh` sidecar per object | the store |
 
-Output is **JSON lines on standard output**, nothing else there: `{"event":"stage",...}`, `{"event":"progress",...}` and, last, one `{"event":"result",...}` (its `ok`, `exit`, `code`, `message`, `advice`, and the mode's payload). Standard error carries only a usage text. No prompts, ever; the environment variable `SPADE_PART_STORE` is only the default for `--store`.
+Output is **JSON lines on standard output**, nothing else there: `{"event":"stage",...}`, `{"event":"progress",...}` and, last, one `{"event":"result",...}` (its `ok`, `exit`, `code`, `message`, `advice`, and the mode's payload). Standard error carries only a usage text, and only for a usage error (exit 2). The one exception to the JSON lines is `--help` (and `-h`): it is a request, not a usage problem, so it prints the usage as plain text on standard output, exits 0, and prints no JSON line and nothing on standard error; a machine never calls it (L88q). `step_convert.py --help` is argparse's own, the same way. No prompts, ever; the environment variable `SPADE_PART_STORE` is only the default for `--store`.
 
 ## 2. Options
 
