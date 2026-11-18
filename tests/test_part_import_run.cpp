@@ -322,6 +322,72 @@ TEST(PartImportInspect, AnOpenMeshIsRefusedWithItsMessageAndAdvice) {
     expect_json_lines_discipline(r);
 }
 
+TEST(PartImportInspect, EveryObjectOfAFileGetsItsOwnGateResult) {
+    Rig rig;
+    const std::string bytes = three_mf({cube_object(1, "a", 10.0), cube_object(2, "b", 10.0, 40.0, 11), cube_object(3, "c", 10.0, 80.0)});
+    const Out r = rig.run(A({"--inspect", rig.put("three.3mf", bytes).string()}));
+    EXPECT_EQ(r.exit, 4) << r.out;
+    EXPECT_FALSE(r.ok());
+    EXPECT_EQ(r.result.value("gate", std::string()), "refused");
+    EXPECT_EQ(r.code(), "mesh_refused");
+    ASSERT_EQ(r.result.at("objects").size(), 3u) << r.out;
+    const std::vector<bool> expected_ok = {true, false, true};
+    for (std::size_t i = 0; i < 3; ++i) {
+        const json& o = r.result.at("objects")[i];
+        EXPECT_EQ(o.value("ok", !expected_ok[i]), expected_ok[i]) << o.dump();
+        if (expected_ok[i]) {
+            EXPECT_EQ(o.value("triangles", 0), 12);
+        } else {
+            EXPECT_EQ(o.value("code", std::string()), "mesh_refused");
+            EXPECT_FALSE(o.value("message", std::string()).empty());
+            EXPECT_FALSE(o.contains("triangles"));
+        }
+    }
+    EXPECT_NE(r.result.value("message", std::string()).find("b"), std::string::npos);
+    expect_json_lines_discipline(r);
+    // an OBJ whose FIRST object is the open one
+    std::string obj;
+    uint32_t base = 0;
+    for (const auto& [name, faces] : {std::pair<const char*, std::size_t>{"first", 11}, {"second", 12}}) {
+        obj += std::string("o ") + name + "\n";
+        for (uint32_t v = 0; v < 8; ++v) {
+            const glm::vec3 c = corner(v, 1.0f);
+            obj += "v " + std::to_string(c.x + static_cast<float>(base)) + " " + std::to_string(c.y) + " " + std::to_string(c.z) + "\n";
+        }
+        for (std::size_t i = 0; i < faces; ++i) {
+            obj += "f " + std::to_string(kCube[i][0] + 1 + base) + " " + std::to_string(kCube[i][1] + 1 + base) + " " +
+                   std::to_string(kCube[i][2] + 1 + base) + "\n";
+        }
+        base += 8;
+    }
+    const Out o = rig.run(A({"--inspect", rig.put("two.obj", obj).string(), "--unit", "m"}));
+    EXPECT_EQ(o.exit, 4) << o.out;
+    ASSERT_EQ(o.result.at("objects").size(), 2u);
+    EXPECT_FALSE(o.result.at("objects")[0].value("ok", true));
+    EXPECT_TRUE(o.result.at("objects")[1].value("ok", false));
+}
+
+TEST(PartImportImport, TheGateIsRunOnThePickedObjectsOnlyAndARefusalIsMeshRefusedWithNothingStored) {
+    Rig rig;
+    const std::string bytes = three_mf({cube_object(1, "a", 10.0), cube_object(2, "b", 10.0, 40.0, 11), cube_object(3, "c", 10.0, 80.0)});
+    const fs::path in = rig.put("three.3mf", bytes);
+    // all of it: refused, naming the object, and nothing stored
+    Out r = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    EXPECT_EQ(r.exit, 4) << r.out;
+    EXPECT_EQ(r.code(), "mesh_refused");
+    EXPECT_NE(r.result.value("message", std::string()).find("b"), std::string::npos);
+    EXPECT_FALSE(fs::exists(rig.store() / sha256_hex(bytes)));
+    // the refused one picked: the same
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "b"}));
+    EXPECT_EQ(r.exit, 4) << r.out;
+    EXPECT_EQ(r.code(), "mesh_refused");
+    // a good one picked: stored, the open sibling does not stop it
+    r = rig.run(A({"--import", in.string(), "--store", rig.store().string(), "--object", "c"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    ASSERT_EQ(r.result.at("objects").size(), 1u);
+    EXPECT_EQ(r.result.at("objects")[0].value("name", std::string()), "c");
+}
+
 TEST(PartImportInspect, AxesAndScaleShowThePartFrame) {
     Rig rig;
     const Out r = rig.run(A({"--inspect", rig.put("cube.glb", cube_glb(2.0f)).string(), "--axes", "-y,x,z", "--scale", "0.5"}));
