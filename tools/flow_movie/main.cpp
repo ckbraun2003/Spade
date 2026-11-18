@@ -35,7 +35,7 @@
 //
 // Everything under --out (Desktop/Projects/Videos/Footage/Spade/<date> by default) is working
 // output, and none of it is posted. A film is POSTED only under
-// C:/Users/Cameron/Desktop/Projects/Videos, by Videos/CATEGORIES.md (Cameron,
+// Desktop/Projects/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
 // 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
 // recorded), at most 120 s and 30 MB, with a title card. A renderer
 // before-and-after is a Feature. To post one, encode it through the queue
