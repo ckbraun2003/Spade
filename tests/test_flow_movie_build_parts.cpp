@@ -1015,7 +1015,7 @@ TEST(FlowMovieBuildParts, TheDiscRastersWithNoAngularStructureAndBrighterWhereTh
             means[k] += l / 16.0;
         }
         EXPECT_LE(hi - lo, 0.10f * static_cast<float>(means[k]) + 2.0f) << "no angular structure at " << fractions[k] << " of the radius: " << lo << ".." << hi;
-        EXPECT_GT(means[k], 4.0) << "the disc is there at " << fractions[k];
+        EXPECT_GT(means[k], 2.0) << "the disc is there at " << fractions[k];
     }
     EXPECT_GT(means[0], 1.15 * means[1]) << "denser (brighter) nearer the root";
     EXPECT_GT(means[1], 1.15 * means[2]) << "and denser in the middle than near the tip";

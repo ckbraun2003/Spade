@@ -195,6 +195,8 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
     if (name == "aluminium_bare") return make(0.70f, 0.71f, 0.73f);
     if (name == "aluminium_anodised") return make(0.11f, 0.12f, 0.15f);
     if (name == "pcb_green") return make(0.03f, 0.21f, 0.11f);
+    // CHOSEN: a board seen through a case's vent slots. The renderer has no occlusion, so a lit pcb green reads as outside light; the interior is in shadow.
+    if (name == "pcb_in_shadow") return make(0.006f, 0.022f, 0.012f);
     if (name == "plastic_black") return make(0.045f, 0.045f, 0.05f);
     if (name == "plastic_white") return make(0.86f, 0.86f, 0.84f);
     if (name == "rubber_black") return make(0.02f, 0.02f, 0.022f);
@@ -463,6 +465,8 @@ struct PropBlur {
     double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.5f;         // the copies' grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
+    bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
+    float opacity = 1.0f;      // the disc's: its alpha at each radius is the blade's solidity there times this
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
@@ -483,6 +487,16 @@ struct PropBlur {
         if (eq == std::string::npos) return bad_blur("'" + item + "' has no '=': write key=value");
         const std::string key = item.substr(0, eq);
         const std::string value = item.substr(eq + 1u);
+        if (key == "mode") {
+            if (value == "disc") {
+                blur.sampled = false;
+            } else if (value == "sampled") {
+                blur.sampled = true;
+            } else {
+                return bad_blur("mode is disc or sampled, not '" + value + "'");
+            }
+            continue;
+        }
         double number = 0.0;
         const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
         if (value.empty() || ec != std::errc{} || end != value.data() + value.size() || !std::isfinite(number)) {
@@ -494,6 +508,9 @@ struct PropBlur {
         } else if (key == "samples") {
             if (!(number >= 1.0 && number <= 128.0 && number == std::floor(number))) return bad_blur("samples must be a whole number from 1 to 128");
             blur.samples = static_cast<uint32_t>(number);
+        } else if (key == "opacity") {
+            if (!(number > 0.0 && number <= 1.0)) return bad_blur("opacity must be above 0 and at most 1");
+            blur.opacity = static_cast<float>(number);
         } else if (key == "tint") {
             if (!(number > 0.0 && number <= 1.0)) return bad_blur("tint must be above 0 and at most 1");
             blur.tint = static_cast<float>(number);
@@ -501,16 +518,136 @@ struct PropBlur {
             if (!(number > 0.0 && number < 0.1)) return bad_blur("shutter is in seconds, above 0 and under 0.1");
             blur.shutter_s = number;
         } else {
-            return bad_blur("unknown key '" + key + "' (alpha samples shutter tint)");
+            return bad_blur("unknown key '" + key + "' (mode alpha samples shutter tint opacity)");
         }
     }
     return blur;
 }
 
+// A prop part file's blade chord table (the one the physics reads): `prop.blades`, `prop.blade.r_over_r` and `.c_over_r` (the chord over the
+// radius at each station), `.hub_cutout` (the first station when absent).
+struct BladeChord {
+    uint32_t blades = 2u;
+    std::vector<float> r_over_r;
+    std::vector<float> c_over_r;
+    float hub_cutout = 0.0f;
+};
+
+[[nodiscard]] inline spade::Result<BladeChord> read_blade_chord(const std::filesystem::path& file) {
+    const auto bad_chord = [&](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "prop part " + file.string() + ": " + why});
+    };
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "prop part " + file.string() + ": cannot be read"});
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    try {
+        const YAML::Node root = YAML::Load(text);
+        if (!root.IsMap() || !root["prop"] || !root["prop"].IsMap()) return bad_chord("no `prop:` block (is it a prop part file?)");
+        const YAML::Node prop = root["prop"];
+        const YAML::Node blade = prop["blade"];
+        if (!blade || !blade.IsMap() || !blade["r_over_r"] || !blade["c_over_r"]) return bad_chord("no prop.blade.r_over_r and c_over_r (the chord table)");
+        BladeChord chord;
+        if (prop["blades"]) chord.blades = prop["blades"].as<uint32_t>();
+        if (chord.blades < 1u || chord.blades > 8u) return bad_chord("prop.blades must be from 1 to 8");
+        for (const auto& v : blade["r_over_r"]) chord.r_over_r.push_back(v.as<float>());
+        for (const auto& v : blade["c_over_r"]) chord.c_over_r.push_back(v.as<float>());
+        if (chord.r_over_r.size() < 2u || chord.r_over_r.size() != chord.c_over_r.size()) return bad_chord("r_over_r and c_over_r are two lists of the same length, at least 2");
+        for (std::size_t i = 0; i < chord.r_over_r.size(); ++i) {
+            if (!(chord.r_over_r[i] > 0.0f) || !(chord.c_over_r[i] > 0.0f) || (i > 0u && !(chord.r_over_r[i] > chord.r_over_r[i - 1u]))) {
+                return bad_chord("the stations must be positive and r_over_r strictly increasing");
+            }
+        }
+        chord.hub_cutout = blade["hub_cutout"] ? blade["hub_cutout"].as<float>() : chord.r_over_r.front();
+        if (!(chord.hub_cutout > 0.0f && chord.hub_cutout < 1.0f)) return bad_chord("blade.hub_cutout must be inside (0, 1)");
+        return chord;
+    } catch (const YAML::Exception& e) {
+        return bad_chord(std::string("not readable: ") + e.what());
+    }
+}
+
+// The blade's SOLIDITY at r/R = x: B c(r) / (2 pi r), the share of a circle at that radius the B blades cover; c/R linear between the table's
+// stations; 0 inside the first station (the hub) and past the last (the tip).
+[[nodiscard]] inline float blade_solidity(const BladeChord& chord, float x) noexcept {
+    if (chord.r_over_r.size() < 2u || !(x >= chord.r_over_r.front()) || x > chord.r_over_r.back()) return 0.0f;
+    std::size_t i = 1u;
+    while (i + 1u < chord.r_over_r.size() && chord.r_over_r[i] < x) ++i;
+    const float t = (x - chord.r_over_r[i - 1u]) / (chord.r_over_r[i] - chord.r_over_r[i - 1u]);
+    const float c = chord.c_over_r[i - 1u] + t * (chord.c_over_r[i] - chord.c_over_r[i - 1u]);
+    return static_cast<float>(chord.blades) * c / (2.0f * std::numbers::pi_v<float> * x);
+}
+
+// The time-averaged disc of a turning propeller: `bands` concentric rings from the hub cutout to the tip, each one flat tint at alpha = the
+// solidity at its middle radius times `opacity` (at most 1), `segments` evenly round, both windings (seen from either side), flat at y = plane_y.
+// One submesh and one material per ring; nothing varies with the angle.
+[[nodiscard]] inline spade::render::MeshData rotor_disc_mesh(const BladeChord& chord, float radius_m, float plane_y, float opacity, float tint,
+                                                           uint32_t bands, uint32_t segments) {
+    spade::render::MeshData m;
+    const float width = (1.0f - chord.hub_cutout) / static_cast<float>(bands);
+    for (uint32_t b = 0; b < bands; ++b) {
+        const float lo = chord.hub_cutout + width * static_cast<float>(b);
+        const float hi = lo + width;
+        const float alpha = std::min(1.0f, blade_solidity(chord, lo + 0.5f * width) * opacity);
+        spade::render::Material material;
+        material.base_color = glm::vec4(tint, tint, std::min(1.0f, tint * 1.06f), alpha);
+        m.source_materials.push_back(material);
+        const auto first = static_cast<uint32_t>(m.indices.size());
+        for (const float side : {1.0f, -1.0f}) {
+            const auto face = static_cast<uint32_t>(m.positions.size());
+            for (uint32_t j = 0; j < segments; ++j) {
+                const float a = 2.0f * std::numbers::pi_v<float> * static_cast<float>(j) / static_cast<float>(segments);
+                const glm::vec3 d(std::cos(a), 0.0f, std::sin(a));
+                m.positions.push_back(d * (lo * radius_m) + glm::vec3(0.0f, plane_y, 0.0f));
+                m.positions.push_back(d * (hi * radius_m) + glm::vec3(0.0f, plane_y, 0.0f));
+                m.normals.insert(m.normals.end(), 2u, glm::vec3(0.0f, side, 0.0f));
+            }
+            for (uint32_t j = 0; j < segments; ++j) {
+                const uint32_t j1 = (j + 1u) % segments;
+                const uint32_t in0 = face + 2u * j, out0 = in0 + 1u, in1 = face + 2u * j1, out1 = in1 + 1u;
+                const std::array<uint32_t, 6> top{in0, out1, out0, in0, in1, out1};  // right-handed normal +y
+                const std::array<uint32_t, 6> bottom{in0, out0, out1, in0, out1, in1};
+                for (const uint32_t k : side > 0.0f ? top : bottom) m.indices.push_back(k);
+            }
+        }
+        m.submesh_first_index.push_back(first);
+        m.submesh_index_count.push_back(static_cast<uint32_t>(m.indices.size()) - first);
+        m.submesh_material.push_back(b);
+    }
+    return m;
+}
+
 struct BuildDraw {
     std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen
     PropBlur blur{};
+    std::optional<BladeChord> chord;  // the prop part's chord table (--lines): what the turning rotors' disc is made from
 };
+
+// The `prop` primitive's reach (the farthest vertex from the y axis, hub at the origin) and mean height, by the glTF material names; none when
+// the mesh has no `prop` primitive.
+struct PropExtent {
+    float reach = 0.0f;
+    float plane_y = 0.0f;
+};
+[[nodiscard]] inline std::optional<PropExtent> prop_extent(const spade::render::MeshData& mesh, const std::vector<std::string>& names) {
+    std::vector<uint8_t> marked(mesh.positions.size(), 0u);
+    for (std::size_t s = 0; s < mesh.submesh_first_index.size() && s < mesh.submesh_index_count.size() && s < mesh.submesh_material.size(); ++s) {
+        const uint32_t m = mesh.submesh_material[s];
+        if (m >= names.size() || last_word(names[m]) != "prop") continue;
+        for (uint32_t i = mesh.submesh_first_index[s]; i < mesh.submesh_first_index[s] + mesh.submesh_index_count[s] && i < mesh.indices.size(); ++i) {
+            if (mesh.indices[i] < marked.size()) marked[mesh.indices[i]] = 1u;
+        }
+    }
+    PropExtent e;
+    std::size_t count = 0;
+    for (std::size_t v = 0; v < marked.size(); ++v) {
+        if (marked[v] == 0u) continue;
+        e.reach = std::max(e.reach, std::hypot(mesh.positions[v].x, mesh.positions[v].z));
+        e.plane_y += mesh.positions[v].y;
+        ++count;
+    }
+    if (count == 0u || !(e.reach > 0.0f)) return std::nullopt;
+    e.plane_y /= static_cast<float>(count);
+    return e;
+}
 
 // The primitives of `mesh` whose glTF material (names[the submesh's material]) ends in one of `hide` are left out of the drawing: their indices
 // and submesh entries go, the palette and the vertices stay. Each name must match a primitive: one that matches nothing is refused naming
@@ -658,7 +795,25 @@ struct BuildDraw {
                 const double omega = part.kind == "rotor" && part.rotor >= 0 && static_cast<std::size_t>(part.rotor) < draw_options.omega.size()
                                          ? draw_options.omega[static_cast<std::size_t>(part.rotor)]
                                          : 0.0;
-                if (part.kind == "rotor" && omega > 0.0 && draw_options.blur.samples > 0u) {
+                if (part.kind == "rotor" && omega > 0.0 && !draw_options.blur.sampled) {
+                    // the time-averaged disc: the `prop` primitive is replaced by rings at its blade plane, alpha the solidity there; the bell stays
+                    const std::string what = "object " + file.string();
+                    if (!draw_options.chord) {
+                        return fail(part, what, spade::Error{spade::Code::invalid_argument, "a turning rotor is drawn as a disc from the prop part's chord table: give the prop part file (--lines), or draw the sampled blur (--prop-blur mode=sampled)"});
+                    }
+                    if (names.empty()) return fail(part, what, spade::Error{spade::Code::invalid_argument, "its material names are needed to find the prop"});
+                    const auto extent = prop_extent(mesh, names);
+                    if (!extent) return fail(part, what, spade::Error{spade::Code::invalid_argument, "the mesh has no `prop` primitive (by its material names)"});
+                    const float radius = part.radius_m > 0.0f ? part.radius_m : extent->reach;
+                    if (auto hidden = hide_materials(mesh, names, {"prop"}); !hidden) return fail(part, what, hidden.error());
+                    if (!mesh.submesh_index_count.empty()) {
+                        if (auto r = draw(std::move(mesh), pos, orient, what); !r) return r;
+                    }
+                    constexpr uint32_t kBands = 32u, kSegments = 96u;
+                    spade::render::MeshData ring = rotor_disc_mesh(*draw_options.chord, radius, extent->plane_y, draw_options.blur.opacity, draw_options.blur.tint, kBands, kSegments);
+                    if (auto r = draw(std::move(ring), pos, orient, what); !r) return r;
+                    scene.statics.back().see_through = true;
+                } else if (part.kind == "rotor" && omega > 0.0 && draw_options.blur.samples > 0u) {
                     // the blade spread over the shutter: the prop's materials at the blur's alpha (every one for a mesh without names)
                     for (std::size_t i = 0; i < mesh.source_materials.size(); ++i) {
                         if (names.empty() || last_word(names[i]) == "prop") {

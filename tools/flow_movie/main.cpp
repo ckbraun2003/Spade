@@ -1678,8 +1678,15 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 if (!parts) return std::unexpected(spade::Error{parts.error().code, "--build-parts " + plan.build_parts + ": " + parts.error().context});
                 build = std::make_shared<const std::vector<BuildPart>>(std::move(*parts));
             }
+            // the turning rotors' disc is made from the prop part's own chord table: the --lines file (the one the physics reads)
+            std::optional<BladeChord> chord;
+            if (build && !plan.lines.empty() && !plan.prop_blur.sampled) {
+                auto read = read_blade_chord(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines);
+                if (!read) return std::unexpected(spade::Error{read.error().code, "--lines (the rotors' disc): " + read.error().context});
+                chord = std::move(*read);
+            }
             if (visual || build) {
-                film.decorate = [visual, build, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1691,6 +1698,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                     if (build) {
                         BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
                         draw.blur = blur;
+                        draw.chord = chord;
                         draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
                         return add_build_parts(scene, *build, store, pos, orient, draw);
                     }
