@@ -8,7 +8,9 @@
 // step, Cs 0.17, the quad's rigid parts as solids, the deep grid), the rows LiveRun holds at hover, one line a rotor from
 // vehicles::rotor_lines() with the part's blade and polar (scene::line_propeller()), the dye released at the rotors' discs (zero load:
 // the lines carry the force). Knobs: SPADE_LINE_STILLS_STEPS (default "300,700,1200,1800"), SPADE_LINE_STILLS_NSUB (8),
-// SPADE_LS_STEP (the time step, s; 0.0002), SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
+// SPADE_LS_DIAG=1 (L86p, the step-size diagnostic): per sample step, the pressure solve's health since the last sample (largest residual, mean
+// iterations, steps capped / unconverged / stalled), the vertical momentum flux through four planes under the hubs (rho sum w^2 dA, the mass flux
+// and the pressure's sum, all in newtons or kg/s), and the tip's travel a step; SPADE_LS_STEP (the time step, s; 0.0002), SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
 // SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline),
 // SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1).
 // ---------------------------------------------------------------------------
@@ -22,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "core/fp16.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -242,7 +245,20 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                 static_cast<double>(prop->blade.radius), static_cast<double>(prop->blade.radius / shape.dx),
                 prop->fitted ? "yes" : "no", shape.nx, shape.ny, shape.nz, static_cast<double>(shape.dx) * 1000.0,
                 static_cast<double>(box.cfg.h) * 1000.0);
+    const bool diag = env_cstr("SPADE_LS_DIAG") != nullptr;
+    if (diag && !ph.rows.empty()) {
+        const double tip_speed = static_cast<double>(omega) * static_cast<double>(prop->blade.radius);
+        const double cells = tip_speed * static_cast<double>(box.cfg.h) / static_cast<double>(shape.dx);
+        std::printf("[ diag    ] tip speed %.1f m/s: %.2f cells a step, %.2f cells between the %u sub-azimuths of a step; the sub-azimuths all read the "
+                    "grid as the step begins\n",
+                    tip_speed, cells, cells / static_cast<double>(n_sub), n_sub);
+    }
     std::fflush(stdout);
+    struct PressureStats {
+        double max_residual = 0.0;
+        uint64_t iterations = 0;
+        uint32_t steps = 0, capped = 0, unconverged = 0, stalled = 0;
+    } pstats;
 
     const std::vector<uint32_t> at = steps_from_env();
     const uint32_t last = at.empty() ? 0u : *std::max_element(at.begin(), at.end());
@@ -273,6 +289,12 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         }
         ASSERT_TRUE(health.has_value()) << "step " << step << ": " << health.error().context;
         ASSERT_EQ(health->fault, af::FluidFault::none) << "step " << step;
+        pstats.max_residual = std::max(pstats.max_residual, static_cast<double>(health->pressure_residual));
+        pstats.iterations += health->pressure_iterations;
+        ++pstats.steps;
+        pstats.capped += health->capped ? 1u : 0u;
+        pstats.unconverged += health->unconverged ? 1u : 0u;
+        pstats.stalled += health->stalled ? 1u : 0u;
         for (float& a : psi) a = std::fmod(a + omega * box.cfg.h, kTwoPi);
         if (std::find(at.begin(), at.end(), step) == at.end()) continue;
 
@@ -313,6 +335,38 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count(), thrust,
                     (*gpu)->line_reports().size());
         std::fflush(stdout);
+        if (diag && !lines.empty()) {
+            std::printf("[ diag    ] step %u: pressure solve over the last %u steps: largest residual %.3e, %.1f iterations a step, capped %u, "
+                        "unconverged %u, stalled %u\n",
+                        step, pstats.steps, pstats.max_residual,
+                        pstats.steps != 0u ? static_cast<double>(pstats.iterations) / static_cast<double>(pstats.steps) : 0.0, pstats.capped,
+                        pstats.unconverged, pstats.stalled);
+            pstats = {};
+            const spade::FlowVolumeHeader& hd = volume.header;
+            for (const float drop : {0.05f, 0.10f, 0.20f, 0.30f}) {
+                const int j = static_cast<int>(std::floor((lines[0].centre.y - drop) / hd.cell));
+                if (j < 0 || j >= static_cast<int>(hd.ny)) continue;
+                double w2 = 0.0, mass = 0.0, press = 0.0;
+                for (uint32_t k = 0; k < hd.nz; ++k) {
+                    for (uint32_t i = 0; i < hd.nx; ++i) {
+                        const std::size_t cell = spade::flow_cell_index(hd, i, static_cast<uint32_t>(j), k);
+                        const float w = spade::fp16::to_f32(spade::flow_half(volume, cell, spade::kFlowV));
+                        const float p = spade::fp16::to_f32(spade::flow_half(volume, cell, spade::kFlowPressure));
+                        if (std::isnan(w) || std::isnan(p)) continue;
+                        w2 += static_cast<double>(w) * w;
+                        mass += -static_cast<double>(w);
+                        press += p;
+                    }
+                }
+                const double area = static_cast<double>(hd.cell) * hd.cell;
+                std::printf("[ diag    ] step %u: %.2f m under the hubs: momentum flux rho sum w^2 dA %.3f N, mass flux %.4f kg/s, pressure sum "
+                            "p dA %.3f N, together %.3f N (the lines' thrust %.3f N)\n",
+                            step, static_cast<double>(drop), static_cast<double>(box.cfg.rho) * w2 * area,
+                            static_cast<double>(box.cfg.rho) * mass * area, press * area, static_cast<double>(box.cfg.rho) * w2 * area + press * area,
+                            thrust);
+            }
+            std::fflush(stdout);
+        }
         const struct View {
             const char* name;
             float az, el, target_y;
