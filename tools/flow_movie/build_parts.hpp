@@ -2,27 +2,39 @@
 // battery, companion computer, camera and radio, drawn PRESENTATION ONLY over the held body, from the plain table Core writes
 // (tools/flow_movie/data/x500_build/parts.yaml). The flow's solids are the model's and are untouched: nothing here reaches the solve.
 //
-// The table is one list `parts:`; each entry has `name` (unique), `kind` (frame controller gps battery computer camera radio mast),
+// The table is one list `parts:`; each entry has `name` (unique), `kind` (frame controller gps battery computer camera radio mast rotor),
 // `mass_kg` (Physics' business: read, kept, not drawn), `pose: {position: [x, y, z] m, orientation: [w, x, y, z]}` in the X500 body frame
 // (y up, +X forward, the origin the model's centre of mass, the frame of KAT's glTF), and ONE shape: `objects` (a list of `store_ref:
 // {sha256, file}` with an optional `offset: {position, orientation}`; the file is <store>/<sha256>/<file>, a .spmesh or a .gltf/.glb),
 // `box: [sx, sy, sz]` m, or `cylinder: {radius, length}` m along the part's local y, centred. Unknown kinds and keys are refused.
 //
-// Colours: a part's .spmesh, box and cylinder take its KIND's colour; a glTF keeps its own palette (the X500 frame's materials).
+// Colours: a part's .spmesh, box and cylinder take its `material:` (a name of real_material(): carbon_fibre, aluminium_bare, ...), else
+// its KIND's colour; an object's own `material:` wins; a glTF's materials are replaced by real ones keyed on their NAMES
+// (real_material_for_gltf), a name not mapped keeping the file's colour. Lambert only: the renderer has no specular term.
+//
+// A ROTOR (`kind: rotor`, `rotor: i` the index of its omega in the logged body's rotor speeds, `spin: 1 or -1`, optional `radius: m`)
+// is drawn as its blade SPREAD over the frame's shutter (prop_blur_angles: many see-through copies of one mesh at a low alpha), a
+// stopped or speedless one as one solid blade; `radius` scales the glTF's `prop` primitive radially about the hub to the SIMULATED
+// rotor's radius (the drawn blade's tips are where the cloud's rings are), the motor bell as drawn.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <numbers>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <yaml-cpp/yaml.h>
 
@@ -42,6 +54,7 @@ struct BuildObject {
     std::string file;
     glm::vec3 offset_position{0.0f};
     glm::quat offset_orient{1.0f, 0.0f, 0.0f, 0.0f};
+    std::string material;  // a real_material() name; "": the part's
 };
 
 struct BuildPart {
@@ -55,11 +68,15 @@ struct BuildPart {
     glm::vec3 box{0.0f};
     float radius = 0.0f;
     float length = 0.0f;
+    std::string material;  // a real_material() name; "": the kind's colour
+    int rotor = -1;        // kind rotor: the index of its omega in the logged rotor speeds
+    int spin = 0;          // kind rotor: +1 or -1, the sense the blade turns
+    float radius_m = 0.0f; // kind rotor: the simulated rotor's radius the drawn prop is scaled to (0: the file's own)
 };
 
 namespace build_detail {
 
-inline constexpr std::array<std::string_view, 8> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast"};
+inline constexpr std::array<std::string_view, 9> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast", "rotor"};
 
 [[nodiscard]] inline std::unexpected<spade::Error> bad(const std::string& why) {
     return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: " + why});
@@ -150,7 +167,66 @@ struct PoseRead {
     if (kind == "camera") return make(0.12f, 0.12f, 0.14f);
     if (kind == "radio") return make(0.20f, 0.30f, 0.75f);
     if (kind == "mast") return make(0.60f, 0.60f, 0.62f);
+    if (kind == "rotor") return make(0.04f, 0.04f, 0.045f);
     return std::nullopt;
+}
+
+// THE REAL MATERIALS (the lead, 2026-11-18: the role colours "read as a toy"): colours, lambert, for the things the drone is made of.
+inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", "aluminium_bare", "aluminium_anodised", "pcb_green",
+                                                                "plastic_black", "plastic_white", "rubber_black", "gold"};
+
+[[nodiscard]] inline std::optional<spade::render::Material> real_material(std::string_view name) {
+    const auto make = [](float r, float g, float b) {
+        spade::render::Material m;
+        m.base_color = glm::vec4(r, g, b, 1.0f);
+        return m;
+    };
+    if (name == "carbon_fibre") return make(0.025f, 0.027f, 0.032f);
+    if (name == "aluminium_bare") return make(0.70f, 0.71f, 0.73f);
+    if (name == "aluminium_anodised") return make(0.11f, 0.12f, 0.15f);
+    if (name == "pcb_green") return make(0.03f, 0.21f, 0.11f);
+    if (name == "plastic_black") return make(0.045f, 0.045f, 0.05f);
+    if (name == "plastic_white") return make(0.86f, 0.86f, 0.84f);
+    if (name == "rubber_black") return make(0.02f, 0.02f, 0.022f);
+    if (name == "gold") return make(0.83f, 0.62f, 0.23f);
+    return std::nullopt;
+}
+
+[[nodiscard]] inline bool real_material_known(std::string_view name) { return real_material(name).has_value(); }
+
+// The last word of a glTF material name ("drone/x500-body/carbon_plates" -> "carbon_plates"; no folders: the name).
+[[nodiscard]] inline std::string_view last_word(std::string_view name) {
+    const std::size_t slash = name.rfind('/');
+    return slash == std::string_view::npos ? name : name.substr(slash + 1u);
+}
+
+// The real material a glTF's own material is replaced by, from its name's last word; nothing for a name not mapped (its file colour stays).
+[[nodiscard]] inline std::optional<std::string> real_material_for_gltf(std::string_view name) {
+    const std::string_view word = last_word(name);
+    if (word == "carbon_plates" || word == "arms") return "carbon_fibre";
+    if (word == "metal") return "aluminium_bare";
+    if (word == "stator" || word == "bell") return "aluminium_anodised";
+    if (word == "prop" || word == "autopilot" || word == "antenna_holder") return "plastic_black";
+    if (word == "landing_rubber" || word == "rails_rubber") return "rubber_black";
+    if (word == "autopilot_rubber") return "plastic_white";
+    return std::nullopt;
+}
+
+// A glTF's material names from its JSON, in order ("" for an unnamed one; none when it has no materials). A glTF is JSON, which YAML reads.
+[[nodiscard]] inline spade::Result<std::vector<std::string>> gltf_material_names(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "gltf " + file.string() + ": cannot be read"});
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::vector<std::string> names;
+    try {
+        const YAML::Node root = YAML::Load(text);
+        if (root && root.IsMap() && root["materials"] && root["materials"].IsSequence()) {
+            for (const auto& m : root["materials"]) names.push_back(m.IsMap() && m["name"] ? m["name"].as<std::string>() : std::string());
+        }
+    } catch (const YAML::Exception& e) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "gltf " + file.string() + ": its JSON is not readable: " + e.what()});
+    }
+    return names;
 }
 
 // The table's parts, in file order. Refused, every message prefixed "build parts:" and naming the part and the piece.
@@ -176,7 +252,7 @@ struct PoseRead {
             if (part.name.empty()) return bad("a part has no name");
             const std::string who = "part '" + part.name + "'";
             if (!names.insert(part.name).second) return bad(who + " is listed twice");
-            if (const auto key = build_detail::unknown_key(entry, {"name", "kind", "mass_kg", "pose", "objects", "box", "cylinder"})) {
+            if (const auto key = build_detail::unknown_key(entry, {"name", "kind", "mass_kg", "material", "rotor", "spin", "radius", "pose", "objects", "box", "cylinder"})) {
                 return bad(who + ": unknown key '" + *key + "'");
             }
             part.kind = entry["kind"] ? entry["kind"].as<std::string>() : std::string();
@@ -184,6 +260,26 @@ struct PoseRead {
             if (entry["mass_kg"]) {
                 part.mass_kg = entry["mass_kg"].as<double>();
                 if (!(std::isfinite(part.mass_kg) && part.mass_kg >= 0.0)) return bad(who + ": mass_kg is not a finite number from 0 up");
+            }
+            if (entry["material"]) {
+                part.material = entry["material"].as<std::string>();
+                if (!real_material_known(part.material)) return bad(who + ": unknown material '" + part.material + "'");
+            }
+            if (part.kind == "rotor") {
+                if (!entry["rotor"]) return bad(who + " is a rotor and needs `rotor: i`, the index of its speed");
+                part.rotor = entry["rotor"].as<int>();
+                if (part.rotor < 0 || part.rotor > 15) return bad(who + ": rotor " + std::to_string(part.rotor) + " is not an index from 0 to 15");
+                if (!entry["objects"]) return bad(who + ": a rotor is drawn from `objects` (its blade's file)");
+                if (!entry["spin"]) return bad(who + " is a rotor and needs `spin: 1` or `-1`");
+                part.spin = entry["spin"].as<int>();
+                if (part.spin != 1 && part.spin != -1) return bad(who + ": spin " + std::to_string(part.spin) + " is not 1 or -1");
+                if (entry["radius"]) {
+                    const double r = entry["radius"].as<double>();
+                    if (!(std::isfinite(r) && r > 0.0 && r <= 1.0)) return bad(who + ": the rotor's radius must be above 0 and at most 1 m");
+                    part.radius_m = static_cast<float>(r);
+                }
+            } else if (entry["rotor"] || entry["spin"] || entry["radius"]) {
+                return bad(who + ": rotor, spin and radius are for a rotor (kind: rotor)");
             }
             const auto pose = build_detail::pose_of(entry["pose"], who);
             if (!pose) return std::unexpected(pose.error());
@@ -217,7 +313,7 @@ struct PoseRead {
                 part.shape = BuildShape::objects;
                 for (const auto& o : objs) {
                     if (!o.IsMap() || !o["store_ref"]) return bad(who + ": an object has no store_ref");
-                    if (const auto key = build_detail::unknown_key(o, {"store_ref", "offset"})) {
+                    if (const auto key = build_detail::unknown_key(o, {"store_ref", "offset", "material"})) {
                         return bad(who + ": unknown key '" + *key + "' in an object");
                     }
                     const YAML::Node ref = o["store_ref"];
@@ -236,6 +332,10 @@ struct PoseRead {
                     const std::string ext = build_detail::extension_of(object.file);
                     if (ext != ".spmesh" && ext != ".gltf" && ext != ".glb") {
                         return bad(who + ": file '" + object.file + "' has an extension that is not .spmesh, .gltf or .glb");
+                    }
+                    if (o["material"]) {
+                        object.material = o["material"].as<std::string>();
+                        if (!real_material_known(object.material)) return bad(who + ": unknown material '" + object.material + "' on an object");
                     }
                     if (o["offset"]) {
                         const auto off = build_detail::pose_of(o["offset"], who + " object " + object.file + " offset");
@@ -313,11 +413,70 @@ inline void quad(spade::render::MeshData& m, glm::vec3 a, glm::vec3 b, glm::vec3
     return m;
 }
 
+// THE BLADE BLUR: the azimuths, about the hub's y, of `samples` copies of a blade spread over omega x shutter radians, centred on the
+// blade's own pose, advancing in the spin's direction (+1 or -1); all 0 when it is not turning, none for no samples.
+[[nodiscard]] inline std::vector<double> prop_blur_angles(double omega, int spin, double shutter_s, uint32_t samples) {
+    std::vector<double> angles(samples, 0.0);
+    if (!(omega > 0.0) || samples == 0u) return angles;
+    const double sweep = omega * shutter_s * (spin < 0 ? -1.0 : 1.0);
+    for (uint32_t i = 0; i < samples; ++i) angles[i] = sweep * ((static_cast<double>(i) + 0.5) / static_cast<double>(samples) - 0.5);
+    return angles;
+}
+
+struct PropBlur {
+    uint32_t samples = 24u;    // copies of the blade over the shutter
+    double shutter_s = 1.0 / 60.0;  // a 180 degree shutter at 30 fps
+    float alpha = 0.18f;       // each copy's opacity
+};
+
+struct BuildDraw {
+    std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen
+    PropBlur blur{};
+};
+
+// The `prop` primitive of `mesh` scaled radially (x and z, about the y axis through the hub) so its blade tip is at `radius`: the
+// submeshes whose glTF material (names[the submesh's material]) ends in `prop`; everything else, and the blade's thickness, as drawn.
+// Refused, the mesh left as it was: a radius not above 0, no prop primitive, a prop with no extent.
+[[nodiscard]] inline spade::Result<void> scale_prop_radially(spade::render::MeshData& mesh, const std::vector<std::string>& names, float radius) {
+    const auto bad_scale = [](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: scaling the prop: " + why});
+    };
+    if (!(radius > 0.0f)) return bad_scale("the radius must be above 0");
+    std::vector<uint8_t> marked(mesh.positions.size(), 0u);
+    bool any = false;
+    for (std::size_t s = 0; s < mesh.submesh_first_index.size() && s < mesh.submesh_index_count.size() && s < mesh.submesh_material.size(); ++s) {
+        const uint32_t m = mesh.submesh_material[s];
+        if (m >= names.size() || last_word(names[m]) != "prop") continue;
+        for (uint32_t i = mesh.submesh_first_index[s]; i < mesh.submesh_first_index[s] + mesh.submesh_index_count[s] && i < mesh.indices.size(); ++i) {
+            const uint32_t v = mesh.indices[i];
+            if (v < marked.size()) {
+                marked[v] = 1u;
+                any = true;
+            }
+        }
+    }
+    if (!any) return bad_scale("the mesh has no `prop` primitive (by its material names)");
+    float reach = 0.0f;
+    for (std::size_t v = 0; v < marked.size(); ++v) {
+        if (marked[v] != 0u) reach = std::max(reach, std::hypot(mesh.positions[v].x, mesh.positions[v].z));
+    }
+    if (!(reach > 0.0f)) return bad_scale("the prop has no radial extent");
+    const float factor = radius / reach;
+    for (std::size_t v = 0; v < marked.size(); ++v) {
+        if (marked[v] == 0u) continue;
+        mesh.positions[v].x *= factor;
+        mesh.positions[v].z *= factor;
+    }
+    return {};
+}
+
 // Every part drawn at the body's pose x its own (x an object's offset), presentation only. A store object is <store>/<sha256>/<file>:
-// a .spmesh drawn flat in its kind's colour, a glTF with its own palette. All or nothing: a part that cannot be drawn is refused naming
-// the part and the file, and the scene is left exactly as it was (meshes, items and palette).
+// a .spmesh drawn flat in its material (the object's, else the part's, else its kind's colour), a glTF with its materials replaced by
+// real ones keyed on their names (a name not mapped keeps the file's colour). A rotor is its blade spread over the shutter (BuildDraw).
+// All or nothing: a part that cannot be drawn is refused naming the part and the file, and the scene is left exactly as it was.
 [[nodiscard]] inline spade::Result<void> add_build_parts(spade::render::RenderScene& scene, const std::vector<BuildPart>& parts,
-                                                        const std::filesystem::path& store, glm::vec3 body_position, glm::quat body_orient) {
+                                                        const std::filesystem::path& store, glm::vec3 body_position, glm::quat body_orient,
+                                                        const BuildDraw& draw_options = {}) {
     const std::size_t meshes = scene.meshes.size();
     const std::size_t statics = scene.statics.size();
     const std::size_t materials = scene.materials.size();
@@ -327,8 +486,10 @@ inline void quad(spade::render::MeshData& m, glm::vec3 a, glm::vec3 b, glm::vec3
         scene.materials.resize(materials);
         return std::unexpected(spade::Error{e.code, "build parts: part '" + part.name + "' " + what + ": " + e.context});
     };
-    const auto kind_coloured = [](spade::render::MeshData m, const std::string& kind) {
-        const auto colour = kind_material(kind);
+    // The one-colour palette of a mesh without its own: the object's material, else the part's, else the kind's colour.
+    const auto coloured = [](spade::render::MeshData m, const BuildPart& part, const std::string& object_material) {
+        const std::string& name = !object_material.empty() ? object_material : part.material;
+        std::optional<spade::render::Material> colour = name.empty() ? kind_material(part.kind) : real_material(name);
         m.source_materials = {colour ? *colour : spade::render::Material{}};
         m.submesh_material.assign(std::max<std::size_t>(m.submesh_index_count.size(), 1u), 0u);
         return m;
@@ -341,27 +502,61 @@ inline void quad(spade::render::MeshData& m, glm::vec3 a, glm::vec3 b, glm::vec3
             return {};
         };
         if (part.shape == BuildShape::box) {
-            if (auto r = draw(kind_coloured(box_mesh(part.box), part.kind), base_pos, base_orient, "box"); !r) return r;
+            if (auto r = draw(coloured(box_mesh(part.box), part, ""), base_pos, base_orient, "box"); !r) return r;
         } else if (part.shape == BuildShape::cylinder) {
-            if (auto r = draw(kind_coloured(cylinder_mesh(part.radius, part.length), part.kind), base_pos, base_orient, "cylinder"); !r) return r;
+            if (auto r = draw(coloured(cylinder_mesh(part.radius, part.length), part, ""), base_pos, base_orient, "cylinder"); !r) return r;
         } else {
             for (const BuildObject& object : part.objects) {
                 const std::filesystem::path file = store / object.sha256 / object.file;
                 spade::render::MeshData mesh;
+                std::vector<std::string> names;  // a glTF's material names, in its palette's order
                 if (build_detail::extension_of(object.file) == ".spmesh") {
                     auto loaded = spade::load_mesh_file(file);
                     if (!loaded) return fail(part, "object " + file.string(), loaded.error());
                     mesh = spade::render::flat_mesh(*loaded->mesh);
                     build_detail::one_submesh(mesh);
-                    mesh = kind_coloured(std::move(mesh), part.kind);
+                    mesh = coloured(std::move(mesh), part, object.material);
                 } else {
                     auto loaded = spade::render::load_gltf(file);
                     if (!loaded) return fail(part, "object " + file.string(), loaded.error());
                     mesh = std::move(*loaded);
+                    if (auto read = gltf_material_names(file); read && read->size() == mesh.source_materials.size()) names = std::move(*read);
+                    for (std::size_t i = 0; i < names.size(); ++i) {  // real materials, keyed on the names
+                        const std::string chosen = !object.material.empty() ? object.material : !part.material.empty() ? part.material : std::string();
+                        const auto mapped = !chosen.empty() ? std::optional<std::string>(chosen) : real_material_for_gltf(names[i]);
+                        if (mapped) mesh.source_materials[i] = *real_material(*mapped);
+                    }
+                    if (names.empty() && (!object.material.empty() || !part.material.empty())) {
+                        const auto colour = real_material(!object.material.empty() ? object.material : part.material);
+                        for (auto& m : mesh.source_materials) m = *colour;
+                    }
+                    if (part.kind == "rotor" && part.radius_m > 0.0f) {
+                        if (names.empty()) return fail(part, "object " + file.string(), spade::Error{spade::Code::invalid_argument, "its material names are needed to find the prop to scale"});
+                        if (auto scaled = scale_prop_radially(mesh, names, part.radius_m); !scaled) return fail(part, "object " + file.string(), scaled.error());
+                    }
                 }
-                if (auto r = draw(std::move(mesh), base_pos + base_orient * object.offset_position, base_orient * object.offset_orient,
-                                  "object " + file.string());
-                    !r) {
+                glm::vec3 pos = base_pos + base_orient * object.offset_position;
+                const glm::quat orient = base_orient * object.offset_orient;
+                const double omega = part.kind == "rotor" && part.rotor >= 0 && static_cast<std::size_t>(part.rotor) < draw_options.omega.size()
+                                         ? draw_options.omega[static_cast<std::size_t>(part.rotor)]
+                                         : 0.0;
+                if (part.kind == "rotor" && omega > 0.0 && draw_options.blur.samples > 0u) {
+                    // the blade spread over the shutter: the prop's materials at the blur's alpha (every one for a mesh without names)
+                    for (std::size_t i = 0; i < mesh.source_materials.size(); ++i) {
+                        if (names.empty() || last_word(names[i]) == "prop") mesh.source_materials[i].base_color.a = draw_options.blur.alpha;
+                    }
+                    const std::vector<double> angles = prop_blur_angles(omega, part.spin, draw_options.blur.shutter_s, draw_options.blur.samples);
+                    const std::size_t first_item = scene.statics.size();
+                    const glm::quat turn0 = glm::angleAxis(static_cast<float>(angles.front()), glm::vec3(0.0f, 1.0f, 0.0f));
+                    if (auto r = draw(std::move(mesh), pos, orient * turn0, "object " + file.string()); !r) return r;
+                    for (std::size_t i = 1; i < angles.size(); ++i) {
+                        spade::render::DrawItem copy = scene.statics[first_item];
+                        const glm::quat turn = glm::angleAxis(static_cast<float>(angles[i]), glm::vec3(0.0f, 1.0f, 0.0f));
+                        copy.local_to_world = glm::translate(glm::mat4(1.0f), pos) * glm::mat4_cast(orient * turn);
+                        scene.statics.push_back(copy);
+                    }
+                    for (std::size_t i = first_item; i < scene.statics.size(); ++i) scene.statics[i].see_through = true;
+                } else if (auto r = draw(std::move(mesh), pos, orient, "object " + file.string()); !r) {
                     return r;
                 }
             }

@@ -364,7 +364,9 @@ TEST(FlowMovieBuildParts, ABladeBlurIsSamplesAzimuthsSpreadSymmetricallyOverTheS
     for (std::size_t i = 0; i < up.size(); ++i) {
         sum += up[i];
         EXPECT_NEAR(up[i], -down[i], 1e-6) << "the opposite spin mirrors it";
-        if (i > 0) EXPECT_GT(up[i], up[i - 1]) << "a +1 spin advances";
+        if (i > 0) {
+            EXPECT_GT(up[i], up[i - 1]) << "a +1 spin advances";
+        }
     }
     EXPECT_NEAR(sum, 0.0, 1e-4) << "centred on the blade's own pose";
     const double step = omega * shutter / 24.0;

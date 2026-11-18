@@ -1686,7 +1686,11 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                     if (visual) {
                         if (auto r = add_visual_mesh(scene, *visual, pos, orient); !r) return r;
                     }
-                    if (build) return add_build_parts(scene, *build, store, pos, orient);
+                    if (build) {
+                        BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
+                        draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
+                        return add_build_parts(scene, *build, store, pos, orient, draw);
+                    }
                     return {};
                 };
             }
