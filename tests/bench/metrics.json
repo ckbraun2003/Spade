@@ -190,8 +190,12 @@
    "basis": "real_time",
    "unit": "s",
    "class": "gpu",
-   "who_waits": "a person making a website clip (one 4K web frame, drawn from a solved cache, no solve in the run)",
-   "workload": "flow_movie --web S1, the 30 frames drawn from the fixed 180-frame cache (S1 draws from frame 150); the median per-frame loop body without the encode tail. Phases rendering.diag_web_<phase> are diagnostics. The cache path and byte count go in the ledger notes",
+   "scratch": [
+    "{web_out}"
+   ],
+   "free_gb": 24,
+   "who_waits": "a person making a website clip (one 4K web frame, drawn from a solved cache; the solve is in the discarded warm-up, never in a value)",
+   "workload": "flow_movie --web S1, the 30 frames drawn from the fixed 180-frame cache (S1 draws from frame 150); the median per-frame loop body without the encode tail. Phases rendering.diag_web_<phase> are diagnostics. The cache path and byte count go in the ledger notes. The cache (about 20.5 GB) is made in the warm-up run (a solve of about 219 s), kept for the repeats and deleted after the metric (scratch); the metric needs 24 GB free (free_gb), else the harness exits 5 before measuring",
    "command": [
     "{flow_movie}",
     "--web",
@@ -200,7 +204,7 @@
     "180",
     "--keep-cache",
     "--out",
-    "{home}/Desktop/spade-videos/perf-web-s1-30",
+    "{web_out}",
     "--ticket",
     "{ticket}"
    ]
