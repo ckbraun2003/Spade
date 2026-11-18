@@ -133,7 +133,7 @@ parts:
     cylinder: {radius: 0.005, length: 0.14}
 
   - name: electronics_misc
-    kind: misc
+    kind: mass_only
     mass_kg: 0.175
     mass_grade: assumed
     mass_source: 4 ESCs at 25 g (a 20 A to 30 A ESC with leads), a power module 25 g, wiring 30 g, fasteners 20 g; none is in the parts above
