@@ -10,7 +10,7 @@
 
 ## The calibration
 
-Physics ran the exact configuration at Cs 0 and Cs 0.17 (117 s and 203 s) and dumped the field at every 50 steps from 500 to 900. Raw: `%USERPROFILE%/wake-out/calibration.json`. Flux is ρ Σv² dA over the whole horizontal plane 0.30 m under the hubs; R is flux over 4T = 5.158 N.
+Physics ran the exact configuration at Cs 0 and Cs 0.17 (117 s and 203 s) and dumped the field at every 50 steps from 500 to 900. Raw: `docs/design/physics/records/data/2026-11-10-wake/calibration.json`. Flux is ρ Σv² dA over the whole horizontal plane 0.30 m under the hubs; R is flux over 4T = 5.158 N.
 
 | Cs | R per dump, steps 500 to 900 | R, five-dump mean (700 to 900) | ke_hi, five-dump mean |
 |---|---|---|---|
