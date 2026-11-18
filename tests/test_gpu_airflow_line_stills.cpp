@@ -8,7 +8,7 @@
 // step, Cs 0.17, the quad's rigid parts as solids, the deep grid), the rows LiveRun holds at hover, one line a rotor from
 // vehicles::rotor_lines() with the part's blade and polar (scene::line_propeller()), the dye released at the rotors' discs (zero load:
 // the lines carry the force). Knobs: SPADE_LINE_STILLS_STEPS (default "300,700,1200,1800"), SPADE_LINE_STILLS_NSUB (8),
-// SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
+// SPADE_LS_STEP (the time step, s; 0.0002), SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
 // SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline),
 // SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1).
 // ---------------------------------------------------------------------------
@@ -101,7 +101,7 @@ struct Phantom {
     c.grid.box = grid.dx * static_cast<float>(std::max(grid.nx, grid.nz));
     c.grid.spacing = grid.dx;
     c.time.duration = 1.0f;
-    c.time.step = 0.0002f;
+    c.time.step = flow_still::env_float("SPADE_LS_STEP", 0.0002f);  // L86p: 0.0001 for the step-size probe
     c.flight.kind = an::FlightKind::hover;  // still air
     c.flight.speed = 0.0f;
     auto trim = an::showcase_trim(c, model);
@@ -285,7 +285,9 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
             const uint32_t frame = env_cstr("SPADE_LINE_STILLS_CACHE_FRAME") != nullptr
                                        ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_CACHE_FRAME"), nullptr, 10))
                                        : 200u;
-            if (step == (frame + 1u) * 5u) {
+            // The d1-still group's frame f is at t = (f + 1) * 5 * 0.2 ms; with SPADE_LS_STEP at 0.1 ms that is twice the steps.
+            const uint32_t per = static_cast<uint32_t>(std::lround(0.0002 / static_cast<double>(box.cfg.h)));
+            if (step == (frame + 1u) * 5u * per) {
                 std::filesystem::create_directories(cache_dir);
                 double lines_thrust = 0.0;
                 for (const af::LineReport& r : (*gpu)->line_reports()) lines_thrust += static_cast<double>(r.thrust);
