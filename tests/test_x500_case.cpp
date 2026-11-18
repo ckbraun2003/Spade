@@ -1,16 +1,19 @@
 // ---------------------------------------------------------------------------
 // test_x500_case.cpp -- L86k (the lead, 2026-11-17): the website clips' X500, a flow model built from KAT's x500.airframe.json and
-// kept with the clips' tool data (tools/flow_movie/data/x500/), its 13-inch propeller an ESTIMATE (tests/x500_model.hpp).
+// kept with the clips' tool data (tools/flow_movie/data/x500/). L86p (the lead, 2026-11-18): the kit's propeller is the 1045 (10 x 4.5 in),
+// R 0.127 m, the library's measured UIUC APC 10x5 blade at 10 in graded derived, no scaled estimate (tests/x500_model.hpp).
 //
 //   X500Model.TheFilesAreTheBuildersOutput       the model file and the prop part file are the builder's text, byte for byte; with
 //                                                SPADE_X500_WRITE set the test writes them instead
 //   X500Model.CarriesKatsNumbers                 mass 2.0643 kg, the four rotors at (+-0.174, +-0.174) m with PX4's spins, radius
-//                                                0.173 m, the hubs 0.06 m above the centre of mass, the chain's propeller the 13-inch
-//   X500Prop.EveryRowIsGradedEstimated           each prop row grade assumed with "ESTIMATED" first; diameter 0.346 m; the blade's
-//                                                radius 0.173 m; c/R, twist and the fitted polar the APC 10x5's
+//                                                0.127 m, the hubs 0.06 m above the centre of mass, the chain's propeller the 10-inch
+//   X500Prop.NoRowIsEstimatedAndTheBladeIsTheApc10x5s   no row says ESTIMATED; diameter 0.254 m (graded for the kit), pitch derived with the
+//                                                4.5 in against 5 in said, mass assumed; the blade's radius 0.127 m; c/R, twist and the
+//                                                fitted polar the library's APC 10x5, as it is
 //   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 5.0610 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
-//   AirflowX500.TheThreeMillimetreGridIsWithinTheCapWithItsSolids   check_grid(kD1X500Grid, the case's faces, with solids)
+//   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   266 x 237 x 266 at 2.5 mm; check_grid(kD1X500Grid, the case's
+//                                                faces, with solids); the device runner's 4 GiB at 234.6 B a cell
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -118,36 +121,47 @@ TEST(X500Model, CarriesKatsNumbers) {
         EXPECT_NEAR(std::fabs(r.local_pos.x), x5::kArm, 1.0e-4) << "rotor " << i;
         EXPECT_NEAR(std::fabs(r.local_pos.z), x5::kArm, 1.0e-4) << "rotor " << i;
         EXPECT_NEAR(r.local_pos.y - m.com_offset.y * 0.0, x5::kHubAboveCentre, 0.01) << "rotor " << i << ": KAT's hub 0.06 m above the centre";
-        EXPECT_NEAR(r.radius, x5::kDiameter / 2.0, 1.0e-4) << "rotor " << i;
+        EXPECT_NEAR(r.radius, 0.127, 1.0e-4) << "rotor " << i << ": the 1045's 10 in";
         EXPECT_EQ(r.spin_dir, expect_spin[i]) << "rotor " << i;
         quadrants += (r.local_pos.x > 0 ? 1 : 0) * 2 + (r.local_pos.z > 0 ? 1 : 0);
     }
     EXPECT_EQ(quadrants, 0 + 1 + 2 + 3) << "the four rotors are in the four quadrants";
     ASSERT_TRUE(m.propulsion.has_value());
-    EXPECT_NEAR(m.propulsion->diameter, x5::kDiameter, 1.0e-6) << "the chain's propeller is the 13-inch";
+    EXPECT_NEAR(m.propulsion->diameter, 0.254, 1.0e-6) << "the chain's propeller is the 10-inch";
 }
 
-TEST(X500Prop, EveryRowIsGradedEstimated) {
+TEST(X500Prop, NoRowIsEstimatedAndTheBladeIsTheApc10x5s) {
     const auto text = read_all(x5::data_dir() / x5::kPropFile);
     ASSERT_FALSE(text.empty()) << "the prop part file is missing: regenerate with SPADE_X500_WRITE=1";
     const auto part = sc::prop_from_yaml(text);
     ASSERT_TRUE(part.has_value()) << part.error().context;
-    EXPECT_NEAR(part->block.diameter, x5::kDiameter, 1.0e-9);
+    EXPECT_NEAR(part->block.diameter, 0.254, 1.0e-9) << "the 1045's 10 in";
     EXPECT_FALSE(part->sources.empty());
+    const sc::FieldSource* pitch = nullptr;
+    const sc::FieldSource* diameter = nullptr;
     for (const sc::FieldSource& s : part->sources) {
-        EXPECT_EQ(s.ref.grade, sc::Grade::assumed) << s.field;
-        EXPECT_EQ(s.ref.note.rfind("ESTIMATED", 0), 0u) << s.field << ": " << s.ref.note;
+        EXPECT_EQ(s.ref.note.find("ESTIMATED"), std::string::npos) << s.field << ": no scaled estimate any more: " << s.ref.note;
+        if (s.field == "pitch") pitch = &s;
+        if (s.field == "diameter") diameter = &s;
     }
+    ASSERT_TRUE(pitch != nullptr && diameter != nullptr);
+    EXPECT_EQ(pitch->ref.grade, sc::Grade::derived) << "5 in pitch (UIUC's 10x5) against the kit's 4.5 in";
+    EXPECT_NE(pitch->ref.note.find("4.5"), std::string::npos) << pitch->ref.note;
+    EXPECT_NE(diameter->ref.note.find("1045"), std::string::npos) << diameter->ref.note;
     const auto prop = sc::line_propeller(*part);
     ASSERT_TRUE(prop.has_value()) << prop.error().context;
-    EXPECT_NEAR(prop->blade.radius, x5::kDiameter / 2.0, 1.0e-6);
+    EXPECT_NEAR(prop->blade.radius, 0.127, 1.0e-6);
     const std::string base_text = read_all(fs::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml");
     const auto base = sc::prop_from_yaml(base_text);
     ASSERT_TRUE(base.has_value());
     ASSERT_TRUE(part->blade.has_value() && base->blade.has_value());
-    EXPECT_EQ(part->blade->c_over_r, base->blade->c_over_r) << "c/R is the APC 10x5's";
-    EXPECT_EQ(part->blade->beta_deg, base->blade->beta_deg) << "the twist is the APC 10x5's";
-    EXPECT_EQ(part->blade->alpha_0_deg, base->blade->alpha_0_deg) << "the fitted polar is the APC 10x5's";
+    EXPECT_EQ(part->blade->r_over_r, base->blade->r_over_r) << "r/R is the library's";
+    EXPECT_EQ(part->blade->c_over_r, base->blade->c_over_r) << "c/R is the library's APC 10x5";
+    EXPECT_EQ(part->blade->beta_deg, base->blade->beta_deg) << "the twist is the library's APC 10x5";
+    EXPECT_EQ(part->blade->alpha_0_deg, base->blade->alpha_0_deg) << "the fitted polar is the library's";
+    EXPECT_EQ(part->blade->cd_scale, base->blade->cd_scale) << "the fitted polar is the library's";
+    EXPECT_EQ(part->block.ct_static, base->block.ct_static) << "the non-dimensional tables are the library's, as UIUC measured them";
+    EXPECT_EQ(part->block.ct_table, base->block.ct_table);
 }
 
 TEST(X500Balance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
@@ -174,34 +188,40 @@ TEST(X500Balance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
                 static_cast<double>(target), static_cast<double>(*omega), static_cast<double>(*omega) * 60.0 / 6.283185307,
                 static_cast<double>(loads->torque), chain_omega, chain_omega * 60.0 / 6.283185307,
                 static_cast<double>(*omega) / chain_omega);
-    EXPECT_GT(*omega, 250.0f);
-    EXPECT_LT(*omega, 450.0f) << "a 13-inch prop holds this weight near 3300 rpm, not KAT's 6130";
+    EXPECT_GT(*omega, 560.0f);
+    EXPECT_LT(*omega, 720.0f) << "a 10-inch prop holds this weight near 6100 rpm (KAT's Gazebo 642 rad/s is in this band)";
 }
 
-TEST(AirflowX500, TheThreeMillimetreGridIsWithinTheCapWithItsSolids) {
+TEST(AirflowX500, TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids) {
     const spade::physics::airflow::GridShape grid = spade::testing::kD1X500Grid;
+    EXPECT_EQ(grid.nx, 266u);
+    EXPECT_EQ(grid.ny, 237u);
+    EXPECT_EQ(grid.nz, 266u);
+    EXPECT_EQ(grid.dx, 0.0025f);
     const auto made = spade::testing::still_air_case(x5::data_dir() / x5::kModelFile, "x500", grid);
     ASSERT_TRUE(made.has_value()) << made.error().context;
     const auto& bc = made->resolved.domain;
     const uint64_t fluid = spade::physics::airflow::fluid_bytes(grid, bc);
     const uint64_t solids = spade::physics::airflow::solid_bytes(grid, bc);
-    std::printf("[ x500    ] %ux%ux%u at 3 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the cap "
-                "%.3f GiB\n",
-                grid.nx, grid.ny, grid.nz, static_cast<double>(grid.nx) * grid.ny * grid.nz / 1.0e6,
-                static_cast<double>(fluid) / 1073741824.0, static_cast<double>(solids) / 1073741824.0,
-                static_cast<double>(fluid + solids) / 1073741824.0,
-                static_cast<double>(spade::physics::airflow::kGridByteCap) / 1073741824.0);
+    const double cells = static_cast<double>(grid.nx) * grid.ny * grid.nz;
+    std::printf("[ x500    ] %ux%ux%u at 2.5 mm: %.1f M cells; fluid_bytes %.3f GiB, solid_bytes %.3f GiB, together %.3f GiB against the cap "
+                "%.3f GiB; the device runner's 234.6 B a cell: %.3f GiB of 4\n",
+                grid.nx, grid.ny, grid.nz, cells / 1.0e6, static_cast<double>(fluid) / 1073741824.0,
+                static_cast<double>(solids) / 1073741824.0, static_cast<double>(fluid + solids) / 1073741824.0,
+                static_cast<double>(spade::physics::airflow::kGridByteCap) / 1073741824.0, cells * 234.6 / 1073741824.0);
     const auto ok = spade::physics::airflow::check_grid(grid, bc, true);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
+    EXPECT_LE(cells * 234.6, 4.0 * 1073741824.0) << "the device runner's own 4 GiB (compute::vram_cap), measured at 234.6 B a cell";
 }
 
-// The line's kernel reaches R + 6 dx from a rotor's centre (the live run refuses a rotor whose reach leaves the grid): the rotors' centres
-// are 88.5 cells under the top face by d1_hold() less the hub height, 0.5 mm short at 3 mm; d1_x500_hold() leaves 1.5 R of open air above.
+// The line's kernel reaches R + 6 dx from a rotor's centre (the live run refuses a rotor whose reach leaves the grid, up or sideways):
+// d1_x500_hold() leaves 1.5 R of open air above the hubs, and the box is wide enough for 0.174 + R + 6 dx from the axis.
 TEST(AirflowX500, TheRotorsReachStaysInsideTheBoxWithRoomAbove) {
     const spade::physics::airflow::GridShape grid = spade::testing::kD1X500Grid;
     const auto file = sc::load_model_file(x5::data_dir() / x5::kModelFile);
     ASSERT_TRUE(file.has_value()) << file.error().context;
     const auto& r = file->model.rotors.front();
+    EXPECT_NEAR(r.radius, 0.127, 1.0e-4);
     const float hub_above_origin = r.local_pos.y + file->model.com_offset.y;
     const float height = static_cast<float>(grid.ny) * grid.dx;
     const float top_margin = 0.5f * height - spade::testing::d1_x500_hold().y - hub_above_origin;
@@ -209,9 +229,12 @@ TEST(AirflowX500, TheRotorsReachStaysInsideTheBoxWithRoomAbove) {
     std::printf("[ x500    ] the rotors' centres are %.4f m under the top face (reach %.4f m, 1.5 R = %.4f m)\n",
                 static_cast<double>(top_margin), static_cast<double>(reach), static_cast<double>(1.5f * r.radius));
     EXPECT_GE(top_margin, reach + 0.04f) << "the kernel's reach and 4 cells of room";
-    EXPECT_GE(top_margin, 1.4f * static_cast<float>(r.radius)) << "open air above the rotors, as the phantom's box has";
+    EXPECT_GE(top_margin, 1.5f * static_cast<float>(r.radius) - 1.0e-4f) << "1.5 R of open air above the rotors";
     const float below = 0.5f * height + spade::testing::d1_x500_hold().y + hub_above_origin;
-    EXPECT_GE(below, 0.3f) << "wake below the hubs";
+    EXPECT_GE(below, 0.40f - 0.002f) << "0.4 m of wake below the hubs";
+    const float side = 0.5f * static_cast<float>(grid.nx) * grid.dx - (std::fabs(r.local_pos.x) + reach);
+    std::printf("[ x500    ] sideways: %.4f m of room past the kernel's reach\n", static_cast<double>(side));
+    EXPECT_GE(side, 0.0165f - 1.0e-4f) << "as much side room as the phantom's 2 mm box";
 }
 
 }  // namespace
