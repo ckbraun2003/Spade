@@ -97,14 +97,12 @@ namespace {
     std::string objects;
     for (const SidecarRecord& s : r.sidecars) {
         if (!objects.empty()) objects.push_back(',');
-        objects += JsonObject{}
-                       .str("object", s.object)
-                       .str("file", s.file)
-                       .str("content_hash", s.content_hash)
-                       .integer("triangles", s.triangles)
-                       .num("volume_m3", s.volume_m3)
-                       .raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line())
-                       .line();
+        JsonObject o;
+        o.str("object", s.object).str("file", s.file).str("content_hash", s.content_hash);
+        o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
+        o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
+        if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
+        objects += o.line();
     }
     return JsonObject{}
                .integer("import_version", 1)
@@ -170,6 +168,7 @@ std::optional<EntryRecord> find_entry(const fs::path& store, std::string_view sh
             if (s.file.empty() || fs::path(s.file).filename().string() != s.file || s.file == "..") return std::nullopt;
             const nlohmann::json& ref = o.at("store_ref");
             s.store_sha256 = ref.at("sha256").get<std::string>();
+            if (const auto x = o.find("cross_check"); x != o.end() && x->is_object()) s.cross_check_json = x->dump();
             if (ref.at("file").get<std::string>() != s.file || s.store_sha256.size() != 64) return std::nullopt;
             // The sidecar as a store file of its own: there, and the bytes its address says.
             if (sha256_hex(read_text(store / s.store_sha256 / s.file)) != s.store_sha256) return std::nullopt;
@@ -250,8 +249,14 @@ Expected<EntryRecord> write_entry(const fs::path& store, std::string_view source
         if (const Expected<bool> placed = place_store_file(store, sidecar_sha, file, sidecar_bytes, token); !placed) {
             return cleanup_and_fail(placed.error());
         }
+        std::string cross = objects[i].cross_check_json;
+        if (!cross.empty()) {  // kept in its canonical form, the one a later find_entry reads back
+            const nlohmann::json parsed = nlohmann::json::parse(cross, nullptr, false);
+            if (!parsed.is_object()) return cleanup_and_fail(Problem{"internal", "the cross-check of '" + objects[i].name + "' is not a JSON object"});
+            cross = parsed.dump();
+        }
         rec.sidecars.push_back({objects[i].name, file, hex16(objects[i].mesh->content_hash()), objects[i].mesh->triangle_count(),
-                                objects[i].mesh->mass_properties().volume, sidecar_sha});
+                                objects[i].mesh->mass_properties().volume, sidecar_sha, cross});
     }
     if (!write_text(tmp / "import.json", record_json(rec))) return cleanup_and_fail(io_problem("cannot write import.json", {}));
     fs::rename(tmp, dir, ec);

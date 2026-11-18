@@ -158,6 +158,14 @@ struct Candidates {
     return to_candidates(std::move(r));
 }
 
+// The flagged cross-check as a problem: the converter's mesh volume and the B-rep's differ by more than 1% for these objects.
+[[nodiscard]] Problem flagged_problem_for(const std::vector<std::string>& flagged_names) {
+    std::string names;
+    for (const std::string& n : flagged_names) names += (names.empty() ? "" : ", ") + n;
+    return Problem{"cross_check_flagged", "the mesh volume differs from the B-rep's by more than 1% for " + names +
+                                              "; use a smaller --deflection or --angle"};
+}
+
 [[nodiscard]] std::string hex16(std::uint64_t v) { return std::format("{:016x}", v); }
 
 [[nodiscard]] std::string array3(const glm::vec3& v) {
@@ -330,14 +338,25 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             o.str("name", s.object).str("sidecar", (rec.dir / s.file).string()).str("content_hash", s.content_hash);
             o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
             o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
-            if (const auto x = cross_by_name.find(s.object); x != cross_by_name.end()) o.raw("cross_check", x->second);
+            if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
             objects += o.line();
         }
         p.raw("objects", "[" + objects + "]");
         return p;
     };
     if (importing) {
-        if (const auto hit = find_entry(store, sha, cache_key(key_in))) return result(out, "import", nullptr, import_payload(*hit, true));
+        if (const auto hit = find_entry(store, sha, cache_key(key_in))) {
+            std::vector<std::string> flagged_on_hit;  // the flag was kept with the entry: a flagged import is flagged every time
+            for (const SidecarRecord& s : hit->sidecars) {
+                const nlohmann::json x = nlohmann::json::parse(s.cross_check_json.empty() ? "null" : s.cross_check_json, nullptr, false);
+                if (x.is_object() && x.value("flagged", false)) flagged_on_hit.push_back(s.object);
+            }
+            if (!flagged_on_hit.empty()) {
+                const Problem p = flagged_problem_for(flagged_on_hit);
+                return result(out, "import", &p, import_payload(*hit, true));
+            }
+            return result(out, "import", nullptr, import_payload(*hit, true));
+        }
     }
 
     // ---- a STEP's fast inspect: the converter's own solids, boxes and B-rep volumes; nothing is tessellated, so no gate ----------------
@@ -466,12 +485,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             if (x.flagged) flagged_names.push_back(x.name);
         }
     }
-    const auto flagged_problem = [&]() {
-        std::string names;
-        for (const std::string& n : flagged_names) names += (names.empty() ? "" : ", ") + n;
-        return Problem{"cross_check_flagged", "the mesh volume differs from the B-rep's by more than 1% for " + names +
-                                                  "; use a smaller --deflection or --angle"};
-    };
+    const auto flagged_problem = [&]() { return flagged_problem_for(flagged_names); };
     glm::vec3 file_lo(1e30f), file_hi(-1e30f);  // the objects' box in the file's own numbers, for the unit guess
     for (const MeshObject& o : objects) {
         if (!o.mesh) continue;
@@ -549,7 +563,9 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     (void)remove_stale_temps(store, env.stale_after);
     std::vector<StoredObject> stored;
     for (const MeshObject& o : objects) {
-        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m}});
+        const auto cross = cross_by_name.find(o.name);
+        stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m},
+                          cross == cross_by_name.end() ? std::string() : cross->second});
     }
     const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token);
     if (!rec) return fail(rec.error(), base);
