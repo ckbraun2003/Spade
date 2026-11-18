@@ -254,6 +254,23 @@ TEST(PartImportStore, NoTemporaryIsLeftInAnyStoreFolder) {
     EXPECT_EQ(folders, 3) << "the source's folder and one folder a sidecar";
 }
 
+TEST(PartImportStore, ACrossCheckIsKeptWithTheEntryAndFoundAgain) {
+    StoreRig rig;
+    rig.objects[0].cross_check_json = R"({"name":"arm left","brep_volume":30,"mesh_volume":27,"difference":0.1,"flagged":true})";
+    const auto rec = rig.write();
+    ASSERT_TRUE(rec.has_value()) << rec.error().message;
+    const auto j = nlohmann::json::parse(read_file(rec->dir / "import.json"));
+    ASSERT_TRUE(j.at("objects")[0].contains("cross_check"));
+    EXPECT_EQ(j.at("objects")[0].at("cross_check").at("flagged"), true);
+    EXPECT_FALSE(j.at("objects")[1].contains("cross_check"));
+    const auto found = find_entry(rig.store, rig.sha(), rig.key());
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(*found, *rec);
+    EXPECT_FALSE(found->sidecars[0].cross_check_json.empty());
+    EXPECT_EQ(nlohmann::json::parse(found->sidecars[0].cross_check_json).at("difference"), 0.1);
+    EXPECT_TRUE(found->sidecars[1].cross_check_json.empty());
+}
+
 TEST(PartImportStore, AStorePathThatIsAFileIsStoreIo) {
     StoreRig rig;
     write_file(rig.store, "a file where the store should be");

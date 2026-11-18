@@ -51,6 +51,7 @@ struct StoredObject {
     std::string name;
     std::shared_ptr<const TriangleMesh> mesh;
     MeshProvenance provenance;
+    std::string cross_check_json;  // optional: a JSON object kept in import.json (see SidecarRecord)
 };
 struct SidecarRecord {
     std::string object;
@@ -61,6 +62,9 @@ struct SidecarRecord {
     // The sidecar is also a store file of its own, <store>/<store_sha256>/<file>: the SHA-256 of ITS bytes, so a record can name it as
     // store: {sha256, file} (the library contract's "Store files"). Empty until the store writes it.
     std::string store_sha256;
+    // The converter's cross-check of this object as one JSON object (STEP imports), or empty: kept so a cache hit reports it, and a
+    // flagged object is flagged every time, not only on the run that made it.
+    std::string cross_check_json;
     bool operator==(const SidecarRecord&) const = default;
 };
 // An entry: the record import.json holds.

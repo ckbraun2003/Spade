@@ -286,6 +286,8 @@ TEST(PartImportStep, AFlaggedCrossCheckIsWrittenAllTheSameWithExitSix) {
     NEED_PYTHON();
     const EnvGuard mode("FAKE_STEP_MODE", "flag");
     StepRig rig;
+    const fs::path log = rig.tmp.path() / "calls.log";
+    const EnvGuard guard("FAKE_STEP_LOG", log.string());
     const Out r = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
     EXPECT_EQ(r.exit, 6);
     EXPECT_FALSE(r.result.value("ok", true));
@@ -294,6 +296,17 @@ TEST(PartImportStep, AFlaggedCrossCheckIsWrittenAllTheSameWithExitSix) {
     ASSERT_EQ(r.result.at("objects").size(), 2u);
     EXPECT_TRUE(fs::is_regular_file(fs::path(r.result.at("objects")[0].value("sidecar", std::string()))));
     EXPECT_EQ(r.result.at("objects")[0].at("cross_check").value("flagged", false), true);
+    // the next run is a cache hit and is flagged the same: the flag is kept with the entry, and the converter does not run again
+    const Out again = rig.run(rig.with_converter({"--import", rig.step_file().string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
+    EXPECT_EQ(again.exit, 6) << again.result.dump();
+    EXPECT_TRUE(again.result.value("cached", false));
+    EXPECT_FALSE(again.result.value("ok", true));
+    EXPECT_EQ(again.code(), "cross_check_flagged");
+    EXPECT_NE(again.result.value("message", std::string()).find("arm"), std::string::npos);
+    ASSERT_EQ(again.result.at("objects").size(), 2u);
+    EXPECT_EQ(again.result.at("objects")[0].at("cross_check").value("flagged", false), true);
+    EXPECT_EQ(again.result.at("objects")[1].at("cross_check").value("flagged", true), false);
+    EXPECT_EQ(rig.converter_runs(log), 1) << "a cache hit ran the converter";
 }
 
 TEST(PartImportStep, TheConvertersOwnRefusalsAndFailuresKeepTheirMeaningAndStoreNothing) {
