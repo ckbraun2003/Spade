@@ -13,16 +13,20 @@
 #include <cmath>
 #include <array>
 #include <filesystem>
+#include <cstring>
 #include <fstream>
 #include <vector>
 #include <string>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "../tools/flow_movie/build_parts.hpp"
 #include "render/mesh_resolver.hpp"
+#include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
+#include "render/target.hpp"
 #include "unique_temp.hpp"
 #include "world/builder.hpp"
 #include "world/mesh.hpp"
@@ -640,5 +644,107 @@ TEST(FlowMovieBuildParts, ATopLevelHideMaterialsAppliesToTheFrameByWholePathOrLa
     spade::render::MeshData wrong_path = m;
     EXPECT_FALSE(flow_movie::hide_materials(wrong_path, names, {"other/x500-body/autopilot"}).has_value()) << "a different path matches nothing";
     EXPECT_EQ(wrong_path.submesh_material.size(), 2u) << "left as it was";
+}
+
+// THE SEAM THE FIRST X500 STILLS FELL THROUGH (the lead, 2026-11-18: the spread blade was not visible in the frame): a rotor drawn from a
+// REAL glTF (a prop primitive and a bell, two materials named drone/<file>/prop and /bell, one mesh, as KAT's rotor files are) through the
+// whole path (names, real materials, the radial scale, the blur copies) and then RASTERISED, not only counted. A black blade over a pale sky:
+// a turning rotor must darken a DISC of pixels, many times what the same blade frozen does; a frozen one is a solid blade; the blur's alpha
+// is the blade's, the bell stays opaque.
+namespace {
+
+std::string base64_of(const std::vector<uint8_t>& bytes) {
+    static const char* kDigits = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < bytes.size(); i += 3u) {
+        const uint32_t a = bytes[i];
+        const uint32_t b = i + 1u < bytes.size() ? bytes[i + 1u] : 0u;
+        const uint32_t c = i + 2u < bytes.size() ? bytes[i + 2u] : 0u;
+        const uint32_t v = (a << 16) | (b << 8) | c;
+        out += kDigits[(v >> 18) & 63u];
+        out += kDigits[(v >> 12) & 63u];
+        out += i + 1u < bytes.size() ? kDigits[(v >> 6) & 63u] : '=';
+        out += i + 2u < bytes.size() ? kDigits[v & 63u] : '=';
+    }
+    return out;
+}
+
+// A two-primitive rotor glTF: a flat blade along +x (chord 0.02, from 0.02 to `reach`, both windings) on material 0 "t/prop", and a small
+// tetrahedron bell on material 1 "t/bell", both black-ish (the real materials replace them by name).
+void save_rotor_gltf(const fs::path& file, float reach) {
+    const std::vector<float> positions{0.02f, 0.0f, -0.01f, reach, 0.0f, -0.01f, reach, 0.0f, 0.01f, 0.02f, 0.0f, 0.01f,
+                                       0.0f,  0.0f, 0.0f,   0.02f, 0.0f, 0.0f,  0.0f,  0.02f, 0.0f, 0.0f,  0.0f, 0.02f};
+    std::vector<float> normals(24, 0.0f);
+    for (std::size_t i = 1; i < 24; i += 3u) normals[i] = 1.0f;
+    const std::vector<uint16_t> indices{0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 5, 7, 4, 7, 6, 5, 6, 7};
+    std::vector<uint8_t> bytes(positions.size() * 4u + normals.size() * 4u + indices.size() * 2u);
+    std::memcpy(bytes.data(), positions.data(), positions.size() * 4u);
+    std::memcpy(bytes.data() + positions.size() * 4u, normals.data(), normals.size() * 4u);
+    std::memcpy(bytes.data() + positions.size() * 4u + normals.size() * 4u, indices.data(), indices.size() * 2u);
+    std::ofstream out(file, std::ios::binary);
+    out << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],)"
+        << R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2,"material":0,"mode":4},)"
+        << R"({"attributes":{"POSITION":0,"NORMAL":1},"indices":3,"material":1,"mode":4}]}],)"
+        << R"("materials":[{"name":"t/prop","pbrMetallicRoughness":{"baseColorFactor":[0.05,0.05,0.06,1]}},)"
+        << R"({"name":"t/bell","pbrMetallicRoughness":{"baseColorFactor":[0.2,0.2,0.2,1]}}],)"
+        << R"("accessors":[{"bufferView":0,"componentType":5126,"count":8,"type":"VEC3","min":[0,0,-0.01],"max":[)" << reach
+        << R"(,0.02,0.02]},{"bufferView":1,"componentType":5126,"count":8,"type":"VEC3"},)"
+        << R"({"bufferView":2,"componentType":5123,"count":12,"type":"SCALAR"},)"
+        << R"({"bufferView":2,"byteOffset":24,"componentType":5123,"count":12,"type":"SCALAR"}],)"
+        << R"("bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":96},{"buffer":0,"byteOffset":96,"byteLength":96},)"
+        << R"({"buffer":0,"byteOffset":192,"byteLength":48}],)"
+        << R"("buffers":[{"byteLength":240,"uri":"data:application/octet-stream;base64,)" << base64_of(bytes) << R"("}]})";
+}
+
+// The count of dark pixels (the black blade over a pale sky) of a rotor part rasterised from 20 degrees above its plane.
+uint32_t dark_pixels(const std::string& rotor_entry, const flow_movie::BuildDraw& draw, const fs::path& store) {
+    const auto parts = flow_movie::parse_build_parts("parts:\n" + rotor_entry);
+    EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
+    if (!parts) return 0u;
+    spade::render::RenderScene scene;
+    scene.lighting.sky_zenith = glm::vec3(0.9f);
+    scene.lighting.sky_horizon = glm::vec3(0.9f);
+    const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), draw);
+    EXPECT_TRUE(added.has_value()) << (added ? "" : added.error().context);
+    if (!added) return 0u;
+    constexpr uint32_t kW = 160, kH = 120;
+    spade::render::Camera camera;
+    const glm::vec3 eye(0.0f, 0.22f, 0.60f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    camera.position = eye;
+    camera.orientation = glm::quat_cast(glm::mat3(glm::inverse(view)));
+    std::vector<uint8_t> px(static_cast<std::size_t>(kW) * kH * 4u, 0xABu);
+    spade::render::RenderTarget target{.pixels = std::span<uint8_t>(px), .width = kW, .height = kH, .stride = kW * 4u};
+    spade::render::RenderOptions options;
+    options.overlays = false;
+    const auto rendered = spade::render::render(scene, camera, options, target);
+    EXPECT_TRUE(rendered.has_value()) << (rendered ? "" : rendered.error().context);
+    uint32_t dark = 0;
+    for (std::size_t i = 0; i < px.size(); i += 4u) {
+        if (static_cast<int>(px[i]) + px[i + 1] + px[i + 2] < 3 * 110) ++dark;
+    }
+    return dark;
+}
+
+}  // namespace
+
+TEST(FlowMovieBuildParts, ATurningRotorFromARealGltfDarkensADiscAndAFrozenOneOnlyItsBlade) {
+    const fs::path store = fresh_store("blades");
+    save_rotor_gltf(store / kSha / "rotor.gltf", 0.127f);
+    const std::string entry =
+        "  - name: rotor_fr\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n    radius: 0.127\n"
+        "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: rotor.gltf}\n";
+    flow_movie::BuildDraw turning;
+    turning.blur.samples = 48u;
+    turning.blur.alpha = 0.9f;
+    const std::array<double, 1> omega{343.667};
+    turning.omega = omega;
+    flow_movie::BuildDraw frozen;  // no speeds: one solid blade
+    const uint32_t blur_px = dark_pixels(entry, turning, store);
+    const uint32_t solid_px = dark_pixels(entry, frozen, store);
+    EXPECT_GT(solid_px, 8u) << "the frozen blade itself is there";
+    EXPECT_GT(blur_px, 4u * solid_px) << "the spread blade covers a disc, many times one blade's pixels: " << blur_px << " vs " << solid_px;
+    fs::remove_all(store);
 }
 
