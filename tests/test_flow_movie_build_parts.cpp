@@ -726,6 +726,36 @@ uint32_t dark_pixels(const std::string& rotor_entry, const flow_movie::BuildDraw
     return dark;
 }
 
+// The count of LIT pixels of a rotor part over a BLACK sky (the first stills' background): the blur's tint, not the blade's black, shows there.
+uint32_t lit_pixels(const std::string& rotor_entry, const flow_movie::BuildDraw& draw, const fs::path& store) {
+    const auto parts = flow_movie::parse_build_parts("parts:\n" + rotor_entry);
+    EXPECT_TRUE(parts.has_value()) << (parts ? "" : parts.error().context);
+    if (!parts) return 0u;
+    spade::render::RenderScene scene;
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+    const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), draw);
+    EXPECT_TRUE(added.has_value()) << (added ? "" : added.error().context);
+    if (!added) return 0u;
+    constexpr uint32_t kW = 160, kH = 120;
+    spade::render::Camera camera;
+    const glm::vec3 eye(0.0f, 0.22f, 0.60f);
+    const glm::mat4 view = glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    camera.position = eye;
+    camera.orientation = glm::quat_cast(glm::mat3(glm::inverse(view)));
+    std::vector<uint8_t> px(static_cast<std::size_t>(kW) * kH * 4u, 0xABu);
+    spade::render::RenderTarget target{.pixels = std::span<uint8_t>(px), .width = kW, .height = kH, .stride = kW * 4u};
+    spade::render::RenderOptions options;
+    options.overlays = false;
+    const auto rendered = spade::render::render(scene, camera, options, target);
+    EXPECT_TRUE(rendered.has_value()) << (rendered ? "" : rendered.error().context);
+    uint32_t lit = 0;
+    for (std::size_t i = 0; i < px.size(); i += 4u) {
+        if (static_cast<int>(px[i]) + px[i + 1] + px[i + 2] > 3 * 40) ++lit;
+    }
+    return lit;
+}
+
 }  // namespace
 
 TEST(FlowMovieBuildParts, ATurningRotorFromARealGltfDarkensADiscAndAFrozenOneOnlyItsBlade) {
@@ -745,6 +775,48 @@ TEST(FlowMovieBuildParts, ATurningRotorFromARealGltfDarkensADiscAndAFrozenOneOnl
     const uint32_t solid_px = dark_pixels(entry, frozen, store);
     EXPECT_GT(solid_px, 8u) << "the frozen blade itself is there";
     EXPECT_GT(blur_px, 4u * solid_px) << "the spread blade covers a disc, many times one blade's pixels: " << blur_px << " vs " << solid_px;
+    fs::remove_all(store);
+}
+
+// WHY THE SPREAD BLADE DID NOT SHOW (the first X500 stills; the CPU raster test above passes, so the drawing is right): the blur copies were
+// the prop's own BLACK (a real propeller's colour) over a frame whose background is black or dark blue cloud: a black disc on black is
+// nothing. A blurred propeller is a smoky, lit haze: the blur copies take a TINT, a pale grey (PropBlur::tint, --prop-blur tint=..), the
+// frozen blade stays black. Over a BLACK sky the turning rotor must light a disc of pixels where a frozen black blade lights almost none.
+TEST(FlowMovieBuildParts, TheBlurTintIsAPaleGreyOptionAndTheSpreadBladeShowsOverABlackSky) {
+    const flow_movie::PropBlur defaults;
+    EXPECT_GE(defaults.tint, 0.3f);
+    EXPECT_LE(defaults.tint, 0.7f);
+    const auto set = flow_movie::parse_prop_blur("tint=0.6,alpha=0.3");
+    ASSERT_TRUE(set.has_value()) << set.error().context;
+    EXPECT_FLOAT_EQ(set->tint, 0.6f);
+    EXPECT_FLOAT_EQ(set->alpha, 0.3f);
+    for (const char* bad : {"tint=0", "tint=1.5", "tint=x"}) {
+        const auto r = flow_movie::parse_prop_blur(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("prop blur"), std::string::npos) << r.error().context;
+    }
+
+    const fs::path store = fresh_store("tint");
+    save_rotor_gltf(store / kSha / "rotor.gltf", 0.127f);
+    const std::string entry =
+        "  - name: rotor_fr\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n    radius: 0.127\n"
+        "    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: rotor.gltf}\n";
+    const auto parts = flow_movie::parse_build_parts("parts:\n" + entry);
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    flow_movie::BuildDraw turning;
+    const std::array<double, 1> omega{343.667};
+    turning.omega = omega;
+    spade::render::RenderScene scene;
+    ASSERT_TRUE(flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), turning).has_value());
+    float brightest = 0.0f;
+    for (const auto& m : scene.materials) brightest = std::max(brightest, m.base_color.r);
+    EXPECT_NEAR(brightest, turning.blur.tint, 0.08f) << "the blur copies' colour is the tint, not the propeller's black";
+
+    const uint32_t spread = lit_pixels(entry, turning, store);
+    const uint32_t frozen = lit_pixels(entry, flow_movie::BuildDraw{}, store);
+    EXPECT_GT(spread, 150u) << "the blur is a disc of light over a black sky";
+    EXPECT_GT(spread, 4u * (frozen + 10u)) << "and a frozen black blade is nearly nothing there: " << spread << " vs " << frozen;
     fs::remove_all(store);
 }
 
