@@ -28,8 +28,10 @@
 # -Werror. -fsyntax-only never runs the optimiser, so it misses the warnings
 # only optimisation finds (maybe-uninitialized, array-bounds); a leg finds
 # them minutes later. This finds them in seconds. A header is still checked
-# with -fsyntax-only; a .cpp the volume's build never compiled (a new file)
-# fails with the reason. scripts/gcc_check_compile.py does the compiling.
+# with -fsyntax-only. A .cpp the volume's build never compiled (a new file)
+# borrows the command line of a compiled sibling, a template or the first
+# spade_tests file, and the output says whose; only a file with no sibling at
+# all fails with the reason. scripts/gcc_check_compile.py does the compiling.
 #
 #   scripts/gcc-check.sh --compile engine/render/flow_render.cpp
 #

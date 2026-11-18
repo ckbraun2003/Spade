@@ -14,10 +14,11 @@ and adds those the line lacks, and the repository root, after the line's own
 (GCC_CHECK_BUILD and GCC_CHECK_GEN, from gcc-check.sh), drops the depfile
 flags (the volume is
 read-only), writes the object to /tmp, and adds -Wall -Wextra -Wpedantic
--Werror. A file the volume's build never
-compiled fails with the reason: run a leg first -- except a new spade_tests
-file (NEW_TESTS below), which borrows a sibling's command line, and the output
-says whose.
+-Werror. A .cpp the volume's build never compiled (a new file) borrows a
+sibling's command line, and the output says whose: a TEMPLATES entry, else the
+first spade_tests file for a new tests/test_*.cpp (NEW_TESTS below), else the
+nearest compiled sibling (nearest_sibling below). Only a file with no sibling
+at all fails with the reason: run a leg first.
 
 Window-backend code. The leg's container has no X11, so GLFW builds without a
 window backend (SPADE_GLFW_HAS_BACKEND=0) and some code never meets gcc there:
@@ -106,6 +107,40 @@ def spade_tests_sibling(entries):
         line = entry.get("command", " ".join(entry.get("arguments", [])))
         if name.startswith("/leg/src/" + NEW_TESTS) and "/spade_tests.dir/" in entry.get("output", line):
             return name[len("/leg/src/"):], entry
+    return None, None
+
+
+# The directories a new file's sibling is looked for in: the ones gcc-check.sh copies in
+# and a leg builds. Never the repository root.
+def target_of(entry):
+    """The CMake target directory of a compile-database entry ("spade_tests.dir"), or ""."""
+    m = re.search(r"([^/]+\.dir)/", entry.get("output", ""))
+    return m.group(1) if m else ""
+
+
+def nearest_sibling(entries, f):
+    """(file, entry) of a .cpp the build compiles that is nearest to the new file `f`, or (None, None).
+
+    A target's sources share one command line (CMake sets no per-file flags here), and a directory's sources
+    almost always belong to one target, so the nearest compiled .cpp stands in for the new file: its own
+    directory first (its direct children before any below), then each ancestor, down to the top-level
+    directory and no higher. Where a directory's sources span several targets, the target with the most files
+    there wins, the first by path within it. A file whose real target sets flags of its own would be checked
+    against a sibling's: the output names the sibling so the reader can tell."""
+    parts = f.split("/")[:-1]
+    for depth in range(len(parts), 0, -1):
+        d = "/leg/src/" + "/".join(parts[:depth]) + "/"
+        below = {n: e for n, e in entries.items() if n.startswith(d) and n.endswith(".cpp")}
+        direct = {n: e for n, e in below.items() if "/" not in n[len(d):]}
+        pool = direct or below
+        if not pool:
+            continue
+        counts = {}
+        for e in pool.values():
+            counts[target_of(e)] = counts.get(target_of(e), 0) + 1
+        best = max(sorted(counts), key=counts.get)
+        name = sorted(n for n, e in pool.items() if target_of(e) == best)[0]
+        return name[len("/leg/src/"):], pool[name]
     return None, None
 
 
@@ -216,8 +251,14 @@ for f in files:
         rc |= verdict(compile_with(model_entry, source=f), f,
                       f"compiled with {model}'s command line: a new spade_tests file the leg has not built")
         continue
-    print(f"gcc FAIL: {f}: volume {volume}'s build does not compile it (a new file, or a volume older than "
-          "its target?); GCC_CHECK_VOLUME=<a volume that builds it>, or run a leg (scripts\\docker-leg.ps1), "
-          "then check again")
+    model, model_entry = nearest_sibling(by_file, f)
+    if model_entry is not None:
+        rc |= verdict(compile_with(model_entry, source=f), f,
+                      f"compiled with {model}'s command line: a new file the leg has not built, borrowing its nearest "
+                      "compiled sibling")
+        continue
+    print(f"gcc FAIL: {f}: volume {volume}'s build does not compile it, and no .cpp near it is compiled to borrow "
+          "from (a new target, or a volume older than its target?); GCC_CHECK_VOLUME=<a volume that builds it>, "
+          "or run a leg (scripts\\docker-leg.ps1), then check again")
     rc = 1
 sys.exit(rc)
