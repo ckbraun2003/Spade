@@ -29,6 +29,8 @@ set(_step_cases
     test_the_files_own_unit_is_kept
     test_a_conversion_based_unit_named_for_its_length_is_read
     test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others
+    test_a_solids_colour_is_read_as_srgb_and_a_solid_with_none_says_null
+    test_a_solid_with_coloured_faces_takes_the_colour_covering_the_most_area_and_counts_them
     test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused
     test_a_coarse_deflection_is_flagged_by_the_cross_check_and_still_written
     test_a_file_that_is_not_step_is_refused_by_name
