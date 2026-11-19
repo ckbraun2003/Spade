@@ -272,8 +272,8 @@ std::optional<EntryPeek> peek_entry(const SetEntry& entry, std::string* why) {
     } else {  // part
         const YAML::Node block = get(doc, entry.part_kind.c_str());
         double m = 0.0;
-        if (to_double(get(block, "mass"), m)) {
-            peek.mass_kg = m;
+        if (to_double(get(block, "mass"), m) || to_double(get(get(doc, "mass_properties"), "mass"), m)) {
+            peek.mass_kg = m;  // the spec block's mass, or a blocks-only part's (part_version 2) mass_properties.mass
         }
         if (const YAML::Node p = get(doc, "provides"); p.IsSequence()) {
             for (const YAML::Node& item : p) {
