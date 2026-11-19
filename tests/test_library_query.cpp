@@ -418,4 +418,20 @@ TEST(LibraryQuery, TheRepositorysDefaultLibraryListsWithPeeksAndUniqueHashes) {
     }
 }
 
+// A blocks-only part (part_version 2: install points, meshes, shapes) has its mass in mass_properties.mass, not in a motor/prop/esc/battery block: the peek reads it.
+TEST(LibraryQuery, APeekReadsABlocksOnlyPartsMass) {
+    const fs::path dir = fresh("blocks_peek");
+    put(dir / "p.motor.yaml", "part_version: 2\nid: \"part.motor.x\"\nmass_properties: {mass: 0.055}\n");
+    sc::SetEntry entry;
+    entry.id = "default:part.motor.x";
+    entry.kind = "part";
+    entry.part_kind = "motor";
+    entry.file = dir / "p.motor.yaml";
+    std::string why;
+    const auto peek = sc::peek_entry(entry, &why);
+    ASSERT_TRUE(peek.has_value()) << why;
+    ASSERT_TRUE(peek->mass_kg.has_value()) << "a version-2 part's mass is in mass_properties";
+    EXPECT_DOUBLE_EQ(*peek->mass_kg, 0.055);
+}
+
 }  // namespace

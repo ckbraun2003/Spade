@@ -604,13 +604,16 @@ void Reader::read_citations(const YAML::Node& node) {
             only_keys(c, path, {"source", "grade", "note"});
             SourceRef ref;
             bool ok = true;
-            ref.source = c["source"].IsScalar() ? c["source"].Scalar() : std::string();
-            ref.note = c["note"].IsScalar() ? c["note"].Scalar() : std::string();
-            if (!c["grade"].IsScalar()) {
+            // A missing key is an undefined node, and asking one its type throws: test IsDefined() first (an `assumed` citation has a note and no `source`).
+            const auto text = [&](const char* key) { const YAML::Node v = c[key]; return v.IsDefined() && v.IsScalar() ? v.Scalar() : std::string(); };
+            const auto has_text = [&](const char* key) { const YAML::Node v = c[key]; return v.IsDefined() && v.IsScalar(); };
+            ref.source = text("source");
+            ref.note = text("note");
+            if (!has_text("grade")) {
                 add(path, "its citation needs a grade");
                 ok = false;
-            } else if (const Result<Grade> g = parse_grade(c["grade"].Scalar(), path); !g) {
-                add(path, "its grade '" + c["grade"].Scalar() + "' is not one of measured, published, retailer, derived, fitted, assumed");
+            } else if (const Result<Grade> g = parse_grade(text("grade"), path); !g) {
+                add(path, "its grade '" + text("grade") + "' is not one of measured, published, retailer, derived, fitted, assumed");
                 ok = false;
             } else {
                 ref.grade = *g;

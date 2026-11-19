@@ -107,6 +107,19 @@ TEST(PartBlocks, TheValidExampleHasNoIssueAndReadsBackFieldForField) {
     EXPECT_EQ(r->sources.at("mass_properties.mass").grade, sc::Grade::published);
 }
 
+// A citation's keys are each optional to READ (the rules say which are required): an `assumed` one has a note and no `source`; one with no grade, or no keys at all, is
+// an issue by its path, never an exception from the YAML reader.
+TEST(PartBlocks, ACitationWithMissingKeysIsAnIssueOrValidNeverAThrow) {
+    const std::string head = "id: \"p\"\nmass_properties: {mass: 0.5}\nsources:\n  mass_properties.mass: ";
+    EXPECT_TRUE(sc::validate_part_blocks(head + "{grade: assumed, note: \"a stand-in\"}\n").empty()) << "an assumed citation: a note, no source";
+    std::vector<PartIssue> no_grade;
+    ASSERT_NO_THROW(no_grade = sc::validate_part_blocks(head + "{source: a_source}\n"));
+    EXPECT_TRUE(has_field(no_grade, "mass_properties.mass")) << "no grade";
+    std::vector<PartIssue> no_note;
+    ASSERT_NO_THROW(no_note = sc::validate_part_blocks(head + "{grade: assumed}\n"));
+    EXPECT_TRUE(has_field(no_note, "mass_properties.mass")) << "an assumed value carries a note";
+}
+
 TEST(PartBlocks, JsonReadsAsYamlWithTheSameResult) {
     const std::string json =
         std::string(R"({"id": "m1", "name": "KAT's own key", "mass": 99, "geometry": {"source": {"format": "stl", "sha256": ")") + kSha +
