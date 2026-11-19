@@ -1130,3 +1130,31 @@ TEST(FlowMovieBuildParts, TheRecordSaysHowTheRotorDiscsAreDrawn) {
     EXPECT_EQ(copies.find("times"), std::string::npos) << "no gain is claimed for the sampled blur: " << copies;
 }
 
+// CORE'S KIT TABLE (653fcdf9, L88s) has four `kind: motor` parts, the kit's motors, with their own material name (aluminium_anodised). The loader
+// refused them as an unknown kind (flow_movie: "part 'motor_front_right': unknown kind 'motor'"), so no frame of the X500 could be drawn.
+TEST(FlowMovieBuildParts, ACoreMotorIsAKnownKindWithAColourAndItsOwnMaterialName) {
+    const std::string entry =
+        "  - name: motor_front_right\n    kind: motor\n    mass_kg: 0.055\n    material: aluminium_anodised\n"
+        "    pose: {position: [0.1774, 0.0, 0.1774], orientation: [1, 0, 0, 0]}\n    box: [0.029, 0.04, 0.029]\n";
+    const auto parts = flow_movie::parse_build_parts(table(entry));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    ASSERT_EQ(parts->size(), 1u);
+    EXPECT_EQ((*parts)[0].kind, "motor");
+    EXPECT_TRUE(flow_movie::kind_material("motor").has_value()) << "a colour for a motor that names no material";
+    EXPECT_TRUE(flow_movie::real_material("aluminium_anodised").has_value());
+}
+
+TEST(FlowMovieBuildParts, TheWholeX500TableParsesAndHasItsFourMotors) {
+    std::ifstream in(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500_build/parts.yaml", std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const auto parts = flow_movie::parse_build_parts(text);
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    std::size_t motors = 0, rotors = 0;
+    for (const auto& part : *parts) {
+        motors += part.kind == "motor" ? 1u : 0u;
+        rotors += part.kind == "rotor" ? 1u : 0u;
+    }
+    EXPECT_EQ(motors, 4u);
+    EXPECT_EQ(rotors, 4u);
+}
+
