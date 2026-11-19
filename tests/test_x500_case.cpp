@@ -1,30 +1,30 @@
 // ---------------------------------------------------------------------------
 // test_x500_case.cpp -- L86k (the lead, 2026-11-17): the website clips' X500, a flow model built from KAT's x500.airframe.json and
 // kept with the clips' tool data (tools/flow_movie/data/x500/). L86p (the lead, 2026-11-18): the kit's propeller is the 1045 (10 x 4.5 in),
-// R 0.127 m, the library's measured UIUC APC 10x5 blade at 10 in graded derived, no scaled estimate (tests/x500_model.hpp). Its mass, centre
-// of mass and inertia are Core's parts table's (tools/flow_movie/data/x500_build/parts.yaml, core/x500-pose-table 1031a020; the lead, 2026-11-18):
-// 13 parts, 1.6389 kg, not the Gazebo model's 2.0643 kg.
+// R 0.127 m, the library's measured UIUC APC 10x5 blade at 10 in graded derived, no scaled estimate (tests/x500_model.hpp). L98, L99a, L104
+// (2026-11-19): its mass, centre of mass and inertia are Core's kit table's (tools/flow_movie/data/x500_build/parts.yaml, b1a5a7f0): 16 entries,
+// 1.6326 kg, the centre of mass and whole tensor from the part meshes (tests/test_x500_kit_inertia.cpp), the principal axes 5.4 degrees from the
+// design axes (carried in design_to_principal), the motor axes at +-0.17689 m and the actuator discs 0.0607 m above the table's origin.
 //
 //   X500Model.TheFilesAreTheBuildersOutput       the model file and the prop part file are the builder's text, byte for byte; with
 //                                                SPADE_X500_WRITE set the test writes them instead
-//   X500Model.CarriesKatsNumbers                 mass 2.0643 kg, the four rotors at (+-0.174, +-0.174) m with PX4's spins, radius
-//                                                0.127 m, the hubs 0.06 m above the centre of mass, the chain's propeller the 10-inch
+//   X500Model.CarriesKatsNumbers                 the body's mass 1.6326 kg (not the Gazebo model's 2.0643), the four rotors at the table's hubs
+//                                                (turned by design_to_principal, shifted by -com_offset) with PX4's spins, radius 0.127 m, the
+//                                                chain's propeller the 10-inch
 //   X500Prop.NoRowIsEstimatedAndTheBladeIsTheApc10x5s   no row says ESTIMATED; diameter 0.254 m (graded for the kit), pitch derived with the
 //                                                4.5 in against 5 in said, mass assumed; the blade's radius 0.127 m; c/R, twist and the
 //                                                fitted polar the library's APC 10x5, as it is
-//   X500Model.TheMassAndInertiaComeFromTheBuildTable   the compiled composite: 1.6389 kg, the centre of mass within 0.6 mm of the table's in x
-//                                                and z and within 8 mm in y, the hubs at the table's pose (0.0614 m above its origin), the principal
-//                                                diagonal within 3% of an independent sum of the table's parts, the products of inertia zero and
-//                                                the design frame the principal frame (design_to_principal the identity)
-//   X500Model.TheFilesComOffsetIsTheCentreOfMassInTheTablesFrame   the design frame IS the table's frame (the hubs 0.0614 m above its
-//                                                origin, in the file too), so the model file's `com_offset` is the parts' centre of mass in the table's
-//                                                frame, the one value a drawing of the table shifts by (Rendering: the table's origin sits at
-//                                                -com_offset from the body)
-//   X500Model.TheBatterySitsUnderTheFrameAsASolid   the 4S pack as a 0.133 x 0.0335 x 0.045 m box part under the frame stack
-//   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0181 N:
+//   X500Model.TheMassAndInertiaComeFromTheBuildTable   the compiled composite: 1.6326 kg, the kit's centre of mass and whole tensor (products
+//                                                included), the discs 0.0607 m above the table's origin, and the 5.4 degree turn of the principal axes
+//   X500Model.TheFilesComOffsetIsTheCentreOfMassInTheTablesFrame   the design frame IS the table's frame, so the model file's `com_offset` is
+//                                                the kit's centre of mass in the table's frame (the one value a drawing of the table shifts by)
+//   X500Model.TheBatterySitsUnderTheFrameAsASolid   the 4S pack as a 0.133 x 0.0335 x 0.045 m box part under the frame stack (0.0805 m tall)
+//   X500Balance.TheBalanceSpeedHoldsAQuarterOfTheWeight   the grid-free BEMT (tests/bemt_reference.hpp) bisected for W/4 = 4.0027 N:
 //                                                thrust within 0.1% of the target; the speed against the chain's own static-thrust speed
-//   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   266 x 237 x 266 at 2.5 mm; check_grid(kD1X500Grid, the case's
+//   AirflowX500.TheTwoAndAHalfMillimetreGridIsWithinTheCapWithItsSolids   270 x 237 x 270 at 2.5 mm; check_grid(kD1X500Grid, the case's
 //                                                faces, with solids); the device runner's 4 GiB at 234.6 B a cell
+//   AirflowX500.TheRotorsReachStaysInsideTheBoxWithRoomAbove   the discs' reach and the open air above and below and at the sides
+//   AirflowX500.TheLinesThrustAgainstTheStepInOneRotorOnTheCpu   L105, opt-in (SPADE_L105=1): the lines' thrust against h, one rotor on the CPU
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
