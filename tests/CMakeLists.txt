@@ -325,6 +325,9 @@ add_executable(spade_tests
     ../tools/library_c/library_json.cpp
     ../tools/library_c/mesh_info.cpp
     ../tools/library_c/c_api.cpp
+    # spade_part_stand_in's boxes (L88l), compiled in from the tool: the stand-in shapes a part with store meshes carries.
+    test_part_stand_in.cpp
+    ../tools/part_stand_in/stand_in.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
