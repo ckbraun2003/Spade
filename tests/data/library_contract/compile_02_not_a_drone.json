@@ -1,0 +1,43 @@
+{
+ "description": "only a drone with a parts map compiles",
+ "open": {
+  "roots": [
+   {
+    "name": "quad",
+    "path": "$FIXTURES/roots/quad"
+   }
+  ]
+ },
+ "op": "compile",
+ "request": {
+  "id": "quad:part.frame.f",
+  "options": {
+   "drag": {
+    "mode": "componentwise",
+    "area": 0,
+    "coeffs": [
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compile",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_entry",
+   "severity": "error",
+   "message": "",
+   "root": "quad",
+   "path": null,
+   "id": "quad:part.frame.f",
+   "field": null,
+   "issues": []
+  }
+ }
+}

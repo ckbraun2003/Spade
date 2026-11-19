@@ -1,0 +1,32 @@
+{
+ "description": "a drone compiles only with a drag given: a tensor record gives the compile no area to estimate one from",
+ "open": {
+  "roots": [
+   {
+    "name": "quad",
+    "path": "$FIXTURES/roots/quad"
+   }
+  ]
+ },
+ "op": "compile",
+ "request": {
+  "id": "quad:drone.quad"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compile",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "options.drag",
+   "issues": []
+  }
+ }
+}

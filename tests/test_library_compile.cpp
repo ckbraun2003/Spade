@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "physics/forces.hpp"
 #include "scene/library_compile.hpp"
 #include "scene/library_query.hpp"
 #include "scene/library_set.hpp"
@@ -265,6 +266,20 @@ std::string frame_with_cube(const std::string& sha) {
     const std::size_t at = t.find("shapes:\n");
     t.insert(at, "meshes:\n  - {store: {sha256: \"" + sha + "\", file: \"cube.spmesh\"}}\n");
     return t;
+}
+
+// A spec compile_airframe refuses (a negative drag coefficient) comes back as compile_refused, with its issue's words.
+TEST(LibraryCompile, ASpecTheCompileRefusesIsCompileRefused) {
+    const sc::LibrarySet set = open_quad("refused", kQuad);
+    sc::CompileOptions options;
+    vh::DragSpec drag;
+    drag.mode = spade::physics::drag_mode::componentwise;
+    drag.coeffs = {-1.0, 0.0, 0.0};
+    options.drag = drag;
+    const auto got = sc::compile_drone(set, "r:drone.quad", options);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().code, "compile_refused");
+    EXPECT_NE(got.error().message.find("drag"), std::string::npos) << got.error().message;
 }
 
 // THE RULE: a part with meshes is its meshes for physics, never its stand-in boxes; and a mesh needs the store.

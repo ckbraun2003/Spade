@@ -1,0 +1,5 @@
+library_version: 3
+name: quad
+depends: []
+indexes:
+  - index.yaml

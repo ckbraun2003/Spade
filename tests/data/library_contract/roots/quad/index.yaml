@@ -1,0 +1,37 @@
+index_version: 1
+entries:
+  - id: part.frame.f
+    name: frame
+    category: Parts
+    file: parts/f.frame.yaml
+  - id: part.motor.m
+    name: motor
+    category: Parts
+    file: parts/m.motor.yaml
+  - id: part.prop.p
+    name: prop
+    category: Parts
+    file: parts/p.prop.yaml
+  - id: part.battery.b
+    name: pack
+    category: Parts
+    file: parts/b.battery.yaml
+  - id: part.payload.e
+    name: esc carrier
+    category: Parts
+    file: parts/e.payload.yaml
+  - id: drone.quad
+    name: quad
+    category: drones
+    parts_map:
+      - {slot: frame, part: "quad:part.frame.f", placement: {pos: [0, 0, 0], quat: [0.707106781187, 0.707106781187, 0, 0]}}
+      - {slot: m_fr, part: "quad:part.motor.m", parent: frame, install_point: motor_fr}
+      - {slot: m_fl, part: "quad:part.motor.m", parent: frame, install_point: motor_fl}
+      - {slot: m_rl, part: "quad:part.motor.m", parent: frame, install_point: motor_rl}
+      - {slot: m_rr, part: "quad:part.motor.m", parent: frame, install_point: motor_rr}
+      - {slot: pack, part: "quad:part.battery.b", parent: frame, install_point: battery_pad}
+      - {slot: esc, part: "quad:part.payload.e", parent: frame, install_point: esc_pad}
+      - {slot: p_fr, part: "quad:part.prop.p", parent: m_fr, install_point: prop_hub}
+      - {slot: p_fl, part: "quad:part.prop.p", parent: m_fl, install_point: prop_hub}
+      - {slot: p_rl, part: "quad:part.prop.p", parent: m_rl, install_point: prop_hub}
+      - {slot: p_rr, part: "quad:part.prop.p", parent: m_rr, install_point: prop_hub}
