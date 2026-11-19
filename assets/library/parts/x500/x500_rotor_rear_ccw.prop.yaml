@@ -1,0 +1,15 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.prop.x500_rotor_rear_ccw"
+mass_properties: {mass: 0.013}
+install_points:
+  - {name: seat, kind: prop_hub, pos: [0, -0.016, 0], orient: [1, 0, 0, 0]}
+  - {name: disc, kind: prop_hub, pos: [0, -0.00926, 0], orient: [1, 0, 0, 0]}
+meshes:
+  - {store: {sha256: "9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7", file: "x500-rotor-rear-ccw.gltf"}, role: visual}
+source: {id: "holybro_x500_v2_kit", url: "https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {grade: assumed, note: "library uiuc_apce_10x5 propeller 0.013 kg (assumed)"}
+  install_points.seat: {source: "holybro_x500_v2_kit", grade: derived, note: "the glTF's hub bottom face, 0.0160 m below its origin (measured by Core on x500-rotor-front-ccw.gltf, the prop material's lowest vertices); it sits on the motor's prop_hub, so the part's own mount offset is the inverse of this point"}
+  install_points.disc: {source: "holybro_x500_v2_kit", grade: derived, note: "the actuator disc: the blade mid-plane at 0.25 to 0.35 R (R 0.127 m), 0.00926 m below the glTF origin (measured by Core on x500-rotor-front-ccw.gltf); Physics takes the disc from here, the drawing from the origin"}

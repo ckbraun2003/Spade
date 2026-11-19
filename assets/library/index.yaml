@@ -250,3 +250,91 @@ entries:
     category: "test fixtures"
     file: "drones/reference_quad.model.yaml"
     thumbnail: "thumbnails/reference_quad.png"
+
+  # The X500 build (L88l): the Holybro X500 V2 kit's frame, its motor, rotors and payload parts, and the drone that places them. The part files under parts/x500/ are generated from
+  # tools/flow_movie/data/x500_build/parts.yaml and pinned to it by tests/test_library_x500_entries.cpp. Their meshes are in the local part store (L88b): only hashes are here.
+  - id: part.frame.x500_kit_frame
+    name: "X500 kit frame (Holybro X500 V2)"
+    category: "frames"
+    file: "parts/x500/x500_kit_frame.frame.yaml"
+
+  - id: part.payload.pixhawk_6c
+    name: "Pixhawk 6C (Holybro)"
+    category: "payloads"
+    file: "parts/x500/pixhawk_6c.payload.yaml"
+
+  - id: part.payload.gps_m8n_m9n_v1
+    name: "M8N/M9N standard GPS (Holybro)"
+    category: "payloads"
+    file: "parts/x500/gps_m8n_m9n_v1.payload.yaml"
+
+  - id: part.payload.raspberry_pi_5
+    name: "Raspberry Pi 5"
+    category: "payloads"
+    file: "parts/x500/raspberry_pi_5.payload.yaml"
+
+  - id: part.payload.camera_module_3
+    name: "Camera Module 3 (Raspberry Pi)"
+    category: "payloads"
+    file: "parts/x500/camera_module_3.payload.yaml"
+
+  - id: part.battery.tattu_4s_5200
+    name: "4S 5200 mAh pack (Tattu G-Tech)"
+    category: "batteries"
+    file: "parts/x500/tattu_4s_5200.battery.yaml"
+
+  - id: part.payload.sik_radio_v3
+    name: "SiK Telemetry Radio V3 (Holybro)"
+    category: "payloads"
+    file: "parts/x500/sik_radio_v3.payload.yaml"
+
+  - id: part.payload.electronics_misc
+    name: "X500 ESCs, power module and wiring (mass only)"
+    category: "payloads"
+    file: "parts/x500/electronics_misc.payload.yaml"
+
+  - id: part.prop.x500_rotor_front_ccw
+    name: "X500 rotor, front ccw"
+    category: "props"
+    file: "parts/x500/x500_rotor_front_ccw.prop.yaml"
+
+  - id: part.prop.x500_rotor_front_cw
+    name: "X500 rotor, front cw"
+    category: "props"
+    file: "parts/x500/x500_rotor_front_cw.prop.yaml"
+
+  - id: part.prop.x500_rotor_rear_ccw
+    name: "X500 rotor, rear ccw"
+    category: "props"
+    file: "parts/x500/x500_rotor_rear_ccw.prop.yaml"
+
+  - id: part.prop.x500_rotor_rear_cw
+    name: "X500 rotor, rear cw"
+    category: "props"
+    file: "parts/x500/x500_rotor_rear_cw.prop.yaml"
+
+  - id: part.motor.dj2216_kv880
+    name: "DJ-2216 motor (Holybro X500 V2 kit)"
+    category: "motors"
+    file: "parts/x500/dj2216_kv880.motor.yaml"
+
+  - id: drone.x500_build
+    name: "X500 build (Holybro kit)"
+    category: "drones"
+    parts_map:
+      - {slot: frame, part: "default:part.frame.x500_kit_frame", placement: {pos: [0, 0, 0], quat: [0, 0, 0.707106781187, 0.707106781187]}}
+      - {slot: motor_front_right, part: "default:part.motor.dj2216_kv880", parent: frame, install_point: motor_front_right}
+      - {slot: motor_front_left, part: "default:part.motor.dj2216_kv880", parent: frame, install_point: motor_front_left}
+      - {slot: motor_rear_left, part: "default:part.motor.dj2216_kv880", parent: frame, install_point: motor_rear_left}
+      - {slot: motor_rear_right, part: "default:part.motor.dj2216_kv880", parent: frame, install_point: motor_rear_right}
+      - {slot: fc, part: "default:part.payload.pixhawk_6c", parent: frame, install_point: fc_6c}
+      - {slot: gnss, part: "default:part.payload.gps_m8n_m9n_v1", parent: frame, install_point: gnss_stand}
+      - {slot: companion, part: "default:part.payload.raspberry_pi_5", parent: frame, install_point: companion_tray}
+      - {slot: camera, part: "default:part.payload.camera_module_3", parent: frame, install_point: camera_front}
+      - {slot: battery, part: "default:part.battery.tattu_4s_5200", parent: frame, install_point: battery_pad}
+      - {slot: radio, part: "default:part.payload.sik_radio_v3", parent: frame, install_point: radio_plate}
+      - {slot: esc, part: "default:part.payload.electronics_misc", parent: frame, install_point: esc_between_plates}
+      - {slot: prop_front_right, part: "default:part.prop.x500_rotor_front_ccw", parent: motor_front_right, install_point: prop_hub}
+      - {slot: prop_front_left, part: "default:part.prop.x500_rotor_front_cw", parent: motor_front_left, install_point: prop_hub}
+      - {slot: prop_rear_left, part: "default:part.prop.x500_rotor_rear_ccw", parent: motor_rear_left, install_point: prop_hub}
+      - {slot: prop_rear_right, part: "default:part.prop.x500_rotor_rear_cw", parent: motor_rear_right, install_point: prop_hub}

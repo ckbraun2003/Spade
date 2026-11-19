@@ -1,0 +1,10 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.battery.tattu_4s_5200"
+mass_properties: {mass: 0.4365}
+shapes:
+  - {kind: box, size: [0.133, 0.0335, 0.045]}
+source: {id: "grepow_tattu_4s_5200", url: "https://www.grepow.com/uav-battery/tattu-g-tech-4s-5200mah-14-8v-35c-lipo-drone-battery.html", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {source: "grepow_tattu_4s_5200", grade: retailer, note: "Grepow product listing, Tattu G-Tech 5200 mAh 4S (133 x 45 x 33.5 mm, 436.5 g)"}

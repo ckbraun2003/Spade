@@ -398,8 +398,9 @@ TEST(LibrarySet, TheRepositorysDefaultLibraryOpensWithDerivedIdsForEveryEntry) {
     std::vector<std::string> ids;
     for (const sc::SetEntry& e : set->entries) {
         EXPECT_EQ(e.id.rfind("default:", 0), 0u) << e.id;
-        EXPECT_TRUE(fs::exists(e.file)) << e.file;
         ids.push_back(e.id);
+        if (e.rel_file.empty() && e.has_parts_map) continue;  // a drone with a parts map only has no file
+        EXPECT_TRUE(fs::exists(e.file)) << e.file;
     }
     std::sort(ids.begin(), ids.end());
     EXPECT_EQ(std::adjacent_find(ids.begin(), ids.end()), ids.end());

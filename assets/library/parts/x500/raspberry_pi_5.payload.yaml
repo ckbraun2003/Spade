@@ -1,0 +1,27 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.raspberry_pi_5"
+mass_properties: {mass: 0.045}
+meshes:
+  - {store: {sha256: "7e031388b64c748d5cfdabf83dca2d1a08bfc18cc5de7c1d3e691d9f957270d9", file: "OBJ12.spmesh"}}
+  - {store: {sha256: "f494280926fa6c407968c5bb978cd49fd90fe9c632c7f754f212c702da31455c", file: "OBJ1936.spmesh"}}
+  - {store: {sha256: "45cb69b8b566d99b2484a8f726cc7e9b1a34a8c43b30d53064d5b65aee0001c1", file: "OBJ1938.spmesh"}}
+  - {store: {sha256: "212f56bfd003feebd82f38ae2e948c4e5997dc7578221d0937a09c34dc139f54", file: "OBJ3526.spmesh"}}
+  - {store: {sha256: "17a6ddd1a61db68976a2f478cc4606b3bf16047148a364d2592ba2ec00018bdf", file: "OBJ3532.spmesh"}}
+  - {store: {sha256: "0920615ceb2a41ced33c41a5e1dc24e4f0fffbf65efad046ceb6f8f0e9c09f3c", file: "OBJ3634.spmesh"}}
+  - {store: {sha256: "ad1d005b72c487a37901a5a2287f6ba8652b586068bb4cffa737fae02c0fa2f8", file: "OBJ3640.spmesh"}}
+  - {store: {sha256: "0f2c7a6a9d29b58d386adc8f0260bc6b7bbbe30a64ef8a682a6c5e5220e95557", file: "OBJ3734.spmesh"}}
+  - {store: {sha256: "8dd7cae262f69d3e5996cf0c1b8f52370dc8b0b775c146eae9ae37b19e9bf248", file: "OBJ3742.spmesh"}}
+  - {store: {sha256: "3edb8d2b9b8dc663ab061b4f3f983e549fb83df6d3a381b9bb1e5cfc9ee29d16", file: "OBJ4356.spmesh"}}
+  - {store: {sha256: "cf3fb4625ac6ceb06a5a0f3da9efd820307f4f3f53dd78753436ea431ba5b36a", file: "OBJ4358.spmesh"}}
+  - {store: {sha256: "a453741db902b3a286148a136d54f4d78da336ab06bdea6b15a9c8dcb274898b", file: "OBJ4366.spmesh"}}
+  - {store: {sha256: "552fcd33894a8dd282876d33a7d4ed75ffffde4a55707f88a1f1b74a176323c4", file: "OBJ5006.spmesh"}}
+  - {store: {sha256: "d4a5ffd33ecee5f77e7792f8cc06fd07ea505369e74ef53d49092128a4413584", file: "OBJ5142.spmesh"}}
+  - {store: {sha256: "e3ec63431cc620cb5379c77e0687387433742bdc245b7dac8f3a5a52f59e8959", file: "OBJ5144.spmesh"}}
+  - {store: {sha256: "402ce5b3cce3e42d07058212bcde21df52517b69c9c5babd9a3d8151dc49c378", file: "OBJ8534.spmesh"}}
+  - {store: {sha256: "2c20b0afb4fb5767b6dc2b3545d1aa9d4a07addf7ecdf5997fbc6735038164c2", file: "OBJ8536.spmesh"}}
+  - {store: {sha256: "1c67333986945f3eabf754755710da4a3a0a54718af01cec0646e17262579d86", file: "OBJ8572.spmesh"}}
+source: {id: "raspberry_pi_5_files", url: "https://pip.raspberrypi.com/categories/892-raspberry-pi-5", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {source: "retail_raspberry_pi_5", grade: retailer, note: "desertcart.sg listing 45 g; ghacks says Raspberry Pi publishes no weight; HiFiBerry lists 62 g (likely packaged)"}

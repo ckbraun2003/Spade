@@ -87,3 +87,51 @@ sources:
     retrieved: 2026-10-21
     license: facts_cite
     license_evidence: "Kat's own design notes, read in place; Cameron, 2026-10-21 (ruling 5) puts the competition fit in the library. Nothing in it that took its shape from APC is used (ruling 4)."
+  - id: holybro_x500_v2_kit
+    citation: "Holybro, PX4 Development Kit X500 V2: the kit page (frame mass) and the docs page with its \"3D CAD File\" x500v2-frame.step (the kit frame, its motor axes and its plates)"
+    url: "https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "The vendor pages carry no terms line. The numbers (mass, dimensions) are facts, used and cited; the CAD file itself stays in the local part store and is not in this repository (L88b). Recorded, not enforced (L88c): docs/design/interface/records/2026-11-18-x500-parts-sources.md section 5."
+  - id: holybro_pixhawk_6c
+    citation: "Holybro, Pixhawk 6C technical specification (\"Weight (Plastic Case): 34.6g\", \"Dimensions: 84.8 * 44 * 12.4 mm\") and its case CAD"
+    url: "https://docs.holybro.com/autopilot/pixhawk-6c/technical-specification"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "The pages and the file carry no terms line; the store terms are the only reuse lines. The numbers are facts, used and cited; the CAD file stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 1."
+  - id: holybro_gps_m9n_standard
+    citation: "Holybro, M8N/M9N/M10 standard GPS overview (\"Dimension (V1)\": phi50 x14.4 mm; \"Weight (V1)\": 32g) and its CAD"
+    url: "https://docs.holybro.com/gps-and-rtk-system/m8n-m9n-m10-gps/standard-m10-m9n-m8n-gps/overview"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "The pages and the file carry no terms line. The numbers are facts, used and cited; the CAD file stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 2."
+  - id: raspberry_pi_5_files
+    citation: "Raspberry Pi, Raspberry Pi 5 3D STEP \"No Graphics small file\" (design files, MIT licence in the zip)"
+    url: "https://pip.raspberrypi.com/categories/892-raspberry-pi-5"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "The zip's LICENSE.txt: \"This 3D model is provided under the MIT license included at the end of this file.\" The model is geometry only; it stays in the local part store (L88b) and the repository carries its hash. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 4."
+  - id: retail_raspberry_pi_5
+    citation: "Retailer listing of the Raspberry Pi 5 8GB board (desertcart.sg), 45 g; Raspberry Pi publishes no weight"
+    url: "https://www.desertcart.sg/products/593685802-raspberry-pi-5-8gb-ram-board"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "A retailer listing with no reuse licence; the number is a fact, used and cited. The page was supplied by the lead and not read by Interface (docs/design/interface/records/2026-11-18-x500-parts-sources.md section 4); other sources give 62 g packaged."
+  - id: raspberry_pi_camera_module_3
+    citation: "Raspberry Pi, Camera Module 3: product page (\"Dimensions: 25 x 24 x 11.5mm\") and the design files (camera-module-3-step)"
+    url: "https://www.raspberrypi.com/products/camera-module-3/"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "raspberrypi.com/licensing: \"Most of the design files released and hosted by us are made available openly, with no limitations.\" The model stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 3."
+  - id: grepow_tattu_4s_5200
+    citation: "Grepow, Tattu G-Tech 4S 5200mAh 14.8V 35C LiPo drone battery: \"Weight: 436.5g\", \"Dimensions: 133x45x33.5mm\""
+    url: "https://www.grepow.com/uav-battery/tattu-g-tech-4s-5200mah-14-8v-35c-lipo-drone-battery.html"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "A maker's product page with no terms line read; the numbers are facts, used and cited. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 6."
+  - id: holybro_sik_radio_v3
+    citation: "Holybro, SiK Telemetry Radio V3 433/915MHz: \"Dimension 28 x 53 x 10.7mm (without antenna)\", \"Weight 23.5g w/ antenna\" (the 100 mW and 500 mW columns)"
+    url: "https://docs.holybro.com/radio/sik-telemetry-radio-v3"
+    retrieved: 2026-11-18
+    license: facts_cite
+    license_evidence: "The datasheet page carries no terms line; the numbers are facts, used and cited. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 7."

@@ -1,0 +1,11 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.gps_m8n_m9n_v1"
+mass_properties: {mass: 0.032}
+meshes:
+  - {store: {sha256: "22e4fe75e90d026b30469a1f9fafe72817473bd421cf3e405b12a9dd55b25d27", file: "GPS-V5-SK-C1.spmesh"}}
+  - {store: {sha256: "c046eb15dd6db641431fd570085e8339e2dd6200849490f3d21e4b0d82daf7c9", file: "GPS-V5-XK-C1.spmesh"}}
+source: {id: "holybro_gps_m9n_standard", url: "https://docs.holybro.com/gps-and-rtk-system/m8n-m9n-m10-gps/standard-m10-m9n-m8n-gps/overview", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {source: "holybro_gps_m9n_standard", grade: published, note: "Holybro docs, M8N/M9N/M10 standard GPS overview page, 'Weight (V1): 32g'; model GPS-M8N-M9N-full_asm.stp (Holybro docs, standard GPS download page)"}

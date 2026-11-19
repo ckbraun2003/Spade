@@ -1,0 +1,10 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.sik_radio_v3"
+mass_properties: {mass: 0.0235}
+shapes:
+  - {kind: box, size: [0.053, 0.0107, 0.028]}
+source: {id: "holybro_sik_radio_v3", url: "https://docs.holybro.com/radio/sik-telemetry-radio-v3", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {source: "holybro_sik_radio_v3", grade: published, note: "Holybro docs, SiK Telemetry Radio V3 specification page (28 x 53 x 10.7 mm without antenna, 23.5 g with antenna)"}
