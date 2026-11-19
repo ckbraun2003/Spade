@@ -144,6 +144,9 @@ LibraryResult<void> add_records(const PartData& part, const Pose& pose, std::vec
             r.orientation = to_spade(pose.q * s.orient);
             r.shape = vehicles::PartShape::box;
             r.size = {s.size[0], s.size[1], s.size[2]};
+            r.tensor = vehicles::part_inertia_local(r);  // the box's inertia, as a tensor record: mass only, like every part (a box record would be a wall)
+            r.shape = vehicles::PartShape::tensor;
+            r.size = glm::dvec3(0.0);
             out.push_back(r);
         }
         return {};

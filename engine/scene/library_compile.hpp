@@ -10,10 +10,10 @@
 //                 on its parent's point by that seat (its own mount offset is the seat's inverse: a rotor's hub bottom on the motor's boss);
 //   2. one frame  every pose goes through the one fixed rotation Rx(-90 deg), (x, y, z) -> (x, z, -y), into the AirframeSpec's design frame (+X forward,
 //                 +Y up, +Z right). The origin is the parts map's own; compile_airframe moves it to the centre of mass;
-//   3. masses     each part is mass records in `AirframeSpec::parts`, mass only (no wall parts: walls come from flow parts alone). A part with solid mesh
+//   3. masses     each part is mass records in `AirframeSpec::parts`, mass only (no wall parts: walls come from options.flow_parts alone, L107). A part with solid mesh
 //                 objects (part_meshes: `role: solid`) is one TENSOR record per object, by the kit constants' own method: TriangleMesh::mass_properties()
 //                 at a uniform density `rho = part mass / the sum of its solid objects' volumes`, mass rho V at the centroid, the tensor rho I turned by
-//                 the object's pose. A part with `shapes` and no meshes is its uniform boxes (the shapes are the stand-ins of a part with meshes, and
+//                 the object's pose. A part with `shapes` and no meshes is its uniform boxes, as tensor records too (a box record would be a wall; the shapes are the stand-ins of a part with meshes, and
 //                 meshes win: THE RULE of the library contract); a part with neither is a point mass. A propeller is a thin disc of its radius about its spin axis
 //                 at its part's pose (the kit constants' own: the table puts its mass at the part's origin, not at the actuator disc). The motor, ESC,
 //                 pack and propeller blocks carry mass 0 (their parts' records are the mass);
@@ -48,7 +48,7 @@ struct CompiledDrone {
 
 // Refused: bare_id, root_not_loaded, entry_not_found (as find_entry); invalid_entry (not a drone with a parts map, a part that cannot be read, no motor
 // point, no spec for a block the airframe needs); invalid_request (field `drag`: none given); store_file_missing (a mesh part, no store or no file);
-// invalid_argument from compile_airframe, its issues joined in the message.
+// compile_refused from compile_airframe, its issues joined in the message.
 [[nodiscard]] LibraryResult<CompiledDrone> compile_drone(const LibrarySet& set, std::string_view id, const CompileOptions& options);
 
 }  // namespace spade::scene

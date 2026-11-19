@@ -310,7 +310,7 @@ TEST(LibraryCompile, AMeshPartIsATensorRecordAtItsCentroidAndNeedsTheStore) {
     // one tensor record for the cube: a cube's inertia is m a^2 / 6 about its centroid
     std::size_t tensors = 0;
     for (const vh::PartInertia& r : got->spec.parts) {
-        if (r.shape != vh::PartShape::tensor || r.mass < 0.1) continue;  // the propellers' discs are tensor records too, of 13 g
+        if (r.shape != vh::PartShape::tensor || std::abs(r.mass - 0.6) > 1e-9) continue;  // the other parts are tensor records too (their boxes, the discs)
         ++tensors;
         EXPECT_NEAR(r.mass, 0.6, 1e-9);
         EXPECT_NEAR(r.tensor[0][0], 0.6 * 0.1 * 0.1 / 6.0, 1e-9);
