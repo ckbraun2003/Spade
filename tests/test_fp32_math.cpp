@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "core/detail/flush_subnormals.hpp"  // MXCSR, for the flush-mode test at the end
+#include "core/detail/math_ops_f64.hpp"  // atan2_arith, the double reference
 #include "core/fp32_math.hpp"
 #include "core/rng.hpp"
 
@@ -702,4 +703,99 @@ TEST(Fp32Math, SubnormalPathsDoNotDependOnTheFlushMode) {
         }
         EXPECT_EQ(m.count, 0u) << c.what << ": " << m.count << " results change when subnormals flush" << first;
     }
+}
+
+// ===========================================================================
+// 5. atan32 (Spade L111)
+// ===========================================================================
+//
+// The reference is spade::math::atan2_arith(x, 1) in double: + - * / and sqrt only, within 1 ulp of the correctly rounded double result (so about 2^29 times
+// finer than a float ulp). A full sweep of the float line is 2^32 evaluations, too many for a test; what DECIDES the bound is enumerated at full float density
+// (the windows around each place the argument is reduced: tan(pi/8), 1, tan(3 pi/8), and the span where 1/x is taken), the rest is sampled at a stride, and the
+// kernel is odd by construction so only the non-negative half is swept.
+
+namespace {
+
+[[nodiscard]] double atan_reference(float x) { return spade::math::atan2_arith(static_cast<double>(x), 1.0); }
+
+// Worst ulp error over `count` consecutive float bit patterns starting at `first` (all non-negative).
+[[nodiscard]] double atan_worst_ulp(uint32_t first, uint32_t count, uint32_t stride, uint32_t* at) {
+    double worst = 0.0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t u = first + i * stride;
+        const float x = float_of(u);
+        if (!std::isfinite(x)) break;
+        const double e = ulp_error(spade::math::atan32(x), atan_reference(x));
+        if (e > worst) {
+            worst = e;
+            *at = u;
+        }
+    }
+    return worst;
+}
+
+// The bound atan32 claims (see fp32_math.cpp): the worst ulp error measured over everything below, rounded up to the next half ulp.
+constexpr double kAtanUlpBound = 1.0;
+
+}  // namespace
+
+TEST(Fp32Atan, SpecialArgumentsAreExact) {
+    EXPECT_EQ(bits_of(spade::math::atan32(0.0f)), bits_of(0.0f));
+    EXPECT_EQ(bits_of(spade::math::atan32(-0.0f)), bits_of(-0.0f)) << "the sign of zero is kept";
+    EXPECT_TRUE(std::isnan(spade::math::atan32(std::numeric_limits<float>::quiet_NaN())));
+    const float pio2 = 0x1.921fb6p+0f;  // the float nearest pi/2
+    EXPECT_EQ(spade::math::atan32(std::numeric_limits<float>::infinity()), pio2);
+    EXPECT_EQ(spade::math::atan32(-std::numeric_limits<float>::infinity()), -pio2);
+    EXPECT_EQ(spade::math::atan32(1.0f), 0x1.921fb6p-1f) << "atan(1) = pi/4, the float nearest it";
+    EXPECT_EQ(spade::math::atan32(-1.0f), -0x1.921fb6p-1f);
+}
+
+TEST(Fp32Atan, IsTheIdentityWhereTheCubicTermIsBelowHalfAnUlp) {
+    // atan(x) = x - x^3/3 + ..., so for |x| <= 2^-13 the correction is under 2^-27 x: the nearest float is x itself. Every exponent, a spread of mantissas.
+    for (int e = -149; e <= -13; ++e) {
+        for (uint32_t m : {0u, 1u, 0x155555u, 0x400000u, 0x7FFFFFu}) {
+            const float x = std::ldexp(1.0f + static_cast<float>(m) * 0x1.0p-23f, e);
+            if (x > 0x1.0p-13f) continue;
+            ASSERT_EQ(spade::math::atan32(x), x) << "x = " << x;
+        }
+    }
+    // and the smallest subnormals, which are exact too
+    for (uint32_t u = 1; u < 200; ++u) ASSERT_EQ(spade::math::atan32(float_of(u)), float_of(u)) << u;
+}
+
+TEST(Fp32Atan, IsOddExactly) {
+    for (uint32_t u = 0x00800000u; u < 0x7F800000u; u += 0x1357u) {
+        const float x = float_of(u);
+        ASSERT_EQ(bits_of(spade::math::atan32(-x)), bits_of(-spade::math::atan32(x))) << "x = " << x;
+    }
+}
+
+TEST(Fp32Atan, IsWithinTheBoundAtFullFloatDensityAroundEveryReductionPoint) {
+    // tan(pi/8), 1, tan(3 pi/8): the places the argument is reduced, 2^19 floats each side
+    const float points[] = {0x1.a827999fcef32p-2f, 1.0f, 0x1.3504f333f9de6p+1f};
+    double worst = 0.0;
+    uint32_t at = 0;
+    for (const float p : points) {
+        const uint32_t centre = bits_of(p);
+        uint32_t here = 0;
+        const double w = atan_worst_ulp(centre - (1u << 19), 1u << 20, 1u, &here);
+        if (w > worst) {
+            worst = w;
+            at = here;
+        }
+    }
+    std::printf("atan32 worst ulp over 2^20 floats around each of tan(pi/8), 1, tan(3 pi/8): %.3f (at 0x%08X = %g)\n", worst, static_cast<unsigned>(at), float_of(at));
+    EXPECT_LE(worst, kAtanUlpBound);
+}
+
+TEST(Fp32Atan, IsWithinTheBoundAcrossTheWholeFloatLineAtAStride) {
+    // every 1021st non-negative float up to the largest finite one (about 2.1 million of them), and every float of the last span where pi/2 - 1/x rounds to pi/2
+    uint32_t at = 0;
+    const double worst = atan_worst_ulp(0u, 0x7F800000u / 1021u, 1021u, &at);
+    std::printf("atan32 worst ulp over every 1021st float of [0, max]: %.3f (at 0x%08X = %g)\n", worst, static_cast<unsigned>(at), float_of(at));
+    EXPECT_LE(worst, kAtanUlpBound);
+    uint32_t at_big = 0;
+    const double big = atan_worst_ulp(bits_of(0x1.0p+22f), 1u << 19, 1u, &at_big);
+    std::printf("atan32 worst ulp over 2^19 floats from 2^22: %.3f\n", big);
+    EXPECT_LE(big, kAtanUlpBound);
 }

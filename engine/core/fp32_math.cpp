@@ -524,3 +524,10 @@ float cos32(float x) noexcept {
 }
 
 }  // namespace spade::math
+
+namespace spade::math {
+
+// RED stub: atan32 is declared and not built yet.
+float atan32(float /*x*/) noexcept { return 0.0f; }
+
+}  // namespace spade::math
