@@ -123,6 +123,7 @@ add_executable(spade_tests
     test_gpu_live_near_field.cpp
     test_x500_build_table.cpp
     test_x500_case.cpp
+    test_x500_kit_inertia.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
