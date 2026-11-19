@@ -15,7 +15,7 @@
     Exit: 0 the daemon answers (it was up, or it came up); 1 it never did, or Docker Desktop was not found; the last line says why.
 
 .PARAMETER LimitS
-    Seconds to wait for the daemon after starting Docker Desktop. Default 180 (SPADE_DOCKER_START_LIMIT_S sets another default).
+    Seconds to wait for the daemon after starting Docker Desktop. Default 300, a guess from two data points: a quiet start took about 21 s and a loaded one took over 180 s (2026-11-19). SPADE_DOCKER_START_LIMIT_S sets another default.
 
 .PARAMETER PollS
     Seconds between polls. Default 5 (SPADE_DOCKER_POLL_S sets another default).
@@ -24,7 +24,7 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\docker-up.ps1
 #>
 param(
-    [int] $LimitS = $(if ($env:SPADE_DOCKER_START_LIMIT_S) { [int] $env:SPADE_DOCKER_START_LIMIT_S } else { 180 }),
+    [int] $LimitS = $(if ($env:SPADE_DOCKER_START_LIMIT_S) { [int] $env:SPADE_DOCKER_START_LIMIT_S } else { 300 }),
     [int] $PollS = $(if ($env:SPADE_DOCKER_POLL_S) { [int] $env:SPADE_DOCKER_POLL_S } else { 5 })
 )
 $ErrorActionPreference = 'Stop'
