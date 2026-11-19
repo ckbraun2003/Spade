@@ -260,6 +260,10 @@ TEST(FlowMovieBuildParts, TheRealMaterialsAreNamedAndLookLikeTheirThings) {
     EXPECT_LT(std::max({bare.x, bare.y, bare.z}) - std::min({bare.x, bare.y, bare.z}), 0.1f) << "and nearly grey";
     const glm::vec3 anodised = rgb("aluminium_anodised");
     EXPECT_LT(anodised.x + anodised.y + anodised.z, bare.x + bare.y + bare.z) << "anodised is darker than bare";
+    // The kit's motor mounts and cans are BLACK anodised aluminium: beside the carbon they read as black metal, not as grey parts (the kit stills,
+    // 2026-11-18: at 0.11 to 0.15 the mounts lit to a pale grey L at every arm end), and a little lighter than the carbon so the metal still shows.
+    EXPECT_LT(std::max({anodised.x, anodised.y, anodised.z}), 0.07f) << "black anodised reads black";
+    EXPECT_GT(anodised.x + anodised.y + anodised.z, carbon.x + carbon.y + carbon.z) << "and a little lighter than the carbon";
     const glm::vec3 pcb = rgb("pcb_green");
     EXPECT_GT(pcb.y, pcb.x);
     EXPECT_GT(pcb.y, pcb.z);
@@ -962,8 +966,9 @@ TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidi
                     << "a step at the edge of ring " << i << " (opacity " << opacity << ")";
             }
             const float mid = 0.5f * (e.lo + e.hi);
-            EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity), 2e-3f) << "ring " << i;
+            EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(0.5f, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity)), 2e-3f) << "ring " << i;
             EXPECT_NEAR(mesh.source_materials[i].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
+            EXPECT_EQ(mesh.source_materials[i].shading, 1u) << "unlit: the drone's key light is not a light on a drawn average (at 2.5 times it turned the disc roots white)";
             EXPECT_EQ(mesh.submesh_index_count[i], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings";
         }
         // three radii of the first ring's neighbourhood: flat at the blade plane, evenly spaced round (no angular structure)
@@ -977,6 +982,23 @@ TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidi
             }
         }
         EXPECT_GT(mesh.source_materials.front().base_color.a, mesh.source_materials.back().base_color.a) << "denser at the root than at the tip";
+    }
+}
+
+// THE DISC NEVER COVERS MORE THAN HALF (the lead, 2026-11-18, L100: under a near-opaque root the black anodised mounts read as white arms, which
+// misstates the hardware): alpha = min(current, 0.5) with the ring's colour unchanged, so the disc still reads and the parts under it show through.
+TEST(FlowMovieBuildParts, TheDiscIsNeverMoreThanHalfOpaqueSoThePartsUnderItShowThrough) {
+    const flow_movie::BladeChord chord = uiuc_10x5();
+    for (const float opacity : {1.0f, 5.0f, 10.0f}) {
+        const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, 0.127f, 0.0f, opacity, 0.65f, 0.01f, 32u);
+        float most = 0.0f;
+        for (const auto& material : mesh.source_materials) {
+            EXPECT_LE(material.base_color.a, 0.5f + 1e-6f) << "opacity " << opacity;
+            EXPECT_FLOAT_EQ(material.base_color.r, 0.65f) << "the ring's colour is not changed by the cap";
+            most = std::max(most, material.base_color.a);
+        }
+        if (opacity >= 5.0f) EXPECT_NEAR(most, 0.5f, 1e-6f) << "the root reaches the cap at a gain of " << opacity;
+        else EXPECT_LT(most, 0.5f) << "the physical average (1) is under the cap everywhere";
     }
 }
 
@@ -1117,11 +1139,13 @@ TEST(FlowMovieBuildParts, TheChordADrawGetsComesFromTheLinesFileOnlyForADiscWith
 
 // THE CLIP RECORD NAMES WHAT THE PICTURE DOES NOT SHOW AS IT IS (the lead, 2026-11-18): the rotor discs are drawn at a gain, so the record says so.
 TEST(FlowMovieBuildParts, TheRecordSaysHowTheRotorDiscsAreDrawn) {
-    flow_movie::PropBlur gain;  // the defaults: a gain of 6
-    EXPECT_EQ(flow_movie::prop_blur_note(gain), "rotor discs drawn at 6 times the blades' time-averaged coverage so they show over the air");
+    flow_movie::PropBlur gain;  // the defaults: an UNLIT disc at a gain of 5, never more than half opaque (the lead, 2026-11-18, the kit stills)
+    EXPECT_FLOAT_EQ(gain.opacity, 5.0f);
+    EXPECT_EQ(flow_movie::prop_blur_note(gain),
+              "rotor discs drawn unlit at 5 times the blades' time-averaged coverage, no more than half opaque, so they show over the air and the parts under them show through");
     flow_movie::PropBlur exact;
     exact.opacity = 1.0f;
-    EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn at the blades' time-averaged coverage");
+    EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn unlit at the blades' time-averaged coverage, no more than half opaque");
     flow_movie::PropBlur sampled;
     sampled.sampled = true;
     sampled.samples = 24u;
@@ -1156,5 +1180,57 @@ TEST(FlowMovieBuildParts, TheWholeX500TableParsesAndHasItsFourMotors) {
     }
     EXPECT_EQ(motors, 4u);
     EXPECT_EQ(rotors, 4u);
+}
+
+// THE DRONE'S LIGHT (the lead, 2026-11-18, the kit stills: "a soft rim or key light so the carbon plates and arm tubes read against the black,
+// without lifting the background"; a presentation choice, named in the clip record). The air is not lit (a volume), and the web scene's sky is
+// black, so the scene's one sun and its ambient light only the drone: --drone-light key=K,ambient=A sets them to K and A times the standard.
+TEST(FlowMovieBuildParts, TheDroneLightIsAKeyAndAFillStrengthAndNothingElse) {
+    const auto none = flow_movie::parse_drone_light("");
+    ASSERT_TRUE(none.has_value()) << none.error().context;
+    EXPECT_FLOAT_EQ(none->key, 1.0f);
+    EXPECT_FLOAT_EQ(none->ambient, 1.0f);
+    EXPECT_FALSE(none->on()) << "the standard light is not a choice to name";
+    const auto got = flow_movie::parse_drone_light("key=2.5,ambient=1.5");
+    ASSERT_TRUE(got.has_value()) << got.error().context;
+    EXPECT_FLOAT_EQ(got->key, 2.5f);
+    EXPECT_FLOAT_EQ(got->ambient, 1.5f);
+    EXPECT_TRUE(got->on());
+    const auto key_only = flow_movie::parse_drone_light("key=3");
+    ASSERT_TRUE(key_only.has_value());
+    EXPECT_FLOAT_EQ(key_only->ambient, 1.0f) << "what is not named keeps the standard";
+    for (const char* bad : {"key=0", "key=21", "ambient=-1", "key=abc", "key", "glow=2", "key=2,,ambient=1", "key=", "key=inf"}) {
+        const auto refused = flow_movie::parse_drone_light(bad);
+        ASSERT_FALSE(refused.has_value()) << bad;
+        EXPECT_NE(refused.error().context.find("drone light"), std::string::npos) << bad << ": " << refused.error().context;
+    }
+}
+
+TEST(FlowMovieBuildParts, TheDroneLightSetsTheLightingToAMultipleOfTheStandardNotAFurtherMultiple) {
+    const spade::render::Lighting standard;
+    spade::render::RenderScene scene;
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+    flow_movie::apply_drone_light(scene, flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f});
+    EXPECT_FLOAT_EQ(scene.lighting.sun_intensity, standard.sun_intensity * 2.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.x, standard.ambient_color.x * 1.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.y, standard.ambient_color.y * 1.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.z, standard.ambient_color.z * 1.5f);
+    EXPECT_EQ(scene.lighting.sun_direction, standard.sun_direction) << "the key's direction is not changed";
+    EXPECT_EQ(scene.lighting.sky_zenith, glm::vec3(0.0f)) << "the background stays black";
+    EXPECT_EQ(scene.lighting.sky_horizon, glm::vec3(0.0f));
+    flow_movie::apply_drone_light(scene, flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f});
+    EXPECT_FLOAT_EQ(scene.lighting.sun_intensity, standard.sun_intensity * 2.5f) << "every frame's scene is decorated: the same call twice is the same light";
+    spade::render::RenderScene plain;
+    const spade::render::Lighting before = plain.lighting;
+    flow_movie::apply_drone_light(plain, flow_movie::DroneLight{});
+    EXPECT_FLOAT_EQ(plain.lighting.sun_intensity, before.sun_intensity);
+    EXPECT_EQ(plain.lighting.ambient_color, before.ambient_color) << "the standard light changes nothing";
+}
+
+TEST(FlowMovieBuildParts, TheRecordSaysHowTheDroneIsLit) {
+    EXPECT_EQ(flow_movie::drone_light_note(flow_movie::DroneLight{}), "");
+    EXPECT_EQ(flow_movie::drone_light_note(flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f}),
+              "the drone is drawn under a key light at 2.5 times and a fill light at 1.5 times the standard lighting so its dark carbon reads against the black; the air is not lit by them");
 }
 

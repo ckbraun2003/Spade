@@ -195,7 +195,8 @@ inline constexpr std::array<std::string_view, 8> kRealMaterials{"carbon_fibre", 
     if (name == "lipo_wrap") return make(0.04f, 0.08f, 0.26f);
     if (name == "carbon_fibre") return make(0.025f, 0.027f, 0.032f);
     if (name == "aluminium_bare") return make(0.70f, 0.71f, 0.73f);
-    if (name == "aluminium_anodised") return make(0.11f, 0.12f, 0.15f);
+    // CHOSEN from the kit photos: the motor mounts and cans are BLACK anodised aluminium; a little lighter than the carbon so the metal shows
+    if (name == "aluminium_anodised") return make(0.05f, 0.052f, 0.058f);
     if (name == "pcb_green") return make(0.03f, 0.21f, 0.11f);
     // CHOSEN: a board seen through a case's vent slots. The renderer has no occlusion, so a lit pcb green reads as outside light; the interior is in shadow.
     if (name == "pcb_in_shadow") return make(0.006f, 0.022f, 0.012f);
@@ -468,11 +469,68 @@ struct PropBlur {
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.65f;        // the copies' and the disc's grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
     bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
-    float opacity = 6.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
+    float opacity = 5.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
 // in seconds in (0, 0.1). Empty: the defaults. Refused, prefixed "prop blur:": an unknown key, no '=', a value that is not a number, one out of range.
+// THE DRONE'S LIGHT (the lead, 2026-11-18, the kit stills): the carbon plates and arm tubes vanish against the black. The air is a volume (no
+// lighting) and the web scene's sky is black, so the scene's one sun and its ambient light only the drone; --drone-light key=K,ambient=A sets the
+// sun's intensity and the ambient colour to K and A times the standard (Lighting{}), absolutely: every frame's scene is decorated. The sun's direction
+// and the black background are not touched. 1 and 1 are the standard light and need no naming in the record.
+struct DroneLight {
+    float key = 1.0f;      // times the standard sun intensity
+    float ambient = 1.0f;  // times the standard ambient colour
+    [[nodiscard]] bool operator==(const DroneLight&) const noexcept = default;
+    [[nodiscard]] bool on() const noexcept { return key != 1.0f || ambient != 1.0f; }
+};
+
+[[nodiscard]] inline spade::Result<DroneLight> parse_drone_light(std::string_view text) {
+    const auto bad_light = [](const std::string& why) {
+        return std::unexpected(spade::Error{spade::Code::invalid_argument, "drone light: " + why});
+    };
+    DroneLight light;
+    if (text.empty()) return light;
+    std::size_t at = 0;
+    while (at <= text.size()) {
+        const std::size_t comma = text.find(',', at);
+        const std::string item(text.substr(at, comma == std::string_view::npos ? std::string_view::npos : comma - at));
+        at = comma == std::string_view::npos ? text.size() + 1u : comma + 1u;
+        if (item.empty()) return bad_light("an empty item (a stray comma)");
+        const std::size_t eq = item.find('=');
+        if (eq == std::string::npos) return bad_light("'" + item + "' has no '=': write key=value");
+        const std::string key = item.substr(0, eq);
+        const std::string value = item.substr(eq + 1u);
+        double number = 0.0;
+        const auto [end, ec] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (value.empty() || ec != std::errc{} || end != value.data() + value.size() || !std::isfinite(number)) {
+            return bad_light("'" + key + "' is not a number: '" + value + "'");
+        }
+        if (!(number > 0.0 && number <= 20.0)) return bad_light("'" + key + "' is a multiple of the standard light: above 0 and at most 20");
+        if (key == "key") {
+            light.key = static_cast<float>(number);
+        } else if (key == "ambient") {
+            light.ambient = static_cast<float>(number);
+        } else {
+            return bad_light("no '" + key + "' (key and ambient)");
+        }
+    }
+    return light;
+}
+
+inline void apply_drone_light(spade::render::RenderScene& scene, const DroneLight& light) {
+    const spade::render::Lighting standard;
+    scene.lighting.sun_intensity = standard.sun_intensity * light.key;
+    scene.lighting.ambient_color = standard.ambient_color * light.ambient;
+}
+
+// The clip record's sentence on the drone's light: nothing for the standard light.
+[[nodiscard]] inline std::string drone_light_note(const DroneLight& light) {
+    if (!light.on()) return "";
+    return std::format("the drone is drawn under a key light at {:g} times and a fill light at {:g} times the standard lighting so its dark carbon reads against the black; the air is not lit by them",
+                       static_cast<double>(light.key), static_cast<double>(light.ambient));
+}
+
 [[nodiscard]] inline spade::Result<PropBlur> parse_prop_blur(std::string_view text) {
     const auto bad_blur = [](const std::string& why) {
         return std::unexpected(spade::Error{spade::Code::invalid_argument, "prop blur: " + why});
@@ -582,10 +640,13 @@ struct BladeChord {
 // middle radius times `opacity` (capped at 1), `segments` evenly round, both windings (seen from either side), flat at y = plane_y. The rings are as
 // narrow as the alpha's change needs: a ring's two edges differ in alpha by at most `max_alpha_step` (and no ring is wider than 4% of the radius or
 // narrower than 0.15%), so there is no visible step between one ring and the next. One submesh and one material per ring; nothing varies with the angle.
+inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at most half of what is behind it
+
 [[nodiscard]] inline spade::render::MeshData rotor_disc_mesh(const BladeChord& chord, float radius_m, float plane_y, float opacity, float tint,
                                                            float max_alpha_step, uint32_t segments) {
     spade::render::MeshData m;
-    const auto alpha_at = [&](float x) { return std::min(1.0f, blade_solidity(chord, x) * opacity); };
+    // never more than half opaque (L100): under a near-opaque root the black mounts read as white arms; the colour is not changed by the cap
+    const auto alpha_at = [&](float x) { return std::min(kDiscMaxAlpha, std::min(1.0f, blade_solidity(chord, x) * opacity)); };
     constexpr float kWidestRing = 0.04f, kNarrowestRing = 0.0015f;
     std::vector<float> edges{chord.hub_cutout};
     while (edges.back() < 1.0f - 1e-6f) {
@@ -599,6 +660,7 @@ struct BladeChord {
         const float hi = edges[b + 1u];
         spade::render::Material material;
         material.base_color = glm::vec4(tint, tint, std::min(1.0f, tint * 1.06f), alpha_at(0.5f * (lo + hi)));
+        material.shading = 1u;  // unlit: a mark of where the blades sweep, not a surface; the drone's key light does not light it
         m.source_materials.push_back(material);
         const auto first = static_cast<uint32_t>(m.indices.size());
         for (const float side : {1.0f, -1.0f}) {
@@ -640,8 +702,9 @@ struct BladeChord {
     if (blur.sampled) {
         return std::format("each rotor's blade drawn as {} copies spread over a {:g} s shutter so the turning shows", blur.samples, blur.shutter_s);
     }
-    if (blur.opacity == 1.0f) return "rotor discs drawn at the blades' time-averaged coverage";
-    return std::format("rotor discs drawn at {:g} times the blades' time-averaged coverage so they show over the air", static_cast<double>(blur.opacity));
+    if (blur.opacity == 1.0f) return "rotor discs drawn unlit at the blades' time-averaged coverage, no more than half opaque";
+    return std::format("rotor discs drawn unlit at {:g} times the blades' time-averaged coverage, no more than half opaque, so they show over the air and the parts under them show through",
+                       static_cast<double>(blur.opacity));
 }
 
 struct BuildDraw {

@@ -1550,6 +1550,7 @@ struct WebPlan {
     std::string build_parts;                          // --build-parts: Core's parts table drawn over the held body (presentation only)
     std::string part_store;                           // --part-store: the store the table's objects are read from
     PropBlur prop_blur;                               // --prop-blur: the rotors' blade blur
+    DroneLight drone_light;                           // --drone-light: the key and fill strength the drone is lit with (presentation only)
     std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
@@ -1686,7 +1687,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 chord = std::move(*got);
             }
             if (visual || build) {
-                film.decorate = [visual, build, chord, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, blur = plan.prop_blur, light = plan.drone_light, store = std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1696,6 +1697,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                         if (auto r = add_visual_mesh(scene, *visual, pos, orient); !r) return r;
                     }
                     if (build) {
+                        apply_drone_light(scene, light);
                         BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
                         draw.blur = blur;
                         draw.chord = chord;
@@ -1931,6 +1933,7 @@ struct Options {
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
     std::string build_parts;         // --build-parts FILE: the real-parts drone's table (build_parts.hpp), drawn at the held body's pose over the flow
     std::string prop_blur;           // --prop-blur alpha=..,samples=..,shutter=..: the rotors' blade blur (build_parts.hpp)
+    std::string drone_light;         // --drone-light key=..,ambient=..: the drone's key and fill light, times the standard (build_parts.hpp)
     std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
@@ -2455,6 +2458,7 @@ struct WebFilming {
         }
         if (!opt.build_parts.empty()) {
             if (const auto blur = parse_prop_blur(opt.prop_blur)) in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + prop_blur_note(*blur) + ".";
+            if (const auto light = parse_drone_light(opt.drone_light); light && light->on()) in.extra += " " + drone_light_note(*light) + ".";
         }
         if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
         std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
@@ -2541,6 +2545,9 @@ struct WebFilming {
         auto blur = parse_prop_blur(opt.prop_blur);
         if (!blur) return fail(blur.error());
         plan.prop_blur = *blur;
+        auto light = parse_drone_light(opt.drone_light);
+        if (!light) return fail(light.error());
+        plan.drone_light = *light;
     }
     if (!opt.visual_mesh.empty()) {
         if (!web::sgs_cs_applies(*clip)) {
@@ -3135,6 +3142,8 @@ int main(int argc, char** argv) {
             opt.build_parts = value();
         } else if (arg == "--prop-blur") {
             opt.prop_blur = value();
+        } else if (arg == "--drone-light") {
+            opt.drone_light = value();
         } else if (arg == "--part-store") {
             opt.part_store = value();
         } else if (arg == "--lines") {
