@@ -1250,14 +1250,19 @@ void main() {
 // instance a segment from an SSBO (a and b in world, then the mean colour), grown in pixels by the capsule's
 // half width, the glow and a pixel, so the fragment shader can take the exact distance to the segment. The
 // segment is clipped to the near and far planes in camera space, as raster_cpu's clipSegmentToHalfSpace() does.
-// The segment's width is its colour's w: the polyline's own, else the scene's.
+// The segment's width is its colour's w: the polyline's own, else the scene's (times RenderOptions::ui_scale, on the host).
+// D182 S1: a segment is four vec4s, the fourth the colour at the b end (the gradient) and the segment's flags as bits in its w:
+// 1 gradient, 2 flat cap at the a end, 4 flat cap at the b end, 8 hard edge (aa off), 16 no depth test, 32 no glow. A flat end stops
+// square at its point and grows by one pixel only (the pixel of anti-aliasing). The host has already dropped the polylines whose
+// slot mask misses this render's slot. uPass 2 draws the no-depth-test segments (the host turns the depth test off), passes 0 and 1
+// the rest.
 // The fragment computes raster_cpu's draw_styled_flow_lines() per pixel: the distance from the pixel's centre
 // to the segment, the coverage and the glow, and the depth at the nearest point of the segment (window depth is
 // affine in 1/d, so it is linear in screen space, as the CPU's inverse depth is). Two passes: uPass 0 draws the
 // pixels under half coverage and writes no depth (the host turns the depth mask off), uPass 1 those with half
 // or more, which write it.
 constexpr const char* kFlowLineVertexSrc = R"GLSL(
-struct FlowSeg { vec4 a; vec4 b; vec4 colour; };
+struct FlowSeg { vec4 a; vec4 b; vec4 colour; vec4 colour_b; };
 layout(std430, binding = 9) readonly buffer FlowSegs { FlowSeg uSeg[]; };
 
 uniform mat4 uView;  // world to camera
@@ -1266,10 +1271,14 @@ uniform vec2 uViewport;
 uniform float uGlow;  // pixels
 uniform float uNear;
 uniform float uFar;
+uniform uint uPass;
 
 flat out vec2 fA;     // the ends in window pixels, y up, as gl_FragCoord
 flat out vec2 fB;
 flat out vec3 fColour;
+flat out vec3 fColourB;
+flat out uint fFlags;
+flat out float fGlow; // this segment's glow, pixels (0 for a hard edge or a flat cap)
 flat out vec2 fZ;     // window depth at the ends
 flat out vec2 fAlpha; // the alpha at the ends (1, 1 for a polyline with none)
 flat out float fHalf; // half the segment's width, pixels
@@ -1289,6 +1298,11 @@ bool clip_depth(inout vec3 a, inout vec3 b) {
 
 void main() {
     FlowSeg s = uSeg[gl_InstanceID];
+    uint flags = floatBitsToUint(s.colour_b.w);
+    if (((flags & 16u) != 0u) != (uPass == 2u)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // a no-depth-test segment draws in pass 2 only, the rest in 0 and 1
+        return;
+    }
     vec3 a = (uView * vec4(s.a.xyz, 1.0)).xyz;
     vec3 b = (uView * vec4(s.b.xyz, 1.0)).xyz;
     if (!clip_depth(a, b)) {
@@ -1301,6 +1315,10 @@ void main() {
     vec2 sb = (cb.xy / cb.w * 0.5 + 0.5) * uViewport;
     vec2 dir = sb - sa;
     float len = length(dir);
+    if ((flags & 6u) != 0u && !(len > 1.0e-6)) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // a flat end of no length has no direction to be square to
+        return;
+    }
     dir = len > 1.0e-6 ? dir / len : vec2(1.0, 0.0);
     vec2 n = vec2(-dir.y, dir.x);
     // Two triangles over the corners 0 (a, -n), 1 (a, +n), 2 (b, -n), 3 (b, +n).
@@ -1316,13 +1334,19 @@ void main() {
     float end = float(corner >> 1);
     float side = (corner & 1) == 1 ? 1.0 : -1.0;
     float half_width = 0.5 * s.colour.w;
-    float pad = half_width + uGlow + 1.0;
-    vec2 p = mix(sa, sb, end) + dir * ((end > 0.5 ? 1.0 : -1.0) * pad) + n * (side * pad);
+    float glow = (flags & 32u) != 0u ? 0.0 : uGlow;
+    float pad = half_width + glow + 1.0;
+    bool flat_end = (end > 0.5 ? (flags & 4u) : (flags & 2u)) != 0u;
+    float along = flat_end ? 1.0 : pad;
+    vec2 p = mix(sa, sb, end) + dir * ((end > 0.5 ? 1.0 : -1.0) * along) + n * (side * pad);
     vec4 cc = mix(ca, cb, end);
     gl_Position = vec4((p / uViewport * 2.0 - 1.0) * cc.w, cc.z, cc.w);
     fA = sa;
     fB = sb;
     fColour = s.colour.rgb;
+    fColourB = s.colour_b.rgb;
+    fFlags = flags;
+    fGlow = glow;
     fZ = vec2(ca.z / ca.w, cb.z / cb.w) * 0.5 + 0.5;
     fAlpha = vec2(s.a.w, s.b.w);
     fHalf = half_width;
@@ -1333,13 +1357,15 @@ constexpr const char* kFlowLineFragmentSrc = R"GLSL(
 flat in vec2 fA;
 flat in vec2 fB;
 flat in vec3 fColour;
+flat in vec3 fColourB;
+flat in uint fFlags;
+flat in float fGlow;
 flat in vec2 fZ;
 flat in vec2 fAlpha;
 flat in float fHalf;
 
-uniform float uGlow;      // pixels
 uniform float uStrength;  // the halo's alpha at the edge
-uniform uint uPass;       // 0: coverage under one half, no depth write; 1: one half or more
+uniform uint uPass;       // 0: coverage under one half, no depth write; 1: one half or more; 2: the no-depth-test segments, everything
 uniform uint uAdditive;   // 1: light: one pass, everything, added (the host blends src alpha, one) and no depth write
 
 out vec4 fragColor;
@@ -1348,13 +1374,26 @@ void main() {
     vec2 p = gl_FragCoord.xy;
     vec2 ab = fB - fA;
     float l2 = dot(ab, ab);
-    float t = l2 > 1.0e-12 ? clamp(dot(p - fA, ab) / l2, 0.0, 1.0) : 0.0;
-    vec2 d = p - (fA + ab * t);
+    float tu = l2 > 1.0e-12 ? dot(p - fA, ab) / l2 : 0.0;
+    float t = clamp(tu, 0.0, 1.0);
+    float td = t;  // where the distance is measured from: a flat end is a line, not a point
+    float end_cov = 1.0;
+    float len = sqrt(l2);
+    if ((fFlags & 2u) != 0u) {
+        if (tu < 0.0) td = tu;
+        end_cov = min(end_cov, clamp(0.5 + tu * len, 0.0, 1.0));
+    }
+    if ((fFlags & 4u) != 0u) {
+        if (tu > 1.0) td = tu;
+        end_cov = min(end_cov, clamp(0.5 + (1.0 - tu) * len, 0.0, 1.0));
+    }
+    vec2 d = p - (fA + ab * td);
     float dist = sqrt(dot(d, d));
-    float cov = clamp(fHalf + 0.5 - dist, 0.0, 1.0);
+    float cov = clamp(fHalf + 0.5 - dist, 0.0, 1.0) * end_cov;
+    if ((fFlags & 8u) != 0u) cov = cov >= 0.5 ? 1.0 : 0.0;
     float g = 0.0;
-    if (uGlow > 0.0) {
-        float u = clamp(1.0 - max(dist - fHalf, 0.0) / uGlow, 0.0, 1.0);
+    if (fGlow > 0.0) {
+        float u = clamp(1.0 - max(dist - fHalf, 0.0) / fGlow, 0.0, 1.0);
         g = uStrength * u * u;
     }
     // The alpha along the segment: equal ends are exactly that value (mix of equal ends is not always exact in float).
@@ -1363,10 +1402,11 @@ void main() {
     bool core = cov * ta >= 0.5;
     if (alpha <= 0.0) discard;
     if (uAdditive != 0u) {
-        if (uPass != 0u) discard;
-    } else if (core != (uPass == 1u)) discard;
+        if (uPass == 1u) discard;
+    } else if (uPass < 2u && core != (uPass == 1u)) discard;
     gl_FragDepth = mix(fZ.x, fZ.y, t);
-    fragColor = vec4(fColour, alpha);
+    vec3 colour = (fFlags & 1u) != 0u ? mix(fColour, fColourB, t) : fColour;
+    fragColor = vec4(colour, alpha);
 }
 )GLSL";
 
@@ -2919,8 +2959,14 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                                                             "; draw them with render::render()"});
     }
     // The flow inputs GL draws, validated before any pixel, as render() does.
+    if (Result<void> valid = render::validate_line_options(options); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+    }
+    if (Result<void> valid = render::validate_flow_line_budget(scene.flow_polylines); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
+    }
     for (size_t i = 0; i < scene.flow_polylines.size(); ++i) {
-        if (Result<void> valid = render::validate_flow_line_draw(scene.flow_polylines[i], scene.flow_line_style); !valid) {
+        if (Result<void> valid = render::validate_flow_line_draw(scene.flow_polylines[i], scene.flow_line_style, options.ui_scale); !valid) {
             return std::unexpected(Error{valid.error().code, "GlRenderer::draw: flow polyline " + std::to_string(i) +
                                                                  ": " + valid.error().context});
         }
@@ -3875,17 +3921,53 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     if (styled_lines) {
         s.flow_line_segments.clear();
         const auto to_unit = [](float channel) { return static_cast<float>(render::to_byte(channel)) / 255.0f; };
+        const auto mean_unit = [](float a, float b) {  // flat_mean: (a + b + 1) / 2 in whole 8-bit channels
+            return static_cast<float>((static_cast<int>(render::to_byte(a)) + static_cast<int>(render::to_byte(b)) + 1) / 2) / 255.0f;
+        };
+        bool any_tested = false;
+        bool any_untested = false;
         for (const render::FlowPolyline& line : scene.flow_polylines) {
             if (!styled(line)) continue;
-            const float line_width = render::effective_width_px(line, scene.flow_line_style);
-            for (size_t i = 0; i + 1u < line.points.size(); ++i) {
-                const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
-                s.flow_line_segments.emplace_back(line.points[i], line.alphas.empty() ? 1.0f : line.alphas[i]);
-                s.flow_line_segments.emplace_back(line.points[i + 1u], line.alphas.empty() ? 1.0f : line.alphas[i + 1u]);
-                s.flow_line_segments.emplace_back(to_unit(c.r), to_unit(c.g), to_unit(c.b), line_width);
+            if (((line.slots >> options.slot) & 1u) == 0u) continue;  // not drawn in this slot
+            const float line_width = render::effective_width_px(line, scene.flow_line_style) * options.ui_scale;
+            const size_t n = line.points.size();
+            const bool flat_cap = line.cap == render::LineCap::flat;
+            any_tested = any_tested || (line.depth_test && n > 1u);
+            any_untested = any_untested || (!line.depth_test && n > 1u);
+            for (size_t i = 0; i + 1u < n; ++i) {
+                const glm::vec3& ca = line.colours[i];
+                const glm::vec3& cb = line.colours[i + 1u];
+                float alpha_a = line.alphas.empty() ? 1.0f : line.alphas[i];
+                float alpha_b = line.alphas.empty() ? 1.0f : line.alphas[i + 1u];
+                glm::vec3 colour_a;
+                glm::vec3 colour_b(0.0f);
+                uint32_t flags = 0u;
+                if (line.shading == render::LineShading::gradient) {
+                    colour_a = ca;
+                    colour_b = cb;
+                    flags |= 1u;
+                } else if (line.shading == render::LineShading::flat_mean) {
+                    colour_a = glm::vec3(mean_unit(ca.r, cb.r), mean_unit(ca.g, cb.g), mean_unit(ca.b, cb.b));
+                    alpha_a = alpha_b = mean_unit(alpha_a, alpha_b);
+                } else {
+                    const glm::vec3 c = 0.5f * (ca + cb);
+                    colour_a = glm::vec3(to_unit(c.r), to_unit(c.g), to_unit(c.b));
+                }
+                if (flat_cap && i == 0u) flags |= 2u;
+                if (flat_cap && i + 2u == n) flags |= 4u;
+                if (!line.aa) flags |= 8u;
+                if (!line.depth_test) flags |= 16u;
+                if (!line.aa || flat_cap) flags |= 32u;
+                float flag_bits;
+                static_assert(sizeof(flag_bits) == sizeof(flags));
+                std::memcpy(&flag_bits, &flags, sizeof(flags));
+                s.flow_line_segments.emplace_back(line.points[i], alpha_a);
+                s.flow_line_segments.emplace_back(line.points[i + 1u], alpha_b);
+                s.flow_line_segments.emplace_back(colour_a, line_width);
+                s.flow_line_segments.emplace_back(colour_b, flag_bits);
             }
         }
-        const auto segment_count = static_cast<GLsizei>(s.flow_line_segments.size() / 3u);
+        const auto segment_count = static_cast<GLsizei>(s.flow_line_segments.size() / 4u);
         if (segment_count > 0) {
             const render::FlowLineStyle& style = scene.flow_line_style;
             upload_in_place(gl, s.ssbo_flow_lines, s.flow_lines_capacity, s.flow_line_segments);
@@ -3902,15 +3984,20 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             gl.Uniform2f(s.flow_line.viewport, static_cast<float>(width), static_cast<float>(height));
             gl.Uniform1f(s.flow_line.near_plane, camera.near_plane);
             gl.Uniform1f(s.flow_line.far_plane, camera.far_plane);
-            gl.Uniform1f(s.flow_line.glow, style.glow_px);
+            gl.Uniform1f(s.flow_line.glow, style.glow_px * options.ui_scale);
             gl.Uniform1f(s.flow_line.strength, style.glow_strength);
             gl.Uniform1ui(s.flow_line.additive, style.additive ? 1u : 0u);
             gl.BindVertexArray(s.empty_vao);
-            for (int pass = 0; pass < (style.additive ? 1 : 2); ++pass) {  // light is one pass and writes no depth
+            for (int pass = 0; pass < 3; ++pass) {  // 0 and 1 the depth-tested segments (light is one pass and writes no depth), 2 the rest
+                if (pass == 2 ? !any_untested : (!any_tested || (pass == 1 && style.additive))) continue;
+                if (pass == 2) {
+                    gl.Disable(GL_DEPTH_TEST);  // an untested line is drawn over everything, writing no depth
+                }
                 gl.DepthMask(pass == 1 ? GL_TRUE : GL_FALSE);
                 gl.Uniform1ui(s.flow_line.pass, static_cast<GLuint>(pass));
                 gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, segment_count);
             }
+            gl.Enable(GL_DEPTH_TEST);
             gl.BindVertexArray(0);
             gl.DepthMask(GL_TRUE);
             gl.Disable(GL_BLEND);
@@ -3930,6 +4017,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         };
         for (const render::FlowPolyline& line : scene.flow_polylines) {
             if (styled(line)) continue;
+            if (((line.slots >> options.slot) & 1u) == 0u) continue;
             for (size_t i = 0; i + 1u < line.points.size(); ++i) {
                 const glm::vec3 c = 0.5f * (line.colours[i] + line.colours[i + 1u]);
                 push(line.points[i], c);

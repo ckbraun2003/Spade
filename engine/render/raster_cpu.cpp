@@ -1528,7 +1528,7 @@ void draw_styled_flow_lines(FrameBuffers& fb, const ViewContext& vc, const Rende
                             }
                         }
                         const float alpha = (cov + (1.0f - cov) * g) * along_alpha;
-                        const bool core = cov >= 0.5f;
+                        const bool core = cov * along_alpha >= 0.5f;
                         if (alpha <= 0.0f || (pass < 2 && core != (pass == 1))) continue;
                         const size_t idx = static_cast<size_t>(y) * fb.width + static_cast<size_t>(x);
                         const double inv = sa.invDepth + (sb.invDepth - sa.invDepth) * static_cast<double>(t);
