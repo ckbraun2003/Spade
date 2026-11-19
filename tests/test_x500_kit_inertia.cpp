@@ -223,8 +223,8 @@ TEST(X500KitInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
     std::printf("[kit] principal moments (about the design axes' nearest principal axes): %.7f %.7f %.7f kg m^2\n", principal[0], principal[1], principal[2]);
     std::printf("[kit] the diagonal only (the products dropped): %.7f %.7f %.7f kg m^2\n", tensor[0][0], tensor[1][1], tensor[2][2]);
     std::printf("[kit] the principal axes turn %.3f degrees from the design axes\n", turn_deg);
-    // The numbers tests/x500_model.hpp holds (kKitMass, kKitCom, kKitTensor), at 9 significant digits.
-    std::printf("[kit-const] mass %.9g\n[kit-const] com %.9g %.9g %.9g\n[kit-const] tensor xx %.9g yy %.9g zz %.9g xy %.9g xz %.9g yz %.9g\n", mass,
+    // The numbers tests/x500_model.hpp holds (kKitMass, kKitCom, kKitTensor), at 17 significant digits (a double round-trips: Core's compile pins them to 1e-9 relative).
+    std::printf("[kit-const] mass %.17g\n[kit-const] com %.17g %.17g %.17g\n[kit-const] tensor xx %.17g yy %.17g zz %.17g xy %.17g xz %.17g yz %.17g\n", mass,
                 centre.x, centre.y, centre.z, tensor[0][0], tensor[1][1], tensor[2][2], tensor[1][0], tensor[2][0], tensor[2][1]);
     EXPECT_NEAR(mass, 1.6326, 1e-4);
     EXPECT_GT(names.size(), 10u);
