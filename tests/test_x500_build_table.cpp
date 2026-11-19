@@ -6,7 +6,7 @@
 //                                                (vehicles/rotor.hpp, consumers.md L7a): a +1 rotor takes the *-ccw file, a -1 rotor
 //                                                the *-cw file; a front file sits at +X, a rear file at -X
 //   X500BuildTable.TheHubsAreOnTheKitsMotorAxes   the four rotors keep the model's order and spin_dir and the model's signs; each hub is
-//                                                +-0.1774 m on x and on z (the kit's 501.8 mm motor-to-motor diagonal), 0.063 m up
+//                                                +-0.17689 m on x and on z (the kit's motor shaft axes, measured by a circle fit: 500.3 mm motor to motor on the diagonal), 0.070 m up (the glTF's hub bottom on the bell boss), the disc at 0.0607
 //   X500BuildTable.TheFrameIsTheKitsOwnCadAndTheMotorsAreTheKitsMotors   61 kit objects in the frame (no drawing-only glTF), the 4 kit
 //                                                motors one entry each, every kit object posed by the one turn of the file to the design frame
 //   X500BuildTable.EachRotorHidesItsOwnBell   a rotor entry's own `hide_materials` names its glTF's bell (59 mm across; the kit's motor is
@@ -83,13 +83,17 @@ TEST(X500BuildTable, TheHubsAreOnTheKitsMotorAxes) {
         EXPECT_EQ(r.spin, m["spin_dir"].as<int>()) << "rotor " << r.index;
         EXPECT_EQ(r.x > 0.0, pos[0].as<double>() > 0.0) << "rotor " << r.index;
         EXPECT_EQ(r.z > 0.0, pos[2].as<double>() > 0.0) << "rotor " << r.index;
-        // the kit's motor axes: +-177.4 mm on each axis, 501.8 mm motor to motor
-        EXPECT_NEAR(std::fabs(r.x), 0.1774, 1e-6) << "rotor " << r.index;
-        EXPECT_NEAR(std::fabs(r.z), 0.1774, 1e-6) << "rotor " << r.index;
-        // the can top (0.052) plus 0.011 m: the rotor glTF's origin stands 11 mm over its own bell's top
-        EXPECT_NEAR(r.y, 0.063, 1e-6) << "rotor " << r.index;
+        // the kit's motor axes: +-176.89 mm on each axis (Interface's circle fit through the shaft and the can wall, 0.03 mm; the earlier 177.4 was a bounding-box
+        // centre, 0.5 mm outward), 500.3 mm motor to motor
+        EXPECT_NEAR(std::fabs(r.x), 0.17689, 1e-6) << "rotor " << r.index;
+        EXPECT_NEAR(std::fabs(r.z), 0.17689, 1e-6) << "rotor " << r.index;
+        // the seat, measured: Interface's re-origined motor has its bell boss top 0.032 above the flange (y 0.022), so 0.054; the rotor glTF's hub bottom face
+        // is 0.016 below the glTF origin (Core, measured on x500-rotor-front-ccw.gltf), so the origin, the drawn pose, is at 0.070
+        EXPECT_NEAR(r.y, 0.070, 1e-6) << "rotor " << r.index;
+        // the disc (what Physics takes) is the blade mid-plane at 0.25 to 0.35 R, 0.00926 below the glTF origin (Core, measured): 0.0607
+        EXPECT_NEAR(r.y - 0.00926, 0.0607, 1e-4) << "rotor " << r.index;
     }
-    EXPECT_NEAR(std::hypot(2 * 0.1774, 2 * 0.1774), 0.5018, 1e-4);
+    EXPECT_NEAR(std::hypot(2 * 0.17689, 2 * 0.17689), 0.5003, 1e-4);
 }
 
 TEST(X500BuildTable, TheFrameIsTheKitsOwnCadAndTheMotorsAreTheKitsMotors) {

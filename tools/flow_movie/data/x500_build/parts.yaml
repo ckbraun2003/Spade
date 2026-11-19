@@ -9,8 +9,7 @@
 # Rotors: the vehicle's rotor order and spins are Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml): rotor 0 front-right (spin 1), 1 front-left (-1), 2 rear-left (1), 3 rear-right (-1).
 # spin +1 is the engine's spin_dir: counter-clockwise seen from above (vehicles/rotor.hpp, consumers.md L7a), so a +1 rotor takes the *-ccw file, whose blades lift turning counter-clockwise (Rendering measured the
 # blade pitch), and a -1 rotor the *-cw file. Each rotor glTF is modelled at its own origin, hub on its y axis, so the pose is the hub; its 59 mm bell is hidden (the rotor entry's own hide_materials) because the kit's 28.7 mm motor is drawn.
-# The kit's motor axes are at +-0.1774 m on each axis (501.8 mm motor to motor on the diagonal). The hub height is the can top (y 0.052) plus the 0.011 m by which the rotor glTF's origin stands over its own bell's
-# top (the glTF pair Rendering authored: the prop's hub spans -0.016 to +0.0094 about the origin, the bell tops out at -0.011), 0.063 m; the kit file shows no prop adaptor, and the shaft top is 0.0641. The hub height is graded assumed (the rotor file's own hub-to-bell relation, not a measurement of the kit).
+# The kit's motor axes are at +-0.17689 m on each axis (500.3 mm motor to motor on the diagonal), measured (Interface, the re-origined motor, store entry 37b3bd113defaf7f: a least-squares circle fit through the shaft's vertices and the can wall, agreeing to 0.03 mm); the earlier +-0.1774 was the bounding-box centre of the whole motor, which an off-centre lower feature pulls 0.5 mm outward. The rotor height is the seat measured on the kit's motor (Interface, the re-origined motor): the bell boss top is +0.032 above the flange (the top of the motor mount plate, y 0.022), y 0.054, and the rotor glTF's hub bottom face sits on it. On the glTF (measured by Core on x500-rotor-front-ccw.gltf: the hub's lowest face is -0.0160 below the glTF origin, the blade mid-plane at 0.25 to 0.35 R is -0.00926 below it) the origin is then at 0.054 + 0.016 = 0.070 m (the drawing origin, every rotor's pose y), and the DISC, the actuator plane Physics takes, is at 0.070 - 0.00926 = 0.0607 m. The library's rotor part carries both as install points (`seat`, `disc`); nothing of this is stored in the drone. The shaft collar is +0.036 and the shaft tip +0.0415 above the flange.
 #
 # HOW IT WAS MEASURED. Every kit object is read from the part store (record docs/design/interface/records/2026-11-18-x500-parts-sources.md): the 61 frame objects and the 4 motors, each at its own place in the
 # file. The other parts' own bounding boxes are read from their stored .spmesh files (the part frame), and each pose puts the part's box on a surface read from the kit file. pose_grade: measured = placed on a surface read
@@ -101,7 +100,7 @@ parts:
     mass_grade: assumed
     mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
     pose_grade: derived
-    # the kit's motor DJ-2216-KV880:1_1 (axis at x 0.1774, z 0.1774 m)
+    # the kit's motor DJ-2216-KV880:1_1 (axis at x 0.17689, z 0.17689 m)
     pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
     material: aluminium_anodised
     objects:
@@ -113,7 +112,7 @@ parts:
     mass_grade: assumed
     mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
     pose_grade: derived
-    # the kit's motor DJ-2216-KV880:1_2 (axis at x 0.1774, z -0.1774 m)
+    # the kit's motor DJ-2216-KV880:1_2 (axis at x 0.17689, z -0.17689 m)
     pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
     material: aluminium_anodised
     objects:
@@ -125,7 +124,7 @@ parts:
     mass_grade: assumed
     mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
     pose_grade: derived
-    # the kit's motor DJ-2216-KV880:1_3 (axis at x -0.1774, z -0.1774 m)
+    # the kit's motor DJ-2216-KV880:1_3 (axis at x -0.17689, z -0.17689 m)
     pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
     material: aluminium_anodised
     objects:
@@ -137,7 +136,7 @@ parts:
     mass_grade: assumed
     mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
     pose_grade: derived
-    # the kit's motor DJ-2216-KV880:1_4 (axis at x -0.1774, z 0.1774 m)
+    # the kit's motor DJ-2216-KV880:1_4 (axis at x -0.17689, z 0.17689 m)
     pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
     material: aluminium_anodised
     objects:
@@ -260,9 +259,9 @@ parts:
     mass_kg: 0.013
     mass_grade: assumed
     mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: assumed
-    # the kit motor's axis, at the can top plus 0.011 m (see the header); the blades only, the bell is hidden
-    pose: {position: [0.1774, 0.063, 0.1774], orientation: [1, 0, 0, 0]}
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [0.17689, 0.070, 0.17689], orientation: [1, 0, 0, 0]}
     hide_materials: [drone/x500-rotor-front-ccw/bell]
     objects:
       - {store_ref: {sha256: 46fd2683c9cc3125978f4e4addc3f6d571dbadfcc9db29457be50030b9d7ee07, file: x500-rotor-front-ccw.gltf}}
@@ -275,9 +274,9 @@ parts:
     mass_kg: 0.013
     mass_grade: assumed
     mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: assumed
-    # the kit motor's axis, at the can top plus 0.011 m (see the header); the blades only, the bell is hidden
-    pose: {position: [0.1774, 0.063, -0.1774], orientation: [1, 0, 0, 0]}
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [0.17689, 0.070, -0.17689], orientation: [1, 0, 0, 0]}
     hide_materials: [drone/x500-rotor-front-cw/bell]
     objects:
       - {store_ref: {sha256: 61121917c65405f022d19087def8a03b341ef3f76013f6fbe384b3f19ee6b7ac, file: x500-rotor-front-cw.gltf}}
@@ -290,9 +289,9 @@ parts:
     mass_kg: 0.013
     mass_grade: assumed
     mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: assumed
-    # the kit motor's axis, at the can top plus 0.011 m (see the header); the blades only, the bell is hidden
-    pose: {position: [-0.1774, 0.063, -0.1774], orientation: [1, 0, 0, 0]}
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [-0.17689, 0.070, -0.17689], orientation: [1, 0, 0, 0]}
     hide_materials: [drone/x500-rotor-rear-ccw/bell]
     objects:
       - {store_ref: {sha256: 9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7, file: x500-rotor-rear-ccw.gltf}}
@@ -305,9 +304,9 @@ parts:
     mass_kg: 0.013
     mass_grade: assumed
     mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: assumed
-    # the kit motor's axis, at the can top plus 0.011 m (see the header); the blades only, the bell is hidden
-    pose: {position: [-0.1774, 0.063, 0.1774], orientation: [1, 0, 0, 0]}
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [-0.17689, 0.070, 0.17689], orientation: [1, 0, 0, 0]}
     hide_materials: [drone/x500-rotor-rear-cw/bell]
     objects:
       - {store_ref: {sha256: d7c1722992864c1972f5c960cdf2d04cec3ce847346bd5c11ec441cd29c40d39, file: x500-rotor-rear-cw.gltf}}
