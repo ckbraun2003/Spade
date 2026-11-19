@@ -1686,8 +1686,15 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 if (!got) return std::unexpected(got.error());
                 chord = std::move(*got);
             }
+            // the table is in the design frame: the model the run flies says how the body is turned and where its centre of mass is
+            BodyFrame frame;
+            if (build) {
+                auto got = body_frame_of(std::filesystem::path(SPADE_ASSETS_DIR) / plan.drone->model_file);
+                if (!got) return std::unexpected(got.error());
+                frame = *got;
+            }
             if (visual || build) {
-                film.decorate = [visual, build, chord, blur = plan.prop_blur, light = plan.drone_light, store = std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, store = std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1699,6 +1706,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                     if (build) {
                         apply_drone_light(scene, light);
                         BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
+                        draw.design_to_principal = frame.design_to_principal;
+                        draw.com_offset = frame.com_offset;
                         draw.blur = blur;
                         draw.chord = chord;
                         draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
