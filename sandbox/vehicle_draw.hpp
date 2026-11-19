@@ -176,4 +176,17 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
     return false;
 }
 
+// What a GPU renderer holds of a scene's CSG subtrees, so a frame uploads the scene again only when one changed. GlRenderer::draw() refuses a
+// subtree whose program (its nodes, the transforms it marches) or box is not the one upload_scene() copied, and render_parts poses a part into
+// its program, so a CSG vehicle that moves, or a CSG model that is edited, needs the upload: nothing else about the scene does (the meshes are
+// bound once, only transforms move). note_uploaded() records the subtrees an upload carried; needs_upload() is whether the scene now differs.
+class CsgUploadGate {
+  public:
+    // True when nothing was noted yet, the subtree count changed, or any subtree differs from the noted one.
+    [[nodiscard]] bool needs_upload(const render::RenderScene&) const { return true; }  // RED: a stand-in
+    // The indices of the scene's subtrees that differ from the noted ones, or that the noted scene had none of: what an edit touched.
+    [[nodiscard]] std::vector<std::size_t> changed(const render::RenderScene&) const { return {}; }  // RED: a stand-in
+    void note_uploaded(const render::RenderScene&) {}  // RED: a stand-in
+};
+
 }  // namespace spade::sandbox

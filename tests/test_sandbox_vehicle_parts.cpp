@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -255,3 +256,104 @@ TEST(SandboxVehicleParts, APropIsTurnedWhenItsAzimuthIsFarFromTheAuthoredPoseMod
     EXPECT_EQ(spade::sandbox::props_turned(psi, 1, 25.0f * kDeg), 4u) << "one blade: pi is half a turn away";
     EXPECT_EQ(spade::sandbox::props_turned({}, 2, 25.0f * kDeg), 0u);
 }
+
+namespace {
+// ---- the CSG upload gate -------------------------------------------------------------------------------------------------------
+
+// The reference quad with one CSG part (a box minus a sphere) of the given half size on its body, so a vehicle of it has a CSG subtree.
+vh::ModelType quad_with_ring(float half) {
+    vh::ModelType model;
+    reference_quad(model);
+    spade::SdfProgram ring;
+    ring.transforms.push_back(spade::SdfTransform{});
+    spade::SdfNode box{};
+    box.kind = static_cast<uint32_t>(spade::SdfPrim::box);
+    box.params = glm::vec4(half, 0.03f, half, 0.0f);
+    spade::SdfNode ball{};
+    ball.kind = static_cast<uint32_t>(spade::SdfPrim::sphere);
+    ball.params = glm::vec4(0.045f, 0.0f, 0.0f, 0.0f);
+    spade::SdfNode subtract{};
+    subtract.op = static_cast<uint32_t>(spade::SdfOp::subtract);
+    ring.nodes = {box, ball, subtract};
+    model.parts = {vh::PartDesc{.name = "ring",
+                                .role = "test",
+                                .attach = vh::PartAttach::body,
+                                .rotor = 0,
+                                .mount_pos = glm::vec3(0.02f, 0.01f, -0.03f),
+                                .mount_orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                .shape = std::move(ring),
+                                .surface = vh::PartSurface{.kind = vh::PartSurface::Kind::wall, .inv_permeability = 0.0f, .inertial_coeff = 0.0f},
+                                .min_feature = 0.001f}};
+    return model;
+}
+
+// A scene as the editor's draw_items() makes one each frame: the base palette, then each vehicle's parts bound where it is.
+spade::render::RenderScene drawn(const std::vector<std::pair<vh::ModelType, glm::vec3>>& vehicles) {
+    spade::render::RenderScene scene = palette_scene();
+    for (const auto& [model, pos] : vehicles) {
+        const auto prepared = rp::prepare_parts(model);
+        EXPECT_TRUE(prepared.has_value()) << (prepared.has_value() ? "" : prepared.error().context);
+        if (!prepared.has_value()) continue;
+        EXPECT_TRUE(append_vehicle_parts(scene, *prepared, model, pos, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), look()).has_value());
+    }
+    return scene;
+}
+
+}  // namespace
+
+TEST(SandboxCsgUploadGate, AnUnchangedCsgSceneUploadsOnceOverManyFrames) {
+    const vh::ModelType quad = quad_with_ring(0.06f);
+    spade::sandbox::CsgUploadGate gate;
+    int uploads = 0;
+    for (int frame = 0; frame < 120; ++frame) {
+        const spade::render::RenderScene scene = drawn({{quad, glm::vec3(0.0f)}});
+        ASSERT_FALSE(scene.csg_subtrees.empty());
+        if (gate.needs_upload(scene)) {
+            gate.note_uploaded(scene);
+            ++uploads;
+        }
+    }
+    EXPECT_EQ(uploads, 1) << "the first frame uploads, the 119 that follow are the same scene";
+}
+
+TEST(SandboxCsgUploadGate, AMovedCsgVehicleUploadsAndSettlesAgain) {
+    const vh::ModelType quad = quad_with_ring(0.06f);
+    spade::sandbox::CsgUploadGate gate;
+    gate.note_uploaded(drawn({{quad, glm::vec3(0.0f)}}));
+    EXPECT_FALSE(gate.needs_upload(drawn({{quad, glm::vec3(0.0f)}})));
+    const spade::render::RenderScene moved = drawn({{quad, glm::vec3(0.5f, 0.0f, 0.0f)}});
+    EXPECT_TRUE(gate.needs_upload(moved)) << "a CSG piece marches at the pose it was uploaded with";
+    EXPECT_EQ(gate.changed(moved), (std::vector<std::size_t>{0}));
+    gate.note_uploaded(moved);
+    EXPECT_FALSE(gate.needs_upload(drawn({{quad, glm::vec3(0.5f, 0.0f, 0.0f)}}))) << "it settles where it stopped";
+}
+
+TEST(SandboxCsgUploadGate, AnEditToOneCsgModelChangesThatModelsSubtreeOnly) {
+    const vh::ModelType a = quad_with_ring(0.06f);
+    const vh::ModelType b = quad_with_ring(0.06f);
+    spade::sandbox::CsgUploadGate gate;
+    gate.note_uploaded(drawn({{a, glm::vec3(0.0f)}, {b, glm::vec3(1.0f, 0.0f, 0.0f)}}));
+    EXPECT_FALSE(gate.needs_upload(drawn({{a, glm::vec3(0.0f)}, {b, glm::vec3(1.0f, 0.0f, 0.0f)}})));
+    const vh::ModelType edited = quad_with_ring(0.08f);  // the second vehicle's ring is edited
+    const spade::render::RenderScene scene = drawn({{a, glm::vec3(0.0f)}, {edited, glm::vec3(1.0f, 0.0f, 0.0f)}});
+    ASSERT_EQ(scene.csg_subtrees.size(), 2u);
+    EXPECT_TRUE(gate.needs_upload(scene));
+    EXPECT_EQ(gate.changed(scene), (std::vector<std::size_t>{1})) << "the first model's subtree is untouched";
+}
+
+TEST(SandboxCsgUploadGate, ASceneWithoutCsgNeverNeedsAnUploadAfterTheFirstAndACountChangeDoes) {
+    vh::ModelType plain;
+    reference_quad(plain);
+    plain.parts.clear();
+    spade::sandbox::CsgUploadGate gate;
+    EXPECT_TRUE(gate.needs_upload(drawn({{plain, glm::vec3(0.0f)}}))) << "nothing noted yet";
+    gate.note_uploaded(drawn({{plain, glm::vec3(0.0f)}}));
+    for (int frame = 0; frame < 10; ++frame) {
+        EXPECT_FALSE(gate.needs_upload(drawn({{plain, glm::vec3(0.1f * static_cast<float>(frame), 0.0f, 0.0f)}})));
+    }
+    const vh::ModelType ring = quad_with_ring(0.06f);
+    EXPECT_TRUE(gate.needs_upload(drawn({{ring, glm::vec3(0.0f)}}))) << "a subtree that was not there";
+    gate.note_uploaded(drawn({{ring, glm::vec3(0.0f)}}));
+    EXPECT_TRUE(gate.needs_upload(drawn({{plain, glm::vec3(0.0f)}}))) << "a subtree that went";
+}
+
