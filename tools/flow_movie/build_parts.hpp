@@ -82,7 +82,7 @@ struct BuildPart {
 namespace build_detail {
 
 // "mass_only": a mass carrier for the physics, not a drawing of anything (accepted, nothing drawn)
-inline constexpr std::array<std::string_view, 10> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast", "rotor", "mass_only"};
+inline constexpr std::array<std::string_view, 11> kKinds{"frame", "controller", "gps", "battery", "computer", "camera", "radio", "mast", "rotor", "motor", "mass_only"};
 
 [[nodiscard]] inline std::unexpected<spade::Error> bad(const std::string& why) {
     return std::unexpected(spade::Error{spade::Code::invalid_argument, "build parts: " + why});
@@ -174,6 +174,7 @@ struct PoseRead {
     if (kind == "radio") return make(0.20f, 0.30f, 0.75f);
     if (kind == "mast") return make(0.60f, 0.60f, 0.62f);
     if (kind == "rotor") return make(0.04f, 0.04f, 0.045f);
+    if (kind == "motor") return make(0.11f, 0.12f, 0.15f);  // the kit's anodised can, as aluminium_anodised
     return std::nullopt;
 }
 
