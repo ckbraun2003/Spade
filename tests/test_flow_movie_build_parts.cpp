@@ -1277,3 +1277,25 @@ TEST(FlowMovieBuildParts, TheRecordSaysHowTheDroneIsLit) {
               "the drone is drawn under a key light at 2.5 times and a fill light at 1.5 times the standard lighting so its dark carbon reads against the black; the air is not lit by them");
 }
 
+
+// L106's dry run: S1 (the streamline view) seeds its lines at the rotors from the held body's pose, which a view's decorate() records as it draws. A web
+// film that draws the real parts (--build-parts) REPLACES the case film's decorate(), and the replacement never recorded the pose, so S1 refused with
+// "the streamline view ran before a frame's held body was read" on a frame whose log was whole. The pose is now read from the frame's log by one function
+// the draw paths call before any decorate(), so no replacement can forget it. The log is the held frame's own: x, y, z, then w, x, y, z, then the four
+// rotors' speeds and the lines' thrust (Physics' 10-inch X500 frame 200).
+TEST(FlowMovieBuildParts, TheHeldPoseIsReadFromAFramesLogWhateverDecorateDoes) {
+    const std::vector<double> live = {0.0009, -0.0048, -0.0016, 1.0, 0.0, 0.0, 0.0, 568.2145, 568.2145, 568.2145, 568.2145, 16.0371};
+    const flow_movie::HeldPose pose = flow_movie::held_pose_from_live(live);
+    ASSERT_TRUE(pose.known);
+    EXPECT_FLOAT_EQ(pose.pos.x, 0.0009f);
+    EXPECT_FLOAT_EQ(pose.pos.y, -0.0048f);
+    EXPECT_FLOAT_EQ(pose.pos.z, -0.0016f);
+    EXPECT_FLOAT_EQ(pose.orient.w, 1.0f);
+    EXPECT_FLOAT_EQ(pose.orient.x, 0.0f);
+    // fewer than 7 doubles is no held body: not known, and the pose is the default
+    const flow_movie::HeldPose none = flow_movie::held_pose_from_live(std::vector<double>{1.0, 2.0, 3.0});
+    EXPECT_FALSE(none.known);
+    EXPECT_FALSE(flow_movie::held_pose_from_live(std::vector<double>{}).known);
+    // exactly 7 is enough: the body alone, no rotor speeds
+    EXPECT_TRUE(flow_movie::held_pose_from_live(std::vector<double>{0, 0, 0, 1, 0, 0, 0}).known);
+}
