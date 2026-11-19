@@ -2277,18 +2277,29 @@ Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& 
     return {};
 }
 
-bool rasterize_sprite_overlay(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
-                              std::vector<uint8_t>& rgba) {
-    rgba.clear();
-    if (scene.sprites.empty() || width == 0u || height == 0u) return false;
+size_t rasterize_sprite_tiles(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
+                              SpriteTiles& out) {
+    out.tiles.clear();
+    out.pixels.clear();
+    if (scene.sprites.empty() || width == 0u || height == 0u) return 0u;
     const ViewContext vc = build_view_context(camera, width, height);
-    bool any = false;
     for_each_projected_sprite(vc, scene, options.slot, [&](double x, double y, const std::vector<SpriteShape>& shapes) {
-        if (!any) rgba.assign(static_cast<size_t>(width) * height * 4u, 0u);
-        any = true;
-        draw_sprite_shapes(rgba, width, height, x, y, options.ui_scale, shapes, SpriteTarget::overlay_rgba);
+        SpriteRect box;
+        if (!sprite_pixel_box(shapes, x, y, options.ui_scale, width, height, box)) return;
+        SpriteTile tile;
+        tile.x = box.x0;
+        tile.y = box.y0;
+        tile.w = static_cast<uint32_t>(box.x1 - box.x0);
+        tile.h = static_cast<uint32_t>(box.y1 - box.y0);
+        tile.offset = static_cast<uint32_t>(out.pixels.size() / 4u);
+        const size_t bytes = static_cast<size_t>(tile.w) * tile.h * 4u;
+        out.pixels.resize(out.pixels.size() + bytes, 0u);
+        const std::span<uint8_t> dst(out.pixels.data() + static_cast<size_t>(tile.offset) * 4u, bytes);
+        draw_sprite_shapes(dst, tile.w, tile.h, x - static_cast<double>(tile.x), y - static_cast<double>(tile.y), options.ui_scale, shapes,
+                           SpriteTarget::overlay_rgba);
+        out.tiles.push_back(tile);
     });
-    return any;
+    return out.tiles.size();
 }
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,

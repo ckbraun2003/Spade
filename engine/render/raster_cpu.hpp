@@ -155,10 +155,11 @@ struct OverlayGeometry {
 // mode draws no overlays.
 [[nodiscard]] OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& options);
 
-// D182 S3, for the GL renderer: the sprites of `scene` that draw on options.slot (projected exactly as render() projects them), rasterised by
-// draw_sprite_shapes into a transparent premultiplied R, G, B, A overlay of width x height, rows top first. Returns false, with `rgba` empty, when none draw.
-// The caller validates the sprites (validate_sprite_budget).
-[[nodiscard]] bool rasterize_sprite_overlay(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
-                                            std::vector<uint8_t>& rgba);
+// D182 S3, for the GL renderer: the sprites of `scene` that draw on options.slot (projected exactly as render() projects them), each rasterised by
+// draw_sprite_shapes into a tile of its own, a transparent premultiplied R, G, B, A rectangle clipped to the frame (render/sprites.hpp SpriteTiles). `out` is
+// cleared first and reused. Returns the number of tiles (a sprite wholly outside the frame has none). Composited in order over a frame with
+// (ONE, ONE_MINUS_SRC_ALPHA) the tiles are the sprites render() draws, to a level of rounding. The caller validates the sprites (validate_sprite_budget).
+size_t rasterize_sprite_tiles(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
+                              SpriteTiles& out);
 
 }  // namespace spade::render
