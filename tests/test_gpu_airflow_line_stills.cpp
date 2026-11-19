@@ -31,6 +31,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -300,6 +301,7 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     const auto t_start = std::chrono::steady_clock::now();
     spade::FlowVolume volume;
     double step_s = 0.0;
+    std::vector<double> thrust_by_step;  // L106: the lines' thrust in all, each step, for the last revolution's mean
     uint32_t steps_timed = 0;
     for (uint32_t step = 1; step <= last; ++step) {
         for (std::size_t i = 0; i < lines.size(); ++i) lines[i].psi = psi[i];
@@ -321,6 +323,11 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         ASSERT_TRUE(health.has_value()) << "step " << step << ": " << health.error().context;
         ASSERT_EQ(health->fault, af::FluidFault::none) << "step " << step;
         pstats.max_residual = std::max(pstats.max_residual, static_cast<double>(health->pressure_residual));
+        {
+            double all = 0.0;
+            for (const af::LineReport& r : (*gpu)->line_reports()) all += static_cast<double>(r.thrust);
+            thrust_by_step.push_back(all);
+        }
         pstats.iterations += health->pressure_iterations;
         ++pstats.steps;
         pstats.capped += health->capped ? 1u : 0u;
@@ -371,6 +378,14 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count(), thrust,
                     (*gpu)->line_reports().size());
+        if (!lines.empty() && omega > 0.0f) {  // L106: the mean over the last revolution, which the blades' azimuth does not scatter
+            const uint32_t rev_steps = static_cast<uint32_t>(std::lround(static_cast<double>(kTwoPi) / (static_cast<double>(omega) * static_cast<double>(box.cfg.h))));
+            const std::size_t from = step > rev_steps ? step - rev_steps : 0u;
+            const double mean = std::accumulate(thrust_by_step.begin() + static_cast<std::ptrdiff_t>(from), thrust_by_step.end(), 0.0) /
+                                static_cast<double>(thrust_by_step.size() - from);
+            std::printf("[ lines   ] step %u (%.4f s): the lines' thrust over the last revolution (%u steps): %.4f N in all, %.4f N a rotor (%zu rotors)\n",
+                        step, static_cast<double>(step) * static_cast<double>(box.cfg.h), rev_steps, mean, mean / static_cast<double>(lines.size()), lines.size());
+        }
         std::fflush(stdout);
         if (diag && !lines.empty()) {
             std::printf("[ diag    ] step %u: pressure solve over the last %u steps: largest residual %.3e, %.1f iterations a step, capped %u, "
