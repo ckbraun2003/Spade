@@ -9,11 +9,13 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <glm/gtc/quaternion.hpp>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "../tools/flow_movie/part_materials.hpp"
+#include "../tools/flow_movie/visual_mesh.hpp"
 #include "render/scene.hpp"
 
 namespace {
@@ -101,3 +103,64 @@ TEST(FlowMovieMaterials, ADrawItemWithNoPartLabelOrABadLabelIndexIsLeftAlone) {
     EXPECT_EQ(flow_movie::apply_role_materials(scene, 0u, roles), 0u);
     EXPECT_EQ(scene.statics[0].material_override, 0u);
 }
+
+// --visual-mesh FILE (the lead, 2026-11-17: an accurate X500 for the web clips, PRESENTATION ONLY): a glTF mesh drawn at the held
+// body's pose in place of the model's proxy parts; the flow's solids are untouched. The file's own palette (MeshData::source_materials,
+// baseColorFactor) is appended to the scene's, and the copy's submesh_material indices move by the offset (an out-of-range one to
+// the file's first), exactly as scene_from_world() does for a resolved mesh; the caller's MeshData is not changed.
+namespace {
+spade::render::MeshData two_triangle_mesh() {
+    spade::render::MeshData m;
+    m.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    m.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 1, 0}};
+    m.indices = {0, 1, 2, 0, 2, 3};
+    m.submesh_first_index = {0, 3};
+    m.submesh_index_count = {3, 3};
+    m.submesh_material = {1, 7};  // the second is out of the palette's range
+    m.source_materials = {spade::render::Material{.base_color = glm::vec4(1, 0, 0, 1)},
+                          spade::render::Material{.base_color = glm::vec4(0, 1, 0, 1)}};
+    return m;
+}
+}  // namespace
+
+TEST(FlowMovieVisualMesh, TheMeshIsAddedAtTheBodysPoseWithItsOwnPaletteOffsetIntoTheScenes) {
+    spade::render::RenderScene scene;
+    scene.materials.push_back(spade::render::Material{});
+    scene.materials.push_back(spade::render::Material{});
+    scene.meshes.emplace_back();  // something already there: the new mesh's index is not 0
+    const spade::render::MeshData mesh = two_triangle_mesh();
+    const glm::vec3 pos(1.0f, 2.0f, 3.0f);
+    const glm::quat orient = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto added = flow_movie::add_visual_mesh(scene, mesh, pos, orient);
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    ASSERT_EQ(scene.meshes.size(), 2u);
+    ASSERT_EQ(scene.statics.size(), 1u);
+    EXPECT_EQ(scene.statics.front().mesh_index, 1u);
+    const glm::vec4 moved = scene.statics.front().local_to_world * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    EXPECT_NEAR(moved.x, 1.0f, 1e-5f) << "a quarter turn about y takes +x to -z, then the body's position adds";
+    EXPECT_NEAR(moved.y, 2.0f, 1e-5f);
+    EXPECT_NEAR(moved.z, 2.0f, 1e-5f);
+    ASSERT_EQ(scene.materials.size(), 4u) << "the file's two materials after the scene's two";
+    EXPECT_EQ(scene.materials[2].base_color, glm::vec4(1, 0, 0, 1));
+    EXPECT_EQ(scene.materials[3].base_color, glm::vec4(0, 1, 0, 1));
+    EXPECT_EQ(scene.meshes[1].submesh_material, (std::vector<uint32_t>{3u, 2u})) << "offset by 2; the out-of-range one to the file's first";
+    EXPECT_EQ(mesh.submesh_material, (std::vector<uint32_t>{1u, 7u})) << "the caller's mesh is not changed";
+    EXPECT_FALSE(scene.statics.front().flow_wall) << "presentation only: no wall in the flow's colouring";
+}
+
+TEST(FlowMovieVisualMesh, AMeshThatCannotBeDrawnIsRefusedAndTheSceneIsLeftAsItWas) {
+    spade::render::RenderScene scene;
+    spade::render::MeshData empty;
+    const auto none = flow_movie::add_visual_mesh(scene, empty, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    ASSERT_FALSE(none.has_value());
+    EXPECT_NE(none.error().context.find("visual mesh"), std::string::npos) << none.error().context;
+    spade::render::MeshData ragged = two_triangle_mesh();
+    ragged.normals.pop_back();
+    const auto bad = flow_movie::add_visual_mesh(scene, ragged, glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    ASSERT_FALSE(bad.has_value()) << "normals that do not match the positions";
+    EXPECT_NE(bad.error().context.find("normals"), std::string::npos) << bad.error().context;
+    EXPECT_TRUE(scene.meshes.empty());
+    EXPECT_TRUE(scene.statics.empty());
+    EXPECT_TRUE(scene.materials.empty());
+}
+

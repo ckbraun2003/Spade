@@ -2581,18 +2581,20 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
         // Every colour map's stops, a row per ColourMapId, once.
         static_assert(static_cast<uint32_t>(render::ColourMapId::viridis) == 0u &&
                       static_cast<uint32_t>(render::ColourMapId::inferno) == 1u &&
-                      static_cast<uint32_t>(render::ColourMapId::cool_warm) == 2u);
+                      static_cast<uint32_t>(render::ColourMapId::cool_warm) == 2u &&
+                      static_cast<uint32_t>(render::ColourMapId::blue_magenta) == 3u && render::kColourMapCount == 4u);
         static_assert(render::kColourMapEntries == 256 && sizeof(glm::vec3) == 3 * sizeof(float));
         std::vector<glm::vec3> rows;
         for (const render::ColourMapId id :
-             {render::ColourMapId::viridis, render::ColourMapId::inferno, render::ColourMapId::cool_warm}) {
+             {render::ColourMapId::viridis, render::ColourMapId::inferno, render::ColourMapId::cool_warm,
+              render::ColourMapId::blue_magenta}) {
             const auto& table = render::colour_map_table(id);
             rows.insert(rows.end(), table.begin(), table.end());
         }
         gl.BindTexture(GL_TEXTURE_2D, impl->flow_colour_tex);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, static_cast<GLsizei>(render::kColourMapEntries), 3, 0, GL_RGB,
+        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, static_cast<GLsizei>(render::kColourMapEntries), 4, 0, GL_RGB,
                       GL_FLOAT, rows.data());
         gl.BindTexture(GL_TEXTURE_2D, 0);
     }

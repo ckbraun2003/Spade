@@ -38,6 +38,21 @@ namespace {
     return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string();
 }
 
+// The converter's `colour` ([r, g, b] 0..255, or null) and `colours` (how many distinct) of one object; none when the colour is absent or null.
+[[nodiscard]] std::optional<SurfaceColour> read_colour(const json& j) {
+    const auto c = j.find("colour");
+    if (c == j.end() || !c->is_array() || c->size() != 3) return std::nullopt;
+    SurfaceColour out;
+    for (std::size_t k = 0; k < 3; ++k) {
+        if (!(*c)[k].is_number_integer()) return std::nullopt;
+        const auto v = (*c)[k].get<long long>();
+        if (v < 0 || v > 255) return std::nullopt;
+        out.rgb[k] = static_cast<std::uint8_t>(v);
+    }
+    out.colours = j.value("colours", 1u);
+    return out;
+}
+
 [[nodiscard]] bool read_vec3(const json& j, const char* key, glm::dvec3& out) {
     const auto it = j.find(key);
     if (it == j.end() || !it->is_array() || it->size() != 3) return false;
@@ -196,6 +211,7 @@ Expected<StepInspect> parse_inspect(const std::string& json_text) {
             !read_vec3(s, "bbox_max", o.hi)) {
             return std::unexpected(converter_failed("the converter's inspect answer has a solid without a name, volume or box"));
         }
+        o.colour = read_colour(s);
         o.volume_m3 = s["volume"].get<double>() * u * u * u;
         o.lo *= u;
         o.hi *= u;
@@ -213,6 +229,9 @@ Expected<EmitReport> parse_emit(const std::string& json_text) {
     r.unit = text_of(*j, "unit");
     r.occt = text_of(*j, "occt");
     r.wheel = text_of(*j, "wheel");
+    if (const auto c = j->find("colours"); c != j->end() && c->is_array()) {
+        for (const json& e : *c) r.colours.push_back({text_of(e, "name"), read_colour(e)});
+    }
     std::vector<std::string> flagged;
     if (const auto f = j->find("flagged"); f != j->end() && f->is_array()) {
         for (const json& n : *f) {

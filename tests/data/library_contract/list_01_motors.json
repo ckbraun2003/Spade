@@ -1,0 +1,64 @@
+{
+ "description": "a part kind filter",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "list",
+ "request": {
+  "kind": "part",
+  "part_kind": "motor"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "list",
+  "ok": true,
+  "result": {
+   "entries": [
+    {
+     "id": "default:part.motor.fpv_2306",
+     "root": "default",
+     "local_id": "part.motor.fpv_2306",
+     "kind": "part",
+     "part_kind": "motor",
+     "type": null,
+     "name": "FPV 2306",
+     "category": "Motors",
+     "tags": [
+      "fpv"
+     ],
+     "file": "$FIXTURES/roots/default/motors/fpv_2306.motor.yaml",
+     "rel_file": "motors/fpv_2306.motor.yaml",
+     "thumbnail": null,
+     "requires": [],
+     "files": [],
+     "store_file": null,
+     "hash": "sha256:c416e6d1d47ef39f6ccc40d213e750ae73b2d44ebaf51fb643b002448a268993",
+     "generated_from": null,
+     "peek": {
+      "mass_kg": 0.032,
+      "provides": [],
+      "limits": {},
+      "rotor_count": null,
+      "world_version": null,
+      "install_kinds": []
+     }
+    }
+   ],
+   "total": 1,
+   "offset": 0
+  },
+  "warnings": []
+ }
+}

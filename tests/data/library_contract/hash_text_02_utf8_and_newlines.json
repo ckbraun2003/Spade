@@ -1,0 +1,31 @@
+{
+ "description": "UTF-8 bytes, no newline translation",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "hash_text",
+ "request": {
+  "text": "é\r\n"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "hash_text",
+  "ok": true,
+  "result": {
+   "hash": "sha256:64da669b12bbeda0ca8f2840891bd8834e5b8206f24c7703e20ac1d472612b0e"
+  },
+  "warnings": []
+ }
+}

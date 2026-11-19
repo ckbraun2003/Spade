@@ -126,6 +126,7 @@ struct SetRoot {
     std::vector<std::string> depends{};
     std::size_t entry_count = 0;
     bool writable = false;
+    std::map<std::string, std::string> aliases{};  // this root's own alias table: alias -> full id (a v3 root's `aliases`)
 };
 
 // Several roots opened together: roots and entries in the host's order, each

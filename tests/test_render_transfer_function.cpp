@@ -9,6 +9,7 @@
 #include <limits>
 
 #include "core/flow_volume.hpp"
+#include "render/target.hpp"
 #include "render/transfer_function.hpp"
 
 namespace {
@@ -249,3 +250,41 @@ TEST(RenderTransferFunction, AMalformedTransferFunctionIsRefused) {
 }
 
 }  // namespace
+
+// THE VORTEX MAP (the lead, 2026-11-17: NASA's multirotor flow figures colour vortex surfaces by vorticity magnitude, blue for low to
+// magenta for high): a sequential map from a deep blue to a pale magenta, five anchors blended linearly, so a surface reads as one
+// quantity getting stronger. Like viridis and inferno its lightness rises at every entry; the ends are named by colour, not by the
+// anchors' digits; the table is in [0, 1] and has no jump between entries.
+TEST(RenderTransferFunction, TheBlueMagentaMapRunsFromABlueToAMagentaAndBrightensAtEveryEntry) {
+    const auto& t = colour_map_table(ColourMapId::blue_magenta);
+    EXPECT_GT(t.front().z, 2.0f * t.front().x) << "the low end is a blue";
+    EXPECT_GT(t.front().z, 2.0f * t.front().y);
+    EXPECT_GT(t.back().x, 0.8f) << "the high end is a magenta: red and blue both high, green lower";
+    EXPECT_GT(t.back().z, 0.8f);
+    EXPECT_LT(t.back().y, t.back().x - 0.3f);
+    for (size_t i = 0; i < t.size(); ++i) {
+        for (int lane = 0; lane < 3; ++lane) {
+            ASSERT_GE(t[i][lane], 0.0f) << i;
+            ASSERT_LE(t[i][lane], 1.0f) << i;
+        }
+        if (i > 0) {
+            ASSERT_GT(luminance(t[i]), luminance(t[i - 1])) << "entry " << i;
+            for (int lane = 0; lane < 3; ++lane) ASSERT_LT(std::fabs(t[i][lane] - t[i - 1][lane]), 0.02f) << "no jump at entry " << i;
+        }
+    }
+    const glm::vec3 mid = colour_map_at(ColourMapId::blue_magenta, 0.5f);
+    EXPECT_GT(mid.z, mid.x) << "halfway is still more blue than red: the blues are the low half";
+}
+
+TEST(RenderTransferFunction, TheMapCountNamesEveryMapAndADepthRangeAcceptsTheNewOne) {
+    EXPECT_EQ(spade::render::kColourMapCount, 4u);
+    EXPECT_EQ(static_cast<uint32_t>(ColourMapId::blue_magenta), 3u) << "after viridis, inferno, cool_warm: the GL table's rows are the ids";
+    spade::render::DepthRange range;
+    range.near_m = 0.0f;
+    range.far_m = 1.0f;
+    range.colours = ColourMapId::blue_magenta;
+    EXPECT_TRUE(spade::render::validate_depth_range(range).has_value());
+    range.colours = static_cast<ColourMapId>(4u);
+    EXPECT_FALSE(spade::render::validate_depth_range(range).has_value()) << "a fifth id is still refused";
+}
+

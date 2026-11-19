@@ -4,10 +4,11 @@
 // part_import/step.hpp -- the STEP route's pieces (L88, step 4; design note sections 4 and 5): where the converter is, how it is run, what
 // it answers. The converter is python running tools/step_convert/step_convert.py (OpenCASCADE is never linked or shipped); its modes here:
 //   --probe                                   {"ocp":bool,"python","occt","wheel","reason"}
-//   --inspect IN                              {"unit","occt","wheel","solids":[{"name","volume","bbox_min","bbox_max"}]}  (file unit)
+//   --inspect IN                              {"unit","occt","wheel","solids":[{"name","volume","bbox_min","bbox_max","colour","colours"}]}  (file unit)
 //   --emit-3mf OUT --deflection D --angle A [--solid NAME]...
 //                                             a 3MF at OUT; {"unit","occt","wheel","cross_check":[{"name","brep_volume",
-//                                             "mesh_volume","difference"}],"flagged":[names]}; exit 0, or 5 when flagged (3MF written)
+//                                             "mesh_volume","difference"}],"colours":[{"name","colour","colours"}],"flagged":[names]}; exit 0, or
+//                                             5 when flagged (3MF written)
 // Its exit codes are step_convert.py's own: 0 done, 1 io, 2 usage, 3 OCP missing or the STEP unreadable (named), 4 a solid refused, 5 flagged.
 // ---------------------------------------------------------------------------
 
@@ -22,6 +23,7 @@
 #include "process.hpp"
 #include "report.hpp"
 #include "run.hpp"
+#include "world/mesh_import.hpp"
 
 namespace spade::partimport {
 
@@ -64,6 +66,7 @@ struct StepSolid {
     std::string name;
     double volume_m3 = 0.0;
     glm::dvec3 lo{0}, hi{0};  // metres
+    std::optional<SurfaceColour> colour;  // the STEP's colour for the solid (the converter's `colour` and `colours`)
 };
 struct StepInspect {
     std::string unit, occt, wheel;
@@ -77,9 +80,14 @@ struct CrossCheck {
     double brep_volume = 0.0, mesh_volume = 0.0, difference = 0.0;
     bool flagged = false;
 };
+struct ObjectColour {
+    std::string name;
+    std::optional<SurfaceColour> colour;
+};
 struct EmitReport {
     std::string unit, occt, wheel;
     std::vector<CrossCheck> checks;
+    std::vector<ObjectColour> colours;  // by name, as the checks are
     std::vector<std::string> skipped;  // parts with no solid, left out by the converter
 };
 [[nodiscard]] Expected<EmitReport> parse_emit(const std::string& json_text);

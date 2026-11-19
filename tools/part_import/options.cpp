@@ -89,8 +89,9 @@ const char* usage_text() {
            "  STEP only: --deflection LEN (a length with a unit, no default), --angle RAD (default 0.5), --deep (inspect: tessellate\n"
            "             and run the gate), --step-python PATH, --step-convert PATH\n"
            "\n"
-           "Standard output is JSON lines: stage events, then one result line last. Exit codes: 0 done, 1 io or internal, 2 usage,\n"
-           "3 unavailable, 4 refused (not a good solid), 5 cancelled, 6 written but flagged.\n";
+           "Standard output is JSON lines: stage events, then one result line last (only --help prints plain text there, and exit 0).\n"
+           "A usage error prints this text on standard error with its result line, exit 2. Exit codes: 0 done, 1 io or internal,\n"
+           "2 usage, 3 unavailable, 4 refused (not a good solid), 5 cancelled, 6 written but flagged.\n";
 }
 
 }  // namespace spade::partimport

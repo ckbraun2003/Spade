@@ -34,6 +34,7 @@ struct Out {
     std::vector<json> lines;
     json result;
     std::string out, err;
+    std::string text;  // lines of out that are not JSON (only --help has any), when the caller said they may be
     [[nodiscard]] bool ok() const { return result.value("ok", false); }
     [[nodiscard]] std::string code() const { return result.value("code", std::string("?")); }
 };
@@ -51,7 +52,7 @@ struct Rig {
         };
         env.exe_dir = tmp.path() / "exe";
         env.cancelled = [this] { return cancel; };
-        env.token = "t1";
+        env.token = test::unique_token();
     }
     [[nodiscard]] fs::path store() const { return tmp.path() / "store"; }
     [[nodiscard]] fs::path put(const std::string& name, std::string_view bytes) const {
@@ -59,7 +60,7 @@ struct Rig {
         write_file(p, bytes);
         return p;
     }
-    Out run(std::vector<std::string> args) {
+    Out run(std::vector<std::string> args, bool text_ok = false) {
         std::ostringstream out, err;
         Out r;
         r.exit = run_part_import(args, env, out, err);
@@ -68,6 +69,10 @@ struct Rig {
         std::istringstream in(r.out);
         for (std::string l; std::getline(in, l);) {
             json j = json::parse(l, nullptr, false);
+            if (j.is_discarded() && text_ok) {
+                r.text += l + "\n";
+                continue;
+            }
             EXPECT_FALSE(j.is_discarded()) << "not JSON: " << l;
             r.lines.push_back(j);
         }
@@ -95,6 +100,13 @@ void expect_json_lines_discipline(const Out& r) {
 
 // ---- usage ---------------------------------------------------------------------------------------------------------------------
 
+TEST(PartImportRun, TwoRigsNeverShareATokenSoNeverAWorkFolder) {
+    // env.token names the tool's work folder in the temp folder: a literal would be one folder for every process running these tests
+    const Rig a, b;
+    EXPECT_NE(a.env.token, b.env.token);
+    EXPECT_EQ(a.env.token.rfind(std::to_string(test::process_id()) + "_", 0), 0u) << a.env.token;
+}
+
 TEST(PartImportRun, ACommandLineThatIsNoModeIsAUsageProblemWithOnlyTheResultLineOnStandardOut) {
     Rig rig;
     const std::vector<std::vector<std::string>> bad = {A({}),
@@ -116,16 +128,21 @@ TEST(PartImportRun, ACommandLineThatIsNoModeIsAUsageProblemWithOnlyTheResultLine
     }
 }
 
-TEST(PartImportRun, HelpPrintsTheUsageOnStandardErrorAndExitsZero) {
+// --help is a request, not a usage problem: plain usage text on standard output and exit 0, with no JSON lines at all (the one exception to
+// "standard output is JSON lines"; a machine never calls --help) and nothing on standard error, so a shell that wraps stderr as an error
+// record sees none. A usage ERROR keeps standard error, its JSON result line and exit 2.
+TEST(PartImportRun, HelpPrintsPlainUsageOnStandardOutputWithNoJsonAndExitsZero) {
     Rig rig;
-    const Out r = rig.run(A({"--help"}));
-    EXPECT_EQ(r.exit, 0);
-    EXPECT_TRUE(r.ok());
-    EXPECT_EQ(r.result.value("mode", std::string()), "help");
-    EXPECT_NE(r.err.find("--inspect"), std::string::npos);
-    EXPECT_NE(r.err.find("--import"), std::string::npos);
-    EXPECT_NE(r.err.find("--store"), std::string::npos);
-    EXPECT_NE(r.err.find("--axes"), std::string::npos);
+    for (const char* flag : {"--help", "-h"}) {
+        const Out r = rig.run(A({flag}), true);
+        EXPECT_EQ(r.exit, 0) << flag;
+        EXPECT_TRUE(r.err.empty()) << flag << ": " << r.err;
+        EXPECT_TRUE(r.lines.empty()) << flag << " printed a JSON line: " << r.out;
+        for (const char* word : {"usage: spade_part_import", "--inspect", "--import", "--store", "--axes", "--object"}) {
+            EXPECT_NE(r.text.find(word), std::string::npos) << flag << " lacks " << word << " on standard output";
+        }
+        EXPECT_EQ(r.text.find('{'), std::string::npos) << flag << ": no JSON in the help";
+    }
 }
 
 TEST(PartImportRun, EveryUsageCodeHasItsExitCodeAndNothingIsWritten) {
@@ -641,6 +658,79 @@ TEST(PartImportImport, ALeftoverTemporaryFromAKilledRunIsRemovedAtTheNextImport)
     const Out r = rig.run(A({"--import", rig.put("cube.glb", bytes).string(), "--store", rig.store().string()}));
     ASSERT_EQ(r.exit, 0) << r.out;
     EXPECT_FALSE(fs::exists(sha_dir / ".tmp-9999-oldkey"));
+}
+
+// ---- colour --------------------------------------------------------------------------------------------------------------------
+
+// A 3MF of two objects: the first painted with the second basematerial (#FF8000), the second with none.
+[[nodiscard]] std::string painted_two_objects() {
+    std::string arm = cube_object(1, "arm", 10.0);
+    const std::string open = "\"><mesh>";
+    arm.replace(arm.find(open), open.size(), "\" pid=\"10\" pindex=\"1\"><mesh>");
+    const std::string bases = R"(<basematerials id="10"><base name="a" displaycolor="#112233"/><base name="b" displaycolor="#FF8000"/></basematerials>)";
+    return three_mf({arm, cube_object(2, "hub", 20.0, 40.0)}, R"(unit="millimeter")", bases);
+}
+
+TEST(PartImportColour, InspectAndImportGiveEachObjectItsColourOrNullAndAHitReturnsThemBitForBit) {
+    Rig rig;
+    const fs::path in = rig.put("two.3mf", painted_two_objects());
+    const auto colours_of = [](const json& objects) {
+        std::vector<std::string> v;
+        for (const json& o : objects) v.push_back(o.at("name").get<std::string>() + " " + o.at("colour").dump() + " " + o.at("colours").dump());
+        return v;
+    };
+    const std::vector<std::string> expected = {"arm [255,128,0] 1", "hub null 0"};
+    Out r = rig.run(A({"--inspect", in.string()}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_EQ(colours_of(r.result.at("objects")), expected);
+    const Out first = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(first.exit, 0) << first.out;
+    EXPECT_FALSE(first.result.value("cached", true));
+    EXPECT_EQ(colours_of(first.result.at("objects")), expected);
+    const auto stored = json::parse(read_file(fs::path(first.result.value("entry", std::string())) / "import.json"));
+    EXPECT_EQ(stored.at("objects")[0].at("colour"), (json::array({255, 128, 0})));
+    EXPECT_TRUE(stored.at("objects")[1].at("colour").is_null());
+    const Out hit = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(hit.exit, 0) << hit.out;
+    EXPECT_TRUE(hit.result.value("cached", false));
+    EXPECT_EQ(hit.result.at("objects").dump(), first.result.at("objects").dump()) << "a hit returns the colours bit for bit";
+}
+
+TEST(PartImportColour, AFileWithNoColourSaysNullForEveryObjectInBothModes) {
+    Rig rig;
+    const fs::path in = rig.put("cube.stl", cube_stl(1.0f));
+    const Out r = rig.run(A({"--inspect", in.string(), "--unit", "m"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    ASSERT_EQ(r.result.at("objects").size(), 1u);
+    ASSERT_TRUE(r.result.at("objects")[0].contains("colour")) << r.result.dump();
+    EXPECT_TRUE(r.result.at("objects")[0].at("colour").is_null());
+    EXPECT_EQ(r.result.at("objects")[0].at("colours"), 0);
+    const Out imported = rig.run(A({"--import", in.string(), "--unit", "m", "--store", rig.store().string()}));
+    ASSERT_EQ(imported.exit, 0) << imported.out;
+    EXPECT_TRUE(imported.result.at("objects")[0].at("colour").is_null());
+}
+
+TEST(PartImportColour, AnEntryOfTheOlderRevisionIsReimportedAtTheSameKeyWithTheSameStoreRefs) {
+    Rig rig;
+    const fs::path in = rig.put("two.3mf", painted_two_objects());
+    const Out first = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(first.exit, 0) << first.out;
+    const fs::path file = fs::path(first.result.value("entry", std::string())) / "import.json";
+    json j = json::parse(read_file(file));
+    j["import_version"] = 1;
+    for (auto& o : j["objects"]) {
+        o.erase("colour");
+        o.erase("colours");
+    }
+    write_file(file, j.dump());
+    const Out again = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(again.exit, 0) << again.out;
+    EXPECT_FALSE(again.result.value("cached", true)) << "an entry with no colour is not a hit";
+    EXPECT_EQ(again.result.value("key", std::string()), first.result.value("key", std::string()));
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(again.result.at("objects")[i].at("store_ref"), first.result.at("objects")[i].at("store_ref"));
+        EXPECT_EQ(again.result.at("objects")[i].at("colour"), first.result.at("objects")[i].at("colour"));
+    }
 }
 
 }  // namespace

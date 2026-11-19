@@ -22,6 +22,21 @@ function ConvertTo-RecordCell([string] $Text) {
     ($Text -replace '\|', '\|' -replace '[\r\n]+', ' ').Trim()
 }
 
+function ConvertTo-PublicRecord([string] $Text, [hashtable] $Folders = $null) {
+    # The copy of a record that goes into the public repo: the user's profile, local-app-data and roaming-app-data folders become
+    # %USERPROFILE%, %LOCALAPPDATA% and %APPDATA%, so a home folder (C:\Users\<name>) is never printed. The record beside the setup keeps the real paths.
+    # $Folders maps those three names to folders; by default the running user's. Matches either slash, a doubled backslash (JSON text in a journal note),
+    # any case, and only a whole folder name (C:\Users\Ada does not match C:\Users\Adam). The deepest folder is replaced first.
+    if ($null -eq $Folders) { $Folders = @{ USERPROFILE = $env:USERPROFILE; LOCALAPPDATA = $env:LOCALAPPDATA; APPDATA = $env:APPDATA } }
+    $pairs = @($Folders.GetEnumerator() | Where-Object { $_.Value } | Sort-Object { $_.Value.Length } -Descending)
+    foreach ($pair in $pairs) {
+        $parts = @($pair.Value.TrimEnd('\', '/') -split '[\\/]+' | Where-Object { $_ })
+        $pattern = ($parts | ForEach-Object { [regex]::Escape($_) }) -join '(?:\\\\|\\|/)'
+        $Text = [regex]::Replace($Text, "(?i)$pattern(?![\w~-])", ('%' + $pair.Key + '%').Replace('$', '$$'))
+    }
+    $Text
+}
+
 function Get-InstallTestVerdict($R) {
     $failed = @($R.Checks | Where-Object { -not $_.Ok })
     if ($failed.Count -gt 0) { return 'FAIL' }

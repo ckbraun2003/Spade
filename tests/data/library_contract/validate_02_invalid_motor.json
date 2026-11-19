@@ -1,0 +1,45 @@
+{
+ "description": "a document that fails is not a refusal",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "validate",
+ "request": {
+  "as": "part.motor",
+  "text": "part_version: 1\nmotor:\n  kv: -1\n  mass: 0.03\n"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": true,
+  "op": "validate",
+  "result": {
+   "issues": [
+    {
+     "code": "invalid_argument",
+     "column": 3,
+     "id": null,
+     "index": 0,
+     "kind": null,
+     "line": 3,
+     "message": "missing required key 'resistance' in motor (line 3, column 3)",
+     "path": null,
+     "severity": "error"
+    }
+   ],
+   "valid": false
+  },
+  "warnings": []
+ }
+}

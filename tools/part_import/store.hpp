@@ -17,6 +17,7 @@
 
 #include "transform.hpp"
 #include "world/mesh_file.hpp"
+#include "world/mesh_import.hpp"
 
 namespace spade::partimport {
 
@@ -46,12 +47,18 @@ struct KeyInputs {
 // The names made safe, then unique ignoring ASCII case: a later duplicate gets "-2", "-3", ... in order.
 [[nodiscard]] std::vector<std::string> unique_file_names(const std::vector<std::string>& names);
 
+// An object's colour as import.json and the result lines write it: "[r,g,b]" (sRGB 0..255), or "null" when the file gives none; and the
+// count beside it (0 when none).
+[[nodiscard]] std::string colour_json(const std::optional<SurfaceColour>& colour);
+[[nodiscard]] inline std::uint32_t colour_count(const std::optional<SurfaceColour>& colour) { return colour ? colour->colours : 0u; }
+
 // One object to store: its sidecar's mesh and provenance.
 struct StoredObject {
     std::string name;
     std::shared_ptr<const TriangleMesh> mesh;
     MeshProvenance provenance;
     std::string cross_check_json{};  // optional: a JSON object kept in import.json (see SidecarRecord)
+    std::optional<SurfaceColour> colour{};  // the colour the source file gives the object, kept beside the sidecar in import.json (never in it)
 };
 struct SidecarRecord {
     std::string object;
@@ -65,9 +72,12 @@ struct SidecarRecord {
     // The converter's cross-check of this object as one JSON object (STEP imports), or empty: kept so a cache hit reports it, and a
     // flagged object is flagged every time, not only on the run that made it.
     std::string cross_check_json{};
+    std::optional<SurfaceColour> colour{};  // as StoredObject::colour; read back by find_entry
     bool operator==(const SidecarRecord&) const = default;
 };
-// An entry: the record import.json holds.
+// An entry: the record import.json holds. import_version is 2: rev 2 added each object's `colour` and `colours`. An entry of rev 1 has no
+// colour fields, so it is not a hit (find_entry), and the import that finds none writes it again at the same key: the sidecars are the
+// same bytes, so their store_refs do not move.
 struct EntryRecord {
     std::string sha256;       // of the source file
     std::string key;

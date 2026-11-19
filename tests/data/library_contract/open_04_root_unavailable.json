@@ -1,0 +1,41 @@
+{
+ "description": "a root whose folder is absent",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/missing"
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "open_failed",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "root_unavailable",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "root 'default': the folder or its library.yaml is absent or unreadable",
+     "path": "$FIXTURES/roots/missing",
+     "root": "default",
+     "severity": "error"
+    }
+   ],
+   "message": "1 problem(s) opening the libraries; the first: root 'default': the folder or its library.yaml is absent or unreadable",
+   "path": null,
+   "root": null,
+   "severity": "error"
+  }
+ }
+}

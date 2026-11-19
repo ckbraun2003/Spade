@@ -1,0 +1,41 @@
+{
+ "description": "kat depends on default, which was not opened",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "open_failed",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "dependency_missing",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "root 'kat' depends on 'default', which was not opened",
+     "path": "$FIXTURES/roots/kat",
+     "root": "kat",
+     "severity": "error"
+    }
+   ],
+   "message": "1 problem(s) opening the libraries; the first: root 'kat' depends on 'default', which was not opened",
+   "path": null,
+   "root": null,
+   "severity": "error"
+  }
+ }
+}

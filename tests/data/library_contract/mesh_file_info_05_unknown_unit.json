@@ -1,0 +1,38 @@
+{
+ "description": "a unit that is none of m, mm, cm, um, in, ft",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "mesh_file_info",
+ "request": {
+  "path": "$FIXTURES/meshes/none.stl",
+  "unit": "furlong"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "mesh_file_info",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "unit",
+   "issues": []
+  }
+ }
+}

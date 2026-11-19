@@ -35,7 +35,12 @@
 #
 #   scripts/gcc-check.sh --compile engine/render/flow_render.cpp
 #
-# Exit: 0 every file passed, 1 a file failed, 2 usage, or no usable volume.
+# The Docker daemon: Kat quits Docker Desktop whenever no Spade Linux work is running or
+# queued. If `docker info` fails, this starts Docker Desktop (scripts/docker-up.ps1) and
+# waits up to 180 s, one line per poll: a cold start adds about a minute (an estimate, not
+# measured yet) to the first check. It never stops Docker; Kat does.
+#
+# Exit: 0 every file passed, 1 a file failed, 2 usage, no usable volume, or no Docker.
 set -u
 prefix=spade-docker-leg
 here=$(cd "$(dirname "$0")" && pwd -W)
@@ -62,6 +67,13 @@ if [ -n "${GCC_CHECK_BUILD:-}" ] && [ ! -d "$build" ]; then
     exit 2
 fi
 [ -d "$build" ] || build=
+
+# The daemon may be down (Kat quits Docker Desktop when no Spade Linux work is running or queued): start it and wait.
+if ! docker info >/dev/null 2>&1; then
+    echo "gcc-check: the Docker daemon is down; starting Docker Desktop (a cold start adds about a minute, estimated)" >&2
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$here/docker-up.ps1" >&2 \
+        || { echo "gcc-check: the Docker daemon is not running and Docker Desktop did not start it" >&2; exit 2; }
+fi
 
 image=$(docker images -q "$prefix" | head -n 1)
 if [ -z "$image" ]; then

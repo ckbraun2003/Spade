@@ -16,6 +16,7 @@ import zipfile
 
 SOLIDS = {"arm": (10.0, 0.0), "hub": (20.0, 40.0)}  # name: (edge, x offset), millimetres
 MODE = os.environ.get("FAKE_STEP_MODE", "")
+COLOURS = {"arm": ([10, 20, 30], 2), "hub": (None, 0)}  # name: (colour, how many distinct); the real converter's fields
 SKIPPED = [{"name": "cover", "code": "no_solid"}] if MODE == "sheet" else []  # a surface-only part the real converter leaves out
 
 
@@ -90,7 +91,8 @@ def main(argv):
     if "--inspect" in args:
         say({"unit": "mm", "occt": "7.8.1-fake", "wheel": "fake-1", "skipped": SKIPPED,
              "solids": [{"name": n, "volume": SOLIDS[n][0] ** 3, "bbox_min": [SOLIDS[n][1], 0.0, 0.0],
-                         "bbox_max": [SOLIDS[n][1] + SOLIDS[n][0], SOLIDS[n][0], SOLIDS[n][0]]} for n in names]})
+                         "bbox_max": [SOLIDS[n][1] + SOLIDS[n][0], SOLIDS[n][0], SOLIDS[n][0]],
+                         "colour": COLOURS[n][0], "colours": COLOURS[n][1]} for n in names]})
         return 0
     if "--emit-3mf" in args:
         out = args[args.index("--emit-3mf") + 1]
@@ -102,6 +104,7 @@ def main(argv):
              "cross_check": [{"name": n, "brep_volume": SOLIDS[n][0] ** 3,
                               "mesh_volume": SOLIDS[n][0] ** 3 * (0.9 if n in flagged else 1.0),
                               "difference": 0.1 if n in flagged else 0.0} for n in names],
+             "colours": [{"name": n, "colour": COLOURS[n][0], "colours": COLOURS[n][1]} for n in names],
              "flagged": flagged, "skipped": SKIPPED})
         return 5 if flagged else 0
     sys.stderr.write("step_convert: no mode\n")

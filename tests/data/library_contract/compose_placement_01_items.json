@@ -1,0 +1,249 @@
+{
+ "description": "a yawed slot, an out-of-range pitch, and bad items answered one by one in request order",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "compose_placement",
+ "request": {
+  "items": [
+   {
+    "key": "motor_fl",
+    "parent": {
+     "pos": [
+      0,
+      0,
+      0
+     ],
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    "install_point": {
+     "pos": [
+      0.09,
+      0.09,
+      0
+     ],
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    "adjust": {
+     "pos": [
+      0,
+      0,
+      0.002
+     ],
+     "yaw_deg": 180
+    }
+   },
+   {
+    "key": "cam",
+    "parent": null,
+    "install_point": {
+     "pos": [
+      0,
+      0,
+      0
+     ],
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    "adjust": {
+     "pitch_deg": 70
+    },
+    "adjust_range": {
+     "pos_min": [
+      0,
+      0,
+      0
+     ],
+     "pos_max": [
+      0,
+      0,
+      0.01
+     ],
+     "yaw_deg": [
+      -5,
+      5
+     ],
+     "pitch_deg": [
+      -10,
+      60
+     ],
+     "roll_deg": [
+      0,
+      0
+     ]
+    }
+   },
+   {
+    "key": "bad_quat",
+    "install_point": {
+     "pos": [
+      0,
+      0,
+      0
+     ],
+     "quat": [
+      2,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   {
+    "key": "bad_pos",
+    "install_point": {
+     "pos": "x",
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    }
+   },
+   {
+    "key": "unknown_key",
+    "install_point": {
+     "pos": [
+      0,
+      0,
+      0
+     ],
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    },
+    "color": "red"
+   },
+   {
+    "key": "no_install_point"
+   }
+  ]
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compose_placement",
+  "ok": true,
+  "result": {
+   "items": [
+    {
+     "key": "motor_fl",
+     "pose": {
+      "pos": [
+       0.09,
+       0.09,
+       0.002
+      ],
+      "quat": [
+       0,
+       0,
+       0,
+       1
+      ]
+     },
+     "refusal": null
+    },
+    {
+     "key": "cam",
+     "pose": null,
+     "refusal": {
+      "code": "adjust_out_of_range",
+      "severity": "error",
+      "message": "",
+      "root": null,
+      "path": null,
+      "id": null,
+      "field": "adjust.pitch_deg",
+      "issues": []
+     }
+    },
+    {
+     "key": "bad_quat",
+     "pose": null,
+     "refusal": {
+      "code": "invalid_request",
+      "severity": "error",
+      "message": "",
+      "root": null,
+      "path": null,
+      "id": null,
+      "field": "install_point.quat",
+      "issues": []
+     }
+    },
+    {
+     "key": "bad_pos",
+     "pose": null,
+     "refusal": {
+      "code": "invalid_request",
+      "severity": "error",
+      "message": "",
+      "root": null,
+      "path": null,
+      "id": null,
+      "field": "install_point.pos",
+      "issues": []
+     }
+    },
+    {
+     "key": "unknown_key",
+     "pose": null,
+     "refusal": {
+      "code": "invalid_request",
+      "severity": "error",
+      "message": "",
+      "root": null,
+      "path": null,
+      "id": null,
+      "field": "color",
+      "issues": []
+     }
+    },
+    {
+     "key": "no_install_point",
+     "pose": null,
+     "refusal": {
+      "code": "invalid_request",
+      "severity": "error",
+      "message": "",
+      "root": null,
+      "path": null,
+      "id": null,
+      "field": "install_point",
+      "issues": []
+     }
+    }
+   ]
+  },
+  "warnings": []
+ }
+}

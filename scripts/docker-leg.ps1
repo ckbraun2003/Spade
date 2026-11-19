@@ -36,6 +36,11 @@ run (leg.log, build.log, build-errors.txt, ctest.log, ctest-junit.xml, tests.txt
 agreement.txt, summary.txt). Exit code: 0 only when every docker call answered,
 the leg's container exited 0 and summary.txt opens "docker leg: PASS"; otherwise
 non-zero, with the reason on the last line ("docker-leg: exit N, FAIL: ...").
+
+The Docker daemon: Kat quits Docker Desktop whenever no Spade Linux work is running
+or queued, so every mode first runs scripts\docker-up.ps1, which starts Docker Desktop
+if `docker info` fails and waits up to 180 s for the daemon, one line per poll. A cold
+start takes about a minute (an estimate, not measured yet), added to the run. The leg never stops Docker; Kat does.
 #>
 param(
     [string] $Commit = 'HEAD',
@@ -202,6 +207,10 @@ function Resolve-Commit {
     Invoke-Checked "git rev-parse $Commit"
     $sha
 }
+
+# ---- the daemon: started if it is down (scripts\docker-up.ps1), before any docker call ----
+& (Join-Path $PSScriptRoot 'docker-up.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'the Docker daemon is not running and Docker Desktop did not start it (the docker-up lines above say why); start Docker Desktop, then run again' }
 
 # ---- prune: idle leg volumes beyond the newest $Keep ---------------------------
 if ($Prune) {

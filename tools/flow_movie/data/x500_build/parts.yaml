@@ -1,18 +1,24 @@
-# The X500 build for the website clips: where each part sits on the frame. Written by hand from measurements; the library entries (L88l) will be pinned equal to this table by a test.
+# The X500 build for the website clips: where each part sits on the Holybro X500 V2 kit. Written by hand from measurements; the library entries (L88l) will be pinned equal to this table by a test.
 #
-# FRAME. One frame for every position: the PX4 x500 body mesh as the part store holds it (x500-body.gltf, drawing-only). Y up, +X forward, +Z right (starboard), origin = the vehicle's
-# centre of mass, metres, orientation quaternions [w, x, y, z]. The library's design frame is Z up, +X forward, +Y left; an entry converts a table point (X, Y, Z) to (X, -Z, Y).
-# Rotors: the vehicle's rotor order and spins are Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml): rotor 0 front-right (spin 1), 1 front-left (-1), 2 rear-left (1),
-# 3 rear-right (-1). spin +1 is the engine's spin_dir: counter-clockwise seen from above (vehicles/rotor.hpp, consumers.md L7a), so a +1 rotor takes the *-ccw file, whose blades lift turning
-# counter-clockwise (Rendering measured the blade pitch), and a -1 rotor the *-cw file. Each rotor mesh is modelled at its own origin, hub on its y axis, so the pose is the hub.
+# FRAME. One frame for every position (the design frame): the kit's own CAD file as the part store holds it (x500v2-frame.step, store entry d2a28d276fe74896, 65 objects) turned 180 degrees about its
+# vertical axis. Y up, +X forward, +Z right (starboard), metres, orientation quaternions [w, x, y, z]; the origin is the kit file's origin: the frame's centre on the bottom plate's lower face (y 0), NOT the centre
+# of mass. The centre of mass is the one value a drawing shifts by (below). The kit file is millimetres with forward at its -X (the depth-camera bracket and the optical-flow cover are at -X, the GPS stand at +X)
+# and the stored meshes are metres in the file's axes, so every kit object takes the pose [0, 0, 0] with orientation [0, 0, 1, 0] and (x, y, z)_table = (-x, y, -z)_file. The library's design frame is Z up, +X forward,
+# +Y left; an entry converts a table point (X, Y, Z) to (X, -Z, Y).
+# Forward is the file's -X, graded derived (L88s): the kit's docs say nothing about front or rear.
+# Rotors: the vehicle's rotor order and spins are Physics' x500 model (tools/flow_movie/data/x500/x500.model.yaml): rotor 0 front-right (spin 1), 1 front-left (-1), 2 rear-left (1), 3 rear-right (-1).
+# spin +1 is the engine's spin_dir: counter-clockwise seen from above (vehicles/rotor.hpp, consumers.md L7a), so a +1 rotor takes the *-ccw file, whose blades lift turning counter-clockwise (Rendering measured the
+# blade pitch), and a -1 rotor the *-cw file. Each rotor glTF is modelled at its own origin, hub on its y axis, so the pose is the hub; its 59 mm bell is hidden (the rotor entry's own hide_materials) because the kit's 28.7 mm motor is drawn.
+# The kit's motor axes are at +-0.17689 m on each axis (500.3 mm motor to motor on the diagonal), measured (Interface, the re-origined motor, store entry 37b3bd113defaf7f: a least-squares circle fit through the shaft's vertices and the can wall, agreeing to 0.03 mm); the earlier +-0.1774 was the bounding-box centre of the whole motor, which an off-centre lower feature pulls 0.5 mm outward. The rotor height is the seat measured on the kit's motor (Interface, the re-origined motor): the bell boss top is +0.032 above the flange (the top of the motor mount plate, y 0.022), y 0.054, and the rotor glTF's hub bottom face sits on it. On the glTF (measured by Core on x500-rotor-front-ccw.gltf: the hub's lowest face is -0.0160 below the glTF origin, the blade mid-plane at 0.25 to 0.35 R is -0.00926 below it) the origin is then at 0.054 + 0.016 = 0.070 m (the drawing origin, every rotor's pose y), and the DISC, the actuator plane Physics takes, is at 0.070 - 0.00926 = 0.0607 m. The library's rotor part carries both as install points (`seat`, `disc`); nothing of this is stored in the drone. The shaft collar is +0.036 and the shaft tip +0.0415 above the flange.
 #
-# HOW IT WAS MEASURED. Surfaces read off x500-body.gltf (horizontal faces and component boxes), the parts' own bounding boxes read from the stored .spmesh files (the part frame),
-# the pose chosen so the part's box sits on the named surface. pose_grade: measured = placed on a surface read from the frame mesh, assumed = a layout choice the frame leaves open.
-#   top plate 148 x 148 x 2 mm, y 0.023..0.025;  damper deck 66 x 66 mm, y 0.0328..0.0343 on four rubber dampers (kept: the 6C sits on them);  front plate 67.5 x 81 mm, x 0.0918..0.1593,
-#   y -0.0004;  battery tray 100 x 40 x 1 mm, y -0.0466..-0.0456 under the lower plate;  built-in Pixhawk-4-class block (material drone/x500-body/autopilot) hidden when the 6C is drawn.
-# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The sum is 1.64 kg; it is nobody's take-off weight, and it is not tuned to KAT's Gazebo 2.0643 kg.
-
-hide_materials: [drone/x500-body/autopilot]
+# HOW IT WAS MEASURED. Every kit object is read from the part store (record docs/design/interface/records/2026-11-18-x500-parts-sources.md): the 61 frame objects and the 4 motors, each at its own place in the
+# file. The other parts' own bounding boxes are read from their stored .spmesh files (the part frame), and each pose puts the part's box on a surface read from the kit file. pose_grade: measured = placed on a surface read
+# from the kit (the heading of a part whose case does not say which end is the front is assumed), derived = from the kit file's positions plus a stated rule, assumed = a layout choice the kit leaves open.
+#   top plate 143.7 x 143.7 x 2 mm, top face y 0.032;  battery tray 100 x 50.3 x 2 mm at y -0.0455 with a 2 mm pad under it (underside y -0.0485);  payload platform 65 x 93 x 2 mm, top face y -0.026, whose centre
+#   is the GPS stand's 29.7 mm base;  GPS stand tray top y 0.107 at x -0.099 (the rear), on a 108 mm rod;  the pylons stand at x +-0.035 on the tray, the rail tubes at z +-0.030, y -0.013.
+# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The sum is 1.633 kg: it is nobody's take-off weight, and it is not tuned to KAT's Gazebo 2.0643 kg. The mast of the old table is gone
+# (the kit's own GPS stand is in the frame, whose 0.610 kg is the bare kit); the motors and the propellers are two entries each (0.055 + 0.013 kg, the old 0.068 kg rotor entry split).
+# CENTRE OF MASS in this frame: [-0.00448, -0.02581, 0.00056] m (the mass-weighted centre of the entries' boxes and, for the frame, the volume-weighted centre of its 61 objects, equal density: derived). A drawing shifts by it.
 
 parts:
   - name: x500_frame
@@ -20,10 +26,121 @@ parts:
     mass_kg: 0.610
     mass_grade: published
     mass_source: Holybro X500 V2 kit page https://holybro.com/products/px4-development-kit-x500-v2 (the bare frame kit, no motors, ESCs or electronics)
-    pose_grade: measured
-    pose: {position: [0, 0, 0], orientation: [1, 0, 0, 0]}
+    pose_grade: derived
+    # the kit file as stored, turned to the design frame; the plates, arm tubes, motor mounts, arm clamps, motor base plates, landing gear, the GPS stand, and the battery tray with the payload platform and rails
+    # (materials are assumed from the parts' names and the kit's look: the file carries one steel colour for all)
+    pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
+    material: carbon
     objects:
-      - {store_ref: {sha256: adb4814f38a4045ad8fa15b89fe4cadfd9e7a396085c931a59f9bc19b1a45403, file: x500-body.gltf}}
+      - {store_ref: {sha256: eac8e7daf518d4220be2b82c5008dd89823c04e0729ba201d52686051d60f3fc, file: BOTTOM-PLATE-X500-V5_1.spmesh}}
+      - {store_ref: {sha256: a38be181585fd248aab3e5a3d8c8846b789d4f46d91bca24aa12986eeab923c5, file: TOP-PLATE-X500-V5_1.spmesh}}
+      - {store_ref: {sha256: 0ed20d7086190f6507a69c0dfc2f047352e64358bde4ee0537771e1a0afd914d, file: HMX5V-GUAN-DINGWEI_1_1.spmesh}}
+      - {store_ref: {sha256: 86920dafb2d81f59307d3b2c32b735eff5e93229a8520348fb050357077b83ca, file: HMX5V-GUAN-DINGWEI_1_2.spmesh}}
+      - {store_ref: {sha256: eb6be5c911fb9fad56ad00f094c69b8743945d17efd66af0b79dc3bacb4fb500, file: HMX5V-GUAN-DINGWEI_1_3.spmesh}}
+      - {store_ref: {sha256: b9e52986d35f42220a443b1b8bf536f7cb8e6bf792645d1cc03f52be62cbe1b6, file: HMX5V-GUAN-DINGWEI_1_4.spmesh}}
+      - {store_ref: {sha256: a4b1bcf4c19fea89b1c38c6d130f770eedf5d942742ffda29aa72e7596ddbccd, file: HMX5V-ZUO-DJ-MUJU_1_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 7675bca54b0676d7b86249f34fa8e6a43f324b44cec0bc34b494aa4575bb2995, file: HMX5V-ZUO-DJ-MUJU_1_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: a7a5c88bd16842655c645b4a98b8bf0185f23e77b95b83b60899f4a44d166eb7, file: HMX5V-ZUO-DJ-MUJU_1_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 1fbc34c1710e3aa6aa7ff2e232f2e65178890f2ee11c84f0d60cd25ed02c4e79, file: HMX5V-ZUO-DJ-MUJU_1_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 47ed664bc42f065fa8fa5d46c366161166925fafa9c4d2b152a177c54624f677, file: HMX5V-JIBI-JIA-MUJU_1_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 8249333ef3d6418c1a39dde4714c63ce7ddb92eac4186636f004ea920ccd34c1, file: HMX5V-JIBI-JIA-MUJU_1_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 3ace70925075cea939f0f9742cd05f738d5cdab53b7a6cbba5843aa3ad41a69d, file: HMX5V-JIBI-JIA-MUJU_1_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 4860a0062d4e10e73d942598fae3bae25dcc2b520ec7eadff3206d43d0e6644d, file: HMX5V-JIBI-JIA-MUJU_1_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: f939377052cf21f425b1869827daca9a0723d1b7f9b393e5321df56548601a47, file: HMX5V-JIBI-JIA-MUJU_2_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: b3604da76a0f72acb85ce159d911cd41525ba8513e0f2c5e87c0ea14a6691383, file: HMX5V-JIBI-JIA-MUJU_2_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: ed9c7e1307d53c4190c6516345067eede4c274d811c68cec707bd9ec5107914c, file: HMX5V-JIBI-JIA-MUJU_2_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 4a5ea2004adb738a0aa708bc188fc4172cb6c9782899207e376d281961d71320, file: HMX5V-JIBI-JIA-MUJU_2_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 0c32b3f93fa068561ac36586369f919d50c9ed6ace1f57618824e3a00ec40f42, file: BAN-DJ-DIAN-F2_1_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 8e06fed000b39d32e3d5c3dec898bf446d19adc2490297ba7661f7ef798bb007, file: BAN-DJ-DIAN-F2_1_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: a2c8ebc4fe8c5fc02b2a2e026418bf42a2a3953792d8466b325f7a677bfab748, file: BAN-DJ-DIAN-F2_1_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: e8f9cce30847cae35d2f7f41290617e4bb9f8eee9146e1b00ff46753cdf49d3f, file: BAN-DJ-DIAN-F2_1_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: f31aa0f05aa92207419bc6cd22a7a5928c244adcde51438143dd98a2f79c5e89, file: CARBON-FIBER-TUBE_1.spmesh}}
+      - {store_ref: {sha256: 4afe0d121aa971508e888f660d340894bdd236dfe81cd27380f5e1239a660b09, file: CARBON-FIBER-TUBE_2.spmesh}}
+      - {store_ref: {sha256: 70604a87f89d81aab54d257edaa8c59ed40e2361f245e594a8780cdd0e3e5edf, file: GUAN-CHENG_1.spmesh}}
+      - {store_ref: {sha256: 98b55533125080d937a7b90041deacac63765ac9875643feba32f8f676ac0f91, file: GUAN-CHENG_2.spmesh}}
+      - {store_ref: {sha256: 8a67e5e41f3cb203cf532e7bb38a4f66182d621c8bfa70a07cbdc675e5b5653e, file: JIA-LIANJIE_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 1f9145cc8b86814f53e7e49ae4de7abbfd25459ababeac09d0533dc6523b2ed0, file: JIA-LIANJIE_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 7c52ba5f54cb1cdaa1276de1048ec524b9cd8efc2c1a322170718fdae28da202, file: JIAO-EVA_1.spmesh}, material: rubber_black}
+      - {store_ref: {sha256: 34e2de4dc804c6fab54a7dd77ea522a19361609eb6874ca2b41b69a5e06d072e, file: JIAO-EVA_2.spmesh}, material: rubber_black}
+      - {store_ref: {sha256: c5b21680ff18eab836ff913e032bed8adbeefb4b0a9ca35b13693c696cfaaea7, file: JIAO-EVA_3.spmesh}, material: rubber_black}
+      - {store_ref: {sha256: f7530071e9bbefa3ec4d6e028769719f042ca287234e13f8168fda850b63a560, file: JIAO-EVA_4.spmesh}, material: rubber_black}
+      - {store_ref: {sha256: 5cd393eb531b13a76f833d53ec56a0df11efd4233cb0a6aa8503ba5efadefea6, file: JIAO-LIANJIE_1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 6bac83d1e98131d2443c0b8ded56300959467c3f6011093f214d5a944c53d862, file: JIAO-LIANJIE_2.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: c03b37ceaafe0be186cd1b20b69a627ab85253c95acd6eef65f0d7ff3937f94a, file: GAN-GPSV5-ZHIJIA_1.spmesh}}
+      - {store_ref: {sha256: 5ce1325881a831935684e7027d7c6a13d78d828c18e415420a670f8269dd421c, file: GPS-ZHIJIA-ZHUANJIETOU_1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 4d53360511070a266b91f202f6d017745a71228f3ccc30e8c4952633db59dbf6, file: GPS-ZHIJIA-ZUO_1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 7e3a2ed7958e935168451f0e097de55ece92187a574f9dd09200eccb2be04bff, file: GPSV5-ZHIJIA-TUOPAN_1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 78ed5c5daaf5e819de1061e886bccca08ea46e9dd6118f216cc09728fc7c1627, file: BATTERY-MOUNTING-PLAT_1.spmesh}}
+      - {store_ref: {sha256: 93a6714da957cd55297fa00b70c1acc90cd93121df98bd8f310f0b949436d6d4, file: BATTERY-PAD_1.spmesh}, material: rubber_black}
+      - {store_ref: {sha256: f17ba21e5343d25e6a5aa0b65981b7d683f531f1a5a5269be54bb0dede75b53e, file: CARBON-FIBER-TUBE300_1.spmesh}}
+      - {store_ref: {sha256: 989e961c71b5c0f1e699692a34d3ec73fb25eba18341650e63a877ed5364a528, file: CARBON-FIBER-TUBE300_2.spmesh}}
+      - {store_ref: {sha256: 37a49abff84e397a9207485a92a309c63f5c75dcbbbda231c14e52f1c5b8564a, file: PLATFORM-PLAT-X500_1.spmesh}}
+      - {store_ref: {sha256: 230bd37b05bafeceeeeb0a301ea95f58390e71ff7693bf5437e259fc283a6a3e, file: PYLONS-X500_1.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: d55a21a70f51eb268cc7a9c076f10d502e64d100372dcc1e67de2444296c49b5, file: PYLONS-X500_2.spmesh}, material: plastic_black}
+      - {store_ref: {sha256: 4e46fd4af8710cd8726c79693787f441aad9f8a9ba1a2976af41c9df3090a272, file: HUAN-GUIJIAO_1_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 71484525a3f052d4cfcef09285c8eca362e14224ce8011d34213439433328619, file: HUAN-GUIJIAO_1_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 1767ac2da34d6de027d9990dbd68f66736fdd91d67a282d7cb04ceafe63f9bf9, file: HUAN-GUIJIAO_1_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 33afed3e13534a51229d3039ab2e3e27811bc6abc5e16d60c72fc84cd484c34a, file: HUAN-GUIJIAO_1_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 7ec2188177beefa323c10d6a63ab17464b70bca4e313d68edc666321e706b8a7, file: HUAN-GUIJIAO_2_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: ae7c072270b833216d632b4bb949eae94bad1e8f3acff836b02870fc4fe6d00a, file: HUAN-GUIJIAO_2_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 666f2f2b0d55eed2f8a0c9ed915c502c53e363371319fb46912be1031529f487, file: HUAN-GUIJIAO_2_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: fe5524a2bf25a0afa519119ddad6db8c0a30aefe4f6c2c656b449a1553493d07, file: HUAN-GUIJIAO_2_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 86ba00502f8ab182cfeab0c1c8ca63a7b3842e923c66497d5ec1883439691e01, file: JIA-GUAN_1_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: b2214ccd4ce4d7ddd6c0086c9d3568309904597b6249a0249b9b03ca2ded43e7, file: JIA-GUAN_1_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 4a9cd7e0af88b0510a70cb6b038fdc625a33f1cbdfef3269d7ca23edf50924fd, file: JIA-GUAN_1_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 1f1e3076826601fa6ec3b9aac86517e1aae71d23767ee3ae349338efe480f48d, file: JIA-GUAN_1_4.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: a0dd89de70c79b402a91329f37d8cb5e024b5114cd1a461c10eb0efe1e8a08fb, file: JIA-GUAN_2_1.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: a1cab9d5522a5b7a39673fdeb2f851d25d37acc00b09308f6edc09f0870a2426, file: JIA-GUAN_2_2.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: a22affd33d8422e56de2a321688bcf89950c25b31dc704552f8014ebfd018fff, file: JIA-GUAN_2_3.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 216e7e6fb2f407610b704fce96f3956ad502abb025b2270fdcb573310a52c3d9, file: JIA-GUAN_2_4.spmesh}, material: aluminium_anodised}
+
+  - name: motor_front_right
+    kind: motor
+    mass_kg: 0.055
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
+    pose_grade: derived
+    # the kit's motor DJ-2216-KV880:1_1 (axis at x 0.17689, z 0.17689 m)
+    pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
+    material: aluminium_anodised
+    objects:
+      - {store_ref: {sha256: 8a60bec80f0635d5084f53df812e120869733745abc46e5d9a2274871d129613, file: DJ-2216-KV880_1_1.spmesh}}
+
+  - name: motor_front_left
+    kind: motor
+    mass_kg: 0.055
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
+    pose_grade: derived
+    # the kit's motor DJ-2216-KV880:1_2 (axis at x 0.17689, z -0.17689 m)
+    pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
+    material: aluminium_anodised
+    objects:
+      - {store_ref: {sha256: 3d25dc21a0df32b45dbb754c0e8a23fa20508d049b92bb64ccff5a8783e95bb2, file: DJ-2216-KV880_1_2.spmesh}}
+
+  - name: motor_rear_left
+    kind: motor
+    mass_kg: 0.055
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
+    pose_grade: derived
+    # the kit's motor DJ-2216-KV880:1_3 (axis at x -0.17689, z -0.17689 m)
+    pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
+    material: aluminium_anodised
+    objects:
+      - {store_ref: {sha256: 61998003dac2847c735a999fd46686c602ee75675126884aef7a7025d7f1a854, file: DJ-2216-KV880_1_3.spmesh}}
+
+  - name: motor_rear_right
+    kind: motor
+    mass_kg: 0.055
+    mass_grade: assumed
+    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)
+    pose_grade: derived
+    # the kit's motor DJ-2216-KV880:1_4 (axis at x -0.17689, z 0.17689 m)
+    pose: {position: [0, 0, 0], orientation: [0, 0, 1, 0]}
+    material: aluminium_anodised
+    objects:
+      - {store_ref: {sha256: 7a0ab2685bf7e58c75dc7ba9baaf2775349d7bbad43881e7da387ff26e07edf5, file: DJ-2216-KV880_1_4.spmesh}}
 
   - name: pixhawk_6c
     kind: controller
@@ -31,11 +148,11 @@ parts:
     mass_grade: published
     mass_source: "Holybro docs, Pixhawk 6C technical specification page, \"Weight (Plastic Case): 34.6g\"; model Pixhawk6C-3D-CAD.stp (Holybro docs, Pixhawk 6C download page)"
     pose_grade: measured
-    # on the damper deck, centred on it; the file's +X along the vehicle's +X (the case does not say which end is the front)
-    pose: {position: [0.0005, 0.0402, 0.0004], orientation: [1, 0, 0, 0]}
+    # on the top plate, centred, its lowest face on the plate top (y 0.032); the file's +X along the vehicle's +X (the case does not say which end is the front)
+    pose: {position: [0, 0.0379, 0], orientation: [1, 0, 0, 0]}
     material: plastic_black
     objects:
-      - {store_ref: {sha256: 6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb, file: PCB-PIXHAWK6C-F1.spmesh}, material: pcb}
+      - {store_ref: {sha256: 6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb, file: PCB-PIXHAWK6C-F1.spmesh}, material: pcb_in_shadow}
       - {store_ref: {sha256: b46e9195617796641e590131d93d13bd4f88a790693080820b352f0da3cf4756, file: MIANKE-PIXHAWK6C-LV-C1.spmesh}}
       - {store_ref: {sha256: 0b3807d1ea295a84b5293d23b74430ba3a5d3188a689dee54f554e466a260d32, file: DIKE-PIXHAWK6C-LV-C1.spmesh}}
       - {store_ref: {sha256: 278c17f49e9442bee9db096b6735dafd1febf13b4bec15ee63e3562fd7256c4e, file: IMU-PIXHAWK6C.spmesh}, material: pcb}
@@ -45,9 +162,9 @@ parts:
     mass_kg: 0.032
     mass_grade: published
     mass_source: "Holybro docs, M8N/M9N/M10 standard GPS overview page, \"Weight (V1): 32g\"; model GPS-M8N-M9N-full_asm.stp (Holybro docs, standard GPS download page)"
-    pose_grade: assumed
-    # on the mast's top, file +X forward; the shell only (the PCB and small parts are left out)
-    pose: {position: [-0.0577, 0.171, -0.0405], orientation: [1, 0, 0, 0]}
+    pose_grade: measured
+    # on the GPS stand's tray (top face y 0.107) at x -0.099, the shell centred on the 108 mm rod, file +X forward; the shell only (the PCB and small parts are left out)
+    pose: {position: [-0.099, 0.113, 0], orientation: [1, 0, 0, 0]}
     material: plastic_black
     objects:
       - {store_ref: {sha256: 22e4fe75e90d026b30469a1f9fafe72817473bd421cf3e405b12a9dd55b25d27, file: GPS-V5-SK-C1.spmesh}}
@@ -59,8 +176,9 @@ parts:
     mass_grade: retailer
     mass_source: "desertcart.sg listing 45 g; ghacks says Raspberry Pi publishes no weight; HiFiBerry lists 62 g (likely packaged)"
     pose_grade: assumed
-    # on the front plate, board flat (the file is z up: x -> +Z, y -> +X, z -> +Y), ports to starboard, the lowest solder pin on the plate
-    pose: {position: [0.0982, 0.001, -0.044], orientation: [0.5, -0.5, -0.5, -0.5]}
+    # on the battery tray's top (y -0.0445), between the pylons, board flat, its long edge across the vehicle, 19 mm overhanging each side (the payload platform's centre is the GPS stand's base,
+    # so the board does not fit there; no source places a companion on this kit); the file is z up: x -> +Z, y -> +X, z -> +Y
+    pose: {position: [-0.0274, -0.0431, -0.044], orientation: [0.5, -0.5, -0.5, -0.5]}
     material: pcb
     objects:
       - {store_ref: {sha256: 7e031388b64c748d5cfdabf83dca2d1a08bfc18cc5de7c1d3e691d9f957270d9, file: OBJ12.spmesh}}
@@ -88,8 +206,8 @@ parts:
     mass_grade: assumed
     mass_source: "Raspberry Pi publishes no mass for the Camera Module 3; 4 g is an assumed figure"
     pose_grade: assumed
-    # standing on the front plate just ahead of the Pi, lens forward (file x -> +Z, z -> -X; the lens housing is file -z), 5 mm over the plate edge
-    pose: {position: [0.1568, -0.0004, -0.0119], orientation: [0.7071068, 0, -0.7071068, 0]}
+    # standing on the top plate's front edge, lens forward (file x -> +Z, z -> -X; the lens housing is file -z), its housing's front on the plate's edge (x 0.0719)
+    pose: {position: [0.0642, 0.032, -0.0119], orientation: [0.7071068, 0, -0.7071068, 0]}
     material: pcb
     objects:
       - {store_ref: {sha256: 8bdf6c1b1316c3e742e74733e8d23f5e79d75e29ce04f7094fa9d0e339974baa, file: Dielectric.spmesh}}
@@ -106,8 +224,8 @@ parts:
     mass_grade: retailer
     mass_source: Grepow product listing, Tattu G-Tech 5200 mAh 4S (133 x 45 x 33.5 mm, 436.5 g)
     pose_grade: assumed
-    # under the tray, long axis along +X, centred; its top face on the tray's underside (y -0.0466); clear of the legs and the metal brackets
-    pose: {position: [0, -0.0634, 0], orientation: [1, 0, 0, 0]}
+    # under the tray, long axis along +X, centred; its top face on the pad's underside (y -0.0485); clear of the legs and the rails
+    pose: {position: [0, -0.0653, 0], orientation: [1, 0, 0, 0]}
     material: lipo_wrap
     box: [0.133, 0.0335, 0.045]
 
@@ -115,23 +233,12 @@ parts:
     kind: radio
     mass_kg: 0.0235
     mass_grade: published
-    mass_source: Holybro docs, SiK Telemetry Radio V3 specification page (28 x 53 x 10.7 mm, 23.5 g with antenna)
+    mass_source: Holybro docs, SiK Telemetry Radio V3 specification page (28 x 53 x 10.7 mm without antenna, 23.5 g with antenna)
     pose_grade: assumed
-    # on the top plate behind the controller, starboard side, long side along Z
-    pose: {position: [-0.0577, 0.0304, 0.0405], orientation: [1, 0, 0, 0]}
+    # on the top plate, starboard of the controller (z +0.038), long side along X, clear of the arm clamps at the plate's corners
+    pose: {position: [0, 0.0374, 0.038], orientation: [1, 0, 0, 0]}
     material: plastic_black
-    box: [0.028, 0.0107, 0.053]
-
-  - name: gps_mast
-    kind: mast
-    mass_kg: 0.0063
-    mass_grade: assumed
-    mass_source: carbon tube 10 mm OD, 8 mm ID, 140 mm at 1600 kg/m3 (the 140 mm length is a retailer's listing for the Holybro GPS mount's tube); the diameters are assumed
-    pose_grade: assumed
-    # standing on the top plate, behind the controller, port side; the GPS puck sits on its top
-    pose: {position: [-0.0577, 0.095, -0.0405], orientation: [1, 0, 0, 0]}
-    material: carbon
-    cylinder: {radius: 0.005, length: 0.14}
+    box: [0.053, 0.0107, 0.028]
 
   - name: electronics_misc
     kind: mass_only
@@ -139,8 +246,8 @@ parts:
     mass_grade: assumed
     mass_source: 4 ESCs at 25 g (a 20 A to 30 A ESC with leads), a power module 25 g, wiring 30 g, fasteners 20 g; none is in the parts above
     pose_grade: assumed
-    # a mass carrier between the plates, inside the corner standoffs; not a drawing of anything
-    pose: {position: [0, 0.0113, 0], orientation: [1, 0, 0, 0]}
+    # a mass carrier between the plates, inside the corner clamps; not a drawing of anything
+    pose: {position: [0, 0.016, 0], orientation: [1, 0, 0, 0]}
     material: plastic_black
     box: [0.07, 0.016, 0.07]
 
@@ -149,11 +256,13 @@ parts:
     rotor: 0
     spin: 1
     radius: 0.127
-    mass_kg: 0.068
+    mass_kg: 0.013
     mass_grade: assumed
-    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: measured
-    pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
+    mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [0.17689, 0.070, 0.17689], orientation: [1, 0, 0, 0]}
+    hide_materials: [drone/x500-rotor-front-ccw/bell]
     objects:
       - {store_ref: {sha256: 46fd2683c9cc3125978f4e4addc3f6d571dbadfcc9db29457be50030b9d7ee07, file: x500-rotor-front-ccw.gltf}}
 
@@ -162,11 +271,13 @@ parts:
     rotor: 1
     spin: -1
     radius: 0.127
-    mass_kg: 0.068
+    mass_kg: 0.013
     mass_grade: assumed
-    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: measured
-    pose: {position: [0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
+    mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [0.17689, 0.070, -0.17689], orientation: [1, 0, 0, 0]}
+    hide_materials: [drone/x500-rotor-front-cw/bell]
     objects:
       - {store_ref: {sha256: 61121917c65405f022d19087def8a03b341ef3f76013f6fbe384b3f19ee6b7ac, file: x500-rotor-front-cw.gltf}}
 
@@ -175,11 +286,13 @@ parts:
     rotor: 2
     spin: 1
     radius: 0.127
-    mass_kg: 0.068
+    mass_kg: 0.013
     mass_grade: assumed
-    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: measured
-    pose: {position: [-0.174, 0.0614, -0.174], orientation: [1, 0, 0, 0]}
+    mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [-0.17689, 0.070, -0.17689], orientation: [1, 0, 0, 0]}
+    hide_materials: [drone/x500-rotor-rear-ccw/bell]
     objects:
       - {store_ref: {sha256: 9839c1ff21ed9f81f8bc0bdc37c713f8f17ce7753ad0a9f64d5f5c18259bfaf7, file: x500-rotor-rear-ccw.gltf}}
 
@@ -188,10 +301,12 @@ parts:
     rotor: 3
     spin: -1
     radius: 0.127
-    mass_kg: 0.068
+    mass_kg: 0.013
     mass_grade: assumed
-    mass_source: library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920) plus library uiuc_apce_10x5 propeller 0.013 kg (assumed)
-    pose_grade: measured
-    pose: {position: [-0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}
+    mass_source: library uiuc_apce_10x5 propeller 0.013 kg (assumed)
+    pose_grade: derived
+    # the kit motor's axis, the glTF's hub bottom on the bell boss (see the header); the blades only, the bell is hidden
+    pose: {position: [-0.17689, 0.070, 0.17689], orientation: [1, 0, 0, 0]}
+    hide_materials: [drone/x500-rotor-rear-cw/bell]
     objects:
       - {store_ref: {sha256: d7c1722992864c1972f5c960cdf2d04cec3ce847346bd5c11ec441cd29c40d39, file: x500-rotor-rear-cw.gltf}}

@@ -1,0 +1,35 @@
+{
+ "description": "a request that is not a JSON object",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "list",
+ "request": [],
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "list",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": null,
+   "issues": []
+  }
+ }
+}

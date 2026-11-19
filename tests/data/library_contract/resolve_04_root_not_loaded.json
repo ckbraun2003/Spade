@@ -1,0 +1,38 @@
+{
+ "description": "a root that is not open",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "resolve",
+ "request": {
+  "alias": "gate-corridor",
+  "root": "zeta"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "resolve",
+  "ok": false,
+  "refusal": {
+   "code": "root_not_loaded",
+   "severity": "error",
+   "message": "",
+   "root": "zeta",
+   "path": null,
+   "id": null,
+   "field": "root",
+   "issues": []
+  }
+ }
+}

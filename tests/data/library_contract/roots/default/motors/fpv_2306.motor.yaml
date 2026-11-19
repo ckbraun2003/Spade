@@ -1,0 +1,6 @@
+part_version: 1
+motor:
+  kv: 1700
+  mass: 0.032
+sources:
+  - id: s1

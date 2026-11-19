@@ -15,7 +15,9 @@
 // SequentialMapsBrightenAndTheDivergingMapPeaksAtItsCentre.
 // ---------------------------------------------------------------------------
 
+#include <algorithm>
 #include <array>
+#include <iterator>
 
 #include <glm/vec3.hpp>
 
@@ -800,10 +802,37 @@ const std::array<glm::vec3, kColourMapEntries> kCoolWarm{{
     {0.705673158f, 0.01555616f, 0.150232812f},
 }};
 
+// blue_magenta is not from a library: five anchors blended linearly in display values (a deep blue, an azure, a violet, a magenta and
+// a pale magenta), chosen so the lightness rises at every entry. Checked by
+// RenderTransferFunction.TheBlueMagentaMapRunsFromABlueToAMagentaAndBrightensAtEveryEntry.
+std::array<glm::vec3, kColourMapEntries> make_blue_magenta() {
+    struct Anchor {
+        float at;
+        glm::vec3 colour;
+    };
+    constexpr Anchor anchors[] = {{0.0f, {0.04f, 0.08f, 0.50f}},
+                                  {0.33f, {0.10f, 0.38f, 0.95f}},
+                                  {0.64f, {0.50f, 0.36f, 0.98f}},
+                                  {0.85f, {0.95f, 0.25f, 0.80f}},
+                                  {1.0f, {1.0f, 0.55f, 0.92f}}};
+    std::array<glm::vec3, kColourMapEntries> table{};
+    for (std::size_t i = 0; i < table.size(); ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(table.size() - 1u);
+        std::size_t k = 0;
+        while (k + 2u < std::size(anchors) && t > anchors[k + 1u].at) ++k;
+        const float u = (t - anchors[k].at) / (anchors[k + 1u].at - anchors[k].at);
+        table[i] = anchors[k].colour + (anchors[k + 1u].colour - anchors[k].colour) * std::min(std::max(u, 0.0f), 1.0f);
+    }
+    return table;
+}
+const std::array<glm::vec3, kColourMapEntries> kBlueMagenta = make_blue_magenta();
+
 }  // namespace
 
 const std::array<glm::vec3, kColourMapEntries>& colour_map_table(ColourMapId id) {
     switch (id) {
+        case ColourMapId::blue_magenta:
+            return kBlueMagenta;
         case ColourMapId::inferno:
             return kInferno;
         case ColourMapId::cool_warm:

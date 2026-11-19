@@ -33,9 +33,9 @@
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
 //
-// Everything under --out (Desktop/spade-videos/<date> by default) is working
+// Everything under --out (Desktop/Projects/Videos/Footage/Spade/<date> by default) is working
 // output, and none of it is posted. A film is POSTED only under
-// C:/Users/Cameron/Desktop/Projects/Videos, by Videos/CATEGORIES.md (Cameron,
+// Desktop/Projects/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
 // 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
 // recorded), at most 120 s and 30 MB, with a title card. A renderer
 // before-and-after is a Feature. To post one, encode it through the queue
@@ -80,9 +80,14 @@
 #include "gpu_live.hpp"
 #endif
 #include "live_case.hpp"
+#include "lines.hpp"
+#include "render/gltf.hpp"
 #include "look.hpp"
 #include "part_materials.hpp"
 #include "particles.hpp"
+#include "q_look.hpp"
+#include "build_parts.hpp"
+#include "visual_mesh.hpp"
 #include "stream_plan.hpp"
 #include "recorder.hpp"
 #include "sgs_note.hpp"
@@ -234,6 +239,7 @@ struct Film {
     // The particle look (--particles): the seed pool from a frame's log (the held drone's rotors), and the run's state.
     std::function<std::vector<glm::vec3>(const FrameLog&)> particle_pool;
     std::shared_ptr<ParticleHold> particle_hold;
+    std::shared_ptr<const spade::analysis::LiveLines> lines;  // --lines: the rotors as actuator lines (a device film)
     // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
     bool role_materials = false;
     bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
@@ -459,10 +465,10 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         maker = [inner = device.maker, cs = lc.sgs_cs](const an::LiveFluidStart& s) {
             spade::physics::airflow::FluidConfig config = s.config;
             config.sgs_cs = cs;
-            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids});
+            return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids, s.lines, s.line_elements, s.line_rotors});
         };
     }
-    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker)
+    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker, film.lines.get())
                : resuming  ? an::LiveRun::restore(save, *resolved, lc.run_model)
                            : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
@@ -1226,7 +1232,8 @@ struct HeldPose {
 // `particle_views`: the two particle views are web-only (--particles, --particles-preview on S2 and S8): an ordinary film draws every
 // view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
-                                            const Look& look = {}, bool particle_views = false) {
+                                            const Look& look = {}, bool particle_views = false,
+                                            const std::optional<QLook>& nasa_look = std::nullopt) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1357,6 +1364,26 @@ struct HeldPose {
                 frame_on_drone(v, k, n, camera);
                 return {};
             }});
+        if (nasa_look) {
+            film.views.push_back(View{
+                "vorticity-cloud", "vorticity magnitude as a soft cloud (blue low to magenta high), no surfaces",
+                [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                                 render::Camera& camera) -> spade::Result<void> {
+                    frame_on_drone(v, k, n, camera);
+                    if (auto tf = vorticity_cloud(v, q)) scene.flow_layers.push_back(render::FlowLayer{&v, {*tf}, {}});
+                    return {};
+                }});
+            // NASA Ames' multirotor look: Q-criterion surfaces (a ladder of three levels) coloured by vorticity, blue to magenta.
+            film.views.push_back(View{
+                "nasa", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
+                [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+                                                 render::Camera& camera) -> spade::Result<void> {
+                    frame_on_drone(v, k, n, camera);
+                    std::vector<render::IsoSurface> isos = q_isos(v, q);
+                    if (!isos.empty()) scene.flow_layers.push_back(render::FlowLayer{&v, {}, std::move(isos)});
+                    return {};
+                }});
+        }
         if (particle_views) film.views.push_back(View{
             "particles", "points carried through every stored frame, from the air above and round the rotors, through them and down",
             [frame_on_drone, hold = film.particle_hold](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
@@ -1519,6 +1546,14 @@ struct WebPlan {
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
     bool particles = false;                           // S2 and S8: points carried through every stored frame
     bool particles_preview = false;                   // S2 and S8: tracers through one frozen frame, not the volume
+    std::string visual_mesh;                          // --visual-mesh: a glTF drawn in place of the model's parts (presentation only)
+    std::string build_parts;                          // --build-parts: Core's parts table drawn over the held body (presentation only)
+    std::string part_store;                           // --part-store: the store the table's objects are read from
+    PropBlur prop_blur;                               // --prop-blur: the rotors' blade blur
+    std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
+    std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
+    bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
+    std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1573,6 +1608,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
     stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
+    stem += web::lines_stem_suffix(!plan.lines.empty());  // and one with the rotors as lines
     return stem;
 }
 
@@ -1622,15 +1658,65 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview);
+                               plan.particles || plan.particles_preview, plan.nasa);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
+        {   // what is drawn over the held body, presentation only: the visual mesh and/or the parts build, at the logged pose
+            std::shared_ptr<const render::MeshData> visual;
+            if (!plan.visual_mesh.empty()) {
+                auto loaded = render::load_gltf(plan.visual_mesh);
+                if (!loaded) return std::unexpected(spade::Error{loaded.error().code, "--visual-mesh " + plan.visual_mesh + ": " + loaded.error().context});
+                visual = std::make_shared<const render::MeshData>(std::move(*loaded));
+            }
+            std::shared_ptr<const std::vector<BuildPart>> build;
+            if (!plan.build_parts.empty()) {
+                std::ifstream in(plan.build_parts, std::ios::binary);
+                if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "--build-parts " + plan.build_parts + ": cannot be read"});
+                const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+                auto parts = parse_build_parts(text);
+                if (!parts) return std::unexpected(spade::Error{parts.error().code, "--build-parts " + plan.build_parts + ": " + parts.error().context});
+                build = std::make_shared<const std::vector<BuildPart>>(std::move(*parts));
+            }
+            // the turning rotors' disc is made from the prop part's own chord table: the --lines file (the one the physics reads)
+            std::optional<BladeChord> chord;
+            {
+                auto got = chord_for_draw(plan.prop_blur, build != nullptr, plan.lines.empty() ? std::filesystem::path() : std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines);
+                if (!got) return std::unexpected(got.error());
+                chord = std::move(*got);
+            }
+            if (visual || build) {
+                film.decorate = [visual, build, chord, blur = plan.prop_blur, store = std::filesystem::path(plan.part_store)](
+                                    const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
+                    if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
+                    const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
+                    const glm::quat orient(static_cast<float>(log.live[3]), static_cast<float>(log.live[4]), static_cast<float>(log.live[5]),
+                                           static_cast<float>(log.live[6]));
+                    if (visual) {
+                        if (auto r = add_visual_mesh(scene, *visual, pos, orient); !r) return r;
+                    }
+                    if (build) {
+                        BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
+                        draw.blur = blur;
+                        draw.chord = chord;
+                        draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
+                        return add_build_parts(scene, *build, store, pos, orient, draw);
+                    }
+                    return {};
+                };
+            }
+        }
+        if (!plan.lines.empty()) {
+            auto lines = live_lines_from_prop_file(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines, 8u);
+            if (!lines) return std::unexpected(lines.error());
+            film.lines = std::make_shared<const spade::analysis::LiveLines>(std::move(*lines));
+        }
         // S1, S8 and S2 are framed closer, looking down 8 degrees, so the deeper box's floor stays out of frame (L63;
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
         const glm::vec3 below_drone = web::subject_point(0.08f);  // the drone's COM, not the box's centre (L60)
-        const web::Framing& framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        web::Framing framing = plan.drone->framing;  // the reference quad's is the constants this table always had
+        if (plan.elevation) framing.elevation_deg = *plan.elevation;  // --elevation: a close-up from higher up
         const glm::vec3 still_aim = web::subject_point(framing.aim_below_m);
         if (id == "S1") {
             view = with_camera(*view_named(film, "streamlines"), [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
@@ -1638,14 +1724,14 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              framing.elevation_deg);
             }, plan.particles);  // the streaks are polylines the view's shot makes: kept (with_camera clears them otherwise)
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
@@ -1843,9 +1929,19 @@ struct Options {
     uint32_t web_frames = 0;       // --web-frames N: a cache of N frames (the timing job's), not the master's
     std::string particle_look;       // --particle-look KEY=VALUE,...: the streaks' numbers (needs --particles)
     std::optional<std::pair<uint32_t, uint32_t>> clip_size;  // --clip-size WxH: a web clip at another size (a diagnostic)
+    std::string build_parts;         // --build-parts FILE: the real-parts drone's table (build_parts.hpp), drawn at the held body's pose over the flow
+    std::string prop_blur;           // --prop-blur alpha=..,samples=..,shutter=..: the rotors' blade blur (build_parts.hpp)
+    std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
+    std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
+    std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
+    bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
+    std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
+    bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
+    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
+    std::optional<float> elevation;  // --elevation DEG: the camera's elevation for a web still, in place of the drone's (web::parse_elevation_deg)
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
@@ -1993,7 +2089,7 @@ constexpr double kD1Seconds = 0.6;
 #endif
     char date[16];
     std::strftime(date, sizeof date, "%Y-%m-%d", &local);
-    return fs::path(profile != nullptr ? profile : ".") / "Desktop" / "spade-videos" / date;
+    return web::default_out_dir(profile != nullptr ? profile : "", date);
 }
 
 // The run's labels by step, from the cache's run.txt (each line "step<TAB>label"), for the captions.
@@ -2118,6 +2214,7 @@ constexpr double kD1Seconds = 0.6;
     if (opt.sgs_cs && *opt.sgs_cs != web::kD1WebSgsCs) {
         return stop("a clip filmed at another Smagorinsky Cs (--sgs-cs) is a diagnostic, not a master");
     }
+    if (opt.elevation) return stop("a camera elevation (--elevation) is for stills, not a master");
     if (opt.particles_preview) {
         return stop("a particle preview (--particles-preview) is a diagnostic, not a master");
     }
@@ -2356,6 +2453,9 @@ struct WebFilming {
         if (const std::string declared = look_note(opt.look, 1000.0 * times.per_frame); !declared.empty()) {
             in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
         }
+        if (!opt.build_parts.empty()) {
+            if (const auto blur = parse_prop_blur(opt.prop_blur)) in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + prop_blur_note(*blur) + ".";
+        }
         if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
         std::ofstream caption(work / (base + "md"), std::ios::binary | std::ios::trunc);
         caption << web::caption_text(in);
@@ -2424,11 +2524,55 @@ struct WebFilming {
         return 2;
     }
     // S1's lines and the particle preview are traced in the true flow: no fade for them.
-    if ((clip->id == "S2" || clip->id == "S8") && !opt.particles_preview && !opt.particles) opt.look.fade = drone->framing.fade();
     WebPlan plan;
-    plan.look = opt.look;
     plan.drone = drone;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
+    if (!opt.build_parts.empty() || !opt.part_store.empty()) {
+        if (!web::sgs_cs_applies(*clip)) {
+            std::fprintf(stderr, "flow_movie: --build-parts is for the D1 clips (S1 to S4 and S8)\n");
+            return 2;
+        }
+        if (opt.build_parts.empty()) {
+            std::fprintf(stderr, "flow_movie: --part-store needs --build-parts\n");
+            return 2;
+        }
+        plan.build_parts = opt.build_parts;
+        plan.part_store = opt.part_store;
+        auto blur = parse_prop_blur(opt.prop_blur);
+        if (!blur) return fail(blur.error());
+        plan.prop_blur = *blur;
+    }
+    if (!opt.visual_mesh.empty()) {
+        if (!web::sgs_cs_applies(*clip)) {
+            std::fprintf(stderr, "flow_movie: --visual-mesh is for the D1 clips (S1 to S4 and S8)\n");
+            return 2;
+        }
+        plan.visual_mesh = opt.visual_mesh;
+    }
+    if (!opt.lines_prop.empty()) {
+        if (const std::string why = web::lines_refusal(web::sgs_cs_applies(*clip)); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+        plan.lines = opt.lines_prop;
+    }
+    if (opt.nasa) {
+        const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--nasa is for S2 and S8"
+                          : opt.window_to > 0.0                   ? "--nasa is not for a --window run"
+                          : opt.particles || opt.particles_preview ? "--nasa and the particle looks are different looks: use one"
+                                                                  : "";
+        if (*why != '\0') {
+            std::fprintf(stderr, "flow_movie: %s\n", why);
+            return 2;
+        }
+        auto q = parse_q_look(opt.q_look);
+        if (!q) return fail(q.error());
+        plan.nasa = *q;
+        plan.cloud = opt.nasa_cloud;
+    } else if (!opt.q_look.empty()) {
+        std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
+        return 2;
+    }
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
                           : opt.window_to > 0.0                   ? "--particles is not for a --window run"
@@ -2441,6 +2585,7 @@ struct WebFilming {
         plan.particles = true;
     }
     plan.sgs_cs = opt.sgs_cs.value_or(web::kD1WebSgsCs);
+    plan.elevation = opt.elevation;
     plan.frames = opt.web_frames > 0u ? opt.web_frames : group->frames;
     plan.from_s = opt.window_to > 0.0 ? opt.window_from : group->from_s;
     plan.steps_per_frame = opt.window_to > 0.0 ? 0u : group->steps_per_frame;
@@ -2466,6 +2611,12 @@ struct WebFilming {
                 stage.limits().c_str());
 
     const uint32_t still_k = opt.still_frame >= 0 ? std::min(static_cast<uint32_t>(opt.still_frame), n - 1u) : n / 2u;
+    // The run's look, made once and given to BOTH places that read it: opt.look (the film's look state) and plan.look (the film's setup).
+    // S1's lines and the particle preview are traced in the true flow: no fade for them.
+    opt.look = web::web_look(opt.look, *drone,
+                             web::web_fade_applies(clip->id, opt.particles_preview, opt.particles, opt.nasa, opt.nasa_cloud),
+                             plan.nasa ? &*plan.nasa : nullptr);
+    plan.look = opt.look;
     auto film = web_film(*clip, *group, plan);
     if (!film) return fail(film.error());
     film->role_materials = drone != &web::default_drone();
@@ -2486,7 +2637,13 @@ struct WebFilming {
         std::fprintf(stderr, "flow_movie: --particle-look is for --particles\n");
         return 2;
     }
-    const fs::path cache = opt.out / "cache" / film->stem;
+    const fs::path cache = opt.cache_dir.empty() ? opt.out / "cache" / film->stem : fs::path(opt.cache_dir);
+    if (const std::string why = web::cache_dir_refusal(opt.cache_dir, opt.web_still_only, opt.still_frame >= 0,
+                                                       fs::exists(frame_file(cache, first + still_k)));
+        !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
     const auto snapshot_file = [&cache](uint32_t frame) {
         char name[48];
         std::snprintf(name, sizeof name, "particles-%05u.bin", frame);
@@ -2956,6 +3113,12 @@ int main(int argc, char** argv) {
             opt.video = "web";
         } else if (arg == "--web-frames") {
             opt.web_frames = static_cast<uint32_t>(std::atoi(value().c_str()));
+        } else if (arg == "--elevation") {
+            opt.elevation = web::parse_elevation_deg(value());
+            if (!opt.elevation) {
+                std::fprintf(stderr, "flow_movie: --elevation takes one number above 0 and at most 85 (degrees above the drone), as 55\n");
+                return 2;
+            }
         } else if (arg == "--sgs-cs") {
             opt.sgs_cs = web::parse_sgs_cs(value());
             if (!opt.sgs_cs) {
@@ -2966,6 +3129,25 @@ int main(int argc, char** argv) {
             opt.drone = value();
         } else if (arg == "--particles-preview") {
             opt.particles_preview = true;
+        } else if (arg == "--visual-mesh") {
+            opt.visual_mesh = value();
+        } else if (arg == "--build-parts") {
+            opt.build_parts = value();
+        } else if (arg == "--prop-blur") {
+            opt.prop_blur = value();
+        } else if (arg == "--part-store") {
+            opt.part_store = value();
+        } else if (arg == "--lines") {
+            opt.lines_prop = value();
+        } else if (arg == "--nasa") {
+            opt.nasa = true;
+        } else if (arg == "--nasa-cloud") {
+            opt.nasa = true;
+            opt.nasa_cloud = true;
+        } else if (arg == "--cache-dir") {
+            opt.cache_dir = value();
+        } else if (arg == "--q-look") {
+            opt.q_look = value();
         } else if (arg == "--particles") {
             opt.particles = true;
         } else if (arg == "--particle-look") {

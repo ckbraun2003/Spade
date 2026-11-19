@@ -102,6 +102,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+# The library's shared object (tools/library_c) links the static engine archives, which gcc needs position-independent.
+if(NOT MSVC)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # Add vendor dependencies before our modules
 add_subdirectory(vendor)
 
@@ -146,6 +151,10 @@ add_subdirectory(tools/geo_fetch)
 
 # The part import tool (L88, L88b; Spec B revision 2): a CAD file to the local part store, over spade::mesh_import and step_convert.
 add_subdirectory(tools/part_import)
+
+# The library's C ABI (L88l, S4): spade_library.dll / libspade_library.so over spade::scene, JSON in and out; install component library_c.
+# A shared library links the static engine archives, so on gcc they are built position-independent (set before engine/ is added).
+add_subdirectory(tools/library_c)
 
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.

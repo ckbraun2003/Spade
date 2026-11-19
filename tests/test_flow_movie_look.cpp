@@ -17,6 +17,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "core/flow_volume.hpp"
 #include "core/fp16.hpp"
 #include "render/scene.hpp"
+#include "../tools/flow_movie/q_look.hpp"
 
 namespace {
 
@@ -487,5 +489,180 @@ TEST(FlowMovieLook, ThePreviewSeedsFillTheInflowShellAboveEachRotorAndAFarFieldB
         return l.x != r.x ? l.x < r.x : (l.y != r.y ? l.y < r.y : l.z < r.z);
     });
     EXPECT_EQ(std::adjacent_find(sorted.begin(), sorted.end()), sorted.end()) << "no two seeds are the same point";
+}
+
+// THE NASA LOOK (the lead, 2026-11-17: Cameron wants the multirotor flow figures of NASA Ames, OVERFLOW: Q-criterion iso-surfaces
+// coloured by vorticity magnitude, blue low to magenta high, crisp thin tubes and sheets): the published frame's q_hat channel is
+// sqrt(Q) with its sign, so an iso level L on it is Q = L^2. A LADDER of three levels, each a fraction of the frame's largest q_hat
+// (the thin cores at the top, the sheets low), each its own opacity (the cores near solid, the outer sheets see-through), all coloured
+// by the vorticity channel on the blue-to-magenta map between 0 and a fraction of the frame's largest |omega|.
+namespace {
+spade::FlowVolume volume_with_ranges(float q_max, float vort_max) {
+    spade::FlowVolume v;
+    v.header.channel_max[spade::kFlowQHat] = q_max;
+    v.header.channel_min[spade::kFlowQHat] = -q_max;
+    v.header.channel_max[spade::kFlowVorticity] = vort_max;
+    return v;
+}
+}  // namespace
+
+TEST(FlowMovieQLook, TheLadderIsThreeLevelsAsFractionsOfTheFramesLargestQHatColouredByVorticity) {
+    const flow_movie::QLook look;
+    const auto isos = flow_movie::q_isos(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_EQ(isos.size(), 3u);
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(isos[i].quantity, spade::render::FlowQuantity::q_hat) << i;
+        EXPECT_NEAR(isos[i].value, 10.0f * look.level[i], 1e-5f) << i;
+        EXPECT_FLOAT_EQ(isos[i].opacity, look.opacity[i]) << i;
+        ASSERT_TRUE(isos[i].colour_by.has_value()) << i;
+        EXPECT_EQ(isos[i].colour_by->quantity, spade::render::FlowQuantity::vorticity) << i;
+        EXPECT_EQ(isos[i].colour_by->colours, spade::render::ColourMapId::blue_magenta) << i;
+        EXPECT_FALSE(isos[i].colour_by->auto_range) << "a fixed range: the colours mean the same in every frame of a clip";
+        EXPECT_FLOAT_EQ(isos[i].colour_by->range_min, 0.0f) << i;
+        EXPECT_NEAR(isos[i].colour_by->range_max, 200.0f * look.vorticity_max, 1e-4f) << i;
+    }
+    EXPECT_GT(isos[0].value, isos[1].value);
+    EXPECT_GT(isos[1].value, isos[2].value) << "the highest level first";
+    EXPECT_GT(isos[0].opacity, isos[2].opacity) << "the cores are the most solid";
+}
+
+TEST(FlowMovieQLook, AFrameWithNoVorticityToShowGivesNoSurfaces) {
+    const flow_movie::QLook look;
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(0.0f, 200.0f), look).empty()) << "no q_hat above zero";
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(-1.0f, 200.0f), look).empty());
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(10.0f, 0.0f), look).empty()) << "no vorticity range to colour by";
+    EXPECT_TRUE(flow_movie::q_isos(volume_with_ranges(std::numeric_limits<float>::quiet_NaN(), 200.0f), look).empty());
+}
+
+TEST(FlowMovieQLook, TheQLookStringSetsTheNamedNumbersAndRefusesWhatCannotBeDrawnByName) {
+    const auto none = flow_movie::parse_q_look("");
+    ASSERT_TRUE(none.has_value()) << none.error().context;
+    const flow_movie::QLook defaults;
+    EXPECT_EQ(none->level, defaults.level);
+    const auto some = flow_movie::parse_q_look("l1=0.6, l2=0.3,l3=0.05,o1=1,o2=0.5,o3=0.2,vmax=0.8");
+    ASSERT_TRUE(some.has_value()) << some.error().context;
+    EXPECT_FLOAT_EQ(some->level[0], 0.6f);
+    EXPECT_FLOAT_EQ(some->level[2], 0.05f);
+    EXPECT_FLOAT_EQ(some->opacity[0], 1.0f);
+    EXPECT_FLOAT_EQ(some->opacity[2], 0.2f);
+    EXPECT_FLOAT_EQ(some->vorticity_max, 0.8f);
+    for (const char* bad : {"colour=red", "l1", "l1=", "l1=abc", "l1=0", "l1=1.5", "o1=0", "o2=1.1", "vmax=0", "vmax=2", "l1=0.2,l2=0.3",
+                            "l2=0.05", "l1=0.2,,l2=0.1", "=1"}) {
+        const auto r = flow_movie::parse_q_look(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("q look"), std::string::npos) << bad << ": " << r.error().context;
+    }
+    EXPECT_NE(flow_movie::parse_q_look("sparkle=1").error().context.find("sparkle"), std::string::npos);
+}
+
+// THE CLOUD (the lead, 2026-11-17: Cameron also asked for "fluffy cloud-like air"): the same vorticity colours as a soft VOLUME, no
+// surfaces: |omega| on the blue-to-magenta map over 0 .. vorticity_max x the frame's largest |omega| (the ladder's own ceiling),
+// absorbing from an onset of the range up to a modest sigma at its top, so the strongest air is the densest and the weak air a haze.
+TEST(FlowMovieQLook, TheCloudIsVorticityOnTheBlueMagentaMapOverTheLaddersRangeAndGetsDenserWithIt) {
+    const flow_movie::QLook look;
+    const auto tf = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 200.0f), look);
+    ASSERT_TRUE(tf.has_value());
+    EXPECT_EQ(tf->quantity, spade::render::FlowQuantity::vorticity);
+    EXPECT_EQ(tf->colours, spade::render::ColourMapId::blue_magenta);
+    EXPECT_FALSE(tf->auto_range);
+    EXPECT_FLOAT_EQ(tf->range_min, 0.0f);
+    EXPECT_NEAR(tf->range_max, 200.0f * look.vorticity_max, 1e-4f);
+    ASSERT_GE(tf->extinction.size(), 2u);
+    EXPECT_EQ(tf->extinction.front().sigma, 0.0f) << "no absorption in the weakest air: a haze, not a wall";
+    EXPECT_GT(tf->extinction.back().sigma, 0.0f);
+    EXPECT_LE(tf->extinction.back().sigma, 60.0f) << "soft: the densest air is still see-through at a few centimetres";
+    for (std::size_t i = 1; i < tf->extinction.size(); ++i) {
+        EXPECT_GE(tf->extinction[i].sigma, tf->extinction[i - 1].sigma) << "denser with vorticity, " << i;
+    }
+    EXPECT_TRUE(spade::render::validate_transfer_function(*tf).has_value());
+    EXPECT_FALSE(flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 0.0f), look).has_value()) << "no vorticity to show";
+    EXPECT_FALSE(flow_movie::vorticity_cloud(volume_with_ranges(10.0f, std::numeric_limits<float>::infinity()), look).has_value());
+}
+
+// THE CLOUD'S TWO NUMBERS (Cameron picked the soft cloud, L86o; the lead 2026-11-18: tune the density and the cloud near the body):
+// sigma, the density at the top of the range in 1/m (30 now), and onset, the fraction of the range below which the air is clear
+// (0.15 now); both in --q-look, so a redraw of the kept frame shows each. And the cloud THINNED NEAR THE BODY: the vorticity within
+// thin_r metres of the drone is scaled by a factor from thin_floor at its centre back to 1 at thin_r (a smoothstep), so the airframe
+// reads through the haze. The frame's own header range is not remade: the colours keep the range of the unthinned frame.
+TEST(FlowMovieQLook, TheCloudsDensityOnsetAndThinningAreNamedInTheLookString) {
+    const flow_movie::QLook defaults;
+    EXPECT_FLOAT_EQ(defaults.sigma, 30.0f);
+    EXPECT_FLOAT_EQ(defaults.onset, 0.15f);
+    EXPECT_FLOAT_EQ(defaults.thin_r, 0.0f) << "no thinning unless asked";
+    const auto look = flow_movie::parse_q_look("sigma=60,onset=0.3,thin_r=0.15,thin_floor=0.2");
+    ASSERT_TRUE(look.has_value()) << look.error().context;
+    EXPECT_FLOAT_EQ(look->sigma, 60.0f);
+    EXPECT_FLOAT_EQ(look->onset, 0.3f);
+    EXPECT_FLOAT_EQ(look->thin_r, 0.15f);
+    EXPECT_FLOAT_EQ(look->thin_floor, 0.2f);
+    for (const char* bad : {"sigma=0", "sigma=2000", "onset=1", "onset=-0.1", "thin_r=-1", "thin_r=3", "thin_floor=1.5", "thin_floor=-0.1"}) {
+        const auto r = flow_movie::parse_q_look(bad);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("q look"), std::string::npos) << bad << ": " << r.error().context;
+    }
+    // thin_r is a multiple of the drone's own size (Framing::subject_m), so one value fits every drone: up to 2 of it
+    const auto wide = flow_movie::parse_q_look("thin_r=1.5");
+    ASSERT_TRUE(wide.has_value()) << wide.error().context;
+    EXPECT_FLOAT_EQ(wide->thin_r, 1.5f);
+    flow_movie::QLook dense;
+    dense.sigma = 80.0f;
+    dense.onset = 0.4f;
+    const auto tf = flow_movie::vorticity_cloud(volume_with_ranges(10.0f, 200.0f), dense);
+    ASSERT_TRUE(tf.has_value());
+    EXPECT_FLOAT_EQ(tf->extinction.back().sigma, 80.0f) << "the density at the top of the range";
+    bool clear_below = false;
+    for (const auto& point : tf->extinction) {
+        if (std::abs(point.value - 0.4f * tf->range_max) < 1e-3f * tf->range_max && point.sigma == 0.0f) clear_below = true;  // the onset is the last clear point
+    }
+    EXPECT_TRUE(clear_below) << "no absorption below the onset";
+}
+
+TEST(FlowMovieLook, TheVorticityIsThinnedNearTheDroneAndNothingElseChanges) {
+    spade::FlowVolume v = uniform_down_flow(16, 0.01f, glm::vec3(-0.08f));
+    const std::size_t cells = std::size_t{16} * 16 * 16;
+    for (std::size_t c = 0; c < cells; ++c) v.s[c * spade::kFlowHalvesPerCell + 1] = spade::fp16::from_f32(100.0f).bits;  // |omega|
+    v.header.channel_max[spade::kFlowVorticity] = 100.0f;
+    const spade::FlowVolume before = v;
+    flow_movie::CloudThin thin;
+    thin.centre = glm::vec3(0.005f);  // the centre of cell (8, 8, 8)
+    thin.radius = 0.05f;
+    thin.floor = 0.3f;
+    EXPECT_TRUE(thin.on());
+    EXPECT_FALSE(flow_movie::CloudThin{}.on());
+    flow_movie::thin_vorticity(v, thin);
+    const auto at = [&v](uint32_t i, uint32_t j, uint32_t k) {
+        return spade::fp16::to_f32(v.s[spade::flow_cell_index(v.header, i, j, k) * spade::kFlowHalvesPerCell + 1]);
+    };
+    EXPECT_NEAR(at(8, 8, 8), 30.0f, 0.1f) << "at the centre: the floor";
+    EXPECT_NEAR(at(0, 0, 0), 100.0f, 0.1f) << "far from it: untouched";
+    const float near = at(10, 8, 8);  // 2 cells = 0.02 m away
+    EXPECT_GT(near, 30.0f);
+    EXPECT_LT(near, 100.0f) << "in between, smoothly";
+    EXPECT_NEAR(at(13, 8, 8), 100.0f, 0.1f) << "past the radius (5 cells): untouched";
+    EXPECT_EQ(v.v, before.v) << "the velocity and the dye are not touched";
+    for (std::size_t c = 0; c < cells; ++c) {
+        for (std::size_t lane = 0; lane < spade::kFlowHalvesPerCell; ++lane) {
+            if (lane == 1) continue;
+            ASSERT_EQ(v.s[c * spade::kFlowHalvesPerCell + lane], before.s[c * spade::kFlowHalvesPerCell + lane]) << c << "/" << lane;
+        }
+    }
+    EXPECT_FLOAT_EQ(v.header.channel_max[spade::kFlowVorticity], 100.0f) << "the colours keep the unthinned frame's range";
+    flow_movie::Look look;
+    look.thin = thin;
+    EXPECT_TRUE(look.any()) << "a thinned look is a look";
+    EXPECT_NE(flow_movie::look_note(look, 1.0).find("thinned"), std::string::npos);
+    spade::FlowVolume w = before;
+    flow_movie::finish_look(look, w);
+    EXPECT_NEAR(spade::fp16::to_f32(w.s[spade::flow_cell_index(w.header, 8, 8, 8) * spade::kFlowHalvesPerCell + 1]), 30.0f, 0.1f)
+        << "finish_look thins";
+}
+
+// THE THINNING IS A PRESENTATION CHOICE THAT HIDES AIR NEAR THE DRONE, so the record says it in plain words (the lead, 2026-11-18).
+TEST(FlowMovieLook, TheRecordSaysTheAirNearTheDroneIsDrawnThinnedAndTheFieldIsUnchanged) {
+    flow_movie::Look look;
+    look.thin.radius = 0.7461f;
+    look.thin.floor = 0.0f;
+    const std::string note = flow_movie::look_note(look, 1.0);
+    EXPECT_NE(note.find("the air within 0.75 m of the drone is drawn thinned so the drone shows; the field is unchanged"), std::string::npos) << note;
 }
 

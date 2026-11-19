@@ -1,0 +1,37 @@
+{
+ "description": "an id without its root is refused, never guessed",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "part.motor.fpv_2306"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "find",
+  "ok": false,
+  "refusal": {
+   "code": "bare_id",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": "part.motor.fpv_2306",
+   "field": null,
+   "issues": []
+  }
+ }
+}

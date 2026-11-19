@@ -1,0 +1,23 @@
+{
+ "description": "a call before open: ABI misuse answers 2 and invalid_request",
+ "open": null,
+ "op": "list",
+ "request": {},
+ "rc": 2,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "list",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": null,
+   "issues": []
+  }
+ }
+}

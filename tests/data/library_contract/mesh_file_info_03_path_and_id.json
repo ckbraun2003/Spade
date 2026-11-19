@@ -1,0 +1,38 @@
+{
+ "description": "exactly one of path and id",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "mesh_file_info",
+ "request": {
+  "path": "$FIXTURES/meshes/bell.spmesh",
+  "id": "default:part.motor.fpv_2306"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "mesh_file_info",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "path",
+   "issues": []
+  }
+ }
+}

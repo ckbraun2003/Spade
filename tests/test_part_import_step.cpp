@@ -82,7 +82,7 @@ struct StepRig {
         env.getenv = [](const char*) -> const char* { return nullptr; };
         env.exe_dir = tmp.path() / "exe";
         env.cancelled = [this] { return cancel.load(); };
-        env.token = "s1";
+        env.token = test::unique_token();
     }
     [[nodiscard]] fs::path store() const { return tmp.path() / "store"; }
     [[nodiscard]] fs::path step_file() const {
@@ -240,6 +240,14 @@ TEST(PartImportStep, SeveralSolidsPickedAreAskedOfTheConverterTogetherAndAnImpor
     EXPECT_TRUE(again.result.value("cached", false));
     ASSERT_TRUE(again.result.contains("skipped")) << again.result.dump();
     EXPECT_EQ(again.result.at("skipped").size(), 1u);
+}
+
+TEST(PartImportStep, TwoRigsNeverShareATokenSoNeverAConvertersWorkFolder) {
+    // run.cpp makes <temp>/spade_part_import_<token> and removes it before and after the convert: a shared token let one process delete
+    // another's model.3mf mid-convert
+    const StepRig a, b;
+    EXPECT_NE(a.env.token, b.env.token);
+    EXPECT_EQ(a.env.token.rfind(std::to_string(test::process_id()) + "_", 0), 0u) << a.env.token;
 }
 
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
@@ -403,6 +411,35 @@ TEST(PartImportStep, ACancelWhileTheConverterRunsKillsItAndLeavesNothingBehind) 
     }
     EXPECT_EQ(files, 0);
     EXPECT_EQ(r.lines.back().value("event", std::string()), "result");
+}
+
+// ---- colour --------------------------------------------------------------------------------------------------------------------
+
+TEST(PartImportStep, TheConvertersColoursComeThroughInspectDeepInspectImportAndAHit) {
+    NEED_PYTHON();
+    StepRig rig;
+    const fs::path in = rig.step_file();
+    const auto colours_of = [](const json& objects) {
+        std::vector<std::string> v;
+        for (const json& o : objects) v.push_back(o.at("name").get<std::string>() + " " + o.at("colour").dump() + " " + o.at("colours").dump());
+        return v;
+    };
+    const std::vector<std::string> expected = {"arm [10,20,30] 2", "hub null 0"};
+    Out r = rig.run(rig.with_converter({"--inspect", in.string()}));
+    ASSERT_EQ(r.exit, 0) << r.result.dump();
+    EXPECT_EQ(colours_of(r.result.at("objects")), expected) << "the fast inspect";
+    r = rig.run(rig.with_converter({"--inspect", in.string(), "--deep", "--deflection", "0.1mm"}));
+    ASSERT_EQ(r.exit, 0) << r.result.dump();
+    EXPECT_EQ(colours_of(r.result.at("objects")), expected) << "the deep inspect";
+    const Out first = rig.run(rig.with_converter({"--import", in.string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
+    ASSERT_EQ(first.exit, 0) << first.result.dump();
+    EXPECT_EQ(colours_of(first.result.at("objects")), expected);
+    const auto stored = json::parse(read_file(fs::path(first.result.value("entry", std::string())) / "import.json"));
+    EXPECT_EQ(stored.at("objects")[0].at("colour"), (json::array({10, 20, 30})));
+    const Out hit = rig.run(rig.with_converter({"--import", in.string(), "--store", rig.store().string(), "--deflection", "0.1mm"}));
+    ASSERT_EQ(hit.exit, 0) << hit.result.dump();
+    EXPECT_TRUE(hit.result.value("cached", false));
+    EXPECT_EQ(hit.result.at("objects").dump(), first.result.at("objects").dump());
 }
 
 }  // namespace

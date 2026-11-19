@@ -1,0 +1,47 @@
+{
+ "description": "a sidecar by absolute path: counts, box, volume, unit, hash",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "mesh_file_info",
+ "request": {
+  "path": "$FIXTURES/meshes/bell.spmesh"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "mesh_file_info",
+  "ok": true,
+  "result": {
+   "container": "spmesh",
+   "triangles": 192,
+   "vertices": 98,
+   "bbox_min": [
+    -0.014000000432133675,
+    -0.019999999552965164,
+    -0.014000000432133675
+   ],
+   "bbox_max": [
+    0.014000000432133675,
+    0.0,
+    0.014000000432133675
+   ],
+   "volume_m3": 1.215326733912146e-05,
+   "unit": "m",
+   "sha256": "sha256:c7441d904c58e0db69eb3424cd2534f2dac3ac71a00d0010793e99e352db0ce1",
+   "solid": true
+  },
+  "warnings": []
+ }
+}

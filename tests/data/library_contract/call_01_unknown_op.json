@@ -1,0 +1,35 @@
+{
+ "description": "an op the contract does not name",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "frobnicate",
+ "request": {},
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "frobnicate",
+  "ok": false,
+  "refusal": {
+   "code": "unknown_op",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": null,
+   "issues": []
+  }
+ }
+}

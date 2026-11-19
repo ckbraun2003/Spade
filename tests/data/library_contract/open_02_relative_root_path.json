@@ -1,0 +1,41 @@
+{
+ "description": "a root path that is not absolute",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "relative/dir"
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "relative_path",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "relative_path",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "the path of root 'default' must be absolute",
+     "path": "relative/dir",
+     "root": "default",
+     "severity": "error"
+    }
+   ],
+   "message": "the path of root 'default' must be absolute",
+   "path": "relative/dir",
+   "root": "default",
+   "severity": "error"
+  }
+ }
+}

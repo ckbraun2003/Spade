@@ -168,6 +168,7 @@ add_executable(spade_tests
     test_library_store.cpp
     test_library_find.cpp
     test_library_place.cpp
+    test_library_resolve.cpp
     test_library_validate.cpp
     test_library_props.cpp
     test_library_sources.cpp
@@ -283,6 +284,7 @@ add_executable(spade_tests
     test_flow_movie_web.cpp
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
+    test_flow_movie_build_parts.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
     test_flow_movie_box_down.cpp
@@ -313,6 +315,12 @@ add_executable(spade_tests
     ../tools/part_import/run.cpp
     ../tools/part_import/process.cpp
     ../tools/part_import/step.cpp
+    # spade_library's JSON calls and C ABI (L88l, S4), compiled in from the tool: the tests drive the ABI's functions and replay the golden
+    # exchanges in tests/data/library_contract.
+    test_library_c.cpp
+    ../tools/library_c/library_json.cpp
+    ../tools/library_c/mesh_info.cpp
+    ../tools/library_c/c_api.cpp
 )
 
 # test_library_install.cpp (L50) installs the `spade_library` component from THIS build tree into a temp prefix and checks it. It needs
@@ -944,6 +952,21 @@ if(GIT_FOUND AND SPADE_SH)
     set_tests_properties(PushGuard.RefusesEveryPushWithoutTheOwnersWord PROPERTIES
         LABELS spade
         TIMEOUT 120)
+endif()
+
+# A down Docker daemon gets started (scripts/docker-up.ps1, run first by scripts/docker-leg.ps1 and scripts/gcc-check.sh), with a fake docker and a
+# fake Docker Desktop on PATH: the real Docker is never touched. Windows only (PowerShell); the gcc-check case needs Git Bash (SPADE_SH). LABELS spade.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_DOCKER_UP_REPO NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        add_test(NAME DockerUp.StartsADownDaemon
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/docker_up_test.ps1" "${SPADE_DOCKER_UP_REPO}" "${SPADE_SH}")
+        set_tests_properties(DockerUp.StartsADownDaemon PROPERTIES
+            LABELS spade
+            TIMEOUT 120)
+    endif()
 endif()
 
 # The installer test's record (scripts/package-test-record.ps1, written by scripts/package-test.ps1 beside each setup.exe tested): every field

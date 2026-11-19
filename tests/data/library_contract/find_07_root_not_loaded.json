@@ -1,0 +1,37 @@
+{
+ "description": "an id naming a root that is not open",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "zeta:part.motor.x"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "find",
+  "ok": false,
+  "refusal": {
+   "code": "root_not_loaded",
+   "severity": "error",
+   "message": "",
+   "root": "zeta",
+   "path": null,
+   "id": "zeta:part.motor.x",
+   "field": null,
+   "issues": []
+  }
+ }
+}

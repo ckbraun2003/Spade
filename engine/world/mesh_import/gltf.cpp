@@ -29,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "core/path_text.hpp"
+#include "world/mesh_import/colour.hpp"
 #include "world/mesh_import/outcome.hpp"
 #include "world/detail/weld.hpp"
 
@@ -230,6 +231,7 @@ private:
     struct Primitive {
         Accessor position;
         std::optional<Accessor> indices;
+        std::optional<std::array<uint8_t, 3>> colour;  // its material's base colour, sRGB; empty when it has none
     };
     struct Buffer {
         bool loaded = false;
@@ -288,6 +290,9 @@ private:
     [[nodiscard]] Result<MeshObject> object(const Json& node, uint64_t node_index, uint64_t mesh_index,
                                             const Affine& world);
     [[nodiscard]] Result<Accessor> describe(uint64_t index, const std::string& role_where, bool position) const;
+    // The primitive's material colour (baseColorFactor, linear in the file, sRGB here). It is a drawing hint and never refuses: no
+    // material, a material index past the array or a malformed factor is no colour; a material with no factor is white.
+    [[nodiscard]] std::optional<std::array<uint8_t, 3>> material_colour(const Json& prim) const;
     [[nodiscard]] Result<Data> data(const Accessor& a, uint64_t element_size);
     [[nodiscard]] Result<std::pair<std::span<const std::byte>, uint64_t>> buffer(uint64_t index,
                                                                                  const std::string& where);
@@ -599,7 +604,7 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
         }
         triangles = saturating_add(triangles, n / 3);
         vertices = saturating_add(vertices, position->count);
-        primitives.push_back(Primitive{std::move(*position), std::move(indices)});
+        primitives.push_back(Primitive{std::move(*position), std::move(indices), material_colour(prim)});
     }
     if (triangles > kMaxMeshTriangles) {
         return fail(Code::capacity_exceeded, prefix + ": " + num(triangles) + " triangles, more than the " +
@@ -613,7 +618,9 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
     // Pass 2: the data, transformed into metres in the object's frame.
     std::vector<glm::dvec3> positions;
     std::vector<uint32_t> indices;
+    std::vector<std::size_t> first_index;  // where each primitive's indices start, and at the end the total
     for (const Primitive& prim : primitives) {
+        first_index.push_back(indices.size());
         auto pd = data(prim.position, 12);
         if (!pd) return std::unexpected(pd.error());
         std::optional<Data> id;
@@ -663,6 +670,20 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
         }
     }
 
+    first_index.push_back(indices.size());
+    std::optional<SurfaceColour> colour;
+    if (collect_ != nullptr) {  // the colour by triangle area (a mirroring turns triangles inside out, which changes no area)
+        detail::ColourTally tally;
+        for (std::size_t p = 0; p < primitives.size(); ++p) {
+            if (!primitives[p].colour) continue;
+            for (std::size_t t = first_index[p]; t + 2 < first_index[p + 1]; t += 3) {
+                tally.add(*primitives[p].colour,
+                          detail::triangle_area(positions[indices[t]], positions[indices[t + 1]], positions[indices[t + 2]]));
+            }
+        }
+        colour = tally.result();
+    }
+
     // A mirroring transform turns every triangle inside out; reverse them.
     if (determinant(world) < 0.0) {
         for (std::size_t t = 0; t + 2 < indices.size(); t += 3) std::swap(indices[t + 1], indices[t + 2]);
@@ -671,11 +692,34 @@ Result<MeshObject> Reader::object(const Json& node, uint64_t node_index, uint64_
     const MeshInput input = detail::weld_exact(positions, indices, MeshUnit::metre);
     auto built = make_mesh_diagnosed(input, file_ + ": " + prefix);
     if (collect_ != nullptr) {  // the collecting mode: the outcome, whatever it is (the object returned here is dropped by the caller)
-        detail::record_outcome(*collect_, name, MeshUnit::metre, built);
+        detail::record_outcome(*collect_, name, MeshUnit::metre, built, colour);
         return MeshObject{std::move(name), built ? *built : std::shared_ptr<const TriangleMesh>(), MeshUnit::metre};
     }
     if (!built) return std::unexpected(built.error().error);
     return MeshObject{std::move(name), std::move(*built), MeshUnit::metre};
+}
+
+std::optional<std::array<uint8_t, 3>> Reader::material_colour(const Json& prim) const {
+    const auto m = prim.find("material");
+    if (m == prim.end() || !m->is_number_unsigned()) return std::nullopt;
+    const auto materials = root_.find("materials");
+    const uint64_t index = m->get<uint64_t>();
+    if (materials == root_.end() || !materials->is_array() || index >= materials->size()) return std::nullopt;
+    const Json& material = (*materials)[static_cast<std::size_t>(index)];
+    if (!material.is_object()) return std::nullopt;
+    std::array<double, 3> factor{1.0, 1.0, 1.0};
+    if (const auto pbr = material.find("pbrMetallicRoughness"); pbr != material.end()) {
+        if (!pbr->is_object()) return std::nullopt;
+        if (const auto base = pbr->find("baseColorFactor"); base != pbr->end()) {
+            if (!base->is_array() || base->size() != 4) return std::nullopt;
+            for (std::size_t k = 0; k < 3; ++k) {
+                if (!(*base)[k].is_number()) return std::nullopt;
+                factor[k] = (*base)[k].get<double>();
+            }
+        }
+    }
+    return std::array<uint8_t, 3>{detail::srgb_from_linear(factor[0]), detail::srgb_from_linear(factor[1]),
+                                  detail::srgb_from_linear(factor[2])};
 }
 
 Result<Reader::Accessor> Reader::describe(uint64_t index, const std::string& role_where, bool position) const {
