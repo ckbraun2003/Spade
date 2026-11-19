@@ -36,6 +36,7 @@ namespace spade::test {
     scene::Library library;
     library.dir = dir;
     for (const YAML::Node& e : doc["entries"]) {
+        if (!e["file"]) continue;  // a drone with a parts map only has no file: not a Library entry
         scene::LibraryEntry out;
         out.name = e["name"].as<std::string>();
         out.category = e["category"].as<std::string>();
@@ -49,7 +50,17 @@ namespace spade::test {
                 known = true;
             }
         }
-        if (known) library.entries.push_back(std::move(out));
+        if (known) {
+            // A part file of part_version 2 is a blocks-only part of the store, which load_library() does not list either.
+            if (out.kind != scene::LibraryKind::model && out.kind != scene::LibraryKind::object) {
+                try {
+                    const YAML::Node part = YAML::LoadFile((dir / out.file).string());
+                    if (part.IsMap() && part["part_version"].IsScalar() && part["part_version"].Scalar() != "1") continue;
+                } catch (const YAML::Exception&) {
+                }
+            }
+            library.entries.push_back(std::move(out));
+        }
     }
     return library;
 }

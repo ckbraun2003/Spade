@@ -1,0 +1,10 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.electronics_misc"
+mass_properties: {mass: 0.175}
+shapes:
+  - {kind: box, size: [0.07, 0.016, 0.07]}
+source: {id: "holybro_x500_v2_kit", url: "https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {grade: assumed, note: "4 ESCs at 25 g (a 20 A to 30 A ESC with leads), a power module 25 g, wiring 30 g, fasteners 20 g; none is in the parts above"}

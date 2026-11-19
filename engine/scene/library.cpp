@@ -361,7 +361,20 @@ namespace {
 // A version-3 library.yaml is a ROOT (the library contract's section 2), not an index: its `indexes` hold the entries. The editor's list is that root's
 // entries of the kinds LibraryKind knows (model, object, and the parts motor, prop, esc and battery), in the root's order, with each entry's name,
 // category, file and thumbnail as the index spells them. An entry of any other kind (a drone with a parts map, a mesh, a world, a frame or payload part,
-// an opaque one) has no LibraryKind and is not listed here; open_libraries() lists it.
+// an opaque one) has no LibraryKind and is not listed here, and neither is a part file of part_version 2 (the blocks-only parts of the store);
+// open_libraries() lists them all.
+// True for a part file of `part_version` 2 or later: the blocks-only parts of the part store (install points, meshes, shapes; the library contract's section
+// 1), which only open_libraries() lists. The panel's parts are version 1 (a motor, prop, esc or battery spec) and load through part_file.hpp.
+bool is_blocks_part(const std::filesystem::path& file) {
+    try {
+        const YAML::Node doc = YAML::LoadFile(file.string());
+        if (!doc.IsMap() || !doc["part_version"].IsScalar()) return false;
+        return doc["part_version"].Scalar() != "1";
+    } catch (const YAML::Exception&) {
+        return false;
+    }
+}
+
 Result<Library> load_v3_root(const std::filesystem::path& path, const YAML::Node& doc) {
     const YAML::Node name = doc["name"];
     if (!name.IsDefined() || !name.IsScalar() || name.Scalar().empty()) {
@@ -390,6 +403,8 @@ Result<Library> load_v3_root(const std::filesystem::path& path, const YAML::Node
             out.kind = LibraryKind::model;
         } else if (e.kind == "object") {
             out.kind = LibraryKind::object;
+        } else if (e.kind == "part" && is_blocks_part(e.file)) {
+            continue;
         } else if (e.kind == "part" && e.part_kind == "motor") {
             out.kind = LibraryKind::motor;
         } else if (e.kind == "part" && e.part_kind == "prop") {

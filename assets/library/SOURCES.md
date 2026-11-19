@@ -105,3 +105,59 @@ Kat, `design-specs/integration/drone-builder-datapack.md` section 7.4: the candi
 - **License:** `facts_cite`.
 - **Used for:** the competition quad's choice of parts. Nothing in it that took its shape from APC is used.
 - **Withdrawn:** section 7.2's fit was withdrawn on 2026-10-21, because its inputs included APC-derived rows (the datapack's own note, line 307). A re-run on measured data only is owed, and is not scheduled (Kat, 2026-10-22). Until it lands, nothing fitted cites it: the competition parts that name this source (`comp_2207_2450kv`, `comp_4s`) are `assumed`, and each says so in its note.
+
+### `holybro_x500_v2_kit`
+
+Holybro, PX4 Development Kit X500 V2: the kit page (frame mass) and the docs page with its "3D CAD File" x500v2-frame.step (the kit frame, its motor axes and its plates), <https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. The vendor pages carry no terms line. The numbers (mass, dimensions) are facts, used and cited; the CAD file itself stays in the local part store and is not in this repository (L88b). Recorded, not enforced (L88c): docs/design/interface/records/2026-11-18-x500-parts-sources.md section 5.
+- **Used for:** the X500 build's frame: its mass (0.610 kg, the bare kit), the poses read from the kit file (motor axes at +-0.1774 m, the plates, the GPS stand, the battery tray) and the kit motor and rotor geometry. Published; the file positions are measured.
+
+### `holybro_pixhawk_6c`
+
+Holybro, Pixhawk 6C technical specification ("Weight (Plastic Case): 34.6g", "Dimensions: 84.8 * 44 * 12.4 mm") and its case CAD, <https://docs.holybro.com/autopilot/pixhawk-6c/technical-specification>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. The pages and the file carry no terms line; the store terms are the only reuse lines. The numbers are facts, used and cited; the CAD file stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 1.
+- **Used for:** the 6C controller part's mass (34.6 g, plastic case) and its box. Published.
+
+### `holybro_gps_m9n_standard`
+
+Holybro, M8N/M9N/M10 standard GPS overview ("Dimension (V1)": phi50 x14.4 mm; "Weight (V1)": 32g) and its CAD, <https://docs.holybro.com/gps-and-rtk-system/m8n-m9n-m10-gps/standard-m10-m9n-m8n-gps/overview>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. The pages and the file carry no terms line. The numbers are facts, used and cited; the CAD file stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 2.
+- **Used for:** the standard GPS part's mass (32 g) and its shell. Published.
+
+### `raspberry_pi_5_files`
+
+Raspberry Pi, Raspberry Pi 5 3D STEP "No Graphics small file" (design files, MIT licence in the zip), <https://pip.raspberrypi.com/categories/892-raspberry-pi-5>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. The zip's LICENSE.txt: "This 3D model is provided under the MIT license included at the end of this file." The model is geometry only; it stays in the local part store (L88b) and the repository carries its hash. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 4.
+- **Used for:** the Raspberry Pi 5 part's geometry. Measured from the file.
+
+### `retail_raspberry_pi_5`
+
+Retailer listing of the Raspberry Pi 5 8GB board (desertcart.sg), 45 g; Raspberry Pi publishes no weight, <https://www.desertcart.sg/products/593685802-raspberry-pi-5-8gb-ram-board>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. A retailer listing with no reuse licence; the number is a fact, used and cited. The page was supplied by the lead and not read by Interface (docs/design/interface/records/2026-11-18-x500-parts-sources.md section 4); other sources give 62 g packaged.
+- **Used for:** the Raspberry Pi 5 part's mass (0.045 kg). Retailer.
+
+### `raspberry_pi_camera_module_3`
+
+Raspberry Pi, Camera Module 3: product page ("Dimensions: 25 x 24 x 11.5mm") and the design files (camera-module-3-step), <https://www.raspberrypi.com/products/camera-module-3/>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. raspberrypi.com/licensing: "Most of the design files released and hosted by us are made available openly, with no limitations." The model stays in the local part store (L88b). docs/design/interface/records/2026-11-18-x500-parts-sources.md section 3.
+- **Used for:** the Camera Module 3 part's geometry. Measured from the file; its mass is assumed (the vendor publishes none).
+
+### `grepow_tattu_4s_5200`
+
+Grepow, Tattu G-Tech 4S 5200mAh 14.8V 35C LiPo drone battery: "Weight: 436.5g", "Dimensions: 133x45x33.5mm", <https://www.grepow.com/uav-battery/tattu-g-tech-4s-5200mah-14-8v-35c-lipo-drone-battery.html>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. A maker's product page with no terms line read; the numbers are facts, used and cited. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 6.
+- **Used for:** the 4S pack part's mass (0.4365 kg) and box (133 x 33.5 x 45 mm). Retailer.
+
+### `holybro_sik_radio_v3`
+
+Holybro, SiK Telemetry Radio V3 433/915MHz: "Dimension 28 x 53 x 10.7mm (without antenna)", "Weight 23.5g w/ antenna" (the 100 mW and 500 mW columns), <https://docs.holybro.com/radio/sik-telemetry-radio-v3>, retrieved 2026-11-18.
+
+- **License:** `facts_cite`. The datasheet page carries no terms line; the numbers are facts, used and cited. docs/design/interface/records/2026-11-18-x500-parts-sources.md section 7.
+- **Used for:** the telemetry radio part's mass (23.5 g) and box (53 x 10.7 x 28 mm). Published.

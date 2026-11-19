@@ -5,7 +5,8 @@
 //   LibraryDefaultRoot.TheV3RootReadsAsTheLibraryTheV2IndexGave   scene::load_library() of the committed library.yaml and library_from_yaml() of the old
 //                                                  text: the same entries, in the same order, name, category, file, thumbnail and kind each
 //   LibraryDefaultRoot.TheSetKeepsEveryIdAndFileOfTheV2Root         open_libraries() on the committed root and on a v2 root made of the old text (its
-//                                                  files as empty placeholders): id for id, file for file, thumbnail, name, category, kind
+//                                                  files as empty placeholders): the old 38 are the root's first 38, id for id, file for file,
+//                                                  thumbnail, name, category, kind
 //   LibraryDefaultRoot.ALegacyReaderKeepsReadingVersion2           load_library() of the old text on disk still gives the version-2 library (a consumer's
 //                                                  own library may be v2), and version 4 is still refused by name
 //   LibraryDefaultRoot.LoadLibraryListsOnlyTheKindsItKnows         a v3 root with a model, a frame part and a world: the list is the model
@@ -105,7 +106,8 @@ TEST(LibraryDefaultRoot, TheSetKeepsEveryIdAndFileOfTheV2Root) {
     EXPECT_EQ(old_set->roots[0].library_version, 2u);
     ASSERT_EQ(new_set->roots.size(), 1u);
     EXPECT_EQ(new_set->roots[0].library_version, 3u);
-    ASSERT_EQ(new_set->entries.size(), old_set->entries.size());
+    // the 38 entries of the old file come first and unchanged; the root has grown after them (the X500 build's parts and drone, L88l)
+    ASSERT_GE(new_set->entries.size(), old_set->entries.size());
     for (std::size_t i = 0; i < old_set->entries.size(); ++i) {
         const sc::SetEntry& a = old_set->entries[i];
         const sc::SetEntry& b = new_set->entries[i];

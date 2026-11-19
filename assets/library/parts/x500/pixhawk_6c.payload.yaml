@@ -1,0 +1,13 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.pixhawk_6c"
+mass_properties: {mass: 0.0346}
+meshes:
+  - {store: {sha256: "6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb", file: "PCB-PIXHAWK6C-F1.spmesh"}}
+  - {store: {sha256: "b46e9195617796641e590131d93d13bd4f88a790693080820b352f0da3cf4756", file: "MIANKE-PIXHAWK6C-LV-C1.spmesh"}}
+  - {store: {sha256: "0b3807d1ea295a84b5293d23b74430ba3a5d3188a689dee54f554e466a260d32", file: "DIKE-PIXHAWK6C-LV-C1.spmesh"}}
+  - {store: {sha256: "278c17f49e9442bee9db096b6735dafd1febf13b4bec15ee63e3562fd7256c4e", file: "IMU-PIXHAWK6C.spmesh"}}
+source: {id: "holybro_pixhawk_6c", url: "https://docs.holybro.com/autopilot/pixhawk-6c/technical-specification", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {source: "holybro_pixhawk_6c", grade: published, note: "Holybro docs, Pixhawk 6C technical specification page, 'Weight (Plastic Case): 34.6g'; model Pixhawk6C-3D-CAD.stp (Holybro docs, Pixhawk 6C download page)"}

@@ -1,0 +1,13 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.motor.dj2216_kv880"
+mass_properties: {mass: 0.055}
+install_points:
+  - {name: prop_hub, kind: prop_hub, pos: [0, 0.032, 0], orient: [0, 0, 1, 0]}
+meshes:
+  - {store: {sha256: "dd3fdc640f9f30113f353ed08cb29f391a952e5d38f25ec17894c27c3dcc26f0", file: "DJ-2216-KV880_1_1.spmesh"}}
+source: {id: "holybro_x500_v2_kit", url: "https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {grade: assumed, note: "library iris_920kv motor 0.055 kg (assumed, a 2212 stand-in for the 2216 KV920; the kit file's DJ-2216-KV880 is the same 2216 can, 28.7 mm across, a different winding)"}
+  install_points.prop_hub: {source: "holybro_x500_v2_kit", grade: derived, note: "the bell boss top, the seat the rotor part's seat point sits on (measured by Interface on the re-origined motor); the shaft collar is at +0.036 and the shaft tip at +0.0415"}

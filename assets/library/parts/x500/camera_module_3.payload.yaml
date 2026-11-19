@@ -1,0 +1,16 @@
+# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
+part_version: 2
+id: "part.payload.camera_module_3"
+mass_properties: {mass: 0.004}
+meshes:
+  - {store: {sha256: "8bdf6c1b1316c3e742e74733e8d23f5e79d75e29ce04f7094fa9d0e339974baa", file: "Dielectric.spmesh"}}
+  - {store: {sha256: "9e7c82466d157d146fa94f0f66fad9324b75d41a3555d6d0ee05b4ee261aa5e0", file: "U4_3.spmesh"}}
+  - {store: {sha256: "b0bd973f942d6790a11f95426610512180e82d7beb8f893035f16b1a5028d22d", file: "U4_6.spmesh"}}
+  - {store: {sha256: "c801287e8939cd6f60840e885c6b4fb2f031409584b732aad1bd927947e60ac4", file: "U4_7.spmesh"}}
+  - {store: {sha256: "4eeea849eb668984e6918fa5451ae4647af05faa639944741434b0d1bd65e635", file: "U12.spmesh"}}
+  - {store: {sha256: "9893fca68b39a86669350063e7e723a312e29816021a8e15d97e36f7966f1588", file: "J1.spmesh"}}
+  - {store: {sha256: "c84c1f2c61f0aeba58f6d3e6d5c62c77a12fea093069eae6c3036733edc3b91b", file: "X1.spmesh"}}
+source: {id: "raspberry_pi_camera_module_3", url: "https://www.raspberrypi.com/products/camera-module-3/", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
+sources:
+  mass_properties.mass: {grade: assumed, note: "Raspberry Pi publishes no mass for the Camera Module 3; 4 g is an assumed figure"}
