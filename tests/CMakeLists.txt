@@ -317,6 +317,7 @@ add_executable(spade_tests
     # exchanges in tests/data/library_contract.
     test_library_c.cpp
     ../tools/library_c/library_json.cpp
+    ../tools/library_c/mesh_info.cpp
     ../tools/library_c/c_api.cpp
 )
 

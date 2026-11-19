@@ -1,0 +1,37 @@
+{
+ "description": "an id that is not there",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "mesh_file_info",
+ "request": {
+  "id": "default:part.motor.nope"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "mesh_file_info",
+  "ok": false,
+  "refusal": {
+   "code": "entry_not_found",
+   "severity": "error",
+   "message": "",
+   "root": "default",
+   "path": null,
+   "id": "default:part.motor.nope",
+   "field": null,
+   "issues": []
+  }
+ }
+}

@@ -1,4 +1,5 @@
 #include "library_json.hpp"
+#include "mesh_info.hpp"
 
 #include <array>
 #include <cmath>
@@ -462,6 +463,27 @@ Answer op_compose_placement(const Json& req) {
     return ok_answer("compose_placement", Json{{"items", std::move(out)}});
 }
 
+// mesh_file_info: a file by absolute `path`, or by the `id` of an entry that has one; `unit` names the unit of an STL or OBJ file, which declares none.
+Answer op_mesh_file_info(const Library& lib, const Json& req) {
+    only_keys(req, {"path", "id", "unit"}, "", true);
+    const std::string path = opt_string(req, "path", "");
+    const std::string id = opt_string(req, "id", "");
+    if (path.empty() == id.empty()) refuse("invalid_request", "give exactly one of `path` and `id`", "path");
+    fs::path file;
+    if (!path.empty()) {
+        file = path_of(path);
+        if (!file.is_absolute()) refuse("relative_path", "the path must be absolute", "path");
+    } else {
+        auto found = sc::find_entry(lib.set, id, {});
+        if (!found) return refused_answer("mesh_file_info", found.error());
+        if (found->entry->file.empty()) refuse("invalid_request", "the entry has no file", "id");
+        file = found->entry->file;
+    }
+    auto info = mesh_file_info(file, opt_string(req, "unit", ""));
+    if (!info) return refused_answer("mesh_file_info", info.error());
+    return ok_answer("mesh_file_info", std::move(*info));
+}
+
 // Ops the contract names and this build does not answer yet ([shape]), and ops it does not name.
 bool is_known_op(std::string_view op) {
     for (std::string_view s : {"list", "find", "resolve", "hash_text", "validate", "compose_placement", "mesh_file_info", "reload", "create_root",
@@ -531,6 +553,7 @@ Answer call_library(const Library& lib, std::string_view op, std::string_view re
         if (op == "hash_text") return op_hash_text(req);
         if (op == "validate") return op_validate(req);
         if (op == "compose_placement") return op_compose_placement(req);
+        if (op == "mesh_file_info") return op_mesh_file_info(lib, req);
         return refused_answer(op, refusal("not_implemented", "'" + std::string(op) + "' is not built in this version"));
     } catch (const Refused& r) {
         return refused_answer(op, r.refusal);
