@@ -29,8 +29,11 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -40,6 +43,7 @@
 #include "d1_case.hpp"
 #include "phantom_case.hpp"
 #include "physics/airflow/fluid_step.hpp"
+#include "physics/airflow/line.hpp"
 #include "scene/model_file.hpp"
 #include "scene/part_file.hpp"
 #include "scene/prop_line.hpp"
@@ -349,6 +353,156 @@ TEST(AirflowX500, TheRotorsReachStaysInsideTheBoxWithRoomAbove) {
     const float side = 0.5f * static_cast<float>(grid.nx) * grid.dx - (static_cast<float>(x5::kArm) + reach);
     std::printf("[ x500    ] sideways: %.4f m of room past the kernel's reach\n", static_cast<double>(side));
     EXPECT_GE(side, 0.0165f - 1.0e-4f) << "as much side room as the phantom's 2 mm box";
+}
+
+// L105 (the lead, 2026-11-19), opt-in (SPADE_L105=1), CPU: why the lines' thrust at a fixed rotor speed falls with h. ONE of the kit's rotors (the 1045 at
+// its balance speed) in a 0.40 x 0.55 x 0.40 m open box at 5 mm, the rotor 0.20 m under the top (the kernel reaches 0.157 m), its thrust at t = 0.01, 0.02 and 0.05 s for h 0.4, 0.2, 0.1 and 0.05 ms (the stills'
+// 0.2 / 0.1 / 0.05 at half the cells, so the same cells a step at twice the h), in four modes:
+//   as now      8 sub-azimuths, the field fed back (spread_line, then fluid_step)
+//   frozen      8 sub-azimuths, the line reads a uniform downflow of the rotor's momentum-theory speed and the fluid is not stepped: no feedback
+//   mid         ONE azimuth a step (n_sub 1, the step's middle), the field fed back
+//   no-tip      as now with the tip/smearing correction off
+// If frozen loses the h-dependence it is the feedback; if mid does, it is the sub-step sampling; if no-tip does, it is the correction.
+[[nodiscard]] bool l105_asked() {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SPADE_L105") != nullptr;
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+[[nodiscard]] uint32_t l105_env(const char* name, uint32_t fallback) {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    const char* v = std::getenv(name);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    return v != nullptr ? static_cast<uint32_t>(std::strtoul(v, nullptr, 10)) : fallback;
+}
+
+// Optional: SPADE_L105_NV (the projection's V-cycles), SPADE_L105_MODE (0..3: only that mode), SPADE_L105_NH (the first NH of the four steps).
+TEST(AirflowX500, TheLinesThrustAgainstTheStepInOneRotorOnTheCpu) {
+    if (!l105_asked()) GTEST_SKIP() << "opt-in: SPADE_L105=1 (CPU, minutes)";
+    namespace af = spade::physics::airflow;
+    const auto part = x5::prop_part();
+    ASSERT_TRUE(part.has_value()) << part.error().context;
+    const auto prop = sc::line_propeller(*part);
+    ASSERT_TRUE(prop.has_value()) << prop.error().context;
+    const float target = static_cast<float>(x5::kMass * 9.80665 / 4.0);
+    const auto omega = x5::balance_omega(prop->blade, prop->polar, target);
+    ASSERT_TRUE(omega.has_value()) << omega.error().context;
+    constexpr float kRho = 1.225f;
+    const double area = 3.14159265358979 * 0.127 * 0.127;
+    const float v_i = static_cast<float>(std::sqrt(static_cast<double>(target) / (2.0 * kRho * area)));  // m/s, momentum theory
+    std::printf("[ L105    ] omega %.1f rad/s, momentum-theory induced speed %.3f m/s, W/4 %.4f N\n", static_cast<double>(*omega),
+                static_cast<double>(v_i), static_cast<double>(target));
+    struct Mode {
+        const char* name;
+        uint32_t n_sub;
+        bool feedback;
+        bool tip;
+    };
+    const Mode modes[] = {{"as now", 8, true, true}, {"frozen", 8, false, true}, {"mid", 1, true, true}, {"no-tip", 8, true, false}};
+    const float hs[] = {0.0004f, 0.0002f, 0.0001f, 0.00005f};
+    const double sample_t[] = {0.01, 0.02, 0.05};
+    // SPADE_L105_DXMM (default 5): the cell, mm; the box in cells and every h scale with it, so the cells the blade moves a step are the same.
+    const uint32_t dx_mm = l105_env("SPADE_L105_DXMM", 5u);
+    const float dx = 0.001f * static_cast<float>(dx_mm);
+    const float scale = static_cast<float>(dx_mm) / 5.0f;
+    const uint32_t only_mode = l105_env("SPADE_L105_MODE", 99u);
+    const uint32_t n_h = std::min<uint32_t>(l105_env("SPADE_L105_NH", 4u), 4u);
+    for (uint32_t mi = 0; mi < 4u; ++mi) {
+        if (only_mode != 99u && only_mode != mi) continue;
+        const Mode& mode = modes[mi];
+        std::printf("[ L105    ] %-7s (n_v %u)", mode.name, l105_env("SPADE_L105_NV", 2u));
+        std::string rows;
+        for (uint32_t hi = 0; hi < n_h; ++hi) {
+            const float h = hs[hi] * scale;
+            const af::GridShape shape{static_cast<uint32_t>(80.0f / scale), static_cast<uint32_t>(110.0f / scale), static_cast<uint32_t>(80.0f / scale), dx};
+            af::DomainBc bc;
+            auto grid = af::make_grid(shape, bc);
+            ASSERT_TRUE(grid.has_value()) << grid.error().context;
+            af::FluidConfig cfg;
+            cfg.rho = kRho;
+            cfg.h = h;
+            cfg.n_v = l105_env("SPADE_L105_NV", cfg.n_v);
+            auto scratch = af::make_fluid_scratch(*grid, bc, cfg);
+            ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
+            if (!mode.feedback) std::fill(grid->v.begin(), grid->v.end(), -v_i);
+            af::LineRotor rotor;
+            rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx, static_cast<float>(shape.ny) * dx - 0.20f,
+                                     0.5f * static_cast<float>(shape.nz) * dx);
+            rotor.axis = glm::vec3(0.0f, 1.0f, 0.0f);
+            rotor.omega = *omega;
+            rotor.blade = &prop->blade;
+            rotor.polar = &prop->polar;
+            rotor.tip_correction = mode.tip;
+            const uint32_t total = l105_env("SPADE_L105_STEPS", static_cast<uint32_t>(std::lround(sample_t[2] / static_cast<double>(h))));
+            double psi = 0.0;
+            double first = 0.0;
+            double early[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};  // the thrust at steps 1 to 6: what the blade reads of its own last steps' force
+            double at[3] = {0.0, 0.0, 0.0};
+            double inflow[3] = {0.0, 0.0, 0.0};   // m/s, the mean downward speed over the disc's area in the rotor's plane
+            double inflow5[3] = {0.0, 0.0, 0.0};  // and 0.05 m under it
+            // The mean downward air over the cells inside the disc's radius, on the v faces of row j.
+            const auto disc_mean = [&](uint32_t j) {
+                double sum = 0.0;
+                uint32_t n = 0;
+                for (uint32_t k = 0; k < shape.nz; ++k) {
+                    for (uint32_t i = 0; i < shape.nx; ++i) {
+                        const float x = (static_cast<float>(i) + 0.5f) * dx - rotor.centre.x;
+                        const float z = (static_cast<float>(k) + 0.5f) * dx - rotor.centre.z;
+                        if (x * x + z * z > 0.127f * 0.127f) continue;
+                        sum -= static_cast<double>(grid->v[af::v_index(shape, i, j, k)]);
+                        ++n;
+                    }
+                }
+                return n != 0u ? sum / static_cast<double>(n) : 0.0;
+            };
+            const uint32_t row = static_cast<uint32_t>(std::lround(rotor.centre.y / dx));
+            const auto t0 = std::chrono::steady_clock::now();
+            for (uint32_t step = 1; step <= total; ++step) {
+                rotor.psi = static_cast<float>(psi);
+                const auto rep = af::spread_line(rotor, *grid, kRho, h, mode.n_sub, scratch->du, scratch->dv, scratch->dw);
+                ASSERT_TRUE(rep.has_value()) << rep.error().context;
+                if (step == 1) first = static_cast<double>(rep->thrust);
+                if (step <= 6u) early[step - 1u] = static_cast<double>(rep->thrust);
+                for (int k = 0; k < 3; ++k) {
+                    if (step == static_cast<uint32_t>(std::lround(sample_t[k] / static_cast<double>(h)))) {
+                        at[k] = static_cast<double>(rep->thrust);
+                        inflow[k] = disc_mean(row);
+                        inflow5[k] = disc_mean(row - static_cast<uint32_t>(std::lround(0.05f / dx)));
+                    }
+                }
+                if (mode.feedback) {
+                    const af::FluidHealth fh = af::fluid_step(*grid, bc, cfg, *scratch);
+                    ASSERT_EQ(fh.fault, af::FluidFault::none) << af::describe(fh, grid->shape);
+                }
+                psi = std::fmod(psi + static_cast<double>(*omega) * static_cast<double>(h), 2.0 * 3.14159265358979);
+            }
+            const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            // Momentum theory for the thrust the line reports against the inflow the disc shows: T = 2 rho A v^2, so v_mt = sqrt(T / 2 rho A).
+            const double v_mt = std::sqrt(at[2] / (2.0 * static_cast<double>(kRho) * area));
+            char text[480];
+            std::snprintf(text, sizeof text,
+                          "\n[ L105    ]   h %.2f ms: step 1 %.3f N; 0.01 s %.3f, 0.02 s %.3f, 0.05 s %.3f N (%.0f s wall); at 0.05 s the disc's mean downflow "
+                          "%.3f m/s in its plane, %.3f m/s 0.05 m under it, the thrust's momentum-theory speed %.3f m/s (disc/theory %.3f); at 0.02 s %.3f, %.3f m/s",
+                          static_cast<double>(h) * 1000.0, first, at[0], at[1], at[2], wall, inflow[2], inflow5[2], v_mt, inflow[2] / v_mt, inflow[1], inflow5[1]);
+            rows += text;
+            std::snprintf(text, sizeof text, "\n[ L105    ]     steps 1 to 6: %.3f %.3f %.3f %.3f %.3f %.3f N (the blade moves %.2f cells a step)", early[0], early[1],
+                          early[2], early[3], early[4], early[5],
+                          static_cast<double>(*omega) * 0.127 * static_cast<double>(h) / static_cast<double>(dx));
+            rows += text;
+        }
+        std::printf("%s\n", rows.c_str());
+        std::fflush(stdout);
+    }
 }
 
 }  // namespace
