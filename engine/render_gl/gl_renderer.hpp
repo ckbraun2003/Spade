@@ -153,6 +153,31 @@ class GlRenderer {
     //     render to the R32F texture dynamic bodies' shadows are drawn into.
     [[nodiscard]] Result<void> upload_scene(const render::RenderScene& scene);
 
+    // What update_csg_subtrees() wrote.
+    struct CsgUpdateReport {
+        uint32_t nodes_written = 0;       // SdfNodes whose bytes changed, and were written
+        uint32_t transforms_written = 0;  // SdfTransforms whose bytes changed, and were written
+        uint32_t boxes_changed = 0;       // subtrees whose box differs from the uploaded one
+        [[nodiscard]] bool any() const noexcept { return nodes_written + transforms_written + boxes_changed > 0u; }
+    };
+
+    // D180 ("run smoother"; the lead approved this header, 2026-11-19). Re-uploads ONLY the CSG subtrees' programs and boxes, for a scene whose
+    // mesh set, materials, shadow map and subtree layout are the ones upload_scene() last accepted: a moving or posed CSG vehicle changes its
+    // program's transforms and its box, nothing else, and need not pay upload_scene()'s meshes, materials and shadow map. It packs each subtree
+    // exactly as upload_scene() does and compares the result byte for byte with the HOST copy of what was last uploaded (the very copy draw()
+    // compares against; the device is never read back), then writes only the changed element ranges (one glBufferSubData per table, from the first
+    // to the last changed element); nothing changed is no GL call and an empty report. A box is host data that draw() compares, so it is only
+    // recorded. The meshes, the materials and the static shadow map are untouched (the shadow stays as uploaded). After it succeeds,
+    // draw(scene, ...) passes its byte compare with this scene.
+    // Refused, and a refusal changes nothing: the previous upload still draws (but a draw of the refused scene is still refused by draw(), as today).
+    //   Code::invalid_argument -- a different number of CSG subtrees, meshes or materials, a subtree whose node count or used-transform count
+    //     differs from the upload's (the tables' layout would move: the message says to call upload_scene()), and every check upload_scene() makes on
+    //     a subtree (no program, a draw item past the statics or see-through, a program that fails SdfProgram::validate()). A subtree's draw item is
+    //     not stored on the device, so a changed one is not a layout change; draw() takes it from the scene each frame.
+    //   Code::capacity_exceeded -- a subtree past kMaxCsgSubtreeNodes, as upload_scene().
+    // A host's simplest loop: call it every frame, and on invalid_argument call upload_scene().
+    [[nodiscard]] Result<CsgUpdateReport> update_csg_subtrees(const render::RenderScene& scene);
+
     // One frame. Groups statics+dynamics by mesh_index, refreshes the instance
     // SSBOs in place, and issues one instanced draw per mesh+submesh.
     //
