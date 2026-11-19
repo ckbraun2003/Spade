@@ -33,14 +33,14 @@
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
 //
-// Everything under --out (Desktop/Projects/Videos/Footage/Spade/<date> by default) is working
+// Everything under --out (Desktop/Vantage/Videos/Footage/Spade/<date> by default) is working
 // output, and none of it is posted. A film is POSTED only under
-// Desktop/Projects/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
+// Desktop/Vantage/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
 // 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
 // recorded), at most 120 s and 30 MB, with a title card. A renderer
 // before-and-after is a Feature. To post one, encode it through the queue
 // (a short test-class job), with the card prepended:
-//   python C:/Users/Cameron/Desktop/Projects/Videos/check_video.py --encode SRC
+//   python %USERPROFILE%/Desktop/Vantage/Videos/check_video.py --encode SRC
 //       Videos/Research/Spade/YYYY-MM-DD_HHMM_<name>.mp4 --card CARD.txt
 // The card names the title, the tree, the commit, the date (UTC), the case,
 // the grid, the simulated-on and drawn-on builds, and the limits that matter
