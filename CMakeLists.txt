@@ -173,6 +173,8 @@ if(SPADE_VULKAN)
     add_subdirectory(spike/airflow)
     # The LBM tier's GPU twin (spike/lbm): after spike/airflow, whose runner it links.
     add_subdirectory(spike/lbm)
+    # The camera sensor's core spike (tools/camera_spike): a standalone ray-query benchmark, build-tree only.
+    add_subdirectory(tools/camera_spike)
 endif()
 
 enable_testing()
