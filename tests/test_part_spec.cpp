@@ -14,6 +14,7 @@
 #include "scene/part_blocks.hpp"
 #include "scene/part_file.hpp"
 #include "scene/part_spec.hpp"
+#include "library_spec_text.hpp"
 
 namespace {
 
@@ -25,21 +26,7 @@ std::string slurp(const fs::path& path) {
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// The v1 text of a library part, as the body of a `spec:` key: its `part_version` line dropped, every other line indented two spaces.
-std::string as_spec(const std::string& v1_text) {
-    std::string out = "spec:\n";
-    std::size_t at = 0;
-    while (at < v1_text.size()) {
-        std::size_t end = v1_text.find('\n', at);
-        if (end == std::string::npos) end = v1_text.size();
-        std::string line = v1_text.substr(at, end - at);
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        at = end + 1;
-        if (line.rfind("part_version:", 0) == 0 || line.empty() || line[0] == '#') continue;
-        out += "  " + line + "\n";
-    }
-    return out;
-}
+using spade::test::as_spec;
 
 const fs::path kLibrary = fs::path(SPADE_ASSETS_DIR) / "library" / "parts";
 const std::string kBlocks = "part_version: 2\nid: \"part.motor.t\"\nmass_properties: {mass: 0.055}\nsources:\n  mass_properties.mass: {grade: assumed, note: \"a stand-in mass\"}\n";
