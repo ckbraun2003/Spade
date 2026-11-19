@@ -40,6 +40,7 @@ PERF_RE = re.compile(r"PERF\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 NOTE_RE = re.compile(r"PERF-NOTE\s+(\S+)\s+(.*)$")
 NS_TO = {"ns": 1.0, "us": 1e-3, "ms": 1e-6, "s": 1e-9}
 MAX_NOISY_RETRIES = 3
+DISK_SHORT = 5  # exit code: a metric's free_gb is not there; nothing was measured
 IGNORE_QUEUE = False  # --dry-run --ignore-queue only: tests the mechanics on a busy box
 
 
@@ -287,7 +288,66 @@ def add_perf(result, out, m):
             r["values"].append(v)
 
 
+SCRATCH_ROOT = os.path.join(REPO, "build-bench")
+
+
+def scratch_dirs(m, ctx):
+    """The folders a metric makes for itself (its "scratch": a cache, a recording), expanded. Each lies under <repo>/build-bench."""
+    out = []
+    for p in expand(m.get("scratch", []), ctx):
+        p = os.path.abspath(p)
+        root = os.path.normcase(SCRATCH_ROOT) + os.sep
+        if not os.path.normcase(p).startswith(root):
+            raise RuntimeError("%s: scratch %s is not under %s: refusing to delete it" % (m["name"], p, SCRATCH_ROOT))
+        out.append(p)
+    return out
+
+
+def remove_scratch(path, say):
+    """Delete a scratch folder and say how much it held."""
+    if not os.path.isdir(path):
+        return
+    size = sum(os.path.getsize(os.path.join(d, f)) for d, _, files in os.walk(path) for f in files if os.path.exists(os.path.join(d, f)))
+    shutil.rmtree(path, ignore_errors=True)
+    if os.path.isdir(path):
+        say("  warning: %s was not fully removed" % path)
+    else:
+        say("  removed %s (%.1f GB)" % (path, size / 2**30))
+
+
+def disk_short(chosen, ctx):
+    """The first metric whose free_gb is not free on the drive of its scratch folder (or of the build folder): (name, need, have), else None."""
+    for m in chosen:
+        need = m.get("free_gb")
+        if not need:
+            continue
+        dirs = scratch_dirs(m, ctx)
+        probe = dirs[0] if dirs else SCRATCH_ROOT
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        have = shutil.disk_usage(probe).free / 2**30
+        if have < need:
+            return m["name"], need, have
+    return None
+
+
 def measure_metric(m, ctx, repeats, say):
+    """measure_metric_run() between a clean slate and a clean-up: a metric's scratch folders are emptied before its first run (so no
+    stale cache or recording can pass for a fresh one) and deleted after its last, whatever happens."""
+    scratch = scratch_dirs(m, ctx)
+    for p in scratch:
+        remove_scratch(p, say)
+    try:
+        return measure_metric_run(m, ctx, repeats, say)
+    finally:
+        for p in scratch:
+            remove_scratch(p, say)
+
+
+def measure_metric_run(m, ctx, repeats, say):
     """Returns {metric name: {"unit", "values", "basis", "noisy"}}. One warm-up run is thrown away."""
     kind = m["kind"]
     repeats = m.get("repeats", repeats)  # a long run (the live smoke) says how many it takes
@@ -484,10 +544,14 @@ def cmd_measure(a):
     today = datetime.date.today().isoformat()
     run_id = "%s_%s" % (today, sha[:7])
     exe = lambda name: os.path.join(build_dir, "bin", name + ".exe")
-    ctx = {"home": HOME.replace("\\", "/"), "repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
+    ctx = {"home": HOME.replace("\\", "/"), "web_out": os.path.join(SCRATCH_ROOT, "perf-web-s1-30").replace("\\", "/"), "repo": tree, "build": build_dir, "bench": exe("spade_bench"), "tests": exe("spade_tests"), "flow_movie": exe("flow_movie"), "sandbox": exe("spade_sandbox"),
            "smoke_out": os.path.join(REPO, "build-bench", "perf-smoke"),
            "ticket": "perf-" + run_id, "run_id": run_id,
            "raw_dir": os.path.abspath(a.raw_dir or os.path.dirname(os.path.abspath(a.out_json or a.ledger)))}
+    short = disk_short(chosen, ctx)
+    if short and not a.dry_run:
+        print("disk short: %s needs %g GB free and the drive has %.1f GB; nothing was measured. Run it when C: has room." % short, flush=True)
+        sys.exit(DISK_SHORT)
     env = environment(build_dir)
     queue_readings = []
     results, noisy = {}, 0
