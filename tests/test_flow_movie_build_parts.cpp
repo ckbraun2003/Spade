@@ -968,6 +968,7 @@ TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidi
             const float mid = 0.5f * (e.lo + e.hi);
             EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity), 2e-3f) << "ring " << i;
             EXPECT_NEAR(mesh.source_materials[i].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
+            EXPECT_EQ(mesh.source_materials[i].shading, 1u) << "unlit: the drone's key light is not a light on a drawn average (at 2.5 times it turned the disc roots white)";
             EXPECT_EQ(mesh.submesh_index_count[i], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings";
         }
         // three radii of the first ring's neighbourhood: flat at the blade plane, evenly spaced round (no angular structure)
