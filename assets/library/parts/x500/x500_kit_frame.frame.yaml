@@ -5,9 +5,9 @@ id: "part.frame.x500_kit_frame"
 mass_properties: {mass: 0.61}
 install_points:
   - {name: motor_front_right, kind: motor, pos: [-0.17689, 0.022, -0.17689], orient: [1, 0, 0, 0], spin: 1}
-  - {name: motor_front_left, kind: motor, pos: [-0.17689, 0.022, 0.17689], orient: [1, 0, 0, 0], spin: -1}
-  - {name: motor_rear_left, kind: motor, pos: [0.17689, 0.022, 0.17689], orient: [1, 0, 0, 0], spin: 1}
-  - {name: motor_rear_right, kind: motor, pos: [0.17689, 0.022, -0.17689], orient: [1, 0, 0, 0], spin: -1}
+  - {name: motor_front_left, kind: motor, pos: [-0.17689, 0.022, 0.17689], orient: [0.70710678118654757, 0, 0.70710678118654757, 0], spin: -1}
+  - {name: motor_rear_left, kind: motor, pos: [0.17689, 0.022, 0.17689], orient: [0, 0, 1, 0], spin: 1}
+  - {name: motor_rear_right, kind: motor, pos: [0.17689, 0.022, -0.17689], orient: [0.70710678118654757, 0, -0.70710678118654757, 0], spin: -1}
   - {name: fc_6c, kind: fc, pos: [0, 0.0379, 0], orient: [0, 0, 1, 0]}
   - {name: gnss_stand, kind: gnss, pos: [0.099, 0.113, 0], orient: [0, 0, 1, 0]}
   - {name: companion_tray, kind: companion, pos: [0.0274, -0.0431, 0.044], orient: [0.5, -0.5, 0.5, 0.5]}
@@ -80,10 +80,10 @@ meshes:
 source: {id: "holybro_x500_v2_kit", url: "https://docs.holybro.com/drone-development-kit/px4-development-kit-x500v2", license: "none found, see docs/design/interface/records/2026-11-18-x500-parts-sources.md", retrieved: "2026-11-18"}
 sources:
   mass_properties.mass: {source: "holybro_x500_v2_kit", grade: published, note: "Holybro X500 V2 kit page https://holybro.com/products/px4-development-kit-x500-v2 (the bare frame kit, no motors, ESCs or electronics)"}
-  install_points.motor_front_right: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022)"}
-  install_points.motor_front_left: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022)"}
-  install_points.motor_rear_left: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022)"}
-  install_points.motor_rear_right: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022)"}
+  install_points.motor_front_right: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022). The motor is turned about its own axis by +0 / +90 / +180 / -90 degrees (front right, front left, rear left, rear right; right-handed about the kit file's +y): the kit's four motor meshes are exact turns of the library's one re-origined motor mesh (Physics, measured from the store, residual 3e-10 m)"}
+  install_points.motor_front_left: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022). The motor is turned about its own axis by +0 / +90 / +180 / -90 degrees (front right, front left, rear left, rear right; right-handed about the kit file's +y): the kit's four motor meshes are exact turns of the library's one re-origined motor mesh (Physics, measured from the store, residual 3e-10 m)"}
+  install_points.motor_rear_left: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022). The motor is turned about its own axis by +0 / +90 / +180 / -90 degrees (front right, front left, rear left, rear right; right-handed about the kit file's +y): the kit's four motor meshes are exact turns of the library's one re-origined motor mesh (Physics, measured from the store, residual 3e-10 m)"}
+  install_points.motor_rear_right: {source: "holybro_x500_v2_kit", grade: derived, note: "the kit file's motor axis: x and z +-0.17689 m (500.3 mm motor to motor, Interface's circle fit), at the mounting face, the flange of the kit's motor mount plate (y 0.022). The motor is turned about its own axis by +0 / +90 / +180 / -90 degrees (front right, front left, rear left, rear right; right-handed about the kit file's +y): the kit's four motor meshes are exact turns of the library's one re-origined motor mesh (Physics, measured from the store, residual 3e-10 m)"}
   install_points.fc_6c: {source: "holybro_x500_v2_kit", grade: measured, note: "the pose table's pixhawk_6c: measured"}
   install_points.gnss_stand: {source: "holybro_x500_v2_kit", grade: measured, note: "the pose table's gps_m8n_m9n_v1: measured"}
   install_points.companion_tray: {grade: assumed, note: "the pose table's raspberry_pi_5: assumed"}

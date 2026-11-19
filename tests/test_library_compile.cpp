@@ -314,13 +314,11 @@ TEST(LibraryCompile, AMeshPartIsATensorRecordAtItsCentroidAndNeedsTheStore) {
 // The acceptance (L103, L107): the X500 drone, from the part store, is the kit Physics' flow model carries: its mass, centre of mass and whole tensor are the
 // kit constants (tests/x500_model.hpp: the same meshes, the same uniform density per part, the same parallel axis), the principal frame 5.4 degrees about z.
 // Opt-in: SPADE_PART_STORE.
-// The kit constants are the table's parts from their own meshes; the entries reuse ONE motor mesh (the kit's DJ-2216, re-origined on its shaft axis, Spade's
-// ruling for the entries) at the four points, where the table has the four distinct instances (DJ-2216-KV880_1_1 .. _4). That is the one difference this
-// test finds (a motor's centroid is a fraction of a millimetre off its axis, and the four differ): the mass is exact, the centre of mass is within 5e-5 m and
-// the tensor within 0.2 per cent. Tighten to 1e-9 when the constants are computed from the entries' one motor (Physics, L107).
-constexpr double kMassPin = 1e-9;      // relative
-constexpr double kComPin = 5e-5;       // m
-constexpr double kTensorPin = 2e-3;    // relative to the diagonal; the products are compared to the same absolute size
+// The pins are relative. The kit constants in tests/x500_model.hpp are printed to 9 digits (a relative rounding of up to 5e-9), so the pin is 1e-7 here; it goes to
+// the lead's 1e-9 when Physics' 17-digit constants (physics/kit-constants-17, 012ceebd) are on this branch. The library has ONE motor mesh and the table's four
+// motors are exact turns of it about their own axes (Physics, L108), so the frame part's motor points carry the turns: without them the centre of mass was
+// 2.9e-5 m and the tensor 0.1 per cent off.
+constexpr double kPin = 1e-7;
 
 TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     const std::string store = store_from_env();
@@ -344,22 +342,24 @@ TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
         com += r.mass * r.position;
     }
     com /= mass;
-    EXPECT_NEAR(mass, kit::kKitMass, kMassPin * kit::kKitMass);
-    EXPECT_NEAR(com.x, kit::kKitCom.x, kComPin);
-    EXPECT_NEAR(com.y, kit::kKitCom.y, kComPin);
-    EXPECT_NEAR(com.z, kit::kKitCom.z, kComPin);
+    EXPECT_NEAR(mass, kit::kKitMass, 1e-9 * kit::kKitMass);  // the table's sum, exact
+    EXPECT_NEAR(com.x, kit::kKitCom.x, kPin * std::abs(kit::kKitCom.x));
+    EXPECT_NEAR(com.y, kit::kKitCom.y, kPin * std::abs(kit::kKitCom.y));
+    EXPECT_NEAR(com.z, kit::kKitCom.z, kPin * std::abs(kit::kKitCom.z));
     const glm::dmat3& I = got->compiled.inertia.inertia_design;
-    EXPECT_NEAR(I[0][0], kit::kKitXX, kTensorPin * kit::kKitXX);
-    EXPECT_NEAR(I[1][1], kit::kKitYY, kTensorPin * kit::kKitYY);
-    EXPECT_NEAR(I[2][2], kit::kKitZZ, kTensorPin * kit::kKitZZ);
-    EXPECT_NEAR(I[0][1], kit::kKitXY, kTensorPin * kit::kKitXX);
-    EXPECT_NEAR(I[0][2], kit::kKitXZ, kTensorPin * kit::kKitXX);
-    EXPECT_NEAR(I[1][2], kit::kKitYZ, kTensorPin * kit::kKitXX);
+    EXPECT_NEAR(I[0][0], kit::kKitXX, kPin * kit::kKitXX);
+    EXPECT_NEAR(I[1][1], kit::kKitYY, kPin * kit::kKitYY);
+    EXPECT_NEAR(I[2][2], kit::kKitZZ, kPin * kit::kKitZZ);
+    // the products are compared to the tensor's own scale (Ixx), not to themselves: Ixz is 7e-5 of it, so the frame's 12-digit quaternion (0.707106781187) alone
+    // moves it by 2e-13 (1e-7 of itself)
+    EXPECT_NEAR(I[0][1], kit::kKitXY, 1e-9 * kit::kKitXX);
+    EXPECT_NEAR(I[0][2], kit::kKitXZ, 1e-9 * kit::kKitXX);
+    EXPECT_NEAR(I[1][2], kit::kKitYZ, 1e-9 * kit::kKitXX);
     // the principal frame: about 5.4 degrees about z
     const glm::quat q = got->compiled.model.design_to_principal;
     const double angle = 2.0 * std::acos(std::min(1.0, static_cast<double>(std::abs(q.w)))) * 180.0 / 3.14159265358979323846;
     EXPECT_NEAR(angle, 5.4, 0.1);
-    EXPECT_GT(std::abs(q.z), 0.95f * std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z)) << "about z (the products xz and yz tilt the axis a little)";
+    EXPECT_GT(std::abs(q.z), 0.98f * std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z)) << "about z (Ixx and Izz are within 2 per cent, so the small products tilt the axis a little)";
     // the rotors: the kit's four, at the table's hub height (the disc)
     ASSERT_EQ(got->spec.rotors.size(), 4u);
     EXPECT_NEAR(got->spec.rotors[0].hub.position.y, kit::kDiscHeight, 1e-4) << "the disc: 0.070 - 0.00926; the constant rounds it to 0.0607";

@@ -335,6 +335,6 @@ entries:
       - {slot: radio, part: "default:part.payload.sik_radio_v3", parent: frame, install_point: radio_plate}
       - {slot: esc, part: "default:part.payload.electronics_misc", parent: frame, install_point: esc_between_plates}
       - {slot: prop_front_right, part: "default:part.prop.x500_rotor_front_ccw", parent: motor_front_right, install_point: prop_hub}
-      - {slot: prop_front_left, part: "default:part.prop.x500_rotor_front_cw", parent: motor_front_left, install_point: prop_hub}
-      - {slot: prop_rear_left, part: "default:part.prop.x500_rotor_rear_ccw", parent: motor_rear_left, install_point: prop_hub}
-      - {slot: prop_rear_right, part: "default:part.prop.x500_rotor_rear_cw", parent: motor_rear_right, install_point: prop_hub}
+      - {slot: prop_front_left, part: "default:part.prop.x500_rotor_front_cw", parent: motor_front_left, install_point: prop_hub, adjust: {pitch_deg: -90}}
+      - {slot: prop_rear_left, part: "default:part.prop.x500_rotor_rear_ccw", parent: motor_rear_left, install_point: prop_hub, adjust: {pitch_deg: -180}}
+      - {slot: prop_rear_right, part: "default:part.prop.x500_rotor_rear_cw", parent: motor_rear_right, install_point: prop_hub, adjust: {pitch_deg: 90}}

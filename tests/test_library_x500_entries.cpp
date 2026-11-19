@@ -242,6 +242,13 @@ void expect_pose(const Pose& got, const Pose& want, const std::string& what) {
     for (int i = 0; i < 4; ++i) EXPECT_NEAR(got.q[i], want.q[i], 1e-9) << what << " orientation " << i;
 }
 
+// The table has the kit's four motors in place; the library has ONE re-origined motor mesh, so the frame's motor points carry the turns (Physics, L108: the
+// table's four meshes are exact turns of the one about each motor's own vertical axis; the kit file's axes, right-handed about +y). w-first.
+const std::map<std::string, glm::dquat> kMotorTurn = {{"motor_front_right", glm::dquat(1.0, 0.0, 0.0, 0.0)},
+                                                       {"motor_front_left", glm::dquat(0.70710678118654757, 0.0, 0.70710678118654757, 0.0)},
+                                                       {"motor_rear_left", glm::dquat(0.0, 0.0, 1.0, 0.0)},
+                                                       {"motor_rear_right", glm::dquat(0.70710678118654757, 0.0, -0.70710678118654757, 0.0)}};
+
 TEST(LibraryX500Entries, EveryPartOfTheTableIsAnEntryOfTheDroneInItsPose) {
     const sc::LibrarySet set = open_default();
     const std::map<std::string, Pose> poses = compose_drone(set);
@@ -253,13 +260,16 @@ TEST(LibraryX500Entries, EveryPartOfTheTableIsAnEntryOfTheDroneInItsPose) {
         const auto got = poses.find(slot->second);
         ASSERT_NE(got, poses.end()) << "no slot " << slot->second << " for " << part.name;
         if (part.kind == "motor") {
-            // the motor part is one object about its own axis: the table has the kit's motor in place, so the pin is the axis (x and z) and the turn
+            // the motor part is one object about its own axis: the table has the kit's motor in place, so the pin is the axis (x and z) and the table's turn composed
+            // with the library mesh's own (kMotorTurn: the table's three other motors are turns of the one mesh)
             const Pose want = to_design(part.pos, part.q);
             const double hub_x = part.name.find("front") != std::string::npos ? kHub : -kHub;
             const double hub_z = part.name.find("right") != std::string::npos ? kHub : -kHub;
             EXPECT_NEAR(got->second.p[0], hub_x, 1e-9) << part.name;
             EXPECT_NEAR(got->second.p[1], -hub_z, 1e-9) << part.name << " (the design frame's y is the table's -z)";
-            for (int i = 0; i < 4; ++i) EXPECT_NEAR(got->second.q[i], want.q[i], 1e-9) << part.name << " orientation " << i;
+            const glm::dquat expected = glm::dquat(want.q[0], want.q[1], want.q[2], want.q[3]) * kMotorTurn.at(part.name);
+            const glm::dquat have(got->second.q[0], got->second.q[1], got->second.q[2], got->second.q[3]);
+            EXPECT_NEAR(std::abs(glm::dot(have, expected)), 1.0, 1e-9) << part.name << " orientation (a quaternion and its negative are one turn)";
         } else {
             expect_pose(got->second, to_design(part.pos, part.q), part.name);
         }
@@ -314,6 +324,7 @@ TEST(LibraryX500Entries, TheFramesMotorPointsAreTheKitsAxesWithTheEnginesSpins) 
         const sc::PartInstallPoint& p = *points[r.name];
         EXPECT_EQ(p.kind, "motor") << r.name;
         EXPECT_EQ(p.spin, r.spin) << r.name;
+        EXPECT_NEAR(std::abs(glm::dot(p.orient, kMotorTurn.at(r.name))), 1.0, 1e-9) << r.name << " (the motor's turn about its own axis)";
         // in the kit file's axes (the table turned 180 degrees about Y): x = -x_table, z = -z_table
         EXPECT_NEAR(p.pos.x, -r.x_table, 1e-9) << r.name;
         EXPECT_NEAR(p.pos.z, -r.z_table, 1e-9) << r.name;
