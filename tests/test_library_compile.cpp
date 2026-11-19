@@ -294,6 +294,106 @@ TEST(LibraryCompile, AShapesOnlyPartIsMassNotAWall) {
     EXPECT_NEAR(got->compiled.inertia.mass, 1.372, 1e-6);
 }
 
+// ---- options.flow_parts: the caller's proxy solids are the walls, one remainder record keeps the composite ----------------------------------------------
+
+sc::CompileOptions with_flow(std::vector<sc::FlowPart> parts) {
+    sc::CompileOptions o = with_zero_drag();
+    o.flow_parts = std::move(parts);
+    return o;
+}
+
+sc::FlowPart box_part(const std::string& name, glm::dvec3 pos, glm::dvec3 size, double mass) {
+    sc::FlowPart p;
+    p.name = name;
+    p.role = "proxy";
+    p.shape = vh::PartShape::box;
+    p.size = size;
+    p.pos = pos;
+    p.mass = mass;
+    return p;
+}
+
+TEST(LibraryCompile, FlowPartsAreTheModelsSolidsAndTheRemainderKeepsTheComposite) {
+    const sc::LibrarySet set = open_quad("flow", kQuad);
+    const auto plain = sc::compile_drone(set, "r:drone.quad", with_zero_drag());
+    ASSERT_TRUE(plain.has_value()) << plain.error().message;
+    // the frame's own box (0.6 kg, 0.2 x 0.04 x 0.2 in its file axes: 0.2 x 0.2 x 0.04 in the library frame) and the pack's (0.4 kg, 0.12 x 0.04 x 0.05, 0.04 below)
+    const auto got = sc::compile_drone(set, "r:drone.quad", with_flow({box_part("frame", {0.0, 0.0, 0.0}, {0.2, 0.2, 0.04}, 0.6), box_part("pack", {0.0, 0.0, -0.04}, {0.12, 0.04, 0.05}, 0.4)}));
+    ASSERT_TRUE(got.has_value()) << got.error().code << ": " << got.error().message;
+    // the composite is the all-parts composite: mass, centre and the whole tensor (double, to rounding)
+    EXPECT_NEAR(got->compiled.inertia.mass, plain->compiled.inertia.mass, 1e-6);
+    for (int i = 0; i < 3; ++i) EXPECT_NEAR(got->compiled.inertia.center_of_mass[i], plain->compiled.inertia.center_of_mass[i], 1e-7) << i;
+    for (int c = 0; c < 3; ++c) {
+        for (int r = 0; r < 3; ++r) {
+            EXPECT_NEAR(got->compiled.inertia.inertia_design[c][r], plain->compiled.inertia.inertia_design[c][r], 1e-9) << c << "," << r;
+        }
+    }
+    // the records: the two flow parts as given (names, shapes, masses) and one tensor record for the rest (the motors, propellers and ESC carrier), 1.372 - 1.0 kg
+    ASSERT_EQ(got->spec.parts.size(), 3u);
+    EXPECT_EQ(got->spec.parts[0].geometry.name, "frame");
+    EXPECT_EQ(got->spec.parts[0].shape, vh::PartShape::box);
+    EXPECT_EQ(got->spec.parts[0].mass, 0.6);
+    EXPECT_EQ(got->spec.parts[1].geometry.name, "pack");
+    EXPECT_EQ(got->spec.parts[2].geometry.name, "remainder");
+    EXPECT_EQ(got->spec.parts[2].shape, vh::PartShape::tensor);
+    EXPECT_NEAR(got->spec.parts[2].mass, 1.372 - 1.0, 1e-12);
+    // the solids are the model's parts (walls); the remainder is no solid
+    std::vector<std::string> names;
+    for (const auto& part : got->compiled.model.parts) names.push_back(part.name);
+    EXPECT_NE(std::find(names.begin(), names.end(), "frame"), names.end());
+    EXPECT_NE(std::find(names.begin(), names.end(), "pack"), names.end());
+    EXPECT_EQ(std::find(names.begin(), names.end(), "remainder"), names.end());
+}
+
+TEST(LibraryCompile, FlowPartsThatTakeAllTheMassWriteNoRemainder) {
+    const sc::LibrarySet set = open_quad("flow_all", kQuad);
+    const auto got = sc::compile_drone(set, "r:drone.quad", with_flow({box_part("all", {0.0, 0.0, 0.0}, {0.4, 0.4, 0.1}, 1.372)}));
+    ASSERT_TRUE(got.has_value()) << got.error().code << ": " << got.error().message;
+    ASSERT_EQ(got->spec.parts.size(), 1u) << "no zero record";
+    EXPECT_EQ(got->spec.parts[0].geometry.name, "all");
+    EXPECT_NEAR(got->compiled.inertia.mass, 1.372, 1e-6);
+}
+
+// Four heavy blocks at the arm tips hold more inertia about the vertical than the whole drone has: the remainder would be negative there, not a body.
+TEST(LibraryCompile, ARemainderThatIsNotAPhysicalBodyIsRefusedNamingTheFlowParts) {
+    const sc::LibrarySet set = open_quad("flow_heavy", kQuad);
+    const auto got = sc::compile_drone(set, "r:drone.quad",
+                                       with_flow({box_part("tip_fr", {0.12, 0.12, 0.02}, {0.03, 0.03, 0.03}, 0.3), box_part("tip_fl", {0.12, -0.12, 0.02}, {0.03, 0.03, 0.03}, 0.3),
+                                                  box_part("tip_rl", {-0.12, -0.12, 0.02}, {0.03, 0.03, 0.03}, 0.3), box_part("tip_rr", {-0.12, 0.12, 0.02}, {0.03, 0.03, 0.03}, 0.3)}));
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().code, "invalid_request");
+    EXPECT_EQ(got.error().field, "options.flow_parts");
+    for (const char* name : {"tip_fr", "tip_fl", "tip_rl", "tip_rr"}) EXPECT_NE(got.error().message.find(name), std::string::npos) << name << ": " << got.error().message;
+}
+
+TEST(LibraryCompile, FlowPartsAreRefusedByNameWhenTheyAreMalformed) {
+    const sc::LibrarySet set = open_quad("flow_bad", kQuad);
+    struct Case {
+        const char* what;
+        std::vector<sc::FlowPart> parts;
+    };
+    sc::FlowPart point = box_part("p", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.1);
+    point.shape = vh::PartShape::point;
+    sc::FlowPart tensor = box_part("t", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.1);
+    tensor.shape = vh::PartShape::tensor;
+    const std::vector<Case> cases = {
+        {"an empty name", {box_part("", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.1)}},
+        {"a duplicate name", {box_part("a", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.1), box_part("a", {0.1, 0, 0}, {0.1, 0.1, 0.1}, 0.1)}},
+        {"the remainder's name", {box_part("remainder", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.1)}},
+        {"a point (no solid)", {point}},
+        {"a tensor (no solid)", {tensor}},
+        {"a mass of 0", {box_part("z", {0, 0, 0}, {0.1, 0.1, 0.1}, 0.0)}},
+        {"a size of 0", {box_part("s", {0, 0, 0}, {0.1, 0.0, 0.1}, 0.1)}},
+        {"more mass than the drone", {box_part("big", {0, 0, 0}, {0.3, 0.3, 0.1}, 5.0)}},
+    };
+    for (const Case& c : cases) {
+        const auto got = sc::compile_drone(set, "r:drone.quad", with_flow(c.parts));
+        ASSERT_FALSE(got.has_value()) << c.what;
+        EXPECT_EQ(got.error().code, "invalid_request") << c.what << ": " << got.error().message;
+        EXPECT_EQ(got.error().field.rfind("options.flow_parts", 0), 0u) << c.what << ": field " << got.error().field;
+    }
+}
+
 // THE RULE: a part with meshes is its meshes for physics, never its stand-in boxes; and a mesh needs the store.
 TEST(LibraryCompile, AMeshPartIsATensorRecordAtItsCentroidAndNeedsTheStore) {
     const std::string sha(64, 'c');
