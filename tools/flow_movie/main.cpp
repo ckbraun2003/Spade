@@ -239,6 +239,9 @@ struct Film {
     // The particle look (--particles): the seed pool from a frame's log (the held drone's rotors), and the run's state.
     std::function<std::vector<glm::vec3>(const FrameLog&)> particle_pool;
     std::shared_ptr<ParticleHold> particle_hold;
+    // The held body's pose a view that seeds at the rotors reads (build_parts.hpp's HeldPose). Set by a film that has such a view; the draw paths record it from
+    // each frame's log before decorate(), which a film may replace (note_held_pose).
+    std::shared_ptr<HeldPose> held_pose;
     std::shared_ptr<const spade::analysis::LiveLines> lines;  // --lines: the rotors as actuator lines (a device film)
     // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
     bool role_materials = false;
@@ -255,6 +258,13 @@ struct Film {
     bool device = false;
     std::shared_ptr<StreamHooks> stream;  // --stream: set by run_web alone; null for every other film
 };
+
+// Record the held body's pose from a frame's log into the film's, when the film has a view that reads it and the log holds a body.
+void note_held_pose(const Film& film, const FrameLog& log) {
+    if (!film.held_pose) return;
+    const HeldPose pose = held_pose_from_live(log.live);
+    if (pose.known) *film.held_pose = pose;
+}
 
 [[nodiscard]] std::string fixed(double x, int decimals) {
     char buffer[64];
@@ -698,6 +708,7 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             if (auto shot = film.views[v].shot(volume, k, film.frames, scene, camera); !shot) {
                 return std::unexpected(shot.error());
             }
+            note_held_pose(film, log);
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return std::unexpected(drawn.error());
             }
@@ -769,6 +780,7 @@ void offset_picture(render::Camera& camera, const spade::FlowVolume& volume, flo
             render::RenderScene scene = dark_scene(volume);
             render::Camera camera;
             if (auto shot = view.shot(volume, k, film.frames, scene, camera); !shot) return shot;
+            note_held_pose(film, log);
             if (film.decorate) {
                 if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
             }
@@ -1217,14 +1229,6 @@ void add_rims(render::RenderScene& scene, const AirflowCase& c) {
 // it, as in a box of uniform wind, the deepest value is the grid's noise.
 constexpr float kVortexFloor = -5.0f;
 
-// The held body's pose, from the last frame decorate() saw: a view that seeds at the rotors (a streamline view's
-// on_parts runs after decorate) reads it. The drone is held, so it is the same every frame.
-struct HeldPose {
-    glm::vec3 pos{0.0f};
-    glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};
-    bool known = false;
-};
-
 // A film flown through LiveRun (D1, --case): the flow from two views, with
 // the held drone's parts drawn in each where the run held it (render_parts,
 // RND-9), and the controls and run line in its captions. `gpu`: its fluid
@@ -1273,6 +1277,7 @@ struct HeldPose {
         return t;
     };
     const auto pose = std::make_shared<HeldPose>();
+    film.held_pose = pose;
     film.particle_hold = std::make_shared<ParticleHold>();
     film.particle_pool = [run](const FrameLog& log) -> std::vector<glm::vec3> {
         if (log.live.size() < 7u) return {};
@@ -1840,6 +1845,7 @@ struct LookState {
     render::RenderScene scene = black_scene(volume);
     render::Camera camera;
     if (auto shot = view.shot(volume, k, n, scene, camera); !shot) return shot;
+    note_held_pose(film, log);
     if (film.decorate) {
         const std::size_t first_part_item = scene.statics.size();
         if (auto drawn = film.decorate(log, scene); !drawn) return drawn;
@@ -1954,7 +1960,7 @@ struct Options {
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
     std::optional<float> elevation;  // --elevation DEG: the camera's elevation for a web still, in place of the drone's (web::parse_elevation_deg)
-    std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off); a diagnostic
+    std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off, a diagnostic; a --lines run refuses 0: its guard needs sgs_cs above 0)
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
     std::vector<uint32_t> keep_frames;  // --keep-frames A,B: frames a streamed run keeps on disk (the still pairs')
@@ -3138,7 +3144,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--sgs-cs") {
             opt.sgs_cs = web::parse_sgs_cs(value());
             if (!opt.sgs_cs) {
-                std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off), as 0.17\n");
+                std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off, a diagnostic; a --lines run refuses 0, as actuator lines need a subgrid model), as 0.17\n");
                 return 2;
             }
         } else if (arg == "--drone") {

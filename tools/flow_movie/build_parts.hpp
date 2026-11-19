@@ -955,4 +955,24 @@ struct PropExtent {
     return {};
 }
 
+// The held body's pose, as a film's frame log holds it: the case's measures start with the body's position (x, y, z) and orientation (w, x, y, z), then each
+// rotor's speed. A view that seeds at the rotors (the streamline view's on_parts) reads it. The drone is held, so it is the same every frame. It is read from the
+// LOG by the draw paths, before any decorate(), not by a decorate(): a film that draws the real parts REPLACES the case film's decorate(), and a pose recorded
+// there was lost with it (L106's dry run: S1 refused on a frame whose log was whole).
+struct HeldPose {
+    glm::vec3 pos{0.0f};
+    glm::quat orient{1.0f, 0.0f, 0.0f, 0.0f};
+    bool known = false;
+};
+
+// The pose in `live` (a FrameLog's measures): known only when it holds the 7 numbers of a body, else the default, not known.
+[[nodiscard]] inline HeldPose held_pose_from_live(std::span<const double> live) {
+    HeldPose pose;
+    if (live.size() < 7u) return pose;
+    pose.pos = glm::vec3(static_cast<float>(live[0]), static_cast<float>(live[1]), static_cast<float>(live[2]));
+    pose.orient = glm::quat(static_cast<float>(live[3]), static_cast<float>(live[4]), static_cast<float>(live[5]), static_cast<float>(live[6]));
+    pose.known = true;
+    return pose;
+}
+
 }  // namespace flow_movie
