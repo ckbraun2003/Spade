@@ -412,8 +412,8 @@ TEST(AirflowMomentumAccount, TheBoxKeepsTheSameShareOfItsImpulseAtHAndAtHalfH) {
 }
 
 // The open faces take inflow (L90), so a backflow instability is the risk, and two cases that could grow one stay bounded at h 0.2 ms, the largest
-// step the solver is run at: a jet that leaves through a face at an angle, and a disc close to a side face that draws its air in through it. 600
-// steps (0.12 s), the largest face speed sampled every 100: under 40 m/s (the forcing disc's own faces carry about 34, a 14 N disc on a coarse grid),
+// step the solver is run at: a jet that leaves through a face at an angle, and a disc close to a side face that draws its air in through it. 450
+// steps (0.09 s; 600 took 36 s in debug under ctest, over the 30 s kept), the largest face speed sampled every 75: under 40 m/s (the forcing disc's own faces carry about 34, a 14 N disc on a coarse grid),
 // and the last half no higher than 1.1 times the first. The same jet run to 3000 steps under each outlet rule is the opt-in test below; copying the
 // neighbour's face instead of leaving it, or no ambient ghost in the advection, gives 42 to 59 m/s there, noisy and not bounded.
 void expect_bounded(const Engine& e) {
@@ -432,12 +432,12 @@ TEST(AirflowMomentumAccount, AJetLeavingThroughAFaceAtAnAngleStaysBounded) {
     // A disc 4 cells from the x+ face pushing +x, and a downward disc at the face: the jet leaves through x+ at an angle.
     const std::vector<Jet> jets = {Jet{.axis = 0, .layer = 20, .ca = 12.0f, .cb = 12.0f, .radius = 0.127f, .thrust = 14.0f},
                                    Jet{.axis = 1, .layer = 12, .ca = 20.0f, .cb = 12.0f, .radius = 0.127f, .thrust = -8.0f}};
-    expect_bounded(run_engine(jets, 0.0002f, 0.12, 24, 0.02f, 100u));
+    expect_bounded(run_engine(jets, 0.0002f, 0.09, 24, 0.02f, 75u));
 }
 
 TEST(AirflowMomentumAccount, ADiscDrawingItsAirInThroughASideFaceStaysBounded) {
     // A downward disc whose edge is under a cell from the x- face: the side face is the nearest source of the air it entrains.
-    expect_bounded(run_engine({Jet{.axis = 1, .layer = 17, .ca = 7.0f, .cb = 12.0f, .radius = 0.127f, .thrust = -16.073f}}, 0.0002f, 0.12, 24, 0.02f, 100u));
+    expect_bounded(run_engine({Jet{.axis = 1, .layer = 17, .ca = 7.0f, .cb = 12.0f, .radius = 0.127f, .thrust = -16.073f}}, 0.0002f, 0.09, 24, 0.02f, 75u));
 }
 
 // Opt-in (SPADE_MOMENTUM_ACCOUNT=1): the two backflow cases and the 32^3 momentum account under each outlet rule, to choose the fix's rule.
