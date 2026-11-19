@@ -1,0 +1,20 @@
+part_version: 2
+id: "part.frame.f"
+mass_properties: {mass: 0.6}
+install_points:
+  - {name: motor_fr, kind: motor, pos: [0.12, 0.02, 0.12], orient: [1, 0, 0, 0], spin: 1}
+  - {name: motor_fl, kind: motor, pos: [0.12, 0.02, -0.12], orient: [1, 0, 0, 0], spin: -1}
+  - {name: motor_rl, kind: motor, pos: [-0.12, 0.02, -0.12], orient: [1, 0, 0, 0], spin: 1}
+  - {name: motor_rr, kind: motor, pos: [-0.12, 0.02, 0.12], orient: [1, 0, 0, 0], spin: -1}
+  - {name: battery_pad, kind: battery, pos: [0, -0.04, 0], orient: [1, 0, 0, 0]}
+  - {name: esc_pad, kind: esc, pos: [0, 0.03, 0], orient: [1, 0, 0, 0]}
+shapes:
+  - {kind: box, size: [0.2, 0.04, 0.2]}
+sources:
+  mass_properties.mass: {grade: assumed, note: "a test frame"}
+  install_points.motor_fr: {grade: assumed, note: "a test point"}
+  install_points.motor_fl: {grade: assumed, note: "a test point"}
+  install_points.motor_rl: {grade: assumed, note: "a test point"}
+  install_points.motor_rr: {grade: assumed, note: "a test point"}
+  install_points.battery_pad: {grade: assumed, note: "a test point"}
+  install_points.esc_pad: {grade: assumed, note: "a test point"}

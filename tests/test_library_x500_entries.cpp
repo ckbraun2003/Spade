@@ -27,8 +27,10 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -37,7 +39,10 @@
 #include "scene/library_place.hpp"
 #include "scene/library_query.hpp"
 #include "scene/library_set.hpp"
+#include "scene/library_sources.hpp"
 #include "scene/part_blocks.hpp"
+#include "scene/part_file.hpp"
+#include "scene/part_spec.hpp"
 #include "../tools/part_stand_in/stand_in.hpp"
 
 namespace {
@@ -237,6 +242,13 @@ void expect_pose(const Pose& got, const Pose& want, const std::string& what) {
     for (int i = 0; i < 4; ++i) EXPECT_NEAR(got.q[i], want.q[i], 1e-9) << what << " orientation " << i;
 }
 
+// The table has the kit's four motors in place; the library has ONE re-origined motor mesh, so the frame's motor points carry the turns (Physics, L108: the
+// table's four meshes are exact turns of the one about each motor's own vertical axis; the kit file's axes, right-handed about +y). w-first.
+const std::map<std::string, glm::dquat> kMotorTurn = {{"motor_front_right", glm::dquat(1.0, 0.0, 0.0, 0.0)},
+                                                       {"motor_front_left", glm::dquat(0.70710678118654757, 0.0, 0.70710678118654757, 0.0)},
+                                                       {"motor_rear_left", glm::dquat(0.0, 0.0, 1.0, 0.0)},
+                                                       {"motor_rear_right", glm::dquat(0.70710678118654757, 0.0, -0.70710678118654757, 0.0)}};
+
 TEST(LibraryX500Entries, EveryPartOfTheTableIsAnEntryOfTheDroneInItsPose) {
     const sc::LibrarySet set = open_default();
     const std::map<std::string, Pose> poses = compose_drone(set);
@@ -248,13 +260,16 @@ TEST(LibraryX500Entries, EveryPartOfTheTableIsAnEntryOfTheDroneInItsPose) {
         const auto got = poses.find(slot->second);
         ASSERT_NE(got, poses.end()) << "no slot " << slot->second << " for " << part.name;
         if (part.kind == "motor") {
-            // the motor part is one object about its own axis: the table has the kit's motor in place, so the pin is the axis (x and z) and the turn
+            // the motor part is one object about its own axis: the table has the kit's motor in place, so the pin is the axis (x and z) and the table's turn composed
+            // with the library mesh's own (kMotorTurn: the table's three other motors are turns of the one mesh)
             const Pose want = to_design(part.pos, part.q);
             const double hub_x = part.name.find("front") != std::string::npos ? kHub : -kHub;
             const double hub_z = part.name.find("right") != std::string::npos ? kHub : -kHub;
             EXPECT_NEAR(got->second.p[0], hub_x, 1e-9) << part.name;
             EXPECT_NEAR(got->second.p[1], -hub_z, 1e-9) << part.name << " (the design frame's y is the table's -z)";
-            for (int i = 0; i < 4; ++i) EXPECT_NEAR(got->second.q[i], want.q[i], 1e-9) << part.name << " orientation " << i;
+            const glm::dquat expected = glm::dquat(want.q[0], want.q[1], want.q[2], want.q[3]) * kMotorTurn.at(part.name);
+            const glm::dquat have(got->second.q[0], got->second.q[1], got->second.q[2], got->second.q[3]);
+            EXPECT_NEAR(std::abs(glm::dot(have, expected)), 1.0, 1e-9) << part.name << " orientation (a quaternion and its negative are one turn)";
         } else {
             expect_pose(got->second, to_design(part.pos, part.q), part.name);
         }
@@ -309,6 +324,7 @@ TEST(LibraryX500Entries, TheFramesMotorPointsAreTheKitsAxesWithTheEnginesSpins) 
         const sc::PartInstallPoint& p = *points[r.name];
         EXPECT_EQ(p.kind, "motor") << r.name;
         EXPECT_EQ(p.spin, r.spin) << r.name;
+        EXPECT_NEAR(std::abs(glm::dot(p.orient, kMotorTurn.at(r.name))), 1.0, 1e-9) << r.name << " (the motor's turn about its own axis)";
         // in the kit file's axes (the table turned 180 degrees about Y): x = -x_table, z = -z_table
         EXPECT_NEAR(p.pos.x, -r.x_table, 1e-9) << r.name;
         EXPECT_NEAR(p.pos.z, -r.z_table, 1e-9) << r.name;
@@ -339,6 +355,86 @@ TEST(LibraryX500Entries, TheRotorPartsCarryTheSeatAndTheDiscAndTheMotorTheBoss) 
         EXPECT_NEAR(poses.at(slot).p[2], 0.070, 1e-9) << slot << " origin height";
         EXPECT_NEAR(poses.at(slot).p[2] - 0.00926, 0.0607, 1e-4) << slot << " disc height";
     }
+}
+
+// The flight spec beside the blocks (L103, L107): the kit's motor, the four rotors, the pack and the ESC carry the v1 blocks Physics' X500 model is built
+// from, so a compile reproduces it. All class values are openly assumed (the kit's winding is unpublished); kv 880 is the kit file's mesh name, graded derived.
+std::optional<sc::PartFile> spec_of(const sc::LibrarySet& set, const std::string& full_id, const sc::SourceRegistry& registry) {
+    const sc::SetEntry* e = entry_of(set, full_id);
+    EXPECT_NE(e, nullptr) << full_id;
+    if (e == nullptr) return std::nullopt;
+    auto spec = sc::part_spec_from_text(slurp(e->file));
+    EXPECT_TRUE(spec.has_value()) << full_id << ": " << (spec.has_value() ? "" : spec.error().context);
+    if (!spec.has_value()) return std::nullopt;
+    EXPECT_TRUE(spec->has_value()) << full_id << ": no spec";
+    if (!spec->has_value()) return std::nullopt;
+    auto checked = sc::check_part_sources(**spec, registry);
+    EXPECT_TRUE(checked.has_value()) << full_id << ": " << (checked.has_value() ? "" : checked.error().context);
+    return **spec;
+}
+
+TEST(LibraryX500Entries, TheMotorPropsPackAndEscCarryTheFlightSpecsOfPhysicsModel) {
+    const sc::LibrarySet set = open_default();
+    const auto registry = sc::load_sources(kRoot / "sources.yaml");
+    ASSERT_TRUE(registry.has_value()) << registry.error().context;
+    // the motor: the iris class values, kv 880 from the kit file's name
+    const auto motor = spec_of(set, "default:part.motor.dj2216_kv880", *registry);
+    ASSERT_TRUE(motor.has_value());
+    ASSERT_EQ(sc::part_kind(*motor), sc::PartKind::motor);
+    const sc::MotorPart& m = std::get<sc::MotorPart>(*motor);
+    EXPECT_EQ(m.block.kv, 880.0);
+    EXPECT_EQ(m.block.resistance, 0.12);
+    EXPECT_EQ(m.block.no_load_current, 0.4);
+    EXPECT_EQ(m.block.current_max, 15.0);
+    EXPECT_EQ(m.block.pole_pairs, 7.0);
+    EXPECT_EQ(m.block.rotor_inertia, 3e-6);
+    EXPECT_EQ(m.block.mass, 0.055);
+    EXPECT_EQ(m.block.stator, "2216");
+    bool kv_derived = false;
+    for (const sc::FieldSource& f : m.sources) {
+        if (f.field == "kv") kv_derived = f.ref.grade == sc::Grade::derived;
+    }
+    EXPECT_TRUE(kv_derived) << "kv 880 is the kit file's name: derived, not the retailer's 920";
+    EXPECT_EQ(m.block.mass, blocks_of(set, "default:part.motor.dj2216_kv880").mass_properties->mass);
+    // the four rotors: Physics' 1045 propeller file, field for field
+    const auto want = sc::prop_from_yaml(slurp(fs::path(SPADE_REPO_DIR) / "tools" / "flow_movie" / "data" / "x500" / "parts" / "x500_10in_apc10x5.prop.yaml"));
+    ASSERT_TRUE(want.has_value()) << want.error().context;
+    for (const char* id : {"x500_rotor_front_ccw", "x500_rotor_front_cw", "x500_rotor_rear_ccw", "x500_rotor_rear_cw"}) {
+        const std::string full = std::string("default:part.prop.") + id;
+        const auto prop = spec_of(set, full, *registry);
+        ASSERT_TRUE(prop.has_value()) << full;
+        ASSERT_EQ(sc::part_kind(*prop), sc::PartKind::prop) << full;
+        const sc::PropPart& p = std::get<sc::PropPart>(*prop);
+        EXPECT_EQ(p.block.diameter, want->block.diameter) << full;
+        EXPECT_EQ(p.block.pitch, want->block.pitch) << full;
+        EXPECT_EQ(p.block.inertia, want->block.inertia) << full;
+        EXPECT_EQ(p.block.mass, want->block.mass) << full;
+        EXPECT_EQ(p.block.ct_table, want->block.ct_table) << full;
+        EXPECT_EQ(p.block.cq_table, want->block.cq_table) << full;
+        ASSERT_TRUE(p.blade.has_value() && want->blade.has_value()) << full;
+        EXPECT_EQ(p.blade->r_over_r, want->blade->r_over_r) << full;
+        EXPECT_EQ(p.blade->alpha_0_deg, want->blade->alpha_0_deg) << full;
+        EXPECT_EQ(p.block.mass, blocks_of(set, full).mass_properties->mass) << full;
+    }
+    // the pack: the 4S1P cells of Physics' chain, the table's mass
+    const auto pack = spec_of(set, "default:part.battery.tattu_4s_5200", *registry);
+    ASSERT_TRUE(pack.has_value());
+    ASSERT_EQ(sc::part_kind(*pack), sc::PartKind::battery);
+    const sc::BatteryPart& b = std::get<sc::BatteryPart>(*pack);
+    EXPECT_EQ(b.block.cells_series, 4u);
+    EXPECT_EQ(b.block.cells_parallel, 1u);
+    EXPECT_EQ(b.block.cell_resistance, 0.008);
+    EXPECT_EQ(b.block.cell_voltage_cutoff, 3.3);
+    EXPECT_EQ(b.block.c_rating, 15.0);
+    EXPECT_EQ(b.block.mass, blocks_of(set, "default:part.battery.tattu_4s_5200").mass_properties->mass);
+    // the ESC: four 20 A channels, inside the misc carrier
+    const auto esc = spec_of(set, "default:part.payload.electronics_misc", *registry);
+    ASSERT_TRUE(esc.has_value());
+    ASSERT_EQ(sc::part_kind(*esc), sc::PartKind::esc);
+    const sc::EscPart& e = std::get<sc::EscPart>(*esc);
+    EXPECT_EQ(e.block.channels, 4u);
+    EXPECT_EQ(e.block.current_burst, 25.0);
+    EXPECT_EQ(e.block.on_resistance, 0.006);
 }
 
 // The rule (library contract): a part with `meshes` draws them when the store has them, else its `shapes`: so every X500 part has shapes, and a mesh part's are the

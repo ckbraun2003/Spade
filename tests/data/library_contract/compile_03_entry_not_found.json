@@ -1,0 +1,43 @@
+{
+ "description": "a drone that is not in the library",
+ "open": {
+  "roots": [
+   {
+    "name": "quad",
+    "path": "$FIXTURES/roots/quad"
+   }
+  ]
+ },
+ "op": "compile",
+ "request": {
+  "id": "quad:drone.nope",
+  "options": {
+   "drag": {
+    "mode": "componentwise",
+    "area": 0,
+    "coeffs": [
+     0,
+     0,
+     0
+    ]
+   }
+  }
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compile",
+  "ok": false,
+  "refusal": {
+   "code": "entry_not_found",
+   "severity": "error",
+   "message": "",
+   "root": "quad",
+   "path": null,
+   "id": "quad:drone.nope",
+   "field": null,
+   "issues": []
+  }
+ }
+}

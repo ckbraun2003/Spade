@@ -1050,6 +1050,8 @@ add_library(spade_scene STATIC
     scene/object_file.cpp
     scene/part_blocks.cpp
     scene/part_file.cpp
+    scene/part_spec.cpp
+    scene/library_compile.cpp
     scene/prop_line.cpp
     scene/scene_file.cpp
 )

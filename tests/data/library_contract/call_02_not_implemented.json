@@ -13,13 +13,13 @@
   ],
   "store": "$FIXTURES/store"
  },
- "op": "compile",
+ "op": "evaluate",
  "request": {},
  "rc": 1,
  "response": {
   "format": "spade.library/1",
   "minor": 0,
-  "op": "compile",
+  "op": "evaluate",
   "ok": false,
   "refusal": {
    "code": "not_implemented",

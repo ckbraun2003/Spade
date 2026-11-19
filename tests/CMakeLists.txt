@@ -179,6 +179,8 @@ add_executable(spade_tests
     test_model_sources.cpp
     test_part_blocks.cpp
     test_part_file.cpp
+    test_part_spec.cpp
+    test_library_compile.cpp
     test_library_parts.cpp
     test_library_drones.cpp
     test_library_install.cpp

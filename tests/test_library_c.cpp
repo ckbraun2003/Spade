@@ -9,6 +9,8 @@
 //   LibraryC.MisuseAnswersTwo                 a null handle, op or request answers 2, with the refusal when there is somewhere to put it
 //   LibraryC.AResponseIsFreedWithTheLibrarysFree   free(nullptr) and close(nullptr) are fine
 //   LibraryC.ReadsRunConcurrentlyOnOneHandle  four threads find the same entry and get the same answer
+//   LibraryC.CompileAnswersTheQuadsModelAndInertia   the `quad` fixture drone (roots/quad: five boxes and the parts' spec blocks, no store) compiles with a zero drag:
+//                                             model_yaml reads back as a model of four rotors, the inertia is 1.372 kg, the fit is the hover; the refusals are goldens
 //   LibraryC.MeshFileInfoReadsStlObjAndAPresentationGltf   a 10 mm cube as binary STL and as OBJ in the unit the caller names (12 triangles, 8 vertices, 1e-6 m3, solid);
 //                                             a glTF triangle that is not a closed solid gives its counts and box with volume_m3 and solid null
 // ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@
 #include <nlohmann/json.hpp>
 
 #include "../tools/library_c/spade_library.h"
+#include "scene/model_file.hpp"
 #include "unique_temp.hpp"
 
 namespace {
@@ -165,7 +168,7 @@ TEST(LibraryC, TheGoldenFilesCoverTheSlice) {
             }
         }
     }
-    for (const char* op : {"open", "list", "find", "resolve", "hash_text", "validate", "compose_placement"}) {
+    for (const char* op : {"open", "list", "find", "resolve", "hash_text", "validate", "compose_placement", "compile"}) {
         EXPECT_TRUE(ops.count(op) != 0) << "no golden exchange for op " << op;
     }
     for (const char* code :
@@ -349,6 +352,38 @@ TEST(LibraryC, MeshFileInfoReadsStlObjAndAPresentationGltf) {
     EXPECT_NEAR(r.at("bbox_max")[0].get<double>(), 1.0, 1e-9);
     EXPECT_NEAR(r.at("bbox_max")[1].get<double>(), 1.0, 1e-9);
     spade_lib_close(handle);
+}
+
+TEST(LibraryC, CompileAnswersTheQuadsModelAndInertia) {
+    const std::string request = replace_all(R"({"roots": [{"name": "quad", "path": "$FIXTURES/roots/quad"}]})", "$FIXTURES", generic(fixtures()));
+    spade_lib* handle = nullptr;
+    char* opened = nullptr;
+    ASSERT_EQ(spade_lib_open(request.c_str(), &handle, &opened), 0) << (opened != nullptr ? opened : "");
+    spade_lib_free(opened);
+    const std::string call = R"({"id": "quad:drone.quad", "options": {"drag": {"mode": "componentwise", "area": 0, "coeffs": [0, 0, 0]}}})";
+    char* response = nullptr;
+    const int rc = spade_lib_call(handle, "compile", call.c_str(), &response);
+    const Json j = take(response);
+    spade_lib_close(handle);
+    ASSERT_EQ(rc, 0) << j.dump(2);
+    ASSERT_TRUE(j.at("ok").get<bool>()) << j.dump(2);
+    const Json& r = j.at("result");
+    // the model, as the text Spade would write: it reads back, with the quad's four rotors
+    const auto model = spade::scene::model_from_yaml(r.at("model_yaml").get<std::string>());
+    ASSERT_TRUE(model.has_value()) << model.error().context;
+    EXPECT_EQ(model->model.rotors.size(), 4u);
+    // the composite: 0.6 + 4 x 0.055 + 4 x 0.013 + 0.4 + 0.1 kg; the tensor is 3 x 3
+    EXPECT_NEAR(r.at("inertia").at("mass_kg").get<double>(), 1.372, 1e-6);
+    ASSERT_EQ(r.at("inertia").at("com").size(), 3u);
+    ASSERT_EQ(r.at("inertia").at("tensor").size(), 3u);
+    ASSERT_EQ(r.at("inertia").at("tensor")[0].size(), 3u);
+    // the fit: a hover that holds the weight (1.372 kg over four rotors), and where each number came from
+    const Json& fit = r.at("fit");
+    EXPECT_NEAR(fit.at("hover_thrust").get<double>(), 1.372 * 9.80665 / 4.0, 0.05);
+    EXPECT_GT(fit.at("hover_omega").get<double>(), 0.0);
+    EXPECT_GT(fit.at("thrust_coeff").get<double>(), 0.0);
+    EXPECT_EQ(fit.at("provenance").at("mass_and_inertia"), "from_parts");
+    EXPECT_EQ(fit.at("provenance").at("drag"), "given");
 }
 
 }  // namespace
