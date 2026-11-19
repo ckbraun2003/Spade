@@ -40,6 +40,17 @@ TEST(UniqueTemp, APathNamesItsProcessAndTag) {
     EXPECT_NE(spade::test::unique_temp_path("probe.yaml"), p);
 }
 
+TEST(UniqueTemp, ATokenIsDifferentOnEveryCallAndCarriesTheProcessId) {
+    const std::string a = spade::test::unique_token();
+    const std::string b = spade::test::unique_token();
+    EXPECT_NE(a, b);
+    const std::string pid = std::to_string(spade::test::process_id());
+    EXPECT_EQ(a.rfind(pid + "_", 0), 0u) << a;
+    EXPECT_EQ(b.rfind(pid + "_", 0), 0u) << b;
+    // a token is a folder-name part: no separator or space
+    EXPECT_EQ(a.find_first_of("/\\ :"), std::string::npos) << a;
+}
+
 TEST(UniqueTemp, AFolderGoesWithItsTempDir) {
     fs::path kept;
     {

@@ -82,7 +82,7 @@ struct StepRig {
         env.getenv = [](const char*) -> const char* { return nullptr; };
         env.exe_dir = tmp.path() / "exe";
         env.cancelled = [this] { return cancel.load(); };
-        env.token = "s1";
+        env.token = test::unique_token();
     }
     [[nodiscard]] fs::path store() const { return tmp.path() / "store"; }
     [[nodiscard]] fs::path step_file() const {
@@ -240,6 +240,14 @@ TEST(PartImportStep, SeveralSolidsPickedAreAskedOfTheConverterTogetherAndAnImpor
     EXPECT_TRUE(again.result.value("cached", false));
     ASSERT_TRUE(again.result.contains("skipped")) << again.result.dump();
     EXPECT_EQ(again.result.at("skipped").size(), 1u);
+}
+
+TEST(PartImportStep, TwoRigsNeverShareATokenSoNeverAConvertersWorkFolder) {
+    // run.cpp makes <temp>/spade_part_import_<token> and removes it before and after the convert: a shared token let one process delete
+    // another's model.3mf mid-convert
+    const StepRig a, b;
+    EXPECT_NE(a.env.token, b.env.token);
+    EXPECT_EQ(a.env.token.rfind(std::to_string(test::process_id()) + "_", 0), 0u) << a.env.token;
 }
 
 TEST(PartImportStep, ADeepInspectNeedsADeflectionThenTessellatesAndRunsTheGate) {
