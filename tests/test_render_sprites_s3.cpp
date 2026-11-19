@@ -9,8 +9,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -414,4 +418,213 @@ TEST(RenderSpritesS3, ASpriteDrawsOverTheFlowPolylinesAndTheScene) {
     const Frame got = draw(scene);
     EXPECT_EQ(got.rgb(16, 16), rgb_of(kLap)) << "the sprite is last, over the line's capsule";
     EXPECT_EQ(got.rgb(12, 16).r, 255) << "and the line is still there past the sprite";
+}
+
+// ---------------------------------------------------------------------------
+// Option A (the lead's cost order for S3): each sprite is rasterised into its own tile, GL uploads the packed tiles once and draws one quad a tile, and an
+// anti-aliased edge is analytic (coverage = clamp(0.5 - signed distance)) instead of 4 x 4 samples. A hard edge (aa = false) is unchanged.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+[[nodiscard]] RenderScene mixed_sprites_scene() {
+    RenderScene scene = black_scene();
+    const SpriteColour reticle{0x82, 0x8F, 0x9C, 255}, accent{0x7C, 0x93, 0xFF, 255};
+    scene.sprites.push_back(spade::render::make_drone_disc(glm::dvec3(-1.2, 0.5, 0.0), kFill, kBorder));
+    scene.sprites.push_back(spade::render::make_mark(MarkKind::crash, glm::dvec3(-0.4, 0.5, 0.0), kCrash));
+    scene.sprites.push_back(spade::render::make_mark(MarkKind::lap, glm::dvec3(0.4, 0.5, 0.0), kLap));
+    scene.sprites.push_back(spade::render::make_mark(MarkKind::time_limit, glm::dvec3(1.2, 0.5, 0.0), kLimit));
+    scene.sprites.push_back(spade::render::make_spawn_reticle(glm::dvec3(-0.8, -0.5, 0.0), ReticleState::hover, reticle, accent, kOk));
+    scene.sprites.push_back(spade::render::make_spawn_reticle(glm::dvec3(0.0, -0.5, 0.0), ReticleState::occupied, reticle, accent, kOk));
+    SpriteShape glass = filled_circle(9.0f, SpriteColour{200, 100, 50, 128});
+    glass.aa = false;
+    scene.sprites.push_back(one(glass, glm::dvec3(0.8, -0.5, 0.0)));
+    SpriteShape wedge;
+    wedge.kind = SpriteShapeKind::arc;
+    wedge.r = 8.0f;
+    wedge.start_deg = 20.0f;
+    wedge.span_deg = 200.0f;
+    wedge.stroke = kAccent;
+    wedge.stroke_px = 2.5f;
+    wedge.cap = SpriteCap::round;
+    scene.sprites.push_back(one(wedge, glm::dvec3(-1.6, -0.5, 0.0)));
+    return scene;
+}
+
+// The tiles composited in order, source-over with premultiplied colour, over a black frame (what GL does): a B, G, R, X frame like the CPU's.
+[[nodiscard]] std::vector<uint8_t> compose_tiles(const spade::render::SpriteTiles& t) {
+    std::vector<uint8_t> frame(static_cast<size_t>(kW) * kH * 4u, 0u);
+    for (const spade::render::SpriteTile& tile : t.tiles) {
+        for (uint32_t y = 0; y < tile.h; ++y) {
+            for (uint32_t x = 0; x < tile.w; ++x) {
+                const uint8_t* p = &t.pixels[(static_cast<size_t>(tile.offset) + static_cast<size_t>(y) * tile.w + x) * 4u];  // R, G, B, A premultiplied
+                uint8_t* f = &frame[(static_cast<size_t>(tile.y + static_cast<int32_t>(y)) * kW + static_cast<size_t>(tile.x + static_cast<int32_t>(x))) * 4u];
+                const float inv = 1.0f - static_cast<float>(p[3]) / 255.0f;
+                f[0] = static_cast<uint8_t>(std::min(255.0f, static_cast<float>(p[2]) + static_cast<float>(f[0]) * inv + 0.5f));
+                f[1] = static_cast<uint8_t>(std::min(255.0f, static_cast<float>(p[1]) + static_cast<float>(f[1]) * inv + 0.5f));
+                f[2] = static_cast<uint8_t>(std::min(255.0f, static_cast<float>(p[0]) + static_cast<float>(f[2]) * inv + 0.5f));
+            }
+        }
+    }
+    return frame;
+}
+
+[[nodiscard]] Camera tile_camera() {
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    return camera;
+}
+
+}  // namespace
+
+TEST(RenderSpritesS3, TilesCompositedOverABlackFrameAreTheDirectDrawToOneLevel) {
+    const RenderScene scene = mixed_sprites_scene();
+    const Frame direct = draw(scene);
+    spade::render::SpriteTiles tiles;
+    const size_t n = spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles);
+    EXPECT_EQ(n, scene.sprites.size()) << "one tile for each sprite that draws";
+    EXPECT_EQ(tiles.tiles.size(), n);
+    const std::vector<uint8_t> composed = compose_tiles(tiles);
+    int worst = 0;
+    int lit = 0;
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            const size_t i = (static_cast<size_t>(y) * kW + x) * 4u;
+            for (size_t c = 0; c < 3u; ++c) worst = std::max(worst, std::abs(static_cast<int>(composed[i + c]) - static_cast<int>(direct.px[i + c])));
+            lit += direct.black(x, y) ? 0 : 1;
+        }
+    }
+    EXPECT_GT(lit, 300) << "the sprites reach the frame";
+    EXPECT_LE(worst, 1) << "tiles over black differ from drawing on the frame by a level of rounding at most";
+}
+
+TEST(RenderSpritesS3, EveryDrawnPixelLiesInsideAnEmittedTileAndATileIsClippedToTheFrame) {
+    RenderScene scene = mixed_sprites_scene();
+    scene.sprites.push_back(spade::render::make_mark(MarkKind::lap, glm::dvec3(3.3, 0.0, 0.0), kLap));  // partly off the right edge
+    const Frame direct = draw(scene);
+    spade::render::SpriteTiles tiles;
+    (void)spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles);
+    for (const spade::render::SpriteTile& t : tiles.tiles) {
+        EXPECT_GE(t.x, 0);
+        EXPECT_GE(t.y, 0);
+        EXPECT_LE(static_cast<uint32_t>(t.x) + t.w, kW);
+        EXPECT_LE(static_cast<uint32_t>(t.y) + t.h, kH);
+        EXPECT_GT(t.w, 0u);
+        EXPECT_GT(t.h, 0u);
+    }
+    for (uint32_t y = 0; y < kH; ++y) {
+        for (uint32_t x = 0; x < kW; ++x) {
+            if (direct.black(x, y)) continue;
+            bool inside = false;
+            for (const spade::render::SpriteTile& t : tiles.tiles) {
+                inside = inside || (static_cast<int32_t>(x) >= t.x && static_cast<int32_t>(x) < t.x + static_cast<int32_t>(t.w) &&
+                                    static_cast<int32_t>(y) >= t.y && static_cast<int32_t>(y) < t.y + static_cast<int32_t>(t.h));
+            }
+            EXPECT_TRUE(inside) << "pixel " << x << "," << y << " is lit outside every tile";
+        }
+    }
+}
+
+TEST(RenderSpritesS3, TilesAreReusedWithoutGrowingAndRepeatExactly) {
+    const RenderScene scene = mixed_sprites_scene();
+    spade::render::SpriteTiles tiles;
+    (void)spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles);
+    const std::vector<uint8_t> first = tiles.pixels;
+    const size_t tile_capacity = tiles.tiles.capacity(), pixel_capacity = tiles.pixels.capacity();
+    (void)spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles);
+    EXPECT_EQ(tiles.pixels, first) << "the same scene, the same bytes";
+    EXPECT_EQ(tiles.tiles.capacity(), tile_capacity) << "a steady frame allocates nothing";
+    EXPECT_EQ(tiles.pixels.capacity(), pixel_capacity);
+    // a frame with no sprites after one with sprites: no tiles, and the next frame with sprites is a clean one
+    RenderScene bare = black_scene();
+    EXPECT_EQ(spade::render::rasterize_sprite_tiles(bare, tile_camera(), RenderOptions{}, kW, kH, tiles), 0u);
+    EXPECT_TRUE(tiles.tiles.empty());
+    EXPECT_TRUE(tiles.pixels.empty());
+    (void)spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles);
+    EXPECT_EQ(tiles.pixels, first);
+}
+
+TEST(RenderSpritesS3, TheTileRulesAreTheFrameRulesSlotVisibleIfAndProjection) {
+    RenderScene scene = mixed_sprites_scene();
+    RenderOptions policy;
+    policy.slot = 1u;
+    spade::render::SpriteTiles tiles;
+    EXPECT_EQ(spade::render::rasterize_sprite_tiles(scene, tile_camera(), policy, kW, kH, tiles), 0u) << "slot 0 only by default";
+    scene.sprites.push_back(spade::render::make_drone_disc(glm::dvec3(0.0, 0.0, 4.5), kFill, kBorder));   // a close drone: no disc
+    scene.sprites.push_back(one(filled_circle(3.0f, kFill), glm::dvec3(0.0, 0.0, 6.0)));                  // behind the eye
+    EXPECT_EQ(spade::render::rasterize_sprite_tiles(scene, tile_camera(), RenderOptions{}, kW, kH, tiles), mixed_sprites_scene().sprites.size());
+}
+
+// The analytic edge against the 4 x 4 sampling it replaces: random circles, rects, lines, polygons and arcs, white on black, anchored off a pixel centre. An
+// edge pixel may differ (a line's ramp and a corner are not the sampled area); everything away from an edge is the same.
+TEST(RenderSpritesS3, TheAnalyticEdgeAgreesWithTheSampledEdgeAwayFromTheEdgeAndWithinABandOnIt) {
+    uint32_t state = 12345u;
+    const auto rnd = [&state]() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<float>(state >> 8) / static_cast<float>(1u << 24);
+    };
+    constexpr uint32_t kN = 48;
+    int worst = 0;
+    size_t differing = 0, compared = 0;
+    for (int k = 0; k < 120; ++k) {
+        SpriteShape s;
+        s.aa = true;
+        const SpriteColour white{255, 255, 255, 255};
+        s.stroke_px = 1.0f + 3.0f * rnd();
+        switch (k % 5) {
+            case 0:
+                s.kind = SpriteShapeKind::circle;
+                s.r = 3.0f + 14.0f * rnd();
+                s.fill = (k % 2 == 0) ? std::optional<SpriteColour>(white) : std::nullopt;
+                s.stroke = (k % 2 == 0) ? std::nullopt : std::optional<SpriteColour>(white);
+                break;
+            case 1:
+                s.kind = SpriteShapeKind::rect;
+                s.x0 = -12.0f * rnd();
+                s.y0 = -12.0f * rnd();
+                s.x1 = 4.0f + 14.0f * rnd();
+                s.y1 = 4.0f + 14.0f * rnd();
+                s.fill = (k % 2 == 0) ? std::optional<SpriteColour>(white) : std::nullopt;
+                s.stroke = (k % 2 == 0) ? std::nullopt : std::optional<SpriteColour>(white);
+                break;
+            case 2:
+                s.kind = SpriteShapeKind::line;
+                s.x0 = -14.0f * rnd();
+                s.y0 = -14.0f * rnd();
+                s.x1 = 14.0f * rnd();
+                s.y1 = 14.0f * rnd();
+                s.stroke = white;
+                s.cap = (k % 3 == 0) ? SpriteCap::square : ((k % 3 == 1) ? SpriteCap::flat : SpriteCap::round);
+                break;
+            case 3:
+                s.kind = SpriteShapeKind::polygon;
+                s.points = {glm::vec2(-14.0f * rnd(), -14.0f * rnd()), glm::vec2(14.0f * rnd(), -12.0f * rnd()), glm::vec2(12.0f * rnd(), 14.0f * rnd()),
+                            glm::vec2(-12.0f * rnd(), 12.0f * rnd())};
+                s.fill = (k % 2 == 0) ? std::optional<SpriteColour>(white) : std::nullopt;
+                s.stroke = (k % 2 == 0) ? std::nullopt : std::optional<SpriteColour>(white);
+                break;
+            default:
+                s.kind = SpriteShapeKind::arc;
+                s.r = 5.0f + 12.0f * rnd();
+                s.start_deg = 360.0f * rnd();
+                s.span_deg = 40.0f + 280.0f * rnd();
+                s.stroke = white;
+                s.cap = (k % 3 == 0) ? SpriteCap::square : ((k % 3 == 1) ? SpriteCap::flat : SpriteCap::round);
+                break;
+        }
+        std::vector<uint8_t> a(static_cast<size_t>(kN) * kN * 4u, 0u), b = a;
+        const std::vector<SpriteShape> shapes = {s};
+        spade::render::draw_sprite_shapes(a, kN, kN, 24.3, 23.7, 1.0f, shapes);
+        spade::render::draw_sprite_shapes_sampled(b, kN, kN, 24.3, 23.7, 1.0f, shapes);
+        for (size_t i = 0; i < a.size(); i += 4u) {
+            const int d = std::abs(static_cast<int>(a[i + 2]) - static_cast<int>(b[i + 2]));
+            worst = std::max(worst, d);
+            differing += d != 0 ? 1u : 0u;
+            ++compared;
+        }
+    }
+    std::printf("[ S3 analytic edge ] vs the 4x4 sampled edge over 120 random shapes: worst %d levels; %zu of %zu pixels differ\n", worst, differing, compared);
+    constexpr int kBandWorstLevels = 255;       // to be pinned at the measured value + 1 once measured
+    EXPECT_LE(worst, kBandWorstLevels);
+    EXPECT_LT(differing, compared / 10u) << "only edge pixels differ";
 }

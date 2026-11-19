@@ -4858,6 +4858,44 @@ TEST_F(GpuGlRenderer, ASpriteThatCannotBeDrawnIsRefusedByName) {
     EXPECT_NE(refused.error().context.find("shapes"), std::string::npos) << refused.error().context;
 }
 
+// Option A: the sprites are drawn from per-sprite tiles with one upload and one instanced draw; nothing of a frame is kept for the next. Three frames on ONE
+// renderer: sprites at A, the same sprites moved to B, then none. Each matches the CPU reference within the S3 band, and the sprite-free frame is exactly the
+// frame without sprites (no tile left behind).
+TEST_F(GpuGlRenderer, SpritesFollowAMovingSceneAndLeaveNothingBehind) {
+    using namespace spade::render;
+    const SpriteColour fill{0xDC, 0xE5, 0xEC, 255}, border{0x0B, 0x0F, 0x14, 255}, crash{0xE2, 0x6E, 0x73, 255}, dim{0x82, 0x8F, 0x9C, 255},
+        accent{0x7C, 0x93, 0xFF, 255}, lap{0x5B, 0xBB, 0x86, 255};
+    const auto at = [&](double shift) {
+        RenderScene scene = make_ground_scene();
+        for (int k = 0; k < 6; ++k) {
+            scene.sprites.push_back(make_drone_disc(glm::dvec3(-1.6 + 0.6 * static_cast<double>(k) + shift, 0.5, -0.4), fill, border));
+        }
+        scene.sprites.push_back(make_mark(MarkKind::crash, glm::dvec3(-0.5 + shift, 0.9, -0.4), crash));
+        scene.sprites.push_back(make_spawn_reticle(glm::dvec3(0.3 + shift, 0.2, -0.4), ReticleState::hover, dim, accent, lap));
+        return scene;
+    };
+    RenderScene bare = make_ground_scene();
+    RenderOptions options = comparable_options();
+    options.ui_scale = 1.25f;
+    const Camera camera = camera_over_ground();
+    const RenderScene frame_a = at(0.0), frame_b = at(0.37);
+    const std::vector<uint8_t> gl_a = draw_and_read(frame_a, options, camera);
+    const std::vector<uint8_t> gl_b = draw_and_read(frame_b, options, camera);
+    const std::vector<uint8_t> gl_c = draw_and_read(bare, options, camera);
+    const std::vector<uint8_t> gl_bare = draw_and_read(bare, options, camera);
+    const std::vector<uint8_t> cpu_bare = cpu_rgba(bare, camera, options);
+    const ChannelDiff base = channel_diff(cpu_bare, gl_bare);
+    for (const auto& pair : {std::pair<const RenderScene*, const std::vector<uint8_t>*>{&frame_a, &gl_a}, std::pair<const RenderScene*, const std::vector<uint8_t>*>{&frame_b, &gl_b}}) {
+        const std::vector<uint8_t> cpu = cpu_rgba(*pair.first, camera, options);
+        ASSERT_GT(count_differing(cpu, cpu_bare), 300u) << "the sprites reach the frame";
+        const ChannelDiff d = channel_diff(cpu, *pair.second);
+        EXPECT_LE(d.worst, base.worst + 1);
+        EXPECT_EQ(d.over_two, base.over_two);
+    }
+    EXPECT_EQ(count_differing(gl_c, gl_bare), 0u) << "after frames with sprites, a frame without leaves no sprite behind";
+    EXPECT_GT(count_differing(gl_a, gl_b), 100u) << "and the moved sprites are not the old ones";
+}
+
 // D182 S3's cost (KAT's host draws a disc per drone, a few marks and a reticle each frame): on GL every frame that has a sprite rasterises it on the CPU into a
 // frame-sized premultiplied overlay, uploads it and composites it. This times the whole draw with sprites against the same frame without them, at 1280 x 720
 // and 1920 x 1080, with 32 and 128 drone discs plus one reticle and four marks, and the CPU rasterisation alone (rasterize_sprite_overlay). Medians of 30
@@ -4872,7 +4910,7 @@ TEST_F(GpuGlRenderer, SpriteCostAt32And128DiscsAt720pAnd1080p) {
         RenderScene scene = make_ground_scene();
         if (!with_sprites) return scene;
         for (int k = 0; k < discs; ++k) {
-            WorldSprite disc = make_drone_disc(glm::dvec3(-2.2 + 4.4 * static_cast<double>(k % 16) / 15.0, 0.3 + 0.25 * static_cast<double>(k / 16), -0.4), fill, border);
+            WorldSprite disc = make_drone_disc(glm::dvec3(-2.2 + 4.4 * static_cast<double>(k % 16) / 15.0 + 0.14 * static_cast<double>(k / 128), 0.3 + 0.25 * static_cast<double>((k % 128) / 16), -0.4), fill, border);
             disc.visible_max_span_px = 0.0f;  // always drawn: the disc is the cost being measured
             scene.sprites.push_back(std::move(disc));
         }
@@ -4919,19 +4957,19 @@ TEST_F(GpuGlRenderer, SpriteCostAt32And128DiscsAt720pAnd1080p) {
             return median(ms);
         };
         const auto raster_ms = [&](const RenderScene& scene) {
-            std::vector<uint8_t> rgba;
+            SpriteTiles tiles;
             std::vector<double> ms;
             for (int i = 0; i < 32; ++i) {
                 const auto t0 = std::chrono::steady_clock::now();
-                const bool any = rasterize_sprite_overlay(scene, camera, comparable_options(), w, h, rgba);
+                const size_t drawn = rasterize_sprite_tiles(scene, camera, comparable_options(), w, h, tiles);
                 const auto t1 = std::chrono::steady_clock::now();
-                EXPECT_TRUE(any);
+                EXPECT_GT(drawn, 0u);
                 if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
             }
             return median(ms);
         };
         const double base = gl_ms(build(0, false));
-        for (const int discs : {32, 128}) {
+        for (const int discs : {32, 128, 256}) {
             const RenderScene scene = build(discs, true);
             const double with = gl_ms(scene);
             const double raster = raster_ms(scene);
