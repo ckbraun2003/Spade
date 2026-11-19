@@ -69,12 +69,13 @@ inline constexpr double kDiscHeight = 0.0607;                                   
 inline constexpr double kPackMass = 0.4365;                                            // kg, Tattu G-Tech 5200 mAh 4S (Grepow listing, retailer)
 inline constexpr double kPropMass = 0.013;                                             // kg, the library's APC 10x5 (assumed, a typical 9-10 in moulded prop)
 
-// The kit's composite in the table's frame (see MASS, above): mass, centre of mass, and the tensor about it (kg m^2, design axes), at 9 digits, as
-// tests/test_x500_kit_inertia.cpp prints them from the part store.
+// The kit's composite in the table's frame (see MASS, above): mass, centre of mass, and the tensor about it (kg m^2, design axes), as
+// tests/test_x500_kit_inertia.cpp prints them from the part store. L107: at 17 significant digits (a double round-trips), so Core's compile can pin
+// them tightly; they are the same numbers as before at 9 digits, so the model files do not change. The mass is the table's sum, 1.6326 (the test sums 1.6326000000000001).
 inline constexpr double kKitMass = 1.6326;
-inline const glm::dvec3 kKitCom{-0.00446465349, -0.0254301412, 0.000878054003};
-inline constexpr double kKitXX = 0.0237928957, kKitYY = 0.0289194924, kKitZZ = 0.0233956355;
-inline constexpr double kKitXY = 0.00048523054, kKitXZ = -1.70691015e-06, kKitYZ = -5.54120225e-05;
+inline const glm::dvec3 kKitCom{-0.0044646534873306106, -0.025430141162826263, 0.00087805400318969771};
+inline constexpr double kKitXX = 0.023792895661676021, kKitYY = 0.028919492384880705, kKitZZ = 0.023395635476505722;
+inline constexpr double kKitXY = 0.00048523054049281355, kKitXZ = -1.7069101480298322e-06, kKitYZ = -5.5412022481528728e-05;
 
 [[nodiscard]] inline std::filesystem::path data_dir() {
     return std::filesystem::path(SPADE_ASSETS_DIR).parent_path() / "tools" / "flow_movie" / "data" / "x500";  // assets/ is in the repo root

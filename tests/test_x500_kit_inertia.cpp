@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -223,11 +224,62 @@ TEST(X500KitInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
     std::printf("[kit] principal moments (about the design axes' nearest principal axes): %.7f %.7f %.7f kg m^2\n", principal[0], principal[1], principal[2]);
     std::printf("[kit] the diagonal only (the products dropped): %.7f %.7f %.7f kg m^2\n", tensor[0][0], tensor[1][1], tensor[2][2]);
     std::printf("[kit] the principal axes turn %.3f degrees from the design axes\n", turn_deg);
-    // The numbers tests/x500_model.hpp holds (kKitMass, kKitCom, kKitTensor), at 9 significant digits.
-    std::printf("[kit-const] mass %.9g\n[kit-const] com %.9g %.9g %.9g\n[kit-const] tensor xx %.9g yy %.9g zz %.9g xy %.9g xz %.9g yz %.9g\n", mass,
+    // The numbers tests/x500_model.hpp holds (kKitMass, kKitCom, kKitTensor), at 17 significant digits (a double round-trips: Core's compile pins them to 1e-9 relative).
+    std::printf("[kit-const] mass %.17g\n[kit-const] com %.17g %.17g %.17g\n[kit-const] tensor xx %.17g yy %.17g zz %.17g xy %.17g xz %.17g yz %.17g\n", mass,
                 centre.x, centre.y, centre.z, tensor[0][0], tensor[1][1], tensor[2][2], tensor[1][0], tensor[2][0], tensor[2][1]);
     EXPECT_NEAR(mass, 1.6326, 1e-4);
     EXPECT_GT(names.size(), 10u);
+}
+
+// L108: are the table's four in-place motor meshes (DJ-2216-KV880_1_1 .. _1_4) the library's ONE re-origined motor mesh turned about each motor's own vertical
+// axis? For each, the vertices in order (same count assumed, checked): the turn about y that best maps the library's mesh onto it (least squares on the
+// xz plane), then the translation, and the largest vertex distance left over: 0 for an exact rotation. The meshes are float32, so a residual near 1e-7 m at
+// these coordinates is rounding.
+TEST(X500KitInertia, TheTablesFourMotorsAreTurnsOfTheLibrarysOneMesh) {
+    const char* enable = env_text("SPADE_X500_KIT_INERTIA");
+    const char* store_text = env_text("SPADE_PART_STORE");
+    if (enable == nullptr || store_text == nullptr) {
+        GTEST_SKIP() << "set SPADE_X500_KIT_INERTIA=1 and SPADE_PART_STORE=<the shared part store>";
+    }
+    const std::filesystem::path store(store_text);
+    const char* const kLibraryMotorSha = "dd3fdc640f9f30113f353ed08cb29f391a952e5d38f25ec17894c27c3dcc26f0";  // the library's motor part's store object (re-origined)
+    const auto library = spade::load_mesh_file(store / kLibraryMotorSha / "DJ-2216-KV880_1_1.spmesh");
+    ASSERT_TRUE(library.has_value()) << library.error().context;
+    const std::span<const glm::vec3> v = library->mesh->positions();
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    for (const YAML::Node& part : doc["parts"]) {
+        if (part["kind"].as<std::string>() != "motor") continue;
+        const YAML::Node ref = part["objects"][0]["store_ref"];
+        const auto table = spade::load_mesh_file(store / ref["sha256"].as<std::string>() / ref["file"].as<std::string>());
+        ASSERT_TRUE(table.has_value()) << table.error().context;
+        const std::span<const glm::vec3> w = table->mesh->positions();
+        std::printf("[kit-turn] %-18s %zu vertices (library %zu)", part["name"].as<std::string>().c_str(), w.size(), v.size());
+        if (w.size() != v.size()) {
+            std::printf(": not the same vertex count, so not the same mesh\n");
+            continue;
+        }
+        glm::dvec3 vc(0.0), wc(0.0);
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            vc += glm::dvec3(v[i]);
+            wc += glm::dvec3(w[i]);
+        }
+        vc /= static_cast<double>(v.size());
+        wc /= static_cast<double>(v.size());
+        double sin_sum = 0.0, cos_sum = 0.0;
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            const glm::dvec3 a = glm::dvec3(v[i]) - vc, b = glm::dvec3(w[i]) - wc;
+            cos_sum += b.x * a.x + b.z * a.z;
+            sin_sum += b.x * a.z - b.z * a.x;
+        }
+        const double theta = std::atan2(sin_sum, cos_sum);
+        const double c = std::cos(theta), s = std::sin(theta);
+        const auto turn = [&](const glm::dvec3& p) { return glm::dvec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z); };
+        const glm::dvec3 t = wc - turn(vc);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < v.size(); ++i) worst = std::max(worst, glm::length(turn(glm::dvec3(v[i])) + t - glm::dvec3(w[i])));
+        std::printf(": turn about y %.9f degrees; translation (%.6f, %.6f, %.6f) m; largest vertex distance left %.3e m\n", theta * 180.0 / 3.14159265358979323846,
+                    t.x, t.y, t.z, worst);
+    }
 }
 
 }  // namespace
