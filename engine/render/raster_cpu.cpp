@@ -20,6 +20,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+#include "core/fp32_math.hpp"
 #include "render/raymarch.hpp"
 #include "render/shadow.hpp"
 
@@ -1669,7 +1670,13 @@ void append_spawn_markers(OverlayGeometry& out, const RenderScene& scene) {
     }
 }
 
-constexpr double kDroneNose = 0.5;
+// A body with no mesh is a small flat disc in its own horizontal plane (the body's local XZ plane) with a short tick at its nose (-Z): generic
+// for any body, no airframe shape in it (L89, KAT D171: never a triangle icon). The tick's base lies inside the disc, so it shows only past the rim.
+constexpr double kBodyDiscRadius = 0.15;
+constexpr uint32_t kBodyDiscSegments = 24u;
+constexpr double kBodyTickLength = 0.26;     // from the centre to the apex
+constexpr double kBodyTickBase = 0.14;       // the base's distance from the centre, inside the rim
+constexpr double kBodyTickHalfWidth = 0.02;
 
 // scene.dynamics carries no separate BodyPose list of its own (RenderScene's
 // own design, scene.hpp) -- each dynamic DrawItem's local_to_world already
@@ -1681,9 +1688,10 @@ constexpr double kDroneNose = 0.5;
 // a dynamic body that has NO MESH -- because for such a body nothing else
 // marks the aircraft at all, which was exactly the state the user flew in:
 // no shipped airframe declared a visual_ref, so every body resolved to
-// kNoMesh, draw_mesh_item returned early, and this ~0.4 m placeholder
-// triangle WAS the drone. ("A triangle on a big circle" -- this is the
-// triangle; the circle was the spawn marker below.)
+// kNoMesh, draw_mesh_item returned early, and the placeholder WAS the drone
+// (then a ~0.4 m tetrahedron: "a triangle on a big circle", the circle being
+// the spawn marker below). It is now a small flat disc with a heading tick
+// (L89): the same fallback, no longer an icon.
 //
 // Drawn over a real airframe it is clutter and it dominates: 0.4 m of
 // overlay across a 0.27 m aircraft, in an accent colour, biased toward the
@@ -1698,10 +1706,6 @@ constexpr double kDroneNose = 0.5;
 // one -- adding it now would be speculative.
 void append_body_markers(OverlayGeometry& out, const RenderScene& scene) {
     const std::array<uint8_t, 3> rgb{kDroneR, kDroneG, kDroneB};
-    const Vec3 nose{0.0, 0.0, -kDroneNose};
-    const Vec3 left{-0.2, -0.08, 0.2};
-    const Vec3 right{0.2, -0.08, 0.2};
-    const Vec3 top{0.0, 0.25, 0.2};
     for (const DrawItem& item : scene.dynamics) {
         if (item.mesh_index != kNoMesh) {
             continue;  // this body draws itself -- see this function's own comment.
@@ -1716,10 +1720,14 @@ void append_body_markers(OverlayGeometry& out, const RenderScene& scene) {
             out.triangles.push_back(
                 OverlayTriangle{.a = dvec(place(a)), .b = dvec(place(b)), .c = dvec(place(c)), .rgb = rgb});
         };
-        tri(nose, left, right);
-        tri(nose, right, top);
-        tri(nose, top, left);
-        tri(left, right, top);
+        // The rim at 24 even steps, from the engine's own deterministic sine and cosine (no libm under engine/); the last point is the first.
+        const Vec3 centre{0.0, 0.0, 0.0};
+        const auto rim = [](uint32_t k) {
+            const float a = 2.0f * 3.14159265358979323846f * static_cast<float>(k % kBodyDiscSegments) / static_cast<float>(kBodyDiscSegments);
+            return Vec3{kBodyDiscRadius * static_cast<double>(spade::math::cos32(a)), 0.0, kBodyDiscRadius * static_cast<double>(spade::math::sin32(a))};
+        };
+        for (uint32_t k = 0; k < kBodyDiscSegments; ++k) tri(centre, rim(k), rim(k + 1u));
+        tri(Vec3{-kBodyTickHalfWidth, 0.0, -kBodyTickBase}, Vec3{kBodyTickHalfWidth, 0.0, -kBodyTickBase}, Vec3{0.0, 0.0, -kBodyTickLength});
     }
 }
 

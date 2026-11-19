@@ -17,7 +17,6 @@
 #include <world/builder.hpp>
 
 #include <glm/geometric.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -1114,8 +1113,12 @@ TEST(OverlayGeometry, ListsTheGridBoundsAndMarkersInDrawOrder) {
 TEST(OverlayGeometry, AMeshlessBodyIsAFlatDiscInItsOwnHorizontalPlaneWithAShortHeadingTick) {
     RenderScene scene = make_empty_overlay_scene();
     const glm::vec3 where(1.0f, 2.0f, 3.0f);
-    const glm::mat4 pose = glm::translate(glm::mat4(1.0f), where) * glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)) *
-                           glm::rotate(glm::mat4(1.0f), glm::radians(20.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    // Built from components, not glm::rotate/radians (BitPortability: no libm in a test source): a yaw of 90 degrees about Y, then a roll about Z
+    // with cosine 0.8 and sine 0.6 (about 37 degrees), then the translation.
+    const glm::mat4 yaw(glm::vec4(0.0f, 0.0f, -1.0f, 0.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.0f), glm::vec4(1.0f, 0.0f, 0.0f, 0.0f), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    const glm::mat4 roll(glm::vec4(0.8f, 0.6f, 0.0f, 0.0f), glm::vec4(-0.6f, 0.8f, 0.0f, 0.0f), glm::vec4(0.0f, 0.0f, 1.0f, 0.0f), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+    glm::mat4 pose = yaw * roll;
+    pose[3] = glm::vec4(where, 1.0f);
     scene.dynamics.push_back(DrawItem{.mesh_index = kNoMesh, .local_to_world = pose});
     RenderOptions options;
     options.overlays = true;
