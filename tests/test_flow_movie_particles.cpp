@@ -610,3 +610,50 @@ TEST(FlowMovieParticles, TheDimmingKeysAreInTheLookStringAndRangeChecked) {
     EXPECT_FALSE(flow_movie::parse_particle_look("dim_r=0").has_value());
 }
 
+
+// L106b: a still of the particle look is drawn from a run's kept frames with no solve: advance_through_frames() carries the driver through frames 0 to `last` in
+// order, each frame read once, the pool taken from frame 0's log, each step the stored frames' own time difference. A uniform 2 m/s flow read from 1 ms-apart
+// frames moves the first seed by exactly v x n x dt after n advances (the same step the streamed run takes), a snapshot is kept at each asked frame, and a frame
+// that cannot be read stops the pass naming it.
+TEST(FlowMovieParticles, AdvancingThroughStoredFramesMovesAPointByExactlyVNDtAndKeepsTheAskedSnapshots) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    auto o = options();
+    o.per_frame = 1u;
+    flow_movie::ParticleDriver driver(o, {2u, 5u});
+    uint32_t reads = 0, pools = 0;
+    const auto read = [&](uint32_t k, FlowVolume& volume, double& time_s) -> spade::Result<void> {
+        EXPECT_EQ(k, reads) << "each frame once, in order";
+        ++reads;
+        volume = v;
+        time_s = 0.100 + 0.001 * static_cast<double>(k);  // 1 ms apart, as Physics' runs write them
+        return {};
+    };
+    const auto pool_of = [&]() -> std::vector<glm::vec3> {
+        ++pools;
+        EXPECT_EQ(reads, 1u) << "the pool is taken once, right after frame 0 is read";
+        return std::vector<glm::vec3>{glm::vec3(0.0f), glm::vec3(0.0f, 0.1f, 0.0f)};
+    };
+    ASSERT_TRUE(flow_movie::advance_through_frames(driver, 5u, read, pool_of));
+    EXPECT_EQ(reads, 6u);
+    EXPECT_EQ(pools, 1u);
+    const flow_movie::ParticleField* five = driver.snapshot_at(5u);
+    ASSERT_NE(five, nullptr);
+    ASSERT_EQ(five->position.size(), 6u) << "one seed a frame";
+    EXPECT_NEAR(five->position[0].x, 5.0f * 2.0f * 0.001f, 1e-6f) << "v x n x dt = 2 m/s x 5 x 1 ms";
+    EXPECT_NEAR(five->position[0].y, 0.0f, 1e-9f);
+    EXPECT_NEAR(five->position[1].x, 4.0f * 2.0f * 0.001f, 1e-6f) << "the second seed, one frame younger";
+    ASSERT_NE(driver.snapshot_at(2u), nullptr);
+    EXPECT_EQ(driver.snapshot_at(2u)->frames, 3u);
+    EXPECT_EQ(driver.snapshot_at(3u), nullptr);
+
+    flow_movie::ParticleDriver again(o, {});
+    const auto broken = [&](uint32_t k, FlowVolume& volume, double& time_s) -> spade::Result<void> {
+        if (k == 2u) return std::unexpected(spade::Error{spade::Code::io_error, "frame 2 is not on disk"});
+        volume = v;
+        time_s = 0.001 * static_cast<double>(k);
+        return {};
+    };
+    const spade::Result<void> stopped = flow_movie::advance_through_frames(again, 4u, broken, [&]() { return std::vector<glm::vec3>{glm::vec3(0.0f)}; });
+    ASSERT_FALSE(stopped.has_value());
+    EXPECT_NE(stopped.error().context.find("frame 2"), std::string::npos) << stopped.error().context;
+}
