@@ -614,6 +614,8 @@ add_library(spade_render STATIC
     render/flow_sample.cpp
     render/flow_render.cpp
     render/flow_lines.cpp
+    render/sprites.cpp
+    render/sprite_kit.cpp
     render/flow_look.cpp
     render/view_mode.cpp
     render/mesh_resolver.cpp

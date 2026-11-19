@@ -69,6 +69,7 @@
 #include "core/fp32_math.hpp"   // math::sin32/cos32 (S7a Task R8) -- tan32() below, SR-14
 #include "render/field_layer.hpp"  // FieldLayer, RenderScene::field_layers
 #include "render/flow_render.hpp"  // FlowLayer, RenderScene::flow_layers
+#include "render/sprites.hpp"      // WorldSprite, RenderScene::sprites
 #include "render/flow_lines.hpp"   // FlowPolyline, FlowPoints, RenderScene::flow_polylines
 #include "render/flow_field.hpp"   // FlowSurfaceColouring, RenderScene::flow_surface_colouring
 #include "render/shadow.hpp"   // ShadowMap (S7a Task R7) -- forward-declares RenderScene itself, no cycle
@@ -647,6 +648,9 @@ struct RenderScene {
     // unlit, and GL in its pass; the ray-march mode does not. Empty unless a
     // caller adds them.
     std::vector<FlowPolyline> flow_polylines;
+    // World-anchored constant-pixel sprites (render/sprites.hpp; D182 S3): drawn after the flow polylines, in submission order, clipped to the
+    // frame; the ray-march mode does not draw them. Empty unless a caller adds them.
+    std::vector<WorldSprite> sprites;
     FlowPoints flow_points;
     // How the polylines are drawn: the one-pixel line unless a width is set (render/flow_lines.hpp's
     // FlowLineStyle). Off by default, so no pinned frame changes.
