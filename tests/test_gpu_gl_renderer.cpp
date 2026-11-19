@@ -4564,4 +4564,179 @@ TEST_F(GpuGlRenderer, AnAlphaScalesAnAdditiveCapsulesLight) {
     EXPECT_NEAR(level_at(frame, 80, 60), 102, 4) << "0.8 at alpha 0.5 is 0.4";
 }
 
+// GlRenderer::update_csg_subtrees (D180, "run smoother"; the lead approved the header, 2026-11-19). A CSG vehicle that moves changes only its program's
+// transforms and its box, yet upload_scene() redoes every mesh, the materials, the shadow map and the whole CSG tables, and draw() refuses a frame whose
+// subtree is not byte for byte the uploaded one. update_csg_subtrees(scene) re-uploads only what changed: it packs each subtree as upload_scene() does,
+// compares with the HOST copy of what was last uploaded (the one draw() compares against; never a GPU readback), and writes only the changed element ranges.
+[[nodiscard]] RenderScene csg_moved_by(const RenderScene& good, float dx) {
+    RenderScene moved = good;
+    for (spade::SdfTransform& t : moved.csg_subtrees[0].program.transforms) {
+        t.world_to_local = t.world_to_local * glm::translate(glm::mat4(1.0f), glm::vec3(-dx, 0.0f, 0.0f));
+    }
+    moved.csg_subtrees[0].bounds.min.x += dx;
+    moved.csg_subtrees[0].bounds.max.x += dx;
+    return moved;
+}
+
+TEST_F(GpuGlRenderer, AnUpdateAfterAMoveDrawsExactlyWhatAFreshUploadDraws) {
+    const RenderScene good = slab_scene();
+    ASSERT_EQ(good.csg_subtrees.size(), 1u);
+    const std::vector<uint8_t> before = draw_and_read(good);
+    ASSERT_EQ(before.size(), kPixels * 4u);
+    const RenderScene moved = csg_moved_by(good, 0.5f);
+    const auto report = renderer_->update_csg_subtrees(moved);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_GT(report->transforms_written, 0u) << "the moved leaf transforms are written";
+    EXPECT_EQ(report->nodes_written, 0u) << "the nodes did not change";
+    EXPECT_EQ(report->boxes_changed, 1u);
+    EXPECT_TRUE(report->any());
+    const std::vector<uint8_t> updated = draw_uploaded_and_read(moved);  // draw() passes its byte compare with the updated upload
+    ASSERT_EQ(updated.size(), kPixels * 4u);
+    ASSERT_TRUE(renderer_->upload_scene(moved).has_value());
+    const std::vector<uint8_t> fresh = draw_uploaded_and_read(moved);
+    EXPECT_EQ(count_differing(updated, fresh), 0u) << "an update is a fresh upload's frame, byte for byte";
+    EXPECT_GT(count_differing(before, updated), 50u) << "and the move is real: the frame is not the unmoved one";
+}
+
+TEST_F(GpuGlRenderer, AnUnchangedSceneWritesNothingAndTheUpdateNeverReadsTheDeviceBack) {
+    const RenderScene good = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(good).has_value());
+    const auto report = renderer_->update_csg_subtrees(good);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_FALSE(report->any()) << "nothing changed: no node, no transform, no box";
+    EXPECT_EQ(report->nodes_written + report->transforms_written + report->boxes_changed, 0u);
+    EXPECT_TRUE(renderer_->draw(good, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight).has_value());
+    // The compare is against the host copy of what was uploaded, never a read-back of the buffers: the renderer's source names no GetBufferSubData
+    // and maps no buffer.
+    std::ifstream in(std::string(SPADE_REPO_DIR) + "/engine/render_gl/gl_renderer.cpp", std::ios::binary);
+    ASSERT_TRUE(in.good());
+    const std::string source((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(source.find("GetBufferSubData"), std::string::npos);
+    EXPECT_EQ(source.find("MapBuffer"), std::string::npos);
+    EXPECT_NE(source.find("update_csg_subtrees"), std::string::npos) << "the source scanned is the renderer's";
+}
+
+// A parked vehicle under Run wobbles at about 1e-17 in x: its transform's bytes change, nothing else, and the update writes that one transform.
+TEST_F(GpuGlRenderer, ANudgeOfOneUlpWritesThatOneTransformAndNothingElse) {
+    const RenderScene good = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(good).has_value());
+    RenderScene nudged = good;
+    ASSERT_FALSE(nudged.csg_subtrees[0].program.transforms.empty());
+    glm::mat4& m = nudged.csg_subtrees[0].program.transforms[0].world_to_local;
+    m[3][0] = std::nextafter(m[3][0], 1.0e9f);
+    ASSERT_NE(std::memcmp(&m, &good.csg_subtrees[0].program.transforms[0].world_to_local, sizeof(glm::mat4)), 0);
+    const auto report = renderer_->update_csg_subtrees(nudged);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_EQ(report->transforms_written, 1u) << "the one transform whose bytes changed";
+    EXPECT_EQ(report->nodes_written, 0u);
+    EXPECT_EQ(report->boxes_changed, 0u);
+    EXPECT_TRUE(renderer_->draw(nudged, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight).has_value());
+    // and the same scene again is now unchanged
+    const auto again = renderer_->update_csg_subtrees(nudged);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_FALSE(again->any());
+}
+
+TEST_F(GpuGlRenderer, AnUpdateThatCannotBeAnUpdateIsRefusedAndTheOldUploadStillDraws) {
+    const RenderScene good = slab_scene();
+    ASSERT_TRUE(renderer_->upload_scene(good).has_value());
+    const auto draw = [this](const RenderScene& scene) {
+        return renderer_->draw(scene, camera_on_plus_z(), spade::render::RenderOptions{}, kWidth, kHeight);
+    };
+    RenderScene fewer = good;
+    fewer.csg_subtrees.clear();
+    RenderScene more_meshes = good;
+    more_meshes.meshes.push_back(more_meshes.meshes.front());
+    RenderScene bigger = good;  // a node more: the table layout moves, so it is an upload, not an update
+    bigger.csg_subtrees[0].program.nodes.push_back(bigger.csg_subtrees[0].program.nodes.front());
+    RenderScene empty_program = good;
+    empty_program.csg_subtrees[0].program.nodes.clear();
+    RenderScene past_statics = good;
+    past_statics.csg_subtrees[0].draw_item = static_cast<uint32_t>(good.statics.size());
+    for (const auto& [what, scene] : {std::pair<const char*, const RenderScene*>{"a different subtree count", &fewer},
+                                      {"a different mesh count", &more_meshes},
+                                      {"a different node count", &bigger},
+                                      {"a subtree with no program", &empty_program},
+                                      {"a draw item past the statics", &past_statics}}) {
+        SCOPED_TRACE(what);
+        const auto refused = renderer_->update_csg_subtrees(*scene);
+        ASSERT_FALSE(refused.has_value()) << what;
+        EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(refused.error().context.find("update_csg_subtrees"), std::string::npos) << refused.error().context;
+        EXPECT_TRUE(draw(good).has_value()) << "a refusal changes nothing: the previous upload still draws";
+    }
+    // a draw of a refused scene is refused by draw(), as today
+    EXPECT_FALSE(draw(fewer).has_value());
+    // the node-count refusal says to upload instead
+    const auto refused = renderer_->update_csg_subtrees(bigger);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("upload_scene"), std::string::npos) << refused.error().context;
+}
+
+// An update does not touch the meshes: a scene whose mesh was edited after its upload, updated, still draws the uploaded geometry (wireframe draws a
+// subtree's mesh), where a fresh upload shows the edit.
+TEST_F(GpuGlRenderer, AnUpdateLeavesTheUploadedMeshesAlone) {
+    const RenderScene good = slab_scene();
+    spade::render::RenderOptions wire = comparable_options();
+    wire.mode = spade::render::DrawMode::wireframe;
+    ASSERT_TRUE(renderer_->upload_scene(good).has_value());
+    const std::vector<uint8_t> original = draw_uploaded_and_read(good, wire);
+    ASSERT_GT(count_non_black(original), 50u);
+    RenderScene edited = good;
+    for (spade::render::MeshData& mesh : edited.meshes) {
+        for (glm::vec3& p : mesh.positions) p.x += 0.4f;
+    }
+    const auto report = renderer_->update_csg_subtrees(edited);
+    ASSERT_TRUE(report.has_value()) << report.error().context;
+    EXPECT_FALSE(report->any()) << "the CSG did not change";
+    const std::vector<uint8_t> after_update = draw_uploaded_and_read(edited, wire);
+    EXPECT_EQ(count_differing(original, after_update), 0u) << "the uploaded meshes are the ones drawn";
+    ASSERT_TRUE(renderer_->upload_scene(edited).has_value());
+    EXPECT_GT(count_differing(original, draw_uploaded_and_read(edited, wire)), 20u) << "a fresh upload shows the edit";
+}
+
+// The cost, for Interface's before and after (opt-in, SPADE_CSG_UPDATE_COST=1): the host time of upload_scene() against update_csg_subtrees() on a scene with
+// the CSG slab and 64 more meshes, the slab moved a little each time. Median of 30 calls, glFinish after each.
+TEST_F(GpuGlRenderer, AnUpdateCostsAFractionOfAFullUploadForAMovingSubtree) {
+    if (!env_gate_is_set("SPADE_CSG_UPDATE_COST")) GTEST_SKIP() << "opt-in: set SPADE_CSG_UPDATE_COST=1";
+    RenderScene base = slab_scene();
+    for (int k = 0; k < 64; ++k) {
+        spade::render::MeshData mesh = base.meshes.front();
+        for (glm::vec3& p : mesh.positions) p += glm::vec3(0.01f * static_cast<float>(k), 0.0f, 0.0f);
+        base.meshes.push_back(std::move(mesh));
+    }
+    ASSERT_TRUE(renderer_->upload_scene(base).has_value());
+    const auto median = [](std::vector<double> ms) {
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[ms.size() / 2 - 1] + ms[ms.size() / 2]);
+    };
+    std::vector<double> upload_ms, update_ms;
+    for (int i = 0; i < 32; ++i) {
+        const RenderScene scene = csg_moved_by(base, 0.001f * static_cast<float>(i + 1));
+        glFinish();
+        const auto t0 = std::chrono::steady_clock::now();
+        const spade::Result<void> up = renderer_->upload_scene(scene);
+        glFinish();
+        const auto t1 = std::chrono::steady_clock::now();
+        const RenderScene next = csg_moved_by(base, 0.001f * static_cast<float>(i + 2));
+        const auto report = renderer_->update_csg_subtrees(next);
+        glFinish();
+        const auto t2 = std::chrono::steady_clock::now();
+        EXPECT_TRUE(up.has_value());
+        EXPECT_TRUE(report.has_value());
+        if (i >= 2) {
+            upload_ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            update_ms.push_back(std::chrono::duration<double, std::milli>(t2 - t1).count());
+        }
+    }
+    const double upload = median(upload_ms);
+    const double update = median(update_ms);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ csg update cost ] 65 meshes and one CSG subtree: upload_scene %.3f ms, update_csg_subtrees %.3f ms (%.1fx); on %s\n", upload, update,
+                update > 0.0 ? upload / update : 0.0, device.c_str());
+    RecordProperty("upload_ms_x1000", static_cast<int>(upload * 1000.0));
+    RecordProperty("update_ms_x1000", static_cast<int>(update * 1000.0));
+    EXPECT_LT(update, upload) << device;
+}
+
 }  // namespace
