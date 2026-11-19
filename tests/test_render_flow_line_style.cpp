@@ -357,11 +357,11 @@ TEST(RenderFlowLineStyle, TheCpuRendererRefusesAdditiveAndAlphasByNameAndDrawsNo
     ASSERT_FALSE(result.has_value());
     EXPECT_NE(result.error().context.find("GL"), std::string::npos) << result.error().context;
     EXPECT_NE(result.error().context.find("additive"), std::string::npos) << result.error().context;
+    // per-point alphas are drawn by the CPU now too (D182 S1; test_render_polyline_s1.cpp holds their numbers): no refusal
     FlowPolyline faded = horizontal(kGreen);
     faded.alphas = {0.2f, 0.9f};
     (void)draw(styled(FlowLineStyle{3.0f, 0.0f, 0.35f}, faded), &result);
-    ASSERT_FALSE(result.has_value());
-    EXPECT_NE(result.error().context.find("alpha"), std::string::npos) << result.error().context;
+    EXPECT_TRUE(result.has_value()) << result.error().context;
     // and a scene with neither is exactly what it was
     (void)draw(styled(FlowLineStyle{3.0f, 0.0f, 0.35f}, horizontal(kGreen)), &result);
     EXPECT_TRUE(result.has_value());
