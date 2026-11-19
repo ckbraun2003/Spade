@@ -12,7 +12,9 @@
 // iterations, steps capped / unconverged / stalled), the vertical momentum flux through four planes under the hubs (rho sum w^2 dA, the mass flux
 // and the pressure's sum, all in newtons or kg/s), and the tip's travel a step; SPADE_LS_STEP (the time step, s; 0.0002), SPADE_LINE_STILLS_FILE (the model, library/drones/phantom3_class.model.yaml), SPADE_LS_VIEWS (a, b, c; default a), SPADE_LS_DIST, SPADE_LS_AIM, SPADE_DYE_SIGMA,
 // SPADE_DYE_ONSET (flow_still.hpp), SPADE_LINE_STILLS_DISCS=1 (the same run on discs, the baseline),
-// SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1).
+// SPADE_LS_RING=1 (the disc tip ring too), SPADE_TIP_GAIN (4), SPADE_TIP_FRAC (1). L106's frame cache: SPADE_LINE_STILLS_CACHE=<dir> with
+// SPADE_LINE_STILLS_KEEP="49,99" (the frames; frame f is t = (f + 1) x 1 ms) and SPADE_LINE_STILLS_MEAN=N (the N frames ending at each) writes just those
+// frames, in flow_movie's cache format, and nothing else; SPADE_LS_STEP is then a whole number of ns whose steps in 1 ms are whole.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -29,9 +31,11 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -261,7 +265,34 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     } pstats;
     double impulse = 0.0;  // N s: the sum over steps of h times the thrust the rotors put in (the lines' report, or the discs' fixed thrust)
 
-    const std::vector<uint32_t> at = steps_from_env();
+    std::vector<uint32_t> at = steps_from_env();
+    // The frames the cache keeps (SPADE_LINE_STILLS_CACHE): frame f ends at step (f + 1) x spf, spf the steps in 1 ms (the d1-still group's frame: 5 at
+    // 0.2 ms). L106: SPADE_LINE_STILLS_KEEP="49,99" lists the frames and SPADE_LINE_STILLS_MEAN=N keeps the N frames ending at each (the look's mean
+    // window); a listed frame's step is run to and published whatever SPADE_LINE_STILLS_STEPS says. Without KEEP, the one frame SPADE_LINE_STILLS_CACHE_FRAME (200).
+    const uint32_t spf = static_cast<uint32_t>(std::lround(0.001 / static_cast<double>(box.cfg.h)));
+    std::vector<std::pair<uint32_t, uint32_t>> kept;  // (step, frame)
+    if (const char* keep = env_cstr("SPADE_LINE_STILLS_KEEP"); keep != nullptr) {
+        const uint32_t window = env_cstr("SPADE_LINE_STILLS_MEAN") != nullptr
+                                    ? std::max<uint32_t>(1u, static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_MEAN"), nullptr, 10)))
+                                    : 1u;
+        std::stringstream in(keep);
+        std::string item;
+        while (std::getline(in, item, ',')) {
+            const uint32_t end_frame = static_cast<uint32_t>(std::strtoul(item.c_str(), nullptr, 10));
+            for (uint32_t k = 0; k < window && k <= end_frame; ++k) {
+                const uint32_t frame = end_frame - k;
+                kept.emplace_back((frame + 1u) * spf, frame);
+                at.push_back((frame + 1u) * spf);
+            }
+        }
+        std::printf("[ lines   ] the cache keeps %zu frames (%u steps a frame, %.4f ms a frame)\n", kept.size(), spf,
+                    static_cast<double>(spf) * static_cast<double>(box.cfg.h) * 1000.0);
+    } else {
+        const uint32_t frame = env_cstr("SPADE_LINE_STILLS_CACHE_FRAME") != nullptr
+                                   ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_CACHE_FRAME"), nullptr, 10))
+                                   : 200u;
+        kept.emplace_back((frame + 1u) * spf, frame);
+    }
     const uint32_t last = at.empty() ? 0u : *std::max_element(at.begin(), at.end());
     const std::vector<flow_still::Look> looks = flow_still::dye_looks();
     const float dist = flow_still::env_float("SPADE_LS_DIST", 0.9f);
@@ -270,6 +301,7 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
     const auto t_start = std::chrono::steady_clock::now();
     spade::FlowVolume volume;
     double step_s = 0.0;
+    std::vector<double> thrust_by_step;  // L106: the lines' thrust in all, each step, for the last revolution's mean
     uint32_t steps_timed = 0;
     for (uint32_t step = 1; step <= last; ++step) {
         for (std::size_t i = 0; i < lines.size(); ++i) lines[i].psi = psi[i];
@@ -291,6 +323,11 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         ASSERT_TRUE(health.has_value()) << "step " << step << ": " << health.error().context;
         ASSERT_EQ(health->fault, af::FluidFault::none) << "step " << step;
         pstats.max_residual = std::max(pstats.max_residual, static_cast<double>(health->pressure_residual));
+        {
+            double all = 0.0;
+            for (const af::LineReport& r : (*gpu)->line_reports()) all += static_cast<double>(r.thrust);
+            thrust_by_step.push_back(all);
+        }
         pstats.iterations += health->pressure_iterations;
         ++pstats.steps;
         pstats.capped += health->capped ? 1u : 0u;
@@ -314,12 +351,9 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
         // SPADE_LINE_STILLS_CACHE=<dir>: the published frame in flow_movie's cache format as frame SPADE_LINE_STILLS_CACHE_FRAME (200, the
         // d1-still group's S8 f200: step (200 + 1) * 5 = 1005, so list that step in SPADE_LINE_STILLS_STEPS), for Rendering's look.
         if (const char* cache_dir = env_cstr("SPADE_LINE_STILLS_CACHE"); cache_dir != nullptr) {
-            const uint32_t frame = env_cstr("SPADE_LINE_STILLS_CACHE_FRAME") != nullptr
-                                       ? static_cast<uint32_t>(std::strtoul(env_cstr("SPADE_LINE_STILLS_CACHE_FRAME"), nullptr, 10))
-                                       : 200u;
-            // The d1-still group's frame f is at t = (f + 1) * 5 * 0.2 ms; with SPADE_LS_STEP at 0.1 ms that is twice the steps.
-            const uint32_t per = static_cast<uint32_t>(std::lround(0.0002 / static_cast<double>(box.cfg.h)));
-            if (step == (frame + 1u) * 5u * per) {
+            const auto kept_here = std::find_if(kept.begin(), kept.end(), [&](const std::pair<uint32_t, uint32_t>& k) { return k.first == step; });
+            if (kept_here != kept.end()) {
+                const uint32_t frame = kept_here->second;
                 std::filesystem::create_directories(cache_dir);
                 double lines_thrust = 0.0;
                 for (const af::LineReport& r : (*gpu)->line_reports()) lines_thrust += static_cast<double>(r.thrust);
@@ -344,6 +378,14 @@ TEST(GpuAirflowLineStills, ThePhantomsLinesOnTheDeepBox) {
                     static_cast<double>(step) * static_cast<double>(box.cfg.h),
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count(), thrust,
                     (*gpu)->line_reports().size());
+        if (!lines.empty() && omega > 0.0f) {  // L106: the mean over the last revolution, which the blades' azimuth does not scatter
+            const uint32_t rev_steps = static_cast<uint32_t>(std::lround(static_cast<double>(kTwoPi) / (static_cast<double>(omega) * static_cast<double>(box.cfg.h))));
+            const std::size_t from = step > rev_steps ? step - rev_steps : 0u;
+            const double mean = std::accumulate(thrust_by_step.begin() + static_cast<std::ptrdiff_t>(from), thrust_by_step.end(), 0.0) /
+                                static_cast<double>(thrust_by_step.size() - from);
+            std::printf("[ lines   ] step %u (%.4f s): the lines' thrust over the last revolution (%u steps): %.4f N in all, %.4f N a rotor (%zu rotors)\n",
+                        step, static_cast<double>(step) * static_cast<double>(box.cfg.h), rev_steps, mean, mean / static_cast<double>(lines.size()), lines.size());
+        }
         std::fflush(stdout);
         if (diag && !lines.empty()) {
             std::printf("[ diag    ] step %u: pressure solve over the last %u steps: largest residual %.3e, %.1f iterations a step, capped %u, "
