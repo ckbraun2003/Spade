@@ -357,4 +357,36 @@ LibraryResult<ListPage> list_entries(const LibrarySet& set, const ListFilter& fi
     return page;
 }
 
+LibraryResult<ResolveResult> resolve_alias(const LibrarySet& set, std::string_view alias, std::string_view root) {
+    const std::string key(alias);
+    if (key.empty()) {
+        LibraryRefusal r = make("invalid_request", "an alias is a non-empty string");
+        r.field = "alias";
+        return std::unexpected(std::move(r));
+    }
+    const std::map<std::string, std::string>* table = &set.aliases;
+    if (!root.empty()) {
+        const auto it = std::find_if(set.roots.begin(), set.roots.end(), [&](const SetRoot& r) { return r.name == root; });
+        if (it == set.roots.end()) {
+            LibraryRefusal r = make("root_not_loaded", "root '" + std::string(root) + "' is not loaded", std::string(root));
+            r.field = "root";
+            return std::unexpected(std::move(r));
+        }
+        table = &it->aliases;
+    }
+    const auto found = table->find(key);
+    if (found == table->end()) {
+        LibraryRefusal r = make("entry_not_found", "no alias '" + key + "'" + (root.empty() ? std::string() : " in root '" + std::string(root) + "'"));
+        r.field = "alias";
+        if (!root.empty()) r.root = std::string(root);
+        return std::unexpected(std::move(r));
+    }
+    ResolveResult out;
+    out.id = found->second;
+    out.root = out.id.substr(0, out.id.find(':'));
+    return out;
+}
+
+std::string hash_text(std::string_view text) { return "sha256:" + spade::sha256_hex(text); }
+
 }  // namespace spade::scene
