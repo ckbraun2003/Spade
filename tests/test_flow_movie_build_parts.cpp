@@ -176,6 +176,49 @@ TEST(FlowMovieBuildParts, ABoxAndACylinderAreClosedFlatShadedMeshesAboutTheirCen
     for (const glm::vec3& n : cyl.normals) EXPECT_NEAR(glm::length(n), 1.0f, 1e-4f);
 }
 
+// THE TABLE IS IN THE DESIGN FRAME, NOT THE BODY'S (the lead, 2026-11-19, L104a): the kit table's origin is the bottom plate's lower face and its axes are
+// the design axes, while the body the sim flies is turned to its principal axes (q_bd, design_to_principal) and sits at the centre of mass (com_offset, from the
+// design origin, in the design frame). A part at table point p is therefore drawn at body_position + body_orient * q_bd * (p - com_offset), turned by
+// body_orient * q_bd * its own orientation (sim/design_frame.hpp's R_wd = q_wb * q_bd). Hand-computed on quarter turns: q_bd 90 degrees about z takes
+// (x, y, z) to (-y, x, z), the body 90 degrees about x takes (x, y, z) to (x, -z, y).
+TEST(FlowMovieBuildParts, APartAtADesignFramePointLandsWhereTheDesignFramesRigidBodyIdentitiesPutIt) {
+    const std::string entry =
+        "  - name: battery\n    kind: battery\n    mass_kg: 0.4\n    pose: {position: [1, 2, 3], orientation: [1, 0, 0, 0]}\n"
+        "    box: [0.10, 0.03, 0.04]\n";
+    const auto parts = flow_movie::parse_build_parts(table(entry));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    constexpr float kHalfSqrt2 = 0.70710678118f;
+    flow_movie::BuildDraw draw;
+    draw.design_to_principal = glm::quat(kHalfSqrt2, 0.0f, 0.0f, kHalfSqrt2);  // w, x, y, z: 90 degrees about z
+    draw.com_offset = glm::vec3(0.1f, 0.2f, 0.3f);
+    const glm::quat body_orient(kHalfSqrt2, kHalfSqrt2, 0.0f, 0.0f);          // 90 degrees about x
+    spade::render::RenderScene scene;
+    const auto added = flow_movie::add_build_parts(scene, *parts, fs::path("unused"), glm::vec3(10.0f, 20.0f, 30.0f), body_orient, draw);
+    ASSERT_TRUE(added.has_value()) << added.error().context;
+    ASSERT_EQ(scene.statics.size(), 1u);
+    // p - c = (0.9, 1.8, 2.7); q_bd: (-1.8, 0.9, 2.7); the body: (-1.8, -2.7, 0.9); plus the body's position
+    const glm::vec4 centre = scene.statics.front().local_to_world * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+    EXPECT_NEAR(centre.x, 8.2f, 1e-4f);
+    EXPECT_NEAR(centre.y, 17.3f, 1e-4f);
+    EXPECT_NEAR(centre.z, 30.9f, 1e-4f);
+    // the part's own +x axis: q_bd takes it to +y, the body's turn takes +y to +z
+    const glm::vec4 x = scene.statics.front().local_to_world * glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+    EXPECT_NEAR(x.x, 0.0f, 1e-4f);
+    EXPECT_NEAR(x.y, 0.0f, 1e-4f);
+    EXPECT_NEAR(x.z, 1.0f, 1e-4f);
+}
+
+// The frame comes from the model file the run flies (BuildDraw::design_to_principal and com_offset, read by body_frame_of): the committed X500 model's.
+TEST(FlowMovieBuildParts, TheBodyFrameIsReadFromTheModelFileTheRunFlies) {
+    const auto frame = flow_movie::body_frame_of(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/x500.model.yaml");
+    ASSERT_TRUE(frame.has_value()) << frame.error().context;
+    EXPECT_NEAR(frame->com_offset.x, 0.000913808064f, 1e-9f);
+    EXPECT_NEAR(frame->com_offset.y, -0.0048055402f, 1e-9f);
+    EXPECT_NEAR(frame->com_offset.z, -0.00159445975f, 1e-9f);
+    EXPECT_NEAR(glm::length(frame->design_to_principal), 1.0f, 1e-6f) << "a unit quaternion";
+    EXPECT_FALSE(flow_movie::body_frame_of(fs::path("no/such/model.yaml")).has_value());
+}
+
 TEST(FlowMovieBuildParts, APartIsDrawnAtTheBodysPoseTimesItsOwnAndItsKindsColour) {
     const auto parts = flow_movie::parse_build_parts(table(kBoxEntry));
     ASSERT_TRUE(parts.has_value()) << parts.error().context;

@@ -33,14 +33,14 @@
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
 //
-// Everything under --out (Desktop/Projects/Videos/Footage/Spade/<date> by default) is working
+// Everything under --out (Desktop/Vantage/Videos/Footage/Spade/<date> by default) is working
 // output, and none of it is posted. A film is POSTED only under
-// Desktop/Projects/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
+// Desktop/Vantage/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
 // 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
 // recorded), at most 120 s and 30 MB, with a title card. A renderer
 // before-and-after is a Feature. To post one, encode it through the queue
 // (a short test-class job), with the card prepended:
-//   python C:/Users/Cameron/Desktop/Projects/Videos/check_video.py --encode SRC
+//   python %USERPROFILE%/Desktop/Vantage/Videos/check_video.py --encode SRC
 //       Videos/Research/Spade/YYYY-MM-DD_HHMM_<name>.mp4 --card CARD.txt
 // The card names the title, the tree, the commit, the date (UTC), the case,
 // the grid, the simulated-on and drawn-on builds, and the limits that matter
@@ -1686,8 +1686,15 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 if (!got) return std::unexpected(got.error());
                 chord = std::move(*got);
             }
+            // the table is in the design frame: the model the run flies says how the body is turned and where its centre of mass is
+            BodyFrame frame;
+            if (build) {
+                auto got = body_frame_of(std::filesystem::path(SPADE_ASSETS_DIR) / plan.drone->model_file);
+                if (!got) return std::unexpected(got.error());
+                frame = *got;
+            }
             if (visual || build) {
-                film.decorate = [visual, build, chord, blur = plan.prop_blur, light = plan.drone_light, store = std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, store = std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1699,6 +1706,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                     if (build) {
                         apply_drone_light(scene, light);
                         BuildDraw draw;  // the rotors' logged speeds (live[7 + i]) spread each blade over the shutter
+                        draw.design_to_principal = frame.design_to_principal;
+                        draw.com_offset = frame.com_offset;
                         draw.blur = blur;
                         draw.chord = chord;
                         draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);

@@ -125,10 +125,10 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return value;
 }
 
-// The default working folder (--out unset): <profile>/Desktop/Projects/Videos/Footage/Spade/<date> (Cameron, O74: all videos live under
-// Projects/Videos). A posted or kept film goes wherever --out names; this is only the default. No profile: relative to the working directory.
+// The default working folder (--out unset): <profile>/Desktop/Vantage/Videos/Footage/Spade/<date> (Cameron, O74, moved by O84: all videos live under
+// Vantage/Videos). A posted or kept film goes wherever --out names; this is only the default. No profile: relative to the working directory.
 [[nodiscard]] inline std::filesystem::path default_out_dir(std::string_view profile, std::string_view date) {
-    return std::filesystem::path(profile.empty() ? std::string(".") : std::string(profile)) / "Desktop" / "Projects" / "Videos" / "Footage" / "Spade" /
+    return std::filesystem::path(profile.empty() ? std::string(".") : std::string(profile)) / "Desktop" / "Vantage" / "Videos" / "Footage" / "Spade" /
            std::filesystem::path(std::string(date));
 }
 

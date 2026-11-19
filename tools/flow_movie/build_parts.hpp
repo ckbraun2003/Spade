@@ -3,8 +3,11 @@
 // (tools/flow_movie/data/x500_build/parts.yaml). The flow's solids are the model's and are untouched: nothing here reaches the solve.
 //
 // The table is one list `parts:`; each entry has `name` (unique), `kind` (frame controller gps battery computer camera radio mast rotor),
-// `mass_kg` (Physics' business: read, kept, not drawn), `pose: {position: [x, y, z] m, orientation: [w, x, y, z]}` in the X500 body frame
-// (y up, +X forward, the origin the model's centre of mass, the frame of KAT's glTF), and ONE shape: `objects` (a list of `store_ref:
+// `mass_kg` (Physics' business: read, kept, not drawn), `pose: {position: [x, y, z] m, orientation: [w, x, y, z]}` in the model's DESIGN
+// frame (y up, +X forward, the origin the bottom plate's lower face, the frame of KAT's glTF), NOT the body's: the body the sim flies is turned to its
+// principal axes by the model's design_to_principal (q_bd) and sits at its centre of mass (com_offset, from the design origin, in the design frame), so a
+// part at table point p is drawn at body_position + body_orient * q_bd * (p - com_offset), turned by body_orient * q_bd * its own orientation
+// (BuildDraw, body_frame_of; sim/design_frame.hpp's identities), and ONE shape: `objects` (a list of `store_ref:
 // {sha256, file}` with an optional `offset: {position, orientation}`; the file is <store>/<sha256>/<file>, a .spmesh or a .gltf/.glb),
 // `box: [sx, sy, sz]` m, or `cylinder: {radius, length}` m along the part's local y, centred. Unknown kinds and keys are refused.
 //
@@ -46,6 +49,7 @@
 #include "render/gltf.hpp"
 #include "render/mesh_resolver.hpp"
 #include "render/scene.hpp"
+#include "scene/model_file.hpp"
 #include "visual_mesh.hpp"
 #include "world/mesh_file.hpp"
 
@@ -708,10 +712,25 @@ inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at mo
 }
 
 struct BuildDraw {
+    // The body's frame against the table's (the design frame): the model's design_to_principal and com_offset (body_frame_of). The identity and zero,
+    // the defaults, draw each part at body_position + body_orient * its position, as before.
+    glm::quat design_to_principal{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 com_offset{0.0f};
     std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen
     PropBlur blur{};
     std::optional<BladeChord> chord;  // the prop part's chord table (--lines): what the turning rotors' disc is made from
 };
+
+// A model file's frame: its design_to_principal (unit) and com_offset (design frame, m), what BuildDraw takes. The file the run flies, read once.
+struct BodyFrame {
+    glm::quat design_to_principal{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 com_offset{0.0f};
+};
+[[nodiscard]] inline spade::Result<BodyFrame> body_frame_of(const std::filesystem::path& model_file) {
+    auto loaded = spade::scene::load_model_file(model_file);
+    if (!loaded) return std::unexpected(spade::Error{loaded.error().code, "model " + model_file.string() + ": " + loaded.error().context});
+    return BodyFrame{loaded->model.design_to_principal, loaded->model.com_offset};
+}
 
 // The `prop` primitive's reach (the farthest vertex from the y axis, hub at the origin) and mean height, by the glTF material names; none when
 // the mesh has no `prop` primitive.
@@ -838,8 +857,10 @@ struct PropExtent {
     };
     for (const BuildPart& part : parts) {
         if (part.kind == "mass_only") continue;  // a mass carrier, not a drawing
-        const glm::vec3 base_pos = body_position + body_orient * part.position;
-        const glm::quat base_orient = body_orient * part.orientation;
+        // the table is the design frame: into the body's (q_bd, about the centre of mass), then the body's world pose
+        const glm::quat to_world = body_orient * draw_options.design_to_principal;
+        const glm::vec3 base_pos = body_position + to_world * (part.position - draw_options.com_offset);
+        const glm::quat base_orient = to_world * part.orientation;
         const auto draw = [&](spade::render::MeshData m, glm::vec3 pos, glm::quat orient, const std::string& what) -> spade::Result<void> {
             if (auto r = flow_movie::add_visual_mesh(scene, m, pos, orient); !r) return fail(part, what, r.error());
             return {};
