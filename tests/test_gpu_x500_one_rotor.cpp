@@ -7,8 +7,10 @@
 //
 // Knobs: SPADE_L105_DXMM (the cell in mm, default 5; the box in cells follows), SPADE_L105_CELLS (the tip's cells a step, comma list, default
 // "1.45,0.72,0.36,0.18": h = cells dx / (omega R)), SPADE_L105_T (the last time, s, default 0.1), SPADE_L105_NSUB (8), SPADE_L105_NV (the projection's
-// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0), SPADE_L105_DEPTH (the box's height in m, 0.55: 0.35 m under the rotor,
-// which the wake front crosses at about 0.065 s; a later time wants a deeper box). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
+// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0; the film's is 0.17), SPADE_L105_NU (the air's viscosity, m^2/s, 0; the film's is 1.5e-5), SPADE_L105_DEPTH (the box's height in m, 0.55: 0.35 m under the rotor,
+// which the wake front crosses at about 0.065 s; a later time wants a deeper box), SPADE_L105_EVERY (a step count: every that many steps print the
+// breakdown's evidence -- the disc's downflow at three planes, the box's downward momentum against the impulse put in, the extreme v and where, the
+// pressure's mean and largest, the projection's health since the last print, and the host azimuth against step x h x omega). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
 // step's own and as the mean over the last revolution, and the disc's mean downflow at 0.05 s and T against momentum theory.
 // ---------------------------------------------------------------------------
 
@@ -109,6 +111,7 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
         cfg.h = h;
         if (const char* nv = l105g_env("SPADE_L105_NV"); nv != nullptr) cfg.n_v = static_cast<uint32_t>(std::strtoul(nv, nullptr, 10));
         cfg.sgs_cs = static_cast<float>(l105g_number("SPADE_L105_CS", 0.0));
+        cfg.nu = static_cast<float>(l105g_number("SPADE_L105_NU", 0.0));
         af::LineRotor rotor;
         rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx, static_cast<float>(shape.ny) * dx - 0.20f,
                                  0.5f * static_cast<float>(shape.nz) * dx);
@@ -148,6 +151,11 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
         std::fflush(stdout);
         double psi = 0.0;
         double wall_steps = 0.0;
+        const uint32_t every = static_cast<uint32_t>(l105g_number("SPADE_L105_EVERY", 0.0));
+        double impulse = 0.0;
+        double res_max = 0.0;
+        uint64_t iters = 0;
+        uint32_t health_steps = 0, capped = 0, unconverged = 0, stalled = 0;
         const auto t0 = std::chrono::steady_clock::now();
         const uint32_t rev_steps = static_cast<uint32_t>(std::lround(rev / static_cast<double>(h)));
         for (uint32_t step = 1; step <= total; ++step) {
@@ -158,6 +166,46 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
             ASSERT_TRUE(health.has_value()) << "step " << step << ": " << health.error().context;
             ASSERT_EQ(health->fault, af::FluidFault::none) << "step " << step;
             thrust.push_back(static_cast<double>((*gpu)->line_reports().at(0).thrust));
+            impulse += thrust.back() * static_cast<double>(h);
+            res_max = std::max(res_max, static_cast<double>(health->pressure_residual));
+            iters += health->pressure_iterations;
+            ++health_steps;
+            capped += health->capped ? 1u : 0u;
+            unconverged += health->unconverged ? 1u : 0u;
+            stalled += health->stalled ? 1u : 0u;
+            if (every != 0u && step % every == 0u) {
+                const auto read = (*gpu)->read(*grid);
+                ASSERT_TRUE(read.has_value()) << read.error().context;
+                double down = 0.0, p_sum = 0.0, p_max = 0.0, v_min = 1.0e30, v_max = -1.0e30;
+                std::size_t v_min_at = 0, v_max_at = 0;
+                uint32_t nans = 0;
+                for (std::size_t c = 0; c < grid->v.size(); ++c) {
+                    const float v = grid->v[c];
+                    if (std::isnan(v)) { ++nans; continue; }
+                    down -= static_cast<double>(v);
+                    if (v < v_min) { v_min = v; v_min_at = c; }
+                    if (v > v_max) { v_max = v; v_max_at = c; }
+                }
+                for (const float pv : grid->p) {
+                    p_sum += static_cast<double>(pv);
+                    p_max = std::max(p_max, std::fabs(static_cast<double>(pv)));
+                }
+                const double dv = static_cast<double>(dx) * dx * dx * static_cast<double>(kRho);
+                std::printf("[ L105g   ] step %u (t %.4f s; host psi %.4f rad against %.4f from step x h x omega): downflow in the plane %.3f, 0.05 m under %.3f, "
+                            "0.15 m under %.3f m/s; box momentum %.5f against the impulse %.5f (ratio %.4f); v from %.2f (cell %zu) to %.2f (cell %zu) m/s, "
+                            "NaN %u; p mean %.4f, largest %.2f Pa; projection since the last print: %u steps, largest residual %.2e, %.1f iterations a step, "
+                            "capped %u, unconverged %u, stalled %u\n",
+                            step, static_cast<double>(step) * static_cast<double>(h), psi,
+                            std::fmod(static_cast<double>(step) * static_cast<double>(h) * static_cast<double>(*omega), 2.0 * kPi), disc_mean(row),
+                            disc_mean(row_below), disc_mean(row - static_cast<uint32_t>(std::lround(0.15f / dx))), down * dv, impulse,
+                            impulse > 0.0 ? down * dv / impulse : 0.0, static_cast<double>(v_min), v_min_at, static_cast<double>(v_max), v_max_at, nans,
+                            p_sum / static_cast<double>(grid->p.size()), p_max, health_steps, res_max,
+                            health_steps != 0u ? static_cast<double>(iters) / static_cast<double>(health_steps) : 0.0, capped, unconverged, stalled);
+                std::fflush(stdout);
+                res_max = 0.0;
+                iters = 0;
+                health_steps = capped = unconverged = stalled = 0;
+            }
             psi = std::fmod(psi + static_cast<double>(*omega) * static_cast<double>(h), 2.0 * kPi);
             for (const double t : sample_t) {
                 if (t > t_end + 1.0e-9 || step != static_cast<uint32_t>(std::lround(t / static_cast<double>(h)))) continue;
