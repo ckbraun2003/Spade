@@ -1247,15 +1247,39 @@ void main() {
 }
 )GLSL";
 
+// D182 S3: the sprites, each rasterised on the host into a tile of its own (render/raster_cpu.hpp's rasterize_sprite_tiles: a premultiplied R, G, B, A
+// rectangle clipped to the frame), drawn here as one quad a tile, one instance a tile, from two SSBOs: the tiles (five uints each: x, y, w, h, and the pixel
+// index of the tile's first pixel) and the pixels (one uint each, R in the low byte). The tile's rows run top first; the frame's y is up. Blended over the
+// frame with (ONE, ONE_MINUS_SRC_ALPHA), in submission order.
+constexpr const char* kSpriteVertexSrc = R"GLSL(
+layout(std430, binding = 10) readonly buffer SpriteTiles { uint uTile[]; };
+uniform vec2 uViewport;
+flat out uint vTile;
+
+void main() {
+    const uint t = uint(gl_InstanceID) * 5u;
+    const vec2 origin = vec2(float(uTile[t]), float(uTile[t + 1u]));
+    const vec2 size = vec2(float(uTile[t + 2u]), float(uTile[t + 3u]));
+    const vec2 corner = vec2(float((gl_VertexID == 1) || (gl_VertexID == 4) || (gl_VertexID == 5)),
+                             float((gl_VertexID == 2) || (gl_VertexID == 3) || (gl_VertexID == 5)));
+    const vec2 p = origin + corner * size;  // frame px, y down
+    gl_Position = vec4(2.0 * p.x / uViewport.x - 1.0, 1.0 - 2.0 * p.y / uViewport.y, 0.0, 1.0);
+    vTile = uint(gl_InstanceID);
+}
+)GLSL";
+
 constexpr const char* kSpriteFragmentSrc = R"GLSL(
-// D182 S3: the sprites, rasterised on the host by render/sprites.cpp into a premultiplied overlay the size of the frame (render/raster_cpu.hpp's
-// rasterize_sprite_overlay), composited here over the frame with (ONE, ONE_MINUS_SRC_ALPHA). The overlay's rows run top first; the frame's y is up.
-uniform sampler2D uSprites;
-uniform int uHeight;
+layout(std430, binding = 10) readonly buffer SpriteTiles { uint uTile[]; };
+layout(std430, binding = 11) readonly buffer SpritePixels { uint uPixel[]; };
+uniform vec2 uViewport;
+flat in uint vTile;
 out vec4 fragColor;
 
 void main() {
-    fragColor = texelFetch(uSprites, ivec2(int(gl_FragCoord.x), uHeight - 1 - int(gl_FragCoord.y)), 0);
+    const uint t = vTile * 5u;
+    const int x = int(gl_FragCoord.x) - int(uTile[t]);
+    const int y = (int(uViewport.y) - 1 - int(gl_FragCoord.y)) - int(uTile[t + 1u]);
+    fragColor = unpackUnorm4x8(uPixel[uTile[t + 4u] + uint(y) * uTile[t + 2u] + uint(x)]);
 }
 )GLSL";
 
@@ -2013,9 +2037,10 @@ struct GlRenderer::Impl {
 
     // Styled streamlines (FlowLineStyle): their own program, and an SSBO of three vec4 a segment, a, b, colour.
     GLuint flow_line_program = 0;
-    GLuint sprite_program = 0, sprite_tex = 0;
-    GLint sprite_uniform_tex = -1, sprite_uniform_height = -1;
-    std::vector<uint8_t> sprite_rgba;
+    GLuint sprite_program = 0, ssbo_sprite_tiles = 0, ssbo_sprite_pixels = 0;
+    GLint sprite_uniform_viewport = -1;
+    size_t sprite_tiles_capacity = 0, sprite_pixels_capacity = 0;  // in elements
+    render::SpriteTiles sprite_tiles;                              // reused every frame
     GLuint ssbo_flow_lines = 0;
     size_t flow_lines_capacity = 0;  // in vec4s
     std::vector<glm::vec4> flow_line_segments;
@@ -2318,7 +2343,8 @@ struct GlRenderer::Impl {
         if (ssbo_flow_lines != 0) gl.DeleteBuffers(1, &ssbo_flow_lines);
         if (flow_line_program != 0) gl.DeleteProgram(flow_line_program);
         if (sprite_program != 0) gl.DeleteProgram(sprite_program);
-        if (sprite_tex != 0) gl.DeleteTextures(1, &sprite_tex);
+        if (ssbo_sprite_tiles != 0) gl.DeleteBuffers(1, &ssbo_sprite_tiles);
+        if (ssbo_sprite_pixels != 0) gl.DeleteBuffers(1, &ssbo_sprite_pixels);
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
@@ -2457,7 +2483,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
          {kGlslVersion, kFlowLineVertexSrc},
          {kGlslVersion, kFlowLineFragmentSrc},
          &impl->flow_line_program},
-        {"sprites", {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kSpriteFragmentSrc}, &impl->sprite_program},
+        {"sprites", {kGlslVersion, kSpriteVertexSrc}, {kGlslVersion, kSpriteFragmentSrc}, &impl->sprite_program},
         {"shadow caster",
          {kGlslVersion, kCasterVertexSrc},
          {kGlslVersion, kCasterFragmentSrc},
@@ -2552,9 +2578,9 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->overlay.view = gl.GetUniformLocation(o, "uView");
     impl->overlay.proj = gl.GetUniformLocation(o, "uProj");
     impl->overlay.depth_bias = gl.GetUniformLocation(o, "uDepthBias");
-    impl->sprite_uniform_tex = gl.GetUniformLocation(impl->sprite_program, "uSprites");
-    impl->sprite_uniform_height = gl.GetUniformLocation(impl->sprite_program, "uHeight");
-    gl.GenTextures(1, &impl->sprite_tex);
+    impl->sprite_uniform_viewport = gl.GetUniformLocation(impl->sprite_program, "uViewport");
+    gl.GenBuffers(1, &impl->ssbo_sprite_tiles);
+    gl.GenBuffers(1, &impl->ssbo_sprite_pixels);
     const GLuint fl = impl->flow_line_program;
     impl->flow_line.view = gl.GetUniformLocation(fl, "uView");
     impl->flow_line.proj = gl.GetUniformLocation(fl, "uProj");
@@ -4086,25 +4112,22 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // and written, strictly nearer wins (setPixelIfCloser's rule), and nothing
     // is culled, as on the CPU. In every raster mode, filled.
     // D182 S3: the sprites, after the flow lines and before the overlays, as raster_cpu draws them.
-    if (!sensor && render::rasterize_sprite_overlay(scene, camera, options, width, height, s.sprite_rgba)) {
+    if (!sensor && render::rasterize_sprite_tiles(scene, camera, options, width, height, s.sprite_tiles) > 0u) {
+        upload_in_place(gl, s.ssbo_sprite_tiles, s.sprite_tiles_capacity, s.sprite_tiles.tiles);
+        upload_in_place(gl, s.ssbo_sprite_pixels, s.sprite_pixels_capacity, s.sprite_tiles.pixels);
+        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, s.ssbo_sprite_tiles);
+        gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 11, s.ssbo_sprite_pixels);
         gl.Disable(GL_DEPTH_TEST);
         gl.DepthMask(GL_FALSE);
         gl.Disable(GL_CULL_FACE);
         gl.Enable(GL_BLEND);
         gl.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
-        gl.ActiveTexture(GL_TEXTURE0);
-        gl.BindTexture(GL_TEXTURE_2D, s.sprite_tex);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height), 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                      s.sprite_rgba.data());
         gl.UseProgram(s.sprite_program);
-        gl.Uniform1i(s.sprite_uniform_tex, 0);
-        gl.Uniform1i(s.sprite_uniform_height, static_cast<GLint>(height));
+        gl.Uniform2f(s.sprite_uniform_viewport, static_cast<float>(width), static_cast<float>(height));
         gl.BindVertexArray(s.empty_vao);
-        gl.DrawArrays(GL_TRIANGLES, 0, 3);
+        gl.DrawArraysInstanced(GL_TRIANGLES, 0, 6, static_cast<GLsizei>(s.sprite_tiles.tiles.size()));
         gl.BindVertexArray(0);
-        gl.BindTexture(GL_TEXTURE_2D, 0);
         gl.DepthMask(GL_TRUE);
         gl.Enable(GL_DEPTH_TEST);
         gl.Disable(GL_BLEND);

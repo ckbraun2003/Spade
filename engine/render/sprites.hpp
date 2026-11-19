@@ -75,8 +75,38 @@ enum class SpriteTarget : uint8_t { frame_bgrx, overlay_rgba };
 
 // The reference rasteriser: draws `shapes` (px offsets from (anchor_x, anchor_y), a point in FRAME px, pixel centres at +0.5) into a B, G, R, X frame of
 // width x height with RenderOptions::ui_scale applied, source-over, clipped to the frame. render() calls it for every sprite that projects; the shapes
-// were validated. aa = true samples 4 x 4 per pixel, false takes the pixel centre.
+// were validated. aa = true is ANALYTIC: a pixel's coverage is clamp(0.5 - sd), sd the signed distance (negative inside) from its centre to the edge of the
+// fill or the stroke, one evaluation a pixel. aa = false takes the pixel centre (inside or not). Nothing allocates.
 void draw_sprite_shapes(std::span<uint8_t> pixels, uint32_t width, uint32_t height, double anchor_x, double anchor_y, float ui_scale,
                         std::span<const SpriteShape> shapes, SpriteTarget target = SpriteTarget::frame_bgrx);
+
+// The rasteriser S3 shipped with before its cost was cut: aa = true samples 4 x 4 per pixel. Kept as the reference the analytic edge is held to (the tests);
+// nothing draws with it. A hard edge is identical in the two.
+void draw_sprite_shapes_sampled(std::span<uint8_t> pixels, uint32_t width, uint32_t height, double anchor_x, double anchor_y, float ui_scale,
+                                std::span<const SpriteShape> shapes, SpriteTarget target = SpriteTarget::frame_bgrx);
+
+// A pixel rectangle [x0, x1) x [y0, y1) of the frame.
+struct SpriteRect {
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+
+// The rectangle (clipped to width x height) that holds every pixel draw_sprite_shapes can touch for `shapes` at this anchor; false when there is none.
+[[nodiscard]] bool sprite_pixel_box(std::span<const SpriteShape> shapes, double anchor_x, double anchor_y, float ui_scale, uint32_t width, uint32_t height,
+                                    SpriteRect& out);
+
+// One sprite's pixels, for the GL renderer: the tile's top-left corner in the frame (px, rows top first), its size, and where its width x height premultiplied
+// R, G, B, A pixels start in SpriteTiles::pixels (a PIXEL index, not a byte index).
+struct SpriteTile {
+    int32_t x = 0, y = 0;
+    uint32_t w = 0, h = 0;
+    uint32_t offset = 0;
+};
+
+// What rasterize_sprite_tiles (render/raster_cpu.hpp) fills: tiles in submission order, and their pixels packed one after another. Keep one and pass it every
+// frame: both vectors are cleared, not freed, so a steady frame allocates nothing.
+struct SpriteTiles {
+    std::vector<SpriteTile> tiles;
+    std::vector<uint8_t> pixels;
+};
 
 }  // namespace spade::render
