@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <vector>
 
@@ -183,10 +184,38 @@ inline void append_vehicle_items(std::vector<render::DrawItem>& out, const Vehic
 class CsgUploadGate {
   public:
     // True when nothing was noted yet, the subtree count changed, or any subtree differs from the noted one.
-    [[nodiscard]] bool needs_upload(const render::RenderScene&) const { return true; }  // RED: a stand-in
+    [[nodiscard]] bool needs_upload(const render::RenderScene& scene) const {
+        return !noted_ || scene.csg_subtrees.size() != noted_subtrees_.size() || !changed(scene).empty();
+    }
     // The indices of the scene's subtrees that differ from the noted ones, or that the noted scene had none of: what an edit touched.
-    [[nodiscard]] std::vector<std::size_t> changed(const render::RenderScene&) const { return {}; }  // RED: a stand-in
-    void note_uploaded(const render::RenderScene&) {}  // RED: a stand-in
+    // Compared as draw() compares them, byte for byte: the nodes, the transforms and the box (and the draw item they march).
+    [[nodiscard]] std::vector<std::size_t> changed(const render::RenderScene& scene) const {
+        std::vector<std::size_t> out;
+        for (std::size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+            if (i >= noted_subtrees_.size() || !same(scene.csg_subtrees[i], noted_subtrees_[i])) out.push_back(i);
+        }
+        return out;
+    }
+    // Records the subtrees an upload of this scene carried.
+    void note_uploaded(const render::RenderScene& scene) {
+        noted_ = true;
+        noted_subtrees_ = scene.csg_subtrees;
+    }
+
+  private:
+    template <typename T>
+    [[nodiscard]] static bool same_bytes(const std::vector<T>& a, const std::vector<T>& b) {
+        return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size() * sizeof(T)) == 0);
+    }
+    [[nodiscard]] static bool same(const render::CsgSubtree& a, const render::CsgSubtree& b) {
+        return a.draw_item == b.draw_item && same_bytes(a.program.nodes, b.program.nodes) &&
+               same_bytes(a.program.transforms, b.program.transforms) &&
+               std::memcmp(&a.bounds.min, &b.bounds.min, sizeof(glm::vec3)) == 0 &&
+               std::memcmp(&a.bounds.max, &b.bounds.max, sizeof(glm::vec3)) == 0;
+    }
+
+    bool noted_ = false;
+    std::vector<render::CsgSubtree> noted_subtrees_;
 };
 
 }  // namespace spade::sandbox
