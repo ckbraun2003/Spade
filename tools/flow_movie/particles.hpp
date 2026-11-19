@@ -98,6 +98,7 @@ struct ParticleOptions {
     uint32_t capacity = 100000u;        // live points, 1 to 2^24
     float max_age_s = 0.5f;             // > 0
     uint32_t per_frame = 0u;            // seeds emitted a frame, from the pool in order, wrapping
+    uint32_t substeps = 1u;             // midpoint steps a frame, 1 to 64: each dt / substeps through the same frame (1: one step, as it was)
     glm::vec3 region_lo{-1.0e9f};       // a point whose step ends outside [lo, hi] is retired
     glm::vec3 region_hi{1.0e9f};
 };
@@ -133,6 +134,7 @@ struct ParticleField {
             return bad("the region must be finite with lo <= hi");
         }
     }
+    if (options.substeps < 1u || options.substeps > 64u) return bad("substeps must be 1 to 64");
     if (options.per_frame > 0u && pool.empty()) return bad("per_frame > 0 needs a non-empty seed pool");
     for (const glm::vec3& p : pool) {
         if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return bad("a seed is not finite");
@@ -147,20 +149,31 @@ struct ParticleField {
         return p.x >= options.region_lo.x && p.x <= options.region_hi.x && p.y >= options.region_lo.y &&
                p.y <= options.region_hi.y && p.z >= options.region_lo.z && p.z <= options.region_hi.z;
     };
+    const float h = dt / static_cast<float>(options.substeps);
     std::size_t kept = 0;
     for (std::size_t i = 0; i < field.position.size(); ++i) {
         const glm::vec3 p = field.position[i];
-        const spade::render::FlowVelocity k1 = spade::render::sample_velocity(sampler, p);
-        if (k1.no_data) {
+        // `substeps` midpoint steps of h = dt / substeps through this frame's velocity (one step of dt when substeps is 1, exactly as before); no-data at either
+        // stage of any of them retires the point.
+        glm::vec3 next = p;
+        bool lost = false;
+        for (uint32_t s = 0; s < options.substeps && !lost; ++s) {
+            const spade::render::FlowVelocity k1 = spade::render::sample_velocity(sampler, next);
+            if (k1.no_data) {
+                lost = true;
+                break;
+            }
+            const spade::render::FlowVelocity k2 = spade::render::sample_velocity(sampler, next + k1.u * (0.5f * h));
+            if (k2.no_data) {
+                lost = true;
+                break;
+            }
+            next = next + k2.u * h;
+        }
+        if (lost) {
             ++field.retired_no_data;
             continue;
         }
-        const spade::render::FlowVelocity k2 = spade::render::sample_velocity(sampler, p + k1.u * (0.5f * dt));
-        if (k2.no_data) {
-            ++field.retired_no_data;
-            continue;
-        }
-        const glm::vec3 next = p + k2.u * dt;
         const float age = field.age[i] + dt;
         if (!inside(next)) {
             ++field.retired_left_region;
@@ -332,6 +345,8 @@ struct StreakLook {
     glm::vec3 dim_centre{0.0f};
     float dim_r = 0.15f;
     float dim = 0.0f;
+    // Not a drawing number: how a frame is ADVANCED (ParticleOptions::substeps), set from the same --particle-look string. 1: one midpoint step a frame.
+    uint32_t substeps = 1u;
 };
 
 [[nodiscard]] inline std::vector<spade::render::FlowPolyline> particle_streaks(const ParticleField& field,
@@ -431,7 +446,8 @@ inline constexpr std::array<char, 8> kParticleMagic{'S', 'P', 'P', 'A', 'R', 'T'
 
 // THE LOOK ON THE COMMAND LINE: "key=value,key=value" over StreakLook's defaults (--particle-look). A redraw from the snapshot takes
 // seconds, so one job draws several variants. Keys: tail (s, > 0), min_len (m, 0 up), width (px, 0.5 to 64), glow (px, 0 to 64),
-// strength (0 to 1), alpha (0 to 1), fade_in (s, > 0), fast (m/s, > 0), dim (0 to 1), dim_r (m, > 0). Empty: the defaults. An
+// strength (0 to 1), alpha (0 to 1), fade_in (s, > 0), fast (m/s, > 0), dim (0 to 1), dim_r (m, > 0), substeps (a whole number 1 to 64: how a
+// frame is advanced, so it takes effect where the points are carried, not in a redraw from a snapshot). Empty: the defaults. An
 // unknown key, no '=', an empty key or value, a value that is not a finite number, or one out of its range: refused, naming it.
 [[nodiscard]] inline spade::Result<StreakLook> parse_particle_look(std::string_view text) {
     const auto bad = [](const std::string& why) {
@@ -472,11 +488,18 @@ inline constexpr std::array<char, 8> kParticleMagic{'S', 'P', 'P', 'A', 'R', 'T'
                             {"strength", &look.glow_strength, 0.0f, 1.0f, false}, {"alpha", &look.peak_alpha, 0.0f, 1.0f, false},
                             {"fade_in", &look.fade_in_s, 0.0f, 10.0f, true},   {"fast", &look.fast_mps, 0.0f, 1000.0f, true},
                             {"dim", &look.dim, 0.0f, 1.0f, false},             {"dim_r", &look.dim_r, 0.0f, 10.0f, true}};
+        if (key == "substeps") {
+            if (number < 1.0f || number > 64.0f || number != std::floor(number)) {
+                return bad("'substeps' = " + std::string(value) + " is not a whole number from 1 to 64");
+            }
+            look.substeps = static_cast<uint32_t>(number);
+            continue;
+        }
         const Row* row = nullptr;
         for (const Row& r : rows) {
             if (key == r.key) row = &r;
         }
-        if (row == nullptr) return bad("unknown key '" + key + "' (tail min_len width glow strength alpha fade_in fast dim dim_r)");
+        if (row == nullptr) return bad("unknown key '" + key + "' (tail min_len width glow strength alpha fade_in fast dim dim_r substeps)");
         if (number < row->lo || number > row->hi || (row->lo_open && number <= row->lo)) {
             return bad("'" + key + "' = " + std::string(value) + " is out of its range (" + (row->lo_open ? "above " : "") +
                        std::to_string(row->lo) + " to " + std::to_string(row->hi) + ")");

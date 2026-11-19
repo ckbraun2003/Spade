@@ -2648,11 +2648,12 @@ struct WebFilming {
         popt.capacity = 250000u;
         popt.max_age_s = film->particle_hold->max_age_s;
         popt.per_frame = 120u;  // the region is the volume less a cell: left open
+        auto look = parse_particle_look(opt.particle_look);
+        if (!look) return fail(look.error());
+        popt.substeps = look->substeps;  // how a frame is advanced rides in the same string (--particle-look substeps=N)
         particles = std::make_shared<ParticleDriver>(popt, std::vector<uint32_t>{first + still_k});
         film->particle_hold->driver = particles;
         film->particle_hold->first = first;
-        auto look = parse_particle_look(opt.particle_look);
-        if (!look) return fail(look.error());
         film->particle_hold->look = *look;
         film->particle_hold->look.dim_centre = glm::vec3(0.0f, 0.004f, 0.0f);  // the held drone, at the still-air box's centre
     } else if (!opt.particle_look.empty()) {
