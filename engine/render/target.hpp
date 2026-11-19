@@ -208,7 +208,18 @@ struct RenderOptions {
     //     apart that their own map would be no finer than the world's fall back to folding, by themselves.
     float shadow_filter_texels = 1.0f;
     uint32_t dynamic_shadow_size = 1024;
+
+    // D182 S1 (the lead approved the header, 2026-11-18). Last in the struct, so no designated initialiser moves; the defaults draw what was drawn before.
+    //   slot: which of a scene's polyline slots this render draws (FlowPolyline::slots); 0 to 31, else invalid_argument by name. A host gives a policy
+    //     camera a slot no overlay mask includes, so the camera sees the scene without the editor's lines.
+    //   ui_scale: multiplies every capsule polyline's width and glow (a HiDPI display's scale): 0.25 to 8, else invalid_argument by name. A width of 0
+    //     (the one-pixel line) stays one pixel; a scaled width over 64 px is refused by name.
+    uint32_t slot = 0;
+    float ui_scale = 1.0f;
 };
+
+// invalid_argument, by name: a slot of 32 or more, a ui_scale that is not finite or not 0.25 to 8.
+[[nodiscard]] Result<void> validate_line_options(const RenderOptions& options);
 
 // Shared vocabulary lives HERE, not in scene.hpp: tessellate.hpp and csg_mesh.hpp
 // both need Aabb, and scene.cpp includes both -- putting Aabb in scene.hpp would

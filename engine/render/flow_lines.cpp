@@ -354,11 +354,20 @@ Result<void> validate_flow_polyline(const FlowPolyline& line) {
     return check_coloured(line.points, line.colours, "flow polyline");
 }
 
-Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style) {
+Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style, float ui_scale) {
     if (Result<void> valid = validate_flow_polyline(line); !valid) return valid;
-    if (!line.alphas.empty() && effective_width_px(line, style) <= 0.0f) {
-        return std::unexpected(Error{Code::invalid_argument,
-                                     "flow polyline: alphas need a capsule, so a width of its own or the scene's style width"});
+    const float width = effective_width_px(line, style);
+    if (width <= 0.0f) {
+        if (!line.alphas.empty()) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "flow polyline: alphas need a capsule, so a width of its own or the scene's style width"});
+        }
+        if (line.shading != LineShading::as_before || line.cap != LineCap::round || !line.depth_test || !line.aa) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "flow polyline: shading, cap, depth_test and aa are capsule looks, so they need a width of its own or the scene's style width"});
+        }
+    } else if (!(width * ui_scale <= 64.0f)) {
+        return std::unexpected(Error{Code::invalid_argument, "flow polyline: the width times ui_scale is over 64 pixels"});
     }
     return {};
 }
@@ -367,10 +376,17 @@ std::string flow_lines_gl_only_reason(std::span<const FlowPolyline> lines, const
     if (style.additive) {
         return "flow lines: additive blending is drawn by the GL backend only; the CPU renderer refuses it";
     }
-    for (const FlowPolyline& line : lines) {
-        if (!line.alphas.empty()) {
-            return "flow lines: per-point alpha is drawn by the GL backend only; the CPU renderer refuses it";
-        }
+    (void)lines;  // per-point alpha is drawn by both backends now (D182 S1)
+    return {};
+}
+
+Result<void> validate_flow_line_budget(std::span<const FlowPolyline> lines) {
+    std::size_t total = 0;
+    for (const FlowPolyline& line : lines) total += line.points.size();
+    if (total > kMaxFlowLineVertices) {
+        return std::unexpected(Error{Code::invalid_argument, "flow lines: " + std::to_string(total) + " vertices exceed the " +
+                                                                 std::to_string(kMaxFlowLineVertices) +
+                                                                 " one scene draws; draw fewer or shorter lines"});
     }
     return {};
 }

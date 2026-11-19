@@ -1,5 +1,6 @@
 #include "render/target.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -28,6 +29,16 @@ Result<void> validate_target(const RenderTarget& target) {
     }
     if (target.format != PixelFormat::bgrx8) {
         return std::unexpected(invalid("render target has an unrecognized pixel format"));
+    }
+    return {};
+}
+
+Result<void> validate_line_options(const RenderOptions& options) {
+    if (options.slot >= 32u) {
+        return std::unexpected(invalid("render options: the slot must be 0 to 31"));
+    }
+    if (!(std::isfinite(options.ui_scale) && options.ui_scale >= 0.25f && options.ui_scale <= 8.0f)) {
+        return std::unexpected(invalid("render options: ui_scale must be finite, 0.25 to 8"));
     }
     return {};
 }

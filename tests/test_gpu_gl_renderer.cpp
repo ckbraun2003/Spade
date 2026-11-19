@@ -4478,7 +4478,7 @@ TEST_F(GpuGlRenderer, DISABLED_ShadowRecord) {
 // PER-POINT ALPHA AND ADDITIVE LIGHT on the capsule path (the lead, 2026-11-17; Cameron: "particle-y", "no dark strands"). GL's
 // flow-line program takes an alpha at each end of a segment (FlowPolyline::alphas, interpolated along it) and, with
 // FlowLineStyle::additive, adds the capsules as light: out = behind + colour a, depth-tested, no depth write. The CPU renderer
-// refuses both (test_render_flow_line_style.cpp), so these are not a parity band: each asserts the stated formula on a black
+// refuses additive (test_render_flow_line_style.cpp; it draws alphas since D182 S1, test_render_polyline_s1.cpp), so these are not a parity band: each asserts the stated formula on a black
 // frame, where a pixel's level is the light's. 160 x 120, the camera 5 m back on +Z, capsules in the z = 0 plane.
 [[nodiscard]] RenderScene black_frame_scene() {
     RenderScene scene = make_scene(make_single_triangle(false));
@@ -4562,6 +4562,321 @@ TEST_F(GpuGlRenderer, AnAlphaScalesAnAdditiveCapsulesLight) {
     const std::vector<uint8_t> frame = draw_and_read(scene);
     ASSERT_EQ(frame.size(), kPixels * 4u);
     EXPECT_NEAR(level_at(frame, 80, 60), 102, 4) << "0.8 at alpha 0.5 is 0.4";
+}
+
+// D182 S1 (KAT's drawing spec, P1; the lead approved the header, 2026-11-18) on GL: a polyline's shading (gradient, flat_mean), caps (flat), depth_test, aa
+// and slot mask, and RenderOptions' slot and ui_scale, with the CPU's numbers (test_render_polyline_s1.cpp). Each asserts the stated rule on a black frame
+// (160 x 120, the camera 5 m back on +Z, capsules in the z = 0 plane), then one frame holds every look and is held to the CPU's.
+[[nodiscard]] int channel_at(const std::vector<uint8_t>& rgba, int x, int y_from_bottom, int channel) {
+    return rgba[(static_cast<size_t>(y_from_bottom) * kWidth + static_cast<size_t>(x)) * 4u + static_cast<size_t>(channel)];
+}
+
+// The first and last column of row 60 whose red or blue level is over 8.
+[[nodiscard]] std::pair<int, int> lit_columns(const std::vector<uint8_t>& rgba, int row = 60) {
+    int lo = -1, hi = -1;
+    for (int x = 0; x < static_cast<int>(kWidth); ++x) {
+        if (channel_at(rgba, x, row, 0) > 8 || channel_at(rgba, x, row, 2) > 8) {
+            if (lo < 0) lo = x;
+            hi = x;
+        }
+    }
+    return {lo, hi};
+}
+
+[[nodiscard]] spade::render::FlowPolyline s1_line(glm::vec3 c0, glm::vec3 c1, float z = 0.0f) {
+    return spade::render::FlowPolyline{{glm::vec3(-1.5f, 0.0f, z), glm::vec3(1.5f, 0.0f, z)}, {c0, c1}};
+}
+
+[[nodiscard]] RenderScene s1_scene(spade::render::FlowPolyline line, float width = 6.0f) {
+    RenderScene scene = black_frame_scene();
+    scene.flow_polylines.push_back(std::move(line));
+    scene.flow_line_style = spade::render::FlowLineStyle{width, 0.0f, 0.35f};
+    return scene;
+}
+
+TEST_F(GpuGlRenderer, AGradientRunsFromOneEndsColourToTheOthersAndFlatMeanIsOneWholeByteMean) {
+    spade::render::FlowPolyline line = s1_line(glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    line.shading = spade::render::LineShading::gradient;
+    const std::vector<uint8_t> grad = draw_and_read(s1_scene(line));
+    ASSERT_EQ(grad.size(), kPixels * 4u);
+    const auto [lo, hi] = lit_columns(grad);
+    ASSERT_GT(hi - lo, 30) << "the capsule reaches the frame";
+    const int mid = (lo + hi) / 2;
+    EXPECT_NEAR(channel_at(grad, mid, 60, 0), 128, 24) << "half-way: half red";
+    EXPECT_NEAR(channel_at(grad, mid, 60, 2), 128, 24) << "and half blue";
+    EXPECT_GT(channel_at(grad, lo + 4, 60, 0), channel_at(grad, lo + 4, 60, 2) + 80) << "near the first end: red";
+    EXPECT_GT(channel_at(grad, hi - 4, 60, 2), channel_at(grad, hi - 4, 60, 0) + 80) << "near the last: blue";
+    // as_before is the mean of the ends all along; flat_mean the same in whole 8-bit channels, (255 + 0 + 1) / 2 = 128
+    line.shading = spade::render::LineShading::as_before;
+    const std::vector<uint8_t> before = draw_and_read(s1_scene(line));
+    EXPECT_EQ(channel_at(before, lo + 4, 60, 0), channel_at(before, hi - 4, 60, 0)) << "the same all along the segment";
+    line.shading = spade::render::LineShading::flat_mean;
+    const std::vector<uint8_t> flat = draw_and_read(s1_scene(line));
+    for (const int x : {lo + 4, mid, hi - 4}) {
+        EXPECT_NEAR(channel_at(flat, x, 60, 0), 128, 1) << "column " << x;
+        EXPECT_NEAR(channel_at(flat, x, 60, 2), 128, 1) << "column " << x;
+        EXPECT_EQ(channel_at(flat, x, 60, 1), 0);
+    }
+}
+
+TEST_F(GpuGlRenderer, AFlatCapEndsSquareAtTheEndPointAndARoundOneReachesHalfAWidthPast) {
+    spade::render::FlowPolyline round = s1_line(glm::vec3(1.0f), glm::vec3(1.0f));
+    spade::render::FlowPolyline flat = round;
+    flat.cap = spade::render::LineCap::flat;
+    const std::vector<uint8_t> r = draw_and_read(s1_scene(round, 10.0f));
+    const std::vector<uint8_t> f = draw_and_read(s1_scene(flat, 10.0f));
+    const auto [rlo, rhi] = lit_columns(r);
+    const auto [flo, fhi] = lit_columns(f);
+    ASSERT_GT(rhi - rlo, 30);
+    EXPECT_GE(flo - rlo, 4) << "the flat end is half a width (5 px) inside the round one's";
+    EXPECT_LE(flo - rlo, 6);
+    EXPECT_GE(rhi - fhi, 4);
+    EXPECT_LE(rhi - fhi, 6);
+    // square: three pixels off the centre line the first lit column is the same as on it, within a pixel; round it curves away
+    EXPECT_LE(std::abs(lit_columns(f, 63).first - flo), 1);
+    EXPECT_GE(lit_columns(r, 63).first - rlo, 2);
+}
+
+TEST_F(GpuGlRenderer, DepthTestFalseDrawsOverANearerSurfaceAndAHardEdgeHasNoPartialCoverage) {
+    RenderScene scene = make_scene(make_single_triangle(false));  // z = 1: nearer the camera than the capsule at z = 0
+    scene.materials[0].base_color = glm::vec4(0.5f, 0.5f, 0.5f, 1.0f);
+    spade::render::FlowPolyline line = light_line({-1.5f, 0.0f, 0.0f}, {1.5f, 0.0f, 0.0f}, 0.4f, 1.0f, 1.0f);
+    scene.flow_polylines.push_back(line);
+    scene.flow_line_style = spade::render::FlowLineStyle{6.0f, 0.0f, 0.35f};
+    EXPECT_NEAR(level_at(draw_and_read(scene), 90, 60), 128, 4) << "tested: behind the triangle, the triangle alone";
+    scene.flow_polylines[0].depth_test = false;
+    const std::vector<uint8_t> over = draw_and_read(scene);
+    EXPECT_NEAR(level_at(over, 90, 60), 102, 4) << "untested: drawn over the triangle";
+    EXPECT_NEAR(level_at(over, 70, 60), 102, 4);
+    // aa false: every pixel of a black frame is 0 or the colour, nothing between; aa on has partial pixels
+    RenderScene hard = black_frame_scene();
+    hard.flow_polylines.push_back(light_line({-1.5f, 0.2f, 0.0f}, {1.4f, -0.3f, 0.0f}, 0.4f));
+    hard.flow_line_style = spade::render::FlowLineStyle{5.0f, 0.0f, 0.35f};
+    const auto partial = [](const std::vector<uint8_t>& rgba) {
+        size_t n = 0;
+        for (size_t p = 0; p < rgba.size() / 4u; ++p) {
+            const int v = rgba[p * 4u];
+            if (v > 1 && std::abs(v - 102) > 1) ++n;
+        }
+        return n;
+    };
+    EXPECT_GT(partial(draw_and_read(hard)), 10u) << "anti-aliased: partial coverage along the edge";
+    hard.flow_polylines[0].aa = false;
+    const std::vector<uint8_t> edge = draw_and_read(hard);
+    ASSERT_EQ(edge.size(), kPixels * 4u);
+    EXPECT_EQ(partial(edge), 0u) << "a hard edge: coverage 1 or nothing";
+    EXPECT_GT(count_non_black(edge), 100u);
+}
+
+TEST_F(GpuGlRenderer, ASlotMaskAndUiScaleChooseWhatARenderDrawsAndOutOfRangeValuesAreRefused) {
+    spade::render::FlowPolyline line = s1_line(glm::vec3(1.0f), glm::vec3(1.0f));
+    line.slots = 0b10u;
+    RenderOptions slot0 = comparable_options();
+    RenderOptions slot1 = comparable_options();
+    slot1.slot = 1u;
+    EXPECT_EQ(count_non_black(draw_and_read(s1_scene(line), slot0)), 0u) << "slot 0 is not in the mask";
+    EXPECT_GT(count_non_black(draw_and_read(s1_scene(line), slot1)), 100u);
+    spade::render::FlowPolyline thin = line;  // the one-pixel line has a mask too
+    RenderScene plain = black_frame_scene();
+    plain.flow_polylines.push_back(thin);
+    EXPECT_EQ(count_non_black(draw_and_read(plain, slot0)), 0u);
+    EXPECT_GT(count_non_black(draw_and_read(plain, slot1)), 10u);
+    // ui_scale: width 3 at 2 is exactly width 6 at 1, the glow's pixels too
+    spade::render::FlowPolyline all = s1_line(glm::vec3(1.0f), glm::vec3(1.0f));
+    RenderScene narrow = s1_scene(all, 3.0f);
+    narrow.flow_line_style.glow_px = 2.0f;
+    RenderScene wide = s1_scene(all, 6.0f);
+    wide.flow_line_style.glow_px = 4.0f;
+    RenderOptions doubled = comparable_options();
+    doubled.ui_scale = 2.0f;
+    EXPECT_EQ(count_differing(draw_and_read(narrow, doubled), draw_and_read(wide)), 0u);
+    // refusals, by name, before any pixel
+    ASSERT_TRUE(renderer_->upload_scene(wide).has_value());
+    RenderOptions bad = comparable_options();
+    bad.slot = 32u;
+    auto drew = renderer_->draw(wide, camera_on_plus_z(), bad, kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value());
+    EXPECT_NE(drew.error().context.find("slot"), std::string::npos) << drew.error().context;
+    bad = comparable_options();
+    bad.ui_scale = 9.0f;
+    drew = renderer_->draw(wide, camera_on_plus_z(), bad, kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value());
+    EXPECT_NE(drew.error().context.find("ui_scale"), std::string::npos) << drew.error().context;
+    RenderScene big = black_frame_scene();
+    spade::render::FlowPolyline huge;
+    huge.points.assign(spade::render::kMaxFlowLineVertices + 1u, glm::vec3(0.0f));
+    huge.colours.assign(spade::render::kMaxFlowLineVertices + 1u, glm::vec3(1.0f));
+    big.flow_polylines.push_back(std::move(huge));
+    big.flow_line_style = spade::render::FlowLineStyle{3.0f, 0.0f, 0.35f};
+    drew = renderer_->draw(big, camera_on_plus_z(), comparable_options(), kWidth, kHeight);
+    ASSERT_FALSE(drew.has_value());
+    EXPECT_NE(drew.error().context.find("262144"), std::string::npos) << drew.error().context;
+}
+
+// One frame with every look at once, GL against the CPU: a gradient with alphas, a gradient, flat_mean, a flat cap, a hard edge, an untested line over the
+// ground, a polyline masked out of the slot, at a ui_scale of 1.5. Full-coverage pixels agree to a few levels, edge pixels to the existing styled-line band.
+TEST_F(GpuGlRenderer, EveryS1LookMatchesTheCpuWithinItsBand) {
+    RenderScene scene = make_ground_scene();
+    const auto helix = [](int k) {
+        spade::render::FlowPolyline line;
+        for (int i = 0; i <= 40; ++i) {
+            const float s = static_cast<float>(i) / 40.0f;
+            const float a = 6.0f * s + 1.3f * static_cast<float>(k);
+            line.points.push_back(glm::vec3(-2.0f + 4.0f * s, 0.6f + 0.4f * static_cast<float>(k) * 0.3f + 0.5f * std::sin(a),
+                                            -1.0f + 0.5f * std::cos(a) + 0.3f * static_cast<float>(k)));
+            line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+        }
+        return line;
+    };
+    for (int k = 0; k < 7; ++k) scene.flow_polylines.push_back(helix(k));
+    scene.flow_polylines[0].shading = spade::render::LineShading::gradient;
+    scene.flow_polylines[0].alphas.assign(41u, 1.0f);
+    for (size_t i = 0; i < 41u; ++i) scene.flow_polylines[0].alphas[i] = 0.15f + 0.85f * static_cast<float>(i) / 40.0f;
+    scene.flow_polylines[1].shading = spade::render::LineShading::gradient;
+    scene.flow_polylines[2].shading = spade::render::LineShading::flat_mean;
+    scene.flow_polylines[3].cap = spade::render::LineCap::flat;
+    scene.flow_polylines[4].aa = false;
+    scene.flow_polylines[5].depth_test = false;
+    scene.flow_polylines[6].slots = 0b10u;  // not in slot 0
+    scene.flow_line_style = spade::render::FlowLineStyle{3.0f, 4.0f, 0.4f};
+    RenderScene bare = scene;
+    bare.flow_polylines.clear();
+    RenderOptions options = comparable_options();
+    options.ui_scale = 1.5f;
+    const Camera camera = camera_over_ground();
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, options);
+    const std::vector<uint8_t> cpu_off = cpu_rgba(bare, camera, options);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, options, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(bare, options, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    const size_t styled = count_differing(cpu_on, cpu_off);
+    ASSERT_GT(styled, 1000u) << "the looks reach the frame";
+    ASSERT_GT(count_differing(gl_on, gl_off), 1000u) << "and GL's";
+    const ChannelDiff base = channel_diff(cpu_off, gl_off);
+    const ChannelDiff d = channel_diff(cpu_on, gl_on);
+    RecordProperty("styled_pixels", static_cast<int>(styled));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    RecordProperty("over_two_pixels", static_cast<int>(d.over_two));
+    RecordProperty("ground_worst_levels", base.worst);
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ S1 looks ] %zu px styled; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ (the ground alone %zu); on %s\n", styled,
+                d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
+    // Measured 2026-11-19, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), at df325400's code: 2656 pixels styled; worst 6 levels
+    // (the ground alone 1), 2 pixels over two levels, 1276 pixels differ (the ground alone 608), with seven looks at once at a ui_scale of 1.5. The
+    // one-look tests above are tighter on a black frame (a gradient's mid colour within 24 levels, a flat colour within 1). Which look carries the worst
+    // pixel was not attributed: the CPU's mixed float and double and GL's float32 can fall either side of a coverage or the 0.5 threshold. Pinned at
+    // measured + 1.
+    constexpr int kBandWorstLevels = 7;        // measured 6
+    constexpr size_t kBandOverTwoPixels = 3;   // measured 2
+    constexpr size_t kBandDifferingPixels = 1277;  // measured 1276
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// D182 S1's cost (KAT's host draws a trail per drone): 128 drones, one polyline each of 64, 200 and 400 points, 3 px wide with a 4 px glow, on a 1280 x 720
+// frame, GL and the CPU, the default look (as_before, no alphas: the work the capsule pass did before S1) and every look at once (gradient, per-point
+// alpha, flat cap, a hard edge on every fourth, depth_test false on every eighth). Medians of ten frames after two warm-ups, the draw alone (the scene is
+// uploaded first); the CPU's is render() into a 1280 x 720 buffer. Opt-in, as the other cost tests: set SPADE_POLYLINE_COST=1.
+TEST_F(GpuGlRenderer, PolylineCostAt128DronesAnd64And200And400Points) {
+    if (!env_gate_is_set("SPADE_POLYLINE_COST")) GTEST_SKIP() << "opt-in: set SPADE_POLYLINE_COST=1";
+    constexpr uint32_t kW = 1280u, kH = 720u;
+    const Camera camera = camera_over_ground();
+    const auto build = [&](int points, bool looks) {
+        RenderScene scene = make_ground_scene();
+        for (int k = 0; k < 128; ++k) {
+            spade::render::FlowPolyline line;
+            const float fx = -2.0f + 0.25f * static_cast<float>(k % 16);
+            const float fz = -1.5f + 0.4f * static_cast<float>(k / 16);
+            for (int i = 0; i < points; ++i) {
+                const float s = static_cast<float>(i) / static_cast<float>(points - 1);
+                line.points.push_back(glm::vec3(fx + 0.5f * s, 0.6f + 0.15f * std::sin(9.0f * s + static_cast<float>(k)), fz + 0.1f * std::cos(7.0f * s)));
+                line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+            }
+            if (looks) {
+                line.shading = spade::render::LineShading::gradient;
+                line.alphas.resize(static_cast<size_t>(points));
+                for (int i = 0; i < points; ++i) line.alphas[static_cast<size_t>(i)] = 0.08f + 0.92f * static_cast<float>(i) / static_cast<float>(points - 1);
+                line.cap = spade::render::LineCap::flat;
+                line.aa = (k % 4) != 0;
+                line.depth_test = (k % 8) != 0;
+            }
+            scene.flow_polylines.push_back(std::move(line));
+        }
+        scene.flow_line_style = spade::render::FlowLineStyle{3.0f, 4.0f, 0.4f};
+        return scene;
+    };
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const auto median = [](std::vector<double> ms) {
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[ms.size() / 2 - 1] + ms[ms.size() / 2]);
+    };
+    const auto gl_ms = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        std::vector<double> ms;
+        for (int i = 0; i < 12; ++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> drew = renderer_->draw(scene, camera, comparable_options(), kW, kH);
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(drew.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        return median(ms);
+    };
+    const auto cpu_ms = [&](const RenderScene& scene) {
+        std::vector<uint8_t> pixels(static_cast<size_t>(kW) * kH * 4u);
+        spade::render::RenderTarget target{.pixels = std::span<uint8_t>(pixels), .width = kW, .height = kH, .stride = kW * 4u};
+        std::vector<double> ms;
+        for (int i = 0; i < 12; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> r = spade::render::render(scene, camera, comparable_options(), target);
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(r.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        return median(ms);
+    };
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const RenderScene ground_only = [&] {
+        RenderScene s = build(64, false);
+        s.flow_polylines.clear();
+        return s;
+    }();
+    const double gl_base = gl_ms(ground_only);
+    const double cpu_base = cpu_ms(ground_only);
+    std::printf("[ polyline cost ] 1280x720, 128 drones, 3 px + 4 px glow; the frame without lines: GL %.3f ms, CPU %.2f ms; on %s\n", gl_base, cpu_base, device.c_str());
+    for (const int points : {64, 200, 400}) {
+        const double gl_default = gl_ms(build(points, false));
+        const double gl_looks = gl_ms(build(points, true));
+        const double cpu_default = cpu_ms(build(points, false));
+        const double cpu_looks = cpu_ms(build(points, true));
+        std::printf("[ polyline cost ] %3d points: GL default %.3f ms, every look %.3f ms; CPU default %.2f ms, every look %.2f ms\n", points, gl_default,
+                    gl_looks, cpu_default, cpu_looks);
+        RecordProperty("gl_default_ms_x1000_" + std::to_string(points), static_cast<int>(gl_default * 1000.0));
+        RecordProperty("gl_looks_ms_x1000_" + std::to_string(points), static_cast<int>(gl_looks * 1000.0));
+        RecordProperty("cpu_default_ms_x100_" + std::to_string(points), static_cast<int>(cpu_default * 100.0));
+        RecordProperty("cpu_looks_ms_x100_" + std::to_string(points), static_cast<int>(cpu_looks * 100.0));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 }  // namespace
