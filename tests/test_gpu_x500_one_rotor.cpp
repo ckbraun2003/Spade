@@ -7,7 +7,8 @@
 //
 // Knobs: SPADE_L105_DXMM (the cell in mm, default 5; the box in cells follows), SPADE_L105_CELLS (the tip's cells a step, comma list, default
 // "1.45,0.72,0.36,0.18": h = cells dx / (omega R)), SPADE_L105_T (the last time, s, default 0.1), SPADE_L105_NSUB (8), SPADE_L105_NV (the projection's
-// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
+// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0), SPADE_L105_DEPTH (the box's height in m, 0.55: 0.35 m under the rotor,
+// which the wake front crosses at about 0.065 s; a later time wants a deeper box). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
 // step's own and as the mean over the last revolution, and the disc's mean downflow at 0.05 s and T against momentum theory.
 // ---------------------------------------------------------------------------
 
@@ -98,7 +99,7 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
     for (const double cells : l105g_cells()) {
         const float h = static_cast<float>(cells * static_cast<double>(dx) / tip_speed);
         const af::GridShape shape{static_cast<uint32_t>(std::lround(0.40 / static_cast<double>(dx))),
-                                  static_cast<uint32_t>(std::lround(0.55 / static_cast<double>(dx))),
+                                  static_cast<uint32_t>(std::lround(l105g_number("SPADE_L105_DEPTH", 0.55) / static_cast<double>(dx))),
                                   static_cast<uint32_t>(std::lround(0.40 / static_cast<double>(dx))), dx};
         af::DomainBc bc;
         auto grid = af::make_grid(shape, bc);

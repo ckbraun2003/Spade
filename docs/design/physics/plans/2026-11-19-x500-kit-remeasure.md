@@ -61,3 +61,17 @@ One kit rotor (the 1045 at 569.2 rad/s) in an open box at 5 mm, `AirflowX500.The
 - The disc's mean downflow follows momentum theory at every h (the ratio to sqrt(T / 2 rho A) of the reported thrust is 0.959, 0.958, 0.962 at 5 mm): the fluid does not gain momentum it should not.
 - The advection is already RK2 with a clamped MacCormack correction: no higher-order mode to switch to.
 - The same cells a blade moves a step at dx 10 mm (h doubled) gives -0.9%, -1.3%, -0.9% a halving at 0.05 s, against -4.4%, -3.9%, -2.7% at 5 mm: the dependence is not a function of cells a step alone, it grows with resolution. Cause open.
+
+### L105 on the device: the thrust against the tip's cells a step (`GpuX500OneRotor`, opt-in `SPADE_L105_GPU=1`)
+
+The same rotor and box on the GPU (n_sub 8, n_v 2, h = cells dx / omega R, the tip at 72.3 m/s), the lines' thrust **as the mean over the last revolution (11.04 ms)** at 0.05 s, N, and the change per halving:
+
+| tip cells a step | 1.45 | 0.72 | 0.36 | 0.18 |
+|---|---|---|---|---|
+| dx 5 mm | 3.728 | 3.639 (-2.4%) | 3.596 (-1.2%) | 3.572 (-0.7%) |
+| dx 2.5 mm | 3.795 | 3.600 (-5.1%) | 3.485 (-3.2%) | 3.716 (broken, below) |
+
+- **At 5 mm it converges, at first order** (the changes halve: -2.4, -1.2, -0.7%); the thrust's limit is about 3.55 N, 5% under the 1.45-cell value. At 2.5 mm it does not settle in the range that runs: -5.1% and -3.2%, and the smallest step breaks.
+- **The smallest steps break down by step count, not by time.** The disc's mean downflow, 0.97 of momentum theory in every sound row, falls to about 0 while the lines' thrust stays 3.6 to 4.1 N: dx 5 mm 0.18 cells at 0.1 s (step 8032: 0.02 m/s), 0.36 cells at 0.1 s (step 4016: 0.89 of theory, going), dx 2.5 mm 0.36 cells at 0.1 s (step 8032: 0.48 m/s) and 0.18 cells by 0.05 s (step 8032: 0.48 m/s). Rows at 4000 steps or fewer are sound except that one 0.89. n_v 8 gives the same thrust to four digits and the same collapse at the same step (dx 5 mm, 0.36 and 0.18): not the projection. Cause open.
+- The wake front crosses the 0.35 m under the rotor in the first box (0.55 m high) at about 0.065 s: its 0.075 and 0.1 s rows are box-limited, so the table above is from 0.05 s and the deep box (1.0 m high, `SPADE_L105_DEPTH`) was used for the late rows; the 5 mm 0.05 s values are the same in both boxes to 3 digits.
+- **Cost:** about 31 min of GPU in all, no frames kept, no new disk; the 2.5 mm deep sweep was 22 min (41 ms a step, 10 M cells), the 5 mm sweeps 9 ms a step. Peak VRAM was not measured.
