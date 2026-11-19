@@ -657,3 +657,73 @@ TEST(FlowMovieParticles, AdvancingThroughStoredFramesMovesAPointByExactlyVNDtAnd
     ASSERT_FALSE(stopped.has_value());
     EXPECT_NE(stopped.error().context.find("frame 2"), std::string::npos) << stopped.error().context;
 }
+
+// L106b: one RK2 step across 5 to 8 cells of a frame's frozen velocity is coarse in a tip vortex's core, so a frame can be advanced in `substeps` midpoint steps of
+// dt / substeps through the same frame (ParticleOptions::substeps, --particle-look substeps=N). Default 1: the film as it was, bit for bit.
+TEST(FlowMovieParticles, SubStepsDefaultToOneAndAFrameIsAdvancedInTheSameWayAsBefore) {
+    EXPECT_EQ(flow_movie::ParticleOptions{}.substeps, 1u);
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    const std::vector<glm::vec3> pool{glm::vec3(0.0f)};
+    for (uint32_t substeps : {1u, 4u}) {
+        flow_movie::ParticleField f;
+        auto o = options();
+        o.substeps = substeps;
+        ASSERT_TRUE(flow_movie::advance_particles(f, v, pool, 0.005f, o)) << substeps;
+        o.per_frame = 0u;
+        ASSERT_TRUE(flow_movie::advance_particles(f, v, pool, 0.005f, o)) << substeps;
+        ASSERT_EQ(f.position.size(), 1u);
+        EXPECT_NEAR(f.position[0].x, 0.01f, 1e-6f) << "a uniform flow moves a point by exactly u dt however it is sub-stepped (substeps " << substeps << ")";
+        EXPECT_NEAR(f.previous[0].x, 0.0f, 1e-9f) << "previous is where it was a FRAME ago, not a sub-step ago";
+    }
+}
+
+TEST(FlowMovieParticles, MoreSubStepsHoldASolidBodyRotationsRadiusTighter) {
+    const float omega = 125.0f;  // rad/s: 25 m/s at 0.2 m, so omega x dt = 0.5 a frame (the held frame's rotor region moves 5 to 8 cells a frame)
+    const FlowVolume v =
+        field(32, 0.04f, glm::vec3(-0.64f), [omega](glm::vec3 p) { return glm::vec3(-omega * p.z, 0.0f, omega * p.x); });
+    const std::vector<glm::vec3> pool{glm::vec3(0.2f, 0.0f, 0.0f)};
+    float radius[2] = {0.0f, 0.0f};
+    int at = 0;
+    for (uint32_t substeps : {1u, 4u}) {
+        flow_movie::ParticleField f;
+        auto o = options();
+        o.region_lo = glm::vec3(-0.6f);
+        o.region_hi = glm::vec3(0.6f);
+        o.substeps = substeps;
+        ASSERT_TRUE(flow_movie::advance_particles(f, v, pool, 0.004f, o)) << substeps;
+        o.per_frame = 0u;
+        for (int i = 0; i < 20; ++i) ASSERT_TRUE(flow_movie::advance_particles(f, v, pool, 0.004f, o)) << substeps;
+        ASSERT_EQ(f.position.size(), 1u) << substeps;
+        radius[at++] = std::sqrt(f.position[0].x * f.position[0].x + f.position[0].z * f.position[0].z);
+    }
+    EXPECT_GT(radius[0], 0.2f * 1.10f) << "one midpoint step a frame lets the radius grow more than 10% in 20 frames at omega dt = 0.5";
+    EXPECT_LT(radius[1], 0.2f * 1.02f) << "four sub-steps hold it to 2%";
+    EXPECT_LT(radius[1] - 0.2f, 0.5f * (radius[0] - 0.2f)) << "and to less than half of the drift";
+}
+
+TEST(FlowMovieParticles, ASubStepCountOutsideOneToSixtyFourIsRefusedByNameBeforeAnyChange) {
+    const FlowVolume v = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    const std::vector<glm::vec3> pool{glm::vec3(0.0f)};
+    for (uint32_t substeps : {0u, 65u}) {
+        flow_movie::ParticleField f;
+        auto o = options();
+        o.substeps = substeps;
+        const spade::Result<void> refused = flow_movie::advance_particles(f, v, pool, 0.001f, o);
+        ASSERT_FALSE(refused.has_value()) << substeps;
+        EXPECT_NE(refused.error().context.find("substeps"), std::string::npos) << refused.error().context;
+        EXPECT_EQ(f.frames, 0u) << "nothing changed";
+    }
+}
+
+TEST(FlowMovieParticles, TheParticleLookStringSetsSubStepsAsAWholeNumberOneToSixtyFour) {
+    EXPECT_EQ(flow_movie::parse_particle_look("").value().substeps, 1u) << "the film's default";
+    const auto four = flow_movie::parse_particle_look("substeps=4,width=3");
+    ASSERT_TRUE(four.has_value());
+    EXPECT_EQ(four->substeps, 4u);
+    EXPECT_NEAR(four->width_px, 3.0f, 1e-6f) << "the other keys still work beside it";
+    for (const char* text : {"substeps=0", "substeps=65", "substeps=2.5", "substeps=-1"}) {
+        const auto refused = flow_movie::parse_particle_look(text);
+        ASSERT_FALSE(refused.has_value()) << text;
+        EXPECT_NE(refused.error().context.find("substeps"), std::string::npos) << refused.error().context;
+    }
+}
