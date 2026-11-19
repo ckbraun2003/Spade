@@ -113,7 +113,9 @@ TEST(D1Case, WithoutItsPartsTheyAreDrawnOnly) {
 // the air moves +z, -90 the other way. A heading that did nothing would put a wrong label on a clip, so this reads it
 // back three ways: the case, the resolved ambient, and the air itself after a few steps on a small grid (the CPU
 // step, no solids): the open faces carry the ambient in, and the mean velocity leans to the wind's side at every
-// heading. Mutation: the builder not passing the heading on turns it red (both side headings read a headwind).
+// heading. 72 steps since L90 (2026-11-18): an open face's outflow is left to the projection and the wind comes in through the advection's
+// ambient ghost, not forced onto the faces, so the mean builds up over the box's transit (headwind, along the wind: 0.83 at 24 steps, 1.57 at 72,
+// 2.94 of the 3 at 192; the side headings 0.99, 1.71, 2.94) where the old rule read 1.02 at 24 steps, just over the threshold. Mutation: the builder not passing the heading on turns it red (both side headings read a headwind).
 TEST(D1Case, TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign) {
     struct Row {
         float heading;
@@ -137,7 +139,7 @@ TEST(D1Case, TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign) {
         const af::FluidConfig cfg{.rho = 1.225f, .nu = 0.0f, .h = 0.002f, .n_v = 2, .threads = 1};
         auto scratch = af::make_fluid_scratch(*grid, resolved->domain, cfg);
         ASSERT_TRUE(scratch.has_value()) << scratch.error().context;
-        for (int t = 0; t < 24; ++t) {
+        for (int t = 0; t < 72; ++t) {
             const af::FluidHealth health = af::fluid_step(*grid, resolved->domain, cfg, *scratch);
             ASSERT_EQ(health.fault, af::FluidFault::none) << "step " << t;
         }
@@ -152,7 +154,7 @@ TEST(D1Case, TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign) {
         std::printf("[D1Case] heading %+.0f: mean air (%.4f, %.4f, %.4f) m/s, along the wind %.4f, across %.4f\n",
                     row.heading, m.x, m.y, m.z, along, across);
         EXPECT_GT(along, 1.0f) << "the air moves with the wind, at heading " << row.heading;
-        // Across the wind the mean is the open faces' entrainment (0.27 against 1.18 at the side headings).
+        // Across the wind the mean is the open faces' entrainment (0.29 against 1.71 at the side headings, 72 steps).
         EXPECT_LT(across, 0.5f * along) << "and not across it, at heading " << row.heading;
     }
 }
