@@ -945,3 +945,14 @@ TEST(FlowMovieWeb, TheCameraElevationOptionTakesOneNumberAboveZeroAndAtMost85) {
     }
 }
 
+// WHERE WORKING OUTPUT GOES BY DEFAULT (Cameron, O74, 2026-11-18): all videos live under Desktop/Projects/Videos, and Spade's footage under
+// Footage/Spade, one dated folder a day. Anything posted or kept goes wherever --out names; this is only the default.
+TEST(FlowMovieWeb, TheDefaultOutputFolderIsTheSpadeFootageFolderOfTheVideosArchiveByDate) {
+    EXPECT_EQ(web::default_out_dir("C:/Users/Someone", "2026-11-18"),
+              std::filesystem::path("C:/Users/Someone") / "Desktop" / "Projects" / "Videos" / "Footage" / "Spade" / "2026-11-18");
+    const std::string text = web::default_out_dir("C:/Users/Someone", "2026-11-18").generic_string();
+    EXPECT_EQ(text.find("spade-videos"), std::string::npos) << "the old Desktop folder is not the default any more: " << text;
+    EXPECT_EQ(web::default_out_dir("", "2026-11-18"), std::filesystem::path(".") / "Desktop" / "Projects" / "Videos" / "Footage" / "Spade" / "2026-11-18")
+        << "no profile: relative to the working directory, as before";
+}
+

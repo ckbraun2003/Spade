@@ -33,9 +33,9 @@
 // --stills N renders N evenly spaced frames of each view as PNGs instead of
 // a video, to look at a shot. Exit 0 done, 1 failed, 77 no GL or no ffmpeg.
 //
-// Everything under --out (Desktop/spade-videos/<date> by default) is working
+// Everything under --out (Desktop/Projects/Videos/Footage/Spade/<date> by default) is working
 // output, and none of it is posted. A film is POSTED only under
-// C:/Users/Cameron/Desktop/Projects/Videos, by Videos/CATEGORIES.md (Cameron,
+// Desktop/Projects/Videos (under the user's profile), by Videos/CATEGORIES.md (Cameron,
 // 2026-10-21). An airflow film is Research: 1920x1080 at 30 fps (as
 // recorded), at most 120 s and 30 MB, with a title card. A renderer
 // before-and-after is a Feature. To post one, encode it through the queue
@@ -2089,7 +2089,7 @@ constexpr double kD1Seconds = 0.6;
 #endif
     char date[16];
     std::strftime(date, sizeof date, "%Y-%m-%d", &local);
-    return fs::path(profile != nullptr ? profile : ".") / "Desktop" / "spade-videos" / date;
+    return web::default_out_dir(profile != nullptr ? profile : "", date);
 }
 
 // The run's labels by step, from the cache's run.txt (each line "step<TAB>label"), for the captions.
