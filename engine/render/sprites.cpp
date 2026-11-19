@@ -248,6 +248,19 @@ struct ScaledShape {
     return o;
 }
 
+void blend_overlay(uint8_t* px, SpriteColour c, float cov) {  // px is R, G, B, A, premultiplied
+    const float a = cov * static_cast<float>(c.a) / 255.0f;
+    if (!(a > 0.0f)) return;
+    const auto mix = [&](uint8_t behind, float src) {
+        const float v = src * a + static_cast<float>(behind) * (1.0f - a);
+        return static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, v + 0.5f)));
+    };
+    px[0] = mix(px[0], static_cast<float>(c.r));
+    px[1] = mix(px[1], static_cast<float>(c.g));
+    px[2] = mix(px[2], static_cast<float>(c.b));
+    px[3] = mix(px[3], 255.0f);
+}
+
 void blend(uint8_t* px, SpriteColour c, float cov) {  // px is B, G, R, X
     const float a = cov * static_cast<float>(c.a) / 255.0f;
     if (!(a > 0.0f)) return;
@@ -263,7 +276,7 @@ void blend(uint8_t* px, SpriteColour c, float cov) {  // px is B, G, R, X
 }  // namespace
 
 void draw_sprite_shapes(std::span<uint8_t> pixels, uint32_t width, uint32_t height, double anchor_x, double anchor_y, float ui_scale,
-                        std::span<const SpriteShape> shapes) {
+                        std::span<const SpriteShape> shapes, SpriteTarget target) {
     for (const SpriteShape& sh : shapes) {
         const ScaledShape sc = scale_shape(sh, ui_scale);
         const int xa = std::max(0, static_cast<int>(std::floor(anchor_x + static_cast<double>(sc.bx0))));
@@ -286,8 +299,13 @@ void draw_sprite_shapes(std::span<uint8_t> pixels, uint32_t width, uint32_t heig
                         }
                     }
                     if (hit == 0) continue;
-                    blend(&pixels[(static_cast<size_t>(y) * width + static_cast<size_t>(x)) * 4u], *colour,
-                          static_cast<float>(hit) / static_cast<float>(n * n));
+                    uint8_t* px = &pixels[(static_cast<size_t>(y) * width + static_cast<size_t>(x)) * 4u];
+                    const float cov = static_cast<float>(hit) / static_cast<float>(n * n);
+                    if (target == SpriteTarget::overlay_rgba) {
+                        blend_overlay(px, *colour, cov);
+                    } else {
+                        blend(px, *colour, cov);
+                    }
                 }
             }
         }

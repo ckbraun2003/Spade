@@ -50,6 +50,7 @@
 #include "render/gltf.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
+#include "render/sprite_kit.hpp"
 #include "render/shadow.hpp"
 #include "render/target.hpp"
 #include "render/tessellate.hpp"
@@ -3437,8 +3438,8 @@ TEST_F(GpuGlRenderer, CreateReportsEachProgramAndRefusesABadSalt) {
     const auto made = GlRenderer::create(loader, GlRenderer::CreateOptions{}, probe);
     ASSERT_TRUE(made.has_value()) << made.error().context;
     const std::vector<std::string> want = {"mesh",        "background",  "field",       "overlay",
-                                           "flow lines",  "shadow caster", "csg",       "flow volume",
-                                           "flow bricks", "flow composite"};
+                                           "flow lines",  "sprites",       "shadow caster", "csg",
+                                           "flow volume", "flow bricks",   "flow composite"};
     EXPECT_EQ(names, want);
 
     GlRenderer::CreateProbe bad;
@@ -4773,6 +4774,88 @@ TEST_F(GpuGlRenderer, EveryS1LookMatchesTheCpuWithinItsBand) {
     EXPECT_LE(d.worst, kBandWorstLevels) << device;
     EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// D182 S3: the sprites, GL against the CPU. The GL renderer projects and rasterises them with the CPU reference's own code (render/sprites.cpp), uploads
+// the premultiplied overlay and composites it over its frame, so the sprites agree with the reference up to the ground underneath and one level of
+// rounding where a translucent shape covers a pixel. Drone discs, the three marks, the reticle in its three states, a hard-edged and a translucent shape,
+// a sprite on another slot and one partly off the frame, at a ui_scale of 1.5.
+TEST_F(GpuGlRenderer, SpritesMatchTheCpuReferenceWithinOneLevelOfRounding) {
+    using namespace spade::render;
+    RenderScene scene = make_ground_scene();
+    const SpriteColour fill{0xDC, 0xE5, 0xEC, 255}, border{0x0B, 0x0F, 0x14, 255}, crash{0xE2, 0x6E, 0x73, 255}, lap{0x5B, 0xBB, 0x86, 255},
+        limit{0xE8, 0xA3, 0x3D, 255}, dim{0x82, 0x8F, 0x9C, 255}, accent{0x7C, 0x93, 0xFF, 255};
+    float x = -2.0f;
+    const auto next = [&x]() {
+        const glm::dvec3 p(x, 0.6, -0.4);
+        x += 0.45f;
+        return p;
+    };
+    scene.sprites.push_back(make_drone_disc(next(), fill, border));
+    scene.sprites.push_back(make_mark(MarkKind::crash, next(), crash));
+    scene.sprites.push_back(make_mark(MarkKind::lap, next(), lap));
+    scene.sprites.push_back(make_mark(MarkKind::time_limit, next(), limit));
+    scene.sprites.push_back(make_spawn_reticle(next(), ReticleState::normal, dim, accent, lap));
+    scene.sprites.push_back(make_spawn_reticle(next(), ReticleState::hover, accent, accent, lap));
+    scene.sprites.push_back(make_spawn_reticle(next(), ReticleState::occupied, dim, accent, lap));
+    {
+        SpriteShape glass;  // translucent, hard-edged, over the marks
+        glass.kind = SpriteShapeKind::circle;
+        glass.x0 = -3.0f;
+        glass.r = 14.0f;
+        glass.fill = SpriteColour{200, 100, 50, 128};
+        glass.aa = false;
+        WorldSprite sprite;
+        sprite.anchor = glm::dvec3(-1.1, 0.6, -0.4);
+        sprite.shapes = {glass};
+        scene.sprites.push_back(sprite);
+    }
+    {
+        WorldSprite other = make_mark(MarkKind::crash, glm::dvec3(0.0, 1.2, -0.4), crash);
+        other.slots = 0b10u;  // not slot 0
+        scene.sprites.push_back(other);
+        WorldSprite edge = make_mark(MarkKind::lap, glm::dvec3(2.6, 0.6, -0.4), lap);
+        scene.sprites.push_back(edge);
+    }
+    RenderScene bare = scene;
+    bare.sprites.clear();
+    RenderOptions options = comparable_options();
+    options.ui_scale = 1.5f;
+    const Camera camera = camera_over_ground();
+    const std::vector<uint8_t> cpu_on = cpu_rgba(scene, camera, options);
+    const std::vector<uint8_t> cpu_off = cpu_rgba(bare, camera, options);
+    const std::vector<uint8_t> gl_on = draw_and_read(scene, options, camera);
+    const std::vector<uint8_t> gl_off = draw_and_read(bare, options, camera);
+    ASSERT_EQ(gl_on.size(), kPixels * 4u);
+    const size_t drawn = count_differing(cpu_on, cpu_off);
+    ASSERT_GT(drawn, 400u) << "the sprites reach the frame";
+    ASSERT_GT(count_differing(gl_on, gl_off), 400u) << "and GL's";
+    const ChannelDiff base = channel_diff(cpu_off, gl_off);
+    const ChannelDiff d = channel_diff(cpu_on, gl_on);
+    RecordProperty("sprite_pixels", static_cast<int>(drawn));
+    RecordProperty("worst_levels", d.worst);
+    RecordProperty("differing_pixels", static_cast<int>(d.differing));
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    std::printf("[ S3 sprites ] %zu px drawn; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ (the ground alone %zu); on %s\n", drawn,
+                d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
+    // Measured 2026-11-19, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 2635 pixels drawn; worst 1 level (the ground alone 1),
+    // none over two, 1280 pixels differ (the ground alone 608): the sprites' own pixels agree with the reference to a level, the extra differing pixels
+    // are the premultiplied composite's rounding over the ground. Pinned at measured + 1.
+    EXPECT_LE(d.worst, base.worst + 1) << device;
+    EXPECT_EQ(d.over_two, base.over_two) << device;
+    constexpr size_t kBandDifferingPixels = 1281;  // measured 1280
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+TEST_F(GpuGlRenderer, ASpriteThatCannotBeDrawnIsRefusedByName) {
+    using namespace spade::render;
+    RenderScene scene = make_ground_scene();
+    scene.sprites.push_back(WorldSprite{});  // no shapes
+    const Camera camera = camera_over_ground();
+    const spade::Result<void> refused = renderer_->draw(scene, camera, comparable_options(), kWidth, kHeight);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("sprites[0]"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("shapes"), std::string::npos) << refused.error().context;
 }
 
 // D182 S1's cost (KAT's host draws a trail per drone): 128 drones, one polyline each of 64, 200 and 400 points, 3 px wide with a 4 px glow, on a 1280 x 720

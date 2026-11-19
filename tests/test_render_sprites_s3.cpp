@@ -206,7 +206,9 @@ TEST(RenderSpritesS3, TheRestingReticleIsACircleAndFourTicksAndNothingAtTheCentr
     // hard edges: every lit pixel is exactly the reticle colour
     for (uint32_t y = 0; y < kH; ++y) {
         for (uint32_t x = 0; x < kW; ++x) {
-            if (!got.black(x, y)) EXPECT_EQ(got.rgb(x, y), rgb_of(kDim)) << x << "," << y;
+            if (!got.black(x, y)) {
+                EXPECT_EQ(got.rgb(x, y), rgb_of(kDim)) << x << "," << y;
+            }
         }
     }
 }

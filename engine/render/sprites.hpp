@@ -69,10 +69,14 @@ inline constexpr size_t kMaxSpritePolygonPoints = 64;  // per polygon
 [[nodiscard]] Result<void> validate_sprite(const WorldSprite& sprite);
 [[nodiscard]] Result<void> validate_sprite_budget(std::span<const WorldSprite> sprites);
 
+// What draw_sprite_shapes writes to. frame_bgrx: B, G, R, X bytes of an opaque frame, blended onto what is there. overlay_rgba: R, G, B, A bytes of a
+// transparent overlay holding PREMULTIPLIED colour (source-over onto the overlay), which GL composites over its frame with (ONE, ONE_MINUS_SRC_ALPHA).
+enum class SpriteTarget : uint8_t { frame_bgrx, overlay_rgba };
+
 // The reference rasteriser: draws `shapes` (px offsets from (anchor_x, anchor_y), a point in FRAME px, pixel centres at +0.5) into a B, G, R, X frame of
 // width x height with RenderOptions::ui_scale applied, source-over, clipped to the frame. render() calls it for every sprite that projects; the shapes
 // were validated. aa = true samples 4 x 4 per pixel, false takes the pixel centre.
 void draw_sprite_shapes(std::span<uint8_t> pixels, uint32_t width, uint32_t height, double anchor_x, double anchor_y, float ui_scale,
-                        std::span<const SpriteShape> shapes);
+                        std::span<const SpriteShape> shapes, SpriteTarget target = SpriteTarget::frame_bgrx);
 
 }  // namespace spade::render

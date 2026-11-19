@@ -155,4 +155,10 @@ struct OverlayGeometry {
 // mode draws no overlays.
 [[nodiscard]] OverlayGeometry overlay_geometry(const RenderScene& scene, const RenderOptions& options);
 
+// D182 S3, for the GL renderer: the sprites of `scene` that draw on options.slot (projected exactly as render() projects them), rasterised by
+// draw_sprite_shapes into a transparent premultiplied R, G, B, A overlay of width x height, rows top first. Returns false, with `rgba` empty, when none draw.
+// The caller validates the sprites (validate_sprite_budget).
+[[nodiscard]] bool rasterize_sprite_overlay(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
+                                            std::vector<uint8_t>& rgba);
+
 }  // namespace spade::render

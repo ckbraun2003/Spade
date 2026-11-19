@@ -157,6 +157,7 @@ namespace {
     X(PFNGLTEXIMAGE3DPROC, TexImage3D) \
     X(PFNGLTEXPARAMETERIPROC, TexParameteri) \
     X(PFNGLUNIFORM1FPROC, Uniform1f) \
+    X(PFNGLUNIFORM1IPROC, Uniform1i) \
     X(PFNGLUNIFORM1UIPROC, Uniform1ui) \
     X(PFNGLUNIFORM2FPROC, Uniform2f) \
     X(PFNGLUNIFORM2UIPROC, Uniform2ui) \
@@ -1246,6 +1247,18 @@ void main() {
 }
 )GLSL";
 
+constexpr const char* kSpriteFragmentSrc = R"GLSL(
+// D182 S3: the sprites, rasterised on the host by render/sprites.cpp into a premultiplied overlay the size of the frame (render/raster_cpu.hpp's
+// rasterize_sprite_overlay), composited here over the frame with (ONE, ONE_MINUS_SRC_ALPHA). The overlay's rows run top first; the frame's y is up.
+uniform sampler2D uSprites;
+uniform int uHeight;
+out vec4 fragColor;
+
+void main() {
+    fragColor = texelFetch(uSprites, ivec2(int(gl_FragCoord.x), uHeight - 1 - int(gl_FragCoord.y)), 0);
+}
+)GLSL";
+
 // STYLED STREAMLINES (render/flow_lines.hpp's FlowLineStyle): each segment is a quad of six vertices, one
 // instance a segment from an SSBO (a and b in world, then the mean colour), grown in pixels by the capsule's
 // half width, the glow and a pixel, so the fragment shader can take the exact distance to the segment. The
@@ -2000,6 +2013,9 @@ struct GlRenderer::Impl {
 
     // Styled streamlines (FlowLineStyle): their own program, and an SSBO of three vec4 a segment, a, b, colour.
     GLuint flow_line_program = 0;
+    GLuint sprite_program = 0, sprite_tex = 0;
+    GLint sprite_uniform_tex = -1, sprite_uniform_height = -1;
+    std::vector<uint8_t> sprite_rgba;
     GLuint ssbo_flow_lines = 0;
     size_t flow_lines_capacity = 0;  // in vec4s
     std::vector<glm::vec4> flow_line_segments;
@@ -2301,6 +2317,8 @@ struct GlRenderer::Impl {
         if (overlay_program != 0) gl.DeleteProgram(overlay_program);
         if (ssbo_flow_lines != 0) gl.DeleteBuffers(1, &ssbo_flow_lines);
         if (flow_line_program != 0) gl.DeleteProgram(flow_line_program);
+        if (sprite_program != 0) gl.DeleteProgram(sprite_program);
+        if (sprite_tex != 0) gl.DeleteTextures(1, &sprite_tex);
         if (ssbo_field_colours != 0) gl.DeleteBuffers(1, &ssbo_field_colours);
         if (ssbo_planes != 0) gl.DeleteBuffers(1, &ssbo_planes);
         if (ssbo_speeds != 0) gl.DeleteBuffers(1, &ssbo_speeds);
@@ -2439,6 +2457,7 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
          {kGlslVersion, kFlowLineVertexSrc},
          {kGlslVersion, kFlowLineFragmentSrc},
          &impl->flow_line_program},
+        {"sprites", {kGlslVersion, kBackgroundVertexSrc}, {kGlslVersion, kSpriteFragmentSrc}, &impl->sprite_program},
         {"shadow caster",
          {kGlslVersion, kCasterVertexSrc},
          {kGlslVersion, kCasterFragmentSrc},
@@ -2533,6 +2552,9 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
     impl->overlay.view = gl.GetUniformLocation(o, "uView");
     impl->overlay.proj = gl.GetUniformLocation(o, "uProj");
     impl->overlay.depth_bias = gl.GetUniformLocation(o, "uDepthBias");
+    impl->sprite_uniform_tex = gl.GetUniformLocation(impl->sprite_program, "uSprites");
+    impl->sprite_uniform_height = gl.GetUniformLocation(impl->sprite_program, "uHeight");
+    gl.GenTextures(1, &impl->sprite_tex);
     const GLuint fl = impl->flow_line_program;
     impl->flow_line.view = gl.GetUniformLocation(fl, "uView");
     impl->flow_line.proj = gl.GetUniformLocation(fl, "uProj");
@@ -2970,6 +2992,9 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
             return std::unexpected(Error{valid.error().code, "GlRenderer::draw: flow polyline " + std::to_string(i) +
                                                                  ": " + valid.error().context});
         }
+    }
+    if (Result<void> valid = render::validate_sprite_budget(scene.sprites); !valid) {
+        return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
     }
     if (Result<void> valid = render::validate_flow_points(scene.flow_points); !valid) {
         return std::unexpected(Error{valid.error().code, "GlRenderer::draw: " + valid.error().context});
@@ -4060,6 +4085,31 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
     // The CPU's own lists, in its order: lines, then triangles. Depth-tested
     // and written, strictly nearer wins (setPixelIfCloser's rule), and nothing
     // is culled, as on the CPU. In every raster mode, filled.
+    // D182 S3: the sprites, after the flow lines and before the overlays, as raster_cpu draws them.
+    if (!sensor && render::rasterize_sprite_overlay(scene, camera, options, width, height, s.sprite_rgba)) {
+        gl.Disable(GL_DEPTH_TEST);
+        gl.DepthMask(GL_FALSE);
+        gl.Disable(GL_CULL_FACE);
+        gl.Enable(GL_BLEND);
+        gl.BlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
+        gl.ActiveTexture(GL_TEXTURE0);
+        gl.BindTexture(GL_TEXTURE_2D, s.sprite_tex);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(width), static_cast<GLsizei>(height), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                      s.sprite_rgba.data());
+        gl.UseProgram(s.sprite_program);
+        gl.Uniform1i(s.sprite_uniform_tex, 0);
+        gl.Uniform1i(s.sprite_uniform_height, static_cast<GLint>(height));
+        gl.BindVertexArray(s.empty_vao);
+        gl.DrawArrays(GL_TRIANGLES, 0, 3);
+        gl.BindVertexArray(0);
+        gl.BindTexture(GL_TEXTURE_2D, 0);
+        gl.DepthMask(GL_TRUE);
+        gl.Enable(GL_DEPTH_TEST);
+        gl.Disable(GL_BLEND);
+        gl.BlendFunc(GL_ONE, GL_ZERO);
+    }
     if (options.overlays && !sensor) {  // a sensor frame is the geometry alone
         const render::OverlayGeometry overlays = render::overlay_geometry(scene, options);
         std::vector<float>& v = s.overlay_vertices;
