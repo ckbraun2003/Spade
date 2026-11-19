@@ -126,7 +126,9 @@ struct Library {
 
 // Reads the index at `path` and runs library_from_yaml(), then checks the
 // disk: each entry's file exists, and a thumbnail the entry NAMES exists (the
-// panel never shows a blank tile for a typo). dir is the index's directory
+// panel never shows a blank tile for a typo). A file whose library_version is 3 is a ROOT, not an index: the same Library comes back from
+// open_libraries() (the entries of the kinds LibraryKind knows, in the root's order), and a root that does not open is io_error (root_unavailable) or
+// invalid_argument with the refusal's text. dir is the index's directory
 // ("." for a bare file name). io_error when the index cannot be read, and for
 // a missing file or thumbnail, naming the entry and the path; a parse
 // diagnostic comes back prefixed with the index's path. It reads no entry's

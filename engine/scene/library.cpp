@@ -16,6 +16,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "scene/detail/relative_path.hpp"
+#include "scene/library_set.hpp"
 #include "world/detail/yaml_text.hpp"
 
 namespace spade::scene {
@@ -355,6 +356,58 @@ Result<std::string> library_to_yaml(const Library& library) {
     return text;
 }
 
+namespace {
+
+// A version-3 library.yaml is a ROOT (the library contract's section 2), not an index: its `indexes` hold the entries. The editor's list is that root's
+// entries of the kinds LibraryKind knows (model, object, and the parts motor, prop, esc and battery), in the root's order, with each entry's name,
+// category, file and thumbnail as the index spells them. An entry of any other kind (a drone with a parts map, a mesh, a world, a frame or payload part,
+// an opaque one) has no LibraryKind and is not listed here; open_libraries() lists it.
+Result<Library> load_v3_root(const std::filesystem::path& path, const YAML::Node& doc) {
+    const YAML::Node name = doc["name"];
+    if (!name.IsDefined() || !name.IsScalar() || name.Scalar().empty()) {
+        return std::unexpected(Error{Code::invalid_argument, path_text(path) + ": a version-3 library needs a 'name'"});
+    }
+    const std::filesystem::path dir = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::absolute(dir, ec);
+    const std::vector<LibraryRootSpec> roots = {{name.Scalar(), ec ? dir : absolute, false}};
+    const LibraryResult<LibrarySet> set = open_libraries(roots);
+    if (!set) {
+        std::string why = set.error().message;
+        for (const LibraryRefusal& issue : set.error().issues) why += "; " + issue.message;
+        return std::unexpected(Error{set.error().code == "root_unavailable" ? Code::io_error : Code::invalid_argument, path_text(path) + ": " + why});
+    }
+    Library library;
+    library.dir = dir;
+    for (const SetEntry& e : set->entries) {
+        if (e.rel_file.empty()) continue;
+        LibraryEntry out;
+        out.name = e.name;
+        out.category = e.category;
+        out.file = e.rel_file;
+        out.thumbnail = e.rel_thumbnail;
+        if (e.kind == "model") {
+            out.kind = LibraryKind::model;
+        } else if (e.kind == "object") {
+            out.kind = LibraryKind::object;
+        } else if (e.kind == "part" && e.part_kind == "motor") {
+            out.kind = LibraryKind::motor;
+        } else if (e.kind == "part" && e.part_kind == "prop") {
+            out.kind = LibraryKind::prop;
+        } else if (e.kind == "part" && e.part_kind == "esc") {
+            out.kind = LibraryKind::esc;
+        } else if (e.kind == "part" && e.part_kind == "battery") {
+            out.kind = LibraryKind::battery;
+        } else {
+            continue;
+        }
+        library.entries.push_back(std::move(out));
+    }
+    return library;
+}
+
+}  // namespace
+
 Result<Library> load_library(const std::filesystem::path& path) {
     std::string text;
     try {
@@ -369,6 +422,15 @@ Result<Library> load_library(const std::filesystem::path& path) {
     } catch (const std::exception& e) {
         return std::unexpected(
             Error{Code::io_error, "failed reading library index '" + path_text(path) + "': " + e.what()});
+    }
+
+    // A version-3 file is a root, read by open_libraries(); anything else (including a file that does not parse) goes to the index reader below.
+    try {
+        const YAML::Node doc = YAML::Load(text);
+        if (doc.IsMap() && doc["library_version"].IsScalar() && doc["library_version"].Scalar() == "3") {
+            return load_v3_root(path, doc);
+        }
+    } catch (const YAML::Exception&) {
     }
 
     Result<Library> library = library_from_yaml(text);
