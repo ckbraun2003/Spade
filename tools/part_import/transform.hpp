@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 // part_import/transform.hpp -- the part frame and the unit guess (design note, sections 2 and 6).
 //
+// --origin X,Y,Z is the point of the file, in the file's own unit, that becomes the part's origin: the part frame is p' = scale * axes(p - origin).
 // --axes is the part file's `to_part.axes`: an exact permutation of the source axes with signs, a PROPER rotation (determinant +1; a
 // mirror reverses the winding and is refused). --scale multiplies every position once, after the unit, in double. Axes then scale,
 // applied once to the metre positions, then make_mesh() again, so what is stored passed the gate in its final frame.

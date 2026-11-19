@@ -278,6 +278,13 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         if (!s) return fail(s.error());
         scale = *s;
     }
+    std::optional<glm::dvec3> origin;  // the file's own unit
+    if (opts.origin) {
+        const auto o = parse_origin(*opts.origin);
+        if (!o) return fail(o.error());
+        origin = *o;
+    }
+    const bool part_frame_is_the_file = axes.identity() && scale == 1.0 && !origin;
     const bool is_step = *format == "step";
     const bool fast_inspect = is_step && !importing && !opts.deep;
     double deflection_m = 0.0, angle_rad = 0.0;
@@ -337,6 +344,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     key_in.unit = (declares_unit || !opts.unit) ? std::string() : *opts.unit;
     key_in.axes = axes;
     key_in.scale = scale;
+    key_in.origin = origin;
     {  // the picks name the entry whatever the order they were given in (one pick: its own name, as before)
         std::vector<std::string> sorted = opts.objects;
         std::sort(sorted.begin(), sorted.end());
@@ -402,7 +410,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             glm::dvec3 lo(1e300), hi(-1e300);
             for (int corner = 0; corner < 8; ++corner) {
                 const glm::dvec3 p((corner & 1) ? sol.hi.x : sol.lo.x, (corner & 2) ? sol.hi.y : sol.lo.y, (corner & 4) ? sol.hi.z : sol.lo.z);
-                const glm::dvec3 q = apply_axes(axes, p) * scale;
+                const glm::dvec3 q = apply_axes(axes, p - origin.value_or(glm::dvec3(0.0)) * unit_metres(info->unit)) * scale;
                 lo = glm::min(lo, q);
                 hi = glm::max(hi, q);
             }
@@ -425,7 +433,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         JsonObject payload = base;
         payload.raw("unit", unit_json.line())
             .str("measures_in", "m")
-            .str("frame", (axes.identity() && scale == 1.0) ? "file" : "part")
+            .str("frame", part_frame_is_the_file ? "file" : "part")
             .str("gate", "not_checked")
             .str("depth", "fast")
             .str("occt", info->occt)
@@ -541,7 +549,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     }
     for (MeshObject& o : objects) {
         if (!o.mesh) continue;
-        auto moved = transform_mesh(o.mesh, axes, scale);
+        auto moved = transform_mesh(o.mesh, axes, scale, origin.value_or(glm::dvec3(0.0)) * mesh_unit_scale(o.unit));
         if (!moved) return fail(moved.error(), refused);
         o.mesh = *moved;
     }
@@ -592,7 +600,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         JsonObject payload = base;
         payload.raw("unit", unit_json.line())
             .str("measures_in", used ? "m" : "file")
-            .str("frame", (axes.identity() && scale == 1.0) ? "file" : "part")
+            .str("frame", part_frame_is_the_file ? "file" : "part")
             .str("gate", refused_count > 0 ? "refused" : "passed")
             .str("depth", is_step ? "deep" : "full")
             .raw("objects", "[" + list + "]");
