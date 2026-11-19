@@ -14,8 +14,9 @@
 //                 objects (part_meshes: `role: solid`) is one TENSOR record per object, by the kit constants' own method: TriangleMesh::mass_properties()
 //                 at a uniform density `rho = part mass / the sum of its solid objects' volumes`, mass rho V at the centroid, the tensor rho I turned by
 //                 the object's pose. A part with `shapes` and no meshes is its uniform boxes (the shapes are the stand-ins of a part with meshes, and
-//                 meshes win: THE RULE of the library contract); a part with neither is a point mass. The motor, ESC and pack blocks carry mass 0 (their
-//                 parts' records are the mass); the propeller's mass is its block's, a thin disc on every hub;
+//                 meshes win: THE RULE of the library contract); a part with neither is a point mass. A propeller is a thin disc of its radius about its spin axis
+//                 at its part's pose (the kit constants' own: the table puts its mass at the part's origin, not at the actuator disc). The motor, ESC,
+//                 pack and propeller blocks carry mass 0 (their parts' records are the mass);
 //   4. blocks     motor, prop, ESC and battery from the parts' `spec:` blocks (part_spec.hpp), `kv` in rpm/V; the rotors from the frame's motor install
 //                 points (spin) and each prop's `disc` point (the hub: the actuator disc), thrust along the rotor frame's +Y.
 //                 A part is authored in the axes of its own file (+Y up, as the kit's CAD and glTF), so a prop's thrust is its own +Y; the frame is placed

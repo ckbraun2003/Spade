@@ -221,10 +221,28 @@ LibraryResult<CompiledDrone> compile_drone(const LibrarySet& set, std::string_vi
     spec.name = drone.local_id;
     spec.drag.push_back(*options.drag);
 
-    // the mass records: every part but a propeller (its mass is its block's, on the hub)
+    // the mass records: every part. A propeller is a thin disc of its radius about its spin axis (+Y), at its part's pose (the kit constants' own: its mass
+    // is where the table puts the propeller, the part's origin, not on the hub), so the block's mass is 0
     for (const PartsMapSlot& slot : drone.parts_map) {
         const PartData& part = parts.at(slot.part);
-        if (part.entry->part_kind == "prop") continue;
+        if (part.entry->part_kind == "prop") {
+            const PropPart* p = spec_block<PropPart>(part);
+            if (p == nullptr || !(p->block.diameter > 0.0)) {
+                return std::unexpected(refuse("invalid_entry", "a propeller part needs a prop spec with a diameter", part.entry, "spec"));
+            }
+            if (part.mass <= 0.0) return std::unexpected(refuse("invalid_entry", "the propeller has no mass_properties.mass above 0", part.entry, "mass_properties.mass"));
+            const double radius = 0.5 * p->block.diameter;
+            PartInertia disc;
+            disc.mass = part.mass;
+            disc.position = to_spade(placed.at(slot.slot).p);
+            disc.orientation = to_spade(placed.at(slot.slot).q);
+            disc.shape = vehicles::PartShape::tensor;
+            disc.tensor[0][0] = 0.25 * part.mass * radius * radius;
+            disc.tensor[1][1] = 0.5 * part.mass * radius * radius;
+            disc.tensor[2][2] = 0.25 * part.mass * radius * radius;
+            spec.parts.push_back(disc);
+            continue;
+        }
         LibraryResult<void> ok = add_records(part, placed.at(slot.slot), spec.parts);
         if (!ok) return std::unexpected(ok.error());
     }
@@ -244,7 +262,7 @@ LibraryResult<CompiledDrone> compile_drone(const LibrarySet& set, std::string_vi
         if (!have_prop) {
             if (const PropPart* p = spec_block<PropPart>(part)) {
                 spec.prop = p->block;
-                spec.prop.mass = part.mass;
+                spec.prop.mass = 0.0;  // the propeller's mass is its disc record's (above)
                 spec.prop.shape.reset();
                 have_prop = true;
             }
