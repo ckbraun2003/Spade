@@ -129,6 +129,22 @@ struct TracerState {
 // refuses them until its pass lands (plan step 7).
 // ---------------------------------------------------------------------------
 
+// D182 S1 (KAT's drawing spec, P1; the lead approved the header, 2026-11-18). How a capsule polyline takes its colour and alpha:
+//   as_before  today's rule: the segment's colour is the mean of its two ends' (the float mean, then one byte), the same all along it; alphas, if any,
+//              are interpolated along the segment.
+//   gradient   the colour AND the alpha are interpolated along the segment, end to end.
+//   flat_mean  both channels' mean in WHOLE 8-bit channels, (a + b + 1) / 2, the same all along the segment: a stroke of one flat colour that is
+//              exactly what a host's own 8-bit mean would be.
+enum class LineShading : uint8_t { as_before = 0, gradient, flat_mean };
+
+// How a polyline ENDS (its two ends; the joins between its segments stay round). round: the capsule's half-disc, as before. flat: it stops square at the
+// end point (a pixel whose centre is past the end is not drawn, with half a pixel of anti-aliasing at the edge). A polyline with a flat cap draws no glow
+// (the glow is a round halo).
+enum class LineCap : uint8_t { round = 0, flat };
+
+// One scene draws at most this many polyline vertices in all (KAT's host total); render() refuses more by name (validate_flow_line_budget).
+inline constexpr uint32_t kMaxFlowLineVertices = 262144u;
+
 struct FlowPolyline {
     std::vector<glm::vec3> points;
     std::vector<glm::vec3> colours;  // one per point, in [0, 1]
@@ -136,11 +152,22 @@ struct FlowPolyline {
     // width, and 0 there is the one-pixel line, byte for byte; above 0 it is drawn as a capsule of this width
     // (FlowLineStyle, below) on both backends, whatever the scene's width. The glow stays the scene's.
     float width_px = 0.0f;  // 0, or 0.5 to 64
-    // PER-POINT ALPHA (the lead, 2026-11-17; GL only). Empty: every point is opaque, byte for byte as before. Else one
+    // PER-POINT ALPHA (the lead, 2026-11-17). Empty: every point is opaque, byte for byte as before. Else one
     // per point, each 0 to 1: the capsule's coverage and glow are multiplied by the alpha interpolated along each segment,
     // so a streak fades from tail to head and a streamline fades by transparency, not toward black. It needs a capsule
-    // (an effective width above 0). The CPU renderer refuses it by name.
+    // (an effective width above 0). BOTH backends draw it (D182 S1; the CPU refused it before).
     std::vector<float> alphas{};
+    // D182 S1. All of these are capsule looks, so a polyline whose effective width is 0 (the one-pixel line) must leave them at their defaults, or it is
+    // refused by name; the defaults draw exactly what was drawn before.
+    LineShading shading = LineShading::as_before;
+    LineCap cap = LineCap::round;
+    // false: drawn over the frame whatever is nearer, in a last pass in submission order, reading no depth and writing none.
+    bool depth_test = true;
+    // false: a hard edge, a pixel is covered (coverage 1) when its coverage is 0.5 or more and not otherwise, and no glow is drawn.
+    bool aa = true;
+    // The slots this polyline is drawn in: it draws iff (slots >> RenderOptions::slot) & 1. Every slot by default. One scene can then hold lines for
+    // several cameras (a view's own overlays) and each render picks its own. Applies to the one-pixel line too.
+    uint32_t slots = 0xFFFFFFFFu;
 };
 
 struct FlowPoints {
@@ -191,11 +218,16 @@ struct FlowLineStyle {
 // size outside 1 to 16.
 [[nodiscard]] Result<void> validate_flow_polyline(const FlowPolyline& line);
 
-// validate_flow_polyline(), and: alphas need a capsule, so a polyline with alphas whose effective width (its own, else the
-// style's) is 0 is refused, naming the width.
-[[nodiscard]] Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style);
+// validate_flow_polyline(), and: alphas and the capsule looks (shading, cap, depth_test, aa) need a capsule, so a polyline that has them whose effective
+// width (its own, else the style's) is 0 is refused, naming the width; and the width drawn is the effective width times `ui_scale`
+// (RenderOptions::ui_scale), which must not exceed 64 px, refused by name.
+[[nodiscard]] Result<void> validate_flow_line_draw(const FlowPolyline& line, const FlowLineStyle& style, float ui_scale = 1.0f);
 
-// Why the CPU renderer cannot draw these lines: additive blending or per-point alpha is GL's alone. "" when it can.
+// One scene's polylines together: at most kMaxFlowLineVertices points, else invalid_argument,
+// "flow lines: <n> vertices exceed the 262144 one scene draws; draw fewer or shorter lines".
+[[nodiscard]] Result<void> validate_flow_line_budget(std::span<const FlowPolyline> lines);
+
+// Why the CPU renderer cannot draw these lines: additive blending is GL's alone (per-point alpha is drawn by both since D182 S1). "" when it can.
 [[nodiscard]] std::string flow_lines_gl_only_reason(std::span<const FlowPolyline> lines, const FlowLineStyle& style);
 [[nodiscard]] Result<void> validate_flow_points(const FlowPoints& points);
 

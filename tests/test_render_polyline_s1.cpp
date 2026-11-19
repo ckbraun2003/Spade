@@ -173,12 +173,18 @@ TEST(RenderPolylineS1, DepthTestFalseDrawsOverNearerGeometryAndWritesNoDepth) {
     far_red.depth_test = false;
     const Frame over = draw(with_lines(3.0f, {near_green, far_red}));
     EXPECT_EQ(over.rgb(16, 16), glm::ivec3(200, 0, 0)) << "no depth test: the red is painted over, submitted later";
-    // and it writes no depth: a farther line drawn after it, depth-tested, still shows over it
+    // and it writes no depth: a farther one-pixel line (drawn after the capsules, depth-tested) still shows over the untested near capsule
     FlowPolyline near_green_untested = horizontal(kGreen, kGreen, 1.0f);
+    near_green_untested.width_px = 3.0f;
     near_green_untested.depth_test = false;
-    FlowPolyline far_red_tested = horizontal(kRed, kRed, -1.0f);
-    const Frame none = draw(with_lines(3.0f, {near_green_untested, far_red_tested}));
+    FlowPolyline far_red_thin = horizontal(kRed, kRed, -1.0f);  // width 0 and the scene's width 0: the one-pixel line
+    RenderScene scene = black_scene();
+    scene.flow_polylines = {near_green_untested, far_red_thin};
+    const Frame none = draw(scene);
     EXPECT_EQ(none.rgb(16, 16), glm::ivec3(200, 0, 0)) << "the untested green left no depth for the red to lose to";
+    near_green_untested.depth_test = true;
+    scene.flow_polylines = {near_green_untested, far_red_thin};
+    EXPECT_EQ(draw(scene).rgb(16, 16), glm::ivec3(0, 200, 0)) << "a tested near green does write depth, and the red loses";
 }
 
 TEST(RenderPolylineS1, AaFalseIsAHardEdgeAtHalfCoverage) {
