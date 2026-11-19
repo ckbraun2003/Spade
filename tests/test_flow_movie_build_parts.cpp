@@ -1121,8 +1121,9 @@ TEST(FlowMovieBuildParts, TheChordADrawGetsComesFromTheLinesFileOnlyForADiscWith
 
 // THE CLIP RECORD NAMES WHAT THE PICTURE DOES NOT SHOW AS IT IS (the lead, 2026-11-18): the rotor discs are drawn at a gain, so the record says so.
 TEST(FlowMovieBuildParts, TheRecordSaysHowTheRotorDiscsAreDrawn) {
-    flow_movie::PropBlur gain;  // the defaults: a gain of 6
-    EXPECT_EQ(flow_movie::prop_blur_note(gain), "rotor discs drawn at 6 times the blades' time-averaged coverage so they show over the air");
+    flow_movie::PropBlur gain;  // the defaults: a gain of 3 (the lead, 2026-11-18: at 6 the disc roots read white-hot in the three-quarter view)
+    EXPECT_FLOAT_EQ(gain.opacity, 3.0f);
+    EXPECT_EQ(flow_movie::prop_blur_note(gain), "rotor discs drawn at 3 times the blades' time-averaged coverage so they show over the air");
     flow_movie::PropBlur exact;
     exact.opacity = 1.0f;
     EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn at the blades' time-averaged coverage");
