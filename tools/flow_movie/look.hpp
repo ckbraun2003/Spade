@@ -35,15 +35,29 @@
 
 namespace flow_movie {
 
+// The cloud thinned near the drone (--q-look thin_r, thin_floor): the vorticity within `radius` metres of `centre` is scaled by a
+// factor from `floor` at the centre back to 1 at `radius` (a smoothstep), so the airframe reads through the haze. Off at radius 0.
+struct CloudThin {
+    glm::vec3 centre{0.0f};
+    float radius = 0.0f;
+    float floor = 0.3f;
+    [[nodiscard]] bool operator==(const CloudThin&) const noexcept = default;
+    [[nodiscard]] bool on() const noexcept { return radius > 0.0f; }
+};
+
 struct Look {
     float l2_level = 0.0f;      // 0: the case's own relative level
     bool l2_smooth = false;
     uint32_t min_cells = 0;     // 0: no cull
     uint32_t mean_frames = 1;   // 1: the frame alone
     WakeFade fade;              // the soft edge of a drawn wake: the drone's framing sets it (not an option)
+    CloudThin thin;             // the vorticity thinned near the drone (--q-look): the cloud look's
+
+    // Every field, so a test compares a look whole and a field added later is covered without editing it.
+    [[nodiscard]] bool operator==(const Look&) const noexcept = default;
 
     [[nodiscard]] bool any() const noexcept {
-        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on();
+        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on();
     }
 };
 
@@ -395,12 +409,35 @@ inline void fade_wake_edges(spade::FlowVolume& v, const WakeFade& fade) {
     refresh_velocity_range(v);
 }
 
+// The vorticity channel (|omega|, the s texture's lane 1) scaled near `thin.centre`; the velocity, the dye, the other channels and the
+// header (the colours keep the unthinned frame's range) are not touched, and a no-data half is left as it is.
+inline void thin_vorticity(spade::FlowVolume& v, const CloudThin& thin) {
+    if (!thin.on()) return;
+    const spade::FlowVolumeHeader& h = v.header;
+    constexpr std::size_t lane = spade::kFlowVorticity % spade::kFlowHalvesPerCell;
+    for (uint32_t k = 0; k < h.nz; ++k) {
+        for (uint32_t j = 0; j < h.ny; ++j) {
+            for (uint32_t i = 0; i < h.nx; ++i) {
+                const glm::vec3 at = h.origin + (glm::vec3(static_cast<float>(i), static_cast<float>(j), static_cast<float>(k)) + 0.5f) * h.cell;
+                const float x = std::min(glm::length(at - thin.centre) / thin.radius, 1.0f);
+                if (x >= 1.0f) continue;
+                const float f = thin.floor + (1.0f - thin.floor) * (x * x * (3.0f - 2.0f * x));
+                const std::size_t index = spade::flow_cell_index(h, i, j, k) * spade::kFlowHalvesPerCell + lane;
+                const uint16_t half = v.s[index];
+                if (look_detail::no_data(half)) continue;
+                v.s[index] = spade::fp16::from_f32(spade::fp16::to_f32(half) * f).bits;
+            }
+        }
+    }
+}
+
 // What a look does to a frame's fields once its velocity is the mean (or the frame's own): lambda2-hat smoothed, its small
 // pieces culled, the wake faded at its edges, in that order. One function, so the drawing and its test cannot part ways.
 inline void finish_look(const Look& look, spade::FlowVolume& volume) {
     if (look.l2_smooth) smooth_lambda2(volume);
     if (look.min_cells > 0u) cull_small_vortices(volume, look.l2_level, look.min_cells);
     if (look.fade.on()) fade_wake_edges(volume, look.fade);
+    if (look.thin.on()) thin_vorticity(volume, look.thin);
 }
 
 // The caption's sentence: what the look did, in plain words ("" when it did nothing).
@@ -415,6 +452,10 @@ inline void finish_look(const Look& look, spade::FlowVolume& volume) {
     if (look.mean_frames > 1u) {
         add(std::format("velocity averaged over the {} frames ending at each (about {:g} ms of flow)", look.mean_frames,
                         frame_ms * look.mean_frames));
+    }
+    if (look.thin.on()) {
+        add(std::format("the air within {:.2f} m of the drone is drawn thinned so the drone shows; the field is unchanged (the vorticity drawn at {:g} of its value at the drone, full again at that radius)",
+                        look.thin.radius, look.thin.floor));
     }
     if (look.fade.on()) {
         std::string where;

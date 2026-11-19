@@ -153,7 +153,7 @@ parts:
     pose: {position: [0, 0.0379, 0], orientation: [1, 0, 0, 0]}
     material: plastic_black
     objects:
-      - {store_ref: {sha256: 6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb, file: PCB-PIXHAWK6C-F1.spmesh}, material: pcb}
+      - {store_ref: {sha256: 6102d3cd46d4dd539e6ba6a37e91567758bcb42b9920e0f01ceb2c86e78b74bb, file: PCB-PIXHAWK6C-F1.spmesh}, material: pcb_in_shadow}
       - {store_ref: {sha256: b46e9195617796641e590131d93d13bd4f88a790693080820b352f0da3cf4756, file: MIANKE-PIXHAWK6C-LV-C1.spmesh}}
       - {store_ref: {sha256: 0b3807d1ea295a84b5293d23b74430ba3a5d3188a689dee54f554e466a260d32, file: DIKE-PIXHAWK6C-LV-C1.spmesh}}
       - {store_ref: {sha256: 278c17f49e9442bee9db096b6735dafd1febf13b4bec15ee63e3562fd7256c4e, file: IMU-PIXHAWK6C.spmesh}, material: pcb}

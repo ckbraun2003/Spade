@@ -283,6 +283,7 @@ add_executable(spade_tests
     test_flow_movie_web.cpp
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
+    test_flow_movie_build_parts.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
     test_flow_movie_box_down.cpp

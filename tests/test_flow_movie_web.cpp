@@ -25,11 +25,14 @@
 #include <string>
 #include <vector>
 
+#include "../tools/flow_movie/look.hpp"
+#include "../tools/flow_movie/q_look.hpp"
 #include "../tools/flow_movie/sgs_note.hpp"
 #include "../tools/flow_movie/web_masters.hpp"
 #include "render/raster_cpu.hpp"
 #include "render/scene.hpp"
 #include "render/target.hpp"
+#include "../tools/flow_movie/lines.hpp"
 
 namespace {
 
@@ -666,5 +669,279 @@ TEST(FlowMovieWeb, ADiagnosticClipSizeIsSixteenByNineNoLargerThanTheMasterAndNam
     EXPECT_EQ(web::clip_label(1920u, 1080u), "diag-1920x1080");
     EXPECT_NE(web::web_file_name("S8", "rotor-wake-volume", web::clip_label(1920u, 1080u), "mp4"),
               web::web_file_name("S8", "rotor-wake-volume", web::clip_label(0u, 0u), "mp4"));
+}
+
+// --lines (the lead, 2026-11-17; Physics' web-lines): the rotors of a web D1 clip as ACTUATOR LINES, one per blade, in place of discs.
+// The blade and its polar come from a prop part file under the assets (library/parts/*.prop.yaml, scene::line_propeller); a line run
+// is another simulation, so its cache folder has its own name (a lines cache must never be read as a disc cache or the reverse).
+TEST(FlowMovieWeb, ALinesRunKeepsItsOwnCacheFolderAndOnlyTheD1ClipsTakeLines) {
+    EXPECT_EQ(web::lines_stem_suffix(false), "");
+    EXPECT_EQ(web::lines_stem_suffix(true), "-lines");
+    EXPECT_EQ(web::lines_refusal(true), "");
+    const std::string why = web::lines_refusal(false);
+    EXPECT_NE(why.find("--lines"), std::string::npos) << why;
+    EXPECT_NE(why.find("D1"), std::string::npos) << why;
+}
+
+TEST(FlowMovieWeb, APropPartFileIsTheLinesBladeAndARefusedFileIsNamed) {
+    const std::filesystem::path assets(SPADE_ASSETS_DIR);
+    const auto lines = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_apce_10x5.prop.yaml", 8u);
+    ASSERT_TRUE(lines.has_value()) << lines.error().context;
+    EXPECT_EQ(lines->blade.blades, 2u);
+    EXPECT_NEAR(lines->blade.radius, 0.1194f, 0.002f) << "the file's geometry is UIUC's at 9.4 in (the 10x5 is the nominal size), so R = 0.1194 m";
+    EXPECT_EQ(lines->n_sub, 8u);
+    EXPECT_FALSE(lines->blade.stations.empty());
+    const auto other = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_mit_5x4.prop.yaml", 4u);
+    ASSERT_TRUE(other.has_value()) << other.error().context;
+    EXPECT_EQ(other->n_sub, 4u);
+    EXPECT_LT(other->blade.radius, lines->blade.radius) << "the 5 inch one is smaller";
+    const auto missing = flow_movie::live_lines_from_prop_file(assets / "library/parts/no_such.prop.yaml", 8u);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_NE(missing.error().context.find("no_such.prop.yaml"), std::string::npos) << missing.error().context;
+    const auto motor = flow_movie::live_lines_from_prop_file(assets / "library/parts/iris_920kv.motor.yaml", 8u);
+    ASSERT_FALSE(motor.has_value()) << "a motor is not a propeller";
+    EXPECT_NE(motor.error().context.find("iris_920kv.motor.yaml"), std::string::npos) << motor.error().context;
+    const auto no_sub = flow_movie::live_lines_from_prop_file(assets / "library/parts/uiuc_apce_10x5.prop.yaml", 0u);
+    ASSERT_FALSE(no_sub.has_value());
+    EXPECT_NE(no_sub.error().context.find("n_sub"), std::string::npos) << no_sub.error().context;
+}
+
+// CAPTIONS NAME NO BRANDS (Oversight, 2026-11-17, via the lead): the command a caption shows has --visual-mesh's and --lines' file
+// arguments replaced by plain words, so neither a model's name, a propeller maker nor a path under a vendor's folder is printed; every
+// other word of the command stays as it was. The source, the licence and the copyright notice belong in the clip's .md record.
+TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile) {
+    const std::string command =
+        "flow_movie --web S8 --drone phantom3_class --lines library/parts/uiuc_apce_10x5.prop.yaml "
+        "--visual-mesh C:/Users/Someone/KAT/content/meshes/drone/x500.gltf --nasa --q-look l1=0.5";
+    const std::string shown = web::command_in_words(command, web::default_drone());
+    for (const char* brand : {"x500", "X500", "apce", "uiuc", "UIUC", "KAT", "gltf", "Someone"}) {
+        EXPECT_EQ(shown.find(brand), std::string::npos) << brand << " in: " << shown;
+    }
+    EXPECT_NE(shown.find("--visual-mesh open-source-quadcopter-model"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--lines measured-propeller-polar"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--web S8"), std::string::npos) << "the rest of the command is as given";
+    EXPECT_NE(shown.find("--nasa --q-look l1=0.5"), std::string::npos) << shown;
+    const std::string quoted = web::command_in_words("flow_movie --visual-mesh \"C:/a b/x500.gltf\" --nasa", web::default_drone());
+    EXPECT_EQ(quoted.find("x500"), std::string::npos) << quoted;
+    EXPECT_EQ(quoted.find("a b"), std::string::npos) << "a quoted path with a space is replaced whole: " << quoted;
+    EXPECT_NE(quoted.find("--nasa"), std::string::npos) << quoted;
+    EXPECT_EQ(web::command_in_words("flow_movie --lines", web::default_drone()), "flow_movie --lines") << "a flag with no value is left alone";
+}
+
+// --cache-dir DIR (a still redrawn from a frame someone else's run wrote, as Physics' 2 mm frame): the web run reads DIR instead of its
+// own cache folder and must never simulate or write there. So it is refused unless the run is a still-only redraw of a named still
+// (--web-still, --still-frame N) whose frame file is already in DIR; each missing piece is named.
+TEST(FlowMovieWeb, ACacheDirIsOnlyForAStillOnlyRedrawOfAFrameThatIsThere) {
+    EXPECT_EQ(web::cache_dir_refusal("", true, true, true), "") << "no --cache-dir: nothing to refuse";
+    EXPECT_EQ(web::cache_dir_refusal("", false, false, false), "");
+    EXPECT_EQ(web::cache_dir_refusal("D", true, true, true), "");
+    for (const std::string& why : {web::cache_dir_refusal("D", false, true, true), web::cache_dir_refusal("D", true, false, true),
+                                   web::cache_dir_refusal("D", true, true, false)}) {
+        EXPECT_NE(why.find("--cache-dir"), std::string::npos) << why;
+    }
+    EXPECT_NE(web::cache_dir_refusal("D", false, true, true).find("--web-still"), std::string::npos);
+    EXPECT_NE(web::cache_dir_refusal("D", true, false, true).find("--still-frame"), std::string::npos);
+    EXPECT_NE(web::cache_dir_refusal("D", true, true, false).find("D"), std::string::npos) << "the folder is named";
+    EXPECT_NE(web::cache_dir_refusal("D", true, true, false).find("never simulates"), std::string::npos);
+}
+
+// --loop-blend S (Oversight via the lead, 2026-11-17: the site loops each clip and the flow does not repeat, so S8 jumped every 10 s):
+// the clip renders E = round(S x 30) frames PAST its end; its first E frames are a crossfade from the continuation (frame N + j) to
+// the clip's own start (frame j), so the last frame N - 1 runs into a head that begins as frame N would have, and ends as frame E, the
+// frame after the blend. The weight of the start in frame j is a smoothstep of (j + 1) / (E + 1): strictly between 0 and 1, rising,
+// 0.5 in the middle. The caption names the method.
+TEST(FlowMovieWeb, ALoopBlendIsAWholeNumberOfFramesLessThanHalfTheClipAndRendersThatManyExtra) {
+    EXPECT_EQ(web::loop_blend_frames(1.0, 300u), 30u);
+    EXPECT_EQ(web::loop_blend_frames(0.5, 300u), 15u);
+    EXPECT_EQ(web::loop_blend_frames(0.0, 300u), 0u) << "off";
+    EXPECT_EQ(web::loop_blend_refusal(1.0, 300u), "");
+    EXPECT_EQ(web::loop_blend_refusal(0.0, 300u), "");
+    for (const auto& [seconds, frames] : std::vector<std::pair<double, uint32_t>>{{-1.0, 300u}, {5.1, 300u}, {10.0, 300u}, {0.01, 300u}, {1.0, 40u}}) {
+        const std::string why = web::loop_blend_refusal(seconds, frames);
+        EXPECT_NE(why.find("--loop-blend"), std::string::npos) << seconds << " of " << frames << ": " << why;
+    }
+    EXPECT_EQ(web::loop_blend_total_frames(300u, 30u), 330u) << "the clip's frames and the blend's extra";
+    EXPECT_EQ(web::loop_blend_total_frames(300u, 0u), 300u);
+}
+
+TEST(FlowMovieWeb, TheLoopBlendWeightRisesStrictlyFromNearNothingToNearOneAndIsHalfInTheMiddle) {
+    const uint32_t e = 30;
+    float previous = 0.0f;
+    for (uint32_t j = 0; j < e; ++j) {
+        const float w = web::loop_blend_weight(j, e);
+        EXPECT_GT(w, 0.0f) << j;
+        EXPECT_LT(w, 1.0f) << j;
+        EXPECT_GT(w, previous) << "strictly rising at " << j;
+        previous = w;
+    }
+    EXPECT_LT(web::loop_blend_weight(0, e), 0.01f) << "the first blended frame is almost the continuation";
+    EXPECT_GT(web::loop_blend_weight(e - 1, e), 0.99f) << "the last is almost the start";
+    EXPECT_NEAR(web::loop_blend_weight(14, 29), 0.5f, 0.02f) << "the middle of an odd count";
+    EXPECT_NEAR(web::loop_blend_weight(0, 1), 0.5f, 1e-6f) << "one frame: halfway";
+}
+
+TEST(FlowMovieWeb, ABlendedPixelIsTheWeightedMixRoundedAndWeightsOfZeroAndOneKeepTheEnds) {
+    const std::vector<uint8_t> tail = {0, 100, 200, 255, 10, 20, 30, 255};   // two RGBA pixels
+    const std::vector<uint8_t> head = {100, 200, 0, 255, 250, 20, 30, 255};
+    auto mixed = web::blend_rgba(tail, head, 0.25f);
+    ASSERT_EQ(mixed.size(), tail.size());
+    EXPECT_EQ(mixed[0], 25) << "0.75 x 0 + 0.25 x 100";
+    EXPECT_EQ(mixed[1], 125);
+    EXPECT_EQ(mixed[2], 150);
+    EXPECT_EQ(mixed[3], 255) << "alpha is kept";
+    EXPECT_EQ(mixed[4], 70);
+    EXPECT_EQ(web::blend_rgba(tail, head, 0.0f), tail);
+    EXPECT_EQ(web::blend_rgba(tail, head, 1.0f), head);
+    EXPECT_TRUE(web::blend_rgba(tail, std::vector<uint8_t>{1, 2, 3}, 0.5f).empty()) << "frames of different sizes are not blended";
+}
+
+TEST(FlowMovieWeb, ALoopBlendedCaptionNamesTheMethod) {
+    EXPECT_EQ(web::loop_blend_caption(0u), "");
+    const std::string said = web::loop_blend_caption(30u);
+    EXPECT_NE(said.find("crossfade"), std::string::npos) << said;
+    EXPECT_NE(said.find("1 s"), std::string::npos) << said;
+}
+
+// THE OPEN-SOURCE QUADCOPTER (the lead, 2026-11-18, L86k/L88l): the website clips' drone is the X500's flow model (Physics' tool data,
+// tools/flow_movie/data/x500, not the default library), named "x500" on the command line and in no caption: the clip says "an open-source
+// quadcopter". It is a 13-inch-rotor drone, so its shot is wider than the camera quadcopter's; its model file is reachable from the assets
+// directory like the library's; and the parts-build options (--build-parts, --part-store) are words in a caption, never paths.
+TEST(FlowMovieWeb, TheOpenSourceQuadcopterIsADroneOfTheClipsWhoseWordsNameNoBrand) {
+    const web::Drone* drone = web::find_drone("x500");
+    ASSERT_NE(drone, nullptr);
+    EXPECT_EQ(web::find_drone("open-source-quadcopter"), drone) << "the caption's alias names the same drone";
+    EXPECT_EQ(web::drone_stem_suffix(*drone), "-x500");
+    for (const std::string& words : {std::string(drone->alias), std::string(drone->title_noun), std::string(drone->the_noun),
+                                     std::string(drone->description)}) {
+        for (const char* brand : {"x500", "X500", "PX4", "px4", "Holybro", "holybro", "KAT", "Pixhawk", "UIUC", "APC"}) {
+            EXPECT_EQ(words.find(brand), std::string::npos) << "'" << words << "' carries " << brand;
+        }
+    }
+    EXPECT_NE(std::string(drone->title_noun).find("quadcopter"), std::string::npos);
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / drone->model_file))
+        << "the model file is found from the assets directory: " << drone->model_file;
+    const web::Framing& x = drone->framing;
+    const web::Framing& p = web::find_drone("phantom3_class")->framing;
+    EXPECT_GT(x.subject_m, p.subject_m) << "13-inch rotors reach 0.35 m from the axis: a wider shot";
+    EXPECT_GT(x.push_close_m, p.push_close_m);
+    EXPECT_GT(x.push_wide_m, x.push_close_m);
+    EXPECT_LE(x.elevation_deg, 45.0f);
+}
+
+TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
+    const web::Drone* found = web::find_drone("x500");
+    ASSERT_NE(found, nullptr);
+    const web::Drone& drone = *found;
+    const std::string said = web::command_in_words(
+        "flow_movie --web S8 --drone x500 --build-parts C:/Users/someone/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
+        "\"C:/Users/someone/Desktop/Projects/part-store\" --nasa-cloud",
+        drone);
+    EXPECT_EQ(said.find("x500"), std::string::npos) << said;
+    EXPECT_EQ(said.find("KAT"), std::string::npos) << said;
+    EXPECT_EQ(said.find("part-store\""), std::string::npos) << said;
+    EXPECT_EQ(said.find("someone"), std::string::npos) << said;
+    EXPECT_NE(said.find("--drone open-source-quadcopter"), std::string::npos) << said;
+    EXPECT_NE(said.find("--build-parts open-source-quadcopter-parts-table"), std::string::npos) << said;
+    EXPECT_NE(said.find("--part-store part-store"), std::string::npos) << said;
+    EXPECT_NE(said.find("--nasa-cloud"), std::string::npos) << "the rest of the command is kept: " << said;
+    EXPECT_EQ(web::command_in_words("flow_movie --web S8 --build-parts", drone), "flow_movie --web S8 --build-parts") << "no value: left alone";
+}
+
+// THE SEAM (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy of the look while the film's look state read the
+// options' copy, and never reached a frame): a web run's look is made ONCE, by web_look(), and main assigns that one value to both
+// opt.look (the film's look state) and plan.look (the film's setup). So what a look option says on the command line is what a frame is
+// drawn with, for every field of Look: web_look keeps every one the options set (compared whole, so a field added later is covered
+// without editing this test), adds the drone's wake fade only where it applies, and adds the cloud's thinning round the held body
+// only when the nasa look asks for it.
+TEST(FlowMovieWeb, AWebRunsLookKeepsEveryOptionTheCommandLineSetAndAddsOnlyTheFadeAndTheThinning) {
+    const web::Drone& drone = *web::find_drone("x500");
+    flow_movie::Look set;
+    set.l2_level = 3.5f;
+    set.l2_smooth = true;
+    set.min_cells = 7u;
+    set.mean_frames = 4u;
+    ASSERT_TRUE(set.any());
+
+    // nothing applies: the options' look, whole
+    EXPECT_EQ(web::web_look(set, drone, false, nullptr), set);
+
+    // the fade applies (S2 and S8 without a particle or nasa look): the drone's fade and nothing else changes
+    flow_movie::Look faded = set;
+    faded.fade = drone.framing.fade();
+    ASSERT_TRUE(faded.fade.on());
+    EXPECT_EQ(web::web_look(set, drone, true, nullptr), faded);
+
+    // the nasa look with a thinning: the held body's centre (the drone's own height), the radius and the floor; the rest as set
+    // thin_r is a multiple of the drone's own reach (Drone::reach_m, the farthest point of its rotors from the axis): the X500 reaches
+    // 0.37 m and the camera quadcopter 0.30, so the same 0.74 thins a larger ball (the lead, 2026-11-18)
+    flow_movie::QLook q;
+    q.thin_r = 0.74f;
+    q.thin_floor = 0.05f;
+    flow_movie::Look thinned = set;
+    thinned.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
+    thinned.thin.radius = 0.74f * drone.reach_m;
+    thinned.thin.floor = 0.05f;
+    EXPECT_EQ(web::web_look(set, drone, false, &q), thinned);
+    EXPECT_NEAR(web::web_look(set, drone, false, &q).thin.centre.y, 0.014f, 1e-7f) << "the X500's body is 0.014 m up in its box";
+    const web::Drone& small = *web::find_drone("phantom3_class");
+    EXPECT_NEAR(web::web_look(set, small, false, &q).thin.radius, 0.74f * small.reach_m, 1e-7f);
+    EXPECT_GT(web::web_look(set, drone, false, &q).thin.radius, 1.2f * web::web_look(set, small, false, &q).thin.radius)
+        << "the bigger drone's thinned ball is bigger";
+
+    // a nasa look without a thinning leaves the thinning off
+    const flow_movie::QLook none;
+    EXPECT_EQ(web::web_look(set, drone, false, &none), set);
+    EXPECT_FALSE(web::web_look(set, drone, false, &none).thin.on());
+
+    // an option's own fade is not undone by a run that adds none
+    flow_movie::Look own = set;
+    own.fade = drone.framing.fade();
+    EXPECT_EQ(web::web_look(own, drone, false, nullptr), own);
+}
+
+// THE WAKE FADE IN THE CLOUD LOOK (the lead, 2026-11-18: the flat cut at the box's top and sides): the soft edge of a drawn wake is for S2
+// and S8, and for the nasa CLOUD look (a soft volume); not for S1, the particle looks, or the nasa Q SURFACES (a faded surface vanishes).
+TEST(FlowMovieWeb, TheWakeFadeAppliesToTheCloudLookAndNotToTheQSurfacesOrTheParticles) {
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, false, false)) << "the plain S8";
+    EXPECT_TRUE(web::web_fade_applies("S2", false, false, false, false));
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, true, true)) << "the nasa cloud";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, true, false)) << "the nasa Q surfaces";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, true, false, false)) << "the particles";
+    EXPECT_FALSE(web::web_fade_applies("S8", true, false, false, false)) << "the particle preview";
+    EXPECT_FALSE(web::web_fade_applies("S1", false, false, false, false));
+    EXPECT_FALSE(web::web_fade_applies("S1", false, false, true, true));
+}
+
+// THE X500's SHOT (the lead, 2026-11-18): the drone fills about a third of the height, looked down on at about 20 degrees, the wake's bell in frame.
+TEST(FlowMovieWeb, TheOpenSourceQuadcoptersShotIsTightAndLooksDownAboutTwentyDegrees) {
+    const web::Framing& x = web::find_drone("x500")->framing;
+    EXPECT_NEAR(x.elevation_deg, 20.0f, 0.5f);
+    EXPECT_GE(x.subject_m, 0.36f);
+    EXPECT_LE(x.subject_m, 0.46f);
+    EXPECT_GT(x.aim_below_m, 0.0f);
+    EXPECT_GT(x.wake_fade_to_below_m, x.wake_fade_from_below_m) << "the wake fades going down, above the box's floor";
+    EXPECT_LT(x.wake_fade_to_below_m, 0.31f) << "the X500's box floor is 0.3135 m below the origin";
+}
+
+// A drone's REACH (the thinning radius is a multiple of it): the farthest point of its rotors from the vertical axis through its centre,
+// a rotor's hub distance plus its radius; the model's own proxy radius for the camera quadcopter (0.2963 m), the X500's 10 inch rotors
+// (R 0.127 m) at 0.174 m on each axis: 0.2461 + 0.127.
+TEST(FlowMovieWeb, ADronesReachIsItsFarthestRotorTipFromTheAxis) {
+    EXPECT_NEAR(web::find_drone("phantom3_class")->reach_m, 0.2963f, 2e-3f);
+    EXPECT_NEAR(web::find_drone("x500")->reach_m, 0.373f, 2e-3f);
+    EXPECT_GT(web::find_drone("x500")->reach_m, web::find_drone("phantom3_class")->reach_m);
+}
+
+// THE CAMERA'S ELEVATION (--elevation DEG, the web stills): the X500 shot looks down 20 degrees; a close-up of the boards on the top plate
+// (which way the controller, the computer and the GPS face) needs a higher camera. One number, whole, above 0 and at most 85 (a camera
+// straight overhead has no "up" for the orbit); nothing else is a camera.
+TEST(FlowMovieWeb, TheCameraElevationOptionTakesOneNumberAboveZeroAndAtMost85) {
+    ASSERT_TRUE(web::parse_elevation_deg("20").has_value());
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("20"), 20.0f);
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("62.5"), 62.5f);
+    EXPECT_FLOAT_EQ(*web::parse_elevation_deg("85"), 85.0f);
+    for (const char* bad : {"", "0", "-5", "86", "90", "1e1", "20deg", " 20", "twenty", "."}) {
+        EXPECT_FALSE(web::parse_elevation_deg(bad).has_value()) << "'" << bad << "'";
+    }
 }
 

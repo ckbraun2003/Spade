@@ -25,6 +25,8 @@
 
 #include <glm/glm.hpp>
 
+#include "look.hpp"
+#include "q_look.hpp"
 #include "render/scene.hpp"
 #include "wake_fade.hpp"
 
@@ -120,6 +122,29 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
     if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
     if (!(value >= 0.0f && value <= 1.0f)) return std::nullopt;
+    return value;
+}
+
+// --elevation DEG: how far above the drone the still's camera looks down from, in place of the drone's own framing (the X500's 20): a close-up of the
+// top plate's boards wants a higher camera. One whole number above 0 and at most 85 (straight overhead has no "up" for the orbit): no sign, no
+// blanks, no exponent, no trailing text. nullopt otherwise.
+[[nodiscard]] inline std::optional<float> parse_elevation_deg(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    bool digit = false, point = false;
+    for (const char c : text) {
+        if (c >= '0' && c <= '9') {
+            digit = true;
+        } else if (c == '.' && !point) {
+            point = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!digit) return std::nullopt;
+    float value = 0.0f;
+    const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
+    if (!(value > 0.0f && value <= 85.0f)) return std::nullopt;
     return value;
 }
 
@@ -247,10 +272,12 @@ struct Drone {
     std::string_view the_noun;
     std::string_view description;
     Framing framing;
+    float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
+    float reach_m = 0.30f;    // the farthest rotor tip from the vertical axis (the cloud's thinning radius is a multiple of it)
 };
 
-[[nodiscard]] inline const std::array<Drone, 2>& drones() {
-    static const std::array<Drone, 2> table{{
+[[nodiscard]] inline const std::array<Drone, 3>& drones() {
+    static const std::array<Drone, 3> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
@@ -260,7 +287,12 @@ struct Drone {
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
          // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
-         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}},
+         Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}, 0.004f, 0.2963f},  // its proxy radius
+        // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
+        // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
+        {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
+         "the open-source quadcopter", "a 2 kg open-source quadcopter with 13 inch rotors (published dimensions; the propeller is estimated)",
+         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
     }};
     return table;
 }
@@ -277,17 +309,128 @@ struct Drone {
 }
 
 // The command line as a caption may show it: the drone's library name replaced by its alias.
+// The file arguments of --visual-mesh, --lines, --build-parts and --part-store are replaced by plain words too (a model's name, a propeller maker and a vendor's
+// folder are brands, and captions name none; Oversight, 2026-11-17): the value after the flag, quoted or not, is the word.
 [[nodiscard]] inline std::string command_in_words(std::string command, const Drone& d) {
     const std::string from(d.library);
     for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
         command.replace(at, from.size(), d.alias);
     }
+    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", "open-source-quadcopter-model"},
+                                                                   {"--lines", "measured-propeller-polar"},
+                                                                   {"--build-parts", "open-source-quadcopter-parts-table"},
+                                                                   {"--part-store", "part-store"}};
+    for (const auto& [flag, word] : files) {
+        const std::string key = std::string(flag) + " ";
+        for (std::size_t at = command.find(key); at != std::string::npos; at = command.find(key, at + key.size() + word.size())) {
+            const std::size_t start = at + key.size();
+            if (start >= command.size() || command.compare(start, 2, "--") == 0) continue;  // no value: left alone
+            std::size_t end = 0;
+            if (command[start] == '"') {
+                const std::size_t close = command.find('"', start + 1);
+                end = close == std::string::npos ? command.size() : close + 1;
+            } else {
+                const std::size_t space = command.find(' ', start);
+                end = space == std::string::npos ? command.size() : space;
+            }
+            command.replace(start, end - start, word);
+        }
+    }
     return command;
+}
+
+// Whether a web run draws the drone's wake fade (the soft edge of a drawn wake, hiding the box's cut): S2 and S8, in the plain looks and
+// the nasa CLOUD (a soft volume); not for S1's lines, the particle looks, nor the nasa Q SURFACES (a faded surface vanishes).
+[[nodiscard]] inline bool web_fade_applies(std::string_view clip_id, bool particles_preview, bool particles, bool nasa, bool nasa_cloud) {
+    return (clip_id == "S2" || clip_id == "S8") && !particles_preview && !particles && (!nasa || nasa_cloud);
+}
+
+// A WEB RUN'S LOOK, made ONCE (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy while the film's look state read
+// the options' copy and it never reached a frame): the options' look whole, plus the drone's wake fade where it applies (S2 and S8 without
+// a particle or nasa look), plus the nasa cloud's thinning round the held body (the drone's own height) when `q` asks for one. main
+// assigns this one value to opt.look (the film's look state) and plan.look (the film's setup), so the two cannot differ.
+[[nodiscard]] inline Look web_look(Look from_options, const Drone& drone, bool fade_applies, const QLook* q) {
+    Look look = from_options;
+    if (fade_applies) look.fade = drone.framing.fade();
+    if (q != nullptr && q->thin_r > 0.0f) {
+        look.thin.centre = glm::vec3(0.0f, drone.body_y_m, 0.0f);
+        look.thin.radius = q->thin_r * drone.reach_m;  // a multiple of the drone's own reach: one value fits every drone
+        look.thin.floor = q->thin_floor;
+    }
+    return look;
+}
+
+// --loop-blend S (Oversight via the lead, 2026-11-17: the site loops each clip and the flow does not repeat): the clip renders E extra
+// frames past its end and its first E frames are a crossfade from the continuation (frame N + j) to its own start (frame j). E is S x
+// 30 rounded; the blend must be under half the clip, and a non-zero S that rounds to no frame is refused rather than ignored.
+[[nodiscard]] inline uint32_t loop_blend_frames(double seconds, uint32_t clip_frames) {
+    (void)clip_frames;
+    return seconds > 0.0 ? static_cast<uint32_t>(std::lround(seconds * kFps)) : 0u;
+}
+[[nodiscard]] inline std::string loop_blend_refusal(double seconds, uint32_t clip_frames) {
+    if (seconds == 0.0) return {};
+    if (!(seconds > 0.0)) return "--loop-blend takes a length in seconds above 0 (0 is off)";
+    const uint32_t e = loop_blend_frames(seconds, clip_frames);
+    if (e == 0u) return "--loop-blend rounds to no frame at " + std::to_string(static_cast<int>(kFps)) + " fps: give at least 0.02 s";
+    if (2u * e >= clip_frames) return "--loop-blend must be under half the clip (" + std::to_string(clip_frames) + " frames): " + std::to_string(e) + " is not";
+    return {};
+}
+[[nodiscard]] inline uint32_t loop_blend_total_frames(uint32_t clip_frames, uint32_t blend_frames) { return clip_frames + blend_frames; }
+
+// The start's weight in the blended frame j of E: a smoothstep of (j + 1) / (E + 1), so the first is almost the continuation and the last
+// almost the start (strictly between 0 and 1, rising).
+[[nodiscard]] inline float loop_blend_weight(uint32_t j, uint32_t blend_frames) {
+    const float x = static_cast<float>(j + 1u) / static_cast<float>(blend_frames + 1u);
+    return x * x * (3.0f - 2.0f * x);
+}
+
+// (1 - w) x tail + w x head, per byte, rounded; alpha (every fourth byte) is the tail's. Frames of different sizes give nothing.
+[[nodiscard]] inline std::vector<uint8_t> blend_rgba(const std::vector<uint8_t>& tail, const std::vector<uint8_t>& head, float w) {
+    if (tail.size() != head.size()) return {};
+    std::vector<uint8_t> out(tail.size());
+    for (std::size_t i = 0; i < tail.size(); ++i) {
+        if (i % 4u == 3u) {
+            out[i] = tail[i];
+            continue;
+        }
+        const float v = (1.0f - w) * static_cast<float>(tail[i]) + w * static_cast<float>(head[i]);
+        out[i] = static_cast<uint8_t>(std::lround(std::min(std::max(v, 0.0f), 255.0f)));
+    }
+    return out;
+}
+
+// The caption's sentence naming the method; "" without a blend.
+[[nodiscard]] inline std::string loop_blend_caption(uint32_t blend_frames) {
+    if (blend_frames == 0u) return {};
+    char length[32];
+    std::snprintf(length, sizeof length, "%g s", static_cast<double>(blend_frames) / static_cast<double>(kFps));
+    return std::string("Made to loop: its first ") + length +
+           " is a crossfade from the flow's continuation past the end into the clip's own start, so the flow does not jump when the clip repeats.";
+}
+
+// --cache-dir DIR: a still redrawn from a frame another run wrote. The run reads DIR instead of its own cache folder and never
+// simulates or writes there, so it is refused unless it is a --web-still redraw of a named still (--still-frame N) whose frame file is
+// already in DIR. "" when it will do (and when there is no --cache-dir), else why not, naming the missing piece.
+[[nodiscard]] inline std::string cache_dir_refusal(std::string_view dir, bool still_only, bool has_still_frame, bool frame_present) {
+    if (dir.empty()) return {};
+    if (!still_only) return "--cache-dir is for a --web-still redraw: it reads a frame another run wrote and never simulates";
+    if (!has_still_frame) return "--cache-dir needs --still-frame N, the frame to redraw";
+    if (!frame_present) {
+        return "--cache-dir " + std::string(dir) + ": the frame is not there; a run with --cache-dir never simulates or writes in it";
+    }
+    return {};
 }
 
 // A cache folder's suffix for a drone: none for the default (today's caches keep their names), "-<library>" else.
 [[nodiscard]] inline std::string drone_stem_suffix(const Drone& d) {
     return &d == &default_drone() ? std::string() : "-" + std::string(d.library);
+}
+
+// --lines (the rotors as actuator lines): a lines run is another simulation, so its cache folder has its own name ("-lines"); and
+// only the D1 clips take lines (S5 and S6 are the reference quad's discs on the CPU film). "" when it applies, else why not.
+[[nodiscard]] inline std::string lines_stem_suffix(bool lines) { return lines ? "-lines" : ""; }
+[[nodiscard]] inline std::string lines_refusal(bool d1) {
+    return d1 ? std::string() : "--lines is for the D1 clips (S1 to S4 and S8): S5 and S6 run the reference quad's discs on the CPU";
 }
 
 // `text` (a clip's title or sentences, written for the reference quad) in the drone's own words.
