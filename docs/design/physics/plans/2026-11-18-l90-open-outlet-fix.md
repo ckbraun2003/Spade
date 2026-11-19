@@ -4,7 +4,9 @@ Physics, 2026-11-18. Branch `physics/open-outlet-fix`. The design table is amend
 
 ## The finding
 
-A box held a smaller share of an injected impulse the smaller the step h was, and the actuator lines' thrust at a fixed rotor speed fell with h (x500, 0.05 s: 17.269 N at 0.2 ms, 16.669 at 0.1, 15.735 at 0.05, 15.105 at 0.025). The loss was about 7e-4 of the momentum per step at every h.
+A box held a smaller share of an injected impulse the smaller the step h was (about 7e-4 of the momentum lost per step at every h), and, seen beside it, the actuator lines' thrust at a fixed rotor speed fell with h (x500, 0.05 s: 17.269 N at 0.2 ms, 16.669 at 0.1, 15.735 at 0.05, 15.105 at 0.025).
+
+**Correction (2026-11-19): the two are not one cause.** L90 fixes the first and not the second. The x500 re-measure on the kit model with L90 (below) shows the box's momentum share h-independent and the lines' thrust still falling with h, by the same amount as before. This record's first version said L90 removes the thrust's h-dependence; that was a hypothesis, and the measurement does not support it.
 
 Cause: `apply_velocity_boundaries` copied the neighbouring face into each pressure-outlet face and refused inflow (`if (copy > 0) copy = amb`), once per step with no factor of h, four times per step. The refusal wiped the air a rotor draws in at an open face. Split on the 64³ CPU twin: refusal alone loses the momentum; copy alone (inflow allowed) conserves it.
 
@@ -51,6 +53,21 @@ C8 actuator-disc far wake (momentum theory 7.5777 m/s; band 10%, half-width 0.75
 All inside the band. **Mind the drift:** the record `tests/data/airflow/records/c8-actuator-disc.md` reads 8.0333 m/s for the first measure; the current master (before this fix) reads 7.8893. That is the change of commits since the record was taken, not this fix; this fix moves it by -0.019. The C8 wake sits 2R below a disc and barely uses an outlet, so it does not show the fix. C8q (two ensembles of four at 128³, hours of CPU) was not re-run: costs first; the x500 re-measure on the fixed GPU solver is where a rotor wake reaches the outlets, and if it moves the induced velocity by more than about 3%, C8q is the next question.
 
 Caradonna: the repo's Caradonna tests check the table's own data and run no solver; there is no old/new number to give.
+
+## Re-measure on the x500 (kit model, L90, 2026-11-19)
+
+Kit model (1.6326 kg, hubs 0.17689 m, discs 0.0607 m), the fixed solver, 270 x 237 x 270 at 2.5 mm, rotor speed 567.1 rad/s (the model's hover speed), n_sub 8, no frames kept; 25 min GPU. Lines' thrust in all four rotors, N (the weight is 16.011 N):
+
+| t | h 0.2 ms | h 0.1 ms | h 0.05 ms |
+|---|---|---|---|
+| 0.01 s | 15.606 | 15.396 | 14.348 |
+| 0.02 s | 16.943 | 16.068 | 14.636 |
+| 0.03 s | 16.818 | 16.423 | 15.135 |
+| 0.05 s | 17.212 | 16.712 | 15.765 |
+| 0.075 s | 17.045 | 16.410 | 15.267 |
+| 0.10 s | 17.382 | 16.595 | 15.551 |
+
+At 0.05 s the thrust falls 2.9% and 5.7% per halving of h, against 3.5% and 5.6% before L90 (17.269, 16.669, 15.735 N on the previous model): **L90 did not remove the thrust's dependence on h.** The box's momentum over the impulse put in is the same at every h (1.0155, 1.0156, 1.0160 at 0.01 s; 0.9667, 0.9749, 0.9833 at 0.05 s), and the pressure solve is healthy (8 iterations a step, largest residual under 1e-4, none capped). So the account is conserved and the thrust at a fixed rotor speed still depends on h by another mechanism, in the lines' own sampling or kernel feedback (the impulse put in is the line's own thrust, so the account cannot see it). The thrust scatters between 15.4 and 17.4 N from 0.03 s at h 0.2 ms: no settle time can be stated, and none of these is a converged balance against the weight.
 
 ## Gates on the merged head (master e7e1d076 merged)
 
