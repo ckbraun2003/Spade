@@ -4838,12 +4838,15 @@ TEST_F(GpuGlRenderer, SpritesMatchTheCpuReferenceWithinOneLevelOfRounding) {
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     std::printf("[ S3 sprites ] %zu px drawn; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ (the ground alone %zu); on %s\n", drawn,
                 d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
-    // Measured 2026-11-19, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83): 2635 pixels drawn; worst 1 level (the ground alone 1),
-    // none over two, 1280 pixels differ (the ground alone 608): the sprites' own pixels agree with the reference to a level, the extra differing pixels
-    // are the premultiplied composite's rounding over the ground. Pinned at measured + 1.
+    // Measured 2026-11-19, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), the sprites drawn from tiles (Option A): 2635 pixels drawn;
+    // worst 2 levels (the ground alone 1), none over two, 1483 pixels differ (the ground alone 608). Before Option A (a frame-sized overlay built by the same
+    // rasteriser the CPU frame draws with) it was worst 1 and 1280 differing. The EXTRA level is named: the CPU frame rounds to 8 bits on the frame once for each
+    // shape that covers a pixel (fill, then stroke), the tile rounds the same shapes to 8 bits premultiplied on a transparent base and GL's blend then rounds
+    // the composite onto the frame, one more rounding than the CPU's; a pixel under both a fill and a stroke can land a level apart. The bound stays what it was
+    // (the ground's own worst plus one level, nothing over two); only the count of pixels that differ by a level rose, and is pinned at measured + 1.
     EXPECT_LE(d.worst, base.worst + 1) << device;
     EXPECT_EQ(d.over_two, base.over_two) << device;
-    constexpr size_t kBandDifferingPixels = 1281;  // measured 1280
+    constexpr size_t kBandDifferingPixels = 1484;  // measured 1483
     EXPECT_LE(d.differing, kBandDifferingPixels) << device;
 }
 

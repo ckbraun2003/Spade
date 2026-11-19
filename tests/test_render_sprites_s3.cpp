@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -477,7 +479,7 @@ namespace {
 
 }  // namespace
 
-TEST(RenderSpritesS3, TilesCompositedOverABlackFrameAreTheDirectDrawToOneLevel) {
+TEST(RenderSpritesS3, TilesCompositedOverABlackFrameAreTheDirectDrawToTwoLevels) {
     const RenderScene scene = mixed_sprites_scene();
     const Frame direct = draw(scene);
     spade::render::SpriteTiles tiles;
@@ -495,7 +497,11 @@ TEST(RenderSpritesS3, TilesCompositedOverABlackFrameAreTheDirectDrawToOneLevel) 
         }
     }
     EXPECT_GT(lit, 300) << "the sprites reach the frame";
-    EXPECT_LE(worst, 1) << "tiles over black differ from drawing on the frame by a level of rounding at most";
+    // TWO levels, named: drawing straight on the frame rounds to 8 bits once for each shape that covers a pixel (the fill, then the stroke over it). A tile
+    // rounds the same shapes to 8 bits premultiplied on a transparent base (the same count), and then the composite onto the frame rounds once more. A pixel
+    // under a fill and a stroke is therefore rounded three times against two, and each rounding is half a level, so the sum of the differences is under two.
+    // Measured on this scene: 2.
+    EXPECT_LE(worst, 2) << "tiles over black differ from drawing on the frame by the extra rounding of the composite";
 }
 
 TEST(RenderSpritesS3, EveryDrawnPixelLiesInsideAnEmittedTileAndATileIsClippedToTheFrame) {
@@ -566,6 +572,8 @@ TEST(RenderSpritesS3, TheAnalyticEdgeAgreesWithTheSampledEdgeAwayFromTheEdgeAndW
     constexpr uint32_t kN = 48;
     int worst = 0;
     size_t differing = 0, compared = 0;
+    std::array<int, 5> worst_of_kind{};       // circle, rect, line, polygon, arc
+    std::array<size_t, 5> over_32_of_kind{};  // pixels more than 32 levels apart
     for (int k = 0; k < 120; ++k) {
         SpriteShape s;
         s.aa = true;
@@ -619,12 +627,62 @@ TEST(RenderSpritesS3, TheAnalyticEdgeAgreesWithTheSampledEdgeAwayFromTheEdgeAndW
         for (size_t i = 0; i < a.size(); i += 4u) {
             const int d = std::abs(static_cast<int>(a[i + 2]) - static_cast<int>(b[i + 2]));
             worst = std::max(worst, d);
+            worst_of_kind[static_cast<size_t>(k % 5)] = std::max(worst_of_kind[static_cast<size_t>(k % 5)], d);
+            over_32_of_kind[static_cast<size_t>(k % 5)] += d > 32 ? 1u : 0u;
             differing += d != 0 ? 1u : 0u;
             ++compared;
         }
     }
     std::printf("[ S3 analytic edge ] vs the 4x4 sampled edge over 120 random shapes: worst %d levels; %zu of %zu pixels differ\n", worst, differing, compared);
-    constexpr int kBandWorstLevels = 255;       // to be pinned at the measured value + 1 once measured
-    EXPECT_LE(worst, kBandWorstLevels);
+    std::printf("[ S3 analytic edge ] worst by kind (circle, rect, line, polygon, arc): %d %d %d %d %d; pixels over 32 levels: %zu %zu %zu %zu %zu\n", worst_of_kind[0],
+                worst_of_kind[1], worst_of_kind[2], worst_of_kind[3], worst_of_kind[4], over_32_of_kind[0], over_32_of_kind[1], over_32_of_kind[2], over_32_of_kind[3],
+                over_32_of_kind[4]);
+    // Measured (this seed): worst 125 overall; by kind 32 (circle), 81 (rect), 56 (line), 125 (polygon), 125 (arc). The large ones are at a sharp corner or a thin
+    // feature, where a pixel's centre distance is not the area the 4 x 4 samples take; pinned at the measured value + 1. This is a stated limit, not a goal.
+    constexpr std::array<int, 5> kBandOfKind = {33, 82, 57, 126, 126};
+    for (size_t k = 0; k < 5u; ++k) EXPECT_LE(worst_of_kind[k], kBandOfKind[k]) << "kind " << k;
+    EXPECT_LE(worst, 126);
     EXPECT_LT(differing, compared / 10u) << "only edge pixels differ";
+}
+
+// The same comparison for the shapes KAT draws: the drone disc, the three marks and the reticle in its three states, at a spread of sub-pixel anchors and
+// ui_scales. These are circles, rects, and lines with square caps (no polygon, no thin sliver), so the band is the one that matters for the product.
+TEST(RenderSpritesS3, TheAnalyticEdgeOfKatsShapesStaysWithinItsMeasuredBand) {
+    const SpriteColour reticle{0x82, 0x8F, 0x9C, 255}, accent{0x7C, 0x93, 0xFF, 255};
+    std::vector<std::pair<const char*, WorldSprite>> kit;
+    kit.emplace_back("disc", spade::render::make_drone_disc(glm::dvec3(0.0), kFill, kBorder));
+    kit.emplace_back("crash", spade::render::make_mark(MarkKind::crash, glm::dvec3(0.0), kCrash));
+    kit.emplace_back("lap", spade::render::make_mark(MarkKind::lap, glm::dvec3(0.0), kLap));
+    kit.emplace_back("time_limit", spade::render::make_mark(MarkKind::time_limit, glm::dvec3(0.0), kLimit));
+    kit.emplace_back("reticle", spade::render::make_spawn_reticle(glm::dvec3(0.0), ReticleState::normal, reticle, accent, kOk));
+    kit.emplace_back("reticle_hover", spade::render::make_spawn_reticle(glm::dvec3(0.0), ReticleState::hover, reticle, accent, kOk));
+    kit.emplace_back("reticle_occupied", spade::render::make_spawn_reticle(glm::dvec3(0.0), ReticleState::occupied, reticle, accent, kOk));
+    constexpr uint32_t kN = 64;
+    // Measured worst levels for each (pinned at measured + 1): the disc 26, the crash X 78, the lap ring 25, the time-limit square 58 (a rotated or round edge, where
+    // the distance is not the sampled area); the reticle in all three states 0, because KAT's reticle is drawn with hard edges, which both rasterisers take at
+    // the pixel centre.
+    const std::array<int, 7> band = {27, 79, 26, 59, 1, 1, 1};
+    size_t index = 0;
+    for (const auto& [name, sprite] : kit) {
+        int worst = 0;
+        size_t differing = 0, compared = 0;
+        for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
+            for (const double fx : {0.0, 0.25, 0.5, 0.8}) {
+                for (const double fy : {0.0, 0.4, 0.5, 0.9}) {
+                    std::vector<uint8_t> a(static_cast<size_t>(kN) * kN * 4u, 0u), b = a;
+                    spade::render::draw_sprite_shapes(a, kN, kN, 31.0 + fx, 32.0 + fy, scale, sprite.shapes);
+                    spade::render::draw_sprite_shapes_sampled(b, kN, kN, 31.0 + fx, 32.0 + fy, scale, sprite.shapes);
+                    for (size_t i = 0; i < a.size(); ++i) {
+                        const int d = std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
+                        worst = std::max(worst, d);
+                        differing += d != 0 ? 1u : 0u;
+                        ++compared;
+                    }
+                }
+            }
+        }
+        std::printf("[ S3 analytic edge ] KAT's %s vs the 4x4 sampled edge: worst %d levels; %zu of %zu bytes differ\n", name, worst, differing, compared);
+        EXPECT_LE(worst, band[index]) << name;
+        ++index;
+    }
 }
