@@ -1787,6 +1787,38 @@ template <class T>
            (now.empty() || std::memcmp(now.data(), uploaded.data() + base, now.size() * sizeof(T)) == 0);
 }
 
+// The checks upload_scene() and update_csg_subtrees() make on scene.csg_subtrees[i], in the one place so the two cannot disagree; `who` names the caller
+// in the message. Either would vanish from the frame in silence, or overrun the shader's fixed stack.
+[[nodiscard]] Result<void> check_csg_subtree(const render::RenderScene& scene, size_t i, const char* who) {
+    const render::CsgSubtree& sub = scene.csg_subtrees[i];
+    const std::string which = std::string(who) + ": CSG subtree " + std::to_string(i);
+    if (sub.program.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, which + " has no program"});
+    }
+    if (sub.draw_item >= scene.statics.size()) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     which + " names draw item " + std::to_string(sub.draw_item) + ", past the " +
+                                         std::to_string(scene.statics.size()) + " statics"});
+    }
+    if (scene.statics[sub.draw_item].see_through) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     which + " marches draw item " + std::to_string(sub.draw_item) +
+                                         ", which is see-through (DrawItem::see_through): a marched surface "
+                                         "cannot blend"});
+    }
+    // validate()'s own code comes through: capacity_exceeded past kMaxSdfDepth.
+    if (const Result<uint32_t> valid = sub.program.validate(); !valid) {
+        return std::unexpected(Error{valid.error().code, which + ": " + valid.error().context});
+    }
+    if (sub.program.nodes.size() > GlRenderer::kMaxCsgSubtreeNodes) {
+        return std::unexpected(Error{Code::capacity_exceeded,
+                                     which + " has " + std::to_string(sub.program.nodes.size()) +
+                                         " nodes; GL marches at most " + std::to_string(GlRenderer::kMaxCsgSubtreeNodes) +
+                                         " (GlRenderer::kMaxCsgSubtreeNodes); draw it with render::render()"});
+    }
+    return {};
+}
+
 struct GpuMesh {
     GLuint vao = 0, vbo_pos = 0, vbo_nrm = 0, ebo = 0;
     uint32_t index_count = 0;
@@ -2713,31 +2745,8 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
         const render::CsgSubtree& sub = scene.csg_subtrees[i];
         const std::string which = "GlRenderer::upload_scene: CSG subtree " + std::to_string(i);
-        // Either would vanish from the frame in silence.
-        if (sub.program.empty()) {
-            return std::unexpected(Error{Code::invalid_argument, which + " has no program"});
-        }
-        if (sub.draw_item >= scene.statics.size()) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         which + " names draw item " + std::to_string(sub.draw_item) + ", past the " +
-                                             std::to_string(scene.statics.size()) + " statics"});
-        }
-        if (scene.statics[sub.draw_item].see_through) {
-            return std::unexpected(Error{Code::invalid_argument,
-                                         which + " marches draw item " + std::to_string(sub.draw_item) +
-                                             ", which is see-through (DrawItem::see_through): a marched surface "
-                                             "cannot blend"});
-        }
-        // An invalid program would overrun the shader's fixed stack. validate()'s
-        // own code comes through: capacity_exceeded past kMaxSdfDepth.
-        if (const Result<uint32_t> valid = sub.program.validate(); !valid) {
-            return std::unexpected(Error{valid.error().code, which + ": " + valid.error().context});
-        }
-        if (sub.program.nodes.size() > kMaxCsgSubtreeNodes) {
-            return std::unexpected(Error{Code::capacity_exceeded,
-                                         which + " has " + std::to_string(sub.program.nodes.size()) +
-                                             " nodes; GL marches at most " + std::to_string(kMaxCsgSubtreeNodes) +
-                                             " (GlRenderer::kMaxCsgSubtreeNodes); draw it with render::render()"});
+        if (Result<void> ok = check_csg_subtree(scene, i, "GlRenderer::upload_scene"); !ok) {
+            return std::unexpected(ok.error());
         }
         const std::optional<GpuCsgSubtree> g = pack_csg_subtree(sub, nodes, transforms, renumbered);
         if (!g) {  // validate() checked every leaf's transform, so this is not reached
@@ -2869,6 +2878,94 @@ Result<void> GlRenderer::upload_scene(const render::RenderScene& scene) {
     }
 
     return {};
+}
+
+Result<GlRenderer::CsgUpdateReport> GlRenderer::update_csg_subtrees(const render::RenderScene& scene) {
+    Impl& s = *impl_;
+    const GlApi& gl = s.gl;
+    constexpr const char* kWho = "GlRenderer::update_csg_subtrees";
+    const auto layout = [&](const std::string& what) {
+        return std::unexpected(Error{Code::invalid_argument, std::string(kWho) + ": " + what +
+                                                                 ": the uploaded layout would change -- call upload_scene()"});
+    };
+    // --- validate and pack everything first: a refusal changes nothing (L6) ---------
+    if (scene.meshes.size() != s.meshes.size()) {
+        return layout("this scene has " + std::to_string(scene.meshes.size()) + " meshes but " + std::to_string(s.meshes.size()) + " are uploaded");
+    }
+    if (std::max<size_t>(scene.materials.size(), 1u) != s.gpu_materials.size()) {
+        return layout("this scene has " + std::to_string(scene.materials.size()) + " materials but " + std::to_string(s.gpu_materials.size()) +
+                      " are uploaded");
+    }
+    if (scene.csg_subtrees.size() != s.csg_subtrees.size()) {
+        return layout("this scene has " + std::to_string(scene.csg_subtrees.size()) + " CSG subtrees but " + std::to_string(s.csg_subtrees.size()) +
+                      " are uploaded");
+    }
+    std::vector<SdfNode> nodes;
+    std::vector<SdfTransform> transforms;
+    std::vector<GpuCsgSubtree> subtrees;
+    std::vector<uint32_t> renumbered;
+    subtrees.reserve(scene.csg_subtrees.size());
+    for (size_t i = 0; i < scene.csg_subtrees.size(); ++i) {
+        const render::CsgSubtree& sub = scene.csg_subtrees[i];
+        const GpuCsgSubtree& up = s.csg_subtrees[i];
+        if (sub.program.nodes.size() != up.node_count) {
+            return layout("CSG subtree " + std::to_string(i) + " has " + std::to_string(sub.program.nodes.size()) + " nodes but " +
+                          std::to_string(up.node_count) + " are uploaded");
+        }
+        if (Result<void> ok = check_csg_subtree(scene, i, kWho); !ok) {
+            return std::unexpected(ok.error());
+        }
+        const std::optional<GpuCsgSubtree> g = pack_csg_subtree(sub, nodes, transforms, renumbered);
+        if (!g) {  // check_csg_subtree() validated every leaf's transform, so this is not reached
+            return std::unexpected(Error{Code::invalid_argument, std::string(kWho) + ": CSG subtree " + std::to_string(i) + " names a transform past its table"});
+        }
+        if (g->node_base != up.node_base || g->transform_base != up.transform_base || g->transform_count != up.transform_count) {
+            return layout("CSG subtree " + std::to_string(i) + " marches " + std::to_string(g->transform_count) + " transforms but " +
+                          std::to_string(up.transform_count) + " are uploaded");
+        }
+        subtrees.push_back(*g);
+    }
+    if (nodes.empty()) nodes.emplace_back();  // as upload_scene(): a bound buffer always has storage
+    if (transforms.empty()) transforms.emplace_back();
+    if (nodes.size() != s.csg_nodes_uploaded.size() || transforms.size() != s.csg_transforms_uploaded.size()) {
+        return layout("the tables' sizes differ from the uploaded ones");
+    }
+
+    // --- then compare with the host copy of the upload and write what changed -------
+    CsgUpdateReport report;
+    const auto changed_range = [](const auto& now, const auto& uploaded, uint32_t& count) {
+        size_t first = now.size(), last = 0;
+        count = 0;
+        for (size_t k = 0; k < now.size(); ++k) {
+            if (std::memcmp(&now[k], &uploaded[k], sizeof(now[k])) == 0) continue;
+            ++count;
+            first = std::min(first, k);
+            last = k;
+        }
+        return std::pair<size_t, size_t>{first, last};
+    };
+    const auto [node_first, node_last] = changed_range(nodes, s.csg_nodes_uploaded, report.nodes_written);
+    const auto [transform_first, transform_last] = changed_range(transforms, s.csg_transforms_uploaded, report.transforms_written);
+    for (size_t i = 0; i < subtrees.size(); ++i) {
+        const bool same_box = std::memcmp(&subtrees[i].bounds.min, &s.csg_subtrees[i].bounds.min, sizeof(glm::vec3)) == 0 &&
+                              std::memcmp(&subtrees[i].bounds.max, &s.csg_subtrees[i].bounds.max, sizeof(glm::vec3)) == 0;
+        if (!same_box) ++report.boxes_changed;
+    }
+    if (report.nodes_written > 0u) {
+        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_nodes);
+        gl.BufferSubData(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(node_first * sizeof(SdfNode)),
+                         static_cast<GLsizeiptr>((node_last - node_first + 1u) * sizeof(SdfNode)), nodes.data() + node_first);
+    }
+    if (report.transforms_written > 0u) {
+        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, s.ssbo_csg_transforms);
+        gl.BufferSubData(GL_SHADER_STORAGE_BUFFER, static_cast<GLintptr>(transform_first * sizeof(SdfTransform)),
+                         static_cast<GLsizeiptr>((transform_last - transform_first + 1u) * sizeof(SdfTransform)), transforms.data() + transform_first);
+    }
+    if (report.nodes_written > 0u || report.transforms_written > 0u) gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    s.csg_subtrees = std::move(subtrees);
+    s.csg_nodes_uploaded = std::move(nodes);
+    s.csg_transforms_uploaded = std::move(transforms);
+    return report;
 }
 
 Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Camera& camera,

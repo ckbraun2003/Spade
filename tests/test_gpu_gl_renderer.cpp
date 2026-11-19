@@ -4713,12 +4713,12 @@ TEST_F(GpuGlRenderer, AnUpdateCostsAFractionOfAFullUploadForAMovingSubtree) {
     std::vector<double> upload_ms, update_ms;
     for (int i = 0; i < 32; ++i) {
         const RenderScene scene = csg_moved_by(base, 0.001f * static_cast<float>(i + 1));
+        const RenderScene next = csg_moved_by(base, 0.001f * static_cast<float>(i + 2));  // both built outside the timing: a scene copy is not the call's cost
         glFinish();
         const auto t0 = std::chrono::steady_clock::now();
         const spade::Result<void> up = renderer_->upload_scene(scene);
         glFinish();
         const auto t1 = std::chrono::steady_clock::now();
-        const RenderScene next = csg_moved_by(base, 0.001f * static_cast<float>(i + 2));
         const auto report = renderer_->update_csg_subtrees(next);
         glFinish();
         const auto t2 = std::chrono::steady_clock::now();
