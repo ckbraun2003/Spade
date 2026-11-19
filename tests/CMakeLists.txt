@@ -946,6 +946,21 @@ if(GIT_FOUND AND SPADE_SH)
         TIMEOUT 120)
 endif()
 
+# A down Docker daemon gets started (scripts/docker-up.ps1, run first by scripts/docker-leg.ps1 and scripts/gcc-check.sh), with a fake docker and a
+# fake Docker Desktop on PATH: the real Docker is never touched. Windows only (PowerShell); the gcc-check case needs Git Bash (SPADE_SH). LABELS spade.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_DOCKER_UP_REPO NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        add_test(NAME DockerUp.StartsADownDaemon
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/docker_up_test.ps1" "${SPADE_DOCKER_UP_REPO}" "${SPADE_SH}")
+        set_tests_properties(DockerUp.StartsADownDaemon PROPERTIES
+            LABELS spade
+            TIMEOUT 120)
+    endif()
+endif()
+
 # The installer test's record (scripts/package-test-record.ps1, written by scripts/package-test.ps1 beside each setup.exe tested): every field
 # the owner asked for is present for a pass, a fail and a run with no smoke, and the ledger row is one line with its nine cells. Only on
 # Windows, where the installer test itself runs; no install, no display, no GPU. LABELS spade, as above.
