@@ -323,7 +323,9 @@ if (Test-Path -LiteralPath $logs) { $extra = @(Get-ChildItem -LiteralPath $logs 
 Check 'nothing left under %LOCALAPPDATA%\Spade except logs' ($extra.Count -eq 0) "(left: $($extra -join ', '))"
 Check 'nothing left under %APPDATA%\Spade' (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA 'Spade')))
 
+# The test's own temp folder (the install folder's parent, the install log, the smoke run) goes too; what is worth keeping was copied beside the setup.
 Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+Check 'the test removed its own temp folder (install log, smoke run)' (-not (Test-Path -LiteralPath $work)) "(left: $work)"
 if ($failed.Count -eq 0) {
     Say "package-test: ALL PASS ($expectVersion)"
     Finish 0

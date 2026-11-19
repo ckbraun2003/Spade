@@ -27,8 +27,10 @@
     journal has no END line).
 
 .PARAMETER OutRoot
-    The folder the dated run folder goes under. Default: spade-smoke on the
-    Desktop.
+    The folder the dated run folder goes under. Default: build-smoke in the
+    repository (git-ignored by build-*/), never a folder at the top of the
+    Desktop. A caller that wants the runs elsewhere (the gate's, the
+    package step's) passes its own.
 
 .PARAMETER NoBuild
     Run the existing build-ninja\release\bin\spade_sandbox.exe as it is.
@@ -43,7 +45,7 @@
     powershell -ExecutionPolicy Bypass -File scripts\live-smoke.ps1
 #>
 param(
-    [string] $OutRoot = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'spade-smoke'),
+    [string] $OutRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'build-smoke'),
     [switch] $NoBuild,
     [string[]] $Inject = @()
 )
