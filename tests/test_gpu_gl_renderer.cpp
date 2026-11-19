@@ -4858,6 +4858,95 @@ TEST_F(GpuGlRenderer, ASpriteThatCannotBeDrawnIsRefusedByName) {
     EXPECT_NE(refused.error().context.find("shapes"), std::string::npos) << refused.error().context;
 }
 
+// D182 S3's cost (KAT's host draws a disc per drone, a few marks and a reticle each frame): on GL every frame that has a sprite rasterises it on the CPU into a
+// frame-sized premultiplied overlay, uploads it and composites it. This times the whole draw with sprites against the same frame without them, at 1280 x 720
+// and 1920 x 1080, with 32 and 128 drone discs plus one reticle and four marks, and the CPU rasterisation alone (rasterize_sprite_overlay). Medians of 30
+// frames after two warm-ups, the draw alone (the scene is uploaded first). Opt-in, as the other cost tests: set SPADE_SPRITE_COST=1.
+TEST_F(GpuGlRenderer, SpriteCostAt32And128DiscsAt720pAnd1080p) {
+    if (!env_gate_is_set("SPADE_SPRITE_COST")) GTEST_SKIP() << "opt-in: set SPADE_SPRITE_COST=1";
+    using namespace spade::render;
+    const Camera camera = camera_over_ground();
+    const SpriteColour fill{0xDC, 0xE5, 0xEC, 255}, border{0x0B, 0x0F, 0x14, 255}, crash{0xE2, 0x6E, 0x73, 255}, lap{0x5B, 0xBB, 0x86, 255},
+        limit{0xE8, 0xA3, 0x3D, 255}, dim{0x82, 0x8F, 0x9C, 255}, accent{0x7C, 0x93, 0xFF, 255};
+    const auto build = [&](int discs, bool with_sprites) {
+        RenderScene scene = make_ground_scene();
+        if (!with_sprites) return scene;
+        for (int k = 0; k < discs; ++k) {
+            WorldSprite disc = make_drone_disc(glm::dvec3(-2.2 + 4.4 * static_cast<double>(k % 16) / 15.0, 0.3 + 0.25 * static_cast<double>(k / 16), -0.4), fill, border);
+            disc.visible_max_span_px = 0.0f;  // always drawn: the disc is the cost being measured
+            scene.sprites.push_back(std::move(disc));
+        }
+        scene.sprites.push_back(make_spawn_reticle(glm::dvec3(0.0, 0.2, 0.3), ReticleState::hover, dim, accent, lap));
+        scene.sprites.push_back(make_mark(MarkKind::crash, glm::dvec3(-1.0, 0.9, 0.0), crash));
+        scene.sprites.push_back(make_mark(MarkKind::lap, glm::dvec3(0.0, 0.9, 0.0), lap));
+        scene.sprites.push_back(make_mark(MarkKind::time_limit, glm::dvec3(1.0, 0.9, 0.0), limit));
+        scene.sprites.push_back(make_mark(MarkKind::crash, glm::dvec3(2.0, 0.9, 0.0), crash));
+        return scene;
+    };
+    const auto median = [](std::vector<double> ms) {
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[ms.size() / 2 - 1] + ms[ms.size() / 2]);
+    };
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    for (const auto& size : {std::pair<uint32_t, uint32_t>{1280u, 720u}, std::pair<uint32_t, uint32_t>{1920u, 1080u}}) {
+        const uint32_t w = size.first, h = size.second;
+        GLuint fbo = 0, colour = 0, depth = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glGenRenderbuffers(1, &colour);
+        glBindRenderbuffer(GL_RENDERBUFFER, colour);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+        glGenRenderbuffers(1, &depth);
+        glBindRenderbuffer(GL_RENDERBUFFER, depth);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+        ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+        const auto gl_ms = [&](const RenderScene& scene) {
+            EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+            std::vector<double> ms;
+            for (int i = 0; i < 32; ++i) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                glFinish();
+                const auto t0 = std::chrono::steady_clock::now();
+                const spade::Result<void> drew = renderer_->draw(scene, camera, comparable_options(), w, h);
+                glFinish();
+                const auto t1 = std::chrono::steady_clock::now();
+                EXPECT_TRUE(drew.has_value());
+                if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            return median(ms);
+        };
+        const auto raster_ms = [&](const RenderScene& scene) {
+            std::vector<uint8_t> rgba;
+            std::vector<double> ms;
+            for (int i = 0; i < 32; ++i) {
+                const auto t0 = std::chrono::steady_clock::now();
+                const bool any = rasterize_sprite_overlay(scene, camera, comparable_options(), w, h, rgba);
+                const auto t1 = std::chrono::steady_clock::now();
+                EXPECT_TRUE(any);
+                if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+            }
+            return median(ms);
+        };
+        const double base = gl_ms(build(0, false));
+        for (const int discs : {32, 128}) {
+            const RenderScene scene = build(discs, true);
+            const double with = gl_ms(scene);
+            const double raster = raster_ms(scene);
+            std::printf("[ sprite cost ] %ux%u, %3d discs + a reticle + 4 marks: draw %.3f ms against %.3f ms without sprites (+%.3f ms); of that the CPU rasterisation alone %.3f ms; on %s\n",
+                        w, h, discs, with, base, with - base, raster, device.c_str());
+            RecordProperty("added_ms_x1000_" + std::to_string(w) + "_" + std::to_string(discs), static_cast<int>((with - base) * 1000.0));
+            RecordProperty("raster_ms_x1000_" + std::to_string(w) + "_" + std::to_string(discs), static_cast<int>(raster * 1000.0));
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteRenderbuffers(1, &colour);
+        glDeleteRenderbuffers(1, &depth);
+    }
+}
+
 // D182 S1's cost (KAT's host draws a trail per drone): 128 drones, one polyline each of 64, 200 and 400 points, 3 px wide with a 4 px glow, on a 1280 x 720
 // frame, GL and the CPU, the default look (as_before, no alphas: the work the capsule pass did before S1) and every look at once (gradient, per-point
 // alpha, flat cap, a hard edge on every fourth, depth_test false on every eighth). Medians of ten frames after two warm-ups, the draw alone (the scene is
