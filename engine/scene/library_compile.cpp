@@ -315,7 +315,7 @@ LibraryResult<CompiledDrone> compile_drone(const LibrarySet& set, std::string_vi
     if (spec.rotors.empty()) return std::unexpected(refuse("invalid_entry", "the drone has no motor slot", &drone, "parts_map"));
 
     Result<vehicles::CompiledAirframe> compiled = vehicles::compile_airframe(spec);
-    if (!compiled) return std::unexpected(refuse("invalid_argument", compiled.error().context, &drone));
+    if (!compiled) return std::unexpected(refuse("compile_refused", compiled.error().context, &drone));
     CompiledDrone out;
     out.spec = std::move(spec);
     out.compiled = std::move(*compiled);

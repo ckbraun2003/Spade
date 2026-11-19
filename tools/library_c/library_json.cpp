@@ -13,10 +13,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include "physics/forces.hpp"
+#include "scene/library_compile.hpp"
 #include "scene/library_place.hpp"
 #include "scene/library_query.hpp"
 #include "scene/library_set.hpp"
 #include "scene/library_validate.hpp"
+#include "scene/model_file.hpp"
+#include "vehicles/airframe_compile.hpp"
 
 namespace spade::libc {
 
@@ -484,6 +488,84 @@ Answer op_mesh_file_info(const Library& lib, const Json& req) {
     return ok_answer("mesh_file_info", std::move(*info));
 }
 
+const char* provenance_name(vehicles::Provenance p) {
+    switch (p) {
+        case vehicles::Provenance::from_parts: return "from_parts";
+        case vehicles::Provenance::fitted: return "fitted";
+        case vehicles::Provenance::estimated: return "estimated";
+        case vehicles::Provenance::given: return "given";
+    }
+    return "given";
+}
+
+// A DragSpec as the compile takes it: {mode: "quadratic" | "componentwise", coeffs: [3], area?}.
+vehicles::DragSpec read_drag(const Json& v, const std::string& field) {
+    if (!v.is_object()) refuse("invalid_request", "'" + field + "' must be {mode, coeffs, area}", field);
+    only_keys(v, {"mode", "area", "coeffs"}, field, false);
+    vehicles::DragSpec d;
+    const std::string mode = as_string(need(v, "mode", field), join(field, "mode"));
+    if (mode == "quadratic") {
+        d.mode = physics::drag_mode::quadratic;
+    } else if (mode == "componentwise") {
+        d.mode = physics::drag_mode::componentwise;
+    } else {
+        refuse("invalid_request", "'mode' must be \"quadratic\" or \"componentwise\"", join(field, "mode"));
+    }
+    if (const Json* m = member(v, "area")) d.area = number(*m, join(field, "area"));
+    const auto c = numbers<3>(need(v, "coeffs", field), join(field, "coeffs"));
+    d.coeffs = {c[0], c[1], c[2]};
+    return d;
+}
+
+// compile: a drone entry by `id` and the `options.drag` the compile cannot know; the model Spade would write, the composite and the fit.
+Answer op_compile(const Library& lib, const Json& req) {
+    only_keys(req, {"id", "options"}, "", true);
+    const std::string id = as_string(need(req, "id", ""), "id");
+    const Json* options = member(req, "options");
+    if (options != nullptr) {
+        if (!options->is_object()) refuse("invalid_request", "'options' must be an object", "options");
+        only_keys(*options, {"drag"}, "options", false);
+    }
+    const Json* drag = options != nullptr ? member(*options, "drag") : nullptr;
+    if (drag == nullptr) refuse("invalid_request", "options.drag is required: a part's mass is a tensor, which gives no area to estimate a drag from", "options.drag");
+    sc::CompileOptions compile_options;
+    compile_options.drag = read_drag(*drag, "options.drag");
+    const auto compiled = sc::compile_drone(lib.set, id, compile_options);
+    if (!compiled) return refused_answer("compile", compiled.error());
+    const vehicles::CompiledAirframe& c = compiled->compiled;
+    sc::ModelFile file;
+    file.model = c.model;
+    const auto yaml = sc::model_to_yaml(file);
+    if (!yaml) return refused_answer("compile", refusal("compile_refused", yaml.error().context));
+    const glm::dmat3& t = c.inertia.inertia_design;
+    Json tensor = Json::array();
+    for (int r = 0; r < 3; ++r) tensor.push_back(Json::array({t[0][r], t[1][r], t[2][r]}));
+    const vehicles::AirframeFit& f = c.fit;
+    Json provenance = {{"mass_and_inertia", provenance_name(f.mass_and_inertia)},
+                       {"mounts", provenance_name(f.mounts)},
+                       {"rotor", provenance_name(f.rotor)},
+                       {"rotor_inertia", provenance_name(f.rotor_inertia_source)},
+                       {"drag", provenance_name(f.drag)},
+                       {"proxy_radius", provenance_name(f.proxy_radius)},
+                       {"sensors", provenance_name(f.sensors)}};
+    return ok_answer("compile",
+                     Json{{"model_yaml", *yaml},
+                          {"inertia",
+                           {{"mass_kg", static_cast<double>(c.inertia.mass)},
+                            {"com", Json::array({static_cast<double>(c.inertia.center_of_mass.x), static_cast<double>(c.inertia.center_of_mass.y),
+                                                 static_cast<double>(c.inertia.center_of_mass.z)})},
+                            {"tensor", std::move(tensor)}}},
+                          {"fit",
+                           {{"hover_duty", f.hover_duty},
+                            {"hover_omega", f.hover_omega},
+                            {"hover_thrust", f.hover_thrust},
+                            {"thrust_coeff", f.thrust_coeff},
+                            {"torque_coeff", f.torque_coeff},
+                            {"tau", f.tau},
+                            {"rotor_inertia", f.rotor_inertia},
+                            {"provenance", std::move(provenance)}}}});
+}
+
 // Ops the contract names and this build does not answer yet ([shape]), and ops it does not name.
 bool is_known_op(std::string_view op) {
     for (std::string_view s : {"list", "find", "resolve", "hash_text", "validate", "compose_placement", "mesh_file_info", "reload", "create_root",
@@ -554,6 +636,7 @@ Answer call_library(const Library& lib, std::string_view op, std::string_view re
         if (op == "validate") return op_validate(req);
         if (op == "compose_placement") return op_compose_placement(req);
         if (op == "mesh_file_info") return op_mesh_file_info(lib, req);
+        if (op == "compile") return op_compile(lib, req);
         return refused_answer(op, refusal("not_implemented", "'" + std::string(op) + "' is not built in this version"));
     } catch (const Refused& r) {
         return refused_answer(op, r.refusal);
