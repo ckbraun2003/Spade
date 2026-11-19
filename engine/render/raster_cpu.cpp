@@ -1592,6 +1592,37 @@ void draw_flow_lines(FrameBuffers& fb, const ViewContext& vc, const RenderScene&
     }
 }
 
+// World-anchored constant-pixel sprites (render/sprites.hpp, D182 S3), after the flow polylines. An anchor is projected with the camera's own pinhole (not
+// projected when its camera-space z >= -1e-9; no near or far cull), then visible_if, cull_outside_view and the slot mask decide, then the shapes are
+// rasterised in px from that point. render() has refused malformed ones.
+template <typename Draw>
+void for_each_projected_sprite(const ViewContext& vc, const RenderScene& scene, uint32_t slot, Draw&& draw) {
+    for (const WorldSprite& sprite : scene.sprites) {
+        if (((sprite.slots >> slot) & 1u) == 0u) continue;
+        const Vec3 pc = worldToCameraSpace(vc, Vec3{sprite.anchor.x, sprite.anchor.y, sprite.anchor.z});
+        if (!(pc.z < -1.0e-9)) continue;
+        const ScreenPoint sp = projectCameraSpace(vc, pc);
+        if (sprite.visible_max_span_px > 0.0f) {
+            // the edge point: the anchor plus visible_half_m along the camera's right, which is +x in camera space
+            const ScreenPoint edge = projectCameraSpace(vc, Vec3{pc.x + static_cast<double>(sprite.visible_half_m), pc.y, pc.z});
+            const double dx = edge.x - sp.x, dy = edge.y - sp.y;
+            const double span = 2.0 * std::sqrt(dx * dx + dy * dy);
+            if (!(span < static_cast<double>(sprite.visible_max_span_px))) continue;
+        }
+        if (sprite.cull_outside_view) {
+            const double rx = std::floor(sp.x + 0.5), ry = std::floor(sp.y + 0.5);
+            if (!(rx >= 0.0 && rx < static_cast<double>(vc.width) && ry >= 0.0 && ry < static_cast<double>(vc.height))) continue;
+        }
+        draw(sp.x, sp.y, sprite.shapes);
+    }
+}
+
+void draw_sprites(FrameBuffers& fb, const ViewContext& vc, const RenderScene& scene, uint32_t slot, float ui_scale) {
+    for_each_projected_sprite(vc, scene, slot, [&](double x, double y, const std::vector<SpriteShape>& shapes) {
+        draw_sprite_shapes(fb.pixels, fb.width, fb.height, x, y, ui_scale, shapes);
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Overlay passes (RenderOptions::overlays, PA-4) -- ported from the
 // wireframe rasterizer's drawGroundGrid/drawWorldBounds/drawSpawnMarkers/
@@ -2233,9 +2264,9 @@ namespace {
 Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& options) {
     const std::string mode(sensor_mode_name(options.mode));
     if (!scene.flow_layers.empty() || !scene.field_layers.empty() || !scene.flow_polylines.empty() ||
-        !scene.flow_points.positions.empty() || scene.flow_surface_colouring.has_value()) {
+        !scene.flow_points.positions.empty() || scene.flow_surface_colouring.has_value() || !scene.sprites.empty()) {
         return std::unexpected(Error{Code::invalid_argument, mode + " draws the geometry as data, so it takes no flow "
-                                                                   "or field layers, lines, points or surface colouring"});
+                                                                   "or field layers, lines, points, sprites or surface colouring"});
     }
     if (options.mode == DrawMode::depth) {
         return validate_depth_range(options.depth);
@@ -2244,6 +2275,20 @@ Result<void> sensor_mode_refusal(const RenderScene& scene, const RenderOptions& 
         return validate_labels(scene);
     }
     return {};
+}
+
+bool rasterize_sprite_overlay(const RenderScene& scene, const Camera& camera, const RenderOptions& options, uint32_t width, uint32_t height,
+                              std::vector<uint8_t>& rgba) {
+    rgba.clear();
+    if (scene.sprites.empty() || width == 0u || height == 0u) return false;
+    const ViewContext vc = build_view_context(camera, width, height);
+    bool any = false;
+    for_each_projected_sprite(vc, scene, options.slot, [&](double x, double y, const std::vector<SpriteShape>& shapes) {
+        if (!any) rgba.assign(static_cast<size_t>(width) * height * 4u, 0u);
+        any = true;
+        draw_sprite_shapes(rgba, width, height, x, y, options.ui_scale, shapes, SpriteTarget::overlay_rgba);
+    });
+    return any;
 }
 
 Result<void> render(const RenderScene& scene, const Camera& camera, const RenderOptions& options,
@@ -2295,6 +2340,9 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
             return std::unexpected(
                 Error{valid.error().code, "render: flow polyline " + std::to_string(i) + ": " + valid.error().context});
         }
+    }
+    if (Result<void> valid = validate_sprite_budget(scene.sprites); !valid) {
+        return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
     }
     if (const std::string why = flow_lines_gl_only_reason(scene.flow_polylines, scene.flow_line_style); !why.empty()) {
         return std::unexpected(Error{Code::invalid_argument, "render: " + why});
@@ -2503,6 +2551,7 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     }
     draw_flow_layers(fb, vc, scene, camera, flow_report);
     draw_flow_lines(fb, vc, scene, options.slot, options.ui_scale);
+    draw_sprites(fb, vc, scene, options.slot, options.ui_scale);
 
     // Overlays: overlay_geometry() decides what draws and in what order; GL
     // draws the same lists.
