@@ -79,6 +79,10 @@ Expected<Axes> parse_axes(std::string_view text) {
     return axes;
 }
 
+Expected<glm::dvec3> parse_origin(std::string_view) {
+    return glm::dvec3(0.0);  // RED: a stand-in
+}
+
 Expected<double> parse_scale(std::string_view text) {
     const std::string_view t = trimmed(text);
     double v = 0.0;
@@ -100,7 +104,7 @@ glm::dvec3 apply_axes(const Axes& axes, const glm::dvec3& p) {
 }
 
 Expected<std::shared_ptr<const TriangleMesh>> transform_mesh(const std::shared_ptr<const TriangleMesh>& mesh, const Axes& axes,
-                                                            double scale) {
+                                                            double scale, const glm::dvec3&) {
     if (axes.identity() && scale == 1.0) return mesh;
     MeshInput in;
     in.unit = MeshUnit::metre;

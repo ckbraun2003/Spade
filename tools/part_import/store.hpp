@@ -32,6 +32,7 @@ struct KeyInputs {
     Axes axes;
     double scale = 1.0;
     std::string object;
+    std::optional<glm::dvec3> origin;  // --origin, in the file's unit: in the key text only when given
 };
 
 // The canonical text of the inputs: "spade-part-import-key-1;converter=...;tolerance=...;angle=...;unit=...;axes=...;scale=...;

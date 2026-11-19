@@ -442,4 +442,19 @@ TEST(PartImportStep, TheConvertersColoursComeThroughInspectDeepInspectImportAndA
     EXPECT_EQ(hit.result.at("objects").dump(), first.result.at("objects").dump());
 }
 
+// ---- the origin ----------------------------------------------------------------------------------------------------------------
+
+TEST(PartImportStep, TheOriginIsInTheFilesUnitInTheFastInspectToo) {
+    NEED_PYTHON();
+    StepRig rig;
+    const fs::path in = rig.step_file();
+    // the fake file is millimetres: its `arm` is a 10 mm cube at the origin, so --origin 5,5,5 (mm) centres it
+    const Out r = rig.run(rig.with_converter({"--inspect", in.string(), "--origin", "5,5,5"}));
+    ASSERT_EQ(r.exit, 0) << r.result.dump();
+    const json& arm = r.result.at("objects")[0];
+    ASSERT_EQ(arm.value("name", std::string()), "arm");
+    EXPECT_EQ(numbers(arm.at("bbox").at("min")), (std::vector<double>{-0.005, -0.005, -0.005}));
+    EXPECT_EQ(numbers(arm.at("bbox").at("max")), (std::vector<double>{0.005, 0.005, 0.005}));
+}
+
 }  // namespace
