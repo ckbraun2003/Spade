@@ -657,6 +657,7 @@ struct BladeChord {
         const float hi = edges[b + 1u];
         spade::render::Material material;
         material.base_color = glm::vec4(tint, tint, std::min(1.0f, tint * 1.06f), alpha_at(0.5f * (lo + hi)));
+        material.shading = 1u;  // unlit: a mark of where the blades sweep, not a surface; the drone's key light does not light it
         m.source_materials.push_back(material);
         const auto first = static_cast<uint32_t>(m.indices.size());
         for (const float side : {1.0f, -1.0f}) {
