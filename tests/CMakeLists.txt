@@ -234,6 +234,7 @@ add_executable(spade_tests
     test_render_flow_draw.cpp
     test_render_flow_line_style.cpp
     test_render_polyline_s1.cpp
+    test_render_sprites_s3.cpp
     test_render_see_through.cpp
     test_shadow_focus_fit.cpp
     test_render_terrain.cpp
