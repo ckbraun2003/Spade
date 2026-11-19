@@ -31,6 +31,7 @@
 #include "world/builder.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
+#include "x500_model.hpp"
 
 namespace {
 
@@ -209,12 +210,16 @@ TEST(FlowMovieBuildParts, APartAtADesignFramePointLandsWhereTheDesignFramesRigid
 }
 
 // The frame comes from the model file the run flies (BuildDraw::design_to_principal and com_offset, read by body_frame_of): the committed X500 model's.
+// The centre of mass is pinned to the kit's own (spade::testing::x500::kKitCom, the number the model file is generated from, tests/x500_model.hpp), not to
+// a copy of it: a copy went stale when the kit model landed (gate 40, 8d026c5c: two branches each passed alone), and the next model change must not do that
+// silently. The file's digits are the kit's rounded to float, so a float tolerance holds them together.
 TEST(FlowMovieBuildParts, TheBodyFrameIsReadFromTheModelFileTheRunFlies) {
     const auto frame = flow_movie::body_frame_of(fs::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/x500.model.yaml");
     ASSERT_TRUE(frame.has_value()) << frame.error().context;
-    EXPECT_NEAR(frame->com_offset.x, 0.000913808064f, 1e-9f);
-    EXPECT_NEAR(frame->com_offset.y, -0.0048055402f, 1e-9f);
-    EXPECT_NEAR(frame->com_offset.z, -0.00159445975f, 1e-9f);
+    const glm::dvec3 kit = spade::testing::x500::kKitCom;
+    EXPECT_NEAR(static_cast<double>(frame->com_offset.x), kit.x, 1e-7);
+    EXPECT_NEAR(static_cast<double>(frame->com_offset.y), kit.y, 1e-7);
+    EXPECT_NEAR(static_cast<double>(frame->com_offset.z), kit.z, 1e-7);
     EXPECT_NEAR(glm::length(frame->design_to_principal), 1.0f, 1e-6f) << "a unit quaternion";
     EXPECT_FALSE(flow_movie::body_frame_of(fs::path("no/such/model.yaml")).has_value());
 }
