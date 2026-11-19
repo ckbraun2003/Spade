@@ -251,7 +251,7 @@ entries:
     file: "drones/reference_quad.model.yaml"
     thumbnail: "thumbnails/reference_quad.png"
 
-  # The X500 build (L88l): the Holybro X500 V2 kit's frame, its motor, rotors and payload parts, and the drone that places them. The part files under parts/x500/ are generated from
+  # The X500 build (L88l): the Holybro X500 V2 kit's frame, its motor, rotors and payload parts, and the drone that places them. The part files under parts/x500/ are written from
   # tools/flow_movie/data/x500_build/parts.yaml and pinned to it by tests/test_library_x500_entries.cpp. Their meshes are in the local part store (L88b): only hashes are here.
   - id: part.frame.x500_kit_frame
     name: "X500 kit frame (Holybro X500 V2)"

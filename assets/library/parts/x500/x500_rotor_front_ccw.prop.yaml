@@ -1,4 +1,4 @@
-# Generated from tools/flow_movie/data/x500_build/parts.yaml (the X500 build's pose table), pinned equal to it by tests/test_library_x500_entries.cpp: do not edit by hand.
+# Written from tools/flow_movie/data/x500_build/parts.yaml; pinned by tests/test_library_x500_entries.cpp (a change to the table or to this file fails it). The stand-in shapes after the marker at the end, if any, are written by tools/part_stand_in.
 # A blocks-only part (part_version 2): the part's frame is the file's own axes (Y up for a CAD or glTF mesh); the library contract section 1 and part_blocks.hpp say what each block is.
 part_version: 2
 id: "part.prop.x500_rotor_front_ccw"
