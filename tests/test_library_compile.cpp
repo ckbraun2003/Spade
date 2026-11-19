@@ -282,6 +282,18 @@ TEST(LibraryCompile, ASpecTheCompileRefusesIsCompileRefused) {
     EXPECT_NE(got.error().message.find("drag"), std::string::npos) << got.error().message;
 }
 
+// L107: walls come from options.flow_parts alone. A part with shapes and no meshes is mass, a tensor record like every other part, never a solid: a box record
+// would be a rigid wall of the model through compile_airframe.
+TEST(LibraryCompile, AShapesOnlyPartIsMassNotAWall) {
+    const sc::LibrarySet set = open_quad("no_walls", kQuad);
+    const auto got = sc::compile_drone(set, "r:drone.quad", with_zero_drag());
+    ASSERT_TRUE(got.has_value()) << got.error().message;
+    EXPECT_TRUE(got->compiled.model.parts.empty()) << got->compiled.model.parts.size() << " wall parts";
+    for (const vh::PartInertia& r : got->spec.parts) EXPECT_EQ(r.shape, vh::PartShape::tensor) << "a record of " << r.mass << " kg";
+    // the mass and the centre are what the boxes gave (the same as TheQuad test: 1.372 kg)
+    EXPECT_NEAR(got->compiled.inertia.mass, 1.372, 1e-6);
+}
+
 // THE RULE: a part with meshes is its meshes for physics, never its stand-in boxes; and a mesh needs the store.
 TEST(LibraryCompile, AMeshPartIsATensorRecordAtItsCentroidAndNeedsTheStore) {
     const std::string sha(64, 'c');
