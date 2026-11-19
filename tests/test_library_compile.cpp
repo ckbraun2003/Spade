@@ -437,6 +437,32 @@ constexpr double kPin = 1e-9;
 constexpr double kComFloor = 1e-11;     // m
 constexpr double kTensorFloor = 4e-11;  // kg m^2
 
+// The compiled X500's composite is the kit constants (tests/x500_model.hpp): mass, centre of mass and the whole tensor.
+void expect_is_the_kit(const sc::CompiledDrone& got) {
+    namespace kit = spade::testing::x500;
+    // the records' sums in double, in the compile's order (the propellers are thin-disc records at their parts' origins, as the kit constants have them)
+    double mass = 0.0;
+    glm::dvec3 com{0.0};
+    for (const vh::PartInertia& r : got.spec.parts) {
+        mass += r.mass;
+        com += r.mass * r.position;
+    }
+    com /= mass;
+    EXPECT_NEAR(mass, kit::kKitMass, 1e-9 * kit::kKitMass);  // the table's sum, exact
+    EXPECT_NEAR(com.x, kit::kKitCom.x, kPin * std::abs(kit::kKitCom.x) + kComFloor);
+    EXPECT_NEAR(com.y, kit::kKitCom.y, kPin * std::abs(kit::kKitCom.y) + kComFloor);
+    EXPECT_NEAR(com.z, kit::kKitCom.z, kPin * std::abs(kit::kKitCom.z) + kComFloor);
+    const glm::dmat3& I = got.compiled.inertia.inertia_design;
+    EXPECT_NEAR(I[0][0], kit::kKitXX, kPin * kit::kKitXX + kTensorFloor);
+    EXPECT_NEAR(I[1][1], kit::kKitYY, kPin * kit::kKitYY + kTensorFloor);
+    EXPECT_NEAR(I[2][2], kit::kKitZZ, kPin * kit::kKitZZ + kTensorFloor);
+    // the products are compared to the tensor's own scale (Ixx), not to themselves: Ixz is 7e-5 of it, so the frame's 12-digit quaternion (0.707106781187) alone
+    // moves it by 2e-13 (1e-7 of itself)
+    EXPECT_NEAR(I[0][1], kit::kKitXY, 1e-9 * kit::kKitXX);
+    EXPECT_NEAR(I[0][2], kit::kKitXZ, 1e-9 * kit::kKitXX);
+    EXPECT_NEAR(I[1][2], kit::kKitYZ, 1e-9 * kit::kKitXX);
+}
+
 TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     const std::string store = store_from_env();
     if (store.empty()) GTEST_SKIP() << "SPADE_PART_STORE is not set";
@@ -451,27 +477,7 @@ TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     for (const sc::PartMeshObject& o : *frame) EXPECT_FALSE(o.visual) << o.file;
     const auto got = sc::compile_drone(*set, "default:drone.x500_build", with_zero_drag());
     ASSERT_TRUE(got.has_value()) << got.error().code << ": " << got.error().message;
-    // the records' sums in double, in the compile's order (the propellers are thin-disc records at their parts' origins, as the kit constants have them)
-    double mass = 0.0;
-    glm::dvec3 com{0.0};
-    for (const vh::PartInertia& r : got->spec.parts) {
-        mass += r.mass;
-        com += r.mass * r.position;
-    }
-    com /= mass;
-    EXPECT_NEAR(mass, kit::kKitMass, 1e-9 * kit::kKitMass);  // the table's sum, exact
-    EXPECT_NEAR(com.x, kit::kKitCom.x, kPin * std::abs(kit::kKitCom.x) + kComFloor);
-    EXPECT_NEAR(com.y, kit::kKitCom.y, kPin * std::abs(kit::kKitCom.y) + kComFloor);
-    EXPECT_NEAR(com.z, kit::kKitCom.z, kPin * std::abs(kit::kKitCom.z) + kComFloor);
-    const glm::dmat3& I = got->compiled.inertia.inertia_design;
-    EXPECT_NEAR(I[0][0], kit::kKitXX, kPin * kit::kKitXX + kTensorFloor);
-    EXPECT_NEAR(I[1][1], kit::kKitYY, kPin * kit::kKitYY + kTensorFloor);
-    EXPECT_NEAR(I[2][2], kit::kKitZZ, kPin * kit::kKitZZ + kTensorFloor);
-    // the products are compared to the tensor's own scale (Ixx), not to themselves: Ixz is 7e-5 of it, so the frame's 12-digit quaternion (0.707106781187) alone
-    // moves it by 2e-13 (1e-7 of itself)
-    EXPECT_NEAR(I[0][1], kit::kKitXY, 1e-9 * kit::kKitXX);
-    EXPECT_NEAR(I[0][2], kit::kKitXZ, 1e-9 * kit::kKitXX);
-    EXPECT_NEAR(I[1][2], kit::kKitYZ, 1e-9 * kit::kKitXX);
+    expect_is_the_kit(*got);
     // the principal frame: about 5.4 degrees about z
     const glm::quat q = got->compiled.model.design_to_principal;
     const double angle = 2.0 * std::acos(std::min(1.0, static_cast<double>(std::abs(q.w)))) * 180.0 / 3.14159265358979323846;
@@ -481,6 +487,58 @@ TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     ASSERT_EQ(got->spec.rotors.size(), 4u);
     EXPECT_NEAR(got->spec.rotors[0].hub.position.y, kit::kDiscHeight, 1e-4) << "the disc: 0.070 - 0.00926; the constant rounds it to 0.0607";
     EXPECT_NEAR(std::abs(got->spec.rotors[0].hub.position.x), kit::kArm, 1e-9);
+}
+
+// Physics' proxy solids (tests/x500_model.hpp airframe(): the plate stack, the four arm tubes and the pack, read from it, not copied) as the flow parts: the
+// composite is still the kit's, the model gains the solids as walls, and the remainder is a body. Their poses are the table's frame (the AirframeSpec's), so
+// they go back through the one frame change to the library's.
+TEST(LibraryCompile, TheX500DroneWithPhysicsProxiesAsFlowPartsIsStillTheKit) {
+    const std::string store = store_from_env();
+    if (store.empty()) GTEST_SKIP() << "SPADE_PART_STORE is not set";
+    namespace kit = spade::testing::x500;
+    const auto prop = kit::prop_part();
+    ASSERT_TRUE(prop.has_value()) << prop.error().context;
+    const auto physics = kit::airframe(*prop);
+    ASSERT_TRUE(physics.has_value()) << physics.error().context;
+    // the Spade frame -> the library's: Rx(+90 deg), (x, y, z)_S -> (x, -z, y)_L
+    const glm::dquat to_library = glm::conjugate(glm::dquat(0.70710678118654757, -0.70710678118654757, 0.0, 0.0));
+    const auto flow_part = [&](const std::string& name, const std::string& role, vh::PartShape shape, glm::dvec3 size, glm::dvec3 pos, glm::dquat orient, double mass) {
+        sc::FlowPart f;
+        f.name = name;
+        f.role = role;
+        f.shape = shape;
+        f.size = size;
+        f.pos = {pos.x, -pos.z, pos.y};
+        f.quat = to_library * orient;
+        f.mass = mass;
+        return f;
+    };
+    std::vector<sc::FlowPart> proxies;
+    for (const vh::PartInertia& r : physics->parts) {
+        if (r.geometry.name == "kit_remainder") continue;  // the arithmetic the compile does itself
+        proxies.push_back(flow_part(r.geometry.name, r.geometry.role, r.shape, r.size, r.position, r.orientation, r.mass));
+    }
+    ASSERT_EQ(proxies.size(), 5u) << "the plate stack and four arm tubes";
+    ASSERT_TRUE(physics->battery.shape.has_value()) << "the pack's box";
+    proxies.push_back(flow_part("pack", "battery", physics->battery.shape->shape, physics->battery.shape->size, physics->battery.mount.position,
+                                physics->battery.mount.orientation, physics->battery.mass));
+
+    const std::vector<sc::LibraryRootSpec> roots = {{"default", fs::path(SPADE_ASSETS_DIR) / "library", false}};
+    auto set = sc::open_libraries(roots, fs::path(store));
+    ASSERT_TRUE(set.has_value()) << set.error().message;
+    sc::CompileOptions options = with_zero_drag();
+    options.flow_parts = proxies;
+    const auto got = sc::compile_drone(*set, "default:drone.x500_build", options);
+    ASSERT_TRUE(got.has_value()) << got.error().code << ": " << got.error().message;
+    expect_is_the_kit(*got);
+    // the six solids are the model's walls, by name, and the remainder is no solid
+    std::vector<std::string> names;
+    for (const auto& part : got->compiled.model.parts) names.push_back(part.name);
+    EXPECT_EQ(names.size(), 6u);
+    for (const sc::FlowPart& f : proxies) EXPECT_NE(std::find(names.begin(), names.end(), f.name), names.end()) << f.name;
+    EXPECT_EQ(got->spec.parts.size(), 7u) << "six solids and the remainder";
+    EXPECT_EQ(got->spec.parts.back().geometry.name, "remainder");
+    EXPECT_GT(got->spec.parts.back().mass, 0.0);
 }
 
 }  // namespace
