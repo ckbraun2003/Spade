@@ -64,6 +64,7 @@ Codes (all [slice] unless marked): `open_failed` (the refusal of `open`; its `is
 
 **A root** is a folder with `library.yaml`.
 - **Version 1 and 2** (today): `library_version`, `entries:` of `{name, category, file, thumbnail}`. Still valid and read unchanged. A v1/v2 root has no name of its own: it takes the name the host gives in `open`. Its entries get DERIVED ids, `<kind>.<stem>` with `-` and `.` in the stem turned to `_` and the kind from the file extension (`*.model.yaml` is `model`, `*.object.yaml` `object`, the four part extensions `part`): `default:model.reference_quad`, `default:part.motor.<stem>` (a part's id is `part.<part_kind>.<stem>`). A derived id that collides is refused (`bad_index`). Writing an id into the index is how a root takes control of its ids; that is a v3 index.
+- **The default root is version 3** (L88l): `assets/library/library.yaml` (`library_version: 3`, `name: default`, `indexes: [index.yaml]`) and `assets/library/index.yaml` (the 38 entries with explicit ids, the ones a version-2 root derived from the same files: id for id, file for file; the old text is `tests/data/library_default_v2.yaml`, pinned by `LibraryDefaultRoot.*`). `scene::load_library()` of a version-3 `library.yaml` returns the same `Library` the editor's Library panel always read (entries of the kinds model, object, motor, prop, esc and battery in the root's order; other kinds are `open`'s), so a v1/v2 consumer library and the panel are unchanged.
 - **Version 3**:
 
 ```yaml

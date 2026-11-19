@@ -30,6 +30,7 @@
 #include "../sandbox/library_thumbnail.hpp"
 #include "../sandbox/png_reader.hpp"
 #include "../sandbox/png_writer.hpp"
+#include "library_index.hpp"
 #include "scene/library.hpp"
 #include "scene/library_sources.hpp"
 #include "scene/model_file.hpp"
@@ -64,12 +65,8 @@ namespace sc = spade::scene;
 // The index alone, its dir set: load_library() would refuse a thumbnail the
 // generator has yet to write.
 [[nodiscard]] spade::Result<sc::Library> the_index() {
-    std::ifstream in(library_dir() / "library.yaml", std::ios::binary);
-    if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "library.yaml can't be read"});
-    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-    spade::Result<sc::Library> library = sc::library_from_yaml(text);
-    if (library) library->dir = library_dir();
-    return library;
+    // The default root is version 3: its index.yaml (library_index.hpp).
+    return spade::test::default_root_index(library_dir());
 }
 
 // The entry, loaded as the panel loads it.

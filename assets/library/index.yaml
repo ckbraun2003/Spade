@@ -1,0 +1,252 @@
+# =============================================================================
+# Spade's default library -- the index of the root `default` (library version 3, index_version 1).
+#
+# WHAT THIS IS: the list of what the editor's Library panel offers and Kat's builder shows: drones (model files), objects (object files) and parts (part
+# files: props, motors, ESCs and batteries). It is HAND-WRITTEN, never a folder walk, so the order below is the order the editor shows, and a test loads
+# every entry (tests/test_library.cpp). The library contract (docs/design/core/plans/2026-11-17-spade-library-json-contract.md, section 2) is the
+# format: each entry has an `id` (its kind first: model., object., part.<motor|prop|esc|battery>.), a `name` (non-empty, unique per kind ignoring case),
+# a `category` (free text; the editor groups by it, in the order categories first appear here; Interface owns the categories), a `file` (relative to
+# this folder, forward slashes, never absolute and no '..'; its extension agrees with its kind) and an optional `thumbnail` (an image relative to this
+# folder; one that is named must exist). Unknown, missing and duplicate keys are errors.
+#
+# The ids are the ones the library set derived from this file's version-2 form (tests/data/library_default_v2.yaml, kept as the reader's fixture):
+# kind prefix + the file's stem, lower-cased with anything outside [a-z0-9_] as '_'. tests/test_library_default_root.cpp pins id for id, file for file.
+# scene::load_library() reads library.yaml here into the same Library (name, category, file, thumbnail, kind) the version-2 file gave, so the editor
+# and every other reader of that call are unchanged.
+#
+# The part files are GENERATED (tests/test_library_parts.cpp, with SPADE_LIBRARY_WRITE set), as are the object files (tests/test_library.cpp, with
+# SPADE_LIBRARY_WRITE set), and so is the drone (tests/test_library_quad.cpp): never edit those by hand. So are the thumbnails (thumbnails/*.png, 96 x 96,
+# tests/test_library_thumbnails.cpp): an entry's owner adds its key and regenerates with SPADE_LIBRARY_WRITE=1 ctest -R LibraryThumbnails in the same
+# commit. This index is edited by hand.
+# =============================================================================
+
+index_version: 1
+
+entries:
+  - id: model.phantom3_class
+    name: "Phantom 3-class quad"
+    category: "drones"
+    file: "drones/phantom3_class.model.yaml"
+    thumbnail: "thumbnails/phantom3_class.png"
+
+  - id: model.iris_plus_class
+    name: "Iris+-class quad"
+    category: "drones"
+    file: "drones/iris_plus_class.model.yaml"
+    thumbnail: "thumbnails/iris_plus_class.png"
+
+  - id: model.fpv_5inch
+    name: "5-inch FPV quad"
+    category: "drones"
+    file: "drones/fpv_5inch.model.yaml"
+    thumbnail: "thumbnails/fpv_5inch.png"
+
+  - id: model.crazyflie_class
+    name: "Crazyflie-class micro"
+    category: "drones"
+    file: "drones/crazyflie_class.model.yaml"
+    thumbnail: "thumbnails/crazyflie_class.png"
+
+  - id: model.basic_quad_6inch
+    name: "Basic quad, 6-inch"
+    category: "drones"
+    file: "drones/basic_quad_6inch.model.yaml"
+    thumbnail: "thumbnails/basic_quad_6inch.png"
+
+  - id: model.basic_quad_competition
+    name: "Basic quad, competition"
+    category: "drones"
+    file: "drones/basic_quad_competition.model.yaml"
+    thumbnail: "thumbnails/basic_quad_competition.png"
+
+  - id: object.box
+    name: "Box"
+    category: "primitives"
+    file: "primitives/box.object.yaml"
+    thumbnail: "thumbnails/box.png"
+
+  - id: object.sphere
+    name: "Sphere"
+    category: "primitives"
+    file: "primitives/sphere.object.yaml"
+    thumbnail: "thumbnails/sphere.png"
+
+  - id: object.cylinder
+    name: "Cylinder"
+    category: "primitives"
+    file: "primitives/cylinder.object.yaml"
+    thumbnail: "thumbnails/cylinder.png"
+
+  - id: object.capsule
+    name: "Capsule"
+    category: "primitives"
+    file: "primitives/capsule.object.yaml"
+    thumbnail: "thumbnails/capsule.png"
+
+  - id: object.gate
+    name: "Gate"
+    category: "obstacles"
+    file: "obstacles/gate.object.yaml"
+    thumbnail: "thumbnails/gate.png"
+
+  - id: object.floor_tile
+    name: "Floor tile"
+    category: "floors"
+    file: "floors/floor_tile.object.yaml"
+    thumbnail: "thumbnails/floor_tile.png"
+
+  - id: object.pole
+    name: "Pole"
+    category: "obstacles"
+    file: "obstacles/pole.object.yaml"
+    thumbnail: "thumbnails/pole.png"
+
+  - id: object.wall
+    name: "Wall"
+    category: "obstacles"
+    file: "obstacles/wall.object.yaml"
+    thumbnail: "thumbnails/wall.png"
+
+  - id: part.prop.uiuc_apce_10x5
+    name: "APC Thin Electric 10x5 (Phantom 3 class)"
+    category: "props"
+    file: "parts/uiuc_apce_10x5.prop.yaml"
+    thumbnail: "thumbnails/uiuc_apce_10x5.png"
+
+  - id: part.prop.uiuc_apce_9x4_5
+    name: "APC Thin Electric 9x4.5 (Iris+ class)"
+    category: "props"
+    file: "parts/uiuc_apce_9x4.5.prop.yaml"
+    thumbnail: "thumbnails/uiuc_apce_9x4.5.png"
+
+  - id: part.prop.uiuc_mit_5x4
+    name: "Micro Invent 5x4 three-blade (5-inch FPV)"
+    category: "props"
+    file: "parts/uiuc_mit_5x4.prop.yaml"
+    thumbnail: "thumbnails/uiuc_mit_5x4.png"
+
+  - id: part.prop.uiuc_cfnq_45t1
+    name: "Crazyflie 47 mm two-blade"
+    category: "props"
+    file: "parts/uiuc_cfnq_45t1.prop.yaml"
+    thumbnail: "thumbnails/uiuc_cfnq_45t1.png"
+
+  - id: part.prop.triblade_6inch_scaled
+    name: "6-inch three-blade (scaled stand-in)"
+    category: "props"
+    file: "parts/triblade_6inch_scaled.prop.yaml"
+    thumbnail: "thumbnails/triblade_6inch_scaled.png"
+
+  - id: part.motor.phantom3_2312_960kv
+    name: "2312 960 KV (Phantom 3 class)"
+    category: "motors"
+    file: "parts/phantom3_2312_960kv.motor.yaml"
+    thumbnail: "thumbnails/phantom3_2312_960kv.png"
+
+  - id: part.motor.iris_920kv
+    name: "920 KV (Iris+ class)"
+    category: "motors"
+    file: "parts/iris_920kv.motor.yaml"
+    thumbnail: "thumbnails/iris_920kv.png"
+
+  - id: part.motor.fpv_2207_1855kv
+    name: "2207 1855 KV (5-inch FPV)"
+    category: "motors"
+    file: "parts/fpv_2207_1855kv.motor.yaml"
+    thumbnail: "thumbnails/fpv_2207_1855kv.png"
+
+  - id: part.motor.cf_7x16_coreless
+    name: "7x16 coreless (Crazyflie)"
+    category: "motors"
+    file: "parts/cf_7x16_coreless.motor.yaml"
+    thumbnail: "thumbnails/cf_7x16_coreless.png"
+
+  - id: part.motor.fpv_2306_1700kv
+    name: "2306 1700 KV (basic quad)"
+    category: "motors"
+    file: "parts/fpv_2306_1700kv.motor.yaml"
+    thumbnail: "thumbnails/fpv_2306_1700kv.png"
+
+  - id: part.motor.comp_2207_2450kv
+    name: "2207 2450 KV (competition)"
+    category: "motors"
+    file: "parts/comp_2207_2450kv.motor.yaml"
+    thumbnail: "thumbnails/comp_2207_2450kv.png"
+
+  - id: part.esc.phantom3_4x20a
+    name: "Four 20 A ESCs (Phantom 3 class)"
+    category: "ESCs"
+    file: "parts/phantom3_4x20a.esc.yaml"
+    thumbnail: "thumbnails/phantom3_4x20a.png"
+
+  - id: part.esc.iris_4x20a
+    name: "Four 20 A ESCs (Iris+ class)"
+    category: "ESCs"
+    file: "parts/iris_4x20a.esc.yaml"
+    thumbnail: "thumbnails/iris_4x20a.png"
+
+  - id: part.esc.fpv_4in1_45a
+    name: "45 A 4-in-1 (5-inch FPV)"
+    category: "ESCs"
+    file: "parts/fpv_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/fpv_4in1_45a.png"
+
+  - id: part.esc.cf_brushed_4ch
+    name: "Brushed 4-channel drive (Crazyflie)"
+    category: "ESCs"
+    file: "parts/cf_brushed_4ch.esc.yaml"
+    thumbnail: "thumbnails/cf_brushed_4ch.png"
+
+  - id: part.esc.basic_4in1_45a
+    name: "45 A 4-in-1 (basic quad)"
+    category: "ESCs"
+    file: "parts/basic_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/basic_4in1_45a.png"
+
+  - id: part.esc.comp_4in1_45a
+    name: "45 A 4-in-1 (competition)"
+    category: "ESCs"
+    file: "parts/comp_4in1_45a.esc.yaml"
+    thumbnail: "thumbnails/comp_4in1_45a.png"
+
+  - id: part.battery.phantom3_4s_4480
+    name: "4S 4480 mAh LiHV (Phantom 3)"
+    category: "batteries"
+    file: "parts/phantom3_4s_4480.battery.yaml"
+    thumbnail: "thumbnails/phantom3_4s_4480.png"
+
+  - id: part.battery.iris_3s_5100
+    name: "3S 5100 mAh (Iris+)"
+    category: "batteries"
+    file: "parts/iris_3s_5100.battery.yaml"
+    thumbnail: "thumbnails/iris_3s_5100.png"
+
+  - id: part.battery.fpv_6s_1300
+    name: "6S 1300 mAh (5-inch FPV, basic quad)"
+    category: "batteries"
+    file: "parts/fpv_6s_1300.battery.yaml"
+    thumbnail: "thumbnails/fpv_6s_1300.png"
+
+  - id: part.battery.cf_1s_250
+    name: "1S 250 mAh (Crazyflie)"
+    category: "batteries"
+    file: "parts/cf_1s_250.battery.yaml"
+    thumbnail: "thumbnails/cf_1s_250.png"
+
+  - id: part.battery.comp_4s
+    name: "4S 1500 mAh (competition)"
+    category: "batteries"
+    file: "parts/comp_4s.battery.yaml"
+    thumbnail: "thumbnails/comp_4s.png"
+
+  - id: model.crate
+    name: "Crate"
+    category: "bodies"
+    file: "bodies/crate.model.yaml"
+    thumbnail: "thumbnails/crate.png"
+
+  - id: model.reference_quad
+    name: "Reference quad (test fixture)"
+    category: "test fixtures"
+    file: "drones/reference_quad.model.yaml"
+    thumbnail: "thumbnails/reference_quad.png"

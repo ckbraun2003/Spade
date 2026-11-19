@@ -54,6 +54,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "library_index.hpp"
 #include "library_props.gen.hpp"
 #include "scene/library.hpp"
 #include "scene/library_sources.hpp"
@@ -403,12 +404,9 @@ struct Committed {
 };
 
 [[nodiscard]] inline Result<Committed> committed_library() {
-    std::ifstream in(library_dir() / "library.yaml", std::ios::binary);
-    if (!in) return std::unexpected(Error{Code::io_error, "library.yaml can't be read"});
-    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-    Result<scene::Library> library = scene::library_from_yaml(text);
+    // The default root is version 3: its index.yaml, alone (library_index.hpp).
+    Result<scene::Library> library = spade::test::default_root_index(library_dir());
     if (!library) return std::unexpected(library.error());
-    library->dir = library_dir();
     Result<scene::SourceRegistry> registry = scene::load_library_sources(*library);
     if (!registry) return std::unexpected(registry.error());
     return Committed{std::move(*library), std::move(*registry)};

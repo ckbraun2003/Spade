@@ -392,7 +392,7 @@ TEST(LibrarySet, TheRepositorysDefaultLibraryOpensWithDerivedIdsForEveryEntry) {
     const fs::path dir = fs::path(SPADE_ASSETS_DIR) / "library";
     const auto set = open({{"default", dir, false}});
     ASSERT_TRUE(set.has_value()) << set.error().message;
-    EXPECT_EQ(set->roots[0].library_version, 2u);
+    EXPECT_EQ(set->roots[0].library_version, 3u) << "the default root is version 3 (index.yaml); its ids are the ones the version-2 file derived";
     EXPECT_GE(set->entries.size(), 30u);
     // Every id is namespaced and unique, and every entry's file exists.
     std::vector<std::string> ids;

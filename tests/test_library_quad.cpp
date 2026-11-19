@@ -46,6 +46,7 @@
 
 #include "core/error.hpp"
 #include "core/path_text.hpp"
+#include "library_index.hpp"
 #include "reference_airframe.hpp"
 #include "scene/library.hpp"
 #include "scene/library_sources.hpp"
@@ -377,11 +378,9 @@ TEST(LibraryQuad, TheCommittedSidecarIsTheGeneratorsText) {
 // The index labels it a fixture, last, under its own category; the sidecar
 // loads and checks against the index and its registry, and says so too.
 TEST(LibraryQuad, TheReferenceQuadIsLabelledAFixture) {
-    std::string index;
-    ASSERT_TRUE(read_bytes(library_dir() / "library.yaml", index));
-    spade::Result<sc::Library> library = sc::library_from_yaml(index);
+    // The default root is version 3: its index.yaml (library_index.hpp).
+    spade::Result<sc::Library> library = spade::test::default_root_index(library_dir());
     ASSERT_OK(library);
-    library->dir = library_dir();
     ASSERT_FALSE(library->entries.empty());
 
     const sc::LibraryEntry& last = library->entries.back();

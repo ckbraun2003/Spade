@@ -873,10 +873,10 @@ TEST(LibraryLoad, TheDirectoryIsTheIndexsAndEveryFileItNamesMustExist) {
     EXPECT_EQ(code_of(no_index), code(spade::Code::io_error));
     EXPECT_EQ(why(no_index), "cannot open library index '" + spade::path_text(absent) + "'");
     const fs::path newer = dir.path() / "newer.yaml";
-    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 3\n"));
+    write_text(newer, with(two_entries(), "library_version: 1\n", "library_version: 4\n"));
     const spade::Result<Library> version = spade::scene::load_library(newer);
     EXPECT_EQ(code_of(version), code(spade::Code::schema_mismatch));
-    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 3"))
+    EXPECT_TRUE(why(version).starts_with(spade::path_text(newer) + ": library index is schema version 4"))
         << why(version);
 }
 

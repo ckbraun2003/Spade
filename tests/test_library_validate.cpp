@@ -70,8 +70,8 @@ TEST(LibraryValidate, EveryKindOfTheDefaultLibrarysTextValidates) {
     const auto m = validate("model", slurp(model->file), model->file.parent_path());
     ASSERT_TRUE(m.has_value()) << m.error().message;
     EXPECT_TRUE(m->valid) << (m->issues.empty() ? "" : m->issues[0].message);
-    // The index (a version 2 library.yaml).
-    const auto idx = validate("index", slurp(library_dir() / "library.yaml"));
+    // The index (a version 2 library.yaml: the default root's old text, kept as a fixture; the root itself is version 3).
+    const auto idx = validate("index", slurp(fs::path(SPADE_REPO_DIR) / "tests" / "data" / "library_default_v2.yaml"));
     ASSERT_TRUE(idx.has_value()) << idx.error().message;
     EXPECT_TRUE(idx->valid) << (idx->issues.empty() ? "" : idx->issues[0].message);
     // A world file of the repository.
