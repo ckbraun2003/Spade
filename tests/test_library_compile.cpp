@@ -314,11 +314,16 @@ TEST(LibraryCompile, AMeshPartIsATensorRecordAtItsCentroidAndNeedsTheStore) {
 // The acceptance (L103, L107): the X500 drone, from the part store, is the kit Physics' flow model carries: its mass, centre of mass and whole tensor are the
 // kit constants (tests/x500_model.hpp: the same meshes, the same uniform density per part, the same parallel axis), the principal frame 5.4 degrees about z.
 // Opt-in: SPADE_PART_STORE.
-// The pins are relative. The kit constants in tests/x500_model.hpp are printed to 9 digits (a relative rounding of up to 5e-9), so the pin is 1e-7 here; it goes to
-// the lead's 1e-9 when Physics' 17-digit constants (physics/kit-constants-17, 012ceebd) are on this branch. The library has ONE motor mesh and the table's four
-// motors are exact turns of it about their own axes (Physics, L108), so the frame part's motor points carry the turns: without them the centre of mass was
-// 2.9e-5 m and the tensor 0.1 per cent off.
-constexpr double kPin = 1e-7;
+// The pins are relative, the lead's 1e-9 (L107): the kit constants in tests/x500_model.hpp are at 17 digits (4c628475). The library has ONE motor mesh and the
+// table's four motors are exact turns of it about their own axes (Physics, L108), so the frame part's motor points carry the turns: without them the centre of
+// mass was 2.9e-5 m and the tensor 0.1 per cent off.
+constexpr double kPin = 1e-9;
+// The one residual that is not rounding: the table's four motor meshes are the library's one mesh turned to within 2.6e-10 m (Physics' measurement, L108), and
+// four motors of 0.055 kg moved by that much shift the centre of mass by about 1e-11 m and the tensor by about 3e-11 kg m^2. Measured on this tree: com.z
+// 2.0e-12 m (2.3e-9 of its 8.8e-4) and Iyy 3.5e-11 (1.2e-9 of it) are over 1e-9 relative on their own; everything else is within it. So each pin is 1e-9
+// relative plus that floor (an allowance consistent with the measurement, not proven by a separate run).
+constexpr double kComFloor = 1e-11;     // m
+constexpr double kTensorFloor = 4e-11;  // kg m^2
 
 TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     const std::string store = store_from_env();
@@ -343,13 +348,13 @@ TEST(LibraryCompile, TheX500DroneIsTheKitPhysicsFlowModelCarries) {
     }
     com /= mass;
     EXPECT_NEAR(mass, kit::kKitMass, 1e-9 * kit::kKitMass);  // the table's sum, exact
-    EXPECT_NEAR(com.x, kit::kKitCom.x, kPin * std::abs(kit::kKitCom.x));
-    EXPECT_NEAR(com.y, kit::kKitCom.y, kPin * std::abs(kit::kKitCom.y));
-    EXPECT_NEAR(com.z, kit::kKitCom.z, kPin * std::abs(kit::kKitCom.z));
+    EXPECT_NEAR(com.x, kit::kKitCom.x, kPin * std::abs(kit::kKitCom.x) + kComFloor);
+    EXPECT_NEAR(com.y, kit::kKitCom.y, kPin * std::abs(kit::kKitCom.y) + kComFloor);
+    EXPECT_NEAR(com.z, kit::kKitCom.z, kPin * std::abs(kit::kKitCom.z) + kComFloor);
     const glm::dmat3& I = got->compiled.inertia.inertia_design;
-    EXPECT_NEAR(I[0][0], kit::kKitXX, kPin * kit::kKitXX);
-    EXPECT_NEAR(I[1][1], kit::kKitYY, kPin * kit::kKitYY);
-    EXPECT_NEAR(I[2][2], kit::kKitZZ, kPin * kit::kKitZZ);
+    EXPECT_NEAR(I[0][0], kit::kKitXX, kPin * kit::kKitXX + kTensorFloor);
+    EXPECT_NEAR(I[1][1], kit::kKitYY, kPin * kit::kKitYY + kTensorFloor);
+    EXPECT_NEAR(I[2][2], kit::kKitZZ, kPin * kit::kKitZZ + kTensorFloor);
     // the products are compared to the tensor's own scale (Ixx), not to themselves: Ixz is 7e-5 of it, so the frame's 12-digit quaternion (0.707106781187) alone
     // moves it by 2e-13 (1e-7 of itself)
     EXPECT_NEAR(I[0][1], kit::kKitXY, 1e-9 * kit::kKitXX);
