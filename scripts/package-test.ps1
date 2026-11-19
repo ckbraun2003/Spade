@@ -45,7 +45,8 @@
     What to print as the commit of this script, when it runs from a copy that is not a git checkout. Default: this checkout's HEAD.
 
 .PARAMETER LedgerDir
-    A folder that holds installer-ledger.md. Given, the run appends its row there and copies the record into <LedgerDir>\installer-records\.
+    A folder that holds installer-ledger.md. Given, the run appends its row there and writes a copy of the record into <LedgerDir>\installer-records\,
+    with the profile, local-app-data and roaming-app-data folders written as %USERPROFILE%, %LOCALAPPDATA% and %APPDATA% (the repo is public).
     The ledger is the part that goes into git (docs\design\test-docs).
 
 .EXAMPLE
@@ -171,10 +172,11 @@ function Finish([int] $Code, [bool] $KeptInstall = $false) {
         if ($LedgerDir) {
             $recDir = Join-Path $LedgerDir 'installer-records'
             New-Item -ItemType Directory -Force -Path $recDir | Out-Null
-            Copy-Item -LiteralPath "$recordBase.test.md" -Destination (Join-Path $recDir "$setupName.test.md") -Force
+            # The ledger and its record copies go into the public repo: no home folder in them (the record beside the setup keeps the real paths).
+            [IO.File]::WriteAllText((Join-Path $recDir "$setupName.test.md"), (ConvertTo-PublicRecord ((New-InstallTestRecord $R) + "`n")), $utf8)
             $ledger = Join-Path $LedgerDir 'installer-ledger.md'
             if (-not (Test-Path -LiteralPath $ledger)) { [IO.File]::WriteAllText($ledger, ($InstallLedgerHeader.Replace("`r", '') + "`n"), $utf8) }
-            [IO.File]::AppendAllText($ledger, ((New-InstallLedgerRow $R "installer-records/$setupName.test.md") + "`n"), $utf8)
+            [IO.File]::AppendAllText($ledger, ((ConvertTo-PublicRecord (New-InstallLedgerRow $R "installer-records/$setupName.test.md")) + "`n"), $utf8)
             Write-Host "package-test: ledger row added to $ledger"
         }
     } catch {
