@@ -20,6 +20,7 @@ endif()
 set(_step_cases
     test_a_deflection_is_required_and_needs_a_unit
     test_the_packer_must_be_found
+    test_help_is_a_request_so_it_prints_the_usage_on_stdout_and_exits_zero
     test_a_cube_is_closed_exact_and_carries_its_provenance
     test_a_cylinder_with_a_hole_is_genus_one_and_within_the_deflection_bound
     test_an_assembly_is_placed_by_its_transforms
@@ -27,6 +28,9 @@ set(_step_cases
     test_a_suffixed_name_that_meets_a_real_name_is_refused_naming_both
     test_the_position_weld_is_watertight_and_matches_occts_shared_edge_count
     test_the_files_own_unit_is_kept
+    test_a_length_unit_used_only_in_derived_units_is_ignored
+    test_contexts_that_disagree_or_state_no_length_unit_are_refused_and_an_all_metre_file_is_metre
+    test_a_file_that_also_names_metre_in_a_derived_unit_converts_as_millimetres
     test_a_conversion_based_unit_named_for_its_length_is_read
     test_vertices_that_store_as_the_same_float32_point_are_welded_and_no_others
     test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused

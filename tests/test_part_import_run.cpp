@@ -34,6 +34,7 @@ struct Out {
     std::vector<json> lines;
     json result;
     std::string out, err;
+    std::string text;  // lines of out that are not JSON (only --help has any), when the caller said they may be
     [[nodiscard]] bool ok() const { return result.value("ok", false); }
     [[nodiscard]] std::string code() const { return result.value("code", std::string("?")); }
 };
@@ -59,7 +60,7 @@ struct Rig {
         write_file(p, bytes);
         return p;
     }
-    Out run(std::vector<std::string> args) {
+    Out run(std::vector<std::string> args, bool text_ok = false) {
         std::ostringstream out, err;
         Out r;
         r.exit = run_part_import(args, env, out, err);
@@ -68,6 +69,10 @@ struct Rig {
         std::istringstream in(r.out);
         for (std::string l; std::getline(in, l);) {
             json j = json::parse(l, nullptr, false);
+            if (j.is_discarded() && text_ok) {
+                r.text += l + "\n";
+                continue;
+            }
             EXPECT_FALSE(j.is_discarded()) << "not JSON: " << l;
             r.lines.push_back(j);
         }
@@ -116,16 +121,21 @@ TEST(PartImportRun, ACommandLineThatIsNoModeIsAUsageProblemWithOnlyTheResultLine
     }
 }
 
-TEST(PartImportRun, HelpPrintsTheUsageOnStandardErrorAndExitsZero) {
+// --help is a request, not a usage problem: plain usage text on standard output and exit 0, with no JSON lines at all (the one exception to
+// "standard output is JSON lines"; a machine never calls --help) and nothing on standard error, so a shell that wraps stderr as an error
+// record sees none. A usage ERROR keeps standard error, its JSON result line and exit 2.
+TEST(PartImportRun, HelpPrintsPlainUsageOnStandardOutputWithNoJsonAndExitsZero) {
     Rig rig;
-    const Out r = rig.run(A({"--help"}));
-    EXPECT_EQ(r.exit, 0);
-    EXPECT_TRUE(r.ok());
-    EXPECT_EQ(r.result.value("mode", std::string()), "help");
-    EXPECT_NE(r.err.find("--inspect"), std::string::npos);
-    EXPECT_NE(r.err.find("--import"), std::string::npos);
-    EXPECT_NE(r.err.find("--store"), std::string::npos);
-    EXPECT_NE(r.err.find("--axes"), std::string::npos);
+    for (const char* flag : {"--help", "-h"}) {
+        const Out r = rig.run(A({flag}), true);
+        EXPECT_EQ(r.exit, 0) << flag;
+        EXPECT_TRUE(r.err.empty()) << flag << ": " << r.err;
+        EXPECT_TRUE(r.lines.empty()) << flag << " printed a JSON line: " << r.out;
+        for (const char* word : {"usage: spade_part_import", "--inspect", "--import", "--store", "--axes", "--object"}) {
+            EXPECT_NE(r.text.find(word), std::string::npos) << flag << " lacks " << word << " on standard output";
+        }
+        EXPECT_EQ(r.text.find('{'), std::string::npos) << flag << ": no JSON in the help";
+    }
 }
 
 TEST(PartImportRun, EveryUsageCodeHasItsExitCodeAndNothingIsWritten) {

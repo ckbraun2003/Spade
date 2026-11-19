@@ -202,9 +202,9 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
         return result(out, "none", &parsed.error(), {});
     }
     const Options& opts = *parsed;
-    if (opts.help) {
-        err << usage_text();
-        return result(out, "help", nullptr, {});
+    if (opts.help) {  // a request, not a usage problem: plain text on standard output, no JSON line, nothing on standard error
+        out << usage_text();
+        return 0;
     }
     const auto cancelled = [&] { return env.cancelled && env.cancelled(); };
 
