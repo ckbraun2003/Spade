@@ -266,6 +266,24 @@ private:
     bool region_done_ = false;
 };
 
+// A still of the particle look from a run's KEPT frames, with no solve (L106b): the driver carried through frames 0 to `last` in order, each read once.
+// `read(k, volume, time_s)` fills frame k's volume and its simulated time (the step is the difference between frames, as a streamed run's is) or returns the
+// error; `pool_of()` gives the seed pool, asked once, right after frame 0 is read (the pool comes from a frame's log, the held drone's rotors). The driver
+// keeps its snapshots as in a streamed run, so at(last) shows the field the still draws. A frame that cannot be read or advanced stops the pass, named.
+template <typename Read, typename PoolOf>
+[[nodiscard]] spade::Result<void> advance_through_frames(ParticleDriver& driver, uint32_t last, Read&& read, PoolOf&& pool_of) {
+    spade::FlowVolume volume;
+    double time_s = 0.0;
+    for (uint32_t k = 0; k <= last; ++k) {
+        if (auto got = read(k, volume, time_s); !got) {
+            return std::unexpected(spade::Error{got.error().code, "particles: frame " + std::to_string(k) + " of 0 to " + std::to_string(last) + ": " + got.error().context});
+        }
+        if (k == 0u && !driver.has_pool()) driver.set_pool(pool_of());
+        if (auto stepped = driver.advance(k, volume, time_s); !stepped) return stepped;
+    }
+    return {};
+}
+
 // The pool in a fixed other order: element i of the result is pool[(i s) mod N], s the integer nearest 0.618 N made coprime to N
 // (the golden-ratio stride, which spreads any short run over the whole pool). A pool built shell by shell would otherwise emit
 // the rotor shells for half its cycle and the far field for the rest. Same points, no RNG.

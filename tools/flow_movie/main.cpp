@@ -2597,7 +2597,7 @@ struct WebFilming {
     }
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
-                          : opt.window_to > 0.0                   ? "--particles is not for a --window run"
+                          : (opt.window_to > 0.0 && !opt.web_still_only) ? "--particles is not for a --window run (a --window --web-still redraw from a run's kept frames is)"
                           : opt.particles_preview                 ? "--particles and --particles-preview are two looks: use one"
                                                                   : "";
         if (*why != '\0') {
@@ -2672,19 +2672,34 @@ struct WebFilming {
         return cache / name;
     };
     if (plan.particles && !opt.stream) {
-        // Not streamed, the points are not carried: a still is redrawn from a kept frame and the particle snapshot an earlier
-        // streamed run wrote beside it (--stream --keep-frames N --web-still).
+        // Not streamed, the points are not carried by a solve: a still is redrawn from kept frames. Either the particle snapshot an earlier streamed run wrote beside
+        // the frame (--stream --keep-frames N --web-still), or, with none, frames 0 to the still's all kept in the cache folder (another run's, a harness that keeps every
+        // frame): the points are carried through them in order here, no solve (L106b).
         const uint32_t frame = first + still_k;
-        if (!(opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, frame)) && fs::exists(snapshot_file(frame)))) {
+        const bool redraw = opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, frame));
+        if (redraw && fs::exists(snapshot_file(frame))) {
+            auto field = read_particle_field(snapshot_file(frame));
+            if (!field) return fail(field.error());
+            particles->add_snapshot(frame, std::move(*field));
+        } else if (redraw && cached_frames(cache) > frame) {
+            FrameLog pool_log;
+            const auto read = [&](uint32_t k, spade::FlowVolume& volume, double& time_s) -> spade::Result<void> {
+                if (auto got = read_frame(cache, k, volume, pool_log); !got) return got;
+                time_s = pool_log.time;
+                return {};
+            };
+            const auto pool_of = [&]() { return film->particle_pool(pool_log); };
+            const auto carry_start = std::chrono::steady_clock::now();
+            if (auto carried = advance_through_frames(*particles, frame, read, pool_of); !carried) return fail(carried.error());
+            std::printf("flow_movie: web %s: the points carried through frames 0 to %u of %s in %.1f s (no solve)\n", opt.web_id.c_str(), frame,
+                        cache.generic_string().c_str(), std::chrono::duration<double>(std::chrono::steady_clock::now() - carry_start).count());
+        } else {
             std::fprintf(stderr,
                          "flow_movie: --particles carries points through every frame in order, so it needs --stream, or --web-still "
-                         "--still-frame N redrawing a still from frame %u's kept frame and its particle snapshot, both in %s\n",
+                         "--still-frame N redrawing a still from frame %u's kept frame and either its particle snapshot or every kept frame from 0, in %s\n",
                          frame, cache.generic_string().c_str());
             return 2;
         }
-        auto field = read_particle_field(snapshot_file(frame));
-        if (!field) return fail(field.error());
-        particles->add_snapshot(frame, std::move(*field));
     }
     {
         StreamAsk ask;
