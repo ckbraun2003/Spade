@@ -1,0 +1,92 @@
+# L90 — an open face's outflow is left to the projection, and the advection reads the ambient past it
+
+Physics, 2026-11-18. Branch `physics/open-outlet-fix`. The design table is amended in `2026-10-05-airflow-design.md` (the "Outflow" row and "Advection past an outflow face"); this is the account behind it.
+
+## The finding
+
+A box held a smaller share of an injected impulse the smaller the step h was (about 7e-4 of the momentum lost per step at every h), and, seen beside it, the actuator lines' thrust at a fixed rotor speed fell with h (x500, 0.05 s: 17.269 N at 0.2 ms, 16.669 at 0.1, 15.735 at 0.05, 15.105 at 0.025).
+
+**Correction (2026-11-19): the two are not one cause.** L90 fixes the first and not the second. The x500 re-measure on the kit model with L90 (below) shows the box's momentum share h-independent and the lines' thrust still falling with h, by the same amount as before. This record's first version said L90 removes the thrust's h-dependence; that was a hypothesis, and the measurement does not support it.
+
+Cause: `apply_velocity_boundaries` copied the neighbouring face into each pressure-outlet face and refused inflow (`if (copy > 0) copy = amb`), once per step with no factor of h, four times per step. The refusal wiped the air a rotor draws in at an open face. Split on the 64³ CPU twin: refusal alone loses the momentum; copy alone (inflow allowed) conserves it.
+
+Deleting the refusal alone is not enough: the advection's `locate()` clamps a back-traced point outside the box to the edge sample, so inflow re-injects the jet's own momentum as a source of kinetic energy and the backflow grows (the angled jet reaches 60 m/s).
+
+## The fix (both parts)
+
+1. Outlet faces are left as the projection sets them. `boundaries.cpp` and `airflow_velocity_bc.slang` write only periodic and fixed-velocity faces.
+2. The advection reads an ambient ghost past an outlet. A ghost sample of the ambient sits one cell past each outlet face: a back-traced point between the face's sample and the ghost blends linearly between them, and a point beyond the ghost reads the ambient. `advect.cpp`, `airflow_advection.slang` and the velocity sampler of `airflow_dye_advect.slang`.
+3. The dye's own scalar sampling keeps the edge clamp (`sample_centred`, `centred_axis`): the dye has no ambient value to read, and the clamp is what lets a plume leave.
+
+## Evidence
+
+- Box momentum over impulse at h 0.4 / 0.2 / 0.1 ms (24³ pin box): old rule 0.748 / 0.618 / 0.450; at the final test shape on the old engine 0.6965 / 0.544 / 0.366 (the pin fails at 1.5%); untouched + ambient ghost 1.027 / 1.034 / 1.038.
+- CPU twin, 64³: old 0.700 / 0.561 / 0.399; outlets untouched 1.029-1.032.
+- GPU discs (0.03 s): 0.883 / 0.786 / 0.640 old.
+- The angled jet over 3000 steps at h 0.2 ms, peak every 250 steps: old rule 34 m/s flat (the forcing disc's own faces carry ~34); copy + inflow 42-59 m/s noisy; untouched + ambient ghost 31-35 m/s flat.
+- A disc drawing its air in through a side face stays bounded; the column air is +4.7% (middle disc) and +1.4% (side disc), the angular share within 3%.
+- Tests: `AirflowMomentumAccount.*` (three pinned: the share at h and h/2, the angled jet, the side-face disc; four opt-in with `SPADE_MOMENTUM_ACCOUNT=1`).
+
+## Validation, old rule against new
+
+The old column is the current master's engine; the new is the fix. Both pass every test in the filter (49/49: sphere, couette, sheets, actuator, dense disc, disc peak, line).
+
+| measure | old | new | change |
+|---|---|---|---|
+| sphere max abs(Cp - Cp,pot), one cell out, step 3 | 0.0581 | 0.0582 | +0.0001 |
+| sphere drag, wall_load(), step 3, U h/dx 0.1 | 0.0674 | 0.0676 | +0.0002 |
+| the same, U h/dx 0.05 | 0.0466 | 0.0471 | +0.0005 |
+| sphere side forces | 5.77e-6 | 2.25e-6 | smaller |
+| phantom 10 mm, 125³, step 2, CG 8 residual | 9.36e-6 | 9.48e-6 | +1% |
+| the same, step 3 | 6.74e-6 | 6.97e-6 | +3% |
+
+C8 actuator-disc far wake (momentum theory 7.5777 m/s; band 10%, half-width 0.758 m/s; 8 runs, CPU):
+
+| measure | old | new | change |
+|---|---|---|---|
+| the eight runs' mean downwash, 80 v faces within 0.5R, 2R below, steps 385-768 | 7.8893 | 7.8707 | -0.019 m/s (-0.24%) |
+| the worst of the eight runs | 7.9796 (run 6) | 7.9050 (run 0) | -0.075 |
+| the eight runs' largest deviation from their mean | 0.0902 | 0.0343 | -0.056 |
+| the axis 2R below, steps 257-384, run 0 | 7.9698 | 8.0452 | +0.075 (+0.9%) |
+| the axis, eight runs' range | 7.7495 to 8.0064 | 7.5184 to 8.0836 | wider |
+
+All inside the band. **Mind the drift:** the record `tests/data/airflow/records/c8-actuator-disc.md` reads 8.0333 m/s for the first measure; the current master (before this fix) reads 7.8893. That is the change of commits since the record was taken, not this fix; this fix moves it by -0.019. The C8 wake sits 2R below a disc and barely uses an outlet, so it does not show the fix. C8q (two ensembles of four at 128³, hours of CPU) was not re-run: costs first; the x500 re-measure on the fixed GPU solver is where a rotor wake reaches the outlets, and if it moves the induced velocity by more than about 3%, C8q is the next question.
+
+Caradonna: the repo's Caradonna tests check the table's own data and run no solver; there is no old/new number to give.
+
+## Re-measure on the x500 (kit model, L90, 2026-11-19)
+
+Kit model (1.6326 kg, hubs 0.17689 m, discs 0.0607 m), the fixed solver, 270 x 237 x 270 at 2.5 mm, rotor speed 567.1 rad/s (the model's hover speed), n_sub 8, no frames kept; 25 min GPU. Lines' thrust in all four rotors, N (the weight is 16.011 N):
+
+| t | h 0.2 ms | h 0.1 ms | h 0.05 ms |
+|---|---|---|---|
+| 0.01 s | 15.606 | 15.396 | 14.348 |
+| 0.02 s | 16.943 | 16.068 | 14.636 |
+| 0.03 s | 16.818 | 16.423 | 15.135 |
+| 0.05 s | 17.212 | 16.712 | 15.765 |
+| 0.075 s | 17.045 | 16.410 | 15.267 |
+| 0.10 s | 17.382 | 16.595 | 15.551 |
+
+At 0.05 s the thrust falls 2.9% and 5.7% per halving of h, against 3.5% and 5.6% before L90 (17.269, 16.669, 15.735 N on the previous model): **L90 did not remove the thrust's dependence on h.** The box's momentum over the impulse put in is the same at every h (1.0155, 1.0156, 1.0160 at 0.01 s; 0.9667, 0.9749, 0.9833 at 0.05 s), and the pressure solve is healthy (8 iterations a step, largest residual under 1e-4, none capped). So the account is conserved and the thrust at a fixed rotor speed still depends on h by another mechanism, in the lines' own sampling or kernel feedback (the impulse put in is the line's own thrust, so the account cannot see it). The thrust scatters between 15.4 and 17.4 N from 0.03 s at h 0.2 ms: no settle time can be stated, and none of these is a converged balance against the weight.
+
+## Gates on the merged head (master e7e1d076 merged)
+
+- `-L gpu`: 417 pass, 0 fail, 40 skipped (env-gated timing and live tests). Device against CPU is bit for bit: `GpuAirflowAdvection` (four tests), `GpuAirflowStep` open box, odd-sized open box and periodic channel.
+- CPU subset (664 tests): `AnalysisValidation*`, `SpirvPin`, `AirflowConfigs`, `AirflowMomentumAccount` pass.
+
+## Re-pins, each with its reason
+
+- `AirflowConfigs.EachBoundaryConfigurationsDigestIsPinned`: the five open-face configurations (open 9x7x5, open 16x12x16 disc, wind 12x10x8, floor under wind, one-cell x) move: 0x56707cc190cd8e1d, 0x747a9a1e77bf9740, 0x6ce704702b0a9ba7, 0x03de1fb4e13e3e72, 0xf9055fa7b35de410. Periodic, walls and cavity digests are unchanged (their faces are bit-identical).
+- `SpirvPin`: nine hashes (airflow_advection, airflow_dye_advect, airflow_velocity_bc at local sizes 32, 64, 128); the kernels changed on purpose.
+- `AnalysisLiveRun.ALooseSolveIsCountedBesideTheUnconverged` at k=3: 16 unconverged / 1 loose becomes 6 / 11, the loosest at 9.5e-5. The solve is held to 3 iterations; 10 of the steps that did not reach the mark now reach the loose mark, with the same cap. Cases k=4 and k=8 are as before.
+- `AirflowAdvect.ANonFiniteOrHugeCoordinateSamplesInsideTheField`: the clamped box's sample range may reach the ambient (0), not only the field's values.
+- `D1Case.TheHeadingPutsTheWindAlongTheBodysSidewaysAxisWithTheStatedSign` (found by the Linux leg; the CPU subset's name filter did not include it): the 24-step mean along the wind read 0.83 (headwind), 0.99 and 0.99 (side headings) against its 1.0 threshold, where the old rule gave 1.02 and 1.18. The old rule forced the ambient onto the open faces; the wind now comes in through the advection's ghost and the projection, so it builds up over the box's transit: along the wind 0.83, 1.18, 1.57, 1.96, 2.35, 2.65, 2.84, 2.94 m/s every 24 steps to 192 (headwind), reaching the 3 m/s ambient; across falls to 0.16. The test runs 48 steps (1.18 and 1.34 along, across 0.28), same threshold.
+- `AirflowGrid` outlet tests: an outlet's faces stay as the projection set them (the old refusal test is replaced, with this reason).
+- `GpuAirflowAdvection` parity test: its params block now carries the face kinds, words 18-23 (0 fixed velocity, 1 pressure outlet, 2 periodic), and the ambient velocity in the face block (word 27 gives its offset; ambient at +19, +20, +21), as `airflow_params_layout.slang` names them; the kernel reads them for the ghost.
+
+## Records whose numbers change
+
+- The x500 notes and step-size finding: the thrust balance, the settle time and the h table are re-measured on the fixed GPU solver (approved: about 42 min GPU, 3.5 GiB, no new disk).
+- Phantom and near-field figures that were taken at an open face; the re-measure names the ones that move.
+- Kept frames: a re-render waits for Core's kit table and for costs.
+- `c8-actuator-disc.md`: not edited here; it keeps its older commit's number, now named in this record.

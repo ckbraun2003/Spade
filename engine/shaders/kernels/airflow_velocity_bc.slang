@@ -16,11 +16,10 @@
 // reads and writes airflow_u, airflow_v or airflow_w (set 1, bindings.slang
 // section F).
 //
-// PARITY. Copies, selects, host values and the outlets' two sign tests: no
-// arithmetic, so the kernel is apply_velocity_boundaries()'s bit for bit where
-// the device reads a subnormal in a comparison as the CPU step's DAZ does (the
-// device of record; a denormal-keeping device refuses a subnormal outflow the
-// CPU passes), and the module is scanned under the exact profile.
+// PARITY. Copies, selects and host values: no arithmetic, so the kernel is
+// apply_velocity_boundaries()'s bit for bit, and the module is scanned under the
+// exact profile. (Until L90 the outlets also refused inflow with two sign tests;
+// a subnormal in one of them was read as the CPU step's DAZ does.)
 // ---------------------------------------------------------------------------
 
 import layouts;
@@ -75,23 +74,14 @@ void airflow_velocity_bc(uint3 tid : SV_DispatchThreadID) {
     const uint b = t / m1;
     const uint klo = face_kind(2u * axis);
     const uint khi = face_kind(2u * axis + 1u);
-    const float amb = ambient_velocity(axis);
     if (klo == kFacePeriodic) {
         store(axis, sample_index(axis, n, a, b), load(axis, sample_index(axis, 0u, a, b)));
         return;
     }
     if (klo == kFaceFixedVelocity) {
         store(axis, sample_index(axis, 0u, a, b), face_velocity(2u * axis, axis));
-    } else {
-        float copy = load(axis, sample_index(axis, 1u, a, b));
-        if (copy > 0.0) copy = amb;  // into the box through the minus face: refused
-        store(axis, sample_index(axis, 0u, a, b), copy);
-    }
+    }  // else an outlet: its face is left as the projection set it (L90; boundaries.cpp)
     if (khi == kFaceFixedVelocity) {
         store(axis, sample_index(axis, n, a, b), face_velocity(2u * axis + 1u, axis));
-    } else {
-        float copy = load(axis, sample_index(axis, n - 1u, a, b));
-        if (copy < 0.0) copy = amb;  // into the box through the plus face: refused
-        store(axis, sample_index(axis, n, a, b), copy);
     }
 }

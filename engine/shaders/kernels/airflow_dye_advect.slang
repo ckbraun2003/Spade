@@ -49,6 +49,8 @@ struct Axis {
     uint i0;
     uint i1;
     float t;
+    bool g0;  // L90: the sample at i0 (or i1) is the ambient's (airflow_advection.slang's Axis); the velocity sampler only, never the dye's
+    bool g1;
 };
 
 Axis axis(uint i0, uint i1, float t) {
@@ -56,10 +58,19 @@ Axis axis(uint i0, uint i1, float t) {
     out.i0 = i0;
     out.i1 = i1;
     out.t = t;
+    out.g0 = false;
+    out.g1 = false;
     return out;
 }
 
-Axis locate(float f, uint n, uint count, bool periodic) {
+Axis axis_ghost(uint i0, uint i1, float t, bool g0, bool g1) {
+    Axis out = axis(i0, i1, t);
+    out.g0 = g0;
+    out.g1 = g1;
+    return out;
+}
+
+Axis locate(float f, uint n, uint count, bool periodic, bool ghost_lo, bool ghost_hi) {
     if (periodic) {
         if (n == 1u) return axis(0u, 0u, 0.0);
         const float nf = float(n);
@@ -70,6 +81,8 @@ Axis locate(float f, uint n, uint count, bool periodic) {
     }
     if (count == 1u) return axis(0u, 0u, 0.0);
     const float top = float(count - 1u);
+    if (ghost_lo && f < 0.0) return axis_ghost(0u, 0u, f > -1.0 ? f + 1.0 : 0.0, true, false);
+    if (ghost_hi && f > top) return axis_ghost(count - 1u, count - 1u, f < top + 1.0 ? f - top : 1.0, false, true);
     const float c = f > top ? top : (f >= 0.0 ? f : 0.0);
     uint i0 = uint(c);
     if (i0 + 1u >= count) i0 = count - 2u;
@@ -82,7 +95,8 @@ Axis locate_for(float3 x, uint a, uint c) {
     const bool own = a == c;
     const float f = x[a] * grid_inv_dx() - (own ? 0.0 : 0.5);
     const uint n = axis_cells(a);
-    return locate(f, n, own ? n + 1u : n, axis_periodic(a));
+    return locate(f, n, own ? n + 1u : n, axis_periodic(a), face_kind(2u * a) == kFacePressureOutlet,
+                  face_kind(2u * a + 1u) == kFacePressureOutlet);
 }
 
 struct Sample {
@@ -111,6 +125,8 @@ Sample interpolate(float a000, float a100, float a010, float a110, float a001, f
     return out;
 }
 
+float corner(bool ghost, float amb, float value) { return ghost ? amb : value; }
+
 float velocity_load<let C : uint>(uint index) {
     if (C == 0u) return airflow_u[index];
     if (C == 1u) return airflow_v[index];
@@ -120,14 +136,15 @@ float velocity_load<let C : uint>(uint index) {
 Sample sample_velocity<let C : uint>(Axis x0, Axis x1, Axis x2) {
     const uint sx = samples_x(C);
     const uint sy = samples_y(C);
-    return interpolate(velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i0)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i0)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i0)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i0)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i1)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i1)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i1)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i1)), x0, x1, x2);
+    const float amb = ambient_velocity(C);
+    return interpolate(corner(x0.g0 || x1.g0 || x2.g0, amb, velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i0))),
+                       corner(x0.g1 || x1.g0 || x2.g0, amb, velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i0))),
+                       corner(x0.g0 || x1.g1 || x2.g0, amb, velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i0))),
+                       corner(x0.g1 || x1.g1 || x2.g0, amb, velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i0))),
+                       corner(x0.g0 || x1.g0 || x2.g1, amb, velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i1))),
+                       corner(x0.g1 || x1.g0 || x2.g1, amb, velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i1))),
+                       corner(x0.g0 || x1.g1 || x2.g1, amb, velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i1))),
+                       corner(x0.g1 || x1.g1 || x2.g1, amb, velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i1))), x0, x1, x2);
 }
 
 float3 velocity_at(float3 x) {
@@ -150,7 +167,7 @@ float3 trace_rk2(float3 x, float sign) {
 
 // The cell centres' axes: advect.cpp's sample_centred(), every axis against the centres, so n samples each.
 Axis centred_axis(float3 x, uint a) {
-    return locate(x[a] * grid_inv_dx() - 0.5, axis_cells(a), axis_cells(a), axis_periodic(a));
+    return locate(x[a] * grid_inv_dx() - 0.5, axis_cells(a), axis_cells(a), axis_periodic(a), false, false);  // the dye keeps the edge clamp (L90)
 }
 
 // A cell-centred field's trilinear sample, the field read through `Field`: the dye's cur (offset kDyeHeader of

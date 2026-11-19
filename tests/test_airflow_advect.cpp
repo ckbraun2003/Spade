@@ -154,7 +154,9 @@ TEST(AirflowAdvect, ANonFiniteOrHugeCoordinateSamplesInsideTheField) {
                                       glm::vec3(c)}) {
                 const Sample s = sample_component(g.shape, g.u, 0, x, bc);
                 EXPECT_TRUE(std::isfinite(s.value)) << (periodic ? "periodic " : "clamped ") << c;
-                EXPECT_GE(s.lo, 1.0f);
+                // A clamped box's outlet faces read the ambient (0) past the field (L90): its range may reach down to it, never outside the
+                // field's values and the ambient's.
+                EXPECT_GE(s.lo, periodic ? 1.0f : 0.0f);
                 EXPECT_LE(s.hi, 13.0f);
                 EXPECT_GE(s.value, s.lo);
                 EXPECT_LE(s.value, s.hi);

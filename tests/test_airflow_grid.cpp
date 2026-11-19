@@ -138,18 +138,24 @@ TEST(AirflowBoundaries, TheAmbientEntersThroughAnOpenFaceAndLeavesThroughAnOutle
     g.u[u_index(g.shape, 3, 1, 1)] = 5.0f;
     apply_velocity_boundaries(g, bc);
     EXPECT_EQ(g.u[u_index(g.shape, 0, 1, 1)], 2.0f) << "the inflow takes the ambient";
-    EXPECT_EQ(g.u[u_index(g.shape, 4, 1, 1)], 5.0f) << "the outlet copies its neighbour";
+    EXPECT_EQ(g.u[u_index(g.shape, 4, 1, 1)], 3.0f) << "the outlet's face is left as it was (the projection sets it, L90)";
 }
 
-TEST(AirflowBoundaries, AnOutletRefusesBackflow) {
+// L90 (the design table's outflow row, plans/2026-10-05-airflow-design.md section 2, amended). Until then an outlet copied its neighbour and refused
+// backflow ("zero normal gradient, with backflow clamped to the ambient"; no instability was ever recorded for it). That wiped the air a rotor draws
+// in through the open faces once a step, so the box kept a smaller share of an impulse the smaller h was (AirflowMomentumAccount); copying without the
+// refusal let the backflow grow. An outlet's faces are now left as the projection sets them (p = 0 on the face), whatever their direction.
+TEST(AirflowBoundaries, AnOutletsFacesAreLeftToTheProjection) {
     DomainBc bc;  // still air: every open face is an outlet
     MacGrid g = filled({4, 2, 2, 0.1f}, bc, 0.0f);
     using namespace spade::physics::airflow;
     g.u[u_index(g.shape, 1, 0, 0)] = 1.5f;   // flowing into the box through x-
     g.u[u_index(g.shape, 3, 0, 0)] = -1.5f;  // flowing into the box through x+
+    g.u[u_index(g.shape, 0, 0, 0)] = 0.25f;
+    g.u[u_index(g.shape, 4, 0, 0)] = -0.25f;
     apply_velocity_boundaries(g, bc);
-    EXPECT_EQ(g.u[u_index(g.shape, 0, 0, 0)], 0.0f) << "backflow takes the ambient's normal velocity";
-    EXPECT_EQ(g.u[u_index(g.shape, 4, 0, 0)], 0.0f);
+    EXPECT_EQ(g.u[u_index(g.shape, 0, 0, 0)], 0.25f) << "neither copied nor refused";
+    EXPECT_EQ(g.u[u_index(g.shape, 4, 0, 0)], -0.25f);
 }
 
 TEST(AirflowBoundaries, APeriodicAxisCopiesItsFirstFaceToItsLast) {
@@ -172,10 +178,9 @@ TEST(AirflowBoundaries, AOneCellWideAxisReadsNothingOutOfRange) {
     ASSERT_EQ(g.u.size(), 2u * 3u * 1u);
     g.u[u_index(g.shape, 1, 2, 0)] = 0.5f;
     apply_velocity_boundaries(g, bc);
-    // x- copies face 1 (0.5): flow in +x at the minus face enters the box,
-    // so it is refused and takes the ambient's 0. x+ then copies face 0 (0).
+    // Both outlets' faces are left alone (L90): face 0 and face 1 keep what they held.
     EXPECT_EQ(g.u[u_index(g.shape, 0, 2, 0)], 0.0f);
-    EXPECT_EQ(g.u[u_index(g.shape, 1, 2, 0)], 0.0f);
+    EXPECT_EQ(g.u[u_index(g.shape, 1, 2, 0)], 0.5f);
 }
 
 }  // namespace

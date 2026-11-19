@@ -28,6 +28,8 @@
 // the same order: u at 0, v at faces_u, w at faces_u + faces_v (Physics,
 // 2026-10-21).
 //
+// L90: a point past an outlet face reads an ambient ghost (the Axis' g0, g1), as advect.cpp's does; a select, no arithmetic.
+//
 // PARITY. -fp-mode precise on every kernel compile keeps the arithmetic
 // uncontracted (cmake/SpadeSlang.cmake); 1/dx comes from the host. The two
 // traces are one function: x + (s h/2) v is x - (h/2) v to the bit for
@@ -75,6 +77,10 @@ struct Axis {
     uint i0;
     uint i1;
     float t;
+    // L90 (advect.cpp's Axis): the sample at i0 (or i1) is the ambient's, not the grid's: a point past an outlet face reads a ghost sample of the
+    // ambient air, one cell out, blended with the edge sample across that cell and all ambient past it.
+    bool g0;
+    bool g1;
 };
 
 Axis axis(uint i0, uint i1, float t) {
@@ -82,12 +88,21 @@ Axis axis(uint i0, uint i1, float t) {
     out.i0 = i0;
     out.i1 = i1;
     out.t = t;
+    out.g0 = false;
+    out.g1 = false;
+    return out;
+}
+
+Axis axis_ghost(uint i0, uint i1, float t, bool g0, bool g1) {
+    Axis out = axis(i0, i1, t);
+    out.g0 = g0;
+    out.g1 = g1;
     return out;
 }
 
 // A fractional sample coordinate f along an axis of n cells holding `count`
 // samples (n + 1 on the component's own axis, n on the others).
-Axis locate(float f, uint n, uint count, bool periodic) {
+Axis locate(float f, uint n, uint count, bool periodic, bool ghost_lo, bool ghost_hi) {
     if (periodic) {
         if (n == 1u) return axis(0u, 0u, 0.0);
         const float nf = float(n);
@@ -98,6 +113,8 @@ Axis locate(float f, uint n, uint count, bool periodic) {
     }
     if (count == 1u) return axis(0u, 0u, 0.0);
     const float top = float(count - 1u);
+    if (ghost_lo && f < 0.0) return axis_ghost(0u, 0u, f > -1.0 ? f + 1.0 : 0.0, true, false);  // between the ghost at -1 and sample 0
+    if (ghost_hi && f > top) return axis_ghost(count - 1u, count - 1u, f < top + 1.0 ? f - top : 1.0, false, true);  // between the last sample and the ghost
     const float c = f > top ? top : (f >= 0.0 ? f : 0.0);  // NaN clamps to 0
     uint i0 = uint(c);
     if (i0 + 1u >= count) i0 = count - 2u;
@@ -111,7 +128,8 @@ Axis locate_for(float3 x, uint a, uint c) {
     const bool own = a == c;
     const float f = x[a] * grid_inv_dx() - (own ? 0.0 : 0.5);
     const uint n = axis_cells(a);
-    return locate(f, n, own ? n + 1u : n, axis_periodic(a));
+    return locate(f, n, own ? n + 1u : n, axis_periodic(a), face_kind(2u * a) == kFacePressureOutlet,
+                  face_kind(2u * a + 1u) == kFacePressureOutlet);
 }
 
 struct Sample {
@@ -142,6 +160,9 @@ Sample interpolate(float a000, float a100, float a010, float a110, float a001, f
     return out;
 }
 
+// A corner's value: the ambient's where any of its axes' samples is a ghost (advect.cpp's sample_on at()).
+float corner(bool ghost, float amb, float value) { return ghost ? amb : value; }
+
 // Velocity component C, by face index: C is a compile-time constant, so each
 // call reads one buffer with no branch.
 float velocity_load<let C : uint>(uint index) {
@@ -154,14 +175,15 @@ float velocity_load<let C : uint>(uint index) {
 Sample sample_velocity<let C : uint>(Axis x0, Axis x1, Axis x2) {
     const uint sx = samples_x(C);
     const uint sy = samples_y(C);
-    return interpolate(velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i0)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i0)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i0)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i0)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i1)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i1)),
-                       velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i1)),
-                       velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i1)), x0, x1, x2);
+    const float amb = ambient_velocity(C);
+    return interpolate(corner(x0.g0 || x1.g0 || x2.g0, amb, velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i0))),
+                       corner(x0.g1 || x1.g0 || x2.g0, amb, velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i0))),
+                       corner(x0.g0 || x1.g1 || x2.g0, amb, velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i0))),
+                       corner(x0.g1 || x1.g1 || x2.g0, amb, velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i0))),
+                       corner(x0.g0 || x1.g0 || x2.g1, amb, velocity_load<C>(x0.i0 + sx * (x1.i0 + sy * x2.i1))),
+                       corner(x0.g1 || x1.g0 || x2.g1, amb, velocity_load<C>(x0.i1 + sx * (x1.i0 + sy * x2.i1))),
+                       corner(x0.g0 || x1.g1 || x2.g1, amb, velocity_load<C>(x0.i0 + sx * (x1.i1 + sy * x2.i1))),
+                       corner(x0.g1 || x1.g1 || x2.g1, amb, velocity_load<C>(x0.i1 + sx * (x1.i1 + sy * x2.i1))), x0, x1, x2);
 }
 
 // Component c's forward estimate's trilinear sample on located axes (one
@@ -170,14 +192,15 @@ Sample sample_hat(uint c, Axis x0, Axis x1, Axis x2) {
     const uint sx = samples_x(c);
     const uint sy = samples_y(c);
     const uint base = offset_hat() + component_base(c);
-    return interpolate(airflow_advect[base + x0.i0 + sx * (x1.i0 + sy * x2.i0)],
-                       airflow_advect[base + x0.i1 + sx * (x1.i0 + sy * x2.i0)],
-                       airflow_advect[base + x0.i0 + sx * (x1.i1 + sy * x2.i0)],
-                       airflow_advect[base + x0.i1 + sx * (x1.i1 + sy * x2.i0)],
-                       airflow_advect[base + x0.i0 + sx * (x1.i0 + sy * x2.i1)],
-                       airflow_advect[base + x0.i1 + sx * (x1.i0 + sy * x2.i1)],
-                       airflow_advect[base + x0.i0 + sx * (x1.i1 + sy * x2.i1)],
-                       airflow_advect[base + x0.i1 + sx * (x1.i1 + sy * x2.i1)], x0, x1, x2);
+    const float amb = ambient_velocity(c);
+    return interpolate(corner(x0.g0 || x1.g0 || x2.g0, amb, airflow_advect[base + x0.i0 + sx * (x1.i0 + sy * x2.i0)]),
+                       corner(x0.g1 || x1.g0 || x2.g0, amb, airflow_advect[base + x0.i1 + sx * (x1.i0 + sy * x2.i0)]),
+                       corner(x0.g0 || x1.g1 || x2.g0, amb, airflow_advect[base + x0.i0 + sx * (x1.i1 + sy * x2.i0)]),
+                       corner(x0.g1 || x1.g1 || x2.g0, amb, airflow_advect[base + x0.i1 + sx * (x1.i1 + sy * x2.i0)]),
+                       corner(x0.g0 || x1.g0 || x2.g1, amb, airflow_advect[base + x0.i0 + sx * (x1.i0 + sy * x2.i1)]),
+                       corner(x0.g1 || x1.g0 || x2.g1, amb, airflow_advect[base + x0.i1 + sx * (x1.i0 + sy * x2.i1)]),
+                       corner(x0.g0 || x1.g1 || x2.g1, amb, airflow_advect[base + x0.i0 + sx * (x1.i1 + sy * x2.i1)]),
+                       corner(x0.g1 || x1.g1 || x2.g1, amb, airflow_advect[base + x0.i1 + sx * (x1.i1 + sy * x2.i1)]), x0, x1, x2);
 }
 
 // The velocity at x: each axis located once against its faces and once

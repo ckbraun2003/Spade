@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "physics/airflow/boundaries.hpp"
+
 namespace spade::physics::airflow {
 
 namespace {
@@ -23,11 +25,16 @@ struct Axis {
     uint32_t i0;
     uint32_t i1;
     float t;
+    // L90: the sample at i0 (or i1) is the ambient's, not the grid's: a point past an outlet face reads a ghost sample of the ambient air, one cell
+    // out, blended with the edge sample across that cell and all ambient past it. (A clamp to the edge sample brought the edge cell's own
+    // velocity back in through an inflow, a source of kinetic energy the p = 0 outlet cannot answer.)
+    bool g0 = false;
+    bool g1 = false;
 };
 
 // A fractional sample coordinate f along an axis of n cells holding `count`
 // samples (n + 1 on the component's own axis, n on the others).
-SPADE_AIRFLOW_HOT Axis locate(float f, uint32_t n, uint32_t count, bool periodic) noexcept {
+SPADE_AIRFLOW_HOT Axis locate(float f, uint32_t n, uint32_t count, bool periodic, bool ghost_lo = false, bool ghost_hi = false) noexcept {
     if (periodic) {
         if (n == 1u) return {0u, 0u, 0.0f};
         const float nf = static_cast<float>(n);
@@ -38,6 +45,8 @@ SPADE_AIRFLOW_HOT Axis locate(float f, uint32_t n, uint32_t count, bool periodic
     }
     if (count == 1u) return {0u, 0u, 0.0f};
     const float top = static_cast<float>(count - 1u);
+    if (ghost_lo && f < 0.0f) return {0u, 0u, f > -1.0f ? f + 1.0f : 0.0f, true, false};  // between the ghost at -1 and sample 0
+    if (ghost_hi && f > top) return {count - 1u, count - 1u, f < top + 1.0f ? f - top : 1.0f, false, true};  // between the last sample and the ghost
     const float c = f > top ? top : (f >= 0.0f ? f : 0.0f);  // NaN clamps to 0
     uint32_t i0 = static_cast<uint32_t>(c);
     if (i0 + 1u >= count) i0 = count - 2u;
@@ -53,6 +62,9 @@ SPADE_AIRFLOW_HOT float lerp(float a, float b, float t) noexcept { return a + t 
 struct Geometry {
     uint32_t n[3];
     bool periodic[3];
+    bool ghost_lo[3];   // an outlet at the axis' minus face: the sampler reads the ambient past it (L90)
+    bool ghost_hi[3];
+    float amb[3];       // the ambient's component c, the ghost samples' value
     std::size_t sx[3];  // per component, the samples along x and y
     std::size_t sy[3];
     float inv_dx;
@@ -64,6 +76,9 @@ struct Geometry {
     for (uint32_t a = 0; a < 3; ++a) {
         g.n[a] = n[a];
         g.periodic[a] = bc.face[2u * a] == FaceBc::periodic;
+        g.ghost_lo[a] = face_kind(bc, static_cast<Side>(2u * a)) == FaceKind::pressure_outlet;
+        g.ghost_hi[a] = face_kind(bc, static_cast<Side>(2u * a + 1u)) == FaceKind::pressure_outlet;
+        g.amb[a] = bc.ambient[static_cast<glm::length_t>(a)];
         g.sx[a] = a == 0u ? s.nx + 1u : s.nx;
         g.sy[a] = a == 1u ? s.ny + 1u : s.ny;
     }
@@ -75,7 +90,7 @@ struct Geometry {
 SPADE_AIRFLOW_HOT Axis locate_for(const Geometry& g, glm::vec3 x, uint32_t a, uint32_t c) noexcept {
     const bool own = a == c;
     const float f = x[static_cast<glm::length_t>(a)] * g.inv_dx - (own ? 0.0f : 0.5f);
-    return locate(f, g.n[a], own ? g.n[a] + 1u : g.n[a], g.periodic[a]);
+    return locate(f, g.n[a], own ? g.n[a] + 1u : g.n[a], g.periodic[a], g.ghost_lo[a], g.ghost_hi[a]);
 }
 
 // The trilinear sample of component c's field on located axes; with kRange,
@@ -86,15 +101,16 @@ SPADE_AIRFLOW_HOT Sample sample_on(const Geometry& g, uint32_t c, const float* f
                                    const Axis& x2) noexcept {
     const std::size_t sx = g.sx[c];
     const std::size_t sy = g.sy[c];
-    const auto at = [&](uint32_t i, uint32_t j, uint32_t k) { return field[i + sx * (j + sy * k)]; };
-    const float a000 = at(x0.i0, x1.i0, x2.i0);
-    const float a100 = at(x0.i1, x1.i0, x2.i0);
-    const float a010 = at(x0.i0, x1.i1, x2.i0);
-    const float a110 = at(x0.i1, x1.i1, x2.i0);
-    const float a001 = at(x0.i0, x1.i0, x2.i1);
-    const float a101 = at(x0.i1, x1.i0, x2.i1);
-    const float a011 = at(x0.i0, x1.i1, x2.i1);
-    const float a111 = at(x0.i1, x1.i1, x2.i1);
+    const float amb = g.amb[c];
+    const auto at = [&](uint32_t i, uint32_t j, uint32_t k, bool ghost) { return ghost ? amb : field[i + sx * (j + sy * k)]; };
+    const float a000 = at(x0.i0, x1.i0, x2.i0, x0.g0 || x1.g0 || x2.g0);
+    const float a100 = at(x0.i1, x1.i0, x2.i0, x0.g1 || x1.g0 || x2.g0);
+    const float a010 = at(x0.i0, x1.i1, x2.i0, x0.g0 || x1.g1 || x2.g0);
+    const float a110 = at(x0.i1, x1.i1, x2.i0, x0.g1 || x1.g1 || x2.g0);
+    const float a001 = at(x0.i0, x1.i0, x2.i1, x0.g0 || x1.g0 || x2.g1);
+    const float a101 = at(x0.i1, x1.i0, x2.i1, x0.g1 || x1.g0 || x2.g1);
+    const float a011 = at(x0.i0, x1.i1, x2.i1, x0.g0 || x1.g1 || x2.g1);
+    const float a111 = at(x0.i1, x1.i1, x2.i1, x0.g1 || x1.g1 || x2.g1);
     const float c0 = lerp(lerp(a000, a100, x0.t), lerp(a010, a110, x0.t), x1.t);
     const float c1 = lerp(lerp(a001, a101, x0.t), lerp(a011, a111, x0.t), x1.t);
     Sample out{lerp(c0, c1, x2.t), a000, a000};
