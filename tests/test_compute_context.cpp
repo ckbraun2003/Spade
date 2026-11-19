@@ -112,6 +112,37 @@ TEST(GpuContext, ReportsTheDeviceDriverAndFloatControls) {
     std::cout << "[GpuContext] " << spade::compute::describe(report) << "\n";
 }
 
+// THE VRAM SHARES (camera design section 12, item 3): the context owns the ledger, reserve_vram() checks a share against
+// the live heap budget, and a share fits and is released on whatever card this is (a card whose budget is under 2 GiB
+// makes the test skip, it does not guess).
+TEST(GpuContext, ReservesVramSharesAgainstTheHeapBudget) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto context = VulkanContext::create(BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(context.has_value()) << context.error().context;
+    const spade::compute::MemoryBudget budget = (*context)->memory_budget();
+    constexpr uint64_t kGiB = uint64_t{1} << 30;
+    if (budget.budget < 2 * kGiB) GTEST_SKIP() << "the card's budget (" << budget.budget << " bytes) is under 2 GiB";
+
+    EXPECT_EQ((*context)->vram_ledger().reserved(), 0u);
+    auto camera = (*context)->reserve_vram("camera", kGiB / 2);
+    ASSERT_TRUE(camera.has_value()) << camera.error().context;
+    EXPECT_EQ((*context)->vram_ledger().reserved(), kGiB / 2);
+    ASSERT_EQ((*context)->vram_ledger().shares().size(), 1u);
+    EXPECT_EQ((*context)->vram_ledger().shares()[0].name, "camera");
+
+    // More than the whole budget is refused by name, on this device, and holds nothing more.
+    const auto too_much = (*context)->reserve_vram("flow solver", budget.budget + kGiB);
+    ASSERT_FALSE(too_much.has_value());
+    EXPECT_EQ(too_much.error().code, spade::Code::capacity_exceeded) << too_much.error().context;
+    EXPECT_NE(too_much.error().context.find("flow solver"), std::string::npos) << too_much.error().context;
+    EXPECT_NE(too_much.error().context.find(std::string((*context)->device_name())), std::string::npos)
+        << too_much.error().context;
+    EXPECT_EQ((*context)->vram_ledger().reserved(), kGiB / 2);
+
+    camera->release();
+    EXPECT_EQ((*context)->vram_ledger().reserved(), 0u);
+}
+
 // Simulation::vulkan_device_report() is the same report, on a Vulkan
 // Simulation; on a cpu one it refuses with `unavailable`, like the other
 // Vulkan diagnostics.
