@@ -469,7 +469,7 @@ struct PropBlur {
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.65f;        // the copies' and the disc's grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
     bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
-    float opacity = 3.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
+    float opacity = 5.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
@@ -640,10 +640,13 @@ struct BladeChord {
 // middle radius times `opacity` (capped at 1), `segments` evenly round, both windings (seen from either side), flat at y = plane_y. The rings are as
 // narrow as the alpha's change needs: a ring's two edges differ in alpha by at most `max_alpha_step` (and no ring is wider than 4% of the radius or
 // narrower than 0.15%), so there is no visible step between one ring and the next. One submesh and one material per ring; nothing varies with the angle.
+inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at most half of what is behind it
+
 [[nodiscard]] inline spade::render::MeshData rotor_disc_mesh(const BladeChord& chord, float radius_m, float plane_y, float opacity, float tint,
                                                            float max_alpha_step, uint32_t segments) {
     spade::render::MeshData m;
-    const auto alpha_at = [&](float x) { return std::min(1.0f, blade_solidity(chord, x) * opacity); };
+    // never more than half opaque (L100): under a near-opaque root the black mounts read as white arms; the colour is not changed by the cap
+    const auto alpha_at = [&](float x) { return std::min(kDiscMaxAlpha, std::min(1.0f, blade_solidity(chord, x) * opacity)); };
     constexpr float kWidestRing = 0.04f, kNarrowestRing = 0.0015f;
     std::vector<float> edges{chord.hub_cutout};
     while (edges.back() < 1.0f - 1e-6f) {
@@ -699,8 +702,9 @@ struct BladeChord {
     if (blur.sampled) {
         return std::format("each rotor's blade drawn as {} copies spread over a {:g} s shutter so the turning shows", blur.samples, blur.shutter_s);
     }
-    if (blur.opacity == 1.0f) return "rotor discs drawn at the blades' time-averaged coverage";
-    return std::format("rotor discs drawn at {:g} times the blades' time-averaged coverage so they show over the air", static_cast<double>(blur.opacity));
+    if (blur.opacity == 1.0f) return "rotor discs drawn unlit at the blades' time-averaged coverage, no more than half opaque";
+    return std::format("rotor discs drawn unlit at {:g} times the blades' time-averaged coverage, no more than half opaque, so they show over the air and the parts under them show through",
+                       static_cast<double>(blur.opacity));
 }
 
 struct BuildDraw {
