@@ -51,6 +51,9 @@ struct Device {
     VkPhysicalDeviceMemoryProperties mem{};
     float ts_period_ns = 1.0f;
     VkDeviceSize scratch_align = 256;
+    uint64_t max_descriptor_as = 0;   // maxDescriptorSetAccelerationStructures: how many per-env TLAS one descriptor set can hold
+    uint64_t max_instances = 0;       // maxInstanceCount of one TLAS
+    uint64_t max_primitives = 0;      // maxPrimitiveCount of one BLAS
     bool has_budget = false;
     bool has_external = false;  // win32 external memory and semaphore
     std::string name;
@@ -201,6 +204,9 @@ struct Device {
     vkGetPhysicalDeviceProperties2(d.phys, &p2);
     d.ts_period_ns = p2.properties.limits.timestampPeriod;
     d.scratch_align = std::max<VkDeviceSize>(asp.minAccelerationStructureScratchOffsetAlignment, 128);
+    d.max_descriptor_as = asp.maxDescriptorSetAccelerationStructures;
+    d.max_instances = asp.maxInstanceCount;
+    d.max_primitives = asp.maxPrimitiveCount;
     d.name = p2.properties.deviceName;
     d.driver = p2.properties.driverVersion;
     std::memcpy(d.device_uuid, idp.deviceUUID, VK_UUID_SIZE);

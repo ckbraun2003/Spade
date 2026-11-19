@@ -79,8 +79,11 @@ Setup setup_from(const Args& a) {
 }
 
 void banner(const Device& d) {
-    std::printf("RESULT device name=\"%s\" driver=%u ts_period_ns=%.3f scratch_align=%llu budget_ext=%d external=%d luid_valid=%d\n", d.name.c_str(), d.driver,
-                static_cast<double>(d.ts_period_ns), static_cast<unsigned long long>(d.scratch_align), d.has_budget ? 1 : 0, d.has_external ? 1 : 0, d.luid_valid ? 1 : 0);
+    std::printf("RESULT device name=\"%s\" driver=%u ts_period_ns=%.3f scratch_align=%llu budget_ext=%d external=%d luid_valid=%d max_descriptor_set_as=%llu "
+                "max_tlas_instances=%llu max_blas_primitives=%llu\n",
+                d.name.c_str(), d.driver, static_cast<double>(d.ts_period_ns), static_cast<unsigned long long>(d.scratch_align), d.has_budget ? 1 : 0,
+                d.has_external ? 1 : 0, d.luid_valid ? 1 : 0, static_cast<unsigned long long>(d.max_descriptor_as), static_cast<unsigned long long>(d.max_instances),
+                static_cast<unsigned long long>(d.max_primitives));
 }
 
 double mb(uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
