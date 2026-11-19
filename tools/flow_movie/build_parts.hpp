@@ -469,7 +469,7 @@ struct PropBlur {
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.65f;        // the copies' and the disc's grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
     bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
-    float opacity = 6.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
+    float opacity = 3.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
 };
 
 // "alpha=0.4,samples=32,shutter=0.02" over PropBlur's defaults (--prop-blur): alpha in (0, 1], samples a whole number from 1 to 128, shutter
