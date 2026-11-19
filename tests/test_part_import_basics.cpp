@@ -27,7 +27,7 @@ TEST(PartImportCodes, EveryCodeOfTheDesignNoteHasItsExitCodeAndAdvice) {
     const std::vector<std::pair<std::string_view, int>> expected = {
         {"ok", 0},
         {"store_io", 1}, {"file_unreadable", 1}, {"internal", 1},
-        {"usage", 2}, {"unit_required", 2}, {"unit_not_allowed", 2}, {"axes_invalid", 2}, {"axes_mirror", 2}, {"scale_invalid", 2},
+        {"usage", 2}, {"unit_required", 2}, {"unit_not_allowed", 2}, {"axes_invalid", 2}, {"axes_mirror", 2}, {"origin_invalid", 2}, {"scale_invalid", 2},
         {"object_not_found", 2}, {"deflection_required", 2}, {"store_required", 2}, {"store_in_git_tree", 2},
         {"format_unknown", 3}, {"format_unavailable", 3}, {"external_buffers", 3}, {"step_unavailable", 3}, {"converter_failed", 3},
         {"file_invalid", 4}, {"mesh_refused", 4},
@@ -303,6 +303,69 @@ TEST(PartImportKey, EachInputChangesTheKeyAndTheSameInputsGiveTheSame) {
     vary([](KeyInputs& k) { k.scale = 2.0; });
     vary([](KeyInputs& k) { k.object = "arm"; });
     EXPECT_EQ(keys.size(), 8u);
+}
+
+// ---- the origin ----------------------------------------------------------------------------------------------------------------
+
+TEST(PartImportOrigin, AnOriginIsThreeFiniteNumbers) {
+    auto o = parse_origin("1,2,3");
+    ASSERT_TRUE(o.has_value());
+    EXPECT_EQ(*o, glm::dvec3(1, 2, 3));
+    o = parse_origin(" -177.4 , 22 , 2.5e1 ");
+    ASSERT_TRUE(o.has_value());
+    EXPECT_EQ(*o, glm::dvec3(-177.4, 22.0, 25.0));
+    for (const char* bad : {"", "1,2", "1,2,3,4", "a,b,c", "1,2,nan", "1,inf,3", "1;2;3", "1,,3", "1 2 3", "1,2,3x"}) {
+        const auto e = parse_origin(bad);
+        ASSERT_FALSE(e.has_value()) << "'" << bad << "'";
+        EXPECT_EQ(e.error().code, "origin_invalid") << bad;
+        EXPECT_NE(e.error().message.find("--origin"), std::string::npos);
+    }
+}
+
+[[nodiscard]] std::pair<glm::dvec3, glm::dvec3> bounds_of(const std::shared_ptr<const TriangleMesh>& mesh) {
+    glm::dvec3 lo(1e30), hi(-1e30);
+    for (const glm::vec3& p : mesh->positions()) {
+        lo = glm::min(lo, glm::dvec3(p));
+        hi = glm::max(hi, glm::dvec3(p));
+    }
+    return {lo, hi};
+}
+
+TEST(PartImportOrigin, TheOriginIsSubtractedFirstThenTheAxesThenTheScale) {
+    const auto mesh = box(1.0, 2.0, 3.0);  // x 0..1, y 0..2, z 0..3, metres
+    // (p - (1,0,0)) is x -1..0, y 0..2, z 0..3; axes y,-x,z gives x 0..2, y 0..1, z 0..3; the scale 2 doubles each
+    const auto moved = transform_mesh(mesh, parse_axes("y,-x,z").value(), 2.0, glm::dvec3(1.0, 0.0, 0.0));
+    ASSERT_TRUE(moved.has_value()) << moved.error().message;
+    const auto [lo, hi] = bounds_of(*moved);
+    EXPECT_EQ(lo, glm::dvec3(0.0, 0.0, 0.0));
+    EXPECT_EQ(hi, glm::dvec3(4.0, 2.0, 6.0));
+}
+
+TEST(PartImportOrigin, AnOriginAloneMovesTheMeshAndNoOriginKeepsTheSameMesh) {
+    const auto mesh = box(1.0, 1.0, 1.0);
+    const auto moved = transform_mesh(mesh, Axes{}, 1.0, glm::dvec3(0.5, 0.5, 0.5));
+    ASSERT_TRUE(moved.has_value()) << moved.error().message;
+    const auto [lo, hi] = bounds_of(*moved);
+    EXPECT_EQ(lo, glm::dvec3(-0.5));
+    EXPECT_EQ(hi, glm::dvec3(0.5));
+    const auto same = transform_mesh(mesh, Axes{}, 1.0, glm::dvec3(0.0));
+    ASSERT_TRUE(same.has_value());
+    EXPECT_EQ(same->get(), mesh.get()) << "no origin, no axes, no scale: the mesh itself";
+}
+
+TEST(PartImportOrigin, TheKeyTextCarriesTheOriginOnlyWhenGivenAndTheOriginChangesTheKey) {
+    KeyInputs base;
+    base.converter = "mesh-1";
+    base.unit = "mm";
+    const std::string plain = cache_key_text(base);
+    EXPECT_EQ(plain.find("origin"), std::string::npos) << "an existing key's text does not change";
+    KeyInputs with = base;
+    with.origin = glm::dvec3(-177.4, 22.0, -177.4);
+    EXPECT_EQ(cache_key_text(with), plain + ";origin=-177.4,22,-177.4");
+    EXPECT_NE(cache_key(with), cache_key(base));
+    KeyInputs other = base;
+    other.origin = glm::dvec3(-177.4, 22.0, 177.4);
+    EXPECT_NE(cache_key(other), cache_key(with));
 }
 
 }  // namespace

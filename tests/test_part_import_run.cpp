@@ -733,4 +733,56 @@ TEST(PartImportColour, AnEntryOfTheOlderRevisionIsReimportedAtTheSameKeyWithTheS
     }
 }
 
+// ---- the origin ----------------------------------------------------------------------------------------------------------------
+
+[[nodiscard]] std::pair<glm::dvec3, glm::dvec3> sidecar_bounds(const json& object) {
+    const auto loaded = load_mesh_file(fs::path(object.value("sidecar", std::string())));
+    EXPECT_TRUE(loaded.has_value());
+    glm::dvec3 lo(1e30), hi(-1e30);
+    if (loaded.has_value()) {
+        for (const glm::vec3& p : loaded->mesh->positions()) {
+            lo = glm::min(lo, glm::dvec3(p));
+            hi = glm::max(hi, glm::dvec3(p));
+        }
+    }
+    return {lo, hi};
+}
+
+TEST(PartImportOrigin, AnImportPutsTheGivenPointAtTheOriginInTheFilesOwnUnitAndKeysItApart) {
+    Rig rig;
+    // a glb is metres: a cube of side 1 from 0 to 1
+    const fs::path glb = rig.put("cube.glb", cube_glb());
+    const Out plain = rig.run(A({"--import", glb.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(plain.exit, 0) << plain.out;
+    const Out moved = rig.run(A({"--import", glb.string(), "--store", rig.store().string(), "--origin", "0.25,0.25,0.25"}));
+    ASSERT_EQ(moved.exit, 0) << moved.out;
+    EXPECT_NE(moved.result.value("key", std::string()), plain.result.value("key", std::string()));
+    const auto [lo, hi] = sidecar_bounds(moved.result.at("objects")[0]);
+    EXPECT_NEAR(lo.x, -0.25, 1e-7);
+    EXPECT_NEAR(hi.x, 0.75, 1e-7);
+    EXPECT_NEAR(lo.z, -0.25, 1e-7);
+    const auto stored = json::parse(read_file(fs::path(moved.result.value("entry", std::string())) / "import.json"));
+    EXPECT_NE(stored.at("key_text").get<std::string>().find(";origin=0.25,0.25,0.25"), std::string::npos);
+    // an STL has the unit --unit gives: millimetres, so the origin is millimetres too
+    const fs::path stl = rig.put("cube.stl", cube_stl(10.0f));
+    const Out mm = rig.run(A({"--import", stl.string(), "--unit", "mm", "--store", rig.store().string(), "--origin", "5,5,5"}));
+    ASSERT_EQ(mm.exit, 0) << mm.out;
+    const auto [mlo, mhi] = sidecar_bounds(mm.result.at("objects")[0]);
+    EXPECT_NEAR(mlo.x, -0.005, 1e-7);
+    EXPECT_NEAR(mhi.x, 0.005, 1e-7);
+}
+
+TEST(PartImportOrigin, InspectShowsTheMovedBoxAndAnOriginThatIsNotThreeNumbersIsAUsageProblem) {
+    Rig rig;
+    const fs::path glb = rig.put("cube.glb", cube_glb());
+    const Out r = rig.run(A({"--inspect", glb.string(), "--origin", "0.25,0.25,0.25"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_EQ(numbers(r.result.at("objects")[0].at("bbox").at("min")), (std::vector<double>{-0.25, -0.25, -0.25}));
+    EXPECT_EQ(r.result.value("frame", std::string()), "part");
+    const Out bad = rig.run(A({"--import", glb.string(), "--store", rig.store().string(), "--origin", "1,2"}));
+    EXPECT_EQ(bad.exit, 2);
+    EXPECT_EQ(bad.code(), "origin_invalid");
+    EXPECT_FALSE(fs::exists(rig.store()));
+}
+
 }  // namespace

@@ -79,6 +79,23 @@ Expected<Axes> parse_axes(std::string_view text) {
     return axes;
 }
 
+Expected<glm::dvec3> parse_origin(std::string_view text) {
+    const Problem bad{"origin_invalid", "--origin '" + std::string(text) + "' is not three comma-separated finite numbers, for example -177.4,22,-177.4"};
+    glm::dvec3 out(0.0);
+    std::size_t start = 0;
+    for (int i = 0; i < 3; ++i) {
+        const std::size_t comma = text.find(',', start);
+        if ((i < 2) != (comma != std::string_view::npos)) return std::unexpected(bad);  // two commas, no more
+        const std::string_view item = trimmed(text.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start));
+        double v = 0.0;
+        const auto r = std::from_chars(item.data(), item.data() + item.size(), v);
+        if (item.empty() || r.ec != std::errc() || r.ptr != item.data() + item.size() || !std::isfinite(v)) return std::unexpected(bad);
+        out[i] = v;
+        start = comma + 1;
+    }
+    return out;
+}
+
 Expected<double> parse_scale(std::string_view text) {
     const std::string_view t = trimmed(text);
     double v = 0.0;
@@ -100,13 +117,13 @@ glm::dvec3 apply_axes(const Axes& axes, const glm::dvec3& p) {
 }
 
 Expected<std::shared_ptr<const TriangleMesh>> transform_mesh(const std::shared_ptr<const TriangleMesh>& mesh, const Axes& axes,
-                                                            double scale) {
-    if (axes.identity() && scale == 1.0) return mesh;
+                                                            double scale, const glm::dvec3& origin_m) {
+    if (axes.identity() && scale == 1.0 && origin_m == glm::dvec3(0.0)) return mesh;
     MeshInput in;
     in.unit = MeshUnit::metre;
     in.positions.reserve(mesh->positions().size());
     for (const glm::vec3& p : mesh->positions()) {
-        const glm::dvec3 q = apply_axes(axes, glm::dvec3(p));
+        const glm::dvec3 q = apply_axes(axes, glm::dvec3(p) - origin_m);
         in.positions.push_back(scale == 1.0 ? q : q * scale);
     }
     in.indices.assign(mesh->indices().begin(), mesh->indices().end());

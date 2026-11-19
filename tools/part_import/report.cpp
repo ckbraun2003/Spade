@@ -23,6 +23,7 @@ const std::vector<CodeInfo>& table() {
          "--axes takes three comma-separated axes, each x, y or z with an optional minus, each used once, for example -y,x,z."},
         {"axes_mirror", kExitUsage,
          "That axis choice is a mirror, which reverses the part. Change one sign, or swap two axes, so it is a rotation."},
+        {"origin_invalid", kExitUsage, "--origin takes three comma-separated numbers in the file's own unit, for example -177.4,22,-177.4."},
         {"scale_invalid", kExitUsage, "--scale takes a number above zero, for example 0.001."},
         {"object_not_found", kExitUsage, "The file has no object of that name; the message lists the names it has."},
         {"deflection_required", kExitUsage,

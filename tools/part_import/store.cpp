@@ -20,7 +20,8 @@ namespace fs = std::filesystem;
 std::string cache_key_text(const KeyInputs& in) {
     return "spade-part-import-key-1;converter=" + in.converter + ";tolerance=" + json_number(in.tolerance_m) + ";angle=" +
            json_number(in.angle_rad) + ";unit=" + in.unit + ";axes=" + in.axes.text() + ";scale=" + json_number(in.scale) +
-           ";object=" + in.object;
+           ";object=" + in.object +
+           (in.origin ? ";origin=" + json_number(in.origin->x) + "," + json_number(in.origin->y) + "," + json_number(in.origin->z) : std::string());
 }
 
 std::string colour_json(const std::optional<SurfaceColour>& colour) {
