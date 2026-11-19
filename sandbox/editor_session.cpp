@@ -77,6 +77,10 @@ void EditorSession::attach(GlTargetSink& sink) {
     sink_ = &sink;
     sink.attach_editor(&workspace_->panels());
     gpu_ = start_gpu(scene_);  // after create() bound every mesh, so one upload carries them
+    if (gpu_) {
+        csg_gate_.note_uploaded(scene_);
+        ++scene_uploads_;
+    }
 }
 
 EditorSession::~EditorSession() {
@@ -167,7 +171,7 @@ Result<void> EditorSession::rebuild_scene() {
     // N12: each model with parts, prepared once. One that won't prepare draws
     // as its layout, and says why (announced, never silent).
     prepared_.clear();
-    upload_each_frame_ = false;
+    has_csg_ = false;
     for (const vehicles::ModelType& m : workspace_->documents().scene.desc().models) {
         if (m.parts.empty()) continue;
         Result<render_parts::PreparedParts> p = render_parts::prepare_parts(m);
@@ -175,7 +179,7 @@ Result<void> EditorSession::rebuild_scene() {
             workspace_->panels().status = "the model '" + m.name + "' draws as its layout: " + p.error().context;
             continue;
         }
-        upload_each_frame_ = upload_each_frame_ || has_csg_pieces(*p);
+        has_csg_ = has_csg_ || has_csg_pieces(*p);
         prepared_.emplace_back(m.name, std::move(*p));
     }
     options_.ground_grid = true;
@@ -188,6 +192,8 @@ Result<void> EditorSession::rebuild_scene() {
         if (Result<void> up = gpu_->upload_scene(scene_); !up) {
             return std::unexpected(Error{up.error().code, "re-upload failed: " + up.error().context});
         }
+        csg_gate_.note_uploaded(scene_);
+        ++scene_uploads_;
     }
     return {};
 }
@@ -338,11 +344,13 @@ Result<void> EditorSession::frame(const FrameInput& in, float dt) {
         if (Result<void> rebuilt = rebuild_scene(); !rebuilt) return rebuilt;
     }
     draw_items();
-    if (gpu_ && upload_each_frame_) {
-        // A CSG-root piece marches at the pose it was uploaded with.
+    if (gpu_ && has_csg_ && csg_gate_.needs_upload(scene_)) {
+        // A CSG-root piece marches at the pose it was uploaded with: upload when a subtree moved or was edited, not every frame.
         if (Result<void> up = gpu_->upload_scene(scene_); !up) {
             return std::unexpected(Error{up.error().code, "re-upload failed: " + up.error().context});
         }
+        csg_gate_.note_uploaded(scene_);
+        ++scene_uploads_;
     }
     // Run air's frame (INT-15, §9): the last the worker handed over, its
     // volume already where the drone is placed; the band's speed by the

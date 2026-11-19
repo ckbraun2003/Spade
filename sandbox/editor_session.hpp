@@ -52,6 +52,8 @@ class EditorSession {
     [[nodiscard]] editor::EditorWorkspace& workspace() noexcept { return *workspace_; }
     [[nodiscard]] OrbitCamera& camera() noexcept { return camera_; }
     [[nodiscard]] bool gpu_active() const noexcept { return gpu_ != nullptr; }
+    // How many times the scene was uploaded to the GPU (the start, each composition, and each frame a CSG subtree moved or was edited).
+    [[nodiscard]] uint64_t scene_uploads() const noexcept { return scene_uploads_; }
     // The loop draws every frame while this is true (a run or Run air steps), else on events and a heartbeat.
     [[nodiscard]] bool animating() const noexcept { return workspace_->animating(); }
 
@@ -98,7 +100,9 @@ class EditorSession {
     // vehicles bound in (bind_parts() writes statics).
     render::RenderScene base_;
     std::vector<std::pair<std::string, render_parts::PreparedParts>> prepared_;  // by model name
-    bool upload_each_frame_ = false;  // a CSG-root piece marches at its uploaded pose
+    bool has_csg_ = false;       // a model has a CSG-root piece, which marches at the pose it was uploaded with
+    CsgUploadGate csg_gate_;     // what the renderer holds of the CSG subtrees: a frame uploads only when one changed
+    uint64_t scene_uploads_ = 0;  // upload_scene() calls since the GPU started (a still CSG scene adds none)
     editor::ViewState view_;        // what the view shows (N19): editor state, not scene data
     render::ViewCache view_cache_;  // one across views and frames (streamlines traced once per generation)
     VehicleLook look_;
