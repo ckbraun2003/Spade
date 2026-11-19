@@ -2580,7 +2580,7 @@ struct WebFilming {
     }
     if (opt.nasa) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--nasa is for S2 and S8"
-                          : opt.window_to > 0.0                   ? "--nasa is not for a --window run"
+                          : (opt.window_to > 0.0 && !opt.web_still_only) ? "--nasa is not for a --window run (a --window --web-still redraw from a run's kept frames is)"
                           : opt.particles || opt.particles_preview ? "--nasa and the particle looks are different looks: use one"
                                                                   : "";
         if (*why != '\0') {
