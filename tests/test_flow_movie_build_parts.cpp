@@ -260,6 +260,10 @@ TEST(FlowMovieBuildParts, TheRealMaterialsAreNamedAndLookLikeTheirThings) {
     EXPECT_LT(std::max({bare.x, bare.y, bare.z}) - std::min({bare.x, bare.y, bare.z}), 0.1f) << "and nearly grey";
     const glm::vec3 anodised = rgb("aluminium_anodised");
     EXPECT_LT(anodised.x + anodised.y + anodised.z, bare.x + bare.y + bare.z) << "anodised is darker than bare";
+    // The kit's motor mounts and cans are BLACK anodised aluminium: beside the carbon they read as black metal, not as grey parts (the kit stills,
+    // 2026-11-18: at 0.11 to 0.15 the mounts lit to a pale grey L at every arm end), and a little lighter than the carbon so the metal still shows.
+    EXPECT_LT(std::max({anodised.x, anodised.y, anodised.z}), 0.07f) << "black anodised reads black";
+    EXPECT_GT(anodised.x + anodised.y + anodised.z, carbon.x + carbon.y + carbon.z) << "and a little lighter than the carbon";
     const glm::vec3 pcb = rgb("pcb_green");
     EXPECT_GT(pcb.y, pcb.x);
     EXPECT_GT(pcb.y, pcb.z);
