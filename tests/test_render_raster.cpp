@@ -16,6 +16,8 @@
 
 #include <world/builder.hpp>
 
+#include <glm/geometric.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -1087,7 +1089,7 @@ TEST(OverlayGeometry, ListsTheGridBoundsAndMarkersInDrawOrder) {
     options.spawn_markers = true;
     const spade::render::OverlayGeometry all = spade::render::overlay_geometry(scene, options);
     ASSERT_EQ(all.lines.size(), 21u + 21u + 12u) << "grid lines every metre over +-10 m, then 12 box edges";
-    ASSERT_EQ(all.triangles.size(), 2u * 2u + 4u) << "two per spawn, then four for the one meshless body";
+    ASSERT_EQ(all.triangles.size(), 2u * 2u + 25u) << "two per spawn, then the 25 of the one meshless body (a 24-triangle disc and a heading tick)";
 
     const double y = scene.has_ground ? static_cast<double>(scene.ground_y) : 0.0;
     EXPECT_EQ(all.lines.front().a, glm::dvec3(-10.0, y, -10.0));
@@ -1100,10 +1102,63 @@ TEST(OverlayGeometry, ListsTheGridBoundsAndMarkersInDrawOrder) {
     EXPECT_EQ(all.triangles.back().rgb, (std::array<uint8_t, 3>{124, 147, 255}));
 
     options.spawn_markers = false;
-    EXPECT_EQ(spade::render::overlay_geometry(scene, options).triangles.size(), 4u) << "spawns need spawn_markers";
+    EXPECT_EQ(spade::render::overlay_geometry(scene, options).triangles.size(), 25u) << "spawns need spawn_markers";
     options.overlays = false;
     const spade::render::OverlayGeometry none = spade::render::overlay_geometry(scene, options);
     EXPECT_TRUE(none.lines.empty() && none.triangles.empty()) << "nothing without overlays";
+}
+
+// L89 (KAT D171, accepted 2026-11-18): a body with no mesh is drawn as a small flat disc in its own horizontal plane with a short tick at its
+// nose, never a triangle icon (it was a 0.4 m tetrahedron). Generic for any body: nothing here knows a quadcopter. The pose below is yawed and
+// rolled, so "its own horizontal plane" is the body's local XZ plane, not the world's.
+TEST(OverlayGeometry, AMeshlessBodyIsAFlatDiscInItsOwnHorizontalPlaneWithAShortHeadingTick) {
+    RenderScene scene = make_empty_overlay_scene();
+    const glm::vec3 where(1.0f, 2.0f, 3.0f);
+    const glm::mat4 pose = glm::translate(glm::mat4(1.0f), where) * glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f)) *
+                           glm::rotate(glm::mat4(1.0f), glm::radians(20.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+    scene.dynamics.push_back(DrawItem{.mesh_index = kNoMesh, .local_to_world = pose});
+    RenderOptions options;
+    options.overlays = true;
+    options.spawn_markers = false;
+    const spade::render::OverlayGeometry g = spade::render::overlay_geometry(scene, options);
+    ASSERT_EQ(g.triangles.size(), 25u) << "a 24-triangle disc and one heading tick";
+
+    const glm::dvec3 centre(where);
+    const glm::dvec3 up = glm::normalize(glm::dvec3(pose[1]));
+    const glm::dvec3 nose = -glm::normalize(glm::dvec3(pose[2]));  // the body's -Z is its heading
+    const glm::dvec3 right = glm::normalize(glm::cross(nose, up));
+    constexpr double kDiscRadius = 0.15;
+    constexpr double kTol = 1e-6;
+    double disc_area = 0.0, disc_reach = 0.0;
+    std::size_t ticks = 0;
+    for (const spade::render::OverlayTriangle& t : g.triangles) {
+        EXPECT_EQ(t.rgb, (std::array<uint8_t, 3>{124, 147, 255})) << "the body accent, as before";
+        double reach = 0.0;
+        for (const glm::dvec3& v : {t.a, t.b, t.c}) {
+            EXPECT_NEAR(glm::dot(v - centre, up), 0.0, kTol) << "every vertex in the body's own horizontal plane: no tetrahedron";
+            reach = std::max(reach, glm::length(v - centre));
+        }
+        if (reach > kDiscRadius + kTol) {
+            ++ticks;
+            // the tick: one narrow triangle whose apex is on the heading, 0.26 m from the centre
+            const glm::dvec3* apex = nullptr;
+            for (const glm::dvec3* v : {&t.a, &t.b, &t.c}) {
+                if (glm::length(*v - centre) > kDiscRadius + kTol) apex = v;
+            }
+            ASSERT_NE(apex, nullptr);
+            EXPECT_NEAR(glm::dot(*apex - centre, nose), 0.26, kTol) << "the tick points along the body's heading, short of the disc's twice";
+            EXPECT_NEAR(glm::dot(*apex - centre, right), 0.0, kTol);
+            EXPECT_LE(glm::length(*apex - centre), 0.26 + kTol);
+        } else {
+            disc_reach = std::max(disc_reach, reach);
+            disc_area += 0.5 * glm::length(glm::cross(t.b - t.a, t.c - t.a));
+        }
+    }
+    EXPECT_EQ(ticks, 1u);
+    EXPECT_NEAR(disc_reach, kDiscRadius, kTol) << "the disc reaches its radius";
+    const double circle = 3.14159265358979 * kDiscRadius * kDiscRadius;
+    EXPECT_GT(disc_area, 0.98 * circle) << "a disc, not a fan of a few";
+    EXPECT_LE(disc_area, circle * (1.0 + 1e-9));
 }
 
 // ===========================================================================
