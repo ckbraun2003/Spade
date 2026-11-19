@@ -1158,3 +1158,55 @@ TEST(FlowMovieBuildParts, TheWholeX500TableParsesAndHasItsFourMotors) {
     EXPECT_EQ(rotors, 4u);
 }
 
+// THE DRONE'S LIGHT (the lead, 2026-11-18, the kit stills: "a soft rim or key light so the carbon plates and arm tubes read against the black,
+// without lifting the background"; a presentation choice, named in the clip record). The air is not lit (a volume), and the web scene's sky is
+// black, so the scene's one sun and its ambient light only the drone: --drone-light key=K,ambient=A sets them to K and A times the standard.
+TEST(FlowMovieBuildParts, TheDroneLightIsAKeyAndAFillStrengthAndNothingElse) {
+    const auto none = flow_movie::parse_drone_light("");
+    ASSERT_TRUE(none.has_value()) << none.error().context;
+    EXPECT_FLOAT_EQ(none->key, 1.0f);
+    EXPECT_FLOAT_EQ(none->ambient, 1.0f);
+    EXPECT_FALSE(none->on()) << "the standard light is not a choice to name";
+    const auto got = flow_movie::parse_drone_light("key=2.5,ambient=1.5");
+    ASSERT_TRUE(got.has_value()) << got.error().context;
+    EXPECT_FLOAT_EQ(got->key, 2.5f);
+    EXPECT_FLOAT_EQ(got->ambient, 1.5f);
+    EXPECT_TRUE(got->on());
+    const auto key_only = flow_movie::parse_drone_light("key=3");
+    ASSERT_TRUE(key_only.has_value());
+    EXPECT_FLOAT_EQ(key_only->ambient, 1.0f) << "what is not named keeps the standard";
+    for (const char* bad : {"key=0", "key=21", "ambient=-1", "key=abc", "key", "glow=2", "key=2,,ambient=1", "key=", "key=inf"}) {
+        const auto refused = flow_movie::parse_drone_light(bad);
+        ASSERT_FALSE(refused.has_value()) << bad;
+        EXPECT_NE(refused.error().context.find("drone light"), std::string::npos) << bad << ": " << refused.error().context;
+    }
+}
+
+TEST(FlowMovieBuildParts, TheDroneLightSetsTheLightingToAMultipleOfTheStandardNotAFurtherMultiple) {
+    const spade::render::Lighting standard;
+    spade::render::RenderScene scene;
+    scene.lighting.sky_zenith = glm::vec3(0.0f);
+    scene.lighting.sky_horizon = glm::vec3(0.0f);
+    flow_movie::apply_drone_light(scene, flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f});
+    EXPECT_FLOAT_EQ(scene.lighting.sun_intensity, standard.sun_intensity * 2.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.x, standard.ambient_color.x * 1.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.y, standard.ambient_color.y * 1.5f);
+    EXPECT_FLOAT_EQ(scene.lighting.ambient_color.z, standard.ambient_color.z * 1.5f);
+    EXPECT_EQ(scene.lighting.sun_direction, standard.sun_direction) << "the key's direction is not changed";
+    EXPECT_EQ(scene.lighting.sky_zenith, glm::vec3(0.0f)) << "the background stays black";
+    EXPECT_EQ(scene.lighting.sky_horizon, glm::vec3(0.0f));
+    flow_movie::apply_drone_light(scene, flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f});
+    EXPECT_FLOAT_EQ(scene.lighting.sun_intensity, standard.sun_intensity * 2.5f) << "every frame's scene is decorated: the same call twice is the same light";
+    spade::render::RenderScene plain;
+    const spade::render::Lighting before = plain.lighting;
+    flow_movie::apply_drone_light(plain, flow_movie::DroneLight{});
+    EXPECT_FLOAT_EQ(plain.lighting.sun_intensity, before.sun_intensity);
+    EXPECT_EQ(plain.lighting.ambient_color, before.ambient_color) << "the standard light changes nothing";
+}
+
+TEST(FlowMovieBuildParts, TheRecordSaysHowTheDroneIsLit) {
+    EXPECT_EQ(flow_movie::drone_light_note(flow_movie::DroneLight{}), "");
+    EXPECT_EQ(flow_movie::drone_light_note(flow_movie::DroneLight{.key = 2.5f, .ambient = 1.5f}),
+              "the drone is drawn under a key light at 2.5 times and a fill light at 1.5 times the standard lighting so its dark carbon reads against the black; the air is not lit by them");
+}
+
