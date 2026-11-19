@@ -1,0 +1,31 @@
+{
+ "description": "the SHA-256 of the bytes as given",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "hash_text",
+ "request": {
+  "text": "abc"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "hash_text",
+  "ok": true,
+  "result": {
+   "hash": "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+  },
+  "warnings": []
+ }
+}

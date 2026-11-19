@@ -1,0 +1,16 @@
+index_version: 1
+entries:
+  - id: part.motor.fpv_2306
+    name: FPV 2306
+    category: Motors
+    tags: [fpv]
+    file: motors/fpv_2306.motor.yaml
+  - id: part.prop.five_inch
+    name: Five inch prop
+    category: Props
+    tags: [fpv, five_inch]
+    file: props/five_inch.prop.yaml
+  - id: world.pad
+    name: Pad
+    category: Worlds
+    file: worlds/pad.world.yaml

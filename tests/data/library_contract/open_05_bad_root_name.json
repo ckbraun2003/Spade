@@ -1,0 +1,41 @@
+{
+ "description": "a root name that is not [a-z][a-z0-9_]*",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [
+   {
+    "name": "Bad Name",
+    "path": "$FIXTURES/roots/default"
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "invalid_request",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "invalid_request",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "a root name is [a-z][a-z0-9_]*, got 'Bad Name'",
+     "path": "$FIXTURES/roots/default",
+     "root": "Bad Name",
+     "severity": "error"
+    }
+   ],
+   "message": "a root name is [a-z][a-z0-9_]*, got 'Bad Name'",
+   "path": "$FIXTURES/roots/default",
+   "root": "Bad Name",
+   "severity": "error"
+  }
+ }
+}

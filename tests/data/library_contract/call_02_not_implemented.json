@@ -1,0 +1,35 @@
+{
+ "description": "an op that is [shape]: named, not built",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "compile",
+ "request": {},
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compile",
+  "ok": false,
+  "refusal": {
+   "code": "not_implemented",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": null,
+   "issues": []
+  }
+ }
+}

@@ -1,0 +1,22 @@
+index_version: 1
+entries:
+  - id: drone.quad
+    name: Quad
+    category: Drones
+    parts_map:
+      - slot: frame
+        part: default:part.motor.fpv_2306
+        placement: {pos: [0, 0, 0], quat: [1, 0, 0, 0]}
+      - slot: motor_fl
+        part: default:part.motor.fpv_2306
+        parent: frame
+        install_point: mount_fl
+        adjust: {pos: [0, 0, 0.002], yaw_deg: 5, pitch_deg: -10, roll_deg: 1.5}
+      - slot: prop_fl
+        part: default:part.prop.five_inch
+        parent: motor_fl
+        install_point: prop_hub
+  - id: mesh.x500_body
+    name: X500 body
+    category: Meshes
+    store: {sha256: "0000000000000000000000000000000000000000000000000000000000000000", file: x500-body.glb}

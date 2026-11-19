@@ -1,0 +1,33 @@
+{
+ "description": "an alias that names another root's entry",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "resolve",
+ "request": {
+  "alias": "legacy-motor",
+  "root": "kat"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "resolve",
+  "ok": true,
+  "result": {
+   "id": "default:part.motor.fpv_2306",
+   "root": "default"
+  },
+  "warnings": []
+ }
+}

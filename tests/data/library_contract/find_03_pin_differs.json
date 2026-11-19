@@ -1,0 +1,74 @@
+{
+ "description": "a pin that differs is a warning, the entry still returns",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "default:part.motor.fpv_2306",
+  "expect_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": true,
+  "op": "find",
+  "result": {
+   "drone": null,
+   "entry": {
+    "category": "Motors",
+    "file": "$FIXTURES/roots/default/motors/fpv_2306.motor.yaml",
+    "files": [],
+    "generated_from": null,
+    "hash": "sha256:c416e6d1d47ef39f6ccc40d213e750ae73b2d44ebaf51fb643b002448a268993",
+    "id": "default:part.motor.fpv_2306",
+    "kind": "part",
+    "local_id": "part.motor.fpv_2306",
+    "name": "FPV 2306",
+    "part_kind": "motor",
+    "peek": {
+     "install_kinds": [],
+     "limits": {},
+     "mass_kg": 0.032,
+     "provides": [],
+     "rotor_count": null,
+     "world_version": null
+    },
+    "rel_file": "motors/fpv_2306.motor.yaml",
+    "requires": [],
+    "root": "default",
+    "store_file": null,
+    "tags": [
+     "fpv"
+    ],
+    "thumbnail": null,
+    "type": null
+   },
+   "hash_matches": false,
+   "record": null
+  },
+  "warnings": [
+   {
+    "code": "hash_mismatch",
+    "field": null,
+    "id": "default:part.motor.fpv_2306",
+    "issues": [],
+    "message": "the entry's hash is sha256:c416e6d1d47ef39f6ccc40d213e750ae73b2d44ebaf51fb643b002448a268993, not the pinned sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "path": null,
+    "root": "default",
+    "severity": "warning"
+   }
+  ]
+ }
+}

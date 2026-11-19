@@ -1,0 +1,53 @@
+{
+ "description": "an item with no key cannot be answered by itself: the call is refused",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "compose_placement",
+ "request": {
+  "items": [
+   {
+    "install_point": {
+     "pos": [
+      0,
+      0,
+      0
+     ],
+     "quat": [
+      1,
+      0,
+      0,
+      0
+     ]
+    }
+   }
+  ]
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "compose_placement",
+  "ok": false,
+  "refusal": {
+   "code": "invalid_request",
+   "severity": "error",
+   "message": "",
+   "root": null,
+   "path": null,
+   "id": null,
+   "field": "items[0].key",
+   "issues": []
+  }
+ }
+}

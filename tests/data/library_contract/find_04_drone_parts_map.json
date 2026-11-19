@@ -1,0 +1,119 @@
+{
+ "description": "a drone with its parts map",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "kat:drone.quad",
+  "with": [
+   "parts_map"
+  ]
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": true,
+  "op": "find",
+  "result": {
+   "drone": {
+    "frame": "design/1",
+    "measured": null,
+    "parts_map": [
+     {
+      "adjust": null,
+      "count": 1,
+      "hash": null,
+      "install_point": null,
+      "parent": null,
+      "part": "default:part.motor.fpv_2306",
+      "placement": {
+       "pos": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "quat": [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+       ]
+      },
+      "slot": "frame"
+     },
+     {
+      "adjust": {
+       "pitch_deg": -10.0,
+       "pos": [
+        0.0,
+        0.0,
+        0.002
+       ],
+       "roll_deg": 1.5,
+       "yaw_deg": 5.0
+      },
+      "count": 1,
+      "hash": null,
+      "install_point": "mount_fl",
+      "parent": "frame",
+      "part": "default:part.motor.fpv_2306",
+      "placement": null,
+      "slot": "motor_fl"
+     },
+     {
+      "adjust": null,
+      "count": 1,
+      "hash": null,
+      "install_point": "prop_hub",
+      "parent": "motor_fl",
+      "part": "default:part.prop.five_inch",
+      "placement": null,
+      "slot": "prop_fl"
+     }
+    ]
+   },
+   "entry": {
+    "category": "Drones",
+    "file": null,
+    "files": [],
+    "generated_from": null,
+    "hash": "sha256:0bd0d0999b6ad42baefc31410dae884dfe7325ed58bb05f8e94a414772274b1f",
+    "id": "kat:drone.quad",
+    "kind": "drone",
+    "local_id": "drone.quad",
+    "name": "Quad",
+    "part_kind": null,
+    "peek": {
+     "install_kinds": [],
+     "limits": {},
+     "mass_kg": null,
+     "provides": [],
+     "rotor_count": null,
+     "world_version": null
+    },
+    "rel_file": null,
+    "requires": [],
+    "root": "kat",
+    "store_file": null,
+    "tags": [],
+    "thumbnail": null,
+    "type": null
+   },
+   "hash_matches": null,
+   "record": null
+  },
+  "warnings": []
+ }
+}

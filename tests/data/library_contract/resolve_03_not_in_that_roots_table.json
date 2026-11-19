@@ -1,0 +1,38 @@
+{
+ "description": "the lookup is limited to the root's own table",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "resolve",
+ "request": {
+  "alias": "gate-corridor",
+  "root": "default"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "resolve",
+  "ok": false,
+  "refusal": {
+   "code": "entry_not_found",
+   "severity": "error",
+   "message": "",
+   "root": "default",
+   "path": null,
+   "id": null,
+   "field": "alias",
+   "issues": []
+  }
+ }
+}

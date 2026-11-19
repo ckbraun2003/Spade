@@ -1,0 +1,37 @@
+{
+ "description": "a store that is not absolute",
+ "open": null,
+ "op": "open",
+ "request": {
+  "roots": [],
+  "store": "rel/store"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "open",
+  "refusal": {
+   "code": "relative_path",
+   "field": null,
+   "id": null,
+   "issues": [
+    {
+     "code": "relative_path",
+     "field": null,
+     "id": null,
+     "issues": [],
+     "message": "the store path must be absolute",
+     "path": "rel/store",
+     "root": null,
+     "severity": "error"
+    }
+   ],
+   "message": "the store path must be absolute",
+   "path": "rel/store",
+   "root": null,
+   "severity": "error"
+  }
+ }
+}

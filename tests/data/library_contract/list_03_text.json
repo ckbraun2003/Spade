@@ -1,0 +1,64 @@
+{
+ "description": "case-folded text filter",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "list",
+ "request": {
+  "text": "FIVE"
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "list",
+  "ok": true,
+  "result": {
+   "entries": [
+    {
+     "id": "default:part.prop.five_inch",
+     "root": "default",
+     "local_id": "part.prop.five_inch",
+     "kind": "part",
+     "part_kind": "prop",
+     "type": null,
+     "name": "Five inch prop",
+     "category": "Props",
+     "tags": [
+      "fpv",
+      "five_inch"
+     ],
+     "file": "$FIXTURES/roots/default/props/five_inch.prop.yaml",
+     "rel_file": "props/five_inch.prop.yaml",
+     "thumbnail": null,
+     "requires": [],
+     "files": [],
+     "store_file": null,
+     "hash": "sha256:7493e936c757dec7fcd50a87083a1e83c69d967ca17d7fbcadf275a3c11cd6f0",
+     "generated_from": null,
+     "peek": {
+      "mass_kg": null,
+      "provides": [],
+      "limits": {},
+      "rotor_count": null,
+      "world_version": null,
+      "install_kinds": []
+     }
+    }
+   ],
+   "total": 1,
+   "offset": 0
+  },
+  "warnings": []
+ }
+}

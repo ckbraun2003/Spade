@@ -1,0 +1,37 @@
+{
+ "description": "no such id",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "default:part.motor.nope"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "find",
+  "ok": false,
+  "refusal": {
+   "code": "entry_not_found",
+   "severity": "error",
+   "message": "",
+   "root": "default",
+   "path": null,
+   "id": "default:part.motor.nope",
+   "field": null,
+   "issues": []
+  }
+ }
+}

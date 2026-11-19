@@ -1,0 +1,106 @@
+{
+ "description": "a drone with a parts map and a store entry whose file is absent",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "list",
+ "request": {
+  "roots": [
+   "kat"
+  ]
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": true,
+  "op": "list",
+  "result": {
+   "entries": [
+    {
+     "category": "Drones",
+     "file": null,
+     "files": [],
+     "generated_from": null,
+     "hash": "sha256:0bd0d0999b6ad42baefc31410dae884dfe7325ed58bb05f8e94a414772274b1f",
+     "id": "kat:drone.quad",
+     "kind": "drone",
+     "local_id": "drone.quad",
+     "name": "Quad",
+     "part_kind": null,
+     "peek": {
+      "install_kinds": [],
+      "limits": {},
+      "mass_kg": null,
+      "provides": [],
+      "rotor_count": null,
+      "world_version": null
+     },
+     "rel_file": null,
+     "requires": [],
+     "root": "kat",
+     "store_file": null,
+     "tags": [],
+     "thumbnail": null,
+     "type": null
+    },
+    {
+     "category": "Meshes",
+     "file": "$FIXTURES/store/0000000000000000000000000000000000000000000000000000000000000000/x500-body.glb",
+     "files": [],
+     "generated_from": null,
+     "hash": "sha256:c4af80d96111df19f206a75917dc2eb31ab55ed324e933fb3cbb7f24b5494f75",
+     "id": "kat:mesh.x500_body",
+     "kind": "mesh",
+     "local_id": "mesh.x500_body",
+     "name": "X500 body",
+     "part_kind": null,
+     "peek": {
+      "install_kinds": [],
+      "limits": {},
+      "mass_kg": null,
+      "provides": [],
+      "rotor_count": null,
+      "world_version": null
+     },
+     "rel_file": null,
+     "requires": [],
+     "root": "kat",
+     "store_file": {
+      "file": "x500-body.glb",
+      "path": "$FIXTURES/store/0000000000000000000000000000000000000000000000000000000000000000/x500-body.glb",
+      "present": false,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     "tags": [],
+     "thumbnail": null,
+     "type": null
+    }
+   ],
+   "offset": 0,
+   "total": 2
+  },
+  "warnings": [
+   {
+    "code": "store_file_missing",
+    "field": "store",
+    "id": "kat:mesh.x500_body",
+    "issues": [],
+    "message": "the store has no 'x500-body.glb' at its address",
+    "path": "$FIXTURES/store/0000000000000000000000000000000000000000000000000000000000000000/x500-body.glb",
+    "root": "kat",
+    "severity": "warning"
+   }
+  ]
+ }
+}

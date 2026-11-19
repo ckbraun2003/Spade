@@ -1,0 +1,32 @@
+{
+ "description": "a request may carry the format it speaks",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "hash_text",
+ "request": {
+  "format": "spade.library/1",
+  "text": ""
+ },
+ "rc": 0,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "op": "hash_text",
+  "ok": true,
+  "result": {
+   "hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "warnings": []
+ }
+}

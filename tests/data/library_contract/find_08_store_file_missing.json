@@ -1,0 +1,37 @@
+{
+ "description": "a store entry whose file is absent",
+ "open": {
+  "roots": [
+   {
+    "name": "default",
+    "path": "$FIXTURES/roots/default"
+   },
+   {
+    "name": "kat",
+    "path": "$FIXTURES/roots/kat"
+   }
+  ],
+  "store": "$FIXTURES/store"
+ },
+ "op": "find",
+ "request": {
+  "id": "kat:mesh.x500_body"
+ },
+ "rc": 1,
+ "response": {
+  "format": "spade.library/1",
+  "minor": 0,
+  "ok": false,
+  "op": "find",
+  "refusal": {
+   "code": "store_file_missing",
+   "field": "store",
+   "id": "kat:mesh.x500_body",
+   "issues": [],
+   "message": "the store has no 'x500-body.glb' at its address",
+   "path": "$FIXTURES/store/0000000000000000000000000000000000000000000000000000000000000000/x500-body.glb",
+   "root": "kat",
+   "severity": "error"
+  }
+ }
+}
