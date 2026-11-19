@@ -7,7 +7,7 @@
 //
 // Knobs: SPADE_L105_DXMM (the cell in mm, default 5; the box in cells follows), SPADE_L105_CELLS (the tip's cells a step, comma list, default
 // "1.45,0.72,0.36,0.18": h = cells dx / (omega R)), SPADE_L105_T (the last time, s, default 0.1), SPADE_L105_NSUB (8), SPADE_L105_NV (the projection's
-// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0; the film's is 0.17), SPADE_L105_NU (the air's viscosity, m^2/s, 0; the film's is 1.5e-5), SPADE_L105_DEPTH (the box's height in m, 0.55: 0.35 m under the rotor,
+// V-cycles, the config's default), SPADE_L105_CS (the Smagorinsky constant, 0.17 the film's; 0 is refused: a line run needs one, L105a), SPADE_L105_NU (the air's viscosity, 1.4607e-5 m^2/s), SPADE_L105_DEPTH (the box's height in m, 0.55: 0.35 m under the rotor,
 // which the wake front crosses at about 0.065 s; a later time wants a deeper box), SPADE_L105_EVERY (a step count: every that many steps print the
 // breakdown's evidence -- the disc's downflow at three planes, the box's downward momentum against the impulse put in, the extreme v and where, the
 // pressure's mean and largest, the projection's health since the last print, and the host azimuth against step x h x omega). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
@@ -110,8 +110,8 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
         cfg.rho = kRho;
         cfg.h = h;
         if (const char* nv = l105g_env("SPADE_L105_NV"); nv != nullptr) cfg.n_v = static_cast<uint32_t>(std::strtoul(nv, nullptr, 10));
-        cfg.sgs_cs = static_cast<float>(l105g_number("SPADE_L105_CS", 0.0));
-        cfg.nu = static_cast<float>(l105g_number("SPADE_L105_NU", 0.0));
+        cfg.sgs_cs = static_cast<float>(l105g_number("SPADE_L105_CS", 0.17));
+        cfg.nu = static_cast<float>(l105g_number("SPADE_L105_NU", 1.4607e-5));
         af::LineRotor rotor;
         rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx, static_cast<float>(shape.ny) * dx - 0.20f,
                                  0.5f * static_cast<float>(shape.nz) * dx);

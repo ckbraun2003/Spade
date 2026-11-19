@@ -138,7 +138,7 @@ TEST(GpuAirflowLineBinned, TheBinnedStepIsTheCpusAndTheUnbinnedsBitForBit) {
     Rig rig;
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     af::MacGrid start = *af::make_grid(shape, bc);
     uint32_t state = 0xBEEF01u;
     for (std::vector<float>* comp : {&start.u, &start.v, &start.w}) {
@@ -203,7 +203,7 @@ TEST(GpuAirflowLineBinned, RefusesABinnedSetupItCannotMake) {
     Rig rig;
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     const af::MacGrid start = *af::make_grid(shape, bc);
     const auto probe = ag::line_records(rig.rotors, shape, kRho, kH, kNSub);
     ASSERT_TRUE(probe.has_value());

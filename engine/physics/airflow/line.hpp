@@ -101,6 +101,15 @@ struct LineStencil {
 
 [[nodiscard]] Result<void> check_line(const LineRotor& rotor, const GridShape& shape, float rho, float h, uint32_t n_sub);
 
+// ACTUATOR LINES NEED A SUBGRID MODEL (L105a, 2026-11-19). check_line_damping(sgs_cs) refuses a line run whose fluid has FluidConfig::sgs_cs not above 0, by
+// name: "actuator lines need a subgrid model (sgs_cs above 0)". Why: one x500 kit rotor at 5 mm and 0.18 tip cells a step grows a grid-scale
+// instability on the rotor's axis from about step 4500 (the extreme v 17 -> 200 m/s, the downflow and the box's momentum fall away from the impulse put
+// in) in the lean mode (nu 0, Cs 0) AND with the air's own nu 1.4607e-5 and Cs 0 (from about step 5500: molecular viscosity damps nothing at the
+// cell); with Cs 0.17 (the film's) the same case is steady to step 8032 (record docs/design/physics/plans/2026-11-19-x500-kit-remeasure.md). A
+// refusal, not a default: a default would change the physics without saying so. GpuFluid::create() calls it, before the device is touched, whenever
+// it is given a LineSetup: lines are only ever stepped by the device. The CPU's spread_line() is called by tests, outside any fluid config.
+[[nodiscard]] Result<void> check_line_damping(float sgs_cs);
+
 // The elements, in order sub-azimuth, blade, element, for a rotor already checked (refused-by-check inputs are not rechecked).
 [[nodiscard]] std::vector<LineElement> line_elements(const LineRotor& rotor, float dx, float h, uint32_t n_sub);
 
