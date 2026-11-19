@@ -109,6 +109,24 @@ namespace {
         report.limits.allocation_size_reported = true;
     }
 
+    // WHICH DEVICE (camera design section 12, item 4): VkPhysicalDeviceIDProperties is Vulkan 1.1 core, and the engine admits
+    // nothing below 1.1, so the query is reached whenever properties2 is. Read first, so the 1.2-only early return below
+    // does not skip it.
+    if (properties.apiVersion >= VK_API_VERSION_1_1 && vkGetPhysicalDeviceProperties2 != nullptr) {
+        VkPhysicalDeviceIDProperties ids{};
+        ids.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+        VkPhysicalDeviceProperties2 with_ids{};
+        with_ids.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        with_ids.pNext = &ids;
+        vkGetPhysicalDeviceProperties2(device, &with_ids);
+        report.ids_queryable = true;
+        for (std::size_t i = 0; i < report.device_uuid.size(); ++i) report.device_uuid[i] = ids.deviceUUID[i];
+        report.device_luid_valid = ids.deviceLUIDValid == VK_TRUE;
+        if (report.device_luid_valid) {
+            for (std::size_t i = 0; i < report.device_luid.size(); ++i) report.device_luid[i] = ids.deviceLUID[i];
+        }
+    }
+
     if (properties.apiVersion < VK_API_VERSION_1_2 || vkGetPhysicalDeviceProperties2 == nullptr) {
         return report;
     }
