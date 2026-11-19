@@ -966,7 +966,7 @@ TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidi
                     << "a step at the edge of ring " << i << " (opacity " << opacity << ")";
             }
             const float mid = 0.5f * (e.lo + e.hi);
-            EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity), 2e-3f) << "ring " << i;
+            EXPECT_NEAR(mesh.source_materials[i].base_color.a, std::min(0.5f, std::min(1.0f, flow_movie::blade_solidity(chord, mid) * opacity)), 2e-3f) << "ring " << i;
             EXPECT_NEAR(mesh.source_materials[i].base_color.r, tint, 1e-5f) << "the tint, not a blade's black";
             EXPECT_EQ(mesh.source_materials[i].shading, 1u) << "unlit: the drone's key light is not a light on a drawn average (at 2.5 times it turned the disc roots white)";
             EXPECT_EQ(mesh.submesh_index_count[i], kSegments * 2u * 3u * 2u) << "two triangles a segment, both windings";
@@ -982,6 +982,23 @@ TEST(FlowMovieBuildParts, TheDiscMeshIsContiguousRingsWhoseAlphaFollowsTheSolidi
             }
         }
         EXPECT_GT(mesh.source_materials.front().base_color.a, mesh.source_materials.back().base_color.a) << "denser at the root than at the tip";
+    }
+}
+
+// THE DISC NEVER COVERS MORE THAN HALF (the lead, 2026-11-18, L100: under a near-opaque root the black anodised mounts read as white arms, which
+// misstates the hardware): alpha = min(current, 0.5) with the ring's colour unchanged, so the disc still reads and the parts under it show through.
+TEST(FlowMovieBuildParts, TheDiscIsNeverMoreThanHalfOpaqueSoThePartsUnderItShowThrough) {
+    const flow_movie::BladeChord chord = uiuc_10x5();
+    for (const float opacity : {1.0f, 5.0f, 10.0f}) {
+        const spade::render::MeshData mesh = flow_movie::rotor_disc_mesh(chord, 0.127f, 0.0f, opacity, 0.65f, 0.01f, 32u);
+        float most = 0.0f;
+        for (const auto& material : mesh.source_materials) {
+            EXPECT_LE(material.base_color.a, 0.5f + 1e-6f) << "opacity " << opacity;
+            EXPECT_FLOAT_EQ(material.base_color.r, 0.65f) << "the ring's colour is not changed by the cap";
+            most = std::max(most, material.base_color.a);
+        }
+        if (opacity >= 5.0f) EXPECT_NEAR(most, 0.5f, 1e-6f) << "the root reaches the cap at a gain of " << opacity;
+        else EXPECT_LT(most, 0.5f) << "the physical average (1) is under the cap everywhere";
     }
 }
 
@@ -1122,12 +1139,13 @@ TEST(FlowMovieBuildParts, TheChordADrawGetsComesFromTheLinesFileOnlyForADiscWith
 
 // THE CLIP RECORD NAMES WHAT THE PICTURE DOES NOT SHOW AS IT IS (the lead, 2026-11-18): the rotor discs are drawn at a gain, so the record says so.
 TEST(FlowMovieBuildParts, TheRecordSaysHowTheRotorDiscsAreDrawn) {
-    flow_movie::PropBlur gain;  // the defaults: a gain of 3 (the lead, 2026-11-18: at 6 the disc roots read white-hot in the three-quarter view)
-    EXPECT_FLOAT_EQ(gain.opacity, 3.0f);
-    EXPECT_EQ(flow_movie::prop_blur_note(gain), "rotor discs drawn at 3 times the blades' time-averaged coverage so they show over the air");
+    flow_movie::PropBlur gain;  // the defaults: an UNLIT disc at a gain of 5, never more than half opaque (the lead, 2026-11-18, the kit stills)
+    EXPECT_FLOAT_EQ(gain.opacity, 5.0f);
+    EXPECT_EQ(flow_movie::prop_blur_note(gain),
+              "rotor discs drawn unlit at 5 times the blades' time-averaged coverage, no more than half opaque, so they show over the air and the parts under them show through");
     flow_movie::PropBlur exact;
     exact.opacity = 1.0f;
-    EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn at the blades' time-averaged coverage");
+    EXPECT_EQ(flow_movie::prop_blur_note(exact), "rotor discs drawn unlit at the blades' time-averaged coverage, no more than half opaque");
     flow_movie::PropBlur sampled;
     sampled.sampled = true;
     sampled.samples = 24u;
