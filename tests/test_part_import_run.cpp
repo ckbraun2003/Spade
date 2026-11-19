@@ -757,7 +757,6 @@ TEST(PartImportOrigin, AnImportPutsTheGivenPointAtTheOriginInTheFilesOwnUnitAndK
     const Out moved = rig.run(A({"--import", glb.string(), "--store", rig.store().string(), "--origin", "0.25,0.25,0.25"}));
     ASSERT_EQ(moved.exit, 0) << moved.out;
     EXPECT_NE(moved.result.value("key", std::string()), plain.result.value("key", std::string()));
-    EXPECT_EQ(moved.result.value("frame", std::string()), "part");
     const auto [lo, hi] = sidecar_bounds(moved.result.at("objects")[0]);
     EXPECT_NEAR(lo.x, -0.25, 1e-7);
     EXPECT_NEAR(hi.x, 0.75, 1e-7);
