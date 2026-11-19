@@ -237,6 +237,7 @@
 //     internal -- any other exception, caught.
 // ---------------------------------------------------------------------------
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -279,10 +280,19 @@ struct MeshObject {
 // these give the plain reader's objects (name, unit, the same mesh) and for one that does not, the plain reader's error is the first
 // outcome's refusal. (These read every object, so a problem with the file found AFTER an earlier object's refusal is the one error; the
 // plain reader would have stopped at the refusal.)
+// The colour a file gives an object, sRGB 0..255, alpha ignored: the colour covering the most surface area (the lowest (r, g, b) on a
+// tie), and how many distinct colours the object carries. Surface with no colour counts for nothing. It sits beside the mesh, never in it.
+struct SurfaceColour {
+    std::array<uint8_t, 3> rgb{};
+    uint32_t colours = 1;
+    bool operator==(const SurfaceColour&) const = default;
+};
+
 struct MeshObjectOutcome {
     std::string name;
     MeshUnit unit = MeshUnit::unspecified;
     Result<std::shared_ptr<const TriangleMesh>> mesh;  // the object's mesh, or make_mesh()'s refusal of it
+    std::optional<SurfaceColour> colour{};  // from a glTF material or a 3MF material; empty for STL and OBJ, and when the file gives none
     std::optional<MeshRefusal> kind{};                 // which refusal, when `mesh` is one (make_mesh_diagnosed's kind); empty when it passed
 };
 [[nodiscard]] Result<std::vector<MeshObjectOutcome>> read_gltf_bytes_objects(std::span<const std::byte> bytes,

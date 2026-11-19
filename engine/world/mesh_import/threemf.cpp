@@ -38,6 +38,7 @@
 #include <pugixml.hpp>
 
 #include "core/path_text.hpp"
+#include "world/mesh_import/colour.hpp"
 #include "world/mesh_import/outcome.hpp"
 #include "world/detail/weld.hpp"
 
@@ -45,6 +46,7 @@ namespace spade {
 namespace {
 
 constexpr std::string_view kCoreNs = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02";
+constexpr std::string_view kMaterialsNs = "http://schemas.microsoft.com/3dmanufacturing/material/2015/02";
 constexpr std::string_view kModelRelationship = "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel";
 constexpr uint64_t kMaxVertices = std::numeric_limits<uint32_t>::max();
 
@@ -147,6 +149,11 @@ struct Affine {
     return t;
 }
 
+// The colours of the model's material groups (core basematerials, and the materials extension's colorgroup), by group id then index; an
+// entry that is not a colour is empty.
+using Rgb = std::array<uint8_t, 3>;
+using MaterialGroups = std::map<uint32_t, std::vector<std::optional<Rgb>>>;
+
 struct Component {
     std::size_t object = 0;  // its index in the object table
     Affine transform;
@@ -159,6 +166,7 @@ struct Object {
     bool is_mesh = false;
     std::vector<glm::dvec3> positions;
     std::vector<uint32_t> indices;
+    std::vector<std::optional<Rgb>> triangle_colours;  // one per triangle, from its material
     std::vector<Component> components;
     // What taking it down its components gives, saturating past the caps:
     // triangles, vertices, and the objects visited.
@@ -270,7 +278,7 @@ private:
 // `table` and `by_id` hold the objects above it.
 [[nodiscard]] Result<Object> read_object(const pugi::xml_node& node, std::size_t ordinal, const std::string& cp,
                                          const std::vector<Object>& table,
-                                         const std::map<uint32_t, std::size_t>& by_id) {
+                                         const std::map<uint32_t, std::size_t>& by_id, const MaterialGroups& groups) {
     Object o;
     const std::optional<uint32_t> id = index_number(node.attribute("id").value());
     if (!id || *id == 0) {
@@ -324,6 +332,8 @@ private:
         // A named string: children() keeps the pointer it is given, past the
         // temporary a range-for's initialiser would make of an expression.
         const std::string triangle_tag = cp + "triangle";
+        const std::optional<uint32_t> object_pid = index_number(node.attribute("pid").value());
+        const std::optional<uint32_t> object_pindex = index_number(node.attribute("pindex").value());
         std::size_t t = 0;
         for (const pugi::xml_node& triangle :
              mesh.child((cp + "triangles").c_str()).children(triangle_tag.c_str())) {
@@ -346,6 +356,15 @@ private:
                                                                             num(o.positions.size()) + " vertices"));
                 }
                 o.indices.push_back(*index);
+            }
+            {  // the triangle's material colour: its own pid and p1, else the object's pid and pindex
+                const std::optional<uint32_t> pid = triangle.attribute("pid") ? index_number(triangle.attribute("pid").value()) : object_pid;
+                const std::optional<uint32_t> p1 = triangle.attribute("p1") ? index_number(triangle.attribute("p1").value()) : object_pindex;
+                std::optional<Rgb> colour;
+                if (pid && p1) {
+                    if (const auto group = groups.find(*pid); group != groups.end() && *p1 < group->second.size()) colour = group->second[*p1];
+                }
+                o.triangle_colours.push_back(colour);
             }
             ++t;
         }
@@ -386,7 +405,7 @@ private:
 // One build item's object, taken down its components and joined: positions
 // in the model's unit, the winding reversed under a mirroring transform.
 void gather(const std::vector<Object>& table, std::size_t root, const Affine& item, std::vector<glm::dvec3>& positions,
-            std::vector<uint32_t>& indices) {
+            std::vector<uint32_t>& indices, std::vector<std::optional<Rgb>>& colours) {
     std::vector<std::pair<std::size_t, Affine>> stack{{root, item}};
     while (!stack.empty()) {
         const auto [index, transform] = stack.back();
@@ -395,6 +414,7 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
         if (o.is_mesh) {
             const auto base = static_cast<uint32_t>(positions.size());
             for (const glm::dvec3& p : o.positions) positions.push_back(apply(transform, p));
+            colours.insert(colours.end(), o.triangle_colours.begin(), o.triangle_colours.end());
             const bool mirrored = determinant(transform) < 0.0;
             for (std::size_t t = 0; t < o.indices.size(); t += 3) {
                 indices.push_back(base + o.indices[t]);
@@ -471,12 +491,40 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
                                 "' is not micron, millimeter, centimeter, inch, foot or meter"));
     }
 
+    // The material groups, before the objects that name them.
+    MaterialGroups groups;
+    {
+        std::string materials_prefix;  // the materials extension's prefix, when the root declares one
+        for (const pugi::xml_attribute& a : root.attributes()) {
+            const std::string_view attribute_name = a.name();
+            if (attribute_name.starts_with("xmlns:") && std::string_view(a.value()) == kMaterialsNs) {
+                materials_prefix = std::string(attribute_name.substr(6)) + ":";
+            }
+        }
+        const pugi::xml_node resources = root.child((cp + "resources").c_str());
+        const auto read_group = [&groups](const pugi::xml_node& group, const std::string& child, const char* attribute) {
+            const std::optional<uint32_t> id = index_number(group.attribute("id").value());
+            if (!id) return;
+            std::vector<std::optional<Rgb>> colours;
+            for (const pugi::xml_node& entry : group.children(child.c_str())) {
+                colours.push_back(detail::parse_hex_colour(entry.attribute(attribute).value()));
+            }
+            groups.emplace(*id, std::move(colours));
+        };
+        const std::string base_group_tag = cp + "basematerials", base_tag = cp + "base";
+        for (const pugi::xml_node& group : resources.children(base_group_tag.c_str())) read_group(group, base_tag, "displaycolor");
+        if (!materials_prefix.empty()) {
+            const std::string color_group_tag = materials_prefix + "colorgroup", color_tag = materials_prefix + "color";
+            for (const pugi::xml_node& group : resources.children(color_group_tag.c_str())) read_group(group, color_tag, "color");
+        }
+    }
+
     std::vector<Object> table;
     std::map<uint32_t, std::size_t> by_id;
     std::size_t ordinal = 0;
     const std::string object_tag = cp + "object";
     for (const pugi::xml_node& node : root.child((cp + "resources").c_str()).children(object_tag.c_str())) {
-        Result<Object> o = read_object(node, ordinal++, cp, table, by_id);
+        Result<Object> o = read_object(node, ordinal++, cp, table, by_id, groups);
         if (!o) return in_part(o.error());
         by_id.emplace(o->id, table.size());
         table.push_back(std::move(*o));
@@ -510,11 +558,18 @@ void gather(const std::vector<Object>& table, std::size_t root, const Affine& it
         std::vector<uint32_t> indices;
         positions.reserve(static_cast<std::size_t>(o.vertices));
         indices.reserve(static_cast<std::size_t>(3 * o.triangles));
-        gather(table, found->second, *transform, positions, indices);
+        std::vector<std::optional<Rgb>> triangle_colours;
+        gather(table, found->second, *transform, positions, indices, triangle_colours);
         const MeshInput input = detail::weld_exact(positions, indices, *unit);
         auto built = make_mesh_diagnosed(input, file + ": object '" + o.name + "'");
         if (collect != nullptr) {  // the collecting mode: the outcome, whatever it is, and on to the next object
-            detail::record_outcome(*collect, o.name, *unit, built);
+            detail::ColourTally tally;
+            for (std::size_t t = 0; t < triangle_colours.size() && 3 * t + 2 < indices.size(); ++t) {
+                if (!triangle_colours[t]) continue;
+                tally.add(*triangle_colours[t], detail::triangle_area(positions[indices[3 * t]], positions[indices[3 * t + 1]],
+                                                                      positions[indices[3 * t + 2]]));
+            }
+            detail::record_outcome(*collect, o.name, *unit, built, tally.result());
             continue;
         }
         if (!built) return std::unexpected(built.error().error);

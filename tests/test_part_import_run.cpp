@@ -653,4 +653,77 @@ TEST(PartImportImport, ALeftoverTemporaryFromAKilledRunIsRemovedAtTheNextImport)
     EXPECT_FALSE(fs::exists(sha_dir / ".tmp-9999-oldkey"));
 }
 
+// ---- colour --------------------------------------------------------------------------------------------------------------------
+
+// A 3MF of two objects: the first painted with the second basematerial (#FF8000), the second with none.
+[[nodiscard]] std::string painted_two_objects() {
+    std::string arm = cube_object(1, "arm", 10.0);
+    const std::string open = "\"><mesh>";
+    arm.replace(arm.find(open), open.size(), "\" pid=\"10\" pindex=\"1\"><mesh>");
+    const std::string bases = R"(<basematerials id="10"><base name="a" displaycolor="#112233"/><base name="b" displaycolor="#FF8000"/></basematerials>)";
+    return three_mf({arm, cube_object(2, "hub", 20.0, 40.0)}, R"(unit="millimeter")", bases);
+}
+
+TEST(PartImportColour, InspectAndImportGiveEachObjectItsColourOrNullAndAHitReturnsThemBitForBit) {
+    Rig rig;
+    const fs::path in = rig.put("two.3mf", painted_two_objects());
+    const auto colours_of = [](const json& objects) {
+        std::vector<std::string> v;
+        for (const json& o : objects) v.push_back(o.at("name").get<std::string>() + " " + o.at("colour").dump() + " " + o.at("colours").dump());
+        return v;
+    };
+    const std::vector<std::string> expected = {"arm [255,128,0] 1", "hub null 0"};
+    Out r = rig.run(A({"--inspect", in.string()}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    EXPECT_EQ(colours_of(r.result.at("objects")), expected);
+    const Out first = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(first.exit, 0) << first.out;
+    EXPECT_FALSE(first.result.value("cached", true));
+    EXPECT_EQ(colours_of(first.result.at("objects")), expected);
+    const auto stored = json::parse(read_file(fs::path(first.result.value("entry", std::string())) / "import.json"));
+    EXPECT_EQ(stored.at("objects")[0].at("colour"), (json::array({255, 128, 0})));
+    EXPECT_TRUE(stored.at("objects")[1].at("colour").is_null());
+    const Out hit = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(hit.exit, 0) << hit.out;
+    EXPECT_TRUE(hit.result.value("cached", false));
+    EXPECT_EQ(hit.result.at("objects").dump(), first.result.at("objects").dump()) << "a hit returns the colours bit for bit";
+}
+
+TEST(PartImportColour, AFileWithNoColourSaysNullForEveryObjectInBothModes) {
+    Rig rig;
+    const fs::path in = rig.put("cube.stl", cube_stl(1.0f));
+    const Out r = rig.run(A({"--inspect", in.string(), "--unit", "m"}));
+    ASSERT_EQ(r.exit, 0) << r.out;
+    ASSERT_EQ(r.result.at("objects").size(), 1u);
+    ASSERT_TRUE(r.result.at("objects")[0].contains("colour")) << r.result.dump();
+    EXPECT_TRUE(r.result.at("objects")[0].at("colour").is_null());
+    EXPECT_EQ(r.result.at("objects")[0].at("colours"), 0);
+    const Out imported = rig.run(A({"--import", in.string(), "--unit", "m", "--store", rig.store().string()}));
+    ASSERT_EQ(imported.exit, 0) << imported.out;
+    EXPECT_TRUE(imported.result.at("objects")[0].at("colour").is_null());
+}
+
+TEST(PartImportColour, AnEntryOfTheOlderRevisionIsReimportedAtTheSameKeyWithTheSameStoreRefs) {
+    Rig rig;
+    const fs::path in = rig.put("two.3mf", painted_two_objects());
+    const Out first = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(first.exit, 0) << first.out;
+    const fs::path file = fs::path(first.result.value("entry", std::string())) / "import.json";
+    json j = json::parse(read_file(file));
+    j["import_version"] = 1;
+    for (auto& o : j["objects"]) {
+        o.erase("colour");
+        o.erase("colours");
+    }
+    write_file(file, j.dump());
+    const Out again = rig.run(A({"--import", in.string(), "--store", rig.store().string()}));
+    ASSERT_EQ(again.exit, 0) << again.out;
+    EXPECT_FALSE(again.result.value("cached", true)) << "an entry with no colour is not a hit";
+    EXPECT_EQ(again.result.value("key", std::string()), first.result.value("key", std::string()));
+    for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(again.result.at("objects")[i].at("store_ref"), first.result.at("objects")[i].at("store_ref"));
+        EXPECT_EQ(again.result.at("objects")[i].at("colour"), first.result.at("objects")[i].at("colour"));
+    }
+}
+
 }  // namespace

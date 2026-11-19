@@ -84,7 +84,7 @@ def occt_vertex_counts(step_path, deflection_mm, angle=0.5):
     from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
 
     counts = {}
-    for name, solid, _ in sc.read_solids(step_path, "mm", set()):
+    for name, solid, _, _colour in sc.read_solids(step_path, "mm", set()):
         sc.tessellate(solid, deflection_mm, angle, name)  # meshes `solid` in place, as the converter does
         vertices = TopTools_IndexedMapOfShape()
         TopExp.MapShapes_s(solid, TopAbs_VERTEX, vertices)
@@ -120,6 +120,26 @@ def occt_vertex_counts(step_path, deflection_mm, angle=0.5):
             total += triangulation.NbNodes() - len(on_edges)
         counts[name] = total
     return counts
+
+
+def coloured_cube(work, styles, name="cube_coloured.step"):
+    """The cube fixture with STEP colours added by text: `styles` is [(entity id of the solid or of one of its faces, (r, g, b)
+    as the 0..1 sRGB COLOUR_RGB takes it)]. The solid is #162 and its faces #60 #92 #114 #136 #148 #160."""
+    with open(os.path.join(FIXTURES, "cube_10mm.step"), encoding="utf-8") as f:
+        text = f.read()
+    rows, styled, n = [], [], 170
+    for item, (r, g, b) in styles:
+        rows += [f"#{n}=COLOUR_RGB('',{r},{g},{b});", f"#{n + 1}=FILL_AREA_STYLE_COLOUR('',#{n});",
+                 f"#{n + 2}=FILL_AREA_STYLE('',(#{n + 1}));", f"#{n + 3}=SURFACE_STYLE_FILL_AREA(#{n + 2});",
+                 f"#{n + 4}=SURFACE_SIDE_STYLE('',(#{n + 3}));", f"#{n + 5}=SURFACE_STYLE_USAGE(.BOTH.,#{n + 4});",
+                 f"#{n + 6}=PRESENTATION_STYLE_ASSIGNMENT((#{n + 5}));", f"#{n + 7}=STYLED_ITEM('',(#{n + 6}),#{item});"]
+        styled.append(f"#{n + 7}")
+        n += 8
+    rows.append(f"#{n}=MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',({','.join(styled)}),#7);")
+    path = os.path.join(work, name)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text.replace("ENDSEC;\nEND-ISO", "\n".join(rows) + "\nENDSEC;\nEND-ISO"))
+    return path
 
 
 class StepConvert(unittest.TestCase):
@@ -398,6 +418,45 @@ class StepConvert(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stderr)
             positions, triangles, unit, tolerance, _ = self.sidecar(out, "Cube")
             self.assertAlmostEqual(bounds(positions)[0][1], 0.01, delta=1e-8)  # ten millimetres, not ten metres
+
+    # -- colours (L88t): the colour the STEP gives a solid, sRGB 0..255, as `colour` and `colours` ---------------------------------
+
+    def colours_of(self, path):
+        """The cube's (inspect answer, emit answer) for the colour fields: (colour, colours) from --inspect, and the same from --emit-3mf."""
+        run = subprocess.run([PYTHON, "-B", "-I", CONVERT, path, "--inspect"], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(run.returncode, 0, run.stderr)
+        solids = json.loads(run.stdout)["solids"]
+        self.assertEqual(len(solids), 1)
+        inspected = (solids[0]["colour"], solids[0]["colours"])
+        with tempfile.TemporaryDirectory() as work:
+            run = subprocess.run([PYTHON, "-B", "-I", CONVERT, path, "--emit-3mf", os.path.join(work, "m.3mf"), "--deflection", "0.5mm"],
+                                 capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(run.returncode, 0, run.stderr)
+            listed = json.loads(run.stdout)["colours"]
+        self.assertEqual([c["name"] for c in listed], ["Cube"])
+        return inspected, (listed[0]["colour"], listed[0]["colours"])
+
+    def test_a_solids_colour_is_read_as_srgb_and_a_solid_with_none_says_null(self):
+        with tempfile.TemporaryDirectory() as work:
+            inspected, emitted = self.colours_of(coloured_cube(work, [(162, (0.2, 0.4, 0.6))]))
+            self.assertEqual(inspected, ([51, 102, 153], 1))
+            self.assertEqual(emitted, inspected, "the same answer from both modes")
+            plain = self.colours_of(os.path.join(FIXTURES, "cube_10mm.step"))
+            self.assertEqual(plain[0], (None, 0))
+            self.assertEqual(plain[1], (None, 0))
+
+    def test_a_solid_with_coloured_faces_takes_the_colour_covering_the_most_area_and_counts_them(self):
+        with tempfile.TemporaryDirectory() as work:
+            # two red faces, one blue, three with none: the uncoloured faces count for nothing
+            faces = coloured_cube(work, [(60, (1.0, 0.0, 0.0)), (92, (1.0, 0.0, 0.0)), (114, (0.0, 0.0, 1.0))])
+            inspected, emitted = self.colours_of(faces)
+            self.assertEqual(inspected, ([255, 0, 0], 2))
+            self.assertEqual(emitted, inspected)
+            # the solid's own colour covers the faces nothing else colours: grey on four faces beats red on two
+            over = coloured_cube(work, [(162, (0.502, 0.502, 0.502)), (60, (1.0, 0.0, 0.0)), (92, (1.0, 0.0, 0.0))], "over.step")
+            inspected, _ = self.colours_of(over)
+            self.assertEqual(inspected[1], 2)
+            self.assertEqual(inspected[0], [128, 128, 128], "0.502 as sRGB 0..1 is 128.01, rounded to the nearest integer")
 
     def test_a_part_with_no_solid_is_skipped_and_named_and_a_file_with_none_is_refused(self):
         # Raspberry Pi's Pi 5 STEP holds surface-only parts beside its solids; one of them refused the whole file.

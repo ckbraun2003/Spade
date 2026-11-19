@@ -138,12 +138,14 @@ struct GateRefusal {
 struct Candidates {
     std::vector<MeshObject> objects;
     std::vector<std::optional<GateRefusal>> refusal;
+    std::vector<std::optional<SurfaceColour>> colour;  // parallel to `objects`: what the reader found (a STEP's come from the converter)
 };
 
 [[nodiscard]] Expected<Candidates> to_candidates(Result<std::vector<MeshObjectOutcome>> r) {
     if (!r) return std::unexpected(reader_problem(r.error()));
     Candidates c;
     for (MeshObjectOutcome& o : *r) {
+        c.colour.push_back(o.colour);
         if (o.mesh) {
             c.objects.push_back(MeshObject{o.name, std::move(*o.mesh), o.unit});
             c.refusal.emplace_back(std::nullopt);
@@ -359,6 +361,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
             o.integer("triangles", s.triangles).num("volume_m3", s.volume_m3);
             o.raw("store_ref", JsonObject{}.str("sha256", s.store_sha256).str("file", s.file).line());
             if (!s.cross_check_json.empty()) o.raw("cross_check", s.cross_check_json);
+            o.raw("colour", colour_json(s.colour)).integer("colours", colour_count(s.colour));
             objects += o.line();
         }
         p.raw("objects", "[" + objects + "]");
@@ -409,6 +412,8 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
                         .str("gate", "not_checked")
                         .raw("bbox", JsonObject{}.raw("min", array3(lo)).raw("max", array3(hi)).line())
                         .num("volume", sol.volume_m3 * scale * scale * scale)
+                        .raw("colour", colour_json(sol.colour))
+                        .integer("colours", colour_count(sol.colour))
                         .line();
         }
         for (const std::string& name : info->skipped) {
@@ -469,6 +474,15 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     };
     Expected<Candidates> read = is_step ? convert_step() : read_objects(*format, path, bytes, unit.value_or(MeshUnit::metre));
     if (!read) return fail(read.error(), read.error().code == "cancelled" ? base : refused);
+    std::map<std::string, std::optional<SurfaceColour>> colour_by_name;  // each object's colour: the reader's, or the converter's for a STEP
+    for (std::size_t k = 0; k < read->objects.size(); ++k) colour_by_name[read->objects[k].name] = read->colour[k];
+    if (emitted) {
+        for (const ObjectColour& c : emitted->colours) colour_by_name[c.name] = c.colour;
+    }
+    const auto colour_of = [&](const std::string& name) {
+        const auto it = colour_by_name.find(name);
+        return it == colour_by_name.end() ? std::optional<SurfaceColour>() : it->second;
+    };
     std::vector<MeshObject> objects = std::move(read->objects);
     std::vector<std::optional<GateRefusal>> refusal = std::move(read->refusal);
     if (!opts.objects.empty()) {
@@ -571,6 +585,8 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
                         .raw("bbox", JsonObject{}.raw("min", array3(lo)).raw("max", array3(hi)).line())
                         .num("volume", o.mesh->mass_properties().volume)
                         .str("content_hash", hex16(o.mesh->content_hash()))
+                        .raw("colour", colour_json(colour_of(o.name)))
+                        .integer("colours", colour_count(colour_of(o.name)))
                         .line();
         }
         JsonObject payload = base;
@@ -601,7 +617,7 @@ int run_part_import(const std::vector<std::string>& args, const RunEnv& env, std
     for (const MeshObject& o : objects) {
         const auto cross = cross_by_name.find(o.name);
         stored.push_back({o.name, o.mesh, MeshProvenance{source_name + ": " + o.name, o.unit, key_in.tolerance_m},
-                          cross == cross_by_name.end() ? std::string() : cross->second});
+                          cross == cross_by_name.end() ? std::string() : cross->second, colour_of(o.name)});
     }
     const std::vector<std::string> no_solid = emitted ? emitted->skipped : std::vector<std::string>();
     const Expected<EntryRecord> rec = write_entry(store, bytes, source_name, key_in, stored, env.token, no_solid);
