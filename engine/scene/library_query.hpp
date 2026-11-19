@@ -121,7 +121,7 @@ struct PartMeshObject {
     std::string sha256{};  // the store folder
     std::string file{};    // the store file
     bool visual = false;   // role: visual (drawn only)
-    std::shared_ptr<const TriangleMesh> mesh{};
+    std::shared_ptr<const TriangleMesh> mesh{};  // null for a drawing-only object that is not an .spmesh (a presentation glTF): the renderer loads that file
 };
 
 // A part's objects, in the order its record lists them, each read from `<store>/<sha256>/<file>` (so Rendering draws compose_placement x part_meshes).

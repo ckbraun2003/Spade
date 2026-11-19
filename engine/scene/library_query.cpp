@@ -418,6 +418,15 @@ LibraryResult<std::vector<PartMeshObject>> part_meshes(const LibrarySet& set, st
         if (!fs::exists(file, ec)) {
             return std::unexpected(make("store_file_missing", "the store has no '" + m.file + "' at its address", entry.root, file.generic_string(), entry.id, "store"));
         }
+        // A drawing-only object may be a presentation glTF (no closed solid, so no TriangleMesh): it comes back with no mesh, for the renderer to load.
+        // A solid must be an .spmesh: physics and compile need its volume.
+        if (file.extension() != ".spmesh") {
+            if (!m.visual) {
+                return std::unexpected(make("invalid_entry", "'" + m.file + "' is a solid object and must be an .spmesh (only a role: visual object may be another file)", entry.root, file.generic_string(), entry.id));
+            }
+            out.push_back(PartMeshObject{m.sha256, m.file, true, nullptr});
+            continue;
+        }
         Result<LoadedMesh> loaded = load_mesh_file(file);
         if (!loaded) {
             return std::unexpected(make("invalid_entry", "'" + m.file + "' does not read as a mesh: " + loaded.error().context, entry.root, file.generic_string(), entry.id));
