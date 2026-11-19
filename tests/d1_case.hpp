@@ -68,7 +68,9 @@ inline constexpr physics::airflow::GridShape kD1NearGrid{272, 232, 272, 0.002f};
 // below it, less the hubs' 0.0614 m: the design frame is the table's, the hubs 0.0614 m above its origin), short of 1.5 R and of the kernel's reach
 // plus 4 cells; d1_x500_hold() lowers the drone 13 rows, 0.0325 m, so the hubs are 0.1924 m (1.5 R, the bell) under the top face and 0.400 m of
 // wake is below them.
-inline constexpr physics::airflow::GridShape kD1X500Grid{266, 237, 266, 0.0025f};
+// L99a (2026-11-19): the motor axes are at +-0.17689 m (measured), 2.7 mm further out than the 0.174 this box was sized for, so the box is 270 wide
+// (0.675 m, 4 cells more) to keep the 0.0165 m past the kernel's reach: 270 x 237 x 270 = 17.3 M cells, 3.775 GiB at the runner's 234.6 B a cell.
+inline constexpr physics::airflow::GridShape kD1X500Grid{270, 237, 270, 0.0025f};
 
 // Where the drone (the world origin) sits relative to the box's centre, for a D1 box of `grid`: centred in x and z, and
 // as far below the top face as kD1Grid holds it (0.354 m, 88.5 cells), so +y above the centre by half the extra rows.
