@@ -37,8 +37,8 @@
 #
 # The Docker daemon: Kat quits Docker Desktop whenever no Spade Linux work is running or
 # queued. If `docker info` fails, this starts Docker Desktop (scripts/docker-up.ps1) and
-# waits up to 180 s, one line per poll: a cold start adds about 25 s (measured:
-# 21 s to answer, 24 s wall, 2026-11-19) to the first check. It never stops Docker; Kat does.
+# waits up to 180 s, one line per poll: a cold start adds about 21 s on a quiet box;
+# once over 180 s with builds and legs queued (2026-11-19), when this gave up with rc 2. It never stops Docker; Kat does.
 #
 # Exit: 0 every file passed, 1 a file failed, 2 usage, no usable volume, or no Docker.
 set -u
@@ -70,7 +70,7 @@ fi
 
 # The daemon may be down (Kat quits Docker Desktop when no Spade Linux work is running or queued): start it and wait.
 if ! docker info >/dev/null 2>&1; then
-    echo "gcc-check: the Docker daemon is down; starting Docker Desktop (a cold start adds about 25 s)" >&2
+    echo "gcc-check: the Docker daemon is down; starting Docker Desktop (a cold start adds about 21 s on a quiet box; once over 180 s with builds and legs queued)" >&2
     powershell -NoProfile -ExecutionPolicy Bypass -File "$here/docker-up.ps1" >&2 \
         || { echo "gcc-check: the Docker daemon is not running and Docker Desktop did not start it" >&2; exit 2; }
 fi
