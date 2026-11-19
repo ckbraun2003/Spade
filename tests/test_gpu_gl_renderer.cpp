@@ -4762,8 +4762,121 @@ TEST_F(GpuGlRenderer, EveryS1LookMatchesTheCpuWithinItsBand) {
     const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
     std::printf("[ S1 looks ] %zu px styled; worst %d levels (the ground alone %d), %zu over two; %zu pixels differ (the ground alone %zu); on %s\n", styled,
                 d.worst, base.worst, d.over_two, d.differing, base.differing, device.c_str());
-    EXPECT_LE(d.worst, 20) << device;
-    EXPECT_LE(d.over_two, 400u) << device;
+    // Measured 2026-11-19, 160x120, on an NVIDIA GeForce RTX 3060 Ti (OpenGL 4.3.0, driver 572.83), at df325400's code: 2656 pixels styled; worst 6 levels
+    // (the ground alone 1), 2 pixels over two levels, 1276 pixels differ (the ground alone 608), with seven looks at once at a ui_scale of 1.5. The
+    // one-look tests above are tighter on a black frame (a gradient's mid colour within 24 levels, a flat colour within 1). Which look carries the worst
+    // pixel was not attributed: the CPU's mixed float and double and GL's float32 can fall either side of a coverage or the 0.5 threshold. Pinned at
+    // measured + 1.
+    constexpr int kBandWorstLevels = 7;        // measured 6
+    constexpr size_t kBandOverTwoPixels = 3;   // measured 2
+    constexpr size_t kBandDifferingPixels = 1277;  // measured 1276
+    EXPECT_LE(d.worst, kBandWorstLevels) << device;
+    EXPECT_LE(d.over_two, kBandOverTwoPixels) << device;
+    EXPECT_LE(d.differing, kBandDifferingPixels) << device;
+}
+
+// D182 S1's cost (KAT's host draws a trail per drone): 128 drones, one polyline each of 64, 200 and 400 points, 3 px wide with a 4 px glow, on a 1280 x 720
+// frame, GL and the CPU, the default look (as_before, no alphas: the work the capsule pass did before S1) and every look at once (gradient, per-point
+// alpha, flat cap, a hard edge on every fourth, depth_test false on every eighth). Medians of ten frames after two warm-ups, the draw alone (the scene is
+// uploaded first); the CPU's is render() into a 1280 x 720 buffer. Opt-in, as the other cost tests: set SPADE_POLYLINE_COST=1.
+TEST_F(GpuGlRenderer, PolylineCostAt128DronesAnd64And200And400Points) {
+    if (!env_gate_is_set("SPADE_POLYLINE_COST")) GTEST_SKIP() << "opt-in: set SPADE_POLYLINE_COST=1";
+    constexpr uint32_t kW = 1280u, kH = 720u;
+    const Camera camera = camera_over_ground();
+    const auto build = [&](int points, bool looks) {
+        RenderScene scene = make_ground_scene();
+        for (int k = 0; k < 128; ++k) {
+            spade::render::FlowPolyline line;
+            const float fx = -2.0f + 0.25f * static_cast<float>(k % 16);
+            const float fz = -1.5f + 0.4f * static_cast<float>(k / 16);
+            for (int i = 0; i < points; ++i) {
+                const float s = static_cast<float>(i) / static_cast<float>(points - 1);
+                line.points.push_back(glm::vec3(fx + 0.5f * s, 0.6f + 0.15f * std::sin(9.0f * s + static_cast<float>(k)), fz + 0.1f * std::cos(7.0f * s)));
+                line.colours.push_back(spade::render::colour_map_at(spade::render::ColourMapId::viridis, s));
+            }
+            if (looks) {
+                line.shading = spade::render::LineShading::gradient;
+                line.alphas.resize(static_cast<size_t>(points));
+                for (int i = 0; i < points; ++i) line.alphas[static_cast<size_t>(i)] = 0.08f + 0.92f * static_cast<float>(i) / static_cast<float>(points - 1);
+                line.cap = spade::render::LineCap::flat;
+                line.aa = (k % 4) != 0;
+                line.depth_test = (k % 8) != 0;
+            }
+            scene.flow_polylines.push_back(std::move(line));
+        }
+        scene.flow_line_style = spade::render::FlowLineStyle{3.0f, 4.0f, 0.4f};
+        return scene;
+    };
+    GLuint fbo = 0, colour = 0, depth = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenRenderbuffers(1, &colour);
+    glBindRenderbuffer(GL_RENDERBUFFER, colour);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, colour);
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, kW, kH);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth);
+    ASSERT_EQ(glCheckFramebufferStatus(GL_FRAMEBUFFER), static_cast<GLenum>(GL_FRAMEBUFFER_COMPLETE));
+    const auto median = [](std::vector<double> ms) {
+        std::sort(ms.begin(), ms.end());
+        return 0.5 * (ms[ms.size() / 2 - 1] + ms[ms.size() / 2]);
+    };
+    const auto gl_ms = [&](const RenderScene& scene) {
+        EXPECT_TRUE(renderer_->upload_scene(scene).has_value());
+        std::vector<double> ms;
+        for (int i = 0; i < 12; ++i) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glFinish();
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> drew = renderer_->draw(scene, camera, comparable_options(), kW, kH);
+            glFinish();
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(drew.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        return median(ms);
+    };
+    const auto cpu_ms = [&](const RenderScene& scene) {
+        std::vector<uint8_t> pixels(static_cast<size_t>(kW) * kH * 4u);
+        spade::render::RenderTarget target{.pixels = std::span<uint8_t>(pixels), .width = kW, .height = kH, .stride = kW * 4u};
+        std::vector<double> ms;
+        for (int i = 0; i < 12; ++i) {
+            const auto t0 = std::chrono::steady_clock::now();
+            const spade::Result<void> r = spade::render::render(scene, camera, comparable_options(), target);
+            const auto t1 = std::chrono::steady_clock::now();
+            EXPECT_TRUE(r.has_value());
+            if (i >= 2) ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+        }
+        return median(ms);
+    };
+    const std::string device = renderer_->renderer_name() + " (" + renderer_->version_string() + ")";
+    const RenderScene ground_only = [&] {
+        RenderScene s = build(64, false);
+        s.flow_polylines.clear();
+        return s;
+    }();
+    const double gl_base = gl_ms(ground_only);
+    const double cpu_base = cpu_ms(ground_only);
+    std::printf("[ polyline cost ] 1280x720, 128 drones, 3 px + 4 px glow; the frame without lines: GL %.3f ms, CPU %.2f ms; on %s\n", gl_base, cpu_base, device.c_str());
+    for (const int points : {64, 200, 400}) {
+        const double gl_default = gl_ms(build(points, false));
+        const double gl_looks = gl_ms(build(points, true));
+        const double cpu_default = cpu_ms(build(points, false));
+        const double cpu_looks = cpu_ms(build(points, true));
+        std::printf("[ polyline cost ] %3d points: GL default %.3f ms, every look %.3f ms; CPU default %.2f ms, every look %.2f ms\n", points, gl_default,
+                    gl_looks, cpu_default, cpu_looks);
+        RecordProperty("gl_default_ms_x1000_" + std::to_string(points), static_cast<int>(gl_default * 1000.0));
+        RecordProperty("gl_looks_ms_x1000_" + std::to_string(points), static_cast<int>(gl_looks * 1000.0));
+        RecordProperty("cpu_default_ms_x100_" + std::to_string(points), static_cast<int>(cpu_default * 100.0));
+        RecordProperty("cpu_looks_ms_x100_" + std::to_string(points), static_cast<int>(cpu_looks * 100.0));
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &colour);
+    glDeleteRenderbuffers(1, &depth);
 }
 
 }  // namespace
