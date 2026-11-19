@@ -82,7 +82,7 @@ TEST(GpuLiveLines, ALineRunFliesOnTheDeviceWithItsDye) {
     const an::ResolvedCase r = small_case(p);
     const an::LiveLines lines = lines_for(p);
     const ag::DyeSetup dye{af::DyeRelease{}, af::TipRelease{.gain = 4.0f}};
-    spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx, 64u, 0.0f, dye), &lines);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx, 64u, 0.17f, dye), &lines);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
     for (int i = 0; i < 30; ++i) {
@@ -122,8 +122,12 @@ TEST(GpuLiveLines, RefusesWhatItCannotMakeALineRunOfByName) {
     const auto n_sub = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx), &none);
     ASSERT_FALSE(n_sub.has_value());
     EXPECT_NE(n_sub.error().context.find("n_sub"), std::string::npos) << n_sub.error().context;
+    // L105a: a line run with no subgrid model (the maker's Cs 0, the default) is refused by name, by the device's own guard.
+    const auto lean = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx), &lines);
+    ASSERT_FALSE(lean.has_value());
+    EXPECT_NE(lean.error().context.find("actuator lines need a subgrid model"), std::string::npos) << lean.error().context;
     // A line run's save would restore as a disc run: refused, by name.
-    spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx), &lines);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, ag::gpu_live_fluid(*ctx, 64u, 0.17f), &lines);
     ASSERT_TRUE(run.has_value()) << run.error().context;
     const spade::test::TempDir dir("live-lines-save");
     const auto saved = run->save(dir.path() / "run.save");

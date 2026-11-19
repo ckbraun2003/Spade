@@ -118,6 +118,14 @@ void station_at(const BladeShape& b, float r, float& chord, float& beta_deg) noe
 
 }  // namespace
 
+Result<void> check_line_damping(float sgs_cs) {
+    if (!(sgs_cs > 0.0f)) {  // 0, negative and NaN alike
+        return std::unexpected(refuse("actuator lines need a subgrid model (sgs_cs above 0): without one a line run breaks down within a few thousand "
+                                      "steps, whether nu is 0 or the air's own (L105a, docs/design/physics/plans/2026-11-19-x500-kit-remeasure.md)"));
+    }
+    return {};
+}
+
 Result<void> check_line(const LineRotor& rotor, const GridShape& shape, float rho, float h, uint32_t n_sub) {
     if (rotor.blade == nullptr) return std::unexpected(refuse("line: no blade"));
     if (rotor.polar == nullptr) return std::unexpected(refuse("line: no polar"));

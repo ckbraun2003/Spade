@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -375,6 +376,19 @@ TEST(AirflowLine, EveryRefusalIsByName) {
     const auto s = af::spread_line(off, g, kRho, 0.0002f, 1, inc.du, inc.dv, inc.dw);
     ASSERT_FALSE(s.has_value());
     for (const float v : inc.dw) ASSERT_EQ(v, 0.0f);
+}
+
+// L105a: a line run needs a subgrid model. The x500 kit rotor at 5 mm and 0.18 tip cells a step breaks down from about step 4500 with Cs 0, whether nu is 0
+// or the air's 1.4607e-5, and is steady to step 8032 at Cs 0.17 (record 2026-11-19-x500-kit-remeasure.md); GpuFluid::create() asks this before the device.
+TEST(AirflowLine, ALineNeedsASubgridModel) {
+    for (const float cs : {0.0f, -0.17f, std::numeric_limits<float>::quiet_NaN()}) {
+        const auto c = af::check_line_damping(cs);
+        ASSERT_FALSE(c.has_value()) << "Cs " << cs << " is not a subgrid model";
+        EXPECT_EQ(c.error().code, spade::Code::invalid_argument);
+        EXPECT_NE(c.error().context.find("actuator lines need a subgrid model"), std::string::npos) << c.error().context;
+        EXPECT_NE(c.error().context.find("sgs_cs above 0"), std::string::npos) << c.error().context;
+    }
+    for (const float cs : {0.05f, 0.17f}) EXPECT_TRUE(af::check_line_damping(cs).has_value()) << "Cs " << cs;
 }
 
 }  // namespace

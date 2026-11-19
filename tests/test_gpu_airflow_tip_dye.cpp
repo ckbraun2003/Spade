@@ -82,7 +82,7 @@ TEST(GpuAirflowTipDye, TheTipDyeIsTheCpusBitForBit) {
     const af::PolarTable polar = af::estimated_polar();
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     af::LineRotor rotor;
     rotor.centre = glm::vec3(0.104f, 0.104f, 0.104f);
     rotor.blade = &blade;
@@ -160,7 +160,7 @@ TEST(GpuAirflowTipDye, TheTipDyeFollowsTheBladeAround) {
     const af::PolarTable polar = af::estimated_polar();
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     const af::MacGrid start = *af::make_grid(shape, bc);
     double phase[2] = {0.0, 0.0};
     const float psis[2] = {0.0f, 0.4f};
@@ -215,7 +215,7 @@ TEST(GpuAirflowTipDye, RefusesATipDyeItCannotMake) {
     ASSERT_NE(ctx, nullptr);
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     const af::MacGrid start = *af::make_grid(shape, bc);
     const ag::DyeSetup no_line{af::DyeRelease{}, af::TipRelease{}};
     const auto a = ag::GpuFluid::create(*ctx, start, bc, cfg, nullptr, 64u, nullptr, &no_line);

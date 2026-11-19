@@ -257,6 +257,10 @@ Result<std::unique_ptr<GpuFluid>> GpuFluid::create(compute::VulkanContext& ctx, 
     if (!af::sgs_cs_valid(cfg.sgs_cs)) {
         return std::unexpected(invalid("sgs_cs must be 0 (off) or finite and at most kSgsCsMax"));
     }
+    // L105a: lines are stepped by the device only, so their guard is here (line.hpp's ACTUATOR LINES NEED A SUBGRID MODEL).
+    if (line != nullptr) {
+        if (Result<void> damped = af::check_line_damping(cfg.sgs_cs); !damped) return std::unexpected(damped.error());
+    }
     const bool with_solids = solids != nullptr && solids->any;
     if (Result<void> ok = af::check_grid(g.shape, bc, with_solids); !ok) return std::unexpected(ok.error());
     const af::GridShape& s = g.shape;

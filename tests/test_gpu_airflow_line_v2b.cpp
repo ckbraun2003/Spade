@@ -249,7 +249,7 @@ TEST(GpuAirflowLineHover, V2bTheUiuc10x5OnTheGpu) {
     ASSERT_TRUE(grid.has_value()) << grid.error().context;
     af::FluidConfig cfg;
     cfg.rho = kRho;
-    cfg.sgs_cs = static_cast<float>(env_u32("SPADE_V2B_CS100", 0)) / 100.0f;  // L84: the subgrid viscosity, 0 off
+    cfg.sgs_cs = static_cast<float>(env_u32("SPADE_V2B_CS100", 17)) / 100.0f;  // L84: the subgrid viscosity; L105a: 0 is refused with a line (the film's 0.17)
     cfg.h = 0.00038f * dx / 0.004f;
 
     af::LineRotor rotor;

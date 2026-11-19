@@ -614,7 +614,7 @@ static void fluid_steps_a_line(bool tip) {
     const af::PolarTable polar = af::estimated_polar();
     const af::GridShape shape{kN, kN, kN, kDx};
     const af::DomainBc bc{};
-    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8};
+    const af::FluidConfig cfg{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};  // L105a: a line run needs Cs
     const uint32_t n_sub = 2;
     af::LineRotor rotor;
     rotor.centre = glm::vec3(0.104f, 0.104f, 0.104f);
@@ -712,6 +712,38 @@ static void fluid_steps_a_line(bool tip) {
 }
 
 TEST(GpuAirflowLine, TheFluidStepsALineAndMatchesTheCpu) { fluid_steps_a_line(false); }
+
+// L105a: a device made with a LineSetup and no subgrid model is refused by name (line.hpp's check_line_damping), whether nu is 0 or the air's; a fluid with
+// no line is not asked, and a line with Cs above 0 is made.
+TEST(GpuAirflowLine, ALineFluidWithNoSubgridModelIsRefusedByName) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const af::BladeShape blade = blade_of(2);
+    const af::PolarTable polar = af::estimated_polar();
+    const af::GridShape shape{kN, kN, kN, kDx};
+    const af::DomainBc bc{};
+    const af::MacGrid start = *af::make_grid(shape, bc);
+    af::LineRotor rotor;
+    rotor.centre = glm::vec3(0.104f, 0.104f, 0.104f);
+    rotor.blade = &blade;
+    rotor.polar = &polar;
+    rotor.omega = 400.0f;
+    const std::vector<af::LineRotor> first{rotor};
+    const auto probe = ag::line_records(first, shape, kRho, kH, 2);
+    ASSERT_TRUE(probe.has_value()) << probe.error().context;
+    const ag::LineSetup setup{.polar = &polar, .elements = probe->per_rotor[0], .n_sub = 2, .tip_correction = true};
+    for (const float nu : {0.0f, 1.5e-5f}) {
+        const af::FluidConfig lean{.rho = kRho, .nu = nu, .h = kH, .n_v = 2, .visc_sweeps = 8};
+        const auto refused = ag::GpuFluid::create(*ctx, start, bc, lean, nullptr, 64u, &setup);
+        ASSERT_FALSE(refused.has_value()) << "nu " << nu;
+        EXPECT_NE(refused.error().context.find("actuator lines need a subgrid model"), std::string::npos) << refused.error().context;
+        EXPECT_TRUE(ag::GpuFluid::create(*ctx, start, bc, lean).has_value()) << "no line: not asked, nu " << nu;
+    }
+    const af::FluidConfig damped{.rho = kRho, .nu = 1.5e-5f, .h = kH, .n_v = 2, .visc_sweeps = 8, .sgs_cs = 0.17f};
+    const auto made = ag::GpuFluid::create(*ctx, start, bc, damped, nullptr, 64u, &setup);
+    EXPECT_TRUE(made.has_value()) << (made.has_value() ? std::string() : made.error().context);
+}
 
 // L72k's A1: the whole path with the tip correction on, three steps, every face and cell of u, v, w and p the CPU's bit for bit.
 TEST(GpuAirflowLine, TheFluidStepsATipCorrectedLineAndMatchesTheCpu) { fluid_steps_a_line(true); }
