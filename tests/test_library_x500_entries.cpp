@@ -38,6 +38,7 @@
 #include "scene/library_query.hpp"
 #include "scene/library_set.hpp"
 #include "scene/part_blocks.hpp"
+#include "../tools/part_stand_in/stand_in.hpp"
 
 namespace {
 
@@ -337,6 +338,44 @@ TEST(LibraryX500Entries, TheRotorPartsCarryTheSeatAndTheDiscAndTheMotorTheBoss) 
         ASSERT_EQ(poses.count(slot), 1u) << slot;
         EXPECT_NEAR(poses.at(slot).p[2], 0.070, 1e-9) << slot << " origin height";
         EXPECT_NEAR(poses.at(slot).p[2] - 0.00926, 0.0607, 1e-4) << slot << " disc height";
+    }
+}
+
+// The rule (library contract): a part with `meshes` draws them when the store has them, else its `shapes`: so every X500 part has shapes, and a mesh part's are the
+// tool's (marked, cited as derived), the others' are their own dimensioned boxes.
+TEST(LibraryX500Entries, EveryPartHasShapesAndAMeshPartsAreTheStandInToolsWithTheirCitation) {
+    const sc::LibrarySet set = open_default();
+    std::size_t parts = 0, with_meshes = 0;
+    for (const sc::SetEntry& e : set.entries) {
+        if (e.kind != "part" || e.rel_file.rfind("parts/x500/", 0) != 0) continue;
+        ++parts;
+        const sc::PartBlocks b = blocks_of(set, e.id);
+        EXPECT_FALSE(b.shapes.empty()) << e.id << ": no shapes: a box shows the layout without the store";
+        if (b.meshes.empty()) continue;
+        ++with_meshes;
+        const std::string text = slurp(e.file);
+        EXPECT_NE(text.find(spade::stand_in::kMarker), std::string::npos) << e.id << ": its shapes are not the stand-in tool's (run tools/part_stand_in)";
+        ASSERT_TRUE(b.source.has_value()) << e.id;
+        EXPECT_NE(text.find("shapes: {source: \"" + b.source->id + "\", grade: derived"), std::string::npos) << e.id << ": the shapes are cited derived, from the part's own source";
+    }
+    EXPECT_EQ(parts, 13u);
+    EXPECT_EQ(with_meshes, 10u);
+}
+
+// With the store at hand, the committed stand-ins are exactly what the tool writes now (same store, same rule: the output is reproducible).
+TEST(LibraryX500Entries, TheStandInsAreWhatTheToolWritesWhenTheStoreIsGiven) {
+    const std::string store = store_from_env();
+    if (store.empty()) GTEST_SKIP() << "SPADE_PART_STORE is not set";
+    const sc::LibrarySet set = open_default();
+    for (const sc::SetEntry& e : set.entries) {
+        if (e.kind != "part" || e.rel_file.rfind("parts/x500/", 0) != 0) continue;
+        if (blocks_of(set, e.id).meshes.empty()) continue;
+        spade::stand_in::Options options;
+        if (e.part_kind == "prop") options.skip_materials = {"bell"};  // the bell is hidden in the drawing
+        const std::string text = slurp(e.file);
+        const auto again = spade::stand_in::add_stand_in(text, store, options);
+        ASSERT_TRUE(again.has_value()) << e.id << ": " << again.error();
+        EXPECT_EQ(again->text, text) << e.id;
     }
 }
 

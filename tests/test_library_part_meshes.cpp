@@ -140,4 +140,28 @@ TEST(LibraryPartMeshes, TheRefusalsAreNamed) {
     EXPECT_EQ(bare.error().code, "bare_id");
 }
 
+// A drawing-only object may be a glTF (the kit's rotors are presentation glTFs, not closed solids: no TriangleMesh): it comes back with no mesh once the store has the file,
+// for the renderer to load; a SOLID object must be an .spmesh, since physics and compile need its volume.
+TEST(LibraryPartMeshes, ADrawingOnlyGltfIsAnObjectWithNoMeshAndASolidThatIsNotAnSpmeshIsRefused) {
+    const fs::path store = fresh("gltf_store");
+    put(store / kShaA / "rotor.gltf", "{}");  // present, and not read here
+    const std::string drawn = std::string("id: \"x500_frame\"\nmeshes:\n  - {store: {sha256: \"") + kShaA + "\", file: \"rotor.gltf\"}, role: visual}\n";
+    const auto got = sc::part_meshes(open_set("gltf", drawn, store), "r:part.frame.x500_frame");
+    ASSERT_TRUE(got.has_value()) << got.error().message << ' ' << got.error().path;
+    ASSERT_EQ(got->size(), 1u);
+    EXPECT_EQ((*got)[0].file, "rotor.gltf");
+    EXPECT_TRUE((*got)[0].visual);
+    EXPECT_EQ((*got)[0].mesh, nullptr);
+    // the file must still be in the store
+    const auto absent = sc::part_meshes(open_set("gltf_absent", drawn, fresh("gltf_empty_store")), "r:part.frame.x500_frame");
+    ASSERT_FALSE(absent.has_value());
+    EXPECT_EQ(absent.error().code, "store_file_missing");
+    // the same file as a solid is refused
+    const std::string solid = std::string("id: \"x500_frame\"\nmeshes:\n  - {store: {sha256: \"") + kShaA + "\", file: \"rotor.gltf\"}}\n";
+    const auto refused = sc::part_meshes(open_set("gltf_solid", solid, store), "r:part.frame.x500_frame");
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().code, "invalid_entry");
+    EXPECT_NE(refused.error().path.find("rotor.gltf"), std::string::npos) << refused.error().path;
+}
+
 }  // namespace
