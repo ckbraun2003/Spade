@@ -178,6 +178,24 @@ TEST(FlowMovieLiveCase, TheStillAirClipsDefaultToTheDeepBoxAndAnExplicitGridWins
     EXPECT_EQ(flow_movie::d1_web_grid(false, small).ny, 80u) << "--grid wins on a side-wind clip";
 }
 
+// L106c (the lead, 2026-11-19): the website film at the L106 config, the X500's 2.5 mm box (270 x 237 x 270) with the drone held where Physics'
+// harness holds it (d1_x500_hold()). --cell-mm 2.5 selects both; with no --cell-mm everything above is as it was.
+TEST(FlowMovieLiveCase, TheCellOptionSelectsTheX500sBoxAndItsHoldAndNothingElseChanges) {
+    const auto box = flow_movie::d1_web_grid(true, std::nullopt, 2.5f);
+    EXPECT_EQ(box.nx, spade::testing::kD1X500Grid.nx);
+    EXPECT_EQ(box.ny, spade::testing::kD1X500Grid.ny);
+    EXPECT_EQ(box.nz, spade::testing::kD1X500Grid.nz);
+    EXPECT_EQ(box.dx, spade::testing::kD1X500Grid.dx);
+    const auto hold = flow_movie::d1_web_hold(2.5f);
+    ASSERT_TRUE(hold.has_value());
+    EXPECT_EQ(*hold, spade::testing::d1_x500_hold());
+    EXPECT_FALSE(flow_movie::d1_web_hold(std::nullopt).has_value()) << "no --cell-mm: the case's own hold";
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt, std::nullopt).dx, kD1DeepGrid.dx) << "the default box is the deep one";
+    EXPECT_EQ(flow_movie::d1_web_grid(true, std::nullopt, std::nullopt).ny, kD1DeepGrid.ny);
+    const spade::physics::airflow::GridShape small{112, 80, 112, 0.004f};
+    EXPECT_EQ(flow_movie::d1_web_grid(true, small, std::nullopt).ny, 80u) << "--grid still wins when there is no --cell-mm";
+}
+
 // The model-file parameter of D1's builder (the lead, 2026-11-17: Cameron wants a real drone model in the web clips). The
 // default is today's reference quad, so every existing D1 film and test is the film it was; another library drone is built
 // the same way, its parts in the flow, held at its own hover throttle.

@@ -553,6 +553,54 @@ TEST(FlowMovieWeb, TheSgsCsOptionIsParsedStrictlyAndNamesItsOwnCacheFolder) {
     for (const char* id : {"S5", "S6"}) EXPECT_FALSE(web::sgs_cs_applies(*web::find_clip(id))) << id;
 }
 
+// L106c (the lead, 2026-11-19): the website film at the L106 config. --cell-mm X is the D1 box's cell size (only 2.5, the X500's box, with
+// --drone x500 on a still-air clip); --step-us N is the solver step in whole microseconds (50 is L106's 0.05 ms), for a --window run, whose frames
+// are spread over the window and so do not fix a step count. Both parse strictly, name their own cache folder, and change nothing when absent.
+TEST(FlowMovieWeb, TheCellAndStepOptionsAreParsedStrictlyAndRefusedWhereTheyDoNotApply) {
+    ASSERT_TRUE(web::parse_cell_mm("2.5").has_value());
+    EXPECT_FLOAT_EQ(*web::parse_cell_mm("2.5"), 2.5f);
+    EXPECT_FLOAT_EQ(*web::parse_cell_mm("4"), 4.0f);
+    for (const char* bad : {"", " ", "0", "0.0", "-2.5", "+2.5", "nan", "inf", "2.5x", " 2.5", "2.5 ", "1e1", "2,5", "abc", "11", "100"}) {
+        EXPECT_FALSE(web::parse_cell_mm(bad).has_value()) << "'" << bad << "'";
+    }
+    ASSERT_TRUE(web::parse_step_us("50").has_value());
+    EXPECT_EQ(*web::parse_step_us("50"), 50u);
+    EXPECT_EQ(*web::parse_step_us("1"), 1u);
+    EXPECT_EQ(*web::parse_step_us("1000"), 1000u);
+    for (const char* bad : {"", " ", "0", "-50", "+50", "50.5", "50us", "5e1", " 50", "50 ", "1001", "abc", "99999999999"}) {
+        EXPECT_FALSE(web::parse_step_us(bad).has_value()) << "'" << bad << "'";
+    }
+    // The cell option: 2.5 with the X500 on a still-air clip, and nothing else, each refusal naming what is supported.
+    EXPECT_EQ(web::cell_mm_refusal(2.5f, "x500", true), "");
+    for (const std::string& why : {web::cell_mm_refusal(4.0f, "x500", true), web::cell_mm_refusal(2.5f, "reference_quad", true),
+                                   web::cell_mm_refusal(2.5f, "x500", false)}) {
+        EXPECT_NE(why.find("--cell-mm"), std::string::npos) << why;
+        EXPECT_NE(why.find("2.5"), std::string::npos) << why;
+        EXPECT_NE(why.find("x500"), std::string::npos) << why;
+    }
+    // The step option is for a --window run: the group's frames are 5 whole steps at 0.2 ms.
+    EXPECT_EQ(web::step_us_refusal(50u, true), "");
+    EXPECT_NE(web::step_us_refusal(50u, false).find("--window"), std::string::npos);
+    // A run at another cell or step keeps its frames in a folder of its own, as another Cs does.
+    EXPECT_EQ(web::cell_step_stem_suffix(std::nullopt, std::nullopt), "");
+    EXPECT_EQ(web::cell_step_stem_suffix(2.5f, 50u), "-cell2.5-step50us");
+    EXPECT_EQ(web::cell_step_stem_suffix(2.5f, std::nullopt), "-cell2.5");
+    EXPECT_EQ(web::cell_step_stem_suffix(std::nullopt, 50u), "-step50us");
+    EXPECT_NE(web::cell_step_stem_suffix(2.5f, 50u), web::cell_step_stem_suffix(2.5f, 100u));
+}
+
+// --particles with --window: the points are carried frame to frame, so a --window run that solves (--stream) feeds them in order, and a --web-still
+// redraw from kept frames carries them through the files (L106b). A --window run that neither streams nor redraws has no frames to carry them through.
+TEST(FlowMovieWeb, ParticlesWithAWindowNeedAStreamOrARedrawFromKeptFrames) {
+    EXPECT_EQ(web::particles_window_refusal(false, false, false), "") << "no window: the group's own run";
+    EXPECT_EQ(web::particles_window_refusal(false, false, true), "");
+    EXPECT_EQ(web::particles_window_refusal(true, true, false), "") << "a window redraw of kept frames";
+    EXPECT_EQ(web::particles_window_refusal(true, false, true), "") << "a streamed window run (L106c)";
+    const std::string why = web::particles_window_refusal(true, false, false);
+    EXPECT_NE(why.find("--window"), std::string::npos) << why;
+    EXPECT_NE(why.find("--stream"), std::string::npos) << why;
+}
+
 // S1's caption says where the streamlines start, and says what the code does: seeded 6 cm BELOW each disc's hub (in two rings
 // of eight round the axis) and traced both ways. It once said "above each of four actuator discs", which the picture contradicts.
 TEST(FlowMovieWeb, S1sCaptionSaysWhereTheStreamlinesAreSeededAndHowTheyAreTraced) {
