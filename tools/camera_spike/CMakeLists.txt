@@ -1,4 +1,4 @@
-# tools/camera_spike: the camera sensor's core spike (docs/design/rendering/2026-11-19-camera-sensor-design.md, section 8, V1 to V7).
+# tools/camera_spike: the camera sensor's core spike (docs/design/rendering/2026-11-19-camera-sensor-design.md, section 8, V1 to V11).
 # A standalone Vulkan ray-query benchmark: it links no engine library, changes no engine API and is not installed. It measures what the
 # design needs before the technique is committed to (throughput at KAT's two P1 operating points, the lattice against the per-env
 # TLAS, the export path, determinism, and a CPU oracle). Build-tree only, behind SPADE_VULKAN.
@@ -12,6 +12,7 @@ if(NOT SPADE_SLANGC)
 endif()
 
 set(_cs_shader "${CMAKE_CURRENT_SOURCE_DIR}/camera_spike.slang")
+set(_cs_tex "${CMAKE_CURRENT_SOURCE_DIR}/tex.slang")  # the texture filter, included by the kernel and the probe
 set(_cs_out "${CMAKE_CURRENT_BINARY_DIR}")
 set(_cs_spv)
 foreach(_variant IN ITEMS L E128 E1024)
@@ -26,11 +27,21 @@ foreach(_variant IN ITEMS L E128 E1024)
     add_custom_command(
         OUTPUT "${_spv}"
         COMMAND "${SPADE_SLANGC}" "${_cs_shader}" -target spirv -profile spirv_1_5 -entry main -stage compute ${_defs} -o "${_spv}"
-        DEPENDS "${_cs_shader}"
+        DEPENDS "${_cs_shader}" "${_cs_tex}"
         COMMENT "slangc: camera_spike.slang -> camera_spike_${_variant}.spv"
         VERBATIM)
     list(APPEND _cs_spv "${_spv}")
 endforeach()
+# the texture-filter probe (V11): the filter alone, for the CPU-against-GPU check
+set(_cs_probe "${CMAKE_CURRENT_SOURCE_DIR}/texprobe.slang")
+set(_cs_probe_spv "${_cs_out}/texprobe.spv")
+add_custom_command(
+    OUTPUT "${_cs_probe_spv}"
+    COMMAND "${SPADE_SLANGC}" "${_cs_probe}" -target spirv -profile spirv_1_5 -entry main -stage compute -o "${_cs_probe_spv}"
+    DEPENDS "${_cs_probe}" "${_cs_tex}"
+    COMMENT "slangc: texprobe.slang -> texprobe.spv"
+    VERBATIM)
+list(APPEND _cs_spv "${_cs_probe_spv}")
 add_custom_target(camera_spike_shaders DEPENDS ${_cs_spv})
 
 # volk.c compiles into this target with the win32 platform macro, as spade_compute does for its own use: the external-memory and

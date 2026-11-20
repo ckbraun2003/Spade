@@ -116,11 +116,16 @@ inline constexpr double kTmax = 50.0;
 inline constexpr double kLatticeCell = 100.0;
 inline constexpr uint32_t kInstancesPerEnv = 5;  // gates 0..3, then the mesh
 
+// kind: 0 gate (CSG), 1 mesh (torus), 2 box distractor (a flat rectangle), 3 pole distractor
 struct Placed {
     Mat3 R;
     V3 t;
     uint32_t label;
+    uint32_t kind = 0;
+    uint32_t var = 0;  // a colour variant bit for the distractors
 };
+inline constexpr V3 kBoxHalf{0.5, 0.35, 0.04};
+inline constexpr V3 kPoleHalf{0.05, 1.5, 0.05};
 struct EnvScene {
     std::array<Placed, 5> inst;  // [0..3] gates, [4] mesh (its base pose; a dynamic frame turns it)
 };
@@ -130,12 +135,55 @@ inline EnvScene make_env(uint32_t env, uint32_t frame, bool dynamic) {
         e.inst[g].R = rot_y((hash01(env, 10 + g) - 0.5) * 0.6);
         e.inst[g].t = {(hash01(env, 20 + g) - 0.5) * 1.6, 1.4 + (hash01(env, 30 + g) - 0.5) * 0.4, 2.0 + 3.0 * g};
         e.inst[g].label = g + 1;
+        e.inst[g].kind = 0;
     }
     const double yaw = 0.3 + (dynamic ? 0.05 * frame : 0.0);
     e.inst[4].R = rot_y(yaw);
     e.inst[4].t = {-1.5 + (hash01(env, 40) - 0.5) * 0.5, 1.0, 6.0};
     e.inst[4].label = 5;
+    e.inst[4].kind = 1;
     return e;
+}
+
+// The mesh instance alone (the one a dynamic frame turns). Its label is 5 for up to four gates, else gates + 1: never a gate's label.
+inline Placed mesh_placed(uint32_t env, uint32_t frame, bool dynamic, uint32_t gates) {
+    Placed m;
+    m.R = rot_y(0.3 + (dynamic ? 0.05 * frame : 0.0));
+    m.t = {-1.5 + (hash01(env, 40) - 0.5) * 0.5, 1.0, 6.0};
+    m.label = gates <= 4 ? 5 : gates + 1;
+    m.kind = 1;
+    return m;
+}
+
+// The general scene: `gates` gates down the track (z = 2 + 3g; for gates < 4 and no distractors it is make_env's scene exactly, so the
+// oracle stays valid), `distractors` boxes and poles (unlabelled, label 0), then the mesh last. Order: gates, distractors, mesh.
+inline std::vector<Placed> make_env_list(uint32_t env, uint32_t frame, bool dynamic, uint32_t gates, uint32_t distractors) {
+    std::vector<Placed> v;
+    v.reserve(gates + distractors + 1);
+    for (uint32_t g = 0; g < gates; ++g) {
+        const uint32_t sa = g < 4 ? 10 + g : 200 + g * 3, sb = g < 4 ? 20 + g : 201 + g * 3, sc = g < 4 ? 30 + g : 202 + g * 3;
+        Placed p;
+        p.R = rot_y((hash01(env, sa) - 0.5) * 0.6);
+        p.t = {(hash01(env, sb) - 0.5) * 1.6, 1.4 + (hash01(env, sc) - 0.5) * 0.4, 2.0 + 3.0 * g};
+        p.label = g + 1;
+        p.kind = 0;
+        v.push_back(p);
+    }
+    const double track = 32.0;  // distractors fill z in [-4, 28]: the stretch the camera sees (it flies z = -6 to +4)
+    for (uint32_t d = 0; d < distractors; ++d) {
+        const uint32_t s0 = 1000 + d * 8;
+        Placed p;
+        p.kind = hash01(env, s0) < 0.5 ? 2 : 3;
+        p.R = rot_y(hash01(env, s0 + 1) * 6.28);
+        const double x = (hash01(env, s0 + 2) - 0.5) * 12.0, z = -4.0 + hash01(env, s0 + 3) * track;
+        const double y = p.kind == 3 ? kPoleHalf.y : 0.35 + hash01(env, s0 + 4) * 2.0;
+        p.t = {x, y, z};
+        p.label = 0;
+        p.var = hash01(env, s0 + 5) < 0.5 ? 0 : 1;
+        v.push_back(p);
+    }
+    v.push_back(mesh_placed(env, frame, dynamic, gates));
+    return v;
 }
 
 struct Mesh {

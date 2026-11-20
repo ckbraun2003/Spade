@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "scene.hpp"
+#include "texpool.hpp"
 #include "vkh.hpp"
 
 namespace cs {
@@ -21,6 +22,13 @@ struct Setup {
     bool dynamic = false; // the mesh instance turns every frame and the TLAS is updated
     bool exportable = false;
     bool depth = false;
+    uint32_t gates = 4;        // gates an env (the oracle's scene is 4 gates and no distractors)
+    uint32_t distractors = 0;  // boxes and poles an env
+    bool textured = false;     // texture the gates, distractors and ground from the pool
+    bool count_tex = false;    // count the texture samples (an atomic: not a timing run)
+    uint32_t tex_seed = 0;     // the episode: shifts every env's textures
+    const TexPool* pool = nullptr;
+    std::vector<std::pair<uint32_t, uint32_t>> per_env;  // V10: (aa, blur) per env; empty = the uniform aa and blur above
     std::string spv_dir;
 };
 
@@ -28,9 +36,11 @@ struct Params {
     uint32_t W, H, aa, blur;
     uint32_t envs, side, mode, grey;
     float cell, tmax;
-    uint32_t debug_depth, pad;
+    uint32_t flags, blur_stride;  // flags: 1 debug depth, 2 textured, 4 per-env counts, 8 count texture samples
+    float pix_angle;
+    uint32_t pad0, pad1, pad2;
 };
-static_assert(sizeof(Params) == 48);
+static_assert(sizeof(Params) == 64);
 
 struct FrameTimes {
     double wall_ms = 0, kernel_ms = 0, upload_ms = 0, as_ms = 0, pose_cpu_ms = 0, inst_cpu_ms = 0;
@@ -48,6 +58,16 @@ public:
         while (side_ * side_ < s.envs) ++side_;
         planes_ = s.cfg.grey ? 1u : 3u;
         n_tlas_ = s.lattice ? 1u : s.envs;
+        n_inst_ = s_.gates + s_.distractors + 1;
+        max_aa_ = s_.aa;
+        max_blur_ = s_.blur;
+        for (const auto& pe : s_.per_env) {
+            max_aa_ = std::max(max_aa_, pe.first);
+            max_blur_ = std::max(max_blur_, pe.second);
+        }
+        if (max_aa_ < 1 || max_aa_ > 2) die("aa must be 1 or 2");
+        if (!s_.per_env.empty() && s_.per_env.size() != s_.envs) die("per_env needs one entry an env");
+        if (s_.textured && s_.pool == nullptr) die("a textured run needs the texture pool");
         mesh_ = make_torus();
         vram_start_ = heap_usage(d_);
         make_resources();
@@ -66,9 +86,10 @@ public:
         vkDestroyQueryPool(d_.dev, qpool_, nullptr);
         vkDestroySemaphore(d_.dev, sem_, nullptr);
         for (auto a : tlas_) vkDestroyAccelerationStructureKHR(d_.dev, a, nullptr);
-        vkDestroyAccelerationStructureKHR(d_.dev, blas_gate_, nullptr);
+        for (auto a : blas_aabb_) vkDestroyAccelerationStructureKHR(d_.dev, a, nullptr);
         vkDestroyAccelerationStructureKHR(d_.dev, blas_mesh_, nullptr);
-        for (Buffer* b : {&table_, &poses_, &poses_stage_, &out_, &readback_, &depth_, &depth_read_, &verts_, &idx_, &srgb_, &inst_, &aabb_, &arena_, &scratch_})
+        for (Buffer* b : {&table_, &table2_, &poses_, &poses_stage_, &out_, &readback_, &depth_, &depth_read_, &verts_, &idx_, &srgb_, &inst_, &aabb_, &arena_, &scratch_, &tex_,
+                          &textab_, &envtex_, &envcfg_, &srgblin_, &stats_, &stats_read_})
             destroy_buffer(d_, *b);
     }
     Renderer(const Renderer&) = delete;
@@ -83,9 +104,9 @@ public:
             const auto tp = std::chrono::steady_clock::now();
             auto* dst = static_cast<float*>(poses_stage_.map);
             for (uint32_t e = 0; e < s_.envs; ++e)
-                for (uint32_t k = 0; k < s_.blur; ++k) {
-                    const Pose p = camera_pose(e, shutter_time(f, k, s_.blur));
-                    float* o = dst + (static_cast<size_t>(e) * s_.blur + k) * 8;
+                for (uint32_t k = 0; k < blur_of(e); ++k) {
+                    const Pose p = camera_pose(e, shutter_time(f, k, blur_of(e)));
+                    float* o = dst + (static_cast<size_t>(e) * max_blur_ + k) * 8;
                     o[0] = p.pos[0]; o[1] = p.pos[1]; o[2] = p.pos[2]; o[3] = 0.0f;
                     o[4] = p.quat[0]; o[5] = p.quat[1]; o[6] = p.quat[2]; o[7] = p.quat[3];
                 }
@@ -95,10 +116,7 @@ public:
         if (s_.dynamic) {
             const auto ti = std::chrono::steady_clock::now();
             auto* arr = static_cast<VkAccelerationStructureInstanceKHR*>(inst_.map);
-            for (uint32_t e = 0; e < s_.envs; ++e) {
-                const EnvScene sc = make_env(e, f, true);
-                fill_instance(arr[e * kInstancesPerEnv + 4], sc.inst[4], e, 1);
-            }
+            for (uint32_t e = 0; e < s_.envs; ++e) fill_instance(arr[e * n_inst_ + n_inst_ - 1], mesh_placed(e, f, true, s_.gates), e);
             ft.inst_cpu_ms = ms_since(ti);
         }
         // 3. record and submit
@@ -107,7 +125,8 @@ public:
         begin_cmd(cb);
         vkCmdResetQueryPool(cb, qpool_, 0, 4);
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, qpool_, 0);
-        VkBufferCopy bc{0, 0, static_cast<VkDeviceSize>(s_.envs) * s_.blur * 32};
+        if (s_.count_tex) vkCmdFillBuffer(cb, stats_.buf, 0, 16, 0);
+        VkBufferCopy bc{0, 0, static_cast<VkDeviceSize>(s_.envs) * max_blur_ * 32};
         vkCmdCopyBuffer(cb, poses_stage_.buf, poses_.buf, 1, &bc);
         memory_barrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, qpool_, 1);
@@ -119,13 +138,20 @@ public:
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, qpool_, 2);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout_, 0, 1, &dset_, 0, nullptr);
+        const uint32_t flags = (s_.depth ? 1u : 0u) | (s_.textured ? 2u : 0u) | (s_.per_env.empty() ? 0u : 4u) | (s_.count_tex ? 8u : 0u);
         Params p{s_.cfg.W, s_.cfg.H, s_.aa, s_.blur, s_.envs, side_, s_.lattice ? 0u : 1u, s_.cfg.grey ? 1u : 0u,
-                 static_cast<float>(kLatticeCell), static_cast<float>(kTmax), s_.depth ? 1u : 0u, 0u};
+                 static_cast<float>(kLatticeCell), static_cast<float>(kTmax), flags, max_blur_, static_cast<float>(1.0 / s_.cfg.fx), 0u, 0u, 0u};
         vkCmdPushConstants(cb, layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(p), &p);
         vkCmdDispatch(cb, (s_.cfg.W + 7) / 8, (s_.cfg.H + 7) / 8, s_.envs);
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, qpool_, 3);
-        if (readback) {
+        if (readback || s_.count_tex) {
             memory_barrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            if (s_.count_tex) {
+                VkBufferCopy sc{0, 0, 16};
+                vkCmdCopyBuffer(cb, stats_.buf, stats_read_.buf, 1, &sc);
+            }
+        }
+        if (readback) {
             VkBufferCopy rc{0, 0, out_.size};
             vkCmdCopyBuffer(cb, out_.buf, readback_.buf, 1, &rc);
             if (s_.depth) {
@@ -157,6 +183,7 @@ public:
         ft.upload_ms = static_cast<double>(ts4[1] - ts4[0]) * ns * 1e-6;
         ft.as_ms = static_cast<double>(ts4[2] - ts4[1]) * ns * 1e-6;
         ft.kernel_ms = static_cast<double>(ts4[3] - ts4[2]) * ns * 1e-6;
+        if (s_.count_tex) std::memcpy(&tex_samples_, stats_read_.map, 4);
         if (readback) {
             const auto* src = static_cast<const uint8_t*>(readback_.map);
             image_.assign(src, src + img_bytes_);
@@ -186,12 +213,22 @@ public:
     VkSemaphore semaphore() const { return sem_; }
     uint64_t signalled() const { return counter_; }
     uint32_t side() const { return side_; }
-    uint64_t instances() const { return static_cast<uint64_t>(s_.envs) * kInstancesPerEnv; }
+    uint64_t instances() const { return static_cast<uint64_t>(s_.envs) * n_inst_; }
+    uint32_t instances_per_env() const { return n_inst_; }
+    uint64_t tlas_bytes() const { return tlas_bytes_; }
+    uint64_t tlas_build_scratch() const { return tlas_build_scratch_; }
+    uint64_t tlas_update_scratch() const { return tlas_update_scratch_; }
+    uint64_t tex_samples() const { return tex_samples_; }
+    void set_count_tex(bool on) { s_.count_tex = on; }
+    uint64_t tex_pool_bytes() const { return tex_.size; }
+    uint32_t blur_of(uint32_t e) const { return s_.per_env.empty() ? s_.blur : s_.per_env[e].second; }
+    uint32_t aa_of(uint32_t e) const { return s_.per_env.empty() ? s_.aa : s_.per_env[e].first; }
+    uint32_t env_gate_tex(uint32_t e) const { return (e * 37u + s_.tex_seed * 11u) % kTexCount; }
     const Setup& setup() const { return s_; }
     const Mesh& mesh() const { return mesh_; }
 
 private:
-    void fill_instance(VkAccelerationStructureInstanceKHR& in, const Placed& p, uint32_t env, uint32_t kind) {
+    void fill_instance(VkAccelerationStructureInstanceKHR& in, const Placed& p, uint32_t env) {
         V3 t = p.t;
         if (s_.lattice) {
             t.x += static_cast<double>(env % side_) * kLatticeCell;
@@ -203,11 +240,11 @@ private:
         in.transform.matrix[0][3] = static_cast<float>(t.x);
         in.transform.matrix[1][3] = static_cast<float>(t.y);
         in.transform.matrix[2][3] = static_cast<float>(t.z);
-        in.instanceCustomIndex = (kind << 16) | p.label;
+        in.instanceCustomIndex = (p.kind << 20) | (p.var << 16) | p.label;
         in.mask = 0xFF;
         in.instanceShaderBindingTableRecordOffset = 0;
         in.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-        in.accelerationStructureReference = kind == 0 ? blas_gate_addr_ : blas_mesh_addr_;
+        in.accelerationStructureReference = p.kind == 1 ? blas_mesh_addr_ : blas_aabb_addr_[p.kind == 0 ? 0 : (p.kind == 2 ? 1 : 2)];
     }
 
     VkAccelerationStructureKHR make_as(VkDeviceSize size, VkAccelerationStructureTypeKHR type, VkDeviceAddress* addr) {
@@ -225,6 +262,7 @@ private:
         *addr = vkGetAccelerationStructureDeviceAddressKHR(d_.dev, &ai);
         arena_used_ += size;
         as_bytes_ += size;
+        if (type == VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR) tlas_bytes_ += size;
         return as;
     }
 
@@ -232,10 +270,56 @@ private:
         const uint32_t W = s_.cfg.W, H = s_.cfg.H;
         const VkMemoryPropertyFlags dev_local = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
         const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        const auto table = make_table(s_.cfg, s_.aa);
+        const VkBufferUsageFlags sto = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         {
-            table_ = make_buffer(d_, table.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dev_local);
+            const auto table = make_table(s_.cfg, 1);
+            table_ = make_buffer(d_, table.size() * 4, sto, dev_local);
             upload(table_, table.data(), table.size() * 4);
+            const auto table2 = make_table(s_.cfg, max_aa_ > 1 ? 2u : 1u);  // the 2x2 grid (or a stand-in when no env uses AA)
+            table2_ = make_buffer(d_, table2.size() * 4, sto, dev_local);
+            upload(table2_, table2.data(), table2.size() * 4);
+        }
+        {  // the texture pool (or a stand-in), the per-env table, the sRGB-to-linear table, the counter
+            if (s_.textured) {
+                tex_ = make_buffer(d_, s_.pool->words.size() * 4, sto, dev_local);
+                upload(tex_, s_.pool->words.data(), s_.pool->words.size() * 4);
+                textab_ = make_buffer(d_, s_.pool->table.size() * 4, sto, dev_local);
+                upload(textab_, s_.pool->table.data(), s_.pool->table.size() * 4);
+            } else {
+                const uint32_t zero[4]{};
+                tex_ = make_buffer(d_, 16, sto, dev_local);
+                upload(tex_, zero, 16);
+                textab_ = make_buffer(d_, 16, sto, dev_local);
+                upload(textab_, zero, 16);
+            }
+            std::vector<uint32_t> et(static_cast<size_t>(s_.envs) * 8, 0);
+            for (uint32_t e = 0; e < s_.envs; ++e) {
+                const uint32_t g = env_gate_tex(e);
+                et[e * 8 + 0] = g;
+                et[e * 8 + 1] = (g + 41u) % kTexCount;
+                et[e * 8 + 2] = (g + 83u) % kTexCount;
+                const float ou = static_cast<float>(hash01(e + s_.tex_seed * 977u, 900)), ov = static_cast<float>(hash01(e + s_.tex_seed * 977u, 901));
+                std::memcpy(&et[e * 8 + 4], &ou, 4);
+                std::memcpy(&et[e * 8 + 5], &ov, 4);
+            }
+            envtex_ = make_buffer(d_, et.size() * 4, sto, dev_local);
+            upload(envtex_, et.data(), et.size() * 4);
+            std::vector<uint32_t> ec(static_cast<size_t>(s_.envs) * 2);
+            for (uint32_t e = 0; e < s_.envs; ++e) {
+                ec[e * 2] = aa_of(e);
+                ec[e * 2 + 1] = blur_of(e);
+            }
+            envcfg_ = make_buffer(d_, ec.size() * 4, sto, dev_local);
+            upload(envcfg_, ec.data(), ec.size() * 4);
+            std::vector<float> lin(256);
+            for (int i = 0; i < 256; ++i) {
+                const double c = i / 255.0;
+                lin[i] = static_cast<float>(c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4));
+            }
+            srgblin_ = make_buffer(d_, lin.size() * 4, sto, dev_local);
+            upload(srgblin_, lin.data(), lin.size() * 4);
+            stats_ = make_buffer(d_, 16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dev_local);
+            stats_read_ = make_buffer(d_, 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
         }
         {
             const auto srgb = make_srgb_table();
@@ -249,13 +333,22 @@ private:
             upload(verts_, mesh_.verts.data(), mesh_.verts.size() * 4);
             idx_ = make_buffer(d_, mesh_.idx.size() * 4, asin, dev_local);
             upload(idx_, mesh_.idx.data(), mesh_.idx.size() * 4);
-            const float aabb[6] = {-static_cast<float>(kOuter.x + 0.002), -static_cast<float>(kOuter.y + 0.002), -static_cast<float>(kOuter.z + 0.002),
-                                   static_cast<float>(kOuter.x + 0.002),  static_cast<float>(kOuter.y + 0.002),  static_cast<float>(kOuter.z + 0.002)};
+            float aabb[18];  // the gate's outer box, the box distractor, the pole distractor: each padded 0.002
+            const V3 halves[3] = {kOuter, kBoxHalf, kPoleHalf};
+            for (int i = 0; i < 3; ++i) {
+                aabb[i * 6 + 0] = -static_cast<float>(halves[i].x + 0.002);
+                aabb[i * 6 + 1] = -static_cast<float>(halves[i].y + 0.002);
+                aabb[i * 6 + 2] = -static_cast<float>(halves[i].z + 0.002);
+                aabb[i * 6 + 3] = static_cast<float>(halves[i].x + 0.002);
+                aabb[i * 6 + 4] = static_cast<float>(halves[i].y + 0.002);
+                aabb[i * 6 + 5] = static_cast<float>(halves[i].z + 0.002);
+            }
             aabb_ = make_buffer(d_, sizeof(aabb), asin, dev_local);
             upload(aabb_, aabb, sizeof(aabb));
         }
-        poses_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * s_.blur * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dev_local);
-        poses_stage_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * s_.blur * 32, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host);
+        poses_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * max_blur_ * 32, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, dev_local);
+        poses_stage_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * max_blur_ * 32, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host);
+        std::memset(poses_stage_.map, 0, poses_stage_.size);
         img_bytes_ = static_cast<uint64_t>(s_.envs) * planes_ * W * H;
         ids_bytes_ = static_cast<uint64_t>(s_.envs) * W * H * 2;
         ids_off_ = (img_bytes_ + 255) & ~uint64_t{255};
@@ -265,7 +358,7 @@ private:
         const uint64_t depth_bytes = s_.depth ? static_cast<uint64_t>(s_.envs) * W * H * 4 : 16;
         depth_ = make_buffer(d_, depth_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, dev_local);
         depth_read_ = make_buffer(d_, depth_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
-        inst_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * kInstancesPerEnv * sizeof(VkAccelerationStructureInstanceKHR),
+        inst_ = make_buffer(d_, static_cast<VkDeviceSize>(s_.envs) * n_inst_ * sizeof(VkAccelerationStructureInstanceKHR),
                             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host);
 
         VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -343,7 +436,7 @@ private:
         gi.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
         gi.geometry.instances.arrayOfPointers = VK_FALSE;
         gi.geometry.instances.data.deviceAddress = inst_.addr;
-        const uint32_t tlas_prims = s_.lattice ? s_.envs * kInstancesPerEnv : kInstancesPerEnv;
+        const uint32_t tlas_prims = s_.lattice ? s_.envs * n_inst_ : n_inst_;
 
         const auto sg = sizes_of(gg, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, 1, blas_flags);
         const auto sm = sizes_of(gm, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, mesh_prims, blas_flags);
@@ -352,14 +445,14 @@ private:
         tlas_update_scratch_ = st.updateScratchSize;
         const VkDeviceSize per_scratch = (std::max(st.buildScratchSize, st.updateScratchSize) + d_.scratch_align - 1) / d_.scratch_align * d_.scratch_align;
         per_tlas_scratch_ = per_scratch;
-        const VkDeviceSize arena_need = ((sg.accelerationStructureSize + 255) & ~255ull) + ((sm.accelerationStructureSize + 255) & ~255ull) +
+        const VkDeviceSize arena_need = 3 * ((sg.accelerationStructureSize + 255) & ~255ull) + ((sm.accelerationStructureSize + 255) & ~255ull) +
                                         static_cast<VkDeviceSize>(n_tlas_) * ((st.accelerationStructureSize + 255) & ~255ull) + 4096;
         arena_ = make_buffer(d_, arena_need, VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         const VkDeviceSize scratch_need = std::max<VkDeviceSize>(std::max(sg.buildScratchSize, sm.buildScratchSize) + d_.scratch_align, static_cast<VkDeviceSize>(n_tlas_) * per_scratch);
         scratch_ = make_buffer(d_, scratch_need + d_.scratch_align, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         scratch_base_ = (scratch_.addr + d_.scratch_align - 1) / d_.scratch_align * d_.scratch_align;
 
-        blas_gate_ = make_as(sg.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, &blas_gate_addr_);
+        for (int i = 0; i < 3; ++i) blas_aabb_[i] = make_as(sg.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, &blas_aabb_addr_[i]);
         blas_mesh_ = make_as(sm.accelerationStructureSize, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, &blas_mesh_addr_);
         tlas_.resize(n_tlas_);
         tlas_addr_.resize(n_tlas_);
@@ -368,9 +461,8 @@ private:
         // the instances (a reset's work)
         auto* arr = static_cast<VkAccelerationStructureInstanceKHR*>(inst_.map);
         for (uint32_t e = 0; e < s_.envs; ++e) {
-            const EnvScene sc = make_env(e, 0, false);
-            for (uint32_t i = 0; i < 4; ++i) fill_instance(arr[e * kInstancesPerEnv + i], sc.inst[i], e, 0);
-            fill_instance(arr[e * kInstancesPerEnv + 4], sc.inst[4], e, 1);
+            const std::vector<Placed> sc = make_env_list(e, 0, false, s_.gates, s_.distractors);
+            for (uint32_t i = 0; i < n_inst_; ++i) fill_instance(arr[e * n_inst_ + i], sc[i], e);
         }
 
         // BLAS builds, then the TLAS builds, timed on the GPU
@@ -388,12 +480,18 @@ private:
             bg.flags = blas_flags;
             bg.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
             bg.geometryCount = 1;
-            bg.pGeometries = &gg;
-            bg.dstAccelerationStructure = blas_gate_;
             bg.scratchData.deviceAddress = scratch_base_;
-            VkAccelerationStructureBuildRangeInfoKHR rg{1, 0, 0, 0};
-            const VkAccelerationStructureBuildRangeInfoKHR* prg = &rg;
-            vkCmdBuildAccelerationStructuresKHR(cb, 1, &bg, &prg);
+            for (uint32_t i = 0; i < 3; ++i) {
+                VkAccelerationStructureGeometryKHR gi3 = gg;
+                gi3.geometry.aabbs.data.deviceAddress = aabb_.addr + 24ull * i;
+                bg.pGeometries = &gi3;
+                bg.dstAccelerationStructure = blas_aabb_[i];
+                VkAccelerationStructureBuildRangeInfoKHR rg{1, 0, 0, 0};
+                const VkAccelerationStructureBuildRangeInfoKHR* prg = &rg;
+                vkCmdBuildAccelerationStructuresKHR(cb, 1, &bg, &prg);
+                memory_barrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+                               VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+            }
             memory_barrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR,
                            VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR);
             VkAccelerationStructureBuildGeometryInfoKHR bm = bg;
@@ -436,7 +534,7 @@ private:
             infos[i].geometryCount = 1;
             infos[i].pGeometries = &geoms[i];
             infos[i].scratchData.deviceAddress = scratch_base_ + static_cast<VkDeviceAddress>(i) * per_tlas_scratch_;
-            ranges[i] = VkAccelerationStructureBuildRangeInfoKHR{tlas_prims_, s_.lattice ? 0u : i * kInstancesPerEnv * static_cast<uint32_t>(sizeof(VkAccelerationStructureInstanceKHR)), 0, 0};
+            ranges[i] = VkAccelerationStructureBuildRangeInfoKHR{tlas_prims_, s_.lattice ? 0u : i * n_inst_ * static_cast<uint32_t>(sizeof(VkAccelerationStructureInstanceKHR)), 0, 0};
             pranges[i] = &ranges[i];
         }
         vkCmdBuildAccelerationStructuresKHR(cb, n_tlas_, infos.data(), pranges.data());
@@ -452,12 +550,12 @@ private:
         mi.codeSize = spv.size();
         mi.pCode = reinterpret_cast<const uint32_t*>(spv.data());
         CS_VK(vkCreateShaderModule(d_.dev, &mi, nullptr, &module_));
-        std::vector<VkDescriptorSetLayoutBinding> bs(9);
-        for (uint32_t i = 0; i < 9; ++i) {
+        std::vector<VkDescriptorSetLayoutBinding> bs(kBindings);
+        for (uint32_t i = 0; i < kBindings; ++i) {
             bs[i] = {i, i == 0 ? VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, i == 0 ? n_tlas_ : 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
         }
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        li.bindingCount = 9;
+        li.bindingCount = kBindings;
         li.pBindings = bs.data();
         CS_VK(vkCreateDescriptorSetLayout(d_.dev, &li, nullptr, &dsl_));
         VkPushConstantRange pc{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(Params)};
@@ -471,7 +569,7 @@ private:
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module_, "main", nullptr};
         ci.layout = layout_;
         CS_VK(vkCreateComputePipelines(d_.dev, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe_));
-        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, n_tlas_}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8}};
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, n_tlas_}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kBindings}};
         VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpi.maxSets = 1;
         dpi.poolSizeCount = 2;
@@ -494,7 +592,7 @@ private:
         w0.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
         ws.push_back(w0);
         std::vector<VkDescriptorBufferInfo> infos;
-        infos.reserve(8);
+        infos.reserve(kBindings);
         auto add = [&](uint32_t binding, const Buffer& b, VkDeviceSize off, VkDeviceSize range) {
             infos.push_back({b.buf, off, range});
             VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -513,17 +611,27 @@ private:
         add(6, idx_, 0, idx_.size);
         add(7, srgb_, 0, srgb_.size);
         add(8, depth_, 0, depth_.size);
+        add(9, table2_, 0, table2_.size);
+        add(10, tex_, 0, tex_.size);
+        add(11, textab_, 0, textab_.size);
+        add(12, envtex_, 0, envtex_.size);
+        add(13, envcfg_, 0, envcfg_.size);
+        add(14, srgblin_, 0, srgblin_.size);
+        add(15, stats_, 0, stats_.size);
         vkUpdateDescriptorSets(d_.dev, static_cast<uint32_t>(ws.size()), ws.data(), 0, nullptr);
     }
 
     Device& d_;
     Setup s_;
-    uint32_t side_ = 1, planes_ = 3, n_tlas_ = 1;
+    static constexpr uint32_t kBindings = 16;
+    uint32_t side_ = 1, planes_ = 3, n_tlas_ = 1, n_inst_ = 5, max_aa_ = 1, max_blur_ = 1;
     Mesh mesh_;
-    Buffer table_, poses_, poses_stage_, out_, readback_, depth_, depth_read_, verts_, idx_, srgb_, inst_, aabb_, arena_, scratch_;
+    Buffer table_, table2_, poses_, poses_stage_, out_, readback_, depth_, depth_read_, verts_, idx_, srgb_, inst_, aabb_, arena_, scratch_;
+    Buffer tex_, textab_, envtex_, envcfg_, srgblin_, stats_, stats_read_;
+    uint64_t tex_samples_ = 0, tlas_bytes_ = 0;
     VkDeviceSize arena_used_ = 0;
-    VkAccelerationStructureKHR blas_gate_ = VK_NULL_HANDLE, blas_mesh_ = VK_NULL_HANDLE;
-    VkDeviceAddress blas_gate_addr_ = 0, blas_mesh_addr_ = 0;
+    VkAccelerationStructureKHR blas_aabb_[3]{}, blas_mesh_ = VK_NULL_HANDLE;  // aabb: gate, box, pole
+    VkDeviceAddress blas_aabb_addr_[3]{}, blas_mesh_addr_ = 0;
     std::vector<VkAccelerationStructureKHR> tlas_;
     std::vector<VkDeviceAddress> tlas_addr_;
     VkAccelerationStructureGeometryKHR tlas_geom_{};
