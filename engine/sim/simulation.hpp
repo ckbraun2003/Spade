@@ -864,6 +864,12 @@ public:
     // vulkan_pass_durations_ns(): `unavailable` on the cpu backend.
     [[nodiscard]] Result<compute::DeviceReport> vulkan_device_report() const;
 
+    // The Vulkan backend this run steps on, or nullptr on the cpu backend. For a consumer that must work on the SAME device
+    // as the world set (the camera drawing from the device poses: compute/vulkan/backend.hpp's pose_view()); it includes
+    // that header itself, this one stays Vulkan-free. Owned by the Simulation; invalid once it is destroyed.
+    [[nodiscard]] compute::VulkanBackend* vulkan_backend() noexcept { return vulkan_backend_.get(); }
+    [[nodiscard]] const compute::VulkanBackend* vulkan_backend() const noexcept { return vulkan_backend_.get(); }
+
     // Every buffer the run created and the host arena's bytes (module API stage 7, Task A3; compute/backend.hpp's
     // MemoryReport). A CPU run lists no device buffers.
     [[nodiscard]] compute::MemoryReport memory_report() const;

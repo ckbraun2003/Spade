@@ -11,6 +11,7 @@
 #include "compute/recipe.hpp"
 #include "compute/set_one_bindings.hpp"
 #include "compute/vulkan/context.hpp"
+#include "compute/vulkan/pose_view.hpp"
 #include "compute/vulkan/state_mirror.hpp"
 #include "compute/vulkan/step_recorder.hpp"
 
@@ -292,6 +293,11 @@ std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return impl_
 uint32_t VulkanBackend::pipeline_count() const noexcept { return impl_->recorder->pipeline_count(); }
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
+
+Result<DevicePoseView> pose_view(const VulkanBackend& backend) {
+    (void)backend;
+    return std::unexpected(Error{Code::unavailable, "pose_view: not implemented yet"});  // RED stub
+}
 
 MemoryReport VulkanBackend::memory_report() const { return impl_->mirror->memory_report(); }
 
