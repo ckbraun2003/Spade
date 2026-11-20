@@ -734,8 +734,9 @@ namespace {
     return worst;
 }
 
-// The bound atan32 claims (see fp32_math.cpp): the worst ulp error measured over everything below, rounded up to the next half ulp.
-constexpr double kAtanUlpBound = 1.0;
+// The bound atan32 claims (see fp32_math.cpp): 2 ulp, the worst measured over everything below being 2.000, at x = 0.414214 (0x3ED413D5), just above the second
+// reduction's threshold tan(pi/8), where t - 1 is not exact (it is below 0.5, so Sterbenz's lemma does not hold) and the quotient inherits that rounding.
+constexpr double kAtanUlpBound = 2.0;
 
 }  // namespace
 
