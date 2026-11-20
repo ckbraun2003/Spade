@@ -162,6 +162,14 @@ struct DeviceReport {
     // mode (SPIR-V rule P6), and compute/vulkan/dispatch_chain.hpp refuses
     // their pipelines on a device without it.
     bool signed_zero_inf_nan_preserve_f32 = false;
+    // WHICH PHYSICAL DEVICE this is, for a program that must prove another API is on the same one (the camera's
+    // exported Vulkan buffers imported by a CUDA process: the import works only on the same device, and the importer
+    // checks these against its own device's). VkPhysicalDeviceIDProperties, core in Vulkan 1.1: the 16-byte deviceUUID,
+    // and the 8-byte deviceLUID when deviceLUIDValid (Windows; false elsewhere, the bytes then zero).
+    bool ids_queryable = false;  // the device answered the query (Vulkan >= 1.1); false: the fields below stay zero
+    std::array<uint8_t, 16> device_uuid{};
+    std::array<uint8_t, 8> device_luid{};
+    bool device_luid_valid = false;
     // The device's limits (stage 7 §7.1, CORE-5 as amended 2026-10-12), so
     // every run records what its device admits; compute/device_limits.hpp
     // checks against them by name.
@@ -232,6 +240,11 @@ struct BackendDesc {
     // changes no result, only whether create() refuses, so it is a result-neutral knob (engine A7) with its invariance
     // test (MemoryReport.ACapChangesNoResult).
     uint64_t vram_cap_bytes = 0;
+    // Camera design section 12, item 1: make the body poses reachable on the device (compute/vulkan/pose_view.hpp). True
+    // allocates the previous-tick pose buffer, records a device-side copy of the poses at the start of every tick's command
+    // buffer and ends it with a memory barrier for later readers, so VulkanBackend::pose_view() can answer. False (the
+    // default) records and allocates nothing for it: today's recording, byte for byte. It changes no result (engine A7).
+    bool device_pose_view = false;
 };
 
 // ---------------------------------------------------------------------------

@@ -200,4 +200,13 @@ inline constexpr float kMaxReducibleAngle = 0x1.0p24f;  // 16777216
 [[nodiscard]] float sin32(float x) noexcept;
 [[nodiscard]] float cos32(float x) noexcept;
 
+// ---------------------------------------------------------------------------
+// Arctangent, fp32, deterministic (Spade L111; the camera's KB4 forward projection needs atan(r), r >= 0, under SR-14's no-libm rule).
+//
+// Built from + - * / and sqrt only, so it returns the same bits on every conforming implementation. ODD: atan32(-x) == -atan32(x) exactly. Defined on the
+// whole float line, no accuracy domain: atan32(+-0) = +-0 (the sign kept), atan32(+-infinity) = +-pi/2 (the float nearest it), a NaN gives that NaN.
+// ACCURACY: stated in the .cpp's section header and proven by tests/test_fp32_math.cpp against the double reference spade::math::atan2_arith.
+// ---------------------------------------------------------------------------
+[[nodiscard]] float atan32(float x) noexcept;
+
 }  // namespace spade::math
