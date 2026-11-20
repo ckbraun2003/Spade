@@ -213,14 +213,23 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
         return out + "; no VK_EXT_memory_budget on this device, so other programs' VRAM use is not visible (the budget assumed is "
                      "half the device-local heap, " + std::to_string(now->budget) + " bytes)";
     }
-    out += "; VRAM budget " + std::to_string(now->budget) + " bytes (VK_EXT_memory_budget): " + std::to_string(at_create->usage) +
-           " bytes in use at create, " + std::to_string(now->usage) + " bytes when it was lost";
-    if (now->usage > at_create->usage) {
-        out += ", " + std::to_string(now->usage - at_create->usage) + " bytes more (another program took VRAM after the run began)";
-    } else {
-        out += ", no more than at create (the VRAM did not grow, so look at the work itself)";
+    // heapUsage is THIS process's own use and heapBudget is what the OS lets it hold; the budget falls when another program takes VRAM.
+    const uint64_t b1 = at_create->budget, b2 = now->budget, u1 = at_create->usage, u2 = now->usage;
+    out += "; VRAM (VK_EXT_memory_budget): budget " + std::to_string(b1) + " at create, " + std::to_string(b2) +
+           " when lost; this process held " + std::to_string(u1) + " at create, " + std::to_string(u2) + " when lost";
+    std::string why;
+    const auto add = [&why](const std::string& clause) { why += (why.empty() ? "" : "; ") + clause; };
+    if (b2 < b1) add("the budget fell by " + std::to_string(b1 - b2) + " bytes (another program took VRAM after the run began)");
+    if (u2 > u1) add("this process holds " + std::to_string(u2 - u1) + " bytes more than at create");
+    if (u2 > b2) {
+        add("over its budget by " + std::to_string(u2 - b2) +
+            " bytes (the driver pages to system memory, the usual way a submit passes the 2 s watchdog)");
     }
-    return out;
+    if (why.empty()) {
+        why = b2 == b1 && u2 == u1 ? "neither the budget nor this process's use changed, so look at the work itself"
+                                   : "the budget did not fall and this process's use did not grow, so look at the work itself";
+    }
+    return out + ": " + why;
 }
 
 }  // namespace spade::compute
