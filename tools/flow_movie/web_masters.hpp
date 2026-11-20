@@ -373,16 +373,16 @@ struct Drone {
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
         {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
-         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
+         "the camera quadcopter", "a 1.28 kg camera quadcopter (generated from published dimensions)",
          // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
          // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
          Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}, 0.004f, 0.2963f},  // its proxy radius
-        // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
+        // The X500's flow model (Physics' tool data, found from the assets directory; 10 in rotors reach 0.37 m from the axis, so a
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
-         "the open-source quadcopter", "a 2 kg open-source quadcopter with 10 inch rotors (published dimensions)",
+         "the open-source quadcopter", "a 1.63 kg open-source quadcopter with 10 inch rotors (its parts' masses summed)",
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
     }};
     return table;

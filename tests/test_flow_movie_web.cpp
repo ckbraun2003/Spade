@@ -786,7 +786,7 @@ TEST(FlowMovieWeb, ADroneDescriptionsMassIsTheModelFilesBodyMass) {
 }
 
 // --drone takes a library drone by its internal name, and no caption, title or file name carries that name or a brand: the
-// clip says "a 1.3 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17). The default is the
+// clip says "a 1.28 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17; the mass as the model file has it, 2026-11-20). The default is the
 // reference quad, with today's words and today's cache names.
 TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
     const web::Drone* drone = web::find_drone("phantom3_class");
@@ -815,7 +815,7 @@ TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
         EXPECT_EQ(lower.find("phantom"), std::string::npos) << id;
         EXPECT_EQ(lower.find("dji"), std::string::npos) << id;
         EXPECT_EQ(lower.find("reference quad"), std::string::npos) << id << ": " << text;
-        EXPECT_NE(text.find("a 1.3 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
+        EXPECT_NE(text.find("a 1.28 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
         EXPECT_NE(title.find("amera quadcopter"), std::string::npos) << title;
     }
     web::CaptionInput plain;
