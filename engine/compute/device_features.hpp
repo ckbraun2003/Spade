@@ -124,9 +124,27 @@ private:
 // or is a dependency of one that was, and the device. Nothing is ever dropped silently.
 [[nodiscard]] inline Result<FeatureSet> resolve_features(FeatureSet requested, FeatureSet supported,
                                                          std::string_view device_name) {
-    (void)supported;
-    (void)device_name;
-    return requested;  // RED stub: no closure, no refusal
+    const FeatureSet closure = with_dependencies(requested);
+    for (uint32_t i = 0; i < kDeviceFeatureCount; ++i) {
+        const auto f = static_cast<DeviceFeature>(i);
+        if (!closure.contains(f) || supported.contains(f)) continue;
+        std::string why = "device feature '" + std::string(feature_name(f)) + "' ";
+        if (requested.contains(f)) {
+            why += "(asked for) ";
+        } else {
+            // A dependency: name a member of the closure that needs it directly.
+            for (uint32_t j = 0; j < kDeviceFeatureCount; ++j) {
+                const auto g = static_cast<DeviceFeature>(j);
+                if (closure.contains(g) && feature_dependencies(g).contains(f)) {
+                    why += "(needed by '" + std::string(feature_name(g)) + "') ";
+                    break;
+                }
+            }
+        }
+        why += "is not offered by device '" + std::string(device_name) + "': it needs " + std::string(feature_requires(f));
+        return std::unexpected(Error{Code::unavailable, std::move(why)});
+    }
+    return closure;
 }
 
 }  // namespace spade::compute

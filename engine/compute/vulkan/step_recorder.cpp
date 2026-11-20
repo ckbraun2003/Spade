@@ -119,7 +119,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
                                                              std::span<const GpuPass> passes,
                                                              std::span<const SetOneSet> set1_sets,
                                                              std::span<const GpuPass> rebuilds,
-                                                             PoseCopy pose_copy) {
+                                                             PoseCopy pose_copy, StepTimeline timeline) {
     // A pass with no recipe has no GPU kernel: recording the rest would run a
     // different experiment from the CPU, silently (L6). Refused before any
     // resource is built. A rebuild hook is a pass too.
@@ -395,6 +395,24 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->fence_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkCreateFence (StepRecorder)"));
+    }
+    if (timeline.enabled) {
+        // pNext: the semaphore's type (timeline, from 0), then, when asked, the export of an OPAQUE_WIN32 handle.
+        VkExportSemaphoreCreateInfo export_info{};
+        export_info.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        export_info.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+        VkSemaphoreTypeCreateInfo type_info{};
+        type_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        type_info.pNext = timeline.exportable ? &export_info : nullptr;
+        type_info.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        type_info.initialValue = 0;
+        VkSemaphoreCreateInfo semaphore_info{};
+        semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        semaphore_info.pNext = &type_info;
+        if (VkResult r = vkCreateSemaphore(self->device_, &semaphore_info, nullptr, &self->step_semaphore_); r != VK_SUCCESS) {
+            return std::unexpected(map_vk_error(r, "vkCreateSemaphore (StepRecorder timeline)"));
+        }
+        self->timeline_exportable_ = timeline.exportable;
     }
     if (has_rebuild) {
         if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->rebuild_fence_); r != VK_SUCCESS) {
@@ -719,6 +737,18 @@ Result<void> StepRecorder::submit(uint64_t n, uint64_t first_tick) {
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit_info.commandBufferCount = 1;
         submit_info.pCommandBuffers = &recordings_[which].cmd;
+        // THE TICK COUNTER (camera design section 12, item 2), when asked for: this submit signals the timeline with the number
+        // of tick submits completed once it has run. The host's fence wait below is unchanged.
+        uint64_t signal_value = steps_submitted_ + 1;
+        VkTimelineSemaphoreSubmitInfo timeline_submit{};
+        if (step_semaphore_ != VK_NULL_HANDLE) {
+            timeline_submit.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+            timeline_submit.signalSemaphoreValueCount = 1;
+            timeline_submit.pSignalSemaphoreValues = &signal_value;
+            submit_info.pNext = &timeline_submit;
+            submit_info.signalSemaphoreCount = 1;
+            submit_info.pSignalSemaphores = &step_semaphore_;
+        }
         if (VkResult r = vkQueueSubmit(queue_, 1, &submit_info, fence_); r != VK_SUCCESS) {
             return std::unexpected(map_vk_error(r, "vkQueueSubmit (StepRecorder)"));
         }
@@ -780,6 +810,10 @@ void StepRecorder::destroy() noexcept {
     if (rebuild_fence_ != VK_NULL_HANDLE) {
         vkDestroyFence(device_, rebuild_fence_, nullptr);
         rebuild_fence_ = VK_NULL_HANDLE;
+    }
+    if (step_semaphore_ != VK_NULL_HANDLE) {
+        vkDestroySemaphore(device_, step_semaphore_, nullptr);
+        step_semaphore_ = VK_NULL_HANDLE;
     }
     if (pool_ != VK_NULL_HANDLE) {
         vkDestroyCommandPool(device_, pool_, nullptr);  // frees the recordings' command buffers implicitly

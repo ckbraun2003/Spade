@@ -231,6 +231,15 @@ struct PoseCopy {
     VkDeviceSize bytes = 0;
 };
 
+// The step's timeline semaphore (camera design section 12, item 2; compute/vulkan/pose_view.hpp's step_semaphore()): when
+// enabled, create() makes one timeline semaphore (initial value 0, exportable as an OPAQUE_WIN32 handle when `exportable`) and
+// every tick submit signals it with the number of tick submits completed so far, this one included. Default: none, and the
+// submit is exactly today's.
+struct StepTimeline {
+    bool enabled = false;
+    bool exportable = false;
+};
+
 class StepRecorder {
 public:
     // THE PIPELINE SLOTS ARE GONE (stage 7 Task B1). A pass's recipe (compute/recipe.hpp) names its own kernels; the recorder
@@ -279,7 +288,8 @@ public:
                                                                         std::span<const GpuPass> passes,
                                                                         std::span<const SetOneSet> set1_sets = {},
                                                                         std::span<const GpuPass> rebuilds = {},
-                                                                        PoseCopy pose_copy = {});
+                                                                        PoseCopy pose_copy = {},
+                                                                        StepTimeline timeline = {});
 
     ~StepRecorder();
     StepRecorder(const StepRecorder&) = delete;
@@ -306,6 +316,10 @@ public:
 
     // How many tick submits have completed since create(): 0 means the poses are still the host's upload.
     [[nodiscard]] uint64_t steps_submitted() const noexcept { return steps_submitted_; }
+
+    // The step's timeline semaphore (VK_NULL_HANDLE unless StepTimeline::enabled) and whether it was made exportable.
+    [[nodiscard]] VkSemaphore step_semaphore() const noexcept { return step_semaphore_; }
+    [[nodiscard]] bool step_semaphore_exportable() const noexcept { return timeline_exportable_; }
 
     // The tick most recently written into the step-params buffer -- what
     // Task 5's C2 fix test reads to prove "the host-side write happens per
@@ -408,6 +422,8 @@ private:
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
+    VkSemaphore step_semaphore_ = VK_NULL_HANDLE;  // owned; the timeline of StepTimeline
+    bool timeline_exportable_ = false;
     VkDescriptorSet set_ = VK_NULL_HANDLE;   // non-owning; StateMirror owns the pool/set
 
     // One compute pipeline per distinct kernel the schedule's recipes name (stage 7 Task B1), deduplicated by variant set and
