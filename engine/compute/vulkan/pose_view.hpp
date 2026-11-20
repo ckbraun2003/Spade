@@ -63,6 +63,24 @@ struct DevicePoseView {
     bool stepped = false;                       // false until the first step: `bodies` then holds the upload only
 };
 
+// THE STEP SEMAPHORE (camera design section 12, item 2): with BackendDesc::step_timeline the backend owns one timeline
+// semaphore and every tick submit signals it. Its value counts the tick submits that have completed since the backend was
+// created: monotonic, a restore does not rewind it (it counts submits, not the tick number). A pass on this queue or another
+// submits with a wait on `semaphore` at value V and runs after the Vth tick submit, with no host fence in between. `value` is the
+// count at the time of the call (what the host has seen complete: step() returns after the fence wait, so it is the total
+// number of ticks run so far). The semaphore is exportable as an OPAQUE_WIN32 handle when external_semaphore_win32 was also asked
+// for in BackendDesc::device_features (the consumer fetches the handle with vkGetSemaphoreWin32HandleKHR on `context`'s
+// device); the host's per-tick fence wait is unchanged.
+struct StepSemaphore {
+    VulkanContext* context = nullptr;      // the device the semaphore is on
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    uint64_t value = 0;                    // tick submits completed so far
+    bool exportable = false;               // created with an OPAQUE_WIN32 export
+};
+
+// `unavailable`, naming BackendDesc::step_timeline, unless the backend was created with it.
+[[nodiscard]] Result<StepSemaphore> step_semaphore(const VulkanBackend& backend);
+
 // The view of `backend`'s body poses (see the contract above). `unavailable`, naming BackendDesc::device_pose_view, unless the
 // backend was created with it. A free function, not a member, because VulkanBackend's header must not name Vulkan handles.
 [[nodiscard]] Result<DevicePoseView> pose_view(const VulkanBackend& backend);

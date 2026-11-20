@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -187,6 +188,95 @@ namespace {
     VkPhysicalDeviceFeatures features{};
     vkGetPhysicalDeviceFeatures(device, &features);
     return features.shaderInt64 == VK_TRUE;
+}
+
+// THE OPTIONAL FEATURES (camera design section 12, item 2; compute/device_features.hpp): which of them this device offers, read
+// from its extension list and one feature query. A query only: nothing is enabled here, so a context made without asking is
+// created exactly as before. A feature counts as offered only when its extension (where it has one at this API version) and its
+// feature bit are both there.
+[[nodiscard]] FeatureSet probe_optional_features(VkPhysicalDevice device, uint32_t api_version) {
+    FeatureSet out;
+    std::vector<VkExtensionProperties> extensions;
+    uint32_t count = 0;
+    if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr) == VK_SUCCESS) {
+        extensions.resize(count);
+        if (vkEnumerateDeviceExtensionProperties(device, nullptr, &count, extensions.data()) != VK_SUCCESS) extensions.clear();
+    }
+    const auto has = [&](std::string_view name) {
+        for (const VkExtensionProperties& e : extensions) {
+            if (std::string_view(e.extensionName) == name) return true;
+        }
+        return false;
+    };
+    const bool v12 = api_version >= VK_API_VERSION_1_2;
+    const bool timeline_api = v12 || has(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+    const bool address_api = v12 || has(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+    const bool structure_api =
+        has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) && has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    const bool query_api = has(VK_KHR_RAY_QUERY_EXTENSION_NAME) && has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+
+    // Only the structs this device may legally be asked about.
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{};
+    timeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    VkPhysicalDeviceBufferDeviceAddressFeatures address{};
+    address.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR structure{};
+    structure.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR query{};
+    query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    // 8-bit storage and shaderInt8 (Vulkan 1.2, or their two extensions); 16-bit storage is Vulkan 1.1 core, and shaderInt16 is
+    // a bit of the 1.0 feature block that VkPhysicalDeviceFeatures2 carries.
+    const bool eight_api = v12 || (has("VK_KHR_8bit_storage") && has("VK_KHR_shader_float16_int8"));
+    VkPhysicalDevice8BitStorageFeatures eight{};
+    eight.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+    VkPhysicalDeviceShaderFloat16Int8Features int8{};
+    int8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    VkPhysicalDevice16BitStorageFeatures sixteen{};
+    sixteen.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+    void* chain = nullptr;
+    const auto link = [&chain](auto& s) {
+        s.pNext = chain;
+        chain = &s;
+    };
+    if (timeline_api) link(timeline);
+    if (address_api) link(address);
+    if (structure_api) link(structure);
+    if (query_api) link(query);
+    if (eight_api) {
+        link(eight);
+        link(int8);
+    }
+    link(sixteen);
+    VkPhysicalDeviceFeatures2 features{};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = chain;
+    if (vkGetPhysicalDeviceFeatures2 != nullptr) vkGetPhysicalDeviceFeatures2(device, &features);
+    if (timeline_api && timeline.timelineSemaphore == VK_TRUE) out.add(DeviceFeature::timeline_semaphore);
+    if (address_api && address.bufferDeviceAddress == VK_TRUE) out.add(DeviceFeature::buffer_device_address);
+    if (structure_api && structure.accelerationStructure == VK_TRUE) out.add(DeviceFeature::acceleration_structure);
+    if (query_api && query.rayQuery == VK_TRUE) out.add(DeviceFeature::ray_query);
+    if (eight_api && eight.storageBuffer8BitAccess == VK_TRUE && int8.shaderInt8 == VK_TRUE) out.add(DeviceFeature::storage_8bit);
+    if (sixteen.storageBuffer16BitAccess == VK_TRUE && features.features.shaderInt16 == VK_TRUE) {
+        out.add(DeviceFeature::storage_16bit);
+    }
+    if (has("VK_KHR_external_memory_win32")) out.add(DeviceFeature::external_memory_win32);
+    if (has("VK_KHR_external_semaphore_win32") && vkGetPhysicalDeviceExternalSemaphoreProperties != nullptr) {
+        // The step semaphore is a timeline one, so ask whether THAT kind can be exported.
+        VkSemaphoreTypeCreateInfo type{};
+        type.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
+        type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        VkPhysicalDeviceExternalSemaphoreInfo ask{};
+        ask.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+        ask.pNext = timeline_api ? &type : nullptr;
+        ask.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
+        VkExternalSemaphoreProperties answer{};
+        answer.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+        vkGetPhysicalDeviceExternalSemaphoreProperties(device, &ask, &answer);
+        if ((answer.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT) != 0) {
+            out.add(DeviceFeature::external_semaphore_win32);
+        }
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +553,20 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
                 ", and every spade kernel is SPIR-V 1.3, which needs Vulkan 1.1"});
     }
     DeviceReport report = read_device_report(physical_device, properties);
+    report.optional_supported = probe_optional_features(physical_device, properties.apiVersion);
+
+    // WHAT THE CALLER ASKED FOR (camera design section 12, item 2), resolved against what the device offers, before any queue
+    // is picked or any device created: the step's timeline implies the timeline semaphore; a feature the device lacks is a
+    // refusal by name, never a silent drop. Nothing asked: the empty set, and the device below is created exactly as it was.
+    FeatureSet asked_features = desc.device_features;
+    if (desc.step_timeline) asked_features.add(DeviceFeature::timeline_semaphore);
+    const Result<FeatureSet> enabled = resolve_features(asked_features, report.optional_supported, properties.deviceName);
+    if (!enabled) {
+        if (debug_messenger != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(instance, debug_messenger, nullptr);
+        vkDestroyInstance(instance, nullptr);
+        return std::unexpected(enabled.error());
+    }
+    report.optional_enabled = *enabled;
 
     // S6 Task 8's probe, RECORDED but NOT a requirement -- the one capability
     // question this engine asks and then works around rather than refusing on.
@@ -531,6 +635,83 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     device_info.queueCreateInfoCount = static_cast<uint32_t>(queue_infos.size());
     device_info.pQueueCreateInfos = queue_infos.data();
+
+    // THE OPTIONAL FEATURES ASKED FOR: their extensions and a feature-struct chain, and nothing at all when none were (the
+    // device_info above is then unchanged). Below Vulkan 1.2 the two that were promoted into it are enabled as extensions.
+    const bool v12 = properties.apiVersion >= VK_API_VERSION_1_2;
+    std::vector<const char*> device_extensions;
+    VkPhysicalDeviceTimelineSemaphoreFeatures timeline_features{};
+    timeline_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+    timeline_features.timelineSemaphore = VK_TRUE;
+    VkPhysicalDeviceBufferDeviceAddressFeatures address_features{};
+    address_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    address_features.bufferDeviceAddress = VK_TRUE;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR structure_features{};
+    structure_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    structure_features.accelerationStructure = VK_TRUE;
+    VkPhysicalDeviceRayQueryFeaturesKHR query_features{};
+    query_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    query_features.rayQuery = VK_TRUE;
+    VkPhysicalDevice8BitStorageFeatures eight_features{};
+    eight_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+    eight_features.storageBuffer8BitAccess = VK_TRUE;
+    VkPhysicalDeviceShaderFloat16Int8Features int8_features{};
+    int8_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+    int8_features.shaderInt8 = VK_TRUE;
+    VkPhysicalDevice16BitStorageFeatures sixteen_features{};
+    sixteen_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+    sixteen_features.storageBuffer16BitAccess = VK_TRUE;
+    // shaderInt16 is a bit of the 1.0 feature block, so the 16-bit feature enables it through a VkPhysicalDeviceFeatures2 that
+    // heads the chain (pEnabledFeatures stays null).
+    VkPhysicalDeviceFeatures2 enabled_features2{};
+    enabled_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    void* feature_chain = nullptr;
+    const auto link = [&feature_chain](auto& s) {
+        s.pNext = feature_chain;
+        feature_chain = &s;
+    };
+    if (enabled->contains(DeviceFeature::timeline_semaphore)) {
+        if (!v12) device_extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
+        link(timeline_features);
+    }
+    if (enabled->contains(DeviceFeature::buffer_device_address)) {
+        if (!v12) device_extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
+        link(address_features);
+    }
+    if (enabled->contains(DeviceFeature::acceleration_structure)) {
+        device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        device_extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        link(structure_features);
+    }
+    if (enabled->contains(DeviceFeature::ray_query)) {
+        device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        if (!v12) {
+            device_extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+            device_extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+        }
+        link(query_features);
+    }
+    if (enabled->contains(DeviceFeature::external_memory_win32)) device_extensions.push_back("VK_KHR_external_memory_win32");
+    if (enabled->contains(DeviceFeature::external_semaphore_win32)) {
+        device_extensions.push_back("VK_KHR_external_semaphore_win32");
+    }
+    if (enabled->contains(DeviceFeature::storage_8bit)) {
+        if (!v12) {
+            device_extensions.push_back("VK_KHR_8bit_storage");
+            device_extensions.push_back("VK_KHR_shader_float16_int8");
+        }
+        link(eight_features);
+        link(int8_features);
+    }
+    if (enabled->contains(DeviceFeature::storage_16bit)) {
+        link(sixteen_features);
+        enabled_features2.features.shaderInt16 = VK_TRUE;
+        enabled_features2.pNext = feature_chain;
+        feature_chain = &enabled_features2;
+    }
+    device_info.pNext = feature_chain;
+    device_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+    device_info.ppEnabledExtensionNames = device_extensions.empty() ? nullptr : device_extensions.data();
 
     VkDevice device = VK_NULL_HANDLE;
     if (vkCreateDevice(physical_device, &device_info, nullptr, &device) != VK_SUCCESS) {

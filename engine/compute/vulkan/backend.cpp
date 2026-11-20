@@ -202,7 +202,10 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     Result<std::unique_ptr<StepRecorder>> recorder =
         StepRecorder::create(**ctx, shape, (*mirror)->descriptor_set_layout(), (*mirror)->descriptor_set(),
                              (*mirror)->step_params_mapped(), desc.workgroup_size, passes, (*mirror)->set_one_sets(),
-                             rebuilds, pose_copy);
+                             rebuilds, pose_copy,
+                             StepTimeline{.enabled = desc.step_timeline,
+                                          .exportable = (*ctx)->device_report().optional_enabled.contains(
+                                              DeviceFeature::external_semaphore_win32)});
     if (!recorder) return std::unexpected(recorder.error());
 
     // std::unique_ptr<VulkanBackend>(new VulkanBackend()): the default
@@ -301,6 +304,21 @@ std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return impl_
 uint32_t VulkanBackend::pipeline_count() const noexcept { return impl_->recorder->pipeline_count(); }
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
+
+Result<StepSemaphore> step_semaphore(const VulkanBackend& backend) {
+    const VkSemaphore semaphore = backend.impl_->recorder->step_semaphore();
+    if (semaphore == VK_NULL_HANDLE) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "step_semaphore: this backend was created without BackendDesc::step_timeline, so the "
+                                     "tick submits signal no semaphore"});
+    }
+    StepSemaphore out;
+    out.context = backend.impl_->ctx.get();
+    out.semaphore = semaphore;
+    out.value = backend.impl_->recorder->steps_submitted();
+    out.exportable = backend.impl_->recorder->step_semaphore_exportable();
+    return out;
+}
 
 Result<DevicePoseView> pose_view(const VulkanBackend& backend) {
     const StateMirror::PoseBuffers buffers = backend.impl_->mirror->pose_buffers();
