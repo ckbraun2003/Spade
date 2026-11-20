@@ -51,6 +51,14 @@ inline constexpr uint32_t grey = 1u;
 inline constexpr uint32_t count = 2u;
 }  // namespace camera_mode
 
+// The channel set: bits of CameraSensorRow::channels (rendering/camera-sensor-design section 11a). RED stub: the names, not yet enforced.
+namespace camera_channel {
+inline constexpr uint32_t image = 1u << 0;
+inline constexpr uint32_t instance_id = 1u << 1;
+inline constexpr uint32_t keypoints = 1u << 2;
+inline constexpr uint32_t known = 0x7u;
+}  // namespace camera_channel
+
 // Flags in CameraStamp::flags (Rendering's wire shape): bit 0 valid, bit 1 the frame was dropped or late, bit 2 a camera-rate frame with the shutter blur on.
 namespace stamp_flag {
 inline constexpr uint32_t valid = 1u << 0;
@@ -188,6 +196,6 @@ static_assert(offsetof(CameraStamp, orientation) == 80);
 [[nodiscard]] bool camera_advance(CameraSensorRow& row) noexcept;
 
 // Why a row is not a valid camera, or the empty string: the first rule it breaks, naming the field. A zero row (kind none) is valid: it is inert.
-[[nodiscard]] std::string camera_row_issue(const CameraSensorRow& row);
+[[nodiscard]] std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_groups);
 
 }  // namespace spade::sensors

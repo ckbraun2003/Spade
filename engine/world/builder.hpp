@@ -117,6 +117,9 @@ struct Capacities {
     // hash does not fold them. They come as a pair (cameras without a pixel budget, or a budget without cameras, is refused).
     uint32_t cameras = 0;
     uint32_t camera_pixels = 0;
+    // The camera's keypoint channel (section 11a): G groups of P points a camera frame carries. RED stub: not yet validated or folded.
+    uint32_t keypoint_groups = 0;
+    uint32_t keypoints_per_group = 0;
 };
 
 // ---------------------------------------------------------------------------

@@ -17,7 +17,8 @@ std::string bad(const char* field, const char* why) { return std::string(field) 
 
 }  // namespace
 
-std::string camera_row_issue(const CameraSensorRow& row) {
+std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_groups) {
+    (void)keypoint_groups;  // RED stub
     if (row.kind == sensor_kind::none) return {};  // inert: a freed or reserved slot
     if (row.kind != sensor_kind::camera) return bad("kind", "not a camera row");
     if (row.rate_divider == 0u) return bad("rate_divider", "must be at least 1");
