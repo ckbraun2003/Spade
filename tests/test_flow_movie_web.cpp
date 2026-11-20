@@ -589,6 +589,31 @@ TEST(FlowMovieWeb, TheCellAndStepOptionsAreParsedStrictlyAndRefusedWhereTheyDoNo
     EXPECT_NE(web::cell_step_stem_suffix(2.5f, 50u), web::cell_step_stem_suffix(2.5f, 100u));
 }
 
+// The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
+// 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
+TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string today = web::standing_caveats(s8);
+    EXPECT_NE(today.find("in the flow at 4 mm"), std::string::npos) << today;
+    EXPECT_NE(today.find("at 0.2 ms with a Smagorinsky"), std::string::npos) << today;
+    EXPECT_NE(today.find("the 4 mm cells cannot hold"), std::string::npos) << today;
+    const std::string film = web::standing_caveats(s8, 2.5f, 50u);
+    EXPECT_NE(film.find("in the flow at 2.5 mm"), std::string::npos) << film;
+    EXPECT_NE(film.find("at 0.05 ms with a Smagorinsky"), std::string::npos) << film;
+    EXPECT_NE(film.find("the 2.5 mm cells cannot hold"), std::string::npos) << film;
+    EXPECT_EQ(film.find("4 mm"), std::string::npos) << "no other run's number: " << film;
+    EXPECT_EQ(film.find("0.2 ms"), std::string::npos) << film;
+    EXPECT_NE(film.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << film;
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.cell_mm = 2.5f;
+    in.step_us = 50u;
+    EXPECT_NE(web::caption_text(in).find("at 0.05 ms"), std::string::npos);
+    web::CaptionInput plain;
+    plain.clip = &s8;
+    EXPECT_NE(web::caption_text(plain).find("at 0.2 ms"), std::string::npos) << "a caption with no knobs says today's numbers";
+}
+
 // --particles with --window: the points are carried frame to frame, so a --window run that solves (--stream) feeds them in order, and a --web-still
 // redraw from kept frames carries them through the files (L106b). A --window run that neither streams nor redraws has no frames to carry them through.
 TEST(FlowMovieWeb, ParticlesWithAWindowNeedAStreamOrARedrawFromKeptFrames) {
