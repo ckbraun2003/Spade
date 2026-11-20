@@ -2305,6 +2305,7 @@ private:
     // state (false after create(), restore() and a toggle until the next tick copies it). Not registered: derived, never in a hash.
     bool keep_previous_poses_ = false;
     bool previous_poses_valid_ = false;
+    bool stepped_since_start_ = false;  // a cpu tick has run since create() or restore() (PublishedPoses::stepped)
     std::vector<BodyState> previous_poses_;
     [[nodiscard]] Result<void> check_array_current(std::string_view array, std::string_view what) const;
     [[nodiscard]] Result<void> upload_to_device();  // the full upload if dirty, and the resident arrays if host_newer

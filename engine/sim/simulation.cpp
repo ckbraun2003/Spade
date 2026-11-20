@@ -1637,6 +1637,12 @@ Result<void> Simulation::step(uint64_t n) {
         if (Result<void> views = rebuild_views(); !views) {
             return views;
         }
+        // The previous-tick poses (keep_previous_poses): the state this tick starts from, copied before any pass writes. Outside the
+        // registered state, so no hash, digest or snapshot sees it.
+        if (keep_previous_poses_) {
+            std::memcpy(previous_poses_.data(), all_bodies->data(), all_bodies->size_bytes());
+            previous_poses_valid_ = true;
+        }
 
         physics::SubstepContext ctx;
         ctx.worlds = std::span<const physics::WorldSubstepView>(views_);
@@ -1674,6 +1680,7 @@ Result<void> Simulation::step(uint64_t n) {
         // Tick counts STEPS, not substeps (engine A9). One increment, after the
         // last substep.
         ++tick_;
+        stepped_since_start_ = true;
 
         // A MISUSED VIEW (state/state_view.hpp; stage 5, Task 1, L6). A pass
         // that asked an accessor for a row type of another size, a world
@@ -3628,6 +3635,9 @@ Result<void> Simulation::restore(const SnapshotBlob& blob) {
     if (vulkan_backend_ && has_resident_) resident_state_ = ResidentState::host_newer;
 
     tick_ = blob.tick();
+    // The poses of a timeline that no longer exists: nothing has run on this one yet.
+    stepped_since_start_ = false;
+    previous_poses_valid_ = false;
 
     // Spec §4: "Restore = reverse + structural-queue flush." The queue describes
     // changes to a state that has just been replaced -- including reservations
@@ -3792,13 +3802,42 @@ Result<void> Simulation::derive_streams(uint32_t world_index) {
 // inspection
 // ---------------------------------------------------------------------------
 
-// RED stub: the real bodies land with the tests' GREEN.
 Result<PublishedPoses> Simulation::published_poses() const {
-    return std::unexpected(Error{Code::unavailable, "published_poses: not built yet"});
+    if (vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "published_poses: this Simulation runs on the Vulkan backend, where the poses live on the "
+                                     "device; use compute::pose_view() (compute/vulkan/pose_view.hpp)"});
+    }
+    const Result<std::span<const BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(bodies_id_);
+    if (!map) return std::unexpected(map.error());
+    PublishedPoses view;
+    view.stepped = stepped_since_start_;
+    view.tick = stepped_since_start_ ? tick_.value - 1u : tick_.value;
+    view.current = *bodies;
+    if (keep_previous_poses_ && previous_poses_valid_) view.previous = std::span<const BodyState>(previous_poses_);
+    view.slot_to_world = *map;
+    view.world_count = layout_.world_count;
+    view.capacity_per_world = layout_.body_capacity;
+    return view;
 }
 
 Result<void> Simulation::keep_previous_poses(bool keep) {
-    (void)keep;
+    if (vulkan_backend_) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "keep_previous_poses: this Simulation runs on the Vulkan backend; the device keeps its own "
+                                     "previous poses (BackendDesc::device_pose_view)"});
+    }
+    previous_poses_valid_ = false;
+    keep_previous_poses_ = keep;
+    if (!keep) {
+        std::vector<BodyState>().swap(previous_poses_);
+        return {};
+    }
+    const Result<std::span<const BodyState>> bodies = arenas_.array(bodies_id_);
+    if (!bodies) return std::unexpected(bodies.error());
+    previous_poses_.assign(bodies->size(), BodyState{});
     return {};
 }
 
