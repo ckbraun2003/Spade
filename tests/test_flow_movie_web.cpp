@@ -643,6 +643,60 @@ TEST(FlowMovieWeb, VolumeIsForTheParticleViewsAndHasAFolderOfItsOwn) {
     EXPECT_EQ(web::volume_stem_suffix(true), "-volume");
 }
 
+// --nasa-cloud under a streamed --window run (L106i, Oversight O113): the X500 film's main layer is the purple-blue vorticity cloud (no particles). The cloud
+// is allowed with a --window run that streams, as --particles is; the Q SURFACES keep their old rules (S2 and S8, a redraw of kept frames, no particle look),
+// and the particle looks stay a different look from --nasa and --nasa-cloud.
+TEST(FlowMovieWeb, TheVorticityCloudStreamsAWindow) {
+    // nasa_refusal(s2_or_s8, window, still_redraw, stream, particles, particles_preview, cloud)
+    EXPECT_EQ(web::nasa_refusal(true, false, false, false, false, false, false), "") << "--nasa on its own: the group's own run, as before";
+    EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, false), "") << "a window redraw of kept frames, as before";
+    EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, true), "") << "a redraw of the cloud";
+    EXPECT_EQ(web::nasa_refusal(true, true, false, true, false, false, true), "") << "the streamed cloud film: window, stream, cloud";
+    EXPECT_EQ(web::nasa_refusal(true, false, false, true, false, false, true), "") << "a streamed run of the group's own window";
+
+    const std::string not_clip = web::nasa_refusal(false, false, false, false, false, false, false);
+    EXPECT_NE(not_clip.find("S2 and S8"), std::string::npos) << not_clip;
+    const std::string no_stream = web::nasa_refusal(true, true, false, false, false, false, true);
+    EXPECT_NE(no_stream.find("--window"), std::string::npos) << no_stream;
+    EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
+    const std::string surfaces = web::nasa_refusal(true, true, false, true, false, false, false);
+    EXPECT_NE(surfaces.find("--nasa-cloud"), std::string::npos) << "the Q surfaces do not stream a window: " << surfaces;
+    const std::string points = web::nasa_refusal(true, true, false, true, true, false, true);
+    EXPECT_NE(points.find("particle"), std::string::npos) << "the cloud and the points are different looks: " << points;
+    const std::string preview = web::nasa_refusal(true, false, false, false, false, true, true);
+    EXPECT_NE(preview.find("particle"), std::string::npos) << preview;
+}
+
+// The caption of a vorticity-cloud film says what the colour is: vorticity (the local spin of the air), blue low to magenta high, never "relative speed" or the
+// speed film's "Relative speed of the wake"; the stand-in sentence stays; and a film without --nasa-cloud keeps its words.
+TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string speed = web::standing_caveats(s8, 2.5f, 50u, true);
+    EXPECT_NE(speed.find("Colour shows relative speed"), std::string::npos) << "no cloud: the words as they were: " << speed;
+    const std::string cloud = web::standing_caveats(s8, 2.5f, 50u, true, true);
+    EXPECT_EQ(cloud.find("relative speed"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("Colour shows vorticity"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("blue low to magenta high"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << cloud;
+    EXPECT_NE(cloud.find("fitted blade polar"), std::string::npos) << cloud;
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.cloud = true;
+    in.command = "flow_movie --web S8 --drone x500 --nasa-cloud";
+    const std::string text = web::caption_text(in);
+    EXPECT_NE(text.find("- Shows: The vorticity of the air"), std::string::npos) << text;
+    EXPECT_NE(text.find("four actuator lines"), std::string::npos) << text;
+    EXPECT_EQ(text.find("elative speed"), std::string::npos) << text;
+    EXPECT_EQ(text.find("actuator discs"), std::string::npos) << text;
+    web::CaptionInput old;
+    old.clip = &s8;
+    old.command = "flow_movie --web S8";
+    EXPECT_NE(web::caption_text(old).find("Relative speed of the wake of four actuator discs"), std::string::npos) << "a film without the cloud keeps its words";
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {
