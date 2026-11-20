@@ -1547,6 +1547,8 @@ struct WebPlan {
     uint32_t steps_per_frame = 0;  // 0: --window's even spread over [from_s, to_s]
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
+    std::optional<float> cell_mm;       // --cell-mm 2.5: the X500's box and hold (L106c)
+    std::optional<uint32_t> step_us;    // --step-us N: the solver step in microseconds, in place of kD1WebStepS (a --window run)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
     bool particles = false;                           // S2 and S8: points carried through every stored frame
@@ -1613,6 +1615,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
     std::snprintf(window, sizeof window, "%g-%g", plan.from_s, plan.to_s);
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
+    stem += web::cell_step_stem_suffix(plan.cell_mm, plan.step_us);  // and one at another cell or step
     stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
     stem += web::lines_stem_suffix(!plan.lines.empty());  // and one with the rotors as lines
     return stem;
@@ -1661,7 +1664,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
               // a crosswind (heading 90: the air moves +z)
         const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
-                                   static_cast<float>(web::kD1WebStepS), plan.sgs_cs, plan.drone->model_file);
+                                   plan.step_us ? static_cast<float>(*plan.step_us) * 1.0e-6f : static_cast<float>(web::kD1WebStepS), plan.sgs_cs,
+                                   plan.drone->model_file, d1_web_hold(plan.cell_mm));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
                                plan.particles || plan.particles_preview, plan.nasa);
@@ -1960,6 +1964,8 @@ struct Options {
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
     std::optional<float> elevation;  // --elevation DEG: the camera's elevation for a web still, in place of the drone's (web::parse_elevation_deg)
+    std::optional<float> cell_mm;  // --cell-mm X: the D1 box's cell (web::parse_cell_mm; only 2.5 with --drone x500)
+    std::optional<uint32_t> step_us;  // --step-us N: the solver step in microseconds (web::parse_step_us), for a --window run
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off, a diagnostic; a --lines run refuses 0: its guard needs sgs_cs above 0)
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
@@ -2458,6 +2464,8 @@ struct WebFilming {
         web::CaptionInput in;
         in.clip = &clip;
         in.drone = web::find_drone(opt.drone);
+        in.cell_mm = opt.cell_mm.value_or(4.0f);
+        in.step_us = opt.step_us.value_or(200u);
         in.commit = build_identity();
         in.date_utc = utc_now();
         in.command = opt.command_line;
@@ -2542,9 +2550,27 @@ struct WebFilming {
                      opt.web_id.c_str());
         return 2;
     }
+    if (opt.cell_mm) {
+        const std::string why = opt.grid ? std::string("--cell-mm and --grid both name the box: use one")
+                                         : web::cell_mm_refusal(*opt.cell_mm, drone->library, clip->scene == web::Scene::d1_still);
+        if (!why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+    }
+    if (opt.step_us) {
+        const std::string why = !web::sgs_cs_applies(*clip) ? std::string("--step-us is for the D1 clips (S1 to S4 and S8)")
+                                                           : web::step_us_refusal(*opt.step_us, opt.window_to > 0.0);
+        if (!why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+    }
     // S1's lines and the particle preview are traced in the true flow: no fade for them.
     WebPlan plan;
     plan.drone = drone;
+    plan.cell_mm = opt.cell_mm;
+    plan.step_us = opt.step_us;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     if (!opt.build_parts.empty() || !opt.part_store.empty()) {
         if (!web::sgs_cs_applies(*clip)) {
@@ -2597,7 +2623,7 @@ struct WebFilming {
     }
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
-                          : (opt.window_to > 0.0 && !opt.web_still_only) ? "--particles is not for a --window run (a --window --web-still redraw from a run's kept frames is)"
+                          : !web::particles_window_refusal(opt.window_to > 0.0, opt.web_still_only, opt.stream).empty() ? "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)"
                           : opt.particles_preview                 ? "--particles and --particles-preview are two looks: use one"
                                                                   : "";
         if (*why != '\0') {
@@ -2615,7 +2641,7 @@ struct WebFilming {
                     ? opt.window_to
                     : web::window_end_s(plan.from_s, plan.frames, plan.steps_per_frame, group->step_s);
     // L63: the still-air clips run in their own, deeper box; the quad's clips (S5, S6) have no D1 grid at all.
-    plan.grid = clip->scene == web::Scene::quad ? opt.grid : std::optional(d1_web_grid(clip->scene == web::Scene::d1_still, opt.grid));
+    plan.grid = clip->scene == web::Scene::quad ? opt.grid : std::optional(d1_web_grid(clip->scene == web::Scene::d1_still, opt.grid, opt.cell_mm));
     // The clip draws its frames from the group's cache, from `first` on (a --window run spreads its own frames).
     const uint32_t first = opt.window_to > 0.0 ? 0u : clip->first_frame;
     if (first >= plan.frames) {
@@ -3161,6 +3187,18 @@ int main(int argc, char** argv) {
             opt.sgs_cs = web::parse_sgs_cs(value());
             if (!opt.sgs_cs) {
                 std::fprintf(stderr, "flow_movie: --sgs-cs takes one number from 0 to 1 (0 turns the subgrid term off, a diagnostic; a --lines run refuses 0, as actuator lines need a subgrid model), as 0.17\n");
+                return 2;
+            }
+        } else if (arg == "--cell-mm") {
+            opt.cell_mm = web::parse_cell_mm(value());
+            if (!opt.cell_mm) {
+                std::fprintf(stderr, "flow_movie: --cell-mm takes one number above 0 and at most 10 (only 2.5 is supported, with --drone x500)\n");
+                return 2;
+            }
+        } else if (arg == "--step-us") {
+            opt.step_us = web::parse_step_us(value());
+            if (!opt.step_us) {
+                std::fprintf(stderr, "flow_movie: --step-us takes a whole number of microseconds from 1 to 1000, as 50\n");
                 return 2;
             }
         } else if (arg == "--drone") {

@@ -285,7 +285,8 @@ spade::Result<LiveCase> d1_still_air_live_case(double seconds, const spade::phys
 }
 
 spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
-                                         float heading_deg, float step_s, float sgs_cs, const char* model_file) {
+                                         float heading_deg, float step_s, float sgs_cs, const char* model_file,
+                                         std::optional<glm::vec3> hold) {
     // The website masters' D1 (the lead, 2026-11-10, L54): the parts in the flow, held at hover, at the film's step
     // and with the L52 subgrid viscosity (0.2 ms and Cs 0.17 in web_masters.hpp). Heading 0: still air; else the side wind, as before.
     auto made = heading_deg == 0.0f ? d1_still_air_live_case(seconds, grid, model_file)
@@ -293,6 +294,7 @@ spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::a
     if (!made) return made;
     made->c.time.step = step_s;
     made->sgs_cs = sgs_cs;
+    if (hold) made->hold = *hold;  // --cell-mm: the X500's hold in its own box (d1_web_hold())
     if (heading_deg == 0.0f) made->speed_max = 12.0f;  // the still-air clips' one speed range, 0 to 12 m/s (S1, S2, S8)
     char line[96];
     std::snprintf(line, sizeof line, "; step %.2g ms with a Smagorinsky subgrid viscosity, Cs %.2f",

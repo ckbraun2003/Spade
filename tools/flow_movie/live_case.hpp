@@ -119,15 +119,25 @@ using spade::testing::kD1Grid;
 // still-air hover. `grid` as d1_live_case().
 // The box a website D1 clip runs in: `requested` (--grid) when given; else the deeper box for the still-air clips (S1, S2,
 // S8: L63, the cameras' floor is 1.214 m under the drone), the shallow one for the side-wind clips (S3, S4).
+//
+// L106c: `cell_mm` (--cell-mm 2.5) is the X500's 2.5 mm box, tests/d1_case.hpp's kD1X500Grid (270 x 237 x 270), and d1_web_hold() the hold that goes with it
+// (d1_x500_hold(), 13 rows lower than the deep box's), the harness's config. An explicit --grid still wins; with neither the box is as it was.
 [[nodiscard]] inline spade::physics::airflow::GridShape d1_web_grid(
-    bool still_air, const std::optional<spade::physics::airflow::GridShape>& requested) {
+    bool still_air, const std::optional<spade::physics::airflow::GridShape>& requested, std::optional<float> cell_mm = std::nullopt) {
     if (requested) return *requested;
+    if (cell_mm) return spade::testing::kD1X500Grid;
     return still_air ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid;
+}
+
+[[nodiscard]] inline std::optional<glm::vec3> d1_web_hold(std::optional<float> cell_mm) {
+    if (cell_mm) return spade::testing::d1_x500_hold();
+    return std::nullopt;
 }
 
 [[nodiscard]] spade::Result<LiveCase> d1_web_live_case(double seconds, const spade::physics::airflow::GridShape& grid,
                                                        float heading_deg, float step_s, float sgs_cs,
-                                                       const char* model_file = spade::testing::kLibraryQuad);
+                                                       const char* model_file = spade::testing::kLibraryQuad,
+                                                       std::optional<glm::vec3> hold = std::nullopt);
 
 [[nodiscard]] spade::Result<LiveCase> d1_still_air_live_case(double seconds,
                                                              const spade::physics::airflow::GridShape& grid = kD1Grid,
