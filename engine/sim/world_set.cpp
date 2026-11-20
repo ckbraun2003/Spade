@@ -403,15 +403,18 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 //
 // UPDATED (L85 SP-2): `anchor`, a std::optional<geo::Geodetic> (three doubles and the engaged flag, 32 bytes, no container of its
 // own), joined the end of WorldDesc, and IS in config_hash's fold, only when set (below): 320 + 32 = 352 and 384 + 32 = 416.
+//
+// UPDATED (camera sensor kind, Phase 3.1): Capacities gained `cameras` and `camera_pixels` (two uint32, 8 bytes, no container), and they ARE in config_hash's
+// fold, only when either is non-zero (below): 352 + 8 = 360 and 416 + 8 = 424.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 416,
+static_assert(sizeof(WorldDesc) == 424,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 352,
+static_assert(sizeof(WorldDesc) == 360,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "
@@ -495,6 +498,11 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
         seed = fold_value(seed, caps.force_elements);
         seed = fold_value(seed, caps.sensors);
         seed = fold_value(seed, caps.contacts);
+        // The camera declarations, only when the world has any: a world without them hashes exactly as it did before the camera kind.
+        if (caps.cameras != 0 || caps.camera_pixels != 0) {
+            seed = fold_value(seed, caps.cameras);
+            seed = fold_value(seed, caps.camera_pixels);
+        }
 
         // The INSTANCE seed -- the world's actual rng root (WorldParams::seed),
         // not env.seed's authoring default.

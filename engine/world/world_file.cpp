@@ -827,6 +827,13 @@ Result<std::string> world_to_yaml(const WorldDesc& world) {
         return std::unexpected(r.error());
     }
 
+    // The camera capacities are not in any schema version yet (they come with the labels and materials of the camera design's item 3.4, as a version of
+    // their own): a file written now would lose them on load, so a camera world is refused here rather than written without its cameras.
+    if (world.capacities.cameras != 0 || world.capacities.camera_pixels != 0) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     "world_to_yaml: the world declares cameras (capacities.cameras, camera_pixels), which no world file schema version carries yet"});
+    }
+
     return emit(world);
 }
 

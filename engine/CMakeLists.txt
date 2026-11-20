@@ -886,6 +886,7 @@ add_library(spade_sim STATIC
     # takes a Simulation&.
     objects/spawn_helpers.cpp
     sensors/gnss.cpp
+    sensors/camera.cpp
     sensors/imu.cpp
     sim/simulation.cpp
     sim/world_set.cpp
