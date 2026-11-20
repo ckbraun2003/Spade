@@ -440,7 +440,8 @@ Result<std::vector<DerivedBufferShape>> derived_buffer_shapes(const StepShape& s
 // ---------------------------------------------------------------------------
 
 Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, const StepShape& shape,
-                                                         std::span<const std::vector<uint32_t>> set1_subsets) {
+                                                         std::span<const std::vector<uint32_t>> set1_subsets,
+                                                         bool keep_previous_poses) {
     // -----------------------------------------------------------------------
     // THE REGISTERED WALK IS THE SHAPE'S (module-API stage 4): one buffer per
     // StepShape::arrays entry, which Simulation::create() fills from the
@@ -591,6 +592,31 @@ Result<std::unique_ptr<StateMirror>> StateMirror::create(VulkanContext& ctx, con
                 create_buffer(self->device_, self->physical_device_, e.byte_size, kStagingUsage,
                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, true,
                               e.staging_buffer, e.staging_memory, e.staging_mapped, &e.staging_type);
+            !made) {
+            return std::unexpected(made.error());
+        }
+    }
+
+    // "bodies.previous" (camera design section 12 item 1): one device-only buffer the size of "bodies", so the recorder can
+    // keep the poses of the previous tick. Not bound to any kernel; it is the copy's destination.
+    if (keep_previous_poses) {
+        const Entry* bodies = self->find("bodies");
+        if (bodies == nullptr) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "StateMirror::create: keep_previous_poses needs the registered 'bodies' array"});
+        }
+        Entry& previous = self->previous_poses_;
+        previous.name = "bodies.previous";
+        previous.elem_size = bodies->elem_size;
+        previous.world_count = bodies->world_count;
+        previous.capacity_per_world = bodies->capacity_per_world;
+        previous.byte_size = bodies->byte_size;
+        void* unused_mapped = nullptr;
+        if (Result<void> made = create_buffer(
+                self->device_, self->physical_device_, previous.byte_size,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, false, previous.device_buffer, previous.device_memory, unused_mapped,
+                &previous.device_type);
             !made) {
             return std::unexpected(made.error());
         }
@@ -1540,6 +1566,7 @@ void StateMirror::destroy() noexcept {
 
     for (Entry& e : set_one_scratch_) destroy_entry(device_, e);
     set_one_scratch_.clear();
+    destroy_entry(device_, previous_poses_);
     destroy_entry(device_, resident_staging_);
     destroy_entry(device_, config_);
     for_each_derived([this](Entry& e) { destroy_entry(device_, e); });
@@ -1601,7 +1628,25 @@ MemoryReport StateMirror::memory_report() {
     for (const Entry& e : set_one_scratch_) add(e, MemoryKind::scratch);
     if (resident_staging_.staging_buffer != VK_NULL_HANDLE) add(resident_staging_, MemoryKind::walk);
     if (config_.device_buffer != VK_NULL_HANDLE) add(config_, MemoryKind::table);
+    if (previous_poses_.device_buffer != VK_NULL_HANDLE) add(previous_poses_, MemoryKind::derived);
     return report;
+}
+
+StateMirror::PoseBuffers StateMirror::pose_buffers() const noexcept {
+    PoseBuffers out;
+    if (const Entry* bodies = find("bodies"); bodies != nullptr) {
+        out.bodies = bodies->device_buffer;
+        out.bodies_bytes = bodies->byte_size;
+        out.stride = bodies->elem_size;
+        out.world_count = bodies->world_count;
+        out.capacity_per_world = bodies->capacity_per_world;
+    }
+    if (const Entry* map = find("bodies.slot_to_world"); map != nullptr) {
+        out.slot_to_world = map->device_buffer;
+        out.slot_to_world_bytes = map->byte_size;
+    }
+    out.previous = previous_poses_.device_buffer;
+    return out;
 }
 
 Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/) {

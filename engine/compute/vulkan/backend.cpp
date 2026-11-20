@@ -1,6 +1,7 @@
 #include "compute/vulkan/backend.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
@@ -11,6 +12,8 @@
 #include "compute/recipe.hpp"
 #include "compute/set_one_bindings.hpp"
 #include "compute/vulkan/context.hpp"
+#include "compute/vulkan/pose_view.hpp"
+#include "state/layout.hpp"
 #include "compute/vulkan/state_mirror.hpp"
 #include "compute/vulkan/step_recorder.hpp"
 
@@ -183,8 +186,14 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
         }
     }
 
-    Result<std::unique_ptr<StateMirror>> mirror = StateMirror::create(**ctx, shape, set1_subsets);
+    Result<std::unique_ptr<StateMirror>> mirror =
+        StateMirror::create(**ctx, shape, set1_subsets, desc.device_pose_view);
     if (!mirror) return std::unexpected(mirror.error());
+    PoseCopy pose_copy;
+    if (desc.device_pose_view) {
+        const StateMirror::PoseBuffers poses = (*mirror)->pose_buffers();
+        pose_copy = PoseCopy{.src = poses.bodies, .dst = poses.previous, .bytes = poses.bodies_bytes};
+    }
 
     // The recorder is handed the mirror's step-params mapping rather than
     // allocating its own (S6 Task 6): a descriptor set is written once, from
@@ -193,7 +202,7 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     Result<std::unique_ptr<StepRecorder>> recorder =
         StepRecorder::create(**ctx, shape, (*mirror)->descriptor_set_layout(), (*mirror)->descriptor_set(),
                              (*mirror)->step_params_mapped(), desc.workgroup_size, passes, (*mirror)->set_one_sets(),
-                             rebuilds);
+                             rebuilds, pose_copy);
     if (!recorder) return std::unexpected(recorder.error());
 
     // std::unique_ptr<VulkanBackend>(new VulkanBackend()): the default
@@ -292,6 +301,30 @@ std::vector<RecordedChain> VulkanBackend::recorded_chains() const { return impl_
 uint32_t VulkanBackend::pipeline_count() const noexcept { return impl_->recorder->pipeline_count(); }
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
+
+Result<DevicePoseView> pose_view(const VulkanBackend& backend) {
+    const StateMirror::PoseBuffers buffers = backend.impl_->mirror->pose_buffers();
+    if (buffers.previous == VK_NULL_HANDLE) {
+        return std::unexpected(Error{Code::unavailable,
+                                     "pose_view: this backend was created without BackendDesc::device_pose_view, so the "
+                                     "previous-tick poses are not kept and the tick boundary is not made visible"});
+    }
+    DevicePoseView view;
+    view.context = backend.impl_->ctx.get();
+    view.bodies = buffers.bodies;
+    view.bodies_bytes = buffers.bodies_bytes;
+    view.previous = buffers.previous;
+    view.slot_to_world = buffers.slot_to_world;
+    view.slot_to_world_bytes = buffers.slot_to_world_bytes;
+    view.stride = buffers.stride;
+    view.pos_offset = static_cast<uint32_t>(offsetof(BodyState, pos));
+    view.orient_offset = static_cast<uint32_t>(offsetof(BodyState, orient));
+    view.world_count = buffers.world_count;
+    view.capacity_per_world = buffers.capacity_per_world;
+    view.stepped = backend.impl_->recorder->steps_submitted() > 0;
+    view.tick = view.stepped ? backend.impl_->recorder->last_written_tick() : 0;
+    return view;
+}
 
 MemoryReport VulkanBackend::memory_report() const { return impl_->mirror->memory_report(); }
 

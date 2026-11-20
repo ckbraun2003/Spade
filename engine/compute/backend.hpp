@@ -240,6 +240,11 @@ struct BackendDesc {
     // changes no result, only whether create() refuses, so it is a result-neutral knob (engine A7) with its invariance
     // test (MemoryReport.ACapChangesNoResult).
     uint64_t vram_cap_bytes = 0;
+    // Camera design section 12, item 1: make the body poses reachable on the device (compute/vulkan/pose_view.hpp). True
+    // allocates the previous-tick pose buffer, records a device-side copy of the poses at the start of every tick's command
+    // buffer and ends it with a memory barrier for later readers, so VulkanBackend::pose_view() can answer. False (the
+    // default) records and allocates nothing for it: today's recording, byte for byte. It changes no result (engine A7).
+    bool device_pose_view = false;
 };
 
 // ---------------------------------------------------------------------------

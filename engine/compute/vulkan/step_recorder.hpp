@@ -221,6 +221,16 @@ namespace spade::compute {
 // because the sensor arenas have their own per-world capacity. See
 // dispatch_groups_for()/groups_for() in the .cpp.
 // ---------------------------------------------------------------------------
+// The pose copy of camera design section 12 item 1 (BackendDesc::device_pose_view): at the START of every tick's command
+// buffer, before the first dispatch writes, `src` (the "bodies" array) is copied into `dst` ("bodies.previous"), so after
+// the tick `dst` holds the state the tick started from; and every tick's command buffer ends with a memory barrier that
+// makes its shader writes visible to later compute and transfer reads on the queue. Default: none, the recording unchanged.
+struct PoseCopy {
+    VkBuffer src = VK_NULL_HANDLE;
+    VkBuffer dst = VK_NULL_HANDLE;
+    VkDeviceSize bytes = 0;
+};
+
 class StepRecorder {
 public:
     // THE PIPELINE SLOTS ARE GONE (stage 7 Task B1). A pass's recipe (compute/recipe.hpp) names its own kernels; the recorder
@@ -268,7 +278,8 @@ public:
                                                                         uint32_t workgroup_size,
                                                                         std::span<const GpuPass> passes,
                                                                         std::span<const SetOneSet> set1_sets = {},
-                                                                        std::span<const GpuPass> rebuilds = {});
+                                                                        std::span<const GpuPass> rebuilds = {},
+                                                                        PoseCopy pose_copy = {});
 
     ~StepRecorder();
     StepRecorder(const StepRecorder&) = delete;
@@ -292,6 +303,9 @@ public:
     // does nothing and is not counted. A diagnostic count of the submits that happened is on_demand_count().
     [[nodiscard]] Result<void> submit_rebuild();
     [[nodiscard]] uint64_t on_demand_count() const noexcept { return on_demand_count_; }
+
+    // How many tick submits have completed since create(): 0 means the poses are still the host's upload.
+    [[nodiscard]] uint64_t steps_submitted() const noexcept { return steps_submitted_; }
 
     // The tick most recently written into the step-params buffer -- what
     // Task 5's C2 fix test reads to prove "the host-side write happens per
@@ -466,6 +480,8 @@ private:
     uint32_t cadence_ = 1;  // the one every_steps above 1 in the set, or 1
     uint32_t last_recording_ = 0;
     uint64_t last_tick_ = 0;
+    uint64_t steps_submitted_ = 0;
+    PoseCopy pose_copy_{};
 
     DeviceLimits limits_{};
     std::string device_name_;
