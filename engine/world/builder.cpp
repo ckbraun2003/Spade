@@ -358,6 +358,13 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     if (caps.contacts == 0) {
         return std::unexpected(invalid("world capacity 'contacts' must be > 0"));
     }
+    // The camera declarations default to 0 (none) and come as a pair: cameras need a pixel budget, and a budget needs cameras.
+    if (caps.cameras != 0 && caps.camera_pixels == 0) {
+        return std::unexpected(invalid("world capacity 'camera_pixels' must be > 0 when 'cameras' is"));
+    }
+    if (caps.camera_pixels != 0 && caps.cameras == 0) {
+        return std::unexpected(invalid("world capacity 'cameras' must be > 0 when 'camera_pixels' is"));
+    }
 
     // Spawn points: named, uniquely named (they are looked up by name), and
     // carrying a usable pose. The builder's spawn() already rejects a

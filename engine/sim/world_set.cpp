@@ -498,6 +498,11 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
         seed = fold_value(seed, caps.force_elements);
         seed = fold_value(seed, caps.sensors);
         seed = fold_value(seed, caps.contacts);
+        // The camera declarations, only when the world has any: a world without them hashes exactly as it did before the camera kind.
+        if (caps.cameras != 0 || caps.camera_pixels != 0) {
+            seed = fold_value(seed, caps.cameras);
+            seed = fold_value(seed, caps.camera_pixels);
+        }
 
         // The INSTANCE seed -- the world's actual rng root (WorldParams::seed),
         // not env.seed's authoring default.
