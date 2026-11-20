@@ -699,6 +699,59 @@ TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
     EXPECT_NE(web::caption_text(old).find("Relative speed of the wake of four actuator discs"), std::string::npos) << "a film without the cloud keeps its words";
 }
 
+// --surface-pressure (O124): the third X500 website clip, the air pressure on the airframe's surfaces. An S8 look only; like the cloud it streams a --window run
+// (or redraws kept frames), and it is a different look from --nasa, --nasa-cloud and the particle looks.
+TEST(FlowMovieWeb, ThePressureFilmIsAnS8LookThatStreamsAWindow) {
+    // surface_pressure_refusal(s8, window, still_redraw, stream, particles, particles_preview, nasa)
+    EXPECT_EQ(web::surface_pressure_refusal(true, false, false, false, false, false, false), "") << "the group's own run";
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, false, true, false, false, false), "") << "the streamed film: window and stream";
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, true, false, false, false, false), "") << "a window redraw of kept frames";
+
+    const std::string not_s8 = web::surface_pressure_refusal(false, false, false, false, false, false, false);
+    EXPECT_NE(not_s8.find("S8"), std::string::npos) << not_s8;
+    const std::string no_stream = web::surface_pressure_refusal(true, true, false, false, false, false, false);
+    EXPECT_NE(no_stream.find("--window"), std::string::npos) << no_stream;
+    EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, true, false, false).find("particle"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, true, false).find("particle"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true).find("--nasa"), std::string::npos);
+}
+
+// The pressure film draws surfaces only: no wake is drawn, so the wake fade (the soft edge that hides the box's cut) does not apply.
+TEST(FlowMovieWeb, ThePressureFilmDrawsNoWakeFade) {
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, false, false)) << "the speed volume keeps its fade";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, false, false, true)) << "the pressure film has no wake to fade";
+}
+
+// The caption of a pressure film says what the colour is: the air's pressure on the surfaces, blue below ambient to red above, no figures; first order in the cell
+// size, so where the push and the suction are and not validated magnitudes; never "relative speed" or vorticity. The stand-in sentence stays.
+TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string pressure = web::standing_caveats(s8, 2.5f, 50u, true, false, true);
+    EXPECT_EQ(pressure.find("relative speed"), std::string::npos) << pressure;
+    EXPECT_EQ(pressure.find("vorticity"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("Colour shows pressure on the surfaces"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("blue below the air's ambient pressure to red above"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("no pressure or speed figures"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("not validated magnitudes"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << pressure;
+    EXPECT_NE(pressure.find("fitted blade polar"), std::string::npos) << pressure;
+    EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true).find("Colour shows relative speed"), std::string::npos) << "no pressure: the words as they were";
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.pressure = true;
+    in.command = "flow_movie --web S8 --drone x500 --surface-pressure";
+    const std::string text = web::caption_text(in);
+    EXPECT_NE(text.find("- Shows: The air pressure on the surfaces"), std::string::npos) << text;
+    EXPECT_NE(text.find("four actuator lines"), std::string::npos) << text;
+    EXPECT_EQ(text.find("elative speed"), std::string::npos) << text;
+    EXPECT_EQ(text.find("vorticity"), std::string::npos) << text;
+    EXPECT_EQ(text.find("actuator discs"), std::string::npos) << text;
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {
