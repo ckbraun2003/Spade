@@ -3792,6 +3792,16 @@ Result<void> Simulation::derive_streams(uint32_t world_index) {
 // inspection
 // ---------------------------------------------------------------------------
 
+// RED stub: the real bodies land with the tests' GREEN.
+Result<PublishedPoses> Simulation::published_poses() const {
+    return std::unexpected(Error{Code::unavailable, "published_poses: not built yet"});
+}
+
+Result<void> Simulation::keep_previous_poses(bool keep) {
+    (void)keep;
+    return {};
+}
+
 Result<std::span<const BodyState>> Simulation::world_bodies(uint32_t world_index) const {
     const Result<uint32_t> world = checked_world(world_index);
     if (!world) return std::unexpected(world.error());

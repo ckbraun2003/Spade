@@ -187,6 +187,7 @@ add_executable(spade_tests
     test_library_drone_solids.cpp
     test_determinism.cpp
     test_set_body_state.cpp
+    test_pose_publication.cpp
     test_translation_lock.cpp
     test_sim_medium.cpp
     test_world_wind.cpp
