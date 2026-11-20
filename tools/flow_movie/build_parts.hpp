@@ -975,4 +975,22 @@ struct HeldPose {
     return pose;
 }
 
+// The rotors a table has: one past the highest rotor index of its rotor parts (0 with none).
+[[nodiscard]] inline std::size_t rotor_count_of(const std::vector<BuildPart>& parts) {
+    std::size_t n = 0;
+    for (const BuildPart& part : parts) {
+        if (part.kind == "rotor" && part.rotor >= 0) n = std::max(n, static_cast<std::size_t>(part.rotor) + 1u);
+    }
+    return n;
+}
+
+// The rotors' speeds in a FrameLog's live record: the body is live[0..6], then one speed a rotor, then (L106c) the lines' thrust in all, which is NOT a speed.
+// So the speeds are the `rotors` values after the body, by the table's count, never "everything after the body": a record with the thrust appended draws the
+// frame its thrust-less record drew. Fewer values than that gives what the record has; no body gives none.
+[[nodiscard]] inline std::span<const double> rotor_speeds_of_live(std::span<const double> live, std::size_t rotors) {
+    if (live.size() < 7u) return {};
+    return live.subspan(7u, std::min(rotors, live.size() - 7u));
+}
+
+
 }  // namespace flow_movie

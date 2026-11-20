@@ -518,17 +518,9 @@ TEST(FlowMovieBuildParts, TheLinesThrustAppendedToTheLiveRecordIsNotARotorSpeedA
     save_tetra(store / kSha / "prop.spmesh");
     std::string text;
     for (int r = 0; r < 4; ++r) {
-        text += "  - name: rotor_" + std::to_string(r) + "
-    kind: rotor
-    mass_kg: 0.02
-    rotor: " + std::to_string(r) + "
-    spin: 1
-"
-                "    pose: {position: [0.17, 0.06, 0.17], orientation: [1, 0, 0, 0]}
-"
-                "    objects:
-      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}
-";
+        text += "  - name: rotor_" + std::to_string(r) + "\n    kind: rotor\n    mass_kg: 0.02\n    rotor: " + std::to_string(r) + "\n    spin: 1\n"
+                "    pose: {position: [0.17, 0.06, 0.17], orientation: [1, 0, 0, 0]}\n"
+                "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n";
     }
     const auto parts = flow_movie::parse_build_parts(table(text));
     ASSERT_TRUE(parts.has_value()) << parts.error().context;

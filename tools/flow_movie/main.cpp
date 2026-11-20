@@ -243,6 +243,7 @@ struct Film {
     // each frame's log before decorate(), which a film may replace (note_held_pose).
     std::shared_ptr<HeldPose> held_pose;
     std::shared_ptr<const spade::analysis::LiveLines> lines;  // --lines: the rotors as actuator lines (a device film)
+    bool hover_start = false;  // --hover-start: the rotors spawn at the speed the first controls command (no spool-up), as Physics' L106 harness does
     // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
     bool role_materials = false;
     bool gpu = false;  // --gpu: the run's fluid on GpuFluid, no parts (simulate_gpu())
@@ -478,7 +479,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
             return inner(an::LiveFluidStart{s.grid, s.domain, config, s.solids, s.lines, s.line_elements, s.line_rotors});
         };
     }
-    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker, film.lines.get())
+    // --hover-start: the rotors spawn at the speed the film's first controls command, the same call the L106 harness makes (Physics' hover-start).
+    const an::Controls first_controls = an::controls_at(lc.program, 0.0f);
+    auto run = film.device ? an::LiveRun::start(*resolved, lc.run_model, maker, film.lines.get(), film.hover_start ? &first_controls : nullptr)
                : resuming  ? an::LiveRun::restore(save, *resolved, lc.run_model)
                            : an::LiveRun::start(*resolved, lc.run_model);
     if (!run) return std::unexpected(spade::Error{run.error().code, film.stem + ": " + run.error().context});
@@ -533,6 +536,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         const spade::BodyState& b = run->body();
         std::vector<double> live{b.pos.x, b.pos.y, b.pos.z, b.orient.w, b.orient.x, b.orient.y, b.orient.z};
         for (const float w : run->state().rotor_omega) live.push_back(w);
+        // The lines' thrust in all, after this step, last: the 12th value of a 4-rotor record, as Physics' L106 harness writes it. It is not a speed
+        // (rotor_speeds_of_live reads the speeds by the table's rotor count), so a thrustless record draws the same frame.
+        if (film.lines) live.push_back(run->line_thrust());
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         const FrameBound bound{.expected_speed = film.expected_speed, .solid_cells = run->solids().solid_cells};
         // A streamed run writes only the frames its plan needs: one no draw reads is solved and dropped.
@@ -1548,6 +1554,7 @@ struct WebPlan {
     std::optional<spade::physics::airflow::GridShape> grid;  // D1's, when not kD1Grid
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     std::optional<float> cell_mm;       // --cell-mm 2.5: the X500's box and hold (L106c)
+    bool hover_start = false;           // --hover-start (needs --lines)
     std::optional<uint32_t> step_us;    // --step-us N: the solver step in microseconds, in place of kD1WebStepS (a --window run)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
@@ -1616,6 +1623,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
     stem += web::cell_step_stem_suffix(plan.cell_mm, plan.step_us);  // and one at another cell or step
+    if (plan.hover_start) stem += "-hoverstart";                      // and one whose rotors start at speed
     stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
     stem += web::lines_stem_suffix(!plan.lines.empty());  // and one with the rotors as lines
     return stem;
@@ -1719,7 +1727,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                         draw.com_offset = frame.com_offset;
                         draw.blur = blur;
                         draw.chord = chord;
-                        draw.omega = std::span<const double>(log.live.data() + 7u, log.live.size() - 7u);
+                        draw.omega = rotor_speeds_of_live(log.live, rotor_count_of(*build));  // by the table's rotors: the lines' thrust, last, is not a speed
                         return add_build_parts(scene, *build, store, pos, orient, draw);
                     }
                     return {};
@@ -1730,6 +1738,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
             auto lines = live_lines_from_prop_file(std::filesystem::path(SPADE_ASSETS_DIR) / plan.lines, 8u);
             if (!lines) return std::unexpected(lines.error());
             film.lines = std::make_shared<const spade::analysis::LiveLines>(std::move(*lines));
+            film.hover_start = plan.hover_start;
         }
         // S1, S8 and S2 are framed closer, looking down 8 degrees, so the deeper box's floor stays out of frame (L63;
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
@@ -1969,6 +1978,7 @@ struct Options {
     std::optional<float> sgs_cs;   // --sgs-cs X: a D1 web clip's Smagorinsky Cs, in place of kD1WebSgsCs (0: off, a diagnostic; a --lines run refuses 0: its guard needs sgs_cs above 0)
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
+    bool hover_start = false;      // --hover-start: the rotors start at their commanded (hover) speed, not at rest; needs --lines (L106c)
     std::vector<uint32_t> keep_frames;  // --keep-frames A,B: frames a streamed run keeps on disk (the still pairs')
     std::optional<std::pair<uint32_t, uint32_t>> still_size;  // --still-size WxH: a web still at another size (a diagnostic)
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
@@ -2473,6 +2483,7 @@ struct WebFilming {
         in.screen_seconds = static_cast<double>(n) / static_cast<double>(web::kFps);
         in.sim_seconds = times.per_frame * static_cast<double>(n);
         in.extra = grid_line(film);
+        if (opt.hover_start) in.extra += (in.extra.empty() ? "" : " ") + std::string("The rotors start at their hover speed (no spool-up).");
         if (film.run && !film.run->domain.empty()) {
             in.extra += (in.extra.empty() ? "" : " ") + std::string("Resolved ") + film.run->domain + ".";
         }
@@ -2550,6 +2561,10 @@ struct WebFilming {
                      opt.web_id.c_str());
         return 2;
     }
+    if (opt.hover_start && opt.lines_prop.empty()) {
+        std::fprintf(stderr, "flow_movie: --hover-start is for a run with the rotors as lines (--lines): it starts them at the speed the lines' first controls command\n");
+        return 2;
+    }
     if (opt.cell_mm) {
         const std::string why = opt.grid ? std::string("--cell-mm and --grid both name the box: use one")
                                          : web::cell_mm_refusal(*opt.cell_mm, drone->library, clip->scene == web::Scene::d1_still);
@@ -2570,6 +2585,7 @@ struct WebFilming {
     WebPlan plan;
     plan.drone = drone;
     plan.cell_mm = opt.cell_mm;
+    plan.hover_start = opt.hover_start;
     plan.step_us = opt.step_us;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     if (!opt.build_parts.empty() || !opt.part_store.empty()) {
@@ -3242,6 +3258,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--stream") {
             opt.stream = true;
+        } else if (arg == "--hover-start") {
+            opt.hover_start = true;
         } else if (arg == "--keep-frames") {
             const auto frames = parse_frame_list(value());
             if (!frames) {
