@@ -30,15 +30,40 @@
 // ---------------------------------------------------------------------------
 
 #include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include "scene/library_set.hpp"
 #include "vehicles/airframe_compile.hpp"
 
 namespace spade::scene {
 
+// A proxy solid for the flow: the caller's own stand-in for part of the drone (lumped: the pack's or the avionics' proxy stands for several parts), a wall
+// of the model and a record of its own mass. Pose in the library's design frame like every pose here; the compile turns it into the AirframeSpec's.
+// shape: box (size = full extents), sphere (size.x = radius), cylinder (size.x = radius, size.y = length, along the part's +Y), tube (the same, thin-walled).
+struct FlowPart {
+    std::string name{};  // the model part's name; non-empty, unique, not "remainder"
+    std::string role{};  // a free label
+    vehicles::PartShape shape = vehicles::PartShape::box;
+    glm::dvec3 size{0.0};
+    glm::dvec3 pos{0.0};
+    glm::dquat quat{1.0, 0.0, 0.0, 0.0};
+    double mass = 0.0;  // kg, > 0: the caller's number; the compile does not read it from a part
+};
+
 struct CompileOptions {
     std::optional<vehicles::DragSpec> drag{};  // required
+    // Walls for the flow. Empty: the mass records only (no walls). Given: the drone's composite (mass, centre of mass, the whole tensor) is unchanged; the
+    // flow parts take their own mass and ONE tensor record named "remainder" holds the rest (the tests/x500_model.hpp kit_remainder arithmetic: mass,
+    // centre and the tensor that complete the all-parts composite), no solid. The records of the parts are replaced by these; if the flow parts take all
+    // the mass (the remainder below 1e-9 of the composite) there is no remainder record, and the composite is the flow parts' own. A remainder that is not
+    // a physical body (its smallest principal moment below -1e-9 of the largest, or the triangle inequality I1 + I2 >= I3 failing by more than that) is
+    // refused, naming the flow parts: `invalid_request`, field `options.flow_parts`.
+    std::vector<FlowPart> flow_parts{};
 };
 
 struct CompiledDrone {

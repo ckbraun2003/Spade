@@ -42,6 +42,8 @@
 
 namespace spade::compute {
 
+struct DevicePoseView;  // compute/vulkan/pose_view.hpp
+
 // ---------------------------------------------------------------------------
 // VulkanBackend -- owned by Simulation when BackendDesc::kind == vulkan (S6
 // Task 5's brief, verbatim interface). Move-only for the same reason every
@@ -297,6 +299,10 @@ public:
     // The device, driver and float controls this backend runs on -- forwards to
     // VulkanContext::device_report() (CORE-5, L6).
     [[nodiscard]] const DeviceReport& device_report() const noexcept;
+
+    // The read-only device-side view of the body poses is compute::pose_view(const VulkanBackend&), declared in
+    // compute/vulkan/pose_view.hpp (a header that names Vulkan handles, which this one must not).
+    friend Result<DevicePoseView> pose_view(const VulkanBackend& backend);
 
     // Every buffer this backend created, with its kind, bytes, memory type and heap (stage 7 Task A3).
     [[nodiscard]] MemoryReport memory_report() const;

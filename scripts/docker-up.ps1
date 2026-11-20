@@ -5,7 +5,7 @@
 .DESCRIPTION
     Kat quits Docker Desktop whenever no Spade Linux work is running or queued (it frees about 6.6 GB for the shared queue), so a leg or a gcc check
     often finds the daemon down. `docker info` answers: nothing to do, exit 0 at once. It fails: this starts Docker Desktop and polls `docker info`
-    every PollS seconds, one log line per poll, until it answers or LimitS seconds have passed. A cold start took 21 s to answer (24 s wall) when measured on 2026-11-19, so the 180 s limit is about eight times that.
+    every PollS seconds, one log line per poll, until it answers or LimitS seconds have passed. A cold start takes about 21 s on a quiet box (24 s wall); once over 180 s with builds and legs queued (2026-11-19).
 
     It never stops Docker Desktop: Kat quits it when idle.
 
@@ -15,7 +15,7 @@
     Exit: 0 the daemon answers (it was up, or it came up); 1 it never did, or Docker Desktop was not found; the last line says why.
 
 .PARAMETER LimitS
-    Seconds to wait for the daemon after starting Docker Desktop. Default 180 (SPADE_DOCKER_START_LIMIT_S sets another default).
+    Seconds to wait for the daemon after starting Docker Desktop. Default 300, a guess from two data points: a quiet start took about 21 s and a loaded one took over 180 s (2026-11-19). SPADE_DOCKER_START_LIMIT_S sets another default.
 
 .PARAMETER PollS
     Seconds between polls. Default 5 (SPADE_DOCKER_POLL_S sets another default).
@@ -24,7 +24,7 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\docker-up.ps1
 #>
 param(
-    [int] $LimitS = $(if ($env:SPADE_DOCKER_START_LIMIT_S) { [int] $env:SPADE_DOCKER_START_LIMIT_S } else { 180 }),
+    [int] $LimitS = $(if ($env:SPADE_DOCKER_START_LIMIT_S) { [int] $env:SPADE_DOCKER_START_LIMIT_S } else { 300 }),
     [int] $PollS = $(if ($env:SPADE_DOCKER_POLL_S) { [int] $env:SPADE_DOCKER_POLL_S } else { 5 })
 )
 $ErrorActionPreference = 'Stop'

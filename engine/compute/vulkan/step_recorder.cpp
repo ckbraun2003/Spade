@@ -118,7 +118,8 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
                                                              uint32_t workgroup_size,
                                                              std::span<const GpuPass> passes,
                                                              std::span<const SetOneSet> set1_sets,
-                                                             std::span<const GpuPass> rebuilds) {
+                                                             std::span<const GpuPass> rebuilds,
+                                                             PoseCopy pose_copy) {
     // A pass with no recipe has no GPU kernel: recording the rest would run a
     // different experiment from the CPU, silently (L6). Refused before any
     // resource is built. A rebuild hook is a pass too.
@@ -169,6 +170,7 @@ Result<std::unique_ptr<StepRecorder>> StepRecorder::create(VulkanContext& ctx, c
     self->workgroup_size_ = workgroup_size;
     self->passes_.assign(passes.begin(), passes.end());
     self->rebuilds_.assign(rebuilds.begin(), rebuilds.end());
+    self->pose_copy_ = pose_copy;
     self->dispatch_groups_x_ = dispatch_groups_for(shape, workgroup_size);
 
     // S6 Task 7: the CollisionDynamic chain's own shape, decided ONCE here for
@@ -492,6 +494,26 @@ Result<void> StepRecorder::record(uint32_t recording) {
     // S6 Task 10: reset every per-pass timing query slot ONCE, before the first dispatch (a no-op when unsupported).
     rec.timestamps->record_reset(cmd);
 
+    // THE PREVIOUS TICK'S POSES (camera design section 12 item 1), when asked for: copy "bodies" into "bodies.previous" before
+    // anything of this tick writes it. The first barrier makes the last tick's writes (or the host's upload) visible to the
+    // copy; the second orders the copy's read before the kernels' writes (and its write before any later reader).
+    if (pose_copy_.src != VK_NULL_HANDLE) {
+        VkMemoryBarrier to_copy{};
+        to_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        to_copy.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        to_copy.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &to_copy, 0, nullptr, 0, nullptr);
+        const VkBufferCopy region{0, 0, pose_copy_.bytes};
+        vkCmdCopyBuffer(cmd, pose_copy_.src, pose_copy_.dst, 1, &region);
+        VkMemoryBarrier after_copy{};
+        after_copy.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        after_copy.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        after_copy.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &after_copy, 0,
+                             nullptr, 0, nullptr);
+    }
+
     // The per-substep chain, `shape_.substeps` times, walking this recording's passes in schedule order. Each pass records
     // what its recipe's function appends (compute/recipe.hpp; the built-ins are compute/vulkan/builtin_recipes.cpp, the old
     // switch moved unchanged). THE CADENCE (stage 7 Task B2): a pass with every_steps > 1 is in recording 0 only, and only
@@ -571,6 +593,18 @@ Result<void> StepRecorder::record(uint32_t recording) {
         set_binds);
     rec.chain.dispatches = counts.dispatches;
     rec.chain.barriers = counts.barriers;
+
+    // THE TICK'S END, when the poses are exposed: the dispatch chain has no barrier after its last dispatch (CORE-2), so a
+    // reader of the poses on this queue needs this one. Outside the counted chain: counts.barriers is the chain's alone.
+    if (pose_copy_.src != VK_NULL_HANDLE) {
+        VkMemoryBarrier visible{};
+        visible.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        visible.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        visible.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &visible, 0, nullptr,
+                             0, nullptr);
+    }
 
     if (VkResult r = vkEndCommandBuffer(cmd); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkEndCommandBuffer (StepRecorder record)"));
@@ -701,6 +735,7 @@ Result<void> StepRecorder::submit(uint64_t n, uint64_t first_tick) {
         if (VkResult r = vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX); r != VK_SUCCESS) {
             return std::unexpected(map_vk_error(r, "vkWaitForFences (StepRecorder)"));
         }
+        ++steps_submitted_;
     }
 
     return {};

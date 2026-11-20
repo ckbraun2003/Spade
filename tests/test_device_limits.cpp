@@ -10,8 +10,10 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "compute/device_limits.hpp"
+#include "compute/vram_ledger.hpp"
 #include "core/error.hpp"
 #include "physics/airflow/mac_grid.hpp"
 
@@ -27,6 +29,8 @@ using spade::compute::check_workgroup;
 using spade::compute::DeviceLimits;
 using spade::compute::kGuaranteedLimits;
 using spade::compute::MemoryBudget;
+using spade::compute::VramLedger;
+using spade::compute::VramShare;
 using spade::compute::vram_cap;
 
 constexpr std::string_view kDevice = "Test Device 9000";
@@ -143,4 +147,135 @@ TEST(VramBudget, HalfHeapSubtractsWhatTheCallerAllocated) {
     // With the extension the heap's usage already counts the caller's own.
     const MemoryBudget ext{.budget = 4 * kGiB, .usage = 0, .heap = 1, .source = MemoryBudget::Source::ext};
     EXPECT_EQ(vram_cap(ext, kGiB, kGiB), 3 * kGiB);
+}
+
+// ---------------------------------------------------------------------------
+// THE VRAM LEDGER (camera design section 12, item 3): the world set, the flow solver and the camera each reserve a stated
+// share, and the sum of the shares is checked against the device's budget, by name, before anything is allocated.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr uint64_t kLedgerReserve = uint64_t{64} << 20;  // what the engine leaves free (kMirrorVramReserve's size)
+
+// A card like the 3060 Ti: 8 GiB, the process's budget a little under it.
+[[nodiscard]] MemoryBudget the_card() {
+    return {.budget = 8 * kGiB - kGiB / 4, .usage = 0, .heap = 0, .source = MemoryBudget::Source::ext};
+}
+
+[[nodiscard]] spade::Result<VramShare> reserve(VramLedger& ledger, std::string_view name, uint64_t bytes,
+                                               const MemoryBudget& budget = the_card()) {
+    return ledger.reserve(name, bytes, budget, kLedgerReserve, kDevice);
+}
+
+}  // namespace
+
+TEST(VramLedger, SharesThatFitAreHeldAndSummedInTheOrderReserved) {
+    VramLedger ledger;
+    auto world = reserve(ledger, "world set", kGiB);
+    auto flow = reserve(ledger, "flow solver", 4 * kGiB);
+    auto camera = reserve(ledger, "camera", kGiB);  // the design's 1 GiB at 128 envs: 6 GiB of 7.75
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    ASSERT_TRUE(flow.has_value()) << flow.error().context;
+    ASSERT_TRUE(camera.has_value()) << camera.error().context;
+    EXPECT_TRUE(camera->held());
+    EXPECT_EQ(camera->bytes(), kGiB);
+    EXPECT_EQ(ledger.reserved(), 6 * kGiB);
+    ASSERT_EQ(ledger.shares().size(), 3u);
+    EXPECT_EQ(ledger.shares()[0].name, "world set");
+    EXPECT_EQ(ledger.shares()[1].name, "flow solver");
+    EXPECT_EQ(ledger.shares()[2].name, "camera");
+    EXPECT_EQ(ledger.shares()[1].bytes, 4 * kGiB);
+}
+
+TEST(VramLedger, ASumOverTheBudgetIsRefusedNamingTheAskerTheHoldersAndTheLimit) {
+    VramLedger ledger;
+    auto world = reserve(ledger, "world set", kGiB);
+    auto flow = reserve(ledger, "flow solver", 4 * kGiB);
+    ASSERT_TRUE(world.has_value() && flow.has_value());
+    // 5 GiB held, 7.75 GiB of budget less 64 MiB left free: a 3 GiB camera does not fit, and nothing is held for it.
+    const auto camera = reserve(ledger, "camera", 3 * kGiB);
+    ASSERT_FALSE(camera.has_value());
+    EXPECT_EQ(camera.error().code, Code::capacity_exceeded);
+    const std::string& why = camera.error().context;
+    for (const std::string_view needle :
+         {"camera", "3221225472 bytes", "world set", "flow solver", "5368709120", "8321499136", "VK_EXT_memory_budget",
+          "device 'Test Device 9000'"}) {
+        EXPECT_TRUE(contains(why, needle)) << "missing '" << needle << "' in: " << why;
+    }
+    EXPECT_EQ(ledger.reserved(), 5 * kGiB) << "a refused reservation holds nothing";
+    EXPECT_EQ(ledger.shares().size(), 2u);
+}
+
+TEST(VramLedger, AShareIsReleasedWhenItsHandleIsDestroyedOrReleased) {
+    VramLedger ledger;
+    {
+        auto flow = reserve(ledger, "flow solver", 4 * kGiB);
+        ASSERT_TRUE(flow.has_value());
+        EXPECT_EQ(ledger.reserved(), 4 * kGiB);
+    }
+    EXPECT_EQ(ledger.reserved(), 0u);
+    EXPECT_TRUE(ledger.shares().empty());
+    auto camera = reserve(ledger, "camera", kGiB);
+    ASSERT_TRUE(camera.has_value());
+    camera->release();
+    EXPECT_FALSE(camera->held());
+    EXPECT_EQ(ledger.reserved(), 0u);
+    // The bytes are free to be asked for again, under the same name.
+    EXPECT_TRUE(reserve(ledger, "camera", 7 * kGiB).has_value());
+}
+
+TEST(VramLedger, MovingAHandleMovesTheShareAndReleasesItOnce) {
+    VramLedger ledger;
+    auto a = reserve(ledger, "camera", kGiB);
+    ASSERT_TRUE(a.has_value());
+    VramShare moved = std::move(*a);
+    EXPECT_FALSE(a->held());
+    EXPECT_TRUE(moved.held());
+    EXPECT_EQ(ledger.reserved(), kGiB);
+    VramShare other;
+    other = std::move(moved);
+    EXPECT_EQ(ledger.reserved(), kGiB) << "a move is not a second share";
+    other.release();
+    EXPECT_EQ(ledger.reserved(), 0u);
+}
+
+TEST(VramLedger, BadAsksAreInvalidArgumentsNotCapacityErrors) {
+    VramLedger ledger;
+    auto held = reserve(ledger, "camera", kGiB);
+    ASSERT_TRUE(held.has_value());
+    const auto zero = reserve(ledger, "flow solver", 0);
+    ASSERT_FALSE(zero.has_value());
+    EXPECT_EQ(zero.error().code, Code::invalid_argument) << zero.error().context;
+    const auto unnamed = reserve(ledger, "", kGiB);
+    ASSERT_FALSE(unnamed.has_value());
+    EXPECT_EQ(unnamed.error().code, Code::invalid_argument) << unnamed.error().context;
+    const auto twice = reserve(ledger, "camera", kGiB);
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_EQ(twice.error().code, Code::invalid_argument) << twice.error().context;
+    EXPECT_TRUE(contains(twice.error().context, "camera")) << twice.error().context;
+    EXPECT_EQ(ledger.reserved(), kGiB);
+}
+
+TEST(VramLedger, WithoutTheExtensionTheBudgetIsHalfTheHeapAndTheRefusalSaysSo) {
+    VramLedger ledger;
+    const MemoryBudget half{.budget = 4 * kGiB, .usage = 0, .heap = 0, .source = MemoryBudget::Source::half_heap};
+    const auto world = reserve(ledger, "world set", 3 * kGiB, half);  // kept: a dropped handle releases its share
+    ASSERT_TRUE(world.has_value());
+    // The sum is what the ledger holds; the (blind) usage of the heap plays no part.
+    const auto camera = reserve(ledger, "camera", kGiB, half);
+    ASSERT_FALSE(camera.has_value());
+    EXPECT_TRUE(contains(camera.error().context, "half the device-local heap")) << camera.error().context;
+}
+
+TEST(VramLedger, DescribeListsTheSharesInOneLine) {
+    VramLedger ledger;
+    auto world = reserve(ledger, "world set", kGiB);
+    auto camera = reserve(ledger, "camera", kGiB / 2);
+    ASSERT_TRUE(world.has_value() && camera.has_value());
+    const std::string line = ledger.describe();
+    for (const std::string_view needle : {"world set 1073741824", "camera 536870912", "1610612736 in all"}) {
+        EXPECT_TRUE(contains(line, needle)) << "missing '" << needle << "' in: " << line;
+    }
+    EXPECT_EQ(line.find('\n'), std::string::npos);
 }

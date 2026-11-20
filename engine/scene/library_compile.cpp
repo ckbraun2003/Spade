@@ -1,5 +1,7 @@
 #include "scene/library_compile.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <iterator>
@@ -100,6 +102,157 @@ LibraryResult<PartData> read_part(const LibrarySet& set, const std::string& id, 
         d.objects = std::move(*objects);
     }
     return d;
+}
+
+// ----- the composite of a set of records, in double (the remainder's arithmetic) ---------------------------------------------------------------
+
+// Mass, centre of mass and the tensor about it, design frame.
+struct Lump {
+    double mass = 0.0;
+    glm::dvec3 com{0.0};
+    glm::dmat3 tensor{0.0};
+};
+
+// The inertia of a point mass `m` at `r` from the reference point.
+glm::dmat3 parallel_axis(double m, const glm::dvec3& r) {
+    glm::dmat3 t(0.0);
+    const double r2 = glm::dot(r, r);
+    for (int c = 0; c < 3; ++c) {
+        for (int k = 0; k < 3; ++k) t[c][k] = m * ((c == k ? r2 : 0.0) - r[c] * r[k]);
+    }
+    return t;
+}
+
+Lump lump_of(const std::vector<PartInertia>& records) {
+    Lump out;
+    for (const PartInertia& r : records) {
+        out.mass += r.mass;
+        out.com += r.mass * r.position;
+    }
+    out.com /= out.mass;
+    for (const PartInertia& r : records) {
+        const glm::dmat3 rot = glm::mat3_cast(glm::normalize(r.orientation));
+        out.tensor += rot * vehicles::part_inertia_local(r) * glm::transpose(rot) + parallel_axis(r.mass, r.position - out.com);
+    }
+    return out;
+}
+
+// The eigenvalues of a symmetric 3 x 3, ascending: cyclic Jacobi sweeps, square roots only (no libm transcendental: the engine's sources are scanned).
+std::array<double, 3> principal_moments(const glm::dmat3& m) {
+    double a[3][3];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) a[i][j] = 0.5 * (m[i][j] + m[j][i]);
+    }
+    for (int sweep = 0; sweep < 32; ++sweep) {
+        const double off = a[0][1] * a[0][1] + a[0][2] * a[0][2] + a[1][2] * a[1][2];
+        const double diag = a[0][0] * a[0][0] + a[1][1] * a[1][1] + a[2][2] * a[2][2];
+        if (off <= 1e-34 * diag || off == 0.0) break;
+        for (int p = 0; p < 2; ++p) {
+            for (int q = p + 1; q < 3; ++q) {
+                if (a[p][q] == 0.0) continue;
+                const double theta = (a[q][q] - a[p][p]) / (2.0 * a[p][q]);
+                const double t = (theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+                const double c = 1.0 / std::sqrt(t * t + 1.0);
+                const double s = t * c;
+                const double apq = a[p][q];
+                a[p][p] -= t * apq;
+                a[q][q] += t * apq;
+                a[p][q] = a[q][p] = 0.0;
+                for (int r = 0; r < 3; ++r) {
+                    if (r == p || r == q) continue;
+                    const double arp = a[r][p];
+                    const double arq = a[r][q];
+                    a[r][p] = a[p][r] = c * arp - s * arq;
+                    a[r][q] = a[q][r] = s * arp + c * arq;
+                }
+            }
+        }
+    }
+    std::array<double, 3> v = {a[0][0], a[1][1], a[2][2]};
+    std::sort(v.begin(), v.end());
+    return v;
+}
+
+std::string names_of(const std::vector<FlowPart>& parts) {
+    std::string out;
+    for (const FlowPart& p : parts) out += (out.empty() ? "" : ", ") + p.name;
+    return out;
+}
+
+// The flow parts' records and ONE remainder record, replacing `records` (the all-parts mass records, design frame). Refused: invalid_request, field
+// `options.flow_parts[...]`.
+LibraryResult<void> apply_flow_parts(const std::vector<FlowPart>& parts, std::vector<PartInertia>& records, const SetEntry& drone) {
+    const auto bad = [&](std::string message, std::string field) {
+        return std::unexpected(refuse("invalid_request", std::move(message), &drone, std::move(field)));
+    };
+    std::vector<PartInertia> flow;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        const FlowPart& p = parts[i];
+        const std::string where = "options.flow_parts[" + std::to_string(i) + "]";
+        if (p.name.empty()) return bad(where + ": a flow part needs a name", where + ".name");
+        if (p.name == "remainder") return bad(where + ": 'remainder' is the compile's own record", where + ".name");
+        for (std::size_t j = 0; j < i; ++j) {
+            if (parts[j].name == p.name) return bad(where + ": the name '" + p.name + "' is used twice", where + ".name");
+        }
+        if (!(p.mass > 0.0) || !std::isfinite(p.mass)) return bad(where + " '" + p.name + "': the mass must be finite and above 0", where + ".mass");
+        if (p.shape != vehicles::PartShape::box && p.shape != vehicles::PartShape::sphere && p.shape != vehicles::PartShape::cylinder &&
+            p.shape != vehicles::PartShape::tube) {
+            return bad(where + " '" + p.name + "': a flow part is a box, sphere, cylinder or tube (a point or a tensor is no solid)", where + ".shape");
+        }
+        const bool two = p.shape == vehicles::PartShape::cylinder || p.shape == vehicles::PartShape::tube;
+        const bool three = p.shape == vehicles::PartShape::box;
+        const bool ok = std::isfinite(p.size.x) && p.size.x > 0.0 && (!two || (std::isfinite(p.size.y) && p.size.y > 0.0)) &&
+                        (!three || (std::isfinite(p.size.y) && p.size.y > 0.0 && std::isfinite(p.size.z) && p.size.z > 0.0));
+        if (!ok) return bad(where + " '" + p.name + "': a size that is not finite and above 0", where + ".size");
+        if (!std::isfinite(p.pos.x) || !std::isfinite(p.pos.y) || !std::isfinite(p.pos.z) || glm::dot(p.quat, p.quat) <= 0.0) {
+            return bad(where + " '" + p.name + "': a pose that is not finite", where + ".pos");
+        }
+        PartInertia r;
+        r.mass = p.mass;
+        r.position = to_spade(p.pos);
+        r.orientation = to_spade(p.quat);
+        r.shape = p.shape;
+        r.size = p.size;
+        r.geometry.name = p.name;
+        r.geometry.role = p.role;
+        flow.push_back(r);
+    }
+    const Lump all = lump_of(records);
+    const Lump held = lump_of(flow);
+    const double rest = all.mass - held.mass;
+    if (rest < -1e-9 * all.mass) {
+        return bad("the flow parts [" + names_of(parts) + "] hold more mass than the drone (" + std::to_string(held.mass) + " of " + std::to_string(all.mass) + " kg)",
+                   "options.flow_parts");
+    }
+    if (rest <= 1e-9 * all.mass) {  // they take all of it: no zero record
+        records = std::move(flow);
+        return {};
+    }
+    // the remainder: its mass, its centre where the all-parts centre of mass balances the flow parts', its tensor what completes the all-parts tensor about the
+    // all-parts centre of mass (tests/x500_model.hpp kit_remainder, the same arithmetic)
+    const glm::dvec3 centre = (all.mass * all.com - held.mass * held.com) / rest;
+    const glm::dmat3 held_at_all = held.tensor + parallel_axis(held.mass, held.com - all.com);
+    glm::dmat3 tensor = all.tensor - held_at_all - parallel_axis(rest, centre - all.com);
+    for (int c = 0; c < 3; ++c) {
+        for (int k = c + 1; k < 3; ++k) tensor[c][k] = tensor[k][c] = 0.5 * (tensor[c][k] + tensor[k][c]);
+    }
+    const std::array<double, 3> pm = principal_moments(tensor);
+    const double tol = 1e-9 * std::max(pm[2], 0.0);
+    if (pm[0] < -tol || pm[0] + pm[1] < pm[2] - tol) {
+        return bad("the flow parts [" + names_of(parts) + "] leave a remainder that is not a physical body: principal moments " + std::to_string(pm[0]) + ", " +
+                       std::to_string(pm[1]) + ", " + std::to_string(pm[2]) + " kg m^2 (the smallest must not be below zero, and the two smaller must sum to at least the largest)",
+                   "options.flow_parts");
+    }
+    PartInertia rem;
+    rem.mass = rest;
+    rem.position = centre;
+    rem.shape = vehicles::PartShape::tensor;
+    rem.tensor = tensor;
+    rem.geometry.name = "remainder";
+    rem.geometry.role = "remainder";
+    flow.push_back(rem);
+    records = std::move(flow);
+    return {};
 }
 
 // The mass records of one part placed at `pose` (library frame), in the AirframeSpec's frame.
@@ -247,6 +400,12 @@ LibraryResult<CompiledDrone> compile_drone(const LibrarySet& set, std::string_vi
             continue;
         }
         LibraryResult<void> ok = add_records(part, placed.at(slot.slot), spec.parts);
+        if (!ok) return std::unexpected(ok.error());
+    }
+
+    // the walls, when the caller gives flow parts: they and one remainder record replace the mass records, the composite unchanged
+    if (!options.flow_parts.empty()) {
+        LibraryResult<void> ok = apply_flow_parts(options.flow_parts, spec.parts, drone);
         if (!ok) return std::unexpected(ok.error());
     }
 

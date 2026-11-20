@@ -7,6 +7,9 @@
 // requirement, CORE-5).
 #pragma once
 
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -48,6 +51,10 @@ struct DefaultDeviceDenorms {
     uint32_t driver_version = 0;
     std::string driver_name;  // VkPhysicalDeviceDriverProperties, when queryable
     std::string driver_info;
+    bool ids_queryable = false;  // VkPhysicalDeviceIDProperties answered (Vulkan >= 1.1)
+    std::array<uint8_t, 16> device_uuid{};
+    std::array<uint8_t, 8> device_luid{};
+    bool device_luid_valid = false;
 };
 
 [[nodiscard]] inline DefaultDeviceDenorms read_default_device_denorms() {
@@ -77,6 +84,20 @@ struct DefaultDeviceDenorms {
         out.device_id = properties.deviceID;
         out.api_version = properties.apiVersion;
         out.driver_version = properties.driverVersion;
+        if (properties.apiVersion >= VK_API_VERSION_1_1) {
+            VkPhysicalDeviceIDProperties id{};
+            id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+            VkPhysicalDeviceProperties2 properties2{};
+            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties2.pNext = &id;
+            vkGetPhysicalDeviceProperties2(device, &properties2);
+            out.ids_queryable = true;
+            for (std::size_t i = 0; i < out.device_uuid.size(); ++i) out.device_uuid[i] = id.deviceUUID[i];
+            out.device_luid_valid = id.deviceLUIDValid == VK_TRUE;
+            if (out.device_luid_valid) {
+                for (std::size_t i = 0; i < out.device_luid.size(); ++i) out.device_luid[i] = id.deviceLUID[i];
+            }
+        }
         if (properties.apiVersion >= VK_API_VERSION_1_2) {
             out.queryable = true;
             VkPhysicalDeviceFloatControlsProperties float_controls{};

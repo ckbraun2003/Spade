@@ -39,8 +39,8 @@ non-zero, with the reason on the last line ("docker-leg: exit N, FAIL: ...").
 
 The Docker daemon: Kat quits Docker Desktop whenever no Spade Linux work is running
 or queued, so every mode first runs scripts\docker-up.ps1, which starts Docker Desktop
-if `docker info` fails and waits up to 180 s for the daemon, one line per poll. A cold
-start measured 21 s to answer (24 s wall, 2026-11-19), added to the run. The leg never stops Docker; Kat does.
+if `docker info` fails and waits up to 300 s (a guess from two data points) for the daemon, one line per poll. A cold
+start takes about 21 s on a quiet box; once over 180 s with builds and legs queued (2026-11-19). It is added to the run. The leg never stops Docker; Kat does.
 #>
 param(
     [string] $Commit = 'HEAD',

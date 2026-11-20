@@ -301,6 +301,9 @@ class LiveFluid {
     [[nodiscard]] virtual Result<void> publish(const physics::airflow::PublishInput& in, FlowVolume& out) = 0;
     // u, v, w and p now, into `g`, a grid of the run's shape: what save() writes.
     [[nodiscard]] virtual Result<void> read(physics::airflow::MacGrid& g) const = 0;
+    // The rotors' lines' thrust in all after the last step, N, summed over the rotors (the instantaneous thrust, not the mean
+    // of a revolution). 0 for a device that has no lines, and 0 before the first step.
+    [[nodiscard]] virtual double line_thrust() const { return 0.0; }
 };
 
 // What a device starts from: the run's own, as start() built them.
@@ -326,7 +329,8 @@ class LiveRun {
     // refusal refuses the run: "the fluid's device: " and why. A host that
     // would rather fly on the CPU starts again without it.
     [[nodiscard]] static Result<LiveRun> start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                                               const LiveFluidMaker& fluid = {}, const LiveLines* lines = nullptr);
+                                               const LiveFluidMaker& fluid = {}, const LiveLines* lines = nullptr,
+                                               const Controls* rotors_at = nullptr);
 
     LiveRun(LiveRun&&) noexcept;
     LiveRun& operator=(LiveRun&&) noexcept;
@@ -372,6 +376,8 @@ class LiveRun {
     // (L7c2, Core's posing rule). What posed_parts() turns each rotor's parts
     // by. Drawn only: nothing reads it back into the run. Saved and restored.
     [[nodiscard]] std::span<const float> blade_azimuth() const noexcept;
+    // The lines' thrust in all after the last step (LiveFluid::line_thrust()): 0 for a run on discs or on a device without lines.
+    [[nodiscard]] double line_thrust() const;
     // The first step whose azimuths were refused, named, or "": a refused
     // rotor holds its psi and the step goes on (psi is drawn only), and a
     // host shows this line. A stepping run never makes one.
