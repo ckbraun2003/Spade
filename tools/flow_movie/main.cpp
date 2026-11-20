@@ -1243,7 +1243,7 @@ constexpr float kVortexFloor = -5.0f;
 // view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
                                             const Look& look = {}, bool particle_views = false,
-                                            const std::optional<QLook>& nasa_look = std::nullopt) {
+                                            const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1397,9 +1397,14 @@ constexpr float kVortexFloor = -5.0f;
         }
         if (particle_views) film.views.push_back(View{
             "particles", "points carried through every stored frame, from the air above and round the rotors, through them and down",
-            [frame_on_drone, hold = film.particle_hold](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
+            [frame_on_drone, hold = film.particle_hold, with_volume = particle_volume](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                                          render::Camera& camera) -> spade::Result<void> {
                 frame_on_drone(v, k, n, camera);
+                // --volume: the speed volume under the points (the same layer as the speed-volume view)
+                if (with_volume) {
+                    scene.flow_layers.push_back(render::FlowLayer{
+                        &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, kWebSpeedTop, 0.15f, 30.0f)}, {}});
+                }
                 if (!hold->driver) return std::unexpected(spade::Error{spade::Code::internal, "the particle view ran without a driver"});
                 const ParticleField* field = hold->driver->at(hold->first + k);
                 if (field == nullptr) {
@@ -1414,9 +1419,13 @@ constexpr float kVortexFloor = -5.0f;
             }});
         if (particle_views) film.views.push_back(View{
             "particles-preview", "tracers carried through this one frozen frame (a preview of the particle look, not time-accurate)",
-            [frame_on_drone](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
+            [frame_on_drone, with_volume = particle_volume](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                              render::Camera& camera) -> spade::Result<void> {
                 frame_on_drone(v, k, n, camera);
+                if (with_volume) {
+                    scene.flow_layers.push_back(render::FlowLayer{
+                        &v, {volume_transfer(render::FlowQuantity::speed, render::ColourMapId::viridis, kWebSpeedTop, 0.15f, 30.0f)}, {}});
+                }
                 return {};
             },
             [run, pose](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
@@ -1555,6 +1564,7 @@ struct WebPlan {
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     std::optional<float> cell_mm;       // --cell-mm 2.5: the X500's box and hold (L106c)
     bool hover_start = false;           // --hover-start (needs --lines)
+    bool volume = false;                // --volume (with --particles or --particles-preview)
     std::optional<uint32_t> step_us;    // --step-us N: the solver step in microseconds, in place of kD1WebStepS (a --window run)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
     const web::Drone* drone = &web::default_drone();  // the D1 clips' airframe (--drone)
@@ -1623,6 +1633,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
     std::string stem = "web-" + std::string(group.name) + "-" + window + "-" + std::to_string(plan.frames) + "f";
     stem += web::sgs_cs_suffix(plan.sgs_cs);  // a run at another Cs has a folder of its own
     stem += web::cell_step_stem_suffix(plan.cell_mm, plan.step_us);  // and one at another cell or step
+    stem += web::volume_stem_suffix(plan.volume);
     if (plan.hover_start) stem += "-hoverstart";                      // and one whose rotors start at speed
     stem += web::drone_stem_suffix(*plan.drone);  // and one at another drone
     stem += web::lines_stem_suffix(!plan.lines.empty());  // and one with the rotors as lines
@@ -1676,7 +1687,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    plan.drone->model_file, d1_web_hold(plan.cell_mm));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview, plan.nasa);
+                               plan.particles || plan.particles_preview, plan.nasa, plan.volume);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
@@ -1979,6 +1990,7 @@ struct Options {
     Look look;                     // --l2-level, --l2-smooth, --min-cells, --mean-frames (look.hpp)
     bool stream = false;           // --stream: draw each frame as the solve writes it, delete what the clip no longer needs
     bool hover_start = false;      // --hover-start: the rotors start at their commanded (hover) speed, not at rest; needs --lines (L106c)
+    bool volume = false;           // --volume: the speed volume under the particle views (L106h; needs --particles or --particles-preview)
     std::vector<uint32_t> keep_frames;  // --keep-frames A,B: frames a streamed run keeps on disk (the still pairs')
     std::optional<std::pair<uint32_t, uint32_t>> still_size;  // --still-size WxH: a web still at another size (a diagnostic)
     double window_from = 0.0, window_to = 0.0;  // --window A:B: the simulated window, in place of the clip's group's
@@ -2475,6 +2487,9 @@ struct WebFilming {
         in.clip = &clip;
         in.drone = web::find_drone(opt.drone);
         in.cell_mm = opt.cell_mm.value_or(4.0f);
+        in.lines = !opt.lines_prop.empty();
+        in.particles = opt.particles || opt.particles_preview;
+        in.volume = opt.volume;
         in.step_us = opt.step_us.value_or(200u);
         in.commit = build_identity();
         in.date_utc = utc_now();
@@ -2561,6 +2576,10 @@ struct WebFilming {
                      opt.web_id.c_str());
         return 2;
     }
+    if (const std::string why = web::volume_with_particles_refusal(opt.volume, opt.particles, opt.particles_preview); !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
     if (opt.hover_start && opt.lines_prop.empty()) {
         std::fprintf(stderr, "flow_movie: --hover-start is for a run with the rotors as lines (--lines): it starts them at the speed the lines' first controls command\n");
         return 2;
@@ -2586,6 +2605,7 @@ struct WebFilming {
     plan.drone = drone;
     plan.cell_mm = opt.cell_mm;
     plan.hover_start = opt.hover_start;
+    plan.volume = opt.volume;
     plan.step_us = opt.step_us;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
     if (!opt.build_parts.empty() || !opt.part_store.empty()) {
@@ -3260,6 +3280,8 @@ int main(int argc, char** argv) {
             opt.stream = true;
         } else if (arg == "--hover-start") {
             opt.hover_start = true;
+        } else if (arg == "--volume") {
+            opt.volume = true;
         } else if (arg == "--keep-frames") {
             const auto frames = parse_frame_list(value());
             if (!frames) {
