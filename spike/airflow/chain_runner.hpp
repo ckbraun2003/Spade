@@ -193,6 +193,7 @@ struct RunnerDesc {
     // buffer's own bytes in the one staging allocation, counts in runner_budget_bytes at create(), and is refused
     // there by that name. 0 (the default): no readback may be recorded, and every present caller is unchanged.
     uint64_t readback_bytes = 0;
+    std::string vram_share = "flow solver";
 };
 
 // One readback of a chain: after the chain's last dispatch, bytes [src_offset, src_offset + bytes) of buffer

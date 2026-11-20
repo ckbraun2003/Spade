@@ -486,6 +486,7 @@ if(SPADE_VULKAN)
         test_gpu_cadence.cpp
         test_gpu_pose_view.cpp
         test_gpu_step_semaphore.cpp
+        test_gpu_vram_wiring.cpp
         test_gpu_module_config.cpp
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp

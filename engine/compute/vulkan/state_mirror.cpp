@@ -1649,7 +1649,7 @@ StateMirror::PoseBuffers StateMirror::pose_buffers() const noexcept {
     return out;
 }
 
-Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/) {
+Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/, bool /*keep_previous_poses*/) {
     AdmitShape out;
     // Set 0 is the only set the mirror builds; module kernels' set-1 subsets are the layout classes' to add (batch B).
     out.layouts.push_back(AdmitLayout{.name = "state", .bindings_per_set = {gen::kBindingCount_state}});
