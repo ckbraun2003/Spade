@@ -1625,7 +1625,7 @@ target_sources(spade_sim PRIVATE compute/vulkan/backend_stub.cpp)
 # says (backend.hpp includes device_limits.hpp), and the ON branch installs
 # them with the rest of compute/. With it OFF they must still ship, or the
 # installed simulation.hpp cannot compile.
-install(FILES compute/backend.hpp compute/device_limits.hpp compute/grid_entry.hpp compute/step_params.hpp
+install(FILES compute/backend.hpp compute/device_features.hpp compute/device_limits.hpp compute/grid_entry.hpp compute/step_params.hpp
     DESTINATION include/compute)
 endif()
 

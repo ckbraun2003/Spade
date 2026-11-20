@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include "compute/device_features.hpp"
 #include "compute/device_limits.hpp"
 
 namespace spade::compute {
@@ -166,6 +167,11 @@ struct DeviceReport {
     // every run records what its device admits; compute/device_limits.hpp
     // checks against them by name.
     DeviceLimits limits{};
+    // The optional features of compute/device_features.hpp (camera design section 12, item 2): what the device OFFERS (the probe,
+    // read-only, always filled) and what this context ENABLED (only what BackendDesc::device_features asked for, with what
+    // those depend on). A device created without asking enables none: today's device.
+    FeatureSet optional_supported{};
+    FeatureSet optional_enabled{};
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +243,14 @@ struct BackendDesc {
     // buffer and ends it with a memory barrier for later readers, so VulkanBackend::pose_view() can answer. False (the
     // default) records and allocates nothing for it: today's recording, byte for byte. It changes no result (engine A7).
     bool device_pose_view = false;
+    // Camera design section 12, item 2: optional device features to enable (compute/device_features.hpp). Empty (the default) is
+    // today's device exactly. A feature the device does not offer makes create() fail Code::unavailable, naming it.
+    FeatureSet device_features{};
+    // Camera design section 12, item 2: the step signals a timeline semaphore at every tick submit (compute/vulkan/pose_view.hpp's
+    // step_semaphore()), so a pass on this queue or another can wait for a tick without a host fence. Implies the
+    // timeline_semaphore feature (refused by name where the device lacks it). False (the default): the submit is today's.
+    // It changes no result (engine A7).
+    bool step_timeline = false;
 };
 
 // ---------------------------------------------------------------------------

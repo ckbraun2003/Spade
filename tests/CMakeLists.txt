@@ -156,6 +156,7 @@ add_executable(spade_tests
     test_scene_file.cpp
     test_scene_airflow.cpp
     test_device_limits.cpp
+    test_device_features.cpp
     test_model_file.cpp
     test_object_file.cpp
     test_library_crate.cpp
@@ -482,6 +483,7 @@ if(SPADE_VULKAN)
         test_gpu_recipes.cpp
         test_gpu_cadence.cpp
         test_gpu_pose_view.cpp
+        test_gpu_step_semaphore.cpp
         test_gpu_module_config.cpp
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp

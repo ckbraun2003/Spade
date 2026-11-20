@@ -302,6 +302,11 @@ uint32_t VulkanBackend::pipeline_count() const noexcept { return impl_->recorder
 
 const DeviceReport& VulkanBackend::device_report() const noexcept { return impl_->ctx->device_report(); }
 
+Result<StepSemaphore> step_semaphore(const VulkanBackend& backend) {
+    (void)backend;
+    return std::unexpected(Error{Code::unavailable, "step_semaphore: not implemented yet"});  // RED stub
+}
+
 Result<DevicePoseView> pose_view(const VulkanBackend& backend) {
     const StateMirror::PoseBuffers buffers = backend.impl_->mirror->pose_buffers();
     if (buffers.previous == VK_NULL_HANDLE) {
