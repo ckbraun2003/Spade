@@ -497,6 +497,51 @@ TEST(FlowMovieBuildParts, ASpinningRotorIsManySeeThroughCopiesOfOneMeshAndAStopp
     fs::remove_all(store);
 }
 
+// The frame's live record is the body (7: position, orientation), then one speed a rotor, then, since L106c, the lines' thrust in all (the harness's 12th
+// value). The thrust is LAST and is not a speed: a draw that counts the rotors from the record's length would spin a fifth rotor at 13 rad/s. The speeds are
+// read by the TABLE's rotor count (rotor_speeds_of_live), so a 12-value record draws the same frame as its 11-value record (the lead, 2026-11-19).
+TEST(FlowMovieBuildParts, TheLinesThrustAppendedToTheLiveRecordIsNotARotorSpeedAndDrawsTheSameFrame) {
+    const std::vector<double> eleven{0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 567.0, 567.0, 567.0, 567.0};
+    std::vector<double> twelve = eleven;
+    twelve.push_back(13.012);  // the thrust, N
+    const auto a = flow_movie::rotor_speeds_of_live(eleven, 4u);
+    const auto b = flow_movie::rotor_speeds_of_live(twelve, 4u);
+    ASSERT_EQ(a.size(), 4u);
+    ASSERT_EQ(b.size(), 4u) << "four rotors: the 12th value is the thrust, not a fifth speed";
+    for (std::size_t i = 0; i < 4u; ++i) EXPECT_EQ(a[i], b[i]) << i;
+    EXPECT_EQ(b[3], 567.0);
+    EXPECT_TRUE(flow_movie::rotor_speeds_of_live(std::vector<double>{0.1, 0.2, 0.3}, 4u).empty()) << "no body, no speeds";
+    EXPECT_EQ(flow_movie::rotor_speeds_of_live(std::vector<double>{0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 5.0}, 4u).size(), 1u) << "a short record gives what it has";
+    EXPECT_EQ(flow_movie::rotor_speeds_of_live(twelve, 0u).size(), 0u);
+
+    const fs::path store = fresh_store("thrust_last");
+    save_tetra(store / kSha / "prop.spmesh");
+    std::string text;
+    for (int r = 0; r < 4; ++r) {
+        text += "  - name: rotor_" + std::to_string(r) + "\n    kind: rotor\n    mass_kg: 0.02\n    rotor: " + std::to_string(r) + "\n    spin: 1\n"
+                "    pose: {position: [0.17, 0.06, 0.17], orientation: [1, 0, 0, 0]}\n"
+                "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n";
+    }
+    const auto parts = flow_movie::parse_build_parts(table(text));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    EXPECT_EQ(flow_movie::rotor_count_of(*parts), 4u);
+    flow_movie::BuildDraw d11, d12;
+    d11.blur.sampled = d12.blur.sampled = true;
+    d11.blur.samples = d12.blur.samples = 8u;
+    d11.blur.alpha = d12.blur.alpha = 0.2f;
+    d11.omega = flow_movie::rotor_speeds_of_live(eleven, flow_movie::rotor_count_of(*parts));
+    d12.omega = flow_movie::rotor_speeds_of_live(twelve, flow_movie::rotor_count_of(*parts));
+    spade::render::RenderScene s11, s12;
+    ASSERT_TRUE(flow_movie::add_build_parts(s11, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), d11).has_value());
+    ASSERT_TRUE(flow_movie::add_build_parts(s12, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), d12).has_value());
+    ASSERT_EQ(s11.statics.size(), s12.statics.size());
+    for (std::size_t i = 0; i < s11.statics.size(); ++i) {
+        EXPECT_EQ(s11.statics[i].see_through, s12.statics[i].see_through) << i;
+        EXPECT_EQ(s11.statics[i].local_to_world, s12.statics[i].local_to_world) << i;
+    }
+    fs::remove_all(store);
+}
+
 // THE DRAWN PROP IS THE SIMULATED PROP (the lead, 2026-11-18): KAT's rotor glTFs draw a 0.1468 m prop, the real X500 V2 flies 10 inch (R
 // 0.127 m) and the model's rotors carry that radius, so the drawing's blade tips must be where the cloud's rings are. A rotor part's
 // `radius:` (m, optional) scales the `prop` primitive of its glTF radially about the hub (x and z, not the blade's thickness), leaving the

@@ -589,6 +589,60 @@ TEST(FlowMovieWeb, TheCellAndStepOptionsAreParsedStrictlyAndRefusedWhereTheyDoNo
     EXPECT_NE(web::cell_step_stem_suffix(2.5f, 50u), web::cell_step_stem_suffix(2.5f, 100u));
 }
 
+// The film's caption says what it is (L106h, Oversight O101): the X500's rotors are 10 inch, not 13; a --lines film's rotors are actuator LINES with the fitted
+// blade polar, never "discs of fixed thrust and swirl"; a --particles film SHOWS air points (and the speed volume only when --volume put it there); and
+// the command line carries no user path (--out and --cache-dir show from build-ninja/ on, else the folder's own name).
+TEST(FlowMovieWeb, TheCaptionSaysTenInchLinesAndPointsAndNamesNoUserPath) {
+    const web::Drone& x500 = *web::find_drone("x500");
+    EXPECT_NE(std::string(x500.description).find("10 inch"), std::string::npos) << x500.description;
+    EXPECT_EQ(std::string(x500.description).find("13 inch"), std::string::npos) << x500.description;
+
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string discs = web::standing_caveats(s8, 2.5f, 50u);
+    EXPECT_NE(discs.find("actuator discs"), std::string::npos) << "no --lines: the discs' words, as they were";
+    const std::string lines = web::standing_caveats(s8, 2.5f, 50u, true);
+    EXPECT_NE(lines.find("actuator lines"), std::string::npos) << lines;
+    EXPECT_EQ(lines.find("actuator discs"), std::string::npos) << lines;
+    EXPECT_EQ(lines.find("fixed thrust and swirl"), std::string::npos) << lines;
+    EXPECT_NE(lines.find("fitted blade polar"), std::string::npos) << lines;
+    EXPECT_NE(lines.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << lines;
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = &x500;
+    in.lines = true;
+    in.particles = true;
+    in.command = "flow_movie --web S8 --drone x500 --out C:/Users/Someone/Projects/spade-wt/rendering-film/build-ninja/film-l106c-film --cache-dir D:/work/cache/one --particles";
+    const std::string points = web::caption_text(in);
+    EXPECT_NE(points.find("- Shows: Air points"), std::string::npos) << points;
+    EXPECT_EQ(points.find("speed volume"), std::string::npos) << "no --volume: the volume is not claimed: " << points;
+    EXPECT_EQ(points.find("actuator discs"), std::string::npos) << points;
+    EXPECT_NE(points.find("--out build-ninja/film-l106c-film"), std::string::npos) << points;
+    EXPECT_NE(points.find("--cache-dir one"), std::string::npos) << points;
+    EXPECT_EQ(points.find("Someone"), std::string::npos) << points;
+    EXPECT_EQ(points.find("D:/work"), std::string::npos) << points;
+    in.volume = true;
+    EXPECT_NE(web::caption_text(in).find("over the relative-speed volume"), std::string::npos) << "--volume: the volume is claimed";
+    web::CaptionInput old;
+    old.clip = &s8;
+    old.command = "flow_movie --web S8";
+    EXPECT_NE(web::caption_text(old).find("Relative speed of the wake of four actuator discs"), std::string::npos) << "an old film's Shows line is as it was";
+}
+
+// --volume (L106h): the S8 particle look draws the points ALONE (its view has no flow layer), so a "volume plus particles" film needs the speed volume under
+// the points. --volume adds that layer to the --particles and --particles-preview views; alone it has nothing to add it to, and a film with it keeps a folder of
+// its own as every other look does.
+TEST(FlowMovieWeb, VolumeIsForTheParticleViewsAndHasAFolderOfItsOwn) {
+    EXPECT_TRUE(web::volume_with_particles_refusal(false, false, false).empty()) << "no --volume: nothing to say";
+    EXPECT_TRUE(web::volume_with_particles_refusal(true, true, false).empty());
+    EXPECT_TRUE(web::volume_with_particles_refusal(true, false, true).empty());
+    const std::string alone = web::volume_with_particles_refusal(true, false, false);
+    EXPECT_NE(alone.find("--volume"), std::string::npos) << alone;
+    EXPECT_NE(alone.find("--particles"), std::string::npos) << alone;
+    EXPECT_EQ(web::volume_stem_suffix(false), "");
+    EXPECT_EQ(web::volume_stem_suffix(true), "-volume");
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {

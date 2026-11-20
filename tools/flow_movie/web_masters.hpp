@@ -188,6 +188,15 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
 }
 
+// --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
+// under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
+[[nodiscard]] inline std::string volume_with_particles_refusal(bool volume, bool particles, bool particles_preview) {
+    if (!volume || particles || particles_preview) return {};
+    return "--volume adds the speed volume under the particle views: use it with --particles or --particles-preview";
+}
+
+[[nodiscard]] inline std::string volume_stem_suffix(bool volume) { return volume ? "-volume" : ""; }
+
 // The default working folder (--out unset): <profile>/Desktop/Vantage/Videos/Footage/Spade/<date> (Cameron, O74, moved by O84: all videos live under
 // Vantage/Videos). A posted or kept film goes wherever --out names; this is only the default. No profile: relative to the working directory.
 [[nodiscard]] inline std::filesystem::path default_out_dir(std::string_view profile, std::string_view date) {
@@ -361,7 +370,7 @@ struct Drone {
         // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
-         "the open-source quadcopter", "a 2 kg open-source quadcopter with 13 inch rotors (published dimensions; the propeller is estimated)",
+         "the open-source quadcopter", "a 2 kg open-source quadcopter with 10 inch rotors (published dimensions)",
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
     }};
     return table;
@@ -404,6 +413,30 @@ struct Drone {
                 end = space == std::string::npos ? command.size() : space;
             }
             command.replace(start, end - start, word);
+        }
+    }
+    // --out and --cache-dir name this box's folders: shown from build-ninja/ on, else by the folder's own name, so a caption carries no user path.
+    for (const std::string_view flag : {std::string_view("--out"), std::string_view("--cache-dir")}) {
+        const std::string key = std::string(flag) + " ";
+        for (std::size_t at = command.find(key); at != std::string::npos; at = command.find(key, at + key.size())) {
+            if (at != 0 && command[at - 1] != ' ') continue;
+            const std::size_t start = at + key.size();
+            if (start >= command.size() || command.compare(start, 2, "--") == 0) continue;
+            const std::size_t space = command.find(' ', start);
+            const std::size_t end = space == std::string::npos ? command.size() : space;
+            std::string value = command.substr(start, end - start);
+            for (char& ch : value) {
+                if (ch == '\\') ch = '/';
+            }
+            while (value.size() > 1u && value.back() == '/') value.pop_back();
+            const std::size_t build = value.find("build-ninja/");
+            if (build != std::string::npos) {
+                value = value.substr(build);
+            } else {
+                const std::size_t slash = value.rfind('/');
+                if (slash != std::string::npos) value = value.substr(slash + 1u);
+            }
+            command.replace(start, end - start, value);
         }
     }
     return command;
@@ -683,7 +716,9 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false) {
+    // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
+    const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
     const std::string cell = std::format("{:g}", cell_mm);
     const std::string step_ms = std::format("{:g}", static_cast<double>(step_us) / 1000.0);
@@ -694,8 +729,7 @@ struct DeliveryGuard {
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
         t += "The wake is a single run on the device of record, not a measurement.";
     } else if (c.scene == Scene::d1_still) {
-        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as actuator discs "
-             "of fixed thrust and swirl, the drone held level at its hover throttle in still air. This is a "
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as " + rotors + ", the drone held level at its hover throttle in still air. This is a "
              "visualisation of the air, not a prediction of the thrust, power or attitude of a real quad. ";
         t += "The wake below the quad has not been measured against a downwash record. ";
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
@@ -703,8 +737,7 @@ struct DeliveryGuard {
              "(Cs 0.17), which damps the grid-scale motion the " + cell + " mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
     } else {
-        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as actuator discs "
-             "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as " + rotors + ", the drone held level at its still-air hover throttle in a steady wind from "
              "the side (crosswind setting supported but not validated). The wind bends and carries the wake and "
              "flows round the airframe's parts, but the rotors do not respond to it and the held drone does not "
              "need to compensate. In plain words: the rotor model's push does not respond to the side wind, and the "
@@ -744,6 +777,23 @@ struct DeliveryGuard {
 // A clip's title in the drone's words (the caption's heading and the manifest's description).
 [[nodiscard]] inline std::string clip_title(const Clip& c, const Drone& d) { return in_words(std::string(c.title), d); }
 
+// What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
+// are actuator lines; every other film keeps its clip's text.
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume) {
+    const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (particles && c.id == "S8") {
+        return "Air points carried by the flow round the reference quad's rigid parts and four " + rotors +
+               (volume ? ", over the relative-speed volume of the wake" : "") + ", in a slow orbit.";
+    }
+    std::string t(c.shows);
+    if (lines) {
+        for (std::size_t at = t.find("actuator discs"); at != std::string::npos; at = t.find("actuator discs", at + 14u)) {
+            t.replace(at, 14u, "actuator lines");
+        }
+    }
+    return t;
+}
+
 struct CaptionInput {
     const Clip* clip = nullptr;
     const Drone* drone = nullptr;  // null: the reference quad
@@ -756,6 +806,9 @@ struct CaptionInput {
     std::string extra;  // anything else the run's log carries (the device, the grid, a legend's note)
     float cell_mm = 4.0f;       // the D1 box's cell, for the standing caveats (--cell-mm; today's 4 mm)
     uint32_t step_us = 200u;    // the solver step in microseconds, for the same words (--step-us; today's 0.2 ms)
+    bool lines = false;         // --lines: the rotors are actuator lines with the fitted blade polar, not discs
+    bool particles = false;     // --particles / --particles-preview: the film shows air points carried by the flow
+    bool volume = false;        // --volume: ... over the speed volume (without it the points stand alone and no volume is claimed)
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -767,11 +820,11 @@ struct CaptionInput {
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(std::string(c.shows), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }
