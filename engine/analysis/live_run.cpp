@@ -369,7 +369,8 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
 }
 
 Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
-                               const LiveFluidMaker& fluid, const LiveLines* lines) {
+                               const LiveFluidMaker& fluid, const LiveLines* lines, const Controls* rotors_at) {
+    (void)rotors_at;  // RED stub
     if (lines != nullptr) {
         const auto refuse = [](const std::string& why) {
             return std::unexpected(Error{Code::invalid_argument, "live lines: " + why});
@@ -892,6 +893,8 @@ std::span<const vehicles::RotorRow> LiveRun::rotor_rows() const noexcept { retur
 const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
 std::span<const float> LiveRun::blade_azimuth() const noexcept { return impl_->psi; }
+
+double LiveRun::line_thrust() const { return 0.0; }  // RED stub
 
 const std::string& LiveRun::azimuth_refused() const noexcept { return impl_->azimuth_refused; }
 
