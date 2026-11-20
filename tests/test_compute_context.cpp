@@ -112,6 +112,34 @@ TEST(GpuContext, ReportsTheDeviceDriverAndFloatControls) {
     std::cout << "[GpuContext] " << spade::compute::describe(report) << "\n";
 }
 
+// WHICH DEVICE (camera design section 12, item 4): the report carries the device's 16-byte UUID and, where the driver
+// gives one (Windows), its 8-byte LUID, so a CUDA process importing the camera's exported buffers can prove it is on the
+// same GPU. Equal to a direct read of the driver (the independent source), and a real device's UUID is not all zero.
+TEST(GpuContext, ReportsTheDeviceUuidAndLuid) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::testing::DefaultDeviceDenorms direct = spade::testing::read_default_device_denorms();
+    ASSERT_TRUE(direct.device);
+    ASSERT_TRUE(direct.ids_queryable) << "the device admitted by the engine is Vulkan >= 1.1, which has the id query";
+    auto context = VulkanContext::create(BackendDesc{.kind = BackendKind::vulkan});
+    ASSERT_TRUE(context.has_value()) << context.error().context;
+
+    const spade::compute::DeviceReport& report = (*context)->device_report();
+    EXPECT_TRUE(report.ids_queryable);
+    EXPECT_EQ(report.device_uuid, direct.device_uuid);
+    EXPECT_EQ(report.device_luid_valid, direct.device_luid_valid);
+    EXPECT_EQ(report.device_luid, direct.device_luid);
+    bool any = false;
+    for (const uint8_t b : report.device_uuid) any = any || b != 0;
+    EXPECT_TRUE(any) << "a real device's UUID is not all zero";
+    if (report.device_luid_valid) {
+        any = false;
+        for (const uint8_t b : report.device_luid) any = any || b != 0;
+        EXPECT_TRUE(any) << "a valid LUID is not all zero";
+    } else {
+        for (const uint8_t b : report.device_luid) EXPECT_EQ(b, 0u) << "an invalid LUID's bytes stay zero";
+    }
+}
+
 // Simulation::vulkan_device_report() is the same report, on a Vulkan
 // Simulation; on a cpu one it refuses with `unavailable`, like the other
 // Vulkan diagnostics.
