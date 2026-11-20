@@ -21,7 +21,9 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <numbers>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -758,6 +760,29 @@ TEST(FlowMovieWeb, S2IsAVolumeOfTheWakesSpeedNotVortexSurfaces) {
     EXPECT_EQ(shows.find("lambda2"), std::string::npos) << shows;
     EXPECT_EQ(std::string(s2.short_name), "rotor-wake-start-up-volume");
     EXPECT_EQ(std::string(s2.title).find("ortex"), std::string::npos) << s2.title;
+}
+
+// A drone's description states its mass, and the figure is the one the flow model flies: the body mass in the model file (the X500's is the summed parts'
+// 1.63259995 kg, not the old 2 kg), to two decimals. Every drone with a figure is held to it (Spade lead, 2026-11-20).
+TEST(FlowMovieWeb, ADroneDescriptionsMassIsTheModelFilesBodyMass) {
+    std::size_t with_figure = 0;
+    for (const web::Drone& d : web::drones()) {
+        const std::string description(d.description);
+        const std::size_t kg = description.find(" kg ");
+        if (kg == std::string::npos) continue;  // the reference quad's description is empty
+        ++with_figure;
+        const double said = std::stod(description.substr(description.find(' ') + 1u));  // "a 1.63 kg ..."
+        std::ifstream file(std::filesystem::path(SPADE_ASSETS_DIR) / d.model_file);
+        ASSERT_TRUE(file.good()) << d.model_file;
+        std::stringstream all;
+        all << file.rdbuf();
+        const std::string text = all.str();
+        const std::size_t at = text.find("body: {mass: ");
+        ASSERT_NE(at, std::string::npos) << d.model_file << " has no body mass";
+        const double flown = std::stod(text.substr(at + 13u));
+        EXPECT_NEAR(said, flown, 0.005) << "'" << description << "' says " << said << " kg; the model file flies " << flown << " kg";
+    }
+    EXPECT_GE(with_figure, 2u) << "the camera quadcopter and the X500 both state a mass";
 }
 
 // --drone takes a library drone by its internal name, and no caption, title or file name carries that name or a brand: the
