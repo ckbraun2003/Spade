@@ -93,6 +93,13 @@ class GpuLiveFluid final : public analysis::LiveFluid {
 
     [[nodiscard]] Result<void> read(physics::airflow::MacGrid& g) const override { return fluid_->read(g); }
 
+    // L106e: the lines' thrust in all as of the last step (the sum of the fluid's line reports, each a rotor's), 0 before the first.
+    [[nodiscard]] double line_thrust() const override {
+        double all = 0.0;
+        for (const physics::airflow::LineReport& r : fluid_->line_reports()) all += static_cast<double>(r.thrust);
+        return all;
+    }
+
   private:
     std::unique_ptr<GpuFluid> fluid_;
     std::string dead_;  // why the run stopped, once a publish found it non-finite

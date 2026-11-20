@@ -278,6 +278,60 @@ TEST(AnalysisLiveRun, RefusesAThrottleOutOfRange) {
     EXPECT_EQ(run.state().steps, 0u);
 }
 
+// L106e (the film's blocker): by default a live run starts every rotor at omega 0 and the motor model spools it up, so a
+// short run is flown with rotors far below their command. start()'s last argument, Controls, starts the rotors at the speed those
+// controls command (armed_duty, rotor_omega_for_duty at the case's density and charge), the same speed for every rotor, so the
+// first step is flown at the command and holds it. Default (null): unchanged.
+TEST(AnalysisLiveRun, TheRotorsStartAtTheCommandedSpeedWhenAsked) {
+    const Powered p = powered();
+    const an::AnalysisCase c = tiny_case(p.model);
+    const float want = commanded(p, 0.5f, c.fluid.density);
+    ASSERT_GT(want, 100.0f);
+    const an::Controls hover{true, 0.5f, 0, 0, 0};
+
+    // Asked: at the command before any step, and still there after the first (no spool).
+    spade::Result<an::LiveRun> on = an::LiveRun::start(resolved(an::test::with_power(c, p), p.model), p.model, {}, nullptr, &hover);
+    ASSERT_TRUE(on.has_value()) << on.error().context;
+    ASSERT_EQ(on->state().rotor_omega.size(), p.model.rotors.size());
+    for (const float w : on->state().rotor_omega) EXPECT_NEAR(w, want, 0.005f * want) << "before the first step";
+    ASSERT_TRUE(on->step(hover).has_value());
+    for (const float w : on->state().rotor_omega) EXPECT_NEAR(w, want, 0.005f * want) << "after the first step";
+    for (const spade::vehicles::RotorRow& row : on->rotor_rows()) EXPECT_NEAR(row.omega, want, 0.005f * want);
+
+    // Not asked (the default): at rest, and after one step still far below the command.
+    an::LiveRun off = started(c, p);
+    for (const float w : off.state().rotor_omega) EXPECT_EQ(w, 0.0f);
+    ASSERT_TRUE(off.step(hover).has_value());
+    for (const float w : off.state().rotor_omega) EXPECT_LT(w, 0.5f * want) << "the default spools up from rest";
+}
+
+// Disarmed controls command nothing (armed_duty is 0): the rotors start at rest, as without the knob. Controls the throttle map
+// refuses refuse the start, naming the throttle, and nothing is built.
+TEST(AnalysisLiveRun, StartingTheRotorsAtTheCommandFollowsTheArmRuleAndRefusesWhatTheThrottleMapRefuses) {
+    const Powered p = powered();
+    const an::AnalysisCase c = tiny_case(p.model);
+    const an::ResolvedCase r = resolved(an::test::with_power(c, p), p.model);
+    const an::Controls disarmed{false, 0.5f, 0, 0, 0};
+    spade::Result<an::LiveRun> rest = an::LiveRun::start(r, p.model, {}, nullptr, &disarmed);
+    ASSERT_TRUE(rest.has_value()) << rest.error().context;
+    for (const float w : rest->state().rotor_omega) EXPECT_EQ(w, 0.0f);
+
+    const an::Controls too_much{true, 1.5f, 0, 0, 0};
+    const spade::Result<an::LiveRun> refused = an::LiveRun::start(r, p.model, {}, nullptr, &too_much);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("throttle"), std::string::npos) << refused.error().context;
+}
+
+// A model without rotors has nothing to start: the knob is accepted and changes nothing.
+TEST(AnalysisLiveRun, StartingTheRotorsAtTheCommandOnARotorlessModelChangesNothing) {
+    const spade::vehicles::ModelType m = rotorless();
+    const an::AnalysisCase c = tiny_case(m);
+    const an::Controls hover{true, 0.5f, 0, 0, 0};
+    spade::Result<an::LiveRun> run = an::LiveRun::start(resolved(c, m), m, {}, nullptr, &hover);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_TRUE(run->state().rotor_omega.empty());
+}
+
 // A frame ends at the first step at or past k/30 s: with 4 ms steps, frame 1
 // at step 9 (36 ms, past 33.3 ms) and frame 2 at step 17 (68 ms, past 66.7 ms).
 TEST(AnalysisLiveRun, AFrameEndsAtTheFirstStepAtOrPastItsTime) {

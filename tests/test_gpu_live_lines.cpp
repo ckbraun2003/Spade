@@ -103,6 +103,24 @@ TEST(GpuLiveLines, ALineRunFliesOnTheDeviceWithItsDye) {
     EXPECT_GT(*std::max_element(psi.begin(), psi.end()), 0.0f) << "the blades turned";
 }
 
+// L106e: the lines' thrust in all after the last step (GpuLiveFluid sums its fluid's line reports): 0 before any step, then the
+// lines' push once the rotors turn (here started at their command, the knob, so the thrust is the hover's from the first steps).
+TEST(GpuLiveLines, ALineRunReportsTheLinesThrustAfterItsLastStep) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    const Powered p = an::test::powered_quad();
+    const an::LiveLines lines = lines_for(p);
+    const an::Controls armed{true, 0.5f, 0.0f, 0.0f, 0.0f};
+    spade::Result<an::LiveRun> run =
+        an::LiveRun::start(small_case(p), p.model, ag::gpu_live_fluid(*ctx, 64u, 0.17f), &lines, &armed);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ(run->line_thrust(), 0.0) << "before the first step";
+    for (int i = 0; i < 10; ++i) ASSERT_TRUE(run->step(armed).has_value());
+    EXPECT_GT(run->line_thrust(), 0.1) << "the lines' thrust after the last step";
+    EXPECT_LT(run->line_thrust(), 1.0e4);
+}
+
 TEST(GpuLiveLines, RefusesWhatItCannotMakeALineRunOfByName) {
     const Powered p = an::test::powered_quad();
     const an::ResolvedCase r = small_case(p);

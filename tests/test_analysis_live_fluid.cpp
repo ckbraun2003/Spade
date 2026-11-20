@@ -422,6 +422,64 @@ class DiscTap final : public an::LiveFluid {
 
 }  // namespace
 
+// L106e: the lines' thrust, for a host that records it (flow_movie's 12th live value). A LiveFluid reports 0 unless it has lines;
+// LiveRun forwards what its device reports after the last step, 0 for a run with no device and before any step.
+namespace {
+
+class ThrustTap final : public an::LiveFluid {
+  public:
+    explicit ThrustTap(double thrust) : thrust_(thrust) {}
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc>) override {
+        ++steps_;
+        return af::FluidHealth{};
+    }
+    [[nodiscard]] spade::Result<void> publish(const af::PublishInput&, spade::FlowVolume&) override { return {}; }
+    [[nodiscard]] spade::Result<void> read(af::MacGrid&) const override { return {}; }
+    [[nodiscard]] double line_thrust() const override { return steps_ == 0 ? 0.0 : thrust_ * static_cast<double>(steps_); }
+
+  private:
+    double thrust_;
+    int steps_ = 0;
+};
+
+class NoThrust final : public an::LiveFluid {
+  public:
+    [[nodiscard]] spade::Result<af::FluidHealth> step(std::span<const af::ActuatorDisc>) override { return af::FluidHealth{}; }
+    [[nodiscard]] spade::Result<void> publish(const af::PublishInput&, spade::FlowVolume&) override { return {}; }
+    [[nodiscard]] spade::Result<void> read(af::MacGrid&) const override { return {}; }
+};
+
+}  // namespace
+
+TEST(AnalysisLiveFluid, TheLinesThrustIsTheDevicesAfterTheLastStepAndZeroWithoutOne) {
+    NoThrust base;
+    const an::LiveFluid& plain = base;
+    EXPECT_EQ(plain.line_thrust(), 0.0) << "a device with no lines reports 0";
+
+    const Powered p = with_ball_body();
+    const an::ResolvedCase r = tall(p, glm::vec3(0.0f));
+    const an::Controls armed{true, 0.5f, 0, 0, 0};
+
+    // No device: the discs' run, 0.
+    spade::Result<an::LiveRun> cpu = an::LiveRun::start(r, p.model);
+    ASSERT_TRUE(cpu.has_value()) << cpu.error().context;
+    EXPECT_EQ(cpu->line_thrust(), 0.0);
+    ASSERT_TRUE(cpu->step(armed).has_value());
+    EXPECT_EQ(cpu->line_thrust(), 0.0);
+
+    // A device that reports: LiveRun forwards its value after each step (here 2.5 N times the steps run).
+    const an::LiveFluidMaker maker = [](const an::LiveFluidStart&) -> spade::Result<std::unique_ptr<an::LiveFluid>> {
+        return std::unique_ptr<an::LiveFluid>(new ThrustTap(2.5));
+    };
+    spade::Result<an::LiveRun> run = an::LiveRun::start(r, p.model, maker);
+    ASSERT_TRUE(run.has_value()) << run.error().context;
+    EXPECT_EQ(run->line_thrust(), 0.0) << "before the first step";
+    ASSERT_TRUE(run->step(armed).has_value());
+    EXPECT_EQ(run->line_thrust(), 2.5);
+    ASSERT_TRUE(run->step(armed).has_value());
+    EXPECT_EQ(run->line_thrust(), 5.0);
+}
+
 // The default hold is 0, and a run at it publishes the box centred on the drone, the minimum corner at
 // -0.5 dx n (the same float operations as before the field), over every frame.
 TEST(AnalysisLiveFluid, TheDefaultHoldIsZeroAndTheBoxIsCentred) {
