@@ -125,6 +125,69 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return value;
 }
 
+// L106c (the lead, 2026-11-19): the website film at the L106 config. --cell-mm X is the D1 box's cell size in millimetres: one number above 0 and at
+// most 10, whole (no sign, blanks, exponent or trailing text); only 2.5 is supported, the X500's 270 x 237 x 270 box (cell_mm_refusal). nullopt otherwise.
+[[nodiscard]] inline std::optional<float> parse_cell_mm(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    bool digit = false, point = false;
+    for (const char c : text) {
+        if (c >= '0' && c <= '9') {
+            digit = true;
+        } else if (c == '.' && !point) {
+            point = true;
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!digit) return std::nullopt;
+    float value = 0.0f;
+    const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
+    if (!(value > 0.0f && value <= 10.0f)) return std::nullopt;
+    return value;
+}
+
+// Where --cell-mm applies: 2.5 with the X500 on a still-air D1 clip (S1, S2, S8), whose box and hold the L106 harness and the film then share.
+[[nodiscard]] inline std::string cell_mm_refusal(float cell_mm, std::string_view drone_library, bool still_air_clip) {
+    if (cell_mm == 2.5f && drone_library == "x500" && still_air_clip) return {};
+    return "--cell-mm supports only 2.5 (the X500's 270 x 237 x 270 box, L106) with --drone x500 on a still-air clip (S1, S2, S8)";
+}
+
+// --step-us N: the solver step in whole microseconds, 1 to 1000 (50 is L106's 0.05 ms): digits only, no sign, blanks, point, exponent or trailing text.
+[[nodiscard]] inline std::optional<uint32_t> parse_step_us(std::string_view text) {
+    if (text.empty()) return std::nullopt;
+    for (const char c : text) {
+        if (c < '0' || c > '9') return std::nullopt;
+    }
+    uint32_t value = 0;
+    const auto done = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
+    if (value < 1u || value > 1000u) return std::nullopt;
+    return value;
+}
+
+// The step is for a --window run: a group's frames are 5 whole steps at 0.2 ms, so another step there would change the frame spacing silently.
+[[nodiscard]] inline std::string step_us_refusal(uint32_t step_us, bool window) {
+    (void)step_us;
+    if (window) return {};
+    return "--step-us is for a --window run (the group's frames are whole steps at 0.2 ms; --window spreads its frames over the window)";
+}
+
+// A run at another cell or step keeps its frames in a folder of its own, as a run at another Cs does: "" when neither is given.
+[[nodiscard]] inline std::string cell_step_stem_suffix(std::optional<float> cell_mm, std::optional<uint32_t> step_us) {
+    std::string out;
+    if (cell_mm) out += std::format("-cell{:g}", *cell_mm);
+    if (step_us) out += std::format("-step{}us", *step_us);
+    return out;
+}
+
+// --particles with --window: the points are carried frame to frame, so a --window run that solves (--stream) feeds them in order, and a --web-still
+// redraw from kept frames carries them through the files (L106b). A --window run that does neither has no frames to carry them through.
+[[nodiscard]] inline std::string particles_window_refusal(bool window, bool still_redraw, bool stream) {
+    if (!window || still_redraw || stream) return {};
+    return "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
+}
+
 // The default working folder (--out unset): <profile>/Desktop/Vantage/Videos/Footage/Spade/<date> (Cameron, O74, moved by O84: all videos live under
 // Vantage/Videos). A posted or kept film goes wherever --out names; this is only the default. No profile: relative to the working directory.
 [[nodiscard]] inline std::filesystem::path default_out_dir(std::string_view profile, std::string_view date) {
@@ -620,7 +683,10 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u) {
+    // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
+    const std::string cell = std::format("{:g}", cell_mm);
+    const std::string step_ms = std::format("{:g}", static_cast<double>(step_us) / 1000.0);
     std::string t;
     if (c.scene == Scene::quad) {
         t += "Stand-in: the reference quad is four actuator discs (uniform thrust and swirl), with no airframe, in "
@@ -628,16 +694,16 @@ struct DeliveryGuard {
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
         t += "The wake is a single run on the device of record, not a measurement.";
     } else if (c.scene == Scene::d1_still) {
-        t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as actuator discs "
              "of fixed thrust and swirl, the drone held level at its hover throttle in still air. This is a "
              "visualisation of the air, not a prediction of the thrust, power or attitude of a real quad. ";
         t += "The wake below the quad has not been measured against a downwash record. ";
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
-        t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
-             "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
+        t += "The fluid is stepped by the GPU solver (GpuFluid) at " + step_ms + " ms with a Smagorinsky subgrid viscosity "
+             "(Cs 0.17), which damps the grid-scale motion the " + cell + " mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
     } else {
-        t += "Stand-in: the reference quad's rigid parts as solids in the flow at 4 mm, its rotors as actuator discs "
+        t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as actuator discs "
              "of fixed thrust and swirl, the drone held level at its still-air hover throttle in a steady wind from "
              "the side (crosswind setting supported but not validated). The wind bends and carries the wake and "
              "flows round the airframe's parts, but the rotors do not respond to it and the held drone does not "
@@ -649,8 +715,8 @@ struct DeliveryGuard {
                    "order in the cell size); its sign on the arms' tops has not been measured. "
                  : "The wake below the quad has not been measured against a downwash record. ";
         t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
-        t += "The fluid is stepped by the GPU solver (GpuFluid) at 0.2 ms with a Smagorinsky subgrid viscosity "
-             "(Cs 0.17), which damps the grid-scale motion the 4 mm cells cannot hold: a single run on the device of "
+        t += "The fluid is stepped by the GPU solver (GpuFluid) at " + step_ms + " ms with a Smagorinsky subgrid viscosity "
+             "(Cs 0.17), which damps the grid-scale motion the " + cell + " mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
     }
     return t;
@@ -688,6 +754,8 @@ struct CaptionInput {
     double sim_seconds = 0.0;  // simulated time shown, in the case's own units
     double screen_seconds = 0.0;
     std::string extra;  // anything else the run's log carries (the device, the grid, a legend's note)
+    float cell_mm = 4.0f;       // the D1 box's cell, for the standing caveats (--cell-mm; today's 4 mm)
+    uint32_t step_us = 200u;    // the solver step in microseconds, for the same words (--step-us; today's 0.2 ms)
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -703,7 +771,7 @@ struct CaptionInput {
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }
