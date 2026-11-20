@@ -3808,6 +3808,7 @@ Result<PublishedPoses> Simulation::published_poses() const {
                                      "published_poses: this Simulation runs on the Vulkan backend, where the poses live on the "
                                      "device; use compute::pose_view() (compute/vulkan/pose_view.hpp)"});
     }
+    if (Result<void> current = check_resident_current("published_poses"); !current) return std::unexpected(current.error());
     const Result<std::span<const BodyState>> bodies = arenas_.array(bodies_id_);
     if (!bodies) return std::unexpected(bodies.error());
     const Result<std::span<const uint32_t>> map = arenas_.slot_to_world(bodies_id_);

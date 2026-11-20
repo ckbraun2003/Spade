@@ -729,7 +729,10 @@ public:
 
     // The body poses at the last tick boundary and, when asked for, the one before (PublishedPoses above). CPU backend only: on a
     // Vulkan Simulation the poses live on the device and the view is compute::pose_view() (compute/vulkan/pose_view.hpp), so this
-    // refuses `unavailable` naming it. Also `unavailable` while a device-resident array is stale, as checked_arenas().
+    // refuses `unavailable` naming it. Also `unavailable` while a device-resident array is stale, as checked_arenas(): it goes
+    // through the same door (check_resident_current). No CPU set can reach that refusal today, since an array is only stale after a
+    // Vulkan step and this refuses a Vulkan Simulation first, so no test drives it; the call is there so a future resident array
+    // on the host path cannot publish stale poses.
     [[nodiscard]] Result<PublishedPoses> published_poses() const;
     // Keep (true) or stop keeping (false) the previous tick's poses: the host copy step() makes at the start of every tick. Default
     // off. Turning it on takes effect at the next tick (`previous` is empty until one has run). CPU backend only, like the view.
