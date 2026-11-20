@@ -112,6 +112,11 @@ struct Capacities {
     uint32_t force_elements = 0;
     uint32_t sensors = 0;
     uint32_t contacts = 0;
+    // The camera sensor kind's declarations (rendering/camera-sensor-design section 11 item 2): how many cameras the world holds and the pixels a frame of them may
+    // total. Both default to 0 and 0 means none: a world that does not use a camera allocates nothing for it, its file does not mention them, and its config
+    // hash does not fold them. They come as a pair (cameras without a pixel budget, or a budget without cameras, is refused).
+    uint32_t cameras = 0;
+    uint32_t camera_pixels = 0;
 };
 
 // ---------------------------------------------------------------------------
