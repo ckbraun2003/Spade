@@ -26,6 +26,7 @@ using spade::compute::check_push;
 using spade::compute::check_storage_buffers;
 using spade::compute::check_vram;
 using spade::compute::check_workgroup;
+using spade::compute::device_lost_text;
 using spade::compute::DeviceLimits;
 using spade::compute::kGuaranteedLimits;
 using spade::compute::MemoryBudget;
@@ -278,4 +279,45 @@ TEST(VramLedger, DescribeListsTheSharesInOneLine) {
         EXPECT_TRUE(contains(line, needle)) << "missing '" << needle << "' in: " << line;
     }
     EXPECT_EQ(line.find('\n'), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// WHAT A LOST DEVICE SAYS (L106e's TDR findings): the old words, the device, and the VRAM budget and usage at create() against the
+// read taken when the device was lost, so a reader can tell another program growing from the work being slow.
+// ---------------------------------------------------------------------------
+
+TEST(DeviceLostText, KeepsTheOldWordsNamesTheDeviceAndSaysWhatTheVramDid) {
+    const MemoryBudget at_create{.budget = 7 * kGiB, .usage = kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+    const MemoryBudget now{.budget = 7 * kGiB, .usage = 6 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+    const std::string text = device_lost_text("airflow runner: submit", kDevice, &at_create, &now);
+    for (const std::string_view needle :
+         {"Vulkan device lost during airflow runner: submit", "device 'Test Device 9000'", "TDR", "at create", "when it was lost",
+          "7516192768", "1073741824", "6442450944", "5368709120 bytes more", "VK_EXT_memory_budget"}) {
+        EXPECT_TRUE(contains(text, needle)) << "missing '" << needle << "' in: " << text;
+    }
+    EXPECT_EQ(text.find('\n'), std::string::npos) << "one line";
+}
+
+TEST(DeviceLostText, AUsageThatDidNotGrowSaysSoAndOnlyTheWorkIsLeftToBlame) {
+    const MemoryBudget at_create{.budget = 7 * kGiB, .usage = 3 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+    const MemoryBudget now{.budget = 7 * kGiB, .usage = 3 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+    const std::string text = device_lost_text("submit", kDevice, &at_create, &now);
+    EXPECT_TRUE(contains(text, "no more than at create")) << text;
+    EXPECT_FALSE(contains(text, "bytes more")) << text;
+}
+
+TEST(DeviceLostText, WithoutTheBudgetExtensionTheUsageIsNotVisibleAndTheTextSaysSo) {
+    const MemoryBudget half{.budget = 4 * kGiB, .usage = 0, .heap = 0, .source = MemoryBudget::Source::half_heap};
+    const std::string text = device_lost_text("submit", kDevice, &half, &half);
+    EXPECT_TRUE(contains(text, "no VK_EXT_memory_budget")) << text;
+    EXPECT_TRUE(contains(text, "other programs' VRAM use is not visible")) << text;
+    EXPECT_TRUE(contains(text, "Vulkan device lost during submit")) << text;
+}
+
+TEST(DeviceLostText, WithNoReadsItIsTheOldWordsWithTheDeviceAndTheUsualCause) {
+    const std::string text = device_lost_text("submit", kDevice, nullptr, nullptr);
+    EXPECT_TRUE(contains(text, "Vulkan device lost during submit")) << text;
+    EXPECT_TRUE(contains(text, "device 'Test Device 9000'")) << text;
+    EXPECT_TRUE(contains(text, "TDR")) << text;
+    EXPECT_FALSE(contains(text, "at create")) << text;
 }

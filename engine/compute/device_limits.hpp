@@ -198,4 +198,17 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
                               : std::string())});
 }
 
+// WHAT A LOST DEVICE SAYS (L106e's TDR findings): the error text for a VK_ERROR_DEVICE_LOST, which on Windows is almost always the
+// display driver's watchdog (a TDR reset, Display event 4101) and on a card the desktop shares is often a card out of VRAM. It keeps
+// the old words ("Vulkan device lost during <op>") and, when the budget extension answered, adds the VRAM budget and usage the
+// process saw at create() against the same read taken when the device was lost, so a reader can tell "another program grew" from "the
+// work was slow". `at_create` / `now` are null when no read exists (a context made before the builder, or a failed read).
+[[nodiscard]] inline std::string device_lost_text(std::string_view op, std::string_view device, const MemoryBudget* at_create,
+                                                  const MemoryBudget* now) {
+    (void)device;
+    (void)at_create;
+    (void)now;
+    return "Vulkan device lost during " + std::string(op);  // RED stub: the old text
+}
+
 }  // namespace spade::compute
