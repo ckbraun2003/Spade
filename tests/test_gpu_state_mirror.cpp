@@ -1149,7 +1149,7 @@ TEST(StateMirrorAdmit, TheStandardShapeHoldsOneLayoutOfThirtyBindingsAndThePushB
 
 // Host-only (VRAM ledger wiring, gap 2): the mirror's pre-allocation list left out "bodies.previous", the device-only buffer
 // create() makes when the previous-tick poses are kept. Asked to keep them, the list carries it, one "bodies" array in size and
-// LAST (create() makes it after the walk's entries); asked not to, the list is what it was.
+// LAST in the list; asked not to, the list is what it was.
 TEST(StateMirrorAdmit, KeepingThePreviousPosesAddsOneBodiesSizedBufferToTheListAndOtherwiseNothing) {
     const StepShape shape = scratch_test_shape();
     const auto def = spade::compute::admit_shape_for(shape, 64);

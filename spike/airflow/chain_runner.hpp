@@ -193,6 +193,10 @@ struct RunnerDesc {
     // buffer's own bytes in the one staging allocation, counts in runner_budget_bytes at create(), and is refused
     // there by that name. 0 (the default): no readback may be recorded, and every present caller is unchanged.
     uint64_t readback_bytes = 0;
+    // The name of the VRAM share this runner reserves on ctx's ledger (compute/vram_ledger.hpp) for its total, device + staging
+    // + readback, after the check above has passed and before it allocates; released when the runner is destroyed. A second
+    // runner on the same context must name itself: the ledger refuses a name already held. A ledger belongs to one context, so
+    // runners on SEPARATE contexts do not sum.
     std::string vram_share = "flow solver";
 };
 
@@ -375,6 +379,7 @@ private:
     uint32_t workgroup_size_ = 0;
     compute::DeviceLimits limits_{};
     std::string device_name_;
+    compute::VramShare vram_share_;  // reserved at create(), released in destroy(); declared before the ledger's owner goes
     compute::MemoryBudget budget_at_create_{};  // read once the buffers exist, so its usage counts this runner's own
     bool budget_known_ = false;
 

@@ -249,6 +249,10 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
         !ok) {
         return refuse(ok.error());
     }
+    // The ledger: do the shares held on this context, with this one, fit? After the check above (every refusal that exists keeps
+    // its text) and before anything is allocated. Held as a local until create() succeeds; a failure releases it.
+    Result<compute::VramShare> share = ctx.reserve_vram(desc.vram_share, total);
+    if (!share) return refuse(share.error());
 
     // ---- Allocation. Each step records what it made, so destroy() frees a
     // partial runner on any failure below. --------------------------------
@@ -419,6 +423,7 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     }
     self->budget_at_create_ = ctx.memory_budget();
     self->budget_known_ = true;
+    self->vram_share_ = std::move(*share);
     return self;
 }
 

@@ -118,7 +118,8 @@ struct DerivedBufferShape {
 // bindings, every walk entry and every derived buffer with its bytes, and the push block. The kernels and dispatches
 // are the recorder's to add (it alone knows the grid widths); admit() is called on the whole before the first
 // vkCreate*. The errors are the ones create() would have returned for the same shape (a count past a uint32 slot
-// index, a bad scratch binding), so nothing is refused here that create() accepted before.
+// index, a bad scratch binding), so nothing is refused here that create() accepted before. `keep_previous_poses` (create()'s
+// argument of the same name) adds "bodies.previous", the device buffer the previous-tick poses live in, to the list.
 [[nodiscard]] Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t workgroup_size,
                                                  bool keep_previous_poses = false);
 
