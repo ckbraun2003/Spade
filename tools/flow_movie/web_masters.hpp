@@ -188,6 +188,18 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
 }
 
+// --nasa and --nasa-cloud (L106i, O113): S2 and S8 only; a --window run is for the cloud and only when it streams (as --particles is), or is a --web-still redraw
+// of kept frames (either look); the particle looks are a different look. Empty when the flags are fine, else the refusal's words.
+[[nodiscard]] inline std::string nasa_refusal(bool s2_or_s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool cloud) {
+    if (!s2_or_s8) return "--nasa is for S2 and S8";
+    if (window && !still_redraw && !(stream && cloud)) {
+        return cloud ? "--nasa-cloud is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)"
+                     : "--nasa is not for a --window run (a --window --web-still redraw from a run's kept frames is; --nasa-cloud streams a --window run)";
+    }
+    if (particles || particles_preview) return "--nasa and the particle looks are different looks: use one";
+    return {};
+}
+
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
 [[nodiscard]] inline std::string volume_with_particles_refusal(bool volume, bool particles, bool particles_preview) {
@@ -361,16 +373,16 @@ struct Drone {
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
         {"phantom3_class", "library/drones/phantom3_class.model.yaml", "camera-quadcopter", "Camera quadcopter",
-         "the camera quadcopter", "a 1.3 kg camera quadcopter (generated from published dimensions)",
+         "the camera quadcopter", "a 1.28 kg camera quadcopter (generated from published dimensions)",
          // Larger in the frame, in the upper third (aimed 0.17 m below it); the wake dissolves over its last 0.22 m before the
          // frame's bottom edge, and over 0.10 m before the box's side faces (its disc edges are 0.09 m from them).
          // The slow inflow above the rotors fades out over the 5 cm above their plane, so the drone reads in front of it; seen
          // from 25 degrees above, so its body is not hidden behind the wake of its near rotors (the floor is out of frame: the fade).
          Framing{0.34f, 0.17f, 0.50f, 0.34f, 0.38f, 0.60f, 0.10f, 0.01f, 0.06f, 25.0f}, 0.004f, 0.2963f},  // its proxy radius
-        // The X500's flow model (Physics' tool data, found from the assets directory; 13 in rotors reach 0.35 m from the axis, so a
+        // The X500's flow model (Physics' tool data, found from the assets directory; 10 in rotors reach 0.37 m from the axis, so a
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
-         "the open-source quadcopter", "a 2 kg open-source quadcopter with 10 inch rotors (published dimensions)",
+         "the open-source quadcopter", "a 1.63 kg open-source quadcopter with 10 inch rotors (its parts' masses summed)",
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
     }};
     return table;
@@ -716,7 +728,10 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false) {
+    // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high. Either way no figures.
+    const std::string colour = cloud ? "Colour shows vorticity (the local spin of the air), blue low to magenta high, and the picture carries no vorticity or speed figures. "
+                                     : "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
@@ -726,13 +741,13 @@ struct DeliveryGuard {
     if (c.scene == Scene::quad) {
         t += "Stand-in: the reference quad is four actuator discs (uniform thrust and swirl), with no airframe, in "
              "still air; the run is inviscid, so the shear layers break down to the grid scale. ";
-        t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
+        t += colour;
         t += "The wake is a single run on the device of record, not a measurement.";
     } else if (c.scene == Scene::d1_still) {
         t += "Stand-in: the reference quad's rigid parts as solids in the flow at " + cell + " mm, its rotors as " + rotors + ", the drone held level at its hover throttle in still air. This is a "
              "visualisation of the air, not a prediction of the thrust, power or attitude of a real quad. ";
         t += "The wake below the quad has not been measured against a downwash record. ";
-        t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
+        t += colour;
         t += "The fluid is stepped by the GPU solver (GpuFluid) at " + step_ms + " ms with a Smagorinsky subgrid viscosity "
              "(Cs 0.17), which damps the grid-scale motion the " + cell + " mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
@@ -747,7 +762,7 @@ struct DeliveryGuard {
                  ? "Pressure is a coefficient against the inflow's pressure, read one cell off each wall (first "
                    "order in the cell size); its sign on the arms' tops has not been measured. "
                  : "The wake below the quad has not been measured against a downwash record. ";
-        t += "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
+        t += colour;
         t += "The fluid is stepped by the GPU solver (GpuFluid) at " + step_ms + " ms with a Smagorinsky subgrid viscosity "
              "(Cs 0.17), which damps the grid-scale motion the " + cell + " mm cells cannot hold: a single run on the device of "
              "record, not a measurement.";
@@ -779,8 +794,11 @@ struct DeliveryGuard {
 
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
-[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume) {
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false) {
     const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (cloud && !particles && c.id == "S8") {  // --nasa-cloud: the vorticity as a soft cloud
+        return "The vorticity of the air round the reference quad's rigid parts and four " + rotors + ", as a soft cloud from blue (low) to magenta (high), in a slow orbit.";
+    }
     if (particles && c.id == "S8") {
         return "Air points carried by the flow round the reference quad's rigid parts and four " + rotors +
                (volume ? ", over the relative-speed volume of the wake" : "") + ", in a slow orbit.";
@@ -809,6 +827,7 @@ struct CaptionInput {
     bool lines = false;         // --lines: the rotors are actuator lines with the fitted blade polar, not discs
     bool particles = false;     // --particles / --particles-preview: the film shows air points carried by the flow
     bool volume = false;        // --volume: ... over the speed volume (without it the points stand alone and no volume is claimed)
+    bool cloud = false;         // --nasa-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -820,11 +839,11 @@ struct CaptionInput {
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }

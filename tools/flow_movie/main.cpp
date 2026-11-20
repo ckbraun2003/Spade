@@ -2490,6 +2490,7 @@ struct WebFilming {
         in.lines = !opt.lines_prop.empty();
         in.particles = opt.particles || opt.particles_preview;
         in.volume = opt.volume;
+        in.cloud = opt.nasa_cloud;
         in.step_us = opt.step_us.value_or(200u);
         in.commit = build_identity();
         in.date_utc = utc_now();
@@ -2641,12 +2642,10 @@ struct WebFilming {
         plan.lines = opt.lines_prop;
     }
     if (opt.nasa) {
-        const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--nasa is for S2 and S8"
-                          : (opt.window_to > 0.0 && !opt.web_still_only) ? "--nasa is not for a --window run (a --window --web-still redraw from a run's kept frames is)"
-                          : opt.particles || opt.particles_preview ? "--nasa and the particle looks are different looks: use one"
-                                                                  : "";
-        if (*why != '\0') {
-            std::fprintf(stderr, "flow_movie: %s\n", why);
+        if (const std::string why = web::nasa_refusal(clip->id == "S2" || clip->id == "S8", opt.window_to > 0.0, opt.web_still_only, opt.stream,
+                                                      opt.particles, opt.particles_preview, opt.nasa_cloud);
+            !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
         }
         auto q = parse_q_look(opt.q_look);
