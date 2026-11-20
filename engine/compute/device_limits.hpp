@@ -205,10 +205,22 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
 // work was slow". `at_create` / `now` are null when no read exists (a context made before the builder, or a failed read).
 [[nodiscard]] inline std::string device_lost_text(std::string_view op, std::string_view device, const MemoryBudget* at_create,
                                                   const MemoryBudget* now) {
-    (void)device;
-    (void)at_create;
-    (void)now;
-    return "Vulkan device lost during " + std::string(op);  // RED stub: the old text
+    std::string out = "Vulkan device lost during " + std::string(op) + " on device '" + std::string(device) +
+                      "': on Windows this is usually the display driver's watchdog (a TDR reset, Display event 4101), which a "
+                      "card short of VRAM or a very long submit provokes";
+    if (at_create == nullptr || now == nullptr) return out;
+    if (at_create->source != MemoryBudget::Source::ext || now->source != MemoryBudget::Source::ext) {
+        return out + "; no VK_EXT_memory_budget on this device, so other programs' VRAM use is not visible (the budget assumed is "
+                     "half the device-local heap, " + std::to_string(now->budget) + " bytes)";
+    }
+    out += "; VRAM budget " + std::to_string(now->budget) + " bytes (VK_EXT_memory_budget): " + std::to_string(at_create->usage) +
+           " bytes in use at create, " + std::to_string(now->usage) + " bytes when it was lost";
+    if (now->usage > at_create->usage) {
+        out += ", " + std::to_string(now->usage - at_create->usage) + " bytes more (another program took VRAM after the run began)";
+    } else {
+        out += ", no more than at create (the VRAM did not grow, so look at the work itself)";
+    }
+    return out;
 }
 
 }  // namespace spade::compute

@@ -339,6 +339,9 @@ private:
     [[nodiscard]] Result<void> check_transfer(uint32_t buffer, std::size_t bytes, const char* op) const;
     [[nodiscard]] Result<void> run_transfer(bool to_device, uint32_t buffer, std::size_t bytes) const;
     [[nodiscard]] Result<void> submit_and_wait(VkCommandBuffer cmd, const char* op) const;
+    // The error for a VK_ERROR_DEVICE_LOST in `op`: compute::device_lost_text() with the VRAM budget read when the buffers were made
+    // against one read now (the physical device's, so it answers after a loss).
+    [[nodiscard]] Error device_lost_error(const char* call, const char* op) const;
 
     struct Buffer {
         std::string name;
@@ -371,6 +374,8 @@ private:
     uint32_t workgroup_size_ = 0;
     compute::DeviceLimits limits_{};
     std::string device_name_;
+    compute::MemoryBudget budget_at_create_{};  // read once the buffers exist, so its usage counts this runner's own
+    bool budget_known_ = false;
 
     std::vector<Buffer> buffers_;
     VkBuffer staging_ = VK_NULL_HANDLE;
