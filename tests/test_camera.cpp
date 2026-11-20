@@ -40,7 +40,7 @@ namespace {
     r.blur_samples = 1;
     r.aa_samples = 1;
     r.exposure_gain = 1.0f;
-    r.cull_mask = 0xFBu;  // everything but the carrying body's own bit (bit 2)
+    r.cull_mask = 0xFBu;  // every group but the carrier's own bit (bit 2)
     r.channels = 0;
     return r;
 }

@@ -10,8 +10,10 @@
 // DECIDED WITH RENDERING (Phase 3.1, 2026-11-19):
 //   * lens_kind is a uint32 KIND (0 pinhole, 1 KB4; above is reserved and refused), never a table index. The intrinsics themselves (fx, fy, cx, cy, k1..k4)
 //     are IN THE ROW, so a changed lens is a changed row; k1..k4 are zero for a pinhole.
-//   * cull_mask is the camera's TLAS cull mask: eight bits, the bodies' slots it can see (bit 7 is every static, bits 0..6 a body's slot in its env). The
-//     default is 0xFF with the carrying body's own bit cleared (self-visibility off). It is NOT a channel selector.
+//   * cull_mask is the camera's TLAS cull mask: eight bits that are GROUPS, not bodies (Rendering's revision): bit 7 the statics (gates, ground, static
+//     distractors), bit 6 every body with no bit of its own, bits 0..5 the bodies that need hiding on their own (camera carriers and any the caller names;
+//     a seventh own-bit body in one env is refused, naming the limit of 6, by the code that places instances, not here). The default is 0xFF with the
+//     carrier's own bit cleared (self-visibility off). It is NOT a channel selector.
 //   * mode is colour or grey. The CHANNEL SET (image, id, corners, depth later) is a separate field that waits on Rendering's Phase 1 list: `channels` is a
 //     named field that must stay 0 until then, and a non-zero value is refused.
 // ---------------------------------------------------------------------------
