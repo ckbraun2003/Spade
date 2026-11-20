@@ -74,26 +74,77 @@ public:
     // or a name already held.
     [[nodiscard]] Result<VramShare> reserve(std::string_view name, uint64_t bytes, const MemoryBudget& budget,
                                             uint64_t reserve_bytes, std::string_view device) {
-        (void)name;
-        (void)bytes;
-        (void)budget;
-        (void)reserve_bytes;
-        (void)device;
-        return VramShare{};  // RED stub: holds nothing, checks nothing
+        if (name.empty()) return std::unexpected(Error{Code::invalid_argument, "a VRAM share needs a name"});
+        if (bytes == 0) {
+            return std::unexpected(
+                Error{Code::invalid_argument, "VRAM share '" + std::string(name) + "' asks for 0 bytes"});
+        }
+        for (const Share& s : shares_) {
+            if (s.name == name) {
+                return std::unexpected(Error{Code::invalid_argument,
+                                             "VRAM share '" + std::string(name) + "' is already held (" +
+                                                 std::to_string(s.bytes) + " bytes); release it before reserving again"});
+            }
+        }
+        const uint64_t held = reserved();
+        const uint64_t limit = budget.budget > reserve_bytes ? budget.budget - reserve_bytes : 0;
+        // held + bytes <= limit, written so it cannot overflow.
+        if (bytes > limit || held > limit - bytes) {
+            const bool ext = budget.source == MemoryBudget::Source::ext;
+            return std::unexpected(Error{
+                Code::capacity_exceeded,
+                "VRAM share '" + std::string(name) + "' asks for " + std::to_string(bytes) +
+                    " bytes, over what the device's budget leaves: the shares held are " +
+                    (shares_.empty() ? std::string("none") : list_()) + " (" + std::to_string(held) +
+                    " bytes in all), so this would make " + std::to_string(held + bytes) +
+                    ", over the limit " + std::to_string(limit) + " = budget " + std::to_string(budget.budget) +
+                    " - reserve " + std::to_string(reserve_bytes) + ", from " +
+                    (ext ? std::string("VK_EXT_memory_budget")
+                         : std::string("half the device-local heap (no VK_EXT_memory_budget)")) +
+                    ", on device '" + std::string(device) + "'"});
+        }
+        VramShare share;
+        share.ledger_ = this;
+        share.id_ = next_id_++;
+        share.bytes_ = bytes;
+        shares_.push_back(Share{share.id_, std::string(name), bytes});
+        return share;
     }
 
     // The sum of the shares held, in bytes.
-    [[nodiscard]] uint64_t reserved() const noexcept { return 0; }
+    [[nodiscard]] uint64_t reserved() const noexcept {
+        uint64_t sum = 0;
+        for (const Share& s : shares_) sum += s.bytes;
+        return sum;
+    }
 
     // The shares held, in the order they were reserved.
     [[nodiscard]] std::span<const Share> shares() const noexcept { return shares_; }
 
-    // One line: "world set 1073741824, flow 4294967296, camera 1073741824 bytes (6442450944 in all)".
-    [[nodiscard]] std::string describe() const { return {}; }
+    // One line: "world set 1073741824, flow solver 4294967296, camera 1073741824 bytes (6442450944 in all)".
+    [[nodiscard]] std::string describe() const {
+        return (shares_.empty() ? std::string("no shares") : list_()) + " bytes (" + std::to_string(reserved()) +
+               " in all)";
+    }
 
 private:
     friend class VramShare;
-    void release_(uint64_t id) noexcept { (void)id; }
+    void release_(uint64_t id) noexcept {
+        for (auto it = shares_.begin(); it != shares_.end(); ++it) {
+            if (it->id == id) {
+                shares_.erase(it);
+                return;
+            }
+        }
+    }
+    [[nodiscard]] std::string list_() const {
+        std::string out;
+        for (const Share& s : shares_) {
+            if (!out.empty()) out += ", ";
+            out += s.name + " " + std::to_string(s.bytes);
+        }
+        return out;
+    }
     std::vector<Share> shares_;
     uint64_t next_id_ = 1;
 };

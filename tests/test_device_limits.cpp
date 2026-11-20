@@ -260,7 +260,8 @@ TEST(VramLedger, BadAsksAreInvalidArgumentsNotCapacityErrors) {
 TEST(VramLedger, WithoutTheExtensionTheBudgetIsHalfTheHeapAndTheRefusalSaysSo) {
     VramLedger ledger;
     const MemoryBudget half{.budget = 4 * kGiB, .usage = 0, .heap = 0, .source = MemoryBudget::Source::half_heap};
-    ASSERT_TRUE(reserve(ledger, "world set", 3 * kGiB, half).has_value());
+    const auto world = reserve(ledger, "world set", 3 * kGiB, half);  // kept: a dropped handle releases its share
+    ASSERT_TRUE(world.has_value());
     // The sum is what the ledger holds; the (blind) usage of the heap plays no part.
     const auto camera = reserve(ledger, "camera", kGiB, half);
     ASSERT_FALSE(camera.has_value());
