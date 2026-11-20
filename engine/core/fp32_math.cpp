@@ -1,5 +1,6 @@
 #include "core/fp32_math.hpp"
 
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -521,6 +522,99 @@ float cos32(float x) noexcept {
         default:
             return sin_kernel(red.r);
     }
+}
+
+}  // namespace spade::math
+
+namespace spade::math {
+
+// ===========================================================================
+// atan32 (Spade L111: the camera's KB4 forward projection needs atan(r), r >= 0, under SR-14's no-libm rule)
+// ===========================================================================
+//
+// METHOD. atan is odd, so the work is on a = |x| and the sign is put back last by its bit (+-0 keeps its sign, and oddness is exact). Then:
+//   a <= 2^-13:      atan(a) = a - a^3/3 + ..., the correction is under 2^-27 a, so the nearest float is a itself;
+//   a > 1:           atan(a) = pi/2 - atan(1/a), t = 1/a in [0, 1);   otherwise t = a;
+//   t > tan(pi/8):   atan(t) = pi/4 + atan(u), u = (t - 1) / (t + 1), |u| <= tan(pi/8) = 0.4142;
+//   atan(u) = u + u^3 P(u^2), P the Taylor series -1/3 + w/5 - ... + w^9/21 (the next term is below 1e-10 of u at the largest |u|), Horner in w = u^2.
+// The base angle (0, pi/4 or pi/2) is a pinned hi + lo pair of floats, and the result is bhi + (blo + s * atan(u)): one rounding at the end, the pair keeping
+// the base to about 2^-49 relative. Every coefficient is an exact rational and the irrationals are hex floats (the header's note on constant spelling).
+// Infinity gives the float nearest pi/2, a NaN that NaN. For |x| >= 2^126, 1/a is subnormal, and a flush-to-zero mode changes t but not the result (t
+// is below 2^-126 against a blo of 2^-25, so it rounds away either way).
+//
+// ACCURACY: within 2 ulp (tests/test_fp32_math.cpp, kAtanUlpBound), measured against the double reference spade::math::atan2_arith at full float density
+// around every reduction point and at a stride across the whole float line; the worst measured is 2.000 at x = 0.414214, just above tan(pi/8), where t - 1 is
+// inexact (t < 0.5). Moving that threshold to 0.5 makes t - 1 exact (Sterbenz) at the cost of three more coefficients: do it if a caller needs 1 ulp.
+namespace {
+
+constexpr float kPio4Hi = 0x1.921fb6p-1f;
+constexpr float kPio4Lo = -0x1.777a5cp-26f;
+constexpr float kPio2Hi = 0x1.921fb6p+0f;
+constexpr float kPio2Lo = -0x1.777a5cp-25f;
+constexpr float kTanPio8 = 0x1.a8279ap-2f;  // tan(pi/8) = 0.41421356...; where the second reduction starts (any value near it would do)
+
+constexpr float kAt1 = -1.0f / 3.0f;
+constexpr float kAt2 = 1.0f / 5.0f;
+constexpr float kAt3 = -1.0f / 7.0f;
+constexpr float kAt4 = 1.0f / 9.0f;
+constexpr float kAt5 = -1.0f / 11.0f;
+constexpr float kAt6 = 1.0f / 13.0f;
+constexpr float kAt7 = -1.0f / 15.0f;
+constexpr float kAt8 = 1.0f / 17.0f;
+constexpr float kAt9 = -1.0f / 19.0f;
+constexpr float kAt10 = 1.0f / 21.0f;
+
+}  // namespace
+
+float atan32(float x) noexcept {
+    const uint32_t bits = std::bit_cast<uint32_t>(x);
+    const uint32_t sign = bits & 0x80000000u;
+    const float a = std::bit_cast<float>(bits & 0x7FFFFFFFu);
+    if (a != a) return x;  // a NaN, that NaN
+    float r = 0.0f;
+    if (a == std::numeric_limits<float>::infinity()) {
+        r = kPio2Hi;
+    } else if (a <= 0x1.0p-13f) {
+        r = a;
+    } else {
+        const bool inverted = a > 1.0f;
+        const float t = inverted ? 1.0f / a : a;  // in (0, 1]
+        const bool reduced = t > kTanPio8;
+        const float u = reduced ? (t - 1.0f) / (t + 1.0f) : t;
+        const float w = u * u;
+        float p = kAt10;
+        p = p * w + kAt9;
+        p = p * w + kAt8;
+        p = p * w + kAt7;
+        p = p * w + kAt6;
+        p = p * w + kAt5;
+        p = p * w + kAt4;
+        p = p * w + kAt3;
+        p = p * w + kAt2;
+        p = p * w + kAt1;
+        const float at = u + (u * w) * p;  // atan(u)
+        // atan(t) = bt + at with bt = pi/4 when reduced, else 0; atan(a) = pi/2 - atan(t) when inverted
+        float bhi = 0.0f;
+        float blo = 0.0f;
+        float s = 1.0f;
+        if (!inverted) {
+            if (reduced) {
+                bhi = kPio4Hi;
+                blo = kPio4Lo;
+            }
+        } else {
+            s = -1.0f;
+            if (reduced) {  // pi/2 - (pi/4 + at) = pi/4 - at
+                bhi = kPio4Hi;
+                blo = kPio4Lo;
+            } else {
+                bhi = kPio2Hi;
+                blo = kPio2Lo;
+            }
+        }
+        r = bhi + (blo + s * at);
+    }
+    return std::bit_cast<float>(std::bit_cast<uint32_t>(r) | sign);
 }
 
 }  // namespace spade::math
