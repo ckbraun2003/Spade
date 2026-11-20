@@ -575,7 +575,8 @@ VulkanContext::VulkanContext(VulkanContext&& other) noexcept
       int64_supported_(other.int64_supported_),
       memory_budget_ext_(other.memory_budget_ext_),
       report_(std::move(other.report_)),
-      device_name_(std::move(other.device_name_)) {}
+      device_name_(std::move(other.device_name_)),
+      vram_ledger_(std::move(other.vram_ledger_)) {}
 
 VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
     if (this != &other) {
@@ -593,8 +594,13 @@ VulkanContext& VulkanContext::operator=(VulkanContext&& other) noexcept {
         memory_budget_ext_ = other.memory_budget_ext_;
         report_ = std::move(other.report_);
         device_name_ = std::move(other.device_name_);
+        vram_ledger_ = std::move(other.vram_ledger_);
     }
     return *this;
+}
+
+Result<VramShare> VulkanContext::reserve_vram(std::string_view name, uint64_t bytes) {
+    return vram_ledger_->reserve(name, bytes, memory_budget(), kMirrorVramReserve, device_name_);
 }
 
 MemoryBudget VulkanContext::memory_budget() const {

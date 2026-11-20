@@ -28,6 +28,7 @@
 #include <volk.h>
 
 #include "compute/backend.hpp"
+#include "compute/vram_ledger.hpp"
 #include "core/error.hpp"
 
 namespace spade::compute {
@@ -127,6 +128,13 @@ public:
     // arithmetic.
     [[nodiscard]] MemoryBudget memory_budget() const;
 
+    // THE SHARES (camera design section 12, item 3): the world set, the flow solver and the camera each reserve a stated
+    // share before they allocate, and the ledger refuses a sum over this device's budget (compute/vram_ledger.hpp says what
+    // that is and is not). reserve_vram() checks against memory_budget() read fresh, with kMirrorVramReserve left free, and
+    // names this device in the refusal. A share must be released before the context is destroyed.
+    [[nodiscard]] VramLedger& vram_ledger() noexcept { return *vram_ledger_; }
+    [[nodiscard]] Result<VramShare> reserve_vram(std::string_view name, uint64_t bytes);
+
     // True iff this context created a VK_EXT_debug_utils messenger (S6 Task
     // 5): a debug build where VK_LAYER_KHRONOS_validation AND the
     // VK_EXT_debug_utils instance extension were both present at create()
@@ -174,6 +182,8 @@ private:
     bool memory_budget_ext_ = false;
     DeviceReport report_;
     std::string device_name_;
+    // Behind a pointer so a share's address of its ledger survives the context being moved.
+    std::unique_ptr<VramLedger> vram_ledger_ = std::make_unique<VramLedger>();
 };
 
 // Probe-only: true iff a Vulkan loader is present, it enumerates at least one
