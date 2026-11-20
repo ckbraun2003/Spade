@@ -1,6 +1,6 @@
 # Camera sensor: a batched ray-traced camera for KAT (design, for KAT's review before any code)
 
-**Owner:** Rendering. **Status:** approved by KAT (6521d65d), 2026-11-19; section 14 closed with KAT's answers and the lead's rulings on items 8, 9 and 10; the core spike has its go (section 8). Nothing here is built. **Decided by Cameron (KAT D189):** Spade builds KAT's mass camera renderer, modelled on HyperDrone/HyperLux, after the L106 windows and before LiDAR. **Not decided here:** what the spike (section 8) measures.
+**Owner:** Rendering. **Status:** approved by KAT (6521d65d), 2026-11-19; section 14 closed with KAT's answers and the lead's rulings on items 8, 9 and 10; the spike and its 6a variants are done (section 8a; `rendering/camera-spike`). Nothing here is built. **Decided by Cameron (KAT D189):** Spade builds KAT's mass camera renderer, modelled on HyperDrone/HyperLux, after the L106 windows and before LiDAR. **Not decided here:** what the spike (section 8) measures.
 
 **Inputs:** KAT's answers to the six asks (section 1, quoted from the lead's relay); Eschmann and Loianno, *HyperDrone: Simulation-to-Reality Transfer at Millions of Frames per Second*, arXiv 2610.28950 v1 (CoRL 2026), read as the HTML version, and the repo `github.com/rl-tools/hyperdrone` (MIT), read only; `01-techniques-and-channels.md` (camera, channels, grades), `02-scene-and-appearance.md`, `03-verification.md`, `00-decisions.md` (`RS3`, `RS4`, `RND-3`, `RND-4`, `A2`, `A5`, `A6`), `../core/2026-11-16-lidar-sensor-design.md`, `engine/sensors/kinds.hpp`, `engine/compute/`.
 
@@ -54,10 +54,10 @@ The render scene is already split into draw items, one per union leaf or whole C
 
 **Instances.** The top level (TLAS) holds one instance per body or placed static: a transform, a BLAS reference, an 8-bit mask, and a 24-bit custom index that points at the instance's label, material and sub-program. A static gate placed at a different pose in each env is the same BLAS with a different transform, so per-env memory is the instance records (64 bytes each in the structure), not geometry.
 
-**How the 128 envs share the structure (OPEN, the spike decides):**
+**How the 128 envs share the structure (settled by the spike, section 8a: E, with L as the fallback):**
 - **L, a lattice TLAS.** One TLAS holds every env's instances, each env translated to its own cell of a virtual lattice (rays carry the same offset); one build and one trace dispatch a frame, no descriptor array. Exact if the cells are farther apart than the ray's far limit, and the lattice stays small enough for fp32 (1,024 envs on a 32 x 32 grid of 100 m cells is about 3.2 km, and a hardware transform error of about 0.2 mm at that range; the spike measures it against the 1e-4 epsilon).
 - **E, a TLAS an env.** An array of structures, a ray selects its own. Exact with no precision cost, but needs a descriptor array of acceleration structures and 128 small builds in one batched call.
-- Statics change only at reset, so their BLAS and the static part of the TLAS are built then; only moving instances are updated each frame. The lean is **L**, if the precision holds.
+- Statics change only at reset, so their BLAS and the static part of the TLAS are built then; only moving instances are updated each frame. **Decided: E**, a TLAS an env, with L as the fallback: measured, E traces 12 to 13% faster and is exact at any range, and L's depth error at its far cell (3.1 km at 1,024 envs) is 0.49 mm against E's 0.11 mm. E needs a **runtime-sized** array of acceleration structures in production (the spike compiled fixed 128- and 1,024-env shader variants).
 
 **Shared with the LiDAR.** The scene description and its device image are the same object; a camera and a LiDAR are two ray generators and two result writers over it. The LiDAR design (`../core/2026-11-16-lidar-sensor-design.md`) today marches the SDF with its own 30-line loop inside `world/`, because `sensors/` includes no `render/` header. **Settled (open item 8, Core's conditions, L111):** the ray scene is a small library under `engine/` that links `world` and `render`, named for the ray scene with no camera type in it; `sensors` reach it through device passes, never a `render/` include; its CPU reference is plain C++ with no Vulkan header in a CPU-only build; and the LiDAR keeps its `world/` march until it needs meshes, when it moves over in the same change with that march as its CPU reference. The LiDAR is not designed here; it is a reason to keep the scene image free of any camera type.
 
@@ -78,7 +78,7 @@ The render scene is already split into draw items, one per union leaf or whole C
 - **Exposure.** A per-camera linear gain applied before clamp, so a later "exposure jitter" is a seeded gain a frame (the HyperDrone brightness scale), not a different pipeline.
 - **Noise.** Off by default (the LiDAR's rule, L78b: the SDK adds noise where the learner wants it). When on, a signal-dependent Gaussian (variance a * I + b, I the exposed value) from a **counter-based generator keyed by (seed, camera, capture tick, pixel, channel)** through `core/rng.hpp`'s stream rules, so the noise is independent of dispatch order, thread count and batch size, and a replay or restore repeats it. The CPU reference computes the same integer hash, so the noise matches exactly wherever the shaded value does. The Gaussian transform uses no `log` or `cos`; a rational approximation or a sum of uniforms, with its error stated.
 - **Motion blur and the shutter.** Global shutter only (KAT's T265; no rolling shutter, as in HyperDrone). A frame averages N rays across the exposure window, N a per-camera integer (1 off; HyperDrone trains at 2). Sample k uses the camera pose at time t_cap - shutter_fraction x frame_period x (1 - k/(N-1)), interpolated between the published poses (position linear, orientation slerp done with the engine's fp32 kernels). **v1 blurs by camera motion only**: the scene is posed at the capture tick, so a moving body other than the camera's own is not blurred (a TLAS update a sample is the later price). KAT (answer 3): P1 has no moving bodies in view, so camera-motion blur is enough.
-- **Anti-aliasing.** 1 ray a pixel by default; 2x2 is a knob. Rays a pixel = AA x blur samples, and every cost number below says which.
+- **Anti-aliasing.** 1 ray a pixel by default; 2x2 is a knob (the spike's kernel offers 1 or 2). Rays a pixel = AA x blur samples, and every cost number says which. **KAT's knob defaults:** colour AA 2x2 + blur 2. Fisheye never AA and blur both at full rate: the preferred default is a per-env draw, half the envs AA 2x2 and half blur 2 to 4 (kept inside D190's randomisation, and the spike measures the mean held, section 8a); if the counts can only be set per batch, the fisheye default is blur 2 with AA off; AA + blur 2 on the fisheye is eval-only.
 - **Self-visibility.** A per-camera mask removes the carrying body (and chosen others) from the camera's view, through the instance mask bit, so a T265 with an arm in view and an FPV with none are the same code.
 
 ## 6. Labels: instance ids and keypoints
@@ -172,6 +172,40 @@ The core spike alone is under the 30. The proposal is two approvals: the core sp
 
 **Budget rule (proposed).** The camera pass at P1 gets a stated share of the iteration (the target in ask 1 gives about 4.8 s of render per camera type at 12,000/s against an iteration of about 10 s today, a ceiling of about 20 s). A camera budget of at most 1 GB of VRAM at 128 envs is approved by KAT (answer 11).
 
+## 8a. Spike results (2026-11-19, RTX 3060 Ti 8 GB, driver 572.83)
+
+Branch `rendering/camera-spike` (`tools/camera_spike`, with its README holding every command and number). The spike has its own small Vulkan setup because the engine's context enables none of the needed extensions; shaders are Slang 2026.14.1 (no Vulkan SDK or glslang on the box). Kernel time is a GPU timestamp pair; wall adds pose computation and submit-to-wait. All figures are **means over whole 75-frame camera periods** (per-frame cost swings about 2x as the camera passes gates, so a single frame is not a number to quote). 128 envs, one ray a pixel, unless stated. Total GPU time for the spike and the 6a variants: about 5.7 minutes against the 25 and 15 estimated.
+
+**First risk gone.** Slang compiles the real kernel with `RayQuery`: a procedural box candidate committed from an in-shader CSG sphere-trace, hardware triangles, an array of TLAS indexed by env, uint8 and uint16 storage; it runs on the 3060 Ti.
+
+| Run | kernel ms | renders/s kernel (wall) | Target 12,000 |
+|---|---|---|---|
+| V1 colour 320x180 pinhole, light scene | 1.36 | 94,000 (82,000) | clears about 7x |
+| V2 grey 384x384 KB4 fisheye, light scene | 2.72 | 47,000 (40,000) | clears about 3.5x |
+| colour AA 2x2 / blur 2 / blur 4 | 5.05 / 2.51 / 5.04 | 25,000 / 51,000 / 25,000 | clears |
+| colour AA 2x2 + blur 2 (KAT's colour default) | 10.0 | 12,800 (12,100) | clears, barely |
+| fisheye AA 2x2 / blur 2 / blur 4 | 10.7 / 5.30 / 10.8 | 11,900 / 24,000 / 11,900 | at the line |
+| fisheye AA 2x2 + blur 2 | 21.4 | 6,000 | misses |
+| primary rays | | 5 to 7 G a second | the scale check (0.7 to 2.1 G) was low |
+
+**A denser scene lowers them (V8, V9).** The light scene had about 5 instances an env. With a base of 10 gates and 20 distractors and a dense case of 20 and 64, untextured: colour 1.39 and 1.47 ms, fisheye 2.77 and 3.02 ms. **The colour default (AA 2x2 + blur 2) on the dense scene reads 11,159 renders/s untextured and 10,811 textured at 128 envs: it misses the 12,000 target by about 10%.** The consequence for the budget is small (58,000 renders an iteration is 5.3 s at 10,800 a second against the 4.8 s planned and the 20 s ceiling), but the 12,000 line is not met on a realistic track with that default, and KAT should know (open item 15).
+
+**Textures (V8, E structure, procedural pool of 128 at 512x512 with mips, no hardware sampler).** Textured against untextured kernel time: colour base +0.8%, colour dense +6.5%, fisheye base +6.7%, fisheye dense +6.9%, colour AA 2x2 + blur 2 dense +3.2%. A filtered sample asks the pool for 32 bytes, so the scenes request 100 to 130 GB/s before caching (the card has 448 GB/s), and they cost 1 to 7% of the kernel: **traversal, not texture bandwidth, is the bottleneck** (the bandwidth figure is a count, not a counter reading: there are no DRAM counters here). The pool is 170.7 MiB of VRAM; a second episode's textures cost +2%. **The filter matches its CPU reference exactly:** 9.44 M samples over 4 texture kinds, 7 footprints from 0.5 to 700 texels and the repeat edge, all 28,311,552 channel values equal, none off by one (the plan was "at most 1 level in 255"). Box mapping takes the dominant axis (no three-way blend), the torus mesh is untextured, and the fp64 oracle was not extended to textured frames or distractors.
+
+**Structure (V4, V9).** At 1,024 envs: E 9.5 ms against L 10.5 ms (light scene), TLAS build 1.48 against 0.22 ms, moving-instance update 0.37 against 0.06 ms, structure plus scratch under 4 MB either way; with 75 to 85 instances an env, E 11.7 ms against L 13.4 ms, TLAS 24.0 against 22.1 MiB, build 2.2 against 1.3 ms. A per-env TLAS is about 23 KB. Going from 5 to 75 instances an env costs E +31% at 128 envs and +23% at 1,024. The device allows 1,048,576 acceleration structures in a descriptor set, so an array of per-env TLAS is no obstacle.
+
+**Per-env sample counts (V10, KAT's question).** Envs are dispatched env-major, so a warp stays inside one env and its loop count is uniform. Fisheye, base scene, textured, mean of 5 processes: uniform AA 2x2 11.26 ms, uniform blur 3 8.56 ms, mean of the two 9.91 ms, **mixed batch (half AA 2x2, half blur 2 to 4) 9.82 ms, -0.9% against the mean** (a grouped layout, first half AA and second half blur, +0.3%); colour 0.0%. **Per-env AA and blur in one batch cost what their rays cost, far under KAT's 10% line, so per-env stays possible and the API need not be per batch.** One colour mixed process read +19% in all three repeats and could not be reproduced in nine later processes (4.46 to 4.71 ms); the card may have been shared that minute. The comparator is blur 3, since the 2, 3, 4 blur half averages 3.
+
+**Memory (V4, V5).** The output buffer dominates: 35 MB at 128 envs colour, 281 MB at 1,024; process VRAM delta 69 MB and 317 MB (`VK_EXT_memory_budget`). So the 1 GB camera budget at 1,024 envs is governed by output size, with the pool's 170.7 MiB and under 30 MiB of structures beside it. **Export (V5):** no measured cost (kernel 1.27 against 1.34 ms colour, 2.63 against 2.64 ms fisheye, exported against plain); the device offers `OPAQUE_WIN32` for buffers and for timeline semaphores (both exportable and importable); an imported buffer read back byte-equal; a signal on the imported semaphore was visible on the original in about 10 us; `deviceUUID` and `deviceLUID` are reported. The CUDA import is KAT's and untested.
+
+**Determinism (V6) and the oracle (V7).** The same scene and tick give equal bytes within a process, after a full rebuild of buffers, structures and pipeline, and across two processes (36.9 MB compared), for colour L, fisheye L and colour E: acceleration-structure builds were reproducible on this driver, on one card. Against the fp64 CPU oracle (untextured scene): 0 interior id mismatches and 0 to 9 on about 9,000 silhouette pixels; depth within 0.3 mm near and 1.7 mm on the fisheye; the ground-palette check passes on all 21,004 and 23,530 ground pixels (a worst single pixel of 18 levels, once).
+
+**Sample frames (V11)** for KAT's feature-tracker check: 60 frames each of the P1 colour (320x180 RGB) and the grey fisheye (384x384) from three envs with different textures, uncompressed PNGs (57 MB), with `samples.txt` (intrinsics, k1..k4, per-frame tick and pose), under `Footage\Spade\2026-11-19\camera-spike-samples`.
+
+**What the numbers change in the design.** (1) E over L, with a runtime-sized TLAS array. (2) The fisheye is the only config that bites: AA 2x2 or blur 4 is its ceiling and both together is eval-only; the per-env draw holds the mean. (3) VRAM is governed by the output size at 1,024 envs. (4) Quote means over a whole camera period. (5) The colour default misses 12,000 on a dense track (open item 15).
+
+**Not done.** The CUDA import; a moving body's blur (only a moving mesh instance's TLAS update was priced); a textured oracle; three-way box blending.
+
 ## 9. Determinism, bands and tests
 
 - **CPU reference (`reference`):** a CPU ray tracer over the same scene description, in fp64: the existing `sphere_trace` for SDF shapes (`render/raymarch`) plus a triangle BVH on the CPU. It is the oracle and the source of goldens (CPU only, two-platform promotion, `L4`). It shares the lens table, the shading functions and the noise hash with the GPU path, so what differs is traversal, not definitions.
@@ -187,7 +221,7 @@ Sizes are my estimates in realm sessions (S = one, M = two to four, L = five or 
 
 | Phase | What | Owner | Size | Gate |
 |---|---|---|---|---|
-| 0. Spike | Section 8 (with the textured and distractor variants), standalone in the bench tree | Rendering | M, plus S for the 6a variants | The numbers go to the lead and KAT before Phase 2 is designed in detail. Miss of 12,000 a second: design review (`A6`) |
+| 0. Spike | Section 8 (with the textured and distractor variants), standalone in the bench tree | Rendering | M, plus S for the 6a variants | **Done** (section 8a): about 5.7 GPU minutes; P1 clears 12,000 on the light scene, the colour default misses it on a dense track (open item 15) |
 | 1. Camera model and CPU reference | Lens table (pinhole, KB4), rays, the CPU ray tracer, image, id and corner channels, goldens, the `atan` question | Rendering | M | CPU goldens on two platforms; lens tests against fp64 |
 | 2. The GPU technique | Device scene image, BLAS and TLAS (L or E), batched dispatch, shading port, bands, colour oracle, the announced fallback | Rendering | L | Banded agreement; the P1 throughput from the spike, held |
 | 3. The sensor kind | Row, sample, rate divider, capture-tick stamp, capacities, pool, C ABI | Core, with Rendering | M | Needs Phase 1's channel list; `kinds.hpp`'s rule (row before tag) |
@@ -248,3 +282,4 @@ The card is shared by the physics step (and the flow solver), the camera, and KA
 | 12 | Distractors | Render-only. Section 6a |
 | 13 | `RND-13` | Written (`00-decisions.md`), with one pointer line each in `RS6` and `RS15` |
 | 14 | Cube-map skies | None now |
+| 15 | The colour default (AA 2x2 + blur 2) on a dense track reads about 10,800 to 11,200 renders/s at 128 envs, under the 12,000 line; the iteration budget still holds (5.3 s of render against 20 s). Accept the line as a proxy, or choose a lighter colour default | KAT |
