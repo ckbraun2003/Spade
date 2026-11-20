@@ -286,24 +286,71 @@ TEST(VramLedger, DescribeListsTheSharesInOneLine) {
 // read taken when the device was lost, so a reader can tell another program growing from the work being slow.
 // ---------------------------------------------------------------------------
 
-TEST(DeviceLostText, KeepsTheOldWordsNamesTheDeviceAndSaysWhatTheVramDid) {
-    const MemoryBudget at_create{.budget = 7 * kGiB, .usage = kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
-    const MemoryBudget now{.budget = 7 * kGiB, .usage = 6 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+namespace {
+
+// VK_EXT_memory_budget's two numbers move for different reasons: `usage` is what THIS process holds in the heap, `budget` is what the
+// OS lets it hold, and the budget FALLS when another program takes VRAM. So a lost device's text compares both.
+[[nodiscard]] MemoryBudget ext_budget(uint64_t budget, uint64_t usage) {
+    return {.budget = budget, .usage = usage, .heap = 0, .source = MemoryBudget::Source::ext};
+}
+
+}  // namespace
+
+TEST(DeviceLostText, KeepsTheOldWordsNamesTheDeviceAndPrintsBothBudgetsAndBothUsages) {
+    const MemoryBudget at_create = ext_budget(7 * kGiB, kGiB);
+    const MemoryBudget now = ext_budget(7 * kGiB, 6 * kGiB);
     const std::string text = device_lost_text("airflow runner: submit", kDevice, &at_create, &now);
     for (const std::string_view needle :
-         {"Vulkan device lost during airflow runner: submit", "device 'Test Device 9000'", "TDR", "at create", "when it was lost",
-          "7516192768", "1073741824", "6442450944", "5368709120 bytes more", "VK_EXT_memory_budget"}) {
+         {"Vulkan device lost during airflow runner: submit", "device 'Test Device 9000'", "TDR", "VK_EXT_memory_budget",
+          "budget 7516192768 at create, 7516192768 when lost", "this process held 1073741824 at create, 6442450944 when lost",
+          "this process holds 5368709120 bytes more than at create"}) {
         EXPECT_TRUE(contains(text, needle)) << "missing '" << needle << "' in: " << text;
     }
+    // The budget did not fall and the process is inside it: neither of the other two clauses.
+    EXPECT_FALSE(contains(text, "another program")) << text;
+    EXPECT_FALSE(contains(text, "over its budget")) << text;
     EXPECT_EQ(text.find('\n'), std::string::npos) << "one line";
 }
 
-TEST(DeviceLostText, AUsageThatDidNotGrowSaysSoAndOnlyTheWorkIsLeftToBlame) {
-    const MemoryBudget at_create{.budget = 7 * kGiB, .usage = 3 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
-    const MemoryBudget now{.budget = 7 * kGiB, .usage = 3 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
+// The Vantage-sandbox case: another program takes VRAM, so the BUDGET falls while this process's usage stays flat.
+TEST(DeviceLostText, AFallingBudgetWithFlatUsageNamesAnotherProgram) {
+    const MemoryBudget at_create = ext_budget(7 * kGiB, 3 * kGiB);
+    const MemoryBudget now = ext_budget(4 * kGiB, 3 * kGiB);
     const std::string text = device_lost_text("submit", kDevice, &at_create, &now);
-    EXPECT_TRUE(contains(text, "no more than at create")) << text;
+    for (const std::string_view needle :
+         {"budget 7516192768 at create, 4294967296 when lost", "this process held 3221225472 at create, 3221225472 when lost",
+          "the budget fell by 3221225472 bytes (another program took VRAM after the run began)"}) {
+        EXPECT_TRUE(contains(text, needle)) << "missing '" << needle << "' in: " << text;
+    }
+    EXPECT_FALSE(contains(text, "bytes more than at create")) << "the process did not grow: " << text;
+    EXPECT_FALSE(contains(text, "look at the work itself")) << "the wrong conclusion for this case: " << text;
+    EXPECT_FALSE(contains(text, "over its budget")) << text;
+}
+
+// Usage over the budget: the driver pages to system memory, the usual way a submit passes the 2 s watchdog.
+TEST(DeviceLostText, UsageOverTheBudgetNamesPagingAndWhatEachSideDid) {
+    const MemoryBudget at_create = ext_budget(7 * kGiB, 3 * kGiB);
+    const MemoryBudget now = ext_budget(4 * kGiB, 5 * kGiB);
+    const std::string text = device_lost_text("submit", kDevice, &at_create, &now);
+    for (const std::string_view needle :
+         {"the budget fell by 3221225472 bytes (another program took VRAM after the run began)",
+          "this process holds 2147483648 bytes more than at create",
+          "over its budget by 1073741824 bytes (the driver pages to system memory, the usual way a submit passes the 2 s watchdog)"}) {
+        EXPECT_TRUE(contains(text, needle)) << "missing '" << needle << "' in: " << text;
+    }
+}
+
+TEST(DeviceLostText, NothingChangedSaysSoAndOnlyTheWorkIsLeftToBlame) {
+    const MemoryBudget same = ext_budget(7 * kGiB, 3 * kGiB);
+    const std::string text = device_lost_text("submit", kDevice, &same, &same);
+    EXPECT_TRUE(contains(text, "neither the budget nor this process's use changed, so look at the work itself")) << text;
     EXPECT_FALSE(contains(text, "bytes more")) << text;
+    EXPECT_FALSE(contains(text, "another program")) << text;
+    // A usage that FELL (and a budget that held) is not a change for the worse either.
+    const MemoryBudget fell = ext_budget(7 * kGiB, 2 * kGiB);
+    const std::string eased = device_lost_text("submit", kDevice, &same, &fell);
+    EXPECT_TRUE(contains(eased, "did not fall and this process's use did not grow")) << eased;
+    EXPECT_FALSE(contains(eased, "neither the budget nor this process's use changed")) << eased;
 }
 
 TEST(DeviceLostText, WithoutTheBudgetExtensionTheUsageIsNotVisibleAndTheTextSaysSo) {
