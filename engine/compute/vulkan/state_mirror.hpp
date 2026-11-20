@@ -142,8 +142,13 @@ public:
     // set, which builds NO set-1 descriptor set). Each is bound from the buffers whose NAMES are in
     // compute/set_one_bindings.hpp (a walk array, resident or not; a scratch that names no set-0 binding), or from the
     // configuration image at StepShape::config_binding. A binding no buffer provides is invalid_argument naming it.
+    //
+    // `keep_previous_poses` (BackendDesc::device_pose_view, camera design section 12 item 1) also makes ONE device-only
+    // buffer the size of the registered "bodies" array, "bodies.previous": the StepRecorder copies the poses into it at the
+    // start of every tick. refused (invalid_argument) when the walk has no "bodies" array.
     [[nodiscard]] static Result<std::unique_ptr<StateMirror>> create(
-        VulkanContext& ctx, const StepShape& shape, std::span<const std::vector<uint32_t>> set1_subsets = {});
+        VulkanContext& ctx, const StepShape& shape, std::span<const std::vector<uint32_t>> set1_subsets = {},
+        bool keep_previous_poses = false);
 
     ~StateMirror();
     StateMirror(const StateMirror&) = delete;
@@ -172,6 +177,21 @@ public:
     // How many descriptor sets the mirror built: 1 (set 0, the state set), plus one per distinct set-1 subset a kernel of
     // the schedule names (stage 7 Tasks B1 and C2; Review Focus 2): a set with no set-1 user builds none.
     [[nodiscard]] uint32_t descriptor_set_count() const noexcept { return 1u + static_cast<uint32_t>(set1_.size()); }
+
+    // The device buffers behind the body poses (compute/vulkan/pose_view.hpp's DevicePoseView is built from these): the
+    // registered "bodies" array and its slot-to-world map, and "bodies.previous" (VK_NULL_HANDLE unless create() was asked
+    // for it). Handles stay valid for the mirror's life.
+    struct PoseBuffers {
+        VkBuffer bodies = VK_NULL_HANDLE;
+        VkDeviceSize bodies_bytes = 0;
+        VkBuffer previous = VK_NULL_HANDLE;
+        VkBuffer slot_to_world = VK_NULL_HANDLE;
+        VkDeviceSize slot_to_world_bytes = 0;
+        uint32_t stride = 0;
+        uint32_t world_count = 0;
+        uint32_t capacity_per_world = 0;
+    };
+    [[nodiscard]] PoseBuffers pose_buffers() const noexcept;
 
     // The set-1 descriptor sets, in the order of create()'s `set1_subsets`.
     [[nodiscard]] std::span<const SetOneSet> set_one_sets() const noexcept { return set1_; }
@@ -324,6 +344,9 @@ private:
         bool has_binding = false;
         bool resident = false;  // a device-resident walk entry: device-only, moved by upload_resident()/readback_resident()
     };
+
+    // "bodies.previous" (create()'s keep_previous_poses): device-only, no staging twin, never bound to a shader.
+    Entry previous_poses_;
 
     [[nodiscard]] Entry* find(const std::string& name) noexcept;
     [[nodiscard]] const Entry* find(const std::string& name) const noexcept;
