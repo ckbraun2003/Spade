@@ -370,7 +370,6 @@ Result<ShowcaseTrim> showcase_trim(const AnalysisCase& c, const vehicles::ModelT
 
 Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::ModelType& model,
                                const LiveFluidMaker& fluid, const LiveLines* lines, const Controls* rotors_at) {
-    (void)rotors_at;  // RED stub
     if (lines != nullptr) {
         const auto refuse = [](const std::string& why) {
             return std::unexpected(Error{Code::invalid_argument, "live lines: " + why});
@@ -414,6 +413,18 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
             !at_rest) {
             return std::unexpected(Error{at_rest.error().code, "the propulsion: " + at_rest.error().context});
         }
+    }
+    // L106e: the rotors start at the speed `rotors_at` commands (the arm rule and the chain at the case's density and charge, as
+    // step() forms it), the same for every rotor, instead of at rest and spooling up. Refused here, by the throttle map's own text,
+    // so a bad throttle never builds a run. Without rotors there is nothing to start; null, the default, is the run at rest.
+    float start_omega = 0.0f;
+    if (rotors_at != nullptr && propulsion && !model.rotors.empty()) {
+        const Result<double> duty = vehicles::armed_duty(rotors_at->armed, rotors_at->throttle, propulsion->idle);
+        if (!duty) return std::unexpected(Error{duty.error().code, "the rotors' start controls: " + duty.error().context});
+        const Result<vehicles::DutyCommand> cmd =
+            vehicles::rotor_omega_for_duty(propulsion->chain, *duty, c.fluid.density, propulsion->soc);
+        if (!cmd) return std::unexpected(Error{cmd.error().code, "the rotors' start controls: " + cmd.error().context});
+        start_omega = cmd->omega_cmd;
     }
     auto impl = std::make_unique<Impl>();
     impl->resolved = resolved;
@@ -629,12 +640,14 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
     impl->sim = std::make_unique<Simulation>(std::move(*sim));
     const Result<ModelTypeId> id = impl->sim->register_model(model);
     if (!id) return std::unexpected(id.error());
-    const Result<VehicleRef> vehicle = impl->sim->spawn(0, *id, VehicleSpawn{});
+    VehicleSpawn spawn_at;
+    spawn_at.rotor_omega = start_omega;  // the shaft speed every rotor spawns at and its first command
+    const Result<VehicleRef> vehicle = impl->sim->spawn(0, *id, spawn_at);
     if (!vehicle) return std::unexpected(vehicle.error());
     impl->vehicle = *vehicle;
     if (Result<void> r = impl->sim->flush_structural(); !r) return std::unexpected(r.error());
-    impl->state.rotor_omega.assign(model.rotors.size(), 0.0f);
-    impl->omega_cmd.assign(model.rotors.size(), 0.0f);
+    impl->state.rotor_omega.assign(model.rotors.size(), start_omega);
+    impl->omega_cmd.assign(model.rotors.size(), start_omega);
     impl->rows.resize(model.rotors.size());
     impl->psi.assign(model.rotors.size(), 0.0f);
     impl->discs.resize(model.rotors.size());
@@ -894,7 +907,7 @@ const BodyState& LiveRun::body() const noexcept { return impl_->held; }
 
 std::span<const float> LiveRun::blade_azimuth() const noexcept { return impl_->psi; }
 
-double LiveRun::line_thrust() const { return 0.0; }  // RED stub
+double LiveRun::line_thrust() const { return impl_->device ? impl_->device->line_thrust() : 0.0; }
 
 const std::string& LiveRun::azimuth_refused() const noexcept { return impl_->azimuth_refused; }
 
