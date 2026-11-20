@@ -194,10 +194,11 @@ struct RunnerDesc {
     // there by that name. 0 (the default): no readback may be recorded, and every present caller is unchanged.
     uint64_t readback_bytes = 0;
     // The name of the VRAM share this runner reserves on ctx's ledger (compute/vram_ledger.hpp) for its total, device + staging
-    // + readback, after the check above has passed and before it allocates; released when the runner is destroyed. A second
-    // runner on the same context must name itself: the ledger refuses a name already held. A ledger belongs to one context, so
-    // runners on SEPARATE contexts do not sum.
-    std::string vram_share = "flow solver";
+    // + readback, after the check above has passed and before it allocates; released when the runner is destroyed. Empty (the
+    // default): "flow solver", or "flow solver 2", "flow solver 3" ... when that name is held, so several runners (a fluid
+    // beside a second fluid) on one context each hold their own. A name given is taken as it is, and the ledger refuses one
+    // already held. A ledger belongs to one context, so runners on SEPARATE contexts do not sum.
+    std::string vram_share{};
 };
 
 // One readback of a chain: after the chain's last dispatch, bytes [src_offset, src_offset + bytes) of buffer

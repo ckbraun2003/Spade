@@ -154,7 +154,8 @@ TEST(GpuVramWiring, ARunnerThatTheHeldSharesLeaveNoRoomForIsRefusedByNameBeforeA
 }
 
 // A runner holds "flow solver" for its total (device + staging) while it lives and gives it back when it is destroyed; a second
-// runner on the same context must name itself (RunnerDesc::vram_share), or the ledger refuses the repeated name.
+// unnamed runner on the same context holds "flow solver 2" (two fluids on one context each hold their own); a name given is taken
+// as it is, and the ledger refuses one already held.
 TEST(GpuVramWiring, ARunnerHoldsFlowSolverForItsTotalAndReleasesItAndASecondOneNamesItself) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     auto ctx = make_context();
@@ -170,18 +171,23 @@ TEST(GpuVramWiring, ARunnerHoldsFlowSolverForItsTotalAndReleasesItAndASecondOneN
     ASSERT_TRUE(first.has_value()) << first.error().context;
     EXPECT_EQ(share_bytes(ctx->vram_ledger(), "flow solver"), runner_total(buffers)) << ctx->vram_ledger().describe();
 
-    auto repeated = make(nullptr);
+    auto repeated = make("flow solver");
     ASSERT_FALSE(repeated.has_value()) << "two runners held the same share name";
     EXPECT_EQ(repeated.error().code, Code::invalid_argument);
     EXPECT_TRUE(contains(repeated.error().context, "already held")) << repeated.error().context;
     EXPECT_EQ(ctx->vram_ledger().shares().size(), 1u) << "the refused runner left a share: " << ctx->vram_ledger().describe();
 
-    auto second = make("flow solver B");
+    auto second = make(nullptr);
     ASSERT_TRUE(second.has_value()) << second.error().context;
     EXPECT_EQ(ctx->vram_ledger().shares().size(), 2u) << ctx->vram_ledger().describe();
+    EXPECT_EQ(share_bytes(ctx->vram_ledger(), "flow solver 2"), runner_total(buffers)) << ctx->vram_ledger().describe();
+    auto named = make("fluid B");
+    ASSERT_TRUE(named.has_value()) << named.error().context;
+    EXPECT_EQ(share_bytes(ctx->vram_ledger(), "fluid B"), runner_total(buffers));
+    named->reset();
     first->reset();
     EXPECT_EQ(share_bytes(ctx->vram_ledger(), "flow solver"), 0u) << "the destroyed runner still holds its share";
-    EXPECT_EQ(share_bytes(ctx->vram_ledger(), "flow solver B"), runner_total(buffers));
+    EXPECT_EQ(share_bytes(ctx->vram_ledger(), "flow solver 2"), runner_total(buffers));
     second->reset();
     EXPECT_TRUE(ctx->vram_ledger().shares().empty()) << ctx->vram_ledger().describe();
 }

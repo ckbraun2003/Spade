@@ -137,6 +137,19 @@ void record_entry_barrier(VkCommandBuffer cmd, VkPipelineStageFlags dst_stage, V
                          &barrier, 0, nullptr, 0, nullptr);
 }
 
+// The share name a runner reserves under: the one it was given, or the first of "flow solver", "flow solver 2", ... not held.
+[[nodiscard]] std::string share_name(const compute::VramLedger& ledger, const std::string& asked) {
+    if (!asked.empty()) return asked;
+    const auto held = [&ledger](const std::string& name) {
+        return std::ranges::any_of(ledger.shares(), [&name](const compute::VramLedger::Share& s) { return s.name == name; });
+    };
+    if (!held("flow solver")) return "flow solver";
+    for (uint32_t n = 2;; ++n) {
+        std::string name = "flow solver " + std::to_string(n);
+        if (!held(name)) return name;
+    }
+}
+
 [[nodiscard]] uint64_t saturating_add(uint64_t a, uint64_t b) noexcept {
     return a > UINT64_MAX - b ? UINT64_MAX : a + b;
 }
@@ -251,7 +264,7 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     }
     // The ledger: do the shares held on this context, with this one, fit? After the check above (every refusal that exists keeps
     // its text) and before anything is allocated. Held as a local until create() succeeds; a failure releases it.
-    Result<compute::VramShare> share = ctx.reserve_vram(desc.vram_share, total);
+    Result<compute::VramShare> share = ctx.reserve_vram(share_name(ctx.vram_ledger(), desc.vram_share), total);
     if (!share) return refuse(share.error());
 
     // ---- Allocation. Each step records what it made, so destroy() frees a
