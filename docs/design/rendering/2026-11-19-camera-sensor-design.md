@@ -246,6 +246,24 @@ Phases 1 and 3 can run in parallel after Phase 0. The editor window (Interface) 
 6. **The labels and materials**: a per-object label (uint16) in the world file or the API, and material resolution as the render scene does it today; Core owns the world-file keys, Rendering the meaning (`RS5`).
 7. **Seed plumbing and the appearance set (D190):** the world seed and a per-env episode counter reaching the draw at reset; a render-only appearance set in the world file or the API (material pool, texture pool entries as procedural recipes (image entries later from Spade's library), sky pool, light ranges, distractor templates, keep-clear volumes); the appearance record readable by the caller; `capacities` for texture bytes, sky entries, and `camera_instances` an env. Render-only, so no change to a world that does not use it.
 
+### 11a. The channel set (Phase 1 addendum, 2026-11-20, for Core's `CameraSensorRow::channels`)
+
+Core's row holds `channels` as a reserved word that must stay 0 until this list (camera.hpp). The list, as a bit set in that uint32:
+
+| Bit | Channel | One camera's frame | Notes |
+|---|---|---|---|
+| 0 | `image` | uint8, C x H x W, **C = 1 for `mode` grey, 3 for colour** | the shaded, exposed, sRGB-encoded (or linear, a flag) picture; section 5 |
+| 1 | `instance_id` | uint16, H x W | 0 = no labelled object (sky, ground, unlabelled); the nearest hit's label; section 6 |
+| 2 | `keypoints` | per group: P points x (u, v, visible) float32, plus the group's label uint16 | G groups and P points a group are **world capacities** (below), not row fields; KAT's gates are G x 4; every byte written, absent or off-image = visible 0 and u, v 0; section 6 |
+| 3 | `depth` | float32, H x W | **reserved, refused in v1**: the hit record keeps the distance, so adding it later is a write, not a redesign (the LiDAR shares it) |
+| 4 to 31 | (normals, flow, ...) | | reserved, refused; a bit is named here before any code uses it |
+
+- **v1 known mask = 0x7** (`image | instance_id | keypoints`). Core's validation: a bit outside the known mask is refused naming `channels`; an active camera (`kind` != none) with `channels` == 0 is refused (it would write nothing); a zero row stays inert and valid. `keypoints` also needs the world's `keypoint_groups` > 0 (else refused, naming the capacity). `cull_mask` and `mode` are unchanged and are not channel selectors.
+- **New capacities, as `cameras` and `camera_pixels` are** (default 0, allocate nothing, fold into the config hash only when used): `keypoint_groups` (G) and `keypoints_per_group` (P, 4 for KAT's gates); a pair, as the existing two are. `camera_pixels` stays "the pixels one frame of all the world's cameras may hold" (sum of width x height over the cameras), the budget the pool is sized from: bytes a pixel are 3 or 1 for `image` and 2 for `instance_id`.
+- **A batch is a type.** The output tensors are `[N, ...]` over the cameras of one type, so every camera in one batch shares `lens_kind`, intrinsics, `width`, `height`, `mode` and `channels`; Rendering's pool refuses a mismatch naming the field. Core's per-row validation needs no change for this; the rule is applied where cameras are grouped.
+- **Pool slot layout** (what the stamp's `pool_slot` indexes): one tensor a channel, in bit order, each starting on a 256-byte boundary: `image [N, C, H, W]`, `instance_id [N, H, W]`, `keypoints_uv [N, G, P, 3]` float32 then `keypoint_labels [N, G]` uint16. The stamp (96 B, as merged) is unchanged; it needs no channel field because the row's `channels` is the camera's.
+- **Core's part**: the meaning of the bits as named constants (`camera_channel::image`, `instance_id`, `keypoints`, `known`) beside `camera_mode`, the validation above in `camera_row_issue`, and the two capacities. **Rendering's part**: the output sizes and layout, the refusal on a mixed batch, and everything the bits select.
+
 ## 12. What Rendering needs from Physics (one-GPU scheduling)
 
 The card is shared by the physics step (and the flow solver), the camera, and KAT's CUDA learner. Vulkan and CUDA work on one device are time-sliced by the driver; they do not run concurrently by default, so the order is a design input.
