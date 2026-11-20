@@ -558,9 +558,9 @@ Result<std::unique_ptr<VulkanContext>> VulkanContext::create(const BackendDesc& 
     // WHAT THE CALLER ASKED FOR (camera design section 12, item 2), resolved against what the device offers, before any queue
     // is picked or any device created: the step's timeline implies the timeline semaphore; a feature the device lacks is a
     // refusal by name, never a silent drop. Nothing asked: the empty set, and the device below is created exactly as it was.
-    FeatureSet requested = desc.device_features;
-    if (desc.step_timeline) requested.add(DeviceFeature::timeline_semaphore);
-    const Result<FeatureSet> enabled = resolve_features(requested, report.optional_supported, properties.deviceName);
+    FeatureSet asked_features = desc.device_features;
+    if (desc.step_timeline) asked_features.add(DeviceFeature::timeline_semaphore);
+    const Result<FeatureSet> enabled = resolve_features(asked_features, report.optional_supported, properties.deviceName);
     if (!enabled) {
         if (debug_messenger != VK_NULL_HANDLE) vkDestroyDebugUtilsMessengerEXT(instance, debug_messenger, nullptr);
         vkDestroyInstance(instance, nullptr);
