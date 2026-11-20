@@ -417,6 +417,8 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->fence_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkCreateFence"));
     }
+    self->budget_at_create_ = ctx.memory_budget();
+    self->budget_known_ = true;
     return self;
 }
 
@@ -504,6 +506,7 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
     info.commandBufferCount = 1;
     info.pCommandBuffers = &cmd;
     if (VkResult r = vkQueueSubmit(queue_, 1, &info, fence_); r != VK_SUCCESS) {
+        if (r == VK_ERROR_DEVICE_LOST) return std::unexpected(device_lost_error("vkQueueSubmit", op));
         return std::unexpected(map_vk_error(r, std::string("vkQueueSubmit (") + op + ")"));
     }
     const VkResult wait = vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs);
@@ -513,10 +516,20 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
     }
     if (wait != VK_SUCCESS) {
         in_flight_ = true;
+        if (wait == VK_ERROR_DEVICE_LOST) return std::unexpected(device_lost_error("vkWaitForFences", op));
         return std::unexpected(map_vk_error(wait, std::string("vkWaitForFences (") + op + ")"));
     }
     ++waits_;
     return {};
+}
+
+Error ChainRunner::device_lost_error(const char* call, const char* op) const {
+    // The old words stay first ("Vulkan device lost during airflow runner: <call> (<op>)"); the budget is the physical device's
+    // query, which still answers after a loss.
+    const compute::MemoryBudget now = ctx_ != nullptr ? ctx_->memory_budget() : compute::MemoryBudget{};
+    const bool have = budget_known_ && ctx_ != nullptr;
+    return Error{Code::internal, compute::device_lost_text(std::string("airflow runner: ") + call + " (" + op + ")", device_name_,
+                                                          have ? &budget_at_create_ : nullptr, have ? &now : nullptr)};
 }
 
 // ---------------------------------------------------------------------------
