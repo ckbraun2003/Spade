@@ -357,6 +357,69 @@ TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
     expect_map_colour(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
 }
 
+// A SOLID IN THE VOLUME: the cells within `half` of z = 0 hold no data (a part's solid cells); the air beyond reads `above` on the +z side and `below` on the -z
+// side, in x and y within [-2, 2] m (cells of 0.25 m, so the slab's cells are the four centred on z = 0.125 and -0.125 at half 0.3).
+[[nodiscard]] spade::FlowVolume solid_slab_volume(float half, float above, float below) {
+    return spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [=](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = std::fabs(p.z) < half ? std::numeric_limits<float>::quiet_NaN() : (p.z > 0.0f ? above : below);
+        return c;
+    });
+}
+
+// A DRAWN POINT INSIDE A SOLID (the pressure film, O124): the drawn part is the detailed mesh, the solid the flow saw is a proxy, so a drawn surface can fall inside
+// the solid's cells, where there is no pressure. The one-cell offset then reads no-data and the surface keeps its shaded colour. With a search the read goes on
+// outward along the normal (half a cell at a time, up to search_cells more) to the first FLUID sample and takes the seen side's pressure there; with none in
+// reach it is still no-data and keeps its shaded colour: no value is invented.
+TEST(RenderFlowField, ADrawnPointInsideASolidReadsTheNearestFluidAlongTheNormal) {
+    const spade::FlowVolume volume = solid_slab_volume(0.3f, 1.0f, -1.0f);
+    const auto colour_with = [&](float search) {
+        RenderScene scene = quad_scene();  // at z = 0: inside the slab; seen from z = 5
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
+        colouring.walls_only = true;
+        colouring.offset_cells = 1.0f;
+        colouring.search_cells = search;
+        scene.flow_surface_colouring = colouring;
+        scene.statics[0].flow_wall = true;
+        return rgb(draw(scene), 16, 16);
+    };
+    RenderScene plain = quad_scene();
+    const glm::vec3 shaded = rgb(draw(plain), 16, 16);
+    EXPECT_EQ(colour_with(0.0f), shaded) << "no search: the solid's no-data keeps the shaded colour";
+    expect_map_colour(colour_with(2.0f), 1.0f, "searching outward: the fluid beyond the solid on the seen side, +1");
+    EXPECT_EQ(colour_with(0.25f), shaded) << "a reach that stops inside the solid invents no value";
+
+    const spade::FlowVolume all_solid = solid_slab_volume(10.0f, 1.0f, -1.0f);
+    RenderScene scene = quad_scene();
+    FlowSurfaceColouring colouring{&all_solid, sheet_colours()};
+    colouring.offset_cells = 1.0f;
+    colouring.search_cells = 4.0f;
+    scene.flow_surface_colouring = colouring;
+    EXPECT_EQ(rgb(draw(scene), 16, 16), shaded) << "no fluid cell in reach: the shaded colour, no invented value";
+}
+
+// The search is finite and never negative, as the offset is.
+TEST(RenderFlowField, ASearchReachIsRefusedOutsideItsRange) {
+    const spade::FlowVolume volume = pressure_volume(glm::vec3(-1.0f), 8, 8, 8);
+    TransferFunction colours;
+    colours.quantity = FlowQuantity::pressure;
+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), -0.5f, 4.5f, std::numeric_limits<float>::infinity()}) {
+        FlowSurfaceColouring c{&volume, colours};
+        c.offset_cells = 1.0f;
+        c.search_cells = bad;
+        const auto valid = spade::render::validate_flow_surface_colouring(c);
+        ASSERT_FALSE(valid.has_value()) << bad;
+        EXPECT_NE(valid.error().context.find("search"), std::string::npos) << valid.error().context;
+    }
+    FlowSurfaceColouring fine{&volume, colours};
+    fine.offset_cells = 1.0f;
+    fine.search_cells = spade::render::kMaxSurfaceOffsetCells;
+    EXPECT_TRUE(spade::render::validate_flow_surface_colouring(fine).has_value());
+    FlowSurfaceColouring none{&volume, colours};
+    none.search_cells = 2.0f;  // offset 0: the search starts from the wall itself
+    EXPECT_FALSE(spade::render::validate_flow_surface_colouring(none).has_value()) << "a search needs an offset to start from";
+}
+
 // The C_p view (apply_view) reads where R2.4 chose: one cell off the wall, so
 // a thin wall or a sheet shows its seen side's pressure, never the mean across
 // it (Physics: sample each side separately).

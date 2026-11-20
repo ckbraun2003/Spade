@@ -2303,6 +2303,48 @@ TEST_F(GpuGlRenderer, CpOffASphereMatchesTheCpu) {
     EXPECT_LE(band.differing, kSphereDiffering);
 }
 
+// The pressure film's read past a solid (O124), on GL as on the CPU: a drawn quad inside a slab of no-data cells takes the seen side's pressure from the first
+// fluid sample outward along its normal (search_cells), where one cell off it the read is no-data. GL's frame is the CPU's, within one level.
+TEST_F(GpuGlRenderer, ADrawnPointInsideASolidReadsThePastTheSolidLikeTheCpu) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = std::fabs(p.z) < 0.3f ? std::numeric_limits<float>::quiet_NaN() : (p.z > 0.0f ? 1.0f : -1.0f);
+        return c;
+    });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.5f, -1.5f, 0.0f), glm::vec3(1.5f, -1.5f, 0.0f), glm::vec3(1.5f, 1.5f, 0.0f), glm::vec3(-1.5f, 1.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{}};
+    DrawItem item{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)};
+    item.flow_wall = true;
+    scene.statics.push_back(item);
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    const std::vector<uint8_t> shaded = cpu_rgba(scene, camera, comparable_options());
+    spade::render::FlowSurfaceColouring colouring{&volume, colours};
+    colouring.walls_only = true;
+    colouring.offset_cells = 1.0f;
+    colouring.search_cells = 2.0f;
+    scene.flow_surface_colouring = colouring;
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    const ChannelDiff painted = channel_diff(shaded, cpu);
+    EXPECT_GT(painted.differing, kPixels / 50u) << "the CPU paints the quad from past the solid";
+    const ChannelDiff band = channel_diff(cpu, gl);
+    EXPECT_LE(band.worst, 1) << renderer_->renderer_name();
+    EXPECT_EQ(band.over_two, 0u);
+}
+
 // Plan step 7g: a renderer asked to compile its flow programs in the
 // background says when they are ready. Until then it refuses a flow layer
 // as compiling (L6); once ready, within two minutes even on a cold driver
