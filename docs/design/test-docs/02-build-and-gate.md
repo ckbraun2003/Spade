@@ -90,6 +90,15 @@ These are Cameron's token decisions of 2026-10-21, relayed by Kat's lead (backlo
 
 A red leg is reported per realm with the failing `file:line`, and each realm fixes its own code. Measured times and peak memory are in `07-status.md`.
 
+## The autopilot tests (label `fc`)
+
+The tests that need a real autopilot (PX4 SITL in a container, Interface's pinned image `spade-px4-sitl:v1.17.0`) are the `FcLive*` suites. They carry the ctest label `fc` and not `spade` (`TD-17`), so `scripts\test.ps1` and the Docker leg never run them. The plan, bars and cadence are `plans/2026-11-21-fc-tests.md`.
+
+- **How they run:** `scripts\fc-run.ps1`, as one queued job, never bare: `--class test --floor-gb 4`, a ticket with `-fc-` in it (`spade-testdocs-fc-<what>-<sha>`), and a `--limit-s` of at least 300 s plus the run, because `scripts\docker-up.ps1` waits up to 300 s for a cold daemon. It wraps Interface's `scripts\px4-sitl.ps1` (`-RunId`, `-HostAddress`, `-OutDir`, `-Stop`; one container, `spade-px4-<RunId>`; it never stops Docker Desktop) and does not replace it.
+- **What it does:** `docker-up.ps1`; the container for the run; `ctest -L fc` in the build tree (`--no-tests=error`) with `SPADE_FC_RUN_ID`, `SPADE_FC_HOST_ADDR` and `SPADE_FC_OUT_DIR` set; the container stopped whatever the tests did; `build-fc\<run id>\summary.txt`. The tests find the autopilot through those variables, and with them unset a test skips by name ("no autopilot run").
+- **The verdict:** exit 0 only when ctest passed, at least one test ran and none skipped. A failed test is exit 1. No image, or a skipped test, is exit 2 (`fc run: NOT GREEN`), with every test that did not run named: a skip never counts toward green (`TD-13`'s reading). The development box's gate is not green without them once the first flight exists.
+- **Proved without Docker:** `tests/fc_run_test.ps1` (ctest `FcRun.RunsTheAutopilotTestsAsOneJob`) runs the script against a fake `docker-up.ps1`, a fake `px4-sitl.ps1` and a fake `ctest`, and `FcLabel.LiveSuitesAreOutsideTheSpadeSet` asks ctest for the real `spade` and `fc` sets.
+
 ## The gcc check before review
 
 **Before "ready for review", every C++ file a branch adds or changes is compiled with gcc-13 in the leg's image, and the message says so.** This is the lead's standing practice from 2026-10-03, after master was gcc-red from `da2fcf5` to `7ed7572` over a warning MSVC never raised.
