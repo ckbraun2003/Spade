@@ -175,8 +175,8 @@ TEST(OpenFrame5fInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
                     lo = glm::min(lo, w);
                     hi = glm::max(hi, w);
                 }
-                std::printf("[kit-box] %-22s %-34s x %+.4f .. %+.4f  y %+.4f .. %+.4f  z %+.4f .. %+.4f m\n", name.c_str(),
-                            object["store_ref"]["file"].as<std::string>().c_str(), lo.x, hi.x, lo.y, hi.y, lo.z, hi.z);
+                std::printf("[kit-box] %-22s %-34s x %+.4f .. %+.4f  y %+.4f .. %+.4f  z %+.4f .. %+.4f m  volume %.4e m^3\n", name.c_str(),
+                            object["store_ref"]["file"].as<std::string>().c_str(), lo.x, hi.x, lo.y, hi.y, lo.z, hi.z, m.volume);
             }
             for (const Piece& p : pieces) b.centre += (mass * p.volume / volume) * p.centroid;
             b.centre /= mass;
