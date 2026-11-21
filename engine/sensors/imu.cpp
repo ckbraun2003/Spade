@@ -28,6 +28,11 @@ namespace {
 
 }  // namespace
 
+// THE RED STUBS: no offset and no converter, so the tests fail on values, not on a missing symbol.
+ImuTurnOn imu_turn_on_bias(uint64_t, uint32_t, float, float) noexcept { return ImuTurnOn{glm::vec3(0.0f), glm::vec3(0.0f)}; }
+
+float imu_limit_and_quantise(float value, float, float) noexcept { return value; }
+
 void synthesize_imu(std::span<const BodyState> bodies, std::span<ImuSensorRow> sensors,
                     std::span<ImuSample> rings, uint64_t tick) noexcept {
     for (std::size_t s = 0; s < sensors.size(); ++s) {
@@ -119,6 +124,15 @@ void synthesize_imu(std::span<const BodyState> bodies, std::span<ImuSensorRow> s
         sample._p0 = 0.0f;
         sample.gyro = gyro_true + row.bias_g + row.sigma_g * white_g;
         sample._p1 = 0.0f;
+
+        // THE CONVERTER, after bias and white noise, per axis in the mount frame. Skipped outright when a channel has no
+        // range, so a row with the new fields at zero runs exactly the arithmetic it ran before them.
+        if (row.range_a != 0.0f) {
+            for (int axis = 0; axis < 3; ++axis) sample.accel[axis] = imu_limit_and_quantise(sample.accel[axis], row.range_a, row.adc_bits);
+        }
+        if (row.range_g != 0.0f) {
+            for (int axis = 0; axis < 3; ++axis) sample.gyro[axis] = imu_limit_and_quantise(sample.gyro[axis], row.range_g, row.adc_bits);
+        }
 
         // Monotonic, per sensor, starting at 1 (editor tech spec TA5; see sensors/rings.hpp).
         row.last_index += 1u;

@@ -30,6 +30,9 @@ namespace {
 
 }  // namespace
 
+// THE RED STUB: no offset, so the tests fail on values, not on a missing symbol.
+glm::vec3 gnss_turn_on_bias(uint64_t, uint32_t, float) noexcept { return glm::vec3(0.0f); }
+
 // ---------------------------------------------------------------------------
 // synthesize_gnss() -- the gnss.synthesize pass's work, for ONE
 // world's spans. physics/schedule.cpp's pass_sensor_gnss() calls it, in the
