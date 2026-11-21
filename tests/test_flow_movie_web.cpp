@@ -734,6 +734,8 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
     EXPECT_NE(pressure.find("blue below the air's ambient pressure to red above"), std::string::npos) << pressure;
     EXPECT_NE(pressure.find("no pressure or speed figures"), std::string::npos) << pressure;
     EXPECT_NE(pressure.find("not validated magnitudes"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour"), std::string::npos)
+        << "the parts the flow has no air beside keep their colour, and the caption says so: " << pressure;
     EXPECT_NE(pressure.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << pressure;
     EXPECT_NE(pressure.find("fitted blade polar"), std::string::npos) << pressure;
     EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true).find("Colour shows relative speed"), std::string::npos) << "no pressure: the words as they were";
