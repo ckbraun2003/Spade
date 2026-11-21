@@ -71,6 +71,9 @@ constexpr float kRestHeight = static_cast<float>(kComY - kLowest);  // 0.18987 m
     ph::ShapeDesc shape = ph::hull_shape(body_points, kSkin);
     shape.friction = friction;
     shape.restitution = restitution;
+    // 16 sweeps (kMaxSweeps): the default 4 leaves a level 3.1 m/s drop spinning at 0.7 to 0.8 rad/s from an unconverged sequential-impulse solve over twelve points
+    // (DiagnosticSpinAfterALevelDrop below: 0.017 rad/s at 16 sweeps), and a rest creep; the converged solution zeroes every point's normal speed, so no spin.
+    shape.iterations = 16;
     model.shape = shape;
     return model;
 }
@@ -195,11 +198,6 @@ TEST(X500GroundContact, ADropSettlesWithoutBouncingMoreThanTheRestitutionAllows)
         steps(rig, 1);
         const spade::BodyState b = state(rig);
         min_y = std::min(min_y, b.pos.y);
-        if ((i >= 310 && i < 360 && i % 3 == 0) || (i >= 360 && i < 1000 && i % 60 == 0)) {
-            std::printf("[ ground  ]   step %4d: y %+.5f vy %+.4f pos.x %+.5f z %+.5f omega (%+.3f, %+.3f, %+.3f)\n", i, static_cast<double>(b.pos.y), static_cast<double>(b.vel.y),
-                        static_cast<double>(b.pos.x), static_cast<double>(b.pos.z), static_cast<double>(b.omega_body.x), static_cast<double>(b.omega_body.y),
-                        static_cast<double>(b.omega_body.z));
-        }
         if (!landed && b.vel.y > 0.0f && b.pos.y < kRestHeight + 0.05f) landed = true;
         if (landed) highest_after_impact = std::max(highest_after_impact, b.pos.y - kRestHeight);
     }
@@ -242,8 +240,9 @@ TEST(X500GroundContact, DiagnosticSpinAfterALevelDrop) {
     const float no_bounce = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.6f, 0.0f, 0);
     const float more_sweeps = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.6f, 0.1f, 16);
     std::printf("[ ground  ] spin 20 ms after a level drop (rad/s): centre of mass at the foot centroid %.3f; offset (-4.5, 0.9 mm) %.3f; offset with no friction %.3f; "
-                "offset with no restitution %.3f; offset with 16 sweeps %.3f (rigid-body estimate for the offset: about 1.1)\n",
+                "offset with no restitution %.3f; offset with 16 sweeps %.3f (a converged solve zeroes every point's normal speed: no spin)\n",
                 static_cast<double>(centred), static_cast<double>(offset), static_cast<double>(no_friction), static_cast<double>(no_bounce), static_cast<double>(more_sweeps));
+    EXPECT_LT(more_sweeps, 0.1f) << "16 sweeps converge: the spin after a level drop is under 0.1 rad/s";
 }
 
 // Pitch (about the design frame's +Z, nose up positive) or roll (about +X): the body placed with its lowest foot point 1 cm above the plane.
