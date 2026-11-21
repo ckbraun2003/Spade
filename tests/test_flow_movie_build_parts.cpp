@@ -1560,3 +1560,18 @@ TEST(FlowMovieBuildParts, TheGeneratedFpvPropMeshesHaveBladeZeroAlongPlusXForBot
         }
     }
 }
+
+// THE LOOK SENTENCE NAMES THE DRONE'S OWN BLADES (Spade lead, from the posted kit film's caption, 2026-11-21): the clip record's "Look:" sentence for --prop-blur mode=blades said "the rotors' real blades"
+// for every drone, but the kit's blades are the generated three-blade stand-in. prop_blur_note takes the words for the blades (the default stays the X500's "the rotors' real blades").
+TEST(FlowMovieBuildParts, ThePropBlurNoteNamesTheBladesTheDroneDraws) {
+    const auto blades = flow_movie::parse_prop_blur("mode=blades");
+    ASSERT_TRUE(blades.has_value());
+    EXPECT_EQ(flow_movie::prop_blur_note(*blades), "the rotors' real blades drawn opaque at the simulation's rotor angle, with no blur");
+    const std::string kit = flow_movie::prop_blur_note(*blades, "the stand-in's generated blades");
+    EXPECT_EQ(kit, "the stand-in's generated blades drawn opaque at the simulation's rotor angle, with no blur");
+    EXPECT_EQ(kit.find("real"), std::string::npos) << kit;
+    // the words are for the blades mode only: the disc and the sampled blur say what they always said
+    const auto disc = flow_movie::parse_prop_blur("opacity=0.5");
+    ASSERT_TRUE(disc.has_value());
+    EXPECT_EQ(flow_movie::prop_blur_note(*disc, "the stand-in's generated blades").find("generated"), std::string::npos);
+}
