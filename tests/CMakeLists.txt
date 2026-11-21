@@ -155,6 +155,7 @@ add_executable(spade_tests
     test_airframe_compile.cpp
     test_basic_quad.cpp
     test_quadrotor.cpp
+    test_step_convergence.cpp
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
