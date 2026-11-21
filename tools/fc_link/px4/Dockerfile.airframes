@@ -1,0 +1,11 @@
+# Second layer of the PX4 SITL image (O140, O144): our airframe files, registered in PX4's airframe list, and an incremental rebuild.
+# Built with the network off on top of the first layer (Dockerfile):
+#   docker build --network none -f tools/fc_link/px4/Dockerfile.airframes -t spade-px4-sitl:v1.17.0 <build-px4>
+# The only change to PX4's tree: the files under airframes/ are copied in and added to ROMFS/px4fmu_common/init.d-posix/airframes/CMakeLists.txt.
+FROM spade-px4-sitl:v1.17.0-build
+COPY overlay/airframes/ /src/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes/
+RUN cd /src/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes \
+ && for f in 10090_spade_x500_px4; do grep -q "^	$f\$" CMakeLists.txt || sed -i "s/^	10016_none_iris\$/	10016_none_iris\n	$f/" CMakeLists.txt; done \
+ && grep -n 'spade_x500' CMakeLists.txt
+WORKDIR /src/PX4-Autopilot
+RUN make px4_sitl_spade ARGS="-j6"
