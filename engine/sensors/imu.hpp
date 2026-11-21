@@ -298,13 +298,13 @@ static_assert(sizeof(ImuSample::accel) + sizeof(ImuSample::_p0) + sizeof(ImuSamp
 //
 // Eight 16-byte rows:
 //   row 0  body_slot | kind | rate_divider | phase
-//   row 1  mount_pos | _p0
+//   row 1  mount_pos | range_a
 //   row 2  mount_orient (quat)
 //   row 3  sigma_a | sigma_g | sigma_ba | sigma_bg
-//   row 4  bias_a | _p1
-//   row 5  bias_g | _p2
+//   row 4  bias_a | range_g
+//   row 5  bias_g | adc_bits
 //   row 6  noise (rng::Stream)
-//   row 7  last_index | _reserved0
+//   row 7  last_index | turn_on_sigma_a | turn_on_sigma_g
 //
 // EVERYTHING THE SENSOR NEEDS TO CONTINUE IS IN THIS ROW, and that is the
 // design rule rather than a convenience: the row is registered state, so the
@@ -329,9 +329,10 @@ static_assert(sizeof(ImuSample::accel) + sizeof(ImuSample::_p0) + sizeof(ImuSamp
 // would be a second source of truth for a number the slot already determines,
 // and the two would disagree the first time a slot was recycled.
 //
-// `_reserved0` must stay 0. It is the growth room a versioned layout owes
-// itself (same discipline as WorldParams::_reserved0), and it is what keeps
-// row 7 a full 16 bytes so nothing moves when it is spent.
+// THE LAST FOUR NAMES WERE PADS (and `_reserved0`, split into the two turn-on sigmas): `range_a`, `range_g`, `adc_bits` took the three std430 pads and
+// `turn_on_sigma_a`, `turn_on_sigma_g` the two halves of `_reserved0`, at the SAME offsets, so the row is still 128 bytes, no offset moved and a row with all
+// five at zero is byte-identical to one from before them. They are the converter (range and quantum, applied to every emitted sample, CPU only) and the
+// turn-on offset (a bias started afresh at spawn and every reseed): see imu_limit_and_quantise() and imu_turn_on_bias() below.
 // ---------------------------------------------------------------------------
 struct alignas(kStd430StructAlignment) ImuSensorRow {
     uint32_t body_slot;      // WORLD-LOCAL index into this world's bodies span

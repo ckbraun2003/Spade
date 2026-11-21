@@ -30,8 +30,11 @@ namespace {
 
 }  // namespace
 
-// THE RED STUB: no offset, so the tests fail on values, not on a missing symbol.
-glm::vec3 gnss_turn_on_bias(uint64_t, uint32_t, float) noexcept { return glm::vec3(0.0f); }
+// THREE NORMALS FROM THE TURN-ON STREAM (x, y, z), scaled by sigma_bias: the bias a receiver starts an episode from.
+glm::vec3 gnss_turn_on_bias(uint64_t world_seed, uint32_t local_slot, float sigma_bias) noexcept {
+    rng::Stream stream = rng::make_stream(world_seed, kGnssTurnOnDomainTag, local_slot);
+    return sigma_bias * draw_gauss3(stream);
+}
 
 // ---------------------------------------------------------------------------
 // synthesize_gnss() -- the gnss.synthesize pass's work, for ONE

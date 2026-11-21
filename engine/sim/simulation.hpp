@@ -1632,6 +1632,10 @@ public:
     // Imu.ReseedRederivesALiveSensorsStream... and GnssReseed.Reseed
     // RederivesAReceiversNoiseStream check the built-ins' streams directly.
     //
+    // THE ONE WRITE TO A BIAS: a sensor row whose turn-on sigma (IMU `turn_on_sigma_a`/`_g`, per channel) or flag (GNSS `turn_on_bias`) is set starts that
+    // bias afresh from the turn-on stream at every reseed, because a reseed is where a batch's next episode begins (genesis blob, replayed spawns, then
+    // reseed(scene_seed)) and each episode is to have its own offset. A row with none of them set is as described next.
+    //
     // WHAT IT DOES NOT TOUCH: THE PAST. Ring contents, ring cursors
     // (last_index), rate-divider phase and the accumulated bias states all
     // stay exactly as they are. A RESEED CHANGES THE FUTURE DRAWS, NOT THE

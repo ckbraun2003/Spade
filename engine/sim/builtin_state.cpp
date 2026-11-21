@@ -144,6 +144,19 @@ Result<void> validate_imu_spawn(std::span<const std::byte> spawn) {
         // both sides -- the same discipline world_set.cpp's in_range() uses.
         return invalid("every sigma must be finite and >= 0");
     }
+    if (!finite(sensor.range_a) || !(sensor.range_a >= 0.0f)) return invalid("range_a must be finite and >= 0 (0 is unlimited)");
+    if (!finite(sensor.range_g) || !(sensor.range_g >= 0.0f)) return invalid("range_g must be finite and >= 0 (0 is unlimited)");
+    // 0 (no quantization) or an integer 1..24: the range check first, so the integer test never casts a NaN or a huge value.
+    if (!(sensor.adc_bits == 0.0f || (sensor.adc_bits >= 1.0f && sensor.adc_bits <= 24.0f &&
+                                       static_cast<float>(static_cast<int>(sensor.adc_bits)) == sensor.adc_bits))) {
+        return invalid("adc_bits must be 0 or an integer in 1..24");
+    }
+    if (sensor.adc_bits != 0.0f && sensor.range_a == 0.0f && sensor.range_g == 0.0f) {
+        // Bits are a resolution WITHIN a range (the lsb is 2 * range / 2^bits); with neither range set they quantise nothing.
+        return invalid("adc_bits needs a range_a or a range_g: the quantum is 2 * range / 2^adc_bits");
+    }
+    if (!finite(sensor.turn_on_sigma_a) || !(sensor.turn_on_sigma_a >= 0.0f)) return invalid("turn_on_sigma_a must be finite and >= 0");
+    if (!finite(sensor.turn_on_sigma_g) || !(sensor.turn_on_sigma_g >= 0.0f)) return invalid("turn_on_sigma_g must be finite and >= 0");
     return {};
 }
 
@@ -233,6 +246,7 @@ Result<void> validate_gnss_spawn(std::span<const std::byte> spawn) {
         !finite(sensor.bias_tau_s)) {
         return invalid("every sigma and bias_tau_s must be finite and >= 0");
     }
+    if (sensor.turn_on_bias > 1u) return invalid("turn_on_bias must be 0 or 1");
     return {};
 }
 
