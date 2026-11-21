@@ -86,14 +86,12 @@ TEST(OpenFrame5fModel, TheRemainderIsWhatTheProxiesLeave) {
     const auto first = spade::vehicles::compile_airframe(*spec);
     ASSERT_TRUE(first.has_value()) << first.error().context;
     std::printf("[ openf5  ] proxies and blocks %.4f kg, com (%.5f, %.5f, %.5f); remainder %.4f kg at (%.5f, %.5f, %.5f), tensor diag (%.4e, %.4e, %.4e), "
-                "xy %.3e xz %.3e yz %.3e
-",
+                "xy %.3e xz %.3e yz %.3e\n",
                 static_cast<double>(first->inertia.mass), static_cast<double>(first->inertia.center_of_mass.x), static_cast<double>(first->inertia.center_of_mass.y),
                 static_cast<double>(first->inertia.center_of_mass.z), rest.mass, rest.position.x, rest.position.y, rest.position.z, rest.tensor[0][0],
                 rest.tensor[1][1], rest.tensor[2][2], rest.tensor[1][0], rest.tensor[2][0], rest.tensor[2][1]);
     const glm::dmat3 g = first->inertia.inertia_design;
-    std::printf("[ openf5  ] proxies' tensor about their com: diag (%.4e, %.4e, %.4e) xy %.3e; the kit's diag (%.4e, %.4e, %.4e) xy %.3e
-", g[0][0], g[1][1], g[2][2],
+    std::printf("[ openf5  ] proxies' tensor about their com: diag (%.4e, %.4e, %.4e) xy %.3e; the kit's diag (%.4e, %.4e, %.4e) xy %.3e\n", g[0][0], g[1][1], g[2][2],
                 g[1][0], of::kKitXX, of::kKitYY, of::kKitZZ, of::kKitXY);
 }
 
