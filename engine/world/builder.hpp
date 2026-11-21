@@ -112,6 +112,15 @@ struct Capacities {
     uint32_t force_elements = 0;
     uint32_t sensors = 0;
     uint32_t contacts = 0;
+    // The camera sensor kind's declarations (rendering/camera-sensor-design section 11 item 2): how many cameras the world holds and the pixels a frame of them may
+    // total. Both default to 0 and 0 means none: a world that does not use a camera allocates nothing for it, its file does not mention them, and its config
+    // hash does not fold them. They come as a pair (cameras without a pixel budget, or a budget without cameras, is refused).
+    uint32_t cameras = 0;
+    uint32_t camera_pixels = 0;
+    // The camera's keypoint channel (section 11a): G groups of P points a camera frame carries (4 for KAT's gates). Both default to 0 and allocate nothing; they
+    // come as a pair like the two above, and the config hash folds them only when either is non-zero.
+    uint32_t keypoint_groups = 0;
+    uint32_t keypoints_per_group = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -350,6 +359,10 @@ public:
     // nodes.size() lazily (filling earlier slots with the default, index 0)
     // is this call's job, not build()'s -- see sdf.hpp's node_materials note.
     WorldBuilder& material_for_last_node(uint32_t material_index);
+    // Sets the object label (sdf.hpp's node_labels) of the SDF node most recently pushed, 0 = unlabelled. Grows node_labels to nodes.size() lazily,
+    // as material_for_last_node does, and later pushes keep it in lockstep. A composed object (a union of primitives) labels every primitive of it
+    // with the one label; an operator's own label is accepted and never read (sdf_hit_label resolves a hit to a leaf).
+    WorldBuilder& label_for_last_node(uint16_t label);
 
     // --- product -----------------------------------------------------------
     // Construct, then validate_world_desc(), then hand the world over. The

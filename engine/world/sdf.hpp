@@ -189,6 +189,13 @@ struct SdfProgram {
     // (world/builder.hpp) instead.
     std::vector<uint32_t> node_materials;
 
+    // Per-node OBJECT LABEL (world file schema v4; rendering/camera-sensor-design section 6): a uint16 a node carries, 0 meaning "no labelled object".
+    // Spade attaches no meaning to the number; two nodes with one label are one object, so a gate composed of a torus and two boxes gives all of its
+    // primitives its one label. Same shape and lockstep rule as node_materials: either empty (every node unlabelled) or exactly nodes.size() long, one
+    // entry per node in the SAME order, an operator's entry included (accepted, and never read: sdf_hit_label() resolves a hit to a LEAF). Render-only,
+    // like node_materials: no pass reads it and no hash or snapshot covers it. validate() checks the length.
+    std::vector<uint16_t> node_labels;
+
     [[nodiscard]] bool empty() const noexcept { return nodes.empty(); }
 
     // Structural + parameter validation. On success returns the peak evaluation
@@ -263,6 +270,14 @@ inline constexpr uint32_t kNoSdfLeaf = std::numeric_limits<uint32_t>::max();
 //
 // Returns kNoSdfLeaf for an empty program.
 [[nodiscard]] uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept;
+
+// RENDERING-ONLY: the object label of the surface at p -- node_labels[nearest_leaf_node(program, p)], so a label resolves exactly as a node_materials
+// entry does and the two can never disagree about which primitive owns a hit. 0 when the program carries no labels or has no leaf. A ray hit anywhere on a
+// composed object (a union of primitives all labelled 7) reads 7; two touching objects read their own labels on their own sides of the seam. For
+// smooth_union the blend's larger-weight branch decides, as nearest_leaf_node documents.
+//
+// PRECONDITION: program.validate() passed (so node_labels is empty or one entry a node).
+[[nodiscard]] uint16_t sdf_hit_label(const SdfProgram& program, glm::vec3 p) noexcept;
 
 // ---------------------------------------------------------------------------
 // Bounds (the lead's ask of 2026-10-13, on D1's path: Physics' P2 sizes its

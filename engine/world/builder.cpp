@@ -177,6 +177,9 @@ void WorldBuilder::push_primitive(SdfPrim kind, const glm::vec4& params, const S
     if (!desc_.sdf.node_materials.empty()) {
         desc_.sdf.node_materials.push_back(0);
     }
+    if (!desc_.sdf.node_labels.empty()) {
+        desc_.sdf.node_labels.push_back(0);  // the same lockstep, for the labels
+    }
 }
 
 void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
@@ -188,6 +191,9 @@ void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
     desc_.sdf.nodes.push_back(node);
     if (!desc_.sdf.node_materials.empty()) {
         desc_.sdf.node_materials.push_back(0);
+    }
+    if (!desc_.sdf.node_labels.empty()) {
+        desc_.sdf.node_labels.push_back(0);
     }
 }
 
@@ -298,6 +304,19 @@ WorldBuilder& WorldBuilder::prop(std::string mesh_ref, const SdfPose& pose, uint
     return *this;
 }
 
+WorldBuilder& WorldBuilder::label_for_last_node(uint16_t label) {
+    if (desc_.sdf.nodes.empty()) {
+        fail("label_for_last_node() called before any SDF node was pushed");
+        return *this;
+    }
+    // Grow lazily to nodes.size() (sdf.hpp's node_labels contract: empty or exactly nodes.size()), unlabelled (0) until named.
+    if (desc_.sdf.node_labels.size() != desc_.sdf.nodes.size()) {
+        desc_.sdf.node_labels.resize(desc_.sdf.nodes.size(), 0);
+    }
+    desc_.sdf.node_labels.back() = label;
+    return *this;
+}
+
 WorldBuilder& WorldBuilder::material_for_last_node(uint32_t material_index) {
     if (desc_.sdf.nodes.empty()) {
         fail("material_for_last_node() called before any SDF node was pushed");
@@ -357,6 +376,20 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     }
     if (caps.contacts == 0) {
         return std::unexpected(invalid("world capacity 'contacts' must be > 0"));
+    }
+    // The camera declarations default to 0 (none) and come as a pair: cameras need a pixel budget, and a budget needs cameras.
+    if (caps.cameras != 0 && caps.camera_pixels == 0) {
+        return std::unexpected(invalid("world capacity 'camera_pixels' must be > 0 when 'cameras' is"));
+    }
+    if (caps.camera_pixels != 0 && caps.cameras == 0) {
+        return std::unexpected(invalid("world capacity 'cameras' must be > 0 when 'camera_pixels' is"));
+    }
+    // The keypoint channel's pair, the same rule: groups need points and points need groups.
+    if (caps.keypoint_groups != 0 && caps.keypoints_per_group == 0) {
+        return std::unexpected(invalid("world capacity 'keypoints_per_group' must be > 0 when 'keypoint_groups' is"));
+    }
+    if (caps.keypoints_per_group != 0 && caps.keypoint_groups == 0) {
+        return std::unexpected(invalid("world capacity 'keypoint_groups' must be > 0 when 'keypoints_per_group' is"));
     }
 
     // Spawn points: named, uniquely named (they are looked up by name), and

@@ -563,6 +563,33 @@ inline constexpr std::string_view kReplayConfigArray = "replay_config";
 // Simulation::create() hands it to the backend in StepShape::switches.
 [[nodiscard]] uint32_t optional_switches(const modules::CompiledSchedule& schedule) noexcept;
 
+// ---------------------------------------------------------------------------
+// PublishedPoses (camera design section 11 item 5) -- THE HOST-SIDE, READ-ONLY VIEW OF THE BODY POSES AT A TICK BOUNDARY, for a
+// consumer that draws from them (the CPU reference camera, the editor's single views) and needs the previous tick's poses too, for
+// camera-motion blur. Simulation::published_poses() is the door; compute/vulkan/pose_view.hpp is the same contract on the device.
+//
+// THE CONTRACT (the device one's, word for word where it can be):
+//   * `tick` is the LAST tick step() ran (0-based, the value StepParams carried) and `stepped` is false until a tick has run since
+//     create() or restore(). `current` is the state at the END of that tick; `previous` is the state at the END of tick - 1, which
+//     is the state that tick started from (for the first tick of a run, the state the world was created or restored with).
+//     "Previous" is per TICK: a step(n) with n > 1 keeps one tick of history, not n.
+//   * `previous` is EMPTY until keep_previous_poses(true) was called and a tick has run since. It is a copy the step makes at the
+//     start of each tick, outside the registered state: no snapshot, digest or replay hash sees it, and a world that never asks for
+//     it pays nothing (cadence invariance, L5: reading changes no result).
+//   * Both spans use the arena layout: world w's slots are [w * capacity_per_world, (w + 1) * capacity_per_world) and a slot is
+//     live iff slot_to_world[slot] != kInvalidWorld; a dead slot's row is stale bytes, not a pose.
+//   * The view is valid until the next call that steps, restores or structurally changes the Simulation. Read it, do not keep it.
+// ---------------------------------------------------------------------------
+struct PublishedPoses {
+    uint64_t tick = 0;
+    bool stepped = false;
+    std::span<const BodyState> current;
+    std::span<const BodyState> previous;
+    std::span<const uint32_t> slot_to_world;
+    uint32_t world_count = 0;
+    uint32_t capacity_per_world = 0;
+};
+
 class Simulation {
 public:
     // ---------------------------------------------------------------------
@@ -699,6 +726,17 @@ public:
     // invalid_argument for an index past world_count(), as the other per-world accessors.
     [[nodiscard]] Result<std::optional<geo::Geodetic>> world_anchor(uint32_t world_index) const;
     [[nodiscard]] Tick tick() const noexcept { return tick_; }
+
+    // The body poses at the last tick boundary and, when asked for, the one before (PublishedPoses above). CPU backend only: on a
+    // Vulkan Simulation the poses live on the device and the view is compute::pose_view() (compute/vulkan/pose_view.hpp), so this
+    // refuses `unavailable` naming it. Also `unavailable` while a device-resident array is stale, as checked_arenas(): it goes
+    // through the same door (check_resident_current). No CPU set can reach that refusal today, since an array is only stale after a
+    // Vulkan step and this refuses a Vulkan Simulation first, so no test drives it; the call is there so a future resident array
+    // on the host path cannot publish stale poses.
+    [[nodiscard]] Result<PublishedPoses> published_poses() const;
+    // Keep (true) or stop keeping (false) the previous tick's poses: the host copy step() makes at the start of every tick. Default
+    // off. Turning it on takes effect at the next tick (`previous` is empty until one has run). CPU backend only, like the view.
+    [[nodiscard]] Result<void> keep_previous_poses(bool keep);
     // The behaviors this Simulation runs, or nullptr for none (the default,
     // and what every golden-corpus scenario uses). NOT OWNED: the caller keeps
     // the registry -- and everything its descs' user_data points at -- alive
@@ -2266,6 +2304,12 @@ private:
     enum class ResidentState : uint8_t { in_sync, host_newer, device_newer };
     ResidentState resident_state_ = ResidentState::in_sync;
     bool has_resident_ = false;
+    // keep_previous_poses(): the previous-tick copy of the "bodies" array (empty unless kept) and whether it holds a tick's start
+    // state (false after create(), restore() and a toggle until the next tick copies it). Not registered: derived, never in a hash.
+    bool keep_previous_poses_ = false;
+    bool previous_poses_valid_ = false;
+    bool stepped_since_start_ = false;  // a cpu tick has run since create() or restore() (PublishedPoses::stepped)
+    std::vector<BodyState> previous_poses_;
     [[nodiscard]] Result<void> check_array_current(std::string_view array, std::string_view what) const;
     [[nodiscard]] Result<void> upload_to_device();  // the full upload if dirty, and the resident arrays if host_newer
     [[nodiscard]] Result<void> run_rebuilds();      // the modules' rebuild hooks, in set order (Task C3)

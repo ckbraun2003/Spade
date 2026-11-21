@@ -124,6 +124,8 @@ add_executable(spade_tests
     test_x500_build_table.cpp
     test_x500_case.cpp
     test_x500_kit_inertia.cpp
+    test_airflow_fpv_solids.cpp
+    test_airflow_fpv_grid.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
@@ -151,11 +153,15 @@ add_executable(spade_tests
     test_basic_quad.cpp
     test_quadrotor.cpp
     test_imu.cpp
+    test_camera.cpp
+    test_camera_capacities.cpp
+    test_world_file_v4.cpp
     test_gnss.cpp
     test_world_file.cpp
     test_scene_file.cpp
     test_scene_airflow.cpp
     test_device_limits.cpp
+    test_device_features.cpp
     test_model_file.cpp
     test_object_file.cpp
     test_library_crate.cpp
@@ -187,6 +193,7 @@ add_executable(spade_tests
     test_library_drone_solids.cpp
     test_determinism.cpp
     test_set_body_state.cpp
+    test_pose_publication.cpp
     test_translation_lock.cpp
     test_sim_medium.cpp
     test_world_wind.cpp
@@ -482,6 +489,8 @@ if(SPADE_VULKAN)
         test_gpu_recipes.cpp
         test_gpu_cadence.cpp
         test_gpu_pose_view.cpp
+        test_gpu_step_semaphore.cpp
+        test_gpu_vram_wiring.cpp
         test_gpu_module_config.cpp
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp
@@ -503,6 +512,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line_binned.cpp
         test_gpu_airflow_line_stills.cpp
         test_gpu_x500_one_rotor.cpp
+        test_gpu_fpv_four_rotors.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_live_lines.cpp

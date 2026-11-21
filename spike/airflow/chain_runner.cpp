@@ -137,6 +137,19 @@ void record_entry_barrier(VkCommandBuffer cmd, VkPipelineStageFlags dst_stage, V
                          &barrier, 0, nullptr, 0, nullptr);
 }
 
+// The share name a runner reserves under: the one it was given, or the first of "flow solver", "flow solver 2", ... not held.
+[[nodiscard]] std::string share_name(const compute::VramLedger& ledger, const std::string& asked) {
+    if (!asked.empty()) return asked;
+    const auto held = [&ledger](const std::string& name) {
+        return std::ranges::any_of(ledger.shares(), [&name](const compute::VramLedger::Share& s) { return s.name == name; });
+    };
+    if (!held("flow solver")) return "flow solver";
+    for (uint32_t n = 2;; ++n) {
+        std::string name = "flow solver " + std::to_string(n);
+        if (!held(name)) return name;
+    }
+}
+
 [[nodiscard]] uint64_t saturating_add(uint64_t a, uint64_t b) noexcept {
     return a > UINT64_MAX - b ? UINT64_MAX : a + b;
 }
@@ -249,6 +262,10 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
         !ok) {
         return refuse(ok.error());
     }
+    // The ledger: do the shares held on this context, with this one, fit? After the check above (every refusal that exists keeps
+    // its text) and before anything is allocated. Held as a local until create() succeeds; a failure releases it.
+    Result<compute::VramShare> share = ctx.reserve_vram(share_name(ctx.vram_ledger(), desc.vram_share), total);
+    if (!share) return refuse(share.error());
 
     // ---- Allocation. Each step records what it made, so destroy() frees a
     // partial runner on any failure below. --------------------------------
@@ -417,6 +434,9 @@ Result<std::unique_ptr<ChainRunner>> ChainRunner::create(compute::VulkanContext&
     if (VkResult r = vkCreateFence(self->device_, &fence_info, nullptr, &self->fence_); r != VK_SUCCESS) {
         return std::unexpected(map_vk_error(r, "vkCreateFence"));
     }
+    self->budget_at_create_ = ctx.memory_budget();
+    self->budget_known_ = true;
+    self->vram_share_ = std::move(*share);
     return self;
 }
 
@@ -504,6 +524,7 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
     info.commandBufferCount = 1;
     info.pCommandBuffers = &cmd;
     if (VkResult r = vkQueueSubmit(queue_, 1, &info, fence_); r != VK_SUCCESS) {
+        if (r == VK_ERROR_DEVICE_LOST) return std::unexpected(device_lost_error("vkQueueSubmit", op));
         return std::unexpected(map_vk_error(r, std::string("vkQueueSubmit (") + op + ")"));
     }
     const VkResult wait = vkWaitForFences(device_, 1, &fence_, VK_TRUE, kFenceTimeoutNs);
@@ -513,10 +534,20 @@ Result<void> ChainRunner::submit_and_wait(VkCommandBuffer cmd, const char* op) c
     }
     if (wait != VK_SUCCESS) {
         in_flight_ = true;
+        if (wait == VK_ERROR_DEVICE_LOST) return std::unexpected(device_lost_error("vkWaitForFences", op));
         return std::unexpected(map_vk_error(wait, std::string("vkWaitForFences (") + op + ")"));
     }
     ++waits_;
     return {};
+}
+
+Error ChainRunner::device_lost_error(const char* call, const char* op) const {
+    // The old words stay first ("Vulkan device lost during airflow runner: <call> (<op>)"); the budget is the physical device's
+    // query, which still answers after a loss.
+    const compute::MemoryBudget now = ctx_ != nullptr ? ctx_->memory_budget() : compute::MemoryBudget{};
+    const bool have = budget_known_ && ctx_ != nullptr;
+    return Error{Code::internal, compute::device_lost_text(std::string("airflow runner: ") + call + " (" + op + ")", device_name_,
+                                                          have ? &budget_at_create_ : nullptr, have ? &now : nullptr)};
 }
 
 // ---------------------------------------------------------------------------

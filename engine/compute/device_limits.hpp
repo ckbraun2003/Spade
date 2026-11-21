@@ -198,4 +198,38 @@ inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
                               : std::string())});
 }
 
+// WHAT A LOST DEVICE SAYS (L106e's TDR findings): the error text for a VK_ERROR_DEVICE_LOST, which on Windows is almost always the
+// display driver's watchdog (a TDR reset, Display event 4101) and on a card the desktop shares is often a card out of VRAM. It keeps
+// the old words ("Vulkan device lost during <op>") and, when the budget extension answered, adds the VRAM budget and usage the
+// process saw at create() against the same read taken when the device was lost, so a reader can tell "another program grew" from "the
+// work was slow". `at_create` / `now` are null when no read exists (a context made before the builder, or a failed read).
+[[nodiscard]] inline std::string device_lost_text(std::string_view op, std::string_view device, const MemoryBudget* at_create,
+                                                  const MemoryBudget* now) {
+    std::string out = "Vulkan device lost during " + std::string(op) + " on device '" + std::string(device) +
+                      "': on Windows this is usually the display driver's watchdog (a TDR reset, Display event 4101), which a "
+                      "card short of VRAM or a very long submit provokes";
+    if (at_create == nullptr || now == nullptr) return out;
+    if (at_create->source != MemoryBudget::Source::ext || now->source != MemoryBudget::Source::ext) {
+        return out + "; no VK_EXT_memory_budget on this device, so other programs' VRAM use is not visible (the budget assumed is "
+                     "half the device-local heap, " + std::to_string(now->budget) + " bytes)";
+    }
+    // heapUsage is THIS process's own use and heapBudget is what the OS lets it hold; the budget falls when another program takes VRAM.
+    const uint64_t b1 = at_create->budget, b2 = now->budget, u1 = at_create->usage, u2 = now->usage;
+    out += "; VRAM (VK_EXT_memory_budget): budget " + std::to_string(b1) + " at create, " + std::to_string(b2) +
+           " when lost; this process held " + std::to_string(u1) + " at create, " + std::to_string(u2) + " when lost";
+    std::string why;
+    const auto add = [&why](const std::string& clause) { why += (why.empty() ? "" : "; ") + clause; };
+    if (b2 < b1) add("the budget fell by " + std::to_string(b1 - b2) + " bytes (another program took VRAM after the run began)");
+    if (u2 > u1) add("this process holds " + std::to_string(u2 - u1) + " bytes more than at create");
+    if (u2 > b2) {
+        add("over its budget by " + std::to_string(u2 - b2) +
+            " bytes (the driver pages to system memory, the usual way a submit passes the 2 s watchdog)");
+    }
+    if (why.empty()) {
+        why = b2 == b1 && u2 == u1 ? "neither the budget nor this process's use changed, so look at the work itself"
+                                   : "the budget did not fall and this process's use did not grow, so look at the work itself";
+    }
+    return out + ": " + why;
+}
+
 }  // namespace spade::compute

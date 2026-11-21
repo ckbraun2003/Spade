@@ -1649,7 +1649,7 @@ StateMirror::PoseBuffers StateMirror::pose_buffers() const noexcept {
     return out;
 }
 
-Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/) {
+Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_size*/, bool keep_previous_poses) {
     AdmitShape out;
     // Set 0 is the only set the mirror builds; module kernels' set-1 subsets are the layout classes' to add (batch B).
     out.layouts.push_back(AdmitLayout{.name = "state", .bindings_per_set = {gen::kBindingCount_state}});
@@ -1686,6 +1686,17 @@ Result<AdmitShape> admit_shape_for(const StepShape& shape, uint32_t /*workgroup_
     if (any_resident) out.buffers.push_back(AdmitBuffer{.name = "resident_staging", .bytes = largest_resident});
     if (!shape.config_image.empty()) {
         out.buffers.push_back(AdmitBuffer{.name = "airflow_config", .bytes = shape.config_image.size()});
+    }
+    // "bodies.previous" (create()'s keep_previous_poses): one device-only buffer the size of "bodies". The list is what the VRAM
+    // check and the "world set" share sum, so it must hold every device buffer create() makes.
+    if (keep_previous_poses) {
+        const auto bodies = std::ranges::find_if(out.buffers, [](const AdmitBuffer& b) { return b.name == "bodies"; });
+        if (bodies == out.buffers.end()) {
+            return std::unexpected(Error{Code::invalid_argument,
+                                         "StateMirror::create: keep_previous_poses needs the registered 'bodies' array"});
+        }
+        const uint64_t previous_bytes = bodies->bytes;
+        out.buffers.push_back(AdmitBuffer{.name = "bodies.previous", .bytes = previous_bytes});
     }
     return out;
 }
