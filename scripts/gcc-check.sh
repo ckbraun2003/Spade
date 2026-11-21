@@ -32,6 +32,8 @@
 # borrows the command line of a compiled sibling, a template or the first
 # spade_tests file, and the output says whose; only a file with no sibling at
 # all fails with the reason. scripts/gcc_check_compile.py does the compiling.
+# Both modes put tools/ on the include path (-Itools), so code under
+# tools/fc_link can include its own headers as "fc_link/...".
 #
 #   scripts/gcc-check.sh --compile engine/render/flow_render.cpp
 #
@@ -147,7 +149,7 @@ MSYS_NO_PATHCONV=1 docker run --rm --memory 3g \
       -DSPADE_ENGINE_DIR=\"/src/engine\" -DSPADE_GOLDEN_DIR=\"/src/tests/golden\" \
       -DSPADE_TESTS_DIR=\"/src/tests\" -DSPADE_TEST_OUTPUT_DIR=\"/tmp/test-output\" \
       -DSPADE_ASSETS_DIR=\"/src/assets\" \
-      -Iengine -Isandbox -Iengine/tools/viewer -I. "${gen[@]}" \
+      -Iengine -Isandbox -Iengine/tools/viewer -Itools -I. "${gen[@]}" \
       -I$D/glm-src -I$D/glad-src/include -I$D/glfw-src/include -I$D/imgui-src -I$D/imgui-src/backends \
       -I$D/yaml-cpp-src/include -I$D/nlohmann_json-src/include -I$D/volk-src -I$D/vulkan-headers-src/include \
       -isystem $D/googletest-src/googletest/include -isystem $D/benchmark-src/include \
