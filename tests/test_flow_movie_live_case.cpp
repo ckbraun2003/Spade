@@ -196,6 +196,28 @@ TEST(FlowMovieLiveCase, TheCellOptionSelectsTheX500sBoxAndItsHoldAndNothingElseC
     EXPECT_EQ(flow_movie::d1_web_grid(true, small, std::nullopt).ny, 80u) << "--grid still wins when there is no --cell-mm";
 }
 
+// The OpenFrame-5F's box (lead, 2026-11-21): the FPV harness' own 1.25 mm box, 252 x 237 x 284 (x along the kit's forward, z across), held where d1_fpv_hold(hub height)
+// holds it: the drone entry declares the cell and the hub height above its design origin and the box and hold follow; the X500's stay exactly as above.
+TEST(FlowMovieLiveCase, TheFpvCellSelectsTheFpvBoxAndItsHoldFromTheHubHeight) {
+    const auto box = flow_movie::d1_web_grid(true, std::nullopt, 1.25f);
+    EXPECT_EQ(box.nx, spade::testing::kD1FpvGrid.nx);
+    EXPECT_EQ(box.ny, spade::testing::kD1FpvGrid.ny);
+    EXPECT_EQ(box.nz, spade::testing::kD1FpvGrid.nz);
+    EXPECT_EQ(box.dx, spade::testing::kD1FpvGrid.dx);
+    EXPECT_EQ(box.nx, 252u);
+    EXPECT_EQ(box.nz, 284u) << "x is the kit's forward, z across";
+    const auto at_origin = flow_movie::d1_web_hold(1.25f, 0.0f);
+    ASSERT_TRUE(at_origin.has_value());
+    EXPECT_EQ(*at_origin, spade::testing::d1_fpv_hold(0.0f));
+    EXPECT_NEAR(at_origin->y, 0.0525f, 1.0e-6f) << "a hub at the origin: Physics' 42 rows";
+    const auto raised = flow_movie::d1_web_hold(1.25f, 0.031f);
+    ASSERT_TRUE(raised.has_value());
+    EXPECT_EQ(*raised, spade::testing::d1_fpv_hold(0.031f)) << "the hold follows the entry's hub height";
+    // the X500's hold takes no hub height: whatever is passed, it is d1_x500_hold()
+    ASSERT_TRUE(flow_movie::d1_web_hold(2.5f, 0.031f).has_value());
+    EXPECT_EQ(*flow_movie::d1_web_hold(2.5f, 0.031f), spade::testing::d1_x500_hold());
+}
+
 // The model-file parameter of D1's builder (the lead, 2026-11-17: Cameron wants a real drone model in the web clips). The
 // default is today's reference quad, so every existing D1 film and test is the film it was; another library drone is built
 // the same way, its parts in the flow, held at its own hover throttle.

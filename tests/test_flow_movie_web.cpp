@@ -580,6 +580,17 @@ TEST(FlowMovieWeb, TheCellAndStepOptionsAreParsedStrictlyAndRefusedWhereTheyDoNo
         EXPECT_NE(why.find("2.5"), std::string::npos) << why;
         EXPECT_NE(why.find("x500"), std::string::npos) << why;
     }
+    // The box comes from the drone entry: the X500 declares its 2.5 mm box (its hold is the harness's own, so no hub height), the other drones declare none, and the
+    // refusal for a drone without one says so.
+    ASSERT_NE(web::find_drone("x500"), nullptr);
+    EXPECT_FLOAT_EQ(web::find_drone("x500")->fine_cell_mm, 2.5f);
+    EXPECT_FLOAT_EQ(web::find_drone("x500")->hub_above_origin_m, 0.0f);
+    for (const char* none : {"reference_quad", "phantom3_class"}) {
+        ASSERT_NE(web::find_drone(none), nullptr) << none;
+        EXPECT_FLOAT_EQ(web::find_drone(none)->fine_cell_mm, 0.0f) << none << " declares no fine box";
+        const std::string why = web::cell_mm_refusal(2.5f, none, true);
+        EXPECT_NE(why.find("no fine box"), std::string::npos) << why;
+    }
     // The step option is for a --window run: the group's frames are 5 whole steps at 0.2 ms.
     EXPECT_EQ(web::step_us_refusal(50u, true), "");
     EXPECT_NE(web::step_us_refusal(50u, false).find("--window"), std::string::npos);
