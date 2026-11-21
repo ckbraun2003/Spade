@@ -25,6 +25,7 @@
 // ---------------------------------------------------------------------------
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -86,6 +87,25 @@ inline constexpr physics::airflow::GridShape kD1X500Grid{270, 237, 270, 0.0025f}
 [[nodiscard]] inline glm::vec3 d1_x500_hold() noexcept {
     return d1_hold(kD1X500Grid) - glm::vec3(0.0f, 13.0f * kD1X500Grid.dx, 0.0f);
 }
+
+// The 5-inch FPV's fine box (the lead, 2026-11-21; Cameron chose the OpenFrame-5F): the X500's cell and rules at 1.25 mm, R 0.0635 m = R/dx 50.8. It is
+// RECTANGULAR because the OpenFrame's hubs are a stretched X (Interface, from Arm.step: +-69.534 mm along the kit's +X, +-89.000 mm across, +Z): the rotors'
+// kernel reach R + 6 dx = 0.071 m from the axis and the phantom's 0.0165 m past it need 2 x (0.069534 + 0.071 + 0.0165) = 0.3141 m along (252 cells) and
+// 2 x (0.089 + 0.071 + 0.0165) = 0.353 m across (284 cells; the X500's square 270 would leave 8.75 mm). x is the kit's forward, z across. 16.96 M cells,
+// 3.706 GiB at the device runner's 234.6 B a cell, under the X500's 17.3 M and 3.775 GiB. The height holds 1.5 R of open air above the hubs and about 0.2 m
+// of wake below. A square-hub kit (a wheelbase up to 230 mm on the diagonals, axes up to +-81.25 mm) would fit the X500's 270-cell width.
+inline constexpr physics::airflow::GridShape kD1FpvGrid{252, 237, 284, 0.00125f};
+inline constexpr float kD1FpvRotorRadius = 0.0635f;  // m, a 5-inch prop
+
+// Where the drone (its design origin) sits relative to the FPV box's centre, with the hubs `hub_above_origin` m above that origin (the kit's, in its
+// design frame): the hubs 1.5 R under the top face, to a whole row below that (never less than 1.5 R of open air), so the drone keeps its cell alignment.
+// 0.2006 m of wake is below a hub at the origin. A host holding the drone passes the kit's hub height.
+[[nodiscard]] inline glm::vec3 d1_fpv_hold(float hub_above_origin) noexcept {
+    const double dx = static_cast<double>(kD1FpvGrid.dx);
+    const double room = 0.5 * static_cast<double>(kD1FpvGrid.ny) * dx - 1.5 * static_cast<double>(kD1FpvRotorRadius) - static_cast<double>(hub_above_origin);
+    return glm::vec3(0.0f, static_cast<float>(std::floor(room / dx + 1.0e-6) * dx), 0.0f);
+}
+
 inline constexpr float kD1Step = 0.00038f;  // s
 
 // The library's reference quad, under SPADE_ASSETS_DIR.
