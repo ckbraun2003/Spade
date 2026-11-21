@@ -252,7 +252,9 @@ namespace {
                                     "through them, not a wall's";
                 built.flow_surface_colouring = FlowSurfaceColouring{.volume = volume, .colours = std::move(tf),
                                                                     .walls_only = true,
-                                                                    .offset_cells = kCpReadOffsetCells};
+                                                                    .offset_cells = kCpReadOffsetCells,
+                                                                    .search_cells = s.search_cells,
+                                                                    .shade = s.shade};
                 break;
         }
         if (!added) {

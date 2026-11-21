@@ -719,6 +719,7 @@ struct BuildDraw {
     std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen
     PropBlur blur{};
     std::optional<BladeChord> chord;  // the prop part's chord table (--lines): what the turning rotors' disc is made from
+    bool flow_walls = false;          // --surface-pressure: the parts drawn are walls in the flow (DrawItem::flow_wall), the blade blur excepted
 };
 
 // A model file's frame: its design_to_principal (unit) and com_offset (design frame, m), what BuildDraw takes. The file the run flies, read once.
@@ -831,6 +832,12 @@ struct PropExtent {
     return {};
 }
 
+// The items of scene.statics from `first` on are walls in the flow (RND-8: the surface-pressure colouring reads walls only), but for the see-through ones: a
+// turning rotor's blade blur or disc is an actuator line, no surface the solver saw.
+inline void mark_flow_walls(spade::render::RenderScene& scene, std::size_t first) {
+    for (std::size_t i = first; i < scene.statics.size(); ++i) scene.statics[i].flow_wall = !scene.statics[i].see_through;
+}
+
 // Every part drawn at the body's pose x its own (x an object's offset), presentation only. A store object is <store>/<sha256>/<file>:
 // a .spmesh drawn flat in its material (the object's, else the part's, else its kind's colour), a glTF with its materials replaced by
 // real ones keyed on their names (a name not mapped keeps the file's colour). A rotor is its blade spread over the shutter (BuildDraw).
@@ -841,6 +848,14 @@ struct PropExtent {
     const std::size_t meshes = scene.meshes.size();
     const std::size_t statics = scene.statics.size();
     const std::size_t materials = scene.materials.size();
+    struct WallMarker {  // on the way out: the new items are walls when asked (a refusal truncated the scene to `first`, so it marks nothing)
+        spade::render::RenderScene& scene;
+        std::size_t first;
+        bool ask;
+        ~WallMarker() {
+            if (ask) mark_flow_walls(scene, first);
+        }
+    } wall_marker{scene, statics, draw_options.flow_walls};
     const auto fail = [&](const BuildPart& part, const std::string& what, const spade::Error& e) -> spade::Result<void> {
         scene.meshes.resize(meshes);
         scene.statics.resize(statics);
