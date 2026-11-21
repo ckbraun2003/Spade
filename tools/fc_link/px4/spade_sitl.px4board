@@ -1,6 +1,6 @@
 # spade_sitl: PX4 v1.17.0 boards/px4/sitl/default.px4board (BSD-3-Clause, (c) PX4 Development Team) WITHOUT the three Gazebo lines
-# (CONFIG_MODULES_SIMULATION_GZ_MSGS, _GZ_BRIDGE, _GZ_PLUGINS): the Gazebo-free SITL build for the external MAVLink simulator link (Spade).
-# Applied at image build as boards/px4/sitl/spade.px4board. PX4 v1.17.0 source with two files added (the SITL board variant and the airframe) and one line added to the airframe list; no other PX4 file is edited; built and run locally, never distributed. See tools/fc_link/px4/Dockerfile.
+# (CONFIG_MODULES_SIMULATION_GZ_MSGS, _GZ_BRIDGE, _GZ_PLUGINS) and with CONFIG_MODULES_UXRCE_DDS_CLIENT=n (the ROS 2/DDS bridge, whose build clones Micro-CDR from the network; Oversight L-S4): the Gazebo-free SITL build for the external MAVLink simulator link (Spade).
+# Applied at image build as boards/px4/sitl/spade.px4board. PX4 v1.17.0 source with two files added (the SITL board variant (Gazebo and the ROS 2/DDS bridge left out) and the airframe) and one line added to the airframe list; no other PX4 file is edited; built and run locally, never distributed. See tools/fc_link/px4/Dockerfile.
 CONFIG_PLATFORM_POSIX=y
 CONFIG_BOARD_TESTING=y
 CONFIG_BOARD_ETHERNET=y
@@ -59,7 +59,7 @@ CONFIG_MODULES_SIMULATION_SENSOR_AGP_SIM=y
 CONFIG_MODULES_TEMPERATURE_COMPENSATION=y
 CONFIG_MODULES_UUV_ATT_CONTROL=y
 CONFIG_MODULES_UUV_POS_CONTROL=y
-CONFIG_MODULES_UXRCE_DDS_CLIENT=y
+CONFIG_MODULES_UXRCE_DDS_CLIENT=n
 CONFIG_MODULES_VTOL_ATT_CONTROL=y
 CONFIG_SYSTEMCMDS_ACTUATOR_TEST=y
 CONFIG_SYSTEMCMDS_BSONDUMP=y

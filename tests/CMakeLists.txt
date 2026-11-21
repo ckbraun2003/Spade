@@ -168,6 +168,8 @@ add_executable(spade_tests
     test_camera_golden.cpp
     test_world_file_v4.cpp
     test_gnss.cpp
+    test_baro.cpp
+    test_mag.cpp
     test_world_file.cpp
     test_scene_file.cpp
     test_scene_airflow.cpp
@@ -318,6 +320,7 @@ add_executable(spade_tests
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp
     test_fc_link_tcp.cpp
+    test_autopilot_map.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
