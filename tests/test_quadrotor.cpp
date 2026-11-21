@@ -726,9 +726,9 @@ TEST(Quadrotor, SpawnBuildsTheBodyEveryRotorAndTheSensorAndSeedsTheRotorsInTrim)
         EXPECT_EQ((*row)->spin_dir, model->rotors[i].spin_dir) << "rotor " << i;
         EXPECT_EQ((*row)->local_pos, model->rotors[i].local_pos) << "rotor " << i;
         EXPECT_EQ((*row)->enabled, 1u) << "rotor " << i;
-        // The reserved lanes rotor.hpp holds for the gyroscopic/BEMT opt-ins
-        // must stay 0.
-        EXPECT_EQ((*row)->_r0, 0.0f);
+        // tau_down is the quadrotor builder's 0 (= tau); the lanes rotor.hpp holds
+        // for the gyroscopic/BEMT opt-ins must stay 0.
+        EXPECT_EQ((*row)->tau_down, 0.0f);
         EXPECT_EQ((*row)->_r1, 0.0f);
         EXPECT_EQ((*row)->_r2, 0.0f);
         EXPECT_EQ((*row)->_r3, 0.0f);
