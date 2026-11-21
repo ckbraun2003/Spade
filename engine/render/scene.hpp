@@ -543,6 +543,11 @@ struct DrawItem {
     // actuator model is no wall: the solver never saw its surface.
     bool flow_wall = false;
 
+    // A wall's own range (O128, the pressure film's blades): the value a surface colouring reads for this item's pixels is scaled about the colour map's centre by this
+    // before the map, so one item reads on a different fixed range from the colouring's own (gain = the colouring's range over the item's). Read for flow walls only;
+    // 1 changes nothing. Finite and above 0 (render() refuses another).
+    float flow_gain = 1.0f;
+
     // Segmentation's identity (N13; render/segmentation.hpp): indices into
     // RenderScene::labels, or kNoLabel. The object this item belongs to, and
     // its part of it; segmentation by parts falls back to the object.

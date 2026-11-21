@@ -221,9 +221,17 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // How far past a solid the pressure film reads (cells): it paints the detailed kit meshes with the air of Physics' proxy solids, so a drawn point can sit inside a solid
 // cell, and the read goes on outward along the normal to the nearest fluid cell, up to this far (render::FlowSurfaceColouring::search_cells).
 inline constexpr float kSurfacePressureSearchCells = 3.0f;
-// FIXED for the whole film, symmetric about ambient (Oversight, O124): 1.5 x the 95th percentile of |C_p| over the painted pixels at 0.03 s (0.36, four views, measured from the flat stills), rounded up to 0.25, capped at 1.
+// FIXED for the whole film, symmetric about ambient (Oversight, O124). The first film's was +-0.75 (1.5 x the 95th percentile of |C_p| at 0.03 s, 0.36, rounded up to 0.25); Cameron
+// asked for stronger colours (O129), so it is +-0.4, read off the DEVELOPED film (the delivered one's frames at 3.0 to 9.8 s: of the coloured pixels, C_p p1 -0.32, p5 -0.19,
+// p50 +0.07, p95 +0.29, p99 +0.53): the arm strips saturate (2.7% of the coloured pixels, 0.5% of the parts' pixels clip) and the blue tail reads at about half the ramp.
 // The pressure film's colour range, C_p = (p - p_inflow) / q over [-range, range] (q = the discs' loading T/A), centred on the still air's pressure: blue below, red above.
-inline constexpr float kSurfacePressureCpRange = 0.75f;
+inline constexpr float kSurfacePressureCpRange = 0.4f;
+// The blades' OWN fixed range (O128), in the same units, symmetric about the still air's pressure, measured from the blades' own test stills (the 600-step run's frames at
+// steps 600 and 655, the 70 degree start camera, 38,534 blade pixels over the background): the blades are seen from above, so the colour is the suction on the upper face,
+// all below ambient (C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28). +-6 uses the map's whole blue half and clips 8.3% at the blue end (the roots); +-7 would clip 1.1%.
+inline constexpr float kBladePressureCpRange = 6.0f;
+// The gain that makes the blades read on their own range under the parts' colouring (DrawItem::flow_gain): the colouring's range over the blades'.
+[[nodiscard]] constexpr float blade_flow_gain() { return kSurfacePressureCpRange / kBladePressureCpRange; }
 
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
@@ -753,7 +761,7 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false, bool blades = false) {
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
@@ -764,10 +772,16 @@ struct DeliveryGuard {
     const std::string colour =
         pressure ? "Colour shows pressure on the surfaces (the frame, arms, legs, boards and motors), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
                    "and the picture carries no pressure or speed figures. The pressure is the simulated air's, read beside the simulated solids (the parts as solids at " + cell + " mm) and painted on the "
-                   "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. The rotors are " + rotors +
-                   ", which have no surface, so they carry no pressure colour. Parts inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour. "
-                   "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading, symmetric about the still air's pressure"
-                   ", the same in every frame" + (shaded ? "; the surfaces are lit for shape; the colour is the pressure. " : ". ")
+                   "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. " +
+                   (blades ? "The rotors are " + rotors + " and their blades are the kit's real blades, drawn at the simulation's rotor angle. The blade colour is the air pressure the rotor model makes "
+                             "beside the blades, spread over about 5 mm by the model's force kernel, not a pressure resolved on the blade surface. "
+                           : "The rotors are " + rotors + ", which have no surface, so they carry no pressure colour. ") +
+                   "Parts inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour. " +
+                   (blades ? "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading on the parts and at +-" +
+                                 std::format("{:g}", static_cast<double>(kBladePressureCpRange)) + " of the disc loading on the blades, each fixed, symmetric about the still air's pressure, and the same in every frame"
+                           : "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading, symmetric about the still air's pressure"
+                             ", the same in every frame") +
+                   (shaded ? "; the surfaces are lit for shape; the colour is the pressure. " : ". ")
         : cloud ? "Colour shows vorticity (the local spin of the air), blue low to magenta high, and the picture carries no vorticity or speed figures. "
                 : "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
     std::string t;
@@ -837,8 +851,12 @@ struct DeliveryGuard {
 
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
-[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false) {
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false, bool blades = false) {
     const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (pressure && blades && !particles && c.id == "S8") {  // with --prop-blur mode=blades the rotor blades are drawn too, and take the air's pressure beside them
+        return "The air pressure on the surfaces of the reference quad's rigid parts and on its rotor blades, drawn at the simulation's rotor angle, blue (below ambient) to red (above), with four " + rotors +
+               " driving the air, in a slow orbit.";
+    }
     if (pressure && !particles && c.id == "S8") {  // --surface-pressure: the air's pressure on the surfaces, nothing else drawn of the air
         return "The air pressure on the surfaces of the reference quad's rigid parts, blue (below ambient) to red (above), with four " + rotors + " driving the air, in a slow orbit.";
     }
@@ -876,6 +894,7 @@ struct CaptionInput {
     bool cloud = false;         // --nasa-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
     bool pressure = false;      // --surface-pressure: the film shows the air's pressure on the surfaces, and its colour is pressure, not relative speed
     bool shaded = false;        // --surface-shade: ... lit for shape
+    bool blades = false;        // --prop-blur mode=blades: ... and the rotors' real blades, drawn at the simulation's angle, take the air's pressure beside them on their own range
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -887,11 +906,11 @@ struct CaptionInput {
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure, in.blades), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }

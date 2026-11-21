@@ -243,6 +243,7 @@ struct Film {
     // each frame's log before decorate(), which a film may replace (note_held_pose).
     std::shared_ptr<HeldPose> held_pose;
     std::shared_ptr<const spade::analysis::LiveLines> lines;  // --lines: the rotors as actuator lines (a device film)
+    bool blade_azimuth = false;  // --prop-blur mode=blades: each frame's live record ends with the blades' azimuths (LiveRun::blade_azimuth), one a rotor, in radians
     bool hover_start = false;  // --hover-start: the rotors spawn at the speed the first controls command (no spool-up), as Physics' L106 harness does
     // A library drone's parts take their roles' colours (part_materials.hpp); off for the reference quad, whose frames stay.
     bool role_materials = false;
@@ -539,6 +540,9 @@ constexpr uint32_t kStateEvery = 20;  // frames between solver snapshots
         // The lines' thrust in all, after this step, last: the 12th value of a 4-rotor record, as Physics' L106 harness writes it. It is not a speed
         // (rotor_speeds_of_live reads the speeds by the table's rotor count), so a thrustless record draws the same frame.
         if (film.lines) live.push_back(run->line_thrust());
+        if (film.blade_azimuth) {  // the blades' azimuths, last: the simulation's psi at this frame's step (what the drawn blade is turned by)
+            for (const float psi : run->blade_azimuth()) live.push_back(static_cast<double>(psi));
+        }
         const FrameLog log{frame->steps, frame->t_s, std::move(live)};
         const FrameBound bound{.expected_speed = film.expected_speed, .solid_cells = run->solids().solid_cells};
         // A streamed run writes only the frames its plan needs: one no draw reads is solved and dropped.
@@ -1750,6 +1754,8 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                         draw.blur = blur;
                         draw.chord = chord;
                         draw.omega = rotor_speeds_of_live(log.live, rotor_count_of(*build));  // by the table's rotors: the lines' thrust, last, is not a speed
+                        draw.psi = rotor_azimuths_of_live(log.live, rotor_count_of(*build));  // --prop-blur mode=blades: the simulation's blade azimuths, the record's last values
+                        if (blur.blades && walls) draw.blade_flow_gain = web::blade_flow_gain();  // the blades read the air on their own range
                         draw.flow_walls = walls;  // --surface-pressure: the drawn parts take the pressure colour (the blade blur is no wall)
                         return add_build_parts(scene, *build, store, pos, orient, draw);
                     }
@@ -1763,6 +1769,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
             film.lines = std::make_shared<const spade::analysis::LiveLines>(std::move(*lines));
             film.hover_start = plan.hover_start;
         }
+        film.blade_azimuth = plan.prop_blur.blades;
         // S1, S8 and S2 are framed closer, looking down 8 degrees, so the deeper box's floor stays out of frame (L63;
         // web_masters.hpp's constants, the floor's projection pinned by FlowMovieWeb.TheStillAirFramingKeepsTheFloor...).
         // S3 and S4 are still PROVISIONAL: the quad's radii, not yet fitted on D1's side-wind field.
@@ -2507,6 +2514,7 @@ struct WebFilming {
         in.cloud = opt.nasa_cloud;
         in.pressure = opt.surface_pressure;
         in.shaded = opt.surface_shade;
+        if (const auto blades_blur = parse_prop_blur(opt.prop_blur)) in.blades = blades_blur->blades;
         in.step_us = opt.step_us.value_or(200u);
         in.commit = build_identity();
         in.date_utc = utc_now();

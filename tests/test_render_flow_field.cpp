@@ -357,6 +357,39 @@ TEST(RenderFlowField, AnOffsetReadsTheSeenSideOfASheet) {
     expect_map_colour(centre_colour(-1.0f, 1.0f), 0.0f, "one cell off: the seen side's -1");
 }
 
+// DrawItem::flow_gain (the pressure film's blades, O128): a wall's value is multiplied by its item's gain before the colour map, so one item reads on a different
+// fixed range from the colouring's own (gain = the colouring's range / the item's). The sheet reads +0.5 one cell off its seen side, on a map over [-1, 1]: gain 1 is
+// 0.75 along the map, gain 2 is the map's end, gain 0.5 is 0.625, and a gain that overshoots clamps at the end. A gain acts on walls only; a bad gain is refused.
+TEST(RenderFlowField, AWallItemsGainScalesItsValueBeforeTheColourMap) {
+    const auto centre_colour = [&](float gain, bool wall) {
+        const spade::FlowVolume volume = sheet_volume(0.5f);
+        RenderScene scene = quad_scene();
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
+        colouring.offset_cells = 1.0f;
+        scene.flow_surface_colouring = colouring;
+        scene.statics[0].flow_wall = wall;
+        scene.statics[0].flow_gain = gain;
+        return rgb(draw(scene), 16, 16);
+    };
+    expect_map_colour(centre_colour(1.0f, true), 0.75f, "gain 1: the value as read");
+    expect_map_colour(centre_colour(2.0f, true), 1.0f, "gain 2: +0.5 reads as +1, the map's end");
+    expect_map_colour(centre_colour(0.5f, true), 0.625f, "gain 0.5: +0.25");
+    expect_map_colour(centre_colour(8.0f, true), 1.0f, "an overshoot clamps at the end");
+    expect_map_colour(centre_colour(2.0f, false), 0.75f, "a gain on a non-wall item is not read");
+
+    for (const float bad : {0.0f, -1.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        const spade::FlowVolume volume = sheet_volume(0.5f);
+        RenderScene scene = quad_scene();
+        scene.flow_surface_colouring = FlowSurfaceColouring{&volume, sheet_colours()};
+        scene.statics[0].flow_wall = true;
+        scene.statics[0].flow_gain = bad;
+        spade::Result<void> r;
+        (void)draw(scene, &r);
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("flow_gain"), std::string::npos) << r.error().context;
+    }
+}
+
 // A SOLID IN THE VOLUME: the cells within `half` of z = 0 hold no data (a part's solid cells); the air beyond reads `above` on the +z side and `below` on the -z
 // side, in x and y within [-2, 2] m (cells of 0.25 m, so the slab's cells are the four centred on z = 0.125 and -0.125 at half 0.3).
 [[nodiscard]] spade::FlowVolume solid_slab_volume(float half, float above, float below) {

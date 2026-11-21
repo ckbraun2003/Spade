@@ -526,6 +526,146 @@ TEST(FlowMovieBuildParts, ASpinningRotorIsManySeeThroughCopiesOfOneMeshAndAStopp
     fs::remove_all(store);
 }
 
+// THE REAL BLADES (--prop-blur mode=blades, O128): the kit's own blade mesh, ONE opaque copy a rotor, turned about the hub's +Y by s psi, psi the simulation's blade
+// azimuth (LiveRun::blade_azimuth, posed_parts' R_y(s psi)). The actuator line puts blade b at phi = s psi + 2 pi b / B, d = ref cos phi + (axis x ref) sin phi with the
+// thrust axis +Y and ref the part's own +X, so blade 0's direction is (cos phi, 0, -sin phi): the drawn blade and the line coincide, for both hands, at psi 0 and after.
+TEST(FlowMovieBuildParts, ABladesModeRotorIsOneOpaqueBladeAtTheSimulationsAzimuthWhereTheLinePutsBladeZero) {
+    const fs::path store = fresh_store("blades");
+    save_tetra(store / kSha / "prop.spmesh");
+    const auto parts = flow_movie::parse_build_parts(table(
+        "  - name: rotor_fl\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n"
+        "    pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n"
+        "  - name: rotor_fr\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 1\n    spin: -1\n"
+        "    pose: {position: [-0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n"));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    const std::array<double, 2> omega{567.0, 567.0};
+    const glm::vec3 hub[2] = {glm::vec3(0.174f, 0.0614f, 0.174f), glm::vec3(-0.174f, 0.0614f, 0.174f)};
+    const int spin[2] = {1, -1};
+    for (const double psi0 : {0.0, 1.5707963267948966, 2.5}) {
+        flow_movie::BuildDraw draw;
+        draw.blur.blades = true;
+        draw.omega = omega;
+        const std::array<double, 2> psi{psi0, psi0};
+        draw.psi = psi;
+        spade::render::RenderScene scene;
+        const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), draw);
+        ASSERT_TRUE(added.has_value()) << added.error().context;
+        ASSERT_EQ(scene.statics.size(), 2u) << "one blade a rotor: no copies, no disc";
+        for (std::size_t k = 0; k < 2u; ++k) {
+            EXPECT_FALSE(scene.statics[k].see_through) << "a real blade is opaque, " << k;
+            const double phi = static_cast<double>(spin[k]) * psi0;  // the line's blade 0: phi = s psi
+            const glm::vec4 at = scene.statics[k].local_to_world * glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+            EXPECT_NEAR(at.x - hub[k].x, std::cos(phi), 1e-5) << "rotor " << k << " psi " << psi0;
+            EXPECT_NEAR(at.z - hub[k].z, -std::sin(phi), 1e-5) << "rotor " << k << " psi " << psi0;
+            EXPECT_NEAR(at.y, hub[k].y, 1e-6) << k;
+        }
+    }
+    fs::remove_all(store);
+}
+
+// A blades-mode rotor with no blade azimuth for it is refused, naming it: drawing azimuth 0 would claim an angle the simulation did not have.
+TEST(FlowMovieBuildParts, ABladesModeRotorWithNoAzimuthIsRefusedNamingIt) {
+    const fs::path store = fresh_store("blades_refused");
+    save_tetra(store / kSha / "prop.spmesh");
+    const auto parts = flow_movie::parse_build_parts(table(
+        "  - name: rotor_fl\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n"
+        "    pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n"));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    flow_movie::BuildDraw draw;
+    draw.blur.blades = true;
+    const std::array<double, 1> omega{567.0};
+    draw.omega = omega;
+    spade::render::RenderScene scene;
+    const auto added = flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), draw);
+    ASSERT_FALSE(added.has_value());
+    EXPECT_NE(added.error().context.find("blade azimuth"), std::string::npos) << added.error().context;
+    EXPECT_NE(added.error().context.find("rotor_fl"), std::string::npos) << added.error().context;
+    fs::remove_all(store);
+}
+
+// The blades read the air on THEIR OWN fixed range: with the pressure film's walls on, a blades-mode blade is a flow wall carrying BuildDraw::blade_flow_gain (the
+// colouring's range over the blades' own), and every other part keeps gain 1. A blade that is not a wall in the flow (no --surface-pressure) is still drawn.
+TEST(FlowMovieBuildParts, TheBladesAreFlowWallsWithTheirOwnRangeGainAndTheOtherPartsKeepGainOne) {
+    const fs::path store = fresh_store("blade_gain");
+    save_tetra(store / kSha / "prop.spmesh");
+    const auto parts = flow_movie::parse_build_parts(table(
+        std::string(kBoxEntry) +
+        "  - name: rotor_fl\n    kind: rotor\n    mass_kg: 0.02\n    rotor: 0\n    spin: 1\n"
+        "    pose: {position: [0.174, 0.0614, 0.174], orientation: [1, 0, 0, 0]}\n"
+        "    objects:\n      - store_ref: {sha256: " + kSha + ", file: prop.spmesh}\n"));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    const std::array<double, 1> omega{567.0};
+    const std::array<double, 1> psi{0.3};
+    flow_movie::BuildDraw draw;
+    draw.blur.blades = true;
+    draw.omega = omega;
+    draw.psi = psi;
+    draw.blade_flow_gain = 0.25f;
+    draw.flow_walls = true;
+    spade::render::RenderScene scene;
+    ASSERT_TRUE(flow_movie::add_build_parts(scene, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), draw).has_value());
+    ASSERT_GE(scene.statics.size(), 2u);
+    const auto& blade = scene.statics.back();
+    EXPECT_TRUE(blade.flow_wall);
+    EXPECT_FLOAT_EQ(blade.flow_gain, 0.25f);
+    for (std::size_t i = 0; i + 1 < scene.statics.size(); ++i) {
+        EXPECT_TRUE(scene.statics[i].flow_wall) << i;
+        EXPECT_FLOAT_EQ(scene.statics[i].flow_gain, 1.0f) << "a part that is no blade, " << i;
+    }
+    draw.flow_walls = false;
+    spade::render::RenderScene plain;
+    ASSERT_TRUE(flow_movie::add_build_parts(plain, *parts, store, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), draw).has_value());
+    for (const auto& item : plain.statics) EXPECT_FALSE(item.flow_wall) << "no ask, no wall";
+    fs::remove_all(store);
+}
+
+// --prop-blur mode=blades is a third mode beside the disc and the sampled copies; the others are as they were, and the note says what is drawn.
+TEST(FlowMovieBuildParts, ThePropBlurBladesModeIsParsedAndSaysWhatItDraws) {
+    const auto blades = flow_movie::parse_prop_blur("mode=blades");
+    ASSERT_TRUE(blades.has_value()) << blades.error().context;
+    EXPECT_TRUE(blades->blades);
+    EXPECT_FALSE(blades->sampled);
+    const auto sampled = flow_movie::parse_prop_blur("mode=sampled");
+    ASSERT_TRUE(sampled.has_value());
+    EXPECT_FALSE(sampled->blades);
+    EXPECT_TRUE(sampled->sampled);
+    const auto plain = flow_movie::parse_prop_blur("");
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_FALSE(plain->blades);
+    const auto bad = flow_movie::parse_prop_blur("mode=propellers");
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().context.find("blades"), std::string::npos) << "the refusal lists the modes: " << bad.error().context;
+    const std::string note = flow_movie::prop_blur_note(*blades);
+    EXPECT_NE(note.find("real blade"), std::string::npos) << note;
+    EXPECT_NE(note.find("simulation's rotor angle"), std::string::npos) << note;
+    EXPECT_EQ(note.find("copies"), std::string::npos) << note;
+    EXPECT_EQ(note.find("disc"), std::string::npos) << note;
+}
+
+// The blades' azimuths ride in the frame's live record, after everything the draw already reads: [7 body][a speed a rotor][the lines' thrust, when lines][a psi a rotor].
+// They are the LAST `rotors` values, and a record too short to hold them has none (the plain 11- and 12-value records draw as before).
+TEST(FlowMovieBuildParts, TheBladeAzimuthsAreTheLastRotorsValuesOfALongEnoughLiveRecord) {
+    const std::vector<double> plain{0.1, 0.2, 0.3, 1.0, 0.0, 0.0, 0.0, 567.0, 567.0, 567.0, 567.0};
+    EXPECT_TRUE(flow_movie::rotor_azimuths_of_live(plain, 4u).empty());
+    std::vector<double> lines = plain;
+    lines.push_back(16.0);  // the lines' thrust
+    EXPECT_TRUE(flow_movie::rotor_azimuths_of_live(lines, 4u).empty()) << "the thrust is not an azimuth";
+    std::vector<double> with = lines;
+    for (const double a : {0.5, 1.5, 2.5, 3.5}) with.push_back(a);
+    const auto psi = flow_movie::rotor_azimuths_of_live(with, 4u);
+    ASSERT_EQ(psi.size(), 4u);
+    EXPECT_DOUBLE_EQ(psi[0], 0.5);
+    EXPECT_DOUBLE_EQ(psi[3], 3.5);
+    EXPECT_EQ(flow_movie::rotor_speeds_of_live(with, 4u).size(), 4u) << "the speeds are still the four after the body";
+    EXPECT_DOUBLE_EQ(flow_movie::rotor_speeds_of_live(with, 4u)[3], 567.0);
+    std::vector<double> no_thrust = plain;
+    for (const double a : {0.5, 1.5, 2.5, 3.5}) no_thrust.push_back(a);
+    EXPECT_EQ(flow_movie::rotor_azimuths_of_live(no_thrust, 4u).size(), 4u) << "a record with no lines' thrust";
+}
+
 // The frame's live record is the body (7: position, orientation), then one speed a rotor, then, since L106c, the lines' thrust in all (the harness's 12th
 // value). The thrust is LAST and is not a speed: a draw that counts the rotors from the record's length would spin a fifth rotor at 13 rad/s. The speeds are
 // read by the TABLE's rotor count (rotor_speeds_of_live), so a 12-value record draws the same frame as its 11-value record (the lead, 2026-11-19).
