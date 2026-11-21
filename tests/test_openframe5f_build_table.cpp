@@ -20,7 +20,7 @@
 //                                                front-right, spin +1 takes prop_ccw), radius 0.0635 m, the prop stand-ins the library's own meshes by file hash
 //   OpenFrame5fBuildTable.ThePackIsAnAssumedTypicalSixS   one 6S 1300 mAh pack, 200 g, 78 x 39 x 38 mm, graded assumed, on the top plate
 //   OpenFrame5fBuildTable.EveryEntryCarriesItsMassAndItsGrades   mass_kg, mass_grade, mass_source and pose_grade on every entry; the frame's 0.170 kg is
-//                                                the maker's, the printed parts' mass assumed; the kit sums to 0.5657 kg
+//                                                the maker's, the printed parts' mass assumed; the kit sums to 0.5665 kg; the frame's mass_source names the antenna mount lumped into it
 //   OpenFrame5fBuildTable.TheStoreRefsResolveAndTheArmsAreTheHandsTheyClaim   OPT-IN (SPADE_PART_STORE): every store_ref is a file in the store, and the
 //                                                exported arm's centroid is at +y, its mirror's at -y with the same |x|
 // ---------------------------------------------------------------------------
@@ -186,7 +186,8 @@ TEST(OpenFrame5fBuildTable, EveryEntryCarriesItsMassAndItsGrades) {
     ASSERT_TRUE(frame.IsMap());
     EXPECT_NEAR(frame["mass_kg"].as<double>(), 0.170, 1e-12) << "the maker's 170 g (carbon, aluminium and hardware, without the printed parts)";
     EXPECT_EQ(frame["mass_grade"].as<std::string>(), "published") << "the README says measured, the product page says est.: not graded measured by Spade";
-    EXPECT_NEAR(sum, 0.5657, 1e-4) << "frame 170 g, printed parts 29.7 g, FC 7, ESC 15, RX 0.8, four motors 128, pack 200, four props 15.2: 565.7 g, no camera, VTX or wiring";
+    EXPECT_NEAR(sum, 0.5665, 1e-4) << "frame 170 g, printed parts 29.7 g, FC 7, ESC 15, RX 0.8, four motors 128, pack 200, four props 16: 566.5 g, no camera, VTX or wiring";
+    EXPECT_TRUE(frame["mass_source"].as<std::string>().find("Airtag") != std::string::npos) << "the antenna mount's mass is lumped into the frame's, and the source says so";
 }
 
 TEST(OpenFrame5fBuildTable, TheStackSitsOnTheMakersHoles) {
@@ -251,11 +252,12 @@ TEST(OpenFrame5fBuildTable, TheMotorsAndTheRotorsAreOnTheArmsBores) {
         EXPECT_GT(at.z * want_z[index], 0.0) << name;
         EXPECT_NEAR(part["radius"].as<double>(), 0.0635, 1e-12) << name;
         EXPECT_NEAR(at.y, 0.0436, 1e-9) << name << ": the disc plane, 4 mm above the motor's top (assumed: the hub is not published)";
+        EXPECT_NEAR(at.y - 0.009, 0.0306 + 0.004, 1e-9) << name << ": 34.6 mm above the 9.0 mm seat: the motor's 30.6 mm (retailer) and the 4 mm hub (assumed)";
         ASSERT_EQ(part["objects"].size(), 1u) << name;
         const std::string file = part["objects"][0]["store_ref"]["file"].as<std::string>();
         EXPECT_EQ(file, spin == 1 ? "prop_ccw.spmesh" : "prop_cw.spmesh") << name << ": spin +1 is counter-clockwise from above and takes the ccw file";
-        EXPECT_NEAR(part["mass_kg"].as<double>(), 0.0038, 1e-12) << name;
-        EXPECT_EQ(part["mass_grade"].as<std::string>(), "retailer") << name << ": 3.8 g, the retailers' figure for the HQProp V2S";
+        EXPECT_NEAR(part["mass_kg"].as<double>(), 0.004, 1e-12) << name << ": the uiuc_mit_5x4 stand-in, 4 g (Physics' kit model)";
+        EXPECT_EQ(part["mass_grade"].as<std::string>(), "assumed") << name << ": a stand-in prop, not the HQProp V2S the maker names";
         // the part store's entry is the library's own mesh, byte for byte
         const std::filesystem::path lib = std::filesystem::path(SPADE_REPO_DIR) / "assets/library/drones/fpv_5inch" / file;
         std::ifstream in(lib, std::ios::binary);
