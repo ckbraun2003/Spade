@@ -155,6 +155,7 @@ add_executable(spade_tests
     test_camera_capacities.cpp
     test_camera_lens.cpp
     test_ray_scene.cpp
+    test_camera_shade.cpp
     test_gnss.cpp
     test_world_file.cpp
     test_scene_file.cpp
