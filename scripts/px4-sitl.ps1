@@ -59,7 +59,7 @@ if (-not $Stop) {
         '--entrypoint', "$px4Dir/bin/px4")
     if ($PublishOffboard) { $dockerArgs += @('-p', '14540:14540/udp') }
     $dockerArgs += @($Image, '-d', '-s', 'etc/init.d-posix/rcS')
-    & docker @args *> $null
+    & docker @dockerArgs *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Output "px4-sitl: docker could not start $name from $Image"
         exit 4
