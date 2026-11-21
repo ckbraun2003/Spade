@@ -168,6 +168,15 @@ TEST(OpenFrame5fInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
                 const spade::MeshMassProperties& m = loaded->mesh->mass_properties();
                 pieces.push_back({m.volume, object_at + object_rot * glm::dvec3(m.centroid), object_rot * glm::dmat3(m.inertia) * glm::transpose(object_rot)});
                 volume += m.volume;
+                // The object's box in the table's frame, for the flow's proxy solids (the kit model's plate stack and arms).
+                glm::dvec3 lo(1.0e30), hi(-1.0e30);
+                for (const glm::vec3& vertex : loaded->mesh->positions()) {
+                    const glm::dvec3 w = object_at + object_rot * glm::dvec3(vertex);
+                    lo = glm::min(lo, w);
+                    hi = glm::max(hi, w);
+                }
+                std::printf("[kit-box] %-22s %-34s x %+.4f .. %+.4f  y %+.4f .. %+.4f  z %+.4f .. %+.4f m\n", name.c_str(),
+                            object["store_ref"]["file"].as<std::string>().c_str(), lo.x, hi.x, lo.y, hi.y, lo.z, hi.z);
             }
             for (const Piece& p : pieces) b.centre += (mass * p.volume / volume) * p.centroid;
             b.centre /= mass;
