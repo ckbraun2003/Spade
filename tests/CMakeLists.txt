@@ -125,6 +125,7 @@ add_executable(spade_tests
     test_x500_case.cpp
     test_x500_kit_inertia.cpp
     test_airflow_fpv_solids.cpp
+    test_airflow_fpv_grid.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
