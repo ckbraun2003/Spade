@@ -473,6 +473,7 @@ struct PropBlur {
     float alpha = 0.30f;       // each copy's opacity (the first 0.18 lit only 77 pixels of a rotor's disc over a black sky)
     float tint = 0.65f;        // the copies' and the disc's grey level: a blurred blade is a pale smoky haze (a black one is nothing on a dark frame)
     bool sampled = false;      // --prop-blur mode=sampled: the many-copies blur; the default is the time-averaged disc (rotor_disc_mesh)
+    bool blades = false;       // --prop-blur mode=blades (O128): the kit's real blade, one opaque copy, at the simulation's blade azimuth (BuildDraw::psi); no disc, no copies
     float opacity = 5.0f;      // the disc's GAIN on the solidity (1 is the physical average, alpha 0.03 to 0.28: nearly invisible over the cloud); alpha is capped at 1
 };
 
@@ -554,10 +555,15 @@ inline void apply_drone_light(spade::render::RenderScene& scene, const DroneLigh
         if (key == "mode") {
             if (value == "disc") {
                 blur.sampled = false;
+                blur.blades = false;
             } else if (value == "sampled") {
                 blur.sampled = true;
+                blur.blades = false;
+            } else if (value == "blades") {
+                blur.sampled = false;
+                blur.blades = true;
             } else {
-                return bad_blur("mode is disc or sampled, not '" + value + "'");
+                return bad_blur("mode is disc, sampled or blades, not '" + value + "'");
             }
             continue;
         }
@@ -694,7 +700,7 @@ inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at mo
 // The chord a draw gets: the prop part file's (--lines) when there are parts and the blur is the disc; none otherwise (a turning rotor is then
 // refused, naming --lines). An unreadable file is an error naming --lines.
 [[nodiscard]] inline spade::Result<std::optional<BladeChord>> chord_for_draw(const PropBlur& blur, bool has_parts, const std::filesystem::path& lines_file) {
-    if (!has_parts || blur.sampled || lines_file.empty()) return std::optional<BladeChord>{};
+    if (!has_parts || blur.sampled || blur.blades || lines_file.empty()) return std::optional<BladeChord>{};
     auto read = read_blade_chord(lines_file);
     if (!read) return std::unexpected(spade::Error{read.error().code, "--lines (the rotors' disc): " + read.error().context});
     return std::optional<BladeChord>(std::move(*read));
@@ -703,6 +709,7 @@ inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at mo
 // The clip record's sentence on how the turning rotors are drawn: the disc at the blades' time-averaged coverage (times a gain, when it is not 1),
 // or the sampled blur's copies.
 [[nodiscard]] inline std::string prop_blur_note(const PropBlur& blur) {
+    if (blur.blades) return "the rotors' real blades drawn opaque at the simulation's rotor angle, with no blur";
     if (blur.sampled) {
         return std::format("each rotor's blade drawn as {} copies spread over a {:g} s shutter so the turning shows", blur.samples, blur.shutter_s);
     }
@@ -717,6 +724,8 @@ struct BuildDraw {
     glm::quat design_to_principal{1.0f, 0.0f, 0.0f, 0.0f};
     glm::vec3 com_offset{0.0f};
     std::span<const double> omega{};  // the logged rotor speeds (rad/s), by a rotor part's `rotor` index; none: every blade frozen
+    std::span<const double> psi{};    // --prop-blur mode=blades: the simulation's blade azimuth (rad) by a rotor part's `rotor` index (rotor_azimuths_of_live); a blades-mode rotor with none is refused
+    float blade_flow_gain = 1.0f;     // blades mode: the blade items' DrawItem::flow_gain (the colouring's range over the blades' own), when the parts are flow walls
     PropBlur blur{};
     std::optional<BladeChord> chord;  // the prop part's chord table (--lines): what the turning rotors' disc is made from
     bool flow_walls = false;          // --surface-pressure: the parts drawn are walls in the flow (DrawItem::flow_wall), the blade blur excepted
@@ -923,7 +932,17 @@ inline void mark_flow_walls(spade::render::RenderScene& scene, std::size_t first
                 const double omega = part.kind == "rotor" && part.rotor >= 0 && static_cast<std::size_t>(part.rotor) < draw_options.omega.size()
                                          ? draw_options.omega[static_cast<std::size_t>(part.rotor)]
                                          : 0.0;
-                if (part.kind == "rotor" && omega > 0.0 && !draw_options.blur.sampled) {
+                if (part.kind == "rotor" && draw_options.blur.blades) {
+                    // the real blade (O128): one opaque copy at the simulation's azimuth, R_y(s psi) about the hub's +Y, where the actuator line puts blade 0
+                    const std::size_t at = part.rotor >= 0 ? static_cast<std::size_t>(part.rotor) : draw_options.psi.size();
+                    if (at >= draw_options.psi.size()) {
+                        return fail(part, "object " + file.string(), spade::Error{spade::Code::invalid_argument, "blades mode needs the simulation's blade azimuth for rotor " + std::to_string(part.rotor) +
+                                                                                                                    " and the frame's record carries none"});
+                    }
+                    const glm::quat turn = glm::angleAxis(static_cast<float>((part.spin < 0 ? -1.0 : 1.0) * draw_options.psi[at]), glm::vec3(0.0f, 1.0f, 0.0f));
+                    if (auto r = draw(std::move(mesh), pos, orient * turn, "object " + file.string()); !r) return r;
+                    scene.statics.back().flow_gain = draw_options.blade_flow_gain;
+                } else if (part.kind == "rotor" && omega > 0.0 && !draw_options.blur.sampled) {
                     // the time-averaged disc: the `prop` primitive is replaced by rings at its blade plane, alpha the solidity there; the bell stays
                     const std::string what = "object " + file.string();
                     if (!draw_options.chord) {
@@ -1005,6 +1024,13 @@ struct HeldPose {
 [[nodiscard]] inline std::span<const double> rotor_speeds_of_live(std::span<const double> live, std::size_t rotors) {
     if (live.size() < 7u) return {};
     return live.subspan(7u, std::min(rotors, live.size() - 7u));
+}
+
+// The blades' azimuths (rad, the simulation's psi a rotor, O128): the LAST `rotors` values of a record long enough to hold [7 body][a speed a rotor][a psi a rotor] (the lines'
+// thrust, when there is one, sits between and is not an azimuth); a record too short for that has none. Written by the live run when the film asks for real blades.
+[[nodiscard]] inline std::span<const double> rotor_azimuths_of_live(std::span<const double> live, std::size_t rotors) {
+    if (rotors == 0u || live.size() < 7u + 2u * rotors) return {};
+    return live.subspan(live.size() - rotors, rotors);
 }
 
 

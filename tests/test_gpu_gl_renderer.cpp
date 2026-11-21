@@ -2384,6 +2384,47 @@ TEST_F(GpuGlRenderer, AShadedSurfaceColouringMatchesTheCpu) {
     EXPECT_EQ(band.over_two, 0u);
 }
 
+// DrawItem::flow_gain on GL as on the CPU (O128, the pressure film's blades): the wall's value times its gain before the map. A quad over a pressure ramp read at
+// gain 1 and at gain 2 differs on the CPU, and GL's frame at gain 2 is the CPU's within one level.
+TEST_F(GpuGlRenderer, AWallItemsFlowGainMatchesTheCpu) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = 0.4f * p.x;
+        return c;
+    });
+    spade::render::TransferFunction colours;
+    colours.quantity = spade::render::FlowQuantity::pressure;
+    colours.colours = spade::render::ColourMapId::cool_warm;
+    colours.range_min = -1.0f;
+    colours.range_max = 1.0f;
+    RenderScene scene;
+    spade::render::MeshData quad;
+    quad.positions = {glm::vec3(-1.5f, -1.5f, 0.0f), glm::vec3(1.5f, -1.5f, 0.0f), glm::vec3(1.5f, 1.5f, 0.0f), glm::vec3(-1.5f, 1.5f, 0.0f)};
+    quad.normals.assign(4, glm::vec3(0.0f, 0.0f, 1.0f));
+    quad.indices = {0, 1, 2, 0, 2, 3};
+    scene.meshes.push_back(quad);
+    scene.materials = {Material{}};
+    scene.statics.push_back(DrawItem{.mesh_index = 0, .local_to_world = glm::mat4(1.0f)});
+    scene.bounds = spade::render::Aabb{.min = glm::vec3(-5.0f), .max = glm::vec3(5.0f)};
+    spade::render::FlowSurfaceColouring colouring{&volume, colours};
+    colouring.offset_cells = 1.0f;
+    colouring.walls_only = true;
+    scene.flow_surface_colouring = colouring;
+    scene.statics[0].flow_wall = true;
+    Camera camera;
+    camera.position = glm::vec3(0.0f, 0.0f, 5.0f);
+    scene.statics[0].flow_gain = 1.0f;
+    const std::vector<uint8_t> cpu1 = cpu_rgba(scene, camera, comparable_options());
+    scene.statics[0].flow_gain = 2.0f;
+    const std::vector<uint8_t> gl = draw_and_read(scene, comparable_options(), camera);
+    const std::vector<uint8_t> cpu2 = cpu_rgba(scene, camera, comparable_options());
+    ASSERT_EQ(gl.size(), kPixels * 4u);
+    EXPECT_GT(channel_diff(cpu1, cpu2).differing, kPixels / 50u) << "the gain changes the colours";
+    const ChannelDiff band = channel_diff(cpu2, gl);
+    EXPECT_LE(band.worst, 1) << renderer_->renderer_name();
+    EXPECT_EQ(band.over_two, 0u);
+}
+
 // Plan step 7g: a renderer asked to compile its flow programs in the
 // background says when they are ready. Until then it refuses a flow layer
 // as compiling (L6); once ready, within two minutes even on a cold driver

@@ -1,6 +1,6 @@
 // test_camera_capacities.cpp -- Capacities::cameras and ::camera_pixels (Phase 3.1 of rendering/camera-sensor-design, section 11 item 2): declared like the
-// other capacities, default 0 so a world that does not use a camera is unchanged in its file, its validation and its config hash. A world file does not carry
-// them yet (that is a schema version of its own, with the labels and materials of item 3.4): writing one is refused, never silently dropped.
+// other capacities, default 0 so a world that does not use a camera is unchanged in its file, its validation and its config hash. A world file carries
+// them as schema version 4 (Phase 3.4; test_world_file_v4.cpp has the rest of that schema).
 
 #include <gtest/gtest.h>
 
@@ -62,12 +62,17 @@ TEST(CameraCapacities, CamerasNeedAPixelBudgetAndABudgetNeedsCameras) {
     EXPECT_NE(no_cameras.error().context.find("cameras"), std::string::npos) << no_cameras.error().context;
 }
 
-TEST(CameraCapacities, AWorldFileRefusesToWriteACameraWorldRatherThanDropItsCameras) {
+TEST(CameraCapacities, AWorldFileCarriesACameraWorldAsVersion4) {
+    // Phase 3.1 refused to write a camera world (no schema version carried the capacities); schema version 4 (Phase 3.4) carries them, so it round trips.
     const spade::Result<WorldDesc> world = build_with(2, 1'228'800);
     ASSERT_TRUE(world.has_value()) << world.error().context;
     const spade::Result<std::string> text = spade::world_to_yaml(*world);
-    ASSERT_FALSE(text.has_value()) << "silently writing a file that loses the cameras is the failure";
-    EXPECT_NE(text.error().context.find("camera"), std::string::npos) << text.error().context;
+    ASSERT_TRUE(text.has_value()) << text.error().context;
+    EXPECT_NE(text->find("world_version: 4\n"), std::string::npos);
+    const spade::Result<WorldDesc> loaded = spade::world_from_yaml(*text);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    EXPECT_EQ(loaded->capacities.cameras, 2u);
+    EXPECT_EQ(loaded->capacities.camera_pixels, 1'228'800u);
 }
 
 TEST(CameraCapacities, TheConfigHashSeesThemOnlyWhenTheyAreUsed) {
@@ -96,12 +101,15 @@ TEST(CameraCapacities, TheKeypointCapacitiesDefaultToZeroAndComeAsAPair) {
     EXPECT_NE(no_groups.error().context.find("keypoint_groups"), std::string::npos) << no_groups.error().context;
 }
 
-TEST(CameraCapacities, AWorldFileRefusesToWriteKeypointCapacitiesToo) {
+TEST(CameraCapacities, AWorldFileCarriesTheKeypointCapacitiesToo) {
     const spade::Result<WorldDesc> world = build_with(0, 0, 5, 4);
     ASSERT_TRUE(world.has_value()) << world.error().context;
     const spade::Result<std::string> text = spade::world_to_yaml(*world);
-    ASSERT_FALSE(text.has_value()) << "no schema version carries them yet; silently dropping them is the failure";
-    EXPECT_NE(text.error().context.find("keypoint"), std::string::npos) << text.error().context;
+    ASSERT_TRUE(text.has_value()) << text.error().context;
+    const spade::Result<WorldDesc> loaded = spade::world_from_yaml(*text);
+    ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
+    EXPECT_EQ(loaded->capacities.keypoint_groups, 5u);
+    EXPECT_EQ(loaded->capacities.keypoints_per_group, 4u);
 }
 
 TEST(CameraCapacities, TheConfigHashSeesTheKeypointCapacitiesOnlyWhenTheyAreUsed) {

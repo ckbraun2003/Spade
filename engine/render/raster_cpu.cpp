@@ -294,6 +294,7 @@ constexpr uint8_t kBgrxOpaqueByte = 0xFFu;
 struct SurfaceInfo {
     glm::vec3 normal{0.0f};  // world, unit, turned toward the eye; 0 where unknown (lines)
     bool flow_wall = false;  // DrawItem::flow_wall of the item drawn here
+    float flow_gain = 1.0f;  // DrawItem::flow_gain of the item drawn here
 };
 
 struct FrameBuffers {
@@ -997,7 +998,7 @@ void draw_mesh_item(FrameBuffers& fb, const ViewContext& vc, const RenderScene& 
     }
     // RND-8: this item's pixels record whether it is a wall in the flow;
     // draw_mesh_triangle_shaded() adds each triangle's normal.
-    const SurfaceScope surface_scope(fb, SurfaceInfo{glm::vec3(0.0f), item.flow_wall});
+    const SurfaceScope surface_scope(fb, SurfaceInfo{glm::vec3(0.0f), item.flow_wall, item.flow_gain});
     if (mode == DrawMode::segmentation) {
         fb.flat_now = item_segment_colour(scene, item, options.segment_by);
     }
@@ -1297,7 +1298,7 @@ void draw_csg_subtrees(FrameBuffers& fb, const ViewContext& vc, const RenderScen
                 }
                 if (fb.surfaces != nullptr) {  // RND-8: the gradient, turned toward the eye
                     fb.surface_now = SurfaceInfo{glm::dot(normal, ray.dir_world) > 0.0f ? -normal : normal,
-                                                 item.flow_wall};
+                                                 item.flow_wall, item.flow_gain};
                 }
                 setPixelIfCloser(fb, x, y, 1.0 / (-pc.z), to_byte(color.r), to_byte(color.g), to_byte(color.b));
             }
@@ -1366,7 +1367,12 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
                 if (report != nullptr) ++report->surface_pixels_no_data;
                 continue;
             }
-            glm::vec3 c = apply_transfer(prepared, v.value).colour;
+            float value = v.value;
+            if (surface != nullptr && surface->flow_wall && surface->flow_gain != 1.0f && prepared.inv_span > 0.0f) {  // this wall's own range: scaled about the map's centre
+                const float centre = prepared.range.min + 0.5f / prepared.inv_span;
+                value = centre + (value - centre) * surface->flow_gain;
+            }
+            glm::vec3 c = apply_transfer(prepared, value).colour;
             if (colouring.shade) {  // the hue, lit for shape: the floor plus N.L of the scene's sun
                 const float n_dot_l = surface != nullptr ? std::max(glm::dot(surface->normal, scene.lighting.sun_direction), 0.0f) : 0.0f;
                 c *= kSurfaceShadeFloor + (1.0f - kSurfaceShadeFloor) * n_dot_l;
@@ -2373,6 +2379,15 @@ Result<void> render(const RenderScene& scene, const Camera& camera, const Render
     if (scene.flow_surface_colouring) {
         if (Result<void> valid = validate_flow_surface_colouring(*scene.flow_surface_colouring); !valid) {
             return std::unexpected(Error{valid.error().code, "render: " + valid.error().context});
+        }
+        for (const std::vector<DrawItem>* items : {&scene.statics, &scene.dynamics}) {
+            for (size_t i = 0; i < items->size(); ++i) {
+                const float gain = (*items)[i].flow_gain;
+                if (!std::isfinite(gain) || !(gain > 0.0f)) {
+                    return std::unexpected(Error{Code::invalid_argument, std::string("render: ") + (items == &scene.statics ? "statics[" : "dynamics[") + std::to_string(i) +
+                                                                             "]'s flow_gain must be finite and above 0"});
+                }
+            }
         }
     }
     if (flow_report != nullptr) {

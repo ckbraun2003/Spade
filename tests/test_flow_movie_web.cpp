@@ -805,6 +805,54 @@ TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
     EXPECT_EQ(first_line(web::caption_text(other)), "# " + web::clip_title(s4, web::default_drone()));
 }
 
+// THE PRESSURE FILM WITH REAL BLADES (O128, O129). The parts' range is +-0.4 of the disc loading (the stronger colours: the developed film's arm strips saturate and
+// the blue tail turns clearly blue). The blades read the air beside them on their OWN fixed range, so the colouring's range over the blades' is a gain on the blade
+// items (DrawItem::flow_gain): blade_flow_gain() = kSurfacePressureCpRange / kBladePressureCpRange.
+TEST(FlowMovieWeb, ThePartsRangeIsPointFourAndTheBladesOwnRangeIsAGainOnTheBladeItems) {
+    EXPECT_FLOAT_EQ(web::kSurfacePressureCpRange, 0.4f) << "the stronger colours, O129";
+    // measured from the blades' own test stills (steps 600 and 655, a quarter turn apart, the 70 degree start camera, 38,534 blade pixels over the background): the blade colour is the
+    // air pressure beside the blade on its seen (upper) face, all suction: C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28, min -7.4, max -0.03. +-6 clips 8.3% of those pixels
+    // (the blade roots, at the blue end) and uses the map's whole blue half; +-7 would clip 1.1%, +-9.75 (the arms' 1.5 x p95 rule) none and waste the ramp (the stronger colours, O129).
+    EXPECT_FLOAT_EQ(web::kBladePressureCpRange, 6.0f);
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(), web::kSurfacePressureCpRange / web::kBladePressureCpRange);
+    const web::Clip& s8 = *web::find_clip("S8");
+    EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true, false, true, true).find("The colour range is fixed at +-0.4 of the disc loading"), std::string::npos);
+}
+
+// The caption of a blades-mode pressure film says plainly what the blade colour is and is not, the rotor angle, and both ranges; the blades-off caption is as it was.
+TEST(FlowMovieWeb, TheBladesFilmsCaptionSaysWhatTheBladeColourIsAndBothRanges) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string blades = web::standing_caveats(s8, 2.5f, 50u, true, false, true, true, true);
+    EXPECT_NE(blades.find("drawn at the simulation's rotor angle"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("the air pressure the rotor model makes beside the blades, spread over about 5 mm"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("not a pressure resolved on the blade surface"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("+-0.4 of the disc loading on the parts"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("of the disc loading on the blades"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("each fixed, symmetric about the still air's pressure"), std::string::npos) << blades;
+    EXPECT_NE(blades.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << blades;
+    EXPECT_NE(blades.find("inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour"), std::string::npos) << blades;
+    EXPECT_EQ(blades.find("which have no surface"), std::string::npos) << "the blades are drawn and coloured: " << blades;
+    EXPECT_EQ(blades.find("no pressure colour"), std::string::npos) << blades;
+    EXPECT_EQ(blades.find("relative speed"), std::string::npos) << blades;
+
+    const std::string arms_only = web::standing_caveats(s8, 2.5f, 50u, true, false, true, true, false);
+    EXPECT_NE(arms_only.find("which have no surface, so they carry no pressure colour"), std::string::npos) << "blades off: the words as they were";
+    EXPECT_EQ(arms_only.find("on the blades"), std::string::npos) << arms_only;
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.command = "flow_movie --web S8 --drone x500 --surface-pressure --prop-blur mode=blades";
+    const std::string text = web::caption_text(in);
+    EXPECT_NE(text.find("- Shows: The air pressure on the surfaces of the open-source quadcopter's rigid parts and on its rotor blades, drawn at the simulation's rotor angle"), std::string::npos) << text;
+    EXPECT_EQ(text.find("volume render"), std::string::npos) << text;
+    EXPECT_EQ(web::shows_line(s8, true, false, false, false, true, false).find("rotor blades"), std::string::npos) << "blades off: as it was";
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {

@@ -177,6 +177,9 @@ void WorldBuilder::push_primitive(SdfPrim kind, const glm::vec4& params, const S
     if (!desc_.sdf.node_materials.empty()) {
         desc_.sdf.node_materials.push_back(0);
     }
+    if (!desc_.sdf.node_labels.empty()) {
+        desc_.sdf.node_labels.push_back(0);  // the same lockstep, for the labels
+    }
 }
 
 void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
@@ -188,6 +191,9 @@ void WorldBuilder::push_op(SdfOp op, const glm::vec4& params) {
     desc_.sdf.nodes.push_back(node);
     if (!desc_.sdf.node_materials.empty()) {
         desc_.sdf.node_materials.push_back(0);
+    }
+    if (!desc_.sdf.node_labels.empty()) {
+        desc_.sdf.node_labels.push_back(0);
     }
 }
 
@@ -295,6 +301,19 @@ WorldBuilder& WorldBuilder::prop(std::string mesh_ref, const SdfPose& pose, uint
     p.pose.rotation = pose.rotation / qlen;  // same normalize-at-authoring-time as spawn()
     p.material = material;
     desc_.props.push_back(std::move(p));
+    return *this;
+}
+
+WorldBuilder& WorldBuilder::label_for_last_node(uint16_t label) {
+    if (desc_.sdf.nodes.empty()) {
+        fail("label_for_last_node() called before any SDF node was pushed");
+        return *this;
+    }
+    // Grow lazily to nodes.size() (sdf.hpp's node_labels contract: empty or exactly nodes.size()), unlabelled (0) until named.
+    if (desc_.sdf.node_labels.size() != desc_.sdf.nodes.size()) {
+        desc_.sdf.node_labels.resize(desc_.sdf.nodes.size(), 0);
+    }
+    desc_.sdf.node_labels.back() = label;
     return *this;
 }
 
