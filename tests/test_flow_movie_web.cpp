@@ -784,6 +784,59 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
 // The .md's title follows the look (the lead, O124: the pressure film's master was titled by the S8 clip's fallback, "a volume render of the rotor wake"). A
 // --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --nasa-cloud S8 names the vorticity cloud; the plain S8, and every
 // other clip, keeps its clip's title.
+// A blades film's title says the pressure is BESIDE the rotor blades, not on them (the colour is the air pressure the rotor model makes beside them, Oversight's approved claim).
+TEST(FlowMovieWeb, ABladesFilmsTitleSaysBesideTheRotorBlades) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const web::Drone& x500 = *web::find_drone("x500");
+    EXPECT_EQ(web::look_title(s8, x500, false, false, true, true), "Open-source quadcopter in hover: the air pressure on the airframe and beside the rotor blades");
+    EXPECT_EQ(web::look_title(s8, x500, false, false, true, false), "Open-source quadcopter in hover: the air pressure on the airframe in the rotor wake") << "blades off: as it was";
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = &x500;
+    in.lines = true;
+    in.pressure = true;
+    in.blades = true;
+    in.command = "flow_movie --web S8 --drone x500";
+    const std::string text = web::caption_text(in);
+    EXPECT_EQ(text.substr(0, text.find('\n')), "# Open-source quadcopter in hover: the air pressure on the airframe and beside the rotor blades") << text;
+}
+
+// What is the drone's own in a blades film's words comes from its entry: the blades' range (and the gain that reads it), what the blades are called, what the pressure is on,
+// and any card lines of its own; the X500's entry holds the words and +-6 it had, so its captions do not change.
+TEST(FlowMovieWeb, ABladesFilmsDroneSpecificWordsAndRangeComeFromTheDroneEntry) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const web::Drone& x500 = *web::find_drone("x500");
+    EXPECT_FLOAT_EQ(x500.blade_cp_range, web::kBladePressureCpRange);
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(x500.blade_cp_range), web::blade_flow_gain());
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(3.5f), web::kSurfacePressureCpRange / 3.5f);
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = &x500;
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.command = "flow_movie --web S8 --drone x500";
+    const std::string plain = web::caption_text(in);
+    EXPECT_NE(plain.find("of the disc loading on the parts and at +-6 of the disc loading on the blades"), std::string::npos) << plain;
+    EXPECT_NE(plain.find("their blades are the kit's real blades"), std::string::npos) << plain;
+    EXPECT_NE(plain.find("(the frame, arms, legs, boards and motors)"), std::string::npos) << plain;
+
+    web::Drone other = x500;
+    other.blade_cp_range = 3.5f;
+    other.blade_words = "generated three-blade stand-in blades";
+    other.parts_words = "the frame, stack, motors and battery";
+    other.card_extra = "Propellers: a stand-in for the kit's own.";
+    in.drone = &other;
+    const std::string own = web::caption_text(in);
+    EXPECT_NE(own.find("+-3.5 of the disc loading on the blades"), std::string::npos) << own;
+    EXPECT_NE(own.find("their blades are generated three-blade stand-in blades"), std::string::npos) << own;
+    EXPECT_NE(own.find("(the frame, stack, motors and battery)"), std::string::npos) << own;
+    EXPECT_NE(own.find("\n- Propellers: a stand-in for the kit's own.\n"), std::string::npos) << own;
+    EXPECT_EQ(plain.find("Propellers:"), std::string::npos) << "the X500 has no card line of its own";
+}
+
 TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
     const web::Clip& s8 = *web::find_clip("S8");
     auto first_line = [](const std::string& text) { return text.substr(0, text.find('\n')); };
