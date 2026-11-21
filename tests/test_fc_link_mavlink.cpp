@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "fc_link/mavlink.hpp"
+#include "../tools/fc_link/mavlink.hpp"
 
 namespace {
 
@@ -96,8 +96,7 @@ std::vector<Golden> golden() {
         a.mode = 129;
         a.flags = 1;
         g.push_back({"hil_actuator_controls_armed", 7, a,
-                     "fd5100000701c85d0000401f00000000000001000000000000000000003f9a99193f3333333fcdcc4c3f0000000000000000000000"
-                     "00000000000000000000000000000000000000000000000000000000000000000000000000000000814591",
+                     "fd5100000701c85d0000401f00000000000001000000000000000000003f9a99193f3333333fcdcc4c3f000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000814591",
                      81});
     }
     {
@@ -236,7 +235,7 @@ TEST(FcLinkMavlink, TheParserFindsFramesInGarbageAndBackToBack) {
     EXPECT_EQ(frames[0].msgid, 0u);
     EXPECT_EQ(frames[1].msgid, 93u);
     EXPECT_EQ(frames[2].msgid, 93u);
-    EXPECT_EQ(frames[2].header.seq, 9);
+    EXPECT_EQ(frames[2].header.seq, 8) << "the disarmed frame's own sequence number";
     EXPECT_GE(stats.garbage_bytes, 3u);
 }
 
