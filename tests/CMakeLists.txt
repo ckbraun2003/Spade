@@ -309,6 +309,7 @@ add_executable(spade_tests
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
     test_flow_movie_build_parts.cpp
+    test_fc_link_mavlink.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
@@ -756,6 +757,7 @@ target_link_libraries(spade_tests PRIVATE
     spade::physics
     spade::vehicles
     spade::sim
+    spade_fc_link
     spade_warnings
     spade_fp_strict
     yaml-cpp::yaml-cpp
