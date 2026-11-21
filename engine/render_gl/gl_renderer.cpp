@@ -3,6 +3,7 @@
 
 #include "render_gl/gl_renderer.hpp"
 
+#include <bit>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -493,11 +494,11 @@ uniform vec3 uFlowSun;          // the scene's sun direction, toward the sun
 uniform float uFlowShadeFloor;
 
 // `normal` is the surface's, unit and turned toward the eye, or 0 where
-// unknown; `wall` is DrawItem::flow_wall (RND-8). The value is read off the
-// wall along the normal, as raster_cpu reads it.
-vec3 flow_colour_surface(vec3 world, vec3 normal, bool wall, vec3 shaded) {
+// unknown; `wall` is DrawItem::flow_wall (RND-8) as 0, or the bits of its DrawItem::flow_gain (a float, never 0 as bits: 1.0 is 0x3F800000). The value is read off
+// the wall along the normal, as raster_cpu reads it, and scaled about the map's centre by the gain.
+vec3 flow_colour_surface(vec3 world, vec3 normal, uint wall, vec3 shaded) {
     if (uFlowColouring == 0u) return shaded;
-    if (uFlowWallsOnly != 0u && !wall) return shaded;
+    if (uFlowWallsOnly != 0u && wall == 0u) return shaded;
     if (any(lessThan(world, uFlowBoxMin)) || any(greaterThan(world, uFlowBoxMax))) return shaded;
     float value;
     if (!flow_sample_quantity(world + normal * uFlowOffset, uFlowQuantity, value)) {
@@ -515,6 +516,11 @@ vec3 flow_colour_surface(vec3 world, vec3 normal, bool wall, vec3 shaded) {
         value = 2.0 * value - far_value;
     }
     if (uFlowConstant != 0u) return uFlowConstantColour;
+    if (wall != 0u && uFlowInvSpan > 0.0) {  // this wall's own range: scaled about the map's centre, as raster_cpu
+        float gain = uintBitsToFloat(wall);
+        float centre = uFlowRangeMin + 0.5 / uFlowInvSpan;
+        value = centre + (value - centre) * gain;
+    }
     vec3 colour = flow_colour_map((value - uFlowRangeMin) * uFlowInvSpan, uFlowColourMap);
     if (uFlowShade != 0u) colour *= uFlowShadeFloor + (1.0 - uFlowShadeFloor) * max(dot(normal, uFlowSun), 0.0);
     return colour;
@@ -1033,7 +1039,7 @@ flat in uint vInstance;
 
 layout(std430, binding = 1) readonly buffer Overrides  { uint uOverride[]; };
 layout(std430, binding = 4) readonly buffer Speeds { float uSpeed[]; };
-layout(std430, binding = 5) readonly buffer FlowWalls { uint uFlowWall[]; };  // DrawItem::flow_wall
+layout(std430, binding = 5) readonly buffer FlowWalls { uint uFlowWall[]; };  // DrawItem::flow_wall as 0, or its flow_gain's float bits
 layout(std430, binding = 8) readonly buffer Segments { uint uSegment[]; };    // segmentation's colour, RGBA8
 
 uniform uint uSubmeshMaterial;
@@ -1054,7 +1060,7 @@ void main() {
     GpuMaterial m = uMaterials[mi];
 
     vec3 base = m.base_color.rgb;
-    bool wall = uFlowWall[vInstance] != 0u;
+    uint wall = uFlowWall[vInstance];
     // Wireframe edges take the unlit material colour, as raster_cpu draws them.
     if (uMode == 1u) {
         fragColor = vec4(flow_colour_surface(vWorld, vec3(0.0), wall, base), 1.0);
@@ -1717,7 +1723,7 @@ uniform float uFar;
 uniform uint uMarchMaxSteps;     // render/raymarch.hpp's kRaymarchMaxSteps
 uniform float uMarchEpsilon;     // kRaymarchSurfaceEpsilon (SR-28)
 uniform uint uSubtreeMaterial;   // the draw item's material
-uniform uint uSubtreeFlowWall;   // its DrawItem::flow_wall (RND-8)
+uniform uint uSubtreeFlowWall;   // its DrawItem::flow_wall (RND-8) as 0, or its flow_gain's float bits
 uniform float uSubtreeSpeed;     // the draw item's speed, for velocity mode
 uniform uint uSubtreeSegment;    // the draw item's segmentation colour, RGBA8
 
@@ -1790,7 +1796,7 @@ void main() {
         return;
     }
     vec3 n_eye = dot(n, uCamPos - p) < 0.0 ? -n : n;
-    fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall != 0u, shade_surface(m.shading, base, n, p, n)), 1.0);
+    fragColor = vec4(flow_colour_surface(p, n_eye, uSubtreeFlowWall, shade_surface(m.shading, base, n, p, n)), 1.0);
 }
 )GLSL";
 
@@ -3296,7 +3302,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         s.instance_transforms[at] = d.local_to_world;
         s.instance_overrides[at] = d.material_override;
         s.instance_speeds[at] = d.speed_mps;
-        s.instance_walls[at] = d.flow_wall ? 1u : 0u;
+        s.instance_walls[at] = d.flow_wall ? std::bit_cast<uint32_t>(d.flow_gain) : 0u;
         if (sensor_segments) {
             s.instance_segments[at] = pack_rgb8(render::item_segment_colour(scene, d, options.segment_by));
         }
@@ -3724,7 +3730,7 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
                 gl.Uniform1ui(cu.segment, sensor_segments ? pack_rgb8(render::item_segment_colour(
                                                                 scene, item, options.segment_by))
                                                           : 0u);
-                gl.Uniform1ui(cu.flow_wall, item.flow_wall ? 1u : 0u);
+                gl.Uniform1ui(cu.flow_wall, item.flow_wall ? std::bit_cast<uint32_t>(item.flow_gain) : 0u);
                 gl.DrawArrays(GL_TRIANGLES, 0, 36);
                 ++draw_calls;
             }
