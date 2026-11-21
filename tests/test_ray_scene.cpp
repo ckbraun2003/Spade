@@ -293,3 +293,23 @@ TEST(RayScene, ATraceIsAPureFunctionOfTheSceneAndTheRay) {
     EXPECT_EQ(first.normal, again.normal);
     EXPECT_EQ(first.triangle, again.triangle);
 }
+
+// A standalone plane in a world is the analytic ground, and the finite tessellated grid scene_from_world() also makes for it is NOT in the BVH: one ground, closed
+// form, so a ray far outside the grid's extent still reaches it, and no ray meets the plane twice.
+TEST(RayScene, AStandalonePlaneIsTheClosedFormGroundAndItsTessellatedGridIsNotInTheBvh) {
+    spade::WorldBuilder b;
+    b.name("ray-scene-ground-test").capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    b.plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f);
+    const spade::Result<spade::WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << (world ? "" : world.error().context);
+    spade::Result<rd::RenderScene> scene = rd::scene_from_world(*world, {});
+    ASSERT_TRUE(scene.has_value()) << (scene ? "" : scene.error().context);
+    ASSERT_EQ(scene->ground_planes.size(), 1u);
+    ASSERT_FALSE(scene->statics.empty()) << "the plane also has a tessellated item";
+    const rd::RayScene rs = built(*scene);
+    EXPECT_EQ(rs.triangle_count(), 0u) << "the grid is the ground's own item: it is not a second surface";
+    const rd::RayHit far = rs.trace(ray({1.0e4, 5.0, -3.0e3}, {0.0, -1.0, 0.0}));
+    ASSERT_EQ(far.kind, rd::RayHitKind::ground);
+    EXPECT_NEAR(far.t, 5.0, 1e-9);
+    EXPECT_NEAR(far.normal.y, 1.0f, 1e-6f);
+}
