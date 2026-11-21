@@ -457,6 +457,9 @@ SdfProgram csg_subtree_program(const SdfProgram& program, uint32_t root_node) {
     SdfProgram subtree;
     subtree.nodes.assign(program.nodes.begin() + start, program.nodes.begin() + root_node + 1);
     subtree.transforms = program.transforms;
+    if (!program.node_labels.empty()) {  // schema v4: the object labels travel with their nodes, in lockstep (sdf_hit_label reads them)
+        subtree.node_labels.assign(program.node_labels.begin() + start, program.node_labels.begin() + root_node + 1);
+    }
     return subtree;
 }
 

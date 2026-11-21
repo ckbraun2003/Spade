@@ -156,6 +156,12 @@ add_executable(spade_tests
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
+    test_camera_lens.cpp
+    test_ray_scene.cpp
+    test_camera_shade.cpp
+    test_camera_frame.cpp
+    test_camera_mount.cpp
+    test_camera_golden.cpp
     test_world_file_v4.cpp
     test_gnss.cpp
     test_world_file.cpp
