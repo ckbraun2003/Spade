@@ -208,3 +208,24 @@ ArduPilot's JSON: ArduPilot sends a servo packet per frame; the sim replies with
 - *The X500 first.* Right choice (PX4's reference), with the mass, inertia and time-constant differences above made visible by the variant rather than hidden. The risk of the kit model alone is that a PX4 tuned for 2.06 kg and 12.5 ms motors is tested on 1.63 kg and 76 ms motors: any instability would be the model, and the variant is how we would know.
 - *Budget plus measured modes.* Outside Physics' part; no argument.
 - *Lockstep at 4 ms with a 500 us tick.* It makes the autopilot's delay one period (4 ms); a faster sensor rate lowers it. If the EKF delay turns out to matter, 2 ms is available (4 ticks).
+
+## 7. Addendum (Physics, 2026-11-21, later the same day): the pinned PX4 tag, and what batch 48 settled
+
+**7.1 PX4 v1.17.0's x500 airframe is a trapezoid, not the square quoted in 3.1 and section 4.** Interface read `ROMFS/px4fmu_common/init.d-posix/airframes/4001_gz_x500` at the pinned tag v1.17.0 (commit d6f12ad1) in a local clone (relayed to Physics; **not re-read here**, so the grade is "relayed, first-hand by Interface"). The page this document's 3.1 and section 4 read was the `main` branch, which has the square. At the tag, in FRD:
+
+| Motor | `CA_ROTOR*_PX` | `_PY` | `KM` | Corner |
+|---|---|---|---|---|
+| 0 | +0.13 | +0.22 | +0.05 | front-right, CCW |
+| 1 | -0.13 | -0.20 | +0.05 | rear-left, CCW |
+| 2 | +0.13 | -0.22 | -0.05 | front-left, CW |
+| 3 | -0.13 | +0.20 | -0.05 | rear-right, CW |
+
+Also at the tag: `MPC_THR_HOVER` 0.60, and the motors are `PWM_MAIN_FUNC1..4` = 101..104 on our link (`SIM_GZ_EC_*` are Gazebo-only).
+
+- **The order, spin and sign map is unchanged** (3.1's table and `{0, 2, 1, 3}`): the corners and the `KM` signs are the same; only the magnitudes differ. The map's test compares signs and corners, not magnitudes.
+- **The magnitudes in section 4's "rotor positions" row are `main`'s, not the tag's.** The Gazebo model's SDF (+-0.174) does not match the tag's airframe file (the allocator's trapezoid): PX4's own reference flights run an allocator that believes one geometry on a simulated airframe with another.
+- **Consequence for the PX4-match variant (proposal, not yet decided with Interface).** To reproduce PX4's reference flight the variant's *dynamics* take the SDF's geometry (+-0.174 square, which is what Gazebo flies) and PX4's parameters are left as shipped (the trapezoid). The kit run is different and cleaner: the kit's measured +-0.17689 square (Interface, L98) goes in both the model and `CA_ROTOR*_PX/PY` (Interface's second airframe file, `10091_spade_x500_kit`), and `MPC_THR_HOVER` becomes the chain's hover duty from the case's trim (Physics to send when the kit run is near; whether `KM` should follow our Q/T of 0.0155 is open, as in section 4).
+
+**7.2 Section 5.3 (ground contact) is superseded by `2026-11-21-ground-contact.md` (merged in batch 48).** What was open there is closed: the route is the existing L68 hull through the model's `collision:` block, with no engine change; twelve points, three to a pad, 16 sweeps; the checks (`tests/test_x500_ground_contact.cpp`) pass 6/6 at the link's 500 us tick: rest height, a clean IMU (+g, spread 1e-6), a drop, the tip-over bracket (about 31 degrees in pitch, 34 in roll) and a 20-degree slope that holds at friction 0.6 and slides at 0.3. Two of its numbers are the named limits this document gave: the rest velocity -g dt (-4.9 mm/s at 500 us) and a slope creep of g sin(slope) dt^2 a step (3.4 mm in 2 s at 20 degrees), both `PHY-8`'s. The feet-only limit stands: a drone tipped past about 31 degrees has nothing else to hold it up; points on the plates and guards come when a scenario tips (phase 4).
+
+**7.3 The actuator map is built** (`tools/fc_link/autopilot_map.*`, branch `physics/fc-link-actuator-map`): `px4_output_to_duty`, `ardupilot_pwm_to_duty` and four duties through `rotor_omega_for_duty` into Spade's rotor order. The PX4 output range on the wire is still not read from a SITL run: the map assumes [0, 1] and refuses outside a 1e-3 slack by name, and phase 1's link test settles it.
