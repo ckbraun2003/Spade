@@ -1407,9 +1407,16 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     const std::string extra(d->card_extra);
     EXPECT_NE(extra.find("a measured 5x4 three-blade stand-in for the kit's 5x4.3x3"), std::string::npos) << extra;
     EXPECT_NE(extra.find("above the speeds it was measured at"), std::string::npos) << extra;
-    // Physics' kit gate (O139): 0.84 of W/4 at 0.05 s, not a settled balance; the 90% was the generic fpv_5inch's (the lead, 2026-11-21).
-    EXPECT_NE(extra.find("about 84% of the weight in a 0.05 s check"), std::string::npos) << extra;
+    // The film runs the rotors at the chain trim, 973.704 rad/s (9,298 rpm), not the 941.0 of Physics' O139 gate (0.84 of W/4 in a 0.05 s check, which must not be quoted for it): the card's
+    // thrust share is Physics' gate at 973.7 run to 0.20 s, "about N% of the weight in a 0.20 s check" (the lead, 2026-11-21). The 90% was the generic fpv_5inch's.
+    EXPECT_EQ(extra.find("0.05 s"), std::string::npos) << extra;
+    EXPECT_EQ(extra.find("84%"), std::string::npos) << extra;
     EXPECT_EQ(extra.find("90%"), std::string::npos) << extra;
+    const std::size_t share_at = extra.find("% of the weight in a 0.20 s check");
+    ASSERT_NE(share_at, std::string::npos) << extra;
+    ASSERT_GE(share_at, 8u) << extra;
+    EXPECT_EQ(extra.substr(share_at - 8u, 6u), "about ") << extra;  // "about " then two digits then "%"
+    EXPECT_TRUE(std::isdigit(static_cast<unsigned char>(extra[share_at - 2u])) && std::isdigit(static_cast<unsigned char>(extra[share_at - 1u]))) << extra;
     // The battery is an assumed typical 6S pack, not from published dimensions.
     EXPECT_NE(extra.find("motors and flight stack modelled from published dimensions"), std::string::npos) << extra;
     EXPECT_NE(extra.find("battery: an assumed typical 6S pack"), std::string::npos) << extra;
@@ -1456,4 +1463,19 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesTheKitsOwnPartsTableAndModelInWords) {
     ASSERT_NE(x500, nullptr);
     EXPECT_NE(web::command_in_words("flow_movie --build-parts p.yaml --visual-mesh m.glb", *x500).find("--build-parts open-source-quadcopter-parts-table --visual-mesh open-source-quadcopter-model"),
               std::string::npos) << "the X500's words are unchanged";
+}
+
+// THE KIT FILM'S SPEED-DERIVED FIGURES (the lead, 2026-11-21): every figure on its card and caption follows from the speed it runs, the chain trim 973.704 rad/s, not the 941.0 of the first gate.
+// 9,298 rpm; a rotor turn 6.45 ms; 35 ms of simulated time over a 10 s clip is 286 times slower than real time, so a turn takes 1.84 s on screen; and 9,298 rpm is above the 6,057 rpm of the
+// measured propeller point the rotor model was fitted through (the wording "above the speeds it was measured at").
+TEST(FlowMovieWeb, TheKitFilmsSpeedDerivedFiguresFollowFromItsChainTrimSpeed) {
+    constexpr double kOmega = 973.704, kPi = 3.14159265358979323846;
+    const double rpm = kOmega * 60.0 / (2.0 * kPi);
+    const double turn_s = 2.0 * kPi / kOmega;
+    const double slow = 10.0 / 0.035;
+    EXPECT_NEAR(rpm, 9298.0, 0.5);
+    EXPECT_NEAR(turn_s * 1000.0, 6.45, 0.005);
+    EXPECT_NEAR(slow, 286.0, 0.5);
+    EXPECT_NEAR(turn_s * slow, 1.84, 0.005);
+    EXPECT_GT(rpm, 6057.0);
 }
