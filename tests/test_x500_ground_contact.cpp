@@ -45,6 +45,8 @@ namespace {
 namespace ph = spade::physics;
 
 constexpr float kG = 9.80665f;
+constexpr uint64_t kDtNs = 500'000;  // the tick the autopilot link runs at (fc-physics 5.1; test_step_convergence.cpp)
+constexpr float kStepsPerSecond = 2000.0f;
 constexpr float kSkin = 0.0095f;
 constexpr double kComY = -0.0254301;  // x500.model.yaml com_offset.y: the design frame's centre of mass height
 constexpr float kLowest = -0.2153f;   // the pads' bottom faces in the design frame
@@ -109,7 +111,7 @@ struct Rig {
 [[nodiscard]] Rig make_rig(const spade::vehicles::ModelType& model, glm::vec3 gravity, glm::vec3 pos, glm::quat orient) {
     spade::modules::ModuleSet set = spade::modules::standard_modules();
     set.push_back(spade::modules::rigid_contact_module());
-    auto sim = spade::Simulation::create(make_world(gravity), 1'000'000, 1, spade::compute::BackendDesc{.kind = spade::compute::BackendKind::cpu}, set);
+    auto sim = spade::Simulation::create(make_world(gravity), kDtNs, 1, spade::compute::BackendDesc{.kind = spade::compute::BackendKind::cpu}, set);
     EXPECT_TRUE(sim.has_value()) << (sim ? "" : sim.error().context);
     Rig rig{std::move(*sim), {}};
     const auto id = rig.sim.register_model(model);
@@ -170,7 +172,7 @@ TEST(X500GroundContact, RestsOnItsFeetAtTheRightHeightAndTheImuReadsGravity) {
     const spade::vehicles::ModelType model = load_model(0.6f, 0.1f);
     Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kDesignOriginAtRest + 0.01f, 0.0f), level(model));
     for (int k = 0; k < 8; ++k) {
-        steps(rig, 250);
+        steps(rig, 500);
         const spade::BodyState t = state(rig);
         std::printf("[ ground  ]   rest t %.2f s: pos (%+.5f, %+.5f, %+.5f) vel (%+.2e, %+.2e, %+.2e)\n", 0.25 * (k + 1), static_cast<double>(t.pos.x), static_cast<double>(t.pos.y),
                     static_cast<double>(t.pos.z), static_cast<double>(t.vel.x), static_cast<double>(t.vel.y), static_cast<double>(t.vel.z));
@@ -182,9 +184,9 @@ TEST(X500GroundContact, RestsOnItsFeetAtTheRightHeightAndTheImuReadsGravity) {
                 static_cast<double>(b.pos.y), static_cast<double>(kRestHeight), static_cast<double>(b.vel.x), static_cast<double>(b.vel.y), static_cast<double>(b.vel.z),
                 imu.n, static_cast<double>(imu.mean.x), static_cast<double>(imu.mean.y), static_cast<double>(imu.mean.z), static_cast<double>(imu.spread.x),
                 static_cast<double>(imu.spread.y), static_cast<double>(imu.spread.z));
-    EXPECT_NEAR(b.pos.y, kRestHeight, 1.0e-3f) << "rest height";
+    EXPECT_NEAR(b.pos.y, kRestHeight, 1.5e-3f) << "rest height (the skin sinks about 1 mm under load)";
     EXPECT_NEAR(glm::length(glm::vec2(b.pos.x, b.pos.z)), 0.0f, 5.0e-3f) << "it has not walked";
-    EXPECT_LT(std::fabs(b.vel.y), 5.0e-3f) << "rest velocity (PHY-8: about -g dt = -1e-2 m/s at 1 ms)";
+    EXPECT_LT(std::fabs(b.vel.y), 5.5e-3f) << "rest velocity (PHY-8: the velocity is sampled before the contact, so it reads about -g dt = -4.9e-3 m/s at 500 us)";
     EXPECT_NEAR(imu.mean.y, kG, 0.1f) << "the IMU reads +g up";
     EXPECT_LT(std::fabs(imu.mean.x), 0.1f);
     EXPECT_LT(std::fabs(imu.mean.z), 0.1f);
@@ -197,7 +199,7 @@ TEST(X500GroundContact, ADropSettlesWithoutBouncingMoreThanTheRestitutionAllows)
     float highest_after_impact = 0.0f;
     bool landed = false;
     float min_y = 1e9f;
-    for (int i = 0; i < 3000; ++i) {
+    for (int i = 0; i < 6000; ++i) {
         steps(rig, 1);
         const spade::BodyState b = state(rig);
         min_y = std::min(min_y, b.pos.y);
@@ -257,7 +259,7 @@ TEST(X500GroundContact, DiagnosticSpinAfterALevelDrop) {
     for (const glm::vec3& p : pad_points_design()) low = std::min(low, (tilt * p).y);  // about the DESIGN origin: the spawn pose is the design frame's
     const float y = 0.01f + kSkin - low;
     Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, y, 0.0f), orient);
-    steps(rig, static_cast<uint32_t>(seconds * 1000.0f));
+    steps(rig, static_cast<uint32_t>(seconds * kStepsPerSecond));
     // the tilt from level: the angle of the design frame's up axis from world up
     const glm::quat design_orient = state(rig).orient * model.design_to_principal;  // body->world then design->body: design->world
     const glm::vec3 up = design_orient * glm::vec3(0.0f, 1.0f, 0.0f);
@@ -287,9 +289,9 @@ TEST(X500GroundContact, ARolledDroneRocksBackBelowTheTipOverAndTipsAbove) {
     const spade::vehicles::ModelType model = load_model(friction, 0.0f);
     const float a = glm::radians(20.0f);
     Rig rig = make_rig(model, glm::vec3(0.0f, -kG * std::cos(a), kG * std::sin(a)), glm::vec3(0.0f, kDesignOriginAtRest + 0.005f, 0.0f), level(model));
-    steps(rig, 500);  // settle
+    steps(rig, 1000);  // settle
     const glm::vec3 from = state(rig).pos;
-    steps(rig, static_cast<uint32_t>(seconds * 1000.0f));
+    steps(rig, static_cast<uint32_t>(seconds * kStepsPerSecond));
     const glm::vec3 to = state(rig).pos;
     return glm::length(glm::vec2(to.x - from.x, to.z - from.z));
 }
@@ -298,7 +300,9 @@ TEST(X500GroundContact, TheSlopeHoldsAboveTheFrictionAngleAndSlidesBelowIt) {
     const float holds = slid_after(0.6f, 2.0f);
     const float slides = slid_after(0.3f, 1.0f);
     std::printf("[ ground  ] 20 degree slope: mu 0.6 moved %.4f m in 2 s; mu 0.3 moved %.3f m in 1 s (tan 20 = 0.364)\n", static_cast<double>(holds), static_cast<double>(slides));
-    EXPECT_LT(holds, 5.0e-3f) << "tan 20 = 0.364 < 0.6: it holds";
+    // It holds to PHY-8's own creep: the pre-contact velocity along the slope is g sin(20) dt = 1.7 mm/s, so the position moves g sin(20) dt^2 a step, 3.4 mm in 2 s at
+    // 500 us (the first run at 1 ms moved 6.7 mm, exactly twice: 4 times a step, half as many steps). The bound is 1.3 times that prediction.
+    EXPECT_LT(holds, 4.5e-3f) << "tan 20 = 0.364 < 0.6: it holds, to PHY-8's creep";
     EXPECT_GT(slides, 0.1f) << "tan 20 = 0.364 > 0.3: it slides (about 0.3 m in 1 s)";
 }
 
