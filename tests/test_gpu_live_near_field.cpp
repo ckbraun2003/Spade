@@ -33,6 +33,7 @@
 #include "flow_still.hpp"
 #include "gpu_skip.hpp"
 #include "phantom_case.hpp"
+#include "openframe5f_model.hpp"
 #include "x500_model.hpp"
 #include "physics/airflow/dye.hpp"
 #include "physics/airflow/fluid_step.hpp"
@@ -72,15 +73,32 @@ TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
     if (env_cstr("SPADE_NEAR_FIELD") == nullptr) GTEST_SKIP() << "opt-in: SPADE_NEAR_FIELD=1 (GPU, minutes)";
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     // SPADE_NEAR_DRONE=x500 (L86k): the X500 on its 2.5 mm grid with the kit's 10-inch prop; else the phantom on the 2 mm near field.
+    // SPADE_NEAR_DRONE=openframe5f: the OpenFrame-5F kit model (tools/flow_movie/data/openframe5f/) on the film's FPV box kD1FpvGrid, held by d1_fpv_hold of the
+    // rotors' mean height above the body origin, at SPADE_NEAR_STEP_US microseconds a step (default 25: 1.2 cells of tip travel at 8,986 rpm); the solver's
+    // health (the solids' pressure residual and counts, the subgrid viscosity's) is printed after the steps.
     const bool x500 = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "x500";
-    const af::GridShape grid = x500 ? spade::testing::kD1X500Grid : spade::testing::kD1NearGrid;
-    const auto made = x500 ? spade::testing::still_air_case(spade::testing::x500::data_dir() / spade::testing::x500::kModelFile, "x500", grid, 0.0002f,
-                                                                spade::testing::d1_x500_hold())
-                           : spade::testing::phantom_case(grid);
+    const bool kit = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "openframe5f";
+    const af::GridShape grid = kit ? spade::testing::kD1FpvGrid : x500 ? spade::testing::kD1X500Grid : spade::testing::kD1NearGrid;
+    namespace of = spade::testing::openframe5f;
+    const float kit_step_s = 1.0e-6f * (env_cstr("SPADE_NEAR_STEP_US") != nullptr ? static_cast<float>(std::strtod(env_cstr("SPADE_NEAR_STEP_US"), nullptr)) : 25.0f);
+    spade::Result<spade::testing::PhantomCase> made = std::unexpected(spade::Error{spade::Code::invalid_argument, "unset"});
+    if (kit) {
+        const auto probe = spade::testing::still_air_case(of::data_dir() / of::kModelFile, "openframe5f", grid, kit_step_s, glm::vec3(0.0f));
+        ASSERT_TRUE(probe.has_value()) << probe.error().context;
+        float hub_mean = 0.0f;
+        for (const auto& r : probe->model.rotors) hub_mean += r.local_pos.y / static_cast<float>(probe->model.rotors.size());
+        made = spade::testing::still_air_case(of::data_dir() / of::kModelFile, "openframe5f", grid, kit_step_s, spade::testing::d1_fpv_hold(hub_mean));
+    } else if (x500) {
+        made = spade::testing::still_air_case(spade::testing::x500::data_dir() / spade::testing::x500::kModelFile, "x500", grid, 0.0002f,
+                                              spade::testing::d1_x500_hold());
+    } else {
+        made = spade::testing::phantom_case(grid);
+    }
     ASSERT_TRUE(made.has_value()) << made.error().context;
 
-    const std::filesystem::path prop_file = x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kPropFile
-                                                 : std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
+    const std::filesystem::path prop_file = kit ? of::data_dir() / of::kPropFile
+                                                : x500 ? spade::testing::x500::data_dir() / spade::testing::x500::kPropFile
+                                                       : std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts/uiuc_apce_10x5.prop.yaml";
     std::ifstream in(prop_file, std::ios::binary);
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     const auto part = spade::scene::prop_from_yaml(text);
@@ -124,6 +142,14 @@ TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
     std::printf("[ near    ] %u steps: %.0f ms a step; fastest %.2f m/s, dye max %.3f; device memory now %.0f MiB\n", n, ms,
                 static_cast<double>(fastest), static_cast<double>(out.header.channel_max[spade::kFlowDye]),
                 static_cast<double>((*ctx)->memory_budget().usage) / (1024.0 * 1024.0));
+    const an::LiveSolids& health = run->solids();
+    std::printf("[ near    ] health after %u steps: solids %u cells; last pressure residual %.3e in %u iterations; unconverged %llu (stalled %llu, capped %llu), "
+                "loose %llu (largest %.3e); sgs: %s\n",
+                n + 1u, health.solid_cells, static_cast<double>(health.pressure_residual), health.pressure_iterations,
+                static_cast<unsigned long long>(health.unconverged_steps), static_cast<unsigned long long>(health.stalled_steps),
+                static_cast<unsigned long long>(health.capped_steps), static_cast<unsigned long long>(health.loose_steps),
+                static_cast<double>(health.loose_max_residual), an::sgs_health_line(run->sgs()).empty() ? "nothing bound" : an::sgs_health_line(run->sgs()).c_str());
+    std::printf("[ near    ] %s\n", an::solids_health_line(health, 64u).c_str());
     EXPECT_GT(fastest, 0.0f) << "the lines move the air";
     EXPECT_GT(out.header.channel_max[spade::kFlowDye], 0.0f) << "the tips' dye is in the frame";
 }
