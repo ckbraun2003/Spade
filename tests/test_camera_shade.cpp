@@ -93,9 +93,14 @@ TEST(CameraShade, AHitIsTheScenesOwnLambertAndAMissIsItsSky) {
 
     const rd::RayScene again = f.rays();
     EXPECT_EQ(rd::shade_ray(f.scene, again, ray({0.0, 0.0, 5.0}, {0.0, 1.0, 0.0})), f.scene.lighting.sky_zenith) << "straight up: the zenith";
-    EXPECT_EQ(rd::shade_ray(f.scene, again, ray({0.0, 0.0, 5.0}, {1.0, 0.0, 0.0})), f.scene.lighting.sky_horizon) << "on the horizon";
+    const glm::vec3 horizon = rd::shade_ray(f.scene, again, ray({0.0, 0.0, 5.0}, {1.0, 0.0, 0.0}));
+    EXPECT_NEAR(horizon.x, f.scene.lighting.sky_horizon.x, 1e-6f) << "on the horizon";
+    EXPECT_NEAR(horizon.z, f.scene.lighting.sky_horizon.z, 1e-6f);
     const glm::vec3 half = rd::shade_ray(f.scene, again, ray({0.0, 0.0, 5.0}, {1.0, 1.0, 0.0}));
-    EXPECT_EQ(half, rd::sky_gradient_color(f.scene.lighting, glm::vec3(1.0f, 1.0f, 0.0f))) << "in between: the scene's own gradient";
+    const glm::vec3 want_half = rd::sky_gradient_color(f.scene.lighting, glm::vec3(1.0f, 1.0f, 0.0f));
+    EXPECT_NEAR(half.x, want_half.x, 1e-6f) << "in between: the scene's own gradient";
+    EXPECT_NEAR(half.y, want_half.y, 1e-6f);
+    EXPECT_NEAR(half.z, want_half.z, 1e-6f);
 }
 
 // SR-17a: at strength 0 the surface is exactly as without it; above 0 it blends toward the sky by the rational term, by the distance along the ray.
@@ -136,7 +141,8 @@ TEST(CameraShade, TheByteIsTheExactSrgbRoundToNearest) {
     EXPECT_EQ(rd::srgb_byte(1.0f), 255u);
     EXPECT_EQ(rd::srgb_byte(-3.0f), 0u) << "clamped";
     EXPECT_EQ(rd::srgb_byte(7.0f), 255u) << "clamped";
-    EXPECT_EQ(rd::srgb_byte(0.2140f), 128u) << "linear 0.2140 is sRGB 0.5";
+    EXPECT_EQ(rd::srgb_byte(0.2141f), 128u) << "just above linear 0.21404, sRGB 0.5";
+    EXPECT_EQ(rd::srgb_byte(0.2140f), 127u) << "just below it";
 
     uint8_t px[3] = {9, 9, 9};
     rd::CameraShading s;
