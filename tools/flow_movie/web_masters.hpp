@@ -221,8 +221,9 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // How far past a solid the pressure film reads (cells): it paints the detailed kit meshes with the air of Physics' proxy solids, so a drawn point can sit inside a solid
 // cell, and the read goes on outward along the normal to the nearest fluid cell, up to this far (render::FlowSurfaceColouring::search_cells).
 inline constexpr float kSurfacePressureSearchCells = 3.0f;
+// FIXED for the whole film, symmetric about ambient (Oversight, O124): 1.5 x the 95th percentile of |C_p| over the painted pixels at 0.03 s (0.36, four views, measured from the flat stills), rounded up to 0.25, capped at 1.
 // The pressure film's colour range, C_p = (p - p_inflow) / q over [-range, range] (q = the discs' loading T/A), centred on the still air's pressure: blue below, red above.
-inline constexpr float kSurfacePressureCpRange = 0.5f;
+inline constexpr float kSurfacePressureCpRange = 0.75f;
 
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
