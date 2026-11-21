@@ -11,7 +11,7 @@
 // THE PIXEL. The linear colour takes the exposure gain (linear, BEFORE the clamp, so a later exposure jitter is a seeded gain, not a new pipeline), then the sensor mode:
 // colour keeps three channels; grey is one, the luminance Y = 0.2126 R + 0.7152 G + 0.0722 B of the exposed linear colour. Then the sRGB transfer curve to a byte rounded
 // to nearest (v1 is sRGB only, section 11a). The engine has no pow: the byte is the exact round-to-nearest of the curve by the engine's own threshold table
-// (world/mesh_import/colour.hpp's kSrgbThreshold: the code of a linear value is the number of thresholds at or below it), which is exact, so the design's 1,024-entry
+// (core/srgb.hpp's threshold table: the code of a linear value is the number of thresholds at or below it), which is exact, so the design's 1,024-entry
 // interpolated table (an error to state and pin) is not needed on the CPU; the GPU port in Phase 2 may still want a table and is then banded against this.
 // No libm: + - * / and sqrt only (SR-14).
 // ---------------------------------------------------------------------------

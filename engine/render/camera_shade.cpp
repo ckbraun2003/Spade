@@ -1,6 +1,6 @@
 #include "render/camera_shade.hpp"
 
-#include "world/mesh_import/colour.hpp"  // spade::detail::srgb_from_linear: the exact round-to-nearest sRGB byte, no libm
+#include "core/srgb.hpp"  // spade::srgb_from_linear: the exact round-to-nearest sRGB byte, no libm
 
 namespace spade::render {
 
@@ -15,7 +15,7 @@ glm::vec3 shade_ray(const RenderScene& scene, const RayScene& rays, const Ray& r
     return horizon_blend(surface, sky, static_cast<float>(hit.t), shading.atmosphere_onset, shading.atmosphere_strength);
 }
 
-uint8_t srgb_byte(float linear) { return detail::srgb_from_linear(static_cast<double>(linear)); }
+uint8_t srgb_byte(float linear) { return spade::srgb_from_linear(static_cast<double>(linear)); }
 
 uint32_t channel_count(const CameraShading& shading) { return shading.grey ? 1u : 3u; }
 
