@@ -810,7 +810,10 @@ TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
 // items (DrawItem::flow_gain): blade_flow_gain() = kSurfacePressureCpRange / kBladePressureCpRange.
 TEST(FlowMovieWeb, ThePartsRangeIsPointFourAndTheBladesOwnRangeIsAGainOnTheBladeItems) {
     EXPECT_FLOAT_EQ(web::kSurfacePressureCpRange, 0.4f) << "the stronger colours, O129";
-    EXPECT_GT(web::kBladePressureCpRange, 0.0f);
+    // measured from the blades' own test stills (steps 600 and 655, a quarter turn apart, the 70 degree start camera, 38,534 blade pixels over the background): the blade colour is the
+    // air pressure beside the blade on its seen (upper) face, all suction: C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28, min -7.4, max -0.03. +-6 clips 8.3% of those pixels
+    // (the blade roots, at the blue end) and uses the map's whole blue half; +-7 would clip 1.1%, +-9.75 (the arms' 1.5 x p95 rule) none and waste the ramp (the stronger colours, O129).
+    EXPECT_FLOAT_EQ(web::kBladePressureCpRange, 6.0f);
     EXPECT_FLOAT_EQ(web::blade_flow_gain(), web::kSurfacePressureCpRange / web::kBladePressureCpRange);
     const web::Clip& s8 = *web::find_clip("S8");
     EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true, false, true, true).find("The colour range is fixed at +-0.4 of the disc loading"), std::string::npos);
