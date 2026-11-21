@@ -74,6 +74,29 @@ struct Texts {
     return Texts{std::move(*prop_text), std::move(*model)};
 }
 
+// What the proxies leave for the remainder record: its mass, centre and the tensor about it (printed; the compile refuses a remainder that is not a body).
+TEST(OpenFrame5fModel, TheRemainderIsWhatTheProxiesLeave) {
+    const auto prop = of::prop_part();
+    ASSERT_TRUE(prop.has_value()) << prop.error().context;
+    auto spec = of::airframe(*prop);
+    ASSERT_TRUE(spec.has_value()) << spec.error().context;
+    ASSERT_EQ(spec->parts.back().geometry.name, "kit_remainder");
+    const spade::vehicles::PartInertia rest = spec->parts.back();
+    spec->parts.pop_back();
+    const auto first = spade::vehicles::compile_airframe(*spec);
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    std::printf("[ openf5  ] proxies and blocks %.4f kg, com (%.5f, %.5f, %.5f); remainder %.4f kg at (%.5f, %.5f, %.5f), tensor diag (%.4e, %.4e, %.4e), "
+                "xy %.3e xz %.3e yz %.3e
+",
+                static_cast<double>(first->inertia.mass), static_cast<double>(first->inertia.center_of_mass.x), static_cast<double>(first->inertia.center_of_mass.y),
+                static_cast<double>(first->inertia.center_of_mass.z), rest.mass, rest.position.x, rest.position.y, rest.position.z, rest.tensor[0][0],
+                rest.tensor[1][1], rest.tensor[2][2], rest.tensor[1][0], rest.tensor[2][0], rest.tensor[2][1]);
+    const glm::dmat3 g = first->inertia.inertia_design;
+    std::printf("[ openf5  ] proxies' tensor about their com: diag (%.4e, %.4e, %.4e) xy %.3e; the kit's diag (%.4e, %.4e, %.4e) xy %.3e
+", g[0][0], g[1][1], g[2][2],
+                g[1][0], of::kKitXX, of::kKitYY, of::kKitZZ, of::kKitXY);
+}
+
 TEST(OpenFrame5fModel, TheFilesAreTheBuildersOutput) {
     const auto texts = build_texts();
     ASSERT_TRUE(texts.has_value()) << texts.error().context;
