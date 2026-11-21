@@ -51,14 +51,14 @@ if (-not $Stop) {
         exit 5
     }
     if ($OutDir) { $OutDir = [System.IO.Path]::GetFullPath($OutDir) }
-    $args = @('run', '-d', '--name', $name, '--label', "spade.outdir=$OutDir",
+    $dockerArgs = @('run', '-d', '--name', $name, '--label', "spade.outdir=$OutDir",
         '--add-host', 'host.docker.internal:host-gateway',
         '-e', "PX4_SYS_AUTOSTART=$Autostart",
         '-e', "PX4_SIM_HOSTNAME=$HostAddress",
         '-w', "$px4Dir/rootfs",
         '--entrypoint', "$px4Dir/bin/px4")
-    if ($PublishOffboard) { $args += @('-p', '14540:14540/udp') }
-    $args += @($Image, '-d', '-s', 'etc/init.d-posix/rcS')
+    if ($PublishOffboard) { $dockerArgs += @('-p', '14540:14540/udp') }
+    $dockerArgs += @($Image, '-d', '-s', 'etc/init.d-posix/rcS')
     & docker @args *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Output "px4-sitl: docker could not start $name from $Image"
