@@ -162,7 +162,12 @@ struct ImuStats {
 TEST(X500GroundContact, RestsOnItsFeetAtTheRightHeightAndTheImuReadsGravity) {
     const spade::vehicles::ModelType model = load_model(0.6f, 0.1f);
     Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kRestHeight + 0.01f, 0.0f), level(model));
-    steps(rig, 2000);
+    for (int k = 0; k < 8; ++k) {
+        steps(rig, 250);
+        const spade::BodyState t = state(rig);
+        std::printf("[ ground  ]   rest t %.2f s: pos (%+.5f, %+.5f, %+.5f) vel (%+.2e, %+.2e, %+.2e)\n", 0.25 * (k + 1), static_cast<double>(t.pos.x), static_cast<double>(t.pos.y),
+                    static_cast<double>(t.pos.z), static_cast<double>(t.vel.x), static_cast<double>(t.vel.y), static_cast<double>(t.vel.z));
+    }
     const spade::BodyState b = state(rig);
     const ImuStats imu = imu_stats(rig, spade::sensors::kRingDepth);
     std::printf("[ ground  ] at rest after 2 s: centre of mass y %.5f m (expected %.5f), velocity (%+.2e, %+.2e, %+.2e) m/s; IMU (last %u samples) mean (%+.4f, %+.4f, %+.4f) m/s^2, "
@@ -189,6 +194,11 @@ TEST(X500GroundContact, ADropSettlesWithoutBouncingMoreThanTheRestitutionAllows)
         steps(rig, 1);
         const spade::BodyState b = state(rig);
         min_y = std::min(min_y, b.pos.y);
+        if ((i >= 310 && i < 360 && i % 3 == 0) || (i >= 360 && i < 1000 && i % 60 == 0)) {
+            std::printf("[ ground  ]   step %4d: y %+.5f vy %+.4f pos.x %+.5f z %+.5f omega (%+.3f, %+.3f, %+.3f)\n", i, static_cast<double>(b.pos.y), static_cast<double>(b.vel.y),
+                        static_cast<double>(b.pos.x), static_cast<double>(b.pos.z), static_cast<double>(b.omega_body.x), static_cast<double>(b.omega_body.y),
+                        static_cast<double>(b.omega_body.z));
+        }
         if (!landed && b.vel.y > 0.0f && b.pos.y < kRestHeight + 0.05f) landed = true;
         if (landed) highest_after_impact = std::max(highest_after_impact, b.pos.y - kRestHeight);
     }
