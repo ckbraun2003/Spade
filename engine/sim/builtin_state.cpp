@@ -257,7 +257,7 @@ void init_rotor_row(const RowInit& in) noexcept {
     row.omega_cmd = rotor.omega;
     row.thrust_coeff = rotor.desc.thrust_coeff;
     row.torque_coeff = rotor.desc.torque_coeff;
-    row._r0 = 0.0f;
+    row.tau_down = rotor.desc.tau_down;
     row._r1 = 0.0f;
     row._r2 = 0.0f;
     row._r3 = 0.0f;
