@@ -1699,7 +1699,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
         const bool still = clip.scene == web::Scene::d1_still;  // S1, S2, S8; S3 and S4 are in the side wind
         auto lc = d1_web_live_case(plan.to_s, plan.grid.value_or(kD1Grid), still ? 0.0f : 90.0f,
                                    plan.step_us ? static_cast<float>(*plan.step_us) * 1.0e-6f : static_cast<float>(web::kD1WebStepS), plan.sgs_cs,
-                                   plan.drone->model_file, d1_web_hold(plan.cell_mm));
+                                   plan.drone->model_file, d1_web_hold(plan.cell_mm, plan.drone->hub_above_origin_m));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
                                plan.particles || plan.particles_preview, plan.nasa, plan.volume);

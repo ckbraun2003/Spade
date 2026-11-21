@@ -122,14 +122,20 @@ using spade::testing::kD1Grid;
 //
 // L106c: `cell_mm` (--cell-mm 2.5) is the X500's 2.5 mm box, tests/d1_case.hpp's kD1X500Grid (270 x 237 x 270), and d1_web_hold() the hold that goes with it
 // (d1_x500_hold(), 13 rows lower than the deep box's), the harness's config. An explicit --grid still wins; with neither the box is as it was.
+//
+// The fine boxes are the harness's own, one per cell a drone entry can declare (web_masters.hpp's Drone::fine_cell_mm): 2.5 mm is the X500's (kD1X500Grid, d1_x500_hold(), no hub
+// height), 1.25 mm the 5 inch FPV's (kD1FpvGrid, x along the kit's forward, and d1_fpv_hold(the entry's hub height above its design origin)). The CLI refuses a cell no entry declares
+// before it gets here.
 [[nodiscard]] inline spade::physics::airflow::GridShape d1_web_grid(
     bool still_air, const std::optional<spade::physics::airflow::GridShape>& requested, std::optional<float> cell_mm = std::nullopt) {
     if (requested) return *requested;
+    if (cell_mm && *cell_mm == 1.25f) return spade::testing::kD1FpvGrid;
     if (cell_mm) return spade::testing::kD1X500Grid;
     return still_air ? spade::testing::kD1DeepGrid : spade::testing::kD1Grid;
 }
 
-[[nodiscard]] inline std::optional<glm::vec3> d1_web_hold(std::optional<float> cell_mm) {
+[[nodiscard]] inline std::optional<glm::vec3> d1_web_hold(std::optional<float> cell_mm, float hub_above_origin_m = 0.0f) {
+    if (cell_mm && *cell_mm == 1.25f) return spade::testing::d1_fpv_hold(hub_above_origin_m);
     if (cell_mm) return spade::testing::d1_x500_hold();
     return std::nullopt;
 }
