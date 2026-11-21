@@ -55,6 +55,7 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_srgb.cpp
     test_fp32_exact.cpp
     test_spirv_scan_estimates.cpp
     test_core_fp16.cpp
@@ -124,6 +125,8 @@ add_executable(spade_tests
     test_x500_build_table.cpp
     test_x500_case.cpp
     test_x500_kit_inertia.cpp
+    test_airflow_fpv_solids.cpp
+    test_airflow_fpv_grid.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
@@ -304,6 +307,7 @@ add_executable(spade_tests
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
     test_flow_movie_build_parts.cpp
+    test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
     test_flow_movie_box_down.cpp
@@ -516,6 +520,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line_binned.cpp
         test_gpu_airflow_line_stills.cpp
         test_gpu_x500_one_rotor.cpp
+        test_gpu_fpv_four_rotors.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_live_lines.cpp

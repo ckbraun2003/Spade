@@ -12,6 +12,12 @@
 // breakdown's evidence -- the disc's downflow at three planes, the box's downward momentum against the impulse put in, the extreme v and where, the
 // pressure's mean and largest, the projection's health since the last print, and the host azimuth against step x h x omega). Reports the thrust at 0.01, 0.02, 0.05, 0.075 and 0.1 s (up to T) as the
 // step's own and as the mean over the last revolution, and the disc's mean downflow at 0.05 s and T against momentum theory.
+//
+// ANOTHER AIRFRAME (the lead, 2026-11-21: the 5-inch FPV's rotor model against its weight; every default below is the X500's, unchanged):
+// SPADE_L105_PROP (a library part's name, e.g. uiuc_mit_5x4: assets/library/parts/<name>.prop.yaml as the library grades it, its own diameter),
+// SPADE_L105_MASS (the airframe's kg, default the X500's 1.6326: W/4 is the thrust asked of the balance speed), SPADE_L105_OMEGA (the rotor speed, rad/s,
+// instead of the blade's own balance speed for W/4), SPADE_L105_BOX (the box's width and length, m, default 0.40) and SPADE_L105_TOP (the rotor's depth
+// under the box's top, m, default 0.20). A half-size airframe takes BOX 0.20, TOP 0.10 and DEPTH 0.275.
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -22,6 +28,9 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <numeric>
 #include <sstream>
 #include <string>
@@ -62,6 +71,17 @@ namespace x5 = spade::testing::x500;
     return v != nullptr ? std::strtod(v, nullptr) : fallback;
 }
 
+// The rotor's part: the X500's (the library's 10x5 at 10 in) or, with SPADE_L105_PROP, the library part of that name as it is.
+[[nodiscard]] spade::Result<spade::scene::PropPart> l105g_part() {
+    const char* name = l105g_env("SPADE_L105_PROP");
+    if (name == nullptr) return x5::prop_part();
+    const std::filesystem::path file = std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts" / (std::string(name) + ".prop.yaml");
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return std::unexpected(spade::Error{spade::Code::io_error, "cannot read " + file.string()});
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return spade::scene::prop_from_yaml(text);
+}
+
 [[nodiscard]] std::vector<double> l105g_cells() {
     const char* v = l105g_env("SPADE_L105_CELLS");
     std::stringstream in(v != nullptr ? v : "1.45,0.72,0.36,0.18");
@@ -74,12 +94,15 @@ namespace x5 = spade::testing::x500;
 TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
     if (l105g_env("SPADE_L105_GPU") == nullptr) GTEST_SKIP() << "opt-in: SPADE_L105_GPU=1 (GPU, minutes)";
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
-    const auto part = x5::prop_part();
+    const auto part = l105g_part();
     ASSERT_TRUE(part.has_value()) << part.error().context;
     const auto prop = spade::scene::line_propeller(*part);
     ASSERT_TRUE(prop.has_value()) << prop.error().context;
-    const float target = static_cast<float>(x5::kMass * 9.80665 / 4.0);
-    const auto omega = x5::balance_omega(prop->blade, prop->polar, target);
+    const float target = static_cast<float>(l105g_number("SPADE_L105_MASS", x5::kMass) * 9.80665 / 4.0);
+    auto omega = x5::balance_omega(prop->blade, prop->polar, target);
+    if (const char* given = l105g_env("SPADE_L105_OMEGA"); given != nullptr) {
+        omega = static_cast<float>(std::strtod(given, nullptr));
+    }
     ASSERT_TRUE(omega.has_value()) << omega.error().context;
     constexpr float kRho = 1.225f;
     constexpr double kPi = 3.14159265358979;
@@ -100,9 +123,10 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
 
     for (const double cells : l105g_cells()) {
         const float h = static_cast<float>(cells * static_cast<double>(dx) / tip_speed);
-        const af::GridShape shape{static_cast<uint32_t>(std::lround(0.40 / static_cast<double>(dx))),
+        const double box = l105g_number("SPADE_L105_BOX", 0.40);
+        const af::GridShape shape{static_cast<uint32_t>(std::lround(box / static_cast<double>(dx))),
                                   static_cast<uint32_t>(std::lround(l105g_number("SPADE_L105_DEPTH", 0.55) / static_cast<double>(dx))),
-                                  static_cast<uint32_t>(std::lround(0.40 / static_cast<double>(dx))), dx};
+                                  static_cast<uint32_t>(std::lround(box / static_cast<double>(dx))), dx};
         af::DomainBc bc;
         auto grid = af::make_grid(shape, bc);
         ASSERT_TRUE(grid.has_value()) << grid.error().context;
@@ -113,7 +137,7 @@ TEST(GpuX500OneRotor, TheLinesThrustAgainstCellsAPerStep) {
         cfg.sgs_cs = static_cast<float>(l105g_number("SPADE_L105_CS", 0.17));
         cfg.nu = static_cast<float>(l105g_number("SPADE_L105_NU", 1.4607e-5));
         af::LineRotor rotor;
-        rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx, static_cast<float>(shape.ny) * dx - 0.20f,
+        rotor.centre = glm::vec3(0.5f * static_cast<float>(shape.nx) * dx, static_cast<float>(shape.ny) * dx - static_cast<float>(l105g_number("SPADE_L105_TOP", 0.20)),
                                  0.5f * static_cast<float>(shape.nz) * dx);
         rotor.axis = glm::vec3(0.0f, 1.0f, 0.0f);
         rotor.omega = *omega;
