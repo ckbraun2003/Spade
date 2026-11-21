@@ -262,7 +262,7 @@ TEST(OpenFrame5fBalance, TheBalanceSpeedHoldsAQuarterOfTheWeight) {
     const double rpm = static_cast<double>(*omega) * 60.0 / 6.283185307;
     std::printf("[ openf5  ] W/4 %.4f N: balance %.1f rad/s (%.0f rpm)\n", static_cast<double>(target), static_cast<double>(*omega), rpm);
     EXPECT_GT(rpm, 8000.0);
-    EXPECT_LT(rpm, 10500.0) << "a 5 inch tri-blade holds 0.5665 kg near 9,400 rpm";
+    EXPECT_LT(rpm, 10500.0) << "a 5 inch tri-blade holds 0.5665 kg near 9,000 rpm";
 }
 
 }  // namespace
