@@ -1,13 +1,12 @@
 // ---------------------------------------------------------------------------
 // test_airflow_fpv_solids.cpp -- the lead's question (2026-11-21), no GPU: which of the library's 5-inch FPV's parts does the air take at 1.25 mm
 // cells, in a 270 x 237 x 270 box (337.5 x 296.25 x 337.5 mm, 17.3 M cells), and which are drawn only (the classifier's wire / thin rules, the measured
-// leak safeguard, L13's contained parts)? The run is LiveRun::start() on the CPU's fluid with the rotors as actuator lines (the film's
-// configuration without the device): its set_solids() decides, and this test only reports what it decided.
+// leak safeguard, L13's contained parts)? The run is LiveRun::start() on the CPU's fluid (the CPU run steps discs; the film's lines need the device,
+// and the rotors' own parts are never solids either way): its set_solids() decides, and this test only reports what it decided.
 //
 //   AirflowFpvSolids.WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres   opt-in: SPADE_FPV_SOLIDS=1 (CPU, about 4 GB of host memory, seconds to a minute)
 //
-// Knobs: SPADE_FPV_DXMM (the cell in mm, default 1.25; the box in cells stays 270 x 237 x 270), SPADE_FPV_DRONE (a library drone's stem, default fpv_5inch),
-// SPADE_FPV_PROP (its library prop part, default uiuc_mit_5x4).
+// Knobs: SPADE_FPV_DXMM (the cell in mm, default 1.25; the box in cells stays 270 x 237 x 270), SPADE_FPV_DRONE (a library drone's stem, default fpv_5inch).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -18,8 +17,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 
 #include <glm/glm.hpp>
@@ -29,8 +26,6 @@
 #include "phantom_case.hpp"
 #include "physics/airflow/fluid_step.hpp"
 #include "physics/airflow/mac_grid.hpp"
-#include "scene/part_file.hpp"
-#include "scene/prop_line.hpp"
 
 namespace {
 
@@ -65,7 +60,6 @@ namespace af = spade::physics::airflow;
 TEST(AirflowFpvSolids, WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres) {
     if (fpv_env("SPADE_FPV_SOLIDS") == nullptr) GTEST_SKIP() << "opt-in: SPADE_FPV_SOLIDS=1 (CPU, about 4 GB of host memory)";
     const std::string stem = fpv_env("SPADE_FPV_DRONE") != nullptr ? fpv_env("SPADE_FPV_DRONE") : "fpv_5inch";
-    const std::string prop_name = fpv_env("SPADE_FPV_PROP") != nullptr ? fpv_env("SPADE_FPV_PROP") : "uiuc_mit_5x4";
     const float dx = fpv_env("SPADE_FPV_DXMM") != nullptr ? static_cast<float>(0.001 * std::strtod(fpv_env("SPADE_FPV_DXMM"), nullptr)) : 0.00125f;
     const af::GridShape grid{270, 237, 270, dx};
 
@@ -81,26 +75,13 @@ TEST(AirflowFpvSolids, WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres) {
                                                glm::vec3(0.0f, hold_y, 0.0f));
     ASSERT_TRUE(made.has_value()) << made.error().context;
 
-    const std::filesystem::path prop_file = std::filesystem::path(SPADE_ASSETS_DIR) / "library/parts" / (prop_name + ".prop.yaml");
-    std::ifstream in(prop_file, std::ios::binary);
-    ASSERT_TRUE(in.good()) << "cannot read " << prop_file.string();
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const auto part = spade::scene::prop_from_yaml(text);
-    ASSERT_TRUE(part.has_value()) << part.error().context;
-    const auto prop = spade::scene::line_propeller(*part);
-    ASSERT_TRUE(prop.has_value()) << prop.error().context;
-    an::LiveLines lines;
-    lines.blade = prop->blade;
-    lines.polar = prop->polar;
-    lines.n_sub = 8;
-
     std::printf("[ fpv     ] %s at %.3f mm: box %ux%ux%u = %.1f x %.1f x %.1f mm, %.1f M cells, rotor R %.4f m (R/dx %.1f), hold y %.4f m, %zu model parts\n",
                 stem.c_str(), static_cast<double>(dx) * 1000.0, grid.nx, grid.ny, grid.nz, static_cast<double>(grid.nx) * dx * 1000.0,
                 static_cast<double>(grid.ny) * dx * 1000.0, static_cast<double>(grid.nz) * dx * 1000.0,
                 static_cast<double>(grid.nx) * grid.ny * grid.nz / 1.0e6, static_cast<double>(radius), static_cast<double>(radius / dx),
                 static_cast<double>(hold_y), made->model.parts.size());
     std::fflush(stdout);
-    spade::Result<an::LiveRun> run = an::LiveRun::start(made->resolved, made->model, {}, &lines);
+    spade::Result<an::LiveRun> run = an::LiveRun::start(made->resolved, made->model);
     if (!run.has_value()) {
         std::printf("[ fpv     ] start() REFUSED: %s\n", run.error().context.c_str());
         FAIL() << "the run was refused: " << run.error().context;
