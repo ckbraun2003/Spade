@@ -235,7 +235,7 @@ TEST(FcLinkMavlink, TheParserFindsFramesInGarbageAndBackToBack) {
     EXPECT_EQ(frames[0].msgid, 0u);
     EXPECT_EQ(frames[1].msgid, 93u);
     EXPECT_EQ(frames[2].msgid, 93u);
-    EXPECT_EQ(frames[2].header.seq, 9);
+    EXPECT_EQ(frames[2].header.seq, 8) << "the disarmed frame's own sequence number";
     EXPECT_GE(stats.garbage_bytes, 3u);
 }
 
