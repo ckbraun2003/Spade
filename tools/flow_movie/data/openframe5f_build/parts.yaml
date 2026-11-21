@@ -24,8 +24,11 @@
 # MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The frame is the maker's 170 g; the printed parts are not in it ("without the TPU parts") and have no published mass: they are
 # an assumed upper bound (every printed part counted as SOLID, 100 % fill, at 1.2 g/cm3). The FC, ESC and receiver are the maker's own estimates ("(est.)"), graded published and said so in their mass_source; the four 2306 motors'
 # mass is ASSUMED (the maker publishes none for the 2306: its README says "not yet measured"), their size a retailer's stand-in (no motor CAD exists: the maker's page says "there are no design files to publish."); the
-# pack is an assumed typical 6S 1300 mAh pack; the four props are the retailers' 3.8 g. The sum is 0.5657 kg: it is nobody's take-off weight (no camera, video transmitter, antennas, wiring or fasteners beyond the
+# pack is an assumed typical 6S 1300 mAh pack; the four props are a stand-in at an assumed 4 g each. The sum is 0.5665 kg: it is nobody's take-off weight (no camera, video transmitter, antennas, wiring or fasteners beyond the
 # frame's own 170 g are in it; a real 5 inch build is heavier).
+#
+# OBJECT ROLES. Every object listed in this table is a SOLID: each STEP part passed the converter's closed-solid gate (volume above 0, the brep-to-mesh cross-check unflagged), the motors, boards, receiver and pack are solid
+# boxes and cylinders, and the prop meshes are the library's solid blade meshes. None is visual-only. (The loader refuses a `role` key, so the role is stated here, not per object.)
 #
 # THE STACK. The 30.5 x 30.5 mm stack holes are about the studio's (0, -12.75) mm, so the stack's centre is X +0.01275, Z 0 in the design frame (measured from the plates' holes); the heights are a layout choice (assumed):
 # the ESC board's 5 mm (1.6 mm of board and its parts) from the middle plate's top face (design Y 0.012 m) up, the FC board 1.6 mm below the top plate's lower face (design Y 0.032 m), the 20 mm stack between. The boards' sizes
@@ -43,7 +46,7 @@ parts:
     kind: frame
     mass_kg: 0.170
     mass_grade: published
-    mass_source: "OpenFrame-5F README, \"Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts\"; the product page https://opendrone.be/products/openframe says \"170 g, without TPU parts (est.)\". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here"
+    mass_source: "OpenFrame-5F README, \"Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts\"; the product page https://opendrone.be/products/openframe says \"170 g, without TPU parts (est.)\". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here. The Airtag/Antenna mount (a printed part, 4.9 cm3, not in the part store: the converter refuses a face of it, so it is not drawn) has its mass lumped into this 170 g in the kit model (the lead's and Physics' decision); the maker's 170 g itself is without printed parts"
     pose_grade: derived
     # the maker's part-studio frame turned to the design frame (see the header); the plates, the cross, the four arms (two hands), the four M3 standoffs and the two aluminium side plates
     pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
@@ -169,9 +172,9 @@ parts:
     rotor: 0
     spin: 1
     radius: 0.0635
-    mass_kg: 0.0038
-    mass_grade: retailer
-    mass_source: "HQProp 5X4.3X3 V2S, 3.8 g per propeller on retailer listings (for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray); the drawn blade is the library's generated stand-in, not that prop"
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
     pose_grade: assumed
     # the library's generated three-blade prop (prop_ccw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
     pose: {position: [0.069534, 0.0436, 0.089000], orientation: [1, 0, 0, 0]}
@@ -183,9 +186,9 @@ parts:
     rotor: 1
     spin: -1
     radius: 0.0635
-    mass_kg: 0.0038
-    mass_grade: retailer
-    mass_source: "HQProp 5X4.3X3 V2S, 3.8 g per propeller on retailer listings (for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray); the drawn blade is the library's generated stand-in, not that prop"
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
     pose_grade: assumed
     # the library's generated three-blade prop (prop_cw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
     pose: {position: [0.069534, 0.0436, -0.089000], orientation: [1, 0, 0, 0]}
@@ -197,9 +200,9 @@ parts:
     rotor: 2
     spin: 1
     radius: 0.0635
-    mass_kg: 0.0038
-    mass_grade: retailer
-    mass_source: "HQProp 5X4.3X3 V2S, 3.8 g per propeller on retailer listings (for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray); the drawn blade is the library's generated stand-in, not that prop"
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
     pose_grade: assumed
     # the library's generated three-blade prop (prop_ccw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
     pose: {position: [-0.069534, 0.0436, -0.089000], orientation: [1, 0, 0, 0]}
@@ -211,9 +214,9 @@ parts:
     rotor: 3
     spin: -1
     radius: 0.0635
-    mass_kg: 0.0038
-    mass_grade: retailer
-    mass_source: "HQProp 5X4.3X3 V2S, 3.8 g per propeller on retailer listings (for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray); the drawn blade is the library's generated stand-in, not that prop"
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
     pose_grade: assumed
     # the library's generated three-blade prop (prop_cw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
     pose: {position: [-0.069534, 0.0436, 0.089000], orientation: [1, 0, 0, 0]}
