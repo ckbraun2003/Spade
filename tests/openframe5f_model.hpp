@@ -18,9 +18,11 @@
 // receiver (55 g). The tensor's products turn the principal axes 2.9 degrees about z, which the model file carries.
 //
 // THE PROXY SOLIDS. A frame object's mass is the frame's 0.170 kg by its mesh volume (the carbon, the two aluminium side plates and the standoffs
-// share one density, 1915 kg/m3: an assumption, as the X500's). A plate is a box of the mesh's extents (x, y, z read from the part store to 0.1 mm; the real plates
-// have cut-outs, so the box is the more solid shape and carries the plate's own mass); an arm is a box from the centre to the motor bore, 6 mm thick (the
-// kit's arms are 6 mm carbon), as wide as its volume asks (16.4 mm), turned along the bore's direction. The ESC and the pack are the table's boxes at the
+// share one density, 1915 kg/m3: an assumption, as the X500's). Each proxy is at its mesh's centroid and sized so its second moments are the mesh's (read from the
+// part store by the inertia test, [kit-obj]): the meshes have cut-outs and an arm has a boss, so a box of the bounding extents puts the mass in the wrong place and
+// leaves the remainder record no body at all (the compile refuses a tensor that breaks the triangle inequality; the first build did). A plate is a box of the
+// mesh's thickness and the x, z sizes that give its moments (within 1 cm of the mesh's extents); an arm is a box 6 mm thick (the kit's arms are 6 mm carbon),
+// 16.35 mm wide (its volume) and 128.6 mm long (its moment about the vertical), turned along the bore. The ESC and the pack are the table's boxes at the
 // table's poses. A motor is the table's cylinder (phi 29.3 mm) 38.6 mm long: the table's 30.6 mm and the 4 mm between its top and the prop's disc plane, which
 // the compile's motor rule (a motor's record is its hub moved half its length down) needs for the centre to be the table's, 0.0243 m up.
 //
@@ -115,7 +117,7 @@ inputs:
   rotors: {value: "(+-0.069534, +-0.089000) m", grade: measured, note: "the motor bores' axes measured on the exported Arm (Interface; 225.9 mm across the diagonal against the maker's 226 mm wheelbase): a stretched X; rotor 0 front-right (+X, +Z) spin +1, 1 front-left -1, 2 rear-left +1, 3 rear-right -1, the library's fpv_5inch order and spins. The other three arms are derived from the one exported arm (two hands) by the table's stated rule"}
   disc_height: {value: "0.0436 m above the table's origin", grade: assumed, note: "the 2306 stand-in stands on the arm's top face (0.009 m), 30.6 mm tall (a retailer's BETAFPV Snow 2306 listing: no motor CAD exists), so its top is 0.0396 m; the propeller's disc plane is put 4 mm above it (the hub is not published)"}
   rotor_radius: {value: 0.0635, unit: m, grade: published, note: "a 5 inch propeller: 5 in = 0.127 m, halved (the maker's build names the HQProp 5X4.3X3 V2S)"}
-  body: {value: "three plate boxes and four 6 mm arm boxes, 0.152 kg", grade: derived, note: "proxy solids for the flow: the bottom, middle and top plates as boxes of the meshes' extents, each carrying its mesh's share of the frame's 170 g, and the four arms as 6 mm boxes from the centre to the motor bores, 16.4 mm wide (the mesh's volume), turned along each bore; the Cross, the camera side plates, the standoffs, the printed parts, the controller and the receiver are in the kit_remainder tensor record, with no solid"}
+  body: {value: "three plate boxes and four 6 mm arm boxes, 0.152 kg", grade: derived, note: "proxy solids for the flow: the bottom, middle and top plates as boxes at their meshes' centroids with the meshes' second moments, each carrying its mesh's share of the frame's 170 g, and the four arms as 6 mm boxes 16.35 mm wide and 128.6 mm long at each arm mesh's centroid, turned along the bore; the Cross, the camera side plates, the standoffs, the printed parts, the controller and the receiver are in the kit_remainder tensor record, with no solid"}
   battery: {value: "box 0.078 x 0.038 x 0.039 m, 0.200 kg, on the top plate's side of the stack", grade: assumed, note: "a Tattu R-Line 6S 1300 mAh class pack (retailer listings: 78 x 39 x 38 mm, 200 g +-20 g); the table's pose (-0.00385, 0.0535, 0), a layout choice the maker's build leaves open"}
   motor: {value: "the library's fpv_2306_1700kv with kv 1950 rpm/V, 0.032 kg", grade: assumed, note: "the OpenMotor 2306 6S 1950KV: its published kv; the resistance, no-load current, current limit, pole pairs and rotor inertia are the library's typical-2306 estimates; the 32 g and the 29.3 x 30.6 mm cylinder are the table's (a retailer's BETAFPV Snow 2306 stand-in; the maker's README says the motor mass is not yet measured). The solid is 38.6 mm long (the 4 mm to the disc plane added) so the centre is the table's, 0.0243 m up"}
   esc_battery: {value: "the library's fpv_4in1_45a (0.015 kg, 41.6 x 42.5 x 5 mm) and fpv_6s_1300 cells", grade: assumed, note: "stand-ins; the chain only fixes the hover throttle, the rotors turn at the speed the propeller part gives for a quarter of the weight. The ESC's pose is the table's (stack holes, Y 0.0155 m)"}
@@ -241,17 +243,21 @@ not_carried: "the Cross, camera side plates, standoffs, TPU parts (boots, bumper
     // The proxy solids replace basic_quad's body box and arm tubes.
     spec->parts.clear();
     const double rho = kFrameMass / kFrameVolume;  // kg/m3: the frame's objects share one density
-    spec->parts.push_back(proxy_box("plate_bottom", "body", rho * kPlateBottomVolume, glm::dvec3(0.0285, 0.0015, 0.0), glm::dvec3(0.115, 0.003, 0.0684)));
-    spec->parts.push_back(proxy_box("plate_middle", "body", rho * kPlateMiddleVolume, glm::dvec3(-0.02035, 0.0105, 0.0), glm::dvec3(0.1073, 0.003, 0.0684)));
-    spec->parts.push_back(proxy_box("plate_top", "body", rho * kPlateTopVolume, glm::dvec3(-0.00025, 0.03325, 0.0), glm::dvec3(0.1475, 0.0025, 0.0376)));
-    const double arm_length = std::sqrt(kArmX * kArmX + kArmZ * kArmZ);
-    const double arm_width = kArmVolume / (kArmThickness * arm_length);
+    // Each proxy sits at its mesh's centroid, sized so its inertia is the mesh's (the meshes have cut-outs and a boss: a box of the bounding extents has the
+    // mass in the wrong place, and the remainder record then is not a body): plate boxes of the thickness and the x, z sizes that give the mesh's second
+    // moments about its centroid (tests/test_openframe5f_inertia.cpp, [kit-obj]); an arm 6 mm thick, 16.35 mm wide (its mesh volume) and 128.6 mm long (its
+    // moment about the vertical), turned along the bore, at the mesh's centroid (0.04365, 0.00600, 0.05507) m.
+    spec->parts.push_back(proxy_box("plate_bottom", "body", rho * kPlateBottomVolume, glm::dvec3(0.02261, 0.0015, 0.00001), glm::dvec3(0.1053, 0.003, 0.0523)));
+    spec->parts.push_back(proxy_box("plate_middle", "body", rho * kPlateMiddleVolume, glm::dvec3(-0.01552, 0.01048, 0.0), glm::dvec3(0.0943, 0.003, 0.0517)));
+    spec->parts.push_back(proxy_box("plate_top", "body", rho * kPlateTopVolume, glm::dvec3(0.00131, 0.03325, -0.00008), glm::dvec3(0.1444, 0.0025, 0.0348)));
+    const double arm_width = kArmVolume / kArmThickness / 0.1286;
     const std::array<glm::dvec2, 4> corners = {glm::dvec2(kArmX, kArmZ), glm::dvec2(kArmX, -kArmZ), glm::dvec2(-kArmX, -kArmZ), glm::dvec2(-kArmX, kArmZ)};
     for (std::size_t k = 0; k < corners.size(); ++k) {
         const double theta = std::atan2(-corners[k].y, corners[k].x);  // about +Y: local x onto the bore's direction
         const glm::dquat turn(std::cos(0.5 * theta), 0.0, std::sin(0.5 * theta), 0.0);
-        spec->parts.push_back(proxy_box(("arm[" + std::to_string(k) + "]").c_str(), "arm", rho * kArmVolume, glm::dvec3(0.5 * corners[k].x, 0.006, 0.5 * corners[k].y),
-                                        glm::dvec3(arm_length, kArmThickness, arm_width), turn));
+        const glm::dvec3 centroid(corners[k].x > 0.0 ? 0.04365 : -0.04365, 0.006, corners[k].y > 0.0 ? 0.05507 : -0.05507);
+        spec->parts.push_back(proxy_box(("arm[" + std::to_string(k) + "]").c_str(), "arm", rho * kArmVolume, centroid,
+                                        glm::dvec3(0.1286, kArmThickness, arm_width), turn));
     }
     // The proxy solids and blocks compile as they are; the remainder completes the table's composite.
     const auto first = vehicles::compile_airframe(*spec);
