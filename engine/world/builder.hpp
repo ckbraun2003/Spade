@@ -359,6 +359,8 @@ public:
     // nodes.size() lazily (filling earlier slots with the default, index 0)
     // is this call's job, not build()'s -- see sdf.hpp's node_materials note.
     WorldBuilder& material_for_last_node(uint32_t material_index);
+    // RED stub: sets the label of the node most recently pushed.
+    WorldBuilder& label_for_last_node(uint16_t label);
 
     // --- product -----------------------------------------------------------
     // Construct, then validate_world_desc(), then hand the world over. The

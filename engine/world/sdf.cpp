@@ -463,6 +463,12 @@ uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept {
     return sp == 1 ? leaf[0] : kNoSdfLeaf;
 }
 
+uint16_t sdf_hit_label(const SdfProgram& program, glm::vec3 p) noexcept {
+    (void)program;
+    (void)p;
+    return 0;  // RED stub
+}
+
 Result<uint32_t> SdfProgram::validate() const {
     // PA-2: node_materials is a parallel, host-only array (sdf.hpp) -- the
     // only thing THIS type can check about it is its length, since whether an

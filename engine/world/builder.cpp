@@ -298,6 +298,11 @@ WorldBuilder& WorldBuilder::prop(std::string mesh_ref, const SdfPose& pose, uint
     return *this;
 }
 
+WorldBuilder& WorldBuilder::label_for_last_node(uint16_t label) {
+    (void)label;  // RED stub
+    return *this;
+}
+
 WorldBuilder& WorldBuilder::material_for_last_node(uint32_t material_index) {
     if (desc_.sdf.nodes.empty()) {
         fail("material_for_last_node() called before any SDF node was pushed");

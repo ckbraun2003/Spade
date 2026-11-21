@@ -189,6 +189,9 @@ struct SdfProgram {
     // (world/builder.hpp) instead.
     std::vector<uint32_t> node_materials;
 
+    // Per-node object label (schema v4; rendering/camera-sensor-design section 6): RED stub -- declared, not yet validated or written.
+    std::vector<uint16_t> node_labels;
+
     [[nodiscard]] bool empty() const noexcept { return nodes.empty(); }
 
     // Structural + parameter validation. On success returns the peak evaluation
@@ -263,6 +266,9 @@ inline constexpr uint32_t kNoSdfLeaf = std::numeric_limits<uint32_t>::max();
 //
 // Returns kNoSdfLeaf for an empty program.
 [[nodiscard]] uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept;
+
+// RED stub: the object label of the surface at p. 0 for now.
+[[nodiscard]] uint16_t sdf_hit_label(const SdfProgram& program, glm::vec3 p) noexcept;
 
 // ---------------------------------------------------------------------------
 // Bounds (the lead's ask of 2026-10-13, on D1's path: Physics' P2 sizes its
