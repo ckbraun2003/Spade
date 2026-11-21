@@ -158,6 +158,7 @@ add_executable(spade_tests
     test_camera_shade.cpp
     test_camera_frame.cpp
     test_camera_mount.cpp
+    test_camera_golden.cpp
     test_gnss.cpp
     test_world_file.cpp
     test_scene_file.cpp
