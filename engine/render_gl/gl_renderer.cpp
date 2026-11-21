@@ -486,6 +486,8 @@ uniform vec3 uFlowConstantColour;
 uniform uint uFlowWallsOnly;  // RND-8
 uniform float uFlowOffset;    // metres: offset_cells times the volume's cell
 uniform uint uFlowExtrapolate;  // 2 v(offset) - v(2 offset), as raster_cpu
+uniform float uFlowSearch;      // metres: search_cells times the volume's cell; on past a no-data read, half a cell at a time, as raster_cpu
+uniform float uFlowHalfCell;    // metres: half the volume's cell
 
 // `normal` is the surface's, unit and turned toward the eye, or 0 where
 // unknown; `wall` is DrawItem::flow_wall (RND-8). The value is read off the
@@ -495,7 +497,15 @@ vec3 flow_colour_surface(vec3 world, vec3 normal, bool wall, vec3 shaded) {
     if (uFlowWallsOnly != 0u && !wall) return shaded;
     if (any(lessThan(world, uFlowBoxMin)) || any(greaterThan(world, uFlowBoxMax))) return shaded;
     float value;
-    if (!flow_sample_quantity(world + normal * uFlowOffset, uFlowQuantity, value)) return shaded;
+    if (!flow_sample_quantity(world + normal * uFlowOffset, uFlowQuantity, value)) {
+        bool found = false;
+        if (uFlowSearch > 0.0) {
+            for (float d = uFlowHalfCell; d <= uFlowSearch + 1e-6 * uFlowHalfCell && !found; d += uFlowHalfCell) {
+                found = flow_sample_quantity(world + normal * (uFlowOffset + d), uFlowQuantity, value);
+            }
+        }
+        if (!found) return shaded;
+    }
     if (uFlowExtrapolate != 0u) {
         float far_value;
         if (!flow_sample_quantity(world + normal * (2.0 * uFlowOffset), uFlowQuantity, far_value)) return shaded;
@@ -2273,7 +2283,7 @@ struct GlRenderer::Impl {
     struct FlowSurfaceUniforms {
         GLint on = -1, quantity = -1, box_min = -1, box_max = -1, origin = -1, inv_cell = -1, range_min = -1,
               inv_span = -1, constant = -1, constant_colour = -1, colour_map = -1, walls_only = -1, offset = -1,
-              extrapolate = -1;
+              extrapolate = -1, search = -1, half_cell = -1;
     } mesh_flow, csg_flow;
 
     struct FlowLayerUniforms {
@@ -2684,6 +2694,8 @@ Result<std::unique_ptr<GlRenderer>> GlRenderer::create(GlProcLoader loader, cons
         u.walls_only = gl.GetUniformLocation(program, "uFlowWallsOnly");
         u.offset = gl.GetUniformLocation(program, "uFlowOffset");
         u.extrapolate = gl.GetUniformLocation(program, "uFlowExtrapolate");
+        u.search = gl.GetUniformLocation(program, "uFlowSearch");
+        u.half_cell = gl.GetUniformLocation(program, "uFlowHalfCell");
     };
     flow_uniforms(impl->program, impl->mesh_flow);
     flow_uniforms(impl->csg_program, impl->csg_flow);
@@ -3477,6 +3489,8 @@ Result<void> GlRenderer::draw(const render::RenderScene& scene, const render::Ca
         gl.Uniform1ui(u.walls_only, scene.flow_surface_colouring->walls_only ? 1u : 0u);
         gl.Uniform1f(u.offset, scene.flow_surface_colouring->offset_cells * h.cell);
         gl.Uniform1ui(u.extrapolate, scene.flow_surface_colouring->extrapolate ? 1u : 0u);
+        gl.Uniform1f(u.search, scene.flow_surface_colouring->search_cells * h.cell);
+        gl.Uniform1f(u.half_cell, 0.5f * h.cell);
     };
     const glm::vec3 sensor_forward = camera.orientation * glm::vec3(0.0f, 0.0f, -1.0f);
     const auto set_sensor_uniforms = [&](const Impl::SensorUniforms& u) {

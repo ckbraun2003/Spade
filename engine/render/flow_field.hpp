@@ -56,6 +56,10 @@ struct FlowSurfaceColouring {
     // first-order part (R2.4: at 8 cells per radius, 0.43 in C_p becomes
     // about 0.2) for up to three times a read's noise. Meant for pressure.
     bool extrapolate = false;
+    // When the read at the offset is no-data (a solid cell: the drawn surface is not the solid the flow saw, so a point can fall inside one), go on outward
+    // along the same normal, half a cell at a time, up to this many cells more, and take the first FLUID sample; a solid cell is never read. None in reach:
+    // no-data, the shaded colour, no value invented. 0: no search, as before. Needs an offset to start from, and does not combine with extrapolate.
+    float search_cells = 0.0f;
 };
 inline constexpr float kMaxSurfaceOffsetCells = 4.0f;
 // Where the C_p view reads (R2.4, measured 2026-10-13): one cell off the

@@ -1350,6 +1350,14 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
                 step = surface->normal * (colouring.offset_cells * h.cell);
             }
             FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p + step);
+            if (v.no_data && colouring.search_cells > 0.0f && surface != nullptr) {
+                // a solid at the offset: on outward along the normal to the first fluid sample, half a cell at a time (as the GL program steps)
+                const float half_cell = 0.5f * h.cell;
+                const float reach = colouring.search_cells * h.cell;
+                for (float d = half_cell; v.no_data && d <= reach + 1e-6f * h.cell; d += half_cell) {
+                    v = sample_quantity(sampler, colouring.colours.quantity, p + step + surface->normal * d);
+                }
+            }
             if (colouring.extrapolate && !v.no_data) {  // 2 v(delta) - v(2 delta), linearly to the wall
                 const FlowValue far = sample_quantity(sampler, colouring.colours.quantity, p + 2.0f * step);
                 v = far.no_data ? far : FlowValue{2.0f * v.value - far.value, false};
