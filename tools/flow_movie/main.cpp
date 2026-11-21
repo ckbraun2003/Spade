@@ -1522,7 +1522,7 @@ constexpr float kVortexFloor = -5.0f;
         const float q = 0.5f * run->c.fluid.density * two_v_h * two_v_h;
         // `search` is the reach past a solid at the read (FlowSurfaceColouring::search_cells): 0 for S4's C_p, whose parts ARE the flow's solids; the pressure film
         // paints the detailed kit meshes, which are not, so it goes on outward to the nearest fluid cell (O124).
-        const auto cp_view = [&](const char* name, float search, float range) {
+        const auto cp_view = [&](const char* name, float search, float range, bool shade) {
             return View{
                 name,
                 "C_p = (p - p_inflow) / q on the airframe, q = 1/2 rho (2 v_h)^2 = T/A = " + fixed(q, 1) +
@@ -1534,7 +1534,7 @@ constexpr float kVortexFloor = -5.0f;
                     camera = orbit(volume_centre(v), 0.35f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
                     return {};
                 },
-                [q, search, range](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                [q, search, range, shade](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
                     render::FlowViewSpec cp;
                     cp.kind = render::FlowView::surface_cp;
                     cp.colours = render::ColourMapId::cool_warm;
@@ -1543,6 +1543,7 @@ constexpr float kVortexFloor = -5.0f;
                     cp.q_ref = q;
                     cp.p_ref = static_cast<float>(inflow_pressure(v));
                     cp.search_cells = search;
+                    cp.shade = shade;
                     render::RenderOptions options;
                     auto legends = render::apply_view(render::ViewSpec{render::ViewBase::shaded, {cp}}, &v, scene,
                                                       options);
@@ -1550,8 +1551,9 @@ constexpr float kVortexFloor = -5.0f;
                     return legends->empty() ? std::string() : legends->front().note;
                 }};
         };
-        film.views.push_back(cp_view("cp", 0.0f, 1.0f));
-        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange));
+        film.views.push_back(cp_view("cp", 0.0f, 1.0f, false));
+        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, false));
+        film.views.push_back(cp_view("surface-pressure-shaded", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, true));
     }
     return film;
 }
@@ -1586,6 +1588,7 @@ struct WebPlan {
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
     bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
     bool pressure = false;                            // --surface-pressure: S8 draws the air's pressure on the drawn parts, nothing else of the air
+    bool shade = false;                               // --surface-shade: ... lit for shape
     std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
@@ -1773,7 +1776,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.pressure ? "surface-pressure" : plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.pressure ? (plan.shade ? "surface-pressure-shaded" : "surface-pressure") : plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
@@ -1987,6 +1990,7 @@ struct Options {
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
     bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
     bool surface_pressure = false;   // --surface-pressure: S8 shows the air's pressure on the drone's surfaces (O124)
+    bool surface_shade = false;      // --surface-shade: ... lit for shape (the colour keeps its hue; needs --surface-pressure)
     std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
     bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
     std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
@@ -2502,6 +2506,7 @@ struct WebFilming {
         in.volume = opt.volume;
         in.cloud = opt.nasa_cloud;
         in.pressure = opt.surface_pressure;
+        in.shaded = opt.surface_shade;
         in.step_us = opt.step_us.value_or(200u);
         in.commit = build_identity();
         in.date_utc = utc_now();
@@ -2676,6 +2681,11 @@ struct WebFilming {
         }
         plan.pressure = true;
     }
+    if (const std::string why = web::surface_shade_refusal(opt.surface_shade, opt.surface_pressure); !why.empty()) {
+        std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+        return 2;
+    }
+    plan.shade = opt.surface_shade;
     if (opt.particles) {
         const char* why = !(clip->id == "S2" || clip->id == "S8") ? "--particles is for S2 and S8"
                           : !web::particles_window_refusal(opt.window_to > 0.0, opt.web_still_only, opt.stream).empty() ? "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)"
@@ -3279,6 +3289,8 @@ int main(int argc, char** argv) {
             opt.nasa_cloud = true;
         } else if (arg == "--surface-pressure") {
             opt.surface_pressure = true;
+        } else if (arg == "--surface-shade") {
+            opt.surface_shade = true;
         } else if (arg == "--cache-dir") {
             opt.cache_dir = value();
         } else if (arg == "--q-look") {

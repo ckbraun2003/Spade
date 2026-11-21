@@ -1366,7 +1366,11 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
                 if (report != nullptr) ++report->surface_pixels_no_data;
                 continue;
             }
-            const glm::vec3 c = apply_transfer(prepared, v.value).colour;
+            glm::vec3 c = apply_transfer(prepared, v.value).colour;
+            if (colouring.shade) {  // the hue, lit for shape: the floor plus N.L of the scene's sun
+                const float n_dot_l = surface != nullptr ? std::max(glm::dot(surface->normal, scene.lighting.sun_direction), 0.0f) : 0.0f;
+                c *= kSurfaceShadeFloor + (1.0f - kSurfaceShadeFloor) * n_dot_l;
+            }
             uint8_t* px = &fb.pixels[idx * 4u];  // B, G, R, X
             px[0] = to_byte(c.b);
             px[1] = to_byte(c.g);

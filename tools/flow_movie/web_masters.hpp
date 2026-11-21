@@ -212,6 +212,12 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return {};
 }
 
+// --surface-shade (O124): the pressure colour lit for shape; it is a way of drawing --surface-pressure, so it needs it. Empty when the flags are fine.
+[[nodiscard]] inline std::string surface_shade_refusal(bool shade, bool pressure) {
+    if (shade && !pressure) return "--surface-shade is for --surface-pressure (it lights that film's colour for shape)";
+    return {};
+}
+
 // How far past a solid the pressure film reads (cells): it paints the detailed kit meshes with the air of Physics' proxy solids, so a drawn point can sit inside a solid
 // cell, and the read goes on outward along the normal to the nearest fluid cell, up to this far (render::FlowSurfaceColouring::search_cells).
 inline constexpr float kSurfacePressureSearchCells = 3.0f;
@@ -746,7 +752,7 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false) {
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
@@ -758,7 +764,9 @@ struct DeliveryGuard {
         pressure ? "Colour shows pressure on the surfaces (the frame, arms, legs, boards and motors), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
                    "and the picture carries no pressure or speed figures. The pressure is the simulated air's, read beside the simulated solids (the parts as solids at " + cell + " mm) and painted on the "
                    "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. The rotors are " + rotors +
-                   ", which have no surface, so they carry no pressure colour. "
+                   ", which have no surface, so they carry no pressure colour. Parts inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour. "
+                   "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading, symmetric about the still air's pressure"
+                   ", the same in every frame" + (shaded ? "; the surfaces are lit for shape; the colour is the pressure. " : ". ")
         : cloud ? "Colour shows vorticity (the local spin of the air), blue low to magenta high, and the picture carries no vorticity or speed figures. "
                 : "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
     std::string t;
@@ -856,6 +864,7 @@ struct CaptionInput {
     bool volume = false;        // --volume: ... over the speed volume (without it the points stand alone and no volume is claimed)
     bool cloud = false;         // --nasa-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
     bool pressure = false;      // --surface-pressure: the film shows the air's pressure on the surfaces, and its colour is pressure, not relative speed
+    bool shaded = false;        // --surface-shade: ... lit for shape
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -871,7 +880,7 @@ struct CaptionInput {
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }

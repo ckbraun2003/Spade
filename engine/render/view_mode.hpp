@@ -86,6 +86,7 @@ struct FlowViewSpec {
     StreamlineOptions lines{};      // streamlines
     float q_ref = 0.0f;             // surface_cp: C_p = (p - p_ref) / q_ref
     float p_ref = 0.0f;
+    bool shade = false;             // surface_cp: lit for shape (FlowSurfaceColouring::shade)
     float search_cells = 0.0f;      // surface_cp: past a solid at the read, on to the nearest fluid sample, up to this many cells (FlowSurfaceColouring::search_cells)
 };
 
