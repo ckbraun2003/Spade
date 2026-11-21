@@ -115,6 +115,23 @@ TEST(FcLinkFrames, GravityIsOneGOnBothSides) {
 
 // ---- the anchored world (x east, y up, z south) ----
 
+TEST(FcLinkFrames, GravityIsDownInTheAnchoredWorldToo) {
+    expect_vec(world_to_ned(anchored_world(), {0, -9.80665, 0}), {0, 0, 9.80665}, "gravity in NED");
+}
+
+TEST(FcLinkFrames, AFieldIsAWorldVectorSoItFollowsTheWorldMapInBothLayouts) {
+    // a (N, E, D) = (0.2, 0, 0.4) field: (0.2, -0.4, 0) in the compass-x-north world, (0, -0.4, -0.2) in the anchored one (x east, z south);
+    // a body facing north in each reads the same FRD (0.2, 0, 0.4) (Physics' review note 1).
+    const FrameMap a = compass_x_north();
+    expect_vec(world_to_ned(a, {0.2, -0.4, 0}), {0.2, 0, 0.4}, "compass-x-north field in NED");
+    const glm::dquat facing_north_a = attitude_to_ned_frd(a, glm::dquat(1, 0, 0, 0));  // +X is North: identity faces north
+    expect_vec(glm::inverse(facing_north_a) * world_to_ned(a, {0.2, -0.4, 0}), {0.2, 0, 0.4}, "compass-x-north field in FRD");
+    const FrameMap b = anchored_world();
+    expect_vec(world_to_ned(b, {0, -0.4, -0.2}), {0.2, 0, 0.4}, "anchored field in NED");
+    const glm::dquat facing_north_b = attitude_to_ned_frd(b, glm::dquat(0.70710678, 0, 0.70710678, 0));  // +90 about +Y takes +X to -Z, North
+    expect_vec(glm::inverse(facing_north_b) * world_to_ned(b, {0, -0.4, -0.2}), {0.2, 0, 0.4}, "anchored field in FRD");
+}
+
 TEST(FcLinkFrames, AnAnchoredWorldHasEastOnXAndNorthOnMinusZ) {
     const FrameMap m = anchored_world();
     expect_vec(position_to_ned(m, {10, 5, -20}, {0, 0, 0}), {20, 10, -5}, "10 east, 20 north, 5 up");

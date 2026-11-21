@@ -20,7 +20,8 @@
 //                       anchor);
 //     anchored_world   a world with a geo anchor (core/geodesy.hpp): x east, y up, z south, so North = -z, East = +x.
 // Orientation is body-to-world, so it takes BOTH maps: q' = Q(world) * q * Q(body)^-1. With the two maps equal that is the familiar
-// R q R^-1, i.e. (w, x, y, z) -> (w, x, z, -y). The result is given the sign with w >= 0 (q and -q are one rotation).
+// R q R^-1, i.e. (w, x, y, z) -> (w, x, z, -y). The result is given the sign with w >= 0 (q and -q are one rotation); note that a consumer
+// that DIFFERENCES successive quaternions sees a sign jump whenever w crosses 0 (harmless for HIL_STATE_QUATERNION and the JSON attitude).
 //
 // Pure functions: no engine state, no I/O, double precision.
 // ---------------------------------------------------------------------------
