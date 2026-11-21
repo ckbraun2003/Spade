@@ -536,6 +536,35 @@ TEST(GnssTurnOn, TheFlagIsZeroOrOne) {
     EXPECT_NE(r.error().context.find("turn_on_bias"), std::string::npos) << r.error().context;
 }
 
+// With no correlation (bias_tau_s <= 0) the receiver's bias is redrawn white on every fix (retention 0 and drive 0), so a turn-on offset would vanish after the
+// first fix: a silent no-op. A turn-on offset is refused without a tau above 0 (Core's review; the baro and mag treat tau <= 0 as the bias disabled, turn-on
+// included). "A constant offset is a very long tau."
+TEST(GnssTurnOn, NeedsACorrelationTimeAboveZero) {
+    const spade::Result<WorldSetDesc> set = void_world_set(1, 3, 0x5EED0015ULL);  // capacity for the two accepted sensors below
+    ASSERT_OK(set);
+    spade::Result<Simulation> sim = Simulation::create(*set, 1'000'000, 1);
+    ASSERT_OK(sim);
+    const spade::Result<BodyRef> body = sim->spawn(0, unit_body());
+    ASSERT_OK(body);
+
+    GnssSensorSpawn spawn;
+    spawn.sigma_bias = 3.0f;
+    spawn.turn_on_bias = 1;
+    spawn.bias_tau_s = 0.0f;
+    const spade::Result<GnssSensorRef> refused = sim->add_gnss_sensor(*body, spawn);
+    ASSERT_FALSE(refused.has_value()) << "turn_on_bias with bias_tau_s 0 was accepted: the offset would vanish after one fix";
+    EXPECT_EQ(refused.error().code, spade::Code::invalid_argument);
+    EXPECT_NE(refused.error().context.find("turn_on_bias"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("bias_tau_s"), std::string::npos) << refused.error().context;
+
+    spawn.bias_tau_s = 100.0f;
+    EXPECT_OK(sim->add_gnss_sensor(*body, spawn)) << "with a tau above 0 it is accepted";
+    GnssSensorSpawn no_flag;
+    no_flag.sigma_bias = 3.0f;
+    no_flag.bias_tau_s = 0.0f;
+    EXPECT_OK(sim->add_gnss_sensor(*body, no_flag)) << "without the flag a tau of 0 is the old, valid white-bias receiver";
+}
+
 // ===========================================================================
 // A VULKAN WORLD REFUSES THE CONVERTER (the GPU twin has none; the turn-on is an initial state and needs no refusal)
 // ===========================================================================
