@@ -103,8 +103,10 @@ struct EndState {
 }
 
 [[nodiscard]] float angle_between(const glm::quat& a, const glm::quat& b) {
+    // atan2 of the vector part's length and |w|, not acos(w): in float, acos(w) cannot resolve a rotation under about 1e-3 rad (w rounds to 1), and the
+    // first run of this test read an attitude error of exactly 0 from it.
     const glm::quat d = glm::conjugate(a) * b;
-    return 2.0f * std::acos(std::min(1.0f, std::fabs(d.w)));
+    return 2.0f * std::atan2(glm::length(glm::vec3(d.x, d.y, d.z)), std::fabs(d.w));
 }
 
 TEST(StepConvergence, TheFiveHundredMicrosecondStepIsWithinTheBoundOfTheFinerRuns) {
@@ -136,13 +138,17 @@ TEST(StepConvergence, TheFiveHundredMicrosecondStepIsWithinTheBoundOfTheFinerRun
                 static_cast<double>(ref.omega_body.y), static_cast<double>(ref.omega_body.z),
                 static_cast<double>(angle_between(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), ref.orient)));
     // The bound at 500 us, and the trend: halving the step must not make the error larger (a step that did not converge would not fall).
-    EXPECT_LT(att[1], 1.0e-3f) << "attitude error at 500 us";
-    EXPECT_LT(pos[1], 5.0e-3f) << "position error at 500 us";
-    EXPECT_LT(rate[1], 1.0e-2f) << "body-rate error at 500 us";
-    EXPECT_LE(att[2], att[1]);
-    EXPECT_LE(att[1], att[0]);
+    // The first run (attitude read through acos, blind below 1e-3 rad) gave a position error of 0.55 mm and a body-rate error of 2.1e-4 rad/s at 500 us against
+    // a manoeuvre that ends 0.196 rad from level at about 1 rad/s; the bounds are set a few times above that: 0.03 deg, 2 mm, 1e-3 rad/s.
+    EXPECT_LT(att[1], 5.0e-4f) << "attitude error at 500 us";
+    EXPECT_LT(pos[1], 2.0e-3f) << "position error at 500 us";
+    EXPECT_LT(rate[1], 1.0e-3f) << "body-rate error at 500 us";
+    EXPECT_LE(att[2], att[1] + 1.0e-6f);
+    EXPECT_LE(att[1], att[0] + 1.0e-6f);
     EXPECT_LE(pos[2], pos[1]);
     EXPECT_LE(pos[1], pos[0]);
+    EXPECT_LE(rate[2], rate[1]);
+    EXPECT_LE(rate[1], rate[0]);
 }
 
 }  // namespace
