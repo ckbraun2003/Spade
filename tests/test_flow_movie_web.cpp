@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -1642,4 +1643,73 @@ TEST(FlowMovieWeb, TheVortexNoteNamesTheClipsLargestVorticityWhenTheRangeIsFixed
     EXPECT_EQ(fixed.find("each frame's"), std::string::npos) << fixed;
     EXPECT_NE(fixed.find("the simulated air's own vorticity"), std::string::npos) << "the rest of the rule is unchanged: " << fixed;
     EXPECT_NE(fixed.find("not a measurement"), std::string::npos) << fixed;
+}
+
+// NO "NASA" IN A CAPTION OR A RECORD (Oversight, 2026-11-21, via the lead): a public caption that names NASA can read as NASA having made or endorsed the film, and footage records name no
+// brand. The flags are neutral (--vorticity-cloud, --q-surfaces) and so is the Q-surface look's name (q-surfaces), and nothing the tool writes -- the "How rendered" command, the refusals a
+// caption could quote, the view names that reach a file name or a record -- carries the word. A code comment may still credit where the look came from; the source scan is for the flag and the look's
+// name only (a quoted "--nasa..." option and a "nasa" string literal).
+namespace {
+[[nodiscard]] std::string lowered(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+[[nodiscard]] std::string whole_file(const char* relative) {
+    std::ifstream in(fs::path(SPADE_REPO_DIR) / relative, std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+}  // namespace
+
+TEST(FlowMovieWeb, NothingTheToolWritesNamesNasaAndTheLooksFlagsAreNeutral) {
+    std::vector<std::string> said;
+    for (const bool a : {false, true}) {
+        for (const bool b : {false, true}) {
+            for (const bool c : {false, true}) {
+                said.push_back(web::nasa_refusal(a, b, c, !a, b, !c, a != b));
+                said.push_back(web::surface_pressure_refusal(a, b, c, !a, b, !c, a != c, b));
+                said.push_back(web::fixed_cloud_range_refusal(true, a, b, c, !a, 3u, 300u));
+                said.push_back(web::fixed_cloud_range_refusal(true, true, a, b, c, 3u, 300u));
+                said.push_back(web::from_cache_refusal(true, a, b, 1u, 300u));
+            }
+        }
+    }
+    for (const std::string& s : said) EXPECT_EQ(lowered(s).find("nasa"), std::string::npos) << s;
+    for (const bool pressure : {false, true}) {
+        for (const bool nasa : {false, true}) {
+            for (const bool cloud : {false, true}) {
+                const std::string view = web::s8_view_name(pressure, false, nasa, cloud, false, false);
+                EXPECT_EQ(lowered(view).find("nasa"), std::string::npos) << view;
+            }
+        }
+    }
+    EXPECT_EQ(web::s8_view_name(false, false, true, false, false, false), "q-surfaces") << "the Q-surface look's neutral name";
+    EXPECT_EQ(web::s8_view_name(false, false, true, true, false, false), "vorticity-cloud");
+    // the refusals name the flags by their neutral names
+    EXPECT_NE(web::nasa_refusal(true, true, false, true, false, false, false).find("--vorticity-cloud"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true, false).find("--q-surfaces"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, false, false, false, true, 300u, 300u).find("--vorticity-cloud"), std::string::npos);
+    // a caption and its "How rendered" words for the cloud film
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = web::find_drone("openframe5f");
+    in.lines = true;
+    in.pressure = true;
+    in.cloud = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    in.vortex_note = flow_movie::vortex_note(flow_movie::QLook{});
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --vorticity-cloud --fixed-cloud-range --prop-blur mode=blades";
+    EXPECT_EQ(lowered(web::caption_text(in)).find("nasa"), std::string::npos) << web::caption_text(in);
+    EXPECT_NE(web::caption_text(in).find("--vorticity-cloud"), std::string::npos);
+    // the source: no quoted --nasa option and no "nasa" literal in the tool's own files
+    for (const char* file : {"tools/flow_movie/main.cpp", "tools/flow_movie/web_masters.hpp", "tools/flow_movie/q_look.hpp"}) {
+        const std::string text = whole_file(file);
+        ASSERT_FALSE(text.empty()) << file;
+        EXPECT_EQ(lowered(text).find("--nasa"), std::string::npos) << file << " still names a --nasa flag";
+        EXPECT_EQ(text.find("\"nasa\""), std::string::npos) << file << " still names the look \"nasa\"";
+    }
 }
