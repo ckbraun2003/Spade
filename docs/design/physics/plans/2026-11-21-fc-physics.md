@@ -69,6 +69,8 @@ The kit's Pixhawk 6C carries (Holybro technical specification page, published): 
 
 The PX4 bridge's IMU, baro and mag in Gazebo add **no** noise at all (the bridge forwards them). So PX4's own reference simulation is a noise-free IMU with a noisy GNSS; our runs with noise are harder than PX4's reference, and the first phase 1 flight should run with the noise rows at zero to compare like with like.
 
+**Two decisions in the sensor profiles** (`tools/fc_link/sensor_profiles.hpp`, 2026-11-21): (1) the **reference** profile's IMU converter **clamps at PX4's full scale (+-16 g, +-2000 deg/s) but does not quantise**, because PX4's bridge forwards the values with no converter noise, while a real part's saturation is what PX4's decode would also do; (2) the **16-bit converter** (the quantum) is in the **kit** profile only, since it is a datasheet figure (recalled) and the reference is the noise-free comparison.
+
 **Rates in lockstep.** One `HIL_SENSOR` per 4 ms exchange; `fields_updated` sets the baro bits only on a baro tick (every 5th exchange at 50 Hz is 20 ms) and the mag bits on a mag tick (every 10 ms at 100 Hz is every 2.5th exchange, which is **not a whole number of exchanges**: the mag sample is sent on the first exchange after it is due, which delays it by up to 2 ms; or set the mag to 125 Hz or 50 Hz so it divides). GPS is a separate message every 100 ms. PX4's EKF2 needs the IMU at 100 Hz at least and the mag and height sources at 5 Hz at least (a summary of its tuning page, not verbatim).
 
 ## 2. Frames
