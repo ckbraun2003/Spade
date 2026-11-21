@@ -1428,6 +1428,9 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     // Centred, the drone is no nearer the camera than the aim, so it reads smaller than when it sat high (above the aim, closer): the subject radius 0.15 m (from 0.19) fills about three quarters of the 1080 p frame's height at 70 degrees.
     EXPECT_NEAR(d->framing.subject_m, 0.15f, 1.0e-6f);
     EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
+    // The clip record's Look sentence names the blades this drone draws: the kit's are the generated stand-in, the X500's real meshes (the default).
+    EXPECT_EQ(std::string(d->look_blades), "the stand-in's generated blades");
+    EXPECT_EQ(std::string(web::find_drone("x500")->look_blades), "the rotors' real blades");
 
     web::CaptionInput in;
     in.clip = web::find_clip("S8");
