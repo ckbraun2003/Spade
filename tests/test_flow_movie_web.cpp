@@ -1382,3 +1382,49 @@ TEST(FlowMovieWeb, TheDefaultOutputFolderIsTheSpadeFootageFolderOfTheVideosArchi
         << "no profile: relative to the working directory, as before";
 }
 
+
+// THE OpenFrame-5F's DRONE ENTRY (O138, the lead): the real open-hardware 5 inch FPV frame, its model file Physics' (tools/flow_movie/data/openframe5f), its fine box the FPV's
+// 1.25 mm one with the hub disc 0.0436 m above the design origin (Interface's table), the farthest tip at the hubs' radius plus the rotor's (0.1764 m), and the words a card
+// carries: the kit named factually ("OpenFrame-5F", no endorsement wording), the stand-in prop sentence, the published-dimensions sentence.
+TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
+    const web::Drone* d = web::find_drone("openframe5f");
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(web::find_drone("fpv-quadcopter"), d) << "found by its alias too";
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / d->model_file)) << d->model_file;
+    EXPECT_FLOAT_EQ(d->fine_cell_mm, 1.25f);
+    EXPECT_NEAR(d->hub_above_origin_m, 0.0436f, 1.0e-6f);
+    EXPECT_NEAR(d->reach_m, std::hypot(0.069534f, 0.089f) + 0.0635f, 2.0e-3f);
+    EXPECT_GT(d->blade_cp_range, 0.0f);
+    EXPECT_EQ(web::cell_mm_refusal(1.25f, "openframe5f", true), "");
+    EXPECT_NE(web::cell_mm_refusal(2.5f, "openframe5f", true), "") << "its box is its own 1.25 mm one";
+
+    const std::string description(d->description);
+    EXPECT_NE(description.find("OpenFrame-5F"), std::string::npos) << description;
+    for (const char* never : {"endorse", "official", "certified", "approved", "partner", "sponsor", "UIUC"}) {
+        EXPECT_EQ(description.find(never), std::string::npos) << never << " in: " << description;
+        EXPECT_EQ(std::string(d->card_extra).find(never), std::string::npos) << never << " in: " << d->card_extra;
+    }
+    const std::string extra(d->card_extra);
+    EXPECT_NE(extra.find("a measured 5x4 three-blade stand-in for the kit's 5x4.3x3"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("above the speeds it was measured at"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("about 90% of the weight"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("motors, flight stack and battery modelled from published dimensions"), std::string::npos) << extra;
+    EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
+
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = d;
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --prop-blur mode=blades";
+    const std::string text = web::caption_text(in);
+    EXPECT_EQ(text.substr(0, text.find('\n')), "# 5 inch FPV quadcopter in hover: the air pressure on the airframe and beside the rotor blades") << text;
+    EXPECT_EQ(text.find("openframe5f"), std::string::npos) << "the library name stays off the command line shown: " << text;
+    EXPECT_NE(text.find("- Drone: "), std::string::npos) << text;
+    EXPECT_NE(text.find("\n- " + extra + "\n"), std::string::npos) << "its own card lines follow the caveats: " << text;
+    EXPECT_NE(text.find("(the frame, arms, stack, motors and battery)"), std::string::npos) << text;
+}
