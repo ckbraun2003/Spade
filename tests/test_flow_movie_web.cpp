@@ -1605,3 +1605,41 @@ TEST(FlowMovieWeb, TheVortexNoteSaysHowTheSwirlsAreDrawnAndThatTheyAreTheSimulat
     plain.vortex_note.clear();
     EXPECT_EQ(web::caption_text(plain).find("vortic"), std::string::npos) << web::caption_text(plain);
 }
+
+// --fixed-cloud-range (O144, the lead's call after the per-frame cloud top stepped 13.6% between frames): the cloud's top becomes a share of the CLIP's largest vorticity, read from the cache's
+// headers, so it needs the cloud, and every frame already on disk (a redraw: --from-cache or --web-still), never a streamed or --simulate-only run.
+TEST(FlowMovieWeb, TheFixedCloudRangeNeedsTheCloudAndTheWholeCacheOnDisk) {
+    // fixed_cloud_range_refusal(fixed, nasa_cloud, stream, simulate_only, redraw, cached_frames, needed_frames)
+    EXPECT_EQ(web::fixed_cloud_range_refusal(false, false, true, true, false, 0u, 300u), "") << "not asked: nothing to say";
+    EXPECT_EQ(web::fixed_cloud_range_refusal(true, true, false, false, true, 300u, 300u), "");
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, false, false, false, true, 300u, 300u).find("--nasa-cloud"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, true, true, false, true, 300u, 300u).find("--stream"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, true, false, true, true, 300u, 300u).find("--simulate-only"), std::string::npos);
+    const std::string not_redraw = web::fixed_cloud_range_refusal(true, true, false, false, false, 300u, 300u);
+    EXPECT_NE(not_redraw.find("--from-cache"), std::string::npos) << not_redraw;
+    EXPECT_NE(not_redraw.find("--web-still"), std::string::npos) << not_redraw;
+    const std::string few = web::fixed_cloud_range_refusal(true, true, false, false, true, 120u, 300u);
+    EXPECT_NE(few.find("120"), std::string::npos) << few;
+    EXPECT_NE(few.find("300"), std::string::npos) << few;
+}
+
+// The words follow the rule: with a clip-wide peak the card and caption say the cloud tops out at a share of the CLIP's largest vorticity (and its figure), the same in every frame; without one
+// they say each frame's, as before.
+TEST(FlowMovieWeb, TheVortexNoteNamesTheClipsLargestVorticityWhenTheRangeIsFixed) {
+    flow_movie::QLook look;
+    look.vorticity_max = 0.4f;
+    const std::string per_frame = flow_movie::vortex_note(look);
+    EXPECT_NE(per_frame.find("40% of each frame's largest vorticity"), std::string::npos) << per_frame;
+    EXPECT_EQ(per_frame.find("the clip's"), std::string::npos) << per_frame;
+    look.vorticity_peak = 18960.0f;
+    const std::string fixed = flow_movie::vortex_note(look);
+    EXPECT_NE(fixed.find("40% of the clip's largest vorticity"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("18960 per second"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("the same in every frame"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("7584 per second"), std::string::npos) << "the absolute top, 40% of the peak: " << fixed;
+    EXPECT_NE(fixed.find("1138 per second"), std::string::npos) << "the absolute show threshold, 15% of that top: " << fixed;
+    EXPECT_NE(fixed.find("weaker frames show fewer, dimmer swirls"), std::string::npos) << fixed;
+    EXPECT_EQ(fixed.find("each frame's"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("the simulated air's own vorticity"), std::string::npos) << "the rest of the rule is unchanged: " << fixed;
+    EXPECT_NE(fixed.find("not a measurement"), std::string::npos) << fixed;
+}
