@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "core/error.hpp"
-#include "fc_link/mavlink.hpp"
+#include "mavlink.hpp"
 
 // ---------------------------------------------------------------------------
 // fc_link/px4_link.hpp -- Spade as the simulator PX4 expects (docs/design/interface/plans/2026-11-21-fc-links.md section 1). PX4 SITL,

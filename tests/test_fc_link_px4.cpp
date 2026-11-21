@@ -15,8 +15,8 @@
 #include <thread>
 #include <vector>
 
-#include "fc_link/mavlink.hpp"
-#include "fc_link/px4_link.hpp"
+#include "../tools/fc_link/mavlink.hpp"
+#include "../tools/fc_link/px4_link.hpp"
 
 namespace {
 

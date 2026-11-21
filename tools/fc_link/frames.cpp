@@ -1,4 +1,4 @@
-#include "fc_link/frames.hpp"
+#include "frames.hpp"
 
 namespace spade::fc_link::frames {
 
