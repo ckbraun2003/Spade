@@ -13,8 +13,14 @@
 //                                                the (+x, -y) quadrant (a boolean check found 64 mm3 of overlap with the cross)
 //   OpenFrame5fBuildTable.TheFourStandoffsSitOnTheMiddlePlatesHoles   the one exported M3 standoff is copied to the four holes of the middle plate:
 //                                                (+-12.75, 24.0) and (+-10.25, 69.5) mm
+//   OpenFrame5fBuildTable.TheStackSitsOnTheMakersHoles   the FC and the ESC (the maker's 30x30 boards) are centred on the 30.5 mm stack holes at the
+//                                                studio's (0, -12.75) mm = X +0.01275, Z 0, their sizes the maker's, their heights assumed
+//   OpenFrame5fBuildTable.TheMotorsAndTheRotorsAreOnTheArmsBores   four motors (retailer-dimension stand-ins, 32 g assumed) and four rotors at the
+//                                                measured bores (+-0.069534, +-0.089000) m, the library fpv_5inch rotor order and spins (rotor 0
+//                                                front-right, spin +1 takes prop_ccw), radius 0.0635 m, the prop stand-ins the library's own meshes by file hash
+//   OpenFrame5fBuildTable.ThePackIsAnAssumedTypicalSixS   one 6S 1300 mAh pack, 200 g, 78 x 39 x 38 mm, graded assumed, on the top plate
 //   OpenFrame5fBuildTable.EveryEntryCarriesItsMassAndItsGrades   mass_kg, mass_grade, mass_source and pose_grade on every entry; the frame's 0.170 kg is
-//                                                the maker's, the printed parts' mass assumed
+//                                                the maker's, the printed parts' mass assumed; the kit sums to 0.5657 kg
 //   OpenFrame5fBuildTable.TheStoreRefsResolveAndTheArmsAreTheHandsTheyClaim   OPT-IN (SPADE_PART_STORE): every store_ref is a file in the store, and the
 //                                                exported arm's centroid is at +y, its mirror's at -y with the same |x|
 // ---------------------------------------------------------------------------
@@ -37,6 +43,7 @@
 #include "../tools/flow_movie/build_parts.hpp"
 #include "world/mesh.hpp"
 #include "world/mesh_file.hpp"
+#include "world/sha256.hpp"
 
 namespace {
 
@@ -179,7 +186,105 @@ TEST(OpenFrame5fBuildTable, EveryEntryCarriesItsMassAndItsGrades) {
     ASSERT_TRUE(frame.IsMap());
     EXPECT_NEAR(frame["mass_kg"].as<double>(), 0.170, 1e-12) << "the maker's 170 g (carbon, aluminium and hardware, without the printed parts)";
     EXPECT_EQ(frame["mass_grade"].as<std::string>(), "published") << "the README says measured, the product page says est.: not graded measured by Spade";
-    EXPECT_NEAR(sum, 0.1997, 1e-4) << "the frame and its printed parts, so far";
+    EXPECT_NEAR(sum, 0.5657, 1e-4) << "frame 170 g, printed parts 29.7 g, FC 7, ESC 15, RX 0.8, four motors 128, pack 200, four props 15.2: 565.7 g, no camera, VTX or wiring";
+}
+
+TEST(OpenFrame5fBuildTable, TheStackSitsOnTheMakersHoles) {
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    int seen = 0;
+    for (const YAML::Node& part : doc["parts"]) {
+        const std::string name = part["name"].as<std::string>();
+        if (name != "openfc_lite_30x30" && name != "openesc_30x30") continue;
+        ++seen;
+        const glm::dvec3 at = vec_of(part["pose"]["position"]);
+        EXPECT_NEAR(at.x, 0.01275, 1e-9) << name << ": the stack holes are about the studio's (0, -12.75) mm, forward -y";
+        EXPECT_NEAR(at.z, 0.0, 1e-9) << name;
+        EXPECT_EQ(part["mass_grade"].as<std::string>(), "published") << name << ": the maker's estimate, marked as it says";
+        EXPECT_TRUE(part["mass_source"].as<std::string>().find("est.") != std::string::npos) << name;
+        const glm::dvec3 box = vec_of(part["box"]);
+        if (name == "openfc_lite_30x30") {
+            EXPECT_NEAR(part["mass_kg"].as<double>(), 0.007, 1e-12);
+            EXPECT_NEAR(box.x, 0.0379, 1e-9);
+            EXPECT_NEAR(box.z, 0.0379, 1e-9);
+        } else {
+            EXPECT_NEAR(part["mass_kg"].as<double>(), 0.015, 1e-12);
+            EXPECT_NEAR(box.x, 0.0425, 1e-9);
+            EXPECT_NEAR(box.z, 0.0416, 1e-9);
+        }
+        EXPECT_GT(at.y, 0.012) << name << ": above the middle plate's top face (design Y 0.012 m)";
+        EXPECT_LT(at.y + 0.5 * box.y, 0.0320) << name << ": under the top plate's lower face (design Y 0.032 m)";
+    }
+    EXPECT_EQ(seen, 2);
+}
+
+TEST(OpenFrame5fBuildTable, TheMotorsAndTheRotorsAreOnTheArmsBores) {
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    int motors = 0, rotors = 0;
+    std::set<int> seen_rotor;
+    for (const YAML::Node& part : doc["parts"]) {
+        const std::string kind = part["kind"].as<std::string>();
+        if (kind != "motor" && kind != "rotor") continue;
+        const std::string name = part["name"].as<std::string>();
+        const glm::dvec3 at = vec_of(part["pose"]["position"]);
+        EXPECT_NEAR(std::abs(at.x), 0.069534, 1e-6) << name << ": the bore's 69.534 mm along";
+        EXPECT_NEAR(std::abs(at.z), 0.089000, 1e-6) << name << ": the bore's 89.000 mm across";
+        if (kind == "motor") {
+            ++motors;
+            EXPECT_NEAR(part["mass_kg"].as<double>(), 0.032, 1e-12) << name;
+            EXPECT_EQ(part["mass_grade"].as<std::string>(), "assumed") << name << ": no maker mass for the 2306 is published";
+            EXPECT_NEAR(part["cylinder"]["radius"].as<double>(), 0.01465, 1e-9) << name << ": phi 29.3 mm (a retailer's figure)";
+            EXPECT_NEAR(part["cylinder"]["length"].as<double>(), 0.0306, 1e-9) << name << ": 30.6 mm (a retailer's figure)";
+            EXPECT_NEAR(at.y, 0.009 + 0.0153, 1e-9) << name << ": standing on the arm's top face (design Y 0.009 m)";
+            continue;
+        }
+        ++rotors;
+        const int index = part["rotor"].as<int>();
+        seen_rotor.insert(index);
+        const int spin = part["spin"].as<int>();
+        // the library's fpv_5inch order: 0 front-right (+X, +Z) spin +1, 1 front-left (+X, -Z) -1, 2 rear-left (-X, -Z) +1, 3 rear-right (-X, +Z) -1
+        const int want_spin[4] = {1, -1, 1, -1};
+        const double want_x[4] = {1, 1, -1, -1};
+        const double want_z[4] = {1, -1, -1, 1};
+        ASSERT_TRUE(index >= 0 && index < 4) << name;
+        EXPECT_EQ(spin, want_spin[index]) << name;
+        EXPECT_GT(at.x * want_x[index], 0.0) << name;
+        EXPECT_GT(at.z * want_z[index], 0.0) << name;
+        EXPECT_NEAR(part["radius"].as<double>(), 0.0635, 1e-12) << name;
+        EXPECT_NEAR(at.y, 0.0436, 1e-9) << name << ": the disc plane, 4 mm above the motor's top (assumed: the hub is not published)";
+        ASSERT_EQ(part["objects"].size(), 1u) << name;
+        const std::string file = part["objects"][0]["store_ref"]["file"].as<std::string>();
+        EXPECT_EQ(file, spin == 1 ? "prop_ccw.spmesh" : "prop_cw.spmesh") << name << ": spin +1 is counter-clockwise from above and takes the ccw file";
+        EXPECT_NEAR(part["mass_kg"].as<double>(), 0.0038, 1e-12) << name;
+        EXPECT_EQ(part["mass_grade"].as<std::string>(), "retailer") << name << ": 3.8 g, the retailers' figure for the HQProp V2S";
+        // the part store's entry is the library's own mesh, byte for byte
+        const std::filesystem::path lib = std::filesystem::path(SPADE_REPO_DIR) / "assets/library/drones/fpv_5inch" / file;
+        std::ifstream in(lib, std::ios::binary);
+        ASSERT_TRUE(in.good()) << lib.string();
+        const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(part["objects"][0]["store_ref"]["sha256"].as<std::string>(), spade::sha256_hex(bytes)) << name << ": the file hash of " << file;
+    }
+    EXPECT_EQ(motors, 4);
+    EXPECT_EQ(rotors, 4);
+    EXPECT_EQ(seen_rotor, (std::set<int>{0, 1, 2, 3}));
+}
+
+TEST(OpenFrame5fBuildTable, ThePackIsAnAssumedTypicalSixS) {
+    const YAML::Node doc = YAML::LoadFile(kTable);
+    int seen = 0;
+    for (const YAML::Node& part : doc["parts"]) {
+        if (part["kind"].as<std::string>() != "battery") continue;
+        ++seen;
+        EXPECT_NEAR(part["mass_kg"].as<double>(), 0.200, 1e-12);
+        EXPECT_EQ(part["mass_grade"].as<std::string>(), "assumed");
+        EXPECT_EQ(part["pose_grade"].as<std::string>(), "assumed");
+        const glm::dvec3 box = vec_of(part["box"]);
+        EXPECT_NEAR(box.x, 0.078, 1e-9) << "78 mm long, along X";
+        EXPECT_NEAR(box.y, 0.038, 1e-9) << "38 mm tall";
+        EXPECT_NEAR(box.z, 0.039, 1e-9) << "39 mm across";
+        const glm::dvec3 at = vec_of(part["pose"]["position"]);
+        EXPECT_NEAR(at.y - 0.5 * box.y, 0.0345, 1e-9) << "its underside on the top plate's top face (design Y 0.0345 m)";
+    }
+    EXPECT_EQ(seen, 1);
 }
 
 TEST(OpenFrame5fBuildTable, TheStoreRefsResolveAndTheArmsAreTheHandsTheyClaim) {
