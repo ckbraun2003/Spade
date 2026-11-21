@@ -126,7 +126,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 }
 
 // L106c (the lead, 2026-11-19): the website film at the L106 config. --cell-mm X is the D1 box's cell size in millimetres: one number above 0 and at
-// most 10, whole (no sign, blanks, exponent or trailing text); only 2.5 is supported, the X500's 270 x 237 x 270 box (cell_mm_refusal). nullopt otherwise.
+// most 10, whole (no sign, blanks, exponent or trailing text); only a cell a drone entry declares is supported (Drone::fine_cell_mm: the X500 2.5, 270 x 237 x 270, the FPV 1.25), see cell_mm_refusal. nullopt otherwise.
 [[nodiscard]] inline std::optional<float> parse_cell_mm(std::string_view text) {
     if (text.empty()) return std::nullopt;
     bool digit = false, point = false;
@@ -145,12 +145,6 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     if (done.ec != std::errc{} || done.ptr != text.data() + text.size()) return std::nullopt;
     if (!(value > 0.0f && value <= 10.0f)) return std::nullopt;
     return value;
-}
-
-// Where --cell-mm applies: 2.5 with the X500 on a still-air D1 clip (S1, S2, S8), whose box and hold the L106 harness and the film then share.
-[[nodiscard]] inline std::string cell_mm_refusal(float cell_mm, std::string_view drone_library, bool still_air_clip) {
-    if (cell_mm == 2.5f && drone_library == "x500" && still_air_clip) return {};
-    return "--cell-mm supports only 2.5 (the X500's 270 x 237 x 270 box, L106) with --drone x500 on a still-air clip (S1, S2, S8)";
 }
 
 // --step-us N: the solver step in whole microseconds, 1 to 1000 (50 is L106's 0.05 ms): digits only, no sign, blanks, point, exponent or trailing text.
@@ -398,6 +392,11 @@ struct Drone {
     Framing framing;
     float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
     float reach_m = 0.30f;    // the farthest rotor tip from the vertical axis (the cloud's thinning radius is a multiple of it)
+    // The fine box this drone's web films can run in (--cell-mm): the cell in mm, 0 for none. The box and hold are the harness's (live_case.hpp's d1_web_grid and d1_web_hold): 2.5 is
+    // the X500's, 1.25 the 5 inch FPV's. hub_above_origin_m is the hubs' height above the model's design origin, for a box whose hold depends on it (the FPV's d1_fpv_hold; the X500's
+    // hold is fixed by the harness, so it leaves this 0).
+    float fine_cell_mm = 0.0f;
+    float hub_above_origin_m = 0.0f;
 };
 
 [[nodiscard]] inline const std::array<Drone, 3>& drones() {
@@ -416,7 +415,7 @@ struct Drone {
         // shot about twice as wide as the camera quadcopter's), the held body 0.014 m above the box's origin in its 3 mm box.
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
          "the open-source quadcopter", "a 1.63 kg open-source quadcopter with 10 inch rotors (its parts' masses summed)",
-         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f},  // 0.2461 hub + 0.127 rotor
+         Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f, 2.5f},  // 0.2461 hub + 0.127 rotor; its 2.5 mm box (270 x 237 x 270, L106)
     }};
     return table;
 }
@@ -430,6 +429,21 @@ struct Drone {
         if (d.library == name || d.alias == name) return &d;
     }
     return nullptr;
+}
+
+// Where --cell-mm applies: the cell the drone entry declares (Drone::fine_cell_mm: the X500's 2.5, the FPV's 1.25) on a still-air D1 clip (S1, S2, S8), whose box and hold the
+// harness and the film then share. A refusal names what is supported, from the entries.
+[[nodiscard]] inline std::string cell_mm_refusal(float cell_mm, std::string_view drone_library, bool still_air_clip) {
+    const Drone* d = find_drone(drone_library);
+    if (d != nullptr && d->fine_cell_mm > 0.0f && cell_mm == d->fine_cell_mm && still_air_clip) return {};
+    std::string supported;
+    for (const Drone& e : drones()) {
+        if (e.fine_cell_mm > 0.0f) supported += std::format("{}{:g} with --drone {}", supported.empty() ? "" : ", ", e.fine_cell_mm, e.library);
+    }
+    if (d != nullptr && d->fine_cell_mm <= 0.0f) {
+        return std::format("--cell-mm: --drone {} has no fine box (only {})", drone_library, supported);
+    }
+    return std::format("--cell-mm supports only {}, on a still-air clip (S1, S2, S8)", supported);
 }
 
 // The command line as a caption may show it: the drone's library name replaced by its alias.
