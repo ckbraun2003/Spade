@@ -404,6 +404,7 @@ struct Drone {
     std::string_view blade_words = "the kit's real blades";
     std::string_view parts_words = "the frame, arms, legs, boards and motors";
     std::string_view card_extra = "";
+    std::string_view look_blades = "the rotors' real blades";  // the clip record's Look sentence names the blades this drone draws (the kit's are the generated stand-in)
 };
 
 [[nodiscard]] inline const std::array<Drone, 4>& drones() {
@@ -433,7 +434,8 @@ struct Drone {
          Framing{0.15f, -0.030f, 0.26f, 0.19f, 0.10f, 0.14f, 0.025f, 0.005f, 0.03f, 70.0f}, 0.00875f, 0.1764f, 1.25f, 0.0436f, kBladePressureCpRange,
          "generated three-blade stand-in blades", "the frame, arms, stack, motors and battery",
          "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 90% of the weight in a 0.20 s check, in open air with no frame; "
-         "motors and flight stack modelled from published dimensions; battery: an assumed typical 6S pack."},
+         "motors and flight stack modelled from published dimensions; battery: an assumed typical 6S pack.",
+         "the stand-in's generated blades"},
     }};
     return table;
 }
