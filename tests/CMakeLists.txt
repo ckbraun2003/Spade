@@ -124,6 +124,8 @@ add_executable(spade_tests
     test_x500_build_table.cpp
     test_x500_case.cpp
     test_x500_kit_inertia.cpp
+    test_airflow_fpv_solids.cpp
+    test_airflow_fpv_grid.cpp
     test_airflow_sgs.cpp
     test_airflow_blade.cpp
     test_airflow_bemt_uiuc.cpp
@@ -510,6 +512,7 @@ if(SPADE_VULKAN)
         test_gpu_airflow_line_binned.cpp
         test_gpu_airflow_line_stills.cpp
         test_gpu_x500_one_rotor.cpp
+        test_gpu_fpv_four_rotors.cpp
         test_gpu_airflow_d1_device.cpp
         test_gpu_live_fluid.cpp
         test_gpu_live_lines.cpp
