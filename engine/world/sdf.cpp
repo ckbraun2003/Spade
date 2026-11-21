@@ -464,9 +464,9 @@ uint32_t nearest_leaf_node(const SdfProgram& program, glm::vec3 p) noexcept {
 }
 
 uint16_t sdf_hit_label(const SdfProgram& program, glm::vec3 p) noexcept {
-    (void)program;
-    (void)p;
-    return 0;  // RED stub
+    if (program.node_labels.empty()) return 0;
+    const uint32_t leaf = nearest_leaf_node(program, p);
+    return leaf == kNoSdfLeaf ? uint16_t{0} : program.node_labels[leaf];
 }
 
 Result<uint32_t> SdfProgram::validate() const {
@@ -478,6 +478,12 @@ Result<uint32_t> SdfProgram::validate() const {
         return std::unexpected(invalid(
             "SDF node_materials must be empty or exactly nodes.size() (" +
             std::to_string(nodes.size()) + "), found " + std::to_string(node_materials.size())));
+    }
+
+    if (!node_labels.empty() && node_labels.size() != nodes.size()) {
+        return std::unexpected(invalid(
+            "SDF node_labels must be empty or exactly nodes.size() (" +
+            std::to_string(nodes.size()) + "), found " + std::to_string(node_labels.size())));
     }
 
     for (size_t i = 0; i < transforms.size(); ++i) {

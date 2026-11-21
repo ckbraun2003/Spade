@@ -105,7 +105,8 @@ TEST(WorldFileV4, ALabelledWorldIsWrittenAsVersion4AndRoundTrips) {
     const std::string text = yaml_ok(world);
     EXPECT_NE(text.find("world_version: 4\n"), std::string::npos) << text;
     EXPECT_NE(text.find("node_labels: [0, 5, 0]"), std::string::npos) << text;
-    EXPECT_EQ(text.find("cameras"), std::string::npos) << "no camera capacity, so none of those keys";
+    EXPECT_EQ(text.find("  cameras:"), std::string::npos) << "no camera capacity, so none of those keys";
+    EXPECT_EQ(text.find("keypoint_groups:"), std::string::npos);
     const spade::Result<WorldDesc> loaded = spade::world_from_yaml(text);
     ASSERT_TRUE(loaded.has_value()) << loaded.error().context;
     ASSERT_EQ(loaded->sdf.node_labels.size(), 3u);

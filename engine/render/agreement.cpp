@@ -214,6 +214,9 @@ Result<spade::WorldDesc> strip_to_ground_plane_only(const spade::WorldDesc& worl
     if (!world.sdf.node_materials.empty()) {
         stripped.sdf.node_materials = {world.sdf.node_materials[plane_index]};
     }
+    if (!world.sdf.node_labels.empty()) {
+        stripped.sdf.node_labels = {world.sdf.node_labels[plane_index]};  // schema v4: the same lockstep
+    }
     // `transforms` deliberately left FULLY INTACT -- the surviving node's own
     // `transform` index still resolves into it unchanged (this file's own
     // header comment).

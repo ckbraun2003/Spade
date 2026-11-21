@@ -349,6 +349,9 @@ struct WorldSetLayout {
 //     comments on these fields already say physics never reads. Two descs
 //     differing only in one of these four replay a restored blob identically,
 //     so folding any of them would reject a pairing that is in fact sound.
+//   * SdfProgram::node_labels (schema v4, Phase 3.4). RENDER-ONLY, the same argument one more time: a per-node object label is read only by the camera's
+//     instance-id channel (sdf_hit_label), no pass and no snapshot sees it, so two descs differing only in labels replay a restored blob identically.
+//     (The camera capacities, by contrast, ARE folded, only when used: they size what the world allocates.)
 //
 // AND ONE THING IT COVERS THAT THE ENGINE IGNORES, stated so the strictness is
 // not mistaken for a bug: Environment::seed is the world FILE's authoring

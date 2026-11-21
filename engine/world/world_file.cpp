@@ -86,6 +86,26 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 # =============================================================================
 )YAML";
 
+// The version that added the geodetic anchor, and the lowest version that holds a world with the v4 content (world_file.hpp's notes).
+constexpr uint32_t kWorldFileAnchorVersion = 3;
+
+[[nodiscard]] bool has_camera_capacities(const Capacities& caps) noexcept {
+    return caps.cameras != 0 || caps.camera_pixels != 0 || caps.keypoint_groups != 0 || caps.keypoints_per_group != 0;
+}
+
+[[nodiscard]] bool has_node_labels(const SdfProgram& sdf) noexcept {
+    for (const uint16_t label : sdf.node_labels) {
+        if (label != 0) return true;
+    }
+    return false;
+}
+
+// THE LOWEST VERSION THAT HOLDS THE WORLD (world_file.hpp): 4 for a camera capacity or a non-zero node label, else 3 for an anchor, else 2.
+[[nodiscard]] uint32_t lowest_version(const WorldDesc& world) noexcept {
+    if (has_camera_capacities(world.capacities) || has_node_labels(world.sdf)) return kWorldFileVersion;
+    return world.anchor ? kWorldFileAnchorVersion : kWorldFileBaseVersion;
+}
+
 // The preamble for `version`: kFileHeader is the version-2 text (every anchor-less file is exactly it, byte for byte); a version-3
 // file says 3, and says that a world with an anchor is what makes this build write 3.
 [[nodiscard]] std::string header_for(uint32_t version) {
@@ -96,15 +116,17 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
             assert(at != std::string::npos);
             header.replace(at, from.size(), to);
         };
-        replace_once("schema version 2.", "schema version 3.");
-        replace_once("WRITES version 2.", "WRITES version 2, or 3 for a world with an anchor.");
+        replace_once("schema version 2.", "schema version " + dec(version) + ".");
+        replace_once("WRITES version 2.",
+                     version == kWorldFileAnchorVersion
+                         ? "WRITES version 2, or 3 for a world with an anchor."
+                         : "WRITES version 2, 3 for a world with an anchor, or 4 for a world with cameras or node labels.");
     }
     return header;
 }
 
 [[nodiscard]] std::string emit(const WorldDesc& world) {
-    // THE LOWEST VERSION THAT HOLDS THE WORLD (world_file.hpp): 3 only for a world with v3 content, today the anchor.
-    const uint32_t version = world.anchor ? kWorldFileVersion : kWorldFileBaseVersion;
+    const uint32_t version = lowest_version(world);
     std::string out;
     out.reserve(4096);
     out += header_for(version);
@@ -180,6 +202,15 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     out += "  force_elements: " + dec(caps.force_elements) + "\n";
     out += "  sensors: " + dec(caps.sensors) + "\n";
     out += "  contacts: " + dec(caps.contacts) + "\n";
+    if (has_camera_capacities(caps)) {
+        out +=
+            "  # The camera sensor's declarations (schema version 4, each written only when non-zero): how many cameras, the pixels a frame of them may\n"
+            "  # hold, and the keypoint groups a camera frame carries with the points a group has. Cameras and pixels come as a pair, as do groups and points.\n";
+        if (caps.cameras != 0) out += "  cameras: " + dec(caps.cameras) + "\n";
+        if (caps.camera_pixels != 0) out += "  camera_pixels: " + dec(caps.camera_pixels) + "\n";
+        if (caps.keypoint_groups != 0) out += "  keypoint_groups: " + dec(caps.keypoint_groups) + "\n";
+        if (caps.keypoints_per_group != 0) out += "  keypoints_per_group: " + dec(caps.keypoints_per_group) + "\n";
+    }
 
     // --- spawns ------------------------------------------------------------
     out +=
@@ -256,6 +287,19 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
         for (std::size_t i = 0; i < world.sdf.node_materials.size(); ++i) {
             if (i != 0) out += ", ";
             out += dec(world.sdf.node_materials[i]);
+        }
+        out += "]\n";
+    }
+
+    // node_labels (schema v4): a per-node object label, parallel to `nodes`; written only when any is non-zero.
+    if (has_node_labels(world.sdf)) {
+        out +=
+            "  # Per-node object label (schema version 4, written only when any is non-zero), parallel to `nodes` above. 0 is \"no labelled object\"; a\n"
+            "  # composed object (a gate of several primitives) gives each primitive its one label. Spade attaches no meaning to the number.\n"
+            "  node_labels: [";
+        for (std::size_t i = 0; i < world.sdf.node_labels.size(); ++i) {
+            if (i != 0) out += ", ";
+            out += dec(world.sdf.node_labels[i]);
         }
         out += "]\n";
     }
@@ -411,10 +455,15 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     return env;
 }
 
-[[nodiscard]] Result<Capacities> parse_capacities(const YAML::Node& node) {
+[[nodiscard]] Result<Capacities> parse_capacities(const YAML::Node& node, uint32_t version) {
     constexpr std::string_view kWhat = "world.capacities";
-    if (Result<void> r =
-            check_map(node, kWhat, {"bodies", "force_elements", "sensors", "contacts"});
+    // Version 4 adds the four camera keys, all optional (absent is 0); an older document names them an unknown key.
+    const bool v4 = version >= kWorldFileVersion;
+    if (Result<void> r = v4 ? check_map(node, kWhat,
+                                        {"bodies", "force_elements", "sensors", "contacts", "cameras", "camera_pixels", "keypoint_groups",
+                                         "keypoints_per_group"},
+                                        version)
+                            : check_map(node, kWhat, {"bodies", "force_elements", "sensors", "contacts"}, version);
         !r) {
         return std::unexpected(r.error());
     }
@@ -433,6 +482,21 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     caps.force_elements = *force_elements;
     caps.sensors = *sensors;
     caps.contacts = *contacts;
+    if (v4) {
+        const auto optional_key = [&](const char* key, uint32_t& into) -> Result<void> {
+            if (!yaml_text::has(node, key)) return {};
+            const Result<uint32_t> v = uint_field<uint32_t>(node, key, kWhat);
+            if (!v) return std::unexpected(v.error());
+            into = *v;
+            return {};
+        };
+        for (const auto& [key, into] : {std::pair<const char*, uint32_t*>{"cameras", &caps.cameras},
+                                        {"camera_pixels", &caps.camera_pixels},
+                                        {"keypoint_groups", &caps.keypoint_groups},
+                                        {"keypoints_per_group", &caps.keypoints_per_group}}) {
+            if (Result<void> r = optional_key(key, *into); !r) return std::unexpected(r.error());
+        }
+    }
     return caps;
 }
 
@@ -475,11 +539,16 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 // -- this block's allowlist is itself version-gated, so check_map's
 // kWorldFileVersion default (accurate for shapes that do NOT change between
 // versions) would blame the wrong version here specifically.
-[[nodiscard]] Result<SdfProgram> parse_sdf(const YAML::Node& node, bool is_v1) {
+[[nodiscard]] Result<SdfProgram> parse_sdf(const YAML::Node& node, uint32_t version) {
     constexpr std::string_view kWhat = "world.sdf";
-    const uint32_t version = is_v1 ? kWorldFileMinReadVersion : kWorldFileBaseVersion;
+    const bool is_v1 = (version == kWorldFileMinReadVersion);
     if (is_v1) {
         if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes"}, version); !r) {
+            return std::unexpected(r.error());
+        }
+    } else if (version >= kWorldFileVersion) {
+        // Version 4 adds the optional `node_labels`.
+        if (Result<void> r = check_map(node, kWhat, {"transforms", "nodes", "node_materials", "node_labels"}, version); !r) {
             return std::unexpected(r.error());
         }
     } else {
@@ -531,6 +600,18 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
                 (*node_materials)[i], "world.sdf.node_materials[" + dec(i) + "]");
             if (!m) return std::unexpected(m.error());
             program.node_materials.push_back(*m);
+        }
+    }
+    if (version >= kWorldFileVersion && yaml_text::has(node, "node_labels")) {
+        const YAML::Node labels = node["node_labels"];
+        if (!labels.IsSequence()) {
+            return std::unexpected(at(labels, "world.sdf.node_labels must be a sequence"));
+        }
+        program.node_labels.reserve(labels.size());
+        for (std::size_t i = 0; i < labels.size(); ++i) {
+            const Result<uint16_t> l = parse_uint<uint16_t>(labels[i], "world.sdf.node_labels[" + dec(i) + "]");
+            if (!l) return std::unexpected(l.error());
+            program.node_labels.push_back(*l);
         }
     }
     return program;
@@ -648,7 +729,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
     if (!node.IsMap()) {
         return std::unexpected(at(node, "world.anchor must be a mapping with lat_deg, lon_deg and height_m"));
     }
-    if (Result<void> r = check_map(node, kWhat, {"lat_deg", "lon_deg", "height_m"}, kWorldFileVersion); !r) {
+    if (Result<void> r = check_map(node, kWhat, {"lat_deg", "lon_deg", "height_m"}, kWorldFileAnchorVersion); !r) {
         return std::unexpected(r.error());
     }
     geo::Geodetic anchor;
@@ -716,7 +797,8 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
             return std::unexpected(r.error());
         }
     } else {
-        // Version 3: version 2 plus the optional keys (world_file.hpp), today `anchor`.
+        // Versions 3 and 4: version 2 plus the optional keys (world_file.hpp): `anchor`, and in version 4 the optional capacity and `node_labels` keys,
+        // which parse_capacities() and parse_sdf() gate on the file's own version.
         if (Result<void> r = check_map(root, "world",
                                        {"world_version", "name", "environment", "capacities", "spawns", "sdf", "visuals",
                                         "materials", "lighting", "props", "anchor"},
@@ -746,7 +828,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 
     const Result<YAML::Node> caps_node = field(root, "capacities", "world");
     if (!caps_node) return std::unexpected(caps_node.error());
-    const Result<Capacities> caps = parse_capacities(*caps_node);
+    const Result<Capacities> caps = parse_capacities(*caps_node, *version);
     if (!caps) return std::unexpected(caps.error());
     world.capacities = *caps;
 
@@ -758,7 +840,7 @@ constexpr std::string_view kFileHeader = R"YAML(# ==============================
 
     const Result<YAML::Node> sdf_node = field(root, "sdf", "world");
     if (!sdf_node) return std::unexpected(sdf_node.error());
-    const Result<SdfProgram> sdf = parse_sdf(*sdf_node, is_v1);
+    const Result<SdfProgram> sdf = parse_sdf(*sdf_node, *version);
     if (!sdf) return std::unexpected(sdf.error());
     world.sdf = *sdf;
 
@@ -822,20 +904,13 @@ Result<std::string> world_to_yaml(const WorldDesc& world) {
     // padding) is refused, not silently dropped -- yaml_text.hpp's
     // check_sdf_representable, which the scene file's validator shares.
     if (Result<void> r = yaml_text::check_sdf_representable(world.sdf, "world_to_yaml: SDF",
-                                                            "schema v" + dec(world.anchor ? kWorldFileVersion : kWorldFileBaseVersion));
+                                                            "schema v" + dec(lowest_version(world)));
         !r) {
         return std::unexpected(r.error());
     }
 
-    // The camera capacities are not in any schema version yet (they come with the labels and materials of the camera design's item 3.4, as a version of
-    // their own): a file written now would lose them on load, so a camera world is refused here rather than written without its cameras.
-    const Capacities& caps = world.capacities;
-    if (caps.cameras != 0 || caps.camera_pixels != 0 || caps.keypoint_groups != 0 || caps.keypoints_per_group != 0) {
-        return std::unexpected(Error{Code::invalid_argument,
-                                     "world_to_yaml: the world declares camera capacities (capacities.cameras, camera_pixels, keypoint_groups, "
-                                     "keypoints_per_group), which no world file schema version carries yet"});
-    }
-
+    // The camera capacities and node labels ARE carried now (schema version 4): emit() writes the lowest version that holds the world, so a camera world
+    // is written as version 4 rather than refused (the refusal of Phase 3.1 is lifted by this).
     return emit(world);
 }
 
