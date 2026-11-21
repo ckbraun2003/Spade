@@ -159,6 +159,10 @@ add_subdirectory(tools/part_stand_in)
 # A shared library links the static engine archives, so on gcc they are built position-independent (set before engine/ is added).
 add_subdirectory(tools/library_c)
 
+# The autopilot links (O140, docs/design/interface/plans/2026-11-21-fc-links.md): MAVLink codec, frame conversion and the PX4 link, a static library outside
+# engine/ on the public headers; build-tree only. AFTER engine/, BEFORE tests/, which link it.
+add_subdirectory(tools/fc_link)
+
 # The reference application. AFTER engine/, because it links spade:: aliases
 # that engine/ defines.
 if(SPADE_BUILD_SANDBOX)
