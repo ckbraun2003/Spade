@@ -182,20 +182,20 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return "--particles is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
 }
 
-// --nasa and --nasa-cloud (L106i, O113): S2 and S8 only; a --window run is for the cloud and only when it streams (as --particles is), or is a --web-still redraw
+// --q-surfaces and --vorticity-cloud (L106i, O113): S2 and S8 only; a --window run is for the cloud and only when it streams (as --particles is), or is a --web-still redraw
 // of kept frames (either look); the particle looks are a different look. Empty when the flags are fine, else the refusal's words.
 [[nodiscard]] inline std::string nasa_refusal(bool s2_or_s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool cloud) {
-    if (!s2_or_s8) return "--nasa is for S2 and S8";
+    if (!s2_or_s8) return "--q-surfaces is for S2 and S8";
     if (window && !still_redraw && !(stream && cloud)) {
-        return cloud ? "--nasa-cloud is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)"
-                     : "--nasa is not for a --window run (a --window --web-still redraw from a run's kept frames is; --nasa-cloud streams a --window run)";
+        return cloud ? "--vorticity-cloud is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)"
+                     : "--q-surfaces is not for a --window run (a --window --web-still redraw from a run's kept frames is; --vorticity-cloud streams a --window run)";
     }
-    if (particles || particles_preview) return "--nasa and the particle looks are different looks: use one";
+    if (particles || particles_preview) return "--q-surfaces and the particle looks are different looks: use one";
     return {};
 }
 
 // --surface-pressure (O124): the air pressure on the airframe's surfaces, S8 only. Like the cloud it streams a --window run (or redraws kept frames), and it is a different
-// look from --nasa (the Q surfaces) and the particle looks; with --nasa-cloud it is the pressure film with the vorticity cloud over it (O144). Empty when the flags are fine, else the
+// look from --q-surfaces (the Q surfaces) and the particle looks; with --vorticity-cloud it is the pressure film with the vorticity cloud over it (O144). Empty when the flags are fine, else the
 // refusal's words.
 [[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa, bool nasa_cloud = false) {
     if (!s8) return "--surface-pressure is for S8";
@@ -203,7 +203,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
         return "--surface-pressure is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
     }
     if (particles || particles_preview) return "--surface-pressure and the particle looks are different looks: use one";
-    if (nasa && !nasa_cloud) return "--surface-pressure and --nasa (the Q surfaces) are different looks: use one (--nasa-cloud adds the vortices to --surface-pressure)";
+    if (nasa && !nasa_cloud) return "--surface-pressure and --q-surfaces (the Q surfaces) are different looks: use one (--vorticity-cloud adds the vortices to --surface-pressure)";
     return {};
 }
 
@@ -213,14 +213,14 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return {};
 }
 
-// The S8 view a run's flags choose (O144: main's ternary as a function): the pressure film (shaded or not), with the vorticity cloud over it when --nasa-cloud comes too; else the
-// Q surfaces or the cloud (--nasa, --nasa-cloud), the particle looks, or the speed volume.
+// The S8 view a run's flags choose (O144: main's ternary as a function): the pressure film (shaded or not), with the vorticity cloud over it when --vorticity-cloud comes too; else the
+// Q surfaces or the cloud (--q-surfaces, --vorticity-cloud), the particle looks, or the speed volume.
 [[nodiscard]] inline std::string s8_view_name(bool pressure, bool shade, bool nasa, bool cloud, bool particles, bool particles_preview) {
     if (pressure) {
         if (nasa && cloud) return shade ? "surface-pressure-vortices-shaded" : "surface-pressure-vortices";
         return shade ? "surface-pressure-shaded" : "surface-pressure";
     }
-    if (nasa) return cloud ? "vorticity-cloud" : "nasa";
+    if (nasa) return cloud ? "vorticity-cloud" : "q-surfaces";
     if (particles) return "particles";
     if (particles_preview) return "particles-preview";
     return "speed-volume";
@@ -243,7 +243,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // (a redraw: --from-cache or --web-still), so not --stream (the later frames do not exist yet) or --simulate-only. Empty when the flag is not asked or is fine, else the refusal's words.
 [[nodiscard]] inline std::string fixed_cloud_range_refusal(bool fixed, bool nasa_cloud, bool stream, bool simulate_only, bool redraw, uint32_t cached_frames, uint32_t needed_frames) {
     if (!fixed) return {};
-    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --nasa-cloud";
+    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --vorticity-cloud";
     if (stream) return "--fixed-cloud-range needs every frame on disk to find the clip's largest vorticity; --stream solves as it draws: use --from-cache or --web-still";
     if (simulate_only) return "--fixed-cloud-range is for drawing; --simulate-only only solves: use one";
     if (!redraw) return "--fixed-cloud-range reads the clip's largest vorticity from frames already on disk: use it with --from-cache or --web-still";
@@ -851,7 +851,7 @@ struct DeliveryGuard {
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
     const std::string cell = std::format("{:g}", cell_mm);
     const std::string step_ms = std::format("{:g}", static_cast<double>(step_us) / 1000.0);
-    // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high, or (--surface-pressure) the simulated air's pressure
+    // What the colour is: relative speed, or (--vorticity-cloud) vorticity, the local spin of the air, blue low to magenta high, or (--surface-pressure) the simulated air's pressure
     // beside the simulated solids, painted on the drawn parts, blue below the still air's pressure to red above (the lead's words, O124). Whichever, no figures.
     const std::string colour =
         pressure ? "Colour shows pressure on the surfaces (" + std::string(parts_words) + "), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
@@ -951,7 +951,7 @@ struct DeliveryGuard {
     if (pressure && !particles && c.id == "S8") {  // --surface-pressure: the air's pressure on the surfaces, nothing else drawn of the air
         return "The air pressure on the surfaces of the reference quad's rigid parts, blue (below ambient) to red (above), with four " + rotors + " driving the air, in a slow orbit.";
     }
-    if (cloud && !particles && c.id == "S8") {  // --nasa-cloud: the vorticity as a soft cloud
+    if (cloud && !particles && c.id == "S8") {  // --vorticity-cloud: the vorticity as a soft cloud
         return "The vorticity of the air round the reference quad's rigid parts and four " + rotors + ", as a soft cloud from blue (low) to magenta (high), in a slow orbit.";
     }
     if (particles && c.id == "S8") {
@@ -982,10 +982,10 @@ struct CaptionInput {
     bool lines = false;         // --lines: the rotors are actuator lines with the fitted blade polar, not discs
     bool particles = false;     // --particles / --particles-preview: the film shows air points carried by the flow
     bool volume = false;        // --volume: ... over the speed volume (without it the points stand alone and no volume is claimed)
-    bool cloud = false;         // --nasa-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
+    bool cloud = false;         // --vorticity-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
     bool pressure = false;      // --surface-pressure: the film shows the air's pressure on the surfaces, and its colour is pressure, not relative speed
     bool shaded = false;        // --surface-shade: ... lit for shape
-    std::string vortex_note;    // --surface-pressure with --nasa-cloud: how the swirls are drawn (q_look.hpp's vortex_note), for the caveats
+    std::string vortex_note;    // --surface-pressure with --vorticity-cloud: how the swirls are drawn (q_look.hpp's vortex_note), for the caveats
     bool blades = false;        // --prop-blur mode=blades: ... and the rotors' real blades, drawn at the simulation's angle, take the air's pressure beside them on their own range
 };
 

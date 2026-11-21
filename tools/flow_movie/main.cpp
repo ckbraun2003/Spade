@@ -1391,7 +1391,7 @@ constexpr float kVortexFloor = -5.0f;
                 }});
             // NASA Ames' multirotor look: Q-criterion surfaces (a ladder of three levels) coloured by vorticity, blue to magenta.
             film.views.push_back(View{
-                "nasa", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
+                "q-surfaces", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
                 [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                                  render::Camera& camera) -> spade::Result<void> {
                     frame_on_drone(v, k, n, camera);
@@ -1608,10 +1608,10 @@ struct WebPlan {
     DroneLight drone_light;                           // --drone-light: the key and fill strength the drone is lit with (presentation only)
     std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
-    bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
+    bool cloud = false;                               // --vorticity-cloud: the vorticity as a soft cloud in place of the surfaces
     bool pressure = false;                            // --surface-pressure: S8 draws the air's pressure on the drawn parts, nothing else of the air
     bool shade = false;                               // --surface-shade: ... lit for shape
-    std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
+    std::optional<QLook> nasa;                        // --q-surfaces: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1808,7 +1808,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              framing.elevation_deg);
             }, plan.particles);  // the streaks are polylines the view's shot makes: kept (with_camera clears them otherwise)
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "q-surfaces") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
@@ -2016,12 +2016,12 @@ struct Options {
     std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
-    bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
+    bool nasa_cloud = false;         // --vorticity-cloud: --q-surfaces's colours as a soft vorticity cloud, no surfaces
     bool surface_pressure = false;   // --surface-pressure: S8 shows the air's pressure on the drone's surfaces (O124)
     bool surface_shade = false;      // --surface-shade: ... lit for shape (the colour keeps its hue; needs --surface-pressure)
     std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
-    bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
-    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
+    bool nasa = false;               // --q-surfaces: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
+    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --q-surfaces)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
@@ -2704,7 +2704,7 @@ struct WebFilming {
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
     } else if (!opt.q_look.empty()) {
-        std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
+        std::fprintf(stderr, "flow_movie: --q-look is for --q-surfaces\n");
         return 2;
     }
     if (opt.surface_pressure) {
@@ -2862,7 +2862,7 @@ struct WebFilming {
             return 2;
         }
         opt.cloud_peak = *peak;
-        plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --nasa above)
+        plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --q-surfaces above)
         // The film's views captured the look when web_film() built them (above), before the cache was read: build it again with the peak, and set what was set on the first (no particle look
         // here: the cloud and the particle looks are refused together).
         film = web_film(*clip, *group, plan);
@@ -3351,9 +3351,9 @@ int main(int argc, char** argv) {
             opt.part_store = value();
         } else if (arg == "--lines") {
             opt.lines_prop = value();
-        } else if (arg == "--nasa") {
+        } else if (arg == "--q-surfaces") {
             opt.nasa = true;
-        } else if (arg == "--nasa-cloud") {
+        } else if (arg == "--vorticity-cloud") {
             opt.nasa = true;
             opt.nasa_cloud = true;
         } else if (arg == "--surface-pressure") {

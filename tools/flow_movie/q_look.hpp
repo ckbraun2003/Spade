@@ -31,7 +31,7 @@ struct QLook {
     std::array<float, 3> level{0.50f, 0.25f, 0.10f};   // fractions of the frame's largest q_hat, strictly falling, each in (0, 1]
     std::array<float, 3> opacity{0.95f, 0.60f, 0.30f};  // each in (0, 1]
     float vorticity_max = 0.5f;                        // the map's top: this fraction of the frame's largest |omega|, in (0, 1]
-    // The cloud (--nasa-cloud): the density at the top of the range in 1/m (above 0, at most 1000), the fraction of the range below which
+    // The cloud (--vorticity-cloud): the density at the top of the range in 1/m (above 0, at most 1000), the fraction of the range below which
     // the air is clear (0 up to, not including, 1), and the thinning near the drone: radius as a multiple of the drone's own reach (Drone::reach_m; 0 off, at most 2), the factor at its centre.
     float sigma = 30.0f;
     float onset = 0.15f;
@@ -74,7 +74,7 @@ struct QLook {
                                           (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max, look.onset, look.sigma);
 }
 
-// The caption's words for the swirls the pressure film shows with --nasa-cloud (O144, Oversight's terms): how they are drawn, and that they are the simulated air's own vorticity, not a
+// The caption's words for the swirls the pressure film shows with --vorticity-cloud (O144, Oversight's terms): how they are drawn, and that they are the simulated air's own vorticity, not a
 // measurement. The rule and its threshold are the cloud's own, so a changed --q-look changes the words.
 [[nodiscard]] inline std::string vortex_note(const QLook& look) {
     if (look.vorticity_peak > 0.0f) {  // --fixed-cloud-range: absolute, the same in every frame
