@@ -1518,3 +1518,45 @@ TEST(FlowMovieBuildParts, TheHeldPoseIsReadFromAFramesLogWhateverDecorateDoes) {
     // exactly 7 is enough: the body alone, no rotor speeds
     EXPECT_TRUE(flow_movie::held_pose_from_live(std::vector<double>{0, 0, 0, 1, 0, 0, 0}).known);
 }
+
+// THE OpenFrame-5F's GENERATED PROPS: the drawn blade and the actuator line coincide (O138). The kit's rotor entries take the library's generated three-blade meshes
+// (assets/library/drones/fpv_5inch/prop_ccw.spmesh and prop_cw.spmesh, UIUC chord and twist), the disc in the mesh's own XZ plane, thrust +Y. The line puts blade 0 at
+// phi = s psi, direction (cos phi, 0, -sin phi), so at psi 0 blade 0 must lie along the mesh's +X, and the other two 120 degrees round (azimuth phi = atan2(-z, x)): this pins
+// the MESHES' geometry for both hands, which the transform test above (a tetrahedron's +X) cannot. Also the disc is flat (the thickness a few mm) and the tips reach the
+// simulated radius 0.0635.
+TEST(FlowMovieBuildParts, TheGeneratedFpvPropMeshesHaveBladeZeroAlongPlusXForBothHands) {
+    for (const char* name : {"prop_ccw.spmesh", "prop_cw.spmesh"}) {
+        const fs::path file = fs::path(SPADE_ASSETS_DIR) / "library/drones/fpv_5inch" / name;
+        auto loaded = spade::load_mesh_file(file);
+        ASSERT_TRUE(loaded.has_value()) << name << ": " << (loaded ? "" : loaded.error().context);
+        const spade::render::MeshData mesh = spade::render::flat_mesh(*loaded->mesh);
+        ASSERT_FALSE(mesh.positions.empty()) << name;
+        double r_max = 0.0, y_lo = 1e9, y_hi = -1e9;
+        for (const glm::vec3& p : mesh.positions) {
+            r_max = std::max(r_max, std::hypot(static_cast<double>(p.x), static_cast<double>(p.z)));
+            y_lo = std::min(y_lo, static_cast<double>(p.y));
+            y_hi = std::max(y_hi, static_cast<double>(p.y));
+        }
+        EXPECT_NEAR(r_max, 0.0635, 1.0e-3) << name << ": the tips reach the simulated rotor radius";
+        EXPECT_LT(y_hi - y_lo, 0.012) << name << ": a flat disc, thrust along +Y";
+        // the azimuth of each tip vertex (radius above 95% of the reach), folded to [0, 2 pi)
+        std::vector<double> tips;
+        for (const glm::vec3& p : mesh.positions) {
+            if (std::hypot(static_cast<double>(p.x), static_cast<double>(p.z)) < 0.95 * r_max) continue;
+            double a = std::atan2(-static_cast<double>(p.z), static_cast<double>(p.x));
+            if (a < 0.0) a += kTwoPi;
+            tips.push_back(a);
+        }
+        ASSERT_FALSE(tips.empty()) << name;
+        for (int b = 0; b < 3; ++b) {
+            const double want = kTwoPi * static_cast<double>(b) / 3.0;
+            double nearest = 1e9;
+            for (double a : tips) {
+                double d = std::fabs(a - want);
+                d = std::min(d, kTwoPi - d);
+                nearest = std::min(nearest, d);
+            }
+            EXPECT_LT(nearest, 0.12) << name << ": a tip within 7 degrees of blade " << b << "'s azimuth " << want << " rad";
+        }
+    }
+}

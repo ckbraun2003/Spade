@@ -784,6 +784,59 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
 // The .md's title follows the look (the lead, O124: the pressure film's master was titled by the S8 clip's fallback, "a volume render of the rotor wake"). A
 // --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --nasa-cloud S8 names the vorticity cloud; the plain S8, and every
 // other clip, keeps its clip's title.
+// A blades film's title says the pressure is BESIDE the rotor blades, not on them (the colour is the air pressure the rotor model makes beside them, Oversight's approved claim).
+TEST(FlowMovieWeb, ABladesFilmsTitleSaysBesideTheRotorBlades) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const web::Drone& x500 = *web::find_drone("x500");
+    EXPECT_EQ(web::look_title(s8, x500, false, false, true, true), "Open-source quadcopter in hover: the air pressure on the airframe and beside the rotor blades");
+    EXPECT_EQ(web::look_title(s8, x500, false, false, true, false), "Open-source quadcopter in hover: the air pressure on the airframe in the rotor wake") << "blades off: as it was";
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = &x500;
+    in.lines = true;
+    in.pressure = true;
+    in.blades = true;
+    in.command = "flow_movie --web S8 --drone x500";
+    const std::string text = web::caption_text(in);
+    EXPECT_EQ(text.substr(0, text.find('\n')), "# Open-source quadcopter in hover: the air pressure on the airframe and beside the rotor blades") << text;
+}
+
+// What is the drone's own in a blades film's words comes from its entry: the blades' range (and the gain that reads it), what the blades are called, what the pressure is on,
+// and any card lines of its own; the X500's entry holds the words and +-6 it had, so its captions do not change.
+TEST(FlowMovieWeb, ABladesFilmsDroneSpecificWordsAndRangeComeFromTheDroneEntry) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const web::Drone& x500 = *web::find_drone("x500");
+    EXPECT_FLOAT_EQ(x500.blade_cp_range, web::kBladePressureCpRange);
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(x500.blade_cp_range), web::blade_flow_gain());
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(3.5f), web::kSurfacePressureCpRange / 3.5f);
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = &x500;
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.command = "flow_movie --web S8 --drone x500";
+    const std::string plain = web::caption_text(in);
+    EXPECT_NE(plain.find("of the disc loading on the parts and at +-6 of the disc loading on the blades"), std::string::npos) << plain;
+    EXPECT_NE(plain.find("their blades are the kit's real blades"), std::string::npos) << plain;
+    EXPECT_NE(plain.find("(the frame, arms, legs, boards and motors)"), std::string::npos) << plain;
+
+    web::Drone other = x500;
+    other.blade_cp_range = 3.5f;
+    other.blade_words = "generated three-blade stand-in blades";
+    other.parts_words = "the frame, stack, motors and battery";
+    other.card_extra = "Propellers: a stand-in for the kit's own.";
+    in.drone = &other;
+    const std::string own = web::caption_text(in);
+    EXPECT_NE(own.find("+-3.5 of the disc loading on the blades"), std::string::npos) << own;
+    EXPECT_NE(own.find("their blades are generated three-blade stand-in blades"), std::string::npos) << own;
+    EXPECT_NE(own.find("(the frame, stack, motors and battery)"), std::string::npos) << own;
+    EXPECT_NE(own.find("\n- Propellers: a stand-in for the kit's own.\n"), std::string::npos) << own;
+    EXPECT_EQ(plain.find("Propellers:"), std::string::npos) << "the X500 has no card line of its own";
+}
+
 TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
     const web::Clip& s8 = *web::find_clip("S8");
     auto first_line = [](const std::string& text) { return text.substr(0, text.find('\n')); };
@@ -1088,7 +1141,7 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile)
     for (const char* brand : {"x500", "X500", "apce", "uiuc", "UIUC", "KAT", "gltf", "Someone"}) {
         EXPECT_EQ(shown.find(brand), std::string::npos) << brand << " in: " << shown;
     }
-    EXPECT_NE(shown.find("--visual-mesh open-source-quadcopter-model"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--visual-mesh reference-quad-model"), std::string::npos) << "the word is the drone's own alias and a noun (the default drone here): " << shown;
     EXPECT_NE(shown.find("--lines measured-propeller-polar"), std::string::npos) << shown;
     EXPECT_NE(shown.find("--web S8"), std::string::npos) << "the rest of the command is as given";
     EXPECT_NE(shown.find("--nasa --q-look l1=0.5"), std::string::npos) << shown;
@@ -1329,3 +1382,69 @@ TEST(FlowMovieWeb, TheDefaultOutputFolderIsTheSpadeFootageFolderOfTheVideosArchi
         << "no profile: relative to the working directory, as before";
 }
 
+
+// THE OpenFrame-5F's DRONE ENTRY (O138, the lead): the real open-hardware 5 inch FPV frame, its model file Physics' (tools/flow_movie/data/openframe5f), its fine box the FPV's
+// 1.25 mm one with the hub disc 0.0436 m above the design origin (Interface's table), the farthest tip at the hubs' radius plus the rotor's (0.1764 m), and the words a card
+// carries: the kit named factually ("OpenFrame-5F", no endorsement wording), the stand-in prop sentence, the published-dimensions sentence.
+TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
+    const web::Drone* d = web::find_drone("openframe5f");
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(web::find_drone("fpv-quadcopter"), d) << "found by its alias too";
+    EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / d->model_file)) << d->model_file;
+    EXPECT_FLOAT_EQ(d->fine_cell_mm, 1.25f);
+    EXPECT_NEAR(d->hub_above_origin_m, 0.0436f, 1.0e-6f) << "the film box holds the DESIGN origin (the world origin), so the hold takes the disc height above it: d1_fpv_hold(0.0436), y 0.00875 m (Physics, tried on the device: 0.03875 left the line outside the grid)";
+    EXPECT_NEAR(d->reach_m, std::hypot(0.069534f, 0.089f) + 0.0635f, 2.0e-3f);
+    EXPECT_FLOAT_EQ(d->blade_cp_range, 6.0f) << "the kit's own stills read C_p p1 -7.1, p50 -2.0, p95 -0.4 (6.0% clipped at +-6, 1.4% at +-7): the X500's range stands";
+    EXPECT_EQ(web::cell_mm_refusal(1.25f, "openframe5f", true), "");
+    EXPECT_NE(web::cell_mm_refusal(2.5f, "openframe5f", true), "") << "its box is its own 1.25 mm one";
+
+    const std::string description(d->description);
+    EXPECT_NE(description.find("OpenFrame-5F"), std::string::npos) << description;
+    for (const char* never : {"endorse", "official", "certified", "approved", "partner", "sponsor", "UIUC"}) {
+        EXPECT_EQ(description.find(never), std::string::npos) << never << " in: " << description;
+        EXPECT_EQ(std::string(d->card_extra).find(never), std::string::npos) << never << " in: " << d->card_extra;
+    }
+    const std::string extra(d->card_extra);
+    EXPECT_NE(extra.find("a measured 5x4 three-blade stand-in for the kit's 5x4.3x3"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("above the speeds it was measured at"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("about 90% of the weight"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("motors, flight stack and battery modelled from published dimensions"), std::string::npos) << extra;
+    EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
+
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = d;
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --prop-blur mode=blades";
+    const std::string text = web::caption_text(in);
+    EXPECT_EQ(text.substr(0, text.find('\n')), "# 5 inch FPV quadcopter in hover: the air pressure on the airframe and beside the rotor blades") << text;
+    EXPECT_EQ(text.find("openframe5f"), std::string::npos) << "the library name stays off the command line shown: " << text;
+    EXPECT_NE(text.find("- Drone: "), std::string::npos) << text;
+    EXPECT_NE(text.find("\n- " + extra + "\n"), std::string::npos) << "its own card lines follow the caveats: " << text;
+    EXPECT_NE(text.find("(the frame, arms, stack, motors and battery)"), std::string::npos) << text;
+}
+
+// A caption's command names its drone's own table and model in words: the kit's parts table is the 5 inch FPV quadcopter's, not the open-source quadcopter's
+// (the kit's test card carried the X500's words, found by reading its caption, 2026-11-21).
+TEST(FlowMovieWeb, ACaptionsCommandNamesTheKitsOwnPartsTableAndModelInWords) {
+    const web::Drone* kit = web::find_drone("openframe5f");
+    ASSERT_NE(kit, nullptr);
+    const std::string said = web::command_in_words(
+        "flow_movie --web S8 --drone openframe5f --build-parts C:/Users/someone/openframe5f_build/parts.yaml --visual-mesh C:/Users/someone/kit.glb --lines "
+        "C:/Users/someone/mit5x4.prop.yaml --part-store C:/Users/someone/part-store",
+        *kit);
+    EXPECT_NE(said.find("--build-parts fpv-quadcopter-parts-table"), std::string::npos) << said;
+    EXPECT_NE(said.find("--visual-mesh fpv-quadcopter-model"), std::string::npos) << said;
+    EXPECT_EQ(said.find("open-source"), std::string::npos) << "the X500's words stay off the kit's card: " << said;
+    EXPECT_EQ(said.find("openframe5f"), std::string::npos) << said;
+    EXPECT_NE(said.find("--lines measured-propeller-polar"), std::string::npos) << said;
+    const web::Drone* x500 = web::find_drone("x500");
+    ASSERT_NE(x500, nullptr);
+    EXPECT_NE(web::command_in_words("flow_movie --build-parts p.yaml --visual-mesh m.glb", *x500).find("--build-parts open-source-quadcopter-parts-table --visual-mesh open-source-quadcopter-model"),
+              std::string::npos) << "the X500's words are unchanged";
+}

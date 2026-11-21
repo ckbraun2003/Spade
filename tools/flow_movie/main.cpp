@@ -1737,7 +1737,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 frame = *got;
             }
             if (visual || build) {
-                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, store =std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, blade_gain = web::blade_flow_gain(plan.drone->blade_cp_range), store =std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1755,7 +1755,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                         draw.chord = chord;
                         draw.omega = rotor_speeds_of_live(log.live, rotor_count_of(*build));  // by the table's rotors: the lines' thrust, last, is not a speed
                         draw.psi = rotor_azimuths_of_live(log.live, rotor_count_of(*build));  // --prop-blur mode=blades: the simulation's blade azimuths, the record's last values
-                        if (blur.blades && walls) draw.blade_flow_gain = web::blade_flow_gain();  // the blades read the air on their own range
+                        if (blur.blades && walls) draw.blade_flow_gain = blade_gain;  // the blades read the air on their own range
                         draw.flow_walls = walls;  // --surface-pressure: the drawn parts take the pressure colour (the blade blur is no wall)
                         return add_build_parts(scene, *build, store, pos, orient, draw);
                     }

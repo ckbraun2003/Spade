@@ -225,7 +225,8 @@ inline constexpr float kSurfacePressureCpRange = 0.4f;
 // all below ambient (C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28). +-6 uses the map's whole blue half and clips 8.3% at the blue end (the roots); +-7 would clip 1.1%.
 inline constexpr float kBladePressureCpRange = 6.0f;
 // The gain that makes the blades read on their own range under the parts' colouring (DrawItem::flow_gain): the colouring's range over the blades'.
-[[nodiscard]] constexpr float blade_flow_gain() { return kSurfacePressureCpRange / kBladePressureCpRange; }
+[[nodiscard]] constexpr float blade_flow_gain(float blade_range) { return kSurfacePressureCpRange / blade_range; }
+[[nodiscard]] constexpr float blade_flow_gain() { return blade_flow_gain(kBladePressureCpRange); }
 
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
@@ -393,14 +394,20 @@ struct Drone {
     float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
     float reach_m = 0.30f;    // the farthest rotor tip from the vertical axis (the cloud's thinning radius is a multiple of it)
     // The fine box this drone's web films can run in (--cell-mm): the cell in mm, 0 for none. The box and hold are the harness's (live_case.hpp's d1_web_grid and d1_web_hold): 2.5 is
-    // the X500's, 1.25 the 5 inch FPV's. hub_above_origin_m is the hubs' height above the model's design origin, for a box whose hold depends on it (the FPV's d1_fpv_hold; the X500's
+    // the X500's, 1.25 the 5 inch FPV's. hub_above_origin_m is the hub disc's height above the model's DESIGN origin, the world origin the box holds (not the centre of mass), for a box whose hold depends on it (the FPV's d1_fpv_hold; the X500's
     // hold is fixed by the harness, so it leaves this 0).
     float fine_cell_mm = 0.0f;
     float hub_above_origin_m = 0.0f;
+    // What a blades film says of this drone (--prop-blur mode=blades): the blades' OWN fixed range in disc loadings (measured from this airframe's own test stills; the X500's is
+    // kBladePressureCpRange), what the blades are called, what the pressure colour is on, and any card lines of its own (a bullet after the caveats; the X500 has none).
+    float blade_cp_range = kBladePressureCpRange;
+    std::string_view blade_words = "the kit's real blades";
+    std::string_view parts_words = "the frame, arms, legs, boards and motors";
+    std::string_view card_extra = "";
 };
 
-[[nodiscard]] inline const std::array<Drone, 3>& drones() {
-    static const std::array<Drone, 3> table{{
+[[nodiscard]] inline const std::array<Drone, 4>& drones() {
+    static const std::array<Drone, 4> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
@@ -416,6 +423,17 @@ struct Drone {
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
          "the open-source quadcopter", "a 1.63 kg open-source quadcopter with 10 inch rotors (its parts' masses summed)",
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f, 2.5f},  // 0.2461 hub + 0.127 rotor; its 2.5 mm box (270 x 237 x 270, L106)
+        // The OpenFrame-5F (O138): the real open-hardware 5 inch FPV frame, Interface's parts table (tools/flow_movie/data/openframe5f_build) over Physics' flow model
+        // (tools/flow_movie/data/openframe5f). Its 5 inch rotors reach 0.1764 m from the axis (hubs at +-0.0695 m along and +-0.089 m across, plus the 0.0635 m rotor), so the
+        // framing is the X500's scaled by about 0.47; its fine box is the FPV's 1.25 mm one, held at the DESIGN origin (the world origin; the centre of mass sits above it), so the hub disc, 0.0436 m above the design origin in the table's frame, is the hold's input: d1_fpv_hold(0.0436), y 0.00875 m, 7 rows (Physics, tried on the device: 0.0136 left the line outside the grid). The blade
+        // range is the X500's +-6, kept because the kit's own test stills (steps 600 and 667, 70 degrees, 67,572 blade pixels) read the same: C_p p1 -7.1, p5 -6.2, p25 -3.9, p50 -2.0, p95 -0.4, min -7.9;
+        // +-6 clips 6.0% at the blue end (the roots), +-7 would clip 1.4%. The card names the kit factually and carries the stand-in propeller and published-dimensions sentences.
+        {"openframe5f", "../tools/flow_movie/data/openframe5f/openframe5f.model.yaml", "fpv-quadcopter", "5 inch FPV quadcopter",
+         "the 5 inch FPV quadcopter", "a 0.57 kg 5 inch FPV quadcopter built on the OpenFrame-5F open-hardware frame (its parts' masses summed)",
+         Framing{0.19f, 0.095f, 0.26f, 0.19f, 0.10f, 0.14f, 0.025f, 0.005f, 0.03f, 70.0f}, 0.00875f, 0.1764f, 1.25f, 0.0436f, kBladePressureCpRange,
+         "generated three-blade stand-in blades", "the frame, arms, stack, motors and battery",
+         "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 90% of the weight; "
+         "motors, flight stack and battery modelled from published dimensions."},
     }};
     return table;
 }
@@ -454,9 +472,12 @@ struct Drone {
     for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
         command.replace(at, from.size(), d.alias);
     }
-    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", "open-source-quadcopter-model"},
+    // The model's and the table's words are the drone's own alias plus a noun: the X500's stay what they were, the kit's are its own.
+    const std::string model_word = std::string(d.alias) + "-model";
+    const std::string table_word = std::string(d.alias) + "-parts-table";
+    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", model_word},
                                                                    {"--lines", "measured-propeller-polar"},
-                                                                   {"--build-parts", "open-source-quadcopter-parts-table"},
+                                                                   {"--build-parts", table_word},
                                                                    {"--part-store", "part-store"}};
     for (const auto& [flag, word] : files) {
         const std::string key = std::string(flag) + " ";
@@ -775,7 +796,9 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false, bool blades = false) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false, bool blades = false,
+                                                    float blade_range = kBladePressureCpRange, std::string_view blade_words = "the kit's real blades",
+                                                    std::string_view parts_words = "the frame, arms, legs, boards and motors") {
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
@@ -784,15 +807,15 @@ struct DeliveryGuard {
     // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high, or (--surface-pressure) the simulated air's pressure
     // beside the simulated solids, painted on the drawn parts, blue below the still air's pressure to red above (the lead's words, O124). Whichever, no figures.
     const std::string colour =
-        pressure ? "Colour shows pressure on the surfaces (the frame, arms, legs, boards and motors), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
+        pressure ? "Colour shows pressure on the surfaces (" + std::string(parts_words) + "), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
                    "and the picture carries no pressure or speed figures. The pressure is the simulated air's, read beside the simulated solids (the parts as solids at " + cell + " mm) and painted on the "
                    "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. " +
-                   (blades ? "The rotors are " + rotors + " and their blades are the kit's real blades, drawn at the simulation's rotor angle. The blade colour is the air pressure the rotor model makes "
+                   (blades ? "The rotors are " + rotors + " and their blades are " + std::string(blade_words) + ", drawn at the simulation's rotor angle. The blade colour is the air pressure the rotor model makes "
                              "beside the blades, spread over about 5 mm by the model's force kernel, not a pressure resolved on the blade surface. "
                            : "The rotors are " + rotors + ", which have no surface, so they carry no pressure colour. ") +
                    "Parts inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour. " +
                    (blades ? "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading on the parts and at +-" +
-                                 std::format("{:g}", static_cast<double>(kBladePressureCpRange)) + " of the disc loading on the blades, each fixed, symmetric about the still air's pressure, and the same in every frame"
+                                 std::format("{:g}", static_cast<double>(blade_range)) + " of the disc loading on the blades, each fixed, symmetric about the still air's pressure, and the same in every frame"
                            : "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading, symmetric about the still air's pressure"
                              ", the same in every frame") +
                    (shaded ? "; the surfaces are lit for shape; the colour is the pressure. " : ". ")
@@ -855,8 +878,9 @@ struct DeliveryGuard {
 
 // The .md's heading: the clip's title, except an S8 whose look is the pressure or the vorticity cloud (the same flags as shows_line), which names what it shows
 // and never says "volume render" (the lead, O124: the pressure master's .md carried the S8 fallback title).
-[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure) {
+[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false) {
     if (c.id == "S8" && !particles) {
+        if (pressure && blades) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades", d);
         if (pressure) return in_words("Reference quad in hover: the air pressure on the airframe in the rotor wake", d);
         if (cloud) return in_words("Reference quad in hover: the vorticity cloud of the rotor wake", d);
     }
@@ -916,7 +940,7 @@ struct CaptionInput {
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
     const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
-    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure) + "\n\n";
+    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
@@ -924,7 +948,8 @@ struct CaptionInput {
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades, drone.blade_cp_range, drone.blade_words, drone.parts_words), drone) + "\n";
+    if (!drone.card_extra.empty()) t += "- " + in_words(std::string(drone.card_extra), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }
