@@ -11,3 +11,8 @@ cmake/archive_commit.txt export-subst
 # A mesh sidecar (world/mesh_file.hpp) is binary: never given CRLF, never
 # diffed as text (L7c1; the lead's grant, 2026-10-27).
 *.spmesh binary
+
+# The PX4 image files are read inside a Linux container (the board file by PX4's Kconfig, the Dockerfile by docker, the golden generator by python):
+# always LF (O140, tools/fc_link/px4, tools/fc_link/golden).
+tools/fc_link/px4/* text eol=lf
+tools/fc_link/golden/* text eol=lf
