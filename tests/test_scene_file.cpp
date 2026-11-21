@@ -639,6 +639,11 @@ TEST(SceneFile, TheValidatorRefusesWhatTheSceneAloneDecides) {
          [](SceneDesc& s) { s.assets[0].collider.transforms[0]._pad[0] = 1.0f; }, "non-zero padding"},
         {"collider material indices", [](SceneDesc& s) { s.assets[0].collider.node_materials = {0}; },
          "by name"},
+        // Object labels are the world file's (schema v4): the scene encoding cannot carry them, and a labelled collider must not be silently written
+        // without them. The refusal names the field and where a label CAN go.
+        {"collider node_labels",
+         [](SceneDesc& s) { s.assets[0].collider.node_labels.assign(s.assets[0].collider.nodes.size(), 7); },
+         "sdf.node_labels"},
         {"too few collider material names", [](SceneDesc& s) { s.assets[0].collider_materials.push_back("m"); },
          "collider_materials"},
         {"an empty collider material name", [](SceneDesc& s) { s.assets[0].collider_materials[0].clear(); },

@@ -243,6 +243,10 @@ std::vector<ModelIssue> ModelType::issues() const {
                     refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid "
                                     "sees is the part's surface");
                 }
+                if (!part.shape.node_labels.empty()) {
+                    refuse("shape", "shape must not carry node_labels: they are render data, and what the fluid sees is "
+                                    "the part's surface (an object label goes in the world file's sdf.node_labels)");
+                }
                 // Bounded (CORE-7; the lead's answer of 2026-10-12: an
                 // unbounded part would fill half of space): sdf_bounded(),
                 // the one walk sdf_bounds() also takes (TD-9).
