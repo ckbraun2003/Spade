@@ -206,9 +206,11 @@ def compile_with(entry, source=None, replace=None, add=()):
             cmd += generated_first(LEG_SRC.sub("/tmp/s", a))
             i += 1
     # Last, so they fill only what the line misses: the build's generated
-    # headers, and the repository root (spike/ includes are spelled from it; a
-    # line from before the airflow runner's target has neither).
-    cmd += [d for d in MINE + ["-I/tmp/s"] if d not in cmd]
+    # headers, the repository root (spike/ includes are spelled from it; a line
+    # from before the airflow runner's target has neither) and tools/ (code
+    # under tools/fc_link includes its own headers as "fc_link/...", and a line
+    # from before that target, or borrowed from another tool's, lacks the root).
+    cmd += [d for d in MINE + ["-I/tmp/s", "-I/tmp/s/tools"] if d not in cmd]
     cmd += list(add) + ["-o", "/tmp/gcc-check.o", "-Wall", "-Wextra", "-Wpedantic", "-Werror"]
     return subprocess.run(cmd, cwd=entry["directory"]).returncode == 0
 
