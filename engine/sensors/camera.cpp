@@ -18,7 +18,6 @@ std::string bad(const char* field, const char* why) { return std::string(field) 
 }  // namespace
 
 std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_groups) {
-    (void)keypoint_groups;  // RED stub
     if (row.kind == sensor_kind::none) return {};  // inert: a freed or reserved slot
     if (row.kind != sensor_kind::camera) return bad("kind", "not a camera row");
     if (row.rate_divider == 0u) return bad("rate_divider", "must be at least 1");
@@ -44,7 +43,13 @@ std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_group
     if (row.aa_samples == 0u) return bad("aa_samples", "must be at least 1 (1 is off)");
     if (!finite(row.exposure_gain) || !(row.exposure_gain > 0.0f)) return bad("exposure_gain", "must be finite and above 0");
     if (row.cull_mask > 0xFFu) return bad("cull_mask", "is an 8-bit mask");
-    if (row.channels != 0u) return bad("channels", "is reserved until the channel set is named, and must be 0");
+    if (row.channels == 0u) return bad("channels", "an active camera needs at least one channel (image, instance_id, keypoints)");
+    if ((row.channels & ~camera_channel::known) != 0u) {
+        return bad("channels", "has a bit outside the known set (image, instance_id, keypoints); depth and above are reserved");
+    }
+    if ((row.channels & camera_channel::keypoints) != 0u && keypoint_groups == 0u) {
+        return bad("channels", "asks for keypoints, but the world declares no keypoint_groups (capacities.keypoint_groups is 0)");
+    }
     if (!finite(row.mount_pos.x) || !finite(row.mount_pos.y) || !finite(row.mount_pos.z)) return bad("mount_pos", "must be finite");
     const float q2 = row.mount_orient.w * row.mount_orient.w + row.mount_orient.x * row.mount_orient.x + row.mount_orient.y * row.mount_orient.y +
                      row.mount_orient.z * row.mount_orient.z;

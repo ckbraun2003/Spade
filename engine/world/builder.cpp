@@ -365,6 +365,13 @@ Result<uint32_t> validate_world_desc(const WorldDesc& desc) {
     if (caps.camera_pixels != 0 && caps.cameras == 0) {
         return std::unexpected(invalid("world capacity 'cameras' must be > 0 when 'camera_pixels' is"));
     }
+    // The keypoint channel's pair, the same rule: groups need points and points need groups.
+    if (caps.keypoint_groups != 0 && caps.keypoints_per_group == 0) {
+        return std::unexpected(invalid("world capacity 'keypoints_per_group' must be > 0 when 'keypoint_groups' is"));
+    }
+    if (caps.keypoints_per_group != 0 && caps.keypoint_groups == 0) {
+        return std::unexpected(invalid("world capacity 'keypoint_groups' must be > 0 when 'keypoints_per_group' is"));
+    }
 
     // Spawn points: named, uniquely named (they are looked up by name), and
     // carrying a usable pose. The builder's spawn() already rejects a

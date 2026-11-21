@@ -304,6 +304,7 @@ struct WorldSetLayout {
 //            u64 environment.seed
 //       fold u32   capacities.bodies, force_elements, sensors, contacts
 //       fold u32   capacities.cameras, camera_pixels, ONLY WHEN EITHER IS NON-ZERO (the camera sensor kind; a world without cameras hashes as it always did)
+//       fold u32   capacities.keypoint_groups, keypoints_per_group, ONLY WHEN EITHER IS NON-ZERO (the camera's keypoint channel, likewise)
 //       fold u64   instance seed (WorldInstanceDesc::seed)
 //       fold       DrydenParams raw bytes  (32)
 //       fold       ContactParams raw bytes (32)

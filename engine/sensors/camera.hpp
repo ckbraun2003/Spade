@@ -14,8 +14,9 @@
 //     distractors), bit 6 every body with no bit of its own, bits 0..5 the bodies that need hiding on their own (camera carriers and any the caller names;
 //     a seventh own-bit body in one env is refused, naming the limit of 6, by the code that places instances, not here). The default is 0xFF with the
 //     carrier's own bit cleared (self-visibility off). It is NOT a channel selector.
-//   * mode is colour or grey. The CHANNEL SET (image, id, corners, depth later) is a separate field that waits on Rendering's Phase 1 list: `channels` is a
-//     named field that must stay 0 until then, and a non-zero value is refused.
+//   * mode is colour or grey. The CHANNEL SET is the separate `channels` bit set (camera_channel: image, instance_id, keypoints; section 11a of the design,
+//     Rendering's list). An active camera needs at least one bit, a bit outside camera_channel::known is refused (depth, bit 3, and up are reserved), and
+//     keypoints also need the world's capacities.keypoint_groups > 0. What the bits select, and the tensors they write, are Rendering's.
 // ---------------------------------------------------------------------------
 
 #include <cmath>
@@ -51,7 +52,8 @@ inline constexpr uint32_t grey = 1u;
 inline constexpr uint32_t count = 2u;
 }  // namespace camera_mode
 
-// The channel set: bits of CameraSensorRow::channels (rendering/camera-sensor-design section 11a). RED stub: the names, not yet enforced.
+// The channel set: bits of CameraSensorRow::channels (rendering/camera-sensor-design section 11a). Bit 3 (depth) and up are reserved and refused until a
+// bit is named here and something writes it, so a later channel is a new constant, not a layout change.
 namespace camera_channel {
 inline constexpr uint32_t image = 1u << 0;
 inline constexpr uint32_t instance_id = 1u << 1;
@@ -93,7 +95,7 @@ struct alignas(kStd430StructAlignment) CameraSensorRow {
     uint32_t aa_samples;       // antialiasing samples per pixel; 1 == off
     float exposure_gain;       // linear gain, > 0
     uint32_t cull_mask;        // the TLAS cull mask: bits 0..7 only
-    uint32_t channels;         // the channel set: reserved, must stay 0 until Phase 1 names it
+    uint32_t channels;         // the channel set: camera_channel:: bits, at least one for an active camera, none outside known
     uint32_t _p0;              // std430 pad
     rng::Stream noise;         // this camera's own stream; ALL of its randomness
     SampleIndex last_index;    // the newest frame's generation; 0 == none yet
@@ -197,5 +199,6 @@ static_assert(offsetof(CameraStamp, orientation) == 80);
 
 // Why a row is not a valid camera, or the empty string: the first rule it breaks, naming the field. A zero row (kind none) is valid: it is inert.
 [[nodiscard]] std::string camera_row_issue(const CameraSensorRow& row, uint32_t keypoint_groups);
+// `keypoint_groups` is the world's Capacities::keypoint_groups: the one rule that needs the world (keypoints with none declared writes nothing).
 
 }  // namespace spade::sensors
