@@ -9,7 +9,12 @@
                   the tests saw SPADE_FC_RUN_ID, SPADE_FC_HOST_ADDR and SPADE_FC_OUT_DIR; the autopilot log's path is in the summary
       fail        ctest exits non-zero: exit 1, `FAIL`, and the container is still stopped
       skipped     ctest exits 0 but a test skipped: exit 2, `NOT GREEN`, the test named (a skip never counts toward green)
-      no image    px4-sitl.ps1 exits 3 with a reason: exit 2, the reason and every `fc` test named as not run, ctest not run, nothing to stop
+      no image    px4-sitl.ps1 exits 2 with a reason: exit 2, the reason and every `fc` test named as not run, ctest not run, nothing to stop
+      start 3/4/5/7  px4-sitl.ps1 exits 3 (docker unreachable), 4 (not up; PX4's log lines kept), 5 (run id in use; that container is never stopped) or
+                  anything else: exit 1, FAIL, the reason named, ctest not run
+      stop none   -Stop prints `none` (no .ulg): a pass, and the summary says PX4 wrote no log
+      stop 3/6    -Stop exits 3 (container may still be running: how to remove it is named) or 6 (no run folder): exit 1
+      stop gone   the container was gone at -Stop: a pass becomes NOT GREEN, exit 2
       no daemon   docker-up.ps1 fails: exit 1, px4-sitl.ps1 never called
       no tests    ctest finds no `fc` test (exit 8): exit 1, container stopped (--no-tests=error is passed)
       bad run id  a run id with a slash: exit 1, nothing called
@@ -47,23 +52,31 @@ try {
 Add-Content -LiteralPath $env:FAKE_CALLS 'docker-up'
 exit ([int] $env:FAKE_UP_CODE)
 '@
-    # A fake px4-sitl.ps1: logs its calls, fails to start with FAKE_PX4_START_CODE (a reason on its last line), and prints a log path when it stops.
+    # A fake px4-sitl.ps1 with the contract of Interface's scripts\px4-sitl.ps1 (b558905e): start prints one line and exits 0, or a reason and
+    # 2 no image, 3 docker unreachable, 4 not up (its log follows the first line), 5 run id in use; -Stop (OutDir optional) exits 0 with its LAST
+    # line the bare newest .ulg path or `none` ("no container named" first when it is gone), 3 docker unreachable, 6 no run folder known.
+    # FAKE_PX4_START_CODE and FAKE_PX4_STOP (ulg | none | gone | <exit code>) steer it.
     Set-Content -LiteralPath (Join-Path $fake 'px4-sitl.ps1') @'
 param([string] $RunId, [string] $HostAddress, [string] $OutDir, [switch] $Stop)
 if ($Stop) {
     Add-Content -LiteralPath $env:FAKE_CALLS "stop $RunId"
-    Write-Output 'stopping the container'
-    Write-Output (Join-Path $OutDir 'px4.ulg')
+    $mode = $env:FAKE_PX4_STOP
+    if ($mode -eq '3') { Write-Output 'px4-sitl: docker is not reachable (is Docker Desktop running?)'; exit 3 }
+    if ($mode -eq '6') { Write-Output 'px4-sitl: no run folder known (pass -OutDir)'; Write-Output 'none'; exit 6 }
+    if ($mode -eq 'gone') { Write-Output "px4-sitl: no container named spade-px4-$RunId"; Write-Output 'none'; exit 0 }
+    if ($mode -eq 'none') { Write-Output 'none'; exit 0 }
+    Write-Output (Join-Path $OutDir 'px4-log\2026-11-21\px4.ulg')
     exit 0
 }
 Add-Content -LiteralPath $env:FAKE_CALLS "start $RunId $HostAddress"
-if ([int] $env:FAKE_PX4_START_CODE -ne 0) {
-    Write-Output 'checking the image'
-    Write-Output 'the image spade-px4-sitl:v1.17.0 is missing'
-    exit ([int] $env:FAKE_PX4_START_CODE)
+switch ([int] $env:FAKE_PX4_START_CODE) {
+    0 { Write-Output "px4-sitl: up spade-px4-$RunId -> ${HostAddress}:4560"; exit 0 }
+    2 { Write-Output 'px4-sitl: no autopilot image spade-px4-sitl:v1.17.0 (build it from tools/fc_link/px4)'; exit 2 }
+    3 { Write-Output 'px4-sitl: docker is not reachable (is Docker Desktop running?)'; exit 3 }
+    4 { Write-Output "px4-sitl: spade-px4-$RunId exited at start; its log follows"; Write-Output 'ERROR [px4] no such file: etc/init.d-posix/rcS'; exit 4 }
+    5 { Write-Output "px4-sitl: a container named spade-px4-$RunId already exists (one container per run id)"; exit 5 }
+    default { Write-Output 'px4-sitl: something nobody planned'; exit ([int] $env:FAKE_PX4_START_CODE) }
 }
-Write-Output 'started'
-exit 0
 '@
     # A fake ctest: -N lists two fc tests; otherwise it records the environment and prints FAKE_CTEST_BODY, then exits FAKE_CTEST_CODE.
     [IO.File]::WriteAllText((Join-Path $fake 'ctest.cmd'), @"
@@ -87,10 +100,11 @@ exit /b 0
     $body = Join-Path $work 'ctest-body.txt'
     $env:FAKE_CTEST_BODY = $body
 
-    function Run([string] $Case, [string] $RunId, [int] $UpCode, [int] $StartCode, [int] $CtestCode, [string] $CtestBody, [string[]] $Extra = @()) {
+    function Run([string] $Case, [string] $RunId, [int] $UpCode, [int] $StartCode, [int] $CtestCode, [string] $CtestBody, [string[]] $Extra = @(), [string] $StopMode = 'ulg') {
         Remove-Item -LiteralPath $calls, $ctestEnv -ErrorAction SilentlyContinue
         Set-Content -LiteralPath $body -Value $CtestBody
         $env:FAKE_UP_CODE = "$UpCode"
+        $env:FAKE_PX4_STOP = $StopMode
         $env:FAKE_PX4_START_CODE = "$StartCode"
         $env:FAKE_CTEST_CODE = "$CtestCode"
         $text = (& $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId $RunId -Build $build -OutRoot $outRoot -HostAddress '10.0.0.7' `
@@ -139,13 +153,58 @@ exit /b 0
     Expect 'skipped' ($r.Calls -contains 'stop case-skip') 'the container was not stopped'
 
     # no image
-    $r = Run 'no image' 'case-noimg' 0 3 0 $passBody
+    $r = Run 'no image' 'case-noimg' 0 2 0 $passBody
     Expect 'no image' ($r.Code -eq 2) "exit $($r.Code)"
     Expect 'no image' ($r.Summary.StartsWith('fc run: NOT GREEN')) "summary: $($r.Summary)"
-    Expect 'no image' ($r.Summary.Contains('the image spade-px4-sitl:v1.17.0 is missing')) "the reason is not in the summary: $($r.Summary)"
+    Expect 'no image' ($r.Summary.Contains('no autopilot image spade-px4-sitl:v1.17.0')) "the reason is not in the summary: $($r.Summary)"
     Expect 'no image' ($r.Summary.Contains('not run: FcLiveLink.LockstepTenThousandSteps') -and $r.Summary.Contains('not run: FcLiveFlight.ScriptedFlight')) "the tests are not named as not run: $($r.Summary)"
     Expect 'no image' (-not ($r.Calls -match '^ctest .*-L fc --output')) 'the tests ran with no autopilot'
     Expect 'no image' (-not ($r.Calls -contains 'stop case-noimg')) 'a container that never started was stopped'
+
+    # px4-sitl.ps1's other start exits (3 docker unreachable, 4 not up, 5 id in use, anything else): each is a FAIL with its own named reason,
+    # ctest is not run, and a container this run did not start is never stopped.
+    $r = Run 'start 3' 'case-s3' 0 3 0 $passBody
+    Expect 'start 3' ($r.Code -eq 1) "exit $($r.Code)"
+    Expect 'start 3' ($r.Summary.StartsWith('fc run: FAIL')) "summary: $($r.Summary)"
+    Expect 'start 3' ($r.Summary.Contains('Docker was not reachable')) "the reason is not named: $($r.Summary)"
+    Expect 'start 3' (-not ($r.Calls -match '^(ctest .*-L fc --output|stop)')) "ctest or stop ran: $($r.Calls -join ' / ')"
+
+    $r = Run 'start 4' 'case-s4' 0 4 0 $passBody
+    Expect 'start 4' ($r.Code -eq 1) "exit $($r.Code)"
+    Expect 'start 4' ($r.Summary.StartsWith('fc run: FAIL')) "summary: $($r.Summary)"
+    Expect 'start 4' ($r.Summary.Contains('did not stay up')) "the reason is not named: $($r.Summary)"
+    Expect 'start 4' ($r.Summary.Contains('no such file: etc/init.d-posix/rcS')) "PX4's own log lines are not in the summary: $($r.Summary)"
+    Expect 'start 4' (-not ($r.Calls -match '^(ctest .*-L fc --output|stop)')) "ctest or stop ran: $($r.Calls -join ' / ')"
+
+    $r = Run 'start 5' 'case-s5' 0 5 0 $passBody
+    Expect 'start 5' ($r.Code -eq 1) "exit $($r.Code)"
+    Expect 'start 5' ($r.Summary.StartsWith('fc run: FAIL')) "summary: $($r.Summary)"
+    Expect 'start 5' ($r.Summary.Contains('already in use') -and $r.Summary.Contains('-RunId')) "the reason is not named: $($r.Summary)"
+    Expect 'start 5' (-not ($r.Calls -contains 'stop case-s5')) 'a container this run did not start was stopped'
+
+    $r = Run 'start 7' 'case-s7' 0 7 0 $passBody
+    Expect 'start 7' ($r.Code -eq 1) "exit $($r.Code)"
+    Expect 'start 7' ($r.Summary.Contains('exited 7')) "the unexpected exit is not named: $($r.Summary)"
+
+    # px4-sitl.ps1 -Stop: its last line is `none` when PX4 wrote no log (a pass still, and said so); exit 3 leaves the container running (a FAIL that says
+    # how to remove it); exit 6 is no run folder (a FAIL); a container already gone makes a pass NOT GREEN.
+    $r = Run 'stop none' 'case-none' 0 0 0 $passBody @() 'none'
+    Expect 'stop none' ($r.Code -eq 0) "exit $($r.Code): $($r.Text)"
+    Expect 'stop none' ($r.Summary.Contains('autopilot log: none (PX4 wrote no .ulg)')) "the missing log is not said plainly: $($r.Summary)"
+
+    $r = Run 'stop 3' 'case-st3' 0 0 0 $passBody @() '3'
+    Expect 'stop 3' ($r.Code -eq 1) "exit $($r.Code): a container left running must not pass"
+    Expect 'stop 3' ($r.Summary.StartsWith('fc run: FAIL')) "summary: $($r.Summary)"
+    Expect 'stop 3' ($r.Summary.Contains('may still be running') -and $r.Summary.Contains('docker rm -f spade-px4-case-st3')) "the leftover container is not named: $($r.Summary)"
+
+    $r = Run 'stop 6' 'case-st6' 0 0 0 $passBody @() '6'
+    Expect 'stop 6' ($r.Code -eq 1) "exit $($r.Code)"
+    Expect 'stop 6' ($r.Summary.Contains('no run folder')) "the reason is not named: $($r.Summary)"
+
+    $r = Run 'stop gone' 'case-gone' 0 0 0 $passBody @() 'gone'
+    Expect 'stop gone' ($r.Code -eq 2) "exit $($r.Code): a pass with no container at the end is not green"
+    Expect 'stop gone' ($r.Summary.StartsWith('fc run: NOT GREEN')) "summary: $($r.Summary)"
+    Expect 'stop gone' ($r.Summary.Contains('was gone when the tests ended')) "the vanished container is not named: $($r.Summary)"
 
     # no daemon
     $r = Run 'no daemon' 'case-nodocker' 1 0 0 $passBody

@@ -877,6 +877,7 @@ add_library(spade_sim STATIC
     physics/contact_sets.cpp
     sim/module_schedule.cpp
     sim/standard_modules.cpp
+    sim/sensor_modules.cpp
     sim/builtin_state.cpp
     sim/design_frame.cpp
     # objects/spawn_helpers.cpp (SL9e, Plan A Task 11) -- HEADER DIRECTORY AND
@@ -892,6 +893,8 @@ add_library(spade_sim STATIC
     objects/spawn_helpers.cpp
     sensors/gnss.cpp
     sensors/camera.cpp
+    sensors/baro.cpp
+    sensors/mag.cpp
     sensors/imu.cpp
     sim/simulation.cpp
     sim/world_set.cpp
