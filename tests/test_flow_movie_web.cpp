@@ -1407,8 +1407,15 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     const std::string extra(d->card_extra);
     EXPECT_NE(extra.find("a measured 5x4 three-blade stand-in for the kit's 5x4.3x3"), std::string::npos) << extra;
     EXPECT_NE(extra.find("above the speeds it was measured at"), std::string::npos) << extra;
-    EXPECT_NE(extra.find("about 90% of the weight"), std::string::npos) << extra;
-    EXPECT_NE(extra.find("motors, flight stack and battery modelled from published dimensions"), std::string::npos) << extra;
+    // Physics' kit gate (O139): 0.84 of W/4 at 0.05 s, not a settled balance; the 90% was the generic fpv_5inch's (the lead, 2026-11-21).
+    EXPECT_NE(extra.find("about 84% of the weight in a 0.05 s check"), std::string::npos) << extra;
+    EXPECT_EQ(extra.find("90%"), std::string::npos) << extra;
+    // The battery is an assumed typical 6S pack, not from published dimensions.
+    EXPECT_NE(extra.find("motors and flight stack modelled from published dimensions"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("battery: an assumed typical 6S pack"), std::string::npos) << extra;
+    // The framing is centred on the drone: the aim is the kit's centre of mass, 0.0300 m above the design origin the box holds (a negative "below"), so the drone sits mid-frame (the lead, 2026-11-21).
+    EXPECT_NEAR(d->framing.aim_below_m, -0.0300f, 1.0e-6f);
+    EXPECT_FLOAT_EQ(d->framing.elevation_deg, 70.0f);
     EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
 
     web::CaptionInput in;
