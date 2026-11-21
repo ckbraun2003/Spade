@@ -21,14 +21,32 @@
 # cylindrical faces), so the four standoffs are the exported one translated to those holes (measured positions, derived count). Standoff-L and Standoff-R are the 7 mm CNC aluminium camera side plates (exported both).
 # The 30.5 x 30.5 mm stack holes are at (+-15.25, -28.0) and (+-15.25, 2.5) (self-clinching nut seats in Base-Top) about (0, -12.75): the stack goes there, in the next entries.
 #
-# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The frame is the maker's 170 g; the printed parts are not in it ("without the TPU parts") and have no published mass.
+# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The frame is the maker's 170 g; the printed parts are not in it ("without the TPU parts") and have no published mass: they are
+# an assumed upper bound (every printed part counted as SOLID, 100 % fill, at 1.2 g/cm3). The FC, ESC and receiver are the maker's own estimates ("(est.)"), graded published and said so in their mass_source; the four 2306 motors'
+# mass is ASSUMED (the maker publishes none for the 2306: its README says "not yet measured"), their size a retailer's stand-in (no motor CAD exists: the maker's page says "there are no design files to publish."); the
+# pack is an assumed typical 6S 1300 mAh pack; the four props are a stand-in at an assumed 4 g each. The sum is 0.5665 kg: it is nobody's take-off weight (no camera, video transmitter, antennas, wiring or fasteners beyond the
+# frame's own 170 g are in it; a real 5 inch build is heavier).
+#
+# OBJECT ROLES. Every object listed in this table is a SOLID: each STEP part passed the converter's closed-solid gate (volume above 0, the brep-to-mesh cross-check unflagged), the motors, boards, receiver and pack are solid
+# boxes and cylinders, and the prop meshes are the library's solid blade meshes. None is visual-only. (The loader refuses a `role` key, so the role is stated here, not per object.)
+#
+# THE STACK. The 30.5 x 30.5 mm stack holes are about the studio's (0, -12.75) mm, so the stack's centre is X +0.01275, Z 0 in the design frame (measured from the plates' holes); the heights are a layout choice (assumed):
+# the ESC board's 5 mm (1.6 mm of board and its parts) from the middle plate's top face (design Y 0.012 m) up, the FC board 1.6 mm below the top plate's lower face (design Y 0.032 m), the 20 mm stack between. The boards' sizes
+# are the maker's (FC 37.9 x 37.9 mm, ESC 41.6 x 42.5 mm); the ESC's 42.5 mm is taken along X, its 41.6 mm across (assumed). The receiver is 10.0 x 17.3 mm, on the middle plate behind the stack (assumed).
+#
+# THE MOTORS AND THE ROTORS. The motor axes are the arms' bores, measured on the Arm (89.000, 69.534 mm in the maker's frame), so (X, Z) = (+-0.069534, +-0.089000) m. Order and spins are the library's fpv_5inch drone
+# (assets/library/drones/fpv_5inch.model.yaml): rotor 0 front-right (+X, +Z) spin +1, rotor 1 front-left (+X, -Z) spin -1, rotor 2 rear-left (-X, -Z) spin +1, rotor 3 rear-right (-X, +Z) spin -1; spin +1 is the engine's
+# counter-clockwise from above and takes the *-ccw file (vehicles/rotor.hpp, consumers.md L7a), as the X500's. The motor stand-in is a cylinder of the BETAFPV Snow 2306's size (phi 29.3 mm x 30.6 mm, a retailer's listing), standing on
+# the arm's top face (design Y 0.009 m); no motor body CAD exists, so it is a stand-in and said so. The prop stand-ins are the library's generated three-blade meshes (UIUC chord and twist, radius 63.5 mm, assets/library/drones/fpv_5inch/
+# prop_ccw.spmesh and prop_cw.spmesh), copied into the part store by their file hash; the mesh origin is the disc plane, which is put 4 mm above the motor's top (assumed: the hub is not published): Y 0.0436 m. They are not the HQProp
+# 5x4.3x3 V2S the maker's build names, which has no published CAD.
 
 parts:
   - name: openframe_frame
     kind: frame
     mass_kg: 0.170
     mass_grade: published
-    mass_source: "OpenFrame-5F README, \"Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts\"; the product page https://opendrone.be/products/openframe says \"170 g, without TPU parts (est.)\". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here"
+    mass_source: "OpenFrame-5F README, \"Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts\"; the product page https://opendrone.be/products/openframe says \"170 g, without TPU parts (est.)\". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here. The Airtag/Antenna mount (a printed part, 4.9 cm3, not in the part store: the converter refuses a face of it, so it is not drawn) has its mass lumped into this 170 g in the kit model (the lead's and Physics' decision); the maker's 170 g itself is without printed parts"
     pose_grade: derived
     # the maker's part-studio frame turned to the design frame (see the header); the plates, the cross, the four arms (two hands), the four M3 standoffs and the two aluminium side plates
     pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
@@ -71,3 +89,147 @@ parts:
       - {store_ref: {sha256: dbac8d8bb97f0187fa0660cf53e5a4bc25a5d05411594364a0c475605a030524, file: Bumper.spmesh}}
       - {store_ref: {sha256: 594c9bf10a41273931098fec8bc50f286b9ea6022589e483e53147a0e03cd8a1, file: VTX-Mount.spmesh}}
       - {store_ref: {sha256: e1fa17abb3fa3989ccb000199645489904f3bd2a2b8f6e692208d9e32fe38556, file: "anti-slip pad.spmesh"}, material: rubber_black}
+
+  - name: openfc_lite_30x30
+    kind: controller
+    mass_kg: 0.007
+    mass_grade: published
+    mass_source: "OpenDrone product page https://opendrone.be/products/openfc-lite, \"Weight | 4 g (est.) | 7 g (est.)\" (20x20 | 30x30): the maker's own estimate, not a weighing; the board is 37.9 x 37.9 mm"
+    pose_grade: assumed
+    # the 30x30 flight controller on the stack holes (X +0.01275, Z 0), 1.6 mm thick, 1.6 mm under the top plate's lower face (design Y 0.032 m); the heights are a layout choice
+    pose: {position: [0.01275, 0.0278, 0], orientation: [1, 0, 0, 0]}
+    material: pcb_green
+    box: [0.0379, 0.0016, 0.0379]
+
+  - name: openesc_30x30
+    kind: controller
+    mass_kg: 0.015
+    mass_grade: published
+    mass_source: "OpenDrone product page https://opendrone.be/products/openesc, \"Weight | 7.5 g (est.) | 15 g (est.)\" (20x20 | 30x30): the maker's own estimate, not a weighing; the board is 41.6 x 42.5 mm and carries 60 A per channel"
+    pose_grade: assumed
+    # the 30x30 four-in-one ESC on the stack holes, 5 mm tall (the board and its parts), from 1 mm above the middle plate's top face; the size's 42.5 mm along X is a layout choice
+    pose: {position: [0.01275, 0.0155, 0], orientation: [1, 0, 0, 0]}
+    material: plastic_black
+    box: [0.0425, 0.005, 0.0416]
+
+  - name: openrx_mono
+    kind: radio
+    mass_kg: 0.0008
+    mass_grade: published
+    mass_source: "OpenDrone product page https://opendrone.be/products/openrx?Model=Mono, 0.8 g (est.), 10.0 x 17.3 mm: the maker's own estimate"
+    pose_grade: assumed
+    # on the middle plate's top face, behind the stack (studio y +55 mm), long side along X; a layout choice (the maker's build leaves it open)
+    pose: {position: [-0.055, 0.0135, 0], orientation: [1, 0, 0, 0]}
+    material: pcb_green
+    box: [0.0173, 0.003, 0.0100]
+
+  - name: motor_front_right
+    kind: motor
+    mass_kg: 0.032
+    mass_grade: assumed
+    mass_source: "no maker mass for the OpenMotor 2306 6S 1950KV (the maker's README: not yet measured; its page: there are no design files to publish); 32 g is a typical 2306, within the 31 to 33 g of retailer listings (an iFlight XING2 2207 is listed at 31.6 g with wire)"
+    pose_grade: derived
+    # a cylinder of the BETAFPV Snow 2306's size (phi 29.3 mm x 30.6 mm, a retailer's listing; https://betafpv.com/collections/parts-spares/products/snow-2306-brushless-motors) on the arm's bore, standing on the arm's top face
+    pose: {position: [0.069534, 0.0243, 0.089000], orientation: [1, 0, 0, 0]}
+    material: aluminium_anodised
+    cylinder: {radius: 0.01465, length: 0.0306}
+
+  - name: motor_front_left
+    kind: motor
+    mass_kg: 0.032
+    mass_grade: assumed
+    mass_source: "no maker mass for the OpenMotor 2306 6S 1950KV (the maker's README: not yet measured; its page: there are no design files to publish); 32 g is a typical 2306, within the 31 to 33 g of retailer listings (an iFlight XING2 2207 is listed at 31.6 g with wire)"
+    pose_grade: derived
+    # a cylinder of the BETAFPV Snow 2306's size (phi 29.3 mm x 30.6 mm, a retailer's listing; https://betafpv.com/collections/parts-spares/products/snow-2306-brushless-motors) on the arm's bore, standing on the arm's top face
+    pose: {position: [0.069534, 0.0243, -0.089000], orientation: [1, 0, 0, 0]}
+    material: aluminium_anodised
+    cylinder: {radius: 0.01465, length: 0.0306}
+
+  - name: motor_rear_left
+    kind: motor
+    mass_kg: 0.032
+    mass_grade: assumed
+    mass_source: "no maker mass for the OpenMotor 2306 6S 1950KV (the maker's README: not yet measured; its page: there are no design files to publish); 32 g is a typical 2306, within the 31 to 33 g of retailer listings (an iFlight XING2 2207 is listed at 31.6 g with wire)"
+    pose_grade: derived
+    # a cylinder of the BETAFPV Snow 2306's size (phi 29.3 mm x 30.6 mm, a retailer's listing; https://betafpv.com/collections/parts-spares/products/snow-2306-brushless-motors) on the arm's bore, standing on the arm's top face
+    pose: {position: [-0.069534, 0.0243, -0.089000], orientation: [1, 0, 0, 0]}
+    material: aluminium_anodised
+    cylinder: {radius: 0.01465, length: 0.0306}
+
+  - name: motor_rear_right
+    kind: motor
+    mass_kg: 0.032
+    mass_grade: assumed
+    mass_source: "no maker mass for the OpenMotor 2306 6S 1950KV (the maker's README: not yet measured; its page: there are no design files to publish); 32 g is a typical 2306, within the 31 to 33 g of retailer listings (an iFlight XING2 2207 is listed at 31.6 g with wire)"
+    pose_grade: derived
+    # a cylinder of the BETAFPV Snow 2306's size (phi 29.3 mm x 30.6 mm, a retailer's listing; https://betafpv.com/collections/parts-spares/products/snow-2306-brushless-motors) on the arm's bore, standing on the arm's top face
+    pose: {position: [-0.069534, 0.0243, 0.089000], orientation: [1, 0, 0, 0]}
+    material: aluminium_anodised
+    cylinder: {radius: 0.01465, length: 0.0306}
+
+  - name: rotor_front_right
+    kind: rotor
+    rotor: 0
+    spin: 1
+    radius: 0.0635
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
+    pose_grade: assumed
+    # the library's generated three-blade prop (prop_ccw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
+    pose: {position: [0.069534, 0.0436, 0.089000], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: c825f24b1423530f40d493d9045ee310ca0228f41bb13ad0f5ad5236bb7e0344, file: prop_ccw.spmesh}}
+
+  - name: rotor_front_left
+    kind: rotor
+    rotor: 1
+    spin: -1
+    radius: 0.0635
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
+    pose_grade: assumed
+    # the library's generated three-blade prop (prop_cw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
+    pose: {position: [0.069534, 0.0436, -0.089000], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: 32ee0d408a292ac7e7fd6c602e769504a95582c319b2ad388fc48e8c1658aace, file: prop_cw.spmesh}}
+
+  - name: rotor_rear_left
+    kind: rotor
+    rotor: 2
+    spin: 1
+    radius: 0.0635
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
+    pose_grade: assumed
+    # the library's generated three-blade prop (prop_ccw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
+    pose: {position: [-0.069534, 0.0436, -0.089000], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: c825f24b1423530f40d493d9045ee310ca0228f41bb13ad0f5ad5236bb7e0344, file: prop_ccw.spmesh}}
+
+  - name: rotor_rear_right
+    kind: rotor
+    rotor: 3
+    spin: -1
+    radius: 0.0635
+    mass_kg: 0.004
+    mass_grade: assumed
+    mass_source: "the uiuc_mit_5x4 stand-in of Physics' kit model, 4 g assumed (the HQProp 5X4.3X3 V2S the maker's build names is 3.8 g on retailer listings, for example https://www.readymaderc.com/products/details/hq-freestyle-prop-5x4.3x3-v2s-pc-gray; it has no published CAD); the drawn blade is the library's generated stand-in, not that prop"
+    pose_grade: assumed
+    # the library's generated three-blade prop (prop_cw.spmesh), its origin the disc plane, on the motor axis and 4 mm above the motor's top (assumed)
+    pose: {position: [-0.069534, 0.0436, 0.089000], orientation: [1, 0, 0, 0]}
+    objects:
+      - {store_ref: {sha256: 32ee0d408a292ac7e7fd6c602e769504a95582c319b2ad388fc48e8c1658aace, file: prop_cw.spmesh}}
+
+  - name: battery_6s_1300
+    kind: battery
+    mass_kg: 0.200
+    mass_grade: assumed
+    mass_source: "an assumed typical 6S 1300 mAh pack for a 5 inch build (the maker sells none: its page says you still need LiPo batteries): retailer listings of the Tattu R-Line V4 6S 1300 mAh 130C give 78 x 39 x 38 mm and 200 g (+-20 g), for example https://www.progressiverc.com/products/tattu-r-line-v4-6s-1300mah-130c"
+    pose_grade: assumed
+    # on the top plate's top face (design Y 0.0345 m), long side along X, centred on the anti-slip pad (studio y +3.85 mm); the pack's orientation and place are a layout choice
+    pose: {position: [-0.00385, 0.0535, 0], orientation: [1, 0, 0, 0]}
+    material: lipo_wrap
+    box: [0.078, 0.038, 0.039]
