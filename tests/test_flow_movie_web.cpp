@@ -1428,3 +1428,23 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     EXPECT_NE(text.find("\n- " + extra + "\n"), std::string::npos) << "its own card lines follow the caveats: " << text;
     EXPECT_NE(text.find("(the frame, arms, stack, motors and battery)"), std::string::npos) << text;
 }
+
+// A caption's command names its drone's own table and model in words: the kit's parts table is the 5 inch FPV quadcopter's, not the open-source quadcopter's
+// (the kit's test card carried the X500's words, found by reading its caption, 2026-11-21).
+TEST(FlowMovieWeb, ACaptionsCommandNamesTheKitsOwnPartsTableAndModelInWords) {
+    const web::Drone* kit = web::find_drone("openframe5f");
+    ASSERT_NE(kit, nullptr);
+    const std::string said = web::command_in_words(
+        "flow_movie --web S8 --drone openframe5f --build-parts C:/Users/someone/openframe5f_build/parts.yaml --visual-mesh C:/Users/someone/kit.glb --lines "
+        "C:/Users/someone/mit5x4.prop.yaml --part-store C:/Users/someone/part-store",
+        *kit);
+    EXPECT_NE(said.find("--build-parts fpv-quadcopter-parts-table"), std::string::npos) << said;
+    EXPECT_NE(said.find("--visual-mesh fpv-quadcopter-model"), std::string::npos) << said;
+    EXPECT_EQ(said.find("open-source"), std::string::npos) << "the X500's words stay off the kit's card: " << said;
+    EXPECT_EQ(said.find("openframe5f"), std::string::npos) << said;
+    EXPECT_NE(said.find("--lines measured-propeller-polar"), std::string::npos) << said;
+    const web::Drone* x500 = web::find_drone("x500");
+    ASSERT_NE(x500, nullptr);
+    EXPECT_NE(web::command_in_words("flow_movie --build-parts p.yaml --visual-mesh m.glb", *x500).find("--build-parts open-source-quadcopter-parts-table --visual-mesh open-source-quadcopter-model"),
+              std::string::npos) << "the X500's words are unchanged";
+}
