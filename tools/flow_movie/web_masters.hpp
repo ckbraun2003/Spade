@@ -226,8 +226,10 @@ inline constexpr float kSurfacePressureSearchCells = 3.0f;
 // p50 +0.07, p95 +0.29, p99 +0.53): the arm strips saturate (2.7% of the coloured pixels, 0.5% of the parts' pixels clip) and the blue tail reads at about half the ramp.
 // The pressure film's colour range, C_p = (p - p_inflow) / q over [-range, range] (q = the discs' loading T/A), centred on the still air's pressure: blue below, red above.
 inline constexpr float kSurfacePressureCpRange = 0.4f;
-// The blades' OWN fixed range (O128), in the same units, symmetric about the still air's pressure: provisional until measured from the test stills' blade percentiles.
-inline constexpr float kBladePressureCpRange = 1.0f;
+// The blades' OWN fixed range (O128), in the same units, symmetric about the still air's pressure, measured from the blades' own test stills (the 600-step run's frames at
+// steps 600 and 655, the 70 degree start camera, 38,534 blade pixels over the background): the blades are seen from above, so the colour is the suction on the upper face,
+// all below ambient (C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28). +-6 uses the map's whole blue half and clips 8.3% at the blue end (the roots); +-7 would clip 1.1%.
+inline constexpr float kBladePressureCpRange = 6.0f;
 // The gain that makes the blades read on their own range under the parts' colouring (DrawItem::flow_gain): the colouring's range over the blades'.
 [[nodiscard]] constexpr float blade_flow_gain() { return kSurfacePressureCpRange / kBladePressureCpRange; }
 
