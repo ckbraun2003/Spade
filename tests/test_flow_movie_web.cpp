@@ -1392,7 +1392,7 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     EXPECT_EQ(web::find_drone("fpv-quadcopter"), d) << "found by its alias too";
     EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(SPADE_ASSETS_DIR) / d->model_file)) << d->model_file;
     EXPECT_FLOAT_EQ(d->fine_cell_mm, 1.25f);
-    EXPECT_NEAR(d->hub_above_origin_m, 0.0436f - 0.0300f, 1.0e-6f) << "the disc is 0.0436 m above the design origin and the held point (the centre of mass) 0.0300 m above it: 0.0136 m";
+    EXPECT_NEAR(d->hub_above_origin_m, 0.0436f, 1.0e-6f) << "the film box holds the DESIGN origin (the world origin), so the hold takes the disc height above it: d1_fpv_hold(0.0436), y 0.00875 m (Physics, tried on the device: 0.03875 left the line outside the grid)";
     EXPECT_NEAR(d->reach_m, std::hypot(0.069534f, 0.089f) + 0.0635f, 2.0e-3f);
     EXPECT_GT(d->blade_cp_range, 0.0f);
     EXPECT_EQ(web::cell_mm_refusal(1.25f, "openframe5f", true), "");
