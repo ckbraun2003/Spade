@@ -117,6 +117,10 @@ struct Capacities {
     // hash does not fold them. They come as a pair (cameras without a pixel budget, or a budget without cameras, is refused).
     uint32_t cameras = 0;
     uint32_t camera_pixels = 0;
+    // The camera's keypoint channel (section 11a): G groups of P points a camera frame carries (4 for KAT's gates). Both default to 0 and allocate nothing; they
+    // come as a pair like the two above, and the config hash folds them only when either is non-zero.
+    uint32_t keypoint_groups = 0;
+    uint32_t keypoints_per_group = 0;
 };
 
 // ---------------------------------------------------------------------------

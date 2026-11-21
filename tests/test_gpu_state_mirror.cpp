@@ -1147,6 +1147,25 @@ TEST(StateMirrorAdmit, TheStandardShapeHoldsOneLayoutOfThirtyBindingsAndThePushB
     EXPECT_EQ(admit->push_bytes, spade::compute::gen::kPushConstantSize);
 }
 
+// Host-only (VRAM ledger wiring, gap 2): the mirror's pre-allocation list left out "bodies.previous", the device-only buffer
+// create() makes when the previous-tick poses are kept. Asked to keep them, the list carries it, one "bodies" array in size and
+// LAST in the list; asked not to, the list is what it was.
+TEST(StateMirrorAdmit, KeepingThePreviousPosesAddsOneBodiesSizedBufferToTheListAndOtherwiseNothing) {
+    const StepShape shape = scratch_test_shape();
+    const auto def = spade::compute::admit_shape_for(shape, 64);
+    const auto off = spade::compute::admit_shape_for(shape, 64, false);
+    const auto on = spade::compute::admit_shape_for(shape, 64, true);
+    ASSERT_TRUE(def.has_value() && off.has_value()) << off.error().context;
+    ASSERT_TRUE(on.has_value()) << on.error().context;
+    const auto bodies = std::find_if(off->buffers.begin(), off->buffers.end(),
+                                     [](const auto& b) { return b.name == "bodies"; });
+    ASSERT_NE(bodies, off->buffers.end()) << "the test shape has no 'bodies' array";
+    EXPECT_EQ(def->buffers.size(), off->buffers.size()) << "the default asks for no previous poses";
+    ASSERT_EQ(on->buffers.size(), off->buffers.size() + 1u);
+    EXPECT_EQ(on->buffers.back().name, "bodies.previous");
+    EXPECT_EQ(on->buffers.back().bytes, bodies->bytes);
+}
+
 // Host-only: every walk entry and every derived buffer is in the list, with the bytes the mirror will allocate.
 TEST(StateMirrorAdmit, EveryWalkEntryAndEveryDerivedBufferIsInTheBufferListWithItsBytes) {
     StepShape shape = scratch_test_shape();

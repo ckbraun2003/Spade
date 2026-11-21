@@ -21,7 +21,9 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <numbers>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -643,6 +645,166 @@ TEST(FlowMovieWeb, VolumeIsForTheParticleViewsAndHasAFolderOfItsOwn) {
     EXPECT_EQ(web::volume_stem_suffix(true), "-volume");
 }
 
+// --nasa-cloud under a streamed --window run (L106i, Oversight O113): the X500 film's main layer is the purple-blue vorticity cloud (no particles). The cloud
+// is allowed with a --window run that streams, as --particles is; the Q SURFACES keep their old rules (S2 and S8, a redraw of kept frames, no particle look),
+// and the particle looks stay a different look from --nasa and --nasa-cloud.
+TEST(FlowMovieWeb, TheVorticityCloudStreamsAWindow) {
+    // nasa_refusal(s2_or_s8, window, still_redraw, stream, particles, particles_preview, cloud)
+    EXPECT_EQ(web::nasa_refusal(true, false, false, false, false, false, false), "") << "--nasa on its own: the group's own run, as before";
+    EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, false), "") << "a window redraw of kept frames, as before";
+    EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, true), "") << "a redraw of the cloud";
+    EXPECT_EQ(web::nasa_refusal(true, true, false, true, false, false, true), "") << "the streamed cloud film: window, stream, cloud";
+    EXPECT_EQ(web::nasa_refusal(true, false, false, true, false, false, true), "") << "a streamed run of the group's own window";
+
+    const std::string not_clip = web::nasa_refusal(false, false, false, false, false, false, false);
+    EXPECT_NE(not_clip.find("S2 and S8"), std::string::npos) << not_clip;
+    const std::string no_stream = web::nasa_refusal(true, true, false, false, false, false, true);
+    EXPECT_NE(no_stream.find("--window"), std::string::npos) << no_stream;
+    EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
+    const std::string surfaces = web::nasa_refusal(true, true, false, true, false, false, false);
+    EXPECT_NE(surfaces.find("--nasa-cloud"), std::string::npos) << "the Q surfaces do not stream a window: " << surfaces;
+    const std::string points = web::nasa_refusal(true, true, false, true, true, false, true);
+    EXPECT_NE(points.find("particle"), std::string::npos) << "the cloud and the points are different looks: " << points;
+    const std::string preview = web::nasa_refusal(true, false, false, false, false, true, true);
+    EXPECT_NE(preview.find("particle"), std::string::npos) << preview;
+}
+
+// The caption of a vorticity-cloud film says what the colour is: vorticity (the local spin of the air), blue low to magenta high, never "relative speed" or the
+// speed film's "Relative speed of the wake"; the stand-in sentence stays; and a film without --nasa-cloud keeps its words.
+TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string speed = web::standing_caveats(s8, 2.5f, 50u, true);
+    EXPECT_NE(speed.find("Colour shows relative speed"), std::string::npos) << "no cloud: the words as they were: " << speed;
+    const std::string cloud = web::standing_caveats(s8, 2.5f, 50u, true, true);
+    EXPECT_EQ(cloud.find("relative speed"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("Colour shows vorticity"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("blue low to magenta high"), std::string::npos) << cloud;
+    EXPECT_NE(cloud.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << cloud;
+    EXPECT_NE(cloud.find("fitted blade polar"), std::string::npos) << cloud;
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.cloud = true;
+    in.command = "flow_movie --web S8 --drone x500 --nasa-cloud";
+    const std::string text = web::caption_text(in);
+    EXPECT_NE(text.find("- Shows: The vorticity of the air"), std::string::npos) << text;
+    EXPECT_NE(text.find("four actuator lines"), std::string::npos) << text;
+    EXPECT_EQ(text.find("elative speed"), std::string::npos) << text;
+    EXPECT_EQ(text.find("actuator discs"), std::string::npos) << text;
+    web::CaptionInput old;
+    old.clip = &s8;
+    old.command = "flow_movie --web S8";
+    EXPECT_NE(web::caption_text(old).find("Relative speed of the wake of four actuator discs"), std::string::npos) << "a film without the cloud keeps its words";
+}
+
+// --surface-pressure (O124): the third X500 website clip, the air pressure on the airframe's surfaces. An S8 look only; like the cloud it streams a --window run
+// (or redraws kept frames), and it is a different look from --nasa, --nasa-cloud and the particle looks.
+TEST(FlowMovieWeb, ThePressureFilmIsAnS8LookThatStreamsAWindow) {
+    // surface_pressure_refusal(s8, window, still_redraw, stream, particles, particles_preview, nasa)
+    EXPECT_EQ(web::surface_pressure_refusal(true, false, false, false, false, false, false), "") << "the group's own run";
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, false, true, false, false, false), "") << "the streamed film: window and stream";
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, true, false, false, false, false), "") << "a window redraw of kept frames";
+
+    const std::string not_s8 = web::surface_pressure_refusal(false, false, false, false, false, false, false);
+    EXPECT_NE(not_s8.find("S8"), std::string::npos) << not_s8;
+    const std::string no_stream = web::surface_pressure_refusal(true, true, false, false, false, false, false);
+    EXPECT_NE(no_stream.find("--window"), std::string::npos) << no_stream;
+    EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, true, false, false).find("particle"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, true, false).find("particle"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true).find("--nasa"), std::string::npos);
+}
+
+// --surface-shade (O124): the pressure colour lit for shape; it is a way of drawing --surface-pressure, so it needs it.
+TEST(FlowMovieWeb, TheShadedPressureLookNeedsThePressureFilm) {
+    EXPECT_EQ(web::surface_shade_refusal(false, false), "");
+    EXPECT_EQ(web::surface_shade_refusal(false, true), "");
+    EXPECT_EQ(web::surface_shade_refusal(true, true), "");
+    const std::string alone = web::surface_shade_refusal(true, false);
+    EXPECT_NE(alone.find("--surface-shade"), std::string::npos) << alone;
+    EXPECT_NE(alone.find("--surface-pressure"), std::string::npos) << alone;
+}
+
+// The pressure film draws surfaces only: no wake is drawn, so the wake fade (the soft edge that hides the box's cut) does not apply.
+TEST(FlowMovieWeb, ThePressureFilmDrawsNoWakeFade) {
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, false, false)) << "the speed volume keeps its fade";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, false, false, true)) << "the pressure film has no wake to fade";
+}
+
+// The caption of a pressure film says what the colour is: the air's pressure on the surfaces, blue below ambient to red above, no figures; first order in the cell
+// size, so where the push and the suction are and not validated magnitudes; never "relative speed" or vorticity. The stand-in sentence stays.
+TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    const std::string pressure = web::standing_caveats(s8, 2.5f, 50u, true, false, true);
+    EXPECT_EQ(pressure.find("relative speed"), std::string::npos) << pressure;
+    EXPECT_EQ(pressure.find("vorticity"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("Colour shows pressure on the surfaces"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("blue below the air's ambient pressure to red above"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("no pressure or speed figures"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("not validated magnitudes"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour"), std::string::npos)
+        << "the parts the flow has no air beside keep their colour, and the caption says so: " << pressure;
+    EXPECT_NE(pressure.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << pressure;
+    EXPECT_NE(pressure.find("fitted blade polar"), std::string::npos) << pressure;
+    EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true).find("Colour shows relative speed"), std::string::npos) << "no pressure: the words as they were";
+    // the range is fixed and symmetric about the still air's pressure, in the disc loading's units (Oversight, O124); the shaded look says it is lit for shape
+    EXPECT_NE(pressure.find("The colour range is fixed at +-"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("of the disc loading, symmetric about the still air's pressure"), std::string::npos) << pressure;
+    EXPECT_EQ(pressure.find("lit for shape"), std::string::npos) << "unshaded: flat colour, no claim of light: " << pressure;
+    const std::string shaded = web::standing_caveats(s8, 2.5f, 50u, true, false, true, true);
+    EXPECT_NE(shaded.find("lit for shape; the colour is the pressure"), std::string::npos) << shaded;
+
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.pressure = true;
+    in.command = "flow_movie --web S8 --drone x500 --surface-pressure";
+    const std::string text = web::caption_text(in);
+    EXPECT_NE(text.find("- Shows: The air pressure on the surfaces"), std::string::npos) << text;
+    EXPECT_NE(text.find("four actuator lines"), std::string::npos) << text;
+    EXPECT_EQ(text.find("elative speed"), std::string::npos) << text;
+    EXPECT_EQ(text.find("vorticity"), std::string::npos) << text;
+    EXPECT_EQ(text.find("actuator discs"), std::string::npos) << text;
+}
+
+// The .md's title follows the look (the lead, O124: the pressure film's master was titled by the S8 clip's fallback, "a volume render of the rotor wake"). A
+// --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --nasa-cloud S8 names the vorticity cloud; the plain S8, and every
+// other clip, keeps its clip's title.
+TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    auto first_line = [](const std::string& text) { return text.substr(0, text.find('\n')); };
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.command = "flow_movie --web S8 --drone x500";
+
+    in.pressure = true;
+    const std::string pressure = web::caption_text(in);
+    EXPECT_EQ(first_line(pressure), "# Open-source quadcopter in hover: the air pressure on the airframe in the rotor wake") << pressure;
+    EXPECT_EQ(pressure.find("volume render"), std::string::npos) << "a pressure film is not a volume render: " << pressure;
+    in.pressure = false;
+
+    in.cloud = true;
+    const std::string cloud = web::caption_text(in);
+    EXPECT_EQ(first_line(cloud), "# Open-source quadcopter in hover: the vorticity cloud of the rotor wake") << cloud;
+    EXPECT_EQ(cloud.find("volume render"), std::string::npos) << cloud;
+    in.cloud = false;
+
+    EXPECT_EQ(first_line(web::caption_text(in)), "# Open-source quadcopter in hover: a volume render of the rotor wake") << "the plain S8: the clip's own title";
+
+    // a look flag on another clip changes nothing: the title is that clip's
+    const web::Clip& s4 = *web::find_clip("S4");
+    web::CaptionInput other;
+    other.clip = &s4;
+    other.pressure = true;
+    other.command = "flow_movie --web S4";
+    EXPECT_EQ(first_line(web::caption_text(other)), "# " + web::clip_title(s4, web::default_drone()));
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {
@@ -706,8 +868,31 @@ TEST(FlowMovieWeb, S2IsAVolumeOfTheWakesSpeedNotVortexSurfaces) {
     EXPECT_EQ(std::string(s2.title).find("ortex"), std::string::npos) << s2.title;
 }
 
+// A drone's description states its mass, and the figure is the one the flow model flies: the body mass in the model file (the X500's is the summed parts'
+// 1.63259995 kg, not the old 2 kg), to two decimals. Every drone with a figure is held to it (Spade lead, 2026-11-20).
+TEST(FlowMovieWeb, ADroneDescriptionsMassIsTheModelFilesBodyMass) {
+    std::size_t with_figure = 0;
+    for (const web::Drone& d : web::drones()) {
+        const std::string description(d.description);
+        const std::size_t kg = description.find(" kg ");
+        if (kg == std::string::npos) continue;  // the reference quad's description is empty
+        ++with_figure;
+        const double said = std::stod(description.substr(description.find(' ') + 1u));  // "a 1.63 kg ..."
+        std::ifstream file(std::filesystem::path(SPADE_ASSETS_DIR) / d.model_file);
+        ASSERT_TRUE(file.good()) << d.model_file;
+        std::stringstream all;
+        all << file.rdbuf();
+        const std::string text = all.str();
+        const std::size_t at = text.find("body: {mass: ");
+        ASSERT_NE(at, std::string::npos) << d.model_file << " has no body mass";
+        const double flown = std::stod(text.substr(at + 13u));
+        EXPECT_NEAR(said, flown, 0.005) << "'" << description << "' says " << said << " kg; the model file flies " << flown << " kg";
+    }
+    EXPECT_GE(with_figure, 2u) << "the camera quadcopter and the X500 both state a mass";
+}
+
 // --drone takes a library drone by its internal name, and no caption, title or file name carries that name or a brand: the
-// clip says "a 1.3 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17). The default is the
+// clip says "a 1.28 kg camera quadcopter (generated from published dimensions)" (the lead, 2026-11-17; the mass as the model file has it, 2026-11-20). The default is the
 // reference quad, with today's words and today's cache names.
 TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
     const web::Drone* drone = web::find_drone("phantom3_class");
@@ -736,7 +921,7 @@ TEST(FlowMovieWeb, ALibraryDroneIsNamedOnTheCommandLineAndNeverInACaption) {
         EXPECT_EQ(lower.find("phantom"), std::string::npos) << id;
         EXPECT_EQ(lower.find("dji"), std::string::npos) << id;
         EXPECT_EQ(lower.find("reference quad"), std::string::npos) << id << ": " << text;
-        EXPECT_NE(text.find("a 1.3 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
+        EXPECT_NE(text.find("a 1.28 kg camera quadcopter (generated from published dimensions)"), std::string::npos) << id;
         EXPECT_NE(title.find("amera quadcopter"), std::string::npos) << title;
     }
     web::CaptionInput plain;

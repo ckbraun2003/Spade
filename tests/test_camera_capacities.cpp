@@ -25,7 +25,8 @@ using spade::WorldSetDesc;
 }
 
 // The floor world built through the builder with these capacities.
-[[nodiscard]] spade::Result<WorldDesc> build_with(uint32_t cameras, uint32_t camera_pixels) {
+[[nodiscard]] spade::Result<WorldDesc> build_with(uint32_t cameras, uint32_t camera_pixels, uint32_t keypoint_groups = 0,
+                                                   uint32_t keypoints_per_group = 0) {
     Capacities caps;
     caps.bodies = 2;
     caps.force_elements = 4;
@@ -33,6 +34,8 @@ using spade::WorldSetDesc;
     caps.contacts = 1;
     caps.cameras = cameras;
     caps.camera_pixels = camera_pixels;
+    caps.keypoint_groups = keypoint_groups;
+    caps.keypoints_per_group = keypoints_per_group;
     return spade::WorldBuilder().name("floor").capacities(caps).plane(glm::vec3(0.0f, 1.0f, 0.0f), 0.0f).build();
 }
 
@@ -77,4 +80,38 @@ TEST(CameraCapacities, TheConfigHashSeesThemOnlyWhenTheyAreUsed) {
     EXPECT_NE(spade::config_hash(base), spade::config_hash(with_cameras)) << "a camera is world configuration";
     EXPECT_NE(spade::config_hash(with_cameras), spade::config_hash(more_pixels));
     EXPECT_EQ(spade::config_hash(base), spade::config_hash(floor_set())) << "and a world without one hashes as before";
+}
+
+TEST(CameraCapacities, TheKeypointCapacitiesDefaultToZeroAndComeAsAPair) {
+    const Capacities caps;
+    EXPECT_EQ(caps.keypoint_groups, 0u);
+    EXPECT_EQ(caps.keypoints_per_group, 0u);
+    EXPECT_TRUE(build_with(2, 1'228'800, 0, 0).has_value()) << "none: the default";
+    EXPECT_TRUE(build_with(2, 1'228'800, 5, 4).has_value()) << "KAT's gates: G x 4";
+    const spade::Result<WorldDesc> no_points = build_with(2, 1'228'800, 5, 0);
+    ASSERT_FALSE(no_points.has_value()) << "groups with no points is an authoring mistake";
+    EXPECT_NE(no_points.error().context.find("keypoints_per_group"), std::string::npos) << no_points.error().context;
+    const spade::Result<WorldDesc> no_groups = build_with(2, 1'228'800, 0, 4);
+    ASSERT_FALSE(no_groups.has_value()) << "points with no groups is an authoring mistake";
+    EXPECT_NE(no_groups.error().context.find("keypoint_groups"), std::string::npos) << no_groups.error().context;
+}
+
+TEST(CameraCapacities, AWorldFileRefusesToWriteKeypointCapacitiesToo) {
+    const spade::Result<WorldDesc> world = build_with(0, 0, 5, 4);
+    ASSERT_TRUE(world.has_value()) << world.error().context;
+    const spade::Result<std::string> text = spade::world_to_yaml(*world);
+    ASSERT_FALSE(text.has_value()) << "no schema version carries them yet; silently dropping them is the failure";
+    EXPECT_NE(text.error().context.find("keypoint"), std::string::npos) << text.error().context;
+}
+
+TEST(CameraCapacities, TheConfigHashSeesTheKeypointCapacitiesOnlyWhenTheyAreUsed) {
+    const WorldSetDesc base = floor_set();
+    WorldSetDesc with_keypoints = base;
+    with_keypoints.worlds[0].world.capacities.keypoint_groups = 5;
+    with_keypoints.worlds[0].world.capacities.keypoints_per_group = 4;
+    WorldSetDesc more_groups = with_keypoints;
+    more_groups.worlds[0].world.capacities.keypoint_groups = 6;
+    EXPECT_NE(spade::config_hash(base), spade::config_hash(with_keypoints));
+    EXPECT_NE(spade::config_hash(with_keypoints), spade::config_hash(more_groups));
+    EXPECT_EQ(spade::config_hash(base), spade::config_hash(floor_set())) << "a world without them hashes as before";
 }

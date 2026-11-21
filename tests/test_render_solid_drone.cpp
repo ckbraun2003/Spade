@@ -203,6 +203,48 @@ TEST(RenderSolidDrone, TheCpViewFindsStagnationUpstreamAndSuctionAbove) {
     EXPECT_LT(top_min, -0.2f) << "suction where the wind passes over the airframe";
 }
 
+// THE SIGN THE PRESSURE FILM READS (O124): the same published volume of the airframe in the wind, read as the film reads it (the C_p view with
+// FlowViewSpec::search_cells = web::kSurfacePressureSearchCells' 3, shaded for shape), still has stagnation positive (the warm end of the map) on the faces the
+// wind meets and suction negative over the tops. The field is the live fluid's pressure, as the film's: Physics' device acceptance (GpuB7Acceptance, opt-in) pins the
+// GPU fluid bit-equal to this CPU fluid on the D1 box with its solids on the device of record, so the sign read here is the GPU's.
+TEST(RenderSolidDrone, TheFilmsReadWithASearchKeepsStagnationPositiveAndSuctionNegative) {
+    const SolidDrone& d = rig();
+    ASSERT_TRUE(d.error.empty()) << d.error;
+    FlowViewSpec layer = cp_layer(d.q_ref);
+    layer.search_cells = 3.0f;
+    layer.shade = true;
+    const ViewSpec film{ViewBase::shaded, {layer}};
+    const ViewSpec plain{ViewBase::shaded, {}};
+    const Camera upstream = looking(glm::vec3(-0.35f, 0.03f, 0.05f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const Camera above = looking(glm::vec3(0.0f, 0.35f, 0.0f), glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    // shading darkens the hue (floor 0.55): the colours are read back through the map from the flat view of the same read, so the sign is the read's, not the light's
+    FlowViewSpec flat_layer = layer;
+    flat_layer.shade = false;
+    const ViewSpec flat{ViewBase::shaded, {flat_layer}};
+    const std::vector<float> front = cp_of_coloured(draw(d.volume, d.scene, flat, upstream), draw(d.volume, d.scene, plain, upstream));
+    const std::vector<float> top = cp_of_coloured(draw(d.volume, d.scene, flat, above), draw(d.volume, d.scene, plain, above));
+    ASSERT_FALSE(front.empty());
+    ASSERT_FALSE(top.empty());
+    const float front_max = *std::max_element(front.begin(), front.end());
+    const float top_min = *std::min_element(top.begin(), top.end());
+    std::printf("[ solid drone ] the film's read (search 3): from upstream max C_p %.2f; from above min C_p %.2f\n", static_cast<double>(front_max),
+                static_cast<double>(top_min));
+    EXPECT_GT(front_max, 0.3f) << "stagnation is positive C_p, the warm end, on the faces the wind meets";
+    EXPECT_LT(top_min, -0.2f) << "suction is negative C_p, the cool end, over the tops";
+    const Frame shaded = draw(d.volume, d.scene, film, upstream);
+    const Frame unshaded = draw(d.volume, d.scene, flat, upstream);
+    ASSERT_EQ(shaded.px.size(), unshaded.px.size());
+    size_t darker = 0, differing = 0;
+    for (size_t i = 0; i + 3 < shaded.px.size(); i += 4) {
+        if (shaded.px[i] != unshaded.px[i] || shaded.px[i + 1] != unshaded.px[i + 1] || shaded.px[i + 2] != unshaded.px[i + 2]) {
+            ++differing;
+            if (int{shaded.px[i]} + shaded.px[i + 1] + shaded.px[i + 2] < int{unshaded.px[i]} + unshaded.px[i + 1] + unshaded.px[i + 2]) ++darker;
+        }
+    }
+    EXPECT_GT(differing, 100u) << "the light shades the airframe";
+    EXPECT_EQ(darker, differing) << "the shade only ever darkens (floor 0.55 at most 1): the hue is the read's";
+}
+
 // Every flow view draws with the airframe in the flow: a volume and a vortex
 // surface clear in the deeper solid cells, streamlines from upstream that
 // meet it, and a slice through it.

@@ -194,6 +194,7 @@ add_executable(spade_tests
     test_library_drone_solids.cpp
     test_determinism.cpp
     test_set_body_state.cpp
+    test_pose_publication.cpp
     test_translation_lock.cpp
     test_sim_medium.cpp
     test_world_wind.cpp
@@ -490,6 +491,7 @@ if(SPADE_VULKAN)
         test_gpu_cadence.cpp
         test_gpu_pose_view.cpp
         test_gpu_step_semaphore.cpp
+        test_gpu_vram_wiring.cpp
         test_gpu_module_config.cpp
         test_gpu_resident.cpp
         test_gpu_rebuild.cpp

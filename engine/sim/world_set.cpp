@@ -406,15 +406,18 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 //
 // UPDATED (camera sensor kind, Phase 3.1): Capacities gained `cameras` and `camera_pixels` (two uint32, 8 bytes, no container), and they ARE in config_hash's
 // fold, only when either is non-zero (below): 352 + 8 = 360 and 416 + 8 = 424.
+//
+// UPDATED (camera channel set, Phase 3.1b): Capacities gained `keypoint_groups` and `keypoints_per_group` (two more uint32), folded only when either is non-zero
+// (below): 360 + 8 = 368 and 424 + 8 = 432.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 424,
+static_assert(sizeof(WorldDesc) == 432,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 360,
+static_assert(sizeof(WorldDesc) == 368,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "
@@ -502,6 +505,11 @@ uint64_t config_hash(const WorldSetDesc& desc) noexcept {
         if (caps.cameras != 0 || caps.camera_pixels != 0) {
             seed = fold_value(seed, caps.cameras);
             seed = fold_value(seed, caps.camera_pixels);
+        }
+        // The keypoint channel's declarations, likewise only when used.
+        if (caps.keypoint_groups != 0 || caps.keypoints_per_group != 0) {
+            seed = fold_value(seed, caps.keypoint_groups);
+            seed = fold_value(seed, caps.keypoints_per_group);
         }
 
         // The INSTANCE seed -- the world's actual rng root (WorldParams::seed),

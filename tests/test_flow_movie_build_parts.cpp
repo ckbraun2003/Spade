@@ -224,6 +224,35 @@ TEST(FlowMovieBuildParts, TheBodyFrameIsReadFromTheModelFileTheRunFlies) {
     EXPECT_FALSE(flow_movie::body_frame_of(fs::path("no/such/model.yaml")).has_value());
 }
 
+// THE PRESSURE FILM'S WALLS (O124): the surface-pressure colouring reads only draw items flagged flow_wall (RND-8), and the parts drawn here are the solids the
+// sim flew, so they are walls (--surface-pressure asks BuildDraw::flow_walls); the blade spread of a turning rotor is see-through and is no wall (an actuator
+// line is no surface the solver saw). Without the ask no item is a wall, as before.
+TEST(FlowMovieBuildParts, TheDrawnPartsAreFlowWallsOnlyWhenAskedAndABladeBlurNever) {
+    const auto parts = flow_movie::parse_build_parts(table(kBoxEntry));
+    ASSERT_TRUE(parts.has_value()) << parts.error().context;
+    spade::render::RenderScene plain;
+    ASSERT_TRUE(flow_movie::add_build_parts(plain, *parts, fs::path("unused"), glm::vec3(0.0f), glm::quat(1, 0, 0, 0)).has_value());
+    ASSERT_FALSE(plain.statics.empty());
+    for (const auto& item : plain.statics) EXPECT_FALSE(item.flow_wall) << "no ask, no wall";
+
+    flow_movie::BuildDraw draw;
+    draw.flow_walls = true;
+    spade::render::RenderScene walls;
+    walls.statics.emplace_back();  // something drawn before the parts: not theirs to flag
+    ASSERT_TRUE(flow_movie::add_build_parts(walls, *parts, fs::path("unused"), glm::vec3(0.0f), glm::quat(1, 0, 0, 0), draw).has_value());
+    ASSERT_GE(walls.statics.size(), 2u);
+    EXPECT_FALSE(walls.statics.front().flow_wall) << "the item that was already there";
+    for (std::size_t i = 1; i < walls.statics.size(); ++i) EXPECT_TRUE(walls.statics[i].flow_wall) << "part item " << i;
+
+    spade::render::RenderScene scene;
+    scene.statics.resize(3);
+    scene.statics[1].see_through = true;
+    flow_movie::mark_flow_walls(scene, 1u);
+    EXPECT_FALSE(scene.statics[0].flow_wall) << "before `first`";
+    EXPECT_FALSE(scene.statics[1].flow_wall) << "a see-through blade blur is no wall";
+    EXPECT_TRUE(scene.statics[2].flow_wall);
+}
+
 TEST(FlowMovieBuildParts, APartIsDrawnAtTheBodysPoseTimesItsOwnAndItsKindsColour) {
     const auto parts = flow_movie::parse_build_parts(table(kBoxEntry));
     ASSERT_TRUE(parts.has_value()) << parts.error().context;

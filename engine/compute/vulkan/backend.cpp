@@ -33,6 +33,10 @@ struct VulkanBackend::Impl {
     std::unique_ptr<VulkanContext> ctx;
     std::unique_ptr<StateMirror> mirror;
     std::unique_ptr<StepRecorder> recorder;
+    // The VRAM share "world set" this backend holds on ctx's ledger (compute/vram_ledger.hpp). Declared after ctx, so it is
+    // released before the ledger it came from is destroyed. Consumers on a SEPARATE context (the film's fluid, the editor's) do
+    // not sum with it: a ledger belongs to one context.
+    VramShare world_share;
 };
 
 namespace {
@@ -160,8 +164,9 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     // Every device limit a created shape meets, BEFORE the first buffer is made (stage 7 Task A1; CORE-5, L6): the
     // pipeline layout's binding count, the push block and every buffer, named. The recorder adds the kernels' local
     // sizes and the dispatches' group counts to the same function once it knows the grid widths.
+    VramShare world_share;  // after ctx, so it goes first on any failure below
     {
-        Result<AdmitShape> asked = admit_shape_for(shape, desc.workgroup_size);
+        Result<AdmitShape> asked = admit_shape_for(shape, desc.workgroup_size, desc.device_pose_view);
         if (!asked) return std::unexpected(asked.error());
         if (Result<void> ok = admit(*asked, (*ctx)->device_report().limits, (*ctx)->device_name()); !ok) {
             return std::unexpected(ok.error());
@@ -183,6 +188,13 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
                 !ok) {
                 return std::unexpected(ok.error());
             }
+            // The promise the live-heap check above cannot make: the shares held on this context, all together, fit. After
+            // check_vram so that every refusal that exists keeps its text; the ledger only refuses what would have passed.
+            Result<VramShare> share = (*ctx)->reserve_vram("world set", total);
+            if (!share) {
+                return std::unexpected(Error{share.error().code, "VulkanBackend::create: " + share.error().context});
+            }
+            world_share = std::move(*share);
         }
     }
 
@@ -217,6 +229,7 @@ Result<std::unique_ptr<VulkanBackend>> VulkanBackend::create(const BackendDesc& 
     self->impl_->ctx = std::move(*ctx);
     self->impl_->mirror = std::move(*mirror);
     self->impl_->recorder = std::move(*recorder);
+    self->impl_->world_share = std::move(world_share);
     return self;
 }
 
