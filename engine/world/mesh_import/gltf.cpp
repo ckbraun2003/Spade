@@ -718,8 +718,7 @@ std::optional<std::array<uint8_t, 3>> Reader::material_colour(const Json& prim) 
             }
         }
     }
-    return std::array<uint8_t, 3>{detail::srgb_from_linear(factor[0]), detail::srgb_from_linear(factor[1]),
-                                  detail::srgb_from_linear(factor[2])};
+    return std::array<uint8_t, 3>{srgb_from_linear(factor[0]), srgb_from_linear(factor[1]), srgb_from_linear(factor[2])};
 }
 
 Result<Reader::Accessor> Reader::describe(uint64_t index, const std::string& role_where, bool position) const {
