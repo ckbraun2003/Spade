@@ -1522,11 +1522,11 @@ constexpr float kVortexFloor = -5.0f;
         const float q = 0.5f * run->c.fluid.density * two_v_h * two_v_h;
         // `search` is the reach past a solid at the read (FlowSurfaceColouring::search_cells): 0 for S4's C_p, whose parts ARE the flow's solids; the pressure film
         // paints the detailed kit meshes, which are not, so it goes on outward to the nearest fluid cell (O124).
-        const auto cp_view = [&](const char* name, float search) {
+        const auto cp_view = [&](const char* name, float search, float range) {
             return View{
                 name,
                 "C_p = (p - p_inflow) / q on the airframe, q = 1/2 rho (2 v_h)^2 = T/A = " + fixed(q, 1) +
-                    " Pa; blue -1 to red +1",
+                    " Pa; blue -" + fixed(range, 2) + " to red +" + fixed(range, 2),
                 [](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene&,
                    render::Camera& camera) -> spade::Result<void> {
                     // Close on the drone, from above and upstream, so the arms'
@@ -1534,12 +1534,12 @@ constexpr float kVortexFloor = -5.0f;
                     camera = orbit(volume_centre(v), 0.35f, sweep_azimuth(240.0f, 60.0f, k, n), 40.0f);
                     return {};
                 },
-                [q, search](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
+                [q, search, range](const spade::FlowVolume& v, render::RenderScene& scene) -> spade::Result<std::string> {
                     render::FlowViewSpec cp;
                     cp.kind = render::FlowView::surface_cp;
                     cp.colours = render::ColourMapId::cool_warm;
-                    cp.range_min = -1.0f;
-                    cp.range_max = 1.0f;
+                    cp.range_min = -range;
+                    cp.range_max = range;
                     cp.q_ref = q;
                     cp.p_ref = static_cast<float>(inflow_pressure(v));
                     cp.search_cells = search;
@@ -1550,8 +1550,8 @@ constexpr float kVortexFloor = -5.0f;
                     return legends->empty() ? std::string() : legends->front().note;
                 }};
         };
-        film.views.push_back(cp_view("cp", 0.0f));
-        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells));
+        film.views.push_back(cp_view("cp", 0.0f, 1.0f));
+        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange));
     }
     return film;
 }
