@@ -1411,7 +1411,9 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     // thrust share is Physics' gate at 973.7 run to 0.20 s, "about N% of the weight in a 0.20 s check" (the lead, 2026-11-21). The 90% was the generic fpv_5inch's.
     EXPECT_EQ(extra.find("0.05 s"), std::string::npos) << extra;
     EXPECT_EQ(extra.find("84%"), std::string::npos) << extra;
-    EXPECT_EQ(extra.find("90%"), std::string::npos) << extra;
+    // Physics' gate at 973.704 rad/s to 0.20 s: the mean thrust of the four rotors 0.904 of W/4 at 0.20 s (0.89 to 0.91 from 0.05 s on), open air, no frame: N is 90 (measured now; the old
+    // 90% was the generic fpv_5inch's).
+    EXPECT_NE(extra.find("about 90% of the weight in a 0.20 s check, in open air with no frame"), std::string::npos) << extra;
     const std::size_t share_at = extra.find("% of the weight in a 0.20 s check");
     ASSERT_NE(share_at, std::string::npos) << extra;
     ASSERT_GE(share_at, 8u) << extra;

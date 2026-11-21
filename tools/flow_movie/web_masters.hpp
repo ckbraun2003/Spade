@@ -432,7 +432,7 @@ struct Drone {
          "the 5 inch FPV quadcopter", "a 0.57 kg 5 inch FPV quadcopter built on the OpenFrame-5F open-hardware frame (its parts' masses summed)",
          Framing{0.15f, -0.030f, 0.26f, 0.19f, 0.10f, 0.14f, 0.025f, 0.005f, 0.03f, 70.0f}, 0.00875f, 0.1764f, 1.25f, 0.0436f, kBladePressureCpRange,
          "generated three-blade stand-in blades", "the frame, arms, stack, motors and battery",
-         "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 84% of the weight in a 0.05 s check; "
+         "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 90% of the weight in a 0.20 s check, in open air with no frame; "
          "motors and flight stack modelled from published dimensions; battery: an assumed typical 6S pack."},
     }};
     return table;
