@@ -247,6 +247,11 @@ Result<void> validate_gnss_spawn(std::span<const std::byte> spawn) {
         return invalid("every sigma and bias_tau_s must be finite and >= 0");
     }
     if (sensor.turn_on_bias > 1u) return invalid("turn_on_bias must be 0 or 1");
+    // With bias_tau_s <= 0 the retention and the drive are both 0 (gnss_bias_retention / gnss_bias_drive), so the first fix would erase the offset drawn at
+    // spawn: a silent no-op. Refused instead (the baro and mag treat tau <= 0 as the bias disabled, turn-on included). A constant offset is a very long tau.
+    if (sensor.turn_on_bias != 0u && !(sensor.bias_tau_s > 0.0f)) {
+        return invalid("turn_on_bias needs bias_tau_s > 0, a constant offset is a very long tau");
+    }
     return {};
 }
 
