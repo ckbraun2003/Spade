@@ -1,6 +1,6 @@
 # spade_sitl: PX4 v1.17.0 boards/px4/sitl/default.px4board (BSD-3-Clause, (c) PX4 Development Team) WITHOUT the three Gazebo lines
 # (CONFIG_MODULES_SIMULATION_GZ_MSGS, _GZ_BRIDGE, _GZ_PLUGINS): the Gazebo-free SITL build for the external MAVLink simulator link (Spade).
-# Applied at image build as boards/px4/sitl/spade.px4board; the rest of PX4 is untouched. See tools/fc_link/px4/Dockerfile.
+# Applied at image build as boards/px4/sitl/spade.px4board. PX4 v1.17.0 source with two files added (the SITL board variant and the airframe) and one line added to the airframe list; no other PX4 file is edited; built and run locally, never distributed. See tools/fc_link/px4/Dockerfile.
 CONFIG_PLATFORM_POSIX=y
 CONFIG_BOARD_TESTING=y
 CONFIG_BOARD_ETHERNET=y
