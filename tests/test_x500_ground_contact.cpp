@@ -35,6 +35,7 @@
 #include "sensors/imu.hpp"
 #include "sim/module.hpp"
 #include "sim/simulation.hpp"
+#include "rigid_contact_support.hpp"
 #include "sim/world_set.hpp"
 #include "vehicles/model_type.hpp"
 #include "world/builder.hpp"
@@ -209,6 +210,40 @@ TEST(X500GroundContact, ADropSettlesWithoutBouncingMoreThanTheRestitutionAllows)
     EXPECT_LT(highest_after_impact, 0.015f);
     EXPECT_NEAR(b.pos.y, kRestHeight, 1.0e-3f);
     EXPECT_LT(glm::length(b.vel), 1.0e-2f);
+}
+
+// DIAGNOSTIC (the first run of the drop above spun 5 rad/s after a level 3.1 m/s impact): a bare body of the X500's mass and inertia with the same twelve points,
+// the centre of mass at the foot centroid or offset as the X500's, friction and restitution varied, dropped from 0.5 m; the angular speed 20 ms after the impact.
+[[nodiscard]] float spin_after_drop(glm::vec3 com_in_design_xz, float friction, float restitution, uint32_t sweeps) {
+    namespace rg = spade::test::rigid;
+    rg::WorldOpts o;
+    spade::Simulation sim = rg::make(rg::tumbling_set(), o);
+    std::vector<glm::vec3> pts;
+    for (const glm::vec3& p : pad_points_design()) pts.push_back(p - glm::vec3(com_in_design_xz.x, static_cast<float>(kComY), com_in_design_xz.z));
+    const spade::BodyRef ref = rg::put(sim, glm::vec3(0.0f, kRestHeight + 0.5f, 0.0f), glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+                                       glm::vec3(1.0f / 0.0237f, 1.0f / 0.0290f, 1.0f / 0.0234f), 1.6326f);
+    ph::ShapeDesc shape = ph::hull_shape(pts, kSkin);
+    shape.friction = friction;
+    shape.restitution = restitution;
+    shape.iterations = sweeps;
+    EXPECT_TRUE(rg::shaped(sim, ref, shape));
+    float after = 0.0f;
+    for (int i = 0; i < 400; ++i) {
+        EXPECT_TRUE(sim.step(1).has_value());
+        if (i == 330) after = glm::length(rg::body(sim, ref).omega_body);  // the impact is near step 307; this is 20 ms on
+    }
+    return after;
+}
+
+TEST(X500GroundContact, DiagnosticSpinAfterALevelDrop) {
+    const float centred = spin_after_drop(glm::vec3(0.0f), 0.6f, 0.1f, 0);
+    const float offset = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.6f, 0.1f, 0);
+    const float no_friction = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.0f, 0.1f, 0);
+    const float no_bounce = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.6f, 0.0f, 0);
+    const float more_sweeps = spin_after_drop(glm::vec3(-0.0045f, 0.0f, 0.0009f), 0.6f, 0.1f, 16);
+    std::printf("[ ground  ] spin 20 ms after a level drop (rad/s): centre of mass at the foot centroid %.3f; offset (-4.5, 0.9 mm) %.3f; offset with no friction %.3f; "
+                "offset with no restitution %.3f; offset with 16 sweeps %.3f (rigid-body estimate for the offset: about 1.1)\n",
+                static_cast<double>(centred), static_cast<double>(offset), static_cast<double>(no_friction), static_cast<double>(no_bounce), static_cast<double>(more_sweeps));
 }
 
 // Pitch (about the design frame's +Z, nose up positive) or roll (about +X): the body placed with its lowest foot point 1 cm above the plane.
