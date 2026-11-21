@@ -1141,7 +1141,7 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile)
     for (const char* brand : {"x500", "X500", "apce", "uiuc", "UIUC", "KAT", "gltf", "Someone"}) {
         EXPECT_EQ(shown.find(brand), std::string::npos) << brand << " in: " << shown;
     }
-    EXPECT_NE(shown.find("--visual-mesh open-source-quadcopter-model"), std::string::npos) << shown;
+    EXPECT_NE(shown.find("--visual-mesh reference-quad-model"), std::string::npos) << "the word is the drone's own alias and a noun (the default drone here): " << shown;
     EXPECT_NE(shown.find("--lines measured-propeller-polar"), std::string::npos) << shown;
     EXPECT_NE(shown.find("--web S8"), std::string::npos) << "the rest of the command is as given";
     EXPECT_NE(shown.find("--nasa --q-look l1=0.5"), std::string::npos) << shown;

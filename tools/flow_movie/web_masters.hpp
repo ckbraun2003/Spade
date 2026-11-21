@@ -471,9 +471,12 @@ struct Drone {
     for (std::size_t at = command.find(from); at != std::string::npos; at = command.find(from, at + d.alias.size())) {
         command.replace(at, from.size(), d.alias);
     }
-    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", "open-source-quadcopter-model"},
+    // The model's and the table's words are the drone's own alias plus a noun: the X500's stay what they were, the kit's are its own.
+    const std::string model_word = std::string(d.alias) + "-model";
+    const std::string table_word = std::string(d.alias) + "-parts-table";
+    const std::pair<std::string_view, std::string_view> files[] = {{"--visual-mesh", model_word},
                                                                    {"--lines", "measured-propeller-polar"},
-                                                                   {"--build-parts", "open-source-quadcopter-parts-table"},
+                                                                   {"--build-parts", table_word},
                                                                    {"--part-store", "part-store"}};
     for (const auto& [flag, word] : files) {
         const std::string key = std::string(flag) + " ";
