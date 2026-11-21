@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // test_openframe5f_inertia.cpp -- the OpenFrame-5F kit's mass, centre of mass and inertia from the build table's parts (Interface's
-// tools/flow_movie/data/openframe5f_build/parts.yaml, 13 entries), each part at the table's pose, the way tests/test_x500_kit_inertia.cpp does the X500's:
+// tools/flow_movie/data/openframe5f_build/parts.yaml, 14 entries), each part at the table's pose, the way tests/test_x500_kit_inertia.cpp does the X500's:
 // a part with store meshes (the frame's objects, the printed parts) from the meshes' own polyhedral mass properties (TriangleMesh::mass_properties(), exact
 // for the shape) at uniform density scaled to the part's mass, each object at the table's pose composed with its own `offset`; a part the table gives as a
 // box (the boards, the receiver, the pack) as a uniform box; a motor as a uniform cylinder (radius, length along the part's y); a rotor as a thin disc of its
@@ -235,7 +235,7 @@ TEST(OpenFrame5fInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
     std::printf("[kit-const] mass %.17g\n[kit-const] com %.17g %.17g %.17g\n[kit-const] tensor xx %.17g yy %.17g zz %.17g xy %.17g xz %.17g yz %.17g\n", mass, centre.x,
                 centre.y, centre.z, tensor[0][0], tensor[1][1], tensor[2][2], tensor[1][0], tensor[2][0], tensor[2][1]);
     EXPECT_NEAR(mass, 0.5665, 1e-4) << "the table's sum";
-    EXPECT_EQ(bodies.size(), 13u) << "the table's 13 entries";
+    EXPECT_EQ(bodies.size(), 14u) << "the table's 14 entries: the frame, the printed parts, FC, ESC, receiver, 4 motors, 4 rotors and the pack";
 }
 
 }  // namespace
