@@ -825,6 +825,16 @@ struct DeliveryGuard {
 // A clip's title in the drone's words (the caption's heading and the manifest's description).
 [[nodiscard]] inline std::string clip_title(const Clip& c, const Drone& d) { return in_words(std::string(c.title), d); }
 
+// The .md's heading: the clip's title, except an S8 whose look is the pressure or the vorticity cloud (the same flags as shows_line), which names what it shows
+// and never says "volume render" (the lead, O124: the pressure master's .md carried the S8 fallback title).
+[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure) {
+    if (c.id == "S8" && !particles) {
+        if (pressure) return in_words("Reference quad in hover: the air pressure on the airframe in the rotor wake", d);
+        if (cloud) return in_words("Reference quad in hover: the vorticity cloud of the rotor wake", d);
+    }
+    return clip_title(c, d);
+}
+
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
 [[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false) {
@@ -873,7 +883,7 @@ struct CaptionInput {
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
     const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
-    std::string t = "# " + clip_title(c, drone) + "\n\n";
+    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
