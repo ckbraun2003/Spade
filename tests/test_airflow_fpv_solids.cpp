@@ -7,6 +7,9 @@
 //   AirflowFpvSolids.WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres   opt-in: SPADE_FPV_SOLIDS=1 (CPU, about 4 GB of host memory, seconds to a minute)
 //
 // Knobs: SPADE_FPV_DXMM (the cell in mm, default 1.25; the box in cells stays 270 x 237 x 270), SPADE_FPV_DRONE (a library drone's stem, default fpv_5inch).
+// SPADE_FPV_MODEL=<a model file, absolute or from the repo root> runs that model instead (the OpenFrame-5F kit: tools/flow_movie/data/openframe5f/
+// openframe5f.model.yaml) on the film's box kD1FpvGrid (252 x 237 x 284 at 1.25 mm) with d1_fpv_hold(the four hubs' mean height above the body origin, the
+// design origin: the four hubs mean local_pos.y plus com_offset.y).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -61,9 +64,41 @@ TEST(AirflowFpvSolids, WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres) {
     if (fpv_env("SPADE_FPV_SOLIDS") == nullptr) GTEST_SKIP() << "opt-in: SPADE_FPV_SOLIDS=1 (CPU, about 4 GB of host memory)";
     const std::string stem = fpv_env("SPADE_FPV_DRONE") != nullptr ? fpv_env("SPADE_FPV_DRONE") : "fpv_5inch";
     const float dx = fpv_env("SPADE_FPV_DXMM") != nullptr ? static_cast<float>(0.001 * std::strtod(fpv_env("SPADE_FPV_DXMM"), nullptr)) : 0.00125f;
-    const af::GridShape grid{270, 237, 270, dx};
+    const char* model_knob = fpv_env("SPADE_FPV_MODEL");
+    const af::GridShape grid = model_knob != nullptr ? spade::testing::kD1FpvGrid : af::GridShape{270, 237, 270, dx};
 
     const std::string library = "library/drones/" + stem + ".model.yaml";
+    if (model_knob != nullptr) {
+        std::filesystem::path file(model_knob);
+        if (file.is_relative()) file = std::filesystem::path(SPADE_REPO_DIR) / file;
+        auto probe = spade::testing::still_air_case(file, model_knob, grid, 0.0002f, glm::vec3(0.0f));
+        ASSERT_TRUE(probe.has_value()) << probe.error().context;
+        float hub_mean = 0.0f;
+        for (const auto& r : probe->model.rotors) hub_mean += r.local_pos.y / static_cast<float>(probe->model.rotors.size());
+        hub_mean += probe->model.com_offset.y;  // the held point is the design origin: the body origin (the centre of mass) is com_offset above it
+        const glm::vec3 hold = spade::testing::d1_fpv_hold(hub_mean);
+        auto kit = spade::testing::still_air_case(file, model_knob, grid, 0.0002f, hold);
+        ASSERT_TRUE(kit.has_value()) << kit.error().context;
+        std::printf("[ fpv     ] %s: box %ux%ux%u at %.3f mm, %.1f M cells, rotor R %.4f m, mean hub %.4f m above the design origin, hold y %.5f m, %zu model parts\n",
+                    model_knob, grid.nx, grid.ny, grid.nz, static_cast<double>(grid.dx) * 1000.0,
+                    static_cast<double>(grid.nx) * grid.ny * grid.nz / 1.0e6, static_cast<double>(kit->model.rotors.at(0).radius),
+                    static_cast<double>(hub_mean), static_cast<double>(hold.y), kit->model.parts.size());
+        std::fflush(stdout);
+        spade::Result<an::LiveRun> kit_run = an::LiveRun::start(kit->resolved, kit->model);
+        if (!kit_run.has_value()) {
+            std::printf("[ fpv     ] start() REFUSED: %s\n", kit_run.error().context.c_str());
+            FAIL() << "the run was refused: " << kit_run.error().context;
+        }
+        const an::LiveSolids& kit_solids = kit_run->solids();
+        std::printf("[ fpv     ] label: %s\n", kit_run->run_label().c_str());
+        std::printf("[ fpv     ] solids: any %d, %u solid cells; set_solids(): %s\n", kit_solids.any ? 1 : 0, kit_solids.solid_cells, kit_solids.run_line.c_str());
+        for (const an::DrawnPart& d : kit_solids.drawn_only) {
+            std::printf("[ fpv     ] drawn only: %s (%s%s%s)\n", d.name.c_str(), reason_name(d.why), d.inside.empty() ? "" : ", inside ", d.inside.c_str());
+        }
+        if (kit_solids.drawn_only.empty()) std::printf("[ fpv     ] no part is drawn only\n");
+        EXPECT_TRUE(kit_solids.any) << "no part is in the air";
+        return;
+    }
     // First pass at the hold: the drone at the box's centre, to read the rotors' height from the model; then the hubs 1.5 R under the top face (the
     // X500's rule, d1_x500_hold()), a whole number of rows so the drone keeps its cell alignment.
     auto probe = spade::testing::still_air_case(std::filesystem::path(SPADE_ASSETS_DIR) / library, "assets/" + library, grid, 0.0002f, glm::vec3(0.0f));
