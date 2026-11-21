@@ -272,6 +272,43 @@ TEST(RayScene, ACsgSubtreeIsMarchedExactlyAndNeverReadFromItsMesh) {
     EXPECT_EQ(rs.trace(ray({5.0, 0.0, 0.0}, {1.0, 0.0, 0.0})).kind, rd::RayHitKind::none) << "pointing away";
 }
 
+// A CSG hit reads the object label of the LEAF that owns the surface at the hit (world/sdf.hpp's sdf_hit_label, node_labels in lockstep with the nodes), so two objects
+// touching in one subtree each read their own label on their own side of the seam: a radius-1 ball (label 7) with a box (label 8) cut into its +x side from x = 0.4. A ray
+// down the notch meets the cut face, the box's surface in the result (8); a ray above the notch meets the ball (7). A subtree whose nodes carry no labels reads 0.
+TEST(RayScene, ACsgHitReadsTheLabelOfTheLeafThatOwnsTheSurface) {
+    spade::WorldBuilder b;
+    b.name("ray-scene-label-test").capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    b.sphere(1.0f).label_for_last_node(7);
+    b.box(glm::vec3(0.5f, 0.3f, 0.3f), spade::SdfPose{.position = glm::vec3(0.9f, 0.0f, 0.0f)}).label_for_last_node(8);
+    b.subtract();
+    const spade::Result<spade::WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << (world ? "" : world.error().context);
+    spade::Result<rd::RenderScene> scene = rd::scene_from_world(*world, {});
+    ASSERT_TRUE(scene.has_value()) << (scene ? "" : scene.error().context);
+    ASSERT_EQ(scene->csg_subtrees.size(), 1u);
+    const rd::RayScene rs = built(*scene);
+
+    const rd::RayHit notch = rs.trace(ray({5.0, 0.1, 0.1}, {-1.0, 0.0, 0.0}));
+    ASSERT_EQ(notch.kind, rd::RayHitKind::sdf);
+    EXPECT_NEAR(notch.point.x, 0.4, 2.0 * rd::kRaymarchSurfaceEpsilon) << "the cut face";
+    EXPECT_EQ(notch.sdf_label, 8u) << "the cut face is the box's surface";
+    const rd::RayHit ball = rs.trace(ray({5.0, 0.6, 0.0}, {-1.0, 0.0, 0.0}));
+    ASSERT_EQ(ball.kind, rd::RayHitKind::sdf);
+    EXPECT_EQ(ball.sdf_label, 7u) << "above the notch the surface is the ball's";
+
+    // no labels on the nodes: 0
+    spade::WorldBuilder plain;
+    plain.name("ray-scene-nolabel-test").capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    plain.sphere(1.0f).box(glm::vec3(0.2f, 0.2f, 0.2f)).subtract();
+    const spade::Result<spade::WorldDesc> unlabelled = plain.build();
+    ASSERT_TRUE(unlabelled.has_value());
+    spade::Result<rd::RenderScene> scene2 = rd::scene_from_world(*unlabelled, {});
+    ASSERT_TRUE(scene2.has_value());
+    const rd::RayHit h = built(*scene2).trace(ray({5.0, 0.5, 0.4}, {-1.0, 0.0, 0.0}));
+    ASSERT_EQ(h.kind, rd::RayHitKind::sdf);
+    EXPECT_EQ(h.sdf_label, 0u);
+}
+
 // The same scene and ray give the same bytes every time (a CPU reference is a pure function of its inputs), and a built RayScene does not hold the RenderScene:
 // the scene can change after the build without moving a hit.
 TEST(RayScene, ATraceIsAPureFunctionOfTheSceneAndTheRay) {

@@ -23,6 +23,7 @@
 #include "render/camera_shade.hpp"
 #include "render/ray_scene.hpp"
 #include "render/scene.hpp"
+#include "world/builder.hpp"
 
 namespace rd = spade::render;
 
@@ -254,4 +255,37 @@ TEST(CameraFrame, ABadRequestIsRefusedNamingTheField) {
     d.channels = rd::kChannelImage;
     d.lens.fx = 0.0;
     EXPECT_NE(issue(d).find("fx"), std::string::npos) << "the lens's own refusal";
+}
+
+// An SDF hit's instance id is the host label its LEAF carries (node_labels, resolved by sdf_hit_label), read directly: the same ball (label 7) with a box (label 8)
+// cut into its +x side seen from +x with the camera at (3, 0, 0): the middle pixel looks down the notch at the cut face (8), a pixel above it sees the ball (7), a pixel off
+// the ball is 0. The host's label table is not consulted for a labelled leaf.
+TEST(CameraFrame, ASdfHitsInstanceIdIsItsLeafsHostLabel) {
+    spade::WorldBuilder b;
+    b.name("camera-frame-label-test").capacities(spade::Capacities{.bodies = 1, .force_elements = 1, .sensors = 1, .contacts = 1});
+    b.sphere(1.0f).label_for_last_node(7);
+    b.box(glm::vec3(0.5f, 0.3f, 0.3f), spade::SdfPose{.position = glm::vec3(0.9f, 0.0f, 0.0f)}).label_for_last_node(8);
+    b.subtract();
+    const spade::Result<spade::WorldDesc> world = b.build();
+    ASSERT_TRUE(world.has_value()) << (world ? "" : world.error().context);
+    spade::Result<rd::RenderScene> scene = rd::scene_from_world(*world, {});
+    ASSERT_TRUE(scene.has_value()) << (scene ? "" : scene.error().context);
+    spade::Result<rd::RayScene> rays = rd::RayScene::build(*scene);
+    ASSERT_TRUE(rays.has_value());
+
+    rd::CameraFrameDesc d;
+    d.lens.kind = rd::kLensPinhole;
+    d.lens.width = d.lens.height = 11;
+    d.lens.fx = d.lens.fy = 15.0;
+    d.lens.cx = d.lens.cy = 5.5;
+    d.position = glm::dvec3(3.0, 0.0, 0.0);
+    d.camera_to_world = glm::dmat3(glm::dvec3(0.0, 0.0, -1.0), glm::dvec3(0.0, -1.0, 0.0), glm::dvec3(-1.0, 0.0, 0.0));  // looking down -x, y up
+    d.channels = rd::kChannelInstanceId;
+    d.label_ids.assign(scene->labels.size(), 99);
+    auto frame = rd::render_camera_frame(*scene, *rays, d);
+    ASSERT_TRUE(frame.has_value()) << (frame ? "" : frame.error().context);
+    auto at = [&](uint32_t i, uint32_t j) { return frame->instance_id[j * 11u + i]; };
+    EXPECT_EQ(at(5, 5), 8u) << "down the notch: the cut face is the box's";
+    EXPECT_EQ(at(5, 1), 7u) << "above the notch: the ball's surface";
+    EXPECT_EQ(at(0, 5), 0u) << "off the ball";
 }
