@@ -420,6 +420,34 @@ TEST(RenderFlowField, ASearchReachIsRefusedOutsideItsRange) {
     EXPECT_FALSE(spade::render::validate_flow_surface_colouring(none).has_value()) << "a search needs an offset to start from";
 }
 
+// SHADED FOR SHAPE (the pressure film, O124): the unlit colour of a surface colouring (RND-8) is flat, so a part reads as a pale flat shape. Opt in with `shade`: the
+// hue stays the quantity's colour and the brightness is kSurfaceShadeFloor + (1 - kSurfaceShadeFloor) max(N.L, 0), N the surface's normal turned toward the eye and L the
+// scene's sun direction. Off, the colour is exactly as before.
+TEST(RenderFlowField, AShadedColouringKeepsTheHueAndLightsItForShape) {
+    const spade::FlowVolume volume = sheet_volume(1.0f);  // +1 on the seen side, read one cell off the quad
+    const auto drawn = [&](bool shade, glm::vec3 sun) {
+        RenderScene scene = quad_scene();  // at z = 0, normal +z, seen from z = 5
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
+        colouring.offset_cells = 1.0f;
+        colouring.shade = shade;
+        scene.flow_surface_colouring = colouring;
+        scene.lighting.sun_direction = glm::normalize(sun);
+        return rgb(draw(scene), 16, 16);
+    };
+    const glm::vec3 hue = 255.0f * spade::render::colour_map_at(ColourMapId::cool_warm, 1.0f);
+    const auto expect_scaled = [&](glm::vec3 got, float k, const char* what) {
+        const glm::vec3 diff = glm::abs(got - hue * k);
+        EXPECT_LE(std::max({diff.x, diff.y, diff.z}), 1.5f) << what << ": " << got.x << " " << got.y << " " << got.z << " against " << k;
+    };
+    const float floor = spade::render::kSurfaceShadeFloor;
+    EXPECT_NEAR(floor, 0.55f, 1e-6f);
+    expect_scaled(drawn(false, glm::vec3(1.0f, 0.0f, 0.0f)), 1.0f, "unshaded: the flat colour, whatever the light");
+    expect_scaled(drawn(true, glm::vec3(0.0f, 0.0f, 1.0f)), 1.0f, "light square on: full colour");
+    expect_scaled(drawn(true, glm::vec3(1.0f, 0.0f, 0.0f)), floor, "light along the face: the floor");
+    expect_scaled(drawn(true, glm::vec3(0.0f, 0.0f, -1.0f)), floor, "light from behind: the floor, never darker");
+    expect_scaled(drawn(true, glm::vec3(0.0f, 0.6f, 0.8f)), floor + (1.0f - floor) * 0.8f, "N.L = 0.8");
+}
+
 // The C_p view (apply_view) reads where R2.4 chose: one cell off the wall, so
 // a thin wall or a sheet shows its seen side's pressure, never the mean across
 // it (Physics: sample each side separately).

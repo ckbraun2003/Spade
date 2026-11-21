@@ -717,6 +717,16 @@ TEST(FlowMovieWeb, ThePressureFilmIsAnS8LookThatStreamsAWindow) {
     EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true).find("--nasa"), std::string::npos);
 }
 
+// --surface-shade (O124): the pressure colour lit for shape; it is a way of drawing --surface-pressure, so it needs it.
+TEST(FlowMovieWeb, TheShadedPressureLookNeedsThePressureFilm) {
+    EXPECT_EQ(web::surface_shade_refusal(false, false), "");
+    EXPECT_EQ(web::surface_shade_refusal(false, true), "");
+    EXPECT_EQ(web::surface_shade_refusal(true, true), "");
+    const std::string alone = web::surface_shade_refusal(true, false);
+    EXPECT_NE(alone.find("--surface-shade"), std::string::npos) << alone;
+    EXPECT_NE(alone.find("--surface-pressure"), std::string::npos) << alone;
+}
+
 // The pressure film draws surfaces only: no wake is drawn, so the wake fade (the soft edge that hides the box's cut) does not apply.
 TEST(FlowMovieWeb, ThePressureFilmDrawsNoWakeFade) {
     EXPECT_TRUE(web::web_fade_applies("S8", false, false, false, false)) << "the speed volume keeps its fade";
@@ -739,6 +749,12 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
     EXPECT_NE(pressure.find("a visualisation of the air, not a prediction of the thrust"), std::string::npos) << "the stand-in sentence stays: " << pressure;
     EXPECT_NE(pressure.find("fitted blade polar"), std::string::npos) << pressure;
     EXPECT_NE(web::standing_caveats(s8, 2.5f, 50u, true).find("Colour shows relative speed"), std::string::npos) << "no pressure: the words as they were";
+    // the range is fixed and symmetric about the still air's pressure, in the disc loading's units (Oversight, O124); the shaded look says it is lit for shape
+    EXPECT_NE(pressure.find("The colour range is fixed at +-"), std::string::npos) << pressure;
+    EXPECT_NE(pressure.find("of the disc loading, symmetric about the still air's pressure"), std::string::npos) << pressure;
+    EXPECT_EQ(pressure.find("lit for shape"), std::string::npos) << "unshaded: flat colour, no claim of light: " << pressure;
+    const std::string shaded = web::standing_caveats(s8, 2.5f, 50u, true, false, true, true);
+    EXPECT_NE(shaded.find("lit for shape; the colour is the pressure"), std::string::npos) << shaded;
 
     web::CaptionInput in;
     in.clip = &s8;
