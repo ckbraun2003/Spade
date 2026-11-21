@@ -72,6 +72,8 @@ Release/
 # OS
 .DS_Store
 Thumbs.db
+# A stray file named NUL (a Git Bash redirect to NUL makes a real one); git matches it case-insensitively on Windows.
+nul
 
 # Process residue: per-checkout session scratch (plans, ledgers, local specs).
 # Anything another session or a fresh clone must see belongs in a tracked
