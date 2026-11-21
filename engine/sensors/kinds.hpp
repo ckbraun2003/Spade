@@ -68,12 +68,14 @@ inline constexpr uint32_t none = 0u;
 inline constexpr uint32_t imu = 1u;
 inline constexpr uint32_t gnss = 2u;
 inline constexpr uint32_t camera = 3u;
+inline constexpr uint32_t baro = 4u;
+inline constexpr uint32_t mag = 5u;
 
 // The first value no kind uses. Not a kind: a bound, for a switch's default and
 // for the "is this tag one we know" predicate. It moves when a kind is added,
 // which is deliberate -- a count that absorbs an addition silently is a count
 // nobody has to classify.
-inline constexpr uint32_t count = 4u;
+inline constexpr uint32_t count = 6u;
 
 // Is `tag` a value this build knows about? A tag outside the vocabulary is a
 // row from a newer build, a corrupted slot, or a hand-built ref -- never
