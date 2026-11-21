@@ -848,6 +848,14 @@ struct SetGrade {
 // the module, are untouched. Simulation::set_body_shape() is its typed call, refused with `unavailable` in a set that does not hold it.
 [[nodiscard]] ModuleDesc rigid_contact_module();
 
+// The barometer and the magnetometer (Phase 1 of the flight-computer work, O144; sensors/baro.hpp, sensors/mag.hpp): two built-in modules that are NOT in
+// the standard set, so a set that does not add them keeps every digest and configuration hash. Each owns a per_sensor array (`baro_sensors`, `mag_sensors`),
+// a kRingDepth-deep per_row ring (`baro_ring`, `mag_ring`), a seeded stream (`sensor.baro`, `sensor.mag`) and one pass in the Sensors phase. A sensor is
+// attached with Simulation::attach_row(body, "baro_sensors", BaroSensorSpawn) and read with module_rows<T>() and sensors::ring_poll. CPU reference, Vulkan
+// absent: a Vulkan world that holds either is refused at create() (L6).
+[[nodiscard]] ModuleDesc baro_module();
+[[nodiscard]] ModuleDesc mag_module();
+
 // The CPU function a GPU recipe stands for; nullptr for `none`. A pass that
 // names a recipe must carry exactly this function (compile_schedule refuses
 // anything else), so the two backends run one experiment.
