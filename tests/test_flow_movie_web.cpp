@@ -1416,6 +1416,8 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     // The framing is centred on the drone: the aim is the kit's centre of mass, 0.0300 m above the design origin the box holds (a negative "below"), so the drone sits mid-frame (the lead, 2026-11-21).
     EXPECT_NEAR(d->framing.aim_below_m, -0.0300f, 1.0e-6f);
     EXPECT_FLOAT_EQ(d->framing.elevation_deg, 70.0f);
+    // Centred, the drone is no nearer the camera than the aim, so it reads smaller than when it sat high (above the aim, closer): the subject radius 0.15 m (from 0.19) fills about three quarters of the 1080 p frame's height at 70 degrees.
+    EXPECT_NEAR(d->framing.subject_m, 0.15f, 1.0e-6f);
     EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
 
     web::CaptionInput in;
