@@ -2741,6 +2741,15 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         if (!compiled) return std::unexpected(Error{compiled.error().code, "spawn(vehicle): model '" + model.name + "': " + compiled.error().context});
         model_shape = *compiled;
     }
+    // The Slang rotor kernel carries no fall time constant: a model with one is refused on a Vulkan world (L6, as a module absent on a backend), naming the rotor.
+    if (vulkan_backend_) {
+        for (std::size_t i = 0; i < model.rotors.size(); ++i) {
+            if (model.rotors[i].tau_down != 0.0f) {
+                return std::unexpected(Error{Code::unavailable, "spawn(vehicle): model '" + model.name + "' rotor " + std::to_string(i) +
+                                                                    ": 'tau_down' is not available on a Vulkan world (the GPU rotor pass has no fall time constant)"});
+            }
+        }
+    }
     if (!finite(where.pos) || !finite(where.vel) || !finite(where.omega_body)) {
         return std::unexpected(invalid("spawn(vehicle): pos/vel/omega must all be finite"));
     }

@@ -70,6 +70,8 @@ uint64_t model_identity(const ModelType& m) noexcept {
         f.quat(r.local_orient);
         f.f32(r.spin_dir);
         f.f32(r.tau);
+        // tau_down folds ONLY when set, so no model that predates it changes its identity.
+        if (r.tau_down != 0.0f) f.f32(r.tau_down);
         f.f32(r.radius);
         f.f32(r.thrust_coeff);
         f.f32(r.torque_coeff);
