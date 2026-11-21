@@ -904,7 +904,7 @@ Result<std::string> world_to_yaml(const WorldDesc& world) {
     // padding) is refused, not silently dropped -- yaml_text.hpp's
     // check_sdf_representable, which the scene file's validator shares.
     if (Result<void> r = yaml_text::check_sdf_representable(world.sdf, "world_to_yaml: SDF",
-                                                            "schema v" + dec(lowest_version(world)));
+                                                            "schema v" + dec(lowest_version(world)), /*carries_labels=*/true);
         !r) {
         return std::unexpected(r.error());
     }
