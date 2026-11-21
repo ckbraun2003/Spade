@@ -10,7 +10,8 @@
 //   image        uint8, planar C x H x W (C = 3 colour, 1 grey), sRGB, exposed (P1.3).
 //   instance_id  uint16, H x W. The NEAREST hit's host label: scene object_label (an index into RenderScene::labels) mapped through `label_ids` (the host's table,
 //                one uint16 per scene label); 0 for sky, an unlabelled item or a label the table maps to 0 (the ground is whatever the table maps its plane's label to: 0 unless the host labels it). Two labels with one id are one object. A CSG hit
-//                takes the label of its subtree's item (L118a: Core's per-node SDF labels will replace this when core/world-v4 lands).
+//                reads the host label of the LEAF that owns the surface (node_labels, sdf_hit_label: touching objects read their own labels), directly, and falls
+//                back to its subtree item's label through the table when the leaf carries none.
 //   keypoints    G groups x P points x (u, v, state) float32, plus the group's label uint16. u, v are the lens's own projection in pixels (the distorted pixel for a
 //                KB4), continuous, in the image's own frame. State 0 = absent (behind the image plane, or off the image): u and v written 0; 1 = in frame but occluded;
 //                2 = visible. Occlusion is a DEPTH TEST along the point's own ray, never an id lookup: occluded if a surface is nearer than the point by more than

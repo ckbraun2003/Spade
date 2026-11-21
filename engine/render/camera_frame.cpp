@@ -73,7 +73,11 @@ Result<CameraFrame> render_camera_frame(const RenderScene& scene, const RayScene
                 }
                 if (want_ids) {
                     const RayHit hit = rays.trace(ray);
-                    if (hit.kind != RayHitKind::none && hit.label != kNoLabel && hit.label < desc.label_ids.size()) out.instance_id[at] = desc.label_ids[hit.label];
+                    if (hit.kind == RayHitKind::sdf && hit.sdf_label != 0u) {
+                        out.instance_id[at] = hit.sdf_label;  // a labelled leaf's own host label, read directly (schema v4)
+                    } else if (hit.kind != RayHitKind::none && hit.label != kNoLabel && hit.label < desc.label_ids.size()) {
+                        out.instance_id[at] = desc.label_ids[hit.label];
+                    }
                 }
             }
         }

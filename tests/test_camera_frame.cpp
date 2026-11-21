@@ -287,5 +287,5 @@ TEST(CameraFrame, ASdfHitsInstanceIdIsItsLeafsHostLabel) {
     auto at = [&](uint32_t i, uint32_t j) { return frame->instance_id[j * 11u + i]; };
     EXPECT_EQ(at(5, 5), 8u) << "down the notch: the cut face is the box's";
     EXPECT_EQ(at(5, 1), 7u) << "above the notch: the ball's surface";
-    EXPECT_EQ(at(0, 5), 0u) << "off the ball";
+    EXPECT_EQ(at(0, 0), 0u) << "the corner pixel, 0.47 off the axis, is past the ball's 0.35 (the ball seen from 3 m: tan of 19.5 degrees)";
 }

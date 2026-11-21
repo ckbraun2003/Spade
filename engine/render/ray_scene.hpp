@@ -53,6 +53,7 @@ struct RayHit {
     uint32_t triangle = kNoMesh;    // the triangle's index within its mesh (index buffer offset / 3); kNoMesh unless kind is triangle
     uint32_t material = 0;          // index into RenderScene::materials, resolved as the raster resolves it
     uint32_t label = kNoLabel;      // the item's object_label, or the ground plane's label: what the instance-id channel reads
+    uint16_t sdf_label = 0;         // kind sdf only: the host label of the LEAF that owns the surface at the hit (sdf_hit_label, schema v4 node_labels), 0 when the nodes carry none
 };
 
 class RayScene {

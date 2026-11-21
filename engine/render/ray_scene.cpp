@@ -244,6 +244,7 @@ RayHit RayScene::trace(const Ray& ray) const {
 
     // --- CSG subtrees: marched exactly inside their bounds ---
     uint32_t sdf_label = kNoLabel;
+    uint16_t sdf_leaf_label = 0;
     glm::vec3 sdf_normal{0.0f};
     for (const Subtree& st : subtrees_) {
         const glm::dvec3 lo = glm::dvec3(st.csg.bounds.min) - glm::dvec3(static_cast<double>(kSubtreeBoundsMargin));
@@ -262,6 +263,7 @@ RayHit RayScene::trace(const Ray& ray) const {
         hit.triangle = kNoMesh;
         hit.material = st.material;
         sdf_label = st.label;
+        sdf_leaf_label = spade::sdf_hit_label(st.csg.program, march.p);
         const glm::vec3 raw = spade::gradient(st.csg.program, march.p);
         const float len = std::sqrt(glm::dot(raw, raw));
         sdf_normal = len > 0.0f ? raw / len : glm::vec3(0.0f, 1.0f, 0.0f);
@@ -294,6 +296,7 @@ RayHit RayScene::trace(const Ray& ray) const {
     } else if (hit.kind == RayHitKind::sdf) {
         n = sdf_normal;
         hit.label = sdf_label;
+        hit.sdf_label = sdf_leaf_label;
     } else {
         n = ground_normal;
         hit.label = ground_label;
