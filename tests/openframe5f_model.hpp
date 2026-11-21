@@ -23,8 +23,9 @@
 // leaves the remainder record no body at all (the compile refuses a tensor that breaks the triangle inequality; the first build did). A plate is a box of the
 // mesh's thickness and the x, z sizes that give its moments (within 1 cm of the mesh's extents); an arm is a box 6 mm thick (the kit's arms are 6 mm carbon),
 // 16.35 mm wide (its volume) and 128.6 mm long (its moment about the vertical), turned along the bore. The ESC and the pack are the table's boxes at the
-// table's poses. A motor is the table's cylinder (phi 29.3 mm) 38.6 mm long: the table's 30.6 mm and the 4 mm between its top and the prop's disc plane, which
-// the compile's motor rule (a motor's record is its hub moved half its length down) needs for the centre to be the table's, 0.0243 m up.
+// table's poses. A motor is the table's cylinder (phi 29.3 mm, 30.6 mm long, 32 g) at the table's pose, 0.0243 m up: its own part record (a cylinder), not the
+// motor block's, because the compile puts a block's motor half its length under the hub (0.0283 m, 4 mm above the arm, and 4 mm of the disc plane's gap below
+// the table's); the block's mass is 0, "counted elsewhere", and the block carries the chain's kv and electrical numbers only.
 //
 // THE PROPELLER is a stand-in (kPropCaveat): UIUC's measured 5 x 4 in three-blade (MIT) tables and the B1-fitted blade of the library's uiuc_mit_5x4, 4 g
 // assumed, at the kit's 5 in. The HQProp 5X4.3X3 V2S the maker's build names has no published data or CAD.
@@ -67,7 +68,7 @@ inline constexpr double kDiameter = 0.127;    // m, 5 in
 inline constexpr double kPropMass = 0.004;    // kg each, assumed
 inline constexpr double kMotorMass = 0.032;   // kg each, assumed
 inline constexpr double kMotorRadius = 0.01465;       // m, the table's 29.3 mm
-inline constexpr double kMotorLength = 0.0306 + 0.004;  // m, the table's 30.6 mm and the 4 mm to the disc plane
+inline constexpr double kMotorLength = 0.0306;  // m, the table's
 inline constexpr double kMotorCentreY = 0.0243;       // m, the table's motor centre
 inline constexpr double kPackMass = 0.200;    // kg, assumed 6S 1300 mAh
 inline constexpr double kEscMass = 0.015;     // kg, the maker's estimate
@@ -119,7 +120,7 @@ inputs:
   rotor_radius: {value: 0.0635, unit: m, grade: published, note: "a 5 inch propeller: 5 in = 0.127 m, halved (the maker's build names the HQProp 5X4.3X3 V2S)"}
   body: {value: "three plate boxes and four 6 mm arm boxes, 0.152 kg", grade: derived, note: "proxy solids for the flow: the bottom, middle and top plates as boxes at their meshes' centroids with the meshes' second moments, each carrying its mesh's share of the frame's 170 g, and the four arms as 6 mm boxes 16.35 mm wide and 128.6 mm long at each arm mesh's centroid, turned along the bore; the Cross, the camera side plates, the standoffs, the printed parts, the controller and the receiver are in the kit_remainder tensor record, with no solid"}
   battery: {value: "box 0.078 x 0.038 x 0.039 m, 0.200 kg, on the top plate's side of the stack", grade: assumed, note: "a Tattu R-Line 6S 1300 mAh class pack (retailer listings: 78 x 39 x 38 mm, 200 g +-20 g); the table's pose (-0.00385, 0.0535, 0), a layout choice the maker's build leaves open"}
-  motor: {value: "the library's fpv_2306_1700kv with kv 1950 rpm/V, 0.032 kg", grade: assumed, note: "the OpenMotor 2306 6S 1950KV: its published kv; the resistance, no-load current, current limit, pole pairs and rotor inertia are the library's typical-2306 estimates; the 32 g and the 29.3 x 30.6 mm cylinder are the table's (a retailer's BETAFPV Snow 2306 stand-in; the maker's README says the motor mass is not yet measured). The solid is 38.6 mm long (the 4 mm to the disc plane added) so the centre is the table's, 0.0243 m up"}
+  motor: {value: "the library's fpv_2306_1700kv with kv 1950 rpm/V, 0.032 kg", grade: assumed, note: "the OpenMotor 2306 6S 1950KV: its published kv; the resistance, no-load current, current limit, pole pairs and rotor inertia are the library's typical-2306 estimates; the 32 g and the 29.3 x 30.6 mm cylinder are the table's (a retailer's BETAFPV Snow 2306 stand-in; the maker's README says the motor mass is not yet measured). The solid is the table's cylinder as its own part record at the table's pose, centre 0.0243 m up, standing on the arm's top face (the compile's block rule would put it 4 mm higher)"}
   esc_battery: {value: "the library's fpv_4in1_45a (0.015 kg, 41.6 x 42.5 x 5 mm) and fpv_6s_1300 cells", grade: assumed, note: "stand-ins; the chain only fixes the hover throttle, the rotors turn at the speed the propeller part gives for a quarter of the weight. The ESC's pose is the table's (stack holes, Y 0.0155 m)"}
   propeller: {value: "parts/openframe5f_5in_mit5x4.prop.yaml", grade: derived, note: "A STAND-IN: UIUC's measured 5 x 4 in three-blade (MIT) tables and the library's fitted blade for the HQProp 5X4.3X3 V2S the maker names, which has no published data or CAD. The polar (alpha_0 -4.3344, cd_scale 2.2885) was fitted at 6,057 rpm with a 12 mm kernel at R/dx 15 and is used here at about 9,400 rpm and a 1.25 mm cell (R/dx 50.8); the line's one-rotor thrust in the film box is about 0.9 of a quarter of the weight at hover (the X500's is 0.86 to 0.89)"}
 checks:
@@ -226,8 +227,8 @@ not_carried: "the Cross, camera side plates, standoffs, TPU parts (boots, bumper
     p.hub_height = kDiscHeight;
     p.motor = motor->block;
     p.motor.kv = 1950.0;  // the OpenMotor 2306 6S 1950KV's published kv
-    p.motor.mass = kMotorMass;
-    p.motor.shape = vehicles::BlockShape{vehicles::PartShape::cylinder, glm::dvec3(kMotorRadius, kMotorLength, 0.0), glm::dmat3(0.0)};
+    p.motor.mass = 0.0;  // the four motors are part records below, at the table's pose
+    p.motor.shape.reset();
     p.prop = prop.block;
     p.esc = esc->block;
     p.esc.mass = kEscMass;
@@ -258,6 +259,16 @@ not_carried: "the Cross, camera side plates, standoffs, TPU parts (boots, bumper
         const glm::dvec3 centroid(corners[k].x > 0.0 ? 0.04365 : -0.04365, 0.006, corners[k].y > 0.0 ? 0.05507 : -0.05507);
         spec->parts.push_back(proxy_box(("arm[" + std::to_string(k) + "]").c_str(), "arm", rho * kArmVolume, centroid,
                                         glm::dvec3(0.1286, kArmThickness, arm_width), turn));
+    }
+    for (std::size_t k = 0; k < corners.size(); ++k) {
+        vehicles::PartInertia motor_part;
+        motor_part.mass = kMotorMass;
+        motor_part.position = glm::dvec3(corners[k].x, kMotorCentreY, corners[k].y);
+        motor_part.shape = vehicles::PartShape::cylinder;
+        motor_part.size = glm::dvec3(kMotorRadius, kMotorLength, 0.0);
+        motor_part.geometry.name = "motor[" + std::to_string(k) + "]";
+        motor_part.geometry.role = "motor";
+        spec->parts.push_back(std::move(motor_part));
     }
     // The proxy solids and blocks compile as they are; the remainder completes the table's composite.
     const auto first = vehicles::compile_airframe(*spec);
