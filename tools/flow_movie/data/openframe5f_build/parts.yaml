@@ -28,7 +28,7 @@ parts:
     kind: frame
     mass_kg: 0.170
     mass_grade: published
-    mass_source: OpenFrame-5F README, "Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts"; the product page https://opendrone.be/products/openframe says "170 g, without TPU parts (est.)". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here
+    mass_source: "OpenFrame-5F README, \"Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts\"; the product page https://opendrone.be/products/openframe says \"170 g, without TPU parts (est.)\". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here"
     pose_grade: derived
     # the maker's part-studio frame turned to the design frame (see the header); the plates, the cross, the four arms (two hands), the four M3 standoffs and the two aluminium side plates
     pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
@@ -56,7 +56,7 @@ parts:
     kind: frame
     mass_kg: 0.0297
     mass_grade: assumed
-    mass_source: the README's 170 g leaves the TPU parts out and the maker publishes no mass for them; the CAD volume of the printed parts (4 boots 7.688 cm3, bumper 6.799, two camera mounts 2.904, VTX mount 5.370, anti-slip pad 1.984; 24.745 cm3 in all) at TPU 1.2 g/cm3 and 100 % fill, an upper bound (a real print is not solid)
+    mass_source: "the README's 170 g leaves the TPU parts out and the maker publishes no mass for them; the CAD volume of the printed parts (4 boots 7.688 cm3, bumper 6.799, two camera mounts 2.904, VTX mount 5.370, anti-slip pad 1.984; 24.745 cm3 in all) at TPU 1.2 g/cm3 and 100 % fill, an upper bound (a real print is not solid)"
     pose_grade: derived
     # the same pose as the frame; Boot-L at (+x, +y) and (half turn) (-x, -y), Boot-R at (+x, -y) and (half turn) (-x, +y); the camera mounts, the bumper (front), the VTX mount (rear) and the anti-slip pad (on the top plate) once each
     pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
