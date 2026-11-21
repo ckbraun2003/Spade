@@ -7,11 +7,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -206,4 +208,35 @@ TEST(CameraLens, ALensIsRefusedByNameWhenItsIntrinsicsCannotBeOne) {
     rd::LensSpec fold = fisheye();
     fold.k[0] = -0.9;  // theta_d stops growing inside 90 degrees: the lens folds back
     EXPECT_NE(rd::lens_issue(fold).find("monotone"), std::string::npos) << rd::lens_issue(fold);
+    EXPECT_NE(rd::lens_issue(fold).find("k1"), std::string::npos) << "names the coefficient that folds it: " << rd::lens_issue(fold);
+    rd::LensSpec fold4 = fisheye();
+    fold4.k[3] = -0.05;  // the eighth-power term folds it near the edge instead
+    EXPECT_NE(rd::lens_issue(fold4).find("k4"), std::string::npos) << rd::lens_issue(fold4);
+    // A lens that folds only PAST its own field of view is fine: the pixels never ask for that angle.
+    // (f = 500: the corners are at 69 degrees; with k4 = -0.006 theta_d turns over at 82.5 degrees, so the pixels never reach the fold.)
+    rd::LensSpec late = fisheye();
+    late.fx = late.fy = 500.0;
+    late.k[3] = -0.006;
+    EXPECT_EQ(rd::lens_issue(late), "") << "a fold past the field of view is not the pixels' business";
+}
+
+// The round trip to the lens's edge, not just near the axis (the lead, 2026-11-20): at the four image corners and the four edge midpoints, which are the widest
+// angles the table asks for, project(ray(p)) == p to a billionth of a pixel, and the corner ray's angle is what the corner radius solves for.
+TEST(CameraLens, TheRoundTripHoldsAtTheEdgeOfTheFieldOfView) {
+    for (const rd::LensSpec& s : {aigp(), fisheye()}) {
+        const double w = s.width, h = s.height;
+        for (const glm::dvec2 p : {glm::dvec2(0.5, 0.5), glm::dvec2(w - 0.5, 0.5), glm::dvec2(0.5, h - 0.5), glm::dvec2(w - 0.5, h - 0.5), glm::dvec2(0.5, 0.5 * h),
+                                   glm::dvec2(w - 0.5, 0.5 * h), glm::dvec2(0.5 * w, 0.5), glm::dvec2(0.5 * w, h - 0.5)}) {
+            const glm::dvec3 ray = rd::lens_ray(s, p.x, p.y);
+            const std::optional<glm::dvec2> back = rd::lens_project(s, ray);
+            ASSERT_TRUE(back.has_value());
+            EXPECT_NEAR(back->x, p.x, 1e-9) << "kind " << s.kind << " pixel " << p.x << "," << p.y;
+            EXPECT_NEAR(back->y, p.y, 1e-9) << "kind " << s.kind << " pixel " << p.x << "," << p.y;
+            const glm::dvec3 want = ref_ray(s, p.x, p.y);
+            EXPECT_LT(glm::length(ray - want), 1e-12) << "kind " << s.kind << " pixel " << p.x << "," << p.y;
+        }
+    }
+    // The fisheye's corner is the widest: its half angle is about 81 degrees, well past the 60 a pinhole of this size could hold.
+    const glm::dvec3 corner = rd::lens_ray(fisheye(), 0.5, 0.5);
+    EXPECT_LT(corner.z, std::cos(1.3)) << "the corner looks more than 74 degrees off the axis";
 }
