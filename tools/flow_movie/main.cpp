@@ -2863,6 +2863,11 @@ struct WebFilming {
         }
         opt.cloud_peak = *peak;
         plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --nasa above)
+        // The film's views captured the look when web_film() built them (above), before the cache was read: build it again with the peak, and set what was set on the first (no particle look
+        // here: the cloud and the particle looks are refused together).
+        film = web_film(*clip, *group, plan);
+        if (!film) return fail(film.error());
+        film->role_materials = drone != &web::default_drone();
         std::printf("flow_movie: web %s: the cloud's range is fixed for the clip: its largest vorticity over the %u frames is %.0f per second\n", opt.web_id.c_str(), plan.frames,
                     static_cast<double>(*peak));
     }
