@@ -48,7 +48,9 @@ constexpr float kG = 9.80665f;
 constexpr float kSkin = 0.0095f;
 constexpr double kComY = -0.0254301;  // x500.model.yaml com_offset.y: the design frame's centre of mass height
 constexpr float kLowest = -0.2153f;   // the pads' bottom faces in the design frame
-constexpr float kRestHeight = static_cast<float>(kComY - kLowest);  // 0.18987 m
+constexpr float kRestHeight = static_cast<float>(kComY - kLowest);  // 0.18987 m: the centre of mass over the plane at rest
+constexpr float kDesignOriginAtRest = -kLowest;                      // 0.2153 m: the design origin over the plane at rest. A VEHICLE's spawn pose is the DESIGN
+                                                                     // frame's (VehicleSpawn: the design origin and design axes, converted by spawn()), not the body's
 
 // The twelve points in the DESIGN frame: three along each pad's length (both ends of the 19 mm-section bar, and the middle).
 [[nodiscard]] std::vector<glm::vec3> pad_points_design() {
@@ -134,8 +136,9 @@ void steps(Rig& rig, uint32_t n) {
     ASSERT_TRUE(r.has_value()) << r.error().context;
 }
 
-// The design frame's own "level" as a body orientation: the body frame is the design frame turned by design_to_principal, so body -> world is its conjugate.
-[[nodiscard]] glm::quat level(const spade::vehicles::ModelType& m) { return glm::conjugate(m.design_to_principal); }
+// Level: the design frame's axes along the world's. (The first runs of these tests spawned with the conjugate of design_to_principal, taking the vehicle's spawn
+// pose for the body's: the drone landed 5 degrees yawed and tilted, which is what spun it. VehicleSpawn is the design frame's pose.)
+[[nodiscard]] glm::quat level(const spade::vehicles::ModelType&) { return glm::quat(1.0f, 0.0f, 0.0f, 0.0f); }
 
 // The IMU's last `count` samples' accelerometer, in the mount frame.
 struct ImuStats {
@@ -165,7 +168,7 @@ struct ImuStats {
 
 TEST(X500GroundContact, RestsOnItsFeetAtTheRightHeightAndTheImuReadsGravity) {
     const spade::vehicles::ModelType model = load_model(0.6f, 0.1f);
-    Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kRestHeight + 0.01f, 0.0f), level(model));
+    Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kDesignOriginAtRest + 0.01f, 0.0f), level(model));
     for (int k = 0; k < 8; ++k) {
         steps(rig, 250);
         const spade::BodyState t = state(rig);
@@ -190,7 +193,7 @@ TEST(X500GroundContact, RestsOnItsFeetAtTheRightHeightAndTheImuReadsGravity) {
 
 TEST(X500GroundContact, ADropSettlesWithoutBouncingMoreThanTheRestitutionAllows) {
     const spade::vehicles::ModelType model = load_model(0.6f, 0.1f);
-    Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kRestHeight + 0.5f, 0.0f), level(model));
+    Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, kDesignOriginAtRest + 0.5f, 0.0f), level(model));
     float highest_after_impact = 0.0f;
     bool landed = false;
     float min_y = 1e9f;
@@ -251,7 +254,7 @@ TEST(X500GroundContact, DiagnosticSpinAfterALevelDrop) {
     const glm::quat orient = tilt * level(model);
     // the centre height that puts the lowest of the points (and the skin) 1 cm over the plane
     float low = 1e9f;
-    for (const glm::vec3& p : pad_points_design()) low = std::min(low, (tilt * (p - glm::vec3(0.0f, static_cast<float>(kComY), 0.0f))).y);
+    for (const glm::vec3& p : pad_points_design()) low = std::min(low, (tilt * p).y);  // about the DESIGN origin: the spawn pose is the design frame's
     const float y = 0.01f + kSkin - low;
     Rig rig = make_rig(model, glm::vec3(0.0f, -kG, 0.0f), glm::vec3(0.0f, y, 0.0f), orient);
     steps(rig, static_cast<uint32_t>(seconds * 1000.0f));
@@ -283,7 +286,7 @@ TEST(X500GroundContact, ARolledDroneRocksBackBelowTheTipOverAndTipsAbove) {
 [[nodiscard]] float slid_after(float friction, float seconds) {
     const spade::vehicles::ModelType model = load_model(friction, 0.0f);
     const float a = glm::radians(20.0f);
-    Rig rig = make_rig(model, glm::vec3(0.0f, -kG * std::cos(a), kG * std::sin(a)), glm::vec3(0.0f, kRestHeight + 0.005f, 0.0f), level(model));
+    Rig rig = make_rig(model, glm::vec3(0.0f, -kG * std::cos(a), kG * std::sin(a)), glm::vec3(0.0f, kDesignOriginAtRest + 0.005f, 0.0f), level(model));
     steps(rig, 500);  // settle
     const glm::vec3 from = state(rig).pos;
     steps(rig, static_cast<uint32_t>(seconds * 1000.0f));
