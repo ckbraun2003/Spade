@@ -394,7 +394,7 @@ struct Drone {
     float body_y_m = 0.004f;  // the held body's height above the box's origin (the cloud is thinned round it)
     float reach_m = 0.30f;    // the farthest rotor tip from the vertical axis (the cloud's thinning radius is a multiple of it)
     // The fine box this drone's web films can run in (--cell-mm): the cell in mm, 0 for none. The box and hold are the harness's (live_case.hpp's d1_web_grid and d1_web_hold): 2.5 is
-    // the X500's, 1.25 the 5 inch FPV's. hub_above_origin_m is the hubs' height above the model's design origin, for a box whose hold depends on it (the FPV's d1_fpv_hold; the X500's
+    // the X500's, 1.25 the 5 inch FPV's. hub_above_origin_m is the hub disc's height above the HELD POINT (the model's body origin, its centre of mass), for a box whose hold depends on it (the FPV's d1_fpv_hold; the X500's
     // hold is fixed by the harness, so it leaves this 0).
     float fine_cell_mm = 0.0f;
     float hub_above_origin_m = 0.0f;
@@ -406,8 +406,8 @@ struct Drone {
     std::string_view card_extra = "";
 };
 
-[[nodiscard]] inline const std::array<Drone, 3>& drones() {
-    static const std::array<Drone, 3> table{{
+[[nodiscard]] inline const std::array<Drone, 4>& drones() {
+    static const std::array<Drone, 4> table{{
         {"reference_quad", "library/drones/reference_quad.model.yaml", "reference-quad", "Reference quad",
          "the reference quad", "",
          Framing{kD1StillSubjectM, kD1StillAimBelowM, kD1PushWideM, kD1PushCloseM, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kD1StillElevationDeg}},
@@ -423,6 +423,16 @@ struct Drone {
         {"x500", "../tools/flow_movie/data/x500/x500.model.yaml", "open-source-quadcopter", "Open-source quadcopter",
          "the open-source quadcopter", "a 1.63 kg open-source quadcopter with 10 inch rotors (its parts' masses summed)",
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f, 2.5f},  // 0.2461 hub + 0.127 rotor; its 2.5 mm box (270 x 237 x 270, L106)
+        // The OpenFrame-5F (O138): the real open-hardware 5 inch FPV frame, Interface's parts table (tools/flow_movie/data/openframe5f_build) over Physics' flow model
+        // (tools/flow_movie/data/openframe5f). Its 5 inch rotors reach 0.1764 m from the axis (hubs at +-0.0695 m along and +-0.089 m across, plus the 0.0635 m rotor), so the
+        // framing is the X500's scaled by about 0.47; its fine box is the FPV's 1.25 mm one, held at the model's body origin (the centre of mass, 0.0300 m above the design origin), so the hub disc (0.0436 m above the design origin in the table's frame) is 0.0136 m above the held point: d1_fpv_hold(0.0136), y 0.03875 m, 31 rows (Physics). The blade
+        // range stays the X500's until its own stills set it. The card names the kit factually and carries the stand-in propeller and published-dimensions sentences.
+        {"openframe5f", "../tools/flow_movie/data/openframe5f/openframe5f.model.yaml", "fpv-quadcopter", "5 inch FPV quadcopter",
+         "the 5 inch FPV quadcopter", "a 0.57 kg 5 inch FPV quadcopter built on the OpenFrame-5F open-hardware frame (its parts' masses summed)",
+         Framing{0.19f, 0.095f, 0.26f, 0.19f, 0.10f, 0.14f, 0.025f, 0.005f, 0.03f, 70.0f}, 0.00875f, 0.1764f, 1.25f, 0.0136f, kBladePressureCpRange,
+         "generated three-blade stand-in blades", "the frame, arms, stack, motors and battery",
+         "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 90% of the weight; "
+         "motors, flight stack and battery modelled from published dimensions."},
     }};
     return table;
 }
