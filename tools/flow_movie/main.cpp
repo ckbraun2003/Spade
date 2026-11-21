@@ -8,7 +8,7 @@
 //   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-quad|case-smoke
 //   flow_movie --video case --case FILE.case.yaml [--controls FILE]
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
-//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only] [--from-cache]
+//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only] [--from-cache] [--fixed-cloud-range]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
 //   flow_movie --video d1-hover|d1-still|case ... --gpu
 //
@@ -1980,6 +1980,8 @@ struct Options {
     bool keep_cache = false;
     bool drop_cache = false;  // --drop-cache: a LiveRun film's cache goes after its render
     bool simulate_only = false;
+    float cloud_peak = 0.0f;  // the clip's largest vorticity, set by run_web for --fixed-cloud-range (0: each frame's own)
+    bool fixed_cloud_range = false;  // --fixed-cloud-range: the cloud's top is a share of the clip's largest vorticity (from the cache's headers), the same in every frame (O144)
     bool from_cache = false;  // --from-cache: draw the film from the frames already in the cache folder (a --simulate-only run's, kept); never solve (O144)
     bool cpu = false;  // stills on the CPU renderer instead of GL
     std::string view;  // stills of this view only
@@ -2533,7 +2535,10 @@ struct WebFilming {
         in.cloud = opt.nasa_cloud;
         in.pressure = opt.surface_pressure;
         if (opt.surface_pressure && opt.nasa_cloud) {
-            if (const auto q = parse_q_look(opt.q_look)) in.vortex_note = vortex_note(*q);
+            if (auto q = parse_q_look(opt.q_look)) {
+                q->vorticity_peak = opt.cloud_peak;
+                in.vortex_note = vortex_note(*q);
+            }
         }
         in.shaded = opt.surface_shade;
         if (const auto blades_blur = parse_prop_blur(opt.prop_blur)) in.blades = blades_blur->blades;
@@ -2843,6 +2848,23 @@ struct WebFilming {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
         }
+    }
+    if (opt.fixed_cloud_range) {
+        if (const std::string why = web::fixed_cloud_range_refusal(true, opt.nasa_cloud, opt.stream, opt.simulate_only, opt.web_still_only || opt.from_cache, cached_frames(cache), plan.frames);
+            !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+        const auto peak = largest_header_max(cache, plan.frames, spade::kFlowVorticity);
+        if (!peak) return fail(peak.error());
+        if (!(*peak > 0.0f)) {
+            std::fprintf(stderr, "flow_movie: --fixed-cloud-range: the cache's frames hold no vorticity\n");
+            return 2;
+        }
+        opt.cloud_peak = *peak;
+        plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --nasa above)
+        std::printf("flow_movie: web %s: the cloud's range is fixed for the clip: its largest vorticity over the %u frames is %.0f per second\n", opt.web_id.c_str(), plan.frames,
+                    static_cast<double>(*peak));
     }
     if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
     if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
@@ -3243,6 +3265,8 @@ int main(int argc, char** argv) {
             opt.simulate_only = true;
         } else if (arg == "--from-cache") {
             opt.from_cache = true;
+        } else if (arg == "--fixed-cloud-range") {
+            opt.fixed_cloud_range = true;
         } else if (arg == "--budget-seconds") {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {

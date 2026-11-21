@@ -37,6 +37,9 @@ struct QLook {
     float onset = 0.15f;
     float thin_r = 0.0f;
     float thin_floor = 0.3f;
+    // The vorticity the map's top is a share of, in 1/s: 0 takes each frame's own largest |omega| (the default, and every film before O144's second); above 0 it is the CLIP's largest, read
+    // from the cache's headers before drawing (--fixed-cloud-range), so a colour means the same vorticity in every frame and the cloud does not step with the frame's peak.
+    float vorticity_peak = 0.0f;
 };
 
 // The ladder's iso-surfaces, highest level first; none when the frame has no Q above zero or no vorticity to colour by.
@@ -49,7 +52,7 @@ struct QLook {
     colours.colours = spade::render::ColourMapId::blue_magenta;
     colours.auto_range = false;
     colours.range_min = 0.0f;
-    colours.range_max = vort_max * look.vorticity_max;
+    colours.range_max = (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max;
     std::vector<spade::render::IsoSurface> isos;
     for (std::size_t i = 0; i < look.level.size(); ++i) {
         spade::render::IsoSurface iso;
@@ -68,12 +71,21 @@ struct QLook {
     const float vort_max = v.header.channel_max[spade::kFlowVorticity];
     if (!(std::isfinite(vort_max) && vort_max > 0.0f)) return std::nullopt;
     return spade::render::volume_transfer(spade::render::FlowQuantity::vorticity, spade::render::ColourMapId::blue_magenta,
-                                          vort_max * look.vorticity_max, look.onset, look.sigma);
+                                          (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max, look.onset, look.sigma);
 }
 
 // The caption's words for the swirls the pressure film shows with --nasa-cloud (O144, Oversight's terms): how they are drawn, and that they are the simulated air's own vorticity, not a
 // measurement. The rule and its threshold are the cloud's own, so a changed --q-look changes the words.
 [[nodiscard]] inline std::string vortex_note(const QLook& look) {
+    if (look.vorticity_peak > 0.0f) {  // --fixed-cloud-range: absolute, the same in every frame
+        const double top = static_cast<double>(look.vorticity_peak) * static_cast<double>(look.vorticity_max);
+        return std::format("The swirls round the rotors are the simulated air's own vorticity (the local spin of the air), drawn as a soft cloud from blue (low) to magenta (high): clear where the "
+                           "vorticity is under {:g}% of the map's range ({:.0f} per second), which tops out at {:g}% of the clip's largest vorticity ({:.0f} per second; the clip's largest is "
+                           "{:.0f} per second), the same in every frame, up to a density of {:g} per metre at its top, so only the strongest swirls show, and weaker frames show fewer, dimmer "
+                           "swirls; the cloud is the simulated air, not a measurement, and the parts and blades keep their pressure colour under it.",
+                           static_cast<double>(look.onset) * 100.0, top * static_cast<double>(look.onset), static_cast<double>(look.vorticity_max) * 100.0, top,
+                           static_cast<double>(look.vorticity_peak), static_cast<double>(look.sigma));
+    }
     return std::format("The swirls round the rotors are the simulated air's own vorticity (the local spin of the air), drawn as a soft cloud from blue (low) to magenta (high): clear where the "
                        "vorticity is under {:g}% of the map's range, which tops out at {:g}% of each frame's largest vorticity, up to a density of {:g} per metre at its top, so only the strongest "
                        "swirls show; the cloud is the simulated air, not a measurement, and the parts and blades keep their pressure colour under it.",

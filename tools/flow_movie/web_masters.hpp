@@ -239,6 +239,20 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return {};
 }
 
+// --fixed-cloud-range (O144): the cloud's top is a share of the CLIP's largest vorticity, read from the cache's headers, the same in every frame. It needs the cloud and every frame already on disk
+// (a redraw: --from-cache or --web-still), so not --stream (the later frames do not exist yet) or --simulate-only. Empty when the flag is not asked or is fine, else the refusal's words.
+[[nodiscard]] inline std::string fixed_cloud_range_refusal(bool fixed, bool nasa_cloud, bool stream, bool simulate_only, bool redraw, uint32_t cached_frames, uint32_t needed_frames) {
+    if (!fixed) return {};
+    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --nasa-cloud";
+    if (stream) return "--fixed-cloud-range needs every frame on disk to find the clip's largest vorticity; --stream solves as it draws: use --from-cache or --web-still";
+    if (simulate_only) return "--fixed-cloud-range is for drawing; --simulate-only only solves: use one";
+    if (!redraw) return "--fixed-cloud-range reads the clip's largest vorticity from frames already on disk: use it with --from-cache or --web-still";
+    if (cached_frames < needed_frames) {
+        return "--fixed-cloud-range needs every frame of the clip in the cache folder: " + std::to_string(cached_frames) + " of " + std::to_string(needed_frames) + " are there";
+    }
+    return {};
+}
+
 // How far past a solid the pressure film reads (cells): it paints the detailed kit meshes with the air of Physics' proxy solids, so a drawn point can sit inside a solid
 // cell, and the read goes on outward along the normal to the nearest fluid cell, up to this far (render::FlowSurfaceColouring::search_cells).
 inline constexpr float kSurfacePressureSearchCells = 3.0f;
