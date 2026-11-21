@@ -99,3 +99,36 @@ No maker of a 5 inch motor was found publishing CAD.
 - https://www.printables.com/model/1009540-pragma-5 : HTTP 403 (not retried).
 - every holybro.com store page (Kakute H7, Tekko32, Kopis products and collection): HTTP 429 with Retry-After 60, on both reads (the second after about 25 minutes).
 - Not fetched by design: every CAD file, archive and PDF named above.
+
+## 5. OpenFrame-5F rev2.2: the one download (chosen by the owner, O138)
+
+Cameron's pick, verbatim: "OpenFrame-5F (Recommended)". The lead allowed exactly one download: the `releases/rev2.2` folder of the frame repo, nothing else.
+
+- **Source:** https://github.com/OpenDrone-hw/OpenFrame-5F/tree/main/releases/rev2.2 . rev2.2 is a folder on `main`, not a tag or release. Fetched at commit `d14c4b07c80020f39d993c68e25c96eda432dceb` (`main` at the time, read with `git ls-remote`, refs only). Fetch date 2026-11-21.
+- **Method:** per-file raw downloads of the folder's listing, each pinned to that commit (`https://raw.githubusercontent.com/OpenDrone-hw/OpenFrame-5F/<commit>/releases/rev2.2/<path>`), a generic client (curl, no headers added). The folder listing was read from the three GitHub pages (rev2.2, step, drawings): `manifest.json`, `drawings/Drawing-1.pdf` and 16 files in `step/`. `manifest.json` was fetched first and the files downloaded are exactly the 17 it lists, which are exactly the 17 the pages listed. No git clone, no other URL, no other path of the repo (the LICENSE and BRAND.md below were read as pages, as in sections 1 to 4).
+- **Where:** a new empty folder `part-store-import/openframe-5f-rev2.2-d14c4b07` beside the part store (outside it and outside any git work tree: the store refuses a git tree, and a stray folder inside the store is not an entry). Untrusted data: nothing run from it; paths are passed to tools as arguments.
+- **Check:** all 17 files match `manifest.json`'s SHA-256, 0 mismatches. 18 files on disk (17 + `manifest.json`, whose own sha256 is `0cd0bea633716cdfcec6d5a2040e68aeada34f7d97992a9e61825ca84df41647`, 6,885 bytes; the manifest is the maker's own claim, so this checks the transfer, not the maker). Bytes and sha256:
+
+| file | bytes | sha256 |
+|---|---|---|
+| step/Arm.step | 168,139 | eaa66a41693627d9154bdaeb6282bcb17a4108f0f15fe9cfd97d4fe471597e69 |
+| step/Cross.step | 48,708 | 709b3642fbc3c9ace2fdcb6083f23543451abcfbbbeb1cd7baa2cbc33958c4e6 |
+| step/Base-Top.step | 398,354 | 28074c26e7a674f75a5c16eab4f30821e275c0c4f9cc434ced0edcbd96dc445a |
+| step/Base-Bot.step | 430,839 | 47538aaa7bba939307ca73825236777609665b951f54175ebd48d3ccbad275d5 |
+| step/Top.step | 396,351 | d11cf26c7efadbd8619560f5080e52968a60fd9ce4434a31b8cc8a0d6156e8c1 |
+| step/Standoff-L.step | 92,441 | 1b01cf10fb440f11400bd72386fb596af89b6235284e05fa21d0124c86725ad8 |
+| step/Standoff-M3-F-F-20-OD5.step | 5,900 | a75bb2b867d196ddb3a6e04b7dac1512d3a39ada7504064446ab4870f4e27618 |
+| step/Standoff-R.step | 92,781 | ff99e5caa605ba44f68af114b3baa02c94a01014ccbf091a401368489392b925 |
+| step/Boot-L.step | 173,505 | de7e7f5202d31a7a6cfd0ee578ce4db29f6b08a53ce587181897f1006c21eb00 |
+| step/Boot-R.step | 174,280 | 1dcba107a36caf439f6ebabdcb835e3f6518e2452cd46b30503309b418d24321 |
+| step/Cam-Mount-L.step | 25,254 | b14e4e857f68966baa445ecf21971cb9f2a13cddaa6bd6462f3885b12a9c9690 |
+| step/Cam-Mount-R.step | 25,372 | a3050c9ce3dbfe49dd0c247517321c0623f3ac1dabcb458b565b53234ebec933 |
+| step/Airtag-Antenna-mount.step | 432,376 | 10b1df8bd5be4aab37680e5e4058f91eedb52ab5e9f67816976444c255a46dc8 |
+| step/VTX-Mount.step | 381,971 | 3a1d7c9f5d8a3f760f9e0e8451347d473037577a4219a01568f40e42957bbea1 |
+| step/anti-slip-pad.step | 184,928 | 059c98304b0ec754a7f764e7652bbc0bc8b0f1131475b5f8d5eb20e3719c7ea4 |
+| step/Bumper.step | 296,401 | 9f5c9fe1890025091d6a79b37a75be85ab9791744925929c03cd07c9ac13b547 |
+| drawings/Drawing-1.pdf | 784,930 | 01a8427185a49fc566e0127a78bdd33d6ffddedff27bda65d1370f47188d29c4 |
+
+- **What the files are** (manifest.json, read as text): Onshape document "OpenDrone-V2" (https://cad.onshape.com/documents/78e093d02798373a79bc68d0/w/c0ca752de47c1227bb727503), version "OpenFrame-5F rev2.2" created 2026-10-24T21:00Z, exported_at 2026-10-24T21:05:00Z, "onshape_release.py manifest format; exported through the browser session (Onshape API key over quota), founder-made version". Its note: "Re-released 2026-10-24 evening from version OpenFrame-5F rev2.2: middle-plate nut holes for catalogue self-clinching nuts (M3 4.22 + seat 6.7 x 1.55, M4 5.4 + seat 8.1 x 1.55) and camera-mount hole depths; Base-Top, Standoff-L, Standoff-R and the drawing PDF are exported from this version; the other STEP files are the earlier rev2.2 export, checked geometrically identical to this version (boolean difference 0)." Sixteen STEP parts, each a single part (not an assembly): Arm, Cross, Base-Top, Base-Bot, Top, Standoff-L, Standoff-R, Standoff M3 F-F 20 OD5, Boot-L, Boot-R, Cam-Mount-L, Cam-Mount-R, Airtag/Antenna mount, VTX-Mount, anti-slip pad, Bumper. The part placement in the frame is **not** in the folder: no assembly STEP, no pose file. The STEP header (Arm.step): "ISO-10303-21", "Generated by software containing ST-Developer from STEP Tools, Inc.", AP214. The 4 arms and the standoffs repeat, so a part's count and its mount positions must come from the drawing PDF (Drawing-1.pdf, not yet read) or from the frame's own geometry.
+- **Licence** (the repo's LICENSE, read as a page, not downloaded): "CERN Open Hardware Licence Version 2 - Strongly Reciprocal"; README: "Hardware licensed under [CERN-OHL-S-2.0](https://ohwr.org/cern_ohl_s_v2.txt), see [LICENSE]"; product page https://opendrone.be/products/openframe: "License CERN-OHL-S v2 ↗ Strong reciprocal licence". Section 8.2: "You shall not use any of the name (including acronyms and abbreviations), image, or logo by which the Licensor or CERN is known... Any such permitted use shall be factual and shall not be made so as to suggest any kind of endorsement or implication of involvement by the Licensor or its personnel." Recorded, not enforced (L88c); the folder stays local (L88b).
+- **Brand rule** (https://github.com/OpenDrone-hw/OpenDrone-Brand/blob/main/BRAND.md): "Ask before merchandise, endorsement-like use or incorporating the identity into another product name or logo." and "The hardware licence does not grant trademark rights." Compatibility statements are allowed (a factual mention). The brand repo says "OpenDrone and Incutec artwork is trademarked; see BRAND.md and LICENSE." The site and film may name the frame factually; no endorsement-like use without asking the maker (contact@opendrone.be).
