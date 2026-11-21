@@ -825,3 +825,21 @@ TEST(ModelReach, AMeshPartReachesByItsVertices) {
     for (const glm::vec3& v : hull.mesh->positions()) want = std::max(want, glm::length(hull.mount_pos + v));
     EXPECT_EQ(model_reach(quad_with({hull})), want);
 }
+
+// Object labels (world file schema v4) are render data on a WORLD's SDF. A part's shape must not carry them, as it must not carry node_materials, and the
+// refusal names the field and where a label can go (a silent drop would lose the label with no word).
+TEST(ModelParts, APartShapeMustNotCarryNodeLabels) {
+    PartDesc labelled = part("labelled");
+    ASSERT_FALSE(labelled.shape.nodes.empty());
+    labelled.shape.node_labels.assign(labelled.shape.nodes.size(), 7);
+    const ModelType m = quad_with({part("arm0"), labelled});
+    const std::vector<ModelIssue> issues = m.issues();
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues[0].element, ModelIssue::Element::part);
+    EXPECT_EQ(issues[0].index, 1u);
+    EXPECT_EQ(issues[0].field, "shape");
+    EXPECT_EQ(issues[0].code, spade::Code::invalid_argument);
+    EXPECT_NE(issues[0].message.find("node_labels"), std::string::npos) << issues[0].message;
+    EXPECT_NE(issues[0].message.find("sdf.node_labels"), std::string::npos) << "it says where a label can go: " << issues[0].message;
+    EXPECT_FALSE(m.validate().has_value());
+}
