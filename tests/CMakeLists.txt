@@ -55,6 +55,7 @@ add_executable(spade_tests
     test_core.cpp
     test_math.cpp
     test_fp32_math.cpp
+    test_srgb.cpp
     test_fp32_exact.cpp
     test_spirv_scan_estimates.cpp
     test_core_fp16.cpp
@@ -155,6 +156,12 @@ add_executable(spade_tests
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
+    test_camera_lens.cpp
+    test_ray_scene.cpp
+    test_camera_shade.cpp
+    test_camera_frame.cpp
+    test_camera_mount.cpp
+    test_camera_golden.cpp
     test_world_file_v4.cpp
     test_gnss.cpp
     test_world_file.cpp
@@ -300,6 +307,7 @@ add_executable(spade_tests
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
     test_flow_movie_build_parts.cpp
+    test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
     test_flow_movie_box_down.cpp

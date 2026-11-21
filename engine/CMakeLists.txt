@@ -608,6 +608,11 @@ add_library(spade_render STATIC
     render/gltf.cpp
     render/shadow.cpp
     render/raymarch.cpp
+    render/camera_lens.cpp
+    render/ray_scene.cpp
+    render/camera_shade.cpp
+    render/camera_frame.cpp
+    render/camera_mount.cpp
     render/agreement.cpp
     render/transfer_function.cpp
     render/colour_maps.cpp
