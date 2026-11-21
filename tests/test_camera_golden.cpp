@@ -125,9 +125,9 @@ TEST(CameraGolden, TheReferenceFrameHashesAreFixedOnEveryPlatform) {
         const uint8_t b[2] = {static_cast<uint8_t>(v & 0xFFu), static_cast<uint8_t>(v >> 8)};
         kp = fnv(kp, b, 2);
     }
-    EXPECT_EQ(image, 0ull) << "image hash is " << hex(image);
-    EXPECT_EQ(ids, 0ull) << "instance-id hash is " << hex(ids);
-    EXPECT_EQ(kp, 0ull) << "keypoint hash is " << hex(kp);
+    EXPECT_EQ(image, 0x283927f3982eff08ull) << "image hash is " << hex(image);
+    EXPECT_EQ(ids, 0x9b286a68421d0885ull) << "instance-id hash is " << hex(ids);
+    EXPECT_EQ(kp, 0xb3f1c56cb1ac8015ull) << "keypoint hash is " << hex(kp);
 }
 
 // Independent of the hashes: the sky pixel and a wall pixel are the scene's own shading, the ids are the labels, the keypoints are where the geometry puts them.
