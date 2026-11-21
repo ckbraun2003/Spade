@@ -409,15 +409,18 @@ Result<WorldSetLayout> validate_world_set(const WorldSetDesc& desc) {
 //
 // UPDATED (camera channel set, Phase 3.1b): Capacities gained `keypoint_groups` and `keypoints_per_group` (two more uint32), folded only when either is non-zero
 // (below): 360 + 8 = 368 and 424 + 8 = 432.
+//
+// UPDATED (world file v4, Phase 3.4): SdfProgram gained `node_labels` (one std::vector<uint16_t>: 24 bytes in the release shape, 32 with iterator debugging),
+// which is RENDER-ONLY like node_materials and NOT in config_hash's fold (see world_set.hpp's exclusion list): 368 + 24 = 392 and 432 + 32 = 464.
 #if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
-static_assert(sizeof(WorldDesc) == 432,
+static_assert(sizeof(WorldDesc) == 464,
               "WorldDesc's field set changed (msvc-ninja-debug shape, _ITERATOR_DEBUG_LEVEL != 0) -- "
               "classify the new/changed field into config_hash's fold above, or into "
               "world_set.hpp's documented \"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list "
               "with its own reason, then update this literal (and the non-debug-iterator one "
               "below) to the new sizeof(WorldDesc)");
 #else
-static_assert(sizeof(WorldDesc) == 368,
+static_assert(sizeof(WorldDesc) == 392,
               "WorldDesc's field set changed -- classify the new/changed field into "
               "config_hash's fold above, or into world_set.hpp's documented "
               "\"WHAT IT DELIBERATELY DOES NOT COVER\" exclusion list with its own reason, "

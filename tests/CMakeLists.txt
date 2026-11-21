@@ -153,6 +153,7 @@ add_executable(spade_tests
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
+    test_world_file_v4.cpp
     test_gnss.cpp
     test_world_file.cpp
     test_scene_file.cpp

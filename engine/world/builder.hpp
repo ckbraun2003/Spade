@@ -359,6 +359,10 @@ public:
     // nodes.size() lazily (filling earlier slots with the default, index 0)
     // is this call's job, not build()'s -- see sdf.hpp's node_materials note.
     WorldBuilder& material_for_last_node(uint32_t material_index);
+    // Sets the object label (sdf.hpp's node_labels) of the SDF node most recently pushed, 0 = unlabelled. Grows node_labels to nodes.size() lazily,
+    // as material_for_last_node does, and later pushes keep it in lockstep. A composed object (a union of primitives) labels every primitive of it
+    // with the one label; an operator's own label is accepted and never read (sdf_hit_label resolves a hit to a leaf).
+    WorldBuilder& label_for_last_node(uint16_t label);
 
     // --- product -----------------------------------------------------------
     // Construct, then validate_world_desc(), then hand the world over. The

@@ -70,7 +70,12 @@ namespace spade {
 // with no v3 content is written as version 2, byte for byte as before, and a
 // world with an anchor as version 3. A build that reads only version 2 refuses a
 // version-3 file as schema_mismatch ("upgrade"), never by dropping its anchor.
-inline constexpr uint32_t kWorldFileVersion = 3;
+//
+// VERSION 4 IS VERSION 3 PLUS TWO MORE OPTIONAL KEYS (docs/design/core/2026-11-20-world-file-v4-design.md): the camera capacities
+// (`capacities.cameras`, `camera_pixels`, `keypoint_groups`, `keypoints_per_group`, each written only when non-zero) and `sdf.node_labels` (a uint16
+// object label a node, written only when any is non-zero). A world with neither is written exactly as before, at version 2 or 3; an older build refuses a
+// version-4 file as schema_mismatch, never by dropping its cameras or labels.
+inline constexpr uint32_t kWorldFileVersion = 4;
 
 // The version a world with no version-3 content is written as, and the one the
 // diagnostics for shapes common to versions 2 and 3 name.
