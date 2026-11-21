@@ -9,7 +9,7 @@
 // Knobs: SPADE_FPV_DXMM (the cell in mm, default 1.25; the box in cells stays 270 x 237 x 270), SPADE_FPV_DRONE (a library drone's stem, default fpv_5inch).
 // SPADE_FPV_MODEL=<a model file, absolute or from the repo root> runs that model instead (the OpenFrame-5F kit: tools/flow_movie/data/openframe5f/
 // openframe5f.model.yaml) on the film's box kD1FpvGrid (252 x 237 x 284 at 1.25 mm) with d1_fpv_hold(the four hubs' mean height above the body origin, the
-// centre of mass).
+// design origin: the four hubs mean local_pos.y plus com_offset.y).
 // ---------------------------------------------------------------------------
 
 #include <gtest/gtest.h>
@@ -75,10 +75,11 @@ TEST(AirflowFpvSolids, WhichPartsTheAirTakesAtOnePointTwoFiveMillimetres) {
         ASSERT_TRUE(probe.has_value()) << probe.error().context;
         float hub_mean = 0.0f;
         for (const auto& r : probe->model.rotors) hub_mean += r.local_pos.y / static_cast<float>(probe->model.rotors.size());
+        hub_mean += probe->model.com_offset.y;  // the held point is the design origin: the body origin (the centre of mass) is com_offset above it
         const glm::vec3 hold = spade::testing::d1_fpv_hold(hub_mean);
         auto kit = spade::testing::still_air_case(file, model_knob, grid, 0.0002f, hold);
         ASSERT_TRUE(kit.has_value()) << kit.error().context;
-        std::printf("[ fpv     ] %s: box %ux%ux%u at %.3f mm, %.1f M cells, rotor R %.4f m, mean hub %.4f m above the body origin, hold y %.5f m, %zu model parts\n",
+        std::printf("[ fpv     ] %s: box %ux%ux%u at %.3f mm, %.1f M cells, rotor R %.4f m, mean hub %.4f m above the design origin, hold y %.5f m, %zu model parts\n",
                     model_knob, grid.nx, grid.ny, grid.nz, static_cast<double>(grid.dx) * 1000.0,
                     static_cast<double>(grid.nx) * grid.ny * grid.nz / 1.0e6, static_cast<double>(kit->model.rotors.at(0).radius),
                     static_cast<double>(hub_mean), static_cast<double>(hold.y), kit->model.parts.size());

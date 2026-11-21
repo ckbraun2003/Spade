@@ -74,7 +74,7 @@ TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
     if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
     // SPADE_NEAR_DRONE=x500 (L86k): the X500 on its 2.5 mm grid with the kit's 10-inch prop; else the phantom on the 2 mm near field.
     // SPADE_NEAR_DRONE=openframe5f: the OpenFrame-5F kit model (tools/flow_movie/data/openframe5f/) on the film's FPV box kD1FpvGrid, held by d1_fpv_hold of the
-    // rotors' mean height above the body origin, at SPADE_NEAR_STEP_US microseconds a step (default 25: 1.2 cells of tip travel at 8,986 rpm); the solver's
+    // rotors mean height above the design origin, at SPADE_NEAR_STEP_US microseconds a step (default 25: 1.2 cells of tip travel at 8,986 rpm); the solver's
     // health (the solids' pressure residual and counts, the subgrid viscosity's) is printed after the steps.
     const bool x500 = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "x500";
     const bool kit = env_cstr("SPADE_NEAR_DRONE") != nullptr && std::string(env_cstr("SPADE_NEAR_DRONE")) == "openframe5f";
@@ -87,6 +87,7 @@ TEST(GpuLiveNearField, ThePhantomFliesOnTheTwoMillimetreNearField) {
         ASSERT_TRUE(probe.has_value()) << probe.error().context;
         float hub_mean = 0.0f;
         for (const auto& r : probe->model.rotors) hub_mean += r.local_pos.y / static_cast<float>(probe->model.rotors.size());
+        hub_mean += probe->model.com_offset.y;  // the held point is the design origin: the body origin (the centre of mass) is com_offset above it
         made = spade::testing::still_air_case(of::data_dir() / of::kModelFile, "openframe5f", grid, kit_step_s, spade::testing::d1_fpv_hold(hub_mean));
     } else if (x500) {
         made = spade::testing::still_air_case(spade::testing::x500::data_dir() / spade::testing::x500::kModelFile, "x500", grid, 0.0002f,
