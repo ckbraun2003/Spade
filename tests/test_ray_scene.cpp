@@ -151,7 +151,7 @@ TEST(RayScene, TheBvhAgreesWithABruteForceScanOfTheSameTriangles) {
         const glm::mat4& l2w = scene.statics[item].local_to_world;
         const rd::MeshData& m = scene.meshes[item];
         for (uint32_t t = 0; t + 2 < m.indices.size(); t += 3) {
-            auto w = [&](uint32_t v) { return glm::dvec3(l2w * glm::vec4(m.positions[m.indices[v]], 1.0f)); };
+            auto w = [&](uint32_t v) { return glm::dvec3(glm::dmat4(l2w) * glm::dvec4(glm::dvec3(m.positions[m.indices[v]]), 1.0)); };  // the transform in double, as the ray scene bakes it
             tris.push_back({w(t), w(t + 1), w(t + 2), item, t / 3u});
         }
     }
