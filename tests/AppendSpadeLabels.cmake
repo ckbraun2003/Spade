@@ -21,7 +21,17 @@
 # already holds the discovered list -- gtest_discover_tests()'s default
 # TEST_LIST name, "<target>_TESTS" (this call site never overrides TEST_LIST).
 if(spade_tests_TESTS)
-    set_tests_properties(${spade_tests_TESTS} PROPERTIES LABELS "spade")
+    # A test of the FcLive* suites needs a real autopilot and takes "fc" instead (the fc block at the end of this file, TD-17): it is left out of
+    # this blanket call, because CTest MERGES a LABELS value into the labels a test already has, so "spade" given here could not be taken back.
+    set(_spade_blanket_tests "")
+    foreach(_spade_test_name ${spade_tests_TESTS})
+        if(NOT _spade_test_name MATCHES "^FcLive[^.]*\\.")
+            list(APPEND _spade_blanket_tests "${_spade_test_name}")
+        endif()
+    endforeach()
+    set_tests_properties(${_spade_blanket_tests} PROPERTIES LABELS "spade")
+    unset(_spade_blanket_tests)
+    unset(_spade_test_name)
 endif()
 
 # S5 final-review fix wave (I2): CMakeLists.txt's gtest_discover_tests() call
@@ -136,7 +146,7 @@ endif()
 # (`-L spade`: scripts/test.ps1 and the Docker leg) leave it out with no edit to
 # scripts/, exactly as the "step" label does (TD-16). The unit and replay tests of
 # the same work (FcRunFolder, the codec, the frames) are not FcLive and stay "spade".
-# The label is ASSIGNED, not appended (see the gpu block above for why). TIMEOUT 900:
+# The blanket "spade" call at the top leaves these tests out (CTest merges LABELS, so "spade" could not be taken back here). TIMEOUT 900:
 # a lockstep flight is minutes of wall time, not the blanket 60 s.
 # tests/fc_label_check.cmake pins this rule (ctest FcLabel.LiveSuitesAreOutsideTheSpadeSet).
 if(spade_tests_TESTS)
