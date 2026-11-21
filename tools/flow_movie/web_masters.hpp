@@ -454,7 +454,8 @@ struct Drone {
          Framing{0.40f, 0.20f, 0.55f, 0.40f, 0.22f, 0.30f, 0.05f, 0.01f, 0.06f, 20.0f}, 0.014f, 0.373f, 2.5f},  // 0.2461 hub + 0.127 rotor; its 2.5 mm box (270 x 237 x 270, L106)
         // The OpenFrame-5F (O138): the real open-hardware 5 inch FPV frame, Interface's parts table (tools/flow_movie/data/openframe5f_build) over Physics' flow model
         // (tools/flow_movie/data/openframe5f). Its 5 inch rotors reach 0.1764 m from the axis (hubs at +-0.0695 m along and +-0.089 m across, plus the 0.0635 m rotor), so the
-        // framing is the X500's scaled by about 0.47, aimed at the kit's centre of mass (0.0300 m above the design origin: aim_below -0.030, so the drone sits mid-frame); its fine box is the FPV's 1.25 mm one, held at the DESIGN origin (the world origin; the centre of mass sits above it), so the hub disc, 0.0436 m above the design origin in the table's frame, is the hold's input: d1_fpv_hold(0.0436), y 0.00875 m, 7 rows (Physics, tried on the device: 0.0136 left the line outside the grid). The blade
+        // framing is the X500's scaled by about 0.47, aimed at the kit's centre of mass (0.0300 m above the design origin: aim_below -0.030, so the drone sits mid-frame); its fine box is the FPV's 1.25 mm one, held at the DESIGN origin (the world origin; the centre of mass sits above it), so the hub disc, 0.0436 m above the design origin in the table's frame, is the hold's input: d1_fpv_hold(0.0436), y 0.00875 m, 7 rows (Physics, tried on the device: 0.0136 left the line outside the grid). The parts' range is +-0.8 (O144: lighter than the X500's 0.4, which read the arms as
+        // saturated dark red; set from the solve's own stills). The blade
         // range is the X500's +-6, kept because the kit's own test stills (steps 600 and 667, 70 degrees, 67,572 blade pixels) read the same: C_p p1 -7.1, p5 -6.2, p25 -3.9, p50 -2.0, p95 -0.4, min -7.9;
         // +-6 clips 6.0% at the blue end (the roots), +-7 would clip 1.4%. The card names the kit factually and carries the stand-in propeller and published-dimensions sentences.
         {"openframe5f", "../tools/flow_movie/data/openframe5f/openframe5f.model.yaml", "fpv-quadcopter", "5 inch FPV quadcopter",
@@ -463,7 +464,7 @@ struct Drone {
          "generated three-blade stand-in blades", "the frame, arms, stack, motors and battery",
          "Propellers: a measured 5x4 three-blade stand-in for the kit's 5x4.3x3, its rotor model run above the speeds it was measured at, carrying about 90% of the weight in a 0.20 s check, in open air with no frame; "
          "motors and flight stack modelled from published dimensions; battery: an assumed typical 6S pack.",
-         "the stand-in's generated blades"},
+         "the stand-in's generated blades", 0.8f},
     }};
     return table;
 }
