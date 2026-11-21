@@ -236,6 +236,8 @@ add_executable(spade_tests
     test_vulkan_off_includes.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
+    test_fc_run_folder.cpp
+    test_fc_live_harness.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
@@ -1001,6 +1003,31 @@ if(WIN32)
         set_tests_properties(DockerUp.StartsADownDaemon PROPERTIES
             LABELS spade
             TIMEOUT 120)
+    endif()
+endif()
+
+# The `fc` label (TD-17): the FcLive* suites carry `fc` and not `spade`, so `-L spade` (the gates) leaves them out, `-L fc` finds them, and the unit
+# suites of the same work stay in `spade`. A cmake script asks ctest itself (-N, nothing runs), so the rule is pinned against the real label sets.
+# LABELS spade.
+add_test(NAME FcLabel.LiveSuitesAreOutsideTheSpadeSet
+    COMMAND "${CMAKE_COMMAND}" "-DCTEST=${CMAKE_CTEST_COMMAND}" "-DBUILD=${CMAKE_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/fc_label_check.cmake")
+set_tests_properties(FcLabel.LiveSuitesAreOutsideTheSpadeSet PROPERTIES
+    LABELS spade
+    TIMEOUT 120)
+
+# scripts/fc-run.ps1 runs the `fc` tests as one job (Docker up, one PX4 container, the tests, the container stopped, a summary), with a fake docker-up,
+# a fake px4-sitl.ps1 and a fake ctest on PATH: no Docker, no PX4, no real test is touched. Windows only (PowerShell). LABELS spade.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_FC_RUN_REPO NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        add_test(NAME FcRun.RunsTheAutopilotTestsAsOneJob
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/fc_run_test.ps1" "${SPADE_FC_RUN_REPO}")
+        set_tests_properties(FcRun.RunsTheAutopilotTestsAsOneJob PROPERTIES
+            LABELS spade
+            TIMEOUT 180)
     endif()
 endif()
 
