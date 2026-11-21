@@ -177,6 +177,11 @@ TEST(OpenFrame5fInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
                 }
                 std::printf("[kit-box] %-22s %-34s x %+.4f .. %+.4f  y %+.4f .. %+.4f  z %+.4f .. %+.4f m  volume %.4e m^3\n", name.c_str(),
                             object["store_ref"]["file"].as<std::string>().c_str(), lo.x, hi.x, lo.y, hi.y, lo.z, hi.z, m.volume);
+                const Piece& piece = pieces.back();
+                std::printf("[kit-obj] %-22s %-34s centroid (%+.5f, %+.5f, %+.5f) m; per unit mass about it: xx %.4e yy %.4e zz %.4e xy %.4e xz %.4e yz %.4e m^2\n",
+                            name.c_str(), object["store_ref"]["file"].as<std::string>().c_str(), piece.centroid.x, piece.centroid.y, piece.centroid.z,
+                            piece.inertia[0][0] / piece.volume, piece.inertia[1][1] / piece.volume, piece.inertia[2][2] / piece.volume,
+                            piece.inertia[1][0] / piece.volume, piece.inertia[2][0] / piece.volume, piece.inertia[2][1] / piece.volume);
             }
             for (const Piece& p : pieces) b.centre += (mass * p.volume / volume) * p.centroid;
             b.centre /= mass;
