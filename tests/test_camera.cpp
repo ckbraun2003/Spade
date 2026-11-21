@@ -41,7 +41,7 @@ namespace {
     r.aa_samples = 1;
     r.exposure_gain = 1.0f;
     r.cull_mask = 0xFBu;  // every group but the carrier's own bit (bit 2)
-    r.channels = 0;
+    r.channels = sn::camera_channel::image | sn::camera_channel::instance_id;
     return r;
 }
 
@@ -110,14 +110,14 @@ TEST(CameraSchedule, DividerAndPhaseDecideWhichSubstepsRenderAFrame) {
 }
 
 TEST(CameraRowIssue, AValidRowAndAnInertZeroRowAreAccepted) {
-    EXPECT_EQ(sn::camera_row_issue(good_row()), "");
+    EXPECT_EQ(sn::camera_row_issue(good_row(), 0), "");
     sn::CameraSensorRow zero{};
-    EXPECT_EQ(sn::camera_row_issue(zero), "") << "kind none is inert: a freed or reserved slot";
+    EXPECT_EQ(sn::camera_row_issue(zero, 0), "") << "kind none is inert: a freed or reserved slot";
 }
 
 TEST(CameraRowIssue, EachBrokenRuleIsRefusedNamingItsField) {
     const auto expect_refused = [](sn::CameraSensorRow r, const char* field) {
-        const std::string issue = sn::camera_row_issue(r);
+        const std::string issue = sn::camera_row_issue(r, 1);
         EXPECT_NE(issue, "") << field << " should be refused";
         EXPECT_NE(issue.find(field), std::string::npos) << "the refusal should name " << field << ": " << issue;
     };
@@ -143,7 +143,6 @@ TEST(CameraRowIssue, EachBrokenRuleIsRefusedNamingItsField) {
     r = good_row(); r.aa_samples = 0; expect_refused(r, "aa_samples");
     r = good_row(); r.exposure_gain = 0.0f; expect_refused(r, "exposure_gain");
     r = good_row(); r.cull_mask = 0x100u; expect_refused(r, "cull_mask");
-    r = good_row(); r.channels = 1; expect_refused(r, "channels");
     r = good_row(); r.mount_pos.y = nan; expect_refused(r, "mount_pos");
     r = good_row(); r.mount_orient = glm::quat(2.0f, 0.0f, 0.0f, 0.0f); expect_refused(r, "mount_orient");
     r = good_row(); r._reserved0 = 1; expect_refused(r, "_reserved0");
@@ -156,5 +155,46 @@ TEST(CameraRowIssue, AKb4LensWithItsCoefficientsIsAccepted) {
     r.k2 = -0.003f;
     r.k3 = 0.0005f;
     r.k4 = -0.00007f;
-    EXPECT_EQ(sn::camera_row_issue(r), "");
+    EXPECT_EQ(sn::camera_row_issue(r, 0), "");
+}
+
+TEST(CameraChannel, TheBitsAreTheOnesRenderingNamed) {
+    EXPECT_EQ(sn::camera_channel::image, 1u);
+    EXPECT_EQ(sn::camera_channel::instance_id, 2u);
+    EXPECT_EQ(sn::camera_channel::keypoints, 4u);
+    EXPECT_EQ(sn::camera_channel::known, 0x7u) << "depth (bit 3) and above are reserved, refused in v1";
+    EXPECT_EQ(sn::camera_channel::known, sn::camera_channel::image | sn::camera_channel::instance_id | sn::camera_channel::keypoints);
+}
+
+TEST(CameraRowIssue, ChannelsAreAKnownSetAndAnActiveCameraNeedsAtLeastOne) {
+    const auto issue_with = [](uint32_t channels) {
+        sn::CameraSensorRow r = good_row();
+        r.channels = channels;
+        return sn::camera_row_issue(r, 1);
+    };
+    EXPECT_EQ(issue_with(sn::camera_channel::image), "");
+    EXPECT_EQ(issue_with(sn::camera_channel::instance_id), "");
+    EXPECT_EQ(issue_with(sn::camera_channel::known), "") << "all three, with a keypoint group declared";
+    for (const uint32_t bad : {0u, 1u << 3, 1u << 4, 0x80000000u, sn::camera_channel::known | (1u << 3)}) {
+        const std::string issue = issue_with(bad);
+        EXPECT_NE(issue, "") << std::hex << bad;
+        EXPECT_NE(issue.find("channels"), std::string::npos) << "the refusal names the field: " << issue;
+    }
+}
+
+TEST(CameraRowIssue, AZeroRowStaysInertWhateverTheWorldDeclares) {
+    const sn::CameraSensorRow zero{};
+    EXPECT_EQ(sn::camera_row_issue(zero, 0), "");
+    EXPECT_EQ(sn::camera_row_issue(zero, 4), "");
+}
+
+TEST(CameraRowIssue, KeypointsNeedTheWorldsKeypointGroups) {
+    sn::CameraSensorRow r = good_row();
+    r.channels = sn::camera_channel::image | sn::camera_channel::keypoints;
+    const std::string none = sn::camera_row_issue(r, 0);
+    EXPECT_NE(none, "") << "keypoints with no keypoint groups declared writes nothing";
+    EXPECT_NE(none.find("keypoint_groups"), std::string::npos) << "the refusal names the capacity: " << none;
+    EXPECT_EQ(sn::camera_row_issue(r, 1), "");
+    r.channels = sn::camera_channel::image;
+    EXPECT_EQ(sn::camera_row_issue(r, 0), "") << "a camera that does not ask for keypoints needs no groups";
 }
