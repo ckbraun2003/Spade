@@ -1427,6 +1427,10 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     EXPECT_FLOAT_EQ(d->framing.elevation_deg, 70.0f);
     // Centred, the drone is no nearer the camera than the aim, so it reads smaller than when it sat high (above the aim, closer): the subject radius 0.15 m (from 0.19) fills about three quarters of the 1080 p frame's height at 70 degrees.
     EXPECT_NEAR(d->framing.subject_m, 0.15f, 1.0e-6f);
+    // The O144 re-make: "lighten the colors a bit". The kit's parts range is +-0.8 of the disc loading (from the X500's 0.4, which read the arms as saturated dark red): measured on the
+    // solve's cache at 70 degrees, 0.7 and 1.0 bracket it (the arms' red cores shrink to the hot spots under the rotors, the pale body stays pale); the blades keep their own +-6.
+    EXPECT_FLOAT_EQ(d->parts_cp_range, 0.8f);
+    EXPECT_FLOAT_EQ(d->blade_cp_range, 6.0f) << "the blades' own range does not move: O128's colour stays";
     EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
     // The clip record's Look sentence names the blades this drone draws: the kit's are the generated stand-in, the X500's real meshes (the default).
     EXPECT_EQ(std::string(d->look_blades), "the stand-in's generated blades");
