@@ -261,7 +261,7 @@ TEST(RotorElement, RotorRowLayoutSizesAreVisibleAtRuntime) {
     EXPECT_EQ(offsetof(RotorRow, omega_cmd), 52u);
     EXPECT_EQ(offsetof(RotorRow, thrust_coeff), 56u);
     EXPECT_EQ(offsetof(RotorRow, torque_coeff), 60u);
-    EXPECT_EQ(offsetof(RotorRow, _r0), 64u);
+    EXPECT_EQ(offsetof(RotorRow, tau_down), 64u);  // was the reserved lane _r0
 }
 
 TEST(RotorElement, RotorRowIsRegisteredStateAndZeroFillsInert) {
