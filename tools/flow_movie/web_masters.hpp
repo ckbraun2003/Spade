@@ -225,7 +225,8 @@ inline constexpr float kSurfacePressureCpRange = 0.4f;
 // all below ambient (C_p p1 -7.06, p5 -6.37, p25 -4.11, p50 -1.98, p95 -0.28). +-6 uses the map's whole blue half and clips 8.3% at the blue end (the roots); +-7 would clip 1.1%.
 inline constexpr float kBladePressureCpRange = 6.0f;
 // The gain that makes the blades read on their own range under the parts' colouring (DrawItem::flow_gain): the colouring's range over the blades'.
-[[nodiscard]] constexpr float blade_flow_gain() { return kSurfacePressureCpRange / kBladePressureCpRange; }
+[[nodiscard]] constexpr float blade_flow_gain(float blade_range) { return kSurfacePressureCpRange / blade_range; }
+[[nodiscard]] constexpr float blade_flow_gain() { return blade_flow_gain(kBladePressureCpRange); }
 
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
@@ -397,6 +398,12 @@ struct Drone {
     // hold is fixed by the harness, so it leaves this 0).
     float fine_cell_mm = 0.0f;
     float hub_above_origin_m = 0.0f;
+    // What a blades film says of this drone (--prop-blur mode=blades): the blades' OWN fixed range in disc loadings (measured from this airframe's own test stills; the X500's is
+    // kBladePressureCpRange), what the blades are called, what the pressure colour is on, and any card lines of its own (a bullet after the caveats; the X500 has none).
+    float blade_cp_range = kBladePressureCpRange;
+    std::string_view blade_words = "the kit's real blades";
+    std::string_view parts_words = "the frame, arms, legs, boards and motors";
+    std::string_view card_extra = "";
 };
 
 [[nodiscard]] inline const std::array<Drone, 3>& drones() {
@@ -775,7 +782,9 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false, bool blades = false) {
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false, bool shaded = false, bool blades = false,
+                                                    float blade_range = kBladePressureCpRange, std::string_view blade_words = "the kit's real blades",
+                                                    std::string_view parts_words = "the frame, arms, legs, boards and motors") {
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
@@ -784,15 +793,15 @@ struct DeliveryGuard {
     // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high, or (--surface-pressure) the simulated air's pressure
     // beside the simulated solids, painted on the drawn parts, blue below the still air's pressure to red above (the lead's words, O124). Whichever, no figures.
     const std::string colour =
-        pressure ? "Colour shows pressure on the surfaces (the frame, arms, legs, boards and motors), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
+        pressure ? "Colour shows pressure on the surfaces (" + std::string(parts_words) + "), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
                    "and the picture carries no pressure or speed figures. The pressure is the simulated air's, read beside the simulated solids (the parts as solids at " + cell + " mm) and painted on the "
                    "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. " +
-                   (blades ? "The rotors are " + rotors + " and their blades are the kit's real blades, drawn at the simulation's rotor angle. The blade colour is the air pressure the rotor model makes "
+                   (blades ? "The rotors are " + rotors + " and their blades are " + std::string(blade_words) + ", drawn at the simulation's rotor angle. The blade colour is the air pressure the rotor model makes "
                              "beside the blades, spread over about 5 mm by the model's force kernel, not a pressure resolved on the blade surface. "
                            : "The rotors are " + rotors + ", which have no surface, so they carry no pressure colour. ") +
                    "Parts inside the airframe's body, with no air nearby in the simulation, are drawn in their material colour. " +
                    (blades ? "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading on the parts and at +-" +
-                                 std::format("{:g}", static_cast<double>(kBladePressureCpRange)) + " of the disc loading on the blades, each fixed, symmetric about the still air's pressure, and the same in every frame"
+                                 std::format("{:g}", static_cast<double>(blade_range)) + " of the disc loading on the blades, each fixed, symmetric about the still air's pressure, and the same in every frame"
                            : "The colour range is fixed at +-" + std::format("{:g}", static_cast<double>(kSurfacePressureCpRange)) + " of the disc loading, symmetric about the still air's pressure"
                              ", the same in every frame") +
                    (shaded ? "; the surfaces are lit for shape; the colour is the pressure. " : ". ")
@@ -855,8 +864,9 @@ struct DeliveryGuard {
 
 // The .md's heading: the clip's title, except an S8 whose look is the pressure or the vorticity cloud (the same flags as shows_line), which names what it shows
 // and never says "volume render" (the lead, O124: the pressure master's .md carried the S8 fallback title).
-[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure) {
+[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false) {
     if (c.id == "S8" && !particles) {
+        if (pressure && blades) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades", d);
         if (pressure) return in_words("Reference quad in hover: the air pressure on the airframe in the rotor wake", d);
         if (cloud) return in_words("Reference quad in hover: the vorticity cloud of the rotor wake", d);
     }
@@ -916,7 +926,7 @@ struct CaptionInput {
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
     const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
-    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure) + "\n\n";
+    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
@@ -924,7 +934,8 @@ struct CaptionInput {
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades, drone.blade_cp_range, drone.blade_words, drone.parts_words), drone) + "\n";
+    if (!drone.card_extra.empty()) t += "- " + in_words(std::string(drone.card_extra), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }
