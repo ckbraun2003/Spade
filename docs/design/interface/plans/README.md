@@ -6,6 +6,8 @@ Active Interface plans go here, dated (`YYYY-MM-DD-<topic>.md`).
 
 - **The v1 baselines** (`INT-4`, `SL14b`): `2026-10-02-v1-baselines.md`, spec and plan in one; draft for the lead's review.
 
+- **The autopilot links** (O140, phase 0): `2026-11-21-fc-links.md`, PX4 first (pin v1.17.0), then ArduPilot (JSON); the MAVLink encoder, Docker for PX4, the phase 1 download list, effort per phase; draft for the lead's review.
+
 ## Done
 
 - **The drone sim box** is the lead's plan (Tasks 4–6 were Interface's, built and verified): `../../plans/2026-10-01-drone-sim-box-plan.md`, with its design beside it.
