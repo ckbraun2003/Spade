@@ -707,9 +707,9 @@ inline constexpr float kDiscMaxAlpha = 0.5f;  // a drawn rotor disc covers at mo
 }
 
 // The clip record's sentence on how the turning rotors are drawn: the disc at the blades' time-averaged coverage (times a gain, when it is not 1),
-// or the sampled blur's copies.
-[[nodiscard]] inline std::string prop_blur_note(const PropBlur& blur) {
-    if (blur.blades) return "the rotors' real blades drawn opaque at the simulation's rotor angle, with no blur";
+// or the sampled blur's copies. The blades mode names the blades the drone draws (`blades`: the X500's are real meshes, the kit's the generated stand-in).
+[[nodiscard]] inline std::string prop_blur_note(const PropBlur& blur, std::string_view blades = "the rotors' real blades") {
+    if (blur.blades) return std::string(blades) + " drawn opaque at the simulation's rotor angle, with no blur";
     if (blur.sampled) {
         return std::format("each rotor's blade drawn as {} copies spread over a {:g} s shutter so the turning shows", blur.samples, blur.shutter_s);
     }

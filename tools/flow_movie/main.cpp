@@ -2531,7 +2531,7 @@ struct WebFilming {
             in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + declared + ".";
         }
         if (!opt.build_parts.empty()) {
-            if (const auto blur = parse_prop_blur(opt.prop_blur)) in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + prop_blur_note(*blur) + ".";
+            if (const auto blur = parse_prop_blur(opt.prop_blur)) in.extra += (in.extra.empty() ? "" : " ") + std::string("Look: ") + (in.drone != nullptr ? prop_blur_note(*blur, in.drone->look_blades) : prop_blur_note(*blur)) + ".";
             if (const auto light = parse_drone_light(opt.drone_light); light && light->on()) in.extra += " " + drone_light_note(*light) + ".";
         }
         if (!note.empty()) in.extra += (in.extra.empty() ? "" : " ") + std::string("Legend: ") + note;
