@@ -770,6 +770,41 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
     EXPECT_EQ(text.find("actuator discs"), std::string::npos) << text;
 }
 
+// The .md's title follows the look (the lead, O124: the pressure film's master was titled by the S8 clip's fallback, "a volume render of the rotor wake"). A
+// --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --nasa-cloud S8 names the vorticity cloud; the plain S8, and every
+// other clip, keeps its clip's title.
+TEST(FlowMovieWeb, TheCaptionsTitleFollowsTheLook) {
+    const web::Clip& s8 = *web::find_clip("S8");
+    auto first_line = [](const std::string& text) { return text.substr(0, text.find('\n')); };
+    web::CaptionInput in;
+    in.clip = &s8;
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.command = "flow_movie --web S8 --drone x500";
+
+    in.pressure = true;
+    const std::string pressure = web::caption_text(in);
+    EXPECT_EQ(first_line(pressure), "# Open-source quadcopter in hover: the air pressure on the airframe in the rotor wake") << pressure;
+    EXPECT_EQ(pressure.find("volume render"), std::string::npos) << "a pressure film is not a volume render: " << pressure;
+    in.pressure = false;
+
+    in.cloud = true;
+    const std::string cloud = web::caption_text(in);
+    EXPECT_EQ(first_line(cloud), "# Open-source quadcopter in hover: the vorticity cloud of the rotor wake") << cloud;
+    EXPECT_EQ(cloud.find("volume render"), std::string::npos) << cloud;
+    in.cloud = false;
+
+    EXPECT_EQ(first_line(web::caption_text(in)), "# Open-source quadcopter in hover: a volume render of the rotor wake") << "the plain S8: the clip's own title";
+
+    // a look flag on another clip changes nothing: the title is that clip's
+    const web::Clip& s4 = *web::find_clip("S4");
+    web::CaptionInput other;
+    other.clip = &s4;
+    other.pressure = true;
+    other.command = "flow_movie --web S4";
+    EXPECT_EQ(first_line(web::caption_text(other)), "# " + web::clip_title(s4, web::default_drone()));
+}
+
 // The caption's standing caveats say the cell and the step the film ran at: today's are 4 mm and 0.2 ms, and a --cell-mm 2.5 --step-us 50 film says
 // 2.5 mm and 0.05 ms, in the same words, so a caption never states another run's numbers. Defaults leave the words as they were.
 TEST(FlowMovieWeb, TheCaptionStatesTheCellAndStepTheFilmRanAt) {
