@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <format>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -68,6 +69,15 @@ struct QLook {
     if (!(std::isfinite(vort_max) && vort_max > 0.0f)) return std::nullopt;
     return spade::render::volume_transfer(spade::render::FlowQuantity::vorticity, spade::render::ColourMapId::blue_magenta,
                                           vort_max * look.vorticity_max, look.onset, look.sigma);
+}
+
+// The caption's words for the swirls the pressure film shows with --nasa-cloud (O144, Oversight's terms): how they are drawn, and that they are the simulated air's own vorticity, not a
+// measurement. The rule and its threshold are the cloud's own, so a changed --q-look changes the words.
+[[nodiscard]] inline std::string vortex_note(const QLook& look) {
+    return std::format("The swirls round the rotors are the simulated air's own vorticity (the local spin of the air), drawn as a soft cloud from blue (low) to magenta (high): clear where the "
+                       "vorticity is under {:g}% of the map's range, which tops out at {:g}% of each frame's largest vorticity, up to a density of {:g} per metre at its top, so only the strongest "
+                       "swirls show; the cloud is the simulated air, not a measurement, and the parts and blades keep their pressure colour under it.",
+                       static_cast<double>(look.onset) * 100.0, static_cast<double>(look.vorticity_max) * 100.0, static_cast<double>(look.sigma));
 }
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3

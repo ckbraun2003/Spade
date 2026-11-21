@@ -8,7 +8,7 @@
 //   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-quad|case-smoke
 //   flow_movie --video case --case FILE.case.yaml [--controls FILE]
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
-//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
+//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only] [--from-cache]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
 //   flow_movie --video d1-hover|d1-still|case ... --gpu
 //
@@ -1247,7 +1247,8 @@ constexpr float kVortexFloor = -5.0f;
 // view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
                                             const Look& look = {}, bool particle_views = false,
-                                            const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false) {
+                                            const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false,
+                                            float parts_cp_range = web::kSurfacePressureCpRange) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1556,8 +1557,25 @@ constexpr float kVortexFloor = -5.0f;
                 }};
         };
         film.views.push_back(cp_view("cp", 0.0f, 1.0f, false));
-        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, false));
-        film.views.push_back(cp_view("surface-pressure-shaded", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, true));
+        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, parts_cp_range, false));
+        film.views.push_back(cp_view("surface-pressure-shaded", web::kSurfacePressureSearchCells, parts_cp_range, true));
+        // The pressure film with the vortices of the simulated air round the rotors (O144): the same colouring on the parts and blades, and the vorticity cloud as the one flow layer,
+        // added AFTER apply_view (which replaces the scene's flow content); the GL march stops at the frame's opaque depth (gl_renderer.cpp), so the cloud does not paint over the
+        // parts it is behind.
+        if (nasa_look) {
+            const auto with_cloud = [&](const char* name, bool shade) {
+                View v = cp_view(name, web::kSurfacePressureSearchCells, parts_cp_range, shade);
+                v.on_parts = [on = v.on_parts, q = *nasa_look](const spade::FlowVolume& vol, render::RenderScene& scene) -> spade::Result<std::string> {
+                    auto note = on(vol, scene);
+                    if (!note) return note;
+                    if (auto tf = vorticity_cloud(vol, q)) scene.flow_layers.push_back(render::FlowLayer{&vol, {*tf}, {}});
+                    return note;
+                };
+                return v;
+            };
+            film.views.push_back(with_cloud("surface-pressure-vortices", false));
+            film.views.push_back(with_cloud("surface-pressure-vortices-shaded", true));
+        }
     }
     return film;
 }
@@ -1702,7 +1720,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    plan.drone->model_file, d1_web_hold(plan.cell_mm, plan.drone->hub_above_origin_m));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview, plan.nasa, plan.volume);
+                               plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
@@ -1737,7 +1755,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 frame = *got;
             }
             if (visual || build) {
-                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, blade_gain = web::blade_flow_gain(plan.drone->blade_cp_range), store =std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, blade_gain = web::blade_flow_gain(plan.drone->blade_cp_range, plan.drone->parts_cp_range), store =std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1783,7 +1801,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.pressure ? (plan.shade ? "surface-pressure-shaded" : "surface-pressure") : plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, web::s8_view_name(plan.pressure, plan.shade, plan.nasa.has_value(), plan.cloud, plan.particles, plan.particles_preview)),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
@@ -1962,6 +1980,7 @@ struct Options {
     bool keep_cache = false;
     bool drop_cache = false;  // --drop-cache: a LiveRun film's cache goes after its render
     bool simulate_only = false;
+    bool from_cache = false;  // --from-cache: draw the film from the frames already in the cache folder (a --simulate-only run's, kept); never solve (O144)
     bool cpu = false;  // stills on the CPU renderer instead of GL
     std::string view;  // stills of this view only
     int still_frame = -1;  // stills of this frame only (cached; no simulation past it)
@@ -2513,6 +2532,9 @@ struct WebFilming {
         in.volume = opt.volume;
         in.cloud = opt.nasa_cloud;
         in.pressure = opt.surface_pressure;
+        if (opt.surface_pressure && opt.nasa_cloud) {
+            if (const auto q = parse_q_look(opt.q_look)) in.vortex_note = vortex_note(*q);
+        }
         in.shaded = opt.surface_shade;
         if (const auto blades_blur = parse_prop_blur(opt.prop_blur)) in.blades = blades_blur->blades;
         in.step_us = opt.step_us.value_or(200u);
@@ -2666,7 +2688,7 @@ struct WebFilming {
         plan.lines = opt.lines_prop;
     }
     if (opt.nasa) {
-        if (const std::string why = web::nasa_refusal(clip->id == "S2" || clip->id == "S8", opt.window_to > 0.0, opt.web_still_only, opt.stream,
+        if (const std::string why = web::nasa_refusal(clip->id == "S2" || clip->id == "S8", opt.window_to > 0.0, opt.web_still_only || opt.from_cache, opt.stream,
                                                       opt.particles, opt.particles_preview, opt.nasa_cloud);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
@@ -2681,8 +2703,8 @@ struct WebFilming {
         return 2;
     }
     if (opt.surface_pressure) {
-        if (const std::string why = web::surface_pressure_refusal(clip->id == "S8", opt.window_to > 0.0, opt.web_still_only, opt.stream, opt.particles,
-                                                                  opt.particles_preview, opt.nasa);
+        if (const std::string why = web::surface_pressure_refusal(clip->id == "S8", opt.window_to > 0.0, opt.web_still_only || opt.from_cache, opt.stream, opt.particles,
+                                                                  opt.particles_preview, opt.nasa, opt.nasa_cloud);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
@@ -2812,6 +2834,12 @@ struct WebFilming {
         ask.resimulate = opt.resimulate;
         ask.frames_on_disk = has_frame_files(cache);
         if (const std::string why = stream_refusal(ask); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+    }
+    if (opt.from_cache) {
+        if (const std::string why = web::from_cache_refusal(true, opt.stream, opt.simulate_only, cached_frames(cache), plan.frames); !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
         }
@@ -2951,7 +2979,9 @@ struct WebFilming {
 
     // Not streamed: a still from a frame an earlier streamed run kept needs no simulation, and the cache is not whole.
     const bool kept_frame = opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, first + still_k));
-    if (kept_frame) {
+    if (opt.from_cache) {
+        std::printf("flow_movie: web %s: drawn from the %u frames kept in %s; no simulation\n", opt.web_id.c_str(), cached_frames(cache), cache.generic_string().c_str());
+    } else if (kept_frame) {
         std::printf("flow_movie: web %s: the still is drawn from frame %u, kept in %s; no simulation\n", opt.web_id.c_str(),
                     first + still_k, cache.generic_string().c_str());
     } else {
@@ -3211,6 +3241,8 @@ int main(int argc, char** argv) {
             opt.n_v = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--simulate-only") {
             opt.simulate_only = true;
+        } else if (arg == "--from-cache") {
+            opt.from_cache = true;
         } else if (arg == "--budget-seconds") {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {
