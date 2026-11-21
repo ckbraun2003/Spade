@@ -200,6 +200,22 @@ inline constexpr float kD1WebSgsCs = 0.17f;
     return {};
 }
 
+// --surface-pressure (O124): the air pressure on the airframe's surfaces, S8 only. Like the cloud it streams a --window run (or redraws kept frames), and it is a different
+// look from --nasa, --nasa-cloud and the particle looks. Empty when the flags are fine, else the refusal's words.
+[[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa) {
+    if (!s8) return "--surface-pressure is for S8";
+    if (window && !still_redraw && !stream) {
+        return "--surface-pressure is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
+    }
+    if (particles || particles_preview) return "--surface-pressure and the particle looks are different looks: use one";
+    if (nasa) return "--surface-pressure and --nasa or --nasa-cloud are different looks: use one";
+    return {};
+}
+
+// How far past a solid the pressure film reads (cells): it paints the detailed kit meshes with the air of Physics' proxy solids, so a drawn point can sit inside a solid
+// cell, and the read goes on outward along the normal to the nearest fluid cell, up to this far (render::FlowSurfaceColouring::search_cells).
+inline constexpr float kSurfacePressureSearchCells = 3.0f;
+
 // --volume (L106h): the S8 particle views draw the points ALONE (their views have no flow layer), so a "volume plus particles" film needs the speed volume
 // under them; --volume adds it. It has nothing to add to without a particle view, and a film with it keeps a folder of its own.
 [[nodiscard]] inline std::string volume_with_particles_refusal(bool volume, bool particles, bool particles_preview) {
@@ -455,9 +471,9 @@ struct Drone {
 }
 
 // Whether a web run draws the drone's wake fade (the soft edge of a drawn wake, hiding the box's cut): S2 and S8, in the plain looks and
-// the nasa CLOUD (a soft volume); not for S1's lines, the particle looks, nor the nasa Q SURFACES (a faded surface vanishes).
-[[nodiscard]] inline bool web_fade_applies(std::string_view clip_id, bool particles_preview, bool particles, bool nasa, bool nasa_cloud) {
-    return (clip_id == "S2" || clip_id == "S8") && !particles_preview && !particles && (!nasa || nasa_cloud);
+// the nasa CLOUD (a soft volume); not for S1's lines, the particle looks, the nasa Q SURFACES (a faded surface vanishes), nor the surface-pressure film (no wake is drawn).
+[[nodiscard]] inline bool web_fade_applies(std::string_view clip_id, bool particles_preview, bool particles, bool nasa, bool nasa_cloud, bool pressure = false) {
+    return (clip_id == "S2" || clip_id == "S8") && !particles_preview && !particles && !pressure && (!nasa || nasa_cloud);
 }
 
 // A WEB RUN'S LOOK, made ONCE (the lead, 2026-11-18, after the cloud thinning was set on the plan's copy while the film's look state read
@@ -728,15 +744,21 @@ struct DeliveryGuard {
 
 // The caveats every caption of a clip carries, by what the clip is (Physics', the lead's rulings): no speed
 // figure anywhere, colour is relative speed, the stand-ins by name.
-[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false) {
-    // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high. Either way no figures.
-    const std::string colour = cloud ? "Colour shows vorticity (the local spin of the air), blue low to magenta high, and the picture carries no vorticity or speed figures. "
-                                     : "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
+[[nodiscard]] inline std::string standing_caveats(const Clip& c, float cell_mm = 4.0f, uint32_t step_us = 200u, bool lines = false, bool cloud = false, bool pressure = false) {
     // The rotors' words: actuator discs of fixed thrust and swirl, or (--lines) actuator lines with the blade polar fitted to the propeller.
     const std::string rotors = lines ? "actuator lines with a fitted blade polar" : "actuator discs of fixed thrust and swirl";
     // The cell and the step the film ran at, in the caveats' own words (today's: 4 mm, 0.2 ms; --cell-mm / --step-us change them).
     const std::string cell = std::format("{:g}", cell_mm);
     const std::string step_ms = std::format("{:g}", static_cast<double>(step_us) / 1000.0);
+    // What the colour is: relative speed, or (--nasa-cloud) vorticity, the local spin of the air, blue low to magenta high, or (--surface-pressure) the simulated air's pressure
+    // beside the simulated solids, painted on the drawn parts, blue below the still air's pressure to red above (the lead's words, O124). Whichever, no figures.
+    const std::string colour =
+        pressure ? "Colour shows pressure on the surfaces (the frame, arms, legs, boards and motors), blue below the air's ambient pressure to red above, centred on the pressure of the still air, "
+                   "and the picture carries no pressure or speed figures. The pressure is the simulated air's, read beside the simulated solids (the parts as solids at " + cell + " mm) and painted on the "
+                   "drawn parts: not a surface-resolved pressure, first order in the cell size, showing where the push and the suction are and not validated magnitudes. The rotors are " + rotors +
+                   ", which have no surface, so they carry no pressure colour. "
+        : cloud ? "Colour shows vorticity (the local spin of the air), blue low to magenta high, and the picture carries no vorticity or speed figures. "
+                : "Colour shows relative speed, not validated speed, and the picture carries no speed figures. ";
     std::string t;
     if (c.scene == Scene::quad) {
         t += "Stand-in: the reference quad is four actuator discs (uniform thrust and swirl), with no airframe, in "
@@ -794,8 +816,11 @@ struct DeliveryGuard {
 
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
-[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false) {
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false) {
     const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (pressure && !particles && c.id == "S8") {  // --surface-pressure: the air's pressure on the surfaces, nothing else drawn of the air
+        return "The air pressure on the surfaces of the reference quad's rigid parts, blue (below ambient) to red (above), with four " + rotors + " driving the air, in a slow orbit.";
+    }
     if (cloud && !particles && c.id == "S8") {  // --nasa-cloud: the vorticity as a soft cloud
         return "The vorticity of the air round the reference quad's rigid parts and four " + rotors + ", as a soft cloud from blue (low) to magenta (high), in a slow orbit.";
     }
@@ -828,6 +853,7 @@ struct CaptionInput {
     bool particles = false;     // --particles / --particles-preview: the film shows air points carried by the flow
     bool volume = false;        // --volume: ... over the speed volume (without it the points stand alone and no volume is claimed)
     bool cloud = false;         // --nasa-cloud: the film shows the vorticity as a soft cloud, and its colour is vorticity, not relative speed
+    bool pressure = false;      // --surface-pressure: the film shows the air's pressure on the surfaces, and its colour is pressure, not relative speed
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -839,11 +865,11 @@ struct CaptionInput {
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
-    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud), drone) + "\n";
+    t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
 }
