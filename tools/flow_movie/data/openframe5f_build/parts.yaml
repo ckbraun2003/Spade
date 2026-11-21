@@ -1,0 +1,73 @@
+# The OpenFrame-5F build for the website clips: where each part sits on the 5 inch FPV kit of OpenDrone (Incutec BV), on the maker's own CAD. Written from the files' own measurements; the frame-only table
+# first (the frame and its printed parts); the stack, motors, battery and propellers follow in the same file.
+#
+# SOURCE. The maker's release folder releases/rev2.2 of https://github.com/OpenDrone-hw/OpenFrame-5F (commit d14c4b07c80020f39d993c68e25c96eda432dceb, CERN-OHL-S-2.0), 16 single-part STEP files, each checked against its
+# manifest.json SHA-256; 15 of them are in the part store (record docs/design/interface/records/2026-11-21-fpv-kit-sources.md, sections 5 and 6, with every store_ref). The Airtag/Antenna mount is not (the converter
+# refuses a face of it at every tolerance tried) and is left out. The Arm is stored at deflection 0.025 mm (a tessellation fault at 0.03 mm and coarser), the rest at 0.05 mm.
+#
+# FRAME. One pose for every frame object, as the X500's table: the maker's part-studio frame, metres in the stored meshes, with x across, y along (FORWARD IS -y: the bumper and the camera mounts are at -y, the VTX mount
+# at +y; derived, the maker does not say), z up, the studio's z = 0 the arms' lower face. The design frame is as the X500's: +X forward, +Y up, +Z right, the origin on the lower face of the bottom plate (Base-Bot, z -3..0 mm):
+# (X, Y, Z) = (-y, z + 3 mm, -x), a proper rotation (determinant +1), quaternion [0.5, -0.5, 0.5, 0.5]. The library's design frame (Z up, +X forward, +Y left) takes a table point (X, Y, Z) to (X, -Z, Y), as for the X500.
+#
+# THE FOUR ARMS. The folder exports ONE Arm, in the (+x, +y) quadrant, its motor bore at (89.000, 69.534) mm (measured on its cylindrical faces; 112.93 mm from the centre, 225.9 mm across the diagonal against the maker's
+# "Wheelbase | 226 mm"). The arm is not mirror-symmetric (a boolean common with its mirror image leaves 11 % unmatched), and a rotation of it into the (+x, -y) quadrant overlaps the cross by 64 mm3 while its mirror image
+# does not: the frame has two hands of arm. The converter refuses mirrored axes, so the mirror image is its own mesh (the part store's 'Open CASCADE STEP translator 7.9 1', a derived STEP written by OpenCASCADE from the
+# exported arm, mirrored across y = 0; the record has its sha256), and every placement is a proper turn: Arm at (+x, +y) and, turned half a turn about z, at (-x, -y); the mirrored arm at (+x, -y) and, turned half a turn,
+# at (-x, +y). The Boots (the TPU motor-arm guards) are exported as Boot-L at (+x, +y) and Boot-R at (+x, -y), mirror images of each other; the same two half turns give the other two. All four arm positions are DERIVED
+# (one exported arm and a stated rule); the maker's assembly STEP is not in the folder.
+#
+# THE REST OF THE FRAME. Plates and layers as the maker's README (bottom 3 mm, arms and cross 6 mm, middle plate 3 mm, 20 mm standoffs, top plate 2.5 mm): Base-Bot z -3..0, arms and Cross z 0..6, Base-Top z 6..9, the M3
+# standoffs z 9..29, Top z 29..31.5 (mm, studio). The one exported M3 F-F 20 mm standoff is at (-10.25, 69.5) mm; the middle and top plates carry M3 holes at (+-12.75, 24.0) and (+-10.25, 69.5) (read from the plates'
+# cylindrical faces), so the four standoffs are the exported one translated to those holes (measured positions, derived count). Standoff-L and Standoff-R are the 7 mm CNC aluminium camera side plates (exported both).
+# The 30.5 x 30.5 mm stack holes are at (+-15.25, -28.0) and (+-15.25, 2.5) (self-clinching nut seats in Base-Top) about (0, -12.75): the stack goes there, in the next entries.
+#
+# MASSES. mass_grade is the library's: measured, published, retailer, derived, assumed. The frame is the maker's 170 g; the printed parts are not in it ("without the TPU parts") and have no published mass.
+
+parts:
+  - name: openframe_frame
+    kind: frame
+    mass_kg: 0.170
+    mass_grade: published
+    mass_source: OpenFrame-5F README, "Weight | 170 g measured: carbon, aluminium and hardware, without the TPU parts"; the product page https://opendrone.be/products/openframe says "170 g, without TPU parts (est.)". The two pages disagree on measured against estimated, so it is the maker's published figure and not graded measured here
+    pose_grade: derived
+    # the maker's part-studio frame turned to the design frame (see the header); the plates, the cross, the four arms (two hands), the four M3 standoffs and the two aluminium side plates
+    pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
+    material: carbon
+    objects:
+      - {store_ref: {sha256: ba14a6eee949b89b0f42ede8e0b80100a14c4feeef6313b4353f7aa83cbcd58e, file: Base-Bot.spmesh}}
+      - {store_ref: {sha256: cb393472dec6f98f684d6e20b16595caa8e7005206cee8d88b96819b4a7a66b1, file: Base-Top.spmesh}}
+      - {store_ref: {sha256: 2b38bd8b6e789e91530fdd4216c45221b2ce594099bc7604569221da9587133b, file: Top.spmesh}}
+      - {store_ref: {sha256: 93a5c757de3883dd7a7aa430db36cf4cc2c92fd635f0b0c0d5b4b87a07d933b7, file: Cross.spmesh}}
+      # the arms: the exported one at (+x, +y), its half turn at (-x, -y), the mirror image at (+x, -y), its half turn at (-x, +y)
+      - {store_ref: {sha256: 6244ccff87a459d69e3c5bc27e437be4cf0ab3fcac7e48d6d582ad9bcbd770e9, file: Arm.spmesh}}
+      - {store_ref: {sha256: 6244ccff87a459d69e3c5bc27e437be4cf0ab3fcac7e48d6d582ad9bcbd770e9, file: Arm.spmesh}, offset: {position: [0, 0, 0], orientation: [0, 0, 0, 1]}}
+      - {store_ref: {sha256: f8e341a62f358c55a6921c487a5bb4eace2d830aa44a5f69d88a5a99c1dfb42b, file: "Open CASCADE STEP translator 7.9 1.spmesh"}}
+      - {store_ref: {sha256: f8e341a62f358c55a6921c487a5bb4eace2d830aa44a5f69d88a5a99c1dfb42b, file: "Open CASCADE STEP translator 7.9 1.spmesh"}, offset: {position: [0, 0, 0], orientation: [0, 0, 0, 1]}}
+      # the camera side plates, 7 mm CNC aluminium (the README), exported left and right
+      - {store_ref: {sha256: a80cb66f86290f3cf37942674b16ab77792786edefb65037e67918b1fb950891, file: Standoff-L.spmesh}, material: aluminium_anodised}
+      - {store_ref: {sha256: 21a82b769918749cb5cb78d9650ba267fd7d1e1c081ad054894a66b1d2b8fd19, file: Standoff-R.spmesh}, material: aluminium_anodised}
+      # the M3 F-F 20 mm standoffs: the exported one at (-10.25, 69.5) mm, and its copies at (+10.25, 69.5), (-12.75, 24.0) and (+12.75, 24.0), by translation in the maker's frame (metres)
+      - {store_ref: {sha256: 2d2737a3f0ab6d89817358c49f98c5621a69281740b3b07fb9a30d92b21d8787, file: "Standoff M3 F-F 20 OD5.spmesh"}, material: aluminium_anodised}
+      - {store_ref: {sha256: 2d2737a3f0ab6d89817358c49f98c5621a69281740b3b07fb9a30d92b21d8787, file: "Standoff M3 F-F 20 OD5.spmesh"}, material: aluminium_anodised, offset: {position: [0.0205, 0, 0], orientation: [1, 0, 0, 0]}}
+      - {store_ref: {sha256: 2d2737a3f0ab6d89817358c49f98c5621a69281740b3b07fb9a30d92b21d8787, file: "Standoff M3 F-F 20 OD5.spmesh"}, material: aluminium_anodised, offset: {position: [-0.0025, -0.0455, 0], orientation: [1, 0, 0, 0]}}
+      - {store_ref: {sha256: 2d2737a3f0ab6d89817358c49f98c5621a69281740b3b07fb9a30d92b21d8787, file: "Standoff M3 F-F 20 OD5.spmesh"}, material: aluminium_anodised, offset: {position: [0.0230, -0.0455, 0], orientation: [1, 0, 0, 0]}}
+
+  - name: openframe_printed_parts
+    kind: frame
+    mass_kg: 0.0297
+    mass_grade: assumed
+    mass_source: the README's 170 g leaves the TPU parts out and the maker publishes no mass for them; the CAD volume of the printed parts (4 boots 7.688 cm3, bumper 6.799, two camera mounts 2.904, VTX mount 5.370, anti-slip pad 1.984; 24.745 cm3 in all) at TPU 1.2 g/cm3 and 100 % fill, an upper bound (a real print is not solid)
+    pose_grade: derived
+    # the same pose as the frame; Boot-L at (+x, +y) and (half turn) (-x, -y), Boot-R at (+x, -y) and (half turn) (-x, +y); the camera mounts, the bumper (front), the VTX mount (rear) and the anti-slip pad (on the top plate) once each
+    pose: {position: [0, 0.003, 0], orientation: [0.5, -0.5, 0.5, 0.5]}
+    material: plastic_black
+    objects:
+      - {store_ref: {sha256: e6832261b091e2180ed0c23eee9f412ee96e80c393653b766e13c019cd4a2805, file: Boot-L.spmesh}}
+      - {store_ref: {sha256: e6832261b091e2180ed0c23eee9f412ee96e80c393653b766e13c019cd4a2805, file: Boot-L.spmesh}, offset: {position: [0, 0, 0], orientation: [0, 0, 0, 1]}}
+      - {store_ref: {sha256: 91a8b4d6939c92b4d7b41412737bd68706d303a65ceb2980899f7d0084562109, file: Boot-R.spmesh}}
+      - {store_ref: {sha256: 91a8b4d6939c92b4d7b41412737bd68706d303a65ceb2980899f7d0084562109, file: Boot-R.spmesh}, offset: {position: [0, 0, 0], orientation: [0, 0, 0, 1]}}
+      - {store_ref: {sha256: 38a9fc2bb586840bbb415f39e5e0336c42ee0b309078ddc2f7a620d39b936c82, file: Cam-Mount-L.spmesh}}
+      - {store_ref: {sha256: c0c3549a97cac1f96440e5005e96c847098815495a9b86947a775da8fcc88196, file: Cam-Mount-R.spmesh}}
+      - {store_ref: {sha256: dbac8d8bb97f0187fa0660cf53e5a4bc25a5d05411594364a0c475605a030524, file: Bumper.spmesh}}
+      - {store_ref: {sha256: 594c9bf10a41273931098fec8bc50f286b9ea6022589e483e53147a0e03cd8a1, file: VTX-Mount.spmesh}}
+      - {store_ref: {sha256: e1fa17abb3fa3989ccb000199645489904f3bd2a2b8f6e692208d9e32fe38556, file: "anti-slip pad.spmesh"}, material: rubber_black}
