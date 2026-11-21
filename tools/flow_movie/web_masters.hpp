@@ -426,7 +426,8 @@ struct Drone {
         // The OpenFrame-5F (O138): the real open-hardware 5 inch FPV frame, Interface's parts table (tools/flow_movie/data/openframe5f_build) over Physics' flow model
         // (tools/flow_movie/data/openframe5f). Its 5 inch rotors reach 0.1764 m from the axis (hubs at +-0.0695 m along and +-0.089 m across, plus the 0.0635 m rotor), so the
         // framing is the X500's scaled by about 0.47; its fine box is the FPV's 1.25 mm one, held at the DESIGN origin (the world origin; the centre of mass sits above it), so the hub disc, 0.0436 m above the design origin in the table's frame, is the hold's input: d1_fpv_hold(0.0436), y 0.00875 m, 7 rows (Physics, tried on the device: 0.0136 left the line outside the grid). The blade
-        // range stays the X500's until its own stills set it. The card names the kit factually and carries the stand-in propeller and published-dimensions sentences.
+        // range is the X500's +-6, kept because the kit's own test stills (steps 600 and 667, 70 degrees, 67,572 blade pixels) read the same: C_p p1 -7.1, p5 -6.2, p25 -3.9, p50 -2.0, p95 -0.4, min -7.9;
+        // +-6 clips 6.0% at the blue end (the roots), +-7 would clip 1.4%. The card names the kit factually and carries the stand-in propeller and published-dimensions sentences.
         {"openframe5f", "../tools/flow_movie/data/openframe5f/openframe5f.model.yaml", "fpv-quadcopter", "5 inch FPV quadcopter",
          "the 5 inch FPV quadcopter", "a 0.57 kg 5 inch FPV quadcopter built on the OpenFrame-5F open-hardware frame (its parts' masses summed)",
          Framing{0.19f, 0.095f, 0.26f, 0.19f, 0.10f, 0.14f, 0.025f, 0.005f, 0.03f, 70.0f}, 0.00875f, 0.1764f, 1.25f, 0.0436f, kBladePressureCpRange,

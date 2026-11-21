@@ -1394,7 +1394,7 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     EXPECT_FLOAT_EQ(d->fine_cell_mm, 1.25f);
     EXPECT_NEAR(d->hub_above_origin_m, 0.0436f, 1.0e-6f) << "the film box holds the DESIGN origin (the world origin), so the hold takes the disc height above it: d1_fpv_hold(0.0436), y 0.00875 m (Physics, tried on the device: 0.03875 left the line outside the grid)";
     EXPECT_NEAR(d->reach_m, std::hypot(0.069534f, 0.089f) + 0.0635f, 2.0e-3f);
-    EXPECT_GT(d->blade_cp_range, 0.0f);
+    EXPECT_FLOAT_EQ(d->blade_cp_range, 6.0f) << "the kit's own stills read C_p p1 -7.1, p50 -2.0, p95 -0.4 (6.0% clipped at +-6, 1.4% at +-7): the X500's range stands";
     EXPECT_EQ(web::cell_mm_refusal(1.25f, "openframe5f", true), "");
     EXPECT_NE(web::cell_mm_refusal(2.5f, "openframe5f", true), "") << "its box is its own 1.25 mm one";
 
