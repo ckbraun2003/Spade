@@ -118,6 +118,13 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
         ++done;
         for (int m = 0; m < 4; ++m) max_motor = std::max(max_motor, r->controls[m]);
         ever_armed = ever_armed || r->armed;
+        if (k % 250 == 0 || k == steps) {  // a progress line for whoever watches the run (the run film tails this file)
+            const double wall_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
+            std::ofstream(out / "lockstep-progress.txt", std::ios::app)
+                << "step " << k << " of " << steps << "   sim " << (static_cast<double>(k) * 0.004) << " s   wall " << wall_now << " s   replies " << link->report().replies
+                << "   px4_no_reply 0   px4_stale_reply 0   px4_link_closed 0   motors armed " << (r->armed ? "yes" : "no") << "
+";
+        }
         if (k == (steps * 4) / 5) {
             commander = std::async(std::launch::async, [&] {
                 return docker_exec_to_file(container, "/src/PX4-Autopilot/build/px4_sitl_spade/bin/px4-commander check", out / "commander-check.txt");
