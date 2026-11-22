@@ -62,8 +62,11 @@ struct Sample {
     uint64_t time_ns = 0;  // (tick + 1) * dt_ns
     uint64_t index = 0;    // the ring index (1, 2, ... per sensor), sensors::SampleIndex
     uint32_t size = 0;     // bytes of `bytes` in use: the engine's sample struct, as stored
+    uint32_t reserved = 0; // zero: with it the struct has no padding, so two samples compare byte for byte
     std::array<std::byte, kMaxSampleBytes> bytes{};
 };
+
+static_assert(sizeof(Sample) == 88, "Sample has no padding: every byte is a named field");
 
 // The vehicle's ground truth at the current tick.
 struct Truth {

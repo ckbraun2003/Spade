@@ -28,7 +28,6 @@ using namespace fc_host_test;
     for (std::size_t i = 0; i < n; ++i) s.push_back(static_cast<char>(std::to_integer<uint8_t>(b[at + i])));
     return s;
 }
-[[nodiscard]] std::string as_text(std::span<const std::byte> b) { return std::string(reinterpret_cast<const char*>(b.data()), b.size()); }
 
 constexpr float kCmd[4] = {500.0f, 520.0f, 500.0f, 480.0f};
 
