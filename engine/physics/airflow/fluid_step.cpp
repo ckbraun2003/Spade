@@ -177,7 +177,7 @@ std::string check_grid_note(const GridShape& shape, const DomainBc& bc) {
            "may miss its mark (each step's residual is announced)";
 }
 
-Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids) {
+Result<void> check_grid(const GridShape& shape, const DomainBc& bc, bool with_solids, uint64_t) {
     if (Result<void> ok = check_shape(shape, bc); !ok) return ok;
     if (Result<void> ok = check_domain(bc, shape); !ok) return ok;
     const uint64_t bytes = fluid_bytes(shape, bc) + (with_solids ? solid_bytes(shape, bc) : 0u);

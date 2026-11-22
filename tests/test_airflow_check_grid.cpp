@@ -188,3 +188,22 @@ TEST(AirflowCheckGrid, TheSolidBytesAreWhatSetSolidsAllocates) {
 }
 
 }  // namespace
+
+// O193 (Oversight's two conditions on the 16 GiB policy number): a run may only LOWER it. 0 is "not asked"; a larger value changes nothing.
+TEST(AirflowCheckGrid, ARunMayOnlyLowerTheHostCap) {
+    namespace af = spade::physics::airflow;
+    EXPECT_EQ(af::host_grid_cap(0), kGridByteCap);
+    EXPECT_EQ(af::host_grid_cap(uint64_t{4} << 30), uint64_t{4} << 30);
+    EXPECT_EQ(af::host_grid_cap(kGridByteCap), kGridByteCap);
+    EXPECT_EQ(af::host_grid_cap(uint64_t{64} << 30), kGridByteCap) << "a higher figure never raises it";
+
+    const GridShape shape{312, 312, 312, 0.00125f};  // about 6 GB with solids: inside 16 GiB, over 4 GiB
+    const DomainBc bc;
+    EXPECT_TRUE(check_grid(shape, bc, true).has_value());
+    const spade::Result<void> lowered = check_grid(shape, bc, true, uint64_t{4} << 30);
+    ASSERT_FALSE(lowered.has_value());
+    EXPECT_EQ(lowered.error().code, Code::capacity_exceeded);
+    EXPECT_NE(lowered.error().context.find(std::to_string(uint64_t{4} << 30)), std::string::npos) << lowered.error().context;
+    const GridShape big{480, 480, 480, 0.01f};  // about 22 GB with solids
+    EXPECT_FALSE(check_grid(big, bc, true, uint64_t{64} << 30).has_value()) << "asking for more does not lift the cap";
+}

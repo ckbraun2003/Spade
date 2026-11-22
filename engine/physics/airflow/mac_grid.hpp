@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -106,6 +107,13 @@ void for_each_sample(const GridShape& s, uint32_t component, F&& f) {
 
 // The largest grid make_grid() allocates: the spec's 4 GiB airflow cap (§4.3).
 inline constexpr uint64_t kGridByteCap = uint64_t{4} << 30;
+
+// RED stub (O193): the cap a run is held to when it asks to LOWER the host cap (0: not asked), and a zero-fill that refuses by name instead of throwing.
+[[nodiscard]] inline uint64_t host_grid_cap(uint64_t) noexcept { return kGridByteCap; }
+template <class Vec>
+[[nodiscard]] Result<void> assign_zeroed(Vec&, std::size_t, std::string_view) {
+    return {};
+}
 
 // The bytes of a grid's u, v, w and p, in 64 bits, for a shape check_shape()
 // takes (past its cell cap the products can wrap).

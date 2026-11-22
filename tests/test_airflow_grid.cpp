@@ -4,6 +4,8 @@
 
 #include <cmath>
 #include <limits>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -184,3 +186,51 @@ TEST(AirflowBoundaries, AOneCellWideAxisReadsNothingOutOfRange) {
 }
 
 }  // namespace
+
+// O193 (Oversight's second condition on the 16 GiB policy number): a CPU run that passes validation but cannot get its memory fails BY NAME, the grid and the
+// bytes, and never throws out of a function that promises a Result (L6). The failure is FORCED by an injectable allocator that refuses past a limit, so the
+// test never relies on the machine running out of memory.
+namespace {
+
+template <class T>
+struct LimitedAlloc {
+    using value_type = T;
+    std::size_t limit_bytes = 0;
+    LimitedAlloc() = default;
+    explicit LimitedAlloc(std::size_t limit) : limit_bytes(limit) {}
+    template <class U>
+    LimitedAlloc(const LimitedAlloc<U>& other) noexcept : limit_bytes(other.limit_bytes) {}
+    T* allocate(std::size_t n) {
+        if (n * sizeof(T) > limit_bytes) throw std::bad_alloc();
+        return std::allocator<T>{}.allocate(n);
+    }
+    void deallocate(T* p, std::size_t n) noexcept { std::allocator<T>{}.deallocate(p, n); }
+    template <class U>
+    bool operator==(const LimitedAlloc<U>& other) const noexcept {
+        return limit_bytes == other.limit_bytes;
+    }
+};
+
+}  // namespace
+
+TEST(AirflowGrid, AnAllocationThatFailsIsRefusedByNameAndNeverThrown) {
+    std::vector<float, LimitedAlloc<float>> v{LimitedAlloc<float>(1024)};
+    spade::Result<void> r;
+    EXPECT_NO_THROW(r = spade::physics::airflow::assign_zeroed(v, 1000, "airflow grid 10 x 10 x 10, array 'u'"));
+    ASSERT_FALSE(r.has_value()) << "1000 floats is 4000 bytes, past the allocator's 1024";
+    EXPECT_EQ(r.error().code, spade::Code::capacity_exceeded);
+    const std::string& why = r.error().context;
+    EXPECT_NE(why.find("out of memory"), std::string::npos) << why;
+    EXPECT_NE(why.find("airflow grid 10 x 10 x 10, array 'u'"), std::string::npos) << "the grid is named: " << why;
+    EXPECT_NE(why.find("4000"), std::string::npos) << "the bytes are named: " << why;
+    EXPECT_TRUE(v.empty()) << "a refused allocation leaves the array empty and usable";
+}
+
+TEST(AirflowGrid, AnAllocationThatFitsIsFilledWithZero) {
+    std::vector<float, LimitedAlloc<float>> v{LimitedAlloc<float>(1024)};
+    v.assign(3, 7.0f);
+    const spade::Result<void> r = spade::physics::airflow::assign_zeroed(v, 100, "airflow grid 5 x 5 x 4, array 'p'");
+    ASSERT_TRUE(r.has_value()) << r.error().context;
+    ASSERT_EQ(v.size(), 100u);
+    for (const float x : v) ASSERT_EQ(x, 0.0f);
+}
