@@ -1348,6 +1348,138 @@ void editor_tour(Tour& t, const fs::path& assets) {
         then(10);
     });
 
+    // Video #2 (O150): the X500 on its feet. Physics' x500_contact.model.yaml (the airframe on its twelve foot points) is loaded the way a user loads
+    // it (Load from file, from a copy in this run's work folder: assets/ gains nothing), placed by the editor at its rest height, then lifted 0.10 m through
+    // the inspector's start position, dropped (Run) and watched until it is still. The same drop is replayed at 0.25x, labelled so. What is checked, in mm and
+    // s: the gap between its lowest foot point and the floor, at placement, lifted and settled; the time to stillness. What the contact does (bounce or damp) is
+    // shown as it is; the foot springs are Physics' tuned values.
+    t.step("editor", "x500_feet", [&] {
+        if (!open()) return;
+        std::error_code ec;
+        const fs::path model_file = work / "x500_contact.model.yaml";
+        fs::copy_file(assets.parent_path() / "tools" / "flow_movie" / "data" / "x500" / "x500_contact.model.yaml", model_file,
+                      fs::copy_options::overwrite_existing, ec);
+        if (!s.check(!ec, "copy", ec ? ec.message() : "x500_contact.model.yaml copied into the work copy")) return;
+        w().panels().item_path = model_file.string();
+        command(editor::Command::load_item);
+        if (!s.check(!w().panels().library.empty() && w().panels().library.back().name == "x500_contact", "loaded",
+                     w().panels().status.empty() ? "x500_contact, armed" : w().panels().status)) {
+            return;
+        }
+        const std::size_t before = scene_now().vehicles.size();
+        const glm::vec3 home = scene_now().vehicles.at(0).start.pos;
+        const glm::vec3 target(home.x, 0.0f, home.z - 1.5f);  // clear of the boxes at x +-1, opposite the Phantom's place
+        click_towards(target);
+        if (!s.check(scene_now().vehicles.size() == before + 1, "placed", w().panels().status)) return;
+        const scene::SceneVehicle placed = scene_now().vehicles.back();
+        const std::string x500 = placed.name;
+        const vehicles::ModelType* model = model_of(x500);
+        if (!s.check(model != nullptr, "model", placed.model)) return;
+
+        // The gap between its lowest foot point and the floor beneath it, for a design-frame position (level), by the scene's SDF.
+        const auto foot_gap = [&](glm::vec3 pos) -> std::optional<float> {
+            const BodyState body = body_at(*model, pos, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+            const std::optional<float> low = physics::lowest_contact_point(*model, body);
+            const glm::vec3 above(pos.x, pos.y + 5.0f, pos.z);
+            const std::optional<float> down =
+                editor::detail::march(w().composed().world.sdf, above, glm::vec3(0.0f, -1.0f, 0.0f));
+            if (!low || !down) return std::nullopt;
+            return *low - (above.y - *down);
+        };
+        const std::optional<float> at_rest = foot_gap(placed.start.pos);
+        s.check(at_rest.has_value() && *at_rest >= end_goal::kRestLo && *at_rest <= end_goal::kRestHi, "placed-at-rest",
+                at_rest ? "lowest foot point " + fmt(*at_rest * 1000.0f) + " mm above the floor (within [-2, +5]); origin " +
+                              fmt(placed.start.pos.y * 1000.0f) + " mm up"
+                        : "no floor beneath");
+
+        // The camera on the drone, as the airflow chapter frames its poster; put back after.
+        const OrbitCamera cam_before = session->camera();
+        session->camera().target = placed.start.pos;
+        session->camera().yaw = 0.6f;
+        session->camera().pitch = 0.25f;
+        w().panels().selection = editor::Selection{editor::Selection::Kind::object, x500};
+        then(40);  // the viewer sees it standing
+
+        // The user's lift, through the inspector: 0.10 m up, in the start pose.
+        constexpr float kLift = 0.10f;
+        auto lifted = placed.start;
+        lifted.pos.y += kLift;
+        w().panels().pending.push_back(editor::SetVehicleStart{x500, lifted});
+        w().apply_panels();
+        then(30);
+        const std::optional<float> up = foot_gap(scene_now().vehicles.back().start.pos);
+        s.check(up.has_value() && at_rest.has_value() && std::abs((*up - *at_rest) - kLift) < 2e-3f, "lifted",
+                up ? "lowest foot point " + fmt(*up * 1000.0f) + " mm above the floor after a 100 mm lift" : "no floor beneath");
+
+        // The drop at 1x: Run, then frames until the body is still (speed under 2 cm/s for half a second) or the limit.
+        constexpr int kStillFrames = 30;      // half a second of frames at 60 a second
+        constexpr int kLimitFrames = 300;     // the stated limit: 5 s
+        constexpr float kStillSpeed = 0.02f;  // m/s
+        const auto drop = [&](int& frames_to_still, float& lowest_gap, float& rebound_gap) {
+            frames_to_still = -1;
+            lowest_gap = std::numeric_limits<float>::infinity();
+            rebound_gap = 0.0f;
+            bool touched = false;
+            int calm = 0;
+            for (int f = 1; f <= kLimitFrames; ++f) {
+                then(1);
+                const editor::EditorRun* run = w().run();
+                if (run == nullptr) return;
+                const std::optional<FrameState> st = run->state_of(x500);
+                if (!st) return;
+                const std::optional<float> gap = foot_gap(st->pos);
+                if (gap) {
+                    lowest_gap = std::min(lowest_gap, *gap);
+                    if (*gap <= end_goal::kRestHi) touched = true;
+                    if (touched) rebound_gap = std::max(rebound_gap, *gap);
+                }
+                calm = glm::length(st->vel) < kStillSpeed && touched ? calm + 1 : 0;
+                if (calm >= kStillFrames) {
+                    frames_to_still = f - kStillFrames + 5;  // + the 5 frames Run's command already showed
+                    return;
+                }
+            }
+        };
+        command(editor::Command::run);
+        int still_at = -1;
+        float lowest = 0.0f;
+        float rebound = 0.0f;
+        drop(still_at, lowest, rebound);
+        const editor::EditorRun* run = w().run();
+        const std::optional<FrameState> end_state = run != nullptr ? run->state_of(x500) : std::nullopt;
+        const std::optional<float> settled = end_state ? foot_gap(end_state->pos) : std::nullopt;
+        s.check(still_at >= 0, "still",
+                still_at >= 0 ? "still after " + fmt(static_cast<float>(still_at) / 60.0f) + " s (speed under 20 mm/s for 0.5 s; limit 5 s)"
+                              : "not still within 5 s");
+        s.check(settled.has_value() && *settled >= end_goal::kRestLo && *settled <= end_goal::kRestHi, "settled-on-feet",
+                settled ? "lowest foot point " + fmt(*settled * 1000.0f) + " mm above the floor (within [-2, +5]); the lowest it went " +
+                              fmt(lowest * 1000.0f) + " mm, the highest after first touch " + fmt(rebound * 1000.0f) + " mm"
+                        : "no state");
+        then(30);
+        t.snapshot("editor_x500_feet");
+        then(30);  // the last 1x frame is held so the stop reads
+
+        // The same drop at 0.25x: one rendered frame per 4 ms built-in step is a quarter of real time (a frame is 16.7 ms).
+        command(editor::Command::stop);  // the run is gone; the lifted start pose is the scene's
+        t.sink().set_caption("editor  -  x500_feet  -  0.25x replay");
+        command(editor::Command::run);
+        command(editor::Command::pause);
+        for (int i = 0; i < 90; ++i) {
+            w().panels().commands.push_back(editor::Command::step);
+            then(4);  // one Step = 4 built-in steps = 16 ms of simulation, shown for 4 frames (67 ms): 0.25x
+        }
+        then(30);
+        command(editor::Command::stop);
+        t.sink().set_caption("editor  -  x500_feet");
+
+        // Put back: the lift and the placement undone, the camera where it was.
+        command(editor::Command::undo);
+        command(editor::Command::undo);
+        s.check(scene_now().vehicles.size() == before, "undone", std::to_string(scene_now().vehicles.size()) + " vehicles, as before");
+        session->camera() = cam_before;
+        then(10);
+    });
+
     // INT-15 (T3): Run air on the library's Phantom, placed as add_drone places
     // it and given an airflow region, the Pilot section arming it. The
     // worker's frames reach the view, which draws the streamlines and, once
