@@ -534,10 +534,12 @@ TEST(FcLinkPx4, AReplyThatHasArrivedIsNeverReportedMissing) {
     s.write_delay = 5ms;
     Px4LinkConfig cfg;
     cfg.reply_timeout = 1ms;  // shorter than the send itself
+    cfg.boot_poll = 500ms;    // the first exchange must end boot by reading its reply: a 5 ms sleep can take 16 ms on Windows' timer quantum
     auto link = open_with(s, std::make_shared<Seen>(), cfg);
     ASSERT_TRUE(link.has_value());
-    const auto first = link->exchange(sensor_at(1));  // boot poll is the default 10 ms: this one reads normally
+    const auto first = link->exchange(sensor_at(1));
     ASSERT_TRUE(first.has_value()) << first.error().context;
+    ASSERT_FALSE(first->booting) << "boot ended with the first reply, so the steps below are on the strict side";
     for (uint64_t k = 2; k <= 5; ++k) {
         const auto r = link->exchange(sensor_at(k));
         ASSERT_TRUE(r.has_value()) << "step " << k << ": " << r.error().context;
