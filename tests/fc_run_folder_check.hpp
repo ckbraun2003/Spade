@@ -23,7 +23,8 @@
 //   K3.trace_hash  the layout, the SHA-256 trailer, the rolling hash recomputed tick by tick, and run.yaml's trace_hash and trace_ticks
 //   K11.commands   commands.bin well formed, and consistent with the trace's applied rotor command at every tick
 // The checks that need what the record does not hold are reported `unchecked` with their reason, so one cannot go quiet unnoticed:
-//   K4.log         the autopilot log past its header: parse, time span, firmware version, parameter hash
+//   K4.log         the autopilot log past its header: time span, firmware version, parameter hash (its FRAMING is checked when a log is given:
+//                  fc_ulog_check.hpp, "well-formed"; with no log given it stays unchecked)
 //   K6.recount     the overrun recount: it needs per-tick costs, and the record has none (measured mode; costs.yaml is phase 2)
 //   K11.replay     a replay: it needs the world, which the folder holds only by its hash
 // ---------------------------------------------------------------------------
@@ -37,12 +38,15 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
+#include "fc_ulog_check.hpp"
 #include "world/sha256.hpp"
 
 namespace spade::fc {
@@ -82,8 +86,15 @@ struct Report {
     }
 };
 
+// The record's own files (the six Core's writer leaves, plus costs.yaml in budget mode), and OPTIONALLY the autopilot's log, which lives BESIDE the
+// record (the live test's px4-log/<date>/<time>.ulg), not in it: a .ulg among `files` is an unlisted file, K2's. With a log, K4.log is read from it.
 struct RunFolder {
     Files files;
+    std::optional<std::string> autopilot_log;
+
+    // Constructors, not aggregate initialisation: gcc's -Werror=missing-field-initializers refuses `RunFolder{files}` with the log left out.
+    RunFolder() = default;
+    RunFolder(Files f, std::optional<std::string> log = std::nullopt) : files(std::move(f)), autopilot_log(std::move(log)) {}
 };
 
 // ----- a small reader for the flat YAML the record uses -----------------------------------------------------------------------------
@@ -505,7 +516,12 @@ inline Report check_run_folder(const RunFolder& folder) {
         trace_info.error = "trace.bin is missing";
         add("K3.trace_hash", Verdict::absent, "trace.bin is missing");
     }
-    add("K4.log", Verdict::unchecked, "the autopilot log is opaque to the record; its parse, span, firmware and parameter hash come with the PX4 run");
+    if (folder.autopilot_log.has_value()) {
+        const UlogResult u = read_ulog(*folder.autopilot_log);
+        add("K4.log", u.kind == UlogResult::Kind::well_formed ? Verdict::pass : (u.kind == UlogResult::Kind::unread ? Verdict::unchecked : Verdict::fail), u.detail);
+    } else {
+        add("K4.log", Verdict::unchecked, "no autopilot log was given to the checker (it lives beside the record, not in it)");
+    }
 
     // K5: the copies match their hashes; the mode is one of two; a measured run names its box and tree.
     if (has("run.yaml")) {

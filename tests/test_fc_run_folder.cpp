@@ -8,7 +8,7 @@
 // purpose (TD-4): a checker that shares the writer's code shares its bugs.
 //
 // Core's trace.bin v1 and commands.bin v1 are pinned, so K3's trace hash and K11's commands are read from the bytes (fc_trace_fixture.hpp writes
-// them from the spec). What the record cannot give is reported `unchecked`, never `pass`: K4 past the header (PX4's log), K6's recount (the
+// them from the spec). What the record cannot give is reported `unchecked`, never `pass`: K4 past the log's framing (the ULog reader checks a log WELL-FORMED when one is given), K6's recount (the
 // record has no per-tick costs) and K11's replay (a replay needs the world, which the folder holds only by hash). The good folder's test pins
 // exactly which ones, so one cannot go quiet unnoticed.
 //
@@ -29,6 +29,7 @@
 
 #include "fc_run_folder_check.hpp"
 #include "fc_trace_fixture.hpp"
+#include "fc_ulog_fixture.hpp"
 #include "unique_temp.hpp"
 #include "world/sha256.hpp"
 
@@ -697,4 +698,153 @@ TEST(FcRunFolder, AnEmptyOrMissingFolderIsAbsentNeverAPass) {
     const spade::fc::RunFolder none = spade::fc::load_run_folder(spade::test::unique_temp_path("fc_run_folder_missing"));
     EXPECT_TRUE(none.files.empty());
     EXPECT_FALSE(spade::fc::check_run_folder(none).ok());
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// K4.log: a ULog file is WELL-FORMED (tests/fc_ulog_check.hpp, from the ULog specification; the fixture writes the files from the same
+// specification). The claim is the framing and the section rules, not that PX4's data is right.
+// ---------------------------------------------------------------------------------------------------------------------------------
+namespace {
+
+namespace ux = spade::fc::ulogfx;
+using spade::fc::UlogResult;
+
+[[nodiscard]] UlogResult read_msgs(const std::vector<ux::Msg>& m, uint8_t version = 1) { return spade::fc::read_ulog(ux::assemble(m, version)); }
+
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)  // getenv
+#endif
+[[nodiscard]] std::string ulog_env_path() {
+    const char* v = std::getenv("SPADE_FC_ULOG");
+    return v != nullptr ? std::string(v) : std::string();
+}
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+struct UlogCase {
+    const char* name;
+    std::string bytes;
+    const char* expect;  // a phrase the detail must hold
+};
+
+}  // namespace
+
+TEST(FcRunFolder, K4_AWellFormedLogIsReadAndCounted) {
+    const UlogResult r = read_msgs(ux::good_messages());
+    EXPECT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
+    EXPECT_EQ(r.messages, 17u);
+    EXPECT_EQ(r.definitions, 8u);
+    EXPECT_EQ(r.data_messages, 3u);
+    EXPECT_EQ(r.subscriptions, 2u);
+    EXPECT_EQ(r.syncs, 1u);
+    EXPECT_EQ(r.dropouts, 1u);
+    EXPECT_NE(r.detail.find("well-formed"), std::string::npos) << r.detail;
+}
+
+TEST(FcRunFolder, K4_EveryMalformedLogIsFailedAndNamed) {
+    using namespace ux;
+    const std::string good = assemble(good_messages());
+    const auto with = [](const std::function<void(std::vector<Msg>&)>& f) {
+        std::vector<Msg> v = good_messages();
+        f(v);
+        return assemble(v);
+    };
+    std::vector<UlogCase> cases;
+    cases.push_back({"short header", good.substr(0, 10), "shorter than the 16-byte header"});
+    cases.push_back({"bad magic", std::string("X") + good.substr(1), "ULog magic"});
+    cases.push_back({"version 2", assemble(good_messages(), 2), "version byte is 2"});
+    cases.push_back({"truncated body", good.substr(0, good.size() - 3), "is cut off"});
+    cases.push_back({"cut header", good + std::string("\x05\x00", 2), "message header is cut off"});
+    cases.push_back({"size past the end", good + std::string("\xFF\x00", 2) + "D", "is cut off"});
+    cases.push_back({"first is not B", with([](auto& v) { v.erase(v.begin()); }), "not the flag bits message"});
+    cases.push_back({"B too short", with([](auto& v) { v[kB].body.resize(39); }), "under 40"});
+    cases.push_back({"unknown incompat bit", with([](auto& v) { v[kB].body[9] = 1; }), "does not know"});
+    cases.push_back({"unknown type", with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'Z', "x"}); }), "unknown message type 'Z'"});
+    cases.push_back({"unknown type, not printable", with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'\x01', "x"}); }), "unknown message type 0x01"});
+    cases.push_back({"D in the definitions", with([](auto& v) { v.insert(v.begin() + kMulti, Msg{'D', std::string("\x00\x00", 2)}); }), "definitions section"});
+    cases.push_back({"D for an unsubscribed id", with([](auto& v) { v[kDataGyro0].body[0] = 9; }), "was not subscribed"});
+    cases.push_back({"A for an undefined format", with([](auto& v) { v[kSubGyro].body = std::string("\0\0\0nope", 7); }), "did not define"});
+    cases.push_back({"A twice", with([](auto& v) { v.insert(v.begin() + kSubStatus, v[kSubGyro]); }), "subscribed twice"});
+    cases.push_back({"F in the data section", with([](auto& v) { v.insert(v.begin() + kDataGyro0, v[kFGyro]); }), "in the data section"});
+    cases.push_back({"second B", with([](auto& v) { v.insert(v.begin() + kFStatus, v[kB]); }), "not the first"});
+    cases.push_back({"F that is not name:field;", with([](auto& v) { v[kFGyro].body = "nocolon"; }), "name:field"});
+    cases.push_back({"I key longer than the message", with([](auto& v) { v[kInfoName].body = std::string("\x32", 1) + "abc"; }), "key length"});
+    cases.push_back({"Q with no default bit", with([](auto& v) { v[kDefault].body[0] = 0; }), "no default type bit"});
+    cases.push_back({"S with another magic", with([](auto& v) { v[kSync].body[0] = 0; }), "synchronization"});
+    cases.push_back({"O of 3 bytes", with([](auto& v) { v[kDropout].body += "x"; }), "dropout message of 3"});
+    cases.push_back({"L under 9 bytes", with([](auto& v) { v[kLogged].body.resize(5); }), "logged string of 5"});
+    cases.push_back({"C under 11 bytes", with([](auto& v) { v[kTagged].body.resize(10); }), "tagged logged string of 10"});
+    cases.push_back({"no data message", with([](auto& v) { v.resize(kSubStatus + 1); }), "no data message"});
+    cases.push_back({"only the header", good.substr(0, 16), "no messages after the header"});
+    for (const UlogCase& c : cases) {
+        const UlogResult r = spade::fc::read_ulog(c.bytes);
+        EXPECT_EQ(r.kind, UlogResult::Kind::malformed) << c.name << ": " << r.detail;
+        EXPECT_NE(r.detail.find(c.expect), std::string::npos) << c.name << ": " << r.detail;
+    }
+}
+
+TEST(FcRunFolder, K4_AppendedDataIsUnreadNeverAPass) {
+    using namespace ux;
+    for (const size_t byte : {size_t{8}, size_t{16}}) {  // incompat bit 0 (DATA_APPENDED), then a non-zero appended offset
+        std::vector<Msg> v = good_messages();
+        v[kB].body[byte] = 1;
+        const UlogResult r = read_msgs(v);
+        EXPECT_EQ(r.kind, UlogResult::Kind::unread) << byte << ": " << r.detail;
+        EXPECT_NE(r.detail.find("appended data"), std::string::npos) << r.detail;
+    }
+}
+
+TEST(FcRunFolder, K4_TheDetailNeverQuotesTheLogsBytes) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v[kInfoName].body = keyed("char[24] note", "C:\\Users\\Zed\\SECRETVALUE");
+    v[kSubGyro].body = std::string("\0\0\0SECRETFORMAT", 15);
+    const UlogResult a = read_msgs(v);
+    EXPECT_EQ(a.kind, UlogResult::Kind::malformed);
+    v = good_messages();
+    v[kInfoName].body = keyed("char[24] note", "C:\\Users\\Zed\\SECRETVALUE");
+    std::string bytes = assemble(v);
+    bytes.resize(bytes.size() - 2);  // a truncated tail
+    const UlogResult b = spade::fc::read_ulog(bytes);
+    EXPECT_EQ(b.kind, UlogResult::Kind::malformed);
+    for (const UlogResult* r : {&a, &b}) {
+        EXPECT_EQ(r->detail.find("SECRET"), std::string::npos) << r->detail;
+        EXPECT_EQ(r->detail.find("Zed"), std::string::npos) << r->detail;
+    }
+}
+
+TEST(FcRunFolder, K4_TheLogIsReadFromTheFolderAndAMalformedOneFailsTheCheck) {
+    const std::string good = ux::assemble(ux::good_messages());
+    const Report pass = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), good});
+    EXPECT_TRUE(pass.ok()) << pass.text();
+    EXPECT_NE(pass.find("K4.log", Verdict::pass), nullptr) << pass.text();
+
+    const Report bad = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), good.substr(0, good.size() - 3)});
+    EXPECT_FALSE(bad.ok()) << bad.text();
+    ASSERT_NE(bad.find("K4.log", Verdict::fail), nullptr) << bad.text();
+    EXPECT_NE(bad.find("K4.log", Verdict::fail)->detail.find("is cut off"), std::string::npos);
+
+    std::vector<ux::Msg> v = ux::good_messages();
+    v[ux::kB].body[8] = 1;
+    const Report unread = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), ux::assemble(v)});
+    EXPECT_NE(unread.find("K4.log", Verdict::unchecked), nullptr) << unread.text();
+    EXPECT_TRUE(unread.ok()) << unread.text();
+
+    const Report none = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured()});
+    EXPECT_NE(none.find("K4.log", Verdict::unchecked), nullptr) << none.text();
+}
+
+// A real PX4 log: SPADE_FC_ULOG names a .ulg file (for example one a live fc run left in px4-log/); unset, the case skips by name, so the 12 MB logs of
+// the live runs are never committed. It checks the reader against the real thing, including the message types and sizes the spec page extract lacked.
+TEST(FcRunFolder, TheRealPx4LogIsWellFormed) {
+    const std::string path = ulog_env_path();
+    if (path.empty()) GTEST_SKIP() << "SPADE_FC_ULOG is not set (the path of a .ulg to read)";
+    std::ifstream in(path, std::ios::binary);
+    ASSERT_TRUE(in.good()) << "cannot read the file SPADE_FC_ULOG names";
+    const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const UlogResult r = spade::fc::read_ulog(bytes);
+    std::cout << "SPADE_FC_ULOG: " << bytes.size() << " bytes: " << r.detail << "\n";
+    EXPECT_EQ(r.kind, UlogResult::Kind::well_formed) << r.detail;
 }
