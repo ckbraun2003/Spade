@@ -13,6 +13,9 @@
       stop fails  docker stop exits 1: exit 7, `docker stop` named
       cp fails    docker cp exits 1: exit 7, `docker cp` named
       bad folder  the run folder cannot be created: exit 7, the run folder named
+      empty dir   docker cp finds an EMPTY log folder (PX4 died in boot, wrote nothing): exit 0 and the last line `none` (not a failure)
+      start       a START creates PX4's log folder in the container first (so docker cp always finds one): the run command carries `mkdir -p <rootfs>/log`
+                  and still ends in `exec <px4> <etc> -s etc/init.d-posix/rcS -d`; the script exits 0
       no box      no such container: exit 0 and `none` (as before)
 
 .EXAMPLE
@@ -46,6 +49,8 @@ try {
 Add-Content -LiteralPath $env:FAKE_CALLS ($args -join ' ')
 switch ($args[0]) {
     'version' { exit 0 }
+    'image'   { exit 0 }
+    'run'     { Set-Content -LiteralPath $env:FAKE_STATE 'x'; exit 0 }
     'ps'      { if (Test-Path $env:FAKE_STATE) { 'spade-px4-t1' }; exit 0 }
     'inspect' { $env:FAKE_LABEL; exit 0 }
     'stop'    { exit ([int] $env:FAKE_STOP_CODE) }
@@ -54,7 +59,7 @@ switch ($args[0]) {
         if ([int] $env:FAKE_CP_CODE -ne 0) { exit ([int] $env:FAKE_CP_CODE) }
         $dst = $args[2]
         New-Item -ItemType Directory -Force -Path (Join-Path $dst 'sub') | Out-Null
-        Set-Content -LiteralPath (Join-Path $dst 'sub\fake.ulg') 'ulg'
+        if (-not $env:FAKE_CP_EMPTY) { Set-Content -LiteralPath (Join-Path $dst 'sub\fake.ulg') 'ulg' }
         exit 0
     }
     'rm'      {
@@ -67,7 +72,7 @@ exit 0
 '@
 
     function Run-Case([string] $Name, [hashtable] $Env, [string] $OutDir, [switch] $NoContainer) {
-        foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+        foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY', 'FAKE_CP_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
         $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABEL = ''
         foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
         Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
@@ -123,6 +128,22 @@ exit 0
     $r = Run-Case 'bad folder' @{} (Join-Path $blocker 'run')
     Expect 'bad folder' ($r.Code -eq 7) "exit 7 (got $($r.Code)): $($r.Text)"
     Expect 'bad folder' ($r.Text -match 'run folder') "the text names the run folder (got: $($r.Text))"
+
+    # empty dir: a log folder with no .ulg in it is `none`, exit 0
+    $r = Run-Case 'empty dir' @{ FAKE_CP_EMPTY = '1' } (Join-Path $work 'run-emptydir')
+    Expect 'empty dir' ($r.Code -eq 0) "exit 0 (got $($r.Code)): $($r.Text)"
+    Expect 'empty dir' ($r.Lines.Count -gt 0 -and $r.Lines[-1] -eq 'none') "the last line is none (got '$($r.Lines[-1])')"
+
+    # start: the container's log folder is created before PX4 starts
+    foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY', 'FAKE_CP_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+    $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABEL = ''
+    Remove-Item -LiteralPath $calls, $state -ErrorAction SilentlyContinue
+    $so = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -OutDir (Join-Path $work 'run-start') -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    $startCode = $LASTEXITCODE
+    $runLine = @(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^run ' }) -join ' '
+    Expect 'start' ($startCode -eq 0) "exit 0 (got $startCode): $($so -join ' ')"
+    Expect 'start' ($runLine -match 'mkdir -p \S*rootfs/log') "the run command creates the log folder first (got: $runLine)"
+    Expect 'start' ($runLine -match 'exec \S*/bin/px4 \S*/etc -s etc/init\.d-posix/rcS -d') "and then execs px4 with its data dir and rcS (got: $runLine)"
 
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
