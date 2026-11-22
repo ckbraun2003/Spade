@@ -146,9 +146,9 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
         if (done % 250 == 0 || done == steps || done == 1) {  // a progress line for whoever watches the run (the run film tails this file)
             const double wall_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
             std::ofstream(out / "lockstep-progress.txt", std::ios::app)
-                << "tick " << (done - 1) << " of " << steps << "   sim " << (static_cast<double>(done - 1) * 0.004) << " s   wall " << wall_now << " s   replies "
-                << link->report().replies << "   boot steps " << link->report().boot_steps
-                << "   px4_no_reply 0   px4_stale_reply 0   px4_link_closed 0   motors armed " << (r->armed ? "yes" : "no") << '\n';
+                << "tick " << (done - 1) << "/" << steps << "  sim " << (static_cast<double>(done - 1) * 0.004) << " s  wall " << wall_now << " s  replies "
+                << link->report().replies << "  boot " << link->report().boot_steps << "  no_reply 0  stale 0  closed 0  armed " << (r->armed ? "yes" : "no")
+                << '\n';  // under 100 columns: the film's window shows it whole (a longer line wrapped and cut the window)
         }
         if (done == (steps * 4) / 5) {
             commander = std::async(std::launch::async, [&] {
