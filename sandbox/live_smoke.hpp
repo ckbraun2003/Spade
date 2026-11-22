@@ -292,6 +292,24 @@ class Smoke {
     return false;
 }
 
+// The harness reads every text the editor can draw (the Load field, the status line, the title, the path fields) at the end of EVERY step and before
+// EVERY still, not just in the steps someone thought of: a feature video carries no path on this machine. An offence names the step and the field, never
+// the text (the journal is not a place for the path either). STUB: reads nothing (RED).
+struct ScreenText {
+    std::string field;
+    std::string value;
+};
+class PathWatch {
+  public:
+    void read(std::string_view /*where*/, std::span<const ScreenText> /*texts*/) {}
+    [[nodiscard]] std::size_t reads() const noexcept { return 0; }
+    [[nodiscard]] std::size_t texts_read() const noexcept { return 0; }
+    [[nodiscard]] const std::vector<std::string>& offences() const noexcept { return offences_; }
+
+  private:
+    std::vector<std::string> offences_;
+};
+
 struct Injection {
     enum class Kind { skip, anomaly };
     Kind kind = Kind::skip;

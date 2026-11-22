@@ -689,3 +689,51 @@ TEST(LiveSmokePaths, OrdinaryOnScreenTextIsNotTakenForAPath) {
     EXPECT_FALSE(shows_a_path("Position (m) 0.000 0.315 -1.500"));
     EXPECT_FALSE(shows_a_path("library/drones/phantom.yaml")) << "a relative name inside the library is not a path on this machine";
 }
+
+// The general check: what the tour's steps leave on screen is read at every step's end and before every still. These are the texts the editor draws
+// after the tour's add_objects, save and part steps as they stand today (gate 50's code), with a made-up user folder.
+TEST(LiveSmokePaths, TheWatchNamesTheStepAndTheFieldOfEveryPathAndNeverTheText) {
+    using spade::sandbox::live::PathWatch;
+    using spade::sandbox::live::ScreenText;
+    PathWatch watch;
+    const std::vector<ScreenText> after_add_objects = {
+        {"item_path", "C:\\Users\\Someone\\Desktop\\Projects\\spade-wt\\interface\\build-smoke\\editor_work\\crate.gltf"},
+        {"status", "armed 'crate'"},
+        {"title", "hover.scene.yaml *"},
+    };
+    const std::vector<ScreenText> after_save = {
+        {"item_path", ""},
+        {"status", "saved 'hover_copy' to C:/Users/Someone/work/library/drones/hover_copy.yaml"},
+        {"title", "hover_copy.scene.yaml"},
+    };
+    const std::vector<ScreenText> after_part = {
+        {"selected_source", "C:\\Users\\Someone\\work\\crate.gltf"},
+        {"status", ""},
+    };
+    const std::vector<ScreenText> clean = {{"item_path", ""}, {"status", "x500_contact, armed"}, {"title", "hover.scene.yaml *"}};
+    watch.read("editor.add_objects", after_add_objects);
+    watch.read("editor.save", after_save);
+    watch.read("editor.part", after_part);
+    watch.read("editor.undo", clean);
+    EXPECT_EQ(watch.reads(), 4u);
+    EXPECT_EQ(watch.texts_read(), 11u) << "every text of every read is counted, the clean ones too";
+    ASSERT_EQ(watch.offences().size(), 3u);
+    EXPECT_EQ(watch.offences().at(0), "editor.add_objects: item_path");
+    EXPECT_EQ(watch.offences().at(1), "editor.save: status");
+    EXPECT_EQ(watch.offences().at(2), "editor.part: selected_source");
+    for (const std::string& line : watch.offences()) {
+        EXPECT_EQ(line.find("Someone"), std::string::npos) << "an offence never repeats the path: " << line;
+    }
+}
+
+TEST(LiveSmokePaths, ACleanScreenLeavesNoOffence) {
+    using spade::sandbox::live::PathWatch;
+    using spade::sandbox::live::ScreenText;
+    PathWatch watch;
+    const std::vector<ScreenText> clean = {{"item_path", ""}, {"status", "saved 'hover_copy' to library/drones/hover_copy.yaml"}, {"title", "hover.scene.yaml *"}};
+    watch.read("editor.save", clean);
+    watch.read("still editor_save", clean);
+    EXPECT_EQ(watch.reads(), 2u);
+    EXPECT_EQ(watch.texts_read(), 6u);
+    EXPECT_TRUE(watch.offences().empty());
+}
