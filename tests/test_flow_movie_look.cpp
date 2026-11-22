@@ -803,3 +803,78 @@ TEST(FlowMovieLook, QHatSmoothsLikeLambda2OnlyInItsOwnChannelAndTheRangeFollows)
     EXPECT_FLOAT_EQ(q_at(c, 0, 0, 0), 3.0f);
     EXPECT_EQ(c.s[at(c, 3, 3, 3) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)], hole);
 }
+
+// ---- O158: the tubes' steadiness, part two: a centred mean of the Q and pressure channels, and the caption's words ---------------------------------------------------------------
+// The window of frames a centred mean reads: the drawn frame in the middle, fewer at the ends of the clip (never past either end).
+TEST(FlowMovieLook, ACentredWindowHasTheDrawnFrameInTheMiddleAndStopsAtTheEnds) {
+    const auto mid = flow_movie::centred_window(5, 3, 10);
+    EXPECT_EQ(mid.first, 4u);
+    EXPECT_EQ(mid.count, 3u);
+    const auto start = flow_movie::centred_window(0, 3, 10);
+    EXPECT_EQ(start.first, 0u);
+    EXPECT_EQ(start.count, 2u) << "the frame and the one after it";
+    const auto end = flow_movie::centred_window(9, 3, 10);
+    EXPECT_EQ(end.first, 8u);
+    EXPECT_EQ(end.count, 2u);
+    const auto five = flow_movie::centred_window(5, 5, 10);
+    EXPECT_EQ(five.first, 3u);
+    EXPECT_EQ(five.count, 5u);
+    const auto one = flow_movie::centred_window(7, 1, 10);
+    EXPECT_EQ(one.first, 7u);
+    EXPECT_EQ(one.count, 1u) << "1 frame: the frame alone";
+    const auto whole = flow_movie::centred_window(1, 9, 3);
+    EXPECT_EQ(whole.first, 0u);
+    EXPECT_EQ(whole.count, 3u) << "a window wider than the clip is the clip";
+}
+
+// The drawn frame's chosen s-texture channels become the mean over the window's frames; a cell that is no-data in any is no-data in the mean; the other channels, and the velocity, are the
+// drawn frame's own; the header's range of a meaned channel follows.
+TEST(FlowMovieLook, TheScalarMeanAveragesOnlyTheNamedChannelsAndAnyNoDataStaysNoData) {
+    FlowVolume a = blank(4, 4, 4), b = blank(4, 4, 4), c = blank(4, 4, 4);
+    set_q(a, 1, 1, 1, 3.0f);
+    set_q(b, 1, 1, 1, 6.0f);
+    set_q(c, 1, 1, 1, 9.0f);
+    set_q(a, 2, 2, 2, 1.0f);
+    set_q(b, 2, 2, 2, 1.0f);
+    c.s[at(c, 2, 2, 2) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)] = 0x7E00u;  // no-data in one frame
+    set_l2(b, 0, 0, 0, -40.0f);                                                                              // another channel, in the drawn frame
+    set_u(b, 3, 3, 3, 5.0f);
+    FlowVolume out = b;  // the drawn frame is the middle one
+    const std::vector<const FlowVolume*> frames = {&a, &b, &c};
+    const std::vector<uint32_t> channels = {spade::kFlowQHat};
+    const auto done = flow_movie::mean_scalars(out, frames, channels);
+    ASSERT_TRUE(done.has_value()) << (done ? "" : done.error().context);
+    EXPECT_NEAR(q_at(out, 1, 1, 1), 6.0f, 1e-2f);
+    EXPECT_TRUE(fp16::to_f32(out.s[at(out, 2, 2, 2) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)]) != fp16::to_f32(out.s[at(out, 2, 2, 2) * spade::kFlowHalvesPerCell + (spade::kFlowQHat % spade::kFlowHalvesPerCell)]))
+        << "a NaN: no-data in any frame is no-data in the mean";
+    EXPECT_FLOAT_EQ(l2(out, 0, 0, 0), -40.0f) << "lambda2-hat is the drawn frame's";
+    EXPECT_FLOAT_EQ(u_of(out, 3, 3, 3), 5.0f) << "the velocity is the drawn frame's";
+    EXPECT_NEAR(out.header.channel_max[spade::kFlowQHat], 6.0f, 1e-2f);
+    // refused by name: no frames, another shape, a velocity channel
+    EXPECT_FALSE(flow_movie::mean_scalars(out, std::vector<const FlowVolume*>{}, channels).has_value());
+    FlowVolume other = blank(3, 4, 4);
+    EXPECT_FALSE(flow_movie::mean_scalars(out, std::vector<const FlowVolume*>{&a, &other}, channels).has_value());
+    const auto bad = flow_movie::mean_scalars(out, frames, std::vector<uint32_t>{spade::kFlowU});
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().context.find("channel"), std::string::npos) << bad.error().context;
+}
+
+// The caption's words for the tubes (O163, Oversight's terms): what they are, what colours them, what is fixed, what is smoothed and that it is for display only, and that they are the simulated
+// air and not a measurement. The numbers come from the look, so a changed look changes the words.
+TEST(FlowMovieQLook, TheTubeNoteSaysWhatTheTubesAreHowTheyAreColouredAndHowTheyAreKeptSteady) {
+    flow_movie::QLook look;
+    look.q_peak = 20.0f;
+    const std::string note = flow_movie::tube_note(look, 0.8f, 3u, true);
+    for (const char* want : {"smooth surfaces", "vortices", "pressure", "same scale as the parts", "0.8", "fixed", "every frame", "one cell", "3 frames", "display only", "not a measurement"}) {
+        EXPECT_NE(note.find(want), std::string::npos) << want << ": " << note;
+    }
+    EXPECT_EQ(note.find("soft cloud"), std::string::npos) << "these are surfaces, not the cloud: " << note;
+    EXPECT_EQ(note.find("vorticity"), std::string::npos) << "coloured by pressure, not by vorticity: " << note;
+    std::string lower = note;
+    for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    EXPECT_EQ(lower.find("nasa"), std::string::npos) << note;
+    const std::string wider = flow_movie::tube_note(look, 0.6f, 5u, false);
+    EXPECT_NE(wider.find("0.6"), std::string::npos) << wider;
+    EXPECT_NE(wider.find("5 frames"), std::string::npos) << wider;
+    EXPECT_EQ(wider.find("one cell"), std::string::npos) << "no spatial smoothing asked: none said: " << wider;
+}

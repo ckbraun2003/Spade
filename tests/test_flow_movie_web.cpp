@@ -1714,3 +1714,47 @@ TEST(FlowMovieWeb, NothingTheToolWritesNamesNasaAndTheLooksFlagsAreNeutral) {
         EXPECT_EQ(text.find("\"nasa\""), std::string::npos) << file << " still names the look \"nasa\"";
     }
 }
+
+// ---- O158: the flags of the pressure-coloured tubes film, and the run's CG floor -----------------------------------------------------------------------------------------------
+// --cg-floor N (Oversight: the pressure film's solve runs TIGHT): the solids pressure solve's CG iteration floor, passed to the run (Physics' LiveRun option; default 8, bit-identical to a run without
+// the flag). Only 8 to 16 is taken; anything else is refused by name, with the range and what it was given, before any solve.
+TEST(FlowMovieWeb, TheCgFloorIsEightToSixteenAndAnythingElseIsRefusedByName) {
+    for (const uint32_t n : {8u, 9u, 12u, 16u}) EXPECT_EQ(web::cg_floor_refusal(n), "") << n;
+    for (const uint32_t n : {0u, 1u, 7u, 17u, 100u}) {
+        const std::string why = web::cg_floor_refusal(n);
+        EXPECT_NE(why.find("--cg-floor"), std::string::npos) << n << ": " << why;
+        EXPECT_NE(why.find("8"), std::string::npos) << n << ": " << why;
+        EXPECT_NE(why.find("16"), std::string::npos) << n << ": " << why;
+        EXPECT_NE(why.find(std::to_string(n)), std::string::npos) << "it says what it was given: " << why;
+    }
+}
+
+// --pressure-colour (O158): the Q tubes (--q-surfaces) coloured by the air's pressure on the parts' own scale, in the pressure film. It needs both (the scale is the parts'), not the vorticity cloud
+// (one wake look), and S8.
+TEST(FlowMovieWeb, ThePressureColourNeedsTheTubesAndThePressureFilmAndNoCloud) {
+    // pressure_colour_refusal(asked, s8, surface_pressure, q_surfaces, vorticity_cloud)
+    EXPECT_EQ(web::pressure_colour_refusal(false, false, false, false, true), "") << "not asked: nothing to say";
+    EXPECT_EQ(web::pressure_colour_refusal(true, true, true, true, false), "");
+    EXPECT_NE(web::pressure_colour_refusal(true, false, true, true, false).find("S8"), std::string::npos);
+    EXPECT_NE(web::pressure_colour_refusal(true, true, false, true, false).find("--surface-pressure"), std::string::npos);
+    EXPECT_NE(web::pressure_colour_refusal(true, true, true, false, false).find("--q-surfaces"), std::string::npos);
+    EXPECT_NE(web::pressure_colour_refusal(true, true, true, true, true).find("--vorticity-cloud"), std::string::npos);
+    for (const bool a : {false, true}) {
+        for (const bool b : {false, true}) {
+            for (const bool c : {false, true}) {
+                std::string why = web::pressure_colour_refusal(true, a, b, c, !a);
+                std::transform(why.begin(), why.end(), why.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                EXPECT_EQ(why.find("nasa"), std::string::npos) << why;
+            }
+        }
+    }
+    // the pressure film and the tubes, which --surface-pressure refused as different looks, are one look with --pressure-colour
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, true, true, false, false, true, false, true), "");
+    EXPECT_NE(web::surface_pressure_refusal(true, true, true, true, false, false, true, false, false).find("--q-surfaces"), std::string::npos);
+    // the view it draws
+    EXPECT_EQ(web::s8_view_name(true, false, true, false, false, false, true), "surface-pressure-tubes");
+    EXPECT_EQ(web::s8_view_name(true, true, true, false, false, false, true), "surface-pressure-tubes-shaded");
+    EXPECT_EQ(web::s8_view_name(true, false, true, false, false, false, false), "surface-pressure") << "tubes not asked for: as before";
+    // surfaces vanish when faded: the tubes film does not fade the wake, as the plain Q surfaces do not
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, true, false, true));
+}

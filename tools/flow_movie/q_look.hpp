@@ -44,25 +44,41 @@ struct QLook {
     float q_peak = 0.0f;
 };
 
-// STUB (RED): the tubes' pressure colour is not written yet.
-[[nodiscard]] inline std::optional<spade::render::TransferFunction> pressure_transfer(float, float, float) { return std::nullopt; }
+// THE PRESSURE COLOUR (O158): the parts' own cool_warm map over the still air's pressure `p_ref` plus and minus `range` disc loadings (`q_ref` Pa each), fixed for the clip: the same colour is
+// the same pressure on a part, on a blade and on a tube, in every frame. None when the scale is not a finite positive.
+[[nodiscard]] inline std::optional<spade::render::TransferFunction> pressure_transfer(float p_ref, float q_ref, float range) {
+    if (!(std::isfinite(p_ref) && std::isfinite(q_ref) && q_ref > 0.0f && std::isfinite(range) && range > 0.0f)) return std::nullopt;
+    spade::render::TransferFunction tf;
+    tf.quantity = spade::render::FlowQuantity::pressure;
+    tf.colours = spade::render::ColourMapId::cool_warm;
+    tf.auto_range = false;
+    tf.range_min = p_ref - range * q_ref;
+    tf.range_max = p_ref + range * q_ref;
+    return tf;
+}
 
 // The ladder's iso-surfaces, highest level first; none when the frame has no Q above zero or no vorticity to colour by.
-[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look, const spade::render::TransferFunction* = nullptr) {
+[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look, const spade::render::TransferFunction* colour_by = nullptr) {
     const float q_max = v.header.channel_max[spade::kFlowQHat];
     const float vort_max = v.header.channel_max[spade::kFlowVorticity];
-    if (!(std::isfinite(q_max) && q_max > 0.0f && std::isfinite(vort_max) && vort_max > 0.0f)) return {};
+    if (!(std::isfinite(q_max) && q_max > 0.0f)) return {};
+    if (colour_by == nullptr && !(std::isfinite(vort_max) && vort_max > 0.0f)) return {};
+    const float q_top = look.q_peak > 0.0f ? look.q_peak : q_max;  // the clip's largest q_hat when a run set it, else this frame's
     spade::render::TransferFunction colours;
-    colours.quantity = spade::render::FlowQuantity::vorticity;
-    colours.colours = spade::render::ColourMapId::blue_magenta;
-    colours.auto_range = false;
-    colours.range_min = 0.0f;
-    colours.range_max = (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max;
+    if (colour_by != nullptr) {
+        colours = *colour_by;  // O158: the pressure, on the parts' own map and range
+    } else {
+        colours.quantity = spade::render::FlowQuantity::vorticity;
+        colours.colours = spade::render::ColourMapId::blue_magenta;
+        colours.auto_range = false;
+        colours.range_min = 0.0f;
+        colours.range_max = (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max;
+    }
     std::vector<spade::render::IsoSurface> isos;
     for (std::size_t i = 0; i < look.level.size(); ++i) {
         spade::render::IsoSurface iso;
         iso.quantity = spade::render::FlowQuantity::q_hat;
-        iso.value = q_max * look.level[i];
+        iso.value = q_top * look.level[i];
         iso.opacity = look.opacity[i];
         iso.colour_by = colours;
         isos.push_back(std::move(iso));
@@ -95,6 +111,25 @@ struct QLook {
                        "vorticity is under {:g}% of the map's range, which tops out at {:g}% of each frame's largest vorticity, up to a density of {:g} per metre at its top, so only the strongest "
                        "swirls show; the cloud is the simulated air, not a measurement, and the parts and blades keep their pressure colour under it.",
                        static_cast<double>(look.onset) * 100.0, static_cast<double>(look.vorticity_max) * 100.0, static_cast<double>(look.sigma));
+}
+
+// The caption's words for the tubes (O158, O163, Oversight's terms): what they are, what colours them, what is fixed, what is smoothed (and that it is for display only), and that they are the
+// simulated air and not a measurement. `pressure_range` is the colour range in disc loadings (the parts' own), `mean_frames` the centred mean's window, `smooth` the one-cell smoothing.
+[[nodiscard]] inline std::string tube_note(const QLook& look, float pressure_range, uint32_t mean_frames, bool smooth) {
+    std::string kept;
+    if (smooth) kept = "the field they are cut from is smoothed over one cell";
+    if (mean_frames > 1u) kept += (kept.empty() ? "the field they are cut from is averaged over " : " and averaged over ") + std::format("{} frames centred on the drawn one", mean_frames);
+    if (kept.empty()) kept = "no smoothing or averaging is applied";
+    const std::string level = look.q_peak > 0.0f
+        ? std::format("The surfaces are at fixed levels, {:g}%, {:g}% and {:g}% of the clip's largest value of the Q-criterion (the balance of spin over strain), the same in every frame, so a tube means the same "
+                      "thing from one frame to the next.",
+                      static_cast<double>(look.level[0]) * 100.0, static_cast<double>(look.level[1]) * 100.0, static_cast<double>(look.level[2]) * 100.0)
+        : std::format("The surfaces are at {:g}%, {:g}% and {:g}% of each frame's largest value of the Q-criterion (the balance of spin over strain), so the levels follow each frame.",
+                      static_cast<double>(look.level[0]) * 100.0, static_cast<double>(look.level[1]) * 100.0, static_cast<double>(look.level[2]) * 100.0);
+    return std::format("The vortices round the rotors are drawn as smooth surfaces (the simulated air's own vortex tubes), each coloured by the simulated air's pressure on the same scale as the parts: "
+                       "blue below the still air's pressure to red above, +-{:g} of the disc loading, fixed for the whole clip. {} For steadiness {}; this is for display only, and the simulation and its record "
+                       "are unchanged. The tubes are the simulated air, not a measurement, and the parts and blades keep their pressure colour under them.",
+                       static_cast<double>(pressure_range), level, kept);
 }
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3

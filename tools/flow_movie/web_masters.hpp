@@ -197,13 +197,13 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // --surface-pressure (O124): the air pressure on the airframe's surfaces, S8 only. Like the cloud it streams a --window run (or redraws kept frames), and it is a different
 // look from --q-surfaces (the Q surfaces) and the particle looks; with --vorticity-cloud it is the pressure film with the vorticity cloud over it (O144). Empty when the flags are fine, else the
 // refusal's words.
-[[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa, bool nasa_cloud = false) {
+[[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa, bool nasa_cloud = false, bool tubes = false) {
     if (!s8) return "--surface-pressure is for S8";
     if (window && !still_redraw && !stream) {
         return "--surface-pressure is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
     }
     if (particles || particles_preview) return "--surface-pressure and the particle looks are different looks: use one";
-    if (nasa && !nasa_cloud) return "--surface-pressure and --q-surfaces (the Q surfaces) are different looks: use one (--vorticity-cloud adds the vortices to --surface-pressure)";
+    if (nasa && !nasa_cloud && !tubes) return "--surface-pressure and --q-surfaces (the Q surfaces) are different looks: use one (--vorticity-cloud adds the vortices to --surface-pressure; --pressure-colour draws the --q-surfaces tubes in the pressure colour)";
     return {};
 }
 
@@ -215,9 +215,28 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 
 // The S8 view a run's flags choose (O144: main's ternary as a function): the pressure film (shaded or not), with the vorticity cloud over it when --vorticity-cloud comes too; else the
 // Q surfaces or the cloud (--q-surfaces, --vorticity-cloud), the particle looks, or the speed volume.
-[[nodiscard]] inline std::string s8_view_name(bool pressure, bool shade, bool nasa, bool cloud, bool particles, bool particles_preview) {
+// --cg-floor N (O158: the pressure film's solve runs TIGHT): the solids pressure solve's CG iteration floor, passed to the run (the LiveRun option; 8 is the default, bit-identical to no flag). 8 to 16
+// only. Empty when fine, else the refusal's words (what it was given and the range).
+[[nodiscard]] inline std::string cg_floor_refusal(uint32_t n) {
+    if (n >= 8u && n <= 16u) return {};
+    return "--cg-floor " + std::to_string(n) + " is outside 8 to 16 (the solids pressure solve's CG iteration floor; the default is 8)";
+}
+
+// --pressure-colour (O158): the --q-surfaces tubes coloured by the air's pressure on the parts' own scale, in the --surface-pressure film. It needs both (the scale is the parts'), not the vorticity
+// cloud (one wake look), and S8. Empty when not asked or fine, else the refusal's words.
+[[nodiscard]] inline std::string pressure_colour_refusal(bool asked, bool s8, bool surface_pressure, bool q_surfaces, bool vorticity_cloud) {
+    if (!asked) return {};
+    if (!s8) return "--pressure-colour is for S8";
+    if (!surface_pressure) return "--pressure-colour needs --surface-pressure (the tubes take the parts' own pressure scale)";
+    if (!q_surfaces) return "--pressure-colour needs --q-surfaces (the tubes it colours)";
+    if (vorticity_cloud) return "--pressure-colour and --vorticity-cloud are different wake looks: use one";
+    return {};
+}
+
+[[nodiscard]] inline std::string s8_view_name(bool pressure, bool shade, bool nasa, bool cloud, bool particles, bool particles_preview, bool tubes = false) {
     if (pressure) {
         if (nasa && cloud) return shade ? "surface-pressure-vortices-shaded" : "surface-pressure-vortices";
+        if (nasa && tubes) return shade ? "surface-pressure-tubes-shaded" : "surface-pressure-tubes";  // O158: the Q tubes in the pressure colour
         return shade ? "surface-pressure-shaded" : "surface-pressure";
     }
     if (nasa) return cloud ? "vorticity-cloud" : "q-surfaces";
