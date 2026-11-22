@@ -63,9 +63,10 @@ if (-not $Stop) {
         '-e', "PX4_SYS_AUTOSTART=$Autostart",
         '-e', "PX4_SIM_HOSTNAME=$HostAddress",
         '-w', "$px4Dir/rootfs",
-        '--entrypoint', "$px4Dir/bin/px4")
+        '--entrypoint', 'sh')
     if ($PublishOffboard) { $dockerArgs += @('-p', '127.0.0.1:14540:14540/udp') }
-    $dockerArgs += @($Image, "$px4Dir/etc", '-s', 'etc/init.d-posix/rcS', '-d')
+    # PX4's log folder is created first, so -Stop's docker cp always finds one (empty = no log = `none`); then sh gives way to px4 (exec).
+    $dockerArgs += @($Image, '-c', "mkdir -p $px4Dir/rootfs/log && exec $px4Dir/bin/px4 $px4Dir/etc -s etc/init.d-posix/rcS -d")
     & $Docker @dockerArgs *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Output "px4-sitl: docker could not start $name from $Image"
