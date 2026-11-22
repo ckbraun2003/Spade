@@ -103,6 +103,12 @@ if (-not $OutDir) {
     exit 6
 }
 
+if (-not [System.IO.Path]::IsPathRooted($OutDir)) {  # a label or argument that is not a real absolute folder (a stray {} once became a folder in the worktree) never becomes a path
+    Write-Output "px4-sitl: the run folder '$OutDir' is not an absolute path; nothing was written. The container $name is left running as evidence; remove it with: docker rm -f $name"
+    Write-Output 'none'
+    exit 6
+}
+
 # From here on every step is checked and a failure is NAMED; the container is still removed whatever else failed, and the exit is 7 if anything did.
 $failures = New-Object System.Collections.Generic.List[string]
 $folderOk = $true

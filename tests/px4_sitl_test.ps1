@@ -180,6 +180,7 @@ exit 0
     Expect 'relative label' ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
     Expect 'relative label' (Test-Path -LiteralPath $state) 'the container is left alone'
     $env:FAKE_LABELS_JSON = '{}'
+    Set-Content -LiteralPath $state 'x'
     $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -OutDir 'rel\run' -Docker $fake 2>&1 | ForEach-Object { "$_" }
     Expect 'relative -OutDir' ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
     $cwdAfter = @(Get-ChildItem -LiteralPath $RepoRoot -Force | ForEach-Object Name)
