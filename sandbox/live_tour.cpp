@@ -1418,14 +1418,17 @@ void editor_tour(Tour& t, const fs::path& assets) {
         constexpr int kStillFrames = 30;      // half a second of frames at 60 a second
         constexpr int kLimitFrames = 300;     // the stated limit: 5 s
         constexpr float kStillSpeed = 0.02f;  // m/s
-        const auto drop = [&](int& frames_to_still, float& lowest_gap, float& rebound_gap) {
-            frames_to_still = -1;
+        const InputFn live_input = [](int) { return FrameInput{}; };  // scripted-looking input: pump() does not double it (kIdlePace)
+        const auto one_frame = [&] { t.pump(1, live_input, draw); };  // one rendered frame = 1/60 s of simulation
+        const auto drop = [&](double& seconds_to_still, float& lowest_gap, float& rebound_gap) {
+            seconds_to_still = -1.0;
             lowest_gap = std::numeric_limits<float>::infinity();
             rebound_gap = 0.0f;
             bool touched = false;
             int calm = 0;
+            uint64_t calm_from_tick = 0;
             for (int f = 1; f <= kLimitFrames; ++f) {
-                then(1);
+                one_frame();
                 const editor::EditorRun* run = w().run();
                 if (run == nullptr) return;
                 const std::optional<FrameState> st = run->state_of(x500);
@@ -1436,24 +1439,26 @@ void editor_tour(Tour& t, const fs::path& assets) {
                     if (*gap <= end_goal::kRestHi) touched = true;
                     if (touched) rebound_gap = std::max(rebound_gap, *gap);
                 }
-                calm = glm::length(st->vel) < kStillSpeed && touched ? calm + 1 : 0;
+                const bool quiet = glm::length(st->vel) < kStillSpeed && touched;
+                if (quiet && calm == 0) calm_from_tick = run->tick();
+                calm = quiet ? calm + 1 : 0;
                 if (calm >= kStillFrames) {
-                    frames_to_still = f - kStillFrames + 5;  // + the 5 frames Run's command already showed
+                    seconds_to_still = static_cast<double>(calm_from_tick) * static_cast<double>(kBuiltinStepNs) * 1e-9;  // from Run, in simulated time
                     return;
                 }
             }
         };
         command(editor::Command::run);
-        int still_at = -1;
+        double still_at = -1.0;
         float lowest = 0.0f;
         float rebound = 0.0f;
         drop(still_at, lowest, rebound);
         const editor::EditorRun* run = w().run();
         const std::optional<FrameState> end_state = run != nullptr ? run->state_of(x500) : std::nullopt;
         const std::optional<float> settled = end_state ? foot_gap(end_state->pos) : std::nullopt;
-        s.check(still_at >= 0, "still",
-                still_at >= 0 ? "still after " + fmt(static_cast<float>(still_at) / 60.0f) + " s (speed under 20 mm/s for 0.5 s; limit 5 s)"
-                              : "not still within 5 s");
+        s.check(still_at >= 0.0, "still",
+                still_at >= 0.0 ? "still " + fmt(static_cast<float>(still_at)) + " s after Run (speed under 20 mm/s for 0.5 s; limit 5 s)"
+                                : "not still within 5 s");
         const float settled_gap = settled.value_or(std::numeric_limits<float>::quiet_NaN());
         s.check(settled_gap >= end_goal::kRestLo && settled_gap <= end_goal::kRestHi, "settled-on-feet",
                 settled.has_value() ? "lowest foot point " + fmt(settled_gap * 1000.0f) + " mm above the floor (within [-2, +5]); the lowest it went " +
@@ -1470,7 +1475,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         command(editor::Command::pause);
         for (int i = 0; i < 90; ++i) {
             w().panels().commands.push_back(editor::Command::step);
-            then(4);  // one Step = 4 built-in steps = 16 ms of simulation, shown for 4 frames (67 ms): 0.25x
+            t.pump(4, live_input, draw);  // one Step = 4 built-in steps = 16 ms of simulation, shown for 4 frames (67 ms): 0.25x
         }
         then(30);
         command(editor::Command::stop);
