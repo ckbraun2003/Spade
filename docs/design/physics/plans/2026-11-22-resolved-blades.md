@@ -2,6 +2,13 @@
 
 Status: PLAN, not code. Written by Physics, 2026-11-22 (box clock, `date -u` at each stamp below). Inputs: Core's section (data layout, determinism, pins), Rendering's section (what each phase shows, painting cost). Grades used: **measured** (a number read from a run or a file), **read** (read from the code), **derived** (arithmetic on those), **assumed** (a stated guess).
 
+## Corrections, 2026-11-22T17:56Z (box clock; the lead's request, after Physics traced the VRAM cap in the code)
+
+1. **The VRAM ceiling.** `check_vram` holds a runner to min(4 GiB, budget - usage - 1 GiB reserve); the 88 M-cell target (7.0 GiB) and the ny ~1,230 film box are not reachable on this card: about 50 M cells under the 4 GiB cap, about 76 M with the cap lifted to the reserve rule (§0, §6 corrected in place). The O158 +0.25 m box (6.4 GiB measured) is refused today. This is for Cameron (options A to D via the lead), not a code change in this plan.
+2. **Phase 0 takes about 11 to 12 days, not 7 to 9** (sparse field 6, limiter bounds 1.5, aliased scratch 2.5, one shared gate 1.5); the Physics total about 49 to 61 days; the milestones about day 8.5 (4 GiB cap) / 7 (cap lifted) / 11.5 (full diet), the resolved rotor about day 39, the patch stop about day 26.
+3. The earlier VRAM figure for the fit-3 harness (6.3 to 6.6 GiB) was also wrong (that runner has no solids; at most 141 B a cell under the same cap).
+The in-line corrections below are marked CORRECTED with this date; the rest of the plan is unchanged.
+
 ## 0. The ask and the short answer
 
 Cameron: "truly resolving blades needs finer detail than your card can hold": "If we're hitting optimization roadblocks we need to make the roads." The card is an RTX 3060 Ti, 8,192 MiB, 1,005 MiB used by the desktop: **7.0 GiB usable** (*measured*). The engine today costs **221 B a cell** from my measured run (3,569 MiB at 16.96 M cells) and **234.6 B a cell** in the device runner's own figure (tests/d1_case.hpp:95), so the card holds 32 to 34 M cells at best (*measured*, *read*).
@@ -13,7 +20,7 @@ The plan makes the engine fit the problem in four moves, in this order, each sho
 3. **Moving solids** (Phase 2): the blade as a cut-cell solid moving through a static fine patch, its wall velocity in the pressure solve (the engine's solid field already carries both the open fractions and a wall velocity, so this extends what exists).
 4. **Validation and the film** (Phases 3 and 4): one resolved rotor against UIUC's measured point, then four rotors.
 
-Total: **about 45 to 58 Physics working days, plus Core 8 to 11 and Rendering about 18 in parallel; about 55 to 95 GPU hours** (§9). **First milestone that shows something real:** the memory diet's deeper O158 wake, at about day 8 of the plan (§9), then **one resolved rotor in a nested patch, validated**, at about day 35.
+Total: **about 49 to 61 Physics working days, plus Core 8 to 11 and Rendering about 18 in parallel; about 55 to 95 GPU hours** (§9). **First milestone that shows something real:** the memory diet's deeper O158 wake, at about day 8.5 of the plan under today's 4 GiB cap (about day 7 if the policy cap is lifted; the full diet about day 11.5; §9, corrected 2026-11-22T17:56Z), then **one resolved rotor in a nested patch, validated**, at about day 39.
 
 ## 1. Memory per cell: where the 221 B go
 
@@ -44,7 +51,7 @@ Total: **about 45 to 58 Physics working days, plus Core 8 to 11 and Rendering ab
 4. **fp16 storage for u, v, w, p**: **not first.** Core's count: it saves 8 of the 221 B at most (the scratch and multigrid levels are the big items, and fp32 arithmetic with fp16 storage adds a CPU/GPU conversion contract). Left for later, behind a flag.
 5. **Out-of-core**: §8.
 
-**Target about 85 B a cell** (dense solver ~60 to 65 B, sparse solid ~4 B, render and staging ~20 B): **capacity 12.6 M cells a GiB against 4.6 to 4.9 now, so about 88 M cells on 7.0 GiB against 32 to 34 M.** *Derived*: the target is a plan, to be measured at the end of Phase 0 (an allocation probe per box size, which I am adding anyway).
+**Target about 85 B a cell** (dense solver ~60 to 65 B, sparse solid ~4 B, render and staging ~20 B): **capacity 12.6 M cells a GiB against 4.6 to 4.9 now, so about 88 M cells on 7.0 GiB against 32 to 34 M. CORRECTED 2026-11-22T17:56Z: the 7.0 GiB is not available. The device runner is held to min(4 GiB policy cap, budget - usage - 1 GiB reserve) by `check_vram` (engine/compute/device_limits.hpp:164-176, spike/airflow/chain_runner.hpp:217), so at 85 B a cell today's cap holds about 50 M cells (4 GiB), and the card's own reserve rule, with the cap lifted, about 76 M cells (about 6.0 GiB of the 8 GiB card, after the desktop's 1.0 GiB and the 1 GiB reserve); the 88 M-cell target needs a cap of about 7 GiB, which the card cannot give while the desktop runs. Core's kGridByteCap question is the same ruling.** *Derived*: the target is a plan, to be measured at the end of Phase 0 (an allocation probe per box size, which I am adding anyway).
 
 ## 2. Local refinement: nested patches
 
@@ -99,7 +106,7 @@ The prop's mid-span chord is about 12 mm (c/R 0.195, R 63.5 mm), 10.6 mm at 0.75
 
 ## 6. First payoff: the O158 film goes deeper
 
-**Cameron's words (O185): "0.25 m now, deeper later."** Once Phase 0's sparse solid field lands, the same film box can go deeper at no change to the film: at ~85 B a cell the card holds ~88 M cells, which is the FPV box (252 x ny x 284) with **ny up to ~1,230 cells = 1.54 m**, against 437 (+0.25 m) in the first run. The wake front is ~0.8 to 1.3 m below the hub by the last shown step, so the whole wake fits. Time is not free: ~2 s a step at 88 M cells at today's 22.8 ns a cell (9,400 steps x 2.0 s = 5.2 h, over the 4 h day), so it also needs the traffic saving of items 2 and 3 above (less memory moved a step: **unmeasured**, to be measured at the end of Phase 0) or a two-day split. **This is the plan's first visible result, at about day 8.**
+**Cameron's words (O185): "0.25 m now, deeper later."** Once Phase 0's sparse solid field lands, the same film box can go deeper at no change to the film: at ~85 B a cell the card holds ~88 M cells, which is the FPV box (252 x ny x 284) with **ny up to ~1,230 cells = 1.54 m** (CORRECTED 2026-11-22T17:56Z: ~1,230 needs the 7 GiB that does not exist; under today's 4 GiB cap ny up to ~706 = +0.58 m, with the cap lifted to the card's reserve rule ny up to ~1,059 = +1.03 m), against 437 (+0.25 m) in the first run. **CORRECTED 2026-11-22T17:56Z: that first run, +0.25 m (31.3 M cells, 221 B a cell measured = 6.4 GiB), is REFUSED today by `check_vram` (over the 4 GiB cap, and over the ~6.0 GiB the reserve rule leaves); today's cap passes about 19.4 M cells, ny ~271, +0.04 m; a lifted cap, +0.18 to +0.21 m. Cameron chooses (A to D, with Oversight); the sparse field (221 to ~154 B) plus the limiter bounds (about 124 B) bring +0.25 m under the 4 GiB cap.** The wake front is ~0.8 to 1.3 m below the hub by the last shown step, so the whole wake fits. Time is not free: ~2 s a step at 88 M cells at today's 22.8 ns a cell (9,400 steps x 2.0 s = 5.2 h, over the 4 h day), so it also needs the traffic saving of items 2 and 3 above (less memory moved a step: **unmeasured**, to be measured at the end of Phase 0) or a two-day split. **This is the plan's first visible result, at about day 8.5 under today's cap, about day 7 with the cap lifted (CORRECTED 2026-11-22T17:56Z).**
 
 ## 7. Validation (RED first, a stated band)
 
@@ -119,18 +126,18 @@ Holding the fields in host RAM and streaming tiles to the card over PCIe (about 
 
 | Phase | Physics days | GPU h | what it shows on screen (Rendering's words) |
 |---|---|---|---|
-| 0. memory diet: sparse solid field, recomputed limiter bounds, aliased scratch, allocation probe; CPU/GPU twins, pins | 7 to 9 | 3 to 5 | the **deeper O158 wake** (first payoff) |
+| 0. memory diet: sparse solid field, recomputed limiter bounds, aliased scratch, allocation probe; CPU/GPU twins, pins | 11 to 12 (CORRECTED 2026-11-22T17:56Z: sparse field 6, limiter bounds 1.5, aliased scratch 2.5, one shared gate of pins, full -L gpu and probe 1.5) | 3 to 5 | the **deeper O158 wake** (first payoff) |
 | 1. nested patches: levels, interpolation, reflux, subcycling, patch blob, CPU+GPU | 15 to 20 | 15 to 25 | a vortex ring crossing a patch face, seamless; the patch outlined in a still |
 | 2. moving cut-cell blade: rasteriser, weights, fresh-cell fill, tests, CPU+GPU | 10 to 13 | 15 to 25 | **P1: blade pressure resolved on the surface of one rotor, beside the line's colour for the same frame** |
 | 3. one resolved rotor, validation against UIUC, line comparison | 6 to 8 | 15 to 25 | P2: slow-motion clip of one rotor, suction building along each blade; P4 figures |
 | 4. four rotors with patches; the hybrid film (line spin-up, then resolved phase); film run | 6 to 8 | 8 to 15 | **P3: the FPV pressure film with blades painted from the fine solve** |
-| **Physics total** | **~45 to 58** | **~55 to 95** | |
+| **Physics total** | **~49 to 61** | **~55 to 95** | |
 | Core (layout, fp16 and packed cell types, blob v2, canonical order, pins and re-records) | 8 to 11 (11 to 15 if the hierarchy lives inside Simulation's state: not proposed) | | |
 | Rendering (multi-level cache and reader 3, composite sampler and slice 2, clipped multi-layer march and seam blend 7, per-item surface colouring 3, stills and clips 3) | ~18 | | the on-screen steps above |
 
 **The hybrid film.** The wake needs ~0.2 s to develop (the film shows 0.2 to 0.235 s) and the resolved phase costs ~4.9 s a 25 us coarse step with four rotors at 0.3125 mm (*derived*: L0 17.0 M + 2 x L1 8.2 M + 8 x L2 22.5 M = 213 M cell-updates a coarse step at 22.8 ns), **~21 minutes a revolution** (258 coarse steps a turn), so a whole film at full resolution is ~12.8 h and the 1.5 turns shown ~32 min. **Therefore: run the line model on the coarse box to a developed wake (as the O158 film does), then switch the patches on for the last 3 to 4 revolutions** (~1.0 to 1.4 h); the blade pressure converges within about 2 to 3 turns of the patches switching on (*assumed*, to be measured in Phase 3).
 
-**First milestone that shows Cameron something real, with two stops:** (a) **~day 8**: the deeper O158 wake from the memory diet; (b) **~day 35 (Phases 0 to 3)**: **one resolved rotor, in a nested patch, blade pressure on screen, thrust and power compared to UIUC's measured point with the stated band.** A first stop on the way, **~day 22** (Phases 0 and 1): a patch round a static plate with the conservation tests green and a vortex crossing its face.
+**First milestone that shows Cameron something real, with two stops:** (a) **~day 8.5 under the 4 GiB cap (sparse field + limiter bounds), ~day 7 with the cap lifted (sparse field alone), ~day 11.5 for the full diet** (corrected 2026-11-22T17:56Z; was ~day 8): the deeper O158 wake from the memory diet; (b) **~day 39 (Phases 0 to 3; was ~day 35, moved by the corrected Phase 0)**: **one resolved rotor, in a nested patch, blade pressure on screen, thrust and power compared to UIUC's measured point with the stated band.** A first stop on the way, **~day 26** (Phases 0 and 1; was ~day 22): a patch round a static plate with the conservation tests green and a vortex crossing its face.
 
 ## 10. Risks, named
 
