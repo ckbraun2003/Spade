@@ -84,17 +84,36 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
     std::future<int> commander;
     const auto wall0 = std::chrono::steady_clock::now();
 
-    for (uint64_t k = 1; k <= steps; ++k) {
+    // The still-on-ground feed carries a little noise from its OWN fixed-seed stream (this test has no world): PX4's sensor validators call a signal
+    // that never changes "stale", so a perfectly constant feed would be refused as a failed sensor.
+    uint64_t noise_state = 0x5ADE0000F00DULL;
+    const auto noise = [&noise_state](double sigma) {  // sum of 4 uniforms, scaled to the given standard deviation
+        double sum = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            noise_state += 0x9E3779B97F4A7C15ULL;
+            uint64_t z = noise_state;
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            z ^= z >> 31;
+            sum += static_cast<double>(z >> 11) * (1.0 / 9007199254740992.0) - 0.5;
+        }
+        return static_cast<float>(sum * sigma * 1.7320508);  // 4 uniforms of width 1 have variance 1/3
+    };
+
+    uint64_t boot_steps_wall_cap = 0;
+    for (uint64_t k = 1; done < steps; ++k) {  // k is the link's own step count; done counts the steps PX4 has answered (Spade's ticks)
+        if (++boot_steps_wall_cap > 5000000) break;
         mavlink::HilSensor s;
         s.time_usec = k * 4000;
-        s.zacc = -9.80665F;                       // body at rest, FRD: gravity reads as -g on the down axis
-        s.xmag = 0.21F, s.ymag = 0.F, s.zmag = 0.43F;  // gauss, heading north at about 47 degrees latitude
-        s.abs_pressure = 955.F;                    // hPa, about 488 m
+        s.xacc = noise(0.05), s.yacc = noise(0.05), s.zacc = -9.80665F + noise(0.05);  // body at rest, FRD: gravity reads as -g on the down axis
+        s.xgyro = noise(0.001), s.ygyro = noise(0.001), s.zgyro = noise(0.001);
+        s.xmag = 0.21F + noise(0.002), s.ymag = noise(0.002), s.zmag = 0.43F + noise(0.002);  // gauss, heading north at about 47 degrees latitude
+        s.abs_pressure = 955.F + noise(0.1);       // hPa, about 488 m
         s.pressure_alt = 488.F;
         s.temperature = 15.F;
         s.fields_updated = 0x1BFF;                 // accel, gyro, mag, baro; no differential pressure
         std::optional<mavlink::HilGps> gps;
-        if (k % 50 == 0) {                         // every 200 ms
+        if (k % 50 == 0) {                         // every 200 ms of link time
             mavlink::HilGps g;
             g.time_usec = s.time_usec;
             g.lat = 473977420;
@@ -115,18 +134,29 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
             else ++other_refusal;
             break;  // a refused exchange ends the run: nothing is retried or guessed
         }
+        if (r->booting) {  // PX4 is still booting: the held feed goes on; Spade's tick 0 has not happened
+            if (link->report().boot_steps % 250 == 0)
+                std::ofstream(out / "lockstep-progress.txt", std::ios::app) << "PX4 booting: " << link->report().boot_steps << " boot steps sent, link time "
+                                                                             << (static_cast<double>(k) * 0.004) << " s\n";
+            continue;
+        }
         ++done;
         for (int m = 0; m < 4; ++m) max_motor = std::max(max_motor, r->controls[m]);
         ever_armed = ever_armed || r->armed;
-        if (k % 250 == 0 || k == steps) {  // a progress line for whoever watches the run (the run film tails this file)
+        if (done % 250 == 0 || done == steps || done == 1) {  // a progress line for whoever watches the run (the run film tails this file)
             const double wall_now = std::chrono::duration<double>(std::chrono::steady_clock::now() - wall0).count();
             std::ofstream(out / "lockstep-progress.txt", std::ios::app)
-                << "step " << k << " of " << steps << "   sim " << (static_cast<double>(k) * 0.004) << " s   wall " << wall_now << " s   replies " << link->report().replies
+                << "tick " << (done - 1) << " of " << steps << "   sim " << (static_cast<double>(done - 1) * 0.004) << " s   wall " << wall_now << " s   replies "
+                << link->report().replies << "   boot steps " << link->report().boot_steps
                 << "   px4_no_reply 0   px4_stale_reply 0   px4_link_closed 0   motors armed " << (r->armed ? "yes" : "no") << '\n';
         }
-        if (k == (steps * 4) / 5) {
+        if (done == (steps * 4) / 5) {
             commander = std::async(std::launch::async, [&] {
-                return docker_exec_to_file(container, "/src/PX4-Autopilot/build/px4_sitl_spade/bin/px4-commander check", out / "commander-check.txt");
+                const std::string bin = "/src/PX4-Autopilot/build/px4_sitl_spade/bin/";
+                int rc = docker_exec_to_file(container, bin + "px4-commander check", out / "commander-check.txt");
+                docker_exec_to_file(container, bin + "px4-commander status", out / "commander-status.txt");
+                docker_exec_to_file(container, bin + "px4-ekf2 status", out / "ekf2-status.txt");
+                return rc;
             });
         }
     }
@@ -150,6 +180,9 @@ TEST(FcLivePx4, TheLockstepRunsAgainstTheRealImageAndTheCommanderSaysReady) {
          << "heartbeats_seen: " << rep.heartbeats_seen << "\n"
          << "command_longs_seen: " << rep.command_longs_seen << "\n"
          << "last_time_usec: " << rep.last_time_usec << "\n"
+         << "boot_steps: " << rep.boot_steps << "\n"
+         << "boot_end_time_usec: " << rep.boot_end_time_usec << "\n"
+         << "catchup_replies: " << rep.catchup_replies << "\n"
          << "wall_s: " << wall << "\n"
          << "wall_wait_max_ms: " << std::chrono::duration<double, std::milli>(rep.wall_wait_max).count() << "\n"
          << "parser_frames: " << rep.parser.frames << "\n"
