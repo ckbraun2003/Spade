@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 
+#include "physics/rigid_contact.hpp"
 #include "vehicles/model_part.hpp"
 #include "vehicles/part_pose.hpp"
 
@@ -76,6 +77,18 @@ void build_contact_sets(std::span<const vehicles::ModelType> models, std::vector
 }
 
 std::optional<float> lowest_contact_point(const vehicles::ModelType& model, const BodyState& body) {
+    // A model with a shape rests on its shape (the shape replaces the L9 set at spawn): the lowest of the compiled shape's points, placed by the pass's own expression,
+    // less the shape's radius or skin. A shape the table refuses is refused at instantiate(); here it leaves the set in charge.
+    if (model.shape && model.shape->kind != ShapeKind::none) {
+        const Result<ShapeRow> row = compile_shape(*model.shape);
+        if (row && row->count > 0) {
+            float y = contact_point_world(body, glm::vec3(row->points[0][0], row->points[0][1], row->points[0][2])).y;
+            for (uint32_t k = 1; k < row->count; ++k) {
+                y = std::min(y, contact_point_world(body, glm::vec3(row->points[k][0], row->points[k][1], row->points[k][2])).y);
+            }
+            return y - row->radius;
+        }
+    }
     const std::vector<glm::vec3> points = contact_points(model);
     std::optional<float> low;
     for (const glm::vec3& p : points) {

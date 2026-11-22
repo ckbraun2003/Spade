@@ -223,6 +223,14 @@ struct ResolvedCase {
     // part of case_to_yaml(spec), so no case hash or pin moves, and a LiveRun save does not name it (restore() builds
     // from the caller's ResolvedCase, grid shape included, so the host passes the same hold).
     glm::vec3 hold_from_centre{0.0f};
+    // The live run's pressure solve with solids: the CG's FLOOR, the iterations it always takes before it may stop at
+    // the residual mark (physics::airflow::FluidConfig::n_v). 0, the default, is the engine's own
+    // (kSolidsCgIterations, 8): a run is the same to the bit. A tighter pressure for a film is a larger floor (O158:
+    // 12 turns the 267 loose steps of 601 into healthy ones, for about 135 ms a step on the FPV box); 1 to
+    // kSolidsCgCap (32) otherwise. Set by the host after resolve(), like hold_from_centre: not part of
+    // case_to_yaml(spec), so no case hash or pin moves; a LiveRun save does not name it (restore() builds from the
+    // caller's ResolvedCase, so the host passes the same floor). LiveRun::start() refuses a floor above the cap.
+    uint32_t solids_cg_floor = 0;
     // physics::airflow::fluid_bytes(base) and the rotors' spread_cache_bytes(); the nests' come with R1
     uint64_t base_bytes = 0;
     std::vector<ResolvedRotor> rotors;

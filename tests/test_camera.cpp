@@ -67,7 +67,7 @@ TEST(CameraRow, LayoutIsTheStd430ShapeRenderingAndTheSnapshotSee) {
 
 TEST(CameraKind, IsTheThirdKindAndItsTagIsItsOwn) {
     EXPECT_EQ(sn::sensor_kind::camera, 3u);
-    EXPECT_EQ(sn::sensor_kind::count, 4u) << "the bound moves with the kind";
+    EXPECT_EQ(sn::sensor_kind::count, 6u) << "the bound moves with the kind";
     EXPECT_NE(sn::sensor_kind::camera, sn::sensor_kind::imu);
     EXPECT_NE(sn::sensor_kind::camera, sn::sensor_kind::gnss);
     EXPECT_NE(sn::kCameraNoiseDomainTag, sn::kImuNoiseDomainTag);

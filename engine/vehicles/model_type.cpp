@@ -120,6 +120,12 @@ std::vector<ModelIssue> ModelType::issues() const {
             // admitted; a NEGATIVE time constant is a typo, not a model.
             add(E::rotor, i, "tau", where + "tau must be finite and >= 0");
         }
+        // 0 = the same as tau. A fall time constant with no rise lag (tau <= 0, instant tracking) is an ambiguous mix of the two, so it is refused.
+        if (!(rotor.tau_down >= 0.0f) || !finite(rotor.tau_down)) {
+            add(E::rotor, i, "tau_down", where + "tau_down must be finite and >= 0 (0 = the same as tau)");
+        } else if (rotor.tau_down > 0.0f && !(rotor.tau > 0.0f)) {
+            add(E::rotor, i, "tau_down", where + "tau_down needs tau > 0 (a lagged fall with an instant rise is not a motor)");
+        }
         // -------------------------------------------------------------------
         // THE ONE THAT FAILS QUIETLY WITHOUT THIS CHECK, and the reason
         // rotor.hpp's apply_rotors() preconditions name Task 18 by number:
@@ -242,6 +248,10 @@ std::vector<ModelIssue> ModelType::issues() const {
                 if (!part.shape.node_materials.empty()) {
                     refuse("shape", "shape must not carry node_materials: they are render data, and what the fluid "
                                     "sees is the part's surface");
+                }
+                if (!part.shape.node_labels.empty()) {
+                    refuse("shape", "shape must not carry node_labels: they are render data, and what the fluid sees is "
+                                    "the part's surface (an object label goes in the world file's sdf.node_labels)");
                 }
                 // Bounded (CORE-7; the lead's answer of 2026-10-12: an
                 // unbounded part would fill half of space): sdf_bounded(),

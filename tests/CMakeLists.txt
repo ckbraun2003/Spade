@@ -155,6 +155,9 @@ add_executable(spade_tests
     test_airframe_compile.cpp
     test_basic_quad.cpp
     test_quadrotor.cpp
+    test_x500_ground_contact.cpp
+    test_step_convergence.cpp
+    test_sensor_errors.cpp
     test_imu.cpp
     test_camera.cpp
     test_camera_capacities.cpp
@@ -166,6 +169,8 @@ add_executable(spade_tests
     test_camera_golden.cpp
     test_world_file_v4.cpp
     test_gnss.cpp
+    test_baro.cpp
+    test_mag.cpp
     test_world_file.cpp
     test_scene_file.cpp
     test_scene_airflow.cpp
@@ -234,6 +239,9 @@ add_executable(spade_tests
     test_vulkan_off_includes.cpp
     test_m1b_bar.cpp
     test_temp_hygiene.cpp
+    test_fc_run_folder.cpp
+    test_fc_live_harness.cpp
+    test_fc_live_px4.cpp
     test_render_target.cpp
     test_render_scene.cpp
     test_render_tessellate.cpp
@@ -309,6 +317,13 @@ add_executable(spade_tests
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
     test_flow_movie_build_parts.cpp
+    test_fc_link_mavlink.cpp
+    test_fc_link_frames.cpp
+    test_fc_link_px4.cpp
+    test_fc_link_tcp.cpp
+    test_autopilot_map.cpp
+    test_x500_contact_model.cpp
+    test_sensor_profiles.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
@@ -756,6 +771,7 @@ target_link_libraries(spade_tests PRIVATE
     spade::physics
     spade::vehicles
     spade::sim
+    spade_fc_link
     spade_warnings
     spade_fp_strict
     yaml-cpp::yaml-cpp
@@ -999,6 +1015,39 @@ if(WIN32)
         set_tests_properties(DockerUp.StartsADownDaemon PROPERTIES
             LABELS spade
             TIMEOUT 120)
+    endif()
+endif()
+
+# The `fc` label (TD-17): the FcLive* suites carry `fc` and not `spade`, so `-L spade` (the gates) leaves them out, `-L fc` finds them, and the unit
+# suites of the same work stay in `spade`. A cmake script asks ctest itself (-N, nothing runs), so the rule is pinned against the real label sets.
+# LABELS spade.
+add_test(NAME FcLabel.LiveSuitesAreOutsideTheSpadeSet
+    COMMAND "${CMAKE_COMMAND}" "-DCTEST=${CMAKE_CTEST_COMMAND}" "-DBUILD=${CMAKE_BINARY_DIR}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/fc_label_check.cmake")
+set_tests_properties(FcLabel.LiveSuitesAreOutsideTheSpadeSet PROPERTIES
+    LABELS spade
+    TIMEOUT 120)
+
+# scripts/fc-run.ps1 runs the `fc` tests as one job (Docker up, one PX4 container, the tests, the container stopped, a summary), with a fake docker-up,
+# a fake px4-sitl.ps1 and a fake ctest on PATH: no Docker, no PX4, no real test is touched. Windows only (PowerShell). LABELS spade.
+if(WIN32)
+    find_program(SPADE_POWERSHELL NAMES powershell)
+    if(SPADE_POWERSHELL)
+        cmake_path(SET SPADE_FC_RUN_REPO NORMALIZE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        add_test(NAME FcRun.RunsTheAutopilotTestsAsOneJob
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/fc_run_test.ps1" "${SPADE_FC_RUN_REPO}")
+        set_tests_properties(FcRun.RunsTheAutopilotTestsAsOneJob PROPERTIES
+            LABELS spade
+            TIMEOUT 180)
+        # scripts/px4-sitl.ps1 start and -Stop, on a fake docker (no Docker, no PX4): every -Stop failure is named and exits 7, the log is
+        # timestamp-ordered, the run folder must be a fully qualified path, a start creates PX4's log folder. LABELS spade.
+        add_test(NAME Px4Sitl.StopReportsItsFailures
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/px4_sitl_test.ps1" "${SPADE_FC_RUN_REPO}")
+        set_tests_properties(Px4Sitl.StopReportsItsFailures PROPERTIES
+            LABELS spade
+            TIMEOUT 180)
     endif()
 endif()
 

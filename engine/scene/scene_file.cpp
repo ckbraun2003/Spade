@@ -326,6 +326,7 @@ void detail::emit_model(std::string& out, const vehicles::ModelType& m, std::str
             out += in + "  - {local_pos: " + vec3_list(r.local_pos) +
                    ", local_orient: " + quat_list(r.local_orient) +
                    ", spin_dir: " + format_float(r.spin_dir) + ", tau: " + format_float(r.tau) +
+                   (r.tau_down != 0.0f ? ", tau_down: " + format_float(r.tau_down) : std::string()) +
                    ", radius: " + format_float(r.radius) +
                    ", thrust_coeff: " + format_float(r.thrust_coeff) +
                    ", torque_coeff: " + format_float(r.torque_coeff) + "}\n";
@@ -680,7 +681,7 @@ template <std::size_t N>
 [[nodiscard]] Result<vehicles::RotorDesc> parse_rotor(const YAML::Node& node, const std::string& what,
                                                       std::string_view schema) {
     if (Result<void> r = check_map(node, what,
-                                   {"local_pos", "local_orient", "spin_dir", "tau", "radius",
+                                   {"local_pos", "local_orient", "spin_dir", "tau", "tau_down", "radius",
                                     "thrust_coeff", "torque_coeff"},
                                    schema);
         !r) {
@@ -695,6 +696,13 @@ template <std::size_t N>
     if (!spin_dir) return std::unexpected(spin_dir.error());
     const Result<float> tau = float_field(node, "tau", what);
     if (!tau) return std::unexpected(tau.error());
+    // tau_down is optional, as the writer omits it when 0 (= tau).
+    float tau_down = 0.0f;
+    if (has(node, "tau_down")) {
+        const Result<float> parsed = float_field(node, "tau_down", what);
+        if (!parsed) return std::unexpected(parsed.error());
+        tau_down = *parsed;
+    }
     const Result<float> radius = float_field(node, "radius", what);
     if (!radius) return std::unexpected(radius.error());
     const Result<float> thrust_coeff = float_field(node, "thrust_coeff", what);
@@ -705,6 +713,7 @@ template <std::size_t N>
     out.local_orient = *local_orient;
     out.spin_dir = *spin_dir;
     out.tau = *tau;
+    out.tau_down = tau_down;
     out.radius = *radius;
     out.thrust_coeff = *thrust_coeff;
     out.torque_coeff = *torque_coeff;

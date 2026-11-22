@@ -298,13 +298,13 @@ static_assert(sizeof(ImuSample::accel) + sizeof(ImuSample::_p0) + sizeof(ImuSamp
 //
 // Eight 16-byte rows:
 //   row 0  body_slot | kind | rate_divider | phase
-//   row 1  mount_pos | _p0
+//   row 1  mount_pos | range_a
 //   row 2  mount_orient (quat)
 //   row 3  sigma_a | sigma_g | sigma_ba | sigma_bg
-//   row 4  bias_a | _p1
-//   row 5  bias_g | _p2
+//   row 4  bias_a | range_g
+//   row 5  bias_g | adc_bits
 //   row 6  noise (rng::Stream)
-//   row 7  last_index | _reserved0
+//   row 7  last_index | turn_on_sigma_a | turn_on_sigma_g
 //
 // EVERYTHING THE SENSOR NEEDS TO CONTINUE IS IN THIS ROW, and that is the
 // design rule rather than a convenience: the row is registered state, so the
@@ -329,9 +329,10 @@ static_assert(sizeof(ImuSample::accel) + sizeof(ImuSample::_p0) + sizeof(ImuSamp
 // would be a second source of truth for a number the slot already determines,
 // and the two would disagree the first time a slot was recycled.
 //
-// `_reserved0` must stay 0. It is the growth room a versioned layout owes
-// itself (same discipline as WorldParams::_reserved0), and it is what keeps
-// row 7 a full 16 bytes so nothing moves when it is spent.
+// THE LAST FOUR NAMES WERE PADS (and `_reserved0`, split into the two turn-on sigmas): `range_a`, `range_g`, `adc_bits` took the three std430 pads and
+// `turn_on_sigma_a`, `turn_on_sigma_g` the two halves of `_reserved0`, at the SAME offsets, so the row is still 128 bytes, no offset moved and a row with all
+// five at zero is byte-identical to one from before them. They are the converter (range and quantum, applied to every emitted sample, CPU only) and the
+// turn-on offset (a bias started afresh at spawn and every reseed): see imu_limit_and_quantise() and imu_turn_on_bias() below.
 // ---------------------------------------------------------------------------
 struct alignas(kStd430StructAlignment) ImuSensorRow {
     uint32_t body_slot;      // WORLD-LOCAL index into this world's bodies span
@@ -339,19 +340,20 @@ struct alignas(kStd430StructAlignment) ImuSensorRow {
     uint32_t rate_divider;   // emit one sample every N substeps; 1 == every substep
     uint32_t phase;          // substeps elapsed in the current sensor period
     glm::vec3 mount_pos;     // r, BODY-frame offset from the body's COM, m
-    float _p0;               // std430 pad -- keeps `mount_orient` on row 2
+    float range_a;           // accel full-scale range, +-m/s^2; 0 = unlimited (was a pad: keeps `mount_orient` on row 2)
     glm::quat mount_orient;  // mount -> body rotation, unit quaternion
     float sigma_a;           // accel white noise, per-sample stddev, m/s^2
     float sigma_g;           // gyro white noise, per-sample stddev, rad/s
     float sigma_ba;          // accel bias random-walk step stddev, m/s^2 per sample
     float sigma_bg;          // gyro bias random-walk step stddev, rad/s per sample
     glm::vec3 bias_a;        // accel bias state, MOUNT frame, m/s^2
-    float _p1;               // std430 pad
+    float range_g;           // gyro full-scale range, +-rad/s; 0 = unlimited (was a pad)
     glm::vec3 bias_g;        // gyro bias state, MOUNT frame, rad/s
-    float _p2;               // std430 pad
+    float adc_bits;          // converter resolution, an integer 1..24; 0 = no quantization (was a pad)
     rng::Stream noise;       // this sensor's own stream; ALL of its randomness
     SampleIndex last_index;  // index of the newest sample written; 0 == none yet
-    uint64_t _reserved0;     // reserved for versioned growth; must stay 0
+    float turn_on_sigma_a;   // accel turn-on offset stddev per axis, m/s^2; 0 = none (was half of `_reserved0`)
+    float turn_on_sigma_g;   // gyro turn-on offset stddev per axis, rad/s; 0 = none (was half of `_reserved0`)
 };
 
 static_assert(std::is_standard_layout_v<ImuSensorRow>, "ImuSensorRow must be standard-layout for offsetof to be meaningful");
@@ -365,19 +367,20 @@ static_assert(offsetof(ImuSensorRow, kind) == 4);
 static_assert(offsetof(ImuSensorRow, rate_divider) == 8);
 static_assert(offsetof(ImuSensorRow, phase) == 12);
 static_assert(offsetof(ImuSensorRow, mount_pos) == 16);
-static_assert(offsetof(ImuSensorRow, _p0) == 28);
+static_assert(offsetof(ImuSensorRow, range_a) == 28);
 static_assert(offsetof(ImuSensorRow, mount_orient) == 32);
 static_assert(offsetof(ImuSensorRow, sigma_a) == 48);
 static_assert(offsetof(ImuSensorRow, sigma_g) == 52);
 static_assert(offsetof(ImuSensorRow, sigma_ba) == 56);
 static_assert(offsetof(ImuSensorRow, sigma_bg) == 60);
 static_assert(offsetof(ImuSensorRow, bias_a) == 64);
-static_assert(offsetof(ImuSensorRow, _p1) == 76);
+static_assert(offsetof(ImuSensorRow, range_g) == 76);
 static_assert(offsetof(ImuSensorRow, bias_g) == 80);
-static_assert(offsetof(ImuSensorRow, _p2) == 92);
+static_assert(offsetof(ImuSensorRow, adc_bits) == 92);
 static_assert(offsetof(ImuSensorRow, noise) == 96);
 static_assert(offsetof(ImuSensorRow, last_index) == 112);
-static_assert(offsetof(ImuSensorRow, _reserved0) == 120);
+static_assert(offsetof(ImuSensorRow, turn_on_sigma_a) == 120);
+static_assert(offsetof(ImuSensorRow, turn_on_sigma_g) == 124);
 
 // Every vec3/quat starts a 16-byte row; the stream and the two uint64s are
 // 8-byte aligned, which std430 requires of them too.
@@ -393,7 +396,7 @@ static_assert(offsetof(ImuSensorRow, last_index) % 8 == 0);
 // own 16 bytes -- see core/rng.hpp.)
 static_assert(4 * sizeof(uint32_t) + sizeof(glm::vec3) + sizeof(float) + sizeof(glm::quat) +
                   4 * sizeof(float) + 2 * (sizeof(glm::vec3) + sizeof(float)) + sizeof(rng::Stream) +
-                  sizeof(SampleIndex) + sizeof(uint64_t) ==
+                  sizeof(SampleIndex) + 2 * sizeof(float) ==
                   sizeof(ImuSensorRow),
               "ImuSensorRow has implicit padding: every byte must belong to a named field");
 
@@ -408,6 +411,29 @@ static_assert(4 * sizeof(uint32_t) + sizeof(glm::vec3) + sizeof(float) + sizeof(
 [[nodiscard]] constexpr rng::Stream imu_noise_stream(uint64_t world_seed, uint32_t local_slot) noexcept {
     return rng::make_stream(world_seed, kImuNoiseDomainTag, local_slot);
 }
+
+// ---------------------------------------------------------------------------
+// THE TURN-ON OFFSET (a bias drawn once per episode) AND THE CONVERTER (range and quantum). Both are off at zero, and a
+// row with every new field at zero is BYTE-IDENTICAL to one from before them.
+//
+// kImuTurnOnDomainTag: a SECOND pinned stream, from the world seed and the world-local slot, drawn and DISCARDED (no
+// registered state): imu_turn_on_bias() derives it, takes its six standard normals (accel x y z, then gyro x y z) and
+// scales each channel by its sigma. It is separate from `noise` so that taking the offset never moves the sensor's own
+// draw position, which keeps every digest of a sensor without one exactly where it was. Taken at spawn AND at every
+// reseed(), for a channel whose sigma is above 0 only (a reseed of a defaults-off row writes only `noise`).
+// ---------------------------------------------------------------------------
+inline constexpr std::string_view kImuTurnOnDomainTag = "sensor.imu.turnon";
+
+struct ImuTurnOn {
+    glm::vec3 accel;  // the offset to start bias_a from, m/s^2 (zero for a channel whose sigma is 0)
+    glm::vec3 gyro;   // the offset to start bias_g from, rad/s
+};
+[[nodiscard]] ImuTurnOn imu_turn_on_bias(uint64_t world_seed, uint32_t local_slot, float sigma_a, float sigma_g) noexcept;
+
+// One measured value through the converter: clamped to +-range, then rounded to the lattice of 2 * range / 2^bits. A
+// range of 0 leaves the value alone (no clamp, no quantum); a bits of 0 clamps without rounding. No libm: the rounding is
+// an integer truncation of value / lsb +- 0.5 (half away from zero), the lsb a power-of-two scaling of the range.
+[[nodiscard]] float imu_limit_and_quantise(float value, float range, float adc_bits) noexcept;
 
 // ---------------------------------------------------------------------------
 // synthesize_imu() -- the imu.synthesize pass's work, for ONE

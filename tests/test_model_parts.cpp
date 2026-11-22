@@ -825,3 +825,56 @@ TEST(ModelReach, AMeshPartReachesByItsVertices) {
     for (const glm::vec3& v : hull.mesh->positions()) want = std::max(want, glm::length(hull.mount_pos + v));
     EXPECT_EQ(model_reach(quad_with({hull})), want);
 }
+
+// Object labels (world file schema v4) are render data on a WORLD's SDF. A part's shape must not carry them, as it must not carry node_materials, and the
+// refusal names the field and where a label can go (a silent drop would lose the label with no word).
+TEST(ModelParts, APartShapeMustNotCarryNodeLabels) {
+    PartDesc labelled = part("labelled");
+    ASSERT_FALSE(labelled.shape.nodes.empty());
+    labelled.shape.node_labels.assign(labelled.shape.nodes.size(), 7);
+    const ModelType m = quad_with({part("arm0"), labelled});
+    const std::vector<ModelIssue> issues = m.issues();
+    ASSERT_EQ(issues.size(), 1u);
+    EXPECT_EQ(issues[0].element, ModelIssue::Element::part);
+    EXPECT_EQ(issues[0].index, 1u);
+    EXPECT_EQ(issues[0].field, "shape");
+    EXPECT_EQ(issues[0].code, spade::Code::invalid_argument);
+    EXPECT_NE(issues[0].message.find("node_labels"), std::string::npos) << issues[0].message;
+    EXPECT_NE(issues[0].message.find("sdf.node_labels"), std::string::npos) << "it says where a label can go: " << issues[0].message;
+    EXPECT_FALSE(m.validate().has_value());
+}
+
+// --- tau_down on a rotor (Phase 1 of the flight-computer work, O144) ----------------------------------------------------------------------------------------------
+
+TEST(ModelTauDown, ValidateRefusesWhatCannotBeAFallTimeConstant) {
+    const auto with = [](float tau, float tau_down) {
+        ModelType m = quad_with({part("arm0")});
+        m.rotors[0].tau = tau;
+        m.rotors[0].tau_down = tau_down;
+        return m;
+    };
+    EXPECT_TRUE(with(0.0125f, 0.0f).validate().has_value()) << "0 = the same as tau";
+    EXPECT_TRUE(with(0.0125f, 0.025f).validate().has_value());
+    for (const float bad : {-0.01f, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        const auto r = with(0.0125f, bad).validate();
+        ASSERT_FALSE(r.has_value()) << bad;
+        EXPECT_NE(r.error().context.find("tau_down"), std::string::npos) << r.error().context;
+    }
+    const auto no_lag = with(0.0f, 0.025f).validate();
+    ASSERT_FALSE(no_lag.has_value()) << "an instant rise with a lagged fall is an ambiguous mix";
+    EXPECT_NE(no_lag.error().context.find("tau_down needs tau > 0"), std::string::npos) << no_lag.error().context;
+}
+
+TEST(ModelTauDown, TheIdentityMovesOnlyWhenItIsSet) {
+    ModelType base = quad_with({part("arm0")});
+    ModelType same = base;
+    same.rotors[0].tau_down = 0.0f;
+    ModelType set = base;
+    set.rotors[0].tau = 0.0125f;
+    base.rotors[0].tau = 0.0125f;
+    set.rotors[0].tau_down = 0.025f;
+    EXPECT_EQ(spade::vehicles::model_identity(base), spade::vehicles::model_identity(base));
+    EXPECT_NE(spade::vehicles::model_identity(base), spade::vehicles::model_identity(set)) << "a set tau_down is part of the model";
+    same.rotors[0].tau = 0.0125f;
+    EXPECT_EQ(spade::vehicles::model_identity(base), spade::vehicles::model_identity(same)) << "0 folds nothing: no existing identity moves";
+}

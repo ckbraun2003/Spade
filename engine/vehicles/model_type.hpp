@@ -158,6 +158,7 @@ struct RotorDesc {
     glm::quat local_orient{1.0f, 0.0f, 0.0f, 0.0f};  // local -> body; thrust axis = local_orient * +Y
     float spin_dir = 1.0f;                           // +1 / -1 / 0; a DIRECTION, not a scale
     float tau = 0.0f;                                // RPM-lag time constant, s; <= 0 means no lag
+    float tau_down = 0.0f;                           // the time constant when the command is BELOW the shaft speed, s; 0 = tau; needs tau > 0
     float radius = 0.0f;                             // disc radius R, m; MUST be > 0 (see above)
     float thrust_coeff = 0.0f;                       // k_T in T_static = k_T w^2, N s^2; > 0
     float torque_coeff = 0.0f;                       // k_Q in Q = k_Q w^2, N m s^2; >= 0

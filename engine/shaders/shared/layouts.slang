@@ -279,7 +279,7 @@ struct RotorRow {
     float  omega_cmd;     // STATE: commanded shaft speed, rad/s, non-negative
     float  thrust_coeff;  // k_T in T_static = k_T * omega^2, N s^2
     float  torque_coeff;  // k_Q in Q = k_Q * omega^2, N m s^2, non-negative
-    float  _r0;           // reserved for the gyroscopic/BEMT opt-ins; must stay 0
+    float  tau_down;      // fall time constant, s; 0 = tau (the kernel does not read it: a Vulkan spawn with tau_down > 0 is refused)
     float  _r1;
     float  _r2;
     float  _r3;
@@ -301,19 +301,20 @@ struct ImuSensorRow {
     uint      rate_divider;  // emit one sample every N substeps; 1 == every substep
     uint      phase;         // substeps elapsed in the current sensor period
     float3    mount_pos;     // r, BODY-frame offset from the body's COM, m
-    float     _p0;           // std430 pad -- keeps `mount_orient` on row 2
+    float     range_a;       // accel full-scale range, +-m/s^2; 0 = unlimited (was a pad) -- unread here: a Vulkan spawn with it set is refused
     float4    mount_orient;  // mount->body rotation (x,y,z,w)
     float     sigma_a;       // accel white noise, per-sample stddev, m/s^2
     float     sigma_g;       // gyro white noise, per-sample stddev, rad/s
     float     sigma_ba;      // accel bias random-walk step stddev, m/s^2 per sample
     float     sigma_bg;      // gyro bias random-walk step stddev, rad/s per sample
     float3    bias_a;        // accel bias state, MOUNT frame, m/s^2
-    float     _p1;           // std430 pad
+    float     range_g;       // gyro full-scale range, +-rad/s; 0 = unlimited (was a pad) -- unread here
     float3    bias_g;        // gyro bias state, MOUNT frame, rad/s
-    float     _p2;           // std430 pad
+    float     adc_bits;      // converter resolution, an integer 1..24; 0 = none (was a pad) -- unread here
     RngStream noise;         // this sensor's own stream; ALL of its randomness
     uint2     last_index;    // newest sample index written; 0 == none yet (uint2: header note)
-    uint2     _reserved0;    // reserved for versioned growth; must stay 0
+    float     turn_on_sigma_a;  // accel turn-on offset stddev per axis, m/s^2 (was half of `_reserved0`) -- read at spawn and reseed on the CPU only
+    float     turn_on_sigma_g;  // gyro turn-on offset stddev per axis, rad/s (was the other half) -- the same
 };
 
 // ---------------------------------------------------------------------------
@@ -370,7 +371,7 @@ struct GnssSensorRow {
     float     bias_retention;  // exp(-dt/tau), precomputed on the CPU
     float     bias_drive;      // sigma_bias * sqrt(1 - exp(-2 dt/tau)), precomputed on the CPU
     float     sigma_bias;      // stationary bias stddev, m -- THE SOURCE, unused here
-    float     _p2;             // std430 pad
+    float     turn_on_bias;    // 1: the bias starts from a stationary draw at spawn and reseed (was a pad) -- CPU only
     uint2     _reserved0;      // reserved for versioned growth; must stay 0
 };
 

@@ -511,7 +511,7 @@ inline constexpr float kRotorLagSeriesThreshold = 0.25f;
 //   row 1  local_pos | spin_dir
 //   row 2  local_orient
 //   row 3  omega | omega_cmd | thrust_coeff | torque_coeff
-//   row 4  _r0 | _r1 | _r2 | _r3            (reserved; see below)
+//   row 4  tau_down | _r1 | _r2 | _r3       (tau_down: the fall time constant, 0 = tau; the rest reserved)
 //
 // `body_slot` indexes the SAME world's `bodies` span apply_rotors() is handed
 // -- local to that per-world slice, not a global arena slot, exactly as
@@ -548,7 +548,7 @@ struct alignas(kStd430StructAlignment) RotorRow {
     float thrust_coeff;  // k_T in T_static = k_T * omega^2. N s^2, i.e. N per (rad/s)^2
     float torque_coeff;  // k_Q in Q       = k_Q * omega^2. N m s^2. NON-NEGATIVE magnitude (section 6)
 
-    float _r0;  // reserved for the gyroscopic/BEMT opt-ins (spec S6); must stay 0
+    float tau_down;  // RPM-lag time constant when the command is BELOW the shaft speed, s; 0 = the same as tau (no asymmetry); needs tau > 0
     float _r1;
     float _r2;
     float _r3;
@@ -571,7 +571,7 @@ static_assert(offsetof(RotorRow, omega) == 48);
 static_assert(offsetof(RotorRow, omega_cmd) == 52);
 static_assert(offsetof(RotorRow, thrust_coeff) == 56);
 static_assert(offsetof(RotorRow, torque_coeff) == 60);
-static_assert(offsetof(RotorRow, _r0) == 64);
+static_assert(offsetof(RotorRow, tau_down) == 64);
 static_assert(offsetof(RotorRow, _r1) == 68);
 static_assert(offsetof(RotorRow, _r2) == 72);
 static_assert(offsetof(RotorRow, _r3) == 76);
@@ -586,7 +586,7 @@ static_assert(offsetof(RotorRow, local_orient) % 16 == 0);
 static_assert(sizeof(RotorRow::body_slot) + sizeof(RotorRow::enabled) + sizeof(RotorRow::tau) +
                   sizeof(RotorRow::radius) + sizeof(RotorRow::local_pos) + sizeof(RotorRow::spin_dir) +
                   sizeof(RotorRow::local_orient) + sizeof(RotorRow::omega) + sizeof(RotorRow::omega_cmd) +
-                  sizeof(RotorRow::thrust_coeff) + sizeof(RotorRow::torque_coeff) + sizeof(RotorRow::_r0) +
+                  sizeof(RotorRow::thrust_coeff) + sizeof(RotorRow::torque_coeff) + sizeof(RotorRow::tau_down) +
                   sizeof(RotorRow::_r1) + sizeof(RotorRow::_r2) + sizeof(RotorRow::_r3) ==
               sizeof(RotorRow),
               "RotorRow has implicit padding: every byte must belong to a named field");

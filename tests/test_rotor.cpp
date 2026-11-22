@@ -261,7 +261,7 @@ TEST(RotorElement, RotorRowLayoutSizesAreVisibleAtRuntime) {
     EXPECT_EQ(offsetof(RotorRow, omega_cmd), 52u);
     EXPECT_EQ(offsetof(RotorRow, thrust_coeff), 56u);
     EXPECT_EQ(offsetof(RotorRow, torque_coeff), 60u);
-    EXPECT_EQ(offsetof(RotorRow, _r0), 64u);
+    EXPECT_EQ(offsetof(RotorRow, tau_down), 64u);  // was the reserved lane _r0
 }
 
 TEST(RotorElement, RotorRowIsRegisteredStateAndZeroFillsInert) {
@@ -1357,4 +1357,68 @@ TEST(RotorElement, TwoIdenticalRunsAreByteIdentical) {
     // Guard against the comparison passing because nothing happened.
     EXPECT_GT(rotors_a[0].omega, 100.0f);
     EXPECT_GT(glm::length(bodies_a[0].pos - glm::vec3(-1.8f, 3.2f, 0.0f)), 1e-3f);
+}
+
+// --- tau_down: the fall time constant (Phase 1 of the flight-computer work, O144) -----------------------------------------------------------------------------
+// A motor spins up faster than it spins down (PX4's x500 Gazebo model: up 12.5 ms, down 25 ms). A command ABOVE the shaft speed lags with `tau`, one BELOW it with
+// `tau_down`; 0 means the same as `tau`, so every existing row and model is untouched.
+
+namespace {
+
+// One step of h seconds from `omega0` toward `cmd`, as the pass takes it; returns the new shaft speed.
+[[nodiscard]] float TauDownStep(float omega0, float cmd, float tau, float tau_down, float h) {
+    const SdfProgram world = EmptyWorld();
+    const WorldParams params = MakeParams(glm::vec3(0.0f), glm::vec3(0.0f));
+    const ConstantMedium medium;
+    std::vector<BodyState> bodies{MakeUnitBody()};
+    std::vector<RotorRow> rotors{MakeRotor(0)};
+    rotors[0].tau = tau;
+    rotors[0].tau_down = tau_down;
+    rotors[0].omega = omega0;
+    rotors[0].omega_cmd = cmd;
+    apply_rotors(bodies, rotors, world, medium, params, h);
+    return rotors[0].omega;
+}
+
+}  // namespace
+
+TEST(RotorTauDown, TheFieldIsTheRowsReservedLaneAtOffset64) {
+    EXPECT_EQ(offsetof(RotorRow, tau_down), 64u);
+    EXPECT_EQ(sizeof(RotorRow), 80u);
+}
+
+TEST(RotorTauDown, ARiseFollowsTauAndAFallFollowsTauDown) {
+    const double e1 = std::exp(-1.0);
+    // up: after t = tau the shaft has covered 1 - 1/e of the step (12.5 ms)
+    EXPECT_NEAR(TauDownStep(0.0f, kOmega, 0.0125f, 0.025f, 0.0125f) / kOmega, 1.0 - e1, 1e-5);
+    // down: after t = tau_down it has covered 1 - 1/e of the drop (25 ms), so 1/e of the speed is left
+    EXPECT_NEAR(TauDownStep(kOmega, 0.0f, 0.0125f, 0.025f, 0.025f) / kOmega, e1, 1e-5);
+    // and the fall is slower than a fall at tau would be
+    EXPECT_GT(TauDownStep(kOmega, 0.0f, 0.0125f, 0.025f, 0.0125f), TauDownStep(kOmega, 0.0f, 0.0125f, 0.0f, 0.0125f));
+}
+
+TEST(RotorTauDown, ZeroIsTheSameAsTauAndEqualToTauBitForBit) {
+    for (const float cmd : {0.0f, 400.0f, 1000.0f, 1500.0f}) {
+        const float with_zero = TauDownStep(1000.0f, cmd, 0.05f, 0.0f, 0.004f);
+        const float with_tau = TauDownStep(1000.0f, cmd, 0.05f, 0.05f, 0.004f);
+        EXPECT_EQ(std::memcmp(&with_zero, &with_tau, sizeof(float)), 0) << "cmd " << cmd;
+    }
+}
+
+TEST(RotorTauDown, ACommandEqualToTheSpeedIsTheUpCaseAndMovesNothing) {
+    EXPECT_EQ(TauDownStep(800.0f, 800.0f, 0.0125f, 0.025f, 0.01f), 800.0f);
+}
+
+TEST(RotorTauDown, TheExactStepIsIndependentOfTheSubstepInBothDirections) {
+    for (const float cmd : {0.0f, 1500.0f}) {
+        const float one = TauDownStep(1000.0f, cmd, 0.0125f, 0.025f, 0.01f);
+        float two = TauDownStep(1000.0f, cmd, 0.0125f, 0.025f, 0.005f);
+        two = TauDownStep(two, cmd, 0.0125f, 0.025f, 0.005f);
+        EXPECT_NEAR(one, two, 1e-3f) << "cmd " << cmd;
+    }
+}
+
+TEST(RotorTauDown, NoLagOnTheRiseStillMeansNoLag) {
+    // tau <= 0 is instant tracking and a non-zero tau_down with it is a model error validate() refuses; the pass itself stays total
+    EXPECT_EQ(TauDownStep(0.0f, kOmega, 0.0f, 0.0f, 0.01f), kOmega);
 }

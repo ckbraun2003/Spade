@@ -693,8 +693,16 @@ inline void append_sdf_nodes(std::string& out, std::span<const SdfNode> nodes,
 // invalid_argument whose context reads "<who> node 3 has non-zero padding,
 // which <schema> does not carry", and likewise for an operator's kind and a
 // transform's padding.
+//
+// `carries_labels` says whether the encoding has a place for SdfProgram::node_labels (the object labels of world file schema v4): the world file's writer
+// passes true; the scene file's (an asset's collider, a model part's shape) does not, and a labelled program is refused rather than written without its
+// labels. The refusal names the field and where a label can go.
 [[nodiscard]] inline Result<void> check_sdf_representable(const SdfProgram& program, std::string_view who,
-                                                          std::string_view schema) {
+                                                          std::string_view schema, bool carries_labels = false) {
+    if (!carries_labels && !program.node_labels.empty()) {
+        return std::unexpected(Error{Code::invalid_argument, std::string(who) + " carries node_labels, which " + std::string(schema) +
+                                                                 " does not carry (an object label goes in the world file's sdf.node_labels)"});
+    }
     for (std::size_t i = 0; i < program.nodes.size(); ++i) {
         const SdfNode& node = program.nodes[i];
         if (node._pad != 0) {

@@ -241,7 +241,8 @@ struct alignas(kStd430StructAlignment) GnssSensorRow {
     // cannot answer "derived from WHAT?", and the alternative is a later author
     // recovering it by inverting a float.
     float sigma_bias;       // stationary stddev of the correlated bias, m (§2)
-    float _p2;              // std430 pad -- keeps `_reserved0` 8-byte aligned
+    float turn_on_bias;     // 1: the bias starts from a stationary draw (sigma_bias per axis) at spawn and at every
+                            // reseed; 0: it starts at 0 and a reseed leaves it. (Was a pad: keeps `_reserved0` 8-byte aligned.)
     uint64_t _reserved0;    // reserved for versioned growth; must stay 0
 };
 
@@ -271,7 +272,7 @@ static_assert(offsetof(GnssSensorRow, last_index) == 80);
 static_assert(offsetof(GnssSensorRow, bias_retention) == 88);
 static_assert(offsetof(GnssSensorRow, bias_drive) == 92);
 static_assert(offsetof(GnssSensorRow, sigma_bias) == 96);
-static_assert(offsetof(GnssSensorRow, _p2) == 100);
+static_assert(offsetof(GnssSensorRow, turn_on_bias) == 100);
 static_assert(offsetof(GnssSensorRow, _reserved0) == 104);
 
 // Every vec3 starts a 16-byte row; the stream and the two uint64s are 8-byte
@@ -304,6 +305,12 @@ static_assert(4 * sizeof(uint32_t) + 2 * (sizeof(glm::vec3) + sizeof(float)) +
                                                       uint32_t local_slot) noexcept {
     return rng::make_stream(world_seed, kGnssNoiseDomainTag, local_slot);
 }
+
+// THE TURN-ON OFFSET, as the IMU's (sensors/imu.hpp): a second pinned stream, from the world seed and the world-local slot,
+// drawn and discarded. gnss_turn_on_bias() takes its three standard normals (x, y, z) and scales them by `sigma_bias`; the
+// receiver's bias starts there, at spawn and at every reseed, for a row whose `turn_on_bias` is 1 only.
+inline constexpr std::string_view kGnssTurnOnDomainTag = "sensor.gnss.turnon";
+[[nodiscard]] glm::vec3 gnss_turn_on_bias(uint64_t world_seed, uint32_t local_slot, float sigma_bias) noexcept;
 
 // ---------------------------------------------------------------------------
 // The Gauss-Markov retention factor for a step of `dt` seconds at correlation

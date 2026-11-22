@@ -144,6 +144,20 @@ TEST(X500KitInertia, TheKitsMassCentreAndInertiaFromItsPartsMeshes) {
                     const glm::dvec3 c = at + rot * m.centroid;
                     std::printf("[kit-object] %-34s volume %.4e m^3 centroid (%.4f, %.4f, %.4f)\n", stem.c_str(), m.volume, c.x, c.y, c.z);
                 }
+                // The landing gear (O140 phase 1, the ground-contact note): the feet (JIAO), the skid tubes, the pylons, the battery pad and the platform, with
+                // their boxes in the table's frame, so the contact points can be read off the lowest vertices.
+                if (stem.find("JIAO") != std::string::npos || stem.find("TUBE300") != std::string::npos || stem.find("PYLON") != std::string::npos ||
+                    stem.find("PLATFORM") != std::string::npos || stem.find("BATTERY") != std::string::npos) {
+                    glm::dvec3 lo(1.0e30), hi(-1.0e30);
+                    for (const glm::vec3& vertex : loaded->mesh->positions()) {
+                        const glm::dvec3 w = at + rot * glm::dvec3(vertex);
+                        lo = glm::min(lo, w);
+                        hi = glm::max(hi, w);
+                    }
+                    const glm::dvec3 c = at + rot * m.centroid;
+                    std::printf("[kit-gear] %-34s x %+.4f .. %+.4f  y %+.4f .. %+.4f  z %+.4f .. %+.4f m  centroid (%+.4f, %+.4f, %+.4f)  volume %.4e m^3\n",
+                                stem.c_str(), lo.x, hi.x, lo.y, hi.y, lo.z, hi.z, c.x, c.y, c.z, m.volume);
+                }
                 volume += m.volume;
             }
             Body b;
