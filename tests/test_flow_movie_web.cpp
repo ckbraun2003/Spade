@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -656,12 +657,12 @@ TEST(FlowMovieWeb, VolumeIsForTheParticleViewsAndHasAFolderOfItsOwn) {
     EXPECT_EQ(web::volume_stem_suffix(true), "-volume");
 }
 
-// --nasa-cloud under a streamed --window run (L106i, Oversight O113): the X500 film's main layer is the purple-blue vorticity cloud (no particles). The cloud
+// --vorticity-cloud under a streamed --window run (L106i, Oversight O113): the X500 film's main layer is the purple-blue vorticity cloud (no particles). The cloud
 // is allowed with a --window run that streams, as --particles is; the Q SURFACES keep their old rules (S2 and S8, a redraw of kept frames, no particle look),
-// and the particle looks stay a different look from --nasa and --nasa-cloud.
+// and the particle looks stay a different look from --q-surfaces and --vorticity-cloud.
 TEST(FlowMovieWeb, TheVorticityCloudStreamsAWindow) {
     // nasa_refusal(s2_or_s8, window, still_redraw, stream, particles, particles_preview, cloud)
-    EXPECT_EQ(web::nasa_refusal(true, false, false, false, false, false, false), "") << "--nasa on its own: the group's own run, as before";
+    EXPECT_EQ(web::nasa_refusal(true, false, false, false, false, false, false), "") << "--q-surfaces on its own: the group's own run, as before";
     EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, false), "") << "a window redraw of kept frames, as before";
     EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, true), "") << "a redraw of the cloud";
     EXPECT_EQ(web::nasa_refusal(true, true, false, true, false, false, true), "") << "the streamed cloud film: window, stream, cloud";
@@ -673,7 +674,7 @@ TEST(FlowMovieWeb, TheVorticityCloudStreamsAWindow) {
     EXPECT_NE(no_stream.find("--window"), std::string::npos) << no_stream;
     EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
     const std::string surfaces = web::nasa_refusal(true, true, false, true, false, false, false);
-    EXPECT_NE(surfaces.find("--nasa-cloud"), std::string::npos) << "the Q surfaces do not stream a window: " << surfaces;
+    EXPECT_NE(surfaces.find("--vorticity-cloud"), std::string::npos) << "the Q surfaces do not stream a window: " << surfaces;
     const std::string points = web::nasa_refusal(true, true, false, true, true, false, true);
     EXPECT_NE(points.find("particle"), std::string::npos) << "the cloud and the points are different looks: " << points;
     const std::string preview = web::nasa_refusal(true, false, false, false, false, true, true);
@@ -681,7 +682,7 @@ TEST(FlowMovieWeb, TheVorticityCloudStreamsAWindow) {
 }
 
 // The caption of a vorticity-cloud film says what the colour is: vorticity (the local spin of the air), blue low to magenta high, never "relative speed" or the
-// speed film's "Relative speed of the wake"; the stand-in sentence stays; and a film without --nasa-cloud keeps its words.
+// speed film's "Relative speed of the wake"; the stand-in sentence stays; and a film without --vorticity-cloud keeps its words.
 TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
     const web::Clip& s8 = *web::find_clip("S8");
     const std::string speed = web::standing_caveats(s8, 2.5f, 50u, true);
@@ -698,7 +699,7 @@ TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
     in.drone = web::find_drone("x500");
     in.lines = true;
     in.cloud = true;
-    in.command = "flow_movie --web S8 --drone x500 --nasa-cloud";
+    in.command = "flow_movie --web S8 --drone x500 --vorticity-cloud";
     const std::string text = web::caption_text(in);
     EXPECT_NE(text.find("- Shows: The vorticity of the air"), std::string::npos) << text;
     EXPECT_NE(text.find("four actuator lines"), std::string::npos) << text;
@@ -711,7 +712,7 @@ TEST(FlowMovieWeb, TheCloudFilmsCaptionSaysVorticityNotSpeed) {
 }
 
 // --surface-pressure (O124): the third X500 website clip, the air pressure on the airframe's surfaces. An S8 look only; like the cloud it streams a --window run
-// (or redraws kept frames), and it is a different look from --nasa, --nasa-cloud and the particle looks.
+// (or redraws kept frames), and it is a different look from --q-surfaces, --vorticity-cloud and the particle looks.
 TEST(FlowMovieWeb, ThePressureFilmIsAnS8LookThatStreamsAWindow) {
     // surface_pressure_refusal(s8, window, still_redraw, stream, particles, particles_preview, nasa)
     EXPECT_EQ(web::surface_pressure_refusal(true, false, false, false, false, false, false), "") << "the group's own run";
@@ -725,7 +726,7 @@ TEST(FlowMovieWeb, ThePressureFilmIsAnS8LookThatStreamsAWindow) {
     EXPECT_NE(no_stream.find("--stream"), std::string::npos) << no_stream;
     EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, true, false, false).find("particle"), std::string::npos);
     EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, true, false).find("particle"), std::string::npos);
-    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true).find("--nasa"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true).find("--q-surfaces"), std::string::npos);
 }
 
 // --surface-shade (O124): the pressure colour lit for shape; it is a way of drawing --surface-pressure, so it needs it.
@@ -782,7 +783,7 @@ TEST(FlowMovieWeb, ThePressureFilmsCaptionSaysPressureOnTheSurfaces) {
 }
 
 // The .md's title follows the look (the lead, O124: the pressure film's master was titled by the S8 clip's fallback, "a volume render of the rotor wake"). A
-// --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --nasa-cloud S8 names the vorticity cloud; the plain S8, and every
+// --surface-pressure S8 names the pressure on the airframe and never says "volume render"; a --vorticity-cloud S8 names the vorticity cloud; the plain S8, and every
 // other clip, keeps its clip's title.
 // A blades film's title says the pressure is BESIDE the rotor blades, not on them (the colour is the air pressure the rotor model makes beside them, Oversight's approved claim).
 TEST(FlowMovieWeb, ABladesFilmsTitleSaysBesideTheRotorBlades) {
@@ -1136,7 +1137,7 @@ TEST(FlowMovieWeb, APropPartFileIsTheLinesBladeAndARefusedFileIsNamed) {
 TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile) {
     const std::string command =
         "flow_movie --web S8 --drone phantom3_class --lines library/parts/uiuc_apce_10x5.prop.yaml "
-        "--visual-mesh C:/Users/Someone/KAT/content/meshes/drone/x500.gltf --nasa --q-look l1=0.5";
+        "--visual-mesh C:/Users/Someone/KAT/content/meshes/drone/x500.gltf --q-surfaces --q-look l1=0.5";
     const std::string shown = web::command_in_words(command, web::default_drone());
     for (const char* brand : {"x500", "X500", "apce", "uiuc", "UIUC", "KAT", "gltf", "Someone"}) {
         EXPECT_EQ(shown.find(brand), std::string::npos) << brand << " in: " << shown;
@@ -1144,11 +1145,11 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherTheVisualMeshNorThePropellerFile)
     EXPECT_NE(shown.find("--visual-mesh reference-quad-model"), std::string::npos) << "the word is the drone's own alias and a noun (the default drone here): " << shown;
     EXPECT_NE(shown.find("--lines measured-propeller-polar"), std::string::npos) << shown;
     EXPECT_NE(shown.find("--web S8"), std::string::npos) << "the rest of the command is as given";
-    EXPECT_NE(shown.find("--nasa --q-look l1=0.5"), std::string::npos) << shown;
-    const std::string quoted = web::command_in_words("flow_movie --visual-mesh \"C:/a b/x500.gltf\" --nasa", web::default_drone());
+    EXPECT_NE(shown.find("--q-surfaces --q-look l1=0.5"), std::string::npos) << shown;
+    const std::string quoted = web::command_in_words("flow_movie --visual-mesh \"C:/a b/x500.gltf\" --q-surfaces", web::default_drone());
     EXPECT_EQ(quoted.find("x500"), std::string::npos) << quoted;
     EXPECT_EQ(quoted.find("a b"), std::string::npos) << "a quoted path with a space is replaced whole: " << quoted;
-    EXPECT_NE(quoted.find("--nasa"), std::string::npos) << quoted;
+    EXPECT_NE(quoted.find("--q-surfaces"), std::string::npos) << quoted;
     EXPECT_EQ(web::command_in_words("flow_movie --lines", web::default_drone()), "flow_movie --lines") << "a flag with no value is left alone";
 }
 
@@ -1258,7 +1259,7 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
     const web::Drone& drone = *found;
     const std::string said = web::command_in_words(
         "flow_movie --web S8 --drone x500 --build-parts C:/Users/someone/Desktop/Projects/KAT/x500_build/parts.yaml --part-store "
-        "\"C:/Users/someone/Desktop/Projects/part-store\" --nasa-cloud",
+        "\"C:/Users/someone/Desktop/Projects/part-store\" --vorticity-cloud",
         drone);
     EXPECT_EQ(said.find("x500"), std::string::npos) << said;
     EXPECT_EQ(said.find("KAT"), std::string::npos) << said;
@@ -1267,7 +1268,7 @@ TEST(FlowMovieWeb, ACaptionsCommandNamesNeitherThePartsTableNorThePartStore) {
     EXPECT_NE(said.find("--drone open-source-quadcopter"), std::string::npos) << said;
     EXPECT_NE(said.find("--build-parts open-source-quadcopter-parts-table"), std::string::npos) << said;
     EXPECT_NE(said.find("--part-store part-store"), std::string::npos) << said;
-    EXPECT_NE(said.find("--nasa-cloud"), std::string::npos) << "the rest of the command is kept: " << said;
+    EXPECT_NE(said.find("--vorticity-cloud"), std::string::npos) << "the rest of the command is kept: " << said;
     EXPECT_EQ(web::command_in_words("flow_movie --web S8 --build-parts", drone), "flow_movie --web S8 --build-parts") << "no value: left alone";
 }
 
@@ -1427,6 +1428,10 @@ TEST(FlowMovieWeb, TheOpenFrameFiveFEntryDeclaresItsModelBoxHubAndWords) {
     EXPECT_FLOAT_EQ(d->framing.elevation_deg, 70.0f);
     // Centred, the drone is no nearer the camera than the aim, so it reads smaller than when it sat high (above the aim, closer): the subject radius 0.15 m (from 0.19) fills about three quarters of the 1080 p frame's height at 70 degrees.
     EXPECT_NEAR(d->framing.subject_m, 0.15f, 1.0e-6f);
+    // The O144 re-make: "lighten the colors a bit". The kit's parts range is +-0.8 of the disc loading (from the X500's 0.4, which read the arms as saturated dark red): measured on the
+    // solve's cache at 70 degrees, 0.7 and 1.0 bracket it (the arms' red cores shrink to the hot spots under the rotors, the pale body stays pale); the blades keep their own +-6.
+    EXPECT_FLOAT_EQ(d->parts_cp_range, 0.8f);
+    EXPECT_FLOAT_EQ(d->blade_cp_range, 6.0f) << "the blades' own range does not move: O128's colour stays";
     EXPECT_NE(std::string(d->blade_words).find("stand-in"), std::string::npos) << d->blade_words;
     // The clip record's Look sentence names the blades this drone draws: the kit's are the generated stand-in, the X500's real meshes (the default).
     EXPECT_EQ(std::string(d->look_blades), "the stand-in's generated blades");
@@ -1483,4 +1488,229 @@ TEST(FlowMovieWeb, TheKitFilmsSpeedDerivedFiguresFollowFromItsChainTrimSpeed) {
     EXPECT_NEAR(slow, 286.0, 0.5);
     EXPECT_NEAR(turn_s * slow, 1.84, 0.005);
     EXPECT_GT(rpm, 6057.0);
+}
+
+// ============================== O144: the OpenFrame-5F re-make with the vortices round the rotors (the owner: "lighten the colors a bit, make sure there are some vortices around the
+// drone rotors and pressure on the rotors"; Oversight's terms through the lead, 2026-11-21) ==============================
+
+// --surface-pressure and --vorticity-cloud together draw the pressure film with the vorticity cloud over it (one flow layer, depth-tested against the parts); --q-surfaces on its own (the Q
+// surfaces) is still a different look.
+TEST(FlowMovieWeb, TheVorticesJoinThePressureFilmThroughTheCloudOnly) {
+    // surface_pressure_refusal(s8, window, still_redraw, stream, particles, particles_preview, nasa, nasa_cloud)
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, false, true, false, false, true, true), "") << "the streamed window film with the cloud";
+    EXPECT_EQ(web::surface_pressure_refusal(true, true, true, false, false, false, true, true), "") << "a redraw of kept frames with the cloud";
+    const std::string q_surfaces = web::surface_pressure_refusal(true, true, false, true, false, false, true, false);
+    EXPECT_NE(q_surfaces.find("--q-surfaces"), std::string::npos) << q_surfaces;
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, true, false, true, true).find("particle"), std::string::npos) << "the particle looks are still apart";
+    // the cloud's own refusal lets a redraw of kept frames through (a run drawn with --from-cache passes it as a redraw)
+    EXPECT_EQ(web::nasa_refusal(true, true, true, false, false, false, true), "");
+}
+
+// The S8 view a run's flags choose (main's ternary, now a function so the new combination is pinned): the pressure film, with or without the shading, and with the cloud over it;
+// otherwise what it always was.
+TEST(FlowMovieWeb, TheS8ViewNameFollowsTheLookFlags) {
+    // s8_view_name(pressure, shade, nasa, cloud, particles, particles_preview)
+    EXPECT_EQ(web::s8_view_name(true, true, true, true, false, false), "surface-pressure-vortices-shaded");
+    EXPECT_EQ(web::s8_view_name(true, false, true, true, false, false), "surface-pressure-vortices");
+    EXPECT_EQ(web::s8_view_name(true, true, false, false, false, false), "surface-pressure-shaded");
+    EXPECT_EQ(web::s8_view_name(true, false, false, false, false, false), "surface-pressure");
+    EXPECT_EQ(web::s8_view_name(false, false, true, true, false, false), "vorticity-cloud");
+    EXPECT_EQ(web::s8_view_name(false, false, true, false, false, false), "q-surfaces");
+    EXPECT_EQ(web::s8_view_name(false, false, false, false, true, false), "particles");
+    EXPECT_EQ(web::s8_view_name(false, false, false, false, false, true), "particles-preview");
+    EXPECT_EQ(web::s8_view_name(false, false, false, false, false, false), "speed-volume");
+}
+
+// The cloud's soft edge (the wake fade at the box's cut) applies to the pressure film WITH the cloud, which draws a wake; the pressure film alone and the Q surfaces keep none.
+TEST(FlowMovieWeb, TheWakeFadeAppliesToThePressureFilmWithTheCloud) {
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, true, true, true)) << "pressure with the cloud";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, false, false, true)) << "the pressure film alone: no wake";
+    EXPECT_FALSE(web::web_fade_applies("S8", false, false, true, false, true)) << "pressure with the Q surfaces: refused anyway, and a faded surface vanishes";
+    EXPECT_TRUE(web::web_fade_applies("S8", false, false, true, true)) << "the cloud alone, as before";
+}
+
+// --from-cache draws a film from the frames already in the cache folder (the O144 re-make solves once, with --simulate-only, then draws stills and the film from that cache): it
+// never solves, so it needs every frame there, and it is not for --stream or --simulate-only.
+TEST(FlowMovieWeb, FromCacheNeedsTheWholeCacheAndNoSolve) {
+    // from_cache_refusal(from_cache, stream, simulate_only, cached_frames, needed_frames)
+    EXPECT_EQ(web::from_cache_refusal(false, false, false, 0u, 300u), "") << "not asked: nothing to say";
+    EXPECT_EQ(web::from_cache_refusal(true, false, false, 300u, 300u), "");
+    EXPECT_EQ(web::from_cache_refusal(true, false, false, 305u, 300u), "") << "more than needed is fine";
+    const std::string few = web::from_cache_refusal(true, false, false, 120u, 300u);
+    EXPECT_NE(few.find("120"), std::string::npos) << few;
+    EXPECT_NE(few.find("300"), std::string::npos) << few;
+    EXPECT_NE(web::from_cache_refusal(true, true, false, 300u, 300u).find("--stream"), std::string::npos);
+    EXPECT_NE(web::from_cache_refusal(true, false, true, 300u, 300u).find("--simulate-only"), std::string::npos);
+}
+
+// The parts' pressure range is the drone's own (the X500's is the 0.4 it always was; the kit's is set from its own stills, lighter), and the blades' gain follows it: the parts'
+// range over the blades'.
+TEST(FlowMovieWeb, ADronesPartsRangeIsItsOwnAndTheBladeGainFollowsIt) {
+    EXPECT_FLOAT_EQ(web::find_drone("x500")->parts_cp_range, 0.4f) << "the X500 stays as it was";
+    EXPECT_FLOAT_EQ(web::default_drone().parts_cp_range, web::kSurfacePressureCpRange);
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(6.0f), 0.4f / 6.0f);
+    EXPECT_FLOAT_EQ(web::blade_flow_gain(6.0f, 0.8f), 0.8f / 6.0f) << "the blades' own range stays 6 disc loadings; the gain is the parts' range over it";
+    // the caption states the drone's own parts range, and the X500's stays +-0.4
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = web::find_drone("x500");
+    in.lines = true;
+    in.pressure = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 2.5f;
+    in.step_us = 50u;
+    in.command = "flow_movie --web S8 --drone x500 --surface-pressure --prop-blur mode=blades";
+    EXPECT_NE(web::caption_text(in).find("fixed at +-0.4 of the disc loading on the parts and at +-6 of the disc loading on the blades"), std::string::npos);
+}
+
+// THE VORTEX WORDS (Oversight's terms): the card and the caption say how the swirls are drawn and that they come from the simulated air itself, not a measurement; the rule
+// and its threshold are the cloud's own (QLook), so a changed --q-look changes the words.
+TEST(FlowMovieWeb, TheVortexNoteSaysHowTheSwirlsAreDrawnAndThatTheyAreTheSimulatedAirs) {
+    const flow_movie::QLook look;  // vmax 0.5, onset 0.15, sigma 30
+    const std::string note = flow_movie::vortex_note(look);
+    EXPECT_NE(note.find("the simulated air's own vorticity"), std::string::npos) << note;
+    EXPECT_NE(note.find("not a measurement"), std::string::npos) << note;
+    EXPECT_NE(note.find("15%"), std::string::npos) << "clear below the onset: " << note;
+    EXPECT_NE(note.find("50%"), std::string::npos) << "the map's top, a share of the frame's largest vorticity: " << note;
+    EXPECT_NE(note.find("blue"), std::string::npos) << note;
+    EXPECT_NE(note.find("magenta"), std::string::npos) << note;
+    EXPECT_EQ(note.find("measured"), std::string::npos) << "nothing here is measured: " << note;
+    flow_movie::QLook other;
+    other.onset = 0.30f;
+    other.vorticity_max = 0.25f;
+    const std::string changed = flow_movie::vortex_note(other);
+    EXPECT_NE(changed.find("30%"), std::string::npos) << changed;
+    EXPECT_NE(changed.find("25%"), std::string::npos) << changed;
+
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = web::find_drone("openframe5f");
+    in.lines = true;
+    in.pressure = true;
+    in.cloud = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    in.vortex_note = note;
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --vorticity-cloud --prop-blur mode=blades";
+    const std::string text = web::caption_text(in);
+    EXPECT_EQ(text.substr(0, text.find('\n')), "# 5 inch FPV quadcopter in hover: the air pressure on the airframe and beside the rotor blades, with the vortices round the rotors") << text;
+    EXPECT_NE(text.find("vorticity round the rotors"), std::string::npos) << "the Shows line names the swirls: " << text;
+    EXPECT_NE(text.find(note), std::string::npos) << "the caveats carry the vortex rule verbatim: " << text;
+    EXPECT_NE(text.find("blade colour is the air pressure the rotor model makes beside the blades"), std::string::npos) << "O128's blade words stay: " << text;
+    // without the cloud nothing changes: the pressure film's own words
+    web::CaptionInput plain = in;
+    plain.cloud = false;
+    plain.vortex_note.clear();
+    plain.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --prop-blur mode=blades";  // no cloud flag in it either
+    EXPECT_EQ(web::caption_text(plain).find("vortic"), std::string::npos) << web::caption_text(plain);
+}
+
+// --fixed-cloud-range (O144, the lead's call after the per-frame cloud top stepped 13.6% between frames): the cloud's top becomes a share of the CLIP's largest vorticity, read from the cache's
+// headers, so it needs the cloud, and every frame already on disk (a redraw: --from-cache or --web-still), never a streamed or --simulate-only run.
+TEST(FlowMovieWeb, TheFixedCloudRangeNeedsTheCloudAndTheWholeCacheOnDisk) {
+    // fixed_cloud_range_refusal(fixed, nasa_cloud, stream, simulate_only, redraw, cached_frames, needed_frames)
+    EXPECT_EQ(web::fixed_cloud_range_refusal(false, false, true, true, false, 0u, 300u), "") << "not asked: nothing to say";
+    EXPECT_EQ(web::fixed_cloud_range_refusal(true, true, false, false, true, 300u, 300u), "");
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, false, false, false, true, 300u, 300u).find("--vorticity-cloud"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, true, true, false, true, 300u, 300u).find("--stream"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, true, false, true, true, 300u, 300u).find("--simulate-only"), std::string::npos);
+    const std::string not_redraw = web::fixed_cloud_range_refusal(true, true, false, false, false, 300u, 300u);
+    EXPECT_NE(not_redraw.find("--from-cache"), std::string::npos) << not_redraw;
+    EXPECT_NE(not_redraw.find("--web-still"), std::string::npos) << not_redraw;
+    const std::string few = web::fixed_cloud_range_refusal(true, true, false, false, true, 120u, 300u);
+    EXPECT_NE(few.find("120"), std::string::npos) << few;
+    EXPECT_NE(few.find("300"), std::string::npos) << few;
+}
+
+// The words follow the rule: with a clip-wide peak the card and caption say the cloud tops out at a share of the CLIP's largest vorticity (and its figure), the same in every frame; without one
+// they say each frame's, as before.
+TEST(FlowMovieWeb, TheVortexNoteNamesTheClipsLargestVorticityWhenTheRangeIsFixed) {
+    flow_movie::QLook look;
+    look.vorticity_max = 0.4f;
+    const std::string per_frame = flow_movie::vortex_note(look);
+    EXPECT_NE(per_frame.find("40% of each frame's largest vorticity"), std::string::npos) << per_frame;
+    EXPECT_EQ(per_frame.find("the clip's"), std::string::npos) << per_frame;
+    look.vorticity_peak = 18960.0f;
+    const std::string fixed = flow_movie::vortex_note(look);
+    EXPECT_NE(fixed.find("40% of the clip's largest vorticity"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("18960 per second"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("the same in every frame"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("7584 per second"), std::string::npos) << "the absolute top, 40% of the peak: " << fixed;
+    EXPECT_NE(fixed.find("1138 per second"), std::string::npos) << "the absolute show threshold, 15% of that top: " << fixed;
+    EXPECT_NE(fixed.find("weaker frames show fewer, dimmer swirls"), std::string::npos) << fixed;
+    EXPECT_EQ(fixed.find("each frame's"), std::string::npos) << fixed;
+    EXPECT_NE(fixed.find("the simulated air's own vorticity"), std::string::npos) << "the rest of the rule is unchanged: " << fixed;
+    EXPECT_NE(fixed.find("not a measurement"), std::string::npos) << fixed;
+}
+
+// NO "NASA" IN A CAPTION OR A RECORD (Oversight, 2026-11-21, via the lead): a public caption that names NASA can read as NASA having made or endorsed the film, and footage records name no
+// brand. The flags are neutral (--vorticity-cloud, --q-surfaces) and so is the Q-surface look's name (q-surfaces), and nothing the tool writes -- the "How rendered" command, the refusals a
+// caption could quote, the view names that reach a file name or a record -- carries the word. A code comment may still credit where the look came from; the source scan is for the flag and the look's
+// name only (a quoted "--nasa..." option and a "nasa" string literal).
+namespace {
+[[nodiscard]] std::string lowered(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+[[nodiscard]] std::string whole_file(const char* relative) {
+    std::ifstream in(fs::path(SPADE_REPO_DIR) / relative, std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    return text.str();
+}
+}  // namespace
+
+TEST(FlowMovieWeb, NothingTheToolWritesNamesNasaAndTheLooksFlagsAreNeutral) {
+    std::vector<std::string> said;
+    for (const bool a : {false, true}) {
+        for (const bool b : {false, true}) {
+            for (const bool c : {false, true}) {
+                said.push_back(web::nasa_refusal(a, b, c, !a, b, !c, a != b));
+                said.push_back(web::surface_pressure_refusal(a, b, c, !a, b, !c, a != c, b));
+                said.push_back(web::fixed_cloud_range_refusal(true, a, b, c, !a, 3u, 300u));
+                said.push_back(web::fixed_cloud_range_refusal(true, true, a, b, c, 3u, 300u));
+                said.push_back(web::from_cache_refusal(true, a, b, 1u, 300u));
+            }
+        }
+    }
+    for (const std::string& s : said) EXPECT_EQ(lowered(s).find("nasa"), std::string::npos) << s;
+    for (const bool pressure : {false, true}) {
+        for (const bool nasa : {false, true}) {
+            for (const bool cloud : {false, true}) {
+                const std::string view = web::s8_view_name(pressure, false, nasa, cloud, false, false);
+                EXPECT_EQ(lowered(view).find("nasa"), std::string::npos) << view;
+            }
+        }
+    }
+    EXPECT_EQ(web::s8_view_name(false, false, true, false, false, false), "q-surfaces") << "the Q-surface look's neutral name";
+    EXPECT_EQ(web::s8_view_name(false, false, true, true, false, false), "vorticity-cloud");
+    // the refusals name the flags by their neutral names
+    EXPECT_NE(web::nasa_refusal(true, true, false, true, false, false, false).find("--vorticity-cloud"), std::string::npos);
+    EXPECT_NE(web::surface_pressure_refusal(true, true, false, true, false, false, true, false).find("--q-surfaces"), std::string::npos);
+    EXPECT_NE(web::fixed_cloud_range_refusal(true, false, false, false, true, 300u, 300u).find("--vorticity-cloud"), std::string::npos);
+    // a caption and its "How rendered" words for the cloud film
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = web::find_drone("openframe5f");
+    in.lines = true;
+    in.pressure = true;
+    in.cloud = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    in.vortex_note = flow_movie::vortex_note(flow_movie::QLook{});
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --vorticity-cloud --fixed-cloud-range --prop-blur mode=blades";
+    EXPECT_EQ(lowered(web::caption_text(in)).find("nasa"), std::string::npos) << web::caption_text(in);
+    EXPECT_NE(web::caption_text(in).find("--vorticity-cloud"), std::string::npos);
+    // the source: no quoted --nasa option and no "nasa" literal in the tool's own files
+    for (const char* file : {"tools/flow_movie/main.cpp", "tools/flow_movie/web_masters.hpp", "tools/flow_movie/q_look.hpp"}) {
+        const std::string text = whole_file(file);
+        ASSERT_FALSE(text.empty()) << file;
+        EXPECT_EQ(lowered(text).find("--nasa"), std::string::npos) << file << " still names a --nasa flag";
+        EXPECT_EQ(text.find("\"nasa\""), std::string::npos) << file << " still names the look \"nasa\"";
+    }
 }
