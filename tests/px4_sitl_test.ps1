@@ -34,6 +34,11 @@ $ps = Join-Path $PSHOME 'powershell.exe'
 $work = Join-Path ([IO.Path]::GetTempPath()) ('spade-px4-sitl-test-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 
+# Every run of the script below happens with a fresh TEMP folder as its working directory, so even a RED run can never leave a stray in the worktree.
+$cwdWas = (Get-Location).Path
+$runCwd = Join-Path $work 'cwd'
+New-Item -ItemType Directory -Force -Path $runCwd | Out-Null
+Set-Location -LiteralPath $runCwd
 try {
     $fake = Join-Path $work 'fake-docker.ps1'
     $state = Join-Path $work 'container.exists'
@@ -186,12 +191,24 @@ exit 0
     $cwdAfter = @(Get-ChildItem -LiteralPath $RepoRoot -Force | ForEach-Object Name)
     Expect 'relative' (($cwdAfter -join '|') -eq ($cwdBefore -join '|')) "nothing was created in the repository root (before: $($cwdBefore -join ',') after: $($cwdAfter -join ','))"
 
+    # only a FULLY QUALIFIED path is a run folder: a drive letter then :\ or :/, or a UNC \server\share ("\temp" and "C:foo" are rooted but not qualified)
+    foreach ($bad in @('\temp\run', 'C:foo')) {
+        Set-Content -LiteralPath $state 'x'
+        $env:FAKE_LABELS_JSON = (@{ 'spade.outdir' = $bad } | ConvertTo-Json -Compress)
+        $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -Docker $fake 2>&1 | ForEach-Object { "$_" }
+        Expect "not qualified ($bad)" ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
+        Expect "not qualified ($bad)" (Test-Path -LiteralPath $state) 'the container is left alone'
+    }
+    $cwdLeft = @(Get-ChildItem -LiteralPath $runCwd -Force | ForEach-Object Name)
+    Expect 'cwd' ($cwdLeft.Count -eq 0) "the script's working folder stayed empty (got: $($cwdLeft -join ','))"
+
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
     Expect 'no box' ($r.Code -eq 0) "exit 0 (got $($r.Code))"
     Expect 'no box' ($r.Lines.Count -gt 0 -and $r.Lines[-1] -eq 'none') 'the last line is none'
 }
 finally {
+    Set-Location -LiteralPath $cwdWas
     Remove-Item -Recurse -Force -LiteralPath $work -ErrorAction SilentlyContinue
 }
 
