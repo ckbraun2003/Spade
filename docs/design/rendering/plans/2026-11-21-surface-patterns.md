@@ -55,8 +55,10 @@ The world file's material block gains a strict `pattern: {kind, colour_a, colour
 
 About 4 days of mine: the module and its CPU tests (1), the CPU raster integration for meshes, SDF hits and the ground (1), the GL shader port with the grid and the integer-equality tests (1.5), the scene band test, the viewport and the decisions amendment (0.5). Core's 0.5 day on the reader sits alongside. It starts after the O158 pressure-film code and the camera tool, as ordered.
 
-## Open points for the lead
+## Settled with the lead (2026-11-21)
 
-1. The band's size: I propose the rasters' existing one plus the 1-level pattern figure above; if the existing band is stated in another unit I'll adopt that.
-2. Whether `Material::base_color` doubles as `colour_a` or the pattern carries its own colours (I'd keep them separate: a pattern is explicit).
-3. Whether the track's kerb and grass need a pattern on SDF boxes as well as meshes (the same function; the SDF hit already has its object-space point).
+1. **The band's unit:** the 8-bit sRGB output level, at most 1 level in 255 per channel, counted (the same unit as RND-13's camera filter), plus the integer hash and the noise lattice **bit-equal**.
+2. **Colours:** a pattern carries its own two colours. The material's `base_color` is the fallback (used when patterns are off) and the far-field mean colour of the footprint blend where that is simpler; it is never `colour_a` by default.
+3. **SDF boxes:** yes, if it is the same function at the same shading point and takes under about half a day (the SDF hit already has its object-space point); CSG gets it only if that is free. Otherwise meshes and the ground come first, and SDF is named as the next step.
+
+Ordering as Cameron set it: after the O158 pressure code and the camera tool. This doc stays on its branch until it goes in with the module's first commit.
