@@ -583,17 +583,24 @@ std::vector<std::string> ledger_steps() {
 
 TEST(LiveSmokeLedger, TheTourDeclaresItsStepsAndStillsInOrder) {
     const std::vector<std::string> steps = ledger_steps();
-    EXPECT_EQ(steps.size(), 24u);
-    EXPECT_EQ(spade::sandbox::live::kSnapshots.size(), 21u);
+    EXPECT_EQ(steps.size(), 25u);  // 24 + editor.x500_feet (video #2)
+    EXPECT_EQ(spade::sandbox::live::kSnapshots.size(), 22u);  // 21 + editor_x500_feet
     const auto at = [&](std::string_view name) {
         return std::find(steps.begin(), steps.end(), std::string(name)) - steps.begin();
     };
-    EXPECT_LT(at("editor.add_drone"), at("editor.airflow"));
+    EXPECT_LT(at("editor.add_drone"), at("editor.x500_feet"));
+    EXPECT_LT(at("editor.x500_feet"), at("editor.airflow"));
+    EXPECT_NE(std::find(spade::sandbox::live::kSnapshots.begin(), spade::sandbox::live::kSnapshots.end(), "editor_x500_feet"),
+              spade::sandbox::live::kSnapshots.end());
     EXPECT_LT(at("editor.airflow"), at("editor.add_objects"));
     // a skip injection of a declared step is accepted (it makes the run red); of one the ledger lacks, refused
     using spade::sandbox::live::Injection;
     using spade::sandbox::live::validate_injections;
     const std::vector<Injection> skip_airflow = {{Injection::Kind::skip, "editor.airflow"}};
+    const std::vector<Injection> skip_x500 = {{Injection::Kind::skip, "editor.x500_feet"}};
+    const std::vector<Injection> anomaly_x500 = {{Injection::Kind::anomaly, "editor.x500_feet/injected"}};
     const std::vector<KnownOpen> none;
     EXPECT_TRUE(validate_injections(skip_airflow, steps, none).has_value());
+    EXPECT_TRUE(validate_injections(skip_x500, steps, none).has_value()) << "a skip of the new step makes the run red";
+    EXPECT_TRUE(validate_injections(anomaly_x500, steps, none).has_value()) << "an anomaly in the new step makes the run red";
 }
