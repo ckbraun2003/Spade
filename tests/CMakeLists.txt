@@ -319,6 +319,7 @@ add_executable(spade_tests
     test_fc_host_lockstep.cpp
     test_fc_host_trace.cpp
     test_fc_host_boot.cpp
+    test_fc_host_run_record.cpp
     test_fc_link_mavlink.cpp
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp
