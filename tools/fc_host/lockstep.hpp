@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <span>
 #include <vector>
 
@@ -10,6 +11,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "core/error.hpp"
+#include "sensors/rings.hpp"
 #include "sim/simulation.hpp"
 #include "vehicles/model_type.hpp"
 
@@ -103,10 +105,19 @@ public:
 private:
     LockstepHost() = default;
 
+    // A command waiting for its release tick (the tick whose step is the first to see it).
+    struct Pending {
+        uint64_t release_tick = 0;
+        std::vector<float> omega;
+    };
+
     Simulation* sim_ = nullptr;
     VehicleRef vehicle_{};
     HostConfig config_{};
+    const vehicles::ModelType* model_ = nullptr;
     std::vector<SensorBinding> sensors_;
+    std::vector<sensors::SampleIndex> since_;  // per binding: the newest index take_sensors() has returned
+    std::deque<Pending> pending_;
 };
 
 }  // namespace spade::fc_host
