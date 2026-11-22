@@ -8,6 +8,11 @@
 #   - no FcLive test is in the `spade` set, and none is in `gpu`;
 #   - the unit suite of the same work (FcRunFolder) IS in the `spade` set, so the gate still runs it.
 
+# A `cmake -P` script has no project, so no policy is set for it unless it says so: the Linux leg's CMake then
+# runs it with the OLD policies, where `IN_LIST` is not an operator (CMP0057) and the `if()`s below fail.
+# Same line the other -P scripts under tests/ carry.
+cmake_minimum_required(VERSION 3.28)
+
 if(NOT CTEST OR NOT BUILD)
     message(FATAL_ERROR "fc_label_check: pass -DCTEST=<ctest> -DBUILD=<build tree>")
 endif()

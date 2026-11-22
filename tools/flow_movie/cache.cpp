@@ -78,6 +78,22 @@ spade::Result<void> write_frame(const fs::path& dir, uint32_t frame, const spade
     return {};
 }
 
+spade::Result<float> largest_header_max(const fs::path& dir, uint32_t frames, spade::FlowChannel channel) {
+    float largest = 0.0f;
+    for (uint32_t k = 0; k < frames; ++k) {
+        const fs::path path = frame_path(dir, k);
+        std::ifstream in(path, std::ios::binary);
+        char magic[sizeof kMagic] = {};
+        spade::FlowVolumeHeader header;
+        if (!in || !in.read(magic, sizeof magic) || !std::equal(magic, magic + sizeof magic, kMagic) || !get(in, header)) {
+            return refuse(path.string() + " is not a cached frame");
+        }
+        const float x = header.channel_max[channel];
+        if (std::isfinite(x)) largest = std::max(largest, x);
+    }
+    return largest;
+}
+
 spade::Result<void> read_frame(const fs::path& dir, uint32_t frame, spade::FlowVolume& volume, FrameLog& log) {
     volume.generation = 0;  // unnamed until it is whole (core/flow_volume.hpp)
     const fs::path path = frame_path(dir, frame);

@@ -30,6 +30,12 @@ namespace {
 
 }  // namespace
 
+// THREE NORMALS FROM THE TURN-ON STREAM (x, y, z), scaled by sigma_bias: the bias a receiver starts an episode from.
+glm::vec3 gnss_turn_on_bias(uint64_t world_seed, uint32_t local_slot, float sigma_bias) noexcept {
+    rng::Stream stream = rng::make_stream(world_seed, kGnssTurnOnDomainTag, local_slot);
+    return sigma_bias * draw_gauss3(stream);
+}
+
 // ---------------------------------------------------------------------------
 // synthesize_gnss() -- the gnss.synthesize pass's work, for ONE
 // world's spans. physics/schedule.cpp's pass_sensor_gnss() calls it, in the

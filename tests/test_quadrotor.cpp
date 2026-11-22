@@ -25,6 +25,7 @@
 #include "vehicles/rotor.hpp"
 #include "world/builder.hpp"
 #include "world/sdf.hpp"
+#include "gpu_skip.hpp"
 
 // ---------------------------------------------------------------------------
 // Task 18 -- the model-type layer and the Quadrotor.
@@ -1670,4 +1671,35 @@ TEST(Quadrotor, SetRotorCommandsIsAllOrNothingAndRefusesWhatItCannotMean) {
     // 20 ms time constant this airframe declares.
     EXPECT_LT((*row)->omega, hover);
     EXPECT_GT((*row)->omega, 30.0f);
+}
+
+// A VULKAN WORLD REFUSES A ROTOR'S tau_down (the GPU rotor pass carries no fall time constant; O144). The refusal names the call, the field, the model and
+// the rotor; a model whose tau_down is 0 spawns as it always did.
+TEST(GpuQuadrotorTauDown, AVulkanWorldRefusesAModelWithATauDownNamingTheModelAndTheRotor) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    const spade::Result<WorldSetDesc> desc = void_world();
+    ASSERT_TRUE(desc.has_value());
+    spade::Result<Simulation> sim = Simulation::create(*desc, 1'000'000, 1, spade::compute::BackendDesc{.kind = spade::compute::BackendKind::vulkan});
+    ASSERT_TRUE(sim.has_value());
+
+    QuadrotorParams params = test_quad(0.0125f, 0.0f);
+    spade::Result<ModelType> lagged = spade::vehicles::make_quadrotor(params);
+    ASSERT_TRUE(lagged.has_value());
+    lagged->rotors[2].tau_down = 0.025f;
+    const spade::Result<ModelTypeId> lagged_id = sim->register_model(*lagged);
+    ASSERT_TRUE(lagged_id.has_value());
+    const spade::Result<VehicleRef> refused = sim->spawn(0, *lagged_id, VehicleSpawn{});
+    ASSERT_FALSE(refused.has_value()) << "a tau_down was accepted on a Vulkan world";
+    EXPECT_EQ(refused.error().code, spade::Code::unavailable);
+    EXPECT_NE(refused.error().context.find("tau_down"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("test_quad"), std::string::npos) << refused.error().context;
+    EXPECT_NE(refused.error().context.find("rotor 2"), std::string::npos) << refused.error().context;
+
+    // The same airframe with no fall constant is the Vulkan spawn it always was.
+    spade::Result<ModelType> plain = spade::vehicles::make_quadrotor(params);
+    ASSERT_TRUE(plain.has_value());
+    plain->name = "test_quad_plain";
+    const spade::Result<ModelTypeId> plain_id = sim->register_model(*plain);
+    ASSERT_TRUE(plain_id.has_value());
+    EXPECT_TRUE(sim->spawn(0, *plain_id, VehicleSpawn{}).has_value());
 }

@@ -8,7 +8,7 @@
 //   flow_movie --video quad|validation|smoke|cavity|taylor-green|disc|case-quad|case-smoke
 //   flow_movie --video case --case FILE.case.yaml [--controls FILE]
 //              [--out DIR] [--ffmpeg EXE] [--seconds S] [--stills N]
-//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only]
+//              [--resimulate] [--keep-cache] [--drop-cache] [--simulate-only] [--from-cache] [--fixed-cloud-range]
 //              [--budget-seconds S] [--frame-budget N] [--cpu] [--view NAME]
 //   flow_movie --video d1-hover|d1-still|case ... --gpu
 //
@@ -1247,7 +1247,8 @@ constexpr float kVortexFloor = -5.0f;
 // view it has, and a particle view with no driver is an error, so they are not added unless asked for.
 [[nodiscard]] spade::Result<Film> case_film(LiveCase lc, uint32_t frames, std::string stem, bool gpu = false,
                                             const Look& look = {}, bool particle_views = false,
-                                            const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false) {
+                                            const std::optional<QLook>& nasa_look = std::nullopt, bool particle_volume = false,
+                                            float parts_cp_range = web::kSurfacePressureCpRange) {
     namespace an = spade::analysis;
     auto prepared = spade::render_parts::prepare_parts(lc.draw_model);
     if (!prepared) return std::unexpected(prepared.error());
@@ -1390,7 +1391,7 @@ constexpr float kVortexFloor = -5.0f;
                 }});
             // NASA Ames' multirotor look: Q-criterion surfaces (a ladder of three levels) coloured by vorticity, blue to magenta.
             film.views.push_back(View{
-                "nasa", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
+                "q-surfaces", "Q-criterion surfaces at three levels, coloured by vorticity magnitude (blue low to magenta high)",
                 [frame_on_drone, q = *nasa_look](const spade::FlowVolume& v, uint32_t k, uint32_t n, render::RenderScene& scene,
                                                  render::Camera& camera) -> spade::Result<void> {
                     frame_on_drone(v, k, n, camera);
@@ -1556,8 +1557,25 @@ constexpr float kVortexFloor = -5.0f;
                 }};
         };
         film.views.push_back(cp_view("cp", 0.0f, 1.0f, false));
-        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, false));
-        film.views.push_back(cp_view("surface-pressure-shaded", web::kSurfacePressureSearchCells, web::kSurfacePressureCpRange, true));
+        film.views.push_back(cp_view("surface-pressure", web::kSurfacePressureSearchCells, parts_cp_range, false));
+        film.views.push_back(cp_view("surface-pressure-shaded", web::kSurfacePressureSearchCells, parts_cp_range, true));
+        // The pressure film with the vortices of the simulated air round the rotors (O144): the same colouring on the parts and blades, and the vorticity cloud as the one flow layer,
+        // added AFTER apply_view (which replaces the scene's flow content); the GL march stops at the frame's opaque depth (gl_renderer.cpp), so the cloud does not paint over the
+        // parts it is behind.
+        if (nasa_look) {
+            const auto with_cloud = [&](const char* name, bool shade) {
+                View v = cp_view(name, web::kSurfacePressureSearchCells, parts_cp_range, shade);
+                v.on_parts = [on = v.on_parts, q = *nasa_look](const spade::FlowVolume& vol, render::RenderScene& scene) -> spade::Result<std::string> {
+                    auto note = on(vol, scene);
+                    if (!note) return note;
+                    if (auto tf = vorticity_cloud(vol, q)) scene.flow_layers.push_back(render::FlowLayer{&vol, {*tf}, {}});
+                    return note;
+                };
+                return v;
+            };
+            film.views.push_back(with_cloud("surface-pressure-vortices", false));
+            film.views.push_back(with_cloud("surface-pressure-vortices-shaded", true));
+        }
     }
     return film;
 }
@@ -1590,10 +1608,10 @@ struct WebPlan {
     DroneLight drone_light;                           // --drone-light: the key and fill strength the drone is lit with (presentation only)
     std::optional<float> elevation;                   // --elevation DEG: the still's camera elevation in place of the drone's framing
     std::string lines;                                // --lines: the prop part file (under the assets) of the rotors' actuator lines
-    bool cloud = false;                               // --nasa-cloud: the vorticity as a soft cloud in place of the surfaces
+    bool cloud = false;                               // --vorticity-cloud: the vorticity as a soft cloud in place of the surfaces
     bool pressure = false;                            // --surface-pressure: S8 draws the air's pressure on the drawn parts, nothing else of the air
     bool shade = false;                               // --surface-shade: ... lit for shape
-    std::optional<QLook> nasa;                        // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity
+    std::optional<QLook> nasa;                        // --q-surfaces: S2 and S8 draw Q-criterion surfaces coloured by vorticity
 };
 
 constexpr float kWebFov = 1.0471975511965976f;  // render::Camera's default, 60 degrees
@@ -1702,7 +1720,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    plan.drone->model_file, d1_web_hold(plan.cell_mm, plan.drone->hub_above_origin_m));
         if (!lc) return std::unexpected(lc.error());
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
-                               plan.particles || plan.particles_preview, plan.nasa, plan.volume);
+                               plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range);
         if (!made) return std::unexpected(made.error());
         film = std::move(*made);
         film.device = true;
@@ -1737,7 +1755,7 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                 frame = *got;
             }
             if (visual || build) {
-                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, blade_gain = web::blade_flow_gain(plan.drone->blade_cp_range), store =std::filesystem::path(plan.part_store)](
+                film.decorate = [visual, build, chord, frame, blur = plan.prop_blur, light = plan.drone_light, walls = plan.pressure, blade_gain = web::blade_flow_gain(plan.drone->blade_cp_range, plan.drone->parts_cp_range), store =std::filesystem::path(plan.part_store)](
                                     const FrameLog& log, render::RenderScene& scene) -> spade::Result<void> {
                     if (log.live.size() < 7u) return std::unexpected(spade::Error{spade::Code::internal, "the frame's log has no held body"});
                     const glm::vec3 pos(static_cast<float>(log.live[0]), static_cast<float>(log.live[1]), static_cast<float>(log.live[2]));
@@ -1783,14 +1801,14 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                              web::loop_azimuth(web::kD1StillAzimuthDeg, 360.0f, k, n), framing.elevation_deg);
             }, false);
         } else if (id == "S8") {
-            view = with_camera(*view_named(film, plan.pressure ? (plan.shade ? "surface-pressure-shaded" : "surface-pressure") : plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, web::s8_view_name(plan.pressure, plan.shade, plan.nasa.has_value(), plan.cloud, plan.particles, plan.particles_preview)),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 return orbit(still_aim, web::fit_distance(framing.subject_m, kWebFov, kWebAspect, fit),
                              web::there_and_back_azimuth(web::kD1StillAzimuthDeg, clip.orbit_degrees, k, n),
                              framing.elevation_deg);
             }, plan.particles);  // the streaks are polylines the view's shot makes: kept (with_camera clears them otherwise)
         } else if (id == "S2") {  // the soft speed volume of S8, from the start-up, in a push-in (Cameron, 2026-11-17)
-            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "nasa") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
+            view = with_camera(*view_named(film, plan.nasa ? (plan.cloud ? "vorticity-cloud" : "q-surfaces") : plan.particles ? "particles" : plan.particles_preview ? "particles-preview" : "speed-volume"),
                                [=](const spade::FlowVolume&, uint32_t k, uint32_t n) {
                 const float wide = web::fit_distance(framing.push_wide_m, kWebFov, kWebAspect, fit);
                 const float close = web::fit_distance(framing.push_close_m, kWebFov, kWebAspect, fit);
@@ -1962,6 +1980,9 @@ struct Options {
     bool keep_cache = false;
     bool drop_cache = false;  // --drop-cache: a LiveRun film's cache goes after its render
     bool simulate_only = false;
+    float cloud_peak = 0.0f;  // the clip's largest vorticity, set by run_web for --fixed-cloud-range (0: each frame's own)
+    bool fixed_cloud_range = false;  // --fixed-cloud-range: the cloud's top is a share of the clip's largest vorticity (from the cache's headers), the same in every frame (O144)
+    bool from_cache = false;  // --from-cache: draw the film from the frames already in the cache folder (a --simulate-only run's, kept); never solve (O144)
     bool cpu = false;  // stills on the CPU renderer instead of GL
     std::string view;  // stills of this view only
     int still_frame = -1;  // stills of this frame only (cached; no simulation past it)
@@ -1995,12 +2016,12 @@ struct Options {
     std::string part_store;          // --part-store DIR: where the table's store objects are (<DIR>/<sha256>/<file>)
     std::string visual_mesh;         // --visual-mesh FILE: a glTF (metres, the model's frame) drawn at the held body's pose in place of the model's parts; the flow is unchanged
     std::string lines_prop;          // --lines FILE: the rotors of a D1 web clip as actuator lines, the blade from this prop part (under the assets)
-    bool nasa_cloud = false;         // --nasa-cloud: --nasa's colours as a soft vorticity cloud, no surfaces
+    bool nasa_cloud = false;         // --vorticity-cloud: --q-surfaces's colours as a soft vorticity cloud, no surfaces
     bool surface_pressure = false;   // --surface-pressure: S8 shows the air's pressure on the drone's surfaces (O124)
     bool surface_shade = false;      // --surface-shade: ... lit for shape (the colour keeps its hue; needs --surface-pressure)
     std::string cache_dir;           // --cache-dir DIR: a --web-still redraw from the frame in DIR (another run's), never a solve
-    bool nasa = false;               // --nasa: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
-    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --nasa)
+    bool nasa = false;               // --q-surfaces: S2 and S8 draw Q-criterion surfaces coloured by vorticity (NASA Ames' multirotor look)
+    std::string q_look;              // --q-look KEY=VALUE,...: the ladder's levels, opacities and colour range (needs --q-surfaces)
     bool particles = false;          // --particles: S2 and S8 draw points carried through every stored frame (needs --stream)
     bool particles_preview = false;  // --particles-preview: S2 and S8 draw tracers carried through one frozen frame (a diagnostic)
     std::string drone;             // --drone NAME: a library drone for the D1 web clips (web::drones()); "" the reference quad
@@ -2513,6 +2534,12 @@ struct WebFilming {
         in.volume = opt.volume;
         in.cloud = opt.nasa_cloud;
         in.pressure = opt.surface_pressure;
+        if (opt.surface_pressure && opt.nasa_cloud) {
+            if (auto q = parse_q_look(opt.q_look)) {
+                q->vorticity_peak = opt.cloud_peak;
+                in.vortex_note = vortex_note(*q);
+            }
+        }
         in.shaded = opt.surface_shade;
         if (const auto blades_blur = parse_prop_blur(opt.prop_blur)) in.blades = blades_blur->blades;
         in.step_us = opt.step_us.value_or(200u);
@@ -2666,7 +2693,7 @@ struct WebFilming {
         plan.lines = opt.lines_prop;
     }
     if (opt.nasa) {
-        if (const std::string why = web::nasa_refusal(clip->id == "S2" || clip->id == "S8", opt.window_to > 0.0, opt.web_still_only, opt.stream,
+        if (const std::string why = web::nasa_refusal(clip->id == "S2" || clip->id == "S8", opt.window_to > 0.0, opt.web_still_only || opt.from_cache, opt.stream,
                                                       opt.particles, opt.particles_preview, opt.nasa_cloud);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
@@ -2677,12 +2704,12 @@ struct WebFilming {
         plan.nasa = *q;
         plan.cloud = opt.nasa_cloud;
     } else if (!opt.q_look.empty()) {
-        std::fprintf(stderr, "flow_movie: --q-look is for --nasa\n");
+        std::fprintf(stderr, "flow_movie: --q-look is for --q-surfaces\n");
         return 2;
     }
     if (opt.surface_pressure) {
-        if (const std::string why = web::surface_pressure_refusal(clip->id == "S8", opt.window_to > 0.0, opt.web_still_only, opt.stream, opt.particles,
-                                                                  opt.particles_preview, opt.nasa);
+        if (const std::string why = web::surface_pressure_refusal(clip->id == "S8", opt.window_to > 0.0, opt.web_still_only || opt.from_cache, opt.stream, opt.particles,
+                                                                  opt.particles_preview, opt.nasa, opt.nasa_cloud);
             !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
@@ -2815,6 +2842,34 @@ struct WebFilming {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
             return 2;
         }
+    }
+    if (opt.from_cache) {
+        if (const std::string why = web::from_cache_refusal(true, opt.stream, opt.simulate_only, cached_frames(cache), plan.frames); !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+    }
+    if (opt.fixed_cloud_range) {
+        if (const std::string why = web::fixed_cloud_range_refusal(true, opt.nasa_cloud, opt.stream, opt.simulate_only, opt.web_still_only || opt.from_cache, cached_frames(cache), plan.frames);
+            !why.empty()) {
+            std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
+            return 2;
+        }
+        const auto peak = largest_header_max(cache, plan.frames, spade::kFlowVorticity);
+        if (!peak) return fail(peak.error());
+        if (!(*peak > 0.0f)) {
+            std::fprintf(stderr, "flow_movie: --fixed-cloud-range: the cache's frames hold no vorticity\n");
+            return 2;
+        }
+        opt.cloud_peak = *peak;
+        plan.nasa->vorticity_peak = *peak;  // the cloud (nasa_cloud implies --q-surfaces above)
+        // The film's views captured the look when web_film() built them (above), before the cache was read: build it again with the peak, and set what was set on the first (no particle look
+        // here: the cloud and the particle looks are refused together).
+        film = web_film(*clip, *group, plan);
+        if (!film) return fail(film.error());
+        film->role_materials = drone != &web::default_drone();
+        std::printf("flow_movie: web %s: the cloud's range is fixed for the clip: its largest vorticity over the %u frames is %.0f per second\n", opt.web_id.c_str(), plan.frames,
+                    static_cast<double>(*peak));
     }
     if (!opt.web_deliver.empty()) return web_deliver(opt, *clip, n, work, base);
     if (!opt.export_name.empty()) {  // a cached frame's streamlines, not a clip
@@ -2951,7 +3006,9 @@ struct WebFilming {
 
     // Not streamed: a still from a frame an earlier streamed run kept needs no simulation, and the cache is not whole.
     const bool kept_frame = opt.web_still_only && opt.still_frame >= 0 && fs::exists(frame_file(cache, first + still_k));
-    if (kept_frame) {
+    if (opt.from_cache) {
+        std::printf("flow_movie: web %s: drawn from the %u frames kept in %s; no simulation\n", opt.web_id.c_str(), cached_frames(cache), cache.generic_string().c_str());
+    } else if (kept_frame) {
         std::printf("flow_movie: web %s: the still is drawn from frame %u, kept in %s; no simulation\n", opt.web_id.c_str(),
                     first + still_k, cache.generic_string().c_str());
     } else {
@@ -3211,6 +3268,10 @@ int main(int argc, char** argv) {
             opt.n_v = static_cast<uint32_t>(std::atoi(value().c_str()));
         } else if (arg == "--simulate-only") {
             opt.simulate_only = true;
+        } else if (arg == "--from-cache") {
+            opt.from_cache = true;
+        } else if (arg == "--fixed-cloud-range") {
+            opt.fixed_cloud_range = true;
         } else if (arg == "--budget-seconds") {
             opt.budget_seconds = std::atof(value().c_str());
         } else if (arg == "--frame-budget") {
@@ -3290,9 +3351,9 @@ int main(int argc, char** argv) {
             opt.part_store = value();
         } else if (arg == "--lines") {
             opt.lines_prop = value();
-        } else if (arg == "--nasa") {
+        } else if (arg == "--q-surfaces") {
             opt.nasa = true;
-        } else if (arg == "--nasa-cloud") {
+        } else if (arg == "--vorticity-cloud") {
             opt.nasa = true;
             opt.nasa_cloud = true;
         } else if (arg == "--surface-pressure") {

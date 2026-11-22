@@ -409,6 +409,13 @@ struct ImuSensorSpawn {
     float sigma_g = 0.0f;                            // gyro white noise, rad/s per sample
     float sigma_ba = 0.0f;                           // accel bias walk step, m/s^2 per sample
     float sigma_bg = 0.0f;                           // gyro bias walk step, rad/s per sample
+    // THE CONVERTER AND THE TURN-ON OFFSET (sensors/imu.hpp), all off at zero. CPU only for the converter: a Vulkan world
+    // refuses a non-zero range_a, range_g or adc_bits (Code::unavailable, naming the field).
+    float range_a = 0.0f;                            // accel full scale, +-m/s^2; 0 = unlimited
+    float range_g = 0.0f;                            // gyro full scale, +-rad/s; 0 = unlimited
+    float adc_bits = 0.0f;                           // converter resolution, an integer 1..24; 0 = no quantization
+    float turn_on_sigma_a = 0.0f;                    // accel turn-on offset stddev per axis, m/s^2, redrawn at every reseed
+    float turn_on_sigma_g = 0.0f;                    // gyro turn-on offset stddev per axis, rad/s, redrawn at every reseed
 };
 
 // ---------------------------------------------------------------------------
@@ -431,6 +438,8 @@ struct GnssSensorSpawn {
     float sigma_vel = 0.0f;     // velocity white noise, per-axis per-fix stddev, m/s
     float bias_tau_s = 0.0f;    // Gauss-Markov correlation time, s; <= 0 disables the bias
     float sigma_bias = 0.0f;    // stationary stddev of the correlated bias, m
+    uint32_t turn_on_bias = 0;  // 1: start the bias from a stationary draw (sigma_bias per axis) at spawn and at every reseed, not from 0.
+                                // A uint32_t, not a bool: the spawn travels as raw bytes (the structural queue), so no padding is allowed
 };
 
 // ---------------------------------------------------------------------------
@@ -1622,6 +1631,10 @@ public:
     // the two derive it one way (TD-9). ModuleStreams.* pin both, and
     // Imu.ReseedRederivesALiveSensorsStream... and GnssReseed.Reseed
     // RederivesAReceiversNoiseStream check the built-ins' streams directly.
+    //
+    // THE ONE WRITE TO A BIAS: a sensor row whose turn-on sigma (IMU `turn_on_sigma_a`/`_g`, per channel) or flag (GNSS `turn_on_bias`) is set starts that
+    // bias afresh from the turn-on stream at every reseed, because a reseed is where a batch's next episode begins (genesis blob, replayed spawns, then
+    // reseed(scene_seed)) and each episode is to have its own offset. A row with none of them set is as described next.
     //
     // WHAT IT DOES NOT TOUCH: THE PAST. Ring contents, ring cursors
     // (last_index), rate-divider phase and the accumulated bias states all

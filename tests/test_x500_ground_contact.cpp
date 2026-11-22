@@ -39,6 +39,7 @@
 #include "sim/world_set.hpp"
 #include "vehicles/model_type.hpp"
 #include "world/builder.hpp"
+#include "x500_contact_hull.hpp"
 
 namespace {
 
@@ -47,39 +48,21 @@ namespace ph = spade::physics;
 constexpr float kG = 9.80665f;
 constexpr uint64_t kDtNs = 500'000;  // the tick the autopilot link runs at (fc-physics 5.1; test_step_convergence.cpp)
 constexpr float kStepsPerSecond = 2000.0f;
-constexpr float kSkin = 0.0095f;
+constexpr float kSkin = spade::test::x500::kSkin;
 constexpr double kComY = -0.0254301;  // x500.model.yaml com_offset.y: the design frame's centre of mass height
 constexpr float kLowest = -0.2153f;   // the pads' bottom faces in the design frame
 constexpr float kRestHeight = static_cast<float>(kComY - kLowest);  // 0.18987 m: the centre of mass over the plane at rest
 constexpr float kDesignOriginAtRest = -kLowest;                      // 0.2153 m: the design origin over the plane at rest. A VEHICLE's spawn pose is the DESIGN
                                                                      // frame's (VehicleSpawn: the design origin and design axes, converted by spawn()), not the body's
 
-// The twelve points in the DESIGN frame: three along each pad's length (both ends of the 19 mm-section bar, and the middle).
-[[nodiscard]] std::vector<glm::vec3> pad_points_design() {
-    std::vector<glm::vec3> out;
-    for (const float sx : {1.0f, -1.0f}) {
-        for (const float sz : {1.0f, -1.0f}) {
-            for (const float dx : {0.0305f, 0.0675f, 0.1045f}) out.emplace_back(sx * dx, -0.2058f, sz * 0.12f);
-        }
-    }
-    return out;
-}
+// The twelve points, the skin, the 16 sweeps and the hull's construction are in x500_contact_hull.hpp, shared with test_x500_contact_model.cpp (which writes them into
+// the loadable x500_contact.model.yaml): the numbers and their reasons are there.
+using spade::test::x500::pad_points_design;
 
 [[nodiscard]] spade::vehicles::ModelType load_model(float friction, float restitution) {
     const auto loaded = spade::scene::load_model_file(std::filesystem::path(SPADE_REPO_DIR) / "tools/flow_movie/data/x500/x500.model.yaml");
     EXPECT_TRUE(loaded.has_value()) << (loaded ? "" : loaded.error().context);
-    spade::vehicles::ModelType model = loaded->model;
-    // design frame -> body frame: p_body = q_d2p * (p_design - com_offset)
-    std::vector<glm::vec3> body_points;
-    for (const glm::vec3& p : pad_points_design()) body_points.push_back(model.design_to_principal * (p - model.com_offset));
-    ph::ShapeDesc shape = ph::hull_shape(body_points, kSkin);
-    shape.friction = friction;
-    shape.restitution = restitution;
-    // 16 sweeps (kMaxSweeps): the default 4 leaves a level 3.1 m/s drop spinning at 0.7 to 0.8 rad/s from an unconverged sequential-impulse solve over twelve points
-    // (DiagnosticSpinAfterALevelDrop below: 0.017 rad/s at 16 sweeps), and a rest creep; the converged solution zeroes every point's normal speed, so no spin.
-    shape.iterations = 16;
-    model.shape = shape;
-    return model;
+    return spade::test::x500::with_feet(loaded->model, friction, restitution);
 }
 
 [[nodiscard]] spade::WorldSetDesc make_world(glm::vec3 gravity) {

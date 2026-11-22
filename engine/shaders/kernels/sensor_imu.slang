@@ -235,8 +235,9 @@ void sensor_imu(uint3 tid : SV_DispatchThreadID) {
 
     // The five fields the CPU pass mutates, written back field-wise rather than
     // as a whole-row store: everything else in the row (body_slot, kind,
-    // rate_divider, the mount pose, the four sigmas, `_reserved0` and the three
-    // std430 pads) is configuration this pass must leave exactly as it found
+    // rate_divider, the mount pose, the four sigmas, range_a/range_g/adc_bits
+    // and the two turn-on sigmas, none of which this kernel reads: a Vulkan
+    // spawn with a range or bits is refused) is configuration this pass must leave exactly as it found
     // it, and a whole-row store would make that a property of the local copy
     // rather than of the code.
     imu_sensors[slot].phase = row.phase;
