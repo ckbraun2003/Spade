@@ -93,10 +93,12 @@ if (-not $existing) {
     Write-Output 'none'
     exit 0
 }
-if (-not $OutDir) { $OutDir = (& $Docker inspect --format '{{ index .Config.Labels "spade.outdir" }}' $name) }
+# (no quotes inside the --format: Windows PowerShell 5.1 strips them from a native command's arguments, so the label is read from the JSON)
 if (-not $OutDir) {
-    Write-Output 'px4-sitl: no run folder known (pass -OutDir)'
-    & $Docker rm -f $name *> $null
+    try { $labels = (& $Docker inspect --format '{{json .Config.Labels}}' $name) | ConvertFrom-Json; $OutDir = $labels.'spade.outdir' } catch { $OutDir = $null }
+}
+if (-not $OutDir) {
+    Write-Output "px4-sitl: no run folder known (pass -OutDir). The container $name is left running as evidence; remove it with: docker rm -f $name"
     Write-Output 'none'
     exit 6
 }
