@@ -93,6 +93,10 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
     if (booted_) strict_deadline = start + config_.reply_timeout;
     const bool had_boot_steps = !booted_ && report_.boot_steps > 0;
     uint64_t carried = 0;  // boot-time replies that arrived older than this sensor message, in earlier batches of this exchange
+    // A reply that has already ARRIVED is never silence. The deadlines are measured from before the send, so a slow send (a debug build, a loaded
+    // machine) can pass one before the channel has been read at all; the loop therefore drains what is readable NOW, once, before it declares
+    // a boot step or a missing reply. A piece of a reply that has not arrived still counts as not there.
+    bool drained = false;
     Taken got;
     for (;;) {
         Taken t = take();
@@ -112,6 +116,14 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
         }
         const auto now = std::chrono::steady_clock::now();
         if (!strict_deadline && now >= poll_deadline) {
+            if (!drained) {
+                drained = true;
+                if (auto r = fill(std::chrono::milliseconds(0)); !r) {  // non-blocking: what is readable now
+                    note_wait();
+                    return std::unexpected(r.error());
+                }
+                continue;  // take() parses it; a reply found there ends the boot wait
+            }
             // PX4 is still booting: no reply yet. The caller holds its world and sends the next sensor message.
             note_wait();
             ++report_.boot_steps;
@@ -125,6 +137,14 @@ Result<ActuatorReply> Px4Link::exchange(const mavlink::HilSensor& sensor, const 
             return booting;
         }
         if (strict_deadline && now >= *strict_deadline) {
+            if (!drained) {
+                drained = true;
+                if (auto r = fill(std::chrono::milliseconds(0)); !r) {
+                    note_wait();
+                    return std::unexpected(r.error());
+                }
+                continue;
+            }
             note_wait();
             return std::unexpected(Error{Code::io_error, "px4_no_reply: no HIL_ACTUATOR_CONTROLS within " + std::to_string(config_.reply_timeout.count()) +
                                                              " ms after HIL_SENSOR time_usec " + std::to_string(sensor.time_usec) + " (sensor message " +
