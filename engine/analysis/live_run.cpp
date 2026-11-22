@@ -388,6 +388,11 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
             }
         }
     }
+    if (resolved.solids_cg_floor > af::kSolidsCgCap) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     std::format("solids_cg_floor {} is above the CG's cap of {} iterations (1 to {}, or 0 for the default {})",
+                                                 resolved.solids_cg_floor, af::kSolidsCgCap, af::kSolidsCgCap, af::kSolidsCgIterations)});
+    }
     const AnalysisCase& c = resolved.spec;
     const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
@@ -569,7 +574,9 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
         if (!parts) return refused(parts.error());
         if (parts->empty()) break;
         if (first) {
-            impl->fluid.n_v = af::kSolidsCgIterations;
+            // The CG's floor: the engine's own unless the host raised it (a film's tight pressure, O158). The device reads
+            // it from this FluidConfig when it is made, below, so one value serves the CPU and the device alike.
+            impl->fluid.n_v = resolved.solids_cg_floor != 0 ? resolved.solids_cg_floor : af::kSolidsCgIterations;
             if (Result<void> s = make_scratch(); !s) return std::unexpected(s.error());
         }
         const Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
