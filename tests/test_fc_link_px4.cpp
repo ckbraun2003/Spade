@@ -81,7 +81,11 @@ public:
     spade::Result<std::vector<uint8_t>> read_some(std::chrono::milliseconds timeout) override {
         if (closed_ && inbox_.empty()) return std::unexpected(spade::Error{spade::Code::io_error, "peer closed"});
         if (inbox_.empty()) {
-            std::this_thread::sleep_for(std::min<std::chrono::milliseconds>(timeout, 2ms));
+            // This fake answers inside write() (no thread), so nothing can arrive while the link waits: sleeping only added the OS timer quantum (a 2 ms
+            // sleep took ~15.6 ms on Windows, so a 300-boot-step test took 5 s alone and timed out at 60 s under load). Yield and let the link's own
+            // deadline end the wait.
+            (void)timeout;
+            std::this_thread::yield();
             return std::vector<uint8_t>{};
         }
         const size_t n = script_.chunk == 0 ? inbox_.size() : std::min(script_.chunk, inbox_.size());
@@ -424,7 +428,9 @@ uint64_t world_digest_after_boot(uint64_t boot_steps_px4_takes, uint64_t* boot_s
     s.mode = Mode::silent_first;
     s.after = boot_steps_px4_takes;
     s.backlog = (boot_steps_px4_takes % 2) == 0;  // both kinds of PX4: one that answers the backlog and one that does not
-    auto link = open_with(s, std::make_shared<Seen>());
+    Px4LinkConfig cfg;
+    cfg.boot_poll = std::chrono::milliseconds(1);  // the boot length is counted in steps, not wall time: 300 steps cost ~0.3 s, not 5 s
+    auto link = open_with(s, std::make_shared<Seen>(), cfg);
     if (!link) return 0;
     double world = 0.0;  // the held spawn state
     uint64_t digest = 1469598103934665603ULL;
