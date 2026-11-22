@@ -207,6 +207,12 @@ struct ParticleField {
     return {};
 }
 
+// STUB (RED, B1): the time blend with the next frame; ignores it for now.
+[[nodiscard]] inline spade::Result<void> advance_particles(ParticleField& field, const spade::FlowVolume& volume, const spade::FlowVolume*, std::span<const glm::vec3> pool, float dt,
+                                                           const ParticleOptions& options) {
+    return advance_particles(field, volume, pool, dt, options);
+}
+
 // The frames a particle run reads: the clip's draws and every frame before its first, in order, each once. The points are
 // carried through all of them (the inflow must already be drawn in when the clip starts), so the stream's plan writes them
 // and keeps each until its advance is done.
