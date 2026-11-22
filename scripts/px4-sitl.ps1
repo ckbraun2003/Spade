@@ -29,7 +29,9 @@ param(
     [switch]$PublishOffboard                          # publish PX4's offboard API port (UDP 14540) on this machine's loopback only, for a companion computer
 )
 
-$ErrorActionPreference = 'Stop'
+# 'Continue', not 'Stop' (as fc-run.ps1): Windows PowerShell 5.1 turns a native command's stderr under 2>&1 into a terminating error, and docker and PX4 write there.
+# Every docker call below is checked by its own exit code.
+$ErrorActionPreference = 'Continue'
 $name = "spade-px4-$RunId"
 $px4Dir = '/src/PX4-Autopilot/build/px4_sitl_spade'
 
