@@ -219,6 +219,17 @@ class Smoke {
 // could cancel a real anomaly and turn a FAIL into a PASS; expiry is covered
 // by tests/test_sandbox_live_smoke.cpp.
 // ---------------------------------------------------------------------------
+// --only (a short run of chosen steps, e.g. for a feature film): `a.b,c.d`. STUBS: not implemented yet (RED).
+[[nodiscard]] inline Result<std::vector<std::string>> parse_only(std::string_view /*list*/) {
+    return std::unexpected(Error{Code::invalid_argument, "--only: not implemented"});
+}
+[[nodiscard]] inline Result<void> validate_only(std::span<const std::string> /*only*/, std::span<const std::string> /*declared*/) {
+    return std::unexpected(Error{Code::invalid_argument, "--only: not implemented"});
+}
+[[nodiscard]] inline std::vector<std::string> steps_to_run(std::span<const std::string> /*only*/, std::span<const std::string> declared) {
+    return std::vector<std::string>(declared.begin(), declared.end());
+}
+
 struct Injection {
     enum class Kind { skip, anomaly };
     Kind kind = Kind::skip;

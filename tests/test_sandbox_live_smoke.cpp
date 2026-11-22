@@ -604,3 +604,44 @@ TEST(LiveSmokeLedger, TheTourDeclaresItsStepsAndStillsInOrder) {
     EXPECT_TRUE(validate_injections(skip_x500, steps, none).has_value()) << "a skip of the new step makes the run red";
     EXPECT_TRUE(validate_injections(anomaly_x500, steps, none).has_value()) << "an anomaly in the new step makes the run red";
 }
+
+// ===========================================================================
+// --only: a short run of chosen steps (a feature film runs one step, not the whole tour)
+// ===========================================================================
+TEST(LiveSmokeOnly, TheListIsParsedAndCheckedAgainstTheLedger) {
+    using spade::sandbox::live::parse_only;
+    using spade::sandbox::live::validate_only;
+    const auto one = parse_only("editor.x500_feet");
+    ASSERT_TRUE(one.has_value());
+    ASSERT_EQ(one->size(), 1u);
+    EXPECT_EQ((*one)[0], "editor.x500_feet");
+    const auto two = parse_only("editor.x500_feet,drone_box.attitude");
+    ASSERT_TRUE(two.has_value());
+    EXPECT_EQ(two->size(), 2u);
+    EXPECT_FALSE(parse_only("").has_value());
+    EXPECT_FALSE(parse_only("editor.x500_feet,").has_value()) << "a trailing comma names nothing";
+    EXPECT_FALSE(parse_only("editor").has_value()) << "a step is main.sub";
+
+    const std::vector<std::string> declared = ledger_steps();
+    EXPECT_TRUE(validate_only(*one, declared).has_value());
+    const std::vector<std::string> nope = {"editor.nope"};
+    const auto bad = validate_only(nope, declared);
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().context.find("editor.nope"), std::string::npos) << bad.error().context;
+    EXPECT_NE(bad.error().context.find("editor.x500_feet"), std::string::npos) << "it lists the steps there are: " << bad.error().context;
+}
+
+TEST(LiveSmokeOnly, TheStepsToRunAreTheChosenOnesAndWhatTheyNeed) {
+    using spade::sandbox::live::steps_to_run;
+    const std::vector<std::string> declared = ledger_steps();
+    EXPECT_EQ(steps_to_run({}, declared), declared) << "no --only: the whole tour";
+    const std::vector<std::string> x = {"editor.x500_feet"};
+    const std::vector<std::string> want_x = {"editor.open", "editor.x500_feet"};
+    EXPECT_EQ(steps_to_run(x, declared), want_x) << "an editor step needs the editor open, and runs in ledger order";
+    const std::vector<std::string> d = {"drone_box.attitude"};
+    const std::vector<std::string> want_d = {"drone_box.attitude"};
+    EXPECT_EQ(steps_to_run(d, declared), want_d) << "a step of another chapter needs nothing added";
+    const std::vector<std::string> both = {"editor.x500_feet", "drone_box.attitude"};
+    const std::vector<std::string> want_both = {"drone_box.attitude", "editor.open", "editor.x500_feet"};
+    EXPECT_EQ(steps_to_run(both, declared), want_both) << "ledger order, not the list's";
+}
