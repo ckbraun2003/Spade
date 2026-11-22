@@ -1210,6 +1210,10 @@ Result<void> LiveRun::save(const std::filesystem::path& file) const {
     }
     const std::vector<std::byte> grid = af::grid_to_bytes(r.device ? fields : r.grid);
     w.bytes(as_text(grid));
+    // The solids CG's floor, as the host gave it, only when it was raised: a default save is byte for byte what it was, and no
+    // version moves. restore() reads it if the bytes are there and refuses a ResolvedCase at another floor (a resumed solve
+    // at a different floor would mix two solves in one film).
+    if (r.resolved.solids_cg_floor != 0) w.put<uint32_t>(r.resolved.solids_cg_floor);
     w.put<uint64_t>(rng::fnv1a64(w.out));
     return detail::replace_file(file, w.out);
 }
@@ -1305,7 +1309,17 @@ Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const Resolv
     const std::string_view controls = rd.bytes();
     const std::string_view snapshot = rd.bytes();
     const std::string_view grid = rd.bytes();
+    uint32_t saved_floor = 0;  // absent in a default save
+    if (rd.ok && rd.at < rd.in.size()) saved_floor = rd.get<uint32_t>();
     if (!rd.ok || rd.at != rd.in.size()) return refuse(Code::invalid_argument, "is malformed");
+    // The floor 0 is the engine's own 8: the two are one solve and restore into each other, any other pair is refused.
+    const auto effective_floor = [](uint32_t f) { return f != 0 ? f : af::kSolidsCgIterations; };
+    if (effective_floor(saved_floor) != effective_floor(resolved.solids_cg_floor)) {
+        return refuse(Code::invalid_argument,
+                      std::format("was saved at solids_cg_floor {}, not {} (0 is the default, {}): a resumed solve at another floor "
+                                  "would mix two solves in one run",
+                                  saved_floor, resolved.solids_cg_floor, af::kSolidsCgIterations));
+    }
 
     // The run as the case builds it, then its saved state over it.
     Result<LiveRun> run = start(resolved, model);
