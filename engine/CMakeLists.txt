@@ -983,6 +983,7 @@ add_library(spade_vehicles STATIC
     vehicles/part_pose.cpp
     vehicles/quadrotor.cpp
     vehicles/motor.cpp
+    vehicles/rotor_frequencies.cpp
     vehicles/battery.cpp
     vehicles/propeller.cpp
     vehicles/composite_inertia.cpp
