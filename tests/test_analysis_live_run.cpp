@@ -17,6 +17,7 @@
 #include <format>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -1258,6 +1259,63 @@ TEST(AnalysisLiveRun, TheSolidsIterationLimitUnsetFliesToTheBit) {
     EXPECT_EQ(a.solids().pressure_residual, b.solids().pressure_residual);
     EXPECT_EQ(a.solids().unconverged_steps, b.solids().unconverged_steps);
     EXPECT_EQ(a.solids().pressure_iterations, b.solids().pressure_iterations);
+}
+
+// THE CG'S FLOOR AS A RUN OPTION (O158: the film's tight pressure). ResolvedCase::solids_cg_floor is the iterations the
+// solids' CG always takes before it may stop at the residual mark: 0, the default, is the engine's own 8; a larger one
+// is a tighter solve for a film. The ball body's frame (17 steps) at the default ends each solve at its floor of 8
+// (healthy, ~1e-6: ALooseSolveIsCountedBesideTheUnconverged); at a floor of 12 it takes 12.
+[[nodiscard]] spade::Result<an::LiveRun> started_at_floor(const Powered& p, uint32_t floor) {
+    an::ResolvedCase r = resolved(an::test::with_power(solid_case(p.model), p), p.model);
+    r.solids_cg_floor = floor;
+    return an::LiveRun::start(r, p.model);
+}
+
+TEST(AnalysisLiveRun, ARaisedCgFloorTakesThatManyIterations) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const auto last_solve = [&](uint32_t floor) {
+        spade::Result<an::LiveRun> run = started_at_floor(p, floor);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        spade::FlowVolume v;
+        if (run) armed_frame(*run, v);
+        return run ? std::pair{run->solids().pressure_iterations, run->solids().pressure_residual} : std::pair{0u, 0.0f};
+    };
+    const auto base = last_solve(0);
+    const auto eight = last_solve(8);
+    const auto twelve = last_solve(12);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(base.first, 8u) << "the default solve ends at the CG's floor of 8";
+    EXPECT_EQ(eight.first, 8u);
+    EXPECT_EQ(twelve.first, 12u) << "a floor of 12 takes 12 iterations";
+    EXPECT_LE(twelve.second, base.second) << "and ends no looser: " << twelve.second << " against " << base.second;
+}
+
+// The option unset, 0, and 8 itself (the engine's floor) are the same run to the bit.
+TEST(AnalysisLiveRun, TheDefaultCgFloorFliesToTheBit) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    spade::Result<an::LiveRun> a = started_at_floor(p, 0);
+    spade::Result<an::LiveRun> b = started_at_floor(p, 8);
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    spade::FlowVolume va;
+    spade::FlowVolume vb;
+    for (int i = 0; i < 2; ++i) {
+        armed_frame(*a, va);
+        armed_frame(*b, vb);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(va.v, vb.v);
+    EXPECT_EQ(va.s, vb.s);
+    EXPECT_EQ(a->solids().pressure_residual, b->solids().pressure_residual);
+    EXPECT_EQ(a->solids().pressure_iterations, b->solids().pressure_iterations);
+}
+
+// A floor above the CG's cap (32) is refused by name, at start; the cap itself is accepted.
+TEST(AnalysisLiveRun, ACgFloorAboveTheCapIsRefused) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const spade::Result<an::LiveRun> over = started_at_floor(p, 33);
+    ASSERT_FALSE(over.has_value());
+    EXPECT_NE(over.error().context.find("solids_cg_floor"), std::string::npos) << over.error().context;
+    EXPECT_TRUE(started_at_floor(p, 32).has_value());
 }
 
 // The subgrid viscosity's account (the lead, 2026-11-10; the website clips' Smagorinsky runs): its line names only
