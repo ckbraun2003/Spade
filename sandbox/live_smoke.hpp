@@ -278,6 +278,10 @@ class Smoke {
 // A still that was not written is a failure in a whole-tour run; under --only it is a note (which step writes which still is not in the ledger).
 [[nodiscard]] inline bool missing_still_is_anomaly(std::span<const std::string> only) { return only.empty(); }
 
+// Whether text that is drawn on screen names a path on this machine (a drive path, a user folder). A feature video carries none: the
+// editor_x500_feet still showed the Load from file field with C:\Users\... in it. STUB: never sees one (RED).
+[[nodiscard]] inline bool shows_a_path(std::string_view /*text*/) { return false; }
+
 struct Injection {
     enum class Kind { skip, anomaly };
     Kind kind = Kind::skip;

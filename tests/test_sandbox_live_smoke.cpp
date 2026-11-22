@@ -666,3 +666,26 @@ TEST(LiveSmokeOnly, AShortRunOwesOnlyTheFilesOfItsOwnChapters) {
     EXPECT_TRUE(missing_still_is_anomaly(std::vector<std::string>{})) << "the whole tour still fails a still that was not written";
     EXPECT_FALSE(missing_still_is_anomaly(only)) << "a short run writes only its own stills";
 }
+
+// A path on this machine must never be on screen in a still or a film: the first verification run of editor.x500_feet showed one in the Load
+// from file field.
+TEST(LiveSmokePaths, TextThatNamesAPathOnThisMachineIsRecognised) {
+    using spade::sandbox::live::shows_a_path;
+    EXPECT_TRUE(shows_a_path("C:\\Users\\Someone\\Desktop\\Projects\\spade-wt\\interface\\build-smoke\\editor_work\\x500_contact.model.yaml"));
+    EXPECT_TRUE(shows_a_path("c:/Users/Someone/work/x.yaml"));
+    EXPECT_TRUE(shows_a_path("D:\\builds\\run1\\x.yaml")) << "any drive path";
+    EXPECT_TRUE(shows_a_path("saved 'x' to /Users/someone/lib/x.yaml (undo removes it)"));
+    EXPECT_TRUE(shows_a_path("loaded from /home/someone/x.yaml"));
+    EXPECT_TRUE(shows_a_path("User Guide: the guide is missing (C:\\Program Files\\Spade\\guide.html)"));
+}
+
+TEST(LiveSmokePaths, OrdinaryOnScreenTextIsNotTakenForAPath) {
+    using spade::sandbox::live::shows_a_path;
+    EXPECT_FALSE(shows_a_path(""));
+    EXPECT_FALSE(shows_a_path("x500_contact, armed"));
+    EXPECT_FALSE(shows_a_path("hover.scene.yaml *"));
+    EXPECT_FALSE(shows_a_path("Flying x500_contact, disarmed"));
+    EXPECT_FALSE(shows_a_path("tick 420  1005 frames  at 15:30")) << "a colon in a clock is not a drive";
+    EXPECT_FALSE(shows_a_path("Position (m) 0.000 0.315 -1.500"));
+    EXPECT_FALSE(shows_a_path("library/drones/phantom.yaml")) << "a relative name inside the library is not a path on this machine";
+}
