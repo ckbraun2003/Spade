@@ -1,16 +1,20 @@
 #include "fc_host/lockstep.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include "physics/blade_azimuth.hpp"
 #include "sensors/baro.hpp"
 #include "sensors/gnss.hpp"
 #include "sensors/imu.hpp"
 #include "sensors/kinds.hpp"
 #include "sensors/mag.hpp"
+#include "world/sha256.hpp"
 
 namespace spade::fc_host {
 
@@ -27,6 +31,28 @@ namespace {
     }
     return "unknown";
 }
+
+// Little-endian writers, one byte at a time: the file's bytes never depend on the host's byte order.
+void put_u32(std::vector<std::byte>& out, uint32_t v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+}
+void put_u64(std::vector<std::byte>& out, uint64_t v) {
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<std::byte>((v >> (8 * i)) & 0xFFu));
+}
+void put_f32(std::vector<std::byte>& out, float v) { put_u32(out, std::bit_cast<uint32_t>(v)); }
+
+[[nodiscard]] uint32_t get_u32(std::span<const std::byte> in, std::size_t at) {
+    uint32_t v = 0;
+    for (int i = 3; i >= 0; --i) v = (v << 8) | static_cast<uint32_t>(std::to_integer<uint8_t>(in[at + static_cast<std::size_t>(i)]));
+    return v;
+}
+[[nodiscard]] uint64_t get_u64(std::span<const std::byte> in, std::size_t at) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; --i) v = (v << 8) | static_cast<uint64_t>(std::to_integer<uint8_t>(in[at + static_cast<std::size_t>(i)]));
+    return v;
+}
+
+[[nodiscard]] std::string_view text_of(std::span<const std::byte> b) { return std::string_view(reinterpret_cast<const char*>(b.data()), b.size()); }
 
 // A bound sensor's emission period in substeps. Refuses a ref that names no live sensor of its kind.
 [[nodiscard]] Result<uint32_t> rate_divider_of(const Simulation& sim, const SensorBinding& b, std::size_t index) {
@@ -92,7 +118,28 @@ template <class Sample_, class Row>
     return sensors::ring_poll<Sample_>(window, (*rows)[ref.slot].last_index, since, out);
 }
 
+constexpr std::string_view kHashSeedText = "spade.trace.v1";
+constexpr std::string_view kTraceMagic = "SPTR";
+constexpr std::string_view kCommandsMagic = "SPCM";
+
 }  // namespace
+
+// The trace as recorded: the tick records and the sample records as the file will hold them, the chain hash, the blade azimuths and the commands
+// applied. Shared by copies of the host (a host is movable, never copied in practice).
+struct LockstepHost::Recorded {
+    uint32_t rotor_count = 0;
+    uint64_t dt_ns = 0;
+    uint32_t substeps = 0;
+    uint64_t first_tick = 0;
+    uint64_t ticks = 0;
+    uint64_t samples = 0;
+    std::vector<std::byte> tick_bytes;
+    std::vector<std::byte> sample_bytes;
+    std::string hash;
+    std::vector<float> psi;
+    std::vector<std::byte> command_bytes;
+    uint64_t commands = 0;
+};
 
 SensorBinding SensorBinding::of(ImuSensorRef ref) noexcept {
     SensorBinding b;
@@ -145,12 +192,104 @@ Result<LockstepHost> LockstepHost::open(Simulation& sim, const VehicleRef& vehic
     host.model_ = *model;
     host.sensors_.assign(sensors.begin(), sensors.end());
     host.since_.assign(sensors.size(), 0);
+    host.recorded_ = std::make_shared<Recorded>();
+    Recorded& rec = *host.recorded_;
+    rec.rotor_count = static_cast<uint32_t>((*model)->rotors.size());
+    rec.dt_ns = sim.dt_ns();
+    rec.substeps = substeps;
+    rec.first_tick = sim.tick().value;
+    rec.hash = sha256_hex(kHashSeedText);
+    rec.psi.assign(rec.rotor_count, 0.0f);
     return host;
 }
 
 uint64_t LockstepHost::tick() const noexcept { return sim_->tick().value; }
 uint64_t LockstepHost::dt_ns() const noexcept { return sim_->dt_ns(); }
 uint64_t LockstepHost::sim_time_ns() const noexcept { return tick() * dt_ns(); }
+
+// Applies `omega` to the rotors before the coming tick's step, and logs it for commands.bin.
+Result<void> LockstepHost::apply_now(std::span<const float> omega) {
+    if (Result<void> r = sim_->set_rotor_commands(vehicle_, omega); !r) return r;
+    Recorded& rec = *recorded_;
+    put_u64(rec.command_bytes, tick());
+    for (const float v : omega) put_f32(rec.command_bytes, v);
+    ++rec.commands;
+    return {};
+}
+
+// Steps ONE tick (the commands for it already applied), then records it: the state at the end of the tick, the rotors, the samples it produced.
+Result<void> LockstepHost::step_and_record() {
+    Recorded& rec = *recorded_;
+    const uint64_t this_tick = tick();
+    if (Result<void> r = sim_->step(1); !r) return r;
+
+    // THE SAMPLES OF THIS TICK, polled now so the trace never depends on when the caller takes them.
+    std::vector<Sample> fresh;
+    if (Result<void> r = poll_all(fresh); !r) return r;
+
+    // THE ROTORS: the applied command and the shaft speed after the step, and the blade azimuth by physics/blade_azimuth.hpp's one rule.
+    const Result<std::span<const vehicles::RotorRow>> rows = sim_->arenas().array(sim_->rotors_array());
+    if (!rows) return std::unexpected(invalid("step: " + rows.error().context));
+    const float h = static_cast<float>(static_cast<double>(rec.dt_ns) * 1e-9);
+    std::vector<float> cmd(rec.rotor_count, 0.0f);
+    std::vector<float> omega(rec.rotor_count, 0.0f);
+    for (uint32_t i = 0; i < rec.rotor_count; ++i) {
+        const vehicles::RotorRow& row = (*rows)[vehicle_.rotor_slots[i]];
+        cmd[i] = row.omega_cmd;
+        omega[i] = row.omega;
+        if (row.enabled != 0u) {
+            if (!physics::advance_blade_azimuth(rec.psi[i], row.omega, h)) {
+                return std::unexpected(invalid("step: rotor " + std::to_string(i) + ": the blade azimuth refused (omega " + std::to_string(row.omega) + ")"));
+            }
+        }
+    }
+
+    const Result<Truth> truth = this->truth();
+    if (!truth) return std::unexpected(truth.error());
+
+    // The sample records of this tick, then the tick record that points at them.
+    std::vector<std::byte> sample_records;
+    for (const Sample& s : fresh) {
+        put_u32(sample_records, static_cast<uint32_t>(s.kind));
+        put_u32(sample_records, s.binding);
+        put_u32(sample_records, static_cast<uint32_t>(s.index));
+        put_u32(sample_records, 0u);
+        sample_records.insert(sample_records.end(), s.bytes.begin(), s.bytes.begin() + s.size);
+    }
+    std::vector<std::byte> tick_record;
+    put_u64(tick_record, this_tick);
+    put_u64(tick_record, (this_tick + 1) * rec.dt_ns);
+    put_f32(tick_record, truth->pos.x);
+    put_f32(tick_record, truth->pos.y);
+    put_f32(tick_record, truth->pos.z);
+    put_f32(tick_record, truth->vel.x);
+    put_f32(tick_record, truth->vel.y);
+    put_f32(tick_record, truth->vel.z);
+    put_f32(tick_record, truth->orient.w);
+    put_f32(tick_record, truth->orient.x);
+    put_f32(tick_record, truth->orient.y);
+    put_f32(tick_record, truth->orient.z);
+    put_f32(tick_record, truth->omega_body.x);
+    put_f32(tick_record, truth->omega_body.y);
+    put_f32(tick_record, truth->omega_body.z);
+    for (const float v : cmd) put_f32(tick_record, v);
+    put_u32(tick_record, static_cast<uint32_t>(rec.samples));
+    put_u32(tick_record, static_cast<uint32_t>(fresh.size()));
+    for (const float v : omega) put_f32(tick_record, v);
+    for (const float v : rec.psi) put_f32(tick_record, v);
+
+    std::string chained = rec.hash;
+    chained.append(text_of(tick_record));
+    chained.append(text_of(sample_records));
+    rec.hash = sha256_hex(chained);
+
+    rec.tick_bytes.insert(rec.tick_bytes.end(), tick_record.begin(), tick_record.end());
+    rec.sample_bytes.insert(rec.sample_bytes.end(), sample_records.begin(), sample_records.end());
+    rec.samples += fresh.size();
+    ++rec.ticks;
+    inbox_.insert(inbox_.end(), fresh.begin(), fresh.end());
+    return {};
+}
 
 Result<void> LockstepHost::advance_to(uint64_t t_ns) {
     const uint64_t dt = dt_ns();
@@ -164,19 +303,16 @@ Result<void> LockstepHost::advance_to(uint64_t t_ns) {
     for (uint64_t k = 0; k < ticks; ++k) {
         // Release every command whose time has come, oldest first: the last one released wins, as the last write to a row does.
         while (!pending_.empty() && pending_.front().release_tick <= tick()) {
-            if (Result<void> r = sim_->set_rotor_commands(vehicle_, pending_.front().omega); !r) return r;
+            if (Result<void> r = apply_now(pending_.front().omega); !r) return r;
             pending_.pop_front();
         }
-        if (Result<void> r = sim_->step(1); !r) return r;
+        if (Result<void> r = step_and_record(); !r) return r;
     }
     return {};
 }
 
-Result<std::vector<Sample>> LockstepHost::take_sensors() {
-    std::vector<Sample> out;
+Result<void> LockstepHost::poll_all(std::vector<Sample>& out) {
     const uint64_t dt = dt_ns();
-    uint64_t dropped = 0;
-    std::size_t dropped_at = 0;
     for (std::size_t i = 0; i < sensors_.size(); ++i) {
         const SensorBinding& b = sensors_[i];
         const uint32_t binding = static_cast<uint32_t>(i);
@@ -185,14 +321,14 @@ Result<std::vector<Sample>> LockstepHost::take_sensors() {
             case SensorKind::imu: {
                 std::array<sensors::ImuSample, sensors::kRingDepth> buf;
                 const Result<ImuPoll> poll = sim_->poll_imu(b.imu, since_[i], buf);
-                if (!poll) return std::unexpected(invalid("take_sensors: sensor " + std::to_string(i) + ": " + poll.error().context));
+                if (!poll) return std::unexpected(invalid("poll: sensor " + std::to_string(i) + ": " + poll.error().context));
                 lost = collect(*poll, b.kind, binding, dt, since_[i], out);
                 break;
             }
             case SensorKind::gnss: {
                 std::array<sensors::GnssFix, sensors::kRingDepth> buf;
                 const Result<GnssPoll> poll = sim_->poll_gnss(b.gnss, since_[i], buf);
-                if (!poll) return std::unexpected(invalid("take_sensors: sensor " + std::to_string(i) + ": " + poll.error().context));
+                if (!poll) return std::unexpected(invalid("poll: sensor " + std::to_string(i) + ": " + poll.error().context));
                 lost = collect(*poll, b.kind, binding, dt, since_[i], out);
                 break;
             }
@@ -213,15 +349,18 @@ Result<std::vector<Sample>> LockstepHost::take_sensors() {
                 break;
             }
         }
-        if (lost != 0 && dropped == 0) dropped_at = i;
-        dropped += lost;
+        // One tick cannot wrap a 64-deep ring; if it did, something other than this host stepped the world.
+        if (lost != 0) {
+            return std::unexpected(Error{Code::internal, "fc_host: sensor " + std::to_string(i) + " lost " + std::to_string(lost) +
+                                                             " sample(s) inside one tick: the Simulation was stepped outside the host"});
+        }
     }
-    if (dropped != 0) {
-        // The cursors have moved past what was lost, so the next call carries on from the ring's oldest resident sample.
-        return std::unexpected(invalid("take_sensors: dropped " + std::to_string(dropped) + " sample(s) (first at sensor " + std::to_string(dropped_at) +
-                                       "): the 64-deep ring wrapped between two polls; advance in whole sensor periods"));
-    }
-    std::stable_sort(out.begin(), out.end(), [](const Sample& a, const Sample& b) { return a.tick != b.tick ? a.tick < b.tick : a.binding < b.binding; });
+    return {};
+}
+
+Result<std::vector<Sample>> LockstepHost::take_sensors() {
+    std::vector<Sample> out;
+    out.swap(inbox_);
     return out;
 }
 
@@ -252,13 +391,86 @@ Result<void> LockstepHost::command(std::span<const float> omega) {
     return {};
 }
 
-// RED stubs: the trace API compiles and says it is not built.
-uint64_t LockstepHost::trace_ticks() const noexcept { return 0; }
-std::string LockstepHost::trace_hash() const { return {}; }
-Result<std::vector<std::byte>> LockstepHost::trace_bytes() const { return std::unexpected(Error{Code::unavailable, "fc_host: trace_bytes is not built yet"}); }
-std::vector<std::byte> LockstepHost::commands_bytes() const { return {}; }
-Result<void> LockstepHost::replay_commands(std::span<const std::byte>, uint64_t) {
-    return std::unexpected(Error{Code::unavailable, "fc_host: replay_commands is not built yet"});
+uint64_t LockstepHost::trace_ticks() const noexcept { return recorded_->ticks; }
+std::string LockstepHost::trace_hash() const { return recorded_->hash; }
+
+Result<std::vector<std::byte>> LockstepHost::trace_bytes() const {
+    const Recorded& rec = *recorded_;
+    std::vector<std::byte> out;
+    out.reserve(kTraceHeaderBytes + rec.tick_bytes.size() + rec.sample_bytes.size() + kTraceTrailerBytes);
+    for (const char c : kTraceMagic) out.push_back(static_cast<std::byte>(c));
+    put_u32(out, kTraceVersion);
+    put_u32(out, kTraceHeaderBytes);
+    put_u32(out, 0u);
+    put_u64(out, rec.dt_ns);
+    put_u32(out, rec.substeps);
+    put_u32(out, rec.rotor_count);
+    put_u64(out, rec.ticks);
+    put_u64(out, rec.first_tick);
+    put_u32(out, tick_record_bytes(rec.rotor_count));
+    put_u32(out, kSampleHeaderBytes);
+    put_u64(out, kTraceHeaderBytes);
+    put_u64(out, kTraceHeaderBytes + rec.tick_bytes.size());
+    put_u64(out, rec.samples);
+    put_u32(out, static_cast<uint32_t>(sizeof(sensors::ImuSample)));
+    put_u32(out, static_cast<uint32_t>(sizeof(sensors::GnssFix)));
+    put_u32(out, static_cast<uint32_t>(sizeof(sensors::BaroSample)));
+    put_u32(out, static_cast<uint32_t>(sizeof(sensors::MagSample)));
+    for (const char c : rec.hash) out.push_back(static_cast<std::byte>(c));
+    while (out.size() < kTraceHeaderBytes) out.push_back(std::byte{0});
+    out.insert(out.end(), rec.tick_bytes.begin(), rec.tick_bytes.end());
+    out.insert(out.end(), rec.sample_bytes.begin(), rec.sample_bytes.end());
+    const std::string trailer = sha256_hex(text_of(out));
+    for (const char c : trailer) out.push_back(static_cast<std::byte>(c));
+    return out;
+}
+
+std::vector<std::byte> LockstepHost::commands_bytes() const {
+    const Recorded& rec = *recorded_;
+    std::vector<std::byte> out;
+    for (const char c : kCommandsMagic) out.push_back(static_cast<std::byte>(c));
+    put_u32(out, 1u);
+    put_u32(out, rec.rotor_count);
+    put_u32(out, 0u);
+    put_u64(out, rec.commands);
+    out.insert(out.end(), rec.command_bytes.begin(), rec.command_bytes.end());
+    return out;
+}
+
+Result<void> LockstepHost::replay_commands(std::span<const std::byte> commands, uint64_t ticks) {
+    const uint32_t n = recorded_->rotor_count;
+    if (commands.size() < kCommandsHeaderBytes) return std::unexpected(invalid("replay: the commands file is short (" + std::to_string(commands.size()) + " bytes)"));
+    if (text_of(commands.first(4)) != kCommandsMagic) return std::unexpected(invalid("replay: the commands file has the wrong magic (not SPCM)"));
+    if (get_u32(commands, 4) != 1u) return std::unexpected(invalid("replay: commands.bin version " + std::to_string(get_u32(commands, 4)) + " (this build reads 1)"));
+    if (get_u32(commands, 8) != n) {
+        return std::unexpected(invalid("replay: the commands file has " + std::to_string(get_u32(commands, 8)) + " rotors, the vehicle has " + std::to_string(n)));
+    }
+    const uint64_t count = get_u64(commands, 16);
+    const std::size_t record = 8u + 4u * n;
+    if (commands.size() != kCommandsHeaderBytes + count * record) {
+        return std::unexpected(invalid("replay: the commands file is truncated or has trailing bytes (" + std::to_string(commands.size()) + " bytes for " +
+                                       std::to_string(count) + " records of " + std::to_string(record) + ")"));
+    }
+    uint64_t previous = 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        const uint64_t at = get_u64(commands, kCommandsHeaderBytes + i * record);
+        if (at < tick()) return std::unexpected(invalid("replay: record " + std::to_string(i) + " is for tick " + std::to_string(at) + ", already past (now " + std::to_string(tick()) + ")"));
+        if (i > 0 && at < previous) return std::unexpected(invalid("replay: record " + std::to_string(i) + " is out of tick order"));
+        previous = at;
+    }
+
+    uint64_t next = 0;
+    std::vector<float> omega(n);
+    const uint64_t end = tick() + ticks;
+    while (tick() < end) {
+        while (next < count && get_u64(commands, kCommandsHeaderBytes + next * record) <= tick()) {
+            for (uint32_t r = 0; r < n; ++r) omega[r] = std::bit_cast<float>(get_u32(commands, kCommandsHeaderBytes + next * record + 8 + 4 * r));
+            if (Result<void> res = apply_now(omega); !res) return res;
+            ++next;
+        }
+        if (Result<void> res = step_and_record(); !res) return res;
+    }
+    return {};
 }
 
 const vehicles::ModelType& LockstepHost::model() const noexcept { return *model_; }

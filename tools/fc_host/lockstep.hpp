@@ -145,6 +145,10 @@ public:
 private:
     LockstepHost() = default;
 
+    [[nodiscard]] Result<void> apply_now(std::span<const float> omega);  // set the rotors before the coming step and log it for commands.bin
+    [[nodiscard]] Result<void> step_and_record();                       // one tick, then its trace record
+    [[nodiscard]] Result<void> poll_all(std::vector<Sample>& out);      // every bound sensor since its cursor
+
     // A command waiting for its release tick (the tick whose step is the first to see it).
     struct Pending {
         uint64_t release_tick = 0;
