@@ -805,3 +805,21 @@ TEST(FlowMovieParticles, ANextFrameOfAnotherShapeIsRefusedByNameAndNoDataInItRet
     EXPECT_TRUE(g.position.empty());
     EXPECT_EQ(g.retired_no_data, 1u);
 }
+
+// B1, at the driver: the run's own driver passes the next stored frame to the step, so the points follow the velocity between frames (linear in time from the drawn frame to the next)
+// and not the drawn frame's held for the whole interval. A streamed run has no next frame and steps as before.
+TEST(FlowMovieParticles, ADriverGivenTheNextFrameBlendsTowardItAndWithoutItStepsAsBefore) {
+    const FlowVolume drawn = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(0.0f); });
+    const FlowVolume next = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    const auto run = [&](const FlowVolume* next_frame) {
+        auto o = options();
+        o.per_frame = 1u;
+        flow_movie::ParticleDriver driver(o, {});
+        driver.set_pool(std::vector<glm::vec3>{glm::vec3(0.0f)});
+        EXPECT_TRUE(driver.advance(0u, drawn, 0.100, next_frame));
+        EXPECT_TRUE(driver.advance(1u, drawn, 0.110, next_frame));  // 10 ms
+        return driver.at(1u)->position[0].x;
+    };
+    EXPECT_NEAR(run(nullptr), 0.0f, 1e-9f) << "no next frame: the drawn frame's still air moves nothing";
+    EXPECT_NEAR(run(&next), 0.5f * 2.0f * 0.010f, 1e-6f) << "u runs 0 to 2 m/s over the step: the midpoint rule moves it U dt / 2 = 1 cm";
+}

@@ -256,7 +256,9 @@ public:
 
     // k must be the next frame (0 first), and time_s past the last frame's: the step is their difference (frame 0 moves
     // nothing, there is nothing to move). A region left open is the first volume's box less one cell.
-    [[nodiscard]] spade::Result<void> advance(uint32_t k, const spade::FlowVolume& volume, double time_s) {
+    // `next_frame`, when the run has it (a run drawn from a kept cache does), is blended in by time (advance_particles); STUB (RED): ignored for now.
+    [[nodiscard]] spade::Result<void> advance(uint32_t k, const spade::FlowVolume& volume, double time_s, const spade::FlowVolume* next_frame = nullptr) {
+        (void)next_frame;
         const auto bad = [](const std::string& why) {
             return std::unexpected(spade::Error{spade::Code::invalid_argument, "particles: " + why});
         };
