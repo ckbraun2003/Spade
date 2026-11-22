@@ -13,7 +13,11 @@
                     exit 3 when docker is not reachable; exit 4 when the container did not stay up.
     -Stop           stops the container (SIGTERM, so PX4 closes its log), copies its logs into the -OutDir given at start (kept as a container
                     label; -OutDir may also be passed again), removes it, and prints the path of the newest .ulg as the LAST line (a bare
-                    path, or "none" when there was no log); exit 0.
+                    path, or "none" when there was no log); exit 0. px4-stdout.log is TIMESTAMP-ORDERED (docker logs --timestamps, stdout and stderr
+                    merged by a stable sort on the time prefix; the prefix stays in the file). -Stop never reports success when it failed: every step is
+                    checked, a failure is named on a line `px4-sitl: -Stop FAILED: ...` (docker stop, the run folder, px4-stdout.log missing or empty,
+                    docker cp, docker rm, the container still listed) and the exit is 7; the container is removed whatever else failed. Exit 6: no run
+                    folder known. The LAST line is always the .ulg path or `none`.
 
   The run id is the caller's (Test/Docs' fc-run.ps1 passes the run folder's id). One container per run: starting a second with the same
   id is refused (exit 5).
@@ -93,12 +97,48 @@ if (-not $OutDir) {
     Write-Output 'none'
     exit 6
 }
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+# From here on every step is checked and a failure is NAMED; the container is still removed whatever else failed, and the exit is 7 if anything did.
+$failures = New-Object System.Collections.Generic.List[string]
+$folderOk = $true
+try { New-Item -ItemType Directory -Force -Path $OutDir -ErrorAction Stop | Out-Null }
+catch { $folderOk = $false; $failures.Add("the run folder cannot be created ($OutDir)") | Out-Null }
+if ($folderOk -and -not (Test-Path -LiteralPath $OutDir -PathType Container)) { $folderOk = $false; $failures.Add("the run folder cannot be created ($OutDir)") | Out-Null }  # New-Item -Force can stay silent under a file
+
 & $Docker stop -t 15 $name *> $null
-& $Docker logs $name 2>&1 | ForEach-Object { "$_" } | Set-Content -Path (Join-Path $OutDir 'px4-stdout.log') -Encoding UTF8  # UTF-8, not the UTF-16 a `>` writes
-$logDir = Join-Path $OutDir 'px4-log'
-& $Docker cp "${name}:$px4Dir/rootfs/log" $logDir *> $null
+if ($LASTEXITCODE -ne 0) { $failures.Add("docker stop failed for $name (exit $LASTEXITCODE)") | Out-Null }
+
+if ($folderOk) {
+    # docker prints a container's stdout and its stderr as two separate blocks; --timestamps puts each line's time in front of it, and a STABLE sort on that
+    # prefix (ties keep docker's order; a line without one stays with the line before it) restores the order the lines were written in.
+    $lines = @(& $Docker logs --timestamps $name 2>&1 | ForEach-Object { "$_" })
+    $rows = New-Object System.Collections.Generic.List[object]
+    $key = ''
+    $n = 0
+    foreach ($l in $lines) {
+        if ($l -match '^(\d{4}-\d\d-\d\dT[0-9:.]+Z)\s') { $key = $Matches[1] }
+        $rows.Add([pscustomobject]@{ K = $key; I = $n; L = $l }) | Out-Null
+        $n++
+    }
+    $logFile = Join-Path $OutDir 'px4-stdout.log'
+    try { @($rows | Sort-Object K, I | ForEach-Object { $_.L }) | Set-Content -Path $logFile -Encoding UTF8 -ErrorAction Stop }
+    catch { $failures.Add('px4-stdout.log could not be written') | Out-Null }
+    $f = Get-Item -LiteralPath $logFile -ErrorAction SilentlyContinue
+    if (-not $f -or $f.Length -le 3) { $failures.Add('px4-stdout.log is missing or empty (docker logs gave nothing)') | Out-Null }  # 3 bytes = the UTF-8 mark alone
+
+    $logDir = Join-Path $OutDir 'px4-log'
+    & $Docker cp "${name}:$px4Dir/rootfs/log" $logDir *> $null
+    if ($LASTEXITCODE -ne 0) { $failures.Add("docker cp of the PX4 log folder failed (exit $LASTEXITCODE)") | Out-Null }
+}
+
 & $Docker rm -f $name *> $null
-$ulg = Get-ChildItem -Path $logDir -Recurse -Filter '*.ulg' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0) { $failures.Add("docker rm -f $name failed (exit $LASTEXITCODE)") | Out-Null }
+$left = (& $Docker ps -a --filter "name=^/$name$" --format '{{.Names}}')
+if ($left) { $failures.Add("container $name still exists after docker rm") | Out-Null }
+
+$ulg = $null
+if ($folderOk) { $ulg = Get-ChildItem -Path (Join-Path $OutDir 'px4-log') -Recurse -Filter '*.ulg' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1 }
+foreach ($f in $failures) { Write-Output "px4-sitl: -Stop FAILED: $f" }
 if ($ulg) { Write-Output $ulg.FullName } else { Write-Output 'none' }
+if ($failures.Count -gt 0) { exit 7 }
 exit 0

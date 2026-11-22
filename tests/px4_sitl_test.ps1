@@ -122,7 +122,7 @@ exit 0
     Set-Content -LiteralPath $blocker 'a file'
     $r = Run-Case 'bad folder' @{} (Join-Path $blocker 'run')
     Expect 'bad folder' ($r.Code -eq 7) "exit 7 (got $($r.Code)): $($r.Text)"
-    Expect 'bad folder' ($r.Text -match 'run folder') 'the text names the run folder'
+    Expect 'bad folder' ($r.Text -match 'run folder') "the text names the run folder (got: $($r.Text))"
 
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
