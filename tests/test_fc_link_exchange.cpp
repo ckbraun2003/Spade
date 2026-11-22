@@ -80,6 +80,10 @@ TEST(FcLinkExchange, OnePeriodSendsTheHostsImuSampleInFrdAndTheRepliesOutputsDri
     ASSERT_TRUE(link.has_value());
 
     // The reference: the same host stepped by hand, converted by the library's own functions.
+    const std::array<double, 4> duties{0.2, 0.4, 0.6, 0.8};
+    const auto omega = fcl::autopilot_duties_to_rotor_commands(*model.model.propulsion, duties, config.density, config.soc);
+    ASSERT_TRUE(omega.has_value());
+    ASSERT_TRUE(host_b->command(*omega).has_value());
     ASSERT_TRUE(host_b->advance_to(kImuDivider * kDt).has_value());
     const auto taken = host_b->take_sensors();
     ASSERT_TRUE(taken.has_value());
@@ -88,19 +92,24 @@ TEST(FcLinkExchange, OnePeriodSendsTheHostsImuSampleInFrdAndTheRepliesOutputsDri
     std::memcpy(&imu, (*taken)[0].bytes.data(), sizeof(imu));
     const glm::dvec3 accel = spade::fc_link::frames::body_to_frd(config.frame, glm::dvec3(imu.accel));
     const glm::dvec3 gyro = spade::fc_link::frames::body_to_frd(config.frame, glm::dvec3(imu.gyro));
-    const std::array<double, 4> duties{0.2, 0.4, 0.6, 0.8};
-    const auto omega = fcl::autopilot_duties_to_rotor_commands(*model.model.propulsion, duties, config.density, config.soc);
-    ASSERT_TRUE(omega.has_value());
-    ASSERT_TRUE(host_b->command(*omega).has_value());
 
+    // Exchange 1 is the autopilot's first message, a boot message: its reply is not `booting`, so boot ends at once (zero steps) and the reply's
+    // outputs are the command before tick 0. Exchange 2 runs one IMU period of the world.
+    const spade::Result<fcl::ExchangeResult> first = link->exchange(*host_a);
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    EXPECT_FALSE(first->booting);
+    EXPECT_EQ(host_a->tick(), 0u);
+    ASSERT_TRUE(host_a->boot_note().has_value());
+    EXPECT_EQ(host_a->boot_note()->steps, 0u);
+    EXPECT_EQ(host_a->boot_note()->end_time_usec, kImuDivider * kDt / 1000u);
     const spade::Result<fcl::ExchangeResult> done = link->exchange(*host_a);
     ASSERT_TRUE(done.has_value()) << done.error().context;
     EXPECT_FALSE(done->booting);
     EXPECT_EQ(done->tick, kImuDivider);
     EXPECT_EQ(host_a->tick(), kImuDivider);
-    ASSERT_EQ(seen->sensors.size(), 1u);
-    const mav::HilSensor& m = seen->sensors[0];
-    EXPECT_EQ(m.time_usec, kImuDivider * kDt / 1000u) << "the host's sim time in microseconds (no boot offset)";
+    ASSERT_EQ(seen->sensors.size(), 2u);
+    const mav::HilSensor& m = seen->sensors[1];
+    EXPECT_EQ(m.time_usec, 2u * kImuDivider * kDt / 1000u) << "the boot offset plus the host's sim time, in microseconds";
     EXPECT_FLOAT_EQ(m.xacc, static_cast<float>(accel.x));
     EXPECT_FLOAT_EQ(m.yacc, static_cast<float>(accel.y));
     EXPECT_FLOAT_EQ(m.zacc, static_cast<float>(accel.z));

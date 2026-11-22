@@ -24,7 +24,6 @@
 //   - time_usec is the host's time plus the boot offset, so the autopilot's clock never goes backwards and boot never reaches the world.
 // The transport is a function, so the seam is tested against a scripted peer; Px4Link::exchange is the real one (px4_transport()).
 //
-// STUB (RED): exchange() refuses with "not implemented".
 // ---------------------------------------------------------------------------
 
 namespace spade::fc_link {
@@ -52,15 +51,16 @@ class AutopilotLink {
         return AutopilotLink(std::move(transport), config);
     }
 
-    [[nodiscard]] Result<ExchangeResult> exchange(fc_host::LockstepHost& /*host*/) {
-        return std::unexpected(Error{Code::invalid_argument, "AutopilotLink::exchange: not implemented"});
-    }
+    [[nodiscard]] Result<ExchangeResult> exchange(fc_host::LockstepHost& host);
 
   private:
     AutopilotLink(Px4Transport transport, const ExchangeConfig& config) : transport_(std::move(transport)), config_(config) {}
 
     Px4Transport transport_;
     ExchangeConfig config_;
+    uint64_t boot_steps_ = 0;         // booting replies so far
+    uint64_t boot_end_usec_ = 0;      // the autopilot's clock at the end of boot: the offset of the host's time
+    bool boot_over_ = false;
 };
 
 }  // namespace spade::fc_link
