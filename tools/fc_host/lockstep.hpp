@@ -58,7 +58,7 @@ struct Sample {
     uint32_t binding = 0;  // the index in the span passed to open()
     uint64_t tick = 0;     // the engine's stamp
     uint64_t time_ns = 0;  // (tick + 1) * dt_ns
-    uint32_t index = 0;    // the ring index (1, 2, ... per sensor)
+    uint64_t index = 0;    // the ring index (1, 2, ... per sensor), sensors::SampleIndex
     uint32_t size = 0;     // bytes of `bytes` in use: the engine's sample struct, as stored
     std::array<std::byte, kMaxSampleBytes> bytes{};
 };
