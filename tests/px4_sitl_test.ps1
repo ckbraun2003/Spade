@@ -52,7 +52,7 @@ switch ($args[0]) {
     'image'   { exit 0 }
     'run'     { Set-Content -LiteralPath $env:FAKE_STATE 'x'; exit 0 }
     'ps'      { if (Test-Path $env:FAKE_STATE) { 'spade-px4-t1' }; exit 0 }
-    'inspect' { $env:FAKE_LABEL; exit 0 }
+    'inspect' { $env:FAKE_LABELS_JSON; exit 0 }
     'stop'    { exit ([int] $env:FAKE_STOP_CODE) }
     'logs'    { if (-not $env:FAKE_LOGS_EMPTY) { Get-Content -LiteralPath $env:FAKE_LOGS_FILE }; exit 0 }
     'cp'      {
@@ -73,7 +73,7 @@ exit 0
 
     function Run-Case([string] $Name, [hashtable] $Env, [string] $OutDir, [switch] $NoContainer) {
         foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY', 'FAKE_CP_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
-        $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABEL = ''
+        $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABELS_JSON = '{}'
         foreach ($k in $Env.Keys) { Set-Item "Env:$k" $Env[$k] }
         Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
         if ($NoContainer) { Remove-Item -LiteralPath $state -ErrorAction SilentlyContinue } else { Set-Content -LiteralPath $state 'x' }
@@ -136,7 +136,7 @@ exit 0
 
     # start: the container's log folder is created before PX4 starts
     foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY', 'FAKE_CP_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
-    $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABEL = ''
+    $env:FAKE_CALLS = $calls; $env:FAKE_STATE = $state; $env:FAKE_LOGS_FILE = $logs; $env:FAKE_LABELS_JSON = '{}'
     Remove-Item -LiteralPath $calls, $state -ErrorAction SilentlyContinue
     $so = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -OutDir (Join-Path $work 'run-start') -Docker $fake 2>&1 | ForEach-Object { "$_" }
     $startCode = $LASTEXITCODE
@@ -152,6 +152,24 @@ exit 0
     Expect 'start network' ($LASTEXITCODE -eq 0) "exit 0 (got $LASTEXITCODE): $($so -join ' ')"
     Expect 'start network' ($runLine2 -match '--network none') "the run command carries --network none (got: $runLine2)"
     Expect 'start network' ($runLine -notmatch '--network') 'and the default start has no --network flag'
+
+    # label: -Stop without -OutDir reads the run folder from the container's label (docker inspect ... json: no quotes inside the --format, which
+    # Windows PowerShell 5.1 strips from a native command's arguments)
+    $labelOut = Join-Path $work 'run-label'
+    Remove-Item -LiteralPath $calls -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $state 'x'
+    foreach ($k in 'FAKE_STOP_CODE', 'FAKE_CP_CODE', 'FAKE_RM_CODE', 'FAKE_RM_NOOP', 'FAKE_LOGS_EMPTY', 'FAKE_CP_EMPTY') { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
+    $env:FAKE_LABELS_JSON = (@{ 'spade.outdir' = $labelOut } | ConvertTo-Json -Compress)
+    $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    Expect 'label' ($LASTEXITCODE -eq 0) "exit 0 (got $LASTEXITCODE): $($lo -join ' ')"
+    Expect 'label' (Test-Path -LiteralPath (Join-Path $labelOut 'px4-stdout.log')) 'the log is written into the folder named by the label'
+    # no label, no -OutDir: exit 6, and the container is NOT removed (its log is the evidence)
+    Set-Content -LiteralPath $state 'x'
+    $env:FAKE_LABELS_JSON = '{}'
+    $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    Expect 'no label' ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
+    Expect 'no label' (Test-Path -LiteralPath $state) 'the container is left alone'
+    Expect 'no label' (($lo -join ' ') -match 'docker rm -f spade-px4-t1') 'the text says how to remove it'
 
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
