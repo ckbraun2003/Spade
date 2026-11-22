@@ -8,6 +8,7 @@
 // frame mean what they mean in the next one's, within one clip's solve).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -132,13 +133,38 @@ struct QLook {
                        static_cast<double>(pressure_range), level, kept);
 }
 
-// STUB (RED, O183): whether the tubes reach the box's floor; not written yet.
+// O183: whether the tubes reach the box's floor (a surface cannot fade, so the open floor face would cut a tube flat); read from the solve's own frame.
 struct TubeFloorCheck {
     bool any_tube = false;         // some cell holds q_hat at or above the tubes' lowest level
     bool reaches_floor = false;    // such a cell is in the floor layer(s): the open face would cut the tube flat
     float lowest_height_m = 0.0f;  // the lowest such cell's centre above the floor (0 when none)
 };
-[[nodiscard]] inline TubeFloorCheck tube_floor_check(const spade::FlowVolume&, const QLook&, uint32_t) { return {}; }
+[[nodiscard]] inline TubeFloorCheck tube_floor_check(const spade::FlowVolume& v, const QLook& look, uint32_t floor_layers) {
+    TubeFloorCheck out;
+    const float q_top = look.q_peak > 0.0f ? look.q_peak : v.header.channel_max[spade::kFlowQHat];
+    if (!(std::isfinite(q_top) && q_top > 0.0f) || look.level.empty()) return out;
+    const float lowest = q_top * *std::min_element(look.level.begin(), look.level.end());  // the ladder's lowest level
+    const uint32_t nx = v.header.nx, ny = v.header.ny, nz = v.header.nz;
+    const std::size_t lane = spade::kFlowQHat % spade::kFlowHalvesPerCell;
+    uint32_t lowest_j = ny;
+    for (uint32_t k = 0; k < nz; ++k) {
+        for (uint32_t j = 0; j < ny && j < lowest_j; ++j) {  // j is up; a column's lowest tube cell is the first from the floor
+            for (uint32_t i = 0; i < nx; ++i) {
+                const uint16_t h = v.s[(std::size_t{k} * ny * nx + std::size_t{j} * nx + i) * spade::kFlowHalvesPerCell + lane];
+                if ((h & 0x7C00u) == 0x7C00u) continue;  // no data (inf or NaN)
+                if (spade::fp16::to_f32(h) >= lowest) {
+                    lowest_j = j;
+                    break;
+                }
+            }
+        }
+    }
+    if (lowest_j == ny) return out;
+    out.any_tube = true;
+    out.reaches_floor = lowest_j < floor_layers;
+    out.lowest_height_m = (static_cast<float>(lowest_j) + 0.5f) * v.header.cell;
+    return out;
+}
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3
 // (the opacities, each in (0, 1]), vmax (in (0, 1]). Empty: the defaults. An unknown key, a missing '=', key or value, a value that
