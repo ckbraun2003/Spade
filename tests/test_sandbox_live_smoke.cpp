@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "../sandbox/editor_shown_file.hpp"
 #include "../sandbox/live_ledger.hpp"
 #include "../sandbox/live_smoke.hpp"
 #include "../sandbox/png_writer.hpp"
@@ -736,4 +737,26 @@ TEST(LiveSmokePaths, ACleanScreenLeavesNoOffence) {
     EXPECT_EQ(watch.reads(), 2u);
     EXPECT_EQ(watch.texts_read(), 6u);
     EXPECT_TRUE(watch.offences().empty());
+}
+
+// What the save status shows of the saved file (the lead's rule): inside the library folder, relative to it; anywhere else, the file name alone; never
+// a ..\ chain.
+TEST(LiveSmokePaths, ASavedFileInsideTheLibraryIsShownRelativeToIt) {
+    using spade::sandbox::editor::shown_file;
+    const std::filesystem::path lib = std::filesystem::path("C:/Users/Someone/work/assets/library");
+    EXPECT_EQ(shown_file(lib / "drones" / "hover_copy.yaml", lib), "drones/hover_copy.yaml");
+    EXPECT_EQ(shown_file(lib / "library.yaml", lib), "library.yaml");
+    EXPECT_EQ(shown_file(lib / "drones" / ".." / "drones" / "x.yaml", lib), "drones/x.yaml") << "an inside file written with a .. in it is still inside";
+}
+
+TEST(LiveSmokePaths, ASavedFileOutsideTheLibraryIsShownByItsNameAlone) {
+    using spade::sandbox::editor::shown_file;
+    const std::filesystem::path lib = std::filesystem::path("C:/Users/Someone/work/assets/library");
+    for (const char* outside : {"C:/Users/Someone/Desktop/hover_copy.yaml", "C:/Users/Someone/work/assets/library_old/x.yaml",
+                                "D:/elsewhere/hover_copy.yaml", "C:/Users/Someone/work/assets/hover_copy.yaml"}) {
+        const std::string shown = shown_file(std::filesystem::path(outside), lib);
+        EXPECT_EQ(shown, std::filesystem::path(outside).filename().generic_string()) << outside;
+        EXPECT_EQ(shown.find(".."), std::string::npos) << "never a .. chain: " << shown;
+        EXPECT_EQ(shown.find("Someone"), std::string::npos) << "never the user's folders: " << shown;
+    }
 }
