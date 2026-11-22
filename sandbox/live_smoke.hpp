@@ -279,8 +279,18 @@ class Smoke {
 [[nodiscard]] inline bool missing_still_is_anomaly(std::span<const std::string> only) { return only.empty(); }
 
 // Whether text that is drawn on screen names a path on this machine (a drive path, a user folder). A feature video carries none: the
-// editor_x500_feet still showed the Load from file field with C:\Users\... in it. STUB: never sees one (RED).
-[[nodiscard]] inline bool shows_a_path(std::string_view /*text*/) { return false; }
+// editor_x500_feet still showed the Load from file field with C:\Users\... in it. A drive path (a letter, a colon, a slash) or a user folder.
+[[nodiscard]] inline bool shows_a_path(std::string_view text) {
+    for (std::size_t i = 0; i + 2 < text.size(); ++i) {
+        const char c = text[i];
+        const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        if (letter && text[i + 1] == ':' && (text[i + 2] == '\\' || text[i + 2] == '/')) return true;
+    }
+    for (const std::string_view folder : {std::string_view("\\Users\\"), std::string_view("/Users/"), std::string_view("/home/")}) {
+        if (text.find(folder) != std::string_view::npos) return true;
+    }
+    return false;
+}
 
 struct Injection {
     enum class Kind { skip, anomaly };

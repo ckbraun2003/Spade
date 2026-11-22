@@ -1373,6 +1373,13 @@ void editor_tour(Tour& t, const fs::path& assets) {
                      w().panels().status.empty() ? "x500_contact, armed" : w().panels().status)) {
             return;
         }
+        // The Load from file field shows what it read, a path on this machine, in the still and the film. The model is loaded: the field is emptied
+        // so nothing on screen names a user folder (a feature video carries none).
+        w().panels().item_path.clear();
+        if (!s.check(!shows_a_path(w().panels().item_path) && !shows_a_path(w().panels().status), "path-off-screen",
+                     "the Load from file field emptied after the load; no path in it or in the status line")) {
+            return;
+        }
         const std::size_t before = scene_now().vehicles.size();
         const glm::vec3 home = scene_now().vehicles.at(0).start.pos;
         const glm::vec3 target(home.x, 0.0f, home.z - 1.5f);  // clear of the boxes at x +-1, opposite the Phantom's place
@@ -1472,6 +1479,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
                                           fmt(lowest * 1000.0f) + " mm, the highest after first touch " + fmt(rebound * 1000.0f) + " mm"
                                     : "no state");
         then(30);
+        if (!s.check(!shows_a_path(w().panels().item_path) && !shows_a_path(w().panels().status), "path-off-screen-still",
+                     "no path in the Load from file field or the status line at the still")) {
+            return;
+        }
         t.snapshot("editor_x500_feet");
         then(30);  // the last 1x frame is held so the stop reads
 
