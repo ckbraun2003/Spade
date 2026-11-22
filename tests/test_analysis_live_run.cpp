@@ -17,6 +17,7 @@
 #include <format>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <glm/gtc/quaternion.hpp>
@@ -1258,6 +1259,125 @@ TEST(AnalysisLiveRun, TheSolidsIterationLimitUnsetFliesToTheBit) {
     EXPECT_EQ(a.solids().pressure_residual, b.solids().pressure_residual);
     EXPECT_EQ(a.solids().unconverged_steps, b.solids().unconverged_steps);
     EXPECT_EQ(a.solids().pressure_iterations, b.solids().pressure_iterations);
+}
+
+// THE CG'S FLOOR AS A RUN OPTION (O158: the film's tight pressure). ResolvedCase::solids_cg_floor is the iterations the
+// solids' CG always takes before it may stop at the residual mark: 0, the default, is the engine's own 8; a larger one
+// is a tighter solve for a film. The ball body's frame (17 steps) at the default ends each solve at its floor of 8
+// (healthy, ~1e-6: ALooseSolveIsCountedBesideTheUnconverged); at a floor of 12 it takes 12.
+[[nodiscard]] spade::Result<an::LiveRun> started_at_floor(const Powered& p, uint32_t floor) {
+    an::ResolvedCase r = resolved(an::test::with_power(solid_case(p.model), p), p.model);
+    r.solids_cg_floor = floor;
+    return an::LiveRun::start(r, p.model);
+}
+
+TEST(AnalysisLiveRun, ARaisedCgFloorTakesThatManyIterations) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const auto last_solve = [&](uint32_t floor) {
+        spade::Result<an::LiveRun> run = started_at_floor(p, floor);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        spade::FlowVolume v;
+        if (run) armed_frame(*run, v);
+        return run ? std::pair{run->solids().pressure_iterations, run->solids().pressure_residual} : std::pair{0u, 0.0f};
+    };
+    const auto base = last_solve(0);
+    const auto eight = last_solve(8);
+    const auto twelve = last_solve(12);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(base.first, 8u) << "the default solve ends at the CG's floor of 8";
+    EXPECT_EQ(eight.first, 8u);
+    EXPECT_EQ(twelve.first, 12u) << "a floor of 12 takes 12 iterations";
+    // Not "tighter than the default's": the two runs part after the first step, so their last residuals are two different
+    // problems' (measured 7.2e-7 at 12, 5.8e-7 at 8). Both end healthy, far under the loose mark.
+    EXPECT_LT(twelve.second, an::kLiveLooseResidual) << "the solve at 12 ends healthy: " << twelve.second;
+    EXPECT_LT(base.second, an::kLiveLooseResidual);
+}
+
+// The option unset, 0, and 8 itself (the engine's floor) are the same run to the bit.
+TEST(AnalysisLiveRun, TheDefaultCgFloorFliesToTheBit) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    spade::Result<an::LiveRun> a = started_at_floor(p, 0);
+    spade::Result<an::LiveRun> b = started_at_floor(p, 8);
+    ASSERT_TRUE(a.has_value() && b.has_value());
+    spade::FlowVolume va;
+    spade::FlowVolume vb;
+    for (int i = 0; i < 2; ++i) {
+        armed_frame(*a, va);
+        armed_frame(*b, vb);
+        if (::testing::Test::HasFatalFailure()) return;
+    }
+    EXPECT_EQ(va.v, vb.v);
+    EXPECT_EQ(va.s, vb.s);
+    EXPECT_EQ(a->solids().pressure_residual, b->solids().pressure_residual);
+    EXPECT_EQ(a->solids().pressure_iterations, b->solids().pressure_iterations);
+}
+
+// A SAVE RECORDS THE FLOOR (the lead, O167: a film solve resumed at another floor would silently mix two solves in one film).
+// restore() refuses a ResolvedCase whose floor differs from the one the run was saved at, naming both values; a restore at the
+// same floor continues to the bit. The floor 0 and the engine's 8 are the same solve, so they restore into each other. A default
+// save is byte-identical to what it was: the floor is a trailer written only when non-zero (4 bytes), so no save version moves.
+TEST(AnalysisLiveRun, ASaveRecordsTheCgFloorAndARestoreAtAnotherIsRefused) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const auto case_at = [&](uint32_t floor) {
+        an::ResolvedCase r = resolved(an::test::with_power(solid_case(p.model), p), p.model);
+        r.solids_cg_floor = floor;
+        return r;
+    };
+    const spade::test::TempDir dir("live_save_floor");
+    const std::filesystem::path at12 = dir.path() / "at12.livesave";
+    const std::filesystem::path at0 = dir.path() / "at0.livesave";
+    const std::filesystem::path at8 = dir.path() / "at8.livesave";
+    const auto flown_and_saved = [&](uint32_t floor, const std::filesystem::path& file) {
+        spade::Result<an::LiveRun> run = an::LiveRun::start(case_at(floor), p.model);
+        EXPECT_TRUE(run.has_value()) << (run ? "" : run.error().context);
+        spade::FlowVolume v;
+        if (run) armed_frame(*run, v);
+        EXPECT_TRUE(run && run->save(file).has_value());
+        return run;
+    };
+    spade::Result<an::LiveRun> twelve = flown_and_saved(12, at12);
+    (void)flown_and_saved(0, at0);
+    (void)flown_and_saved(8, at8);
+    if (::testing::Test::HasFatalFailure() || !twelve) return;
+
+    // Another floor is refused, both values named; so is no floor at all (the default) against a save at 12, and the reverse.
+    for (const uint32_t other : {0u, 16u}) {
+        const spade::Result<an::LiveRun> got = an::LiveRun::restore(at12, case_at(other), p.model);
+        ASSERT_FALSE(got.has_value()) << "a save at 12 restored at " << other;
+        EXPECT_NE(got.error().context.find("solids_cg_floor 12"), std::string::npos) << got.error().context;
+        EXPECT_NE(got.error().context.find("not " + std::to_string(other)), std::string::npos) << got.error().context;
+    }
+    EXPECT_FALSE(an::LiveRun::restore(at0, case_at(12), p.model).has_value()) << "a default save restored at 12";
+
+    // The same floor continues to the bit: one more frame from the restored run is the unbroken run's.
+    spade::Result<an::LiveRun> resumed = an::LiveRun::restore(at12, case_at(12), p.model);
+    ASSERT_TRUE(resumed.has_value()) << resumed.error().context;
+    spade::FlowVolume va;
+    spade::FlowVolume vb;
+    armed_frame(*twelve, va);
+    armed_frame(*resumed, vb);
+    if (::testing::Test::HasFatalFailure()) return;
+    EXPECT_EQ(va.v, vb.v);
+    EXPECT_EQ(va.s, vb.s);
+    EXPECT_EQ(twelve->solids().pressure_residual, resumed->solids().pressure_residual);
+    EXPECT_EQ(twelve->solids().pressure_iterations, resumed->solids().pressure_iterations);
+    EXPECT_EQ(resumed->solids().pressure_iterations, 12u);
+
+    // 0 and 8 are one solve: either restores into the other.
+    EXPECT_TRUE(an::LiveRun::restore(at0, case_at(8), p.model).has_value());
+    EXPECT_TRUE(an::LiveRun::restore(at8, case_at(0), p.model).has_value());
+
+    // A default save carries nothing for the floor: a save at 12 is 4 bytes longer than one at the default.
+    EXPECT_EQ(std::filesystem::file_size(at12), std::filesystem::file_size(at0) + 4u);
+}
+
+// A floor above the CG's cap (32) is refused by name, at start; the cap itself is accepted.
+TEST(AnalysisLiveRun, ACgFloorAboveTheCapIsRefused) {
+    const Powered p = with_ball_body(0.1f, 0.2f);
+    const spade::Result<an::LiveRun> over = started_at_floor(p, 33);
+    ASSERT_FALSE(over.has_value());
+    EXPECT_NE(over.error().context.find("solids_cg_floor"), std::string::npos) << over.error().context;
+    EXPECT_TRUE(started_at_floor(p, 32).has_value());
 }
 
 // The subgrid viscosity's account (the lead, 2026-11-10; the website clips' Smagorinsky runs): its line names only

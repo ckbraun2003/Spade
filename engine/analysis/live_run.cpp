@@ -388,6 +388,11 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
             }
         }
     }
+    if (resolved.solids_cg_floor > af::kSolidsCgCap) {
+        return std::unexpected(Error{Code::invalid_argument,
+                                     std::format("solids_cg_floor {} is above the CG's cap of {} iterations (1 to {}, or 0 for the default {})",
+                                                 resolved.solids_cg_floor, af::kSolidsCgCap, af::kSolidsCgCap, af::kSolidsCgIterations)});
+    }
     const AnalysisCase& c = resolved.spec;
     const std::optional<Propulsion> propulsion = propulsion_of(c, model);
     if (!c.time.step || !(*c.time.step > 0.0f)) {
@@ -569,7 +574,9 @@ Result<LiveRun> LiveRun::start(const ResolvedCase& resolved, const vehicles::Mod
         if (!parts) return refused(parts.error());
         if (parts->empty()) break;
         if (first) {
-            impl->fluid.n_v = af::kSolidsCgIterations;
+            // The CG's floor: the engine's own unless the host raised it (a film's tight pressure, O158). The device reads
+            // it from this FluidConfig when it is made, below, so one value serves the CPU and the device alike.
+            impl->fluid.n_v = resolved.solids_cg_floor != 0 ? resolved.solids_cg_floor : af::kSolidsCgIterations;
             if (Result<void> s = make_scratch(); !s) return std::unexpected(s.error());
         }
         const Result<void> set = af::set_solids(impl->scratch, impl->grid, resolved.domain, *parts, solids.sampler());
@@ -1203,6 +1210,10 @@ Result<void> LiveRun::save(const std::filesystem::path& file) const {
     }
     const std::vector<std::byte> grid = af::grid_to_bytes(r.device ? fields : r.grid);
     w.bytes(as_text(grid));
+    // The solids CG's floor, as the host gave it, only when it was raised: a default save is byte for byte what it was, and no
+    // version moves. restore() reads it if the bytes are there and refuses a ResolvedCase at another floor (a resumed solve
+    // at a different floor would mix two solves in one film).
+    if (r.resolved.solids_cg_floor != 0) w.put<uint32_t>(r.resolved.solids_cg_floor);
     w.put<uint64_t>(rng::fnv1a64(w.out));
     return detail::replace_file(file, w.out);
 }
@@ -1298,7 +1309,17 @@ Result<LiveRun> LiveRun::restore(const std::filesystem::path& file, const Resolv
     const std::string_view controls = rd.bytes();
     const std::string_view snapshot = rd.bytes();
     const std::string_view grid = rd.bytes();
+    uint32_t saved_floor = 0;  // absent in a default save
+    if (rd.ok && rd.at < rd.in.size()) saved_floor = rd.get<uint32_t>();
     if (!rd.ok || rd.at != rd.in.size()) return refuse(Code::invalid_argument, "is malformed");
+    // The floor 0 is the engine's own 8: the two are one solve and restore into each other, any other pair is refused.
+    const auto effective_floor = [](uint32_t f) { return f != 0 ? f : af::kSolidsCgIterations; };
+    if (effective_floor(saved_floor) != effective_floor(resolved.solids_cg_floor)) {
+        return refuse(Code::invalid_argument,
+                      std::format("was saved at solids_cg_floor {}, not {} (0 is the default, {}): a resumed solve at another floor "
+                                  "would mix two solves in one run",
+                                  saved_floor, resolved.solids_cg_floor, af::kSolidsCgIterations));
+    }
 
     // The run as the case builds it, then its saved state over it.
     Result<LiveRun> run = start(resolved, model);
