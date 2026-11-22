@@ -823,3 +823,20 @@ TEST(FlowMovieParticles, ADriverGivenTheNextFrameBlendsTowardItAndWithoutItSteps
     EXPECT_NEAR(run(nullptr), 0.0f, 1e-9f) << "no next frame: the drawn frame's still air moves nothing";
     EXPECT_NEAR(run(&next), 0.5f * 2.0f * 0.010f, 1e-6f) << "u runs 0 to 2 m/s over the step: the midpoint rule moves it U dt / 2 = 1 cm";
 }
+
+// B1: carried through stored frames, each step runs from the previous stored frame's velocity to this one's, in time (every frame is on disk, so the next is always there). A uniform
+// flow that is u = 2 k m/s at frame k, stored 10 ms apart: the first seed moves (0 + 2)/2 x 10 ms = 1 cm to frame 1 and (2 + 4)/2 x 10 ms = 3 cm to frame 2, 4 cm in all; the old step (the
+// arriving frame's velocity held over the interval) gives 2 + 4 m/s x 10 ms = 6 cm.
+TEST(FlowMovieParticles, AdvancingThroughStoredFramesFollowsTheVelocityBetweenThemInTime) {
+    auto o = options();
+    o.per_frame = 1u;
+    flow_movie::ParticleDriver driver(o, {});
+    const auto read = [&](uint32_t k, FlowVolume& volume, double& time_s) -> spade::Result<void> {
+        volume = field(16, 0.1f, glm::vec3(-0.8f), [k](glm::vec3) { return glm::vec3(2.0f * static_cast<float>(k), 0.0f, 0.0f); });
+        time_s = 0.100 + 0.010 * static_cast<double>(k);
+        return {};
+    };
+    ASSERT_TRUE(flow_movie::advance_through_frames(driver, 2u, read, []() { return std::vector<glm::vec3>{glm::vec3(0.0f)}; }));
+    ASSERT_NE(driver.at(2u), nullptr);
+    EXPECT_NEAR(driver.at(2u)->position[0].x, 0.04f, 1e-6f);
+}
