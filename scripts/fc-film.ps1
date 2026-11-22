@@ -46,7 +46,7 @@ using System;
 using System.Runtime.InteropServices;
 public static class FilmWin {
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(IntPtr cls, string title);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
 }
@@ -58,7 +58,7 @@ Add-Type -AssemblyName System.Windows.Forms
 function Place-FilmWindow([string] $title, [int] $x, [int] $y, [int] $w, [int] $h) {
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     $hwnd = [IntPtr]::Zero
-    while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) { $hwnd = [FilmWin]::FindWindow($null, $title); if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 } }
+    while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) { $hwnd = [FilmWin]::FindWindow([IntPtr]::Zero, $title); if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 } }
     if ($hwnd -eq [IntPtr]::Zero) { return $null }
     $HWND_TOPMOST = [IntPtr](-1)
     $SWP_SHOWWINDOW = 0x0040
