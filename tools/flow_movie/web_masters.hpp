@@ -217,8 +217,8 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // Q surfaces or the cloud (--q-surfaces, --vorticity-cloud), the particle looks, or the speed volume.
 // --cg-floor N (O158: the pressure film's solve runs TIGHT): the solids pressure solve's CG iteration floor, passed to the run (the LiveRun option; 8 is the default, bit-identical to no flag). 8 to 16
 // only. Empty when fine, else the refusal's words (what it was given and the range).
-// STUB (RED): the words a raised floor adds to the cache's mark.
-[[nodiscard]] inline std::string cg_floor_mark(uint32_t) { return {}; }
+// The words a raised floor adds to the cache's mark: none for 0 (not given) or 8 (the engine's own, the same solve), so a cache solved at another floor is never reused.
+[[nodiscard]] inline std::string cg_floor_mark(uint32_t n) { return n == 0u || n == 8u ? std::string() : " cg_floor " + std::to_string(n); }
 
 [[nodiscard]] inline std::string cg_floor_refusal(uint32_t n) {
     if (n >= 8u && n <= 16u) return {};

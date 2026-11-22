@@ -139,8 +139,12 @@ struct TubeFloorCheck {
     bool reaches_floor = false;    // such a cell is in the floor layer(s): the open face would cut the tube flat
     float lowest_height_m = 0.0f;  // the lowest such cell's centre above the floor (0 when none)
 };
-// STUB (RED): the per-frame report line.
-[[nodiscard]] inline std::string tube_floor_line(const TubeFloorCheck&) { return {}; }
+// The per-frame report line (the bottom 2 layers are what the check is run on).
+[[nodiscard]] inline std::string tube_floor_line(const TubeFloorCheck& c) {
+    return std::format("[ tubes ] floor check: {} (the lowest tube cell {:.1f} mm above the floor, the bottom 2 layers {})",
+                       !c.any_tube ? "no tube" : c.reaches_floor ? "REACHES THE FLOOR" : "stops short", static_cast<double>(c.lowest_height_m) * 1000.0,
+                       c.reaches_floor ? "hold a tube" : "are clear");
+}
 [[nodiscard]] inline TubeFloorCheck tube_floor_check(const spade::FlowVolume& v, const QLook& look, uint32_t floor_layers) {
     TubeFloorCheck out;
     const float q_top = look.q_peak > 0.0f ? look.q_peak : v.header.channel_max[spade::kFlowQHat];
