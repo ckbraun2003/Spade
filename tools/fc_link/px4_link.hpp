@@ -114,6 +114,9 @@ private:
     Px4LinkReport report_;
     uint8_t seq_ = 0;
     std::optional<uint64_t> last_sensor_time_usec_;
+    bool booted_ = false;  // PX4's first reply has been seen: strict lockstep from here
+    std::optional<std::chrono::steady_clock::time_point> boot_start_;  // wall time of the first sensor message (the boot limit counts from it)
+    uint64_t first_sensor_time_usec_ = 0;
 };
 
 }  // namespace spade::fc_link
