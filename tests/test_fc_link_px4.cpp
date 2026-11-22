@@ -36,6 +36,7 @@ struct Script {
     size_t chunk = 0;             // 0 = deliver everything queued in one read, else this many bytes per read
     bool send_heartbeat = true;   // PX4's first message on connecting
     bool backlog = false;         // silent_first: when it finally answers, it answers every sensor message it had held, in order
+    std::chrono::milliseconds write_delay{0};  // write() sleeps this long AFTER queueing its answer: the reply has arrived, and the link's deadline has passed, before the link reads
 };
 
 // What the fake saw us send, for the tests to check.
@@ -75,6 +76,7 @@ public:
                 answer(*s);
             }
         }
+        if (script_.write_delay.count() > 0) std::this_thread::sleep_for(script_.write_delay);
         return {};
     }
 
@@ -496,4 +498,50 @@ TEST(FcLinkPx4, TheAirframeDoesNotRequireAGroundStation) {
     }
     EXPECT_EQ(found, 1) << "airframe 10090 sets NAV_DLL_ACT " << found << " times (expected once, explicitly)";
     EXPECT_EQ(value, 0) << "NAV_DLL_ACT is " << value << ": above 0 makes PX4 require a ground station to arm";
+}
+
+// The ordering bug gate 49b's debug run found (the 1 ms poll exposed it): Px4Link::exchange took the clock for its deadline BEFORE it sent the
+// sensor message, ran take() (the parser's buffer only) and checked the deadlines, and only then read the channel. When the deadline had already
+// passed on entry (a slow send, a slow debug build), it returned `booting` (or px4_no_reply) without ever reading a reply that was already
+// readable. These fakes make that deterministic: write() sleeps 5 ms after it has queued its answer.
+TEST(FcLinkPx4, AReplyThatArrivedDuringTheSendIsNotCountedAsBootSilence) {
+    Script s;
+    s.mode = Mode::silent_first;
+    s.after = 3;  // the first three sensor messages get no answer; the fourth does
+    s.write_delay = 5ms;
+    Px4LinkConfig cfg;
+    cfg.boot_poll = 1ms;  // the deadline is long past by the time the send returns
+    auto link = open_with(s, std::make_shared<Seen>(), cfg);
+    ASSERT_TRUE(link.has_value());
+    uint64_t booting = 0;
+    bool answered = false;
+    for (uint64_t k = 1; k <= 4; ++k) {
+        const auto r = link->exchange(sensor_at(k));
+        ASSERT_TRUE(r.has_value()) << r.error().context;
+        if (r->booting) ++booting;
+        else answered = true;
+    }
+    EXPECT_EQ(booting, 3u) << "the fourth step's reply was in the inbox: it is a reply, not a boot step";
+    EXPECT_TRUE(answered);
+    EXPECT_EQ(link->report().boot_steps, 3u);
+    EXPECT_EQ(link->report().boot_end_time_usec, 4 * kStepUs) << "boot ended at the fourth sensor message (16000 us)";
+    EXPECT_EQ(link->report().catchup_replies, 0u);
+}
+
+// The same ordering on the strict side: after boot, a reply that has ARRIVED must never be reported as px4_no_reply.
+TEST(FcLinkPx4, AReplyThatHasArrivedIsNeverReportedMissing) {
+    Script s;
+    s.write_delay = 5ms;
+    Px4LinkConfig cfg;
+    cfg.reply_timeout = 1ms;  // shorter than the send itself
+    auto link = open_with(s, std::make_shared<Seen>(), cfg);
+    ASSERT_TRUE(link.has_value());
+    const auto first = link->exchange(sensor_at(1));  // boot poll is the default 10 ms: this one reads normally
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    for (uint64_t k = 2; k <= 5; ++k) {
+        const auto r = link->exchange(sensor_at(k));
+        ASSERT_TRUE(r.has_value()) << "step " << k << ": " << r.error().context;
+        EXPECT_FALSE(r->booting);
+    }
+    EXPECT_EQ(link->report().replies, 5u);
 }
