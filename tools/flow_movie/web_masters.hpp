@@ -945,8 +945,9 @@ struct DeliveryGuard {
 
 // The .md's heading: the clip's title, except an S8 whose look is the pressure or the vorticity cloud (the same flags as shows_line), which names what it shows
 // and never says "volume render" (the lead, O124: the pressure master's .md carried the S8 fallback title).
-[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false) {
+[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false, bool tubes = false) {
     if (c.id == "S8" && !particles) {
+        if (pressure && blades && tubes) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades, with the vortices round the rotors as pressure-coloured surfaces", d);
         if (pressure && blades && cloud) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades, with the vortices round the rotors", d);
         if (pressure && blades) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades", d);
         if (pressure) return in_words("Reference quad in hover: the air pressure on the airframe in the rotor wake", d);
@@ -957,8 +958,12 @@ struct DeliveryGuard {
 
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
-[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false, bool blades = false) {
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false, bool blades = false, bool tubes = false) {
     const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (pressure && blades && tubes && !particles && c.id == "S8") {  // O158: the pressure film with the vortices as smooth surfaces in the pressure colours
+        return "The air pressure on the surfaces of the reference quad's rigid parts and on its rotor blades, drawn at the simulation's rotor angle, blue (below ambient) to red (above), with the vortices round the "
+               "rotors drawn as smooth surfaces in the same blue-to-red pressure colours, and four " + rotors + " driving the air, in a slow orbit.";
+    }
     if (pressure && blades && cloud && !particles && c.id == "S8") {  // O144: the pressure film with the vorticity cloud round the rotors
         return "The air pressure on the surfaces of the reference quad's rigid parts and on its rotor blades, drawn at the simulation's rotor angle, blue (below ambient) to red (above), with the vorticity round the rotors drawn as a soft cloud from blue (low) to magenta (high) and four " +
                rotors + " driving the air, in a slow orbit.";
@@ -1014,16 +1019,16 @@ struct CaptionInput {
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
     const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
-    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades) + "\n\n";
+    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades, in.tubes) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure, in.blades), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure, in.blades, in.tubes), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
     t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades, drone.blade_cp_range, drone.blade_words, drone.parts_words, drone.parts_cp_range,
-                                    in.pressure && in.cloud ? std::string_view(in.vortex_note) : std::string_view()), drone) + "\n";
+                                    in.pressure && (in.cloud || in.tubes) ? std::string_view(in.vortex_note) : std::string_view()), drone) + "\n";
     if (!drone.card_extra.empty()) t += "- " + in_words(std::string(drone.card_extra), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
