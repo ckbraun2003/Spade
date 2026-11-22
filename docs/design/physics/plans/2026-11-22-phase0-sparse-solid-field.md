@@ -48,7 +48,7 @@ The GPU solver's authority is the CPU `FluidStep`, held to it BIT FOR BIT by the
 5. **The GPU-vs-CPU bit tests stay as they are** (`GpuAirflowStep.*MatchesFluidStepBitForBit`, `GpuAirflowSolids.*BitForBit`, `GpuAirflowProjection.*BitForBit`, `SameBitsAtEveryWorkgroupSize`): they compare against the DENSE CPU field, so they are the independent proof.
 6. **The SPIR-V pins:** the rows that change must be EXACTLY the kernels this piece touches (the five accessor kernels, publish_fields, sgs, viscous, the mg kernels that read weights, the pcg kernels): the list is written into the commit message BEFORE re-recording, and `SpirvPin` must still show every other row byte-identical. A kernel outside the list that changes is a defect, not a re-record. The rows re-record in the same commit as their shader (the pin file's own rule).
 7. **The whole `-L gpu`** (460/460 on 18f19e1e) equal before and after, with the count quoted; the Docker leg (consumer on and off) as at every code gate.
-8. **The VRAM read:** the allocation probe (approved, gpu-alone, no steps) before and after at the film's box: the dense 30.45 M cells fit at 6.3 to 6.6 GiB; after, the figure drops by the table's 1.9 GiB (an equality with the arithmetic is not claimed; the number is read, not derived).
+8. **The VRAM read:** the allocation probe (approved, gpu-alone, no steps) before and after at the film's box: the dense 30.45 M cells with solids (221 B a cell, 6.4 GiB) are REFUSED by `check_vram` today (the 4 GiB policy cap, and the ~6.0 GiB the 1 GiB reserve leaves), CORRECTED 2026-11-22T17:56Z (the earlier "fit at 6.3 to 6.6 GiB" was wrong); the probe reads what a box that DOES fit holds, before and after; the figure drops by the table's 1.9 GiB (an equality with the arithmetic is not claimed; the number is read, not derived).
 
 ## 4. The other two pieces of Phase 0 (not designed here; their proof is the same bit tests)
 
@@ -56,13 +56,13 @@ The GPU solver's authority is the CPU `FluidStep`, held to it BIT FOR BIT by the
 - **Aliased scratch** (the multigrid's p/b/r, the divergence, the viscous and the du/dv/dw right-hand sides): buffers whose lifetimes do not overlap share memory. Proof: a lifetime table in the design (which kernel writes, which reads, which frees) and the same bit tests; no arithmetic changes.
 Both are written up in their own design notes before their code; each saves about 25 to 35 B and about 15 to 20 B a cell (the parent plan's figures, "derived", to be measured by the allocation probe).
 
-## 5. Order and size inside Phase 0 (the parent plan's 7 to 9 days; this is the piece's share)
+## 5. Order and size inside Phase 0 (CORRECTED 2026-11-22T17:56Z: Phase 0 is about 11 to 12 days, not the parent plan's 7 to 9; this is the sparse piece's share)
 
 1. Tile map, host packer and the host accessor mirror, tests 1 and 2 (RED, then green): 2 days.
 2. The directory binding, the shader accessors, the direct readers moved onto them, test 3: 2.5 days.
 3. Labels and the first-level weights sparse: 1.5 days.
 4. Pin re-record (the listed rows), digests quoted, the full `-L gpu`, the probe before and after: 1 day.
-About 7 days for this piece with the other two pieces' share inside the parent's 7 to 9 (the sum is the parent's number; the first visible payoff, the deeper O158 wake, needs all three, about day 8).
+About 6 days for this piece plus its share of one gate; the limiter bounds add about 1.5 days, the aliased scratch about 2.5 and the shared gate (pins, full -L gpu, probe) 1.5: **Phase 0 is about 11.5 days** (CORRECTED 2026-11-22T17:56Z; the parent's 7 to 9 priced the whole of Phase 0 at about this piece). The first visible payoff, the deeper O158 wake, needs the sparse field plus the limiter bounds under today's 4 GiB cap (about day 8.5), the sparse field alone if the policy cap is lifted (about day 7); the full diet is about day 11.5.
 Core's share (the data layout, pinned structs, the Slang twin) runs alongside and owns the shared layout files; this piece adds ONE binding and new accessors, and touches no existing struct, so only the rows listed above re-record.
 
 ## 6. What this does not claim, and the open points
