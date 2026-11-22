@@ -152,6 +152,8 @@ struct LockstepHost::Recorded {
     uint64_t boot_steps = 0;
     uint64_t boot_end_time_usec = 0;
     BootConfig boot;
+    std::vector<uint64_t> periods_ticks;
+    uint64_t world_seed = 0;
 };
 
 SensorBinding SensorBinding::of(ImuSensorRef ref) noexcept {
@@ -188,6 +190,7 @@ Result<LockstepHost> LockstepHost::open(Simulation& sim, const VehicleRef& vehic
     if (!model) return std::unexpected(invalid("open: the vehicle's model is not registered (" + model.error().context + ")"));
 
     const uint32_t substeps = sim.substeps();
+    std::vector<uint64_t> periods_ticks;
     for (std::size_t i = 0; i < sensors.size(); ++i) {
         const Result<uint32_t> divider = rate_divider_of(sim, sensors[i], i);
         if (!divider) return std::unexpected(divider.error());
@@ -196,7 +199,10 @@ Result<LockstepHost> LockstepHost::open(Simulation& sim, const VehicleRef& vehic
                                            std::to_string(*divider) + " is not a whole number of ticks (a tick is " + std::to_string(substeps) +
                                            " substeps), and a sample is stamped with the tick only"));
         }
+        periods_ticks.push_back(*divider / substeps);
     }
+    const Result<const WorldParams*> world = sim.world_params(vehicle.body.world_index);
+    if (!world) return std::unexpected(invalid("open: " + world.error().context));
 
     LockstepHost host;
     host.sim_ = &sim;
@@ -212,6 +218,8 @@ Result<LockstepHost> LockstepHost::open(Simulation& sim, const VehicleRef& vehic
     rec.substeps = substeps;
     rec.first_tick = sim.tick().value;
     rec.hash = sha256_hex(kHashSeedText);
+    rec.periods_ticks = std::move(periods_ticks);
+    rec.world_seed = (*world)->seed;
     rec.psi.assign(rec.rotor_count, 0.0f);
     return host;
 }
@@ -546,6 +554,16 @@ Result<void> LockstepHost::note_boot(uint64_t boot_steps, uint64_t boot_end_time
     rec.boot_end_time_usec = boot_end_time_usec;
     rec.boot = config;
     return {};
+}
+
+uint32_t LockstepHost::substeps() const noexcept { return recorded_->substeps; }
+std::span<const uint64_t> LockstepHost::sensor_periods_ticks() const noexcept { return recorded_->periods_ticks; }
+uint64_t LockstepHost::world_seed() const noexcept { return recorded_->world_seed; }
+const HostConfig& LockstepHost::config() const noexcept { return config_; }
+std::optional<BootNote> LockstepHost::boot_note() const {
+    const Recorded& rec = *recorded_;
+    if (!rec.boot_noted) return std::nullopt;
+    return BootNote{rec.boot_steps, rec.boot_end_time_usec, rec.boot};
 }
 
 const vehicles::ModelType& LockstepHost::model() const noexcept { return *model_; }

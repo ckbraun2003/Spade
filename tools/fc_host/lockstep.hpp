@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -138,6 +139,13 @@ struct BootReadings {
     glm::vec3 velocity{0.0f};
 };
 
+// What note_boot() recorded (the run record writes it).
+struct BootNote {
+    uint64_t steps = 0;
+    uint64_t end_time_usec = 0;
+    BootConfig config;
+};
+
 class LockstepHost {
 public:
     // Binds `vehicle` and `sensors` of `sim`. The Simulation must outlive the host. Refusals, each naming what is wrong: a null or stale vehicle ref;
@@ -176,6 +184,14 @@ public:
     // THE BOOT PHASE (above). Both refuse once the first tick has run (the world is held only before tick 0), and boot_readings touches nothing.
     [[nodiscard]] Result<BootReadings> boot_readings(uint64_t boot_step, const BootConfig& config = {}) const;
     [[nodiscard]] Result<void> note_boot(uint64_t boot_steps, uint64_t boot_end_time_usec, const BootConfig& config = {});
+
+    // What the run record writes of the run: the substeps per tick, each bound sensor's period in whole ticks (in binding order), the world's registered seed,
+    // the host's configuration, and the boot note if one was made.
+    [[nodiscard]] uint32_t substeps() const noexcept;
+    [[nodiscard]] std::span<const uint64_t> sensor_periods_ticks() const noexcept;
+    [[nodiscard]] uint64_t world_seed() const noexcept;
+    [[nodiscard]] const HostConfig& config() const noexcept;
+    [[nodiscard]] std::optional<BootNote> boot_note() const;
 
     // The vehicle's model, for a link that maps outputs to rotors.
     [[nodiscard]] const vehicles::ModelType& model() const noexcept;
