@@ -171,6 +171,20 @@ exit 0
     Expect 'no label' (Test-Path -LiteralPath $state) 'the container is left alone'
     Expect 'no label' (($lo -join ' ') -match 'docker rm -f spade-px4-t1') 'the text says how to remove it'
 
+    # a relative run folder (from the label or from -OutDir) never becomes a path: exit 6, nothing written (a folder named {} once appeared in the worktree
+    # when a fake label of {} was taken for one)
+    $cwdBefore = @(Get-ChildItem -LiteralPath $RepoRoot -Force | ForEach-Object Name)
+    Set-Content -LiteralPath $state 'x'
+    $env:FAKE_LABELS_JSON = (@{ 'spade.outdir' = 'relative\dir' } | ConvertTo-Json -Compress)
+    $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    Expect 'relative label' ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
+    Expect 'relative label' (Test-Path -LiteralPath $state) 'the container is left alone'
+    $env:FAKE_LABELS_JSON = '{}'
+    $lo = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -Stop -OutDir 'rel\run' -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    Expect 'relative -OutDir' ($LASTEXITCODE -eq 6) "exit 6 (got $LASTEXITCODE): $($lo -join ' ')"
+    $cwdAfter = @(Get-ChildItem -LiteralPath $RepoRoot -Force | ForEach-Object Name)
+    Expect 'relative' (($cwdAfter -join '|') -eq ($cwdBefore -join '|')) "nothing was created in the repository root (before: $($cwdBefore -join ',') after: $($cwdAfter -join ','))"
+
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
     Expect 'no box' ($r.Code -eq 0) "exit 0 (got $($r.Code))"
