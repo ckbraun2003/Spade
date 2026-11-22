@@ -155,6 +155,9 @@ add_subdirectory(tools/part_import)
 # The stand-in shapes tool (L88l): axis boxes for a part with store meshes, so the public library shows a drone's layout without the part store.
 add_subdirectory(tools/part_stand_in)
 
+# The camera's CPU reference frames (O150, video 4): the pinhole and the KB4 fisheye of one pose of a world file, as PNGs; build-tree only. Outside engine/, no engine call added.
+add_subdirectory(tools/camera_frames)
+
 # The library's C ABI (L88l, S4): spade_library.dll / libspade_library.so over spade::scene, JSON in and out; install component library_c.
 # A shared library links the static engine archives, so on gcc they are built position-independent (set before engine/ is added).
 add_subdirectory(tools/library_c)
