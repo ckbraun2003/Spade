@@ -1591,6 +1591,11 @@ constexpr float kVortexFloor = -5.0f;
                     if (!colour) return std::unexpected(spade::Error{spade::Code::invalid_argument, "the tubes' pressure colour has no scale (no disc loading or no still-air pressure)"});
                     std::vector<render::IsoSurface> isos = q_isos(field, ql, &*colour);
                     if (!isos.empty()) scene.flow_layers.push_back(render::FlowLayer{&field, {}, std::move(isos)});
+                    // O183: a tube the open floor face would cut flat shows as a flat end; report it, from the frame the tubes are cut from.
+                    const TubeFloorCheck floor = tube_floor_check(field, ql, 2u);
+                    std::printf("[ tubes ] floor check: %s (the lowest tube cell %.1f mm above the floor, the bottom 2 layers %s)\n",
+                                !floor.any_tube ? "no tube" : floor.reaches_floor ? "REACHES THE FLOOR" : "stops short", static_cast<double>(floor.lowest_height_m) * 1000.0,
+                                floor.reaches_floor ? "hold a tube" : "are clear");
                     return note;
                 };
                 return v;

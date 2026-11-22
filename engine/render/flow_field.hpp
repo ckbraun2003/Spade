@@ -58,7 +58,7 @@ struct FlowSurfaceColouring {
     bool extrapolate = false;
     // When the read at the offset is no-data (a solid cell: the drawn surface is not the solid the flow saw, so a point can fall inside one), go on outward
     // along the same normal, half a cell at a time, up to this many cells more, and take the first FLUID sample; a solid cell is never read. None in reach:
-    // no-data, the shaded colour, no value invented. 0: no search, as before. Needs an offset to start from, and does not combine with extrapolate.
+    // no-data, the shaded colour, no value invented. 0: no search, as before. Needs an offset to start from. With extrapolate, the line runs through the fluid read where the search stopped (d from the wall) and the read one offset further out, to the wall.
     float search_cells = 0.0f;
     // Lit for shape (the pressure film, O124). The colour is flat and unlit by design (RND-8); with `shade` its hue stays and its brightness is
     // kSurfaceShadeFloor + (1 - kSurfaceShadeFloor) max(N.L, 0), N the surface's normal turned toward the eye, L the scene's sun direction

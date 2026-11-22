@@ -74,9 +74,6 @@ Result<void> validate_flow_surface_colouring(const FlowSurfaceColouring& colouri
     if (colouring.search_cells > 0.0f && !(colouring.offset_cells > 0.0f)) {
         return refuse("it searches with no offset to start from");
     }
-    if (colouring.search_cells > 0.0f && colouring.extrapolate) {
-        return refuse("it searches and extrapolates: a search reads one fluid sample, an extrapolation two");
-    }
     if (colouring.extrapolate && !(colouring.offset_cells > 0.0f)) {
         return refuse("it extrapolates with no offset to extrapolate from");
     }

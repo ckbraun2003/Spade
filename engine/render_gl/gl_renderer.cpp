@@ -486,7 +486,7 @@ uniform uint uFlowConstant;
 uniform vec3 uFlowConstantColour;
 uniform uint uFlowWallsOnly;  // RND-8
 uniform float uFlowOffset;    // metres: offset_cells times the volume's cell
-uniform uint uFlowExtrapolate;  // 2 v(offset) - v(2 offset), as raster_cpu
+uniform uint uFlowExtrapolate;  // the line through the read and the one an offset further out, to the wall (2 v(offset) - v(2 offset) with no search), as raster_cpu
 uniform float uFlowSearch;      // metres: search_cells times the volume's cell; on past a no-data read, half a cell at a time, as raster_cpu
 uniform float uFlowHalfCell;    // metres: half the volume's cell
 uniform uint uFlowShade;        // lit for shape: the colour times floor + (1 - floor) max(N.L, 0), as raster_cpu
@@ -501,19 +501,22 @@ vec3 flow_colour_surface(vec3 world, vec3 normal, uint wall, vec3 shaded) {
     if (uFlowWallsOnly != 0u && wall == 0u) return shaded;
     if (any(lessThan(world, uFlowBoxMin)) || any(greaterThan(world, uFlowBoxMax))) return shaded;
     float value;
+    float read_at = uFlowOffset;  // how far from the wall the value was read
     if (!flow_sample_quantity(world + normal * uFlowOffset, uFlowQuantity, value)) {
         bool found = false;
         if (uFlowSearch > 0.0) {
             for (float d = uFlowHalfCell; d <= uFlowSearch + 1e-6 * uFlowHalfCell && !found; d += uFlowHalfCell) {
                 found = flow_sample_quantity(world + normal * (uFlowOffset + d), uFlowQuantity, value);
+                if (found) read_at = uFlowOffset + d;
             }
         }
         if (!found) return shaded;
     }
     if (uFlowExtrapolate != 0u) {
+        // the line through the read at read_at and the one an offset further out, taken to the wall, as raster_cpu
         float far_value;
-        if (!flow_sample_quantity(world + normal * (2.0 * uFlowOffset), uFlowQuantity, far_value)) return shaded;
-        value = 2.0 * value - far_value;
+        if (!flow_sample_quantity(world + normal * (read_at + uFlowOffset), uFlowQuantity, far_value)) return shaded;
+        value = read_at == uFlowOffset ? 2.0 * value - far_value : value - (far_value - value) * (read_at / uFlowOffset);
     }
     if (uFlowConstant != 0u) return uFlowConstantColour;
     if (wall != 0u && uFlowInvSpan > 0.0) {  // this wall's own range: scaled about the map's centre, as raster_cpu
