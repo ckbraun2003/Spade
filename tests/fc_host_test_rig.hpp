@@ -35,6 +35,8 @@ using spade::VehicleSpawn;
 using spade::WorldBuilder;
 using spade::WorldInstanceDesc;
 using spade::WorldSetDesc;
+using spade::fc_host::BootConfig;
+using spade::fc_host::BootReadings;
 using spade::fc_host::HostConfig;
 using spade::fc_host::LockstepHost;
 using spade::fc_host::Sample;
