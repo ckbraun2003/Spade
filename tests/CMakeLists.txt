@@ -1037,6 +1037,14 @@ if(WIN32)
         set_tests_properties(FcRun.RunsTheAutopilotTestsAsOneJob PROPERTIES
             LABELS spade
             TIMEOUT 180)
+        # scripts/px4-sitl.ps1 start and -Stop, on a fake docker (no Docker, no PX4): every -Stop failure is named and exits 7, the log is
+        # timestamp-ordered, the run folder must be a fully qualified path, a start creates PX4's log folder. LABELS spade.
+        add_test(NAME Px4Sitl.StopReportsItsFailures
+            COMMAND "${SPADE_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_CURRENT_SOURCE_DIR}/px4_sitl_test.ps1" "${SPADE_FC_RUN_REPO}")
+        set_tests_properties(Px4Sitl.StopReportsItsFailures PROPERTIES
+            LABELS spade
+            TIMEOUT 180)
     endif()
 endif()
 
