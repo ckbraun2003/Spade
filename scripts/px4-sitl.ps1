@@ -26,7 +26,7 @@ param(
     [string]$Image = 'spade-px4-sitl:v1.17.0',
     [int]$Autostart = 10090,                          # the airframe: 10090 = PX4's own x500 numbers, 10091 = the kit (when it exists)
     [int]$SimPort = 4560,                             # PX4's simulator port; the container's instance 0
-    [switch]$PublishOffboard                          # publish PX4's offboard API port (UDP 14540) to the host for a companion computer
+    [switch]$PublishOffboard                          # publish PX4's offboard API port (UDP 14540) on this machine's loopback only, for a companion computer
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,7 +57,7 @@ if (-not $Stop) {
         '-e', "PX4_SIM_HOSTNAME=$HostAddress",
         '-w', "$px4Dir/rootfs",
         '--entrypoint', "$px4Dir/bin/px4")
-    if ($PublishOffboard) { $dockerArgs += @('-p', '14540:14540/udp') }
+    if ($PublishOffboard) { $dockerArgs += @('-p', '127.0.0.1:14540:14540/udp') }
     $dockerArgs += @($Image, '-d', '-s', 'etc/init.d-posix/rcS')
     & docker @dockerArgs *> $null
     if ($LASTEXITCODE -ne 0) {

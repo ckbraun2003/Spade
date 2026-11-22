@@ -41,8 +41,35 @@ $report = Join-Path $out 'lockstep-report.txt'
 $raw = Join-Path $out 'film-raw.mp4'
 Remove-Item -ErrorAction SilentlyContinue $progress, $report, $raw
 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class FilmWin {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+}
+"@
+Add-Type -AssemblyName System.Windows.Forms
+
+# Under DWM, gdigrab title= films the window's screen rectangle: whatever is drawn over it is filmed. So the two windows sit side by side at fixed
+# positions that do not overlap, both topmost, and their rectangles are written to the run folder.
+function Place-FilmWindow([string] $title, [int] $x, [int] $y, [int] $w, [int] $h) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    $hwnd = [IntPtr]::Zero
+    while ($hwnd -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $deadline) { $hwnd = [FilmWin]::FindWindow($null, $title); if ($hwnd -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 } }
+    if ($hwnd -eq [IntPtr]::Zero) { return $null }
+    $HWND_TOPMOST = [IntPtr](-1)
+    $SWP_SHOWWINDOW = 0x0040
+    [void][FilmWin]::SetWindowPos($hwnd, $HWND_TOPMOST, $x, $y, $w, $h, $SWP_SHOWWINDOW)
+    $r = New-Object FilmWin+RECT
+    [void][FilmWin]::GetWindowRect($hwnd, [ref]$r)
+    return $r
+}
+
 function Start-FilmWindow([string] $title, [string] $body) {
-    $script = "`$Host.UI.RawUI.WindowTitle = '$title'; try { `$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(110, 3000); `$Host.UI.RawUI.WindowSize = New-Object Management.Automation.Host.Size(110, 38) } catch {}; $body"
+    $script = "`$ErrorActionPreference = 'SilentlyContinue'; `$Host.UI.RawUI.WindowTitle = '$title'; try { `$Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size(110, 3000); `$Host.UI.RawUI.WindowSize = New-Object Management.Automation.Host.Size(110, 38) } catch {}; $body"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
     return Start-Process -FilePath $ps -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc) -PassThru
 }
@@ -53,6 +80,17 @@ $bodyA = "while (-not (docker ps -q --filter 'name=^/$container`$')) { Start-Sle
 $bodyB = "`$seen = 0; while (-not (Test-Path '$report')) { if (Test-Path '$progress') { `$l = @(Get-Content '$progress'); while (`$seen -lt `$l.Count) { `$l[`$seen]; `$seen++ } }; Start-Sleep -Milliseconds 300 }; ''; '--- lockstep report ---'; Get-Content '$report'; Start-Sleep -Seconds 8"
 $winA = Start-FilmWindow $titleA $bodyA
 $winB = Start-FilmWindow $titleB $bodyB
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+$cellW = [Math]::Min(960, [int][Math]::Floor($screen.Width / 2) - 20)
+$cellH = [Math]::Min(720, $screen.Height - 60)
+$rectA = Place-FilmWindow $titleA ($screen.X + 10) ($screen.Y + 20) $cellW $cellH
+$rectB = Place-FilmWindow $titleB ($screen.X + 20 + $cellW) ($screen.Y + 20) $cellW $cellH
+$rectLines = @()
+foreach ($pair in @(@('A', $rectA), @('B', $rectB))) {
+    if ($pair[1]) { $rectLines += ('window {0}: left {1} top {2} right {3} bottom {4}' -f $pair[0], $pair[1].Left, $pair[1].Top, $pair[1].Right, $pair[1].Bottom) }
+    else { $rectLines += ('window {0}: not found' -f $pair[0]) }
+}
+Set-Content -Path (Join-Path $out 'window-rects.txt') -Value $rectLines -Encoding ASCII
 
 # the run itself
 $runArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'fc-run.ps1'), '-RunId', $RunId, '-Filter', $Filter, '-OutRoot', $OutRoot)
@@ -72,7 +110,7 @@ else {
         Start-Sleep -Milliseconds 800  # the windows exist by now; give them their titles and size
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $ffmpeg.Source
-        $psi.Arguments = "-y -loglevel warning -f gdigrab -framerate 15 -i title=`"$titleA`" -f gdigrab -framerate 15 -i title=`"$titleB`" -filter_complex `"[0:v]scale=-2:720[a];[1:v]scale=-2:720[b];[a][b]hstack,pad=ceil(iw/2)*2:ceil(ih/2)*2`" -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p `"$raw`""
+        $psi.Arguments = "-y -loglevel warning -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleA`" -f gdigrab -draw_mouse 0 -framerate 15 -i title=`"$titleB`" -filter_complex `"[0:v]scale=-2:720[a];[1:v]scale=-2:720[b];[a][b]hstack,pad=ceil(iw/2)*2:ceil(ih/2)*2`" -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p `"$raw`""
         $psi.RedirectStandardInput = $true
         $psi.UseShellExecute = $false
         $ff = [Diagnostics.Process]::Start($psi)
