@@ -357,6 +357,7 @@ class Tour {
         sink_.set_caption(std::string(main) + "  -  " + std::string(sub) + "    (" + std::to_string(index_) + "/" +
                           std::to_string(run_steps_.size()) + ")");
         body();
+        watch_screen(name);
         if (!stopped_) {
             smoke_.done();
         }
@@ -414,8 +415,13 @@ class Tour {
             smoke_.anomaly("harness/snapshot-undeclared", name);
             return;
         }
+        watch_screen("still " + std::string(name));
         rec_.want_still(options_.out_dir / (std::string(name) + ".png"));
     }
+    // The texts the editor draws, read by the harness at the end of every step and before every still (PathWatch): a feature video carries no path on
+    // this machine. Set while an editor session lives, empty otherwise.
+    void set_screen_texts(std::function<std::vector<ScreenText>()> texts) { screen_texts_ = std::move(texts); }
+    [[nodiscard]] const PathWatch& path_watch() const noexcept { return watch_; }
     [[nodiscard]] const fs::path& out_dir() const noexcept { return options_.out_dir; }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_; }
@@ -425,12 +431,25 @@ class Tour {
     [[nodiscard]] Recorder& recorder() noexcept { return rec_; }
 
   private:
+    // One read of the screen texts; each path found is a failed check naming the step and the field, never the text.
+    void watch_screen(std::string_view where) {
+        if (!screen_texts_) return;
+        const std::vector<ScreenText> texts = screen_texts_();
+        const std::size_t before = watch_.offences().size();
+        watch_.read(where, texts);
+        for (std::size_t i = before; i < watch_.offences().size(); ++i) {
+            (void)smoke_.check(false, "path-on-screen", watch_.offences()[i]);
+        }
+    }
+
     const TourOptions& options_;
     GlTargetSink& sink_;
     Smoke& smoke_;
     Recorder& rec_;
     std::vector<std::string> skip_;
     std::vector<std::string> run_steps_;
+    PathWatch watch_;
+    std::function<std::vector<ScreenText>()> screen_texts_;
     bool stopped_ = false;
     uint64_t frame_ = 0;
     uint32_t index_ = 0;
@@ -632,6 +651,17 @@ private:
 void editor_tour(Tour& t, const fs::path& assets) {
     Smoke& s = t.smoke();
     std::unique_ptr<EditorSession> session;
+    t.set_screen_texts([&session]() -> std::vector<ScreenText> {
+        if (!session) return {};
+        const editor::EditorPanels& p = session->workspace().panels();
+        return {{"item_path", p.item_path}, {"status", p.status},       {"title", p.title},           {"path", p.path},
+                {"selected_source", p.selected_source}, {"view_note", p.view_note}, {"close_prompt", p.close_prompt}};
+    });
+    // The lambda above reads `session`, which ends with this function: the harness must not call it afterwards.
+    struct ClearScreenTexts {
+        Tour& tour;
+        ~ClearScreenTexts() { tour.set_screen_texts(nullptr); }
+    } clear_screen_texts{t};
     const DrawFn draw = [&session, &t](const FrameInput& in) { return session->frame(in, t.sink().delta_seconds()); };
     const auto idle = InputFn{};
     const auto open = [&]() -> bool { return s.check(session != nullptr, "open", "the editor is open"); };
@@ -1638,6 +1668,7 @@ void editor_tour(Tour& t, const fs::path& assets) {
         if (!s.check(write_box_gltf(crate, "crate", 0.4f), "crate-file", path_text(crate))) return;
         w().panels().item_path = path_text(crate);
         command(editor::Command::load_item);
+        w().panels().item_path.clear();  // the field shows what it read: a path on this machine, in the still and the film
         const bool armed = w().panels().armed.has_value();
         if (!s.check(armed, "imported",
                      armed ? "Load from file armed '" + w().panels().library.at(*w().panels().armed).name + "'"
@@ -2339,6 +2370,9 @@ int run_live_smoke(const TourOptions& options) {
     // the recording must not quietly show ImGui's built-in one instead.
     (void)smoke.check(sink->ui_font_loaded(), "ui-font",
                       sink->ui_font_loaded() ? "Inter loaded" : "the UI font did not load; see stderr");
+    (void)smoke.check(tour.path_watch().offences().empty(), "no-path-on-screen",
+                      std::to_string(tour.path_watch().texts_read()) + " texts read over " + std::to_string(tour.path_watch().reads()) +
+                          " step ends and stills, none naming a path on this machine");
     if (rec.piped()) {
         std::error_code ec;
         const std::uintmax_t size = fs::file_size(options.out_dir / "tour.mp4", ec);
