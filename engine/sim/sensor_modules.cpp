@@ -9,6 +9,7 @@
 
 #include "physics/schedule.hpp"
 #include "sensors/baro.hpp"
+#include "sensors/camera.hpp"
 #include "sensors/gnss.hpp"  // gnss_bias_retention / gnss_bias_drive: the one Gauss-Markov coefficient pair, whoever's sensor
 #include "sensors/mag.hpp"
 #include "sim/module.hpp"
@@ -120,7 +121,113 @@ constexpr QuantityAccess kBaroAccess[] = {
 constexpr PassDecl kBaroPasses[] = {{.name = "synthesize", .phase = Phase::sensors, .access = kBaroAccess, .cpu = &pass_baro}};
 
 // ---------------------------------------------------------------------------
+// camera (Phase 3.2: the row, the schedule and the due-frame ring; the pixels are Rendering's)
+// ---------------------------------------------------------------------------
+
+// The stream is re-derived from the world-local slot, as every sensor's is. A camera draws nothing in Core (its noise is Rendering's, phase 6), so the
+// stream is only positioned, ready for whoever draws from it.
+void reseed_camera_row(std::span<std::byte> bytes, const WorldParams& params, uint32_t local_slot) noexcept {
+    sensors::CameraSensorRow& row = row_as<sensors::CameraSensorRow>(bytes);
+    row.noise = sensors::camera_noise_stream(params.seed, local_slot);
+}
+
+void init_camera_row(const RowInit& in) noexcept {
+    sensors::CameraSensorRow& row = row_as<sensors::CameraSensorRow>(in.row);
+    const sensors::CameraSensorSpawn spawn = spawn_as<sensors::CameraSensorSpawn>(in.spawn);
+
+    // Field-wise, never a whole-object assignment (a temporary's padding must not reach the arena); `kind` last.
+    row.body_slot = in.local_body;
+    row.rate_divider = spawn.rate_divider;
+    row.phase = 0u;
+    row.mount_pos = spawn.mount_pos;
+    row.shutter_fraction = spawn.shutter_fraction;
+    row.mount_orient = spawn.mount_orient;
+    row.lens_kind = spawn.lens_kind;
+    row.width = spawn.width;
+    row.height = spawn.height;
+    row.mode = spawn.mode;
+    row.fx = spawn.fx;
+    row.fy = spawn.fy;
+    row.cx = spawn.cx;
+    row.cy = spawn.cy;
+    row.k1 = spawn.k1;
+    row.k2 = spawn.k2;
+    row.k3 = spawn.k3;
+    row.k4 = spawn.k4;
+    row.blur_samples = spawn.blur_samples;
+    row.aa_samples = spawn.aa_samples;
+    row.exposure_gain = spawn.exposure_gain;
+    row.cull_mask = spawn.cull_mask;
+    row.channels = spawn.channels;
+    row._p0 = 0u;
+    row.last_index = 0;
+    row._reserved0 = 0;
+    row._reserved1 = 0;
+    reseed_camera_row(in.row, *in.params, in.local_slot);
+    row.kind = sensors::sensor_kind::camera;
+}
+
+// The row's own rules, on a row built from the spawn. The one rule that needs the world (keypoints need a declared keypoint_groups) is the world's to
+// enforce where the capacities are known; here a placeholder of 1 lets every other rule speak.
+[[nodiscard]] Result<void> validate_camera_spawn(std::span<const std::byte> bytes) {
+    const sensors::CameraSensorSpawn s = spawn_as<sensors::CameraSensorSpawn>(bytes);
+    sensors::CameraSensorRow row{};
+    row.kind = sensors::sensor_kind::camera;
+    row.rate_divider = s.rate_divider;
+    row.mount_pos = s.mount_pos;
+    row.shutter_fraction = s.shutter_fraction;
+    row.mount_orient = s.mount_orient;
+    row.lens_kind = s.lens_kind;
+    row.width = s.width;
+    row.height = s.height;
+    row.mode = s.mode;
+    row.fx = s.fx;
+    row.fy = s.fy;
+    row.cx = s.cx;
+    row.cy = s.cy;
+    row.k1 = s.k1;
+    row.k2 = s.k2;
+    row.k3 = s.k3;
+    row.k4 = s.k4;
+    row.blur_samples = s.blur_samples;
+    row.aa_samples = s.aa_samples;
+    row.exposure_gain = s.exposure_gain;
+    row.cull_mask = s.cull_mask;
+    row.channels = s.channels;
+    const std::string issue = sensors::camera_row_issue(row, 1u);
+    if (!issue.empty()) return std::unexpected(Error{Code::invalid_argument, issue});
+    return {};
+}
+
+void pass_camera(const physics::SubstepContext& ctx) noexcept {
+    for (std::size_t w = 0; w < ctx.worlds.size(); ++w) {
+        const uint32_t world = static_cast<uint32_t>(w);
+        sensors::schedule_cameras(ctx.worlds[w].bodies, world_rows<sensors::CameraSensorRow>(ctx.state[1], world),
+                                  world_rows<sensors::CameraFrameDue>(ctx.state[2], world), ctx.tick.value);
+    }
+}
+
+constexpr ArrayDecl kCameraArrays[] = {
+    {.name = "camera_sensors",
+     .elem_size = attached_row_size<sensors::CameraSensorRow>(),
+     .extent = Extent::per_sensor,
+     .spawn_size = sizeof(sensors::CameraSensorSpawn),
+     .init = &init_camera_row,
+     .validate = &validate_camera_spawn},
+    {.name = "camera_frames",
+     .elem_size = row_size<sensors::CameraFrameDue>(),
+     .extent = Extent::per_row,
+     .owner = "camera_sensors",
+     .depth = sensors::kRingDepth}};
+constexpr StreamDecl kCameraStreams[] = {
+    {.tag = sensors::kCameraNoiseDomainTag, .array = "camera_sensors", .reseed = &reseed_camera_row}};
+constexpr QuantityAccess kCameraAccess[] = {
+    {"body.pose", Access::read}, {"camera.camera_sensors", Access::write}, {"camera.camera_frames", Access::write}};
+constexpr PassDecl kCameraPasses[] = {{.name = "schedule", .phase = Phase::sensors, .access = kCameraAccess, .cpu = &pass_camera}};
+
+// ---------------------------------------------------------------------------
 // mag
+
 // ---------------------------------------------------------------------------
 
 void reseed_mag_row(std::span<std::byte> bytes, const WorldParams& params, uint32_t local_slot) noexcept {
@@ -210,8 +317,9 @@ constexpr GradeDecl kCpuOnlyGrade{.cpu = Grade::reference, .vulkan = Grade::abse
 
 }  // namespace
 
-// RED stub: the camera module declares nothing yet, so no array named camera_sensors exists.
-ModuleDesc camera_module() { return {.name = "camera", .grade = kCpuOnlyGrade}; }
+ModuleDesc camera_module() {
+    return {.name = "camera", .passes = kCameraPasses, .state = kCameraArrays, .streams = kCameraStreams, .grade = kCpuOnlyGrade};
+}
 
 ModuleDesc baro_module() {
     return {.name = "baro", .passes = kBaroPasses, .state = kBaroArrays, .streams = kBaroStreams, .grade = kCpuOnlyGrade};

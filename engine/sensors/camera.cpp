@@ -1,5 +1,7 @@
 #include "sensors/camera.hpp"
 
+#include "physics/integrator.hpp"  // body_flags::active
+
 namespace spade::sensors {
 
 bool camera_advance(CameraSensorRow& row) noexcept {
@@ -9,8 +11,22 @@ bool camera_advance(CameraSensorRow& row) noexcept {
     return true;
 }
 
-// RED stub: the pass does nothing yet.
-void schedule_cameras(std::span<const BodyState>, std::span<CameraSensorRow>, std::span<CameraFrameDue>, uint64_t) noexcept {}
+void schedule_cameras(std::span<const BodyState> bodies, std::span<CameraSensorRow> cameras, std::span<CameraFrameDue> rings, uint64_t tick) noexcept {
+    for (std::size_t s = 0; s < cameras.size(); ++s) {
+        CameraSensorRow& row = cameras[s];
+        if (row.kind != sensor_kind::camera) continue;  // free, or its init still queued
+
+        const BodyState& body = bodies[row.body_slot];
+        if ((body.flags & physics::body_flags::active) == 0u) continue;
+
+        if (!camera_advance(row)) continue;  // the rate boundary: the divider and phase, one substep
+        CameraFrameDue due{};
+        row.last_index += 1u;
+        due.index = row.last_index;
+        due.tick = tick;
+        ring_write(rings.subspan(s * kRingDepth, kRingDepth), due.index, due);
+    }
+}
 
 namespace {
 
