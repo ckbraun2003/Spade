@@ -11,6 +11,10 @@
 // them from the spec). What the record cannot give is reported `unchecked`, never `pass`: K4 past the header (PX4's log), K6's recount (the
 // record has no per-tick costs) and K11's replay (a replay needs the world, which the folder holds only by hash). The good folder's test pins
 // exactly which ones, so one cannot go quiet unnoticed.
+//
+// SPADE_FC_SAMPLE_RUN names a run folder Core's writer filled; the case that reads it skips by name when it is unset. Core's own write test
+// (FcHostRunRecord) REFUSES a non-empty folder there (a record is never overwritten), so give every run a FRESH folder, and set the variable only
+// for the test that reads it.
 // ---------------------------------------------------------------------------
 #include <gtest/gtest.h>
 
