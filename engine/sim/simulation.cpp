@@ -2762,6 +2762,13 @@ Result<VehicleRef> Simulation::spawn(uint32_t world_index, ModelTypeId model_id,
         if (!compiled) return std::unexpected(Error{compiled.error().code, "spawn(vehicle): model '" + model.name + "': " + compiled.error().context});
         model_shape = *compiled;
     }
+    // The Slang rotor kernel carries no fall time constant: a model with one is refused on a Vulkan world, naming the model and the rotor (the shared
+    // refuse_on_vulkan wording, L6).
+    for (std::size_t i = 0; i < model.rotors.size(); ++i) {
+        if (model.rotors[i].tau_down == 0.0f) continue;
+        const std::string why = "model '" + model.name + "' rotor " + std::to_string(i) + ": the GPU rotor pass has no fall time constant";
+        if (Result<void> r = refuse_on_vulkan(vulkan_backend_ != nullptr, "spawn(vehicle)", "tau_down", why.c_str()); !r) return std::unexpected(r.error());
+    }
     if (!finite(where.pos) || !finite(where.vel) || !finite(where.omega_body)) {
         return std::unexpected(invalid("spawn(vehicle): pos/vel/omega must all be finite"));
     }

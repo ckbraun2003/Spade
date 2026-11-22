@@ -12,6 +12,10 @@
 // could change silently. This table is FNV-1a 64 over each compiled variant's bytes as built from master bd207ee8,
 // before the change; the test hashes what is embedded now. A PIN: green at red, and it must stay green. A kernel that
 // is changed on purpose in a later task re-records its own rows in that task's commit, with the reason in the message.
+//
+// RE-TAKEN, the three `rotors` rows (tau_down, O144): RotorRow's reserved lane `_r0` is named `tau_down` in layouts.slang, and the kernel's
+// SPIR-V carries the member name; no arithmetic moved (the kernel never reads the lane, and the GpuParity bands and the standard digest are
+// unchanged). Every other row is unchanged.
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -272,9 +276,9 @@ const Row kRows[] = {
     {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 32, 0x0f34ed07b2209ee8ull},
     {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 64, 0xd345cfee9c44e588ull},
     {&spade::compute::gen::kSpvVariants_points_positions, "points_positions", 128, 0x7e4a8a4a8e723348ull},
-    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 32, 0x6d59a88deb8de7bfull},
-    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 64, 0x0406e0ac98e5f6dfull},
-    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 128, 0x1816b0a38307911full},
+    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 32, 0xeabffc38c9ade1b3ull},
+    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 64, 0x4cd195a3816c6293ull},
+    {&spade::compute::gen::kSpvVariants_rotors, "rotors", 128, 0xaabea42d4d5c55d3ull},
     // sensor_gnss and sensor_imu RE-RECORDED (physics/sensor-errors, O140 phase 1): layouts.slang renamed three IMU pads, `_reserved0` and one GNSS pad to
     // their new fields (range_a, range_g, adc_bits, turn_on_sigma_a/g, turn_on_bias) at the SAME offsets, and the struct member names are debug names in
     // the SPIR-V, so the six rows below moved while the arithmetic did not: no kernel reads a renamed field. The proof: the whole `-L gpu` (459 run, 0

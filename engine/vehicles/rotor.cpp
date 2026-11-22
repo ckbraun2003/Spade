@@ -327,7 +327,10 @@ void apply_rotors(std::span<BodyState> bodies, std::span<RotorRow> rotors, const
         //    -- the order spec S6 states, and the semi-implicit flavour the
         //    rest of the engine uses.
         // -------------------------------------------------------------------
-        const float alpha = rotor_lag_alpha(h, rotor.tau);
+        //    A command BELOW the shaft speed lags with `tau_down` when one is set (> 0), else with `tau`: a motor spins up faster than
+        //    it spins down. tau_down == 0 takes the very same branch as before it existed, so no existing row moves a bit.
+        const float tau_lag = (rotor.omega_cmd < rotor.omega && rotor.tau_down > 0.0f) ? rotor.tau_down : rotor.tau;
+        const float alpha = rotor_lag_alpha(h, tau_lag);
         rotor.omega += (rotor.omega_cmd - rotor.omega) * alpha;
 
         // -------------------------------------------------------------------

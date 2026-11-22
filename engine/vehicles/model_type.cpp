@@ -120,6 +120,12 @@ std::vector<ModelIssue> ModelType::issues() const {
             // admitted; a NEGATIVE time constant is a typo, not a model.
             add(E::rotor, i, "tau", where + "tau must be finite and >= 0");
         }
+        // 0 = the same as tau. A fall time constant with no rise lag (tau <= 0, instant tracking) is an ambiguous mix of the two, so it is refused.
+        if (!(rotor.tau_down >= 0.0f) || !finite(rotor.tau_down)) {
+            add(E::rotor, i, "tau_down", where + "tau_down must be finite and >= 0 (0 = the same as tau)");
+        } else if (rotor.tau_down > 0.0f && !(rotor.tau > 0.0f)) {
+            add(E::rotor, i, "tau_down", where + "tau_down needs tau > 0 (a lagged fall with an instant rise is not a motor)");
+        }
         // -------------------------------------------------------------------
         // THE ONE THAT FAILS QUIETLY WITHOUT THIS CHECK, and the reason
         // rotor.hpp's apply_rotors() preconditions name Task 18 by number:

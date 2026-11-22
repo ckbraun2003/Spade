@@ -618,6 +618,33 @@ TEST(YamlTextDouble, RefusesWhatIsNotAFiniteDoubleByName) {
 // physics::ShapeDesc). It is written only when the model has a shape, so every model file without one stays model_version 1, byte for
 // byte (TheCanonicalTextIsPinned, unedited, pins that).
 
+// A rotor's fall time constant is an OPTIONAL key of the rotor mapping: written only when set (0 = tau), so no existing file or its bytes move and no file
+// version changes; a reader that predates it refuses the file by naming the key.
+TEST(ModelFile, ARotorsTauDownIsWrittenOnlyWhenSetAndRoundTrips) {
+    const std::optional<ModelFile> reference = reference_model_file();
+    ASSERT_TRUE(reference.has_value());
+    ModelFile plain = *reference;
+    ASSERT_FALSE(plain.model.rotors.empty());
+    const spade::Result<std::string> plain_text = spade::scene::model_to_yaml(plain);
+    ASSERT_OK(plain_text);
+    EXPECT_FALSE(contains(*plain_text, "tau_down")) << "a model without one writes the bytes it always did: " << *plain_text;
+
+    ModelFile lagged = *reference;
+    lagged.model.rotors[0].tau = 0.0125f;
+    lagged.model.rotors[0].tau_down = 0.025f;
+    const spade::Result<std::string> text = spade::scene::model_to_yaml(lagged);
+    ASSERT_OK(text);
+    EXPECT_TRUE(contains(*text, ", tau_down: 0.025")) << *text;
+    const spade::Result<ModelFile> back = spade::scene::model_from_yaml(*text);
+    ASSERT_OK(back);
+    EXPECT_EQ(back->model.rotors[0].tau_down, 0.025f);
+    EXPECT_EQ(back->model.rotors[1].tau_down, 0.0f) << "the key is per rotor";
+    EXPECT_EQ(spade::vehicles::model_identity(back->model), spade::vehicles::model_identity(lagged.model));
+    const spade::Result<std::string> again = spade::scene::model_to_yaml(*back);
+    ASSERT_OK(again);
+    EXPECT_TRUE(*again == *text) << first_difference(*text, *again);
+}
+
 TEST(ModelFile, AContactShapeMakesItModelVersionTwo) {
     const std::string pinned(kPinnedText);
     const spade::Result<ModelFile> base = spade::scene::model_from_yaml(pinned);

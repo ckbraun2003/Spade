@@ -279,7 +279,7 @@ struct RotorRow {
     float  omega_cmd;     // STATE: commanded shaft speed, rad/s, non-negative
     float  thrust_coeff;  // k_T in T_static = k_T * omega^2, N s^2
     float  torque_coeff;  // k_Q in Q = k_Q * omega^2, N m s^2, non-negative
-    float  _r0;           // reserved for the gyroscopic/BEMT opt-ins; must stay 0
+    float  tau_down;      // fall time constant, s; 0 = tau (the kernel does not read it: a Vulkan spawn with tau_down > 0 is refused)
     float  _r1;
     float  _r2;
     float  _r3;
