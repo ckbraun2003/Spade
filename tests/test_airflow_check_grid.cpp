@@ -47,7 +47,7 @@ TEST(AirflowCheckGrid, TheShapeRulesAreMakeGridsWordForWord) {
         {{4, 4, 4, std::numeric_limits<float>::quiet_NaN()}, {}, Code::invalid_argument, "dx"},
         {{4, 4, 4, std::numeric_limits<float>::infinity()}, {}, Code::invalid_argument, "dx"},
         {{2048, 2048, 1024, 0.01f}, {}, Code::capacity_exceeded, "2^31"},
-        {{1024, 1024, 1024, 0.01f}, {}, Code::capacity_exceeded, std::to_string(kGridByteCap)},
+        {{1100, 1100, 1100, 0.01f}, {}, Code::capacity_exceeded, std::to_string(kGridByteCap)},  // O193: 1024^3 is 4.3 GB of grid, now under the cap
         {{4, 4, 4, 0.1f}, unpaired, Code::invalid_argument, "x+"},
         {{3, 4, 4, 0.1f}, odd, Code::invalid_argument, "even"},
     };
@@ -118,11 +118,24 @@ TEST(AirflowCheckGrid, AClosedDomainWithANetFluxIsRefusedByName) {
     EXPECT_EQ(scratch.error().context, ok.error().context);
 }
 
-// A 320^3 grid fits the cap as plan A (about 3.4 GB) but not with solids
-// (about 6.6 GB), so a scene validator asks for the grid it will run.
+// O193: the host's cap is a STATED number, not the device's budget and not the machine's free RAM (a case file must validate the same on every run and
+// every machine): 16 GiB, twice the 8 GiB card the plan targets, so a validation never refuses what the device can run. The old 4 GiB refused the
+// 30 M-cell full-box grid (about 6 GB with solids) that the GPU ran.
+TEST(AirflowCheckGrid, TheHostCapIsTheStatedSixteenGibAndASixGigabyteGridPasses) {
+    EXPECT_EQ(kGridByteCap, uint64_t{16} << 30);
+    const GridShape shape{312, 312, 312, 0.00125f};  // 30.4 M cells
+    const DomainBc bc;
+    const uint64_t with_solids = fluid_bytes(shape, bc) + solid_bytes(shape, bc);
+    ASSERT_GT(with_solids, uint64_t{4} << 30) << "the case is over the old cap";
+    ASSERT_LT(with_solids, kGridByteCap);
+    EXPECT_TRUE(check_grid(shape, bc, true).has_value());
+}
+
+// A 480^3 grid fits the cap as plan A (about 11.5 GB) but not with solids
+// (about 22 GB), so a scene validator asks for the grid it will run.
 // Mutation: with_solids ignored.
 TEST(AirflowCheckGrid, SolidsMoveTheCap) {
-    const GridShape shape{320, 320, 320, 0.01f};
+    const GridShape shape{480, 480, 480, 0.01f};
     const DomainBc bc;
     const uint64_t plain = fluid_bytes(shape, bc);
     const uint64_t solid = plain + solid_bytes(shape, bc);

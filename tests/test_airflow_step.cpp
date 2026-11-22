@@ -130,7 +130,7 @@ TEST(AirflowStep, TheSolverCoresDigestIsPinned) {
 // before anything is allocated: the grid here is a shape with no storage.
 TEST(AirflowStep, AFluidScratchPastTheByteCapIsRefusedBeforeAllocating) {
     MacGrid g;
-    g.shape = {512, 512, 256, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone
+    g.shape = {640, 640, 512, 0.01f};  // no storage: make_fluid_scratch must refuse from the shape alone (O193: 512 x 512 x 256 is now under the 16 GiB cap)
     ASSERT_LE(grid_bytes(g.shape), kGridByteCap) << "the grid alone fits";
     ASSERT_GT(fluid_bytes(g.shape, DomainBc{}), kGridByteCap) << "the grid and its scratch do not";
     const auto s = make_fluid_scratch(g, DomainBc{}, {.h = 0.001f});

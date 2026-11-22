@@ -61,7 +61,9 @@ TEST(AirflowFpvGrid, TheBoxIsRectangularAtOnePointTwoFiveMillimetresAndWithinThe
                 static_cast<double>(fluid + solids) / kGiB, static_cast<double>(af::kGridByteCap) / kGiB, cells * 234.6 / kGiB);
     const auto ok = af::check_grid(kD1FpvGrid, bc, true);
     EXPECT_TRUE(ok.has_value()) << (ok ? "" : ok.error().context);
-    EXPECT_LE(cells * 234.6, 4.0 * kGiB) << "the device runner's own 4 GiB (compute::vram_cap), measured at 234.6 B a cell";
+    // O193: the device runner's cap is the card's budget less its reserve (compute::vram_cap), no fixed 4 GiB: on the 3060 Ti (8 GiB, a quarter held back,
+    // the 1 GiB runner reserve) 6.75 GiB, measured at 234.6 B a cell.
+    EXPECT_LE(cells * 234.6, (8.0 - 0.25 - 1.0) * kGiB) << "the 3060 Ti's budget less the reserve, at 234.6 B a cell";
 }
 
 // The hub height is the kit's, above the drone's design origin (the held point): the hold is a function of it.

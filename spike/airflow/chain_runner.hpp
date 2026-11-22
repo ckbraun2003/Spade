@@ -199,6 +199,8 @@ struct RunnerDesc {
     // beside a second fluid) on one context each hold their own. A name given is taken as it is, and the ledger refuses one
     // already held. A ledger belongs to one context, so runners on SEPARATE contexts do not sum.
     std::string vram_share{};
+    // RED stub (O193): the reserve this runner leaves free of the device's budget, in bytes (signed so a negative is refused by name).
+    int64_t vram_reserve_bytes = int64_t{1} << 30;
 };
 
 // One readback of a chain: after the chain's last dispatch, bytes [src_offset, src_offset + bytes) of buffer
@@ -224,6 +226,8 @@ inline constexpr uint64_t kRunnerReserveBytes = uint64_t{1} << 30;
 // VK_EXT_memory_budget the heap's usage already counts it. Read fresh at each
 // call: the budget moves as other programs allocate.
 [[nodiscard]] uint64_t runner_budget_bytes(compute::VulkanContext& ctx);
+// RED stub (O193): the same with the run's own reserve (vram_reserve_bytes) in place of kRunnerReserveBytes.
+[[nodiscard]] uint64_t runner_budget_bytes(compute::VulkanContext& ctx, int64_t reserve_bytes);
 
 // THE STAGING BUFFER'S MEMORY (Rendering's finding, 2026-10-21: a read from
 // uncached host memory ran at about 230 MB/s, 808 ms for 184 MiB on the 3060

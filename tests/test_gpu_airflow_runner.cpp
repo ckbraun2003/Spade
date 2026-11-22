@@ -682,7 +682,7 @@ TEST(GpuAirflowRunner, OversizedBufferIsRefusedByNameBeforeAnyAllocation) {
 
 // Buffers each inside every per-buffer limit whose total passes the budget:
 // refused by the budget's name, with nothing allocated. The budget is
-// runner_budget_bytes(), min(4 GiB, budget - usage - 1 GiB reserve) from
+// runner_budget_bytes(), budget - usage - 1 GiB reserve (O193: no 4 GiB ceiling) from
 // memory_budget(); create() reads it again and it may have moved (other
 // programs allocate), so the message is held to the total and the reserve,
 // not to this reading of the cap. The total passes the cap by up to one slab,
@@ -699,7 +699,7 @@ TEST(GpuAirflowRunner, OverBudgetTotalIsRefusedByName) {
                 memory.budget, memory.usage,
                 memory.source == spade::compute::MemoryBudget::Source::ext ? "VK_EXT_memory_budget" : "half heap",
                 budget);
-    EXPECT_LE(budget, spade::compute::kAirflowVramCap);
+    EXPECT_LE(budget, memory.budget) << "O193: no fixed 4 GiB; the cap is inside the heap's own budget";
 
     uint64_t each = limits.max_storage_buffer_range;
     if (limits.max_memory_allocation_size != 0) each = std::min(each, limits.max_memory_allocation_size);
@@ -728,6 +728,33 @@ TEST(GpuAirflowRunner, OverBudgetTotalIsRefusedByName) {
     EXPECT_TRUE(contains(refused.error().context, "reserve " + std::to_string(spade::airflow_gpu::kRunnerReserveBytes)))
         << refused.error().context;
     EXPECT_EQ(spade::airflow_gpu::runner_memory_stats().allocations, before.allocations);
+}
+
+// O193: the reserve is the runner's named option, vram_reserve_bytes. A reserve under 0.3 GiB or a negative one is refused by that name before anything is
+// allocated; a lowered reserve (0.3 GiB) is the one the refusal names when the total is over.
+TEST(GpuAirflowRunner, TheReserveOptionIsRefusedBelowTheLeastAndNamedWhenLowered) {
+    if (const auto why = spade::testing::vulkan_skip_reason()) GTEST_SKIP() << *why;
+    auto ctx = make_context();
+    ASSERT_NE(ctx, nullptr);
+    std::vector<RunnerBuffer> buffers{RunnerBuffer{"one", 1024, BufferKind::device_only}};
+    const SpirvVariantSet* const kernels[] = {&gen::kSpvVariants_airflow_copy};
+    const spade::airflow_gpu::RunnerMemoryStats before = spade::airflow_gpu::runner_memory_stats();
+    for (const int64_t bad : {int64_t{-1}, int64_t{1} << 20}) {
+        auto refused = ChainRunner::create(*ctx, RunnerDesc{.buffers = buffers, .kernels = kernels, .push_bytes = kPushBytes,
+                                                            .workgroup_size = kWorkgroupSize, .vram_reserve_bytes = bad});
+        ASSERT_FALSE(refused.has_value()) << bad;
+        EXPECT_EQ(refused.error().code, Code::invalid_argument);
+        EXPECT_TRUE(contains(refused.error().context, "vram_reserve_bytes")) << refused.error().context;
+    }
+    EXPECT_EQ(spade::airflow_gpu::runner_memory_stats().allocations, before.allocations);
+
+    // A lowered reserve raises what the runner may hold, by the difference.
+    const uint64_t lowest = spade::compute::kMinVramReserve;
+    const uint64_t with_default = spade::airflow_gpu::runner_budget_bytes(*ctx);
+    const uint64_t with_lowest = spade::airflow_gpu::runner_budget_bytes(*ctx, static_cast<int64_t>(lowest));
+    EXPECT_GE(with_lowest, with_default);
+    EXPECT_LE(with_lowest - with_default, spade::airflow_gpu::kRunnerReserveBytes - lowest + (uint64_t{64} << 20))
+        << "the gain is the reserve given back (within what other programs move between the two readings)";
 }
 
 // push_bytes past maxPushConstantsSize, and past kMaxChainPushBytes (the block

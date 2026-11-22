@@ -156,6 +156,10 @@ inline constexpr uint64_t kAirflowVramCap = uint64_t{4} << 30;
 // What the engine leaves free for everyone else when it checks its own buffers against the budget (stage 7 Task A3).
 inline constexpr uint64_t kMirrorVramReserve = uint64_t{64} << 20;
 
+// RED stub (O193): the smallest reserve a run may ask to leave free, and the check of the named option vram_reserve_bytes.
+inline constexpr uint64_t kMinVramReserve = (uint64_t{3} << 30) / 10;
+[[nodiscard]] inline Result<uint64_t> check_vram_reserve(int64_t asked) { return static_cast<uint64_t>(asked); }
+
 // What a caller may allocate: min(kAirflowVramCap, budget - usage - reserve),
 // never below 0. With half_heap the usage is `own_allocated`, what the caller
 // says it has allocated itself (it cannot see anyone else's); with ext the

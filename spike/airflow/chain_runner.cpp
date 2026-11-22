@@ -164,6 +164,10 @@ uint64_t runner_budget_bytes(compute::VulkanContext& ctx) {
     return compute::vram_cap(ctx.memory_budget(), kRunnerReserveBytes, g_live_bytes.load());
 }
 
+uint64_t runner_budget_bytes(compute::VulkanContext& ctx, int64_t) {  // RED stub
+    return runner_budget_bytes(ctx);
+}
+
 std::optional<uint32_t> choose_memory_type(const VkPhysicalDeviceMemoryProperties& props, uint32_t type_bits,
                                            std::span<const VkMemoryPropertyFlags> preferences) noexcept {
     const uint32_t types = std::min<uint32_t>(props.memoryTypeCount, VK_MAX_MEMORY_TYPES);

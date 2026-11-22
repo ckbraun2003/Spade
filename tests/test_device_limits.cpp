@@ -3,6 +3,7 @@
 // §7.4; CORE-5 as amended 2026-10-12). Pure functions over plain data, so these
 // run on every machine; tests/test_gpu_device_limits.cpp reads a real device.
 
+#include <limits>
 #include <gtest/gtest.h>
 
 #include <array>
@@ -117,17 +118,54 @@ TEST(DeviceLimits, TheWorkgroupCheckNamesTheKernel) {
                    {"kernel 'fat' has 256 invocations per workgroup", "maxComputeWorkGroupInvocations (128)"});
 }
 
-TEST(VramBudget, TheCapIsTheSmallerOfFourGibAndTheFreeBudget) {
-    static_assert(spade::compute::kAirflowVramCap == spade::physics::airflow::kGridByteCap,
-                  "the GPU's ceiling is the CPU's");
+// O193 (Cameron: "lift the limit, tight margin"): the device's cap is what the heap's budget leaves after what is in use and the reserve. There is no
+// fixed 4 GiB ceiling any more; a card with more to give gives it. A user cap can still only lower it.
+TEST(VramBudget, TheCapIsTheFreeBudgetWithNoFixedCeiling) {
     MemoryBudget b{.budget = 7 * kGiB, .usage = 1 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
-    EXPECT_EQ(vram_cap(b, kGiB, 0), 4 * kGiB);  // 7 - 1 - 1 = 5, over the 4 GiB ceiling
+    EXPECT_EQ(vram_cap(b, kGiB, 0), 5 * kGiB);  // 7 - 1 - 1: the old 4 GiB ceiling is gone
     b.usage = 3 * kGiB;
     EXPECT_EQ(vram_cap(b, kGiB, 0), 3 * kGiB);
     b.usage = 7 * kGiB;
     EXPECT_EQ(vram_cap(b, kGiB, 0), 0u);  // never below 0
     b.usage = 6 * kGiB + kGiB / 2;
     EXPECT_EQ(vram_cap(b, kGiB, 0), 0u);
+    const MemoryBudget big{.budget = 24 * kGiB, .usage = 0, .heap = 0, .source = MemoryBudget::Source::ext};
+    EXPECT_EQ(vram_cap(big, kGiB, 0), 23 * kGiB) << "a 24 GiB card gives 23 GiB, not 4";
+    EXPECT_EQ(vram_cap(big, kGiB, 0, 2 * kGiB), 2 * kGiB) << "a user cap only lowers";
+    EXPECT_EQ(vram_cap(big, kGiB, 0, 40 * kGiB), 23 * kGiB) << "and never raises";
+}
+
+// The case that is the point: a grid of 6.5 GiB, refused at 4 GiB today, passes on the 3060 Ti's budget (8 GiB less a quarter, the reserve 1 GiB);
+// one over budget less reserve is still refused, by name, and says what the cap is made of.
+TEST(VramBudget, AGridOverFourGibThatFitsTheBudgetPassesAndOneOverTheBudgetIsStillRefused) {
+    const MemoryBudget card{.budget = 8 * kGiB - kGiB / 4, .usage = 0, .heap = 0, .source = MemoryBudget::Source::ext};
+    EXPECT_TRUE(check_vram("the airflow grid", 6 * kGiB + kGiB / 2, card, kGiB, 0, kDevice).has_value());
+    expect_refused(check_vram("the airflow grid", 7 * kGiB, card, kGiB, 0, kDevice),
+                   {"the airflow grid asks for 7516192768 bytes of VRAM", "the cap is 7247757312 bytes = budget 8321499136 - usage 0 - reserve 1073741824",
+                    "VK_EXT_memory_budget"});
+}
+
+// The reserve is a named, signed option (vram_reserve_bytes): the default is 1 GiB, a run may LOWER it (the O158 film run asks for 0.3 GiB), and a
+// reserve under 0.3 GiB or a negative one is refused by the option's name.
+TEST(VramBudget, TheReserveOptionIsNamedAndRefusedBelowThreeTenthsOfAGibOrNegative) {
+    using spade::Code;
+    using spade::compute::check_vram_reserve;
+    using spade::compute::kMinVramReserve;
+    EXPECT_EQ(kMinVramReserve, (uint64_t{3} << 30) / 10) << "0.3 GiB";
+    for (const int64_t ok : {static_cast<int64_t>(kMinVramReserve), static_cast<int64_t>(kGiB), static_cast<int64_t>(4 * kGiB)}) {
+        const auto r = check_vram_reserve(ok);
+        ASSERT_TRUE(r.has_value()) << ok << ": " << r.error().context;
+        EXPECT_EQ(*r, static_cast<uint64_t>(ok));
+    }
+    for (const int64_t bad : {static_cast<int64_t>(kMinVramReserve) - 1, int64_t{0}, int64_t{1}, int64_t{-1}, std::numeric_limits<int64_t>::min()}) {
+        const auto r = check_vram_reserve(bad);
+        ASSERT_FALSE(r.has_value()) << bad << " accepted";
+        EXPECT_EQ(r.error().code, Code::invalid_argument) << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, "vram_reserve_bytes")) << "the option is named: " << r.error().context;
+        EXPECT_TRUE(contains(r.error().context, std::to_string(bad))) << "the value asked is quoted: " << r.error().context;
+    }
+    EXPECT_TRUE(contains(check_vram_reserve(-1).error().context, "negative")) << check_vram_reserve(-1).error().context;
+    EXPECT_TRUE(contains(check_vram_reserve(1).error().context, std::to_string(kMinVramReserve))) << "the least allowed is named";
 }
 
 TEST(VramBudget, AGridOverTheLiveBudgetIsRefusedNamingTheBytesAndTheCap) {
@@ -136,7 +174,7 @@ TEST(VramBudget, AGridOverTheLiveBudgetIsRefusedNamingTheBytesAndTheCap) {
     const MemoryBudget b{.budget = 7 * kGiB, .usage = 4 * kGiB, .heap = 0, .source = MemoryBudget::Source::ext};
     EXPECT_TRUE(check_vram("the airflow grid", 2 * kGiB, b, kGiB, 0, kDevice).has_value());
     expect_refused(check_vram("the airflow grid", 3 * kGiB, b, kGiB, 0, kDevice),
-                   {"the airflow grid asks for 3221225472 bytes of VRAM", "the cap is 2147483648 bytes",
+                   {"the airflow grid asks for 3221225472 bytes of VRAM", "the cap is 2147483648 bytes = budget",
                     "budget 7516192768 - usage 4294967296 - reserve 1073741824", "VK_EXT_memory_budget"});
 }
 

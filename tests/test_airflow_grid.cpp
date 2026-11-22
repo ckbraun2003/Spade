@@ -87,11 +87,11 @@ TEST(AirflowGrid, CountsItsBytesInSixtyFourBits) {
 }
 
 TEST(AirflowGrid, RefusesAGridPastTheByteCapBeforeAllocating) {
-    const auto g = make_grid({1024, 1024, 1024, 0.01f}, {});
-    ASSERT_FALSE(g.has_value()) << "accepted a grid of about 16 GiB";
+    const auto g = make_grid({1100, 1100, 1100, 0.01f}, {});
+    ASSERT_FALSE(g.has_value()) << "accepted a grid of about 21 GB (past the 16 GiB host cap)";
     EXPECT_EQ(g.error().code, Code::capacity_exceeded);
     const std::string& why = g.error().context;
-    EXPECT_NE(why.find(std::to_string(spade::physics::airflow::grid_bytes({1024, 1024, 1024, 0.01f}))),
+    EXPECT_NE(why.find(std::to_string(spade::physics::airflow::grid_bytes({1100, 1100, 1100, 0.01f}))),
               std::string::npos)
         << why;
     EXPECT_NE(why.find(std::to_string(spade::physics::airflow::kGridByteCap)), std::string::npos) << why;
