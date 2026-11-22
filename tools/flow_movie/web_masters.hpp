@@ -1006,6 +1006,7 @@ struct CaptionInput {
     bool shaded = false;        // --surface-shade: ... lit for shape
     std::string vortex_note;    // --surface-pressure with --vorticity-cloud: how the swirls are drawn (q_look.hpp's vortex_note), for the caveats
     bool blades = false;        // --prop-blur mode=blades: ... and the rotors' real blades, drawn at the simulation's angle, take the air's pressure beside them on their own range
+    bool tubes = false;         // --pressure-colour: the vortices drawn as smooth surfaces (--q-surfaces) coloured by the air's pressure on the parts' scale (O158); the note is vortex_note
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop

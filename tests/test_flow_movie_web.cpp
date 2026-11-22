@@ -1758,3 +1758,33 @@ TEST(FlowMovieWeb, ThePressureColourNeedsTheTubesAndThePressureFilmAndNoCloud) {
     // surfaces vanish when faded: the tubes film does not fade the wake, as the plain Q surfaces do not
     EXPECT_FALSE(web::web_fade_applies("S8", false, false, true, false, true));
 }
+
+// The tubes film's caption (O158, O163): the pressure film with the vortices drawn as smooth surfaces coloured by the air's pressure. The title and the Shows line name that, the caveats carry the tube
+// note (fixed levels, the parts' scale, display-only smoothing, not a measurement) and the blade sentence (O128) stays; nothing of the vorticity cloud or its colour is left in it.
+TEST(FlowMovieWeb, TheTubesFilmsCaptionNamesTheTubesColouredByPressureAndKeepsTheBladeSentence) {
+    web::CaptionInput in;
+    in.clip = web::find_clip("S8");
+    in.drone = web::find_drone("openframe5f");
+    in.lines = true;
+    in.pressure = true;
+    in.tubes = true;
+    in.shaded = true;
+    in.blades = true;
+    in.cell_mm = 1.25f;
+    in.step_us = 25u;
+    flow_movie::QLook look;
+    look.q_peak = 20.0f;
+    in.vortex_note = flow_movie::tube_note(look, 0.8f, 3u, true);
+    in.command = "flow_movie --web S8 --drone openframe5f --surface-pressure --q-surfaces --pressure-colour --prop-blur mode=blades";
+    const std::string text = web::caption_text(in);
+    std::string lower = text;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    EXPECT_NE(text.find("with the vortices round the rotors as pressure-coloured surfaces"), std::string::npos) << text;
+    EXPECT_NE(text.find("smooth surfaces in the same blue-to-red"), std::string::npos) << "the Shows line: " << text;
+    EXPECT_NE(text.find("same scale as the parts"), std::string::npos) << "the tube note is in the caveats: " << text;
+    EXPECT_NE(text.find("display only"), std::string::npos) << text;
+    EXPECT_NE(text.find("spread over about 5 mm"), std::string::npos) << "the O128 blade sentence stays: " << text;
+    EXPECT_EQ(lower.find("vorticity"), std::string::npos) << "nothing of the vorticity cloud is left: " << text;
+    EXPECT_EQ(lower.find("soft cloud"), std::string::npos) << text;
+    EXPECT_EQ(lower.find("nasa"), std::string::npos) << text;
+}
