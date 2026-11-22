@@ -320,6 +320,7 @@ add_executable(spade_tests
     test_fc_link_px4.cpp
     test_fc_link_tcp.cpp
     test_autopilot_map.cpp
+    test_x500_contact_model.cpp
     test_openframe5f_build_table.cpp
     test_flow_movie_particles.cpp
     test_flow_movie_stream.cpp
