@@ -73,7 +73,7 @@ private:
 
 // The frames a streamed run keeps until its solve is done: the --keep-frames list, and the frames its still reads (the
 // still's own and the mean window ending at it), each once, sorted. The still is drawn after the solve, from them.
-[[nodiscard]] inline std::vector<uint32_t> keep_with_still(std::vector<uint32_t> keep, std::optional<uint32_t> still,
+[[nodiscard]] inline std::vector<uint32_t> keep_with_still(std::vector<uint32_t> keep, const std::optional<uint32_t>& still,
                                                            uint32_t mean_frames) {
     if (still) {
         const uint32_t m = std::max(mean_frames, 1u);
