@@ -274,8 +274,8 @@ TEST(CameraFramesTool, EachInstanceIdHasItsOwnColourAndZeroIsBlack) {
     std::vector<uint16_t> many;
     for (uint16_t i = 0; i < 100; ++i) many.push_back(i);
     const std::vector<uint8_t> all = cf::instance_rgb(many);
-    std::set<std::vector<uint8_t>> seen;
-    for (std::size_t i = 0; i < many.size(); ++i) seen.insert(std::vector<uint8_t>(all.begin() + static_cast<std::ptrdiff_t>(3 * i), all.begin() + static_cast<std::ptrdiff_t>(3 * i + 3)));
+    std::set<uint32_t> seen;  // each colour packed into one integer (a set of vectors trips gcc-13 -Werror=stringop-overread)
+    for (std::size_t i = 0; i < many.size(); ++i) seen.insert(uint32_t{all[3 * i]} << 16 | uint32_t{all[3 * i + 1]} << 8 | uint32_t{all[3 * i + 2]});
     EXPECT_EQ(seen.size(), 100u) << "the first hundred ids are a hundred colours";
     for (std::size_t i = 1; i < many.size(); ++i) EXPECT_FALSE(all[3 * i] == 0 && all[3 * i + 1] == 0 && all[3 * i + 2] == 0) << "id " << i << " is black";
 }
