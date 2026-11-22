@@ -26,7 +26,8 @@ param(
     [string]$Image = 'spade-px4-sitl:v1.17.0',
     [int]$Autostart = 10090,                          # the airframe: 10090 = PX4's own x500 numbers, 10091 = the kit (when it exists)
     [int]$SimPort = 4560,                             # PX4's simulator port; the container's instance 0
-    [switch]$PublishOffboard                          # publish PX4's offboard API port (UDP 14540) on this machine's loopback only, for a companion computer
+    [switch]$PublishOffboard,                         # publish PX4's offboard API port (UDP 14540) on this machine's loopback only, for a companion computer
+    [string]$Docker = 'docker'                        # the docker command; a test points it at a fake
 )
 
 # 'Continue', not 'Stop' (as fc-run.ps1): Windows PowerShell 5.1 turns a native command's stderr under 2>&1 into a terminating error, and docker and PX4 write there.
@@ -35,19 +36,19 @@ $ErrorActionPreference = 'Continue'
 $name = "spade-px4-$RunId"
 $px4Dir = '/src/PX4-Autopilot/build/px4_sitl_spade'
 
-& docker version --format '{{.Server.Version}}' *> $null
+& $Docker version --format '{{.Server.Version}}' *> $null
 if ($LASTEXITCODE -ne 0) {
     Write-Output 'px4-sitl: docker is not reachable (is Docker Desktop running?)'
     exit 3
 }
 
 if (-not $Stop) {
-    & docker image inspect $Image *> $null
+    & $Docker image inspect $Image *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Output "px4-sitl: no autopilot image $Image (build it from tools/fc_link/px4: Dockerfile then Dockerfile.airframes, network off)"
         exit 2
     }
-    $existing = (& docker ps -a --filter "name=^/$name$" --format '{{.Names}}')
+    $existing = (& $Docker ps -a --filter "name=^/$name$" --format '{{.Names}}')
     if ($existing) {
         Write-Output "px4-sitl: a container named $name already exists (one container per run id)"
         exit 5
@@ -61,17 +62,17 @@ if (-not $Stop) {
         '--entrypoint', "$px4Dir/bin/px4")
     if ($PublishOffboard) { $dockerArgs += @('-p', '127.0.0.1:14540:14540/udp') }
     $dockerArgs += @($Image, "$px4Dir/etc", '-s', 'etc/init.d-posix/rcS', '-d')
-    & docker @dockerArgs *> $null
+    & $Docker @dockerArgs *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Output "px4-sitl: docker could not start $name from $Image"
         exit 4
     }
     Start-Sleep -Seconds 2
-    $running = (& docker ps --filter "name=^/$name$" --format '{{.Names}}')
+    $running = (& $Docker ps --filter "name=^/$name$" --format '{{.Names}}')
     if (-not $running) {
         Write-Output "px4-sitl: $name exited at start; its log follows"
-        & docker logs $name
-        & docker rm -f $name *> $null
+        & $Docker logs $name
+        & $Docker rm -f $name *> $null
         exit 4
     }
     Write-Output "px4-sitl: up $name -> ${HostAddress}:$SimPort"
@@ -79,25 +80,25 @@ if (-not $Stop) {
 }
 
 # stop
-$existing = (& docker ps -a --filter "name=^/$name$" --format '{{.Names}}')
+$existing = (& $Docker ps -a --filter "name=^/$name$" --format '{{.Names}}')
 if (-not $existing) {
     Write-Output "px4-sitl: no container named $name"
     Write-Output 'none'
     exit 0
 }
-if (-not $OutDir) { $OutDir = (& docker inspect --format '{{ index .Config.Labels "spade.outdir" }}' $name) }
+if (-not $OutDir) { $OutDir = (& $Docker inspect --format '{{ index .Config.Labels "spade.outdir" }}' $name) }
 if (-not $OutDir) {
     Write-Output 'px4-sitl: no run folder known (pass -OutDir)'
-    & docker rm -f $name *> $null
+    & $Docker rm -f $name *> $null
     Write-Output 'none'
     exit 6
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-& docker stop -t 15 $name *> $null
-& docker logs $name 2>&1 | ForEach-Object { "$_" } | Set-Content -Path (Join-Path $OutDir 'px4-stdout.log') -Encoding UTF8  # UTF-8, not the UTF-16 a `>` writes
+& $Docker stop -t 15 $name *> $null
+& $Docker logs $name 2>&1 | ForEach-Object { "$_" } | Set-Content -Path (Join-Path $OutDir 'px4-stdout.log') -Encoding UTF8  # UTF-8, not the UTF-16 a `>` writes
 $logDir = Join-Path $OutDir 'px4-log'
-& docker cp "${name}:$px4Dir/rootfs/log" $logDir *> $null
-& docker rm -f $name *> $null
+& $Docker cp "${name}:$px4Dir/rootfs/log" $logDir *> $null
+& $Docker rm -f $name *> $null
 $ulg = Get-ChildItem -Path $logDir -Recurse -Filter '*.ulg' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
 if ($ulg) { Write-Output $ulg.FullName } else { Write-Output 'none' }
 exit 0
