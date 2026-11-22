@@ -1617,6 +1617,7 @@ struct WebPlan {
     float sgs_cs = web::kD1WebSgsCs;  // the D1 clips' Smagorinsky Cs: the master's, or --sgs-cs's (a diagnostic)
     std::optional<float> cell_mm;       // --cell-mm 2.5: the X500's box and hold (L106c)
     bool hover_start = false;           // --hover-start (needs --lines)
+    uint32_t cg_floor = 0;              // --cg-floor N (8 to 16; 0: the engine's 8)
     bool volume = false;                // --volume (with --particles or --particles-preview)
     std::optional<uint32_t> step_us;    // --step-us N: the solver step in microseconds, in place of kD1WebStepS (a --window run)
     Look look;                        // the look options (look.hpp): declared in the caption, never hidden
@@ -1743,6 +1744,10 @@ constexpr render::FlowLineStyle kWebSoftLineStyle{web::kSoftLineWidthPx, web::kS
                                    plan.step_us ? static_cast<float>(*plan.step_us) * 1.0e-6f : static_cast<float>(web::kD1WebStepS), plan.sgs_cs,
                                    plan.drone->model_file, d1_web_hold(plan.cell_mm, plan.drone->hub_above_origin_m));
         if (!lc) return std::unexpected(lc.error());
+        if (plan.cg_floor != 0u && plan.cg_floor != 8u) {  // a raised floor is a different solve: the cache's mark names it (8 is the engine's own)
+            lc->solids_cg_floor = plan.cg_floor;
+            lc->identity += " cg_floor " + std::to_string(plan.cg_floor);
+        }
         auto made = case_film(std::move(*lc), plan.frames, still ? "web-d1-still" : "web-d1", false, plan.look,
                                plan.particles || plan.particles_preview, plan.nasa, plan.volume, plan.drone->parts_cp_range, plan.tubes, plan.tube_field);
         if (!made) return std::unexpected(made.error());
@@ -2718,6 +2723,7 @@ struct WebFilming {
     plan.drone = drone;
     plan.cell_mm = opt.cell_mm;
     plan.hover_start = opt.hover_start;
+    plan.cg_floor = opt.cg_floor;
     plan.volume = opt.volume;
     plan.step_us = opt.step_us;
     plan.particles_preview = opt.particles_preview && (clip->id == "S2" || clip->id == "S8");
@@ -2789,10 +2795,6 @@ struct WebFilming {
     if (opt.cg_floor != 0u) {
         if (const std::string why = web::cg_floor_refusal(opt.cg_floor); !why.empty()) {
             std::fprintf(stderr, "flow_movie: %s\n", why.c_str());
-            return 2;
-        }
-        if (opt.cg_floor != 8u) {  // 8 is the run's default: only a floor the run cannot take yet is refused
-            std::fprintf(stderr, "flow_movie: --cg-floor %u needs the live run's CG-floor option, which this build does not have yet\n", opt.cg_floor);
             return 2;
         }
     }
