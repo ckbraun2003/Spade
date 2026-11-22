@@ -88,7 +88,9 @@ void build_contact_sets(std::span<const vehicles::ModelType> models, std::vector
 // The lowest world y over the model's contact points at `body`, each placed by
 // contact_point_world() (physics/contacts.hpp), the pass's own expression, so
 // the editor's rest_height() and the contact agree to the bit (L9's one source
-// for rest); nullopt for a model without a set.
+// for rest); nullopt for a model without a set. A model WITH a contact shape rests on
+// the shape, not on the set (the shape replaces it at spawn), so its lowest point is the
+// shape's: the lowest compiled point, placed the same way, less the shape's radius or skin.
 [[nodiscard]] std::optional<float> lowest_contact_point(const vehicles::ModelType& model, const BodyState& body);
 
 }  // namespace spade::physics

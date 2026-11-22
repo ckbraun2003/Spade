@@ -21,12 +21,14 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "contact_set_fakes.hpp"
 #include "physics/contact_sets.hpp"
 #include "physics/contacts.hpp"
 #include "physics/integrator.hpp"
+#include "physics/rigid_contact.hpp"
 #include "library_drones.hpp"
 #include "vehicles/airframe_compile.hpp"
 #include "sim/simulation.hpp"
@@ -143,6 +145,37 @@ TEST(ContactPass, TheLowestPointIsTheSetsLowestAtThePose) {
     const std::optional<float> got = ph::lowest_contact_point(m, b);
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(*got, low);
+}
+
+// A model WITH a contact shape rests on its shape, not on the L9 set (rigid_contact.hpp: the shape replaces the set at spawn), so its lowest point is the shape's own,
+// where the pass puts it: the lowest of the shape's points less its radius or skin, whatever the parts' bounds say. The body is level at (0, 1, 0) unless noted; the
+// expected values are written out from the shapes, not from the function. (The editor's placement reads this function: a hull's feet put it 0.133 m wrong before.)
+TEST(ContactPass, AModelWithAShapeRestsWhereItsShapeDoes) {
+    ModelType m = library_drone("phantom3_class");  // parts, so its L9 set is not empty: the shape must win over it
+    BodyState level{};
+    level.pos = glm::vec3(0.0f, 1.0f, 0.0f);
+    level.orient = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    const auto lowest = [&](const ph::ShapeDesc& shape, const BodyState& at) {
+        m.shape = shape;
+        const std::optional<float> got = ph::lowest_contact_point(m, at);
+        EXPECT_TRUE(got.has_value());
+        return got.value_or(1.0e9f);
+    };
+    EXPECT_NEAR(lowest(ph::sphere_shape(0.05f), level), 0.95f, 1.0e-6f) << "a sphere: the centre less the radius";
+    EXPECT_NEAR(lowest(ph::capsule_shape(glm::vec3(-0.2f, 0.0f, 0.0f), glm::vec3(0.2f, -0.1f, 0.0f), 0.03f), level), 1.0f - 0.1f - 0.03f, 1.0e-6f)
+        << "a capsule: the lower end less the radius";
+    EXPECT_NEAR(lowest(ph::box_shape(glm::vec3(0.1f, 0.2f, 0.1f), 0.01f), level), 1.0f - 0.2f - 0.01f, 1.0e-6f) << "a box: the lowest corner less the skin";
+    EXPECT_NEAR(lowest(ph::hull_shape({glm::vec3(0.0f, -0.3f, 0.0f), glm::vec3(0.1f, 0.2f, 0.0f)}, 0.0095f), level), 1.0f - 0.3f - 0.0095f, 1.0e-6f)
+        << "a hull: the lowest point less the skin";
+    // Turned a quarter about +Z, the box's 0.2 m half height lies along the world's x and its 0.1 m half width stands: the lowest corner is 0.1 m down.
+    BodyState turned = level;
+    turned.orient = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));
+    EXPECT_NEAR(lowest(ph::box_shape(glm::vec3(0.1f, 0.2f, 0.1f), 0.01f), turned), 1.0f - 0.1f - 0.01f, 1.0e-5f) << "the pose turns the points, not the skin";
+    // ShapeKind::none is no shape: the set answers, as it did.
+    ModelType plain = library_drone("phantom3_class");
+    const float set_low = ph::lowest_contact_point(plain, level).value_or(1.0e9f);
+    plain.shape = ph::ShapeDesc{};
+    EXPECT_EQ(ph::lowest_contact_point(plain, level).value_or(1.0e9f), set_low) << "a shape of kind none leaves the L9 set in charge";
 }
 
 // ===========================================================================
