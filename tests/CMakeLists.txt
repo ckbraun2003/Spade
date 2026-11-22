@@ -316,6 +316,7 @@ add_executable(spade_tests
     test_flow_movie_look.cpp
     test_flow_movie_materials.cpp
     test_flow_movie_build_parts.cpp
+    test_fc_host_lockstep.cpp
     test_fc_link_mavlink.cpp
     test_fc_link_frames.cpp
     test_fc_link_px4.cpp
@@ -770,6 +771,7 @@ target_link_libraries(spade_tests PRIVATE
     spade::physics
     spade::vehicles
     spade::sim
+    spade_fc_host
     spade_fc_link
     spade_warnings
     spade_fp_strict
