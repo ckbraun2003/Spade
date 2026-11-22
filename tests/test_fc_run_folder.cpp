@@ -761,8 +761,8 @@ TEST(FcRunFolder, K4_EveryMalformedLogIsFailedAndNamed) {
     cases.push_back({"first is not B", with([](auto& v) { v.erase(v.begin()); }), "not the flag bits message"});
     cases.push_back({"B too short", with([](auto& v) { v[kB].body.resize(39); }), "under 40"});
     cases.push_back({"unknown incompat bit", with([](auto& v) { v[kB].body[9] = 1; }), "does not know"});
-    cases.push_back({"unknown type", with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'Z', "x"}); }), "unknown message type 'Z'"});
-    cases.push_back({"unknown type, not printable", with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'\x01', "x"}); }), "unknown message type 0x01"});
+    cases.push_back({"an unknown type as the first message", with([](auto& v) { v.insert(v.begin(), Msg{'Z', "x"}); }), "not the flag bits message"});
+    cases.push_back({"an unknown type, then a truncated tail", [&] { return with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'Z', "x"}); }).substr(0, with([](auto& v) { v.insert(v.begin() + kSubGyro, Msg{'Z', "x"}); }).size() - 3); }(), "is cut off"});
     cases.push_back({"D in the definitions", with([](auto& v) { v.insert(v.begin() + kMulti, Msg{'D', std::string("\x00\x00", 2)}); }), "definitions section"});
     cases.push_back({"D for an unsubscribed id", with([](auto& v) { v[kDataGyro0].body[0] = 9; }), "was not subscribed"});
     cases.push_back({"A for an undefined format", with([](auto& v) { v[kSubGyro].body = std::string("\0\0\0nope", 7); }), "did not define"});
@@ -783,6 +783,28 @@ TEST(FcRunFolder, K4_EveryMalformedLogIsFailedAndNamed) {
         EXPECT_EQ(r.kind, UlogResult::Kind::malformed) << c.name << ": " << r.detail;
         EXPECT_NE(r.detail.find(c.expect), std::string::npos) << c.name << ": " << r.detail;
     }
+}
+
+// The spec says a parser "must ignore unknown messages" and a new message type can be announced by a new compat flag bit, so a type this reader does not
+// know, with its framing intact, is skipped and named: `unread`, never a pass (the type was not read) and never a failure (it may be valid).
+TEST(FcRunFolder, K4_AnUnknownTypeWithIntactFramingIsUnreadAndNamedNeverAPassOrAFailure) {
+    using namespace ux;
+    std::vector<Msg> v = good_messages();
+    v.insert(v.begin() + kSubGyro, Msg{'Z', "x"});            // in the definitions' end
+    v.insert(v.begin() + kDataGyro0 + 1, Msg{'\x01', "yy"});  // in the data section, a type that is not printable
+    v.insert(v.begin() + kDataGyro0 + 2, Msg{'Z', ""});       // the same type again, an empty body
+    const UlogResult r = read_msgs(v);
+    EXPECT_EQ(r.kind, UlogResult::Kind::unread) << r.detail;
+    EXPECT_EQ(r.unknown_messages, 3u);
+    EXPECT_NE(r.detail.find("unknown message type 'Z', 0x01"), std::string::npos) << r.detail;
+    EXPECT_NE(r.detail.find("3 messages"), std::string::npos) << r.detail;
+    EXPECT_EQ(r.data_messages, 3u) << "the known messages around them are still read";
+
+    const Report folder = spade::fc::check_run_folder(spade::fc::RunFolder{good_measured(), assemble(v)});
+    EXPECT_NE(folder.find("K4.log", Verdict::unchecked), nullptr) << folder.text();
+    EXPECT_EQ(folder.find("K4.log", Verdict::fail), nullptr) << folder.text();
+    EXPECT_EQ(folder.find("K4.log", Verdict::pass), nullptr) << folder.text();
+    EXPECT_TRUE(folder.ok()) << folder.text();
 }
 
 TEST(FcRunFolder, K4_AppendedDataIsUnreadNeverAPass) {

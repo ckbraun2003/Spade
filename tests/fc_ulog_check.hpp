@@ -8,8 +8,9 @@
 // What the reader checks, and ALL it claims (it does not say PX4's data is right):
 //   * the 16-byte header: the 7 magic bytes, the version byte (1), the start time;
 //   * every message by its framing {u16 msg_size, u8 msg_type, body}, to the last byte of the file: none is cut off, and the file ends on a message boundary;
-//   * the message types are the spec's: B F I M P Q (definitions) and A R D L C S O (data); an unknown type is a failure (a stricter rule than a general
-//     reader's "skip it": a log of a run is expected to hold only what the spec lists);
+//   * the message types are the spec's: B F I M P Q (definitions) and A R D L C S O (data). A type NOT on that list, with its framing intact, is
+//     SKIPPED, counted and named, and the answer is `unread` (never a pass, never a failure): the spec's requirements say a parser "must ignore unknown
+//     messages", and a new message type can be announced by a new compat flag bit that existing parsers ignore. A broken framing anywhere still fails;
 //   * the flag bits message `B` is the first message; its incompatible-flag bits are ones this reader knows (the spec says a reader must refuse others);
 //     appended data (incompat bit 0) is NOT read: the answer is `unread`, never a pass;
 //   * the definitions section holds only B F I M P Q and ends at the first A or L; the data section holds no B or F;
@@ -19,13 +20,14 @@
 //   * the log holds at least one data message.
 // What it does NOT check: the field layouts of the logged data (a D body's size against its format), timestamps, parameter values, the firmware
 // version, that a message is the one PX4 should have logged. Those are K4's later steps.
-// What the page gave and what is from the author's memory of the same spec (marked UNVERIFIED until a real log agrees): the page extract read for
-// this file lacked the bodies of L, C, S and O, the sync magic bytes and the rule for unknown types. The sizes used here for them (L 9 + text: level u8 +
-// timestamp u64; C 11 + text: level u8, tag u16, timestamp u64; O 2: duration u16; S 8: magic 2F 73 13 20 25 0C BB 12) are UNVERIFIED against the page and are
-// confirmed or refuted by reading real logs (SPADE_FC_ULOG in test_fc_run_folder.cpp). Two real PX4 v1.17.0 logs (the live runs fc-live-1 and fc-live-2,
-// about 12 MB each, 109,160 and 108,286 messages) read well-formed to their last byte; they hold B I F P Q M A D L and S only. So the sync magic
-// (79 and 78 sync messages, every one matching) and the logged string's minimum size (12 each, sizes 51 to 96) are CONFIRMED by real data; the layouts
-// of C and O were not in those logs (no C, no O, no R), and stay UNVERIFIED.
+// Sources, said as they are: the page was read through a fetch tool that returns the specification only as a model-extracted SUMMARY (the first 39,938
+// characters of the page are navigation), so no sentence below is a verbatim quote, and the first read of it lacked the bodies of L, C, S and O, the sync
+// magic and the unknown-type rule. A second, targeted read of the same page (2026-11-22) gave, in that summary: C = log_level u8, tag u16, timestamp u64,
+// text (msg_size - 11); O = a u16 duration in ms; S = the 8 sync magic bytes 2F 73 13 20 25 0C BB 12; and the requirement "must ignore unknown messages".
+// The sizes used here (L 9 + text: level u8 + timestamp u64; C 11 + text; O 2; S 8) agree with it. Real data: two real PX4 v1.17.0 logs (the live runs
+// fc-live-1 and fc-live-2, about 12 MB each, 109,160 and 108,286 messages) read well-formed to their last byte (SPADE_FC_ULOG in test_fc_run_folder.cpp);
+// they hold B I F P Q M A D L and S only. So the sync magic (79 and 78 sync messages, every one matching) and the logged string's minimum size (12 each,
+// sizes 51 to 96) are CONFIRMED by real data. The C and O layouts rest on the page summary alone: no real log here holds one (no C, no O, no R).
 //
 // A detail never quotes the file's bytes (a key, a value, a string): it names a byte offset, a message type and a size.
 // ---------------------------------------------------------------------------
@@ -48,6 +50,8 @@ struct UlogResult {
     uint64_t subscriptions = 0;  // A messages
     uint64_t syncs = 0;          // S messages
     uint64_t dropouts = 0;       // O messages
+    uint64_t unknown_messages = 0;  // messages of a type the spec's list lacks, skipped (framing intact)
+    std::string unknown_types;      // those types, once each, as 'Z' or 0x01
 };
 
 namespace ulog_detail {
@@ -106,8 +110,17 @@ namespace ulog_detail {
             return bad("a " + type_text(type) + " message of " + std::to_string(size) + " bytes is cut off: " + std::to_string(b.size() - body_at) + " remain", pos);
         const std::string_view m = b.substr(body_at, size);
         const bool known = std::string_view("BFIMPQARDLCSO").find(type) != std::string_view::npos;
-        if (!known) return bad("unknown message type " + type_text(type), pos);
         if (first && type != 'B') return bad("the first message is " + type_text(type) + ", not the flag bits message 'B'", pos);
+        if (!known) {
+            // The spec's requirements section says a parser "must ignore unknown messages", and a new message type can be announced by a new compat
+            // flag bit that existing parsers ignore. So an unknown type with intact framing is neither a pass nor a failure: it is skipped, counted and
+            // named, and the answer is `unread` (whether PX4 may log it is not this reader's to say).
+            ++r.unknown_messages;
+            const std::string t = type_text(type);
+            if (r.unknown_types.find(t) == std::string::npos) r.unknown_types += (r.unknown_types.empty() ? "" : ", ") + t;
+            pos = body_at + size;
+            continue;
+        }
         if (type == 'A' || type == 'L') data_section = true;
         const bool def_type = std::string_view("BFIMPQ").find(type) != std::string_view::npos;
         if (!def_type && !data_section && type != 'A' && type != 'L')
@@ -192,6 +205,12 @@ namespace ulog_detail {
     }
     if (first) return bad("the file holds no messages after the header", 16);
     if (r.data_messages == 0) return bad("the log holds no data message", b.size());
+    if (r.unknown_messages > 0) {
+        r.kind = UlogResult::Kind::unread;
+        r.detail = "unread: unknown message type " + r.unknown_types + " (" + std::to_string(r.unknown_messages) +
+                   " messages, skipped with their framing intact); the rest of the log is well-formed, but a type this reader does not know is not read";
+        return r;
+    }
     r.kind = UlogResult::Kind::well_formed;
     r.detail = "well-formed: " + std::to_string(r.messages) + " messages (" + std::to_string(r.definitions) + " in the definitions, " + std::to_string(r.data_messages) +
                " logged data on " + std::to_string(r.subscriptions) + " subscriptions, " + std::to_string(r.syncs) + " syncs, " + std::to_string(r.dropouts) + " dropouts)";
