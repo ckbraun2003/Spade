@@ -21,6 +21,7 @@
 #include <charconv>
 #include <format>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <system_error>
@@ -50,6 +51,12 @@ struct Look {
     bool l2_smooth = false;
     uint32_t min_cells = 0;     // 0: no cull
     uint32_t mean_frames = 1;   // 1: the frame alone
+    // O158: the Q tubes' own field (--pressure-colour). A run that draws tubes sets `tube_field` to an empty volume it owns; each frame's look fills it with a COPY of the drawn frame whose q_hat and
+    // pressure are the centred mean of `tube_mean` frames (1: none) and whose q_hat is smoothed over one cell when `tube_smooth`, and the tubes are cut from and coloured by that copy. The
+    // drawn frame itself (the parts' pressure colour) is never touched.
+    bool tube_smooth = false;
+    uint32_t tube_mean = 1;
+    std::shared_ptr<spade::FlowVolume> tube_field;
     WakeFade fade;              // the soft edge of a drawn wake: the drone's framing sets it (not an option)
     CloudThin thin;             // the vorticity thinned near the drone (--q-look): the cloud look's
 
@@ -57,7 +64,7 @@ struct Look {
     [[nodiscard]] bool operator==(const Look&) const noexcept = default;
 
     [[nodiscard]] bool any() const noexcept {
-        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on();
+        return l2_level > 0.0f || l2_smooth || min_cells > 0u || mean_frames > 1u || fade.on() || thin.on() || tube_field != nullptr;
     }
 };
 
@@ -71,12 +78,13 @@ inline constexpr std::size_t kL2Lane = spade::kFlowLambda2Hat % spade::kFlowHalv
 
 // channel_min / channel_max of lambda2-hat over its valid cells (0, 0 with none), so a view reading them is not stale; and a
 // new generation, since the callers have just written the s texture.
-inline void refresh_lambda2_range(spade::FlowVolume& v) {
+inline void refresh_s_range(spade::FlowVolume& v, uint32_t channel) {
+    const std::size_t lane = channel % spade::kFlowHalvesPerCell;
     float lo = 0.0f, hi = 0.0f;
     bool any = false;
     const std::size_t cells = std::size_t{v.header.nx} * v.header.ny * v.header.nz;
     for (std::size_t c = 0; c < cells; ++c) {
-        const uint16_t h = v.s[c * spade::kFlowHalvesPerCell + look_detail::kL2Lane];
+        const uint16_t h = v.s[c * spade::kFlowHalvesPerCell + lane];
         if (look_detail::no_data(h)) continue;
         const float x = spade::fp16::to_f32(h);
         if (!any) {
@@ -87,15 +95,18 @@ inline void refresh_lambda2_range(spade::FlowVolume& v) {
             hi = std::max(hi, x);
         }
     }
-    v.header.channel_min[spade::kFlowLambda2Hat] = lo;
-    v.header.channel_max[spade::kFlowLambda2Hat] = hi;
+    v.header.channel_min[channel] = lo;
+    v.header.channel_max[channel] = hi;
     v.generation = spade::next_flow_generation();  // the halves changed: a cache of the old ones must not be drawn
 }
+
+inline void refresh_lambda2_range(spade::FlowVolume& v) { refresh_s_range(v, spade::kFlowLambda2Hat); }
 
 // lambda2-hat smoothed over one cell. Three separable passes (x, y, z) of exp(-t^2 / 2) at t = -3 .. 3, each cell's mean over
 // the VALID neighbours it can reach (a no-data cell and the box's edge are left out and the weights renormalised), so a
 // constant stays constant and a solid is neither read as zero vorticity nor written.
-inline void smooth_lambda2(spade::FlowVolume& v) {
+inline void smooth_s_channel(spade::FlowVolume& v, uint32_t channel) {
+    const std::size_t lane = channel % spade::kFlowHalvesPerCell;
     const uint32_t nx = v.header.nx, ny = v.header.ny, nz = v.header.nz;
     const std::size_t cells = std::size_t{nx} * ny * nz;
     std::array<float, 7> w{};
@@ -108,7 +119,7 @@ inline void smooth_lambda2(spade::FlowVolume& v) {
     std::vector<float> a(cells), b(cells);
     std::vector<uint8_t> valid(cells);
     for (std::size_t c = 0; c < cells; ++c) {
-        const uint16_t h = v.s[c * spade::kFlowHalvesPerCell + look_detail::kL2Lane];
+        const uint16_t h = v.s[c * spade::kFlowHalvesPerCell + lane];
         valid[c] = look_detail::no_data(h) ? 0u : 1u;
         a[c] = valid[c] != 0u ? spade::fp16::to_f32(h) : 0.0f;
     }
@@ -142,10 +153,12 @@ inline void smooth_lambda2(spade::FlowVolume& v) {
     pass(b, a, sy, ny, nx, sx, nz, sz);
     pass(a, b, sz, nz, nx, sx, ny, sy);
     for (std::size_t c = 0; c < cells; ++c) {
-        if (valid[c] != 0u) v.s[c * spade::kFlowHalvesPerCell + look_detail::kL2Lane] = spade::fp16::from_f32(b[c]).bits;
+        if (valid[c] != 0u) v.s[c * spade::kFlowHalvesPerCell + lane] = spade::fp16::from_f32(b[c]).bits;
     }
-    refresh_lambda2_range(v);
+    refresh_s_range(v, channel);
 }
+
+inline void smooth_lambda2(spade::FlowVolume& v) { smooth_s_channel(v, spade::kFlowLambda2Hat); }
 
 // Sets to 0 every 6-connected piece of valid cells with lambda2-hat below -level that holds fewer than `min_cells` cells.
 // Returns the number of pieces removed. 0 cells turns it off. A piece of min_cells or more, and every other cell, is
@@ -271,6 +284,54 @@ struct MeanWindow {
     const uint32_t want = std::max(mean_frames, 1u);
     const uint32_t count = std::min(want, k + 1u);
     return MeanWindow{k + 1u - count, count};
+}
+
+// The window of `frames` cached frames CENTRED on the drawn frame k of a clip of `total` frames (O158: the tubes' temporal mean, which a trailing window would lag): (frames - 1) / 2 before it and
+// frames / 2 after it, never past either end (fewer frames there). 1 frame is the frame alone; a window wider than the clip is the clip.
+[[nodiscard]] inline MeanWindow centred_window(uint32_t k, uint32_t frames, uint32_t total) {
+    const uint32_t want = std::max(frames, 1u);
+    const uint32_t before = std::min((want - 1u) / 2u, k);
+    const uint32_t after = std::min(want / 2u, total > k ? total - 1u - k : 0u);
+    return MeanWindow{k - before, before + 1u + after};
+}
+
+// `out`'s named s-texture channels (4 to 7) become the mean over `frames` (the window; `out` is the drawn frame, which may be one of them). A cell that is no-data in any frame is no-data in the mean.
+// The velocity and every other channel stay `out`'s own; the header's range of a meaned channel, its no-data count and its generation follow. Refused by name: no frames, frames of different
+// shapes, a channel that is not an s-texture one.
+[[nodiscard]] inline spade::Result<void> mean_scalars(spade::FlowVolume& out, std::span<const spade::FlowVolume* const> frames, std::span<const uint32_t> channels) {
+    const auto bad = [](const std::string& why) { return std::unexpected(spade::Error{spade::Code::invalid_argument, "mean scalars: " + why}); };
+    if (frames.empty()) return bad("there are no frames to average");
+    for (const uint32_t ch : channels) {
+        if (ch < spade::kFlowHalvesPerCell || ch >= spade::kFlowChannelCount) return bad("channel " + std::to_string(ch) + " is not an s-texture channel (4 to 7)");
+    }
+    for (const spade::FlowVolume* f : frames) {
+        if (f->header.nx != out.header.nx || f->header.ny != out.header.ny || f->header.nz != out.header.nz) return bad("the frames' grids differ in shape");
+    }
+    const std::size_t cells = std::size_t{out.header.nx} * out.header.ny * out.header.nz;
+    for (const uint32_t ch : channels) {
+        const std::size_t lane = ch % spade::kFlowHalvesPerCell;
+        std::vector<uint16_t> mean(cells);
+        for (std::size_t c = 0; c < cells; ++c) {
+            float sum = 0.0f;
+            bool missing = false;
+            for (const spade::FlowVolume* f : frames) {
+                const uint16_t half = f->s[c * spade::kFlowHalvesPerCell + lane];
+                if (look_detail::no_data(half)) {
+                    missing = true;
+                    break;
+                }
+                sum += spade::fp16::to_f32(half);
+            }
+            mean[c] = missing ? spade::fp16::kNoDataBits : spade::fp16::from_f32(sum / static_cast<float>(frames.size())).bits;
+        }
+        for (std::size_t c = 0; c < cells; ++c) out.s[c * spade::kFlowHalvesPerCell + lane] = mean[c];
+        refresh_s_range(out, ch);
+    }
+    uint32_t missing = 0;
+    for (const uint16_t half : out.v) missing += look_detail::no_data(half) ? 1u : 0u;
+    for (const uint16_t half : out.s) missing += look_detail::no_data(half) ? 1u : 0u;
+    out.header.no_data = missing;
+    return {};
 }
 
 // --l2-level text: one positive finite number below 10000 (1/s), whole: digits and at most one '.', nothing else.

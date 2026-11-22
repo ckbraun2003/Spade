@@ -44,6 +44,8 @@ struct LiveCase {
     // a centred film is the centred run to the bit; 0.43 m up in kD1DeepGrid; a box shorter than kD1Grid stays centred
     // (zero). identity names it when it is not zero.
     glm::vec3 hold{0.0f};
+    // O158: the solids pressure solve's CG iteration floor, passed to the run (ResolvedCase::solids_cg_floor, Physics' option): 0 is the engine's 8 bit for bit, 1 to 32 are allowed.
+    uint32_t solids_cg_floor = 0;
     // L52: the Smagorinsky subgrid viscosity the film's DEVICE fluid is made with (0: off). LiveRun's own CPU fluid
     // has no such setting, so only a device film (main.cpp's maker) applies it; identity names it.
     float sgs_cs = 0.0f;

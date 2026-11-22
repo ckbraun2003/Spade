@@ -255,3 +255,17 @@ TEST(FlowMovieLiveCase, TheWebCaseTakesTheDroneAndANamelessFileIsRefused) {
                                                       "library/drones/no_such_drone.model.yaml");
     EXPECT_FALSE(missing.has_value());
 }
+
+// O158: --cg-floor reaches the run. resolve_live() passes LiveCase::solids_cg_floor on to the ResolvedCase, which LiveRun::start() reads; 0 (not given) leaves the engine's default.
+TEST(FlowMovieLiveCase, TheSolidsCgFloorReachesTheResolvedCaseAndZeroLeavesTheDefault) {
+    auto lc = flow_movie::d1_still_air_live_case(0.01, kD1DeepGrid);
+    ASSERT_TRUE(lc.has_value()) << lc.error().context;
+    const auto untouched = flow_movie::resolve_live(*lc);
+    ASSERT_TRUE(untouched.has_value()) << untouched.error().context;
+    EXPECT_EQ(untouched->solids_cg_floor, 0u) << "not given: the engine's own 8";
+    lc->solids_cg_floor = 12u;
+    const auto raised = flow_movie::resolve_live(*lc);
+    ASSERT_TRUE(raised.has_value()) << raised.error().context;
+    EXPECT_EQ(raised->solids_cg_floor, 12u);
+}
+

@@ -727,3 +727,116 @@ TEST(FlowMovieParticles, TheParticleLookStringSetsSubStepsAsAWholeNumberOneToSix
         EXPECT_NE(refused.error().context.find("substeps"), std::string::npos) << refused.error().context;
     }
 }
+
+// ---- B1 (O170, audit #12): the points' time blend. Between two cached frames the flow is not steady: with the NEXT frame in hand, each midpoint step reads the velocity blended between the
+// drawn frame and the next at the time of the step, instead of holding the drawn frame's velocity for the whole interval. Without the next frame (a streamed run) nothing changes, bit for bit.
+namespace {
+[[nodiscard]] flow_movie::ParticleField after_one_step(const FlowVolume& a, const FlowVolume* next, uint32_t substeps, float dt = 0.01f) {
+    const std::vector<glm::vec3> pool{glm::vec3(0.0f, 0.1f, 0.0f)};
+    flow_movie::ParticleField f;
+    auto o = options();
+    o.substeps = substeps;
+    EXPECT_TRUE(flow_movie::advance_particles(f, a, next, pool, dt, o));  // frame 0 emits the seed
+    o.per_frame = 0u;
+    EXPECT_TRUE(flow_movie::advance_particles(f, a, next, pool, dt, o));  // frame 1 moves it
+    return f;
+}
+}  // namespace
+
+TEST(FlowMovieParticles, WithoutANextFrameOrWithTheSameOneNothingChangesBitForBit) {
+    const auto shear = [](glm::vec3 p) { return glm::vec3(2.0f + 4.0f * p.y, -1.0f, 0.5f * p.x); };
+    const FlowVolume a = field(16, 0.1f, glm::vec3(-0.8f), shear);
+    const FlowVolume same = a;
+    for (const uint32_t n : {1u, 4u, 8u}) {
+        const flow_movie::ParticleField plain = [&] {
+            const std::vector<glm::vec3> pool{glm::vec3(0.0f, 0.1f, 0.0f)};
+            flow_movie::ParticleField f;
+            auto o = options();
+            o.substeps = n;
+            EXPECT_TRUE(flow_movie::advance_particles(f, a, pool, 0.01f, o));
+            o.per_frame = 0u;
+            EXPECT_TRUE(flow_movie::advance_particles(f, a, pool, 0.01f, o));
+            return f;
+        }();
+        const auto none = after_one_step(a, nullptr, n);
+        const auto twin = after_one_step(a, &same, n);
+        ASSERT_EQ(plain.position.size(), 1u);
+        EXPECT_EQ(none.position[0], plain.position[0]) << "no next frame: the old step, " << n << " substeps";
+        EXPECT_EQ(twin.position[0], plain.position[0]) << "a next frame equal to the drawn one blends nothing, " << n << " substeps";
+    }
+}
+
+// u runs linearly in time from 0 (drawn frame) to U = 2 m/s (next frame): the midpoint rule is exact for it, whatever the substeps: the displacement is U dt / 2.
+TEST(FlowMovieParticles, AFlowThatGrowsLinearlyBetweenTheFramesMovesHalfTheNextFramesStepForAnySubsteps) {
+    const FlowVolume a = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(0.0f); });
+    const FlowVolume b = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    for (const uint32_t n : {1u, 4u, 8u}) {
+        const auto held = after_one_step(a, nullptr, n);
+        const auto blended = after_one_step(a, &b, n);
+        ASSERT_EQ(blended.position.size(), 1u);
+        EXPECT_NEAR(held.position[0].x, 0.0f, 1e-7f) << "the drawn frame alone holds u = 0 for the whole interval: " << n;
+        EXPECT_NEAR(blended.position[0].x, 0.5f * 2.0f * 0.01f, 1e-6f) << "U dt / 2: " << n << " substeps";
+        EXPECT_NEAR(blended.position[0].y, 0.1f, 1e-7f);
+    }
+    // two steady-ish frames, u = 1 then 3: the interval's mean is 2
+    const FlowVolume one = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    const FlowVolume three = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(3.0f, 0.0f, 0.0f); });
+    const auto mean = after_one_step(one, &three, 4);
+    EXPECT_NEAR(mean.position[0].x, 2.0f * 0.01f, 1e-6f);
+}
+
+TEST(FlowMovieParticles, ANextFrameOfAnotherShapeIsRefusedByNameAndNoDataInItRetiresThePoint) {
+    const FlowVolume a = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    const FlowVolume small = field(8, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(1.0f, 0.0f, 0.0f); });
+    const std::vector<glm::vec3> pool{glm::vec3(0.0f, 0.1f, 0.0f)};
+    flow_movie::ParticleField f;
+    const auto refused = flow_movie::advance_particles(f, a, &small, pool, 0.01f, options());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_NE(refused.error().context.find("next"), std::string::npos) << refused.error().context;
+    EXPECT_TRUE(f.position.empty()) << "refused before any change";
+
+    FlowVolume hole = a;
+    for (std::size_t c = 0; c < hole.v.size(); ++c) hole.v[c] = 0x7E00u;  // no-data everywhere in the next frame
+    flow_movie::ParticleField g;
+    auto o = options();
+    ASSERT_TRUE(flow_movie::advance_particles(g, a, &hole, pool, 0.01f, o));  // frame 0: emits, moves nothing
+    o.per_frame = 0u;
+    ASSERT_TRUE(flow_movie::advance_particles(g, a, &hole, pool, 0.01f, o));
+    EXPECT_TRUE(g.position.empty());
+    EXPECT_EQ(g.retired_no_data, 1u);
+}
+
+// B1, at the driver: the run's own driver passes the next stored frame to the step, so the points follow the velocity between frames (linear in time from the drawn frame to the next)
+// and not the drawn frame's held for the whole interval. A streamed run has no next frame and steps as before.
+TEST(FlowMovieParticles, ADriverGivenTheNextFrameBlendsTowardItAndWithoutItStepsAsBefore) {
+    const FlowVolume drawn = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(0.0f); });
+    const FlowVolume next = field(16, 0.1f, glm::vec3(-0.8f), [](glm::vec3) { return glm::vec3(2.0f, 0.0f, 0.0f); });
+    const auto run = [&](const FlowVolume* next_frame) {
+        auto o = options();
+        o.per_frame = 1u;
+        flow_movie::ParticleDriver driver(o, {});
+        driver.set_pool(std::vector<glm::vec3>{glm::vec3(0.0f)});
+        EXPECT_TRUE(driver.advance(0u, drawn, 0.100, next_frame));
+        EXPECT_TRUE(driver.advance(1u, drawn, 0.110, next_frame));  // 10 ms
+        return driver.at(1u)->position[0].x;
+    };
+    EXPECT_NEAR(run(nullptr), 0.0f, 1e-9f) << "no next frame: the drawn frame's still air moves nothing";
+    EXPECT_NEAR(run(&next), 0.5f * 2.0f * 0.010f, 1e-6f) << "u runs 0 to 2 m/s over the step: the midpoint rule moves it U dt / 2 = 1 cm";
+}
+
+// B1: carried through stored frames, each step runs from the previous stored frame's velocity to this one's, in time (every frame is on disk, so the next is always there). A uniform
+// flow that is u = 2 k m/s at frame k, stored 10 ms apart: the first seed moves (0 + 2)/2 x 10 ms = 1 cm to frame 1 and (2 + 4)/2 x 10 ms = 3 cm to frame 2, 4 cm in all; the old step (the
+// arriving frame's velocity held over the interval) gives 2 + 4 m/s x 10 ms = 6 cm.
+TEST(FlowMovieParticles, AdvancingThroughStoredFramesFollowsTheVelocityBetweenThemInTime) {
+    auto o = options();
+    o.per_frame = 1u;
+    flow_movie::ParticleDriver driver(o, {});
+    const auto read = [&](uint32_t k, FlowVolume& volume, double& time_s) -> spade::Result<void> {
+        volume = field(16, 0.1f, glm::vec3(-0.8f), [k](glm::vec3) { return glm::vec3(2.0f * static_cast<float>(k), 0.0f, 0.0f); });
+        time_s = 0.100 + 0.010 * static_cast<double>(k);
+        return {};
+    };
+    ASSERT_TRUE(flow_movie::advance_through_frames(driver, 2u, read, []() { return std::vector<glm::vec3>{glm::vec3(0.0f)}; }));
+    ASSERT_NE(driver.at(2u), nullptr);
+    EXPECT_NEAR(driver.at(2u)->position[0].x, 0.04f, 1e-6f);
+}

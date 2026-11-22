@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <numeric>
+#include <optional>
 #include <map>
 #include <numbers>
 #include <span>
@@ -118,13 +119,18 @@ struct ParticleField {
 // invalid_argument, by name, before any change: a volume that fails validate_flow_volume(), dt not finite and > 0, a capacity
 // outside 1 to 2^24, max_age_s not finite and > 0, a region that is not finite and lo <= hi, per_frame > 0 with an empty pool,
 // a pool point that is not finite, or a field whose arrays disagree in length or exceed the capacity.
-[[nodiscard]] inline spade::Result<void> advance_particles(ParticleField& field, const spade::FlowVolume& volume,
-                                                           std::span<const glm::vec3> pool, float dt,
-                                                           const ParticleOptions& options) {
+[[nodiscard]] inline spade::Result<void> advance_particles(ParticleField& field, const spade::FlowVolume& volume, const spade::FlowVolume* next_frame,
+                                                           std::span<const glm::vec3> pool, float dt, const ParticleOptions& options) {
     const auto bad = [](const std::string& why) {
         return std::unexpected(spade::Error{spade::Code::invalid_argument, "particles: " + why});
     };
     if (auto valid = spade::validate_flow_volume(volume); !valid) return std::unexpected(valid.error());
+    if (next_frame != nullptr) {
+        if (auto valid = spade::validate_flow_volume(*next_frame); !valid) return std::unexpected(valid.error());
+        const spade::FlowVolumeHeader& a = volume.header;
+        const spade::FlowVolumeHeader& b = next_frame->header;
+        if (a.nx != b.nx || a.ny != b.ny || a.nz != b.nz || a.cell != b.cell || a.origin != b.origin) return bad("the next frame's grid differs from the drawn frame's");
+    }
     if (!std::isfinite(dt) || dt <= 0.0f) return bad("dt must be finite and > 0");
     if (options.capacity < 1u || options.capacity > (1u << 24)) return bad("capacity must be 1 to 2^24");
     if (!std::isfinite(options.max_age_s) || options.max_age_s <= 0.0f) return bad("max_age_s must be finite and > 0");
@@ -145,6 +151,24 @@ struct ParticleField {
     }
 
     const spade::render::FlowSampler sampler = spade::render::make_flow_sampler(volume);
+    // B1: with the next frame, the velocity of a stage is the drawn frame's blended toward the next's by the stage's time through the interval (0 at its start, 1 at the next frame's time); without
+    // it (a streamed run, which holds one frame), the drawn frame's alone, exactly as before.
+    std::optional<spade::render::FlowSampler> sampler_next;
+    if (next_frame != nullptr) sampler_next = spade::render::make_flow_sampler(*next_frame);
+    const auto velocity_at = [&](glm::vec3 at, float weight, bool& no_data) -> glm::vec3 {
+        const spade::render::FlowVelocity a = spade::render::sample_velocity(sampler, at);
+        if (a.no_data) {
+            no_data = true;
+            return glm::vec3(0.0f);
+        }
+        if (!sampler_next) return a.u;
+        const spade::render::FlowVelocity b = spade::render::sample_velocity(*sampler_next, at);
+        if (b.no_data) {
+            no_data = true;
+            return glm::vec3(0.0f);
+        }
+        return a.u + (b.u - a.u) * weight;
+    };
     const auto inside = [&](glm::vec3 p) {
         return p.x >= options.region_lo.x && p.x <= options.region_hi.x && p.y >= options.region_lo.y &&
                p.y <= options.region_hi.y && p.z >= options.region_lo.z && p.z <= options.region_hi.z;
@@ -158,17 +182,19 @@ struct ParticleField {
         glm::vec3 next = p;
         bool lost = false;
         for (uint32_t s = 0; s < options.substeps && !lost; ++s) {
-            const spade::render::FlowVelocity k1 = spade::render::sample_velocity(sampler, next);
-            if (k1.no_data) {
+            const float n_sub = static_cast<float>(options.substeps);
+            bool stage_lost = false;
+            const glm::vec3 k1 = velocity_at(next, static_cast<float>(s) / n_sub, stage_lost);
+            if (stage_lost) {
                 lost = true;
                 break;
             }
-            const spade::render::FlowVelocity k2 = spade::render::sample_velocity(sampler, next + k1.u * (0.5f * h));
-            if (k2.no_data) {
+            const glm::vec3 k2 = velocity_at(next + k1 * (0.5f * h), (static_cast<float>(s) + 0.5f) / n_sub, stage_lost);
+            if (stage_lost) {
                 lost = true;
                 break;
             }
-            next = next + k2.u * h;
+            next = next + k2 * h;
         }
         if (lost) {
             ++field.retired_no_data;
@@ -207,6 +233,11 @@ struct ParticleField {
     return {};
 }
 
+// The drawn frame alone (a streamed run holds one frame): the velocity is held for the whole interval, as before B1.
+[[nodiscard]] inline spade::Result<void> advance_particles(ParticleField& field, const spade::FlowVolume& volume, std::span<const glm::vec3> pool, float dt, const ParticleOptions& options) {
+    return advance_particles(field, volume, nullptr, pool, dt, options);
+}
+
 // The frames a particle run reads: the clip's draws and every frame before its first, in order, each once. The points are
 // carried through all of them (the inflow must already be drawn in when the clip starts), so the stream's plan writes them
 // and keeps each until its advance is done.
@@ -225,7 +256,8 @@ public:
 
     // k must be the next frame (0 first), and time_s past the last frame's: the step is their difference (frame 0 moves
     // nothing, there is nothing to move). A region left open is the first volume's box less one cell.
-    [[nodiscard]] spade::Result<void> advance(uint32_t k, const spade::FlowVolume& volume, double time_s) {
+    // `next_frame`, when the run has it (a run drawn from a kept cache does), is blended in by time (advance_particles): the points follow the velocity between the two frames.
+    [[nodiscard]] spade::Result<void> advance(uint32_t k, const spade::FlowVolume& volume, double time_s, const spade::FlowVolume* next_frame = nullptr) {
         const auto bad = [](const std::string& why) {
             return std::unexpected(spade::Error{spade::Code::invalid_argument, "particles: " + why});
         };
@@ -246,7 +278,7 @@ public:
             region_done_ = true;
         }
         const float dt = k == 0u ? 1.0e-3f : static_cast<float>(time_s - last_time_);
-        if (auto stepped = advance_particles(live_, volume, pool_, dt, o); !stepped) return stepped;
+        if (auto stepped = advance_particles(live_, volume, next_frame, pool_, dt, o); !stepped) return stepped;
         if (std::find(snapshot_frames_.begin(), snapshot_frames_.end(), k) != snapshot_frames_.end()) snapshots_[k] = live_;
         last_time_ = time_s;
         ++next_;
@@ -281,18 +313,21 @@ private:
 
 // A still of the particle look from a run's KEPT frames, with no solve (L106b): the driver carried through frames 0 to `last` in order, each read once.
 // `read(k, volume, time_s)` fills frame k's volume and its simulated time (the step is the difference between frames, as a streamed run's is) or returns the
-// error; `pool_of()` gives the seed pool, asked once, right after frame 0 is read (the pool comes from a frame's log, the held drone's rotors). The driver
+// error; `pool_of()` gives the seed pool, asked once, right after frame 0 is read (the pool comes from a frame's log, the held drone's rotors). Each step follows the velocity from the previous stored frame to this one in time (B1). The driver
 // keeps its snapshots as in a streamed run, so at(last) shows the field the still draws. A frame that cannot be read or advanced stops the pass, named.
 template <typename Read, typename PoolOf>
 [[nodiscard]] spade::Result<void> advance_through_frames(ParticleDriver& driver, uint32_t last, Read&& read, PoolOf&& pool_of) {
-    spade::FlowVolume volume;
+    spade::FlowVolume volume, previous;
     double time_s = 0.0;
     for (uint32_t k = 0; k <= last; ++k) {
         if (auto got = read(k, volume, time_s); !got) {
             return std::unexpected(spade::Error{got.error().code, "particles: frame " + std::to_string(k) + " of 0 to " + std::to_string(last) + ": " + got.error().context});
         }
         if (k == 0u && !driver.has_pool()) driver.set_pool(pool_of());
-        if (auto stepped = driver.advance(k, volume, time_s); !stepped) return stepped;
+        // Each step runs from the previous stored frame's velocity to this one's, in time (every frame is on disk, so the next is always there); frame 0 moves nothing.
+        const spade::Result<void> stepped = k == 0u ? driver.advance(k, volume, time_s) : driver.advance(k, previous, time_s, &volume);
+        if (!stepped) return stepped;
+        std::swap(previous, volume);
     }
     return {};
 }

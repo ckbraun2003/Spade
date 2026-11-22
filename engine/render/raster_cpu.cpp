@@ -1347,21 +1347,32 @@ void draw_flow_surface_colouring(FrameBuffers& fb, const ViewContext& vc, const 
                 continue;
             }
             glm::vec3 step(0.0f);
+            float offset_m = 0.0f;
             if (colouring.offset_cells > 0.0f && surface != nullptr) {
-                step = surface->normal * (colouring.offset_cells * h.cell);
+                offset_m = colouring.offset_cells * h.cell;
+                step = surface->normal * offset_m;
             }
             FlowValue v = sample_quantity(sampler, colouring.colours.quantity, p + step);
+            float read_at = offset_m;  // how far from the wall the value was read
             if (v.no_data && colouring.search_cells > 0.0f && surface != nullptr) {
                 // a solid at the offset: on outward along the normal to the first fluid sample, half a cell at a time (as the GL program steps)
                 const float half_cell = 0.5f * h.cell;
                 const float reach = colouring.search_cells * h.cell;
                 for (float d = half_cell; v.no_data && d <= reach + 1e-6f * h.cell; d += half_cell) {
                     v = sample_quantity(sampler, colouring.colours.quantity, p + step + surface->normal * d);
+                    if (!v.no_data) read_at = offset_m + d;
                 }
             }
-            if (colouring.extrapolate && !v.no_data) {  // 2 v(delta) - v(2 delta), linearly to the wall
-                const FlowValue far = sample_quantity(sampler, colouring.colours.quantity, p + 2.0f * step);
-                v = far.no_data ? far : FlowValue{2.0f * v.value - far.value, false};
+            if (colouring.extrapolate && !v.no_data) {
+                // the line through the read at `read_at` and the one an offset further out, taken to the wall: 2 v(delta) - v(2 delta) when no search was needed
+                const FlowValue far = sample_quantity(sampler, colouring.colours.quantity, p + (surface != nullptr ? surface->normal : glm::vec3(0.0f)) * (read_at + offset_m));
+                if (far.no_data) {
+                    v = far;
+                } else if (read_at == offset_m) {
+                    v = FlowValue{2.0f * v.value - far.value, false};
+                } else {
+                    v = FlowValue{v.value - (far.value - v.value) * (read_at / offset_m), false};
+                }
             }
             if (v.no_data) {
                 if (report != nullptr) ++report->surface_pixels_no_data;

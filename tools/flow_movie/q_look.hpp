@@ -8,6 +8,7 @@
 // frame mean what they mean in the next one's, within one clip's solve).
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -40,24 +41,45 @@ struct QLook {
     // The vorticity the map's top is a share of, in 1/s: 0 takes each frame's own largest |omega| (the default, and every film before O144's second); above 0 it is the CLIP's largest, read
     // from the cache's headers before drawing (--fixed-cloud-range), so a colour means the same vorticity in every frame and the cloud does not step with the frame's peak.
     float vorticity_peak = 0.0f;
+    // O158: the tubes' levels are fractions of this, the CLIP's largest q_hat (0: each frame's own), so a tube means the same Q in every frame. Set by a run from the cache's headers.
+    float q_peak = 0.0f;
 };
 
+// THE PRESSURE COLOUR (O158): the parts' own cool_warm map over the still air's pressure `p_ref` plus and minus `range` disc loadings (`q_ref` Pa each), fixed for the clip: the same colour is
+// the same pressure on a part, on a blade and on a tube, in every frame. None when the scale is not a finite positive.
+[[nodiscard]] inline std::optional<spade::render::TransferFunction> pressure_transfer(float p_ref, float q_ref, float range) {
+    if (!(std::isfinite(p_ref) && std::isfinite(q_ref) && q_ref > 0.0f && std::isfinite(range) && range > 0.0f)) return std::nullopt;
+    spade::render::TransferFunction tf;
+    tf.quantity = spade::render::FlowQuantity::pressure;
+    tf.colours = spade::render::ColourMapId::cool_warm;
+    tf.auto_range = false;
+    tf.range_min = p_ref - range * q_ref;
+    tf.range_max = p_ref + range * q_ref;
+    return tf;
+}
+
 // The ladder's iso-surfaces, highest level first; none when the frame has no Q above zero or no vorticity to colour by.
-[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look) {
+[[nodiscard]] inline std::vector<spade::render::IsoSurface> q_isos(const spade::FlowVolume& v, const QLook& look, const spade::render::TransferFunction* colour_by = nullptr) {
     const float q_max = v.header.channel_max[spade::kFlowQHat];
     const float vort_max = v.header.channel_max[spade::kFlowVorticity];
-    if (!(std::isfinite(q_max) && q_max > 0.0f && std::isfinite(vort_max) && vort_max > 0.0f)) return {};
+    if (!(std::isfinite(q_max) && q_max > 0.0f)) return {};
+    if (colour_by == nullptr && !(std::isfinite(vort_max) && vort_max > 0.0f)) return {};
+    const float q_top = look.q_peak > 0.0f ? look.q_peak : q_max;  // the clip's largest q_hat when a run set it, else this frame's
     spade::render::TransferFunction colours;
-    colours.quantity = spade::render::FlowQuantity::vorticity;
-    colours.colours = spade::render::ColourMapId::blue_magenta;
-    colours.auto_range = false;
-    colours.range_min = 0.0f;
-    colours.range_max = (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max;
+    if (colour_by != nullptr) {
+        colours = *colour_by;  // O158: the pressure, on the parts' own map and range
+    } else {
+        colours.quantity = spade::render::FlowQuantity::vorticity;
+        colours.colours = spade::render::ColourMapId::blue_magenta;
+        colours.auto_range = false;
+        colours.range_min = 0.0f;
+        colours.range_max = (look.vorticity_peak > 0.0f ? look.vorticity_peak : vort_max) * look.vorticity_max;
+    }
     std::vector<spade::render::IsoSurface> isos;
     for (std::size_t i = 0; i < look.level.size(); ++i) {
         spade::render::IsoSurface iso;
         iso.quantity = spade::render::FlowQuantity::q_hat;
-        iso.value = q_max * look.level[i];
+        iso.value = q_top * look.level[i];
         iso.opacity = look.opacity[i];
         iso.colour_by = colours;
         isos.push_back(std::move(iso));
@@ -90,6 +112,58 @@ struct QLook {
                        "vorticity is under {:g}% of the map's range, which tops out at {:g}% of each frame's largest vorticity, up to a density of {:g} per metre at its top, so only the strongest "
                        "swirls show; the cloud is the simulated air, not a measurement, and the parts and blades keep their pressure colour under it.",
                        static_cast<double>(look.onset) * 100.0, static_cast<double>(look.vorticity_max) * 100.0, static_cast<double>(look.sigma));
+}
+
+// The caption's words for the tubes (O158, O163, Oversight's terms): what they are, what colours them, what is fixed, what is smoothed (and that it is for display only), and that they are the
+// simulated air and not a measurement. `pressure_range` is the colour range in disc loadings (the parts' own), `mean_frames` the centred mean's window, `smooth` the one-cell smoothing.
+[[nodiscard]] inline std::string tube_note(const QLook& look, float pressure_range, uint32_t mean_frames, bool smooth) {
+    std::string kept;
+    if (smooth) kept = "the field they are cut from is smoothed over one cell";
+    if (mean_frames > 1u) kept += (kept.empty() ? "the field they are cut from is averaged over " : " and averaged over ") + std::format("{} frames centred on the drawn one", mean_frames);
+    if (kept.empty()) kept = "no smoothing or averaging is applied";
+    const std::string level = look.q_peak > 0.0f
+        ? std::format("The surfaces are at fixed levels, {:g}%, {:g}% and {:g}% of the largest value of the Q-criterion (the balance of spin over strain) in the clip's unsmoothed frames, the same in every frame, so a tube means the same "
+                      "thing from one frame to the next.",
+                      static_cast<double>(look.level[0]) * 100.0, static_cast<double>(look.level[1]) * 100.0, static_cast<double>(look.level[2]) * 100.0)
+        : std::format("The surfaces are at {:g}%, {:g}% and {:g}% of each frame's largest value of the Q-criterion (the balance of spin over strain), so the levels follow each frame.",
+                      static_cast<double>(look.level[0]) * 100.0, static_cast<double>(look.level[1]) * 100.0, static_cast<double>(look.level[2]) * 100.0);
+    return std::format("The vortices round the rotors are drawn as smooth surfaces (the simulated air's own vortex tubes), each coloured by the simulated air's pressure on the same scale as the parts: "
+                       "blue below the still air's pressure to red above, +-{:g} of the disc loading, fixed for the whole clip. {} For steadiness {}; this is for display only, and the simulation and its record "
+                       "are unchanged. The tubes are the simulated air, not a measurement, and the parts and blades keep their pressure colour under them.",
+                       static_cast<double>(pressure_range), level, kept);
+}
+
+// O183: whether the tubes reach the box's floor (a surface cannot fade, so the open floor face would cut a tube flat); read from the solve's own frame.
+struct TubeFloorCheck {
+    bool any_tube = false;         // some cell holds q_hat at or above the tubes' lowest level
+    bool reaches_floor = false;    // such a cell is in the floor layer(s): the open face would cut the tube flat
+    float lowest_height_m = 0.0f;  // the lowest such cell's centre above the floor (0 when none)
+};
+[[nodiscard]] inline TubeFloorCheck tube_floor_check(const spade::FlowVolume& v, const QLook& look, uint32_t floor_layers) {
+    TubeFloorCheck out;
+    const float q_top = look.q_peak > 0.0f ? look.q_peak : v.header.channel_max[spade::kFlowQHat];
+    if (!(std::isfinite(q_top) && q_top > 0.0f) || look.level.empty()) return out;
+    const float lowest = q_top * *std::min_element(look.level.begin(), look.level.end());  // the ladder's lowest level
+    const uint32_t nx = v.header.nx, ny = v.header.ny, nz = v.header.nz;
+    const std::size_t lane = spade::kFlowQHat % spade::kFlowHalvesPerCell;
+    uint32_t lowest_j = ny;
+    for (uint32_t k = 0; k < nz; ++k) {
+        for (uint32_t j = 0; j < ny && j < lowest_j; ++j) {  // j is up; a column's lowest tube cell is the first from the floor
+            for (uint32_t i = 0; i < nx; ++i) {
+                const uint16_t h = v.s[(std::size_t{k} * ny * nx + std::size_t{j} * nx + i) * spade::kFlowHalvesPerCell + lane];
+                if ((h & 0x7C00u) == 0x7C00u) continue;  // no data (inf or NaN)
+                if (spade::fp16::to_f32(h) >= lowest) {
+                    lowest_j = j;
+                    break;
+                }
+            }
+        }
+    }
+    if (lowest_j == ny) return out;
+    out.any_tube = true;
+    out.reaches_floor = lowest_j < floor_layers;
+    out.lowest_height_m = (static_cast<float>(lowest_j) + 0.5f) * v.header.cell;
+    return out;
 }
 
 // "key=value,key=value" over QLook's defaults (--q-look). Keys: l1 l2 l3 (the levels, each in (0, 1], strictly falling), o1 o2 o3

@@ -631,4 +631,37 @@ TEST(RenderFlowField, AMalformedColouringIsRefusedBeforeAnyPixel) {
     EXPECT_TRUE(std::all_of(px.begin(), px.end(), [](uint8_t b) { return b == 0xABu; }));
 }
 
+// A SEARCH THEN AN EXTRAPOLATION (O158): the wall's pressure is the line through two fluid reads on the seen side, taken to the wall. The first read is where the search found fluid,
+// `d` from the wall; the second is one offset further out. Where the first read needs no search (d = the offset) this is 2 v(delta) - v(2 delta), as before.
+// A slab of no-data cells 0.3 either side of the wall with p = 0.8 z beyond it: the offset read (0.25) is inside the slab, the search finds fluid at 0.375 (p 0.3), the second read
+// is at 0.625 (p 0.5); the line through them reaches the wall at 0, the middle of the map. Without the extrapolation the colour is the fluid read's 0.3.
+TEST(RenderFlowField, AnExtrapolationFollowsASearchToTheWallFromTwoFluidReads) {
+    const spade::FlowVolume volume = spade::test::make_flow_volume(glm::vec3(-2.0f, -2.0f, -1.0f), 0.25f, 16, 16, 8, [](glm::vec3 p) {
+        spade::test::FlowChannels c{};
+        c[spade::kFlowPressure] = std::fabs(p.z) < 0.3f ? std::numeric_limits<float>::quiet_NaN() : 0.8f * p.z;
+        return c;
+    });
+    const auto colour_with = [&](bool extrapolate) {
+        RenderScene scene = quad_scene();  // at z = 0: inside the slab; seen from z = 5
+        FlowSurfaceColouring colouring{&volume, sheet_colours()};
+        colouring.walls_only = true;
+        colouring.offset_cells = 1.0f;
+        colouring.search_cells = 2.0f;
+        colouring.extrapolate = extrapolate;
+        scene.flow_surface_colouring = colouring;
+        scene.statics[0].flow_wall = true;
+        return rgb(draw(scene), 16, 16);
+    };
+    EXPECT_TRUE(spade::render::validate_flow_surface_colouring([&] {
+                    FlowSurfaceColouring c{&volume, sheet_colours()};
+                    c.offset_cells = 1.0f;
+                    c.search_cells = 2.0f;
+                    c.extrapolate = true;
+                    return c;
+                }()).has_value())
+        << "a search and an extrapolation together are allowed";
+    expect_map_colour(colour_with(false), 0.65f, "the search alone: the first fluid read, +0.3");
+    expect_map_colour(colour_with(true), 0.5f, "searched then extrapolated to the wall: 0");
+}
+
 }  // namespace

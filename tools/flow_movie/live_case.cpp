@@ -113,8 +113,10 @@ float expected_speed(const LiveCase& lc) {
 spade::Result<an::ResolvedCase> resolve_live(const LiveCase& lc) {
     // The live run answers for a part the finest cell cannot hold (a prop blade, a sheet): drawn only, named (P-1). The
     // reference quad has none, so its resolve is what it was.
-    return spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold,
-                                             spade::analysis::ThinWalls::drawn_by_the_live_run);
+    auto resolved = spade::testing::resolve_with_grid(lc.c, lc.run_model, lc.grid, lc.hold,
+                                                      spade::analysis::ThinWalls::drawn_by_the_live_run);
+    if (resolved) resolved->solids_cg_floor = lc.solids_cg_floor;  // O158: host-set, like hold_from_centre; 0 is the engine's 8
+    return resolved;
 }
 
 namespace {

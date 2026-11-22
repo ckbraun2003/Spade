@@ -197,13 +197,13 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // --surface-pressure (O124): the air pressure on the airframe's surfaces, S8 only. Like the cloud it streams a --window run (or redraws kept frames), and it is a different
 // look from --q-surfaces (the Q surfaces) and the particle looks; with --vorticity-cloud it is the pressure film with the vorticity cloud over it (O144). Empty when the flags are fine, else the
 // refusal's words.
-[[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa, bool nasa_cloud = false) {
+[[nodiscard]] inline std::string surface_pressure_refusal(bool s8, bool window, bool still_redraw, bool stream, bool particles, bool particles_preview, bool nasa, bool nasa_cloud = false, bool tubes = false) {
     if (!s8) return "--surface-pressure is for S8";
     if (window && !still_redraw && !stream) {
         return "--surface-pressure is not for a --window run without --stream (a --window run that streams, or a --window --web-still redraw from a run's kept frames, is)";
     }
     if (particles || particles_preview) return "--surface-pressure and the particle looks are different looks: use one";
-    if (nasa && !nasa_cloud) return "--surface-pressure and --q-surfaces (the Q surfaces) are different looks: use one (--vorticity-cloud adds the vortices to --surface-pressure)";
+    if (nasa && !nasa_cloud && !tubes) return "--surface-pressure and --q-surfaces (the Q surfaces) are different looks: use one (--vorticity-cloud adds the vortices to --surface-pressure; --pressure-colour draws the --q-surfaces tubes in the pressure colour)";
     return {};
 }
 
@@ -215,9 +215,28 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 
 // The S8 view a run's flags choose (O144: main's ternary as a function): the pressure film (shaded or not), with the vorticity cloud over it when --vorticity-cloud comes too; else the
 // Q surfaces or the cloud (--q-surfaces, --vorticity-cloud), the particle looks, or the speed volume.
-[[nodiscard]] inline std::string s8_view_name(bool pressure, bool shade, bool nasa, bool cloud, bool particles, bool particles_preview) {
+// --cg-floor N (O158: the pressure film's solve runs TIGHT): the solids pressure solve's CG iteration floor, passed to the run (the LiveRun option; 8 is the default, bit-identical to no flag). 8 to 16
+// only. Empty when fine, else the refusal's words (what it was given and the range).
+[[nodiscard]] inline std::string cg_floor_refusal(uint32_t n) {
+    if (n >= 8u && n <= 16u) return {};
+    return "--cg-floor " + std::to_string(n) + " is outside 8 to 16 (the solids pressure solve's CG iteration floor; the default is 8)";
+}
+
+// --pressure-colour (O158): the --q-surfaces tubes coloured by the air's pressure on the parts' own scale, in the --surface-pressure film. It needs both (the scale is the parts'), not the vorticity
+// cloud (one wake look), and S8. Empty when not asked or fine, else the refusal's words.
+[[nodiscard]] inline std::string pressure_colour_refusal(bool asked, bool s8, bool surface_pressure, bool q_surfaces, bool vorticity_cloud) {
+    if (!asked) return {};
+    if (!s8) return "--pressure-colour is for S8";
+    if (!surface_pressure) return "--pressure-colour needs --surface-pressure (the tubes take the parts' own pressure scale)";
+    if (!q_surfaces) return "--pressure-colour needs --q-surfaces (the tubes it colours)";
+    if (vorticity_cloud) return "--pressure-colour and --vorticity-cloud are different wake looks: use one";
+    return {};
+}
+
+[[nodiscard]] inline std::string s8_view_name(bool pressure, bool shade, bool nasa, bool cloud, bool particles, bool particles_preview, bool tubes = false) {
     if (pressure) {
         if (nasa && cloud) return shade ? "surface-pressure-vortices-shaded" : "surface-pressure-vortices";
+        if (nasa && tubes) return shade ? "surface-pressure-tubes-shaded" : "surface-pressure-tubes";  // O158: the Q tubes in the pressure colour
         return shade ? "surface-pressure-shaded" : "surface-pressure";
     }
     if (nasa) return cloud ? "vorticity-cloud" : "q-surfaces";
@@ -243,7 +262,7 @@ inline constexpr float kD1WebSgsCs = 0.17f;
 // (a redraw: --from-cache or --web-still), so not --stream (the later frames do not exist yet) or --simulate-only. Empty when the flag is not asked or is fine, else the refusal's words.
 [[nodiscard]] inline std::string fixed_cloud_range_refusal(bool fixed, bool nasa_cloud, bool stream, bool simulate_only, bool redraw, uint32_t cached_frames, uint32_t needed_frames) {
     if (!fixed) return {};
-    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --vorticity-cloud";
+    if (!nasa_cloud) return "--fixed-cloud-range sets the cloud's range for the whole clip: it needs --vorticity-cloud (or --pressure-colour, whose tube levels it fixes)";
     if (stream) return "--fixed-cloud-range needs every frame on disk to find the clip's largest vorticity; --stream solves as it draws: use --from-cache or --web-still";
     if (simulate_only) return "--fixed-cloud-range is for drawing; --simulate-only only solves: use one";
     if (!redraw) return "--fixed-cloud-range reads the clip's largest vorticity from frames already on disk: use it with --from-cache or --web-still";
@@ -926,8 +945,9 @@ struct DeliveryGuard {
 
 // The .md's heading: the clip's title, except an S8 whose look is the pressure or the vorticity cloud (the same flags as shows_line), which names what it shows
 // and never says "volume render" (the lead, O124: the pressure master's .md carried the S8 fallback title).
-[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false) {
+[[nodiscard]] inline std::string look_title(const Clip& c, const Drone& d, bool particles, bool cloud, bool pressure, bool blades = false, bool tubes = false) {
     if (c.id == "S8" && !particles) {
+        if (pressure && blades && tubes) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades, with the vortices round the rotors as pressure-coloured surfaces", d);
         if (pressure && blades && cloud) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades, with the vortices round the rotors", d);
         if (pressure && blades) return in_words("Reference quad in hover: the air pressure on the airframe and beside the rotor blades", d);
         if (pressure) return in_words("Reference quad in hover: the air pressure on the airframe in the rotor wake", d);
@@ -938,8 +958,12 @@ struct DeliveryGuard {
 
 // What a film shows, in its own words: a --particles S8 shows air points (and the speed volume only when --volume put it under them), a --lines film's rotors
 // are actuator lines; every other film keeps its clip's text.
-[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false, bool blades = false) {
+[[nodiscard]] inline std::string shows_line(const Clip& c, bool lines, bool particles, bool volume, bool cloud = false, bool pressure = false, bool blades = false, bool tubes = false) {
     const std::string rotors = lines ? "actuator lines" : "actuator discs";
+    if (pressure && blades && tubes && !particles && c.id == "S8") {  // O158: the pressure film with the vortices as smooth surfaces in the pressure colours
+        return "The air pressure on the surfaces of the reference quad's rigid parts and on its rotor blades, drawn at the simulation's rotor angle, blue (below ambient) to red (above), with the vortices round the "
+               "rotors drawn as smooth surfaces in the same blue-to-red pressure colours, and four " + rotors + " driving the air, in a slow orbit.";
+    }
     if (pressure && blades && cloud && !particles && c.id == "S8") {  // O144: the pressure film with the vorticity cloud round the rotors
         return "The air pressure on the surfaces of the reference quad's rigid parts and on its rotor blades, drawn at the simulation's rotor angle, blue (below ambient) to red (above), with the vorticity round the rotors drawn as a soft cloud from blue (low) to magenta (high) and four " +
                rotors + " driving the air, in a slow orbit.";
@@ -987,6 +1011,7 @@ struct CaptionInput {
     bool shaded = false;        // --surface-shade: ... lit for shape
     std::string vortex_note;    // --surface-pressure with --vorticity-cloud: how the swirls are drawn (q_look.hpp's vortex_note), for the caveats
     bool blades = false;        // --prop-blur mode=blades: ... and the rotors' real blades, drawn at the simulation's angle, take the air's pressure beside them on their own range
+    bool tubes = false;         // --pressure-colour: the vortices drawn as smooth surfaces (--q-surfaces) coloured by the air's pressure on the parts' scale (O158); the note is vortex_note
 };
 
 // The .md beside a clip: its title, commit, date, how it was rendered, what it shows, the slow motion, the loop
@@ -994,16 +1019,16 @@ struct CaptionInput {
 [[nodiscard]] inline std::string caption_text(const CaptionInput& in) {
     const Clip& c = *in.clip;
     const Drone& drone = in.drone != nullptr ? *in.drone : default_drone();
-    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades) + "\n\n";
+    std::string t = "# " + look_title(c, drone, in.particles, in.cloud, in.pressure, in.blades, in.tubes) + "\n\n";
     t += "- Commit: " + in.commit + "\n";
     t += "- Date: " + in.date_utc + "\n";
     t += "- How rendered: tools/flow_movie, `" + command_in_words(in.command, drone) + "`, job ticket " + in.ticket + "\n";
-    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure, in.blades), drone) + "\n";
+    t += "- Shows: " + in_words(shows_line(c, in.lines, in.particles, in.volume, in.cloud, in.pressure, in.blades, in.tubes), drone) + "\n";
     if (!drone.description.empty()) t += "- Drone: " + std::string(drone.description) + "\n";
     t += "- " + slow_motion_line(in.sim_seconds, in.screen_seconds) + "\n";
     t += "- Loop: " + loop_line(c) + "\n";
     t += "- " + in_words(standing_caveats(c, in.cell_mm, in.step_us, in.lines, in.cloud, in.pressure, in.shaded, in.blades, drone.blade_cp_range, drone.blade_words, drone.parts_words, drone.parts_cp_range,
-                                    in.pressure && in.cloud ? std::string_view(in.vortex_note) : std::string_view()), drone) + "\n";
+                                    in.pressure && (in.cloud || in.tubes) ? std::string_view(in.vortex_note) : std::string_view()), drone) + "\n";
     if (!drone.card_extra.empty()) t += "- " + in_words(std::string(drone.card_extra), drone) + "\n";
     if (!in.extra.empty()) t += "- " + in.extra + "\n";
     return t;
