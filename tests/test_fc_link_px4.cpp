@@ -10,8 +10,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -464,4 +467,27 @@ TEST(FcLinkPx4, TheWorldAfterBootIsTheSameWhetherPx4TookThreeStepsOrThreeHundred
     EXPECT_EQ(boot_b, 300u);
     EXPECT_NE(end_a, end_b) << "the link time offset differs: it is recorded, not hidden";
     EXPECT_EQ(a, b) << "same function of PX4's replies from the world's tick 0, whatever PX4's boot length";
+}
+
+// The airframe's data-link default (found in the first real run: PX4 refused to arm with "Preflight Fail: No connection to the GCS"). In PX4 v1.17.0's
+// rcAndDataLinkCheck.cpp a ground station is REQUIRED to arm only when NAV_DLL_ACT is above 0, and PX4's own default is 0 (Disabled). A headless
+// lockstep run has no ground station, so airframe 10090 must not turn the requirement on. Text check on the file the image is built from.
+TEST(FcLinkPx4, TheAirframeDoesNotRequireAGroundStation) {
+    const std::filesystem::path file = std::filesystem::path(SPADE_REPO_DIR) / "tools" / "fc_link" / "px4" / "airframes" / "10090_spade_x500_px4";
+    std::ifstream in(file);
+    ASSERT_TRUE(in.good()) << "cannot read " << file.string();
+    std::string line;
+    int found = 0;
+    long value = -1;
+    while (std::getline(in, line)) {
+        const std::size_t hash = line.find('#');
+        if (hash != std::string::npos) line.erase(hash);  // a comment is not a setting
+        const std::string key = "param set-default NAV_DLL_ACT";
+        const std::size_t at = line.find(key);
+        if (at == std::string::npos) continue;
+        ++found;
+        value = std::strtol(line.c_str() + at + key.size(), nullptr, 10);
+    }
+    EXPECT_EQ(found, 1) << "airframe 10090 sets NAV_DLL_ACT " << found << " times (expected once, explicitly)";
+    EXPECT_EQ(value, 0) << "NAV_DLL_ACT is " << value << ": above 0 makes PX4 require a ground station to arm";
 }
