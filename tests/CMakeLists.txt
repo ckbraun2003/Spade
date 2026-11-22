@@ -149,6 +149,7 @@ add_executable(spade_tests
     test_rotor.cpp
     test_rotor_wake.cpp
     test_motor.cpp
+    test_rotor_frequencies.cpp
     test_battery.cpp
     test_propeller.cpp
     test_composite_inertia.cpp
