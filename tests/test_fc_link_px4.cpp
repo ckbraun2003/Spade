@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <string>
 #include <thread>
@@ -24,13 +25,14 @@ using namespace spade::fc_link;
 using namespace std::chrono_literals;
 namespace mav = spade::fc_link::mavlink;
 
-enum class Mode { normal, silent_after, stale, doubled, closed_after, garbage_first };
+enum class Mode { normal, silent_after, stale, doubled, closed_after, garbage_first, silent_first };
 
 struct Script {
     Mode mode = Mode::normal;
     uint64_t after = 0;           // silent_after / closed_after: sensors answered before the change
     size_t chunk = 0;             // 0 = deliver everything queued in one read, else this many bytes per read
     bool send_heartbeat = true;   // PX4's first message on connecting
+    bool backlog = false;         // silent_first: when it finally answers, it answers every sensor message it had held, in order
 };
 
 // What the fake saw us send, for the tests to check.
@@ -103,6 +105,16 @@ private:
     void answer(const mav::HilSensor& s) {
         if (s.id != 0) return;
         const uint64_t n = answered_++;
+        if (script_.mode == Mode::silent_first) {  // a PX4 still booting: no output for the first `after` sensor messages
+            if (n < script_.after) {
+                if (script_.backlog) pending_.push_back(s.time_usec);
+                return;
+            }
+            for (const uint64_t t : pending_) queue(mav::Header{static_cast<uint8_t>(seq_++), 1, 1}, controls_for(t, 0.0f));
+            pending_.clear();
+            queue(mav::Header{static_cast<uint8_t>(seq_++), 1, 1}, controls_for(s.time_usec, 0.0f));
+            return;
+        }
         if (script_.mode == Mode::silent_after && n >= script_.after) return;
         if (script_.mode == Mode::closed_after && n >= script_.after) {
             closed_ = true;
@@ -119,6 +131,7 @@ private:
     mav::Parser parser_;
     std::deque<uint8_t> inbox_;
     uint64_t answered_ = 0;
+    std::vector<uint64_t> pending_;
     uint8_t seq_ = 2;
     bool closed_ = false;
 };
@@ -310,4 +323,145 @@ TEST(FcLinkPx4, TheSameCallsGiveTheSameBytes) {
     const std::vector<uint8_t> b = run();
     EXPECT_FALSE(a.empty());
     EXPECT_EQ(a, b) << "no clock, address or counter beyond the sequence number enters the bytes";
+}
+
+// ---- the boot phase: PX4's boot runs on the lockstep clock, so it answers nothing until it is up (first real run, 2026-11-21) ----
+
+TEST(FcLinkPx4, UntilPx4sFirstReplyTheLinkReportsBootingAndKeepsSending) {
+    Script s;
+    s.mode = Mode::silent_first;
+    s.after = 3;
+    auto seen = std::make_shared<Seen>();
+    auto link = open_with(s, seen);
+    ASSERT_TRUE(link.has_value());
+    for (uint64_t k = 1; k <= 3; ++k) {
+        const auto r = link->exchange(sensor_at(k));
+        ASSERT_TRUE(r.has_value()) << "boot step " << k << ": " << r.error().context;
+        EXPECT_TRUE(r->booting);
+        EXPECT_FALSE(r->armed);
+        for (const float c : r->controls) EXPECT_EQ(c, 0.0f) << "no controls while PX4 boots";
+    }
+    EXPECT_EQ(link->report().replies, 0u);
+    EXPECT_EQ(link->report().boot_steps, 3u);
+    EXPECT_EQ(link->report().boot_end_time_usec, 0u) << "not ended yet";
+    const auto first = link->exchange(sensor_at(4));
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    EXPECT_FALSE(first->booting);
+    EXPECT_EQ(first->time_usec, 4 * kStepUs);
+    EXPECT_TRUE(first->armed);
+    EXPECT_EQ(link->report().boot_steps, 3u);
+    EXPECT_EQ(link->report().boot_end_time_usec, 4 * kStepUs) << "Spade's tick 0 is the step that answers PX4's first output";
+    EXPECT_EQ(link->report().replies, 1u);
+    ASSERT_EQ(seen->sensors.size(), 4u);
+    for (size_t i = 0; i < 4; ++i) EXPECT_EQ(seen->sensors[i].time_usec, (i + 1) * kStepUs) << "boot sensors advance the time like any other";
+}
+
+TEST(FcLinkPx4, ABacklogAnsweredWithTheFirstReplyIsCaughtUpNotRefusedAsStale) {
+    Script s;
+    s.mode = Mode::silent_first;
+    s.after = 3;
+    s.backlog = true;
+    auto link = open_with(s, std::make_shared<Seen>());
+    ASSERT_TRUE(link.has_value());
+    for (uint64_t k = 1; k <= 3; ++k) ASSERT_TRUE(link->exchange(sensor_at(k))->booting);
+    const auto first = link->exchange(sensor_at(4));
+    ASSERT_TRUE(first.has_value()) << first.error().context;
+    EXPECT_FALSE(first->booting);
+    EXPECT_EQ(first->time_usec, 4 * kStepUs) << "the reply that counts answers the CURRENT sensor message";
+    EXPECT_EQ(link->report().catchup_replies, 3u);
+    EXPECT_EQ(link->report().replies, 1u);
+    EXPECT_EQ(link->report().max_replies_per_sensor, 1u) << "the gap checker does not see the boot backlog as a doubled reply";
+    const auto next = link->exchange(sensor_at(5));
+    ASSERT_TRUE(next.has_value()) << next.error().context;
+    EXPECT_EQ(next->time_usec, 5 * kStepUs);
+}
+
+TEST(FcLinkPx4, AFirstReplyThatIsStaleWithNothingBeforeItIsStillRefused) {
+    Script s;
+    s.mode = Mode::stale;  // every reply is a step behind; with no boot backlog that is a fault, not a catch-up
+    auto link = open_with(s, std::make_shared<Seen>());
+    ASSERT_TRUE(link.has_value());
+    const auto r = link->exchange(sensor_at(2));
+    ASSERT_FALSE(r.has_value());
+    EXPECT_NE(r.error().context.find("px4_stale_reply"), std::string::npos) << r.error().context;
+}
+
+TEST(FcLinkPx4, APx4ThatNeverStartsIsRefusedByNameWithTheBootCount) {
+    Script s;
+    s.mode = Mode::silent_first;
+    s.after = 1000000;
+    Px4LinkConfig cfg;
+    cfg.boot_timeout = 250ms;
+    cfg.boot_poll = 5ms;
+    auto link = open_with(s, std::make_shared<Seen>(), cfg);
+    ASSERT_TRUE(link.has_value());
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t k = 0;
+    spade::Result<ActuatorReply> r = ActuatorReply{};
+    do {
+        r = link->exchange(sensor_at(++k));
+        ASSERT_LT(k, 100000u) << "it must end";
+    } while (r.has_value());
+    const auto waited = std::chrono::steady_clock::now() - t0;
+    EXPECT_NE(r.error().context.find("px4_no_reply"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find("never started"), std::string::npos) << r.error().context;
+    EXPECT_NE(r.error().context.find(std::to_string(link->report().boot_steps)), std::string::npos) << "the text carries the boot step count: " << r.error().context;
+    EXPECT_GE(link->report().boot_steps, 1u);
+    EXPECT_GE(waited, 250ms);
+    EXPECT_LT(waited, 5s);
+    EXPECT_EQ(link->report().replies, 0u);
+}
+
+namespace {
+
+// A stand-in for "Spade's world": its state is held while PX4 boots, and from the first reply on it is a function of PX4's replies only. The digest
+// folds the world's state and the controls it was given, tick by tick, and NEVER the boot length or the link's absolute time.
+uint64_t world_digest_after_boot(uint64_t boot_steps_px4_takes, uint64_t* boot_steps_seen, uint64_t* boot_end_us) {
+    Script s;
+    s.mode = Mode::silent_first;
+    s.after = boot_steps_px4_takes;
+    s.backlog = (boot_steps_px4_takes % 2) == 0;  // both kinds of PX4: one that answers the backlog and one that does not
+    auto link = open_with(s, std::make_shared<Seen>());
+    if (!link) return 0;
+    double world = 0.0;  // the held spawn state
+    uint64_t digest = 1469598103934665603ULL;
+    const auto fold = [&](double v) {
+        uint64_t bits;
+        static_assert(sizeof(bits) == sizeof(v));
+        std::memcpy(&bits, &v, sizeof(bits));
+        digest = (digest ^ bits) * 1099511628211ULL;
+    };
+    uint64_t link_step = 0;
+    bool started = false;
+    uint64_t tick = 0;
+    while (tick < 200) {
+        mav::HilSensor sensor = sensor_at(++link_step);
+        sensor.zacc = static_cast<float>(-9.80665 + world);  // built from the held (or running) state
+        const auto r = link->exchange(sensor);
+        if (!r) return 0;
+        if (r->booting) continue;  // the world is NOT advanced while PX4 boots
+        started = true;
+        world += static_cast<double>(r->controls[0]) * 0.001;  // tick `tick` of the world: advanced by PX4's reply
+        fold(world);
+        fold(static_cast<double>(r->controls[3]));
+        ++tick;
+    }
+    (void)started;
+    *boot_steps_seen = link->report().boot_steps;
+    *boot_end_us = link->report().boot_end_time_usec;
+    return digest;
+}
+
+}  // namespace
+
+TEST(FcLinkPx4, TheWorldAfterBootIsTheSameWhetherPx4TookThreeStepsOrThreeHundred) {
+    uint64_t boot_a = 0, boot_b = 0, end_a = 0, end_b = 0;
+    const uint64_t a = world_digest_after_boot(3, &boot_a, &end_a);
+    const uint64_t b = world_digest_after_boot(300, &boot_b, &end_b);
+    ASSERT_NE(a, 0u);
+    ASSERT_NE(b, 0u);
+    EXPECT_EQ(boot_a, 3u);
+    EXPECT_EQ(boot_b, 300u);
+    EXPECT_NE(end_a, end_b) << "the link time offset differs: it is recorded, not hidden";
+    EXPECT_EQ(a, b) << "same function of PX4's replies from the world's tick 0, whatever PX4's boot length";
 }

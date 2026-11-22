@@ -44,6 +44,12 @@ struct Px4LinkConfig {
     std::chrono::milliseconds reply_timeout{5000};      // wall time to wait for HIL_ACTUATOR_CONTROLS (a phase 1 requirement: 5 s)
     std::chrono::milliseconds heartbeat_timeout{30000};  // wall time for PX4's first HEARTBEAT after it connects
     mavlink::Header sender{0, 1, 200};                  // our sysid/compid (seq is ours to count)
+    // BOOT PHASE: PX4's own boot runs on the lockstep clock and answers nothing until its modules are up, so until its first
+    // HIL_ACTUATOR_CONTROLS the link keeps sending sensor messages and waits at most boot_poll of wall time per step for a reply; it reports
+    // `booting` (zero controls) and counts boot_steps. A PX4 that has not answered after boot_timeout of wall time since the first sensor
+    // message is refused as "px4_no_reply ... never started". From the first reply on the link is strict lockstep (reply_timeout).
+    std::chrono::milliseconds boot_timeout{120000};
+    std::chrono::milliseconds boot_poll{10};
 };
 
 // PX4's answer to one sensor message.
@@ -52,6 +58,7 @@ struct ActuatorReply {
     std::array<float, 16> controls{};  // motors 0..1 (PWM-1000)/1000, servos -1..1, all 0 when disarmed
     bool armed = false;                // MAV_MODE_FLAG_SAFETY_ARMED (128) in `mode`
     bool lockstep = false;             // HIL_ACTUATOR_CONTROLS_FLAGS_LOCKSTEP (bit 0) in `flags`
+    bool booting = false;              // PX4 has not answered yet: no controls (all 0); the caller holds its world and sends the next sensors
 };
 
 // What the lockstep gap checker (Test/Docs) and the run record read.
@@ -63,6 +70,9 @@ struct Px4LinkReport {
     uint64_t heartbeats_seen = 0;
     uint64_t command_longs_seen = 0;  // PX4's one MAV_CMD_SET_MESSAGE_INTERVAL for HIL_STATE_QUATERNION, normally
     uint64_t last_time_usec = 0;      // time_usec of the last HIL_SENSOR sent
+    uint64_t boot_steps = 0;          // sensor messages sent before PX4's first reply (it depends on wall time: PX4's side)
+    uint64_t boot_end_time_usec = 0;  // time_usec of the sensor message whose exchange returned the first reply (0 until then): Spade's tick 0
+    uint64_t catchup_replies = 0;     // replies to boot-time sensor messages that arrived with the first one
     std::chrono::nanoseconds wall_wait_total{0};  // wall time spent waiting for replies
     std::chrono::nanoseconds wall_wait_max{0};
     mavlink::Parser::Stats parser{};
