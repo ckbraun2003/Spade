@@ -1819,3 +1819,12 @@ TEST(FlowMovieWeb, TheFpvCardSaysTheRotorForceInSolidCellsAsMeasuredAndNoCaption
         EXPECT_EQ(text->find("about 4"), std::string::npos) << *text;
     }
 }
+
+// The cache's mark names a raised CG floor and nothing for the engine's own (O158): 0 (not given) and 8 are the same solve and give the same words, none; 12 names the floor, so a cache solved at
+// another floor is never reused for it.
+TEST(FlowMovieWeb, TheCacheMarkNamesARaisedCgFloorAndNothingForTheEnginesOwn) {
+    EXPECT_EQ(web::cg_floor_mark(0u), "");
+    EXPECT_EQ(web::cg_floor_mark(8u), "") << "8 is the engine's own floor: the same solve as 0";
+    EXPECT_EQ(web::cg_floor_mark(12u), " cg_floor 12");
+    EXPECT_NE(web::cg_floor_mark(12u), web::cg_floor_mark(16u));
+}

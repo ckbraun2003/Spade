@@ -914,3 +914,17 @@ TEST(FlowMovieQLook, ATubeThatReachesTheFloorFailsTheCheckAndOneThatStopsShortPa
     EXPECT_FALSE(none.any_tube);
     EXPECT_FALSE(none.reaches_floor);
 }
+
+// The per-frame floor report (O183): its form and its number on known cases. A tube stopping 3.5 mm above the floor in a clear bottom, a tube in the floor layers, and no tube at all.
+TEST(FlowMovieQLook, TheFloorReportLineNamesTheVerdictAndTheLowestTubeHeightInMillimetres) {
+    flow_movie::TubeFloorCheck short_of;
+    short_of.any_tube = true;
+    short_of.lowest_height_m = 0.0035f;
+    EXPECT_EQ(flow_movie::tube_floor_line(short_of), "[ tubes ] floor check: stops short (the lowest tube cell 3.5 mm above the floor, the bottom 2 layers are clear)");
+    flow_movie::TubeFloorCheck reaches;
+    reaches.any_tube = true;
+    reaches.reaches_floor = true;
+    reaches.lowest_height_m = 0.000625f;
+    EXPECT_EQ(flow_movie::tube_floor_line(reaches), "[ tubes ] floor check: REACHES THE FLOOR (the lowest tube cell 0.6 mm above the floor, the bottom 2 layers hold a tube)");
+    EXPECT_EQ(flow_movie::tube_floor_line(flow_movie::TubeFloorCheck{}), "[ tubes ] floor check: no tube (the lowest tube cell 0.0 mm above the floor, the bottom 2 layers are clear)");
+}
