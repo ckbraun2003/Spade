@@ -145,6 +145,14 @@ exit 0
     Expect 'start' ($runLine -match 'mkdir -p \S*rootfs/log') "the run command creates the log folder first (got: $runLine)"
     Expect 'start' ($runLine -match 'exec \S*/bin/px4 \S*/etc -s etc/init\.d-posix/rcS -d') "and then execs px4 with its data dir and rcS (got: $runLine)"
 
+    # start with -Network none: the run command carries `--network none` (the default is docker's own bridge, which a real run needs to reach the host)
+    Remove-Item -LiteralPath $calls, $state -ErrorAction SilentlyContinue
+    $so = & $ps -NoProfile -ExecutionPolicy Bypass -File $script -RunId t1 -OutDir (Join-Path $work 'run-start2') -Network none -Docker $fake 2>&1 | ForEach-Object { "$_" }
+    $runLine2 = @(Get-Content -LiteralPath $calls | Where-Object { $_ -match '^run ' }) -join ' '
+    Expect 'start network' ($LASTEXITCODE -eq 0) "exit 0 (got $LASTEXITCODE): $($so -join ' ')"
+    Expect 'start network' ($runLine2 -match '--network none') "the run command carries --network none (got: $runLine2)"
+    Expect 'start network' ($runLine -notmatch '--network') 'and the default start has no --network flag'
+
     # no container
     $r = Run-Case 'no box' @{} (Join-Path $work 'run-nobox') -NoContainer
     Expect 'no box' ($r.Code -eq 0) "exit 0 (got $($r.Code))"
