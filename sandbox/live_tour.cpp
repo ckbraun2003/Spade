@@ -1387,10 +1387,11 @@ void editor_tour(Tour& t, const fs::path& assets) {
             return *low - (above.y - *down);
         };
         const std::optional<float> at_rest = foot_gap(placed.start.pos);
-        s.check(at_rest.has_value() && *at_rest >= end_goal::kRestLo && *at_rest <= end_goal::kRestHi, "placed-at-rest",
-                at_rest ? "lowest foot point " + fmt(*at_rest * 1000.0f) + " mm above the floor (within [-2, +5]); origin " +
-                              fmt(placed.start.pos.y * 1000.0f) + " mm up"
-                        : "no floor beneath");
+        const float rest_gap = at_rest.value_or(std::numeric_limits<float>::quiet_NaN());  // NaN: no floor beneath, and every comparison below is false
+        s.check(rest_gap >= end_goal::kRestLo && rest_gap <= end_goal::kRestHi, "placed-at-rest",
+                at_rest.has_value() ? "lowest foot point " + fmt(rest_gap * 1000.0f) + " mm above the floor (within [-2, +5]); origin " +
+                                          fmt(placed.start.pos.y * 1000.0f) + " mm up"
+                                    : "no floor beneath");
 
         // The camera on the drone, as the airflow chapter frames its poster; put back after.
         const OrbitCamera cam_before = session->camera();
@@ -1408,8 +1409,10 @@ void editor_tour(Tour& t, const fs::path& assets) {
         w().apply_panels();
         then(30);
         const std::optional<float> up = foot_gap(scene_now().vehicles.back().start.pos);
-        s.check(up.has_value() && at_rest.has_value() && std::abs((*up - *at_rest) - kLift) < 2e-3f, "lifted",
-                up ? "lowest foot point " + fmt(*up * 1000.0f) + " mm above the floor after a 100 mm lift" : "no floor beneath");
+        const float lifted_gap = up.value_or(std::numeric_limits<float>::quiet_NaN());
+        s.check(std::abs((lifted_gap - rest_gap) - kLift) < 2e-3f, "lifted",
+                up.has_value() ? "lowest foot point " + fmt(lifted_gap * 1000.0f) + " mm above the floor after a 100 mm lift"
+                               : "no floor beneath");
 
         // The drop at 1x: Run, then frames until the body is still (speed under 2 cm/s for half a second) or the limit.
         constexpr int kStillFrames = 30;      // half a second of frames at 60 a second
@@ -1451,10 +1454,11 @@ void editor_tour(Tour& t, const fs::path& assets) {
         s.check(still_at >= 0, "still",
                 still_at >= 0 ? "still after " + fmt(static_cast<float>(still_at) / 60.0f) + " s (speed under 20 mm/s for 0.5 s; limit 5 s)"
                               : "not still within 5 s");
-        s.check(settled.has_value() && *settled >= end_goal::kRestLo && *settled <= end_goal::kRestHi, "settled-on-feet",
-                settled ? "lowest foot point " + fmt(*settled * 1000.0f) + " mm above the floor (within [-2, +5]); the lowest it went " +
-                              fmt(lowest * 1000.0f) + " mm, the highest after first touch " + fmt(rebound * 1000.0f) + " mm"
-                        : "no state");
+        const float settled_gap = settled.value_or(std::numeric_limits<float>::quiet_NaN());
+        s.check(settled_gap >= end_goal::kRestLo && settled_gap <= end_goal::kRestHi, "settled-on-feet",
+                settled.has_value() ? "lowest foot point " + fmt(settled_gap * 1000.0f) + " mm above the floor (within [-2, +5]); the lowest it went " +
+                                          fmt(lowest * 1000.0f) + " mm, the highest after first touch " + fmt(rebound * 1000.0f) + " mm"
+                                    : "no state");
         then(30);
         t.snapshot("editor_x500_feet");
         then(30);  // the last 1x frame is held so the stop reads
