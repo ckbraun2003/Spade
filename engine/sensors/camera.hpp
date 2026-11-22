@@ -189,7 +189,7 @@ static_assert(offsetof(CameraStamp, k4) == 72);
 static_assert(offsetof(CameraStamp, _p0) == 76);
 static_assert(offsetof(CameraStamp, orientation) == 80);
 
-// What a caller states about a camera (the attach_row record of the array "camera_sensors"; 108 bytes, at most kMaxSpawnBytes). The defaults are the row's
+// What a caller states about a camera (the attach_row record of the array "camera_sensors"; 104 bytes, at most kMaxSpawnBytes). The defaults are the row's
 // own for the fields the design gives one (no blur, no antialiasing, unit gain, every cull bit, the image channel); the lens, the size and the rate are the
 // caller's to state, and a spawn that does not (width 0, fx 0) is refused naming the field.
 struct CameraSensorSpawn {
@@ -216,7 +216,7 @@ struct CameraSensorSpawn {
     uint32_t channels = camera_channel::image;
 };
 static_assert(std::is_trivially_copyable_v<CameraSensorSpawn>);
-static_assert(sizeof(CameraSensorSpawn) == 108);
+static_assert(sizeof(CameraSensorSpawn) == 104);
 
 // One frame DUE: the camera's period elapsed in this tick, so a frame is to be rendered from the state at the end of tick `tick`. 16 bytes, no pixels (the
 // pixels are Rendering's); `index` counts the camera's frames from 1, so a gap a reader sees through ring_poll is a frame that was dropped.

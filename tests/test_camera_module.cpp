@@ -151,7 +151,7 @@ TEST(CameraModule, TheDueFrameIsAFixedSixteenByteRecord) {
     EXPECT_EQ(sizeof(CameraFrameDue), 16u);
     EXPECT_EQ(offsetof(CameraFrameDue, index), 0u);
     EXPECT_EQ(offsetof(CameraFrameDue, tick), 8u);
-    EXPECT_EQ(sizeof(CameraSensorSpawn), 108u);
+    EXPECT_EQ(sizeof(CameraSensorSpawn), 104u);
 }
 
 TEST(CameraModule, TheModuleIsOptInAndNotInTheStandardSet) {
